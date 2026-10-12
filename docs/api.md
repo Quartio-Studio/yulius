@@ -205,7 +205,7 @@ limited to the agent's sandbox.
 | Method | Path | Level | Body → Response |
 | --- | --- | --- | --- |
 | GET | `/api/sandboxes/{sid}/tasks?archived=false` | read | → `[TaskSummary]` |
-| POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness?":"claude","mode?":"goal|prompt|auto","workflow_id?":"<id>|auto","model?","effort?","title?","after_task_id?","start_rule?"}` → 201 `TaskSummary`; Yulius runs Claude Code only (another `harness` is 422); `mode` defaults to `goal` (TSK-010); `auto` lets Jev choose the mode and/or the workflow before the task is created (TSK-015, ≤ 2.5 s; see "Task intake"); an unknown workflow or mode is 422 before Jev is asked; with `after_task_id` (a task of the sandbox that has not ended; 422 otherwise, 429 beyond 32 waiting) the task waits as `chained` until that task is Done (TSK-012); with `start_rule` (a logical sentence such as `#12 done and (#13 done or #14 ended)` over tasks of the sandbox; 422 for a malformed rule, an unknown task or together with `after_task_id`) it waits until the rule is true and needs a person when it can no longer be (TSK-016, SPEC-017); the rule shows as `after.rule` |
+| POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness?":"claude","mode?":"goal|prompt|auto","workflow_id?":"<id>|auto","model?","effort?","title?","after_task_id?","start_rule?"}` → 201 `TaskSummary`; Yulius runs Claude Code only (another `harness` is 422); `mode` defaults to `goal` (TSK-010); without `model` the task runs `claude-opus-5-5` and without `effort` at `high` (none for Haiku; SPEC-023); `auto` lets Jev choose the mode and/or the workflow before the task is created (TSK-015, ≤ 2.5 s; see "Task intake"); an unknown workflow or mode is 422 before Jev is asked; with `after_task_id` (a task of the sandbox that has not ended; 422 otherwise, 429 beyond 32 waiting) the task waits as `chained` until that task is Done (TSK-012); with `start_rule` (a logical sentence such as `#12 done and (#13 done or #14 ended)` over tasks of the sandbox; 422 for a malformed rule, an unknown task or together with `after_task_id`) it waits until the rule is true and needs a person when it can no longer be (TSK-016, SPEC-017); the rule shows as `after.rule` |
 | POST | `/api/sandboxes/{sid}/intake/check` | write | `{"prompt"}` → `{"verdict":"one|several","checked":bool}`: whether a new task mixes separate workstreams (TSK-011). `checked` is false — and the verdict `one` — for prompts under 40 words, without a Jev key and when Jev fails or takes over 2.5 s |
 | POST | `/api/sandboxes/{sid}/intake/proposal` | write | `{"prompt"}` → `{"tasks":[{"title","prompt","after_previous":bool}]}`: Claude's smallest split, 2–4 tasks grouped by area carrying their items word for word; `[]` means keep one task. 409 when proposals are not configured or no account is connected, 429 while 2 proposals run, 502 when Claude fails or its proposal is unusable (more than 4 tasks, one per item, an item missing) |
 | POST | `/api/tasks/{tid}/start-now` | write | → `TaskSummary`; a `chained` task starts now whatever its predecessor does (409 otherwise). Cancel it with `/stop` |
@@ -217,7 +217,6 @@ limited to the agent's sandbox.
 | POST | `/api/tasks/{tid}/archive` · `/restore` | write | → `TaskSummary` |
 | DELETE | `/api/tasks/{tid}` | write | → 204; deletes a resting task permanently with its records, run directories, local worktree and branch (TSK-009); 409 while it runs |
 | POST | `/api/tasks/{tid}/feedback` | read | `{"verdict":"correct|incorrect","comment"}` → 204 |
-| GET | `/api/tasks/{tid}/messages` | read | → `[Message]`: notices from Yulius and its agent's messages to people; older task-to-task rows still show, but no new ones are created: `message_send` only accepts `to="people"` (`to_task_id` null). People talk to the agent in its terminal; there is no route that posts a person's message to it (removed 2026-10-10, `POST` is 405) |
 | GET | `/api/archived-tasks` | read | → `[TaskSummary]` across visible sandboxes |
 | WS | `/api/tasks/{tid}/terminal` | read (input: write) | terminal protocol below |
 
@@ -229,7 +228,7 @@ TaskSummary = {
   "branch": "feat/checkout-api", "origin": "ui|automation|import|onboarding|agent",
   "created_by": {"login": "…"}, "created_at": "…", "updated_at": "…",
   "steps": {"done": 3, "total": 7, "current": "Implement API|null", "percent": 42},
-  "unread_messages": 0, "archived": false, "account_label": "Claude #2|null",
+  "archived": false, "account_label": "Claude #2|null",
   "mode": "goal|prompt",
   "resumes_at": "2026-10-09T08:20:00Z|null",
   "after": ChainLink|null, "next": [ChainLink],
@@ -272,7 +271,6 @@ TaskDetail = TaskSummary + {
   "delivery": Delivery, "switches": [{"at","reason","from","to"}]
 }
 Step = {"id","ordinal","title","status":"pending|in_progress|done|skipped|blocked","note","updated_by","updated_at","effort":1}
-Message = {"id","from":{"task_id|null","login|null","title"},"to_task_id|null","kind":"info|question|request (scope: older rows only)","subject","body","created_at","read":bool}
 Metrics = {"wall_ms","active_ms|null","input_tokens|null","output_tokens|null","cache_read_tokens|null","cache_write_tokens|null","models":["…"],"switches":0,"turns|null"}
 ```
 
@@ -313,8 +311,8 @@ nothing is checked and nothing is held, and Auto uses its defaults.
   - `parallel`: a new task with the prompt (same harness, model, effort and mode);
   - `after`: a new task chained after this one;
   - `skip_after`: the given steps become `skipped` (with the note "Ruled out by the user: …" by
-    `user:<login>`), the agent gets a "Scope changed by the user" message, and a chained task gets
-    the prompt;
+    `user:<login>`; the agent sees them in its steps, no message is sent, SPEC-028), and a chained
+    task gets the prompt;
   - `revert`: stops the task (reaped within 30 s, else 409 and nothing changes), commits its work to
     a new branch `yulius/reverted/<number>-<ms>`, resets its worktree to where it forked from the
     integration branch, archives it, and starts a new task with the prompt; `note` names the
@@ -807,6 +805,27 @@ resolves to nothing, the run gets the server without that variable or token.
     else) speaks the terminal protocol (`state` has `attempt_seq` and `harness` `null`). A shell
     ends when its process exits (the server sends `exit` and closes), when it is closed, or after
     24 h without viewers; it keeps running across a server restart. Shells never change tasks.
+- Cockpit (SPEC-021, ADR-0020): every user's own plain Claude Code session per sandbox, a shell
+  of kind `cockpit`.
+  - `POST /api/sandboxes/{sid}/cockpit` (write) → 200 `Shell` (`name` "Cockpit"): the caller's
+    running Cockpit, or a new one started (concurrent calls start one) as `claude [--resume
+    <newest conversation>] --model claude-opus-5-5 --effort high` (SPEC-023) in the sandbox
+    repository, as the caller's sandbox identity, with the token of the pool's best subscription
+    for Opus and `CLAUDE_CONFIG_DIR=~/.claude`, otherwise a
+    terminal's environment (Git as the caller); no Yulius hooks, settings or approval bypass. It
+    gets the Yulius MCP server (SPEC-037, ADR-0029): `--mcp-config` inline JSON for
+    `<internal URL>/mcp` with `Authorization: Bearer ${YULIUS_COCKPIT_TOKEN}` (the `ck_…` bearer
+    in the secret environment, valid while that Cockpit is live and its owner may work), and
+    `--allowedTools` for the read-only tools. It is served `tasks_list`, `task_get`,
+    `task_create`, `automation_create`, `automations_list`, `automation_update`,
+    `workflows_list`, `sessions_search` and `session_read`, acting for its owner.
+    A conversation it could not resume (an error exit within 10 s) is skipped next time.
+    409 before the repository is cloned or without a Claude
+    subscription, 429 while none has capacity. There is no delete: it is never in `GET …/shells`,
+    `PATCH`/`DELETE …/shells/{id}` answer 404 for it, and it does not count against the 8
+    terminals. Its terminal is `WS /api/shells/{id}/terminal`; files go to
+    `POST …/shells/{id}/attachments`. It ends when Claude Code exits or after 24 h without
+    viewers, keeps running across a restart, and the next call resumes its conversation.
 
 ## Administration, analytics, status
 
@@ -1014,7 +1033,7 @@ confirms with `POST /api/auth/reauth` (password) or by signing in with GitHub ag
 ## UI event stream
 
 `WS /api/events` → JSON: `{"type":"task.updated","task":TaskSummary}`, `{"type":"task.removed",
-"task_id"}`, `{"type":"steps.updated","task_id"}`, `{"type":"message","task_id","message":Message}`,
+"task_id"}`, `{"type":"steps.updated","task_id"}`,
 `{"type":"sandbox.updated","sandbox":Sandbox}`, `{"type":"browser.action_requested","sandbox_id",
 "tab_id","reason","task_id"}`, `{"type":"automation.run","automation_id","state","task_id"}`,
 `{"type":"account.updated","account":Account}` (instance administrators only),

@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use serde_json::{Value, json};
 use yulius_domain::harness::Harness;
 use yulius_harness::launch::{
-    Credential, LaunchError, LaunchMode, LaunchPlan, LaunchRequest, McpServerSpec, McpTransport,
-    PRIVATE_FILE_MODE, PlannedFile, plan_launch,
+    CockpitRequest, CockpitYulius, Credential, LaunchError, LaunchMode, LaunchPlan, LaunchRequest,
+    McpServerSpec, McpTransport, PRIVATE_FILE_MODE, PlannedFile, plan_cockpit, plan_launch,
 };
 use yulius_harness::secret::Secret;
 
@@ -198,6 +198,7 @@ fn claude_resume_uncontained_never_skips_permissions() -> TestResult {
         LaunchMode::Resume {
             session_id: SESSION.into(),
             prompt: Some("--continue after the limit".into()),
+            continue_interrupted: false,
         },
         false,
     );
@@ -216,9 +217,12 @@ fn claude_resume_uncontained_never_skips_permissions() -> TestResult {
             "--mcp-config",
             "/data/runs/a1/mcp.json",
             "--strict-mcp-config",
-            // No model named: the default, the latest Opus (F 2026-10-12).
+            // No model or effort named: Opus 5.5 at high effort, pinned so neither drifts with
+            // Claude Code's aliases or a subscription's defaults (task #21).
             "--model",
-            "opus",
+            "claude-opus-5-5",
+            "--effort",
+            "high",
             "--",
             "--continue after the limit",
         ]
@@ -229,6 +233,45 @@ fn claude_resume_uncontained_never_skips_permissions() -> TestResult {
         mcp["mcpServers"].as_object().map(|m| m.len()),
         Some(1),
         "the yulius server is always attached"
+    );
+    Ok(())
+}
+
+/// SPEC-034: a resume after a usage limit sends no prompt; Claude Code continues the interrupted
+/// turn itself (`CLAUDE_CODE_RESUME_INTERRUPTED_TURN`). A plain resume does not set the flag.
+#[test]
+fn claude_resume_continuing_the_interrupted_turn_sends_no_prompt() -> TestResult {
+    let continued = plan_launch(&claude_request(
+        LaunchMode::Resume {
+            session_id: SESSION.into(),
+            prompt: Some("Continue.".into()),
+            continue_interrupted: true,
+        },
+        false,
+    ))?;
+    assert_eq!(continued.argv.last().map(String::as_str), Some("high"));
+    assert!(!continued.argv.iter().any(|a| a == "--" || a == "Continue."));
+    assert!(
+        continued
+            .env
+            .iter()
+            .any(|(k, v)| k == "CLAUDE_CODE_RESUME_INTERRUPTED_TURN" && v == "1"),
+        "{:?}",
+        continued.env
+    );
+    let plain = plan_launch(&claude_request(
+        LaunchMode::Resume {
+            session_id: SESSION.into(),
+            prompt: None,
+            continue_interrupted: false,
+        },
+        false,
+    ))?;
+    assert!(
+        !plain
+            .env
+            .iter()
+            .any(|(k, _)| k == "CLAUDE_CODE_RESUME_INTERRUPTED_TURN")
     );
     Ok(())
 }
@@ -277,6 +320,7 @@ fn invalid_requests_are_rejected_without_echoing_values() {
         LaunchMode::Resume {
             session_id: "--help".into(),
             prompt: None,
+            continue_interrupted: false,
         },
         false,
     );
@@ -377,5 +421,186 @@ fn planned_file_write_is_private_and_replaces_atomically() -> TestResult {
     };
     assert!(missing_parent.write().is_err());
     assert!(!format!("{missing_parent:?}").contains("SYNTHETIC"));
+    Ok(())
+}
+
+#[test]
+fn a_named_model_without_effort_runs_at_high_effort_unless_it_takes_none() -> TestResult {
+    let mut request = claude_request(
+        LaunchMode::New {
+            session_id: None,
+            prompt: None,
+        },
+        false,
+    );
+    request.effort = None;
+    request.model = Some("claude-sonnet-5-5".into());
+    let argv = plan_launch(&request)?.argv;
+    let at = |flag: &str| argv.iter().position(|a| a == flag);
+    assert_eq!(
+        at("--effort")
+            .and_then(|i| argv.get(i + 1))
+            .map(String::as_str),
+        Some("high"),
+        "{argv:?}"
+    );
+    // Haiku takes no effort level, so none is sent.
+    request.model = Some("claude-haiku-4-5".into());
+    let argv = plan_launch(&request)?.argv;
+    assert!(!argv.iter().any(|a| a == "--effort"), "{argv:?}");
+    // An effort the task chose is kept.
+    request.model = None;
+    request.effort = Some("max".into());
+    let argv = plan_launch(&request)?.argv;
+    assert!(
+        argv.windows(2).any(|w| w == ["--effort", "max"]),
+        "{argv:?}"
+    );
+    assert!(
+        argv.windows(2).any(|w| w == ["--model", "claude-opus-5-5"]),
+        "{argv:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment() -> TestResult {
+    let request = CockpitRequest {
+        cwd: PathBuf::from("/data/sandboxes/s1/repo"),
+        config_dir: PathBuf::from("/home/alice/.claude"),
+        resume: None,
+        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
+        yulius: None,
+    };
+    let plan = plan_cockpit(&request)?;
+    // No Yulius settings (hooks, status line), MCP, prompt or approval bypass (SPEC-021
+    // CKP-002): Claude Code as a person starts it, on the default Opus 5.5 at high effort
+    // (SPEC-023 DEF-004); `/model` and `/effort` still change it.
+    assert_eq!(
+        plan.argv,
+        ["claude", "--model", "claude-opus-5-5", "--effort", "high"]
+    );
+    assert_eq!(plan.cwd, PathBuf::from("/data/sandboxes/s1/repo"));
+    assert!(plan.files.is_empty());
+    assert!(
+        plan.env
+            .contains(&("CLAUDE_CONFIG_DIR".into(), "/home/alice/.claude".into()))
+    );
+    assert!(
+        plan.env
+            .contains(&("DISABLE_AUTOUPDATER".into(), "1".into()))
+    );
+    assert!(!plan.env.iter().any(|(k, _)| k.starts_with("YULIUS")));
+    assert_eq!(
+        plan.secret_env,
+        vec![(
+            "CLAUDE_CODE_OAUTH_TOKEN".to_owned(),
+            CLAUDE_TOKEN.to_owned()
+        )]
+    );
+    assert!(!format!("{plan:?}").contains("SYNTHETIC"));
+
+    let resumed = plan_cockpit(&CockpitRequest {
+        resume: Some(SESSION.into()),
+        ..request.clone()
+    })?;
+    assert_eq!(
+        resumed.argv,
+        [
+            "claude",
+            "--resume",
+            SESSION,
+            "--model",
+            "claude-opus-5-5",
+            "--effort",
+            "high"
+        ]
+    );
+    assert_eq!(resumed.session_id.as_deref(), Some(SESSION));
+
+    for bad in ["--help", "a b", ""] {
+        assert_eq!(
+            plan_cockpit(&CockpitRequest {
+                resume: Some(bad.into()),
+                ..request.clone()
+            }),
+            Err(LaunchError::Invalid("session_id"))
+        );
+    }
+    assert_eq!(
+        plan_cockpit(&CockpitRequest {
+            credential: Credential::ClaudeOauthToken(Secret::new("a\nb".into())),
+            ..request
+        }),
+        Err(LaunchError::Invalid("credential"))
+    );
+    Ok(())
+}
+
+#[test]
+fn a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment() -> TestResult {
+    let request = CockpitRequest {
+        cwd: PathBuf::from("/data/sandboxes/s1/repo"),
+        config_dir: PathBuf::from("/home/alice/.claude"),
+        resume: Some(SESSION.into()),
+        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
+        yulius: Some(CockpitYulius {
+            url: "http://127.0.0.1:8081/".into(),
+            token: Secret::new("ck_SYNTHETIC".into()),
+        }),
+    };
+    let plan = plan_cockpit(&request)?;
+    // SPEC-037 MGT-004: the Yulius MCP server inline, its bearer read from the environment; the
+    // read-only tools allowed, everything else still asked; no settings, strict config or bypass.
+    let config = r#"{"mcpServers":{"yulius":{"headers":{"Authorization":"Bearer ${YULIUS_COCKPIT_TOKEN}"},"type":"http","url":"http://127.0.0.1:8081/mcp"}}}"#;
+    assert_eq!(
+        plan.argv,
+        [
+            "claude",
+            "--resume",
+            SESSION,
+            "--mcp-config",
+            config,
+            "--allowedTools",
+            "mcp__yulius__tasks_list,mcp__yulius__task_get,mcp__yulius__automations_list,mcp__yulius__workflows_list,mcp__yulius__sessions_search,mcp__yulius__session_read",
+            "--model",
+            "claude-opus-5-5",
+            "--effort",
+            "high"
+        ]
+    );
+    assert!(plan.files.is_empty());
+    assert!(!plan.argv.iter().any(|a| a.contains("SYNTHETIC")));
+    assert!(!plan.env.iter().any(|(_, v)| v.contains("SYNTHETIC")));
+    assert_eq!(
+        plan.secret_env,
+        vec![
+            (
+                "CLAUDE_CODE_OAUTH_TOKEN".to_owned(),
+                CLAUDE_TOKEN.to_owned()
+            ),
+            ("YULIUS_COCKPIT_TOKEN".to_owned(), "ck_SYNTHETIC".to_owned()),
+        ]
+    );
+    assert!(!format!("{plan:?}").contains("SYNTHETIC"));
+
+    for (url, token) in [
+        ("ftp://x", "ck_1"),
+        ("http://x\"y", "ck_1"),
+        ("http://x", "a\nb"),
+        ("http://x", ""),
+    ] {
+        assert!(
+            plan_cockpit(&CockpitRequest {
+                yulius: Some(CockpitYulius {
+                    url: url.into(),
+                    token: Secret::new(token.into()),
+                }),
+                ..request.clone()
+            })
+            .is_err(),
+            "{url} {token:?}"
+        );
+    }
     Ok(())
 }

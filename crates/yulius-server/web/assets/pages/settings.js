@@ -76,7 +76,7 @@ export function mountSettingsPage(ctx) {
   // Desktop notifications need the browser's permission, asked only when switched on.
   const supported = typeof Notification !== 'undefined' && window.isSecureContext;
   const desktopNote = h('span', null, supported
-    ? 'While this tab is in the background: tasks that need you, failures, messages'
+    ? 'While this tab is in the background: tasks that need you, failures, browser requests'
     : 'Not available here: the browser needs HTTPS (or localhost) and notification support');
   const desktopToggle = toggle({
     checked: supported && readJson(DESKTOP_KEY, false) === true && Notification.permission === 'granted',
@@ -107,7 +107,7 @@ export function mountSettingsPage(ctx) {
       row('contrast', 'Appearance', 'Dark, light, or follow your system', appearance),
       row('target', 'Default model for new tasks', 'What the composer starts with', modelButton),
       row('pulse', 'Default effort for new tasks', 'How hard the agent thinks by default', effortButton),
-      row('tools', 'Show the tools rail', 'Browser, Editor, Shell and Messages on the right of a sandbox', railToggle)),
+      row('tools', 'Show the tools rail', 'Browser, Editor and Shell on the right of a sandbox', railToggle)),
     section('key', 'Keyboard and accessibility', 'kept in this browser',
       row('key', 'Keyboard shortcuts', `Every shortcut in one list (${SHEET_KEYS})`, h('button', { type: 'button', class: 'btn btn-sm', onClick: showShortcuts }, 'Show')),
       row('target', 'Single-key shortcuts', 'On the Tasks page: / to search, j and k to move, . for a task’s menu', keysToggle),

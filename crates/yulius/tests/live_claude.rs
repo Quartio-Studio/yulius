@@ -7,11 +7,11 @@
 //! and that `--session-id` names the session.
 //!
 //! Costs a few cents of provider usage, so it is ignored by default:
-//! `YULIUS_LIVE_CLAUDE=1 cargo test -p yulius --test live_claude -- --ignored --nocapture`.
+//! `YULIUS_LIVE_CLAUDE=1 cargo test -p yulius --test main live_claude:: -- --ignored --nocapture`.
 //! User settings are not loaded (`--setting-sources project` in an empty directory); the session
 //! transcript this creates in the user's Claude config directory is removed afterwards.
 
-mod support;
+use crate::support;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -143,7 +143,8 @@ async fn claude_code_runs_yulius_hooks_and_mcp() -> TestResult {
         worktree: worktree.clone(),
         sandbox_home: work.path().join("home"),
         run_dir: run_dir.clone(),
-        model: None,
+        // Haiku keeps the probe cheap and, taking no effort level, gets no `--effort`.
+        model: Some("claude-haiku-4-5".into()),
         effort: None,
         contained: false,
         mcp: Vec::new(),
@@ -163,8 +164,6 @@ async fn claude_code_runs_yulius_hooks_and_mcp() -> TestResult {
             "Call the yulius MCP tool steps_set with steps [\"Probe live compatibility\"]. Then reply with the single word DONE.",
             "--setting-sources",
             "project",
-            "--model",
-            "haiku",
             "--max-budget-usd",
             "0.50",
             "--allowedTools",

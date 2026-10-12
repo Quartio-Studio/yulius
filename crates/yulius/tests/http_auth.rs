@@ -1,7 +1,7 @@
 //! End-to-end HTTP tests: setup, sign-in, CSRF, admission, GitHub-mirrored visibility and
 //! access on every sandbox and task route (AC-ACC-1..5).
 
-mod support;
+use crate::support;
 
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
@@ -208,7 +208,6 @@ fn scoped_routes() -> Vec<(Method, &'static str, Option<Value>)> {
         (Method::GET, "/api/sandboxes/{sid}/browser", None),
         (Method::GET, "/api/tasks/{tid}", None),
         (Method::DELETE, "/api/tasks/{tid}", None),
-        (Method::GET, "/api/tasks/{tid}/messages", None),
         (Method::POST, "/api/tasks/{tid}/stop", empty()),
         (Method::POST, "/api/tasks/{tid}/continue", empty()),
         (Method::POST, "/api/tasks/{tid}/switch", empty()),
@@ -246,24 +245,18 @@ async fn invisible_sandboxes_answer_like_missing_ones_and_read_users_cannot_chan
     seed_task(&h, "t2", "s2", "u-alice", TaskStatus::Closed, None).await?;
 
     // Alice is signed in and reads her sandbox and its task.
-    for path in [
-        "/api/sandboxes/s1",
-        "/api/tasks/t1",
-        "/api/tasks/t1/messages",
-    ] {
+    for path in ["/api/sandboxes/s1", "/api/tasks/t1"] {
         let seen = call(&h.router, Method::GET, path, None, &alice).await?;
         assert_eq!(seen.status, StatusCode::OK, "{path}");
     }
-    // People talk to the agent in its terminal: no route posts a person's message to it (#110).
-    let post = call(
-        &h.router,
-        Method::POST,
-        "/api/tasks/t1/messages",
-        Some(json!({"body": "hi"})),
-        &alice,
-    )
-    .await?;
-    assert_eq!(post.status, StatusCode::METHOD_NOT_ALLOWED, "{}", post.body);
+    // MSR-005 (SPEC-028): a task has no messages route.
+    for (method, body) in [
+        (Method::GET, None),
+        (Method::POST, Some(json!({"body": "hi"}))),
+    ] {
+        let gone = call(&h.router, method, "/api/tasks/t1/messages", body, &alice).await?;
+        assert_eq!(gone.status, StatusCode::NOT_FOUND, "{}", gone.body);
+    }
 
     // The sandbox she cannot see (and its task) answers exactly like a missing one.
     for (method, path, body) in scoped_routes() {
@@ -984,7 +977,6 @@ async fn the_superadmin_sees_and_opens_every_sandbox_without_github() -> TestRes
         "/api/sandboxes/s2",
         "/api/sandboxes/s2/tasks",
         "/api/tasks/t2",
-        "/api/tasks/t2/messages",
         "/api/sandboxes/s2/files?path=",
         "/api/sandboxes/s2/files/content?path=README.md",
         "/api/sandboxes/s2/workflows",

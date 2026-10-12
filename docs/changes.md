@@ -9,6 +9,64 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - A sandbox runs two CI runs at once (`--ci-lanes`, each lane with its own job checkouts), so
   parallel tasks no longer queue behind each other's runs; this repository's CI retries a failing
   test twice and reports one that then passes as flaky instead of failing the run (SPEC-021).
+- CI runs are no longer refused over the sandbox's disk quota by the size of test builds
+  (SPEC-033, ADR-0028, task #31): the `yulius` crate's 50 integration test files, each its own
+  190 MB executable linking the whole product, are now modules of one test binary
+  (`tests/main.rs`); a gate build's test executables drop from 9.2 GB to 1.3 GB. The repository
+  check rejects a second test binary or an undeclared test file. Run one file's tests with
+  `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^<file>::/)'`.
+- A long task title in the start-rule editor stays on one line ending in an ellipsis instead of
+  wrapping over the condition's border (SPEC-031, task #29).
+- The Cockpit and task agents create tasks and automations (SPEC-037, ADR-0029; task #35). A new
+  `task_create` MCP tool creates a task the way New task does (workflow, mode, after a task or a
+  start rule), on the authority of the task's creator; tools create at most 20 tasks an hour
+  per project. The Cockpit now starts with the Yulius MCP server under its own bearer. It is
+  served the tools for tasks, automations, workflows and sessions, acting for its owner, so
+  "create a task from that" or "every day at 4am align the docs" just works. It asks before
+  creating anything. A Cockpit already running gets the tools when it starts again.
+- Attached images reach Claude Code as pasted images (SPEC-030, ADR-0026; task #28). A task with
+  attached images starts with no CLI prompt. Yulius types its first message into the terminal:
+  each image's path is pasted (Claude Code shows `[Image #N]` and sends an image block), then the
+  text with the other files mentioned. Before this, an `@` mention showed the path and reached the
+  model as a Read tool call.
+- The sandbox navigation is shorter (SPEC-029, ADR-0025, task #27): Cockpit, Tasks, Git,
+  CI (tests), Secrets and Dashboard, then "More", which expands Sessions, Workflows, Skills,
+  Automations and MCP in place. Its state is remembered per browser; arriving at one of those
+  pages shows it open for that page.
+- A usage limit no longer types "Continue." into a task (SPEC-034, decision 0027, task #32): the
+  session moves to another subscription (or waits for the reset) and resumes as if the limit never
+  happened. The transcript steps back over the limit errors and notices, and Claude Code redoes
+  the lost turn by itself: it resubmits the unanswered message, or goes on after the last tool
+  result.
+- Tasks run Opus 5.5 at high effort by default (SPEC-023, task #21): a task without a model runs
+  `claude-opus-5-5` instead of Claude Code's moving `opus` alias, and a task without an effort runs
+  at `high` (none for Haiku); the Cockpit starts on them too; the composer and Settings say so.
+- Messages are gone for now (SPEC-028, ADR-0023; task #26): no `message_send` or `messages_inbox`,
+  no stored notices, notice digest or "unread messages" stop reason, nothing typed into an idle
+  session, and no Messages panel, unread counts, message notifications or
+  `GET /api/tasks/{tid}/messages`. Agents learn about their checks, delivery and armed merges from
+  `yulius wait` (which now says how an armed merge ended), `ci_status` and `delivery_status`. The
+  stored messages stay as history. A `yulius wait` already running when the server updates exits
+  with "cannot be reached" once (its answer changed shape); start it again.
+- A file attached on the new-task composer opens when its chip is clicked (an image in a preview,
+  another file in a new tab), and the task's Claude Code session receives attached files natively
+  as `@path` mentions in its first message, an image as an image, instead of paths to open with the
+  Read tool (SPEC-025, decision 0022).
+- A half-written new task is kept (SPEC-026, task #24): its prompt, attached files (with thumbnails)
+  and choices come back after visiting another page or reloading, per sandbox; starting the task
+  clears it, signing out removes it.
+- Every user has a Cockpit, first in the sandbox navigation: their own plain Claude Code session in
+  the sandbox (no Yulius hooks, MCP or briefing) on a pool subscription, for quick questions and
+  work that should not become a task. `/clear` starts over; it cannot be deleted, and after an
+  exit, a day unwatched or a restart it resumes its conversation (SPEC-021, ADR-0020, task #19).
+- A start rule is picked, not typed: the composer's "When a rule is true…" opens an editor of
+  conditions (a task of the sandbox and "is done", "is merged" or "has ended") joined by All or
+  Any, shows the sentence it builds, opens again with what was picked and is not offered in a
+  sandbox without tasks; the API still takes the full rule language ([SPEC-022](../.ai/specs/SPEC-022-when-rule-is-true-should-be-a-simple-edi.md), ADR-0019, #20).
+- Claude Code sessions in a task terminal no longer open Claude Code's diff side panel by themselves
+  ("No changes this session" on the right); it still opens by hand within a session (SPEC-024).
+- A click on Claude Code's output in a task terminal reaches Claude Code, so a collapsed tool
+  group expands as in a native terminal; drags and double-clicks still select text (SPEC-027).
 - Ended worktrees holding only end-to-end output (`.e2e`), the APM cache (`apm_modules`) or Claude
   Code's own `.claude/` state are removed too (SPEC-019; seven were kept on the first deploy).
 - Agents meet fewer avoidable obstacles (SPEC-020):

@@ -8,7 +8,8 @@
 //! - `turn` / `prompt`: the agent sits at its turn boundary while the Stop or
 //!   `UserPromptSubmit` hook answers "hold" (`202`) and the hook client keeps polling
 //!   (`hooks.rs`); an agent without hooks is simply idle;
-//! - `limit`: the CLI ended a turn with a usage limit and waits at its limit message;
+//! - `limit`: the CLI ended a turn with a usage limit and waits at its limit message; it always
+//!   resumes by a native resume past the limit (SPEC-034), even on its own subscription;
 //! - `start`: there is no process yet; the task starts when capacity returns.
 //!
 //! The resume loop ([`App::start_capacity_loop`]) wakes on new usage, a new or removed account,
@@ -16,7 +17,7 @@
 //! first and resumes each task the policy places, waiting [`crate::context::AppConfig`]
 //! `resume_stagger_ms` between two resumes: in place when the paused process's account has
 //! capacity again (the held hook simply answers on its next poll), otherwise by a native resume
-//! on the chosen account.
+//! on the chosen account. A `limit` pause always takes the native resume past the limit.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -52,10 +53,6 @@ pub const HOLD_RETRY_SECS: u64 = 10;
 /// Longest held prompt carried to another account as the resumed session's prompt (an argv
 /// element; Linux limits one to 128 KiB).
 pub const CONTINUATION_MAX: usize = 100 * 1024;
-/// The only text the harness ever sends on its own after a pause: a turn the CLI itself
-/// interrupted with a usage limit needs a user message to go on. It says nothing about pauses,
-/// accounts or limits.
-pub const CONTINUE_TEXT: &str = "Continue.";
 /// A held hook asks again every [`HOLD_RETRY_SECS`] (a restart: every 2 s); one nobody asked
 /// about for this long was given up by the CLI (an interrupt, the CLI's own hook timeout — 15 s
 /// for sessions started before ADR-17 — or a killed hook client): the agent is not held any more.
@@ -200,14 +197,15 @@ impl App {
         })
     }
 
-    /// The subscription a one-off request outside any task (a split proposal) runs on: the best
-    /// placement of the pool.
+    /// The subscription a run outside any task (a split proposal, a Cockpit) runs on: the best
+    /// placement of the pool for a run of `family`, whose weekly cap binds too.
     ///
     /// # Errors
     /// `Conflict` without any Claude subscription, `Capacity` while none has capacity.
     pub(crate) async fn pool_account(
         &self,
         provider: yulius_domain::harness::Provider,
+        family: ModelFamily,
     ) -> AppResult<crate::model::AccountRecord> {
         let accounts = self.account_views().await?;
         if !accounts.iter().any(|a| a.provider == provider) {
@@ -218,7 +216,7 @@ impl App {
         let input = RotationInput {
             current: None,
             task_provider: provider,
-            family: ModelFamily::Any,
+            family,
             accounts,
             now: self.now(),
             threshold: rotation::THRESHOLD,
@@ -239,7 +237,7 @@ impl App {
     /// Pauses a task for lack of capacity (ROT-010): records the pause, moves the task to
     /// `waiting_capacity` and tells viewers (never the agent). A task that is already paused
     /// keeps its pause, except that a usage limit the CLI reported turns it into a `limit`
-    /// pause (the interrupted turn needs [`CONTINUE_TEXT`] to go on).
+    /// pause (the cut turn resumes past the limit, SPEC-034).
     ///
     /// # Errors
     /// Store failures.
@@ -576,7 +574,9 @@ impl App {
                 Resume::Gone
             }
             Decision::Wait { until } => Resume::Waiting(until),
-            Decision::Stay if has_process => {
+            // A turn the limit cut cannot go on in place without typing into it: it resumes past
+            // the limit like on another subscription (SPEC-034).
+            Decision::Stay if has_process && pause.kind != PauseKind::Limit => {
                 self.release_in_place(&task, pause).await;
                 Resume::Resumed
             }
@@ -586,21 +586,29 @@ impl App {
                     _ => None,
                 };
                 if has_process {
-                    let continuation = match pause.kind {
-                        PauseKind::Prompt => pause.continuation.clone(),
-                        PauseKind::Limit => Some(CONTINUE_TEXT.to_owned()),
-                        PauseKind::Turn => self.stop_continuation(&task).await,
-                        PauseKind::Start => None,
+                    let switched = match pause.kind {
+                        PauseKind::Limit => {
+                            self.switch_after_limit(&task.id, account, &reason).await
+                        }
+                        kind => {
+                            let continuation = match kind {
+                                PauseKind::Prompt => pause.continuation.clone(),
+                                PauseKind::Turn => self.stop_continuation(&task).await,
+                                PauseKind::Limit | PauseKind::Start => None,
+                            };
+                            self.switch_task_now(&task.id, account, &reason, continuation)
+                                .await
+                        }
                     };
-                    if let Err(err) = self
-                        .switch_task_now(&task.id, account, &reason, continuation)
-                        .await
-                    {
+                    if let Err(err) = switched {
                         tracing::warn!(error = %err, task = %task.id, "resume on another subscription failed");
                     }
                 } else {
                     self.end_pause(&task.id, "started").await;
                     let start = match store.provider_sessions(&task.id).await {
+                        Ok(lineage) if !lineage.is_empty() && pause.kind == PauseKind::Limit => {
+                            RunStart::AfterLimit
+                        }
                         Ok(lineage) if !lineage.is_empty() => RunStart::Resume {
                             prompt: pause.continuation.clone(),
                         },
@@ -618,8 +626,8 @@ impl App {
     }
 
     /// Capacity is back on the account the paused process uses: the pause ends and the task
-    /// runs again. A held hook answers on its next poll; only a turn the CLI interrupted with
-    /// a limit gets [`CONTINUE_TEXT`].
+    /// runs again; a held hook answers on its next poll. Nothing is typed (a `limit` pause never
+    /// comes here, SPEC-034).
     async fn release_in_place(&self, task: &TaskRecord, pause: &PauseRecord) {
         let store = &self.deps.store;
         self.end_pause(&task.id, "released").await;
@@ -641,15 +649,6 @@ impl App {
         self.runtime(&task.id)
             .hub
             .notice("A subscription has capacity again: the task continues.");
-        if pause.kind == PauseKind::Limit {
-            if let Err(err) = self.send_input(&task.id, CONTINUE_TEXT.as_bytes()).await {
-                tracing::warn!(error = %err, task = %task.id, "could not continue after a limit");
-            } else {
-                // A separate Enter, so the TUI sees typed text first and then a submit.
-                tokio::time::sleep(Duration::from_millis(150)).await;
-                let _ = self.send_input(&task.id, b"\r").await;
-            }
-        }
         self.publish_task(&task.id).await;
     }
 

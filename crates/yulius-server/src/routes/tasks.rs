@@ -4,7 +4,7 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::Deserialize;
-use yulius_contracts::api::tasks::{FeedbackRequest, MessageView, TaskDetail, TaskSummary};
+use yulius_contracts::api::tasks::{FeedbackRequest, TaskDetail, TaskSummary};
 
 use crate::AppState;
 use crate::auth::Auth;
@@ -74,14 +74,6 @@ pub async fn feedback(
     app.task_feedback(&ctx, &tid, &req.verdict, &req.comment)
         .await?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-pub async fn messages(
-    State(app): State<AppState>,
-    Auth(ctx): Auth,
-    Path(tid): Path<String>,
-) -> ApiResult<Json<Vec<MessageView>>> {
-    Ok(Json(app.task_messages(&ctx, &tid).await?))
 }
 
 pub async fn create(

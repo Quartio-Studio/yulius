@@ -33,8 +33,8 @@ pub const BASH_TIMEOUT_ENV: [(&str, &str); 2] = [
     ("BASH_DEFAULT_TIMEOUT_MS", "600000"),
     ("BASH_MAX_TIMEOUT_MS", "1800000"),
 ];
-/// The model of a task that names none (the latest Opus).
-pub use yulius_domain::harness::DEFAULT_CLAUDE_MODEL;
+/// The model and effort of a task that names none (Opus 5.5 at high effort).
+pub use yulius_domain::harness::{DEFAULT_CLAUDE_EFFORT, DEFAULT_CLAUDE_MODEL};
 /// Name of the always-attached Yulius MCP server.
 pub const YULIUS_MCP_NAME: &str = "yulius";
 /// Hook events registered for Claude Code. `SessionEnd` tells Yulius at once why a session ends
@@ -84,8 +84,19 @@ pub enum LaunchMode {
         session_id: String,
         /// Continuation prompt.
         prompt: Option<String>,
+        /// Continue the turn the transcript left unfinished (SPEC-034): Claude Code resubmits an
+        /// unanswered prompt or goes on after a tool result by itself
+        /// ([`RESUME_INTERRUPTED_TURN_ENV`]); the prompt is not sent. The caller steps the
+        /// transcript back over a usage limit first ([`crate::step_back`]).
+        continue_interrupted: bool,
     },
 }
+
+/// Claude Code 2.1.292 continues an interrupted turn on `--resume` when this is set: an
+/// unanswered prompt at the end of the transcript is submitted again, and a turn cut after a tool
+/// result or a task notification goes on with a hidden "Continue from where you left off."
+/// (undocumented; verified against the CLI with a local fake API, SPEC-034).
+pub const RESUME_INTERRUPTED_TURN_ENV: (&str, &str) = ("CLAUDE_CODE_RESUME_INTERRUPTED_TURN", "1");
 
 /// Transport of an attached MCP server.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,7 +334,9 @@ fn shell_quote(text: &str) -> String {
 fn validate(request: &LaunchRequest) -> Result<(), LaunchError> {
     let (session_id, prompt) = match &request.mode {
         LaunchMode::New { session_id, prompt } => (session_id.as_deref(), prompt.as_deref()),
-        LaunchMode::Resume { session_id, prompt } => (Some(session_id.as_str()), prompt.as_deref()),
+        LaunchMode::Resume {
+            session_id, prompt, ..
+        } => (Some(session_id.as_str()), prompt.as_deref()),
     };
     if let Some(id) = session_id {
         check(valid_session_id(id), "session_id")?;
@@ -497,16 +510,22 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
     let mcp = json!({ "mcpServers": servers });
 
     let mut argv = vec![CLAUDE_PROGRAM.to_owned()];
-    let (session_id, prompt) = match &request.mode {
+    let (session_id, prompt, continue_interrupted) = match &request.mode {
         LaunchMode::New { session_id, prompt } => {
             if let Some(id) = session_id {
                 argv.extend(["--session-id".into(), id.clone()]);
             }
-            (session_id.clone(), prompt.as_deref())
+            (session_id.clone(), prompt.as_deref(), false)
         }
-        LaunchMode::Resume { session_id, prompt } => {
+        LaunchMode::Resume {
+            session_id,
+            prompt,
+            continue_interrupted,
+        } => {
             argv.extend(["--resume".into(), session_id.clone()]);
-            (Some(session_id.clone()), prompt.as_deref())
+            // Claude Code continues the cut turn itself: nothing is sent.
+            let prompt = prompt.as_deref().filter(|_| !continue_interrupted);
+            (Some(session_id.clone()), prompt, *continue_interrupted)
         }
     };
     // `--mcp-config` takes several values; a following option ends the list, so it is never
@@ -518,39 +537,41 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
         utf8(&mcp_path, "run_dir")?.to_owned(),
         "--strict-mcp-config".into(),
     ]);
-    argv.extend([
-        "--model".into(),
-        request
-            .model
-            .clone()
-            .unwrap_or_else(|| DEFAULT_CLAUDE_MODEL.to_owned()),
-    ]);
-    if let Some(effort) = &request.effort {
-        argv.extend(["--effort".into(), effort.clone()]);
+    let model = request.model.as_deref().unwrap_or(DEFAULT_CLAUDE_MODEL);
+    argv.extend(["--model".into(), model.to_owned()]);
+    if let Some(effort) = yulius_domain::harness::claude_effort(model, request.effort.as_deref()) {
+        argv.extend(["--effort".into(), effort.to_owned()]);
     }
     if request.contained {
         argv.push("--dangerously-skip-permissions".into());
     }
     push_prompt(&mut argv, prompt);
+    let mut env = vec![
+        (
+            "CLAUDE_CONFIG_DIR".into(),
+            utf8(&config_dir, "sandbox_home")?.to_owned(),
+        ),
+        (YULIUS_URL_ENV.into(), base_url(request).to_owned()),
+        (
+            DISABLE_AUTOUPDATER_ENV.0.into(),
+            DISABLE_AUTOUPDATER_ENV.1.into(),
+        ),
+        // A cold build or a test run takes minutes: a 2-minute Bash default pushed such
+        // commands into the background mid-run, and agents then polled them (F 2026-10-12).
+        (BASH_TIMEOUT_ENV[0].0.into(), BASH_TIMEOUT_ENV[0].1.into()),
+        (BASH_TIMEOUT_ENV[1].0.into(), BASH_TIMEOUT_ENV[1].1.into()),
+    ];
+    if continue_interrupted {
+        env.push((
+            RESUME_INTERRUPTED_TURN_ENV.0.into(),
+            RESUME_INTERRUPTED_TURN_ENV.1.into(),
+        ));
+    }
 
     Ok(LaunchPlan {
         argv,
         cwd: request.worktree.clone(),
-        env: vec![
-            (
-                "CLAUDE_CONFIG_DIR".into(),
-                utf8(&config_dir, "sandbox_home")?.to_owned(),
-            ),
-            (YULIUS_URL_ENV.into(), base_url(request).to_owned()),
-            (
-                DISABLE_AUTOUPDATER_ENV.0.into(),
-                DISABLE_AUTOUPDATER_ENV.1.into(),
-            ),
-            // A cold build or a test run takes minutes: a 2-minute Bash default pushed such
-            // commands into the background mid-run, and agents then polled them (F 2026-10-12).
-            (BASH_TIMEOUT_ENV[0].0.into(), BASH_TIMEOUT_ENV[0].1.into()),
-            (BASH_TIMEOUT_ENV[1].0.into(), BASH_TIMEOUT_ENV[1].1.into()),
-        ],
+        env,
         secret_env: vec![("CLAUDE_CODE_OAUTH_TOKEN".into(), token.expose().clone())],
         files: vec![
             PlannedFile {
@@ -565,6 +586,114 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
             },
         ],
         session_id,
+    })
+}
+
+/// A user's Cockpit (SPEC-021): a plain Claude Code session outside any task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CockpitRequest {
+    /// Working directory (the sandbox repository).
+    pub cwd: PathBuf,
+    /// Claude's config dir as the session sees it (in the user's own home).
+    pub config_dir: PathBuf,
+    /// Conversation to resume.
+    pub resume: Option<String>,
+    /// Provider credential of the pool subscription.
+    pub credential: Credential,
+    /// The Yulius MCP server the Cockpit manages the project with (SPEC-037); `None` for none.
+    pub yulius: Option<CockpitYulius>,
+}
+
+/// The Yulius MCP server of a Cockpit (SPEC-037 MGT-004).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CockpitYulius {
+    /// Base URL of the internal listener (`/mcp` is appended).
+    pub url: String,
+    /// The Cockpit's bearer (`ck_…`), passed in the secret environment only.
+    pub token: Secret<String>,
+}
+
+/// Environment variable holding a Cockpit's Yulius MCP bearer.
+pub const COCKPIT_TOKEN_ENV: &str = "YULIUS_COCKPIT_TOKEN";
+/// The Yulius tools a Cockpit may call without asking: they only read.
+pub const COCKPIT_READ_ONLY_TOOLS: [&str; 6] = [
+    "tasks_list",
+    "task_get",
+    "automations_list",
+    "workflows_list",
+    "sessions_search",
+    "session_read",
+];
+
+/// Builds the launch plan of a Cockpit: `claude [--resume <id>] [--mcp-config <yulius>
+/// --allowedTools <read-only tools>] --model <default> --effort <default>` (SPEC-023 DEF-004)
+/// with the subscription's token (and the Cockpit's Yulius bearer) in the secret environment and
+/// none of a task's settings, hooks, briefing or approval bypass (SPEC-021 CKP-002, SPEC-037
+/// MGT-004). The MCP config is inline JSON naming `${YULIUS_COCKPIT_TOKEN}`, not its value; it
+/// is not strict, so the person's own MCP servers keep working.
+///
+/// # Errors
+/// [`LaunchError`] for a non-UTF-8 config dir, an unsafe session id, credential, URL or token.
+pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError> {
+    let Credential::ClaudeOauthToken(token) = &request.credential;
+    check(
+        !token.expose().is_empty() && !token.expose().contains(['\0', '\n', '\r']),
+        "credential",
+    )?;
+    let mut argv = vec![CLAUDE_PROGRAM.to_owned()];
+    if let Some(id) = &request.resume {
+        check(valid_session_id(id), "session_id")?;
+        argv.extend(["--resume".into(), id.clone()]);
+    }
+    let mut secret_env = vec![("CLAUDE_CODE_OAUTH_TOKEN".into(), token.expose().clone())];
+    if let Some(yulius) = &request.yulius {
+        check(valid_url(&yulius.url), "yulius url")?;
+        let bearer = yulius.token.expose();
+        check(
+            !bearer.is_empty() && bearer.chars().all(|c| c.is_ascii_graphic()),
+            "yulius token",
+        )?;
+        let config = json!({ "mcpServers": { YULIUS_MCP_NAME: {
+            "headers": { "Authorization": format!("Bearer ${{{COCKPIT_TOKEN_ENV}}}") },
+            "type": "http",
+            "url": format!("{}/mcp", yulius.url.trim_end_matches('/')),
+        } } });
+        let allowed = COCKPIT_READ_ONLY_TOOLS
+            .iter()
+            .map(|tool| format!("mcp__{YULIUS_MCP_NAME}__{tool}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        argv.extend([
+            "--mcp-config".into(),
+            config.to_string(),
+            "--allowedTools".into(),
+            allowed,
+        ]);
+        secret_env.push((COCKPIT_TOKEN_ENV.into(), bearer.clone()));
+    }
+    // The person's own session still starts on Yulius's default model and effort (SPEC-023).
+    argv.extend([
+        "--model".into(),
+        DEFAULT_CLAUDE_MODEL.into(),
+        "--effort".into(),
+        DEFAULT_CLAUDE_EFFORT.into(),
+    ]);
+    Ok(LaunchPlan {
+        argv,
+        cwd: request.cwd.clone(),
+        env: vec![
+            (
+                "CLAUDE_CONFIG_DIR".into(),
+                utf8(&request.config_dir, "config_dir")?.to_owned(),
+            ),
+            (
+                DISABLE_AUTOUPDATER_ENV.0.into(),
+                DISABLE_AUTOUPDATER_ENV.1.into(),
+            ),
+        ],
+        secret_env,
+        files: Vec::new(),
+        session_id: request.resume.clone(),
     })
 }
 

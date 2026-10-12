@@ -10,7 +10,8 @@
 //!            [--session-id ID] [--transcript PATH [--transcript-kind claude]]
 //!            [--limit-after N] [--report-env NAME]... [--tui]
 //!            [--hooks YULIUS_EXE] [--goal-background SECONDS] [--goal-delay-ms MS] [--drop-lines N]
-//!            [--interrupts] [--rate-limits-file PATH]
+//!            [--interrupts] [--rate-limits-file PATH] [--session-start] [--opening-turn-ms MS]
+//!            [--echo-turn-ms MS]
 //! ```
 //!
 //! Modes:
@@ -66,6 +67,20 @@
 //! the `rate_limits` object read from PATH (when it exists) in its input, and prints
 //! `STATUS <line>`.
 //!
+//! `--session-start` (with `--hooks`) runs Claude Code's `SessionStart` hook before anything else.
+//! `--opening-turn-ms MS` stands for a first message given on the command line (Claude Code's
+//! prompt argument): the session starts with a turn like `/work MS opening` (`WORKING`, then
+//! `DONE opening` and its Stop hook) before it reads input. With the terminal's echo, a line typed
+//! during that turn shows before `DONE opening`.
+//!
+//! `--echo-turn-ms MS` makes each echoed message a turn that takes MS (≤ 60 s) before its `ECHO:`
+//! answer and Stop hook, silent meanwhile (a turn on a typed first message, SPEC-030).
+//!
+//! Bracketed pastes (`ESC [200~ … ESC [201~`) are read like Claude Code 2.1.292 reads them: a
+//! pasted path ending in `.png`, `.jpg`, `.jpeg`, `.gif` or `.webp` becomes `[Image #N] ` (N
+//! counts the images of the message), other pasted text is kept as typed, newlines included; the
+//! message is submitted by the Enter after it.
+//!
 //! `--tui` draws like a full-screen agent TUI (Claude Code 2.1.x): the alternate screen with a
 //! header box, the transcript and an input box between two rules along the bottom, all as wide
 //! as the terminal, redrawn in full whenever the terminal is resized (SIGWINCH). Printed lines
@@ -118,6 +133,9 @@ struct Options {
     hooks: Option<PathBuf>,
     goal_background: Option<u64>,
     goal_delay_ms: u64,
+    opening_turn_ms: Option<u64>,
+    echo_turn_ms: u64,
+    session_start: bool,
     drop_lines: u32,
     interrupts: bool,
     rate_limits_file: Option<PathBuf>,
@@ -145,6 +163,9 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         hooks: None,
         goal_background: None,
         goal_delay_ms: 0,
+        opening_turn_ms: None,
+        echo_turn_ms: 0,
+        session_start: false,
         drop_lines: 0,
         interrupts: false,
         rate_limits_file: None,
@@ -197,6 +218,15 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
             }
             "--drop-lines" => options.drop_lines = parse_number(&flag, args.next())?,
             "--interrupts" => options.interrupts = true,
+            "--session-start" => options.session_start = true,
+            "--echo-turn-ms" => {
+                let ms: u64 = parse_number(&flag, args.next())?;
+                options.echo_turn_ms = ms.min(MAX_WORK_MS);
+            }
+            "--opening-turn-ms" => {
+                let ms: u64 = parse_number(&flag, args.next())?;
+                options.opening_turn_ms = Some(ms.min(MAX_WORK_MS));
+            }
             "--rate-limits-file" => {
                 options.rate_limits_file =
                     Some(args.next().ok_or("--rate-limits-file needs a path")?.into());
@@ -600,6 +630,16 @@ impl Hooks {
         })
     }
 
+    /// `SessionStart` (`source: startup`), as Claude Code runs it before its prompt box reads.
+    fn session_start(&self) {
+        run_hook(
+            &self.exe,
+            "SessionStart",
+            &json!({"session_id": self.session_id, "hook_event_name": "SessionStart",
+                "source": "startup"}),
+        );
+    }
+
     /// `SessionEnd` with `reason`.
     fn session_end(&self, reason: &str) {
         run_hook(
@@ -768,6 +808,50 @@ fn read_line(input: &mut impl BufRead) -> io::Result<Option<String>> {
     Ok(Some(text.trim_end_matches(['\n', '\r']).to_owned()))
 }
 
+const PASTE_START: &str = "\x1b[200~";
+const PASTE_END: &str = "\x1b[201~";
+
+/// Reads one submitted message: a line, or several when a bracketed paste holds newlines.
+fn read_message(input: &mut impl BufRead) -> io::Result<Option<String>> {
+    let Some(mut message) = read_line(input)? else {
+        return Ok(None);
+    };
+    while message.matches(PASTE_START).count() > message.matches(PASTE_END).count() {
+        let Some(next) = read_line(input)? else {
+            break;
+        };
+        message.push('\n');
+        message.push_str(&next);
+    }
+    Ok(Some(render_pastes(&message)))
+}
+
+/// A message with its bracketed pastes read like Claude Code (see the module docs).
+fn render_pastes(message: &str) -> String {
+    let mut out = String::new();
+    let mut images = 0;
+    let mut rest = message;
+    while let Some(start) = rest.find(PASTE_START) {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + PASTE_START.len()..];
+        let (pasted, next) = after.split_once(PASTE_END).unwrap_or((after, ""));
+        let lower = pasted.to_ascii_lowercase();
+        if pasted.starts_with('/')
+            && [".png", ".jpg", ".jpeg", ".gif", ".webp"]
+                .iter()
+                .any(|ext| lower.ends_with(ext))
+        {
+            images += 1;
+            out.push_str(&format!("[Image #{images}] "));
+        } else {
+            out.push_str(pasted);
+        }
+        rest = next;
+    }
+    out.push_str(rest);
+    out
+}
+
 /// One `/goal` turn (see the module docs).
 fn goal_turn(
     options: &Options,
@@ -838,10 +922,23 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
     status_line(options, hooks.as_ref())?;
     let mut turns = 0u64;
     let mut limited = false;
+    if let (true, Some(hooks)) = (options.session_start, &hooks) {
+        hooks.session_start();
+    }
+    if let Some(ms) = options.opening_turn_ms {
+        turns += 1;
+        work_turn(
+            options,
+            &format!("/work {ms} opening"),
+            transcript.as_ref(),
+            hooks.as_ref(),
+            keys,
+        )?;
+    }
     let stdin = io::stdin();
     let mut input = stdin.lock();
     let mut to_drop = options.drop_lines;
-    while let Some(line) = read_line(&mut input)? {
+    while let Some(line) = read_message(&mut input)? {
         // A submit the TUI lost (`--drop-lines`): the first typed lines never reach the agent.
         if to_drop > 0 && !line.is_empty() {
             to_drop -= 1;
@@ -918,6 +1015,7 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
                     say(&format!("PROMPT BLOCKED: {reason}"))?;
                     continue;
                 }
+                std::thread::sleep(Duration::from_millis(options.echo_turn_ms));
                 let answer = format!("ECHO: {line}");
                 say(&answer)?;
                 turns += 1;
@@ -1137,6 +1235,26 @@ mod tests {
         assert_eq!(rfc3339(0), "1970-01-01T00:00:00.000Z");
         assert_eq!(rfc3339(951_782_400_123), "2000-02-29T00:00:00.123Z");
         assert_eq!(rfc3339(1_791_368_133_456), "2026-10-07T10:15:33.456Z");
+    }
+
+    #[test]
+    fn pasted_image_paths_become_images_and_other_pastes_stay_text() {
+        let message = "\x1b[200~/a/b.png\x1b[201~\x1b[200~/a/my shot.JPG\x1b[201~\x1b[200~Look\nhere\x1b[201~";
+        assert_eq!(render_pastes(message), "[Image #1] [Image #2] Look\nhere");
+        assert_eq!(render_pastes("/goal plain"), "/goal plain");
+        assert_eq!(
+            render_pastes("\x1b[200~/a/notes.txt\x1b[201~"),
+            "/a/notes.txt"
+        );
+        let mut input = io::Cursor::new(b"\x1b[200~one\ntwo\x1b[201~\nnext\n".to_vec());
+        assert_eq!(
+            read_message(&mut input).ok().flatten().as_deref(),
+            Some("one\ntwo")
+        );
+        assert_eq!(
+            read_message(&mut input).ok().flatten().as_deref(),
+            Some("next")
+        );
     }
 
     #[test]

@@ -114,3 +114,5 @@ directories of closed and cancelled tasks (38, 46, 11 and 7 GB).
 - 2026-10-12: SPEC-019 prunes long-idle tasks' caches without pressure, keeps caches while
   background shells run, removes worktrees whose ignored files are only rebuildable, and purges
   orphan worktrees and removed sandboxes.
+- 2026-10-12: SPEC-033 links the `yulius` integration tests into one test binary, so a working
+  task's build no longer holds fifty 190 MB copies of the product.

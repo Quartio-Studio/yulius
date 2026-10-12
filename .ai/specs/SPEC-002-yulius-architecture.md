@@ -62,7 +62,7 @@ Principles:
    the superadmin owns the instance and has admin access to every sandbox without GitHub
    (ACC-012, F 2026-10-09).
 4. **Harness-independent coordination** through one Yulius MCP server and the hook protocol both
-   CLIs implement (COM-005, STP-001, DSC-003; no task-to-task messages, COM-002 withdrawn).
+   CLIs implement (STP-001, DSC-003; no messages: COM-002 and COM-005 withdrawn, SPEC-028).
 5. **Everything bounded and owned**: each queue, stream, retry and wait has a limit and an owner
    (§9).
 
@@ -644,7 +644,7 @@ context.
 | 1 | No Jev key, Jev unavailable or slow, or task not running | passes | Intake never blocks work on a dependency. |
 | 2 | Empty, a slash command (`/goal`, `/clear`, `/compact`, `/model`…), ≤ 3 words ("yes", "continue", "use option 2") or Claude Code's own tagged turn (`<task-notification>`…) | passes, no Jev call | Fixed text rules; answers and commands are never interrupted. |
 | 3 | The identical text after "Send anyway" (once, within 10 min) | passes, override recorded | The person already decided. |
-| 4 | The task's own prompt, or nobody typed into the task's terminal in the last 60 s (goal continuations, background agents, Yulius's first prompt, continuations and wake notices) | passes | Only a person's own submission is checked. |
+| 4 | The task's own prompt, or nobody typed into the task's terminal in the last 60 s (goal continuations, background agents, Yulius's first prompt and continuations) | passes | Only a person's own submission is checked. |
 | 5 | `context`, or any answer below the threshold | passes | Uncertain means context. |
 | 6 | `new_scope` | held: Start in parallel · Run after this task · Send anyway | New work becomes its own task. |
 | 7 | `drops_scope` | held: pick the steps it rules out → they become `skipped`, the agent gets a message, the new direction is chained · Send anyway | The plan stays true; nothing is dropped silently. |
@@ -774,23 +774,26 @@ until the earliest time a subscription becomes a candidate again.
 | D. Kill now, resume later | — | Cold cache on every resume | — | Survives | Only when capacity returns on another subscription |
 
 **What is held, and how it ends.** At Stop, a task that would work on (its gate blocks, or goal
-mode) is held; a turn that ends idle is not — its next prompt (the user's, a wake notice, an
-automation) is held at `UserPromptSubmit`, and the prompt (≤ 100 KiB) is kept for a resume
+mode) is held; a turn that ends idle is not — its next prompt (the user's or an
+automation's) is held at `UserPromptSubmit`, and the prompt (≤ 100 KiB) is kept for a resume
 elsewhere. A task with no process (new task, Continue, a switch that found nothing) waits to
 start. An agent without hooks pauses idle at the turn end its transcript shows. A `202` carries no
 output, so the model is never involved; the final answer is the ordinary hook output computed when
 the hold ends. The pause is a `capacity_pauses` row (`turn`, `prompt`, `limit`, `start`) plus the
 task status `waiting_capacity`. A usage limit the CLI reports mid-turn turns the pause into
-`limit`: the CLI ended that turn itself, so resuming it needs a user message, and that message is
-the neutral "Continue." — the only text the harness ever sends on its own after a pause.
+`limit`: the CLI ended that turn itself. It resumes by a native resume past the limit, also on its
+own subscription: the transcript steps back over the limit errors and notices, and Claude Code
+continues the cut turn itself (`CLAUDE_CODE_RESUME_INTERRUPTED_TURN`, SPEC-034, ADR-0027). The
+harness never sends text on its own after a pause.
 
 **Resume.** One loop (`App::start_capacity_loop`) wakes on usage readings, an added or removed
 subscription, a new pause, the earliest known reset (+1 s) and every 5 minutes, and walks the open
 pauses oldest first with 20 s between two resumes ("gently": usage readings catch up, and a fresh
 window is not hit by every waiting task at once). Per task the policy decides: in place when the
 process's own subscription is a candidate (the held hook answers on its next poll, ≤ 10 s); else a
-native resume on the chosen subscription (prompt: the held prompt, the gate's reasons, or
-"Continue." after a reported limit; a goal-mode session gets its goal again as at every launch);
+native resume on the chosen subscription (prompt: the held prompt or the gate's reasons; after a
+reported limit none, the turn continued past the limit; a goal-mode session gets its goal again as
+at every launch);
 a task without a process starts there.
 
 **Forecast** (`yulius-domain::capacity`, ROT-013). Points are percentage points of one
@@ -967,15 +970,15 @@ asking anyone; a spec moved after it was registered is found again by its `yuliu
 frontmatter and registered under its new path (F 2026-10-11: features finished without a spec and
 nothing opened; a renamed spec blocked every Stop).
 
-**Delivery loop** (F 2026-10-11). Yulius opens a ready task's pull request after its turn, so the
-agent would otherwise rest at the open pull request. The task gets an inbox request (`tell_task`,
-which wakes an idle agent) when its pull request opens, and once per head and result when the
-background reconciliation sees its checks pass (review the exact head, `delivery_merge`) or fail
-(fix test-first, push), or the pull request conflict with its base (GitHub's `mergeable: false`;
-no checks run on it, so the agent merges the base and resolves first), or green but behind its
-base where the repository requires an up-to-date branch (GitHub's `mergeable_state: behind`;
-`delivery_merge` refuses it with that reason instead of GitHub's "required status checks are
-expected", which an agent read as a missing permission). The briefing says agents never ask a person and open an issue for what
+**Delivery loop** (F 2026-10-11; SPEC-028). Yulius opens a ready task's pull request after its
+turn and says so in the task's terminal. No notice reaches the agent (ADR-0023): it waits with
+`yulius wait`, which ends when the checks at its head end, its delivery moves or an armed merge is
+decided (merged, refused with the reason, or dropped because the branch moved or the checks
+failed), and reads `ci_status` and `delivery_status`. The background reconciliation queues an
+errored Yulius CI run again once. A pull request green but behind its base where the repository
+requires an up-to-date branch (GitHub's `mergeable_state: behind`) is refused by `delivery_merge`
+with that reason instead of GitHub's "required status checks are expected", which an agent read as
+a missing permission. The briefing says agents never ask a person and open an issue for what
 only a person can do.
 
 **Pipeline.** Briefing, `delivery-pipeline` skill and workflows describe one path: ready issue →
@@ -1541,7 +1544,7 @@ Schema version 1 (tables; columns abbreviated):
 | `switch_decisions` | id, task_id, at, reason, inputs (json), outcome |
 | `steps` | id, task_id, ordinal, title, status, note, updated_by, updated_at, effort (1-3, version 11, STP-006) |
 | `step_events` | step_id, at, actor, from_status, to_status, note; index (task_id, step_id) (version 11): start and finish times (STP-007) |
-| `messages` | id, sandbox_id, from_task (null = Yulius), to_task (null = to people; task-to-task rows are history only), kind, subject, body, created_at |
+| `messages` | id, sandbox_id, from_task (null = Yulius), to_task (null = to people), kind, subject, body, created_at. History only: nothing writes or shows messages since SPEC-028 |
 | `message_receipts` | message_id, task_id, delivered_at, read_at |
 | `scope_claims` | id, task_id, pattern, note, created_at, released_at |
 | `workflows` | id, sandbox_id (null = instance), name, description, steps (json), instructions, gates (json) |
@@ -1641,8 +1644,9 @@ observation; the other is ignored (RUN-002).
    SIGTERM first (the agent is idle), a person's switch an interrupt.
 4. Prepare target: nothing to copy (the sandbox home is shared); a task never changes harness.
 5. Launch new attempt with native resume; a prompt only when the turn must go on: the held prompt,
-   the gate's reasons, or "Continue." after a reported limit (never words about accounts or limits).
-   No candidate → the task pauses (`start`).
+   the gate's reasons; after a reported limit no prompt: the transcript steps back over the limit
+   and Claude Code continues the cut turn (SPEC-034; never words about accounts or limits).
+   No candidate → the task pauses (`start`; `limit` for a resume past a limit).
 6. Bridge viewers to the new attempt; write a one-line notice into the terminal stream.
 
 Idempotency: a task has at most one in-flight switch (row lock via task status CAS).
@@ -1797,7 +1801,10 @@ Launch preparation verified against the real CLIs (2026-10-07): with an isolated
 a folder-trust prompt whose default answer is "No, exit". Before each launch Yulius merges
 `hasCompletedOnboarding`, `theme`, `projects[<worktree realpath>].hasTrustDialogAccepted` (and
 `bypassPermissionsModeAccepted` for contained runs) into `<CLAUDE_CONFIG_DIR>/.claude.json`, keeping
-Claude's own keys. Enabled skills are copied into `<CLAUDE_CONFIG_DIR>/skills` at each launch.
+Claude's own keys. It also sets `diffSidebarOpen: false` there and `"open": false` in existing
+stores of the built-in diff plugin (`<CLAUDE_CONFIG_DIR>/plugins/store`), so Claude Code's diff side
+panel does not open by itself beside the transcript in a wide task terminal (SPEC-024).
+Enabled skills are copied into `<CLAUDE_CONFIG_DIR>/skills` at each launch.
 
 MCP servers (MCP-001/004) are part of every launch, not of an account: the supervisor passes the
 sandbox's effective servers (`App::mcp_attachments`: enabled instance servers, overridden by the
@@ -1815,7 +1822,7 @@ warning) while nothing answers to it.
 
 | Concern | Claude Code (verified 2.1.292 flags) |
 | --- | --- |
-| New session | `claude --session-id <uuid> --settings <run>/claude-settings.json --mcp-config <run>/mcp.json [--model m] [--effort e] [--dangerously-skip-permissions when contained] "<prompt>"` |
+| New session | `claude --session-id <uuid> --settings <run>/claude-settings.json --mcp-config <run>/mcp.json --model <m, default claude-opus-5-5> [--effort <e, default high; none for Haiku>] [--dangerously-skip-permissions when contained] "<prompt>"` |
 | Resume | `claude --resume <uuid> … ["<continuation>"]` |
 | Credentials | `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`); `CLAUDE_CONFIG_DIR=<sandbox>/home/.claude` |
 | Updates | `DISABLE_AUTOUPDATER=1` in every session and sign-in terminal: the operator updates the CLI on the host (docs/operations.md); a contained session could only fail to update itself (#45) |
@@ -1846,14 +1853,17 @@ translated. A switch resumes the task's own Claude session on another account.
 
 ### 7.4 Yulius MCP (internal listener `/mcp`, Streamable HTTP, JSON-RPC 2.0)
 
-Authentication: `Authorization: Bearer <task token>`; token → (task, attempt). Protocol versions
+Authentication: `Authorization: Bearer <task token>`; token → (task, attempt). A Cockpit's
+`ck_…` bearer (SPEC-037, ADR-0029) resolves to its owner and sandbox and is served only the
+management tools (tasks, automations, workflows, sessions). Protocol versions
 accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 
 | Tool | Purpose (requirements) |
 | --- | --- |
 | `project_context` | Project summary, architecture/decision index, recent changes, delivery rules (COM-004, DSC-009) |
 | `tasks_list`, `task_get` | Previous and parallel tasks: status, harness, branch, spec, steps, summary (COM-001) |
-| `message_send`, `messages_inbox` | `message_send` tells or asks people (`to="people"` only, COM-005); `messages_inbox` reads Yulius's notices (COM-002 withdrawn, SPEC-012) |
+| `task_create` | Create and start a task as New task does, origin `agent`, for the task's creator or the Cockpit's owner; at most 20 per project and rolling hour (SPEC-037 MGT-001..003) |
+| ~~`message_send`, `messages_inbox`~~ | Withdrawn (SPEC-028, ADR-0023): no message tools. |
 | `scope_claim`, `scope_release`, `scopes_list` | Advisory path-glob claims with conflict report (COM-003) |
 | `steps_set`, `step_update`, `steps_get` | Step manager (STP-001/002, STP-006..008): plan bounds, effort, WIP limit, no reopening by agents, weighted `percent` and `nudges` in every result (ADR-19) |
 | `spec_check` | Run the format validator on the task spec and docs (DSC-003); `required` per the spec policy (DSC-013) and `plan_nudges` |
@@ -1887,12 +1897,11 @@ output) and is recorded. Responses:
 - `SessionStart` → `hookSpecificOutput.additionalContext` = briefing (≤ 12 KiB; §7.6).
 - `UserPromptSubmit` → first the scope check (ADR-16 rules): a held prompt returns
   `{"decision":"block","reason":…}` (shown to the person, never to the agent) and nothing else
-  happens; otherwise additionalContext with unread message digests (marks delivered); activity
-  `working`; a typed prompt that passes clears an achieved goal (§6.1 Finish rule). The Jev
+  happens; otherwise activity `working` (no message digest, SPEC-028); a typed prompt that passes clears an achieved goal (§6.1 Finish rule). The Jev
   deadline (3 s) fits inside the hook client's 5 s; any failure passes.
 - `Stop` → activity `waiting`, or `done` when the goal is achieved (§6.1 Finish rule); discipline
   gate: if the worktree has changes, the task needs a spec (DSC-013) and the spec is
-  missing/invalid, or there are unread urgent messages, return `{"decision":"block","reason":…}`;
+  missing/invalid, return `{"decision":"block","reason":…}`;
   at most 3 consecutive blocks per turn, then `needs_attention`. A clean turn end that stays on its
   subscription may return one step nudge as a block (STP-008, ADR-19): given once per task and
   kind (kept in memory), not counted as a gate block, so it never escalates. Also the turn boundary of the
@@ -1922,9 +1931,9 @@ output) and is recorded. Responses:
   `hookSpecificOutput.updatedToolOutput` when it held an agent secret (ADR-20); without
   fingerprints in a Yulius run the result is withheld.
 
-Waking idle tasks (COM-005): when a notice from Yulius arrives for a `running` task with activity
-`waiting` or `done` for ≥ 30 s and no viewer typed in the last 30 s, the supervisor types a short notice and
-Enter into the PTY (configurable per task; never during `needs_attention`).
+Waking idle tasks (COM-005) is withdrawn (SPEC-028, ADR-0023): Yulius never types into an agent's
+session; an agent that waits runs `yulius wait` in a background shell, which Claude Code wakes it
+from.
 
 ### 7.6 Briefing
 
@@ -1935,8 +1944,7 @@ Git hygiene and the profile's path, "Read before you build" (the docs index and 
 `sessions_search`, `session_read`), Yulius tools, dev-server ports, task (goal, workflow, spec path
 and policy, steps with weighted progress and nudges), project foundations it lacks (DSC-014), project
 summary (`docs/product.md` head), architecture pointer, decision index (titles), recent changes
-(last 10 delivered tasks + `docs/changes.md` head), parallel tasks and scope claims, unread
-messages count.
+(last 10 delivered tasks + `docs/changes.md` head), parallel tasks and scope claims.
 
 ### 7.7 Terminal WebSocket (`/api/tasks/{id}/terminal`)
 
@@ -1963,7 +1971,7 @@ instead of waiting behind Nagle's algorithm for the proxy's delayed ACK (F 2026-
 
 ### 7.8 UI event stream (`/api/events`, WS)
 
-Server-pushed JSON events (task status/activity, steps, messages, usage, automation runs,
+Server-pushed JSON events (task status/activity, steps, usage, automation runs,
 browser action requests) filtered by permission. Bounded per-connection queue (256); lag →
 `resync` event → client refetches lists.
 
@@ -2421,7 +2429,7 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Terminal size, clipboard and file links (UI-018, UI-019, AC-UI-10, AC-UI-11; F 2026-10-10) | `e2e/tests/terminal.e2e.ts` (mock): the key table per platform and the path forms (unit, in the page); Ctrl+C copies a selection and interrupts without one; paste types; the right-click menu; a read-only paste refused; another viewer's 90×30 grid fills the box, centred, never cut off, with a chip and no banner, and a click takes the size; file links in the task terminal (five forms linked, four kinds left plain, a web link kept) open the editor at file, line and column; a shell's `ls` output links. `live_ui_terminal.rs` (opt-in Chrome, real server and fake agent): copy with a selection keeps the agent running, the platform's paste key types the clipboard, two windows of different sizes (the active one sets the PTY, the other fills its box; a click moves the size; an idle window hands it back), and Ctrl+C without a selection interrupts the agent. |
 | User terminals (UI-016, AC-UI-8, AC-UI-37) | `shells.rs`: a shell's `folder` (where its paths resolve) and the OSC 7 working directory its `PROMPT_COMMAND` reports; many named shells per user and sandbox up to the bound, privacy between users and sandboxes (list, attach, rename, close), close ends the process, idle reaping; a shell keeps running when the server stops and the next server adopts it with its screen and process (unadoptable leftovers removed). `live_ui_terminal.rs` (opt-in Chrome): the Shell panel opens a working terminal without a click and "+" adds one. |
 | Task terminal appearance (UI-043, AC-UI-38) | `live_ui_terminal.rs` (opt-in Chrome, fake agent with `--tui`, 80 ms latency): zero visible font, grid or layout changes after the first frame, cold and on reload; before this change 2 (cold) and 1 (reload), plus a font-size change before the agent's text. |
-| Messages and steps (AC-COM-2, AC-STP-3) | `supervision.rs` wake test (a Yulius notice typed into the idle task only); `mcp_coordination.rs` (`message_send` refuses tasks and `"all"`, scope overlaps send nothing); `agent_hooks.rs` plan-checklist → steps sync. No person → agent message route (2026-10-10, #110): `http_auth.rs` (`POST /api/tasks/{tid}/messages` is 405, the read routes still answer); `ui_contract.rs` (neither the UI nor the mock posts messages); `e2e/tests/messages.e2e.ts` (no composer, "Reply in the terminal" focuses the terminal). |
+| Steps; messages withdrawn (AC-STP-3; SPEC-028) | `agent_hooks.rs` plan-checklist → steps sync and `stored_messages_reach_no_hook`; `mcp_coordination.rs` (no message tools, scope overlaps message nobody); `delivery.rs` (no message rows; `yulius wait` says how an armed merge ended: merged, dropped for a moved branch or red checks, refused with GitHub's reason; a merge being decided still reads as armed; a direct merge forgets an old outcome); `http_auth.rs` (no messages route); `e2e/tests/rail.e2e.ts` (the rail is Browser, Editor, Shell). |
 | Unreadable GitHub checks (GIT-001, AC-GIT-1, #111) | `yulius-github`: `wire::tests::unreadable_sources_never_make_checks_green`; `tests/client.rs` against the fake GitHub: 403 on check runs and 200 on statuses (statuses and Actions runs decide, `head_sha` sent), Actions withheld too, nothing reported → unknown, nothing readable → unknown, 403 on statuses only (check runs decide, no Actions call), another 403 still fails. `tests/github_checks.rs`: the production adapter maps the report. `tests/delivery.rs`: one `checks_access` (settings link for the superadmin only), no note, unknown refuses the merge and the release with the reason, other GitHub errors become one note without a doubled prefix. Domain merge-gate tests with `ChecksState::Unknown`. Manifest test requests `statuses: read`. |
 | Operator CLI (AC-OPS-3) | `cli.rs`: `yulius backup` consistent copy, refuses an existing destination; `yulius doctor` fails on a too-long data dir. |
 | Hooks, briefing, discipline (COM-004, DSC-003) | `crates/yulius/tests/agent_hooks.rs` over the internal HTTP listener. |
@@ -2436,7 +2444,7 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Dropped files (EDT-006, UI-048, 2026-10-10) | `tests/uploads.rs`: editor uploads (write users only, CSRF, folders created, byte-for-byte with SHA-256, 409 then overwrite with permissions kept, folders and links never replaced, traversal / absolute / control characters / `.git` / links out refused with nothing written outside, a repository folder linked into another sandbox refused, task worktree root, audit), bounds (declared and streamed size, an interrupted body, 8 concurrent then 429, no temporary file left), task attachments (safe unique names, read users refused, a planted link refused, removed with the task), shell attachments (owner only, removed when the shell closes or at start-up), the fake agent reading an attachment by path with a clean `git status` (uncontained; on Linux also inside bubblewrap, skipped where bubblewrap cannot run). Unit tests in `yulius_app::uploads`. `e2e/tests/filedrop.e2e.ts` (mock UI). Opt-in `live_ui_filedrop.rs` with real Chrome: real drags from disk to the explorer and to the task terminal, read by the fake agent. |
 | Task intake and chains (ADR-16, 2026-10-10) | Unit: domain rules (thresholds, bypasses, bounded states, the 10-item goal → 2 workstreams, one-per-item/too-many/missing-item rejections), `chained` transitions; the Jev adapter against a local HTTP fake (pinned request, every contract check, HTTP errors with one request each, deadline, size bounds, key file rules); the Claude proposer against a fake `claude` (stdin not argv, token and private config dir, timeout kill, output parsing); `keep_and_revert` with real Git. `tests/intake.rs` with fake Jev and Claude: split check and proposal, parallel/chain creation, start on Done, needs-you on crash and delete, continue/start-now/cancel, every hook rule, send anyway, skip steps, revert with real Git. Store: chains and holds across a reopen. `e2e/tests/intake.e2e.ts` (mock UI). Not exercised: real Jev and Claude calls (no key in tests). |
 | Auto mode and workflow, composer (TSK-015, UI-021, 2026-10-10) | Unit: `auto_choice.rs` (thresholds, defaults, the sandbox's own Feature first, the spec-first rule for prompts, bounded options). `tests/auto_choice.rs` (fake Jev, public API): Jev's choices from the store's workflows, a question as Prompt with a no-spec workflow, the spec-first override, defaults with no key, Jev down or unsure, picked values not sent to Jev, 422 before any call, the audit entry; `yulius-store/tests/store.rs` round trip and deletion. `e2e/tests/new-task.e2e.ts`, `intake.e2e.ts` (mock): keys, lists, indent, bold/italic, fences, Preview, Auto chips and labels, the split card's loading and layout. |
-| Subscription pool (ADR-17, 2026-10-10) | Unit: `rotation.rs` (placement spends expiring capacity first, spreading, ties, tiers, 98 % switch, waiting until the earliest reset, one subscription, model caps, manual rules), `capacity.rs` (burn rate, run-out walk through resets, task-hours, needed subscriptions, the forecast numbers), task transitions of `waiting_capacity`, hook client holds (`hook_client.rs`: re-ask after `202`, retry across a restart and a 5xx, fail open on 4xx and after the bound, no retry without a hold), migration 0003→0004. `subscription_pool.rs` (fake clock): a held Stop (`202`, no body) through a restart until the reset releases it in place; a held prompt; an idle turn end not held; `GET /api/capacity` numbers and role scoping. `pool_supervision.rs` (real ptyhost, fake agent, scripted usage): placement on expiring capacity, pause at the boundary with nothing typed and resume in place, staggered oldest-first start on a new subscription, native resume on the subscription with capacity without a prompt, a pause across a server restart, "Continue." only after a reported limit. `accounts.rs`/`analytics.rs`: no priority or enabled in views, PATCH refuses them. `e2e/tests/subscriptions.e2e.ts` (mock UI). Not exercised: a live Claude Code held hook (R-14). |
+| Subscription pool (ADR-17, 2026-10-10) | Unit: `rotation.rs` (placement spends expiring capacity first, spreading, ties, tiers, 98 % switch, waiting until the earliest reset, one subscription, model caps, manual rules), `capacity.rs` (burn rate, run-out walk through resets, task-hours, needed subscriptions, the forecast numbers), task transitions of `waiting_capacity`, hook client holds (`hook_client.rs`: re-ask after `202`, retry across a restart and a 5xx, fail open on 4xx and after the bound, no retry without a hold), migration 0003→0004. `subscription_pool.rs` (fake clock): a held Stop (`202`, no body) through a restart until the reset releases it in place; a held prompt; an idle turn end not held; `GET /api/capacity` numbers and role scoping. `pool_supervision.rs` (real ptyhost, fake agent, scripted usage): placement on expiring capacity, pause at the boundary with nothing typed and resume in place, staggered oldest-first start on a new subscription, native resume on the subscription with capacity without a prompt, a pause across a server restart, a reported limit resumed past the limit with no prompt (also on its own subscription, SPEC-034). `accounts.rs`/`analytics.rs`: no priority or enabled in views, PATCH refuses them. `e2e/tests/subscriptions.e2e.ts` (mock UI). Not exercised: a live Claude Code held hook (R-14). |
 | MCP, Git as presentation, skills, default workflows (MCP-004, GIT-002, SKL-006, AUT-006; #136, 2026-10-10) | The reported bug ("Add server does nothing"): on `dev` the empty MCP page's Add server threw `ReferenceError: edit is not defined` (headless Chrome, mock mode); `live_ui_mcp.rs` (opt-in Chrome, real server) fails on that page and passes with the fix: empty state → add page → pasted `claude mcp add` → Add (sealed, tested) → the attachments a run gets → edit → Remove. `pool_supervision.rs::mcp_servers_reach_every_run_on_every_subscription`: real processes on two subscriptions; each run's `mcp.json` and secret names, the values in the child environment, the same servers after a native-resume switch plus one added meanwhile. `skills_mcp.rs`: `${secret:NAME}` stays write-only and is left out of runs while unresolved. Workflows: `workflow_format` unit tests (every rule, line numbers), `workflows::catalog` (the shipped files parse and are all embedded), `automations.rs` (defaults first and read-only — 409 even for an administrator —, duplicate, task steps and instructions from the catalog, retirement of unchanged and edited seeded rows, `workflows_list`). UI (mock e2e): `mcp.e2e.ts`, `workflows.e2e.ts`, `skills.e2e.ts`, `git.e2e.ts`. |
 | Secrets vault (ADR-20, 2026-10-10) | Unit: names, host bindings, placeholders, injections, encodings (base64 at every alignment), plain and fingerprinted redaction with every split point, RFC 4226/6238 vectors, envelopes (row binding, tampering, foreign key), migration and store. `yulius-egress/tests/proxy.rs`: real TLS upstream echoing the credential, interception with injection and query placeholder, opaque tunnels, 407/403/409 refusals, plain HTTP upgraded to HTTPS. `tests/secrets.rs`: team CRUD, re-authentication by password and GitHub, bearer tokens refused, activity, encryption at rest (database, WAL, backup), access control, agent secrets via the App's policy (placeholders, Basic, injection, conflicts, other sandbox), MCP `secrets_list`, MCP result redaction, MCP `${secret:NAME}`, the proxy on the internal listener through the real router (tunnel with the task token, 407 without, 403 to a local address). `tests/browser.rs`: `browser_fill_secret` against the fake CDP endpoint (typed into the bound host's page, refused on another host, snapshot redacted). `tests/secrets_redaction.rs`: the real `yulius --scrub-exec` with fingerprints (echo, file read back, base64, chunks split by sleeps), the `PostToolUse` hook, a fake agent printing a value into the task terminal, launch environment. `e2e/tests/secrets.e2e.ts` (mock UI). Not exercised: a live Claude Code session. |
 | Delivery discipline (ADR-19, #139, 2026-10-10) | Unit: `yulius-domain` `steps` (plan bounds, keeping status and effort by title, no reopening by agents, WIP limit with its message, blocked/skipped reasons, 9 of 10 = 90 % and effort weighting, phase titles, plan-shape nudges, stale and burst with a fake clock), `spec_format` (Plan bounds and repeats, `SpecPolicy`, documentation paths), `briefing` (docs index, sessions, pipeline, git hygiene, spec policy per workflow, weighted steps and nudges, foundations); `yulius-app` `discipline` (weighted progress, timings, turn-end nudges, the six default workflows' content), `skills` (every pack equals its catalog directory, unique names, licenses and upstream commits, no Open Mercato harness or manual mode in adapted skills, attribution notes, extraction of three packs), `hooks` (foundations without following links). Store: effort and timings from the history. `mcp_coordination.rs` (step rules and nudges over MCP, `spec_check` `required`), `agent_hooks.rs` (briefing sections, the spec asked only where it matters by workflow and by changed paths, the one-shot untracked-work nudge), `delivery.rs` (a docs-only task opens its pull request without a spec; a code change waits), `skills_mcp.rs` (three sources listed, run set, no `.ai/agentic.config.json`), `e2e/tests/steps.e2e.ts` (weighted progress bar, mock). Not exercised: a live agent following the briefing; agent merge/deploy/promote tools (separate change). |
@@ -2449,6 +2457,11 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 
 ## 15. Changelog
 
+- 2026-10-12 (task #26, "delete message mechanism for now until we make the infra very good";
+  SPEC-028, ADR-0023): messages are removed end to end: no `message_send` or `messages_inbox`, no
+  stored notices, digest, urgent-message stop reason or idle wake-up, no Messages panel, unread
+  counts, message notification or `GET /api/tasks/{tid}/messages`. `yulius wait` says how an armed
+  merge ended. Tables and history stay.
 - 2026-10-12 (F 2026-10-12): task-to-task messaging is removed (COM-002 withdrawn, SPEC-012):
   `message_send` accepts only `to="people"`, `scope_claim` messages nobody, notices from Yulius
   (`tell_task`, `tell_freed`, intake) and the inbox, digest, wake-up and panel are unchanged.

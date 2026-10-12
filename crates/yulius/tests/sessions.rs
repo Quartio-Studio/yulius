@@ -3,7 +3,7 @@
 //! sandbox, the onboarding plan of `yulius onboard` and the onboarding gate (AC-SES-1..5,
 //! AC-IMP-4, AC-IMP-7).
 
-mod support;
+use crate::support;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};

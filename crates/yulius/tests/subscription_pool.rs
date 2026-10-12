@@ -3,7 +3,7 @@
 //! (the agent gets nothing), the hold surviving a server restart, release when capacity
 //! returns, and the capacity view with its forecast. Real processes: `pool_supervision.rs`.
 
-mod support;
+use crate::support;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -20,10 +20,10 @@ use support::{
 use yulius_app::context::App;
 use yulius_app::model::Secret;
 use yulius_app::model::{
-    AccountRecord, AccountStatus, AttemptRecord, LaunchKind, PauseKind, PauseRecord, TaskMode,
-    TaskOrigin, TaskRecord, UsageSampleRecord,
+    AccountRecord, AccountStatus, AttemptRecord, LaunchKind, MessageRecord, PauseKind, PauseRecord,
+    TaskMode, TaskOrigin, TaskRecord, UsageSampleRecord,
 };
-use yulius_app::ports::store::{AccountStore, TaskStore, UserStore};
+use yulius_app::ports::store::{AccountStore, CoordinationStore, TaskStore, UserStore};
 use yulius_app::ports::store_ext::CapacityStore;
 use yulius_app::ports::usage::{UsageFailure, UsageProbe};
 use yulius_domain::harness::{Harness as Agent, Provider};
@@ -253,6 +253,74 @@ async fn an_exhausted_pool_holds_the_turn_until_capacity_returns() -> TestResult
         h.store.attempts(&task).await?.len(),
         1,
         "resumed in place: no new run"
+    );
+    Ok(())
+}
+
+/// SPEC-025: the Stop of the turn on a goal session's first message (its attached files), held
+/// for capacity, is still that turn's end: the held polls keep it the opening turn, and the first
+/// Stop answered after the pause ends it.
+#[tokio::test]
+async fn a_held_opening_turn_stays_the_opening_turn_until_its_stop_is_answered() -> TestResult {
+    let h = harness()?;
+    seed(&h).await?;
+    let t0 = now(&h);
+    let only = add_account(
+        &h,
+        "acc-only",
+        Some(usage(
+            98.0,
+            t0.plus_millis(2 * HOUR),
+            40.0,
+            t0.plus_millis(90 * HOUR),
+        )),
+    )
+    .await?;
+    let task = running_task(&h, TaskMode::Goal, &only).await?;
+    // The pool ran out during the turn: a capacity pause is open when its Stop comes.
+    let (code, _, body) = hook(&h.internal, "Stop", json!({"session_id": "s"})).await?;
+    assert_eq!(code, 202, "{body}");
+    assert!(h.store.open_pause(&task).await?.is_some());
+    h.app
+        .runtime(&task)
+        .opening_turn
+        .store(true, Ordering::SeqCst);
+
+    let (code, _, body) = hook(&h.internal, "Stop", json!({})).await?;
+    assert_eq!(code, 202, "{body}");
+    assert!(
+        h.app.runtime(&task).opening_turn.load(Ordering::SeqCst),
+        "a held poll is not the end of the opening turn"
+    );
+
+    // A person's request meanwhile would block an ordinary Stop (the gate's inbox reason).
+    let message = MessageRecord {
+        id: yulius_domain::ids::MessageId::parse("m-open")?,
+        sandbox_id: yulius_domain::ids::SandboxId::parse("s1")?,
+        from_task: None,
+        from_user: Some(yulius_domain::ids::UserId::parse("u1")?),
+        to_task: Some(task.clone()),
+        kind: "request".into(),
+        subject: "Also the footer".into(),
+        body: "Make the footer blue too.".into(),
+        created_at: now(&h),
+    };
+    h.store
+        .insert_message(&message, std::slice::from_ref(&task))
+        .await?;
+
+    advance(&h, 2 * HOUR + 1_000);
+    let _ = h.app.resume_round().await;
+    let (code, _, body) = hook(&h.internal, "Stop", json!({})).await?;
+    assert_eq!(code, 200, "{body}");
+    assert!(
+        !h.app.runtime(&task).opening_turn.load(Ordering::SeqCst),
+        "the answered Stop ends the opening turn"
+    );
+    // Answered as it is: no gate, nudge or rotation reaches the agent.
+    assert!(
+        body.is_null() || body == json!({}),
+        "the opening turn is not gated: {body}"
     );
     Ok(())
 }

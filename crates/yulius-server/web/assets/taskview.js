@@ -2,7 +2,8 @@
 // and the new-task composer shown when no task is selected (SPEC-001 §6.1, STP-003).
 
 import { enc } from './api.js';
-import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, skeleton, openMenu, openModal, field, statusMark, singleFlight, keepFocus } from './dom.js';
+import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, skeleton, openMenu, statusMark, singleFlight, keepFocus } from './dom.js';
+import { openRuleEditor, ruleChoices, ruleText } from './ruleeditor.js';
 import { createTerminalView } from './terminal.js';
 import { taskInfo, isLive, allows, taskActions, endedMessage, statusInfo, pausedLine, resetAround, shellsLine } from './status.js';
 import { heldPromptCard, splitCard, looksSeveral, chainCandidates, intakeStatus, SPLIT_MIN_WORDS } from './intake.js';
@@ -10,7 +11,7 @@ import { attachMarkdownInput } from './mdinput.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
 import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask } from './actions.js';
-import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments } from './filedrop.js';
+import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments, openAttachment } from './filedrop.js';
 import { relLong, dateTime } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
@@ -19,6 +20,7 @@ import { randomQuote } from './quotes.js';
 import { brandSmoke } from './brandfx.js';
 import { BRAND } from './brand.js';
 import { isPhone } from './theme.js';
+import { draftFor, saveDraft, clearDraft, attachToDraft, onDraftChange } from './drafts.js';
 
 const STEP_MARK = { done: '✓', in_progress: '▸', pending: '·', skipped: '–', blocked: '✕' };
 const STEP_LABEL = { done: 'Done', in_progress: 'In progress', pending: 'To do', blocked: 'Blocked', skipped: 'Skipped' };
@@ -325,8 +327,6 @@ export function mountTaskView(ctx, sandbox, task) {
       // The user left the agent session (e.g. /exit): back to the task list (HRN-002).
       if (wasLive && current.status === 'closed' && ctx.onTaskClosed) ctx.onTaskClosed(current);
     },
-    /** Focuses the terminal to answer the agent (the quick input on phones). */
-    reply,
     get task() { return current; },
     get detail() { return detail; },
     destroy() {
@@ -339,7 +339,7 @@ export function mountTaskView(ctx, sandbox, task) {
 }
 
 function pickSummary(detail) {
-  const keys = ['status', 'activity', 'title', 'steps', 'unread_messages', 'account_label', 'harness', 'branch', 'updated_at', 'archived', 'mode', 'after', 'next', 'held_prompt', 'auto'];
+  const keys = ['status', 'activity', 'title', 'steps', 'account_label', 'harness', 'branch', 'updated_at', 'archived', 'mode', 'after', 'next', 'held_prompt', 'auto'];
   const out = {};
   for (const key of keys) if (key in detail) out[key] = detail[key];
   return out;
@@ -379,17 +379,23 @@ export function autoChoiceLabel(task) {
 export function mountComposer(ctx, sandbox) {
   const destroyers = [];
   const write = allows(sandbox.access, 'write');
+  // What was typed, attached and chosen here waits in the sandbox's draft (SPEC-026).
+  const userId = ctx.store.state.me && ctx.store.state.me.user ? ctx.store.state.me.user.id : null;
+  const draft = draftFor(userId, sandbox.id);
+  const remember = (options) => saveDraft(userId, sandbox.id, options);
   const prompt = h('textarea', { class: 'composer-prompt', rows: 4, placeholder: 'Describe what you want to build, fix or find out. Lists and Markdown work.', 'aria-label': 'Task prompt', 'aria-keyshortcuts': SUBMIT_ARIA, maxlength: 100000 });
+  prompt.value = draft.text;
   // A rendered, read-only view of the prompt (Preview), made on demand.
   const previewEl = h('div', { class: 'composer-preview', role: 'region', hidden: true, tabindex: 0, 'aria-label': 'Prompt preview' });
   let preview = null;
-  let mode = AUTO;
-  let workflowId = AUTO;
+  let mode = MODES.some((m) => m.id === draft.mode) ? draft.mode : AUTO;
+  let workflowId = draft.workflowId ?? AUTO;
   let workflows = [];
   // Run after another task of this sandbox (TSK-012): the new task waits until it is Done.
-  let afterTaskId = '';
-  // Or wait for a logical sentence over the sandbox's tasks (SPEC-017), like `#12 done and #13 done`.
-  let startRule = '';
+  let afterTaskId = draft.afterTaskId;
+  // Or wait for a logical sentence over the sandbox's tasks (SPEC-017), like `#12 done and #13 done`,
+  // picked as conditions in the rule editor (SPEC-022): `{ join, conditions }` or null.
+  let startRule = draft.startRule;
   let split = null; // the split card while it shows (TSK-011)
   let modelId = findModel(readJson(MODEL_PREF_KEY, null)) ? readJson(MODEL_PREF_KEY, null) : null;
   let effortId = findEffort(readJson(EFFORT_PREF_KEY, null)) ? readJson(EFFORT_PREF_KEY, null) : null;
@@ -435,20 +441,38 @@ export function mountComposer(ctx, sandbox) {
       h('a', { class: 'composer-repo-link', href: sandbox.repo.url, target: '_blank', rel: 'noopener noreferrer', title: `Open ${sandbox.repo.owner}/${sandbox.repo.name} on GitHub` },
         icon('github', { size: 18 }), h('span', null, `${sandbox.repo.owner} / ${sandbox.repo.name}`)),
       h('span', { class: 'composer-branch', title: `New tasks branch from ${baseBranch}` }, icon('branch', { size: 16 }), h('span', null, baseBranch))) : null);
-  // Files added to the prompt wait here, shown as thumbnails; their paths join the text at start.
-  let attached = [];
+  // Files added to the prompt wait in the draft, shown as thumbnails that open the file; their
+  // paths join the text at start. An image's thumbnail is drawn from its file (an object URL of
+  // this view); a file opened in a tab has its own (`tabUrls`). A draft restored after a reload
+  // keeps no file: an image previews its stored thumbnail, another file cannot be opened.
+  const urls = new Map();
+  const tabUrls = new Map();
   const tray = h('ul', { class: 'composer-attachments', 'aria-label': 'Attached files', hidden: true });
   function renderTray() {
-    for (const item of attached) if (!item.url && /^image\//.test(item.file.type)) item.url = URL.createObjectURL(item.file);
-    tray.hidden = !attached.length;
-    setChildren(tray, attached.map((item) => h('li', { class: 'composer-attachment', title: item.name },
-      item.url ? h('img', { src: item.url, alt: item.name }) : icon('file', { size: 20 }),
-      h('span', { class: 'composer-attachment-name' }, item.name),
-      iconButton('x', `Remove ${item.name}`, () => { dropAttached([item]); renderTray(); }, { class: 'composer-attachment-remove' }))));
+    forgetUrls([...new Set([...urls.keys(), ...tabUrls.keys()])].filter((item) => !draft.attached.includes(item)));
+    for (const item of draft.attached) if (!urls.has(item) && item.file && /^image\//.test(item.type)) urls.set(item, URL.createObjectURL(item.file));
+    tray.hidden = !draft.attached.length;
+    setChildren(tray, draft.attached.map((item) => {
+      const image = urls.get(item) || item.thumb;
+      const face = [image ? h('img', { src: image, alt: '' }) : icon('file', { size: 20 }), h('span', { class: 'composer-attachment-name' }, item.name)];
+      const open = image || item.file
+        ? h('button', { type: 'button', class: 'composer-attachment-open', 'aria-label': `Open ${item.name}`, onClick: () => openAttachment(item, { image, url: (blob) => {
+          if (!tabUrls.has(item)) tabUrls.set(item, URL.createObjectURL(blob));
+          return tabUrls.get(item);
+        } }) }, ...face)
+        : h('span', { class: 'composer-attachment-open', title: `${item.name}: attach it again to open it here` }, ...face);
+      return h('li', { class: 'composer-attachment', title: item.name },
+        open,
+        iconButton('x', `Remove ${item.name}`, () => { dropAttached([item]); renderTray(); }, { class: 'composer-attachment-remove' }));
+    }));
+  }
+  function forgetUrls(items) {
+    for (const map of [urls, tabUrls]) for (const item of items) if (map.has(item)) { URL.revokeObjectURL(map.get(item)); map.delete(item); }
   }
   function dropAttached(items) {
-    for (const item of items) if (item.url) URL.revokeObjectURL(item.url);
-    attached = attached.filter((item) => !items.includes(item));
+    forgetUrls(items);
+    draft.attached = draft.attached.filter((item) => !items.includes(item));
+    remember();
   }
   setChildren(box,
     tray,
@@ -465,7 +489,11 @@ export function mountComposer(ctx, sandbox) {
       h('div', { class: 'composer-hint muted xs' }, modeHint, h('span', { class: 'composer-hint-sep', 'aria-hidden': 'true' }, ' · '), hint),
       intakeSlot));
   // Files dropped (or an image pasted) on the prompt reach the new task's agent by path.
-  attachPromptDrop(ctx, { box, prompt, label: 'Drop to add to the prompt', upload: draftAttachments(ctx, sandbox.id), onAttach: (items) => { attached.push(...items); renderTray(); } });
+  attachPromptDrop(ctx, { box, prompt, label: 'Drop to add to the prompt', upload: draftAttachments(ctx, sandbox.id), onAttach: (items) => {
+    // An upload that ends after the person left still joins the draft (DRF-002), and shows in the
+    // composer open then (onDraftChange below).
+    attachToDraft(userId, sandbox.id, draft, items);
+  } });
 
   function renderChips() {
     const m = MODES.find((x) => x.id === mode);
@@ -478,19 +506,26 @@ export function mountComposer(ctx, sandbox) {
     const wfLabel = workflowId === AUTO ? 'Auto workflow' : wf ? wf.name : workflowId ? 'Workflow' : 'No workflow';
     setChildren(workflowChip, icon(workflowId === AUTO ? 'zap' : 'workflow', { size: 14 }), h('span', { class: 'sr-only' }, 'Workflow: '), h('span', { class: 'chip-label' }, wfLabel), icon('down', { size: 12 }));
     workflowChip.title = workflowId === AUTO ? 'Jev picks the workflow that fits, or none: features get a spec, research and questions do not' : wfLabel;
-    const after = (ctx.store.tasksOf(sandbox.id) || []).find((t) => t.id === afterTaskId);
-    if (afterTaskId && !after) afterTaskId = '';
-    const ruleLabel = startRule.length > 28 ? `${startRule.slice(0, 27)}…` : startRule;
-    setChildren(afterChip, icon('branch', { size: 14 }), h('span', { class: 'sr-only' }, 'Run after: '), h('span', { class: 'chip-label' }, startRule ? `When ${ruleLabel}` : after ? `After #${after.number}` : 'Start now'), icon('down', { size: 12 }));
-    afterChip.title = startRule ? `Starts by itself when ${startRule}` : after ? `Runs after #${after.number} ${after.title} is done` : 'Starts right away; or pick a task to run after, or give a rule';
+    const tasks = ctx.store.tasksOf(sandbox.id);
+    const after = (tasks || []).find((t) => t.id === afterTaskId);
+    if (afterTaskId && tasks && !after) afterTaskId = ''; // gone (a kept draft waits for the list)
+    const rule = startRule ? ruleText(startRule) : '';
+    const ruleLabel = rule.length > 28 ? `${rule.slice(0, 27)}…` : rule;
+    setChildren(afterChip, icon('branch', { size: 14 }), h('span', { class: 'sr-only' }, 'Run after: '), h('span', { class: 'chip-label' }, rule ? `When ${ruleLabel}` : after ? `After #${after.number}` : 'Start now'), icon('down', { size: 12 }));
+    afterChip.title = rule ? `Starts by itself when ${rule}` : after ? `Runs after #${after.number} ${after.title} is done` : 'Starts right away; or pick a task to run after, or give a rule';
     const found = findModel(modelId);
     setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
-    modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Model: Claude Code’s default';
+    modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Model: default, Opus 5.5';
     // A model without effort levels (Haiku) hides the effort choice and sends none.
     const effortless = Boolean(found && found.model.effort === false);
     effortChip.hidden = effortless;
     const effort = findEffort(effortId);
     setChildren(effortChip, h('span', { class: 'sr-only' }, 'Effort: '), h('span', { class: 'chip-label' }, effort ? effort.name : 'Default effort'), icon('down', { size: 12 }));
+    // Every choice shown here is the draft's (DRF-003).
+    if (draft.mode !== mode || draft.workflowId !== workflowId || draft.afterTaskId !== afterTaskId || draft.startRule !== startRule) {
+      Object.assign(draft, { mode, workflowId, afterTaskId, startRule });
+      remember();
+    }
   }
 
   function openModeMenu(anchor) {
@@ -514,32 +549,29 @@ export function mountComposer(ctx, sandbox) {
   function openAfterMenu(anchor) {
     const candidates = chainCandidates(ctx, sandbox);
     openMenu(anchor, [
-      { label: 'Start now', icon: 'up', description: 'The task starts as soon as a session slot is free', checked: !afterTaskId && !startRule, onSelect: () => { afterTaskId = ''; startRule = ''; renderChips(); prompt.focus(); } },
+      { label: 'Start now', icon: 'up', description: 'The task starts as soon as a session slot is free', checked: !afterTaskId && !startRule, onSelect: () => { afterTaskId = ''; startRule = null; renderChips(); prompt.focus(); } },
       candidates.length ? { separator: true } : null,
-      ...candidates.slice(0, 20).map((t) => ({ label: `After #${t.number} ${t.title}`, icon: 'branch', description: `Starts by itself when #${t.number} is done · ${statusInfo(t).label}`, checked: t.id === afterTaskId, onSelect: () => { afterTaskId = t.id; startRule = ''; renderChips(); prompt.focus(); } })),
-      { separator: true },
-      { label: 'When a rule is true…', icon: 'branch', description: 'For example #12 done and #13 done', checked: Boolean(startRule), onSelect: openRuleDialog },
+      ...candidates.slice(0, 20).map((t) => ({ label: `After #${t.number} ${t.title}`, icon: 'branch', description: `Starts by itself when #${t.number} is done · ${statusInfo(t).label}`, checked: t.id === afterTaskId, onSelect: () => { afterTaskId = t.id; startRule = null; renderChips(); prompt.focus(); } })),
+      // A rule names tasks of this sandbox, so a sandbox without any offers none (SPEC-022).
+      ...(ruleChoices(ctx.store.tasksOf(sandbox.id)).length ? [
+        { separator: true },
+        { label: 'When a rule is true…', icon: 'branch', description: 'Pick tasks and whether they are done, merged or ended', checked: Boolean(startRule), onSelect: openRuleDialog },
+      ] : []),
     ]);
   }
 
-  /** A start rule (SPEC-017): "#12 done and (#13 done or #14 ended)". The server checks it. */
+  /** A start rule (SPEC-017) picked as conditions (SPEC-022); the server checks it. */
   function openRuleDialog() {
-    const input = h('input', { class: 'input mono', type: 'text', value: startRule, placeholder: '#12 done and #13 done', maxlength: 500, autocomplete: 'off', spellcheck: 'false' });
-    openModal({
-      title: 'Start when a rule is true',
-      body: h('div', { class: 'stack' },
-        field('Rule', input, 'Tasks are #numbers of this sandbox. States: done (default), merged, ended. Combine with and, or, not and parentheses.')),
-      actions: [
-        { label: 'Cancel', value: false },
-        { label: 'Use this rule', kind: 'primary', run: () => {
-          startRule = input.value.trim();
-          if (startRule) afterTaskId = '';
-          renderChips();
-          prompt.focus();
-        } },
-      ],
+    openRuleEditor({
+      tasks: ctx.store.tasksOf(sandbox.id),
+      value: startRule,
+      onUse: (rule) => {
+        startRule = rule;
+        afterTaskId = '';
+        renderChips();
+        prompt.focus();
+      },
     });
-    input.focus();
   }
 
   function openModelMenu(anchor) {
@@ -556,6 +588,8 @@ export function mountComposer(ctx, sandbox) {
     prompt.style.height = `${prompt.scrollHeight}px`;
   };
   prompt.addEventListener('input', () => {
+    draft.text = prompt.value;
+    remember();
     fit();
     // Editing the prompt withdraws a split proposal made for the old text.
     if (split) clearSplit();
@@ -657,7 +691,7 @@ export function mountComposer(ctx, sandbox) {
 
   /** The request body of a new task with the composer's choices (`auto`: Jev decides, TSK-015). */
   function bodyFor(text, title) {
-    const body = { prompt: withAttachments(text, attached), mode };
+    const body = { prompt: withAttachments(text, draft.attached), mode };
     if (title) body.title = title;
     if (workflowId) body.workflow_id = workflowId;
     const found = findModel(modelId);
@@ -677,11 +711,12 @@ export function mountComposer(ctx, sandbox) {
 
   function opened(task) {
     prompt.value = '';
-    dropAttached([...attached]);
-    renderTray();
-    fit();
+    mode = AUTO;
+    workflowId = AUTO;
     afterTaskId = '';
-    startRule = '';
+    startRule = null;
+    clearDraft(userId, sandbox.id); // redraws the tray (onDraftChange)
+    fit();
     ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`);
   }
 
@@ -698,6 +733,7 @@ export function mountComposer(ctx, sandbox) {
   let showTimer = 0;
   const autoStage = () => (mode === AUTO || workflowId === AUTO ? 'Choosing mode and workflow…' : 'Starting the task…');
   function working(text) {
+    draft.starting = true;
     startButton.disabled = true;
     startButton.classList.add('busy');
     prompt.readOnly = true;
@@ -711,6 +747,7 @@ export function mountComposer(ctx, sandbox) {
     }, 150);
   }
   function idle() {
+    draft.starting = false;
     clearTimeout(showTimer);
     box.classList.remove('thinking');
     prompt.readOnly = false;
@@ -762,6 +799,8 @@ export function mountComposer(ctx, sandbox) {
     const text = prompt.value.trim();
     if (!text) { if (prompt.hidden) setPreview(false); prompt.focus(); toast('Write a prompt first.', { kind: 'warn' }); return; }
     if (split || prompt.disabled) return; // the card is open (its buttons decide), or starting is blocked
+    // Started from this composer before the person left and came back: not twice.
+    if (draft.starting) { toast('This task is already starting.', { kind: 'info' }); return; }
     try {
       // A request mixing separate workstreams gets the split card first; a chosen "Run after"
       // already decided how the work is scheduled. The check never blocks for long (≤ 4 s).
@@ -775,7 +814,7 @@ export function mountComposer(ctx, sandbox) {
       working(autoStage());
       const body = bodyFor(text);
       if (afterTaskId) body.after_task_id = afterTaskId;
-      if (startRule) body.start_rule = startRule;
+      if (startRule) body.start_rule = ruleText(startRule);
       opened(await createTask(body));
     } catch (error) {
       errorToast(error, 'Couldn’t start the task');
@@ -788,18 +827,22 @@ export function mountComposer(ctx, sandbox) {
 
 
   renderChips();
+  renderTray();
 
   destroyers.push(ctx.store.on('sandboxes', renderBanner));
-  destroyers.push(ctx.store.on('tasks', (sid) => { if (sid === sandbox.id) renderBanner(); }));
+  // A kept "Run after" shows once the sandbox's tasks are read.
+  destroyers.push(ctx.store.on('tasks', (sid) => { if (sid === sandbox.id) { renderBanner(); if (afterTaskId) renderChips(); } }));
+  destroyers.push(onDraftChange(userId, sandbox.id, renderTray));
   renderBanner();
 
   return {
     el,
     key: `composer:${sandbox.id}`,
     start() {
+      fit(); // a kept draft's text sizes the box once it is on the page
       if (!prompt.disabled && !isPhone()) prompt.focus();
       if (!stopSmoke) stopSmoke = brandSmoke(niche); // the brand's smoke, when its niche shows (brandfx.js)
     },
-    destroy() { destroyers.forEach((off) => off()); if (stopSmoke) stopSmoke(); clearTimeout(showTimer); clearSplit(); if (preview) preview.destroy(); },
+    destroy() { forgetUrls([...urls.keys()]); remember({ now: true }); destroyers.forEach((off) => off()); if (stopSmoke) stopSmoke(); clearTimeout(showTimer); clearSplit(); if (preview) preview.destroy(); },
   };
 }

@@ -42,8 +42,6 @@ pub struct AppConfig {
     pub secure_cookies: bool,
     /// How often open terminal viewers re-check their access (ACC-008).
     pub viewer_recheck_ms: u64,
-    /// Idle time before a message wakes a waiting task (COM-005).
-    pub wake_idle_ms: i64,
     /// Wait between two resumes of tasks paused for lack of subscription capacity (ROT-010).
     pub resume_stagger_ms: u64,
     /// Extra host paths visible read-only inside containment (for example agent CLI install
@@ -93,7 +91,6 @@ impl AppConfig {
             data_dir,
             secure_cookies: public_url.starts_with("https://"),
             viewer_recheck_ms: 60_000,
-            wake_idle_ms: crate::background::WAKE_IDLE_MS,
             resume_stagger_ms: crate::capacity::RESUME_STAGGER_MS,
             contained_readonly: Vec::new(),
             allowed_origins: Vec::new(),
@@ -148,8 +145,6 @@ pub struct App {
     pub events: EventBus,
     /// Password-login attempts per client key (rate limiting).
     pub(crate) login_attempts: Mutex<HashMap<String, Vec<i64>>>,
-    /// Wakes idle tasks on new messages (set once by the supervisor).
-    pub message_waker: OnceLock<Arc<dyn crate::coordination::MessageWaker>>,
     /// Session supervisor runtime state.
     pub(crate) supervisor: crate::supervisor::SupervisorState,
     /// Account login terminals.
@@ -181,6 +176,8 @@ pub struct App {
     pub(crate) isolation: OnceLock<Arc<dyn crate::ports::isolation::SandboxIsolation>>,
     /// Pull requests the Git overview last observed, for the "needs you" counts (#147).
     pub(crate) observed_pulls: crate::sandboxes::ObservedPulls,
+    /// Tasks created by tools in the last hour, per project (SPEC-037 MGT-003).
+    pub(crate) tool_tasks: crate::manage::ToolTaskWindow,
 }
 
 impl App {
@@ -197,7 +194,6 @@ impl App {
             deps,
             events: EventBus::new(1024),
             login_attempts: Mutex::new(HashMap::new()),
-            message_waker: OnceLock::new(),
             supervisor: crate::supervisor::SupervisorState::default(),
             logins: crate::accounts::LoginRegistry::default(),
             capacity: crate::capacity::CapacityState::default(),
@@ -212,6 +208,7 @@ impl App {
             ci: crate::ci::CiState::default(),
             isolation: OnceLock::new(),
             observed_pulls: crate::sandboxes::ObservedPulls::default(),
+            tool_tasks: crate::manage::ToolTaskWindow::default(),
         })
     }
 

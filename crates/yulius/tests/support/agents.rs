@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 use yulius::wiring::harness::HarnessAdapter;
 use yulius_app::error::AppResult;
 use yulius_app::ports::harness::{
-    HarnessLaunch, HarnessPlan, HarnessPort, OutputMasker, TranscriptWatch,
+    CockpitLaunch, HarnessLaunch, HarnessPlan, HarnessPort, OutputMasker, TranscriptWatch,
 };
+use yulius_app::ports::session::LaunchPlan;
 use yulius_domain::harness::Harness;
 use yulius_domain::time::Timestamp;
 
@@ -32,6 +33,13 @@ pub struct FakeAgentOptions {
     pub interrupts: bool,
     /// Run the status line command with the rate limits in this file (`--rate-limits-file`).
     pub rate_limits_file: Option<PathBuf>,
+    /// Run Claude Code's SessionStart hook at start, like the real CLI (`--session-start`).
+    pub session_start: bool,
+    /// Run a turn of this many milliseconds first when the launch has a first message
+    /// (`--opening-turn-ms`).
+    pub opening_turn_ms: Option<u64>,
+    /// Each echoed message is a silent turn of this many milliseconds (`--echo-turn-ms`).
+    pub echo_turn_ms: Option<u64>,
     /// Also report these environment variables at start (`--report-env`: set and length, never
     /// the value).
     pub report_env: Vec<String>,
@@ -123,12 +131,29 @@ impl HarnessPort for FakeAgentHarness {
                 file.to_string_lossy().into_owned(),
             ]);
         }
+        if self.options.session_start {
+            argv.push("--session-start".into());
+        }
+        let first_message = match &launch.mode {
+            yulius_app::ports::harness::SessionMode::New { prompt, .. }
+            | yulius_app::ports::harness::SessionMode::Resume { prompt, .. } => prompt.is_some(),
+        };
+        if let Some(ms) = self.options.echo_turn_ms {
+            argv.extend(["--echo-turn-ms".into(), ms.to_string()]);
+        }
+        if let (Some(ms), true) = (self.options.opening_turn_ms, first_message) {
+            argv.extend(["--opening-turn-ms".into(), ms.to_string()]);
+        }
         for name in &self.options.report_env {
             argv.extend(["--report-env".into(), name.clone()]);
         }
         plan.plan.argv = argv;
         Ok(plan)
     }
+    fn plan_cockpit(&self, launch: &CockpitLaunch) -> AppResult<LaunchPlan> {
+        self.inner.plan_cockpit(launch)
+    }
+
     fn claude_transcript(&self, home: &Path, worktree: &Path, session: &str) -> PathBuf {
         self.inner.claude_transcript(home, worktree, session)
     }
@@ -160,4 +185,42 @@ impl HarnessPort for FakeAgentHarness {
     fn install_skills(&self, skills: &[(String, PathBuf)], claude: &Path) -> AppResult<()> {
         self.inner.install_skills(skills, claude)
     }
+}
+
+/// What is wrong with a resume after a usage limit (SPEC-034): the launch in `run_dir` must be a
+/// native resume without a prompt that asks Claude Code to continue the interrupted turn, and no
+/// Claude transcript under `data` may still hold a usage-limit record. Empty when all is right.
+#[must_use]
+pub fn limit_resume_problems(run_dir: &Path, data: &Path) -> Vec<String> {
+    let mut problems = Vec::new();
+    match std::fs::read_to_string(run_dir.join("fake-launch.txt")) {
+        Ok(launch) => {
+            if !launch.contains("Resume {") || !launch.contains("prompt: None") {
+                problems.push(format!("a native resume without a prompt: {launch}"));
+            }
+            if !launch.contains("continue_interrupted: true") {
+                problems.push(format!("the interrupted turn continued: {launch}"));
+            }
+        }
+        Err(err) => problems.push(format!("no launch record: {err}")),
+    }
+    let mut dirs = vec![data.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|e| e == "jsonl")
+                && path.components().any(|c| c.as_os_str() == "projects")
+                && std::fs::read_to_string(&path)
+                    .is_ok_and(|text| text.contains("usage_limit_reached"))
+            {
+                problems.push(format!("a limit record left in {}", path.display()));
+            }
+        }
+    }
+    problems
 }

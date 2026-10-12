@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -77,8 +77,6 @@ pub struct TaskRuntime {
     watcher_alive: Arc<AtomicBool>,
     /// Last keyboard input from a viewer (ms).
     pub last_input_ms: AtomicI64,
-    /// When Yulius last typed its wake-up text with no prompt submitted since (ms, 0 = none).
-    pub(crate) wake_typed_ms: AtomicI64,
     /// Proactive switch requested at the next turn boundary.
     pub proactive_switch: AtomicBool,
     /// The current run called a Yulius hook: its Stop hook is the turn boundary that decides
@@ -93,9 +91,6 @@ pub struct TaskRuntime {
     /// The head Yulius last tried to open a pull request for by itself (#35), so a failed try is
     /// not repeated every turn.
     pub(crate) auto_pr_head: Mutex<Option<String>>,
-    /// The pull request head and checks result last told to the agent ("head:state"), so a
-    /// result is told once (F 2026-10-11: agents deliver on their own).
-    pub(crate) checks_told: Mutex<Option<String>>,
     /// When a person last typed into the task's terminal (ms, 0 = never): a prompt submitted
     /// soon after is theirs (TSK-013).
     pub(crate) typed_at_ms: AtomicI64,
@@ -109,18 +104,24 @@ pub struct TaskRuntime {
     /// Claude Code's SessionStart hook arrived for the current attempt: its prompt box reads
     /// input (typing before it is lost or left unsubmitted, F 2026-10-12).
     pub(crate) session_started: AtomicBool,
+    /// The goal-mode session opened with a first message (its attached files, SPEC-025) whose
+    /// turn has not ended yet: its goal is typed after that turn's Stop hook.
+    pub opening_turn: AtomicBool,
     /// A merge `delivery_merge` armed while the checks still ran (SPEC-011): Yulius performs it
     /// once they pass.
     pub(crate) armed_merge: Mutex<Option<crate::agent_wait::ArmedMerge>>,
+    /// How the last armed merge ended, for `yulius wait` (SPEC-028 MSR-003).
+    pub(crate) merge_outcome: Mutex<Option<crate::agent_wait::MergeOutcome>>,
+    /// Armed-merge decisions in progress (the armed merge is taken out meanwhile): `yulius wait`
+    /// still reads the merge as armed until it is decided or put back.
+    pub(crate) merge_deciding: AtomicU32,
     /// When the last clean Stop ended a turn (ms), so a prompt of that turn read late from the
     /// transcript does not reopen it.
     pub(crate) last_stop_ms: AtomicI64,
     /// Background shells the agent left running, as last probed (-1 = not known).
     pub(crate) background_shells: AtomicI64,
-    /// Since when (ms) the idle agent's background shells have been running (0 = none), and
-    /// whether the agent was told they run long (complaint 1: dead shells).
+    /// Since when (ms) the idle agent's background shells have been running (0 = none).
     pub(crate) shells_since_ms: AtomicI64,
-    pub(crate) shells_told: AtomicBool,
     /// The run was reattached after a restart: the transcript it already wrote is history.
     pub(crate) replay_transcript: AtomicBool,
     /// Why Claude Code said the current session ends (`SessionEnd` hook), until the run exits.
@@ -156,24 +157,24 @@ impl TaskRuntime {
             usage: Arc::new(Mutex::new(UsageSnapshot::default())),
             watcher_alive: Arc::new(AtomicBool::new(false)),
             last_input_ms: AtomicI64::new(0),
-            wake_typed_ms: AtomicI64::new(0),
             proactive_switch: AtomicBool::new(false),
             hooks_seen: AtomicBool::new(false),
             limit_resets_at: AtomicI64::new(0),
             turn_started_ms: AtomicI64::new(0),
             active_ms: AtomicI64::new(0),
             auto_pr_head: Mutex::new(None),
-            checks_told: Mutex::new(None),
             typed_at_ms: AtomicI64::new(0),
             typed_by: Mutex::new(None),
             goal_achieved: AtomicBool::new(false),
             goal_submitted: AtomicBool::new(false),
             session_started: AtomicBool::new(false),
+            opening_turn: AtomicBool::new(false),
             armed_merge: Mutex::new(None),
+            merge_outcome: Mutex::new(None),
+            merge_deciding: AtomicU32::new(0),
             last_stop_ms: AtomicI64::new(0),
             background_shells: AtomicI64::new(-1),
             shells_since_ms: AtomicI64::new(0),
-            shells_told: AtomicBool::new(false),
             replay_transcript: AtomicBool::new(false),
             session_end: Mutex::new(None),
             hold_polled_ms: AtomicI64::new(0),
@@ -229,6 +230,10 @@ pub enum RunStart {
         /// Continuation prompt.
         prompt: Option<String>,
     },
+    /// Resume the latest provider session past the usage limit that cut its turn (SPEC-034):
+    /// the transcript steps back over the limit and the agent redoes the lost turn by itself,
+    /// with nothing typed or sent.
+    AfterLimit,
 }
 
 /// Supervisor-owned per-process state.
@@ -302,6 +307,9 @@ const GOAL_QUIET: Duration = Duration::from_millis(1500);
 /// Upper bound for waiting until the TUI is ready for the goal (its SessionStart hook and quiet
 /// output); a busy host starts Claude Code slowly.
 const GOAL_READY_TIMEOUT: Duration = Duration::from_secs(90);
+/// Upper bound for waiting until the turn on a goal session's first message ended; after it the
+/// goal is typed anyway (Claude Code queues it behind a running turn).
+const GOAL_OPENING_TIMEOUT: Duration = Duration::from_secs(300);
 /// How long Claude Code may take to record the goal after each submit before Yulius tries again:
 /// Enter alone (the Enter was lost), the line again over a cleared prompt box (the text was
 /// lost), then Enter alone, waiting longer each time.
@@ -314,6 +322,27 @@ const GOAL_SUBMIT_WAITS: [Duration; 5] = [
 ];
 /// The attempt (index into [`GOAL_SUBMIT_WAITS`]) that types the whole line again.
 const GOAL_RETYPE_ATTEMPT: usize = 2;
+/// Upper bound for waiting until the TUI took one paste of a typed first message (SPEC-030).
+const PASTE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Quiet time after a paste changed the screen before the next one is written.
+const PASTE_QUIET: Duration = Duration::from_millis(500);
+
+/// The pastes that type a first message with attached images (SPEC-030), each a bracketed paste
+/// (xterm `ESC [200~ … ESC [201~`) with what the screen shows once Claude Code took it: each
+/// image's path (`[Image #N]`), then the text. The text ends with a newline, so the cursor is
+/// never on a mention: Claude Code's file autocomplete would take the Enter (measured).
+fn opening_pastes(images: Vec<String>, text: &str) -> Vec<(Vec<u8>, Option<String>)> {
+    let paste = |content: &str| format!("\x1b[200~{content}\x1b[201~").into_bytes();
+    let mut pastes: Vec<(Vec<u8>, Option<String>)> = images
+        .iter()
+        .enumerate()
+        .map(|(i, path)| (paste(path), Some(format!("[Image #{}]", i + 1))))
+        .collect();
+    if !text.is_empty() {
+        pastes.push((paste(&format!("{text}\n")), None));
+    }
+    pastes
+}
 
 /// Rust build jobs of one agent: a third of the host's CPUs, at least 2.
 fn agent_build_jobs() -> usize {
@@ -709,7 +738,7 @@ impl App {
             }
             self.publish_task(&task.id).await;
         }
-        if matches!(start, RunStart::Resume { .. }) {
+        if matches!(start, RunStart::Resume { .. } | RunStart::AfterLimit) {
             // Imported sessions get a native transcript and a worktree from the imported state.
             self.prepare_imported_resume(&task.id).await?;
         }
@@ -724,9 +753,14 @@ impl App {
         let harness = task.harness;
         let Some(account) = self.choose_account(&task, requested.as_ref()).await? else {
             // No subscription has capacity: the task waits before starting, without a process
-            // (ROT-010); the resume loop starts it when capacity returns.
-            self.pause_task(&task.id, PauseKind::Start, None, None)
-                .await?;
+            // (ROT-010); the resume loop starts it when capacity returns. A turn a limit cut
+            // keeps its `limit` pause, so it still resumes past the limit (SPEC-034).
+            let kind = if matches!(start, RunStart::AfterLimit) {
+                PauseKind::Limit
+            } else {
+                PauseKind::Start
+            };
+            self.pause_task(&task.id, kind, None, None).await?;
             return Ok(());
         };
         let credential = self.open_credential(&account)?;
@@ -737,24 +771,51 @@ impl App {
         // Goal mode (TSK-010): the prompt is set as the session goal through `/goal` once the
         // TUI is ready; Claude's goal is per session, so a resumed session gets it again.
         let goal_mode = task.mode == TaskMode::Goal;
+        // A first message with attached images is typed into the TUI, not given on the command
+        // line: Claude Code attaches only a pasted image natively (SPEC-030).
+        let mut typed_opening = None;
         // Decide new / resume.
         let (mode, launch_kind) = match (&start, &previous) {
             (RunStart::Resume { prompt }, Some(prev)) => (
                 SessionMode::Resume {
                     session_id: prev.session_id.clone(),
                     prompt: prompt.clone(),
+                    continue_interrupted: false,
                 },
                 LaunchKind::Resume,
             ),
-            (RunStart::Resume { prompt }, None) | (RunStart::Fresh { prompt }, _) => {
+            (RunStart::AfterLimit, Some(prev)) => (
+                SessionMode::Resume {
+                    session_id: prev.session_id.clone(),
+                    prompt: None,
+                    continue_interrupted: true,
+                },
+                LaunchKind::Resume,
+            ),
+            // Without a recorded session there is nothing to resume: the task starts afresh.
+            (RunStart::Resume { .. } | RunStart::AfterLimit, None)
+            | (RunStart::Fresh { .. }, _) => {
+                let prompt = match &start {
+                    RunStart::Resume { prompt } | RunStart::Fresh { prompt } => prompt.clone(),
+                    RunStart::AfterLimit => None,
+                };
                 // In goal mode the task starts with its `/goal` (the request and the definition
-                // of done, SPEC-011); otherwise the request is the first message, with its
-                // attached files to open.
-                let prompt = prompt.clone().or_else(|| {
-                    (!goal_mode).then(|| {
-                        yulius_domain::request::Request::parse(&task.prompt).first_message()
-                    })
-                });
+                // of done, SPEC-011), after a first message with its attached files when it has
+                // any; otherwise the request is the first message. Images are pasted into it and
+                // other files mentioned, so Claude Code attaches them natively (SPEC-025,
+                // SPEC-030).
+                use yulius_domain::request::{Opening, Request};
+                let prompt = match prompt {
+                    Some(prompt) => Some(prompt),
+                    None => match Request::parse(&task.prompt).opening(goal_mode) {
+                        Some(Opening::Prompt(prompt)) => Some(prompt),
+                        Some(Opening::Typed { images, text }) => {
+                            typed_opening = Some((images, text));
+                            None
+                        }
+                        None => None,
+                    },
+                };
                 (
                     SessionMode::New {
                         session_id: Some(self.deps.crypto.new_id()),
@@ -763,6 +824,31 @@ impl App {
                     LaunchKind::New,
                 )
             }
+        };
+        // A continued turn opens the run like a first message: the goal is set after its Stop.
+        let opens_with_turn = goal_mode
+            && (typed_opening.is_some()
+                || matches!(
+                    &mode,
+                    SessionMode::New {
+                        prompt: Some(_),
+                        ..
+                    } | SessionMode::Resume {
+                        prompt: Some(_),
+                        ..
+                    } | SessionMode::Resume {
+                        continue_interrupted: true,
+                        ..
+                    }
+                ));
+        // The plan steps this session's transcript back over a usage limit (SPEC-034).
+        let stepped_back = match &mode {
+            SessionMode::Resume {
+                session_id,
+                continue_interrupted: true,
+                ..
+            } => Some(session_id.clone()),
+            _ => None,
         };
         let attempt_id =
             AttemptId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?;
@@ -780,6 +866,9 @@ impl App {
             mcp: self.mcp_attachments(&sandbox).await?,
             credential,
         })?;
+        if let Some(session_id) = &stepped_back {
+            self.reindex_session(&task.sandbox_id, session_id).await;
+        }
         let mut launch = plan.plan;
         let task_token = hex_token(&self.deps.crypto.random_bytes());
         let host_token = self.deps.crypto.random_bytes();
@@ -858,6 +947,10 @@ impl App {
         };
         store.insert_attempt(&attempt).await?;
         let runtime = self.runtime(&task.id);
+        // Before the spawn, so the opening turn's Stop hook can never come first.
+        runtime
+            .opening_turn
+            .store(opens_with_turn, Ordering::SeqCst);
         let size = runtime.hub.size();
         let spawned = match self
             .deps
@@ -922,13 +1015,26 @@ impl App {
         self.publish_task(&task.id).await;
         if goal_mode {
             match self.write_task_request(&sandbox, &task, &home).await {
-                Ok(condition) => self.spawn_goal(&task.id, &attempt_id, &condition),
+                Ok(condition) => {
+                    self.spawn_goal(&task.id, &attempt_id, typed_opening, &condition);
+                }
                 Err(err) => {
                     tracing::error!(task = %task.id, error = %err, "could not write the task request");
                     self.goal_not_taken(&task.id, "Yulius could not write the task's request file")
                         .await;
                 }
             }
+        } else if let Some(opening) = typed_opening {
+            let app = Arc::clone(self);
+            let (task_id, attempt_id) = (task.id.clone(), attempt_id.clone());
+            tokio::spawn(async move {
+                if app
+                    .wait_input_ready(&task_id, &attempt_id, tokio::time::Instant::now(), false)
+                    .await
+                {
+                    app.type_opening(&task_id, &attempt_id, opening).await;
+                }
+            });
         }
         Ok(())
     }
@@ -990,43 +1096,142 @@ impl App {
         }
     }
 
-    /// Types `/goal <condition>` into the attempt once its TUI reads input: after Claude Code's
-    /// SessionStart hook arrived and [`GOAL_QUIET`] without new output (or at most
-    /// [`GOAL_READY_TIMEOUT`] after the start). The submit is confirmed by what Claude Code
-    /// records about the goal and retried with growing waits; a goal never taken flags the task.
-    fn spawn_goal(self: &Arc<Self>, task_id: &TaskId, attempt_id: &AttemptId, condition: &str) {
-        let app = Arc::clone(self);
-        let (task_id, attempt_id) = (task_id.clone(), attempt_id.clone());
-        let command = format!("/goal {condition}");
-        tokio::spawn(async move {
-            let runtime = app.runtime(&task_id);
-            let live = || async {
-                matches!(
-                    app.deps.store.live_attempt(&task_id).await,
-                    Ok(Some(a)) if a.id == attempt_id
-                )
+    /// Waits until the attempt's TUI reads input: Claude Code's SessionStart hook arrived and
+    /// [`GOAL_QUIET`] passed without new output (or at most [`GOAL_READY_TIMEOUT`] after
+    /// `started`); with `after_opening`, also until the turn on a first message ended (its Stop
+    /// hook, at most [`GOAL_OPENING_TIMEOUT`]). `false` once the attempt is no longer live.
+    async fn wait_input_ready(
+        &self,
+        task_id: &TaskId,
+        attempt_id: &AttemptId,
+        started: tokio::time::Instant,
+        after_opening: bool,
+    ) -> bool {
+        let runtime = self.runtime(task_id);
+        let mut last = runtime.hub.output_seq();
+        let mut quiet_since = tokio::time::Instant::now();
+        loop {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            if !self.attempt_live(task_id, attempt_id).await {
+                return false;
+            }
+            let seq = runtime.hub.output_seq();
+            if seq != last {
+                last = seq;
+                quiet_since = tokio::time::Instant::now();
+            }
+            // Without hooks (an old CLI) the first output is the only sign of life.
+            let hooked = runtime.session_started.load(Ordering::SeqCst)
+                || started.elapsed() >= GOAL_READY_TIMEOUT / 2;
+            // A turn on the first message (the attached files) runs: quiet output is no sign
+            // its end came, its Stop hook is (SPEC-025).
+            let opening = after_opening && runtime.opening_turn.load(Ordering::SeqCst);
+            let ready = hooked && !opening && last > 0 && quiet_since.elapsed() >= GOAL_QUIET;
+            let limit = if opening {
+                GOAL_OPENING_TIMEOUT
+            } else {
+                GOAL_READY_TIMEOUT
             };
+            if ready || started.elapsed() >= limit {
+                return true;
+            }
+        }
+    }
+
+    async fn attempt_live(&self, task_id: &TaskId, attempt_id: &AttemptId) -> bool {
+        matches!(
+            self.deps.store.live_attempt(task_id).await,
+            Ok(Some(a)) if a.id == *attempt_id
+        )
+    }
+
+    /// Types a session's first message that carries images (SPEC-030): each image's path as a
+    /// bracketed paste of its own, then the text as one paste, then Enter. Each paste is taken
+    /// before the next is written (pastes written in one burst lose the image): the screen shows
+    /// its `[Image #N]`, or the output changed and settled. Typed once, never retried, so the
+    /// request is never sent twice. Typing stops once the attempt is no longer live: input goes
+    /// to the task's current run, which would then be another session.
+    async fn type_opening(
+        &self,
+        task_id: &TaskId,
+        attempt_id: &AttemptId,
+        (images, text): (Vec<String>, String),
+    ) {
+        let runtime = self.runtime(task_id);
+        for (paste, shown) in opening_pastes(images, &text) {
+            if !self.attempt_live(task_id, attempt_id).await {
+                return;
+            }
+            let before = runtime.hub.output_seq();
+            if let Err(err) = self.send_input(task_id, &paste).await {
+                tracing::warn!(task = %task_id, error = %err, "could not type the first message");
+                return;
+            }
             let started = tokio::time::Instant::now();
-            let mut last = runtime.hub.output_seq();
+            let mut last = before;
             let mut quiet_since = started;
-            loop {
-                tokio::time::sleep(Duration::from_millis(200)).await;
-                if !live().await {
-                    return;
+            while started.elapsed() < PASTE_TIMEOUT {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                if shown
+                    .as_deref()
+                    .is_some_and(|s| runtime.hub.screen_text().contains(s))
+                {
+                    break;
                 }
                 let seq = runtime.hub.output_seq();
                 if seq != last {
                     last = seq;
                     quiet_since = tokio::time::Instant::now();
                 }
-                // Without hooks (an old CLI) the first output is the only sign of life.
-                let hooked = runtime.session_started.load(Ordering::SeqCst)
-                    || started.elapsed() >= GOAL_READY_TIMEOUT / 2;
-                let ready = hooked && last > 0 && quiet_since.elapsed() >= GOAL_QUIET;
-                if ready || started.elapsed() >= GOAL_READY_TIMEOUT {
+                if last != before && quiet_since.elapsed() >= PASTE_QUIET {
                     break;
                 }
             }
+        }
+        if !self.attempt_live(task_id, attempt_id).await {
+            return;
+        }
+        if let Err(err) = self.send_input(task_id, b"\r").await {
+            tracing::warn!(task = %task_id, error = %err, "could not submit the first message");
+        }
+    }
+
+    /// Types `/goal <condition>` into the attempt once its TUI reads input: after a typed first
+    /// message with attached images (SPEC-030), Claude Code's SessionStart hook, the turn on a
+    /// first message ended and quiet output ([`Self::wait_input_ready`]). The submit is confirmed
+    /// by what Claude Code records about the goal and retried with growing waits; a goal never
+    /// taken flags the task.
+    fn spawn_goal(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        attempt_id: &AttemptId,
+        opening: Option<(Vec<String>, String)>,
+        condition: &str,
+    ) {
+        let app = Arc::clone(self);
+        let (task_id, attempt_id) = (task_id.clone(), attempt_id.clone());
+        let command = format!("/goal {condition}");
+        tokio::spawn(async move {
+            let runtime = app.runtime(&task_id);
+            let live = || app.attempt_live(&task_id, &attempt_id);
+            let started = tokio::time::Instant::now();
+            if let Some(opening) = opening {
+                if !app
+                    .wait_input_ready(&task_id, &attempt_id, started, false)
+                    .await
+                {
+                    return;
+                }
+                app.type_opening(&task_id, &attempt_id, opening).await;
+            }
+            if !app
+                .wait_input_ready(&task_id, &attempt_id, started, true)
+                .await
+            {
+                return;
+            }
+            // The opening turn is over, or given up on: a later Stop is the goal's own.
+            runtime.opening_turn.store(false, Ordering::SeqCst);
             runtime.goal_submitted.store(false, Ordering::SeqCst);
             let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
             for (attempt, wait) in GOAL_SUBMIT_WAITS.iter().enumerate() {
@@ -1627,6 +1832,32 @@ impl App {
         reason: &str,
         prompt: Option<String>,
     ) -> AppResult<()> {
+        self.switch_with(task_id, account, reason, RunStart::Resume { prompt })
+            .await
+    }
+
+    /// Switches a task whose turn a usage limit cut (SPEC-034): the session resumes on `account`
+    /// (the policy's choice when `None`) past the limit, with nothing typed or sent.
+    ///
+    /// # Errors
+    /// `Conflict` when the task is not running.
+    pub async fn switch_after_limit(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        account: Option<AccountId>,
+        reason: &str,
+    ) -> AppResult<()> {
+        self.switch_with(task_id, account, reason, RunStart::AfterLimit)
+            .await
+    }
+
+    async fn switch_with(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        account: Option<AccountId>,
+        reason: &str,
+        start: RunStart,
+    ) -> AppResult<()> {
         let store = &self.deps.store;
         let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
         let attempt = store.live_attempt(task_id).await?;
@@ -1671,9 +1902,14 @@ impl App {
         let runtime = self.runtime(task_id);
         // The subscription changes under the hood (F 2026-10-10): viewers see that the session
         // continues, not which accounts are involved (Task details lists the switches).
-        runtime
-            .hub
-            .notice("↻ Yulius continues this session on another Claude subscription…");
+        // The policy may pick the same subscription (a limit that reset): no "another" then.
+        let elsewhere = account.is_some()
+            && attempt.as_ref().map(|a| a.account_id.as_ref()) != Some(account.as_ref());
+        runtime.hub.notice(if elsewhere {
+            "↻ Yulius continues this session on another Claude subscription…"
+        } else {
+            "↻ Yulius continues this session…"
+        });
         self.publish_task(task_id).await;
         if let Some(attempt) = attempt {
             let (tx, rx) = oneshot::channel();
@@ -1714,7 +1950,6 @@ impl App {
                     .await;
             }
         }
-        let start = RunStart::Resume { prompt };
         match self.start_run(task_id, start, account).await {
             Ok(()) => {
                 // The switch found no subscription with capacity: the task paused instead.
@@ -2286,13 +2521,16 @@ impl App {
         match decision {
             Decision::Stay => {}
             Decision::Switch { account } => {
-                // Only a turn the CLI interrupted needs a message to go on, and it says nothing
-                // about accounts or limits (F 2026-10-10).
-                let prompt = limit.then(|| crate::capacity::CONTINUE_TEXT.to_owned());
-                if let Err(err) = self
-                    .switch_task_now(task_id, Some(account), &format!("{reason:?}"), prompt)
-                    .await
-                {
+                // A turn the limit cut goes on past it, with nothing typed (SPEC-034).
+                let reason = format!("{reason:?}");
+                let switched = if limit {
+                    self.switch_after_limit(task_id, Some(account), &reason)
+                        .await
+                } else {
+                    self.switch_task_now(task_id, Some(account), &reason, None)
+                        .await
+                };
+                if let Err(err) = switched {
                     tracing::warn!(error = %err, task = %task_id, "automatic switch failed");
                 }
             }
@@ -2312,6 +2550,33 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_typed_first_message_pastes_each_image_then_the_text_ending_in_a_newline() {
+        let pastes = super::opening_pastes(
+            vec!["/s/a.png".into(), "/s/my b.png".into()],
+            "Look\n\n@\"/s/c.txt\"",
+        );
+        let shown: Vec<(String, Option<String>)> = pastes
+            .into_iter()
+            .map(|(bytes, shown)| (String::from_utf8_lossy(&bytes).into_owned(), shown))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (
+                    "\x1b[200~/s/a.png\x1b[201~".to_owned(),
+                    Some("[Image #1]".to_owned())
+                ),
+                (
+                    "\x1b[200~/s/my b.png\x1b[201~".to_owned(),
+                    Some("[Image #2]".to_owned())
+                ),
+                ("\x1b[200~Look\n\n@\"/s/c.txt\"\n\x1b[201~".to_owned(), None),
+            ]
+        );
+        assert_eq!(super::opening_pastes(vec!["/s/a.png".into()], "").len(), 1);
+    }
     #[test]
     fn final_screen_round_trips() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;

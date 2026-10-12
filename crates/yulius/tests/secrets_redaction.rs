@@ -2,7 +2,7 @@
 //! `yulius --scrub-exec` Bash wrapper and the `PostToolUse` hook as Claude Code runs them, and a
 //! fake agent in the real ptyhost whose terminal people watch.
 
-mod support;
+use crate::support;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

@@ -6,10 +6,12 @@ use serde_json::{Value, json};
 use yulius_contracts::mcp::{
     RpcRequest, RpcResponse, SUPPORTED_PROTOCOL_VERSIONS, ToolDescriptor, text_result,
 };
+use yulius_domain::ids::SandboxId;
 
 use crate::context::App;
-use crate::coordination::AgentContext;
+use crate::coordination::{AgentContext, ProjectCaller};
 use crate::error::{AppError, AppResult};
+use crate::shells::COCKPIT_TOKEN_PREFIX;
 
 /// Maximum tool result text returned to the model.
 pub const MAX_RESULT_BYTES: usize = 256 * 1024;
@@ -18,23 +20,53 @@ fn schema(properties: Value, required: &[&str]) -> Value {
     json!({"type": "object", "properties": properties, "required": required, "additionalProperties": false})
 }
 
-/// Tool descriptors served by `tools/list`.
+/// The tools a Cockpit is served: managing the project's tasks and automations (SPEC-037
+/// MGT-006). Everything else belongs to a task.
+pub const COCKPIT_TOOLS: [&str; 9] = [
+    "tasks_list",
+    "task_get",
+    "task_create",
+    "automation_create",
+    "automations_list",
+    "automation_update",
+    "workflows_list",
+    "sessions_search",
+    "session_read",
+];
+
+/// Who calls the MCP server.
+enum McpCaller {
+    /// A task's agent (task token): every tool.
+    Agent(AgentContext),
+    /// A person's Cockpit (`ck_` token): [`COCKPIT_TOOLS`] only.
+    Cockpit(ProjectCaller),
+}
+
+impl McpCaller {
+    fn project(&self) -> ProjectCaller {
+        match self {
+            Self::Agent(ctx) => ctx.caller(),
+            Self::Cockpit(caller) => caller.clone(),
+        }
+    }
+}
+
+/// Tool descriptors served to a Cockpit by `tools/list`.
+#[must_use]
+pub fn cockpit_tool_descriptors() -> Vec<ToolDescriptor> {
+    tool_descriptors()
+        .into_iter()
+        .filter(|tool| COCKPIT_TOOLS.contains(&tool.name.as_str()))
+        .collect()
+}
+
+/// Tool descriptors served to a task's agent by `tools/list`.
 #[must_use]
 pub fn tool_descriptors() -> Vec<ToolDescriptor> {
     let task_ref = json!({
         "task_id": {"type": "string", "description": "Task id"},
         "number": {"type": "integer", "description": "Task number within this sandbox"}
     });
-    let mut message_props = json!({});
-    if let Some(obj) = message_props.as_object_mut() {
-        obj.insert("to".into(), json!({"type": "string", "enum": ["people"], "description": "Required: \"people\" tells or asks the people using Yulius something: it shows in this task's Messages and in their notifications, and they reply in this session's terminal"}));
-        obj.insert(
-            "kind".into(),
-            json!({"type": "string", "enum": ["info", "question", "request"]}),
-        );
-        obj.insert("subject".into(), json!({"type": "string"}));
-        obj.insert("body".into(), json!({"type": "string"}));
-    }
     let mut tools = vec![
         ToolDescriptor {
             name: "project_context".into(),
@@ -50,6 +82,20 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
             name: "task_get".into(),
             description: "Get one task's details: prompt, spec path, branch and its step list.".into(),
             input_schema: schema(task_ref.clone(), &[]),
+        },
+        ToolDescriptor {
+            name: "task_create".into(),
+            description: "Create and start a new task in this project (another Claude Code session with its own branch), e.g. when the user says \"create a task from that\" or a follow-up should run separately. It is created like New task in the UI, on behalf of the person you work for; write the prompt as a complete request (what, why, where, done when). With after_task it waits until that task is done; with start_rule until the rule is true. Tools create at most 20 tasks an hour per project.".into(),
+            input_schema: schema(json!({
+                "prompt": {"type": "string", "description": "The request for the new task"},
+                "title": {"type": "string", "description": "Short title (derived from the prompt when absent)"},
+                "workflow": {"type": "string", "description": "Workflow id or name from workflows_list, or \"auto\" to let Yulius choose"},
+                "mode": {"type": "string", "enum": ["goal", "prompt", "auto"], "description": "goal (default): the task works until its definition of done holds; prompt: one plain prompt"},
+                "after_task": {"type": "integer", "description": "Task number to wait for (starts when it is done)"},
+                "start_rule": {"type": "string", "description": "Start when this rule over the project's tasks is true, e.g. \"#12 done and #13 done\" (not with after_task)"},
+                "model": {"type": "string", "description": "Model override (default Opus)"},
+                "effort": {"type": "string", "description": "Effort override (default high)"}
+            }), &["prompt"]),
         },
         ToolDescriptor {
             name: "sessions_search".into(),
@@ -70,16 +116,6 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
                 "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "Most entries (default 60)"},
                 "max_chars": {"type": "integer", "minimum": 1000, "maximum": crate::session_docs::READ_CHARS_MAX, "description": "Most characters of text (default 24000)"}
             }), &[]),
-        },
-        ToolDescriptor {
-            name: "message_send".into(),
-            description: "Tell or ask the people using Yulius something with to=\"people\" (they reply in this session's terminal, not by message). Messages to other tasks are not supported.".into(),
-            input_schema: schema(message_props, &["to", "body"]),
-        },
-        ToolDescriptor {
-            name: "messages_inbox".into(),
-            description: "Read the notices Yulius sent to this task; marks them read.".into(),
-            input_schema: schema(json!({"unread_only": {"type": "boolean"}}), &[]),
         },
         ToolDescriptor {
             name: "scope_claim".into(),
@@ -158,7 +194,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "delivery_merge".into(),
-            description: "Merge this task's pull request on green (the one delivery pipeline: you deliver your own work, no person accepts it). Refused unless the checks passed on the exact head (Yulius CI), the spec is valid when the task needs one, every step is done, the head is current and an independent review in a fresh session approved exactly this head: pass that commit as reviewed_head (and a one-line review_summary). While the checks at that head still run, the call arms the merge instead: Yulius merges exactly that head as soon as they pass and tells you (start `yulius wait` with run_in_background and end your turn; never poll). Acts with the authority of the task's creator and is audited.".into(),
+            description: "Merge this task's pull request on green (the one delivery pipeline: you deliver your own work, no person accepts it). Refused unless the checks passed on the exact head (Yulius CI), the spec is valid when the task needs one, every step is done, the head is current and an independent review in a fresh session approved exactly this head: pass that commit as reviewed_head (and a one-line review_summary). While the checks at that head still run, the call arms the merge instead: Yulius merges exactly that head as soon as they pass (start `yulius wait` with run_in_background and end your turn: it says how the merge ended; never poll). Acts with the authority of the task's creator and is audited.".into(),
             input_schema: schema(json!({
                 "reviewed_head": {"type": "string", "description": "The commit SHA the independent reviewer approved (must be the branch head)"},
                 "review_summary": {"type": "string", "description": "One line: the reviewer's verdict and what it checked"}
@@ -253,8 +289,13 @@ impl App {
         request: RpcRequest,
     ) -> Option<RpcResponse> {
         let id = request.id.clone()?;
-        let ctx = match self.agent_context(token).await {
-            Ok(ctx) => ctx,
+        let caller = if token.starts_with(COCKPIT_TOKEN_PREFIX) {
+            self.cockpit_caller(token).await.map(McpCaller::Cockpit)
+        } else {
+            self.agent_context(token).await.map(McpCaller::Agent)
+        };
+        let caller = match caller {
+            Ok(caller) => caller,
             Err(_) => {
                 return Some(RpcResponse::err(
                     id,
@@ -279,12 +320,18 @@ impl App {
                     "protocolVersion": version,
                     "capabilities": {"tools": {"listChanged": false}},
                     "serverInfo": {"name": "yulius", "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": "Yulius coordinates this project's tasks. Use tasks_list and sessions_search before starting, message_send to tell or ask the people using Yulius something, and steps_set/step_update to keep a plan of similar-effort steps whose progress arrives steadily.",
+                    "instructions": match caller {
+                        McpCaller::Agent(_) => "Yulius coordinates this project's tasks. Use tasks_list and sessions_search before starting, and steps_set/step_update to keep a plan of similar-effort steps whose progress arrives steadily.",
+                        McpCaller::Cockpit(_) => "Yulius runs this project's tasks. When the person asks for work to be done as a task (\"create a task from that\"), create it with task_create; for recurring work (\"every day at 4am …\") create an automation with automation_create (ask for their time zone if it matters). tasks_list, automations_list and workflows_list show what exists; sessions_search finds how earlier tasks did something.",
+                    },
                 }))
             }
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(json!({"tools": tool_descriptors()})),
-            "tools/call" => Ok(self.mcp_call(&ctx, &request.params).await),
+            "tools/list" => Ok(json!({"tools": match caller {
+                McpCaller::Agent(_) => tool_descriptors(),
+                McpCaller::Cockpit(_) => cockpit_tool_descriptors(),
+            }})),
+            "tools/call" => Ok(self.mcp_call(&caller, &request.params).await),
             other => {
                 return Some(RpcResponse::err(
                     id,
@@ -299,20 +346,44 @@ impl App {
         })
     }
 
-    async fn mcp_call(self: &Arc<Self>, ctx: &AgentContext, params: &Value) -> Value {
+    async fn mcp_call(self: &Arc<Self>, caller: &McpCaller, params: &Value) -> Value {
         let name = params.get("name").and_then(Value::as_str).unwrap_or("");
         let args = params
             .get("arguments")
             .cloned()
             .unwrap_or_else(|| json!({}));
+        let project = caller.project();
         let outcome: AppResult<Value> = match name {
+            "tasks_list" => self.tool_tasks_list(&project, &args).await,
+            "task_get" => self.tool_task_get(&project, &args).await,
+            "task_create" => self.tool_task_create(&project, &args).await,
+            "sessions_search" => self.tool_sessions_search(&project, &args).await,
+            "session_read" => self.tool_session_read(&project, &args).await,
+            "automation_create" => self.tool_automation_create(&project, &args).await,
+            "automations_list" => self.tool_automations_list(&project).await,
+            "automation_update" => self.tool_automation_update(&project, &args).await,
+            "workflows_list" => self.tool_workflows_list(&project).await,
+            _ => match caller {
+                McpCaller::Cockpit(_) => Err(AppError::Invalid(format!("unknown tool: {name}"))),
+                McpCaller::Agent(ctx) => match self.task_tool(ctx, name, &args).await {
+                    TaskToolResult::Value(outcome) => outcome,
+                    TaskToolResult::Complete(result) => return result,
+                },
+            },
+        };
+        self.tool_result(&project.sandbox, outcome).await
+    }
+
+    /// A tool only a task's agent is served.
+    async fn task_tool(
+        self: &Arc<Self>,
+        ctx: &AgentContext,
+        name: &str,
+        args: &Value,
+    ) -> TaskToolResult {
+        let args = args.clone();
+        TaskToolResult::Value(match name {
             "project_context" => self.tool_project_context(ctx).await,
-            "tasks_list" => self.tool_tasks_list(ctx, &args).await,
-            "task_get" => self.tool_task_get(ctx, &args).await,
-            "sessions_search" => self.tool_sessions_search(ctx, &args).await,
-            "session_read" => self.tool_session_read(ctx, &args).await,
-            "message_send" => self.tool_message_send(ctx, &args).await,
-            "messages_inbox" => self.tool_messages_inbox(ctx, &args).await,
             "scope_claim" => self.tool_scope_claim(ctx, &args).await,
             "scope_release" => self.tool_scope_release(ctx, &args).await,
             "scopes_list" => self.tool_scopes_list(ctx).await,
@@ -330,10 +401,6 @@ impl App {
             "delivery_deploy" => self.tool_delivery_deploy(ctx, &args).await,
             "delivery_promote" => self.tool_delivery_promote(ctx).await,
             "issue_create" => self.tool_issue_create(ctx, &args).await,
-            "automation_create" => self.tool_automation_create(ctx, &args).await,
-            "automations_list" => self.tool_automations_list(ctx).await,
-            "automation_update" => self.tool_automation_update(ctx, &args).await,
-            "workflows_list" => self.tool_workflows_list(ctx).await,
             "browser_tabs" => self.tool_browser_tabs(ctx, &args).await,
             "browser_open" => self.tool_browser_open(ctx, &args).await,
             "browser_navigate" => self.tool_browser_navigate(ctx, &args).await,
@@ -341,20 +408,26 @@ impl App {
             "browser_type" => self.tool_browser_type(ctx, &args).await,
             "browser_snapshot" => self.tool_browser_snapshot(ctx, &args).await,
             // Returns a complete result with an image item (size-bounded by the tool itself).
-            "browser_screenshot" => return self.tool_browser_screenshot(ctx, &args).await,
+            "browser_screenshot" => {
+                return TaskToolResult::Complete(self.tool_browser_screenshot(ctx, &args).await);
+            }
             "browser_request_user_action" => {
                 self.tool_browser_request_user_action(ctx, &args).await
             }
             "secrets_list" => self.tool_secrets_list(ctx).await,
             "browser_fill_secret" => self.tool_browser_fill_secret(ctx, &args).await,
             other => Err(AppError::Invalid(format!("unknown tool: {other}"))),
-        };
+        })
+    }
+
+    /// The `tools/call` result of a tool's outcome: redacted and bounded.
+    async fn tool_result(&self, sandbox: &SandboxId, outcome: AppResult<Value>) -> Value {
         match outcome {
             Ok(value) => {
                 // No tool result carries an agent secret's value (SPEC-002 ADR-20): page text,
                 // messages, task prompts and everything else are redacted before the agent.
                 let text = serde_json::to_string_pretty(&value).unwrap_or_default();
-                let mut text = self.redact_for_sandbox(&ctx.task.sandbox_id, &text).await;
+                let mut text = self.redact_for_sandbox(sandbox, &text).await;
                 if text.len() > MAX_RESULT_BYTES {
                     let mut cut = MAX_RESULT_BYTES;
                     while !text.is_char_boundary(cut) {
@@ -366,7 +439,7 @@ impl App {
                 text_result(text, false)
             }
             Err(err) => text_result(
-                self.redact_for_sandbox(&ctx.task.sandbox_id, &err.public_message())
+                self.redact_for_sandbox(sandbox, &err.public_message())
                     .await,
                 true,
             ),
@@ -374,10 +447,30 @@ impl App {
     }
 }
 
+/// What a task-only tool gives back.
+enum TaskToolResult {
+    /// A value to render as text.
+    Value(AppResult<Value>),
+    /// A complete result (an image).
+    Complete(Value),
+}
+
 #[cfg(test)]
 mod tests {
-    use super::tool_descriptors;
+    use super::{COCKPIT_TOOLS, cockpit_tool_descriptors, tool_descriptors};
     use yulius_domain::briefing::YULIUS_TOOLS;
+
+    #[test]
+    fn a_cockpit_is_served_every_management_tool_and_nothing_else() {
+        let served: Vec<String> = cockpit_tool_descriptors()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(served.len(), COCKPIT_TOOLS.len());
+        for name in COCKPIT_TOOLS {
+            assert!(served.iter().any(|s| s == name), "`{name}` is not served");
+        }
+    }
 
     #[test]
     fn every_tool_the_briefing_announces_is_served() {

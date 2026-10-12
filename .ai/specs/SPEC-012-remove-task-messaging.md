@@ -9,6 +9,8 @@ Status: implemented
 Date: 2026-10-12
 Owner: Yulius task #9
 Scope authorization: user request (F 2026-10-12): "delete messaging-to-other-tasks feature for now".
+Superseded by [SPEC-028](SPEC-028-delete-message-mechanism-for-now-until-w.md): the notices,
+inbox, digest, wake-up, Messages panel and `message_send` this spec kept are removed too.
 
 ## Goal
 

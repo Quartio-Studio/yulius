@@ -2,12 +2,18 @@
 //! attached files, the definition of done Yulius holds the task to, and the one-line `/goal`
 //! condition Claude Code keeps the session working towards.
 //!
-//! The request is written to a file the agent reads (no length limit, attachments listed as
-//! files to open), and the goal condition names it: Claude Code caps a goal condition at 500
-//! characters, so a long request is never the condition itself.
+//! The request is written to a file the agent reads (no length limit), and the goal condition
+//! names it: Claude Code caps a goal condition at 500 characters, so a long request is never the
+//! condition itself. Attached files reach the session's first message natively: an image pasted
+//! into the TUI (`[Image #N]`, SPEC-030, ADR-0026), another file mentioned as `@path` (SPEC-025,
+//! ADR-0022).
 
 /// Longest goal condition Yulius types (Claude Code caps goal conditions at 500 characters).
 pub const GOAL_MAX_CHARS: usize = 450;
+
+/// How a goal-mode session's first message (its attached files) begins.
+const ATTACHMENTS_INTRO: &str = "The files attached to this task. Its goal follows in the next \
+                                 message; until then, only look at them.";
 
 /// Longest request text quoted inside the goal condition; a longer one is only named by its file.
 const INLINE_REQUEST_MAX_CHARS: usize = 150;
@@ -21,6 +27,32 @@ pub struct DoneDefinition {
     pub production_branch: String,
     /// Environments after integration that an agent deploys and verifies (they have a command).
     pub integration_environments: Vec<String>,
+}
+
+/// How a session's first message reaches Claude Code (SPEC-030).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Opening {
+    /// The CLI prompt argument (the attached files, none an image, are `@path` mentions).
+    Prompt(String),
+    /// Typed into the TUI: each image's path pasted on its own (Claude Code attaches a pasted
+    /// image natively, as `[Image #N]`; a mention would be a Read tool call), then the text
+    /// pasted (empty when there is none), then Enter.
+    Typed {
+        /// Absolute paths of the attached images, in order.
+        images: Vec<String>,
+        /// The rest of the message, the other files mentioned.
+        text: String,
+    },
+}
+
+/// Whether Claude Code takes a pasted path as an image (Claude Code 2.1.292:
+/// `/\.(png|jpe?g|gif|webp)$/i`).
+#[must_use]
+pub fn is_image(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    [".png", ".jpg", ".jpeg", ".gif", ".webp"]
+        .iter()
+        .any(|ext| lower.ends_with(ext))
 }
 
 /// A task's request split into its text and the files attached to it.
@@ -45,23 +77,82 @@ impl Request {
                 None => text.push(line),
             }
         }
-        let text = text.join("\n").trim().to_owned();
+        // The text becomes a command-line argument: no escape sequence or NUL reaches it.
+        let text: String = text
+            .join("\n")
+            .chars()
+            .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+            .collect();
+        let text = text.trim().to_owned();
         Self { text, attachments }
     }
 
-    /// The first message of a session that is not in goal mode: the text, then the attached
-    /// files to open.
+    /// The first message of a session that is not in goal mode: the text, then a mention of
+    /// each attached file.
     #[must_use]
     pub fn first_message(&self) -> String {
         if self.attachments.is_empty() {
             return self.text.clone();
         }
-        format!(
-            "{}\n\n{}",
-            self.text,
-            attachments_section(&self.attachments)
-        )
+        let mentions = mentions(&self.attachments);
+        if self.text.is_empty() {
+            return mentions;
+        }
+        format!("{}\n\n{mentions}", self.text)
     }
+
+    /// A fresh session's first message: in goal mode only when files are attached (its `/goal`
+    /// follows), else the request. With an attached image it is typed, so the image is pasted.
+    #[must_use]
+    pub fn opening(&self, goal_mode: bool) -> Option<Opening> {
+        let (images, others): (Vec<String>, Vec<String>) =
+            self.attachments.iter().cloned().partition(|p| is_image(p));
+        if images.is_empty() {
+            return if goal_mode {
+                self.attachments_message().map(Opening::Prompt)
+            } else {
+                Some(Opening::Prompt(self.first_message()))
+            };
+        }
+        let rest = Self {
+            text: self.text.clone(),
+            attachments: others,
+        };
+        let text = if goal_mode {
+            rest.attachments_message()
+                .unwrap_or_else(|| ATTACHMENTS_INTRO.to_owned())
+        } else {
+            rest.first_message()
+        };
+        Some(Opening::Typed { images, text })
+    }
+
+    /// The first message of a goal-mode session, before Yulius types its `/goal`: the attached
+    /// files, mentioned so Claude Code attaches them. `None` without attached files.
+    #[must_use]
+    pub fn attachments_message(&self) -> Option<String> {
+        (!self.attachments.is_empty())
+            .then(|| format!("{ATTACHMENTS_INTRO}\n\n{}", mentions(&self.attachments)))
+    }
+}
+
+/// One mention per line, always quoted (`@"/a/b.png"`: Claude Code reads an unquoted mention
+/// only up to its last letter or digit), which Claude Code attaches itself. A path no mention can
+/// carry (a double quote, or `#`, which starts a line range) is listed to open with the Read
+/// tool instead.
+fn mentions(paths: &[String]) -> String {
+    let (mentionable, unmentionable): (Vec<&String>, Vec<&String>) =
+        paths.iter().partition(|p| !p.contains(['"', '#']));
+    let mut lines: Vec<String> = mentionable.iter().map(|p| format!("@\"{p}\"")).collect();
+    if !unmentionable.is_empty() {
+        let mut list = String::from("Open with the Read tool:");
+        for path in unmentionable {
+            list.push_str("\n- ");
+            list.push_str(path);
+        }
+        lines.push(list);
+    }
+    lines.join("\n")
 }
 
 /// The path of an `@path` attachment line (`@/a/b.png` or `@'/a/b c.png'`), if the line is one.
@@ -93,12 +184,14 @@ fn attachment_path(line: &str) -> Option<String> {
         }
         rest.to_owned()
     };
-    (path.starts_with('/') && path.len() > 1).then_some(path)
+    // A control character (an escape sequence, NUL) never reaches the agent's prompt as a path.
+    (path.starts_with('/') && path.len() > 1 && !path.chars().any(char::is_control)).then_some(path)
 }
 
 fn attachments_section(paths: &[String]) -> String {
     let mut out = String::from(
-        "Attached files: open each one with the Read tool (it shows images) before you start:",
+        "These files were given in the session's first message; open one again with the Read \
+         tool (it shows images) if you need it:",
     );
     for path in paths {
         out.push_str("\n- ");
@@ -203,7 +296,7 @@ pub fn request_markdown(
     out.push_str(
         "\n\n## Waiting\n\nWhen only Yulius CI or a person can move the task forward, start \
          `yulius wait` with `run_in_background` and end your turn: it returns when the checks at \
-         your head finish, your delivery changes or Yulius sends you a notice. Never poll with \
+         your head finish, your delivery changes or a merge you armed is decided. Never poll with \
          `sleep`, `pgrep -f` or monitor loops.\n",
     );
     out
@@ -263,12 +356,131 @@ mod tests {
     }
 
     #[test]
-    fn the_first_message_lists_the_files_to_open() {
-        let request = Request::parse("Look\n@/srv/a.png");
-        let first = request.first_message();
-        assert!(first.starts_with("Look\n\nAttached files: open each one with the Read tool"));
-        assert!(first.ends_with("\n- /srv/a.png"));
+    fn the_first_message_mentions_the_files_so_claude_code_attaches_them() {
+        // Always quoted: Claude Code reads an unquoted mention only up to its last letter or
+        // digit (`notes.`, `c++` would lose their ends).
+        let request = Request::parse("Look\n@/srv/a.png\n@'/srv/my shot.png'\n@/srv/c++");
+        assert_eq!(
+            request.first_message(),
+            "Look\n\n@\"/srv/a.png\"\n@\"/srv/my shot.png\"\n@\"/srv/c++\""
+        );
+        assert_eq!(
+            Request::parse("@/srv/a.png").first_message(),
+            "@\"/srv/a.png\""
+        );
         assert_eq!(Request::parse("Just text").first_message(), "Just text");
+        // A path no mention can carry (a double quote, or `#`, which Claude Code reads as a
+        // line range) is left for the Read tool.
+        let odd = Request::parse("Look\n@/srv/say\"hi\".png\n@/srv/issue#3.png").first_message();
+        assert!(!odd.contains('@'), "{odd}");
+        assert!(
+            odd.ends_with("Open with the Read tool:\n- /srv/say\"hi\".png\n- /srv/issue#3.png"),
+            "{odd}"
+        );
+    }
+
+    #[test]
+    fn control_characters_never_reach_the_first_message() {
+        let request = Request::parse("Look\n@/srv/a\u{1b}[2J.png\n@/srv/b\u{0}.png\tok");
+        assert!(request.attachments.is_empty(), "{request:?}");
+        // Such a line stays text, without its control characters (tabs and newlines kept).
+        let first = request.first_message();
+        assert!(!first.contains(['\u{1b}', '\u{0}']), "{first:?}");
+        assert!(
+            first.contains("@/srv/a[2J.png\n@/srv/b.png\tok"),
+            "{first:?}"
+        );
+    }
+
+    #[test]
+    fn a_goal_session_first_gets_the_attached_files_when_there_are_any() {
+        assert_eq!(Request::parse("Only text").attachments_message(), None);
+        let message = Request::parse("Make it blue\n@/srv/a.png\n@/srv/b.txt")
+            .attachments_message()
+            .unwrap_or_default();
+        assert!(
+            message.starts_with(
+                "The files attached to this task. Its goal follows in the next message"
+            ),
+            "{message}"
+        );
+        assert!(
+            message.ends_with("\n\n@\"/srv/a.png\"\n@\"/srv/b.txt\""),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn images_are_the_files_claude_code_pastes_as_images() {
+        for image in ["/s/a.png", "/s/b.JPG", "/s/c.jpeg", "/s/d.gif", "/s/e.WebP"] {
+            assert!(is_image(image), "{image}");
+        }
+        for other in ["/s/a.svg", "/s/b.txt", "/s/png", "/s/c.png.zip", "/s/d.bmp"] {
+            assert!(!is_image(other), "{other}");
+        }
+    }
+
+    #[test]
+    fn without_images_the_first_message_stays_the_command_line_prompt() {
+        let request = Request::parse("Look\n@/srv/notes.txt");
+        assert_eq!(
+            request.opening(false),
+            Some(Opening::Prompt("Look\n\n@\"/srv/notes.txt\"".into()))
+        );
+        assert_eq!(
+            request.opening(true),
+            request.attachments_message().map(Opening::Prompt)
+        );
+        assert_eq!(Request::parse("Only text").opening(true), None);
+        assert_eq!(
+            Request::parse("Only text").opening(false),
+            Some(Opening::Prompt("Only text".into()))
+        );
+    }
+
+    #[test]
+    fn images_are_pasted_and_other_files_mentioned_in_a_typed_first_message() {
+        // SPEC-030: an `@` mention reaches the model as a Read tool call; a pasted image path
+        // is attached natively (`[Image #1]`).
+        let request = Request::parse("Make it blue\n@/srv/a.png\n@'/srv/my shot.JPG'\n@/srv/b.txt");
+        assert_eq!(
+            request.opening(false),
+            Some(Opening::Typed {
+                images: vec!["/srv/a.png".into(), "/srv/my shot.JPG".into()],
+                text: "Make it blue\n\n@\"/srv/b.txt\"".into(),
+            })
+        );
+        let Some(Opening::Typed { images, text }) = request.opening(true) else {
+            panic!("a goal task with images types its first message");
+        };
+        assert_eq!(images, ["/srv/a.png", "/srv/my shot.JPG"]);
+        assert!(
+            text.starts_with("The files attached to this task. Its goal follows"),
+            "{text}"
+        );
+        assert!(text.ends_with("\n\n@\"/srv/b.txt\""), "{text}");
+        // Only images: nothing to mention, the text is the request (or empty).
+        assert_eq!(
+            Request::parse("@/srv/a.png").opening(false),
+            Some(Opening::Typed {
+                images: vec!["/srv/a.png".into()],
+                text: String::new(),
+            })
+        );
+        let Some(Opening::Typed { text, .. }) = Request::parse("@/srv/a.png").opening(true) else {
+            panic!("a goal task with an image types its first message");
+        };
+        assert!(!text.contains('@'), "{text}");
+    }
+
+    #[test]
+    fn a_typed_first_message_carries_no_control_character() {
+        let request = Request::parse("Look\u{1b}[201~ here\n@/srv/a.png\n@/srv/b\u{1b}.png");
+        let Some(Opening::Typed { images, text }) = request.opening(false) else {
+            panic!("an image is attached");
+        };
+        assert_eq!(images, ["/srv/a.png"]);
+        assert!(!text.contains('\u{1b}'), "{text:?}");
     }
 
     #[test]
@@ -320,7 +532,13 @@ mod tests {
         let file = request_markdown(17, "Speed\nup", "mkarp", &request, &done(&["dev"]));
         assert!(file.starts_with("# Task #17: Speed up\n\nRequested by mkarp."));
         assert!(file.contains("## Request\n\nMake it fast\nreally\n"));
-        assert!(file.contains("## Attached files\n\nAttached files: open each one"));
+        assert!(
+            file.contains(
+                "## Attached files\n\nThese files were given in the session's first message"
+            ),
+            "{file}"
+        );
+        assert!(file.contains("\n- /srv/a.png\n"), "{file}");
         assert!(file.contains("`delivery_merge` on green Yulius CI"));
         assert!(file.contains("Then deploy to `dev` with `delivery_deploy`"));
         assert!(file.contains("**Never promote to `main`**"));

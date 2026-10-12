@@ -3,14 +3,14 @@
 //! restart (reconcile + reattach without respawn), crash exits and stop (SPEC-001 RUN-001..006,
 //! AC-RUN-1..4).
 
-mod support;
+use crate::support;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use support::agents::{FakeAgentHarness, FakeAgentOptions};
+use support::agents::{FakeAgentHarness, FakeAgentOptions, limit_resume_problems};
 use support::{FakeGitHub, TestResult};
 use yulius::wiring::clock::SystemClock;
 use yulius::wiring::git::GitAdapter;
@@ -571,6 +571,10 @@ fn a_usage_limit_moves_the_session_to_the_next_account() -> TestResult {
             first.provider_session_id, second.provider_session_id,
             "same session"
         );
+        // SPEC-034: the transcript steps back over the limit and Claude Code continues the turn
+        // itself; nothing like "Continue." is sent.
+        let problems = limit_resume_problems(Path::new(&second.run_dir), &data);
+        assert!(problems.is_empty(), "{problems:?}");
         assert!(
             !app.deps.store.switches(&id).await?.is_empty(),
             "decision recorded"
@@ -1110,18 +1114,15 @@ fn tasks_queue_at_the_session_limit_and_start_when_a_slot_frees() -> TestResult 
     Ok(())
 }
 
-/// AC-TSK-3 and COM-005, MSG-005: an agent's normal exit closes its task; a notice from Yulius to
-/// a task that has been waiting idle wakes it by typing a notice into its terminal.
+/// AC-TSK-3: an agent's normal exit closes its task; another task of the sandbox keeps running.
 #[test]
-fn messages_wake_idle_tasks_and_a_normal_exit_closes_the_task() -> TestResult {
+fn a_normal_exit_closes_the_task() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
     let data = dir.path().canonicalize()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let app = build_tuned(&data, Some(&fake), FakeAgentOptions::default(), |c| {
-            c.wake_idle_ms = 1_000;
-        })?;
+        let app = build_tuned(&data, Some(&fake), FakeAgentOptions::default(), |_| {})?;
         app.start_background();
         let (sandbox, user) = seed_records(&app).await?;
         seed_repo(&data, &sandbox)?;
@@ -1133,43 +1134,6 @@ fn messages_wake_idle_tasks_and_a_normal_exit_closes_the_task() -> TestResult {
             })
             .await?;
         }
-        // The recipient finished its turn (what its Stop hook reports) and nobody types.
-        app.deps
-            .store
-            .set_activity(
-                &recipient,
-                Some(yulius_domain::task::Activity::Waiting),
-                app.now(),
-            )
-            .await?;
-        let target = task(&app, &recipient).await?;
-        app.tell_task(
-            &target,
-            "Schema",
-            "Does the invoices table keep the currency column?".into(),
-        )
-        .await;
-        wait_for("the wake notice", Duration::from_secs(20), || {
-            screen_contains(&app, &recipient, "ECHO: Yulius: you have new messages")
-        })
-        .await?;
-        assert!(
-            !screen_contains(&app, &sender, "you have new messages").await,
-            "only the recipient is woken"
-        );
-        // F 2026-10-12: a wake that was not submitted (this agent runs no hooks) is never typed
-        // again on top of itself; later wakes only press Enter.
-        app.tell_task(&target, "Again", "One more notice.".into())
-            .await;
-        tokio::time::sleep(Duration::from_secs(4)).await;
-        let notices = app
-            .runtime(&recipient)
-            .hub
-            .screen_text()
-            .matches("ECHO: Yulius: you have new messages")
-            .count();
-        assert_eq!(notices, 1, "the wake-up text is typed once");
-
         // A normal exit of the agent closes the task; no shell is spawned.
         app.send_input(&sender, b"/exit\r").await?;
         wait_for("the closed sender", Duration::from_secs(20), || async {

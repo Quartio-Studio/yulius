@@ -259,7 +259,7 @@ export function createBrowserPanel(ctx, sandbox) {
     el,
     headExtra: () => [h('span', { class: 'muted xs' }, 'the sandbox Chrome, shared with agents')],
     /** opts.tabId: select that tab once known (Yulius links, UI-011); opts.url: open it
-     *  (localhost links from terminals and messages). */
+     *  (localhost links from terminals). */
     show(opts = {}) {
       visible = true;
       stream.start();

@@ -1,6 +1,6 @@
 //! Yulius MCP: task awareness, messages and steps between parallel tasks (AC-COM-1/2, AC-STP-1).
 
-mod support;
+use crate::support;
 
 use std::net::SocketAddr;
 
@@ -14,7 +14,6 @@ use yulius_app::model::{
 use yulius_app::ports::store::{
     AttemptUpdate, CoordinationStore, SandboxStore, TaskFieldUpdate, TaskStore, UserStore,
 };
-use yulius_contracts::events::UiEvent;
 use yulius_domain::cron::CivilDate;
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AttemptId, SandboxId, TaskId, UserId};
@@ -176,6 +175,13 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
     .await?;
     assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
     assert_eq!(init["result"]["serverInfo"]["name"], "yulius");
+    let instructions = init["result"]["instructions"]
+        .as_str()
+        .ok_or("instructions")?;
+    assert!(
+        !instructions.contains("message"),
+        "MSR-001: the server instructions mention no messages: {instructions}"
+    );
     let list = rpc(&internal, "tok-claude", "tools/list", json!({})).await?;
     let names: Vec<&str> = list["result"]["tools"]
         .as_array()
@@ -183,7 +189,19 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
         .iter()
         .filter_map(|t| t["name"].as_str())
         .collect();
-    assert!(names.contains(&"message_send") && names.contains(&"steps_set"));
+    assert!(names.contains(&"steps_set"));
+    // MSR-001: no message tools (SPEC-028).
+    for gone in ["message_send", "messages_inbox"] {
+        assert!(!names.contains(&gone), "`{gone}` is not served");
+        let (refused, err) = tool(
+            &internal,
+            "tok-claude",
+            gone,
+            json!({"to": "people", "body": "hi"}),
+        )
+        .await?;
+        assert!(err, "`{gone}` is an unknown tool: {refused}");
+    }
     for announced in [
         "project_context",
         "scope_claim",
@@ -205,62 +223,6 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
     assert!(!err);
     assert_eq!(tasks["tasks"][0]["harness"], "claude");
     assert_eq!(tasks["you"]["harness"], "claude");
-
-    // MSG-001: no task-to-task messages; only to="people" is accepted.
-    let other_number = tasks["tasks"][0]["number"].as_u64().ok_or("number")?;
-    for args in [
-        json!({"number": other_number, "body": "hi"}),
-        json!({"task_id": "claude2", "body": "hi"}),
-        json!({"to": "all", "body": "hi"}),
-        json!({"body": "hi"}),
-        json!({"to": "people", "kind": "scope", "body": "hi"}),
-    ] {
-        let (refused, err) = tool(&internal, "tok-claude", "message_send", args.clone()).await?;
-        assert!(err, "{args} is refused: {refused}");
-    }
-    let (inbox, _) = tool(&internal, "tok-other", "messages_inbox", json!({})).await?;
-    assert_eq!(
-        inbox["messages"].as_array().map(Vec::len),
-        Some(0),
-        "nothing reached the other task"
-    );
-
-    // #46: an answer to the people (a reply to a person's message) is shown in the task's thread
-    // and published to the UI; no task receives it.
-    let mut events = h.app.events.subscribe();
-    let (answer, err) = tool(
-        &internal,
-        "tok-claude",
-        "message_send",
-        json!({"to": "people", "body": "The app is up on port 20000"}),
-    )
-    .await?;
-    assert!(!err, "{answer}");
-    assert_eq!(answer["to"], "people");
-    let thread = h
-        .store
-        .task_messages(&TaskId::parse("claude1")?, 50)
-        .await?;
-    assert!(
-        thread
-            .iter()
-            .any(|e| e.message.body == "The app is up on port 20000" && e.message.to_task.is_none()),
-        "shown in the task's Messages"
-    );
-    let published = events.try_recv()?;
-    match published.event {
-        UiEvent::Message { task_id, message } => {
-            assert_eq!(task_id, "claude1");
-            assert_eq!(message.body, "The app is up on port 20000");
-        }
-        other => return Err(format!("unexpected event {other:?}").into()),
-    }
-    let (others, _) = tool(&internal, "tok-other", "messages_inbox", json!({})).await?;
-    assert_eq!(
-        others["messages"].as_array().map(Vec::len),
-        Some(0),
-        "no task receives an answer to people"
-    );
 
     // Scope claims (COM-003, AC-COM-3, #50): an overlap is reported to the claiming task.
     let (claimed, err) = tool(
@@ -285,12 +247,13 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
     assert_eq!(overlap["conflicts"][0]["pattern"], "src/**/*.rs");
     assert_eq!(overlap["conflicts"][0]["their_pattern"], "src/api/**");
     assert_eq!(overlap["conflicts"][0]["their_note"], "API work");
-    let (told, _) = tool(&internal, "tok-claude", "messages_inbox", json!({})).await?;
-    assert_eq!(
-        told["messages"].as_array().map(Vec::len),
-        Some(0),
-        "MSG-002: the overlap tells the other task nothing: {told}"
-    );
+    for task in ["claude1", "claude2"] {
+        let rows = h.store.task_messages(&TaskId::parse(task)?, 50).await?;
+        assert!(
+            rows.is_empty(),
+            "MSR-002: the overlap messages nobody: {rows:?}"
+        );
+    }
     let (listed, _) = tool(&internal, "tok-other", "scopes_list", json!({})).await?;
     let claims = listed["claims"].as_array().ok_or("claims")?;
     assert_eq!(claims.len(), 3, "a repeated pattern is claimed once");
@@ -331,7 +294,6 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
     )
     .await?;
     assert!(!err);
-    let (_, _) = tool(&internal, "tok-other", "messages_inbox", json!({})).await?;
     let (again, err) = tool(
         &internal,
         "tok-claude",
@@ -340,11 +302,13 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
     )
     .await?;
     assert!(!err, "{again}");
-    let (quiet, _) = tool(&internal, "tok-other", "messages_inbox", json!({})).await?;
-    assert_eq!(
-        quiet["messages"].as_array().map(Vec::len),
-        Some(0),
-        "a repeated claim does not message the other task again: {quiet}"
+    let quiet = h
+        .store
+        .task_messages(&TaskId::parse("claude2")?, 50)
+        .await?;
+    assert!(
+        quiet.is_empty(),
+        "a repeated claim messages nobody: {quiet:?}"
     );
     // `patterns` releases exactly those claims; a malformed release is refused, not "all".
     let (partial, err) = tool(

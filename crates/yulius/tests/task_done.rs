@@ -5,7 +5,7 @@
 //! hooks through the real `yulius hook` client against the internal listener; real worktrees; a
 //! server restart that replays the transcripts.
 
-mod support;
+use crate::support;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -232,6 +232,15 @@ async fn shown(app: &App, id: &TaskId) -> Result<(Option<String>, Option<u32>), 
     Ok((summary.activity, summary.background_shells))
 }
 
+/// What the task's first launch asked the agent for (the fake harness records it).
+async fn first_launch(app: &App, id: &TaskId) -> Result<String, BoxError> {
+    let attempts = app.deps.store.attempts(id).await?;
+    let first = attempts.first().ok_or("the task has no attempt")?;
+    Ok(std::fs::read_to_string(
+        Path::new(&first.run_dir).join("fake-launch.txt"),
+    )?)
+}
+
 async fn screen_contains(app: &App, id: &TaskId, needle: &str) -> bool {
     app.runtime(id).hub.screen_text().contains(needle)
 }
@@ -279,6 +288,9 @@ fn an_achieved_goal_with_no_shell_left_makes_the_task_done() -> TestResult {
             screen_contains(&app, &id, "Goal achieved")
         })
         .await?;
+        // SPEC-025 ATT-003: without attached files the session starts with no first message.
+        let launch = first_launch(&app, &id).await?;
+        assert!(launch.contains("prompt: None"), "{launch}");
         wait_for("Done", Duration::from_secs(20), || async {
             activity(&app, &id).await == Some(Activity::Done)
         })
@@ -371,6 +383,10 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
         let agent = FakeAgentOptions {
             transcript: true,
             hooks: true,
+            session_start: true,
+            // The turn on the typed first message (the attached image) is silent for longer
+            // than the quiet time after which a goal is otherwise typed (SPEC-030 PIMG-003).
+            echo_turn_ms: Some(4_000),
             ..FakeAgentOptions::default()
         };
         let (app, _) = start(&data, &fake, agent, 0).await?;
@@ -408,6 +424,22 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
             "{request}"
         );
         assert!(request.contains("\n- /srv/shots/header.png"), "{request}");
+        // SPEC-030 PIMG-002: an attached image is pasted into the session's first message, so
+        // Claude Code attaches it natively (`[Image #1]`), not mentioned in the command line;
+        // the goal is still typed after that message's turn.
+        let launch = first_launch(&app, &id).await?;
+        assert!(launch.contains("prompt: None"), "{launch}");
+        let screen = app.runtime(&id).hub.screen_text();
+        let pasted = screen
+            .find("ECHO: [Image #1] The files attached to this task.")
+            .ok_or_else(|| screen.clone())?;
+        let typed = screen.find("/goal ").ok_or_else(|| screen.clone())?;
+        assert!(
+            pasted < typed,
+            "the goal was typed during the turn on the first message:\n{screen}"
+        );
+        assert!(!screen.contains("STOP BLOCKED"), "{screen}");
+        assert_eq!(screen.matches("GOAL SET").count(), 1, "{screen}");
         assert!(request.contains("## Definition of done"), "{request}");
         // The goal names the file (a request with attached files is never inlined).
         assert!(
@@ -415,6 +447,112 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
             "{}",
             app.runtime(&id).hub.screen_text()
         );
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-025 ATT-003: a goal task with attached files opens with a turn on them (its first message);
+/// the goal is typed once that turn ended (its Stop hook), not into the middle of it, and once.
+#[test]
+fn the_goal_is_typed_after_the_turn_on_the_attached_files() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            session_start: true,
+            // Silent for longer than the quiet time after which a goal is otherwise typed.
+            opening_turn_ms: Some(6_000),
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = app
+            .create_task_internal(NewTask {
+                sandbox: sandbox.clone(),
+                created_by: user.clone(),
+                // Not an image: mentioned in the command-line prompt (SPEC-025, SPEC-030).
+                prompt: "Make the header blue\n\n@/srv/notes.txt".into(),
+                harness: Harness::ClaudeCode,
+                title: Some("Blue header".into()),
+                workflow_id: None,
+                steps: Vec::new(),
+                model: None,
+                effort: None,
+                origin: TaskOrigin::Ui,
+                automation_run: None,
+                start: true,
+                mode: TaskMode::Goal,
+            })
+            .await?
+            .id;
+        wait_for("the goal to start", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "GOAL SET")
+        })
+        .await?;
+        let screen = app.runtime(&id).hub.screen_text();
+        let done = screen.find("DONE opening").ok_or_else(|| screen.clone())?;
+        let typed = screen.find("/goal ").ok_or_else(|| screen.clone())?;
+        assert!(
+            done < typed,
+            "the goal was typed during the opening turn:\n{screen}"
+        );
+        assert_eq!(screen.matches("GOAL SET").count(), 1, "{screen}");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-030 PIMG-002: a prompt-mode task with an attached image starts with no command-line
+/// prompt; its first message is typed into the TUI with the image pasted (`[Image #1]`, as
+/// Claude Code attaches a pasted image) and the other files mentioned.
+#[test]
+fn an_attached_image_is_pasted_into_the_first_message() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            session_start: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = app
+            .create_task_internal(NewTask {
+                sandbox: sandbox.clone(),
+                created_by: user.clone(),
+                prompt: "Make it blue\n\n@/srv/shot.png\n@/srv/notes.txt".into(),
+                harness: Harness::ClaudeCode,
+                title: Some("Blue".into()),
+                workflow_id: None,
+                steps: Vec::new(),
+                model: None,
+                effort: None,
+                origin: TaskOrigin::Ui,
+                automation_run: None,
+                start: true,
+                mode: TaskMode::Prompt,
+            })
+            .await?
+            .id;
+        wait_for("the first message", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "ECHO: [Image #1] Make it blue")
+        })
+        .await?;
+        let launch = first_launch(&app, &id).await?;
+        assert!(launch.contains("prompt: None"), "{launch}");
+        let screen = app.runtime(&id).hub.screen_text();
+        assert!(screen.contains("@\"/srv/notes.txt\""), "{screen}");
+        assert!(!screen.contains("@\"/srv/shot.png\""), "{screen}");
+        assert_eq!(screen.matches("ECHO: [Image #1]").count(), 1, "{screen}");
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

@@ -1,0 +1,988 @@
+//! The Cockpit end to end with the real detached ptyhost and a fake `claude` that prints what it
+//! was started with: one plain session per user and sandbox on a pool subscription, private,
+//! never listed, renamed or closed as a terminal, resumed with the newest conversation when it
+//! starts again, adopted after a server restart, reaped when unwatched for a day (SPEC-021).
+
+use crate::support;
+
+use std::os::unix::fs::PermissionsExt as _;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+
+use axum::body::Body;
+use axum::http::{Method, StatusCode};
+use futures::{SinkExt as _, StreamExt as _};
+use serde_json::{Value, json};
+use support::{
+    Creds, Harness, HarnessOptions, TestResult, call, harness_with, perms, seed_github_user,
+    seed_sandbox, send, serve, ws_connect, ws_refusal_status,
+};
+use tokio::net::TcpStream;
+use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use yulius::wiring::session::PtySessionHost;
+use yulius_app::error::{AppError, AppResult};
+use yulius_app::model::{AccountRecord, AccountStatus};
+use yulius_app::ports::harness::{
+    CockpitLaunch, HarnessLaunch, HarnessPlan, HarnessPort, OutputMasker, TranscriptWatch,
+};
+use yulius_app::ports::session::LaunchPlan;
+use yulius_app::ports::store::AccountStore;
+use yulius_app::shells::{MAX_SHELLS_PER_SANDBOX, SHELL_IDLE_MS};
+use yulius_contracts::terminal::{KIND_OUTPUT, KIND_SNAPSHOT, decode_binary};
+use yulius_domain::harness::Provider;
+use yulius_domain::ids::{AccountId, SandboxId};
+use yulius_domain::time::Timestamp;
+
+type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+const ORIGIN: &str = "https://yulius.test";
+const WAIT: Duration = Duration::from_secs(20);
+const TOKEN: &str = "synthetic-oauth-token";
+
+/// Prints its arguments (the MCP config and allowed tools, too long for a line, go to files in
+/// its config dir) and environment, then stays as an interactive shell.
+const FAKE_CLAUDE: &str = "#!/bin/sh\n\
+if [ \"$1\" = --resume ] && [ -f \"$CLAUDE_CONFIG_DIR/fail-resume\" ]; then exit 3; fi\n\
+args=; prev=\n\
+for a in \"$@\"; do\n\
+  case \"$prev\" in\n\
+    --mcp-config) printf %s \"$a\" > \"$CLAUDE_CONFIG_DIR/launch-mcp-config\" ;;\n\
+    --allowedTools) printf %s \"$a\" > \"$CLAUDE_CONFIG_DIR/launch-allowed-tools\" ;;\n\
+    *) case \"$a\" in --mcp-config|--allowedTools) ;; *) args=\"$args $a\" ;; esac ;;\n\
+  esac\n\
+  prev=$a\n\
+done\n\
+echo \"cockpit-args:[${args# }]\"\n\
+echo \"bearer:${YULIUS_COCKPIT_TOKEN:-none}\"\n\
+echo \"token:${CLAUDE_CODE_OAUTH_TOKEN:-none}\"\n\
+echo \"config:$CLAUDE_CONFIG_DIR\"\n\
+echo \"cwd:$(pwd)\"\n\
+echo \"ready\"\n\
+exec /bin/sh\n";
+
+struct Fixture {
+    h: Harness,
+    alice: Creds,
+    bob: Creds,
+    carol: Creds,
+    data: PathBuf,
+}
+
+/// alice and carol (write) and bob (read) on `s1`; one pool subscription unless `account` is
+/// false; optionally on the data directory of an earlier fixture (a server restart).
+async fn fixture_with(
+    account: bool,
+    data_dir: Option<PathBuf>,
+) -> Result<Fixture, Box<dyn std::error::Error>> {
+    // A short base: shell sockets live at <data>/shells/<16 hex>/pty.sock (Unix path limit).
+    let dir = tempfile::Builder::new().prefix("yck").tempdir_in("/tmp")?;
+    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
+    let h = harness_with(HarnessOptions {
+        session_host: Some(Arc::new(PtySessionHost::new(exe))),
+        dir: Some(dir),
+        configure: Some(Box::new(move |config| {
+            config.contained = false;
+            if let Some(data) = data_dir {
+                config.data_dir = data;
+            }
+        })),
+        ..HarnessOptions::default()
+    })?;
+    let data = h.app.config.data_dir.clone();
+    assert!(h.app.set_shell_program(PathBuf::from("/bin/sh")));
+    let fake = data.join("fake-claude");
+    std::fs::write(&fake, FAKE_CLAUDE)?;
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755))?;
+    assert!(h.app.set_cockpit_program(fake));
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    let bob = seed_github_user(&h, "u-bob", "bob").await?;
+    let carol = seed_github_user(&h, "u-carol", "carol").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    h.github.set_perm("carol", "acme/fixture", perms("write"));
+    h.github.set_perm("bob", "acme/fixture", perms("read"));
+    std::fs::create_dir_all(data.join("sandboxes/s1/repo"))?;
+    if account {
+        h.store
+            .insert_account(&AccountRecord {
+                id: AccountId::parse("acc-1")?,
+                provider: Provider::Anthropic,
+                label: "acc-1".into(),
+                credential: Some(h.app.deps.crypto.seal(TOKEN.as_bytes())?),
+                status: AccountStatus::Ok,
+                usage_json: None,
+                last_error: None,
+                created_at: Timestamp(1),
+                updated_at: Timestamp(1),
+            })
+            .await?;
+    }
+    Ok(Fixture {
+        h,
+        alice,
+        bob,
+        carol,
+        data,
+    })
+}
+
+async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
+    fixture_with(true, None).await
+}
+
+async fn open_cockpit(
+    f: &Fixture,
+    creds: &Creds,
+) -> Result<support::Resp, Box<dyn std::error::Error>> {
+    call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/cockpit",
+        None,
+        creds,
+    )
+    .await
+}
+
+async fn cockpit_id(f: &Fixture, creds: &Creds) -> Result<String, Box<dyn std::error::Error>> {
+    let resp = open_cockpit(f, creds).await?;
+    assert_eq!(resp.status, StatusCode::OK, "{:?}", resp.body);
+    Ok(resp.body["id"].as_str().ok_or("id")?.to_owned())
+}
+
+async fn attach(
+    addr: std::net::SocketAddr,
+    id: &str,
+    creds: &Creds,
+) -> Result<Socket, Box<dyn std::error::Error>> {
+    let mut socket = ws_connect(
+        addr,
+        &format!("/api/shells/{id}/terminal?cols=100&rows=30"),
+        creds,
+        ORIGIN,
+    )
+    .await?;
+    socket
+        .send(Message::text(
+            json!({"type": "hello", "last_seq": null, "cols": 100, "rows": 30}).to_string(),
+        ))
+        .await?;
+    Ok(socket)
+}
+
+/// Reads frames until the accumulated terminal text contains `needle`.
+async fn read_until(
+    socket: &mut Socket,
+    text: &mut String,
+    needle: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while !text.contains(needle) {
+        let message = tokio::time::timeout_at(deadline, socket.next())
+            .await
+            .map_err(|_| format!("timed out waiting for {needle:?}; screen so far: {text:?}"))?
+            .ok_or("socket closed")??;
+        if let Message::Binary(bytes) = message
+            && let Some((kind, _, payload)) = decode_binary(&bytes)
+            && (kind == KIND_OUTPUT || kind == KIND_SNAPSHOT)
+        {
+            text.push_str(&String::from_utf8_lossy(payload));
+        }
+    }
+    Ok(())
+}
+
+/// The value printed after `key:` on the fake's screen.
+fn printed(screen: &str, key: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let start = screen
+        .find(&format!("{key}:"))
+        .ok_or_else(|| format!("{key} not printed"))?
+        + key.len()
+        + 1;
+    let rest = screen.get(start..).unwrap_or_default();
+    Ok(rest.lines().next().unwrap_or_default().trim().to_owned())
+}
+
+async fn wait_for(what: &str, mut check: impl FnMut() -> bool) -> TestResult {
+    let deadline = tokio::time::Instant::now() + WAIT;
+    while tokio::time::Instant::now() < deadline {
+        if check() {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    Err(format!("timed out waiting for {what}").into())
+}
+
+/// A conversation file of Claude Code, last written `secs` after the epoch.
+fn conversation(project: &Path, id: &str, secs: u64) -> TestResult {
+    std::fs::create_dir_all(project)?;
+    let file = std::fs::File::create(project.join(format!("{id}.jsonl")))?;
+    file.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000 + secs))?;
+    Ok(())
+}
+
+fn sid() -> SandboxId {
+    SandboxId::parse("s1").unwrap_or_else(|_| unreachable!())
+}
+
+#[tokio::test]
+async fn a_write_user_gets_one_plain_cockpit_on_a_pool_subscription() -> TestResult {
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+
+    // Two opens at once (a double click, two tabs) start one Cockpit (CKP-001).
+    let (first, second) = tokio::join!(open_cockpit(&f, &f.alice), open_cockpit(&f, &f.alice));
+    let (first, second) = (first?, second?);
+    assert_eq!(first.status, StatusCode::OK, "{:?}", first.body);
+    assert_eq!(second.status, StatusCode::OK, "{:?}", second.body);
+    let id = first.body["id"].as_str().ok_or("id")?.to_owned();
+    assert_eq!(second.body["id"], first.body["id"]);
+    assert_eq!(f.h.app.sandbox_shells(&sid()).len(), 1);
+    assert_eq!(
+        cockpit_id(&f, &f.alice).await?,
+        id,
+        "the same Cockpit again"
+    );
+
+    // Plain Claude Code on the pool's subscription, in the sandbox repository, its config in
+    // the user's own home (CKP-002).
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    // The default model and effort (SPEC-023 DEF-004).
+    assert_eq!(
+        printed(&screen, "cockpit-args")?,
+        "[--model claude-opus-5-5 --effort high]"
+    );
+    assert_eq!(printed(&screen, "token")?, TOKEN);
+    let repo = std::fs::canonicalize(f.data.join("sandboxes/s1/repo"))?;
+    assert_eq!(printed(&screen, "cwd")?, repo.to_string_lossy());
+    let config = PathBuf::from(printed(&screen, "config")?);
+    assert!(config.ends_with("home/.claude"), "{config:?}");
+    assert!(config.starts_with(&f.data), "{config:?}");
+    // The Yulius MCP server, its bearer only in the environment, accepted by `/mcp` (SPEC-037
+    // MGT-004, AC-MGT-3).
+    let mcp_config: Value =
+        serde_json::from_slice(&std::fs::read(config.join("launch-mcp-config"))?)?;
+    let yulius = &mcp_config["mcpServers"]["yulius"];
+    assert_eq!(
+        yulius["url"],
+        format!("{}/mcp", f.h.app.config.internal_url)
+    );
+    assert_eq!(
+        yulius["headers"]["Authorization"],
+        "Bearer ${YULIUS_COCKPIT_TOKEN}"
+    );
+    let allowed = std::fs::read_to_string(config.join("launch-allowed-tools"))?;
+    assert!(allowed.contains("mcp__yulius__tasks_list"), "{allowed}");
+    assert!(
+        !allowed.contains("task_create"),
+        "creating asks first: {allowed}"
+    );
+    let bearer = printed(&screen, "bearer")?;
+    assert!(bearer.starts_with("ck_"), "{bearer}");
+    let tools = mcp(&f, &bearer, "tools/list", json!({})).await?;
+    assert!(
+        tools["result"]["tools"]
+            .as_array()
+            .is_some_and(|t| t.iter().any(|t| t["name"] == "task_create")),
+        "{tools}"
+    );
+    let settled: Value = serde_json::from_slice(&std::fs::read(config.join(".claude.json"))?)?;
+    assert_eq!(settled["hasCompletedOnboarding"], true);
+    assert!(settled["bypassPermissionsModeAccepted"].is_null());
+    assert!(settled["projects"][repo.to_string_lossy().as_ref()].is_object());
+    // The tokens never reach the shell record or argv.
+    let record = std::fs::read_to_string(f.data.join("shells").join(&id).join("shell.json"))?;
+    assert!(!record.contains(TOKEN));
+    assert!(!record.contains(&bearer));
+    assert!(record.contains("\"kind\":\"cockpit\""), "{record}");
+
+    // Not a terminal: never listed, renamed or closed, and not counted against the terminals
+    // (CKP-004). There is no way to delete it.
+    let list = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/shells",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(list.body, json!([]));
+    let rename = call(
+        &f.h.router,
+        Method::PATCH,
+        &format!("/api/sandboxes/s1/shells/{id}"),
+        Some(json!({"name": "mine"})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(rename.status, StatusCode::NOT_FOUND);
+    let close = call(
+        &f.h.router,
+        Method::DELETE,
+        &format!("/api/sandboxes/s1/shells/{id}"),
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(close.status, StatusCode::NOT_FOUND);
+    let delete = call(
+        &f.h.router,
+        Method::DELETE,
+        "/api/sandboxes/s1/cockpit",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(delete.status, StatusCode::METHOD_NOT_ALLOWED);
+    for _ in 0..MAX_SHELLS_PER_SANDBOX {
+        let shell = call(
+            &f.h.router,
+            Method::POST,
+            "/api/sandboxes/s1/shells",
+            None,
+            &f.alice,
+        )
+        .await?;
+        assert_eq!(shell.status, StatusCode::CREATED, "{:?}", shell.body);
+    }
+    assert_eq!(cockpit_id(&f, &f.alice).await?, id, "still there");
+
+    // Private (CKP-005): carol gets her own, cannot attach to alice's; bob only reads.
+    let carols = cockpit_id(&f, &f.carol).await?;
+    assert_ne!(carols, id);
+    let refused = ws_connect(
+        served.addr,
+        &format!("/api/shells/{id}/terminal"),
+        &f.carol,
+        ORIGIN,
+    )
+    .await;
+    assert_eq!(
+        refused.as_ref().err().and_then(ws_refusal_status),
+        Some(404)
+    );
+    assert_eq!(
+        open_cockpit(&f, &f.bob).await?.status,
+        StatusCode::FORBIDDEN
+    );
+
+    // A file dropped (or an image pasted) on it reaches Claude by path, like a task terminal's;
+    // only its owner may drop onto it.
+    let drop_path = format!("/api/sandboxes/s1/shells/{id}/attachments?name=shot.png");
+    let png = || Body::from(b"png".to_vec());
+    let foreign = send(
+        &f.h.router,
+        Method::POST,
+        &drop_path,
+        png(),
+        Some(3),
+        &f.carol,
+    )
+    .await?;
+    assert_eq!(foreign.status, StatusCode::NOT_FOUND, "{:?}", foreign.body);
+    let dropped = send(
+        &f.h.router,
+        Method::POST,
+        &drop_path,
+        png(),
+        Some(3),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(dropped.status, StatusCode::CREATED, "{:?}", dropped.body);
+
+    // `/clear` is Claude Code's own: the process stays, so does the Cockpit.
+    socket
+        .send(Message::text(
+            json!({"type": "input", "data": "echo still-$((1+1))\r"}).to_string(),
+        ))
+        .await?;
+    read_until(&mut socket, &mut screen, "still-2").await?;
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_cockpit_started_again_resumes_the_newest_conversation() -> TestResult {
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let config = PathBuf::from(printed(&screen, "config")?);
+    let cwd = printed(&screen, "cwd")?;
+
+    // Two conversations so far, the newest one after a `/clear` (CKP-003).
+    let project = yulius_harness::paths::claude_project_dir(&config, Path::new(&cwd));
+    conversation(&project, "before-clear", 1_000)?;
+    conversation(&project, "after-clear", 2_000)?;
+
+    // The user leaves it (`/exit`): the Cockpit is not running any more.
+    socket
+        .send(Message::text(
+            json!({"type": "input", "data": "exit\r"}).to_string(),
+        ))
+        .await?;
+    wait_for("the Cockpit to end", || {
+        f.h.app.sandbox_shells(&sid()).is_empty()
+    })
+    .await?;
+
+    let again = cockpit_id(&f, &f.alice).await?;
+    assert_ne!(again, id, "a new process");
+    let mut socket = attach(served.addr, &again, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(
+        printed(&screen, "cockpit-args")?,
+        "[--resume after-clear --model claude-opus-5-5 --effort high]"
+    );
+
+    // Unwatched for a day it ends like a terminal, and comes back with its conversation.
+    drop(socket);
+    wait_for("viewers to leave", || {
+        f.h.app
+            .sandbox_shells(&sid())
+            .iter()
+            .all(|shell| shell.viewer_count() == 0)
+    })
+    .await?;
+    f.h.clock
+        .0
+        .fetch_add(SHELL_IDLE_MS + 1_000, Ordering::SeqCst);
+    assert_eq!(f.h.app.reap_idle_shells().await, 1);
+    assert!(f.h.app.sandbox_shells(&sid()).is_empty());
+    let back = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &back, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(
+        printed(&screen, "cockpit-args")?,
+        "[--resume after-clear --model claude-opus-5-5 --effort high]"
+    );
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_running_cockpit_is_adopted_as_the_cockpit_after_a_restart() -> TestResult {
+    let f = fixture().await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let alice = yulius_domain::ids::UserId::parse("u-alice")?;
+    let token = f.h.app.cockpit_mcp_token(&alice, &sid());
+    assert!(token.is_some());
+    f.h.app.stop_workspace_services().await;
+
+    let g = fixture_with(true, Some(f.data.clone())).await?;
+    assert_eq!(g.h.app.adopt_shells().await, (1, 0));
+    assert_eq!(
+        g.h.app.cockpit_mcp_token(&alice, &sid()),
+        token,
+        "its Yulius MCP token survives the restart (SPEC-037 MGT-005)"
+    );
+    let tools = mcp(
+        &g,
+        token.as_deref().ok_or("token")?,
+        "tools/list",
+        json!({}),
+    )
+    .await?;
+    assert!(
+        tools["result"]["tools"].is_array(),
+        "accepted again: {tools}"
+    );
+    assert_eq!(
+        cockpit_id(&g, &g.alice).await?,
+        id,
+        "the same session (CKP-006)"
+    );
+    let list = call(
+        &g.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/shells",
+        None,
+        &g.alice,
+    )
+    .await?;
+    assert_eq!(list.body, json!([]), "still not a terminal");
+    g.h.app.end_all_shells().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn without_a_subscription_the_cockpit_says_so_and_nothing_runs() -> TestResult {
+    let f = fixture_with(false, None).await?;
+    let resp = open_cockpit(&f, &f.alice).await?;
+    assert_eq!(resp.status, StatusCode::CONFLICT, "{:?}", resp.body);
+    assert!(
+        resp.body.to_string().contains("no Claude account"),
+        "{:?}",
+        resp.body
+    );
+    assert!(f.h.app.sandbox_shells(&sid()).is_empty());
+    let left = std::fs::read_dir(f.data.join("shells"))
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(left, 0, "no run directory left behind (CKP-007)");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_resume_that_fails_at_once_starts_fresh_the_next_time() -> TestResult {
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let config = PathBuf::from(printed(&screen, "config")?);
+    let cwd = printed(&screen, "cwd")?;
+    let project = yulius_harness::paths::claude_project_dir(&config, Path::new(&cwd));
+    conversation(&project, "broken", 1_000)?;
+    socket
+        .send(Message::text(
+            json!({"type": "input", "data": "exit\r"}).to_string(),
+        ))
+        .await?;
+    wait_for("the Cockpit to end", || {
+        f.h.app.sandbox_shells(&sid()).is_empty()
+    })
+    .await?;
+
+    // Claude Code cannot resume that conversation and exits at once: the Cockpit, which cannot
+    // be deleted, must not stay stuck on it.
+    std::fs::write(config.join("fail-resume"), "")?;
+    cockpit_id(&f, &f.alice).await?;
+    wait_for("the failed resume to end", || {
+        f.h.app.sandbox_shells(&sid()).is_empty()
+    })
+    .await?;
+    let fresh = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &fresh, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(
+        printed(&screen, "cockpit-args")?,
+        "[--model claude-opus-5-5 --effort high]",
+        "a fresh conversation"
+    );
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_cockpit_that_cannot_start_leaves_nothing_and_starts_once_it_can() -> TestResult {
+    let f = fixture().await?;
+    // Claude Code's config in the user's home is unreadable: the start fails after the shell was
+    // prepared, and nothing of it is left (CKP-007).
+    let config = f.data.join("users/u-alice/home/.claude");
+    std::fs::create_dir_all(&config)?;
+    std::fs::write(config.join(".claude.json"), "[]")?;
+    let failed = open_cockpit(&f, &f.alice).await?;
+    assert_eq!(failed.status, StatusCode::BAD_GATEWAY, "{:?}", failed.body);
+    assert!(f.h.app.sandbox_shells(&sid()).is_empty());
+    let left = std::fs::read_dir(f.data.join("shells"))
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(left, 0, "no run directory left behind");
+    std::fs::write(config.join(".claude.json"), "{}")?;
+    cockpit_id(&f, &f.alice).await?;
+
+    // Before the repository is cloned it says so.
+    seed_sandbox(&f.h, "s2", "other", "u-alice").await?;
+    f.h.github.set_perm("alice", "acme/other", perms("write"));
+    let uncloned = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s2/cockpit",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(uncloned.status, StatusCode::CONFLICT, "{:?}", uncloned.body);
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// SPEC-023 DEF-004: the Cockpit runs Opus 5.5, so a subscription whose weekly Opus cap is spent
+/// is passed over even when it has the most room otherwise.
+#[tokio::test]
+async fn the_cockpit_skips_a_subscription_whose_opus_cap_is_spent() -> TestResult {
+    let f = fixture_with(false, None).await?;
+    let now = f.h.clock.0.load(Ordering::SeqCst);
+    let window = |used: f64| json!({"used_percent": used, "window_minutes": 10080, "resets_at": now + 80 * 3_600_000});
+    for (id, token, usage) in [
+        (
+            "acc-a",
+            "spent-opus-token",
+            json!({"secondary": window(5.0), "weekly_opus": window(100.0)}),
+        ),
+        ("acc-b", TOKEN, json!({"secondary": window(60.0)})),
+    ] {
+        f.h.store
+            .insert_account(&AccountRecord {
+                id: AccountId::parse(id)?,
+                provider: Provider::Anthropic,
+                label: id.into(),
+                credential: Some(f.h.app.deps.crypto.seal(token.as_bytes())?),
+                status: AccountStatus::Ok,
+                usage_json: Some(usage.to_string()),
+                last_error: None,
+                created_at: Timestamp(1),
+                updated_at: Timestamp(1),
+            })
+            .await?;
+    }
+    let served = serve(f.h.router.clone()).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(printed(&screen, "token")?, TOKEN);
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn without_capacity_the_cockpit_waits_for_a_subscription() -> TestResult {
+    let f = fixture_with(false, None).await?;
+    f.h.store
+        .insert_account(&AccountRecord {
+            id: AccountId::parse("acc-1")?,
+            provider: Provider::Anthropic,
+            label: "acc-1".into(),
+            credential: Some(f.h.app.deps.crypto.seal(TOKEN.as_bytes())?),
+            status: AccountStatus::Relogin,
+            usage_json: None,
+            last_error: None,
+            created_at: Timestamp(1),
+            updated_at: Timestamp(1),
+        })
+        .await?;
+    let resp = open_cockpit(&f, &f.alice).await?;
+    assert_eq!(
+        resp.status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "{:?}",
+        resp.body
+    );
+    assert!(f.h.app.sandbox_shells(&sid()).is_empty());
+    Ok(())
+}
+
+/// Records the Cockpit launch a contained server asks for and refuses it (no bwrap needed).
+struct RecordingHarness {
+    inner: yulius::wiring::harness::HarnessAdapter,
+    cockpit: std::sync::Mutex<Option<CockpitLaunch>>,
+}
+
+impl HarnessPort for RecordingHarness {
+    fn plan(&self, launch: &HarnessLaunch) -> AppResult<HarnessPlan> {
+        self.inner.plan(launch)
+    }
+    fn plan_cockpit(&self, launch: &CockpitLaunch) -> AppResult<LaunchPlan> {
+        if let Ok(mut recorded) = self.cockpit.lock() {
+            *recorded = Some(launch.clone());
+        }
+        Err(AppError::Invalid("recorded".into()))
+    }
+    fn claude_transcript(&self, home: &Path, worktree: &Path, session: &str) -> PathBuf {
+        self.inner.claude_transcript(home, worktree, session)
+    }
+    fn newest_claude_session(
+        &self,
+        home: &Path,
+        worktree: &Path,
+        since: Timestamp,
+    ) -> AppResult<Option<(String, PathBuf)>> {
+        self.inner.newest_claude_session(home, worktree, since)
+    }
+    fn watch(
+        &self,
+        harness: yulius_domain::harness::Harness,
+        path: &Path,
+        from_start: bool,
+    ) -> AppResult<Box<dyn TranscriptWatch>> {
+        self.inner.watch(harness, path, from_start)
+    }
+    fn login_argv(&self, harness: yulius_domain::harness::Harness) -> Vec<String> {
+        self.inner.login_argv(harness)
+    }
+    fn extract_claude_token(&self, output: &str) -> Option<String> {
+        self.inner.extract_claude_token(output)
+    }
+    fn masker(&self) -> Box<dyn OutputMasker> {
+        self.inner.masker()
+    }
+    fn install_skills(&self, skills: &[(String, PathBuf)], claude_dir: &Path) -> AppResult<()> {
+        self.inner.install_skills(skills, claude_dir)
+    }
+}
+
+#[tokio::test]
+async fn a_contained_cockpit_keeps_its_config_in_the_users_home() -> TestResult {
+    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
+    let recorder = Arc::new(RecordingHarness {
+        inner: yulius::wiring::harness::HarnessAdapter::new(exe, "http://127.0.0.1:9"),
+        cockpit: std::sync::Mutex::new(None),
+    });
+    let h = harness_with(HarnessOptions {
+        harness: Some(recorder.clone()),
+        configure: Some(Box::new(|config| config.contained = true)),
+        ..HarnessOptions::default()
+    })?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    let data = h.app.config.data_dir.clone();
+    let repo = data.join("sandboxes/s1/repo");
+    std::fs::create_dir_all(&repo)?;
+    h.store
+        .insert_account(&AccountRecord {
+            id: AccountId::parse("acc-1")?,
+            provider: Provider::Anthropic,
+            label: "acc-1".into(),
+            credential: Some(h.app.deps.crypto.seal(TOKEN.as_bytes())?),
+            status: AccountStatus::Ok,
+            usage_json: None,
+            last_error: None,
+            created_at: Timestamp(1),
+            updated_at: Timestamp(1),
+        })
+        .await?;
+    // The conversation Claude Code wrote, seen from the host.
+    let home_host = data.join("users/u-alice/home");
+    let project = yulius_harness::paths::claude_project_dir(&home_host.join(".claude"), &repo);
+    conversation(&project, "earlier", 1_000)?;
+
+    let resp = call(
+        &h.router,
+        Method::POST,
+        "/api/sandboxes/s1/cockpit",
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(
+        resp.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{:?}",
+        resp.body
+    );
+    let launch = recorder
+        .cockpit
+        .lock()
+        .map_err(|_| "poisoned")?
+        .clone()
+        .ok_or("no Cockpit launch planned")?;
+    // Inside its containment the session sees its home at /home/<login>; Yulius prepares the
+    // config and finds the conversation on the host side.
+    assert_eq!(launch.config_dir, PathBuf::from("/home/alice/.claude"));
+    assert_eq!(launch.config_dir_host, home_host.join(".claude"));
+    assert_eq!(launch.cwd, repo);
+    assert_eq!(launch.resume.as_deref(), Some("earlier"));
+    assert!(h.app.sandbox_shells(&sid()).is_empty());
+    Ok(())
+}
+
+/// A JSON-RPC call to the internal `/mcp` with `token`.
+async fn mcp(
+    f: &Fixture,
+    token: &str,
+    method: &str,
+    params: Value,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let resp = call(
+        &f.h.internal,
+        Method::POST,
+        "/mcp",
+        Some(json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})),
+        &Creds {
+            bearer: Some(token.into()),
+            ..Creds::default()
+        },
+    )
+    .await?;
+    assert_eq!(resp.status, StatusCode::OK, "{:?}", resp.body);
+    Ok(resp.body)
+}
+
+/// A tool's result text parsed as JSON, and whether it is an error.
+async fn cockpit_tool(
+    f: &Fixture,
+    token: &str,
+    name: &str,
+    args: Value,
+) -> Result<(Value, bool), Box<dyn std::error::Error>> {
+    let body = mcp(
+        f,
+        token,
+        "tools/call",
+        json!({"name": name, "arguments": args}),
+    )
+    .await?;
+    let text = body["result"]["content"][0]["text"]
+        .as_str()
+        .ok_or_else(|| format!("no result: {body}"))?;
+    Ok((
+        serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.to_owned())),
+        body["result"]["isError"].as_bool().unwrap_or(true),
+    ))
+}
+
+/// AC-MGT-2, MGT-005..007: a Cockpit's own token reaches the management tools, which act for
+/// its owner; nothing else is served, and the token ends with the Cockpit and its owner's
+/// access.
+#[tokio::test]
+async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
+    use yulius_app::model::TaskOrigin;
+    use yulius_app::ports::store::TaskStore;
+    use yulius_app::ports::store_ext::AutomationStore;
+    use yulius_domain::ids::{TaskId, UserId};
+
+    let f = fixture().await?;
+    cockpit_id(&f, &f.alice).await?;
+    cockpit_id(&f, &f.carol).await?;
+    let alice = UserId::parse("u-alice")?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&alice, &sid())
+            .ok_or("alice's cockpit token")?;
+    assert!(token.starts_with("ck_"), "{token}");
+    let carols =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-carol")?, &sid())
+            .ok_or("carol's cockpit token")?;
+    assert_ne!(token, carols, "one token per Cockpit");
+
+    // Exactly the management tools (MGT-006).
+    let listed = mcp(&f, &token, "tools/list", json!({})).await?;
+    let mut names: Vec<String> = listed["result"]["tools"]
+        .as_array()
+        .ok_or("tools")?
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_owned))
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "automation_create",
+            "automation_update",
+            "automations_list",
+            "session_read",
+            "sessions_search",
+            "task_create",
+            "task_get",
+            "tasks_list",
+            "workflows_list",
+        ]
+    );
+    let (refused, is_error) =
+        cockpit_tool(&f, &token, "steps_set", json!({"steps": ["x"]})).await?;
+    assert!(is_error, "{refused}");
+    assert!(refused.to_string().contains("unknown tool"), "{refused}");
+
+    // A task for alice (MGT-001, MGT-007).
+    let (created, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "task_create",
+        json!({"prompt": "Fix the onboarding wording about CI homes"}),
+    )
+    .await?;
+    assert!(!is_error, "{created}");
+    let task =
+        f.h.store
+            .task(&TaskId::parse(
+                created["task"]["task_id"].as_str().ok_or("task_id")?,
+            )?)
+            .await?
+            .ok_or("task")?;
+    assert_eq!(task.created_by, alice);
+    assert_eq!(task.origin, TaskOrigin::Agent);
+    let (listed, is_error) = cockpit_tool(&f, &token, "tasks_list", json!({})).await?;
+    assert!(!is_error, "{listed}");
+    assert!(
+        listed.get("you").is_none(),
+        "a Cockpit has no task: {listed}"
+    );
+    assert_eq!(listed["tasks"][0]["task_id"], task.id.as_str());
+
+    // "Every day at 4am align the docs": an automation of alice's.
+    let (automation, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "automation_create",
+        json!({"name": "Align docs", "cron": "0 4 * * *", "prompt": "Align the docs to the latest changes if they are not aligned"}),
+    )
+    .await?;
+    assert!(!is_error, "{automation}");
+    let id = automation["automation"]["id"].as_str().ok_or("id")?;
+    let stored = f.h.store.automation(id).await?.ok_or("automation")?;
+    assert_eq!(stored.created_by, alice);
+    assert_eq!(stored.created_via.as_str(), "agent");
+    let audit = f.h.store.automation_audit(id, 10).await?;
+    let entry = audit
+        .iter()
+        .find(|e| e.action == "automation.created")
+        .ok_or("audit entry")?;
+    assert_eq!(entry.actor, "cockpit:alice");
+
+    // Unknown tokens, and the token of a Cockpit that ended, are refused (MGT-005).
+    let unknown = mcp(&f, "ck_0000", "tools/list", json!({})).await?;
+    assert_eq!(unknown["error"]["code"], -32001, "{unknown}");
+    f.h.app.end_all_shells().await;
+    let ended = mcp(&f, &token, "tools/list", json!({})).await?;
+    assert_eq!(ended["error"]["code"], -32001, "{ended}");
+    Ok(())
+}
+
+/// MGT-005: once its owner can no longer work in the project, a Cockpit's token is refused.
+#[tokio::test]
+async fn a_cockpit_whose_owner_lost_access_manages_nothing() -> TestResult {
+    use yulius_domain::ids::UserId;
+
+    let f = fixture().await?;
+    cockpit_id(&f, &f.alice).await?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-alice")?, &sid())
+            .ok_or("token")?;
+    let allowed = mcp(&f, &token, "tools/list", json!({})).await?;
+    assert!(allowed["result"]["tools"].is_array(), "{allowed}");
+    f.h.github.set_perm("alice", "acme/fixture", perms("read"));
+    f.h.clock
+        .0
+        .fetch_add(f.h.app.config.permission_ttl_ms + 1, Ordering::SeqCst);
+    let refused = mcp(&f, &token, "tools/list", json!({})).await?;
+    assert_eq!(refused["error"]["code"], -32001, "{refused}");
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// MGT-005: a disabled owner's Cockpit token is refused.
+#[tokio::test]
+async fn a_disabled_owners_cockpit_manages_nothing() -> TestResult {
+    use yulius_app::ports::store::UserStore;
+    use yulius_domain::ids::UserId;
+
+    let f = fixture().await?;
+    cockpit_id(&f, &f.alice).await?;
+    let alice = UserId::parse("u-alice")?;
+    let token = f.h.app.cockpit_mcp_token(&alice, &sid()).ok_or("token")?;
+    f.h.store
+        .update_user_flags(&alice, Some(Some(f.h.app.now())), None)
+        .await?;
+    let refused = mcp(&f, &token, "tools/list", json!({})).await?;
+    assert_eq!(refused["error"]["code"], -32001, "{refused}");
+    f.h.app.end_all_shells().await;
+    Ok(())
+}

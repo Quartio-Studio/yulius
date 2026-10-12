@@ -19,7 +19,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 a { color: var(--accent-fg); text-decoration: none; } /* link text: the text-safe accent (4.5:1) */
 a:hover { text-decoration: underline; }
 /* Links inside running text are underlined, not told apart by colour alone (WCAG 1.4.1). */
-p a, li a, .msg-body a, .banner-text a, .checks-access-text a, .toast-msg a, .step-note a, .item-meta a { text-decoration: underline; text-underline-offset: 2px; }
+p a, li a, .banner-text a, .checks-access-text a, .toast-msg a, .step-note a, .item-meta a { text-decoration: underline; text-underline-offset: 2px; }
 /* Focus: a ring with a gap; the transparent outline is what forced-colors (high contrast) modes draw. */
 :focus-visible { outline: 2px solid transparent; outline-offset: 2px; box-shadow: var(--focus); }
 [hidden] { display: none !important; }
@@ -105,6 +105,11 @@ p { margin: 0; }
   .select option::checkmark { order: 1; margin-left: auto; color: var(--accent); }
   .select option:disabled { color: var(--muted); cursor: not-allowed; }
   .select-sm { padding: 0 4px 0 8px; }
+  /* A select that gives its button, `<select><button><selectedcontent></selectedcontent></button>…`,
+     shows a long picked label on one line ending in an ellipsis; without it the label wraps and
+     spills over the fixed-height control. */
+  .select > button { display: flex; flex: 1 1 auto; align-items: center; align-self: stretch; min-width: 0; margin-block: -1px; overflow: hidden; }
+  .select selectedcontent { display: block; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }
 .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .field-label { font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--text-2); font-weight: 500; }
@@ -323,10 +328,14 @@ p { margin: 0; }
 .nav-item:hover .icon, .nav-item.active .icon { color: var(--text-2); }
 .nav-item:hover { background: var(--surface-3); color: var(--text); text-decoration: none; }
 .nav-item.active { background: var(--accent-soft); color: var(--text); }
+/* "More" (SPEC-029): a disclosure button styled as a link, its pages below it in the same column. */
+.nav-toggle { width: 100%; border: 0; background: transparent; font-family: inherit; text-align: left; cursor: pointer; }
+.nav-more-chevron { display: inline-flex; margin-left: auto; }
+.nav-more { display: flex; flex-direction: column; gap: 4px; }
 .task-list { flex: 1 0 auto; padding: 8px 6px 12px; border-top: 1px solid var(--border); margin-top: 8px; }
 /* Active tasks (UI-005): groups — Needs you, Working, Stopped — of two-line rows. */
 /* Task list rows read like a chat list (WhatsApp, cmux): a state tile, a 16 px title with the age
-   on the right, then what is happening or what to do, with the unread count under the age. */
+   on the right, then what is happening or what to do. */
 .task-group { display: flex; flex-direction: column; gap: 2px; padding-top: 16px; }
 /* A group's head is a band of its own (its background and edge set it apart from the tasks below). */
 .task-group-head {
@@ -342,7 +351,7 @@ button.task-group-head:hover { color: var(--text); }
 .task-group-head.group-ended .task-group-count { margin-left: auto; }
 .task-group-head.group-ended .task-group-count + .icon { margin-left: 4px; }
 /* Sidebar task rows: one compact line — state icon on the nav icons' axis, pull request, title on
-   the nav labels' axis, unread count, age (the kebab takes the age's place on hover). */
+   the nav labels' axis, age (the kebab takes the age's place on hover). */
 .task-row { position: relative; border-radius: var(--radius); }
 .task-row:hover, .task-row:focus-within { background: var(--surface-3); }
 .task-row.active { background: var(--accent-soft); }
@@ -361,8 +370,6 @@ button.task-group-head:hover { color: var(--text); }
 .task-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-md); line-height: var(--lh-md); }
 .task-group.group-ended .task-row:not(:hover):not(.active) .task-link { color: var(--muted); }
 .task-age { flex: none; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); font-variant-numeric: tabular-nums; }
-.task-unread { flex: none; display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 4px; border-radius: var(--radius-full); background: var(--accent); color: var(--accent-ink); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; }
-.task-unread[hidden] { display: none; }
 .task-kebab { position: absolute; right: 6px; top: 4px; width: var(--control-sm); height: var(--control-sm); visibility: hidden; background: var(--surface-3); }
 /* The menu's button stays visible while its menu is open, so Escape can return focus to it. */
 .task-row:hover .task-kebab, .task-row:focus-within .task-kebab, .task-kebab[aria-expanded="true"] { visibility: visible; }
@@ -409,7 +416,7 @@ button.task-group-head:hover { color: var(--text); }
   .switch-input:checked + .switch-track::after { background: HighlightText; }
   .switch-input:focus-visible + .switch-track, .seg label:has(input:focus-visible) { outline: 2px solid Highlight; outline-offset: 2px; }
   .seg label:has(input:checked) { outline: 2px solid CanvasText; outline-offset: -2px; }
-  .tab-dot, .rail-dot, .ev-dot, .dl-dot, .task-unread, .rail-btn.active::before { forced-color-adjust: none; background: Highlight; color: HighlightText; }
+  .tab-dot, .rail-dot, .ev-dot, .dl-dot, .rail-btn.active::before { forced-color-adjust: none; background: Highlight; color: HighlightText; }
 }
 /* Reduced motion: no animation or transition anywhere (WCAG 2.3.3). */
 @media (prefers-reduced-motion: reduce) {
@@ -440,7 +447,6 @@ button.task-group-head:hover { color: var(--text); }
 .rail-btn.active::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px; border-radius: var(--radius-full); background: var(--accent); }
 .rail-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 500; white-space: nowrap; }
 .rail-btn.active .rail-label { font-weight: 600; }
-.rail-badge { flex: none; min-width: 16px; height: 16px; margin-left: auto; padding: 0 4px; border-radius: var(--radius-full); background: var(--accent); color: var(--accent-ink); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; display: flex; align-items: center; justify-content: center; }
 /* The attention dot sits on its icon (tools toggle); in the named rail it ends the row. */
 .rail-dot { position: absolute; top: 4px; right: 4px; width: 8px; height: 8px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 2px var(--bg); }
 .rail .rail-dot { position: static; margin-left: auto; flex: none; box-shadow: none; }
@@ -969,6 +975,15 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 /* ---------------------------------------------------------------- task view */
 
 .taskview { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+/* The Cockpit (SPEC-021): one header line, then the user's plain Claude Code session filling the
+   centre like a task's terminal. */
+.cockpit { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.cockpit-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; padding: 8px 16px; border-bottom: 1px solid var(--border); min-width: 0; }
+.cockpit-title { display: inline-flex; align-items: center; gap: 8px; margin: 0; font-family: var(--font-display); font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 600; }
+.cockpit-title .nav-slot { align-self: center; }
+.cockpit-sub { min-width: 0; overflow-wrap: anywhere; }
+.cockpit-term { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.cockpit-msg { padding: 24px 16px; }
 /* The terminal and what floats over it: the attention bar never resizes the terminal (each resize
    makes the agent's TUI redraw, F 2026-10-09). */
 .taskview-term { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -999,6 +1014,16 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
 /* The composer's split proposal (TSK-011; F 2026-10-10 layout): below the prompt box, compact rows
    with an editable title, a one-line preview and the prompt collapsed; one primary action. */
+/* The start-rule editor (SPEC-022): one row per condition, a task and its state. */
+.rule-editor .seg { align-self: flex-start; }
+.rule-conditions { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.rule-condition { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.rule-condition .rule-task { flex: 1 1 auto; min-width: 0; }
+.rule-condition .rule-state { flex: none; }
+.rule-add { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.rule-preview { margin: 0; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-2); overflow-wrap: anywhere; }
+@media (max-width: 480px) { .rule-condition { flex-wrap: wrap; } .rule-condition .rule-task { flex-basis: 100%; } }
+
 .split-card {
   display: flex; flex-direction: column; gap: 12px; padding: 16px; border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
   background: var(--surface); box-shadow: var(--shadow-raised); font-size: var(--fs-sm); line-height: var(--lh-sm);
@@ -1222,7 +1247,16 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
   position: relative; display: flex; align-items: center; justify-content: center; width: 72px; height: 72px;
   border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-2, var(--surface)); color: var(--text-2); overflow: hidden;
 }
+.composer-attachment-open {
+  display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; padding: 0; border: 0;
+  background: transparent; color: inherit; cursor: pointer;
+}
+button.composer-attachment-open:has(img) { cursor: zoom-in; }
+span.composer-attachment-open { cursor: default; }
+.composer-attachment-open:focus-visible { outline: 2px solid var(--accent-border-strong); outline-offset: -2px; }
 .composer-attachment img { width: 100%; height: 100%; object-fit: cover; }
+.attachment-modal .modal-body { display: flex; justify-content: center; }
+.attachment-preview { display: block; max-width: 100%; max-height: 75vh; object-fit: contain; }
 .composer-attachment-name { position: absolute; inset: auto 0 0; padding: 0 4px; overflow: hidden; background: var(--surface-2); color: var(--text); font-size: var(--fs-xs); text-overflow: ellipsis; white-space: nowrap; }
 .composer-attachment-remove { position: absolute; top: 2px; right: 2px; }
 .composer-prompt::placeholder { color: var(--text-faint); }
@@ -1758,14 +1792,6 @@ a.dl-task:hover { text-decoration: underline; }
 .bp-agent-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--agent-ink); flex: none; }
 .bp-tab.agent:not(.active) { border-bottom-color: var(--agent); }
 
-.msg-list { flex: 1; overflow: auto; padding: 8px 12px; display: flex; flex-direction: column; gap: 8px; }
-.msg { padding: 8px 12px; border-radius: var(--radius); background: var(--surface-2); border: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px; }
-.msg.unread { border-left: 3px solid var(--accent); }
-.msg.mine { background: var(--accent-soft); border-color: var(--accent-border); }
-.msg-head { display: flex; align-items: center; gap: 6px; font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--text-2); }
-.msg-subject { font-weight: 600; }
-.msg-body { white-space: pre-wrap; word-break: break-word; }
-.msg-actions { display: flex; gap: 8px; }
 
 /* ---------------------------------------------------------------- auth pages */
 
@@ -1832,7 +1858,6 @@ a.dl-task:hover { text-decoration: underline; }
   .rail-btn { width: var(--control-lg); height: var(--control-lg); justify-content: center; padding: 0; }
   .rail-btn.active::before { top: auto; bottom: 2px; left: 8px; right: 8px; width: auto; height: 3px; }
   .rail-label { display: none; }
-  .rail-badge { position: absolute; top: 1px; right: 0; min-width: 16px; height: 16px; margin: 0; padding: 0 4px; font-size: var(--fs-xs); line-height: var(--lh-xs); }
   .rail .rail-dot { position: absolute; top: 4px; right: 4px; margin: 0; box-shadow: 0 0 0 2px var(--bg); }
 
   .sidebar {
@@ -1846,7 +1871,6 @@ a.dl-task:hover { text-decoration: underline; }
   .task-link { height: var(--control-xl); padding: 0 48px 0 12px; }
   .task-kebab { visibility: visible; top: 0; right: 2px; width: var(--control-xl); height: var(--control-xl); background: transparent; }
   .notif-head .btn-sm { height: var(--control-xl); padding: 0 12px; }
-  .task-row:hover .task-unread { visibility: visible; }
   .nav-item { height: var(--control-xl); }
 
   .panel { position: fixed; z-index: var(--z-panel); inset: 0; width: auto !important; border-left: 0; }

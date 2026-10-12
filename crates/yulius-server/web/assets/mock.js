@@ -123,7 +123,6 @@ function seed(params) {
     },
     sandboxes: [],
     tasks: [],
-    messages: [],
     recovery: { available: true, locked: false, attempts_left: 3 },
     eventSockets: new Set(),
     sessions: new Map(),
@@ -164,7 +163,7 @@ function seed(params) {
       origin: extra.origin || 'ui', created_by: { login: extra.author || 'mkarp' },
       // Created before its last change (an old task's sessions never last a negative time).
       created_at: iso(Math.max(extra.age || number * 3 * HOUR, (extra.updated ?? number * 7 * MIN) + HOUR)), updated_at: iso(extra.updated ?? number * 7 * MIN),
-      unread_messages: extra.unread || 0, archived: Boolean(extra.archived),
+      archived: Boolean(extra.archived),
       account_label: LIVE.has(status) ? 'Claude #2' : null,
       stepsList: extra.noSteps ? [] : makeSteps(id, done, current),
       model: 'claude-opus-4',
@@ -185,7 +184,7 @@ function seed(params) {
     t('sb_studio', 13, 'Improve the code', 'claude', 'running', 'done', { mode: 'goal', done: 7, current: false, updated: 6 * MIN, shells: 0, delivery: { stage: 'pr_open', environment: null, pr: pr(520, 'Improve the code', 'open', 'dev', 'pending') } }),
     // Goal achieved, but a background shell (a dev server) still runs: Working, with the shell said.
     t('sb_studio', 14, 'Start the preview server', 'claude', 'running', 'done', { mode: 'goal', done: 7, current: false, updated: 2 * MIN, shells: 1 }),
-    t('sb_studio', 12, 'Checkout API', 'claude', 'running', 'working', { done: 2, unread: 2, updated: 20e3 }),
+    t('sb_studio', 12, 'Checkout API', 'claude', 'running', 'working', { done: 2, updated: 20e3 }),
     // Finished its turn with a tested pull request (checks green) and a complete plan: "Done" (#35, #139).
     t('sb_studio', 11, '3D model viewer', 'claude', 'running', 'waiting', { done: 7, current: false, author: 'anna-q', delivery: { stage: 'pr_open', environment: null, pr: pr(221, '3D model viewer', 'open', 'dev', 'success') } }),
     t('sb_studio', 10, 'AWS login for deploy', 'claude', 'running', 'needs_attention', { done: 4 }),
@@ -218,13 +217,6 @@ function seed(params) {
       invoices.heldPrompt = { id: 'hold_1', class: 'new_scope', excerpt: 'Also add a dark mode to the invoice settings page.', percent: 92, typed_by: 'mkarp', created_at: iso(2 * MIN) };
     }
   }
-  db.messages = [
-    // Notices from Yulius itself (delivery and disk notices, scope changes); tasks do not message each other.
-    { id: 'msg_1', task: 'tsk_studio_12', from: { task_id: null, login: null, title: 'Yulius' }, to_task_id: 'tsk_studio_12', kind: 'request', subject: 'Scope changed by the user', body: 'The user dropped the invoice export from this task. Stop work on it and continue with the checkout API.', created_at: iso(42 * MIN), read: true },
-    { id: 'msg_2', task: 'tsk_studio_12', from: { task_id: null, login: null, title: 'Yulius' }, to_task_id: 'tsk_studio_12', kind: 'request', subject: 'Checks failed on the pull request', body: 'The CI gate failed on the head of your pull request. Fix it on this branch, test-first, then push.', created_at: iso(8 * MIN), read: false },
-    // The agent asks people (message_send to="people"): they answer in its terminal (F 2026-10-10).
-    { id: 'msg_3', task: 'tsk_studio_12', from: { task_id: 'tsk_studio_12', login: null, title: '#12 Checkout API' }, to_task_id: null, kind: 'question', subject: 'Stripe keys', body: 'Should checkout use the Stripe test keys or the live ones? The AWS sign-in tab is open: ' + `${ORIGIN}/s/studio/browser?tab=tab-aws`, created_at: iso(3 * MIN), read: true },
-  ];
   db.accounts = [
     { id: 'acc_c1', provider: 'anthropic', label: 'Claude #1', status: 'ok', usage: { primary: { used_percent: 42.0, resets_at: isoIn(2.2 * HOUR), window_minutes: 300 }, secondary: { used_percent: 18.5, resets_at: isoIn(4 * DAY), window_minutes: 10080 }, observed_at: iso(2 * MIN) }, last_error: null, in_use_by: 1 },
     { id: 'acc_c2', provider: 'anthropic', label: 'Claude #2', status: 'ok', usage: { primary: { used_percent: 87.3, resets_at: isoIn(1.1 * HOUR), window_minutes: 300 }, secondary: { used_percent: 61.0, resets_at: isoIn(2 * DAY), window_minutes: 10080 }, observed_at: iso(1 * MIN) }, last_error: 'usage: Usage updates again in about 12 min.', in_use_by: 3 },
@@ -274,6 +266,8 @@ function seed(params) {
     db.sandboxes = [];
     db.tasks = [];
   }
+  // `tasks=0`: sandboxes without any task yet (the composer then offers no start rule, SPEC-022).
+  if (params.get('tasks') === '0') db.tasks = [];
   recount(db);
   return db;
 }
@@ -296,7 +290,7 @@ function summary(task) {
     id: task.id, sandbox_id: task.sandbox_id, number: task.number, title: task.title, harness: task.harness,
     status: task.status, activity: task.status === 'running' || task.status === 'waiting_capacity' ? task.activity : null,
     branch: task.branch, origin: task.origin, created_by: task.created_by, created_at: task.created_at, updated_at: task.updated_at,
-    steps: stepsSummary(task), unread_messages: task.unread_messages, archived: task.archived, account_label: task.account_label,
+    steps: stepsSummary(task), archived: task.archived, account_label: task.account_label,
     resumes_at: task.status === 'waiting_capacity' ? task.resumes_at || null : null,
     // Chained tasks (TSK-012) and a held prompt (TSK-013).
     after: task.afterLink ? { ...task.afterLink } : null,
@@ -613,7 +607,7 @@ route('POST', '/api/sandboxes', ({ db, body }) => {
     db.tasks.push({
       id, sandbox_id: sandbox.id, number: 1, title: 'Prepare repository for Yulius', harness: 'claude', status: 'closed', activity: null,
       branch: null, origin: 'onboarding', created_by: { login: db.me.user.login }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-      unread_messages: 0, archived: false, account_label: null,
+      archived: false, account_label: null,
       stepsList: ['Assess the documentation format', 'Add AGENTS.md and docs/specs', 'Open PR'].map((title, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title, status: 'pending', note: '', updated_by: null, updated_at: null })),
       model: 'claude-opus-4', effort: 'high', delivery: null, prompt: 'Adapt this repository to the Yulius documentation format.',
     });
@@ -707,6 +701,8 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   if (body.mode && !['goal', 'prompt', 'auto'].includes(body.mode)) fail(422, 'invalid', 'mode must be goal, prompt or auto');
   const visible = db.workflows.filter((w) => w.scope === 'instance' || w.sandbox === sandbox.id);
   if (body.workflow_id && body.workflow_id !== 'auto' && !visible.some((w) => w.id === body.workflow_id)) fail(422, 'invalid', `unknown workflow \`${body.workflow_id}\``);
+  // A test can hold the creation (`__yuliusMock.holdCreate = promise`) to look at a starting task.
+  if (db.holdCreate) await db.holdCreate;
   // Auto (TSK-015): the mock's stand-in for Jev answers after a moment, like the server.
   const choice = body.mode === 'auto' || body.workflow_id === 'auto' ? await mockAutoChoice(body, visible) : null;
   const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === sandbox.id).map((t) => t.number)) + 1;
@@ -733,7 +729,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
     id, sandbox_id: sandbox.id, number, title, harness: 'claude', status: before ? 'chained' : 'queued', activity: null,
     branch: `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || `task-${number}`}`,
     origin: 'ui', created_by: { login: db.me.user.login }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-    unread_messages: 0, archived: false, account_label: null,
+    archived: false, account_label: null,
     stepsList: wf ? wf.steps.map((title2, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title: title2, status: 'pending', note: '', updated_by: 'workflow', updated_at: new Date().toISOString() })) : [],
     model: body.model || 'claude-opus-4', effort: body.effort || 'default', prompt: body.prompt,
     delivery: null, mode: choice ? choice.mode : body.mode || 'goal', auto: choice ? choice.auto : null,
@@ -902,13 +898,6 @@ route('POST', `/api/tasks/${ID}/feedback`, ({ db, p, body }) => {
   taskOf(db, p[0]);
   if (!['correct', 'incorrect'].includes(body.verdict)) fail(422, 'invalid', 'verdict must be correct or incorrect');
   return json(204);
-});
-route('GET', `/api/tasks/${ID}/messages`, ({ db, p }) => {
-  const task = taskOf(db, p[0]);
-  const list = db.messages.filter((m) => m.task === task.id).map(({ task: _t, ...m }) => ({ ...m }));
-  db.messages.filter((m) => m.task === task.id).forEach((m) => { m.read = true; });
-  if (task.unread_messages) touch(db, task, { unread_messages: 0 });
-  return list;
 });
 route('GET', '/api/archived-tasks', ({ db }) => db.tasks.filter((t) => t.archived && db.sandboxes.some((s) => s.id === t.sandbox_id)).map(summary));
 
@@ -1508,8 +1497,10 @@ route('POST', `/api/tasks/${ID}/attachments`, ({ db, p, query, body }) => {
   needTaskWrite(db, task);
   return storeAttachment(db, task.sandbox_id, `tasks/${task.id}`, query, body);
 });
-route('POST', `/api/sandboxes/${ID}/attachments`, ({ db, p, query, body }) => {
+route('POST', `/api/sandboxes/${ID}/attachments`, async ({ db, p, query, body }) => {
   need(sandboxOf(db, p[0]), 'write');
+  // A test can hold the answer (`__yuliusMock.holdUpload = promise`) to leave the composer meanwhile.
+  if (db.holdUpload) await db.holdUpload;
   return storeAttachment(db, p[0], `drafts/${db.me.user.id}`, query, body);
 });
 route('POST', `/api/sandboxes/${ID}/shells/${ID}/attachments`, ({ db, p, query, body }) => {
@@ -1770,7 +1761,7 @@ function shellFolder(db, shell) {
 const shellDto = (shell) => ({ id: shell.id, name: shell.name, task_id: shell.task_id, folder: shell.folder, created_at: shell.created_at });
 route('GET', `/api/sandboxes/${ID}/shells`, ({ db, p }) => {
   need(sandboxOf(db, p[0]), 'write');
-  return [...db.shells.values()].filter((shell) => shell.sandbox_id === p[0]).map(shellDto);
+  return [...db.shells.values()].filter((shell) => shell.sandbox_id === p[0] && !shell.cockpit).map(shellDto);
 });
 route('POST', `/api/sandboxes/${ID}/shells`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
@@ -1778,7 +1769,7 @@ route('POST', `/api/sandboxes/${ID}/shells`, ({ db, p, body }) => {
     const task = db.tasks.find((t) => t.id === body.task_id && t.sandbox_id === p[0]);
     if (!task) fail(404, 'not_found', 'not found');
   }
-  const own = [...db.shells.values()].filter((shell) => shell.sandbox_id === p[0]);
+  const own = [...db.shells.values()].filter((shell) => shell.sandbox_id === p[0] && !shell.cockpit);
   if (own.length >= 8) fail(429, 'capacity', 'at most 8 terminals per sandbox; close one first');
   const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim().slice(0, 40)
     : `Terminal ${[1, 2, 3, 4, 5, 6, 7, 8, 9].find((n) => !own.some((shell) => shell.name === `Terminal ${n}`))}`;
@@ -1788,10 +1779,31 @@ route('POST', `/api/sandboxes/${ID}/shells`, ({ db, p, body }) => {
   db.shells.set(shell.id, shell);
   return json(201, shellDto(shell));
 });
+// The user's Cockpit (SPEC-021): one plain Claude Code session per sandbox, started on demand,
+// never listed, renamed or closed as a terminal. `&cockpit=fail` makes it fail to start;
+// `&cockpit=gone` answers the first call with a Cockpit whose process is already gone (a reboot).
+route('POST', `/api/sandboxes/${ID}/cockpit`, ({ db, p }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  const scenario = new URLSearchParams(location.search).get('cockpit');
+  if (scenario === 'fail') fail(429, 'capacity', 'no subscription has capacity right now');
+  if (scenario === 'gone' && !db.cockpitGone) {
+    db.cockpitGone = true;
+    return { id: `ck_${p[0]}_gone`, name: 'Cockpit', task_id: null, folder: `/srv/yulius/sandboxes/studio/repo`, created_at: new Date().toISOString() };
+  }
+  let shell = [...db.shells.values()].find((s) => s.sandbox_id === p[0] && s.cockpit);
+  if (!shell) {
+    db.nextId += 1;
+    db.cockpitStarts = (db.cockpitStarts || 0) + 1;
+    shell = { id: `ck_${p[0]}_${db.nextId}`, sandbox_id: p[0], name: 'Cockpit', task_id: null, created_at: new Date().toISOString(), session: null, cockpit: true, resumed: db.cockpitStarts > 1 };
+    shell.folder = shellFolder(db, shell);
+    db.shells.set(shell.id, shell);
+  }
+  return shellDto(shell);
+});
 route('PATCH', `/api/sandboxes/${ID}/shells/${ID}`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
   const shell = db.shells.get(p[1]);
-  if (!shell || shell.sandbox_id !== p[0]) fail(404, 'not_found', 'not found');
+  if (!shell || shell.sandbox_id !== p[0] || shell.cockpit) fail(404, 'not_found', 'not found');
   const name = typeof body.name === 'string' ? body.name.trim() : '';
   if (!name || name.length > 40) fail(422, 'invalid', 'a shell name has 1 to 40 characters and no control characters');
   shell.name = name;
@@ -1800,7 +1812,7 @@ route('PATCH', `/api/sandboxes/${ID}/shells/${ID}`, ({ db, p, body }) => {
 route('DELETE', `/api/sandboxes/${ID}/shells/${ID}`, ({ db, p }) => {
   need(sandboxOf(db, p[0]), 'write');
   const shell = db.shells.get(p[1]);
-  if (!shell || shell.sandbox_id !== p[0]) fail(404, 'not_found', 'not found');
+  if (!shell || shell.sandbox_id !== p[0] || shell.cockpit) fail(404, 'not_found', 'not found');
   if (shell.session) shell.session.end(null);
   db.shells.delete(shell.id);
   return json(204);
@@ -2290,7 +2302,7 @@ route('POST', `/api/sessions/${ID}/continue`, ({ db, p }) => {
     id, sandbox_id: sandbox.id, number, title: doc.title, harness: 'claude', status: 'starting', activity: null,
     branch: `feat/${doc.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)}`,
     origin: 'import', created_by: { login: db.me.user.login }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-    unread_messages: 0, archived: false, account_label: null, stepsList: [], model: 'claude-opus-4', effort: 'default', prompt: doc.title, delivery: null,
+    archived: false, account_label: null, stepsList: [], model: 'claude-opus-4', effort: 'default', prompt: doc.title, delivery: null,
   };
   db.tasks.push(task);
   doc.continued_in = id;
@@ -2434,6 +2446,16 @@ const SCRIPT_CLAUDE = [
   `${c(255, '⏺')} Done with this step. Anything else before I write the UI wiring?`,
 ];
 
+// A collapsed tool group as Claude Code's full-screen transcript shows it: a click on it expands
+// the calls it groups, another click collapses them (task #25).
+const GROUP_CLOSED = `${c(255, '⏺')} Searched for 2 patterns, read 1 file ${dim('(click to expand)')}`;
+const GROUP_OPEN = `${c(255, '⏺')} Searched for 2 patterns, read 1 file`;
+const GROUP_CALLS = [
+  `  ${dim('⎿')}  ${bold('Search')}(pattern: "checkout", path: "src/")`,
+  `  ${dim('⎿')}  ${bold('Search')}(pattern: "loyalty_points", path: "src/")`,
+  `  ${dim('⎿')}  ${bold('Read')}(src/api/tax.rs)`,
+];
+
 /** Persistent fake PTY for one task: a scroll region above a native-looking footer. */
 class TermSession {
   constructor(db, task) {
@@ -2497,6 +2519,7 @@ class TermSession {
         `  Docs for the deploy role: ${c(39, 'https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles.html')}`,
       );
     } else {
+      this.lines.push(GROUP_CLOSED);
       for (const line of this.script.slice(0, 6)) this.lines.push(line);
       this.scriptIndex = 6;
       // File references in every form the terminal links to the editor (F 2026-10-10) — a bare
@@ -2527,7 +2550,6 @@ class TermSession {
     const contained = !(this.db.me.instance && this.db.me.instance.contained === false);
     const extras = [];
     if (!this.exited && this.task.number % 2 === 0) extras.push(c(80, '1 shell'));
-    if (!this.exited && this.task.unread_messages) extras.push(dim(`← ${this.task.unread_messages === 1 ? '1 notice' : `${this.task.unread_messages} notices`}`));
     const mode = contained
       ? ` ${c(204, '⏵⏵ bypass permissions on')}${extras.length ? '' : dim(' (shift+tab to cycle)')}`
       : ` ${dim('? for shortcuts')}`;
@@ -2655,9 +2677,29 @@ class TermSession {
     this.broadcast(this.snapshot());
   }
 
+  /** A primary click at 1-based `row` toggles the collapsed tool group drawn there, if any. */
+  click(row) {
+    const bottom = this.regionBottom();
+    if (row < 1 || row > bottom) return;
+    const index = this.lines.length - this.scroll - bottom + row - 1;
+    const line = this.lines[index];
+    if (line === GROUP_CLOSED) {
+      this.lines.splice(index, 1, GROUP_OPEN, ...GROUP_CALLS);
+    } else if (line === GROUP_OPEN) {
+      this.lines.splice(index, 1 + GROUP_CALLS.length, GROUP_CLOSED);
+    } else {
+      return;
+    }
+    this.broadcast(this.snapshot());
+  }
+
   onInput(data) {
-    // Mouse reports (the viewer's wheel) are not typed text.
-    const typed = data.replace(/\x1b\[<(\d+);\d+;\d+[Mm]/g, (_, button) => { this.wheel(Number(button)); return ''; });
+    // Mouse reports (the viewer's wheel and clicks) are not typed text: a wheel turn scrolls, a
+    // primary press clicks, its release does nothing.
+    const typed = data.replace(/\x1b\[<(\d+);\d+;(\d+)([Mm])/g, (_, button, row, kind) => {
+      if (Number(button) === 0) { if (kind === 'M') this.click(Number(row)); } else this.wheel(Number(button));
+      return '';
+    });
     for (const ch of typed.replace(/\x1b\[[AB]/g, '')) {
       if (ch === '\r' || ch === '\n') this.submit();
       else if (ch === '\x7f' || ch === '\b') { this.input = this.input.slice(0, -1); this.redrawPrompt(); }
@@ -2789,6 +2831,11 @@ class ShellSession {
     // Like bash with Yulius's PROMPT_COMMAND: the working directory as OSC 7 before each prompt.
     this.prompt = `\x1b]7;file://sandbox${shell.folder || ''}\x1b\\${c(114, `you@${slug}`)}:${c(39, cwd)}$ `;
     this.screen = `${dim('Contained sandbox shell (mock). Try: ls, pwd, git status, exit')}\r\n${this.prompt}`;
+    if (shell.cockpit) {
+      // A plain Claude Code session (mock): its welcome and prompt; /exit ends it.
+      this.prompt = `${c(39, '>')} `;
+      this.screen = `${c(208, '✻')} Welcome to Claude Code${shell.resumed ? dim(' · resumed your last conversation') : ''}\r\n${dim(`  cwd: ${shell.folder}`)}\r\n\r\n${this.prompt}`;
+    }
   }
 
   out(text) {
@@ -2828,6 +2875,12 @@ class ShellSession {
       'git status': 'On branch main\r\nYour branch is up to date with \'origin/main\'.\r\n\r\nnothing to commit, working tree clean',
       whoami: 'you',
     };
+    if (this.shell.cockpit) {
+      if (cmd === '/exit') { this.out('\r\n'); this.end(0); return; }
+      if (cmd === '/clear') { this.out(`${E}2J${E}H${this.prompt}`); return; }
+      this.out(`\r\n${cmd ? `${c(208, '⏺')} ${cmd.endsWith('?') ? 'Good question. (mock answer)' : 'Done. (mock)'}\r\n\r\n` : ''}${this.prompt}`);
+      return;
+    }
     if (cmd === 'exit') {
       this.out('\r\nlogout\r\n');
       this.end(0);

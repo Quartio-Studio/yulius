@@ -3,7 +3,7 @@
 //! only sealed MCP secrets, attachments with scope override, and the connection test against a
 //! loopback HTTP server and a stdio child.
 
-mod support;
+use crate::support;
 
 use std::path::Path;
 

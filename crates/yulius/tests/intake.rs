@@ -3,7 +3,7 @@
 //! need a person when it ends otherwise, and the `UserPromptSubmit` scope check with the
 //! decisions on a held prompt. Jev and Claude are fakes: no real call is made.
 
-mod support;
+use crate::support;
 
 use std::path::Path;
 use std::process::Command;
@@ -747,13 +747,8 @@ async fn drops_scope_skips_the_chosen_steps_and_chains_the_new_direction() -> Te
         r.body["task"]["steps"]["done"], 1,
         "skipped counts as finished"
     );
-    let inbox = i.h.store.inbox(&task, true, 10).await?;
-    assert!(
-        inbox
-            .iter()
-            .any(|m| m.message.subject == "Scope changed by the user"
-                && m.message.body.contains("Add CSV export"))
-    );
+    // MSR-002 (SPEC-028): the skipped steps carry the change; no message is stored.
+    assert!(i.h.store.task_messages(&task, 10).await?.is_empty());
     Ok(())
 }
 

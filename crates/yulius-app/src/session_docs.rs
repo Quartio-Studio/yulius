@@ -28,7 +28,7 @@ use yulius_domain::permission::{AccessLevel, Action};
 
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
-use crate::coordination::AgentContext;
+use crate::coordination::ProjectCaller;
 use crate::error::{AppError, AppResult};
 use crate::imports::{aux_relative, copy_immutable, move_tree, parse_rfc3339};
 use crate::lifecycle::NewTask;
@@ -292,6 +292,20 @@ impl App {
 
     /// A task session read from a stored copy moves to the native transcript once the task
     /// resumed it (the copy stops growing; the native file has the continuation).
+    /// A transcript rewritten in place (stepped back over a usage limit, SPEC-034) is indexed
+    /// again from its start: the index reads transcripts as append-only.
+    pub(crate) async fn reindex_session(&self, sandbox: &SandboxId, session_id: &str) {
+        let store = &self.deps.store;
+        let Ok(docs) = store.session_docs(sandbox).await else {
+            return;
+        };
+        for doc in docs.iter().filter(|d| d.session_id == session_id) {
+            if let Err(err) = store.reset_session_index(&doc.id).await {
+                tracing::warn!(error = %err, "could not reset a session's index");
+            }
+        }
+    }
+
     async fn follow_resumed_copies(&self, docs: &mut [SessionDocRecord]) -> AppResult<()> {
         let stored_root = self.config.data_dir.join("transcripts");
         for doc in docs.iter_mut() {
@@ -1110,7 +1124,11 @@ impl App {
     ///
     /// # Errors
     /// `Invalid` without a query.
-    pub async fn tool_sessions_search(&self, ctx: &AgentContext, args: &Value) -> AppResult<Value> {
+    pub async fn tool_sessions_search(
+        &self,
+        caller: &ProjectCaller,
+        args: &Value,
+    ) -> AppResult<Value> {
         let query = args
             .get("query")
             .and_then(Value::as_str)
@@ -1123,9 +1141,10 @@ impl App {
             .and_then(Value::as_u64)
             .map_or(8, |n| usize::try_from(n).unwrap_or(MAX_SEARCH_RESULTS))
             .clamp(1, MAX_SEARCH_RESULTS);
-        let sandbox = &ctx.task.sandbox_id;
+        let sandbox = &caller.sandbox;
         self.refresh_session_index(sandbox).await?;
-        let found = self.search_docs(sandbox, query, Some(&ctx.task.id)).await?;
+        let own = caller.task.as_ref().map(|t| &t.id);
+        let found = self.search_docs(sandbox, query, own).await?;
         let tasks = self.sandbox_tasks(sandbox).await?;
         let mut logins = HashMap::new();
         let mut results = Vec::new();
@@ -1172,8 +1191,12 @@ impl App {
     ///
     /// # Errors
     /// `NotFound` outside the agent's sandbox, `Invalid` without an id or task number.
-    pub async fn tool_session_read(&self, ctx: &AgentContext, args: &Value) -> AppResult<Value> {
-        let sandbox = &ctx.task.sandbox_id;
+    pub async fn tool_session_read(
+        &self,
+        caller: &ProjectCaller,
+        args: &Value,
+    ) -> AppResult<Value> {
+        let sandbox = &caller.sandbox;
         let store = &self.deps.store;
         let doc = if let Some(id) = args.get("id").and_then(Value::as_str) {
             store
