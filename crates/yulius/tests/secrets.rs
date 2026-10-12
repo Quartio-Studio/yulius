@@ -309,6 +309,7 @@ async fn two_factor_is_set_up_once_and_unlocks_the_vault() -> TestResult {
     )
     .await?;
     assert_eq!(setup.status, StatusCode::CREATED, "{}", setup.body);
+    assert_eq!(setup.cache_control.as_deref(), Some("no-store"));
     let seed = setup.body["secret"].as_str().ok_or("secret")?.to_owned();
     assert_eq!(seed.len(), 32, "160 bits of base32");
     let uri = setup.body["uri"].as_str().ok_or("uri")?;
@@ -414,6 +415,63 @@ async fn two_factor_is_set_up_once_and_unlocks_the_vault() -> TestResult {
     Ok(())
 }
 
+/// R6: ten wrong codes in a row lock two-factor (a stolen session cannot keep guessing) until
+/// the person confirms it is them again; the lock is audited.
+#[tokio::test]
+async fn ten_wrong_codes_lock_two_factor_until_identity_is_confirmed() -> TestResult {
+    let h = support::harness()?;
+    let admin = setup_superadmin_creds(&h).await?;
+    let seed = enroll(&h, &admin).await?;
+    for _ in 0..2 {
+        h.clock.0.fetch_add(61_000, Ordering::SeqCst);
+        for _ in 0..5 {
+            let wrong = unlock(&h, &admin, &wrong_code(&h, &seed)?).await?;
+            assert_eq!(wrong.status, StatusCode::FORBIDDEN);
+        }
+    }
+    h.clock.0.fetch_add(61_000, Ordering::SeqCst);
+    let right = unlock(&h, &admin, &code_at(&h, &seed, 0)?).await?;
+    assert_eq!(
+        right.status,
+        StatusCode::FORBIDDEN,
+        "locked: {}",
+        right.body
+    );
+    let status = call(&h.router, Method::GET, "/api/auth/reauth", None, &admin).await?;
+    assert_eq!(status.body["two_factor"], "locked");
+
+    let confirmed = call(
+        &h.router,
+        Method::POST,
+        "/api/auth/reauth",
+        Some(json!({"password": PASSWORD})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.body);
+    assert_eq!(confirmed.body["two_factor"], "on");
+    let again = unlock(&h, &admin, &code_at(&h, &seed, 0)?).await?;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.body);
+
+    let activity = call(
+        &h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &admin,
+    )
+    .await?;
+    assert!(
+        activity
+            .body
+            .as_array()
+            .is_some_and(|a| a.iter().any(|e| e["action"] == "vault.2fa.locked")),
+        "{}",
+        activity.body
+    );
+    Ok(())
+}
+
 /// AC4: setting up needs a recent sign-in or confirmation, so a stolen session alone cannot
 /// enroll its own authenticator.
 #[tokio::test]
@@ -492,6 +550,26 @@ async fn older_team_secrets_fold_into_a_value_and_notes() -> TestResult {
              Two-factor seed: {SEED}\n\nrecovery: 1111-2222"
         )
     );
+    // A later edit seals the new form and keeps the folded notes.
+    let renamed = call(
+        &h.router,
+        Method::PATCH,
+        "/api/team-secrets/old-gmail",
+        Some(json!({"title": "Team Gmail"})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(renamed.status, StatusCode::OK, "{}", renamed.body);
+    let again = call(
+        &h.router,
+        Method::POST,
+        "/api/team-secrets/old-gmail/reveal",
+        None,
+        &admin,
+    )
+    .await?;
+    assert_eq!(again.body["value"], MAIL_PASSWORD);
+    assert_eq!(again.body["notes"], shown.body["notes"]);
     Ok(())
 }
 
@@ -731,6 +809,7 @@ async fn agent_secrets_follow_sandbox_access_and_reveal_only_to_managers() -> Te
     assert_eq!(by_writer.status, StatusCode::FORBIDDEN);
     let by_admin = add_agent_secret(&w, &w.admin, "s1", global).await?;
     assert_eq!(by_admin.status, StatusCode::CREATED, "{}", by_admin.body);
+    let global_id = by_admin.body["id"].as_str().ok_or("id")?.to_owned();
     let other = call(
         &w.h.router,
         Method::GET,
@@ -806,8 +885,20 @@ async fn agent_secrets_follow_sandbox_access_and_reveal_only_to_managers() -> Te
     enroll(&w.h, &writer).await?;
     let shown = call(&w.h.router, Method::POST, &reveal, None, &writer).await?;
     assert_eq!(shown.status, StatusCode::OK, "{}", shown.body);
+    assert_eq!(shown.cache_control.as_deref(), Some("no-store"));
     assert_eq!(shown.body["value"], STRIPE);
     assert_eq!(shown.body["notes"], "test-mode key");
+    // An instance-wide secret is read only by instance administrators.
+    let global_reveal = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/agent-secrets/{global_id}/reveal"),
+        None,
+        &writer,
+    )
+    .await?;
+    assert_eq!(global_reveal.status, StatusCode::FORBIDDEN);
+    assert_hidden(&global_reveal.body, &["global-value-123"]);
     enroll(&w.h, &reader).await?;
     let by_reader = call(&w.h.router, Method::POST, &reveal, None, &reader).await?;
     assert_eq!(by_reader.status, StatusCode::FORBIDDEN);
@@ -894,6 +985,34 @@ async fn the_egress_policy_adds_secrets_for_bound_hosts_only() -> TestResult {
         let created = add_agent_secret(&w, &w.writer, "s1", body).await?;
         assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
     }
+    // Revealing Basic credentials gives the whole credential: the user name leads the notes.
+    let listed = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/agent-secrets",
+        None,
+        &w.writer,
+    )
+    .await?;
+    let svc = listed
+        .body
+        .as_array()
+        .and_then(|a| a.iter().find(|s| s["name"] == "SVC_PASS"))
+        .and_then(|s| s["id"].as_str())
+        .ok_or("SVC_PASS")?
+        .to_owned();
+    let alice = browser_session(&w.h, "u-alice").await?;
+    enroll(&w.h, &alice).await?;
+    let basic = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/agent-secrets/{svc}/reveal"),
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(basic.body["value"], "svc-password-42");
+    assert_eq!(basic.body["notes"], "User name: bob");
     let app: Arc<dyn EgressPolicy> = w.h.app.clone();
     assert!(app.egress_client("unknown-token").await.is_none());
     let s1 = app.egress_client(TOKEN_S1).await.ok_or("s1 client")?;

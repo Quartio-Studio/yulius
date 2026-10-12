@@ -10,10 +10,11 @@ const AGENT_VALUE = 'mock-agent-value-1';
 const MOCK_CODE = '123456';
 
 /** Sets up two-factor in the dialog a first reveal opens (SPEC-040): a wrong code is refused. */
-async function setUpTwoFactor(screen: any) {
+async function setUpTwoFactor(screen: any, browser: any) {
   const setup = screen.getByRole('dialog', 'Set up two-factor');
   await expect(setup).toBeVisible();
   await expect(setup.getByText(/Add this key to your authenticator app/)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
   await expect(setup.getByRole('link', 'Open in an authenticator app')).toHaveAttribute('href', /^otpauth:\/\/totp\//);
   await screen.getByLabel('Code from your app').fill('000000');
   await setup.getByRole('button', 'Unlock').click();
@@ -34,7 +35,7 @@ test('team secrets are a title, a value and notes, shown after a two-factor code
   expect(await axeViolations(browser)).toEqual([]);
 
   await screen.getByRole('button', 'Show Shared Gmail').click();
-  await setUpTwoFactor(screen);
+  await setUpTwoFactor(screen, browser);
   const shown = screen.getByRole('dialog', 'Shared Gmail');
   await expect(shown).toBeVisible();
   await expect(shown.getByText(TEAM_VALUE)).toBeVisible();
@@ -92,7 +93,7 @@ test('agent secrets are bound to hosts and readable by their managers after a co
 
   // Its manager reads it back after a two-factor code.
   await screen.getByRole('button', 'Show STRIPE_KEY').click();
-  await setUpTwoFactor(screen);
+  await setUpTwoFactor(screen, browser);
   const shown = screen.getByRole('dialog', 'STRIPE_KEY');
   await expect(shown.getByText(AGENT_VALUE)).toBeVisible();
   await shown.getByRole('button', 'Done').click();
@@ -102,6 +103,23 @@ test('agent secrets are bound to hosts and readable by their managers after a co
   await expect(screen.getByRole('radio', 'Agent secrets')).toHaveAttribute('aria-checked', 'true');
   await screen.getByRole('radio', 'Team secrets').click();
   await expect(screen.getByText('Shared Gmail')).toBeVisible();
+});
+
+// Review of SPEC-040: an older secret's address, user name and seed live in its notes, so its
+// notes are edited from their current text, never replaced blindly.
+test('editing a team secret loads its current notes after a two-factor code', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets'));
+  await screen.getByRole('button', 'Edit Shared Gmail').click();
+  const edit = screen.getByRole('dialog', 'Edit Shared Gmail');
+  await expect(edit.getByText(/what you type replaces them/)).toBeVisible();
+  await screen.getByRole('button', 'Edit current notes of Shared Gmail').click();
+  await setUpTwoFactor(screen, browser);
+  await expect(browser.locator('dialog.modal textarea')).toHaveValue(/User name: team@example\.test/);
+  await browser.locator('dialog.modal textarea').fill('User name: team@example.test\nRecovery codes: new');
+  await edit.getByRole('button', 'Save').click();
+  await expect(edit).toBeHidden();
+  await screen.getByRole('button', 'Show Shared Gmail').click();
+  await expect(screen.getByRole('dialog', 'Shared Gmail').getByText(/Recovery codes: new/)).toBeVisible();
 });
 
 test('members who only read a sandbox cannot add agent secrets', async ({ app, screen }) => {

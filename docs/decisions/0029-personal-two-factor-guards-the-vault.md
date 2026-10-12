@@ -27,7 +27,8 @@ two-factor.
   Every reveal or copy, of a team secret or of an agent secret, needs a code entered in that
   browser session in the last 10 minutes. Codes are checked in constant time, within one time
   step either way. Each works once (`last_counter`), attempts are limited to 5 a minute, and
-  everything is audited.
+  everything is audited. Ten wrong codes in a row lock codes until the person confirms identity
+  again (password or a new GitHub sign-in), so a stolen session cannot keep guessing.
 - Setting up needs a sign-in or password confirmation in the last 10 minutes, and a confirmed
   seed cannot be replaced from the account. A stolen cookie alone cannot enroll its own
   authenticator.
