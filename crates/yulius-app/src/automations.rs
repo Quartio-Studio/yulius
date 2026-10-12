@@ -16,6 +16,8 @@
 //! has an anchor (the last handled time); enabling it or changing its schedule moves the anchor
 //! to "now" so no history is replayed.
 
+pub mod templates;
+
 use std::sync::Arc;
 use std::time::Duration;
 
