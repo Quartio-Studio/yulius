@@ -1766,8 +1766,8 @@ impl App {
     /// ended and the task rests (SPEC-039), so its records and directories can go. A run that
     /// already ended by itself is not a conflict. The close and the wait are bounded together by
     /// the close escalation, after which the run is terminated and marked lost, plus
-    /// [`CLOSE_SETTLE_MS`]; the wait follows the task's update events and looks again every
-    /// [`CLOSE_RECHECK`] in case an update is never published.
+    /// `CLOSE_SETTLE_MS`; the wait follows the task's update events and looks again every
+    /// `CLOSE_RECHECK` in case an update is never published.
     ///
     /// # Errors
     /// `Conflict` when the run is still there at the bound.
