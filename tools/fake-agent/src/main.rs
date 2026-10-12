@@ -9,7 +9,7 @@
 //!            [--bytes N] [--code N] [--seconds N] [--ignore-term]
 //!            [--session-id ID] [--transcript PATH [--transcript-kind claude]]
 //!            [--limit-after N] [--report-env NAME]... [--tui]
-//!            [--hooks YULIUS_EXE] [--goal-background SECONDS] [--goal-delay-ms MS]
+//!            [--hooks YULIUS_EXE] [--goal-background SECONDS] [--goal-delay-ms MS] [--drop-lines N]
 //!            [--interrupts] [--rate-limits-file PATH]
 //! ```
 //!
@@ -118,6 +118,7 @@ struct Options {
     hooks: Option<PathBuf>,
     goal_background: Option<u64>,
     goal_delay_ms: u64,
+    drop_lines: u32,
     interrupts: bool,
     rate_limits_file: Option<PathBuf>,
 }
@@ -144,6 +145,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         hooks: None,
         goal_background: None,
         goal_delay_ms: 0,
+        drop_lines: 0,
         interrupts: false,
         rate_limits_file: None,
     };
@@ -193,6 +195,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                 let ms: u64 = parse_number(&flag, args.next())?;
                 options.goal_delay_ms = ms.min(MAX_GOAL_DELAY_MS);
             }
+            "--drop-lines" => options.drop_lines = parse_number(&flag, args.next())?,
             "--interrupts" => options.interrupts = true,
             "--rate-limits-file" => {
                 options.rate_limits_file =
@@ -837,7 +840,13 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
     let mut limited = false;
     let stdin = io::stdin();
     let mut input = stdin.lock();
+    let mut to_drop = options.drop_lines;
     while let Some(line) = read_line(&mut input)? {
+        // A submit the TUI lost (`--drop-lines`): the first typed lines never reach the agent.
+        if to_drop > 0 && !line.is_empty() {
+            to_drop -= 1;
+            continue;
+        }
         match line.as_str() {
             "/exit" => {
                 if let Some(hooks) = &hooks {

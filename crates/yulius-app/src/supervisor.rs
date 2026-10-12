@@ -101,6 +101,9 @@ pub struct TaskRuntime {
     pub(crate) typed_by: Mutex<Option<yulius_domain::ids::UserId>>,
     /// Claude Code recorded the session goal as achieved and no prompt came since (TSK-014).
     pub(crate) goal_achieved: AtomicBool,
+    /// Claude Code recorded something about the goal, or a prompt was submitted, since this
+    /// attempt started: the typed `/goal` was submitted, not left in the prompt box.
+    pub(crate) goal_submitted: AtomicBool,
     /// When the last clean Stop ended a turn (ms), so a prompt of that turn read late from the
     /// transcript does not reopen it.
     pub(crate) last_stop_ms: AtomicI64,
@@ -152,6 +155,7 @@ impl TaskRuntime {
             typed_at_ms: AtomicI64::new(0),
             typed_by: Mutex::new(None),
             goal_achieved: AtomicBool::new(false),
+            goal_submitted: AtomicBool::new(false),
             last_stop_ms: AtomicI64::new(0),
             background_shells: AtomicI64::new(-1),
             replay_transcript: AtomicBool::new(false),
@@ -281,6 +285,11 @@ pub(crate) fn git_credential_env(exe: &Path) -> Vec<(String, String)> {
 const GOAL_QUIET: Duration = Duration::from_millis(1500);
 /// Upper bound for waiting until the TUI is ready for the goal.
 const GOAL_READY_TIMEOUT: Duration = Duration::from_secs(45);
+/// How long after Enter Claude Code may take to record the goal before the submit is retried.
+const GOAL_SUBMIT_WAIT: Duration = Duration::from_secs(6);
+/// How often the typed goal is submitted again when Claude Code did not take it (the TUI
+/// sometimes drops the Enter or the text typed before its prompt box was ready).
+const GOAL_SUBMIT_RETRIES: usize = 3;
 /// Longest prompt used as the goal itself (Claude Code caps goal conditions at 500 characters).
 const GOAL_INLINE_MAX: usize = 450;
 /// The goal of a task whose prompt is too long to be the goal: the prompt is the first message.
@@ -929,13 +938,46 @@ impl App {
                     break;
                 }
             }
-            if let Err(err) = app.send_input(&task_id, command.as_bytes()).await {
-                tracing::warn!(task = %task_id, error = %err, "could not set the task goal");
-                return;
+            // Typing and Enter can be lost while the TUI still starts (the task then shows the
+            // goal in the prompt box, unsubmitted), so the submit is confirmed by what Claude
+            // Code records and repeated a bounded number of times: Enter first, then the whole
+            // line again over a cleared prompt box.
+            runtime.goal_submitted.store(false, Ordering::SeqCst);
+            for attempt in 0..=GOAL_SUBMIT_RETRIES {
+                let mut input = Vec::new();
+                if attempt == 0 || attempt == GOAL_SUBMIT_RETRIES {
+                    if attempt > 0 {
+                        input.push(0x15); // Ctrl-U: clear what is in the prompt box
+                    }
+                    input.extend_from_slice(command.as_bytes());
+                }
+                if !input.is_empty()
+                    && let Err(err) = app.send_input(&task_id, &input).await
+                {
+                    tracing::warn!(task = %task_id, error = %err, "could not set the task goal");
+                    return;
+                }
+                // A separate Enter, so the TUI sees typed text first and then a submit.
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                if app.send_input(&task_id, b"\r").await.is_err() {
+                    return;
+                }
+                let waited = tokio::time::Instant::now();
+                while waited.elapsed() < GOAL_SUBMIT_WAIT {
+                    if runtime.goal_submitted.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    let live = matches!(
+                        app.deps.store.live_attempt(&task_id).await,
+                        Ok(Some(a)) if a.id == attempt_id
+                    );
+                    if !live {
+                        return;
+                    }
+                }
+                tracing::warn!(task = %task_id, attempt, "the task goal was not taken; submitting again");
             }
-            // A separate Enter, so the TUI sees typed text first and then a submit.
-            tokio::time::sleep(Duration::from_millis(150)).await;
-            let _ = app.send_input(&task_id, b"\r").await;
         });
     }
 
@@ -1830,6 +1872,7 @@ impl App {
         runtime.active_ms.store(0, Ordering::SeqCst);
         // A new attempt (or the same one after a restart) learns the goal from its transcript.
         runtime.goal_achieved.store(false, Ordering::SeqCst);
+        runtime.goal_submitted.store(false, Ordering::SeqCst);
         runtime.background_shells.store(-1, Ordering::SeqCst);
         if let Ok(mut end) = runtime.session_end.lock() {
             *end = None;
@@ -2027,6 +2070,7 @@ impl App {
             Observation::UserTurn { at } => {
                 // A new prompt: an achieved goal no longer makes the task done (TSK-014).
                 runtime.goal_achieved.store(false, Ordering::SeqCst);
+                runtime.goal_submitted.store(true, Ordering::SeqCst);
                 // A prompt of a turn whose clean Stop already came is not a new turn.
                 if at.is_some_and(|at| at.0 <= runtime.last_stop_ms.load(Ordering::SeqCst)) {
                     return;
