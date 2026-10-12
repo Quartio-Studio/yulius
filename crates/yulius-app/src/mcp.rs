@@ -158,7 +158,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "delivery_merge".into(),
-            description: "Merge this task's pull request on green (the one delivery pipeline: you deliver your own work, no person accepts it). Refused unless the checks passed on the exact head (Yulius CI), the spec is valid when the task needs one, every step is done, the head is current and an independent review in a fresh session approved exactly this head: pass that commit as reviewed_head (and a one-line review_summary). Acts with the authority of the task's creator and is audited.".into(),
+            description: "Merge this task's pull request on green (the one delivery pipeline: you deliver your own work, no person accepts it). Refused unless the checks passed on the exact head (Yulius CI), the spec is valid when the task needs one, every step is done, the head is current and an independent review in a fresh session approved exactly this head: pass that commit as reviewed_head (and a one-line review_summary). While the checks at that head still run, the call arms the merge instead: Yulius merges exactly that head as soon as they pass and tells you (start `yulius wait` with run_in_background and end your turn; never poll). Acts with the authority of the task's creator and is audited.".into(),
             input_schema: schema(json!({
                 "reviewed_head": {"type": "string", "description": "The commit SHA the independent reviewer approved (must be the branch head)"},
                 "review_summary": {"type": "string", "description": "One line: the reviewer's verdict and what it checked"}
@@ -171,7 +171,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "delivery_promote".into(),
-            description: "Promote the integration branch to production once every merged task's integration environments are done. With merge-commit promotion the first call opens the promotion pull request and a later call, after its checks passed, merges it; fast-forward promotes at once.".into(),
+            description: "Only when the task asks for a release to production (a person decides that, in its own task): promote the integration branch to production once every merged task's integration environments are done. With merge-commit promotion the first call opens the promotion pull request and a later call, after its checks passed, merges it; fast-forward promotes at once.".into(),
             input_schema: schema(json!({}), &[]),
         },
         ToolDescriptor {

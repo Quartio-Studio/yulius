@@ -10,7 +10,7 @@ import { attachMarkdownInput } from './mdinput.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
 import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask } from './actions.js';
-import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments } from './filedrop.js';
+import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments } from './filedrop.js';
 import { relLong, dateTime } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
@@ -429,7 +429,23 @@ export function mountComposer(ctx, sandbox) {
       h('a', { class: 'composer-repo-link', href: sandbox.repo.url, target: '_blank', rel: 'noopener noreferrer', title: `Open ${sandbox.repo.owner}/${sandbox.repo.name} on GitHub` },
         icon('github', { size: 18 }), h('span', null, `${sandbox.repo.owner} / ${sandbox.repo.name}`)),
       h('span', { class: 'composer-branch', title: `New tasks branch from ${baseBranch}` }, icon('branch', { size: 16 }), h('span', null, baseBranch))) : null);
+  // Files added to the prompt wait here, shown as thumbnails; their paths join the text at start.
+  let attached = [];
+  const tray = h('ul', { class: 'composer-attachments', 'aria-label': 'Attached files', hidden: true });
+  function renderTray() {
+    for (const item of attached) if (!item.url && /^image\//.test(item.file.type)) item.url = URL.createObjectURL(item.file);
+    tray.hidden = !attached.length;
+    setChildren(tray, attached.map((item) => h('li', { class: 'composer-attachment', title: item.name },
+      item.url ? h('img', { src: item.url, alt: item.name }) : icon('file', { size: 20 }),
+      h('span', { class: 'composer-attachment-name' }, item.name),
+      iconButton('x', `Remove ${item.name}`, () => { dropAttached([item]); renderTray(); }, { class: 'composer-attachment-remove' }))));
+  }
+  function dropAttached(items) {
+    for (const item of items) if (item.url) URL.revokeObjectURL(item.url);
+    attached = attached.filter((item) => !items.includes(item));
+  }
   setChildren(box,
+    tray,
     prompt,
     previewEl,
     h('div', { class: 'composer-tools' }, modeChip, workflowChip, afterChip, h('div', { class: 'composer-right' }, previewButton, modelChip, effortChip, startButton)));
@@ -443,7 +459,7 @@ export function mountComposer(ctx, sandbox) {
       h('div', { class: 'composer-hint muted xs' }, modeHint, h('span', { class: 'composer-hint-sep', 'aria-hidden': 'true' }, ' · '), hint),
       intakeSlot));
   // Files dropped (or an image pasted) on the prompt reach the new task's agent by path.
-  attachPromptDrop(ctx, { box, prompt, label: 'Drop to add to the prompt', upload: draftAttachments(ctx, sandbox.id) });
+  attachPromptDrop(ctx, { box, prompt, label: 'Drop to add to the prompt', upload: draftAttachments(ctx, sandbox.id), onAttach: (items) => { attached.push(...items); renderTray(); } });
 
   function renderChips() {
     const m = MODES.find((x) => x.id === mode);
@@ -612,7 +628,7 @@ export function mountComposer(ctx, sandbox) {
 
   /** The request body of a new task with the composer's choices (`auto`: Jev decides, TSK-015). */
   function bodyFor(text, title) {
-    const body = { prompt: text, mode };
+    const body = { prompt: withAttachments(text, attached), mode };
     if (title) body.title = title;
     if (workflowId) body.workflow_id = workflowId;
     const found = findModel(modelId);
@@ -632,6 +648,8 @@ export function mountComposer(ctx, sandbox) {
 
   function opened(task) {
     prompt.value = '';
+    dropAttached([...attached]);
+    renderTray();
     fit();
     afterTaskId = '';
     ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`);

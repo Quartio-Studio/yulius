@@ -121,6 +121,8 @@ fn claude_new_session_argv_snapshot_and_files() -> TestResult {
             ),
             ("YULIUS_URL".to_owned(), "http://127.0.0.1:7801".to_owned()),
             ("DISABLE_AUTOUPDATER".to_owned(), "1".to_owned()),
+            ("BASH_DEFAULT_TIMEOUT_MS".to_owned(), "600000".to_owned()),
+            ("BASH_MAX_TIMEOUT_MS".to_owned(), "1800000".to_owned()),
         ]
     );
     assert_eq!(
@@ -214,6 +216,9 @@ fn claude_resume_uncontained_never_skips_permissions() -> TestResult {
             "--mcp-config",
             "/data/runs/a1/mcp.json",
             "--strict-mcp-config",
+            // No model named: the default, the latest Opus (F 2026-10-12).
+            "--model",
+            "opus",
             "--",
             "--continue after the limit",
         ]

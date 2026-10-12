@@ -74,6 +74,12 @@ impl App {
             loop {
                 every.tick().await;
                 app.reconcile_deliveries().await;
+                // Armed merges whose checks passed while no CI run ended here (a restart).
+                if let Ok(sandboxes) = app.deps.store.sandboxes().await {
+                    for sandbox in sandboxes.iter().filter(|s| s.removed_at.is_none()) {
+                        app.merge_armed(&sandbox.id).await;
+                    }
+                }
             }
         });
         // Yulius-run CI and repository hygiene (SPEC-002 ADR-21).

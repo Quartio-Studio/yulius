@@ -1,5 +1,5 @@
 //! Internal agent endpoints: `POST /hooks/{harness}/{event}` (also Claude Code's status line,
-//! `event` = `StatusLine`) and `POST /internal/git-credential`
+//! `event` = `StatusLine`), `POST /internal/git-credential` and `POST /internal/agent/wait`
 //! (task-token bearer auth, loopback listener only).
 
 use axum::Json;
@@ -84,6 +84,42 @@ pub struct CredentialRequest {
     host: String,
     #[serde(default)]
     path: Option<String>,
+}
+
+/// `POST /internal/agent/wait` (task token): what `yulius wait` blocks on (SPEC-011). Body:
+/// `{"head": "<sha>", "since": <state>|null, "timeout_secs": n}`; answers the task's wait state
+/// once it differs from `since` or the timeout (at most 55 s) passed.
+pub async fn agent_wait(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<AgentWaitRequest>,
+) -> Response {
+    let Some(token) = bearer(&headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let timeout = std::time::Duration::from_secs(request.timeout_secs.unwrap_or(50));
+    match app
+        .agent_wait(
+            token,
+            request.head.as_deref(),
+            request.since.as_ref(),
+            timeout,
+        )
+        .await
+    {
+        Ok(state) => Json(state).into_response(),
+        Err(err) => status_of(&err).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct AgentWaitRequest {
+    #[serde(default)]
+    head: Option<String>,
+    #[serde(default)]
+    since: Option<yulius_app::agent_wait::WaitState>,
+    #[serde(default)]
+    timeout_secs: Option<u64>,
 }
 
 pub async fn git_credential(

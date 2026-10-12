@@ -28,6 +28,13 @@ pub const YULIUS_URL_ENV: &str = "YULIUS_URL";
 /// on the host, and a contained session cannot write there, so the update could only fail
 /// (#45). Manual `claude update` is unaffected.
 pub const DISABLE_AUTOUPDATER_ENV: (&str, &str) = ("DISABLE_AUTOUPDATER", "1");
+/// Claude Code's Bash timeouts for agents: 10 minutes by default, 30 at most.
+pub const BASH_TIMEOUT_ENV: [(&str, &str); 2] = [
+    ("BASH_DEFAULT_TIMEOUT_MS", "600000"),
+    ("BASH_MAX_TIMEOUT_MS", "1800000"),
+];
+/// The model of a task that names none (the latest Opus).
+pub use yulius_domain::harness::DEFAULT_CLAUDE_MODEL;
 /// Name of the always-attached Yulius MCP server.
 pub const YULIUS_MCP_NAME: &str = "yulius";
 /// Hook events registered for Claude Code. `SessionEnd` tells Yulius at once why a session ends
@@ -441,6 +448,10 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
     );
     let settings = json!({
         "hooks": hooks,
+        // A session whose context fills up compacts itself instead of answering "Prompt is too
+        // long" to everything (F 2026-10-12: "auto compact can be enabled"). These run settings
+        // outrank the sandbox's own settings.json, where `/config` may have turned it off.
+        "autoCompactEnabled": true,
         "statusLine": {
             "type": "command",
             "command": hook_command(request, "claude", CLAUDE_STATUS_LINE_EVENT)?,
@@ -507,9 +518,13 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
         utf8(&mcp_path, "run_dir")?.to_owned(),
         "--strict-mcp-config".into(),
     ]);
-    if let Some(model) = &request.model {
-        argv.extend(["--model".into(), model.clone()]);
-    }
+    argv.extend([
+        "--model".into(),
+        request
+            .model
+            .clone()
+            .unwrap_or_else(|| DEFAULT_CLAUDE_MODEL.to_owned()),
+    ]);
     if let Some(effort) = &request.effort {
         argv.extend(["--effort".into(), effort.clone()]);
     }
@@ -531,6 +546,10 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
                 DISABLE_AUTOUPDATER_ENV.0.into(),
                 DISABLE_AUTOUPDATER_ENV.1.into(),
             ),
+            // A cold build or a test run takes minutes: a 2-minute Bash default pushed such
+            // commands into the background mid-run, and agents then polled them (F 2026-10-12).
+            (BASH_TIMEOUT_ENV[0].0.into(), BASH_TIMEOUT_ENV[0].1.into()),
+            (BASH_TIMEOUT_ENV[1].0.into(), BASH_TIMEOUT_ENV[1].1.into()),
         ],
         secret_env: vec![("CLAUDE_CODE_OAUTH_TOKEN".into(), token.expose().clone())],
         files: vec![

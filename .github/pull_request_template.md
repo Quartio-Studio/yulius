@@ -14,8 +14,8 @@ Delete sections that do not apply; do not claim acceptance based only on a green
 ## Delivery
 
 - Change PR: typed branch → dev, squash merge by its author after checks pass.
-- Promotion PR: dev → main, merge commit; link successful dev push CI for the exact head.
-- Record the resulting branch's push CI run before claiming completion.
+- Promotion PR: dev → main, merge commit; link the successful `yulius/ci` status of the exact dev head.
+- Record the `yulius/ci` status of the resulting dev commit before claiming completion.
 - Delete merged short-lived branches; keep dev/main. No reviewer approval required.
 
 Include the applicable evidence and remove instructions that do not apply.
