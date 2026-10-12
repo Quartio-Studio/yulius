@@ -1,6 +1,6 @@
 ---
 yulius-task: 2c556d99-9a01-42d5-ace8-2b92733b99ae
-status: in-progress
+status: done
 ---
 
 # SPEC-029: a shorter sandbox navigation with a "More" group
@@ -48,7 +48,7 @@ away.
 - [x] Read the product context and related work, then write and validate the spec
 - [x] Sidebar shows six primary pages and a collapsible More group (UI, e2e)
 - [x] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -98,3 +98,16 @@ away.
 - **"CI (tests)"** (request during delivery): only the navigation label says what CI is; the CI
   page keeps its title "CI", as the request names the sidebar entry and the page header has its
   own subtitle (`runs on this Yulius machine`).
+
+## Evidence
+
+- e2e (`cd e2e && npx e2e run`, mock) at e11feba: exit 0, 32 files passed, 1 skipped (the
+  live-model `agent.e2e.ts`); 157 tests passed. `navigation.e2e.ts` (5 tests) covers NAV-001..005;
+  each new assertion failed before its change (no More button; a deep link saved "open"; no focus
+  move or mark; `aria-current` absent; the label "CI").
+- `scripts/dev ci` (repository contracts, script tests, check, fmt, clippy `-D warnings`, nextest,
+  doctests, deny, machete, doc): exit 0, 1166 tests run, 1166 passed, 16 skipped (no Rust change in
+  this task); `python3 scripts/check_repository.py` at e11feba: passed.
+- Seen in the browser (mock, 1280x800): the six pages and a collapsed More; More expands Sessions,
+  Workflows, Skills, Automations and MCP below it.
+- Not verified here: a real deployed instance (the UI is static and served the same way).
