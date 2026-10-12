@@ -4,6 +4,12 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-12
+
+- Agents wake on new messages again: Yulius typed its notice and Enter in one write, which Claude
+  Code read as a paste with a newline, so the notice never submitted and piled up in the input box;
+  Enter now follows separately, and an unsent notice is only submitted.
+
 ## 2026-10-11
 
 - Agent primitives follow the agentic-coding workshop methodology (SPEC-005, ADR-0016): repository
