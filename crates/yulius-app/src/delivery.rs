@@ -2185,12 +2185,44 @@ impl App {
     }
 
     /// Tells the agent, once per pull request head and result, that its checks finished: green
-    /// means merge now, red means fix it (F 2026-10-11: agents deliver without a person).
+    /// means merge now, red means fix it (F 2026-10-11: agents deliver without a person). A pull
+    /// request that conflicts with its base comes first: GitHub runs no checks on it, so without
+    /// this the agent would wait for checks that never come.
     async fn tell_checks(&self, task: &TaskRecord, observed: &Observed) {
         let Some(pull) = observed.pr.as_ref().filter(|p| is_open(p)) else {
             return;
         };
+        let conflicts = pull.mergeable == Some(false);
         let (subject, body) = match observed.checks {
+            _ if conflicts => (
+                "Your pull request conflicts with its base: resolve it",
+                format!(
+                    "Pull request #{} conflicts with `{}` at {}, so its checks do not run. Merge \
+                     `origin/{}` into the branch, resolve the conflicts keeping both sides' \
+                     intent, run the gates and commit: Yulius pushes it and the checks run \
+                     again. Do not ask anyone.",
+                    pull.number,
+                    pull.base,
+                    pull.head_sha.chars().take(9).collect::<String>(),
+                    pull.base
+                ),
+            ),
+            // F 2026-10-11: GitHub refuses a pull request behind its base under a strict
+            // ruleset ("required status checks are expected"), and an agent read that as a
+            // missing permission and stopped.
+            ChecksState::Success if pull.behind => (
+                "Your pull request is behind its base: update it",
+                format!(
+                    "The checks of pull request #{} passed at {}, but `{}` moved on and the \
+                     repository requires an up-to-date branch, so GitHub refuses the merge. Merge \
+                     `origin/{}` into the branch, run the gates and commit: Yulius pushes it, the \
+                     checks run again and Yulius tells you when they pass. Do not ask anyone.",
+                    pull.number,
+                    pull.head_sha.chars().take(9).collect::<String>(),
+                    pull.base,
+                    pull.base
+                ),
+            ),
             ChecksState::Success => (
                 "Your pull request's checks are green: merge it",
                 format!(
@@ -2213,7 +2245,13 @@ impl App {
             ),
             _ => return,
         };
-        let key = format!("{}:{:?}", pull.head_sha, observed.checks);
+        let key = if conflicts {
+            format!("{}:conflicts", pull.head_sha)
+        } else if pull.behind && observed.checks == ChecksState::Success {
+            format!("{}:behind", pull.head_sha)
+        } else {
+            format!("{}:{:?}", pull.head_sha, observed.checks)
+        };
         let runtime = self.runtime(&task.id);
         {
             let Ok(mut told) = runtime.checks_told.lock() else {
@@ -2287,6 +2325,16 @@ impl App {
             .pr
             .clone()
             .ok_or_else(|| AppError::Conflict("the pull request cannot be read".into()))?;
+        // GitHub's own refusal ("required status checks are expected") reads like a missing
+        // permission; say what it means and what to do (F 2026-10-11).
+        if pull.behind {
+            return Err(AppError::Conflict(format!(
+                "the branch is behind `{base}` and the repository requires it to be up to date: \
+                 merge `origin/{base}` into it, push, wait for the checks on the new head, then \
+                 merge that head",
+                base = pull.base
+            )));
+        }
         let merge_sha = self
             .deps
             .github

@@ -721,7 +721,11 @@ crossing 98 %; else at most every 15 s) and sampled for the burn rate at most ev
 (`usage_samples.source` = `session`). An idle subscription has no fresh reading: its last one
 counts until its windows reset (then fresh, §2.4 policy), unknown ranks last. The probe stays for
 sign-ins that may read the endpoint; its 403 is "not shared": no error, an old note cleared, asked
-again a day later. A subscription also used outside Yulius is seen as Claude saw it at the last
+again a day later. **Idle subscriptions (F 2026-10-11, #4):** on that 403 (or 429, which production answers) the probe sends one
+one-token message on the cheapest model and reads the same `anthropic-ratelimit-unified-5h/7d`
+headers (utilization as a fraction, reset in Unix seconds), so a subscription shows usage all the
+time, not only while a task runs; the background round skips subscriptions with a live task. The
+request starts the 5-hour window of an idle subscription. A subscription also used outside Yulius is seen as Claude saw it at the last
 response of a Yulius session.
 
 **What "maximally use all resources" means: use it or lose it.** Capacity is perishable: a
@@ -965,7 +969,11 @@ nothing opened; a renamed spec blocked every Stop).
 agent would otherwise rest at the open pull request. The task gets an inbox request (`tell_task`,
 which wakes an idle agent) when its pull request opens, and once per head and result when the
 background reconciliation sees its checks pass (review the exact head, `delivery_merge`) or fail
-(fix test-first, push). The briefing says agents never ask a person and open an issue for what
+(fix test-first, push), or the pull request conflict with its base (GitHub's `mergeable: false`;
+no checks run on it, so the agent merges the base and resolves first), or green but behind its
+base where the repository requires an up-to-date branch (GitHub's `mergeable_state: behind`;
+`delivery_merge` refuses it with that reason instead of GitHub's "required status checks are
+expected", which an agent read as a missing permission). The briefing says agents never ask a person and open an issue for what
 only a person can do.
 
 **Pipeline.** Briefing, `delivery-pipeline` skill and workflows describe one path: ready issue →
@@ -2437,6 +2445,10 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 
 ## 15. Changelog
 
+- 2026-10-11 (F 2026-10-11): a pull request behind its base is told to update and refused by
+  `delivery_merge` with that reason (strict rulesets).
+- 2026-10-11 (F 2026-10-11): the delivery loop also tells a task when its pull request conflicts
+  with its base (no checks run on it, so an agent waiting for them waited forever).
 - 2026-10-11 (F 2026-10-11): spec policy and the delivery loop — a missing required spec blocks
   the Stop gate, a moved spec is re-registered by its frontmatter, and a task is told when its pull
   request opens and when its checks pass or fail; the briefing makes agents autonomous.

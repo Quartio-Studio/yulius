@@ -220,6 +220,9 @@ pub struct PullRequest {
     pub draft: bool,
     /// GitHub's mergeability (`None` while it is still computing or on list responses).
     pub mergeable: Option<bool>,
+    /// GitHub's `mergeable_state` is `behind`: the base moved on and the repository requires the
+    /// branch to be up to date before it merges (single reads only).
+    pub behind: bool,
     /// Merge commit after merging.
     pub merge_commit_sha: Option<String>,
 }

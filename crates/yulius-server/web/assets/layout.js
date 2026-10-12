@@ -431,7 +431,7 @@ export function accountUsage(account, { foldable = false, open = false } = {}) {
     const name = limitName(w && w.window_minutes, fallback);
     const used = w ? w.used_percent : null;
     return h('div', { class: 'usage-row' },
-      h('div', { class: 'usage-name' }, h('span', null, name), h('span', { class: 'usage-reset', title: w && w.resets_at ? dateTime(w.resets_at) : '' }, w && w.resets_at ? resetLabel(w.resets_at) : Number.isFinite(used) ? '' : 'Shows once a task runs')),
+      h('div', { class: 'usage-name' }, h('span', null, name), h('span', { class: 'usage-reset', title: w && w.resets_at ? dateTime(w.resets_at) : '' }, w && w.resets_at ? resetLabel(w.resets_at) : Number.isFinite(used) ? '' : 'Reading usage…')),
       usageBar(used, name),
       h('span', { class: ['usage-pct', `tone-${toneOf(used)}`] }, Number.isFinite(used) ? `${Math.round(used)}% used` : '—'));
   };
@@ -459,7 +459,7 @@ export function accountUsage(account, { foldable = false, open = false } = {}) {
     usage.weekly_sonnet ? usageRow({ ...usage.weekly_sonnet, window_minutes: null }, 'Sonnet this week') : null,
     h('div', { class: 'account-foot' },
       account.in_use_by ? h('span', { class: 'status-count live' }, h('span', { class: 'live-dot' }), `${account.in_use_by} ${account.in_use_by === 1 ? 'task' : 'tasks'} on this subscription`) : h('span', null, 'No tasks right now'),
-      h('span', null, usage.observed_at ? `Updated ${relLong(usage.observed_at)}` : 'Usage shows up when a task runs on it')));
+      h('span', null, usage.observed_at ? `Updated ${relLong(usage.observed_at)}` : 'Usage is read every few minutes')));
   if (!foldable) return h('div', { class: 'account-card' }, h('div', { class: 'account-head' }, head), body);
   return rememberOpen(h('details', { class: 'account-fold' }, h('summary', { class: 'account-head' }, head), body), `account:${account.id}`, open);
 }

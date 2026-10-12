@@ -958,6 +958,38 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
         .await?;
     assert_eq!(forbidden.status, StatusCode::FORBIDDEN);
     f.h.github.set_checks(&head, ChecksState::Success);
+    // F 2026-10-11: behind its base under a strict ruleset, GitHub would refuse with "required
+    // status checks are expected"; Yulius says what that means, here and in the task's inbox.
+    let set_behind = |behind: bool| {
+        if let Ok(mut pulls) = f.h.github.pulls.lock()
+            && let Some(pull) = pulls.iter_mut().find(|p| p.number == 1)
+        {
+            pull.behind = behind;
+        }
+    };
+    set_behind(true);
+    let behind = f
+        .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(behind.status, StatusCode::CONFLICT, "{}", behind.body);
+    assert!(
+        error_message(&behind).contains("behind `dev`"),
+        "{}",
+        behind.body
+    );
+    f.h.app.reconcile_deliveries().await;
+    f.h.app.reconcile_deliveries().await;
+    let t1 = TaskId::parse("t1")?;
+    let inbox = f.h.store.inbox(&t1, true, 50).await?;
+    let told = |subject: &str| {
+        inbox
+            .iter()
+            .filter(|m| m.message.subject == subject)
+            .count()
+    };
+    assert_eq!(told("Your pull request is behind its base: update it"), 1);
+    assert_eq!(told("Your pull request's checks are green: merge it"), 0);
+    set_behind(false);
     let merged = f
         .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
         .await?;
@@ -2037,6 +2069,49 @@ async fn a_ready_task_opens_its_pull_request_by_itself() -> TestResult {
         f.pushes().last().map(String::as_str),
         Some("feat/1-checkout-api->feat/1-checkout-api token=token-bob"),
         "the creator pushes the follow-up too"
+    );
+
+    // F 2026-10-11: the background round tells the agent what its pull request needs, once per
+    // head and result: a conflict with the base first (GitHub runs no checks on it), then red
+    // checks (fix them), then green ones (merge).
+    let (store, task) = (&f.h.store, &t1);
+    let told = |subject: &'static str| async move {
+        let inbox = store.inbox(task, true, 50).await?;
+        Ok::<usize, Box<dyn std::error::Error>>(
+            inbox
+                .iter()
+                .filter(|m| m.message.subject == subject)
+                .count(),
+        )
+    };
+    let set_mergeable = |mergeable: Option<bool>| {
+        if let Ok(mut pulls) = f.h.github.pulls.lock()
+            && let Some(pull) = pulls.iter_mut().find(|p| p.number == 1)
+        {
+            pull.mergeable = mergeable;
+        }
+    };
+    set_mergeable(Some(false));
+    f.h.app.reconcile_deliveries().await;
+    f.h.app.reconcile_deliveries().await;
+    assert_eq!(
+        told("Your pull request conflicts with its base: resolve it").await?,
+        1
+    );
+    set_mergeable(Some(true));
+    f.h.github.set_checks(&follow_up, ChecksState::Failure);
+    f.h.app.reconcile_deliveries().await;
+    f.h.app.reconcile_deliveries().await;
+    assert_eq!(
+        told("Your pull request's checks failed: fix them").await?,
+        1
+    );
+    f.h.github.set_checks(&follow_up, ChecksState::Success);
+    f.h.app.reconcile_deliveries().await;
+    f.h.app.reconcile_deliveries().await;
+    assert_eq!(
+        told("Your pull request's checks are green: merge it").await?,
+        1
     );
 
     // Merged on GitHub: the background round follows it; nobody read the task meanwhile.
