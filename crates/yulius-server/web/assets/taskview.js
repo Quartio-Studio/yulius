@@ -19,6 +19,7 @@ import { randomQuote } from './quotes.js';
 import { brandSmoke } from './brandfx.js';
 import { BRAND } from './brand.js';
 import { isPhone } from './theme.js';
+import { draftFor, saveDraft, clearDraft } from './drafts.js';
 
 const STEP_MARK = { done: '✓', in_progress: '▸', pending: '·', skipped: '–', blocked: '✕' };
 const STEP_LABEL = { done: 'Done', in_progress: 'In progress', pending: 'To do', blocked: 'Blocked', skipped: 'Skipped' };
@@ -379,7 +380,11 @@ export function autoChoiceLabel(task) {
 export function mountComposer(ctx, sandbox) {
   const destroyers = [];
   const write = allows(sandbox.access, 'write');
+  // What was typed, attached and chosen here waits in the sandbox's draft (SPEC-026).
+  const draft = draftFor(sandbox.id);
+  const remember = () => saveDraft(sandbox.id);
   const prompt = h('textarea', { class: 'composer-prompt', rows: 4, placeholder: 'Describe what you want to build, fix or find out. Lists and Markdown work.', 'aria-label': 'Task prompt', 'aria-keyshortcuts': SUBMIT_ARIA, maxlength: 100000 });
+  prompt.value = draft.text;
   // A rendered, read-only view of the prompt (Preview), made on demand.
   const previewEl = h('div', { class: 'composer-preview', role: 'region', hidden: true, tabindex: 0, 'aria-label': 'Prompt preview' });
   let preview = null;
@@ -435,21 +440,27 @@ export function mountComposer(ctx, sandbox) {
       h('a', { class: 'composer-repo-link', href: sandbox.repo.url, target: '_blank', rel: 'noopener noreferrer', title: `Open ${sandbox.repo.owner}/${sandbox.repo.name} on GitHub` },
         icon('github', { size: 18 }), h('span', null, `${sandbox.repo.owner} / ${sandbox.repo.name}`)),
       h('span', { class: 'composer-branch', title: `New tasks branch from ${baseBranch}` }, icon('branch', { size: 16 }), h('span', null, baseBranch))) : null);
-  // Files added to the prompt wait here, shown as thumbnails; their paths join the text at start.
-  let attached = [];
+  // Files added to the prompt wait in the draft, shown as thumbnails; their paths join the text at
+  // start. An image's thumbnail is drawn from its file (an object URL of this view).
+  const urls = new Map();
   const tray = h('ul', { class: 'composer-attachments', 'aria-label': 'Attached files', hidden: true });
   function renderTray() {
-    for (const item of attached) if (!item.url && /^image\//.test(item.file.type)) item.url = URL.createObjectURL(item.file);
-    tray.hidden = !attached.length;
-    setChildren(tray, attached.map((item) => h('li', { class: 'composer-attachment', title: item.name },
-      item.url ? h('img', { src: item.url, alt: item.name }) : icon('file', { size: 20 }),
+    for (const item of draft.attached) if (!urls.has(item) && item.file && /^image\//.test(item.type)) urls.set(item, URL.createObjectURL(item.file));
+    tray.hidden = !draft.attached.length;
+    setChildren(tray, draft.attached.map((item) => h('li', { class: 'composer-attachment', title: item.name },
+      urls.has(item) ? h('img', { src: urls.get(item), alt: item.name }) : icon('file', { size: 20 }),
       h('span', { class: 'composer-attachment-name' }, item.name),
       iconButton('x', `Remove ${item.name}`, () => { dropAttached([item]); renderTray(); }, { class: 'composer-attachment-remove' }))));
   }
-  function dropAttached(items) {
-    for (const item of items) if (item.url) URL.revokeObjectURL(item.url);
-    attached = attached.filter((item) => !items.includes(item));
+  function forgetUrls(items) {
+    for (const item of items) if (urls.has(item)) { URL.revokeObjectURL(urls.get(item)); urls.delete(item); }
   }
+  function dropAttached(items) {
+    forgetUrls(items);
+    draft.attached = draft.attached.filter((item) => !items.includes(item));
+    remember();
+  }
+  let destroyed = false;
   setChildren(box,
     tray,
     prompt,
@@ -465,7 +476,13 @@ export function mountComposer(ctx, sandbox) {
       h('div', { class: 'composer-hint muted xs' }, modeHint, h('span', { class: 'composer-hint-sep', 'aria-hidden': 'true' }, ' · '), hint),
       intakeSlot));
   // Files dropped (or an image pasted) on the prompt reach the new task's agent by path.
-  attachPromptDrop(ctx, { box, prompt, label: 'Drop to add to the prompt', upload: draftAttachments(ctx, sandbox.id), onAttach: (items) => { attached.push(...items); renderTray(); } });
+  attachPromptDrop(ctx, { box, prompt, label: 'Drop to add to the prompt', upload: draftAttachments(ctx, sandbox.id), onAttach: (items) => {
+    // An upload that ends after the person left still joins the draft (DRF-002).
+    const at = Date.now();
+    draft.attached.push(...items.map(({ path, name, file }) => ({ path, name, type: file.type, at, file })));
+    remember();
+    if (!destroyed) renderTray();
+  } });
 
   function renderChips() {
     const m = MODES.find((x) => x.id === mode);
@@ -556,6 +573,8 @@ export function mountComposer(ctx, sandbox) {
     prompt.style.height = `${prompt.scrollHeight}px`;
   };
   prompt.addEventListener('input', () => {
+    draft.text = prompt.value;
+    remember();
     fit();
     // Editing the prompt withdraws a split proposal made for the old text.
     if (split) clearSplit();
@@ -657,7 +676,7 @@ export function mountComposer(ctx, sandbox) {
 
   /** The request body of a new task with the composer's choices (`auto`: Jev decides, TSK-015). */
   function bodyFor(text, title) {
-    const body = { prompt: withAttachments(text, attached), mode };
+    const body = { prompt: withAttachments(text, draft.attached), mode };
     if (title) body.title = title;
     if (workflowId) body.workflow_id = workflowId;
     const found = findModel(modelId);
@@ -677,7 +696,8 @@ export function mountComposer(ctx, sandbox) {
 
   function opened(task) {
     prompt.value = '';
-    dropAttached([...attached]);
+    forgetUrls([...draft.attached]);
+    clearDraft(sandbox.id);
     renderTray();
     fit();
     afterTaskId = '';
@@ -788,6 +808,7 @@ export function mountComposer(ctx, sandbox) {
 
 
   renderChips();
+  renderTray();
 
   destroyers.push(ctx.store.on('sandboxes', renderBanner));
   destroyers.push(ctx.store.on('tasks', (sid) => { if (sid === sandbox.id) renderBanner(); }));
@@ -797,9 +818,10 @@ export function mountComposer(ctx, sandbox) {
     el,
     key: `composer:${sandbox.id}`,
     start() {
+      fit(); // a kept draft's text sizes the box once it is on the page
       if (!prompt.disabled && !isPhone()) prompt.focus();
       if (!stopSmoke) stopSmoke = brandSmoke(niche); // the brand's smoke, when its niche shows (brandfx.js)
     },
-    destroy() { destroyers.forEach((off) => off()); if (stopSmoke) stopSmoke(); clearTimeout(showTimer); clearSplit(); if (preview) preview.destroy(); },
+    destroy() { destroyed = true; forgetUrls([...urls.keys()]); remember(); destroyers.forEach((off) => off()); if (stopSmoke) stopSmoke(); clearTimeout(showTimer); clearSplit(); if (preview) preview.destroy(); },
   };
 }
