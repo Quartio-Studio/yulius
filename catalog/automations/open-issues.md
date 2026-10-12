@@ -20,9 +20,10 @@ itself.
    already being handled: a task in `tasks_list` (scope `active`) whose title names it
    (`(#<number>)`), or an open pull request that closes it
    (`gh pr list --state open --search "Fixes #<number>"`). Also skip an issue that an earlier
-   run already gave to a task (its `Taken by task #N.` comment) and that is still open with
-   nothing new posted since: comment once that it needs a person, because retrying it every
-   night would loop.
+   run already gave to a task (its `Taken by task #N.` comment) and that is still open, unless a
+   person (not this automation or its tasks) commented since: retrying it every night would loop.
+   Comment `Needs a person: task #N did not solve it.` on it once (skip that when the comment is
+   already there).
 2. Verify in parallel. Give each remaining issue to a read-only subagent (several at once, about
    five at a time) that reads the issue and its comments, the code and the history, and reproduces
    the problem cheaply where it can. Each subagent answers: is it real (still present on the

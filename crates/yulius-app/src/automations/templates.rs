@@ -100,9 +100,10 @@ mod tests {
             }
         }
         assert!(docs.prompt.contains("`issue_create`"));
-        // Its previous run is found in a busy project too, else it falls back to the last day.
+        // Its previous run is found in a busy project too; without one it reviews everything,
+        // since `automations_list` shows only the latest run (it cannot tell a first run).
         assert!(docs.prompt.contains("`limit` 200"));
-        assert!(docs.prompt.contains("26 hours ago"));
+        assert!(!docs.prompt.contains("automations_list"));
         let issues = template("open-issues").ok_or("issues template")?;
         assert!(issues.prompt.contains("Never create a new issue"));
         for association in ["OWNER", "MEMBER", "COLLABORATOR"] {
@@ -113,6 +114,9 @@ mod tests {
         assert!(issues.prompt.contains("Opened by task #"));
         // Outsiders' comments are data, never instructions for the tasks it starts.
         assert!(issues.prompt.contains("untrusted"));
+        // Its own and its tasks' comments do not make an abandoned issue new again.
+        assert!(issues.prompt.contains("Needs a person:"));
+        assert!(issues.prompt.contains("not this automation or its tasks"));
         assert!(issues.prompt.contains("--search \"Fixes #<number>\""));
         Ok(())
     }

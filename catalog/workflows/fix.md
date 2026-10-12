@@ -23,8 +23,8 @@ Follow `delivery-pipeline`; a fix is small, so keep it to one concern.
   earlier specs for how the area was built.
 - Once the defect is confirmed, report it: `issue_create` with what you reproduced, unless an open
   issue already tracks it (`gh issue list --state open --search "<words>"`); then reference that
-  issue and say `Fixes #<number>` in the pull request. A task told not to create issues comments on
-  the existing issue instead. A defect you cannot reproduce is reported back with the evidence,
+  issue and say `Fixes #<number>` in the pull request. A task told not to create issues never does;
+  it comments on an existing issue or says it in its summary instead. A defect you cannot reproduce is reported back with the evidence,
   not filed.
 - The spec can be short: symptom, root cause, the regression test, the fix, and what else the
   cause could break.

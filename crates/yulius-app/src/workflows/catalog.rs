@@ -111,6 +111,7 @@ mod tests {
         assert!(default_workflow("wf-fix").is_some_and(|w| {
             w.instructions
                 .contains("Once the defect is confirmed, report it")
+                && w.instructions.contains("never does")
         }));
         Ok(())
     }

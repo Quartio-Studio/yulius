@@ -14,9 +14,8 @@ of this automation.
    like this one other than this one. If there is one, review everything merged into the
    integration branch since that task was created (`git log --since=<its created_at>
    origin/<integration branch>`, usually the last day, plus `docs/changes.md`). If there is none,
-   look at this automation's run history (`automations_list`): when this is its first run, it was
-   just enabled, so review the documentation as a whole against the current code; otherwise
-   review the last day (`git log --since="26 hours ago"`).
+   this automation was just enabled (or its history is out of reach): review the documentation as
+   a whole against the current code.
 2. For each change, check every document the docs index lists (AGENTS.md, the product summary, the
    architecture with its Mermaid diagrams, decisions, guides, API references, READMEs, the changes
    log) and fix what is outdated, missing or contradictory. Keep each fact in one place and link

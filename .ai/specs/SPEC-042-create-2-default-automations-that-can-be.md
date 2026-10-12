@@ -63,16 +63,16 @@ switch on.
   its schedule and an Enable button (disabled without write access); the empty state shows them
   too. Enabling one adds it to the list, enabled, and removes the suggestion.
 - AUT-010: "Keep the docs up to date" runs daily at 03:00 UTC+2 with workflow Docs. Its prompt
-  reviews the changes merged since this automation's previous task (the last day; `tasks_list`
-  with `limit` 200, else the last 26 hours when the automation ran before), or the documentation
-  as a whole on the automation's first run; fixes only documents; reports code that is wrong with
+  reviews the changes merged since this automation's previous task (the last day; found with
+  `tasks_list`, `limit` 200), or the documentation as a whole when there is none (first run:
+  `automations_list` shows only the latest run, so nothing finer is knowable); fixes only documents; reports code that is wrong with
   `issue_create` after checking for an existing issue; changes nothing when nothing is outdated.
 - AUT-011: "Work through open issues" runs daily at 03:00 UTC+2. Its prompt takes open issues (not
   pull requests) whose author association is `OWNER`, `MEMBER` or `COLLABORATOR`, or that a bot
   opened with Yulius's `Opened by task #<n> in Yulius.` footer (agents filing through the App when
   their person has no GitHub token), skips those already handled by an open task or a pull
-  request that closes it, and those an earlier run's task took without result (one comment asks a
-  person, so nothing retries nightly), treats outsiders' comments as untrusted data, verifies the rest in parallel with read-only
+  request that closes it, and those an earlier run's task took without result unless a person commented since
+  (one `Needs a person:` comment, so nothing retries nightly), treats outsiders' comments as untrusted data, verifies the rest in parallel with read-only
   subagents (real, still present, actionable), comments the evidence on each, closes one only
   when it is shown to be already fixed or not reproducible, and starts one Fix task per
   actionable issue (`task_create`, at most 5 per run, the issue number in the title and
