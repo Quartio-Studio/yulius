@@ -13,7 +13,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use yulius_domain::disk::{
-    Candidate, Owner, bytes_to_free, cache_paths, human, job_cache_cap, owner_of, plan_prune,
+    Candidate, Owner, bytes_to_free, cache_paths, human, job_cache_cap, only_rebuildable, owner_of,
+    plan_prune,
 };
 use yulius_domain::ids::{MessageId, TaskId};
 use yulius_domain::spec_format::parse_yulius_toml_caches;
@@ -35,6 +36,12 @@ pub const ENDED_GRACE_MS: i64 = 10 * 60 * 1000;
 const MAX_ENTRIES: u64 = 4_000_000;
 /// Longest `yulius.toml` read for declared caches.
 const MAX_TOML_BYTES: u64 = 64 * 1024;
+/// A directory under `worktrees/` that belongs to no task (an agent's own `git worktree add`)
+/// untouched this long is treated as ended (F 2026-10-12: `wt-206` kept 2.7 GB).
+const ORPHAN_AFTER_MS: i64 = 24 * 60 * 60 * 1000;
+/// A removed sandbox keeps its worktrees and CI checkouts this long, then they go (its home with
+/// the sessions and its clone stay).
+const REMOVED_SANDBOX_KEEP_MS: i64 = 24 * 60 * 60 * 1000;
 
 /// What a round did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -48,8 +55,10 @@ pub struct DiskReport {
 }
 
 struct Found {
-    /// The task whose worktree holds it; `None` for a CI job checkout.
+    /// The task whose worktree holds it; `None` for a CI job checkout or an orphan worktree.
     task: Option<TaskRecord>,
+    /// A CI job checkout (claimed while its cache goes).
+    ci: bool,
     /// What to call it in the audit log.
     label: String,
     owner: Owner,
@@ -140,6 +149,11 @@ impl App {
                 for sandbox in sandboxes.iter().filter(|s| s.removed_at.is_none()) {
                     if let Err(err) = app.disk_upkeep(sandbox, false).await {
                         tracing::warn!(sandbox = %sandbox.id, error = %err, "disk upkeep failed");
+                    }
+                }
+                for sandbox in &sandboxes {
+                    if let Some(removed) = sandbox.removed_at {
+                        app.purge_removed_sandbox(sandbox, removed.0).await;
                     }
                 }
             }
@@ -246,7 +260,7 @@ impl App {
         let mut scan = Scan::default();
         for archived in [false, true] {
             for task in self.deps.store.tasks(&sandbox.id, archived).await? {
-                let Some(owner) = owner_of(task.status, task.activity) else {
+                let Some(owner) = self.cache_owner(&task) else {
                     continue;
                 };
                 if owner == Owner::Ended && !pressure && now - task.updated_at.0 < ENDED_GRACE_MS {
@@ -266,12 +280,51 @@ impl App {
                     scan.found.push(Found {
                         label: format!("task #{}", task.number),
                         task: Some(task.clone()),
+                        ci: false,
                         owner,
                         path,
                         relative,
                         bytes,
                     });
                 }
+            }
+        }
+        // Worktrees no task owns (an agent's own `git worktree add` next to its task's): their
+        // caches go once nobody touched them for a day.
+        let mut tasks: Vec<String> = Vec::new();
+        for archived in [false, true] {
+            for task in self.deps.store.tasks(&sandbox.id, archived).await? {
+                tasks.push(task.id.to_string());
+            }
+        }
+        let entries: Vec<(String, PathBuf, i64)> = std::fs::read_dir(&root)
+            .map(|dir| {
+                dir.flatten()
+                    .filter_map(|e| {
+                        let name = e.file_name().to_string_lossy().into_owned();
+                        let modified = e.metadata().ok()?.mtime() * 1000;
+                        Some((name, e.path(), modified))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        for (name, worktree, modified) in entries {
+            if tasks.contains(&name)
+                || now - modified < ORPHAN_AFTER_MS
+                || !worktree.join(".git").exists()
+            {
+                continue;
+            }
+            for (relative, path, bytes) in self.find_caches(&worktree).await {
+                scan.found.push(Found {
+                    label: format!("worktree {name}"),
+                    task: None,
+                    ci: false,
+                    owner: Owner::Ended,
+                    path,
+                    relative,
+                    bytes,
+                });
             }
         }
         // Persistent CI job checkouts (SPEC-008): their caches go while no run executes — only
@@ -299,6 +352,7 @@ impl App {
                     scan.found.push(Found {
                         label: format!("CI job {name}"),
                         task: None,
+                        ci: true,
                         owner,
                         path,
                         relative,
@@ -326,7 +380,7 @@ impl App {
             }
             // A CI checkout is claimed while its cache goes, so no run starts in it half
             // deleted; a run that executes (or a claim) keeps it.
-            let claimed = item.task.is_none();
+            let claimed = item.ci;
             if claimed && !self.ci_claim(&sandbox.id) {
                 continue;
             }
@@ -380,8 +434,55 @@ impl App {
     async fn owner_is(&self, task: &TaskId, owner: Owner) -> bool {
         matches!(
             self.deps.store.task(task).await,
-            Ok(Some(t)) if owner_of(t.status, t.activity) == Some(owner)
+            Ok(Some(t)) if self.cache_owner(&t) == Some(owner)
         )
+    }
+
+    /// Whose caches `task`'s are now: by its state, its background shells (an idle agent's
+    /// running build keeps them) and how long it has not moved.
+    fn cache_owner(&self, task: &TaskRecord) -> Option<Owner> {
+        owner_of(
+            task.status,
+            task.activity,
+            self.background_shells_of(&task.id)
+                .is_some_and(|count| count > 0),
+            self.now().0 - task.updated_at.0,
+        )
+    }
+
+    /// The worktrees and CI checkouts of a sandbox removed more than a day ago (its home with
+    /// the sessions and its clone stay): nothing can use them any more.
+    async fn purge_removed_sandbox(&self, sandbox: &SandboxRecord, removed_ms: i64) {
+        if self.now().0 - removed_ms < REMOVED_SANDBOX_KEEP_MS {
+            return;
+        }
+        let dir = self.sandbox_dir(&sandbox.id);
+        for part in ["worktrees", "ci"] {
+            let path = dir.join(part);
+            if !path.exists() {
+                continue;
+            }
+            let target = path.clone();
+            let bytes = tokio::task::spawn_blocking(move || {
+                let bytes = dir_size(&target);
+                std::fs::remove_dir_all(&target).map(|()| bytes)
+            })
+            .await;
+            match bytes {
+                Ok(Ok(bytes)) => {
+                    self.dlv_audit(
+                        "yulius",
+                        "disk.purge",
+                        &sandbox.slug,
+                        &format!("{part} of the removed sandbox: {}", human(bytes)),
+                    )
+                    .await;
+                }
+                _ => {
+                    tracing::warn!(path = %path.display(), "a removed sandbox's directory could not be purged")
+                }
+            }
+        }
     }
 
     async fn still_ended(&self, task: &TaskId) -> bool {
@@ -400,15 +501,12 @@ impl App {
         task: &TaskRecord,
         worktree: &Path,
     ) -> bool {
-        // Files Git ignores that are not caches (local configuration) are not Git's to lose.
-        if self
-            .deps
-            .git
-            .has_ignored_files(worktree)
-            .await
-            .unwrap_or(true)
-        {
-            return false;
+        // Files Git ignores that are not rebuildable caches (local configuration, data) are not
+        // Git's to lose; caches (`target`, `.tools`, `node_modules`, declared ones) are.
+        let declared = declared_caches(worktree);
+        match self.deps.git.ignored_entries(worktree).await {
+            Ok(Some(ignored)) if only_rebuildable(&ignored, &declared) => {}
+            _ => return false,
         }
         let repo = self.sandbox_repo(&sandbox.id);
         let owned = self.sandbox_dir(&sandbox.id).join("worktrees");

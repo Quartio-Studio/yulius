@@ -439,7 +439,7 @@ async fn chain_links_and_held_prompts_persist_and_resolve_once() -> R {
     {
         let store = SqliteStore::open(&path)?;
         let (sid, uid) = seed(&store).await?;
-        for id in ["t1", "t2"] {
+        for id in ["t1", "t2", "t3"] {
             let mut record = task(id, &sid, &uid)?;
             record.status = TaskStatus::Chained;
             store.insert_task(&record).await?;
@@ -451,6 +451,18 @@ async fn chain_links_and_held_prompts_persist_and_resolve_once() -> R {
                 after_number: 1,
                 blocked_reason: None,
                 created_at: Timestamp(5),
+                rule: None,
+            })
+            .await?;
+        // A start rule (SPEC-017) persists in canonical text.
+        store
+            .insert_chain(&ChainRecord {
+                task_id: TaskId::parse("t3")?,
+                after_task_id: Some(TaskId::parse("t1")?),
+                after_number: 1,
+                blocked_reason: None,
+                created_at: Timestamp(5),
+                rule: Some("#1 done and not #2 ended".into()),
             })
             .await?;
         store.insert_hold(&hold("h1", 6)?).await?;
@@ -465,7 +477,13 @@ async fn chain_links_and_held_prompts_persist_and_resolve_once() -> R {
     );
     let chain = store.chain(&t2).await?.ok_or("chain")?;
     assert_eq!(chain.after_task_id.as_ref(), Some(&t1));
-    assert_eq!(store.chain_successors(&t1).await?.len(), 1);
+    assert_eq!(chain.rule, None);
+    let ruled = store
+        .chain(&TaskId::parse("t3")?)
+        .await?
+        .ok_or("chain t3")?;
+    assert_eq!(ruled.rule.as_deref(), Some("#1 done and not #2 ended"));
+    assert_eq!(store.chain_successors(&t1).await?.len(), 2);
     store.set_chain_blocked(&t2, Some("#1 failed")).await?;
     assert_eq!(
         store

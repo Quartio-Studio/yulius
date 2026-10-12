@@ -436,6 +436,16 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
             "timeout": CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS
         }] }]),
     );
+    // A Bash command that waits on or kills itself (`pgrep -f`/`pkill -f` matching its own
+    // `bash -c` line) is refused before it runs (complaint 1, F 2026-10-12).
+    hooks.insert(
+        "PreToolUse".to_owned(),
+        json!([{ "matcher": "Bash", "hooks": [{
+            "type": "command",
+            "command": hook_command(request, "claude", "PreToolUse")?,
+            "timeout": CLAUDE_TOOL_HOOK_TIMEOUT_SECONDS
+        }] }]),
+    );
     let settings = json!({
         "hooks": hooks,
         // A session whose context fills up compacts itself instead of answering "Prompt is too
