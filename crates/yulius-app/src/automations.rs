@@ -30,7 +30,7 @@ use yulius_domain::time::Timestamp;
 
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
-use crate::coordination::AgentContext;
+use crate::coordination::ProjectCaller;
 use crate::error::{AppError, AppResult};
 use crate::lifecycle::{MAX_PROMPT_BYTES, NewTask};
 use crate::model::{TaskOrigin, TaskRecord};
@@ -901,7 +901,7 @@ impl App {
 
     async fn agent_automation(
         &self,
-        ctx: &AgentContext,
+        caller: &ProjectCaller,
         args: &Value,
     ) -> AppResult<AutomationRecord> {
         let id = str_arg(args, "automation_id")?;
@@ -909,11 +909,15 @@ impl App {
             .store
             .automation(id)
             .await?
-            .filter(|a| a.sandbox_id == ctx.task.sandbox_id)
+            .filter(|a| a.sandbox_id == caller.sandbox)
             .ok_or(AppError::NotFound)
     }
 
-    async fn agent_workflow(&self, ctx: &AgentContext, args: &Value) -> AppResult<Option<String>> {
+    pub(crate) async fn agent_workflow(
+        &self,
+        caller: &ProjectCaller,
+        args: &Value,
+    ) -> AppResult<Option<String>> {
         let Some(wanted) = args
             .get("workflow")
             .and_then(Value::as_str)
@@ -922,7 +926,7 @@ impl App {
         else {
             return Ok(None);
         };
-        let workflows = self.workflows_for(&ctx.task.sandbox_id).await?;
+        let workflows = self.workflows_for(&caller.sandbox).await?;
         workflows
             .iter()
             .find(|w| w.id == wanted)
@@ -939,18 +943,15 @@ impl App {
             })
     }
 
-    fn agent_detail(ctx: &AgentContext) -> Value {
-        json!({"task_id": ctx.task.id.as_str(), "task_number": ctx.task.number})
-    }
-
-    /// `automation_create` agent tool (AUT-002): records `created_via = agent` and the agent's
-    /// task in the audit log; tasks are attributed to the user who created the agent's task.
+    /// `automation_create` agent tool (AUT-002): records `created_via = agent` and the caller
+    /// (the agent's task or the Cockpit) in the audit log; tasks are attributed to the person the
+    /// caller acts for (SPEC-037 MGT-007).
     ///
     /// # Errors
     /// Validation and capacity errors.
     pub async fn tool_automation_create(
         &self,
-        ctx: &AgentContext,
+        caller: &ProjectCaller,
         args: &Value,
     ) -> AppResult<Value> {
         let offset = match args.get("utc_offset_minutes") {
@@ -961,7 +962,10 @@ impl App {
         };
         let harness = match args.get("harness").and_then(Value::as_str) {
             Some(h) => validate_harness(h)?,
-            None => ctx.task.harness,
+            None => caller
+                .task
+                .as_ref()
+                .map_or(Harness::ClaudeCode, |t| t.harness),
         };
         let fields = Fields {
             name: validate_name(str_arg(args, "name")?)?,
@@ -971,17 +975,17 @@ impl App {
             harness,
         };
         let enabled = args.get("enabled").and_then(Value::as_bool).unwrap_or(true);
-        let workflow = self.agent_workflow(ctx, args).await?;
+        let workflow = self.agent_workflow(caller, args).await?;
         let record = self
             .insert_automation(NewAutomation {
-                sandbox: ctx.task.sandbox_id.clone(),
+                sandbox: caller.sandbox.clone(),
                 fields,
                 workflow_id: workflow,
                 enabled,
-                created_by: ctx.task.created_by.clone(),
+                created_by: caller.user.clone(),
                 created_via: CreatedVia::Agent,
-                actor: ctx.actor(),
-                detail: Self::agent_detail(ctx),
+                actor: caller.actor.clone(),
+                detail: caller.detail.clone(),
             })
             .await?;
         let view = self.automation_view(&record).await?;
@@ -994,9 +998,9 @@ impl App {
     ///
     /// # Errors
     /// Store failures.
-    pub async fn tool_automations_list(&self, ctx: &AgentContext) -> AppResult<Value> {
+    pub async fn tool_automations_list(&self, caller: &ProjectCaller) -> AppResult<Value> {
         let mut out = Vec::new();
-        for record in self.deps.store.automations(&ctx.task.sandbox_id).await? {
+        for record in self.deps.store.automations(&caller.sandbox).await? {
             out.push(self.automation_view(&record).await?);
         }
         Ok(json!({"automations": out}))
@@ -1008,10 +1012,10 @@ impl App {
     /// `NotFound` outside the agent's sandbox, validation errors.
     pub async fn tool_automation_update(
         &self,
-        ctx: &AgentContext,
+        caller: &ProjectCaller,
         args: &Value,
     ) -> AppResult<Value> {
-        let current = self.agent_automation(ctx, args).await?;
+        let current = self.agent_automation(caller, args).await?;
         let mut next = current.clone();
         if let Some(name) = args.get("name").and_then(Value::as_str) {
             next.name = validate_name(name)?;
@@ -1031,7 +1035,7 @@ impl App {
         if let Some(enabled) = args.get("enabled").and_then(Value::as_bool) {
             next.enabled = enabled;
         }
-        self.save_automation(&current, &next, &ctx.actor(), Self::agent_detail(ctx))
+        self.save_automation(&current, &next, &caller.actor, caller.detail.clone())
             .await?;
         let stored = self
             .deps

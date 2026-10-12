@@ -42,6 +42,20 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
             input_schema: schema(task_ref.clone(), &[]),
         },
         ToolDescriptor {
+            name: "task_create".into(),
+            description: "Create and start a new task in this project (another Claude Code session with its own branch), e.g. when the user says \"create a task from that\" or a follow-up should run separately. It is created like New task in the UI, on behalf of the person you work for; write the prompt as a complete request (what, why, where, done when). With after_task it waits until that task is done; with start_rule until the rule is true. Tools create at most 20 tasks an hour per project.".into(),
+            input_schema: schema(json!({
+                "prompt": {"type": "string", "description": "The request for the new task"},
+                "title": {"type": "string", "description": "Short title (derived from the prompt when absent)"},
+                "workflow": {"type": "string", "description": "Workflow id or name from workflows_list, or \"auto\" to let Yulius choose"},
+                "mode": {"type": "string", "enum": ["goal", "prompt", "auto"], "description": "goal (default): the task works until its definition of done holds; prompt: one plain prompt"},
+                "after_task": {"type": "integer", "description": "Task number to wait for (starts when it is done)"},
+                "start_rule": {"type": "string", "description": "Start when this rule over the project's tasks is true, e.g. \"#12 done and #13 done\" (not with after_task)"},
+                "model": {"type": "string", "description": "Model override (default Opus)"},
+                "effort": {"type": "string", "description": "Effort override (default high)"}
+            }), &["prompt"]),
+        },
+        ToolDescriptor {
             name: "sessions_search".into(),
             description: "Sessions are this project's docs: search the transcripts of earlier and parallel Yulius tasks and the Claude Code sessions people imported from their computers (full text: words from file names, functions, errors, features). Use it whenever you do not know how or why something was implemented, before guessing or re-deriving. Returns sessions with matching passages and their line numbers; read around a match with session_read.".into(),
             input_schema: schema(json!({
@@ -287,10 +301,11 @@ impl App {
             .unwrap_or_else(|| json!({}));
         let outcome: AppResult<Value> = match name {
             "project_context" => self.tool_project_context(ctx).await,
-            "tasks_list" => self.tool_tasks_list(ctx, &args).await,
-            "task_get" => self.tool_task_get(ctx, &args).await,
-            "sessions_search" => self.tool_sessions_search(ctx, &args).await,
-            "session_read" => self.tool_session_read(ctx, &args).await,
+            "tasks_list" => self.tool_tasks_list(&ctx.caller(), &args).await,
+            "task_get" => self.tool_task_get(&ctx.caller(), &args).await,
+            "task_create" => self.tool_task_create(&ctx.caller(), &args).await,
+            "sessions_search" => self.tool_sessions_search(&ctx.caller(), &args).await,
+            "session_read" => self.tool_session_read(&ctx.caller(), &args).await,
             "scope_claim" => self.tool_scope_claim(ctx, &args).await,
             "scope_release" => self.tool_scope_release(ctx, &args).await,
             "scopes_list" => self.tool_scopes_list(ctx).await,
@@ -308,10 +323,10 @@ impl App {
             "delivery_deploy" => self.tool_delivery_deploy(ctx, &args).await,
             "delivery_promote" => self.tool_delivery_promote(ctx).await,
             "issue_create" => self.tool_issue_create(ctx, &args).await,
-            "automation_create" => self.tool_automation_create(ctx, &args).await,
-            "automations_list" => self.tool_automations_list(ctx).await,
-            "automation_update" => self.tool_automation_update(ctx, &args).await,
-            "workflows_list" => self.tool_workflows_list(ctx).await,
+            "automation_create" => self.tool_automation_create(&ctx.caller(), &args).await,
+            "automations_list" => self.tool_automations_list(&ctx.caller()).await,
+            "automation_update" => self.tool_automation_update(&ctx.caller(), &args).await,
+            "workflows_list" => self.tool_workflows_list(&ctx.caller()).await,
             "browser_tabs" => self.tool_browser_tabs(ctx, &args).await,
             "browser_open" => self.tool_browser_open(ctx, &args).await,
             "browser_navigate" => self.tool_browser_navigate(ctx, &args).await,
