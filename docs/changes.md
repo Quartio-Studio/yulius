@@ -7,7 +7,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-10-12
 
 - Secrets are a title, a value and notes, and reading one needs your own two-factor code
-  (SPEC-040, ADR-0029, task #39). The first reveal sets two-factor up: an authenticator key and
+  (SPEC-040, ADR-0030, task #39). The first reveal sets two-factor up: an authenticator key and
   link, confirmed by a first code. After that, a code unlocks the vault in that browser for 10
   minutes. A sign-in or password alone no longer reveals anything. Older team secrets keep every
   field: the password becomes the value, and the address, user name and seed move into the

@@ -127,7 +127,7 @@ them), and people can now read an agent secret's value too, behind the same two-
 
 ## Decisions
 
-- Two-factor is **per person, guarding the whole vault** (ADR-0029). "Per wallet" is read as
+- Two-factor is **per person, guarding the whole vault** (ADR-0030). "Per wallet" is read as
   "on the wallet, not on each secret". A single seed shared by the team would make the audit
   trail meaningless (anyone who once saw it passes as anyone holding a session) and could never be
   revoked for one person. Each person enrolls their own authenticator, so one unlock opens both

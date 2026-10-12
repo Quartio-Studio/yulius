@@ -1,4 +1,4 @@
-# 0029. A personal two-factor code guards the vault; a secret is a title, a value and notes
+# 0030. A personal two-factor code guards the vault; a secret is a title, a value and notes
 
 ## Status
 
