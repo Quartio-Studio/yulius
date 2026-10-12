@@ -814,7 +814,8 @@ resolves to nothing, the run gets the server without that variable or token.
     <newest conversation>]` in the sandbox repository, as the caller's sandbox identity, with the
     token of the pool's best subscription and `CLAUDE_CONFIG_DIR=~/.claude`, otherwise a
     terminal's environment (Git as the caller); no Yulius hooks, MCP, settings or approval bypass.
-    A conversation it could not resume (an error exit within 10 s) is skipped next time. 409 before the repository is cloned or without a Claude
+    A conversation it could not resume (an error exit within 10 s) is skipped next time.
+    409 before the repository is cloned or without a Claude
     subscription, 429 while none has capacity. There is no delete: it is never in `GET …/shells`,
     `PATCH`/`DELETE …/shells/{id}` answer 404 for it, and it does not count against the 8
     terminals. Its terminal is `WS /api/shells/{id}/terminal`; files go to

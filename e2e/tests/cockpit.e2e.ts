@@ -46,6 +46,12 @@ test('a stopped Cockpit starts again with its conversation', async ({ app, brows
   await expect(terminal).toHaveText(/resumed your last conversation/);
 });
 
+test('a Cockpit whose process is gone is started again by itself', async ({ app, browser }) => {
+  // The page got a Cockpit that no longer runs (the machine rebooted): it does not stay stuck on it.
+  await app.open(mock('/s/studio/cockpit', '&cockpit=gone'));
+  await expect(browser.locator(cockpitTerminal)).toHaveText(/Welcome to Claude Code/);
+});
+
 test('a Cockpit that cannot start says why and offers to try again', async ({ app, screen }) => {
   await app.open(mock('/s/studio/cockpit', '&cockpit=fail'));
   await expect(screen.getByRole('alert')).toHaveText(/Couldn’t start the Cockpit: no subscription has capacity right now/);

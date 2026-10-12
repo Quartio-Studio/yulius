@@ -128,6 +128,14 @@ flowchart LR
   Not changed: workspace git credentials of a Cockpit (and of every shell) adopted after a
   restart are not valid any more until it starts again, an existing shell limitation filed as #242;
   files dropped on a Cockpit go when its process ends, like a terminal's.
+- **Review round 2** (fresh session, APPROVE at 498195d with minors): the page asks for its
+  Cockpit again when the terminal is refused or loses its connection and follows it to a new id,
+  so a Cockpit whose process is gone (a reboot) starts again by itself (e2e, mock
+  `&cockpit=gone`); starts are serialised per user and sandbox instead of instance-wide (no new
+  test: the double-open test still proves one start per user); a registration error after the
+  spawn discards the process; only an error exit (not a signal) within 10 s of the spawn marks a
+  conversation unresumable. Not changed: a request during the idle reaper's shutdown may still
+  get the ending Cockpit, which then offers Start again.
 
 ## Evidence
 
@@ -145,7 +153,7 @@ flowchart LR
   The tests failed before the code (missing API; 404 on drop; the broken resume repeated).
 - `cargo test -p yulius-harness --test launch`: 7 passed, including `plan_cockpit`.
 - e2e (`npx e2e run`, mock): 32 files passed, 1 skipped (the live-model `agent.e2e.ts`); 134
-  tests passed, including `cockpit.e2e.ts` (4) and `navigation.e2e.ts` (Cockpit first). Without
+  tests passed at round 1, including `cockpit.e2e.ts` (4, now 5 with the gone-process case) and `navigation.e2e.ts` (Cockpit first). Without
   the navigation entry the Cockpit test fails.
 - Not verified here: a real `claude` binary in a contained production sandbox (the tests use a
   fake `claude` script and the real detached ptyhost; the contained case is checked on the

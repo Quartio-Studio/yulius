@@ -1789,10 +1789,16 @@ route('POST', `/api/sandboxes/${ID}/shells`, ({ db, p, body }) => {
   return json(201, shellDto(shell));
 });
 // The user's Cockpit (SPEC-021): one plain Claude Code session per sandbox, started on demand,
-// never listed, renamed or closed as a terminal. `&cockpit=fail` makes it fail to start.
+// never listed, renamed or closed as a terminal. `&cockpit=fail` makes it fail to start;
+// `&cockpit=gone` answers the first call with a Cockpit whose process is already gone (a reboot).
 route('POST', `/api/sandboxes/${ID}/cockpit`, ({ db, p }) => {
   need(sandboxOf(db, p[0]), 'write');
-  if (new URLSearchParams(location.search).get('cockpit') === 'fail') fail(429, 'capacity', 'no subscription has capacity right now');
+  const scenario = new URLSearchParams(location.search).get('cockpit');
+  if (scenario === 'fail') fail(429, 'capacity', 'no subscription has capacity right now');
+  if (scenario === 'gone' && !db.cockpitGone) {
+    db.cockpitGone = true;
+    return { id: `ck_${p[0]}_gone`, name: 'Cockpit', task_id: null, folder: `/srv/yulius/sandboxes/studio/repo`, created_at: new Date().toISOString() };
+  }
   let shell = [...db.shells.values()].find((s) => s.sandbox_id === p[0] && s.cockpit);
   if (!shell) {
     db.nextId += 1;

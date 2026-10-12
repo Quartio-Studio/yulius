@@ -43,11 +43,13 @@ impl App {
     /// Remembers a conversation a Cockpit could not resume: it exited with an error right after
     /// it started, so starting it the same way again would fail again.
     pub(crate) fn note_cockpit_exit(&self, runtime: &ShellRuntime, code: Option<i32>) {
-        let Some(resumed) = runtime.resumed.get() else {
+        let Some((resumed, spawned)) = runtime.resumed.get() else {
             return;
         };
-        let quick = self.now().millis_since(runtime.info().created_at) < QUICK_EXIT_MS;
-        if runtime.kind != ShellKind::Cockpit || code == Some(0) || !quick {
+        // An error exit of Claude Code itself; a signal (the host ended) says nothing about it.
+        let failed = code.is_some_and(|code| code != 0);
+        let quick = self.now().millis_since(*spawned) < QUICK_EXIT_MS;
+        if runtime.kind != ShellKind::Cockpit || !failed || !quick {
             return;
         }
         tracing::warn!(shell = %runtime.id(), conversation = %resumed, ?code, "the cockpit could not resume its conversation; the next start begins a fresh one");
@@ -84,7 +86,19 @@ impl App {
         if let Some(running) = self.running_cockpit(&ctx.user.id, &record.id) {
             return Ok(running.info());
         }
-        let _starting = self.shells.cockpit_start.lock().await;
+        let starts = {
+            let mut starts = self
+                .shells
+                .cockpit_start
+                .lock()
+                .map_err(AppError::internal)?;
+            Arc::clone(
+                starts
+                    .entry((ctx.user.id.clone(), record.id.clone()))
+                    .or_default(),
+            )
+        };
+        let _starting = starts.lock().await;
         if let Some(running) = self.running_cockpit(&ctx.user.id, &record.id) {
             return Ok(running.info());
         }
@@ -110,12 +124,17 @@ impl App {
             .launch_cockpit(ctx, &record, &runtime, credential)
             .await
         {
-            Ok(reader) => {
-                self.register_shell(&runtime)?;
-                self.start_pump(&runtime, reader);
-                tracing::info!(shell = %id, sandbox = %record.slug, user = %ctx.user.id, account = %account.id, "cockpit started");
-                Ok(runtime.info())
-            }
+            Ok(reader) => match self.register_shell(&runtime) {
+                Ok(()) => {
+                    self.start_pump(&runtime, reader);
+                    tracing::info!(shell = %id, sandbox = %record.slug, user = %ctx.user.id, account = %account.id, "cockpit started");
+                    Ok(runtime.info())
+                }
+                Err(err) => {
+                    self.discard_shell(&runtime);
+                    Err(err)
+                }
+            },
             Err(err) => {
                 self.discard_shell(&runtime);
                 Err(err)
@@ -165,7 +184,7 @@ impl App {
             credential,
         })?;
         if let Some(id) = resume {
-            let _ = runtime.resumed.set(id);
+            let _ = runtime.resumed.set((id, self.now()));
         }
         if let (Some(program), Some(first)) =
             (self.shells.cockpit_program.get(), plan.argv.first_mut())

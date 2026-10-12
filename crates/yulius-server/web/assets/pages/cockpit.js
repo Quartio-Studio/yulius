@@ -19,6 +19,8 @@ export function mountCockpitPage(ctx, sandbox) {
   let terminal = null;
   let alive = true;
   let opening = false;
+  let current = null;
+  let recovering = false;
 
   function drop() {
     if (terminal) terminal.destroy();
@@ -39,7 +41,30 @@ export function mountCockpitPage(ctx, sandbox) {
       return;
     }
     opening = false;
-    if (!alive) return;
+    if (alive) mount(shell);
+  }
+
+  /**
+   * The terminal lost its Cockpit (refused as not found, or the connection dropped): ask for the
+   * Cockpit again, which starts it when its process is gone (a reboot), and follow it to its new
+   * id. The same id means it still runs; the terminal reconnects by itself.
+   */
+  async function recover() {
+    if (recovering || opening || !alive || !current) return;
+    recovering = true;
+    try {
+      const shell = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/cockpit`);
+      if (alive && current && shell.id !== current.id) mount(shell);
+    } catch {
+      // The terminal shows its own connection state and Retry.
+    } finally {
+      recovering = false;
+    }
+  }
+
+  function mount(shell) {
+    drop();
+    current = shell;
     terminal = createTerminalView({
       transport: ctx.transport,
       path: `/api/shells/${enc(shell.id)}/terminal`,
@@ -47,6 +72,8 @@ export function mountCockpitPage(ctx, sandbox) {
       readOnlyLabel: () => 'Read-only',
       exitMessage: () => ({ tone: 'info', text: 'The Cockpit stopped. Its conversation is kept.' }),
       exitActions: () => [{ label: 'Start again', run: open }],
+      onFatal: (message) => { if (message.code === 'not_found') recover(); },
+      onConnection: (status) => { if (status === 'reconnecting' || status === 'failed') recover(); },
       // Paths in its output open in the Editor, as in a terminal of the sandbox repository.
       fileLinks: {
         list: (dir) => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/files?root=sandbox&path=${encodeURIComponent(dir)}`).then((listing) => listing.entries || []),

@@ -98,8 +98,10 @@ pub struct ShellState {
     program: OnceLock<PathBuf>,
     /// The Cockpit's program instead of `claude` (tests).
     pub(crate) cockpit_program: OnceLock<PathBuf>,
-    /// Serialises Cockpit starts: one Cockpit per user and sandbox.
-    pub(crate) cockpit_start: tokio::sync::Mutex<()>,
+    /// Serialises the Cockpit starts of one user in one sandbox (one Cockpit each); other users
+    /// and sandboxes never wait for them.
+    #[allow(clippy::type_complexity)]
+    pub(crate) cockpit_start: Mutex<HashMap<(UserId, SandboxId), Arc<tokio::sync::Mutex<()>>>>,
     /// The conversation each user's Cockpit could not resume (it exited at once), by sandbox:
     /// the next start begins a fresh one instead of failing the same way.
     pub(crate) cockpit_unresumable: Mutex<HashMap<(UserId, SandboxId), String>>,
@@ -111,8 +113,8 @@ pub struct ShellState {
 pub struct ShellRuntime {
     id: String,
     pub(crate) kind: ShellKind,
-    /// The conversation a Cockpit was started to resume.
-    pub(crate) resumed: OnceLock<String>,
+    /// The conversation a Cockpit was started to resume, and when its process was spawned.
+    pub(crate) resumed: OnceLock<(String, Timestamp)>,
     sandbox: SandboxId,
     creator: UserId,
     task: Option<TaskId>,

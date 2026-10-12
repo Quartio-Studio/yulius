@@ -1,6 +1,7 @@
 //! Sandbox shells: `GET`/`POST /api/sandboxes/{sid}/shells`, `PATCH`/`DELETE
 //! /api/sandboxes/{sid}/shells/{id}`, the Cockpit `POST /api/sandboxes/{sid}/cockpit` and
-//! `WS /api/shells/{id}/terminal` (docs/api.md; SPEC-001 UI-015, UI-016, AC-UI-7; SPEC-021). The WebSocket speaks the task terminal protocol.
+//! `WS /api/shells/{id}/terminal` (docs/api.md; SPEC-001 UI-015, UI-016, AC-UI-7; SPEC-021).
+//! The WebSocket speaks the task terminal protocol.
 
 use std::time::Duration;
 
