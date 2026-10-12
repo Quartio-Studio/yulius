@@ -274,6 +274,8 @@ function seed(params) {
     db.sandboxes = [];
     db.tasks = [];
   }
+  // `tasks=0`: sandboxes without any task yet (the composer then offers no start rule, SPEC-022).
+  if (params.get('tasks') === '0') db.tasks = [];
   recount(db);
   return db;
 }
