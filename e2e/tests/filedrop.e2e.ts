@@ -150,7 +150,7 @@ test('a read-only terminal refuses dropped files', async ({ app, browser }) => {
   await expect(browser.locator('.taskview-term .drop-overlay')).toHaveText(/Read-only/);
 });
 
-test('files dropped or pasted on the new-task prompt are added to it by path', async ({ app, browser, screen }) => {
+test('files dropped or pasted on the new-task prompt show as thumbnails and join it by path when the task starts', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill('Fix the layout in');
@@ -159,7 +159,8 @@ test('files dropped or pasted on the new-task prompt are added to it by path', a
   await browser.evaluate(() => (window as unknown as Mocked).__e2eDrop!('.composer-box', [['screen shot.png', 'png', 'image/png']], ['dragenter', 'dragover']));
   await expect(browser.locator('.composer-box .drop-overlay')).toHaveText('Drop to add to the prompt');
   await browser.evaluate(() => (window as unknown as Mocked).__e2eDrop!('.composer-box', [['screen shot.png', 'png', 'image/png']], ['drop']));
-  await expect(prompt).toHaveValue('Fix the layout in /var/lib/yulius/sandboxes/sb_studio/attachments/drafts/usr_1/screen-shot.png ');
+  await expect(browser.locator('.composer-attachment img')).toHaveCount(1);
+  await expect(prompt).toHaveValue('Fix the layout in');
 
   await browser.evaluate(() => {
     const data = new DataTransfer();
@@ -168,5 +169,6 @@ test('files dropped or pasted on the new-task prompt are added to it by path', a
     input.focus();
     input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
   });
-  await expect(prompt).toHaveValue(/screen-shot\.png \/var\/lib\/yulius\/sandboxes\/sb_studio\/attachments\/drafts\/usr_1\/pasted-\d{8}-\d{6}\.png $/);
+  await expect(browser.locator('.composer-attachment img')).toHaveCount(2);
+  await expect(prompt).toHaveValue('Fix the layout in');
 });

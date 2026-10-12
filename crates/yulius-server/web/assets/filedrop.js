@@ -474,8 +474,8 @@ export function attachTerminalDrop(ctx, view, { label, upload }) {
     upload,
     canWrite: () => view.canWrite,
     unwritable: 'The terminal became read-only; the paths were not typed.',
-    insert(paths) {
-      const text = `${paths.map(shellQuote).join(' ')} `;
+    insert(stored) {
+      const text = `${stored.map((item) => shellQuote(item.path)).join(' ')} `;
       if (view.term && typeof view.term.paste === 'function') view.term.paste(text);
       else view.sendKeys(text);
       view.focus();
@@ -485,28 +485,29 @@ export function attachTerminalDrop(ctx, view, { label, upload }) {
 
 /**
  * Drop files onto the new-task prompt, or paste an image into it: each file is uploaded with
- * `upload(file, options)` (draftAttachments) and the stored paths are written into the prompt
- * at the cursor, so the task's agent reads them by path. `box` is the zone, `prompt` its textarea.
+ * `upload(file, options)` (draftAttachments) and handed to `onAttach([{path, name, file}])`, which
+ * shows it beside the prompt (images as thumbnails) instead of typing its path into the text; the
+ * composer adds the paths when the task starts. `box` is the zone, `prompt` its textarea.
  */
-export function attachPromptDrop(ctx, { box, prompt, label, upload }) {
+export function attachPromptDrop(ctx, { box, prompt, label, upload, onAttach }) {
   return attachPathDrop(ctx, {
     zone: box,
     overlayHost: () => box,
     label,
     upload,
     canWrite: () => !prompt.readOnly,
-    unwritable: 'The prompt is being read; the paths were not added.',
-    insert(paths) {
-      const text = paths.map(shellQuote).join(' ');
-      const start = prompt.selectionStart ?? prompt.value.length;
-      const end = prompt.selectionEnd ?? start;
-      const before = prompt.value.slice(0, start);
-      const lead = before && !/\s$/.test(before) ? ' ' : '';
-      prompt.setRangeText(`${lead}${text} `, start, end, 'end');
-      prompt.dispatchEvent(new Event('input', { bubbles: true }));
+    unwritable: 'The prompt is being read; the files were not added.',
+    insert(stored) {
+      onAttach(stored);
       prompt.focus();
     },
   });
+}
+
+/** The prompt text a task starts with: `text`, then the attached files' paths, one per line. */
+export function withAttachments(text, attached) {
+  if (!attached.length) return text;
+  return `${text}\n\nAttached files (read them by path):\n${attached.map((item) => shellQuote(item.path)).join('\n')}`;
 }
 
 /** Uploads a file dropped on the new-task composer of a sandbox, before its task exists. */
@@ -540,7 +541,7 @@ function attachPathDrop(ctx, { zone, overlayHost, label, upload, canWrite, unwri
     if (!canWrite()) {
       if (stored.length) status.error(unwritable);
     } else if (stored.length) {
-      insert(stored.map(({ result }) => result.path));
+      insert(stored.map(({ job, result }) => ({ path: result.path, name: result.name, file: job.file })));
     }
     status.end(stored.length === 1 && jobs.length === 1 ? `Added ${stored[0].result.name}` : `Added ${counted(stored.length, jobs.length)}`);
   }
