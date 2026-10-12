@@ -500,7 +500,7 @@ export async function confirmRemoveSandbox(ctx, sandbox) {
 export function messageView(ctx, message, myLogin, { onReply } = {}) {
   const from = message.from || {};
   const mine = from.login && myLogin && from.login === myLogin && !from.task_id;
-  const kindTone = { question: 'warn', request: 'accent', scope: 'violet', info: '' }[message.kind] || '';
+  const kindTone = { question: 'warn', request: 'accent', info: '' }[message.kind] || '';
   return h('article', { class: ['msg', !message.read && 'unread', mine && 'mine'] },
     h('div', { class: 'msg-head' },
       h('strong', { class: 'ellipsis' }, from.title || from.login || 'unknown'),

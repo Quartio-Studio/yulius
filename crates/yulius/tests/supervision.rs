@@ -1110,8 +1110,8 @@ fn tasks_queue_at_the_session_limit_and_start_when_a_slot_frees() -> TestResult 
     Ok(())
 }
 
-/// AC-TSK-3 and AC-COM-2/COM-005: an agent's normal exit closes its task; a message to a task
-/// that has been waiting idle wakes it by typing a notice into its terminal.
+/// AC-TSK-3 and COM-005, MSG-005: an agent's normal exit closes its task; a notice from Yulius to
+/// a task that has been waiting idle wakes it by typing a notice into its terminal.
 #[test]
 fn messages_wake_idle_tasks_and_a_normal_exit_closes_the_task() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -1142,22 +1142,13 @@ fn messages_wake_idle_tasks_and_a_normal_exit_closes_the_task() -> TestResult {
                 app.now(),
             )
             .await?;
-        let ctx = yulius_app::coordination::AgentContext {
-            attempt: app
-                .deps
-                .store
-                .live_attempt(&sender)
-                .await?
-                .ok_or("sender attempt")?,
-            task: task(&app, &sender).await?,
-        };
-        let number = task(&app, &recipient).await?.number;
-        app.tool_message_send(
-            &ctx,
-            &serde_json::json!({"number": number, "kind": "question", "subject": "Schema",
-                "body": "Does the invoices table keep the currency column?"}),
+        let target = task(&app, &recipient).await?;
+        app.tell_task(
+            &target,
+            "Schema",
+            "Does the invoices table keep the currency column?".into(),
         )
-        .await?;
+        .await;
         wait_for("the wake notice", Duration::from_secs(20), || {
             screen_contains(&app, &recipient, "ECHO: Yulius: you have new messages")
         })
@@ -1168,12 +1159,8 @@ fn messages_wake_idle_tasks_and_a_normal_exit_closes_the_task() -> TestResult {
         );
         // F 2026-10-12: a wake that was not submitted (this agent runs no hooks) is never typed
         // again on top of itself; later wakes only press Enter.
-        app.tool_message_send(
-            &ctx,
-            &serde_json::json!({"number": number, "kind": "info", "subject": "Again",
-                "body": "One more message."}),
-        )
-        .await?;
+        app.tell_task(&target, "Again", "One more notice.".into())
+            .await;
         tokio::time::sleep(Duration::from_secs(4)).await;
         let notices = app
             .runtime(&recipient)
