@@ -600,14 +600,40 @@ pub struct CockpitRequest {
     pub resume: Option<String>,
     /// Provider credential of the pool subscription.
     pub credential: Credential,
+    /// The Yulius MCP server the Cockpit manages the project with (SPEC-037); `None` for none.
+    pub yulius: Option<CockpitYulius>,
 }
 
-/// Builds the launch plan of a Cockpit: `claude [--resume <id>] --model <default> --effort
-/// <default>` (SPEC-023 DEF-004) with the subscription's token in the secret environment and
-/// none of a task's settings, hooks, MCP servers or approval bypass (SPEC-021 CKP-002).
+/// The Yulius MCP server of a Cockpit (SPEC-037 MGT-004).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CockpitYulius {
+    /// Base URL of the internal listener (`/mcp` is appended).
+    pub url: String,
+    /// The Cockpit's bearer (`ck_…`), passed in the secret environment only.
+    pub token: Secret<String>,
+}
+
+/// Environment variable holding a Cockpit's Yulius MCP bearer.
+pub const COCKPIT_TOKEN_ENV: &str = "YULIUS_COCKPIT_TOKEN";
+/// The Yulius tools a Cockpit may call without asking: they only read.
+pub const COCKPIT_READ_ONLY_TOOLS: [&str; 6] = [
+    "tasks_list",
+    "task_get",
+    "automations_list",
+    "workflows_list",
+    "sessions_search",
+    "session_read",
+];
+
+/// Builds the launch plan of a Cockpit: `claude [--resume <id>] [--mcp-config <yulius>
+/// --allowedTools <read-only tools>] --model <default> --effort <default>` (SPEC-023 DEF-004)
+/// with the subscription's token (and the Cockpit's Yulius bearer) in the secret environment and
+/// none of a task's settings, hooks, briefing or approval bypass (SPEC-021 CKP-002, SPEC-037
+/// MGT-004). The MCP config is inline JSON naming `${YULIUS_COCKPIT_TOKEN}`, not its value; it
+/// is not strict, so the person's own MCP servers keep working.
 ///
 /// # Errors
-/// [`LaunchError`] for a non-UTF-8 config dir, an unsafe session id or credential.
+/// [`LaunchError`] for a non-UTF-8 config dir, an unsafe session id, credential, URL or token.
 pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError> {
     let Credential::ClaudeOauthToken(token) = &request.credential;
     check(
@@ -618,6 +644,32 @@ pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError>
     if let Some(id) = &request.resume {
         check(valid_session_id(id), "session_id")?;
         argv.extend(["--resume".into(), id.clone()]);
+    }
+    let mut secret_env = vec![("CLAUDE_CODE_OAUTH_TOKEN".into(), token.expose().clone())];
+    if let Some(yulius) = &request.yulius {
+        check(valid_url(&yulius.url), "yulius url")?;
+        let bearer = yulius.token.expose();
+        check(
+            !bearer.is_empty() && bearer.chars().all(|c| c.is_ascii_graphic()),
+            "yulius token",
+        )?;
+        let config = json!({ "mcpServers": { YULIUS_MCP_NAME: {
+            "headers": { "Authorization": format!("Bearer ${{{COCKPIT_TOKEN_ENV}}}") },
+            "type": "http",
+            "url": format!("{}/mcp", yulius.url.trim_end_matches('/')),
+        } } });
+        let allowed = COCKPIT_READ_ONLY_TOOLS
+            .iter()
+            .map(|tool| format!("mcp__{YULIUS_MCP_NAME}__{tool}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        argv.extend([
+            "--mcp-config".into(),
+            config.to_string(),
+            "--allowedTools".into(),
+            allowed,
+        ]);
+        secret_env.push((COCKPIT_TOKEN_ENV.into(), bearer.clone()));
     }
     // The person's own session still starts on Yulius's default model and effort (SPEC-023).
     argv.extend([
@@ -639,7 +691,7 @@ pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError>
                 DISABLE_AUTOUPDATER_ENV.1.into(),
             ),
         ],
-        secret_env: vec![("CLAUDE_CODE_OAUTH_TOKEN".into(), token.expose().clone())],
+        secret_env,
         files: Vec::new(),
         session_id: request.resume.clone(),
     })

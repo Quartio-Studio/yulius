@@ -1,4 +1,5 @@
-//! Internal `POST /mcp`: the Yulius MCP server for agents (task-token bearer auth).
+//! Internal `POST /mcp`: the Yulius MCP server for agents (task-token bearer auth) and Cockpits
+//! (`ck_` bearer, SPEC-037).
 
 use axum::Json;
 use axum::extract::State;

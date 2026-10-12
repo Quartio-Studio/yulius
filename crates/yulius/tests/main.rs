@@ -37,6 +37,7 @@ mod live_ui_mcp;
 mod live_ui_stream;
 mod live_ui_terminal;
 mod local_ci;
+mod manage_tools;
 mod mcp_coordination;
 mod pool_supervision;
 mod preview;
