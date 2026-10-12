@@ -105,6 +105,11 @@ p { margin: 0; }
   .select option::checkmark { order: 1; margin-left: auto; color: var(--accent); }
   .select option:disabled { color: var(--muted); cursor: not-allowed; }
   .select-sm { padding: 0 4px 0 8px; }
+  /* A select that gives its button, `<select><button><selectedcontent></selectedcontent></button>…`,
+     shows a long picked label on one line ending in an ellipsis; without it the label wraps and
+     spills over the fixed-height control. */
+  .select > button { display: flex; flex: 1 1 auto; align-items: center; align-self: stretch; min-width: 0; margin-block: -1px; overflow: hidden; }
+  .select selectedcontent { display: block; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }
 .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .field-label { font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--text-2); font-weight: 500; }
