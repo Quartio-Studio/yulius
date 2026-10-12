@@ -6,12 +6,17 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
-- The Cockpit is now the **Agent**, on the right (SPEC-035, ADR-0026; task #33): a top-bar Agent
+- The Cockpit is now the **Agent**, on the right (SPEC-035, ADR-0027; task #33): a top-bar Agent
   button and the first tool of the right rail open the user's own Claude Code session in the tool
   panel beside the page, under a notice that it is for quick work (setting up automations, quick
   questions) and that anything more complex, such as writing code, belongs in a task (with a New
   task link). It is no longer in the left sidebar; `/s/<slug>/agent` and the old
   `/s/<slug>/cockpit` open the panel. The API and server keep the `cockpit` names.
+- Attached images reach Claude Code as pasted images (SPEC-030, ADR-0026; task #28). A task with
+  attached images starts with no CLI prompt. Yulius types its first message into the terminal:
+  each image's path is pasted (Claude Code shows `[Image #N]` and sends an image block), then the
+  text with the other files mentioned. Before this, an `@` mention showed the path and reached the
+  model as a Read tool call.
 - The sandbox navigation is shorter (SPEC-029, ADR-0025, task #27): Cockpit, Tasks, Git,
   CI (tests), Secrets and Dashboard, then "More", which expands Sessions, Workflows, Skills,
   Automations and MCP in place. Its state is remembered per browser; arriving at one of those

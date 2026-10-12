@@ -45,6 +45,9 @@ content block), not as a path the agent has to open with the Read tool.
 | ATT-003 | A goal-mode task with attached files starts its session with a first message (the CLI prompt) that says the files belong to the task and its goal follows, then mentions each file as in ATT-002. `/goal` is typed once that turn's Stop hook arrived (at most 5 minutes later), and that Stop is not gated. Without attached files the session starts with no first message, as today. | `request.rs` unit tests; `task_done.rs` goal tests |
 | ATT-004 | The request file still lists the attached paths, saying they were given in the session's first message (open one again with the Read tool if needed). | `request.rs` unit test |
 
+Superseded for images by SPEC-030 (task #28): an `@` mention reaches the model as a Read tool
+call; an attached image is now pasted into a first message typed in the TUI.
+
 ## Acceptance criteria
 
 - AC-ATT-1: clicking an image chip shows the image in a dialog; Esc closes it and the chip is still attached.
