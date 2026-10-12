@@ -1,11 +1,11 @@
 ---
 yulius-task: b35ca245-ec20-4f1c-9b80-f9c148f00648
-status: in-progress
+status: done
 ---
 
 # SPEC-022: a start rule is picked in a simple editor
 
-Status: in-progress
+Status: done
 Date: 2026-10-12
 Owner: Yulius task #20
 Scope authorization: user request: "when rule is true should be a simple editor, not a string to
@@ -47,8 +47,8 @@ start rules themselves (SPEC-017) do not change.
 - [x] Picked conditions become the start rule text the server reads
 - [x] The composer's "When a rule is true…" opens a condition editor instead of a text box
 - [x] A picked rule opens again for changes, and a sandbox without tasks says so
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -80,3 +80,20 @@ start rules themselves (SPEC-017) do not change.
   names #N, which does not exist in this sandbox" and nothing is lost, so the person decides.
 - The editor lives in its own module (`ruleeditor.js`) with a pure `ruleText` function, so the
   sentence it builds is unit-tested without the dialog.
+
+## Evidence
+
+- `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run tests/intake.e2e.ts` at 01dd7a2: 10 passed,
+  including the in-page unit test of `ruleText`, `ruleChoices`, `conditionChoices` and the
+  16-condition limit, the editor flow with All/Any (no WCAG violations), reopening and removing,
+  the limit, and `tasks=0`.
+- `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run` (whole suite, after the editor landed): 133
+  passed, 1 skipped (the model-driven agent test, no key).
+- `scripts/dev ci` at 6efec09: exit 0 (repository check, script tests, check, fmt, clippy,
+  nextest 1149 passed / 16 skipped, deny, machete, doc). Later commits change only web assets,
+  tests and docs; `python3 scripts/check_repository.py` passes at 01dd7a2.
+- Seen in the browser (mock, 1280 px): the editor with two conditions, All/Any and the sentence.
+- Independent review (fresh session, `om-code-review`), three rounds: round 1 approved with three
+  minors (16-condition limit, picked tasks dropped on reopening, stale rule; the last kept by
+  decision) and nits; round 2 found a wrong "(archived)" label; round 3 approved 01dd7a2 with no
+  findings.
