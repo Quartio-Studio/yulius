@@ -163,7 +163,6 @@ flowchart LR
     verdict["goal verdict: not met"] --> working
     work["assistant work after the stop"] --> working
     notice["notice that asks a person"] --> attention["needs_attention"]
-    work --> working
     attention -.->|"agent works on"| working
 ```
 

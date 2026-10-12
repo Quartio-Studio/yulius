@@ -71,7 +71,7 @@ sandbox (`~/.claude/projects/*/*.jsonl`, Claude Code 2.1.292).
 
 - `Observed::TurnEnded` carries `background_agents: Option<u32>` and comes only from
   `turn_duration`. New `Observed::AgentWork { at }` for an assistant line that is not `end_turn`
-  (sidechain lines are ignored, also for `TurnComplete`). The app's `Observation` mirrors both.
+  (sidechain and `<synthetic>` lines are ignored; `TurnComplete` keeps its old rule, sidechain lines included). The app's `Observation` mirrors both.
 - The runtime keeps `background_agents` per run (reset at each turn end). `probe_idle_shells`
   reports `max(process probe, background agents)` as the idle task's background work, so every
   consumer of `background_shells` (UI, `AttentionFacts`, chains, `shells_running_now`) is correct

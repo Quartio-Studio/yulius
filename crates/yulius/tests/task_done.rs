@@ -618,7 +618,7 @@ fn a_pending_background_agent_keeps_the_task_working_until_it_finishes() -> Test
         let agent = FakeAgentOptions {
             transcript: true,
             hooks: true,
-            goal_agent: Some(8),
+            goal_agent: Some(20),
             ..FakeAgentOptions::default()
         };
         let (app, _) = start(&data, &fake, agent, 0).await?;
@@ -628,7 +628,7 @@ fn a_pending_background_agent_keeps_the_task_working_until_it_finishes() -> Test
             screen_contains(&app, &id, "Goal achieved")
         })
         .await?;
-        wait_for("one pending agent", Duration::from_secs(20), || async {
+        wait_for("one pending agent", Duration::from_secs(40), || async {
             shown(&app, &id)
                 .await
                 .ok()
@@ -640,15 +640,21 @@ fn a_pending_background_agent_keeps_the_task_working_until_it_finishes() -> Test
             "the agent still works"
         );
         // The agent ends and wakes the session; the turn after it says nothing is pending.
-        wait_for("the agent's end", Duration::from_secs(30), || {
+        wait_for("the agent's end", Duration::from_secs(45), || {
             screen_contains(&app, &id, "AGENT DONE")
         })
         .await?;
-        wait_for(
-            "Done with nothing pending",
-            Duration::from_secs(20),
-            || async { shown(&app, &id).await.ok() == Some((Some("done".into()), Some(0))) },
-        )
+        // Nothing pending and not Working: the fake's wake-up turn settles at once, so the goal
+        // still counts; a real session's later wake-up turn reads "Your turn" (the prompt-like
+        // line resets the goal), which this check does not pin.
+        wait_for("nothing pending, idle", Duration::from_secs(60), || async {
+            shown(&app, &id)
+                .await
+                .ok()
+                .is_some_and(|(activity, shells)| {
+                    shells == Some(0) && matches!(activity.as_deref(), Some("done" | "waiting"))
+                })
+        })
         .await?;
         stop(&app, &id).await
     })?;

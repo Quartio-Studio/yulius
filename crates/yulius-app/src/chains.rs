@@ -165,6 +165,8 @@ impl App {
 
     /// The tasks waiting for `predecessor` alone ("Run after #N", no rule).
     async fn advance_after_chains(self: &Arc<Self>, predecessor: &TaskId) {
+        // The background tick comes here too: the same wait as `advance_chains`.
+        self.await_turn_record(predecessor).await;
         let store = &self.deps.store;
         let Ok(chains) = store.chain_successors(predecessor).await else {
             return;

@@ -372,9 +372,14 @@ impl App {
 
     /// Waits (bounded) until the record that closes the turn of the last clean Stop was seen:
     /// before it the task's background agents are not known, and a task with one pending is not
-    /// done. No wait without a recent Stop (a replay, a hookless run) or once the record came.
+    /// done. No wait without a recent Stop (a replay, a hookless run), for a run that is not
+    /// watched, or once the record came.
     pub(crate) async fn await_turn_record(&self, task_id: &TaskId) {
         let runtime = self.runtime(task_id);
+        // No record can arrive for a run that ended or is not watched: nothing to wait for.
+        if !runtime.is_watching() {
+            return;
+        }
         let pending = || {
             turn_record_pending(
                 runtime.last_stop_ms.load(Ordering::SeqCst),

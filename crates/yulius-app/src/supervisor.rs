@@ -201,6 +201,11 @@ impl TaskRuntime {
         }
     }
 
+    /// Whether the run's transcript is being watched (a turn record can still arrive).
+    pub(crate) fn is_watching(&self) -> bool {
+        self.watcher_alive.load(Ordering::SeqCst)
+    }
+
     /// Whether a turn is known to be in progress (one started and none ended since).
     pub(crate) fn turn_in_progress(&self) -> bool {
         self.turn_started_ms.load(Ordering::SeqCst) > 0
