@@ -1,5 +1,6 @@
-//! Secrets vault (SPEC-001 VLT, SPEC-002 ADR-20): team secrets people reveal after
-//! re-authenticating, and agent secrets agents use but nobody reads back.
+//! Secrets vault (SPEC-001 VLT, SPEC-002 ADR-20, SPEC-040): team secrets and agent secrets
+//! people reveal after unlocking the vault with their two-factor code; agents use agent secrets
+//! without seeing them.
 
 use serde::{Deserialize, Serialize};
 
@@ -87,15 +88,38 @@ pub struct TotpCode {
     pub remaining: u64,
 }
 
-/// `GET /api/auth/reauth`: whether this browser session may reveal now, and how to confirm.
+/// `GET /api/auth/reauth`: whether this browser session may reveal now, and how to get there.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReauthStatus {
-    /// Reveals are allowed now.
+    /// The vault is unlocked: a two-factor code was entered in this session in the last 10
+    /// minutes (SPEC-040).
     pub fresh: bool,
-    /// Until when (RFC 3339), when fresh.
+    /// Until when (RFC 3339), when unlocked.
     pub fresh_until: Option<String>,
-    /// `password` (the superadmin) and/or `github` (sign in with GitHub again).
+    /// The person's two-factor: `missing`, `pending` (set up, not confirmed) or `on`.
+    pub two_factor: String,
+    /// The session signed in or confirmed it is them in the last 10 minutes (needed to set up
+    /// two-factor).
+    pub identity_fresh: bool,
+    /// How to confirm identity: `password` (the superadmin) and/or `github` (sign in again).
     pub methods: Vec<String>,
+}
+
+/// `POST /api/auth/two-factor`: a new seed for the person's authenticator app.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TwoFactorSetup {
+    /// The base32 seed ("enter this key").
+    pub secret: String,
+    /// The same as an `otpauth://totp/…` link (what a QR code holds).
+    pub uri: String,
+}
+
+/// `POST /api/auth/unlock` body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnlockRequest {
+    /// The current code of the person's authenticator.
+    pub code: String,
 }
 
 /// `POST /api/auth/reauth` body (password method).

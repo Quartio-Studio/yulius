@@ -5,7 +5,9 @@ use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, Transaction, params};
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::Envelope;
-use yulius_app::ports::vault::{VaultAuditEntry, VaultSecretRecord, VaultSection, VaultStore};
+use yulius_app::ports::vault::{
+    TwoFactorRecord, VaultAuditEntry, VaultSecretRecord, VaultSection, VaultStore,
+};
 use yulius_domain::ids::SandboxId;
 use yulius_domain::time::Timestamp;
 
@@ -260,6 +262,111 @@ impl VaultStore for SqliteStore {
         .await
     }
 
+    async fn vault_two_factor(&self, user_id: &str) -> AppResult<Option<TwoFactorRecord>> {
+        let user = user_id.to_owned();
+        self.call(move |c| {
+            c.query_row(
+                "SELECT user_id, kek_id, wrapped_key, ciphertext, created_at, confirmed_at, \
+                 last_counter FROM vault_two_factor WHERE user_id = ?1",
+                [user],
+                |r| {
+                    Ok(TwoFactorRecord {
+                        user_id: r.get(0)?,
+                        envelope: Envelope {
+                            kek_id: to_u32(r.get(1)?),
+                            wrapped_key: r.get(2)?,
+                            ciphertext: r.get(3)?,
+                        },
+                        created_at: Timestamp(r.get(4)?),
+                        confirmed_at: r.get::<_, Option<i64>>(5)?.map(Timestamp),
+                        last_counter: r
+                            .get::<_, Option<i64>>(6)?
+                            .map(|n| u64::try_from(n).unwrap_or(0)),
+                    })
+                },
+            )
+            .optional()
+            .map_err(db)
+        })
+        .await
+    }
+
+    async fn vault_put_two_factor(&self, record: &TwoFactorRecord) -> AppResult<bool> {
+        let r = record.clone();
+        self.call(move |c| {
+            let n = c
+                .execute(
+                    "INSERT INTO vault_two_factor (user_id, kek_id, wrapped_key, ciphertext, \
+                     created_at, confirmed_at, last_counter) VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL) \
+                     ON CONFLICT(user_id) DO UPDATE SET kek_id = excluded.kek_id, \
+                     wrapped_key = excluded.wrapped_key, ciphertext = excluded.ciphertext, \
+                     created_at = excluded.created_at, last_counter = NULL \
+                     WHERE vault_two_factor.confirmed_at IS NULL",
+                    params![
+                        r.user_id,
+                        i64::from(r.envelope.kek_id),
+                        r.envelope.wrapped_key,
+                        r.envelope.ciphertext,
+                        r.created_at.0,
+                    ],
+                )
+                .map_err(db)?;
+            Ok(n == 1)
+        })
+        .await
+    }
+
+    async fn vault_accept_two_factor(
+        &self,
+        user_id: &str,
+        counter: u64,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let user = user_id.to_owned();
+        let counter = to_i64(counter);
+        self.call(move |c| {
+            let n = c
+                .execute(
+                    "UPDATE vault_two_factor SET last_counter = ?2, \
+                     confirmed_at = COALESCE(confirmed_at, ?3) \
+                     WHERE user_id = ?1 AND (last_counter IS NULL OR last_counter < ?2)",
+                    params![user, counter, at.0],
+                )
+                .map_err(db)?;
+            Ok(n == 1)
+        })
+        .await
+    }
+
+    async fn vault_set_unlock(&self, session_hash: &str, at: Timestamp) -> AppResult<()> {
+        let hash = session_hash.to_owned();
+        self.call(move |c| {
+            c.execute(
+                "INSERT INTO vault_unlock (session_hash, at) VALUES (?1, ?2) \
+                 ON CONFLICT(session_hash) DO UPDATE SET at = excluded.at",
+                params![hash, at.0],
+            )
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn vault_unlock(&self, session_hash: &str) -> AppResult<Option<Timestamp>> {
+        let hash = session_hash.to_owned();
+        self.call(move |c| {
+            c.query_row(
+                "SELECT at FROM vault_unlock WHERE session_hash = ?1",
+                [hash],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()
+            .map(|at| at.map(Timestamp))
+            .map_err(db)
+        })
+        .await
+    }
+
     async fn vault_meta(&self, name: &str) -> AppResult<Option<Envelope>> {
         let name = name.to_owned();
         self.call(move |c| {
@@ -455,6 +562,10 @@ mod tests {
         store.vault_set_reauth("h", Timestamp(4)).await?;
         assert_eq!(store.vault_reauth("h").await?, Some(Timestamp(4)));
 
+        assert_eq!(store.vault_unlock("h").await?, None);
+        store.vault_set_unlock("h", Timestamp(5)).await?;
+        assert_eq!(store.vault_unlock("h").await?, Some(Timestamp(5)));
+
         let env = Envelope {
             kek_id: 1,
             wrapped_key: vec![1],
@@ -496,6 +607,76 @@ mod tests {
             })
             .await?;
         assert!(store.vault_get("a").await?.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn two_factor_confirms_once_and_refuses_replays() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let store = store_with_sandboxes().await?;
+        let seed = |n: u8| TwoFactorRecord {
+            user_id: "u1".into(),
+            envelope: Envelope {
+                kek_id: 1,
+                wrapped_key: vec![n],
+                ciphertext: vec![n],
+            },
+            created_at: Timestamp(i64::from(n)),
+            confirmed_at: None,
+            last_counter: None,
+        };
+        assert_eq!(store.vault_two_factor("u1").await?, None);
+        assert!(store.vault_put_two_factor(&seed(1)).await?);
+        // Pending: a new setup replaces it.
+        assert!(store.vault_put_two_factor(&seed(2)).await?);
+        assert!(
+            store
+                .vault_accept_two_factor("u1", 10, Timestamp(9))
+                .await?
+        );
+        let got = store.vault_two_factor("u1").await?.ok_or("missing")?;
+        assert_eq!(got.envelope.ciphertext, vec![2]);
+        assert_eq!(
+            (got.confirmed_at, got.last_counter),
+            (Some(Timestamp(9)), Some(10))
+        );
+        // A used or older step is refused; a later one moves on without re-confirming.
+        assert!(
+            !store
+                .vault_accept_two_factor("u1", 10, Timestamp(10))
+                .await?
+        );
+        assert!(
+            !store
+                .vault_accept_two_factor("u1", 9, Timestamp(10))
+                .await?
+        );
+        assert!(
+            store
+                .vault_accept_two_factor("u1", 11, Timestamp(11))
+                .await?
+        );
+        let got = store.vault_two_factor("u1").await?.ok_or("missing")?;
+        assert_eq!(
+            (got.confirmed_at, got.last_counter),
+            (Some(Timestamp(9)), Some(11))
+        );
+        // Confirmed: it is never replaced.
+        assert!(!store.vault_put_two_factor(&seed(3)).await?);
+        assert_eq!(
+            store
+                .vault_two_factor("u1")
+                .await?
+                .ok_or("missing")?
+                .envelope
+                .ciphertext,
+            vec![2]
+        );
+        assert!(
+            !store
+                .vault_accept_two_factor("nobody", 1, Timestamp(1))
+                .await?
+        );
         Ok(())
     }
 }

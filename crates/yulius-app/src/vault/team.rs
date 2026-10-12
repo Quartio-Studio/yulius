@@ -267,7 +267,8 @@ impl App {
         Ok(created.max(reauth))
     }
 
-    /// `GET /api/auth/reauth`: whether reveals are allowed now and how to confirm.
+    /// `GET /api/auth/reauth`: whether the vault is unlocked, the caller's two-factor, and how
+    /// to confirm identity (to set two-factor up).
     ///
     /// # Errors
     /// Store failures.
@@ -282,18 +283,43 @@ impl App {
             }
         }
         let now = self.now();
-        let at = self.authenticated_at(ctx).await?;
-        let fresh = at.is_some_and(|at| reauth_fresh(now, at));
+        let identity = self.authenticated_at(ctx).await?;
+        let unlocked = match &ctx.session_hash {
+            Some(hash) => self.deps.store.vault_unlock(hash).await?,
+            None => None,
+        };
+        let fresh = unlocked.is_some_and(|at| reauth_fresh(now, at));
         Ok(ReauthStatus {
             fresh,
-            fresh_until: at
+            fresh_until: unlocked
                 .filter(|_| fresh)
                 .map(|at| rfc3339(at.plus_millis(REAUTH_WINDOW_MS))),
+            two_factor: self.two_factor_state(ctx).await?.to_owned(),
+            identity_fresh: identity.is_some_and(|at| reauth_fresh(now, at)),
             methods,
         })
     }
 
-    /// `POST /api/auth/reauth`: the superadmin confirms with the password (rate limited, audited).
+    /// Counts an attempt of `key` (a user's password confirmations or codes): at most 5 a minute.
+    pub(super) fn limit_attempts(&self, key: &str) -> AppResult<()> {
+        let now = self.now();
+        let mut attempts = self
+            .login_attempts
+            .lock()
+            .map_err(|_| AppError::Internal("rate limiter poisoned".into()))?;
+        let entry = attempts.entry(key.to_owned()).or_default();
+        entry.retain(|t| now.0 - *t < 60_000);
+        if entry.len() >= REAUTH_ATTEMPTS_PER_MINUTE {
+            return Err(AppError::Capacity(
+                "too many attempts; wait a minute".into(),
+            ));
+        }
+        entry.push(now.0);
+        Ok(())
+    }
+
+    /// `POST /api/auth/reauth`: the superadmin confirms it is them with the password (rate
+    /// limited, audited), which allows setting up two-factor.
     ///
     /// # Errors
     /// `Forbidden` without a browser session or a password and for a wrong password;
@@ -314,22 +340,7 @@ impl App {
             ));
         };
         let now = self.now();
-        {
-            let mut attempts = self
-                .login_attempts
-                .lock()
-                .map_err(|_| AppError::Internal("rate limiter poisoned".into()))?;
-            let entry = attempts
-                .entry(format!("reauth:{}", ctx.user.id.as_str()))
-                .or_default();
-            entry.retain(|t| now.0 - *t < 60_000);
-            if entry.len() >= REAUTH_ATTEMPTS_PER_MINUTE {
-                return Err(AppError::Capacity(
-                    "too many attempts; wait a minute".into(),
-                ));
-            }
-            entry.push(now.0);
-        }
+        self.limit_attempts(&format!("reauth:{}", ctx.user.id.as_str()))?;
         let actor = Self::vault_actor(ctx);
         if !self.deps.crypto.verify_password(password, phc) {
             self.vault_audit(&actor, "vault.reauth.failed", None, "password")
@@ -343,11 +354,15 @@ impl App {
         self.reauth_status(ctx).await
     }
 
-    /// Checks the re-authentication window before a reveal.
-    async fn fresh_or_status(&self, ctx: &AuthContext) -> AppResult<Option<ReauthStatus>> {
+    /// Checks the two-factor unlock before a reveal (SPEC-040 R4).
+    pub(super) async fn fresh_or_status(
+        &self,
+        ctx: &AuthContext,
+    ) -> AppResult<Option<ReauthStatus>> {
         if ctx.session_hash.is_none() {
             return Err(AppError::Forbidden(
-                "secrets are revealed only in the web UI, after confirming it is you".into(),
+                "secrets are revealed only in the web UI, after entering your two-factor code"
+                    .into(),
             ));
         }
         let status = self.reauth_status(ctx).await?;

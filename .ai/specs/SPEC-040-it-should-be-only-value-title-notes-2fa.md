@@ -78,7 +78,7 @@ them), and people can now read an agent secret's value too, behind the same two-
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Team secrets hold a title, a value and notes, and older ones fold into that form
+- [x] Team secrets hold a title, a value and notes, and older ones fold into that form
 - [ ] People set up two-factor and unlock the vault with a code
 - [ ] Every reveal needs a vault unlock, and people can read agent secrets they manage
 - [ ] Agent secrets drop the per-secret TOTP seed, and the user name serves Basic only
