@@ -1,11 +1,11 @@
 ---
 yulius-task: 7f2dac7e-b5cd-454e-b06b-370a2a983dae
-status: in-progress
+status: done
 ---
 
 # SPEC-011: merging into dev is automatic and test-driven; no person confirms dev
 
-Status: in progress
+Status: implemented
 Date: 2026-10-12
 Owner: Yulius task #10
 Scope authorization: user request ("Dev deployment/merge should be automatic, test-driven, and not wait for an explicit human approval")
@@ -55,8 +55,8 @@ hold the same manual `dev` checkpoint.
 
 ## Plan
 
-- [ ] Standard profile has no manual dev checkpoint and legacy profiles read as it
-- [ ] Docs and changes log say the merge on green is the dev delivery; every gate green
+- [x] Standard profile has no manual dev checkpoint and legacy profiles read as it
+- [x] Docs and changes log say the merge on green is the dev delivery; every gate green
 - [ ] Finished tasks are on dev and their branches and worktrees are cleared
 
 ## Decisions
@@ -64,3 +64,10 @@ hold the same manual `dev` checkpoint.
 - Remove the checkpoint instead of auto-confirming it: a confirmation nobody can refuse verifies
   nothing; the green gate on the exact head and the post-merge CI run are the verification.
 - Promotion to `main` keeps its own gate (merge-commit PR with green checks); only the dev wait goes.
+
+## Evidence
+
+- `cargo test -p yulius-domain -p yulius-app --lib`: 141 + 215 passed (new `legacy_standard_checkpoint_reads_as_the_new_standard`; standard flow goes merge → promote).
+- `cargo test -p yulius --test delivery`: 15 passed (the dev checkpoint steps removed; promotion follows the merge).
+- `scripts/dev ci` (build dir outside the worktree after a disk prune removed `target` mid-run): exit 0.
+- Not run: a real GitHub repository's rulesets.
