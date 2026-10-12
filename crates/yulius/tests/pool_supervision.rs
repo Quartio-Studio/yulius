@@ -951,3 +951,63 @@ fn a_limit_on_the_only_subscription_resumes_past_the_limit_when_it_recovers() ->
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// SPEC-034 (review): a person's switch of a task paused at a usage limit resumes it past the
+/// limit too, with no prompt and the transcript stepped back.
+#[test]
+fn a_manual_switch_at_a_limit_resumes_past_the_limit() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            limit_after: Some(1),
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+        probe.set("b-second", usage(99.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "b-second").await?;
+        let id = new_task(&app, &sandbox, &user, "Limit").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("FAKE-AGENT READY") }
+        })
+        .await?;
+        app.send_input(&id, b"hello\r").await?;
+        wait_for("the pause at the limit", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::WaitingCapacity)
+        })
+        .await?;
+        probe.set("b-second", usage(10.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "b-second").await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        app.switch_task(
+            &ctx,
+            id.as_str(),
+            &yulius_contracts::api::tasks::ContinueTask {
+                account_id: Some("b-second".into()),
+            },
+        )
+        .await?;
+        wait_for("the resumed run", Duration::from_secs(60), || async {
+            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+            attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
+        })
+        .await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        let problems = limit_resume_problems(Path::new(&attempts[1].run_dir), &data);
+        assert!(problems.is_empty(), "{problems:?}");
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
