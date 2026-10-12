@@ -209,11 +209,11 @@ impl Fixture {
         loop {
             self.h.app.ci_dispatch().await;
             let overview = self.get("/api/sandboxes/s1/ci").await?;
-            let active = overview["runs"]
-                .as_array()
-                .ok_or("runs")?
-                .iter()
-                .any(|r| r["state"] == "queued" || r["state"] == "running");
+            // A finished run publishes its commit status after recording its end: settled means
+            // no run is active and none waits for its status ("pending").
+            let active = overview["runs"].as_array().ok_or("runs")?.iter().any(|r| {
+                r["state"] == "queued" || r["state"] == "running" || r["status"] == "pending"
+            });
             if !active {
                 return Ok(());
             }
