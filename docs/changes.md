@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- Nothing refers to GitHub Actions runs any more: the delivery steps, the pull request template,
+  the `yulius-git` and `yulius-verify` skills and the branch policy's promotion evidence use the
+  `yulius/ci` status of the exact dev head (#184).
 - Tasks finish on `dev` by themselves (SPEC-011; tasks #10, #12, #16): a goal task starts from a
   request file (the request, its attached files to open, the definition of done) and a `/goal`
   that names it, typed once Claude Code's session started and confirmed, so long requests get a

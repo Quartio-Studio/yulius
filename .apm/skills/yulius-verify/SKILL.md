@@ -23,10 +23,10 @@ retries or broaden policies. Missing tools mean unverified, not success.
 
 Before completion inspect the diff, verify acceptance against actual results,
 and update evidence/state. Report passed, failed and unrun checks separately.
-Hosted CI is unrun until a real workflow result exists; local equivalence is not
-a claim that GitHub checks passed. Leave product acceptance open if its evidence
+Yulius CI is unrun until its run for the exact head exists; local equivalence is not
+a claim that `yulius/ci` passed. Leave product acceptance open if its evidence
 is absent, even when the harness passes.
 
-For published delivery, also verify the required PR checks and exact post-merge
-push runs on dev and main per `docs/engineering/git.md`. Local green checks do
-not replace either post-merge gate.
+For published delivery, also verify the required PR check and the `yulius/ci` status
+of the exact post-merge dev commit per `docs/engineering/git.md`. Local green checks do
+not replace that post-merge gate.
