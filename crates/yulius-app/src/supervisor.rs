@@ -117,6 +117,10 @@ pub struct TaskRuntime {
     pub(crate) last_stop_ms: AtomicI64,
     /// Background shells the agent left running, as last probed (-1 = not known).
     pub(crate) background_shells: AtomicI64,
+    /// Since when (ms) the idle agent's background shells have been running (0 = none), and
+    /// whether the agent was told they run long (complaint 1: dead shells).
+    pub(crate) shells_since_ms: AtomicI64,
+    pub(crate) shells_told: AtomicBool,
     /// The run was reattached after a restart: the transcript it already wrote is history.
     pub(crate) replay_transcript: AtomicBool,
     /// Why Claude Code said the current session ends (`SessionEnd` hook), until the run exits.
@@ -168,6 +172,8 @@ impl TaskRuntime {
             armed_merge: Mutex::new(None),
             last_stop_ms: AtomicI64::new(0),
             background_shells: AtomicI64::new(-1),
+            shells_since_ms: AtomicI64::new(0),
+            shells_told: AtomicBool::new(false),
             replay_transcript: AtomicBool::new(false),
             session_end: Mutex::new(None),
             hold_polled_ms: AtomicI64::new(0),
@@ -308,6 +314,14 @@ const GOAL_SUBMIT_WAITS: [Duration; 5] = [
 ];
 /// The attempt (index into [`GOAL_SUBMIT_WAITS`]) that types the whole line again.
 const GOAL_RETYPE_ATTEMPT: usize = 2;
+
+/// Rust build jobs of one agent: a third of the host's CPUs, at least 2.
+fn agent_build_jobs() -> usize {
+    std::thread::available_parallelism()
+        .map_or(2, std::num::NonZeroUsize::get)
+        .div_ceil(3)
+        .max(2)
+}
 
 /// Branch name for a task: `feat/<number>-<slug>`.
 #[must_use]
@@ -700,6 +714,10 @@ impl App {
             self.prepare_imported_resume(&task.id).await?;
         }
         let worktree = self.ensure_worktree(&sandbox, task).await?;
+        // The spec path is given out once, so parallel tasks never pick the same number.
+        if let Ok(Some(fresh)) = store.task(&task.id).await {
+            self.allocate_spec_path(&fresh, &worktree).await;
+        }
         let task = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
         let lineage = store.provider_sessions(&task.id).await?;
         let previous = lineage.last().cloned();
@@ -1081,6 +1099,10 @@ impl App {
             ("YULIUS_PORT_COUNT".into(), sandbox.port_count.to_string()),
             ("PORT".into(), sandbox.port_base.to_string()),
             ("YULIUS_SANDBOX".into(), sandbox.slug.clone()),
+            // Parallel tasks share the sandbox's memory: each Rust build uses a third of the
+            // CPUs (at least 2), so several tasks linking at once do not run it out (OOM kills
+            // of 2026-10-12).
+            ("CARGO_BUILD_JOBS".into(), agent_build_jobs().to_string()),
         ];
         env.extend(git_credential_env(&self.config.yulius_exe));
         env

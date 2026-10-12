@@ -197,6 +197,11 @@ impl GitPort for GitAdapter {
         blocking(move || git.has_ignored_files(&wt)).await
     }
 
+    async fn ignored_entries(&self, worktree: &Path) -> AppResult<Option<Vec<String>>> {
+        let (git, wt) = (self.git(), worktree.to_path_buf());
+        blocking(move || git.ignored_entries(&wt)).await.map(Some)
+    }
+
     async fn has_changes(&self, worktree: &Path) -> AppResult<bool> {
         let (git, wt) = (self.git(), worktree.to_path_buf());
         blocking(move || git.has_changes(&wt)).await
@@ -403,6 +408,11 @@ impl GitPort for GitAdapter {
     async fn resolve_commit(&self, repo: &Path, rev: &str) -> AppResult<Option<String>> {
         let (git, repo, rev) = (self.git(), repo.to_path_buf(), rev.to_owned());
         blocking(move || git.resolve_commit(&repo, &rev)).await
+    }
+
+    async fn tree_of(&self, repo: &Path, rev: &str) -> AppResult<Option<String>> {
+        let (git, repo, rev) = (self.git(), repo.to_path_buf(), rev.to_owned());
+        blocking(move || git.tree_of(&repo, &rev)).await
     }
 
     async fn show_file(&self, repo: &Path, rev: &str, path: &str) -> AppResult<Option<String>> {

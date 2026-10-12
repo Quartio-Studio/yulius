@@ -9,6 +9,25 @@ use crate::task::{Activity, TaskStatus};
 pub const PRESSURE_PERCENT: u64 = 90;
 /// Share of the quota (percent) pruning aims to get below.
 pub const TARGET_PERCENT: u64 = 80;
+/// A task idle this long has its caches pruned whatever the quota (F 2026-10-12: "agents leave
+/// old compiles and worktrees ... it should keep things clean"); continuing rebuilds them.
+pub const IDLE_PRUNE_AFTER_MS: i64 = 4 * 60 * 60 * 1000;
+/// Names of ignored directories that only hold what a build or an install recreates: a worktree
+/// whose ignored files are all such directories loses nothing when it is removed.
+pub const REBUILDABLE: [&str; 12] = [
+    "target",
+    "node_modules",
+    ".tools",
+    ".venv",
+    "venv",
+    "__pycache__",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".next",
+    ".turbo",
+    ".cache",
+];
 
 /// Whose cache it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,18 +39,57 @@ pub enum Owner {
 }
 
 /// Whose caches a task's are, by what it is doing; `None` for a task that works (or is
-/// starting, switching or stopping): its caches are never touched.
+/// starting, switching or stopping, or idles while its background shells still run a build):
+/// its caches are never touched. An idle task that has not moved for [`IDLE_PRUNE_AFTER_MS`]
+/// (`quiet_ms`) counts as ended.
 #[must_use]
-pub fn owner_of(status: TaskStatus, activity: Option<Activity>) -> Option<Owner> {
+pub fn owner_of(
+    status: TaskStatus,
+    activity: Option<Activity>,
+    background_shells: bool,
+    quiet_ms: i64,
+) -> Option<Owner> {
+    let idle = || {
+        if quiet_ms >= IDLE_PRUNE_AFTER_MS {
+            Owner::Ended
+        } else {
+            Owner::Idle
+        }
+    };
     match status {
         TaskStatus::Closed | TaskStatus::Stopped(_) | TaskStatus::Failed(_) => Some(Owner::Ended),
-        TaskStatus::Queued | TaskStatus::Chained | TaskStatus::WaitingCapacity => Some(Owner::Idle),
-        TaskStatus::Running if activity.is_some_and(Activity::is_idle) => Some(Owner::Idle),
+        TaskStatus::Queued | TaskStatus::Chained | TaskStatus::WaitingCapacity => Some(idle()),
+        TaskStatus::Running if activity.is_some_and(Activity::is_idle) && !background_shells => {
+            Some(idle())
+        }
         TaskStatus::Running
         | TaskStatus::Starting
         | TaskStatus::Switching
         | TaskStatus::Stopping => None,
     }
+}
+
+/// Whether every ignored entry of a worktree (as `git ls-files --others --ignored --directory`
+/// lists them) is a rebuildable directory ([`REBUILDABLE`]) or one of its declared `caches`.
+#[must_use]
+pub fn only_rebuildable(ignored: &[String], caches: &[String]) -> bool {
+    ignored.iter().all(|entry| {
+        // Git also lists an untracked directory that holds only ignored files (`e2e/` next to
+        // `e2e/node_modules/`): its listed contents decide.
+        if entry.ends_with('/')
+            && ignored
+                .iter()
+                .any(|other| other.len() > entry.len() && other.starts_with(entry.as_str()))
+        {
+            return true;
+        }
+        let entry = entry.trim_end_matches('/');
+        let last = entry.rsplit('/').next().unwrap_or(entry);
+        REBUILDABLE.contains(&last)
+            || caches
+                .iter()
+                .any(|cache| entry == cache || entry.starts_with(&format!("{cache}/")))
+    })
 }
 
 /// A cache directory found in a worktree.
@@ -54,8 +112,11 @@ pub fn cache_paths(entries: &[String], declared: &[String]) -> Vec<String> {
         paths.push("target".into());
     }
     if has("package.json") {
-        paths.push("node_modules/.cache".into());
+        paths.push("node_modules".into());
         paths.push(".next/cache".into());
+    }
+    if has("pyproject.toml") || has("requirements.txt") {
+        paths.push(".venv".into());
     }
     for path in declared {
         let first = path.split('/').next().unwrap_or_default();
@@ -144,7 +205,11 @@ mod tests {
                 &names(&["package.json"]),
                 &names(&["build/cache", ".git/hooks"])
             ),
-            names(&["node_modules/.cache", ".next/cache", "build/cache"])
+            names(&["node_modules", ".next/cache", "build/cache"])
+        );
+        assert_eq!(
+            cache_paths(&names(&["pyproject.toml"]), &[]),
+            names(&[".venv"])
         );
         assert!(cache_paths(&names(&["README.md"]), &[]).is_empty());
         assert_eq!(
@@ -198,26 +263,91 @@ mod tests {
 
     #[test]
     fn only_tasks_that_do_not_work_own_prunable_caches() {
-        assert_eq!(owner_of(TaskStatus::Closed, None), Some(Owner::Ended));
+        let owner = |status, activity| owner_of(status, activity, false, 0);
+        assert_eq!(owner(TaskStatus::Closed, None), Some(Owner::Ended));
         assert_eq!(
-            owner_of(TaskStatus::Stopped(StopReason::Cancelled), None),
+            owner(TaskStatus::Stopped(StopReason::Cancelled), None),
             Some(Owner::Ended)
         );
         assert_eq!(
-            owner_of(TaskStatus::Running, Some(Activity::Waiting)),
+            owner(TaskStatus::Running, Some(Activity::Waiting)),
             Some(Owner::Idle)
         );
-        assert_eq!(owner_of(TaskStatus::Chained, None), Some(Owner::Idle));
+        assert_eq!(owner(TaskStatus::Chained, None), Some(Owner::Idle));
         for working in [
-            owner_of(TaskStatus::Running, Some(Activity::Working)),
-            owner_of(TaskStatus::Running, Some(Activity::NeedsAttention)),
-            owner_of(TaskStatus::Running, None),
-            owner_of(TaskStatus::Starting, None),
-            owner_of(TaskStatus::Switching, None),
-            owner_of(TaskStatus::Stopping, None),
+            owner(TaskStatus::Running, Some(Activity::Working)),
+            owner(TaskStatus::Running, Some(Activity::NeedsAttention)),
+            owner(TaskStatus::Running, None),
+            owner(TaskStatus::Starting, None),
+            owner(TaskStatus::Switching, None),
+            owner(TaskStatus::Stopping, None),
         ] {
             assert_eq!(working, None);
         }
+    }
+
+    #[test]
+    fn background_shells_keep_a_task_working_and_long_idleness_ends_it() {
+        // F 2026-10-12: upkeep deleted target/ under an idle agent's running gate.
+        assert_eq!(
+            owner_of(TaskStatus::Running, Some(Activity::Waiting), true, 0),
+            None
+        );
+        assert_eq!(
+            owner_of(
+                TaskStatus::Running,
+                Some(Activity::Done),
+                true,
+                IDLE_PRUNE_AFTER_MS
+            ),
+            None
+        );
+        assert_eq!(
+            owner_of(
+                TaskStatus::Running,
+                Some(Activity::Waiting),
+                false,
+                IDLE_PRUNE_AFTER_MS
+            ),
+            Some(Owner::Ended)
+        );
+        assert_eq!(
+            owner_of(TaskStatus::Chained, None, false, IDLE_PRUNE_AFTER_MS - 1),
+            Some(Owner::Idle)
+        );
+    }
+
+    #[test]
+    fn a_worktree_whose_ignored_files_are_rebuildable_loses_nothing() {
+        assert!(only_rebuildable(
+            &names(&[
+                "target/",
+                ".tools/",
+                "e2e/node_modules/",
+                "crates/x/__pycache__/"
+            ]),
+            &[]
+        ));
+        assert!(only_rebuildable(
+            &names(&["build/cache/"]),
+            &names(&["build/cache"])
+        ));
+        assert!(only_rebuildable(&[], &[]));
+        // An untracked directory holding only ignored files is listed too; its contents decide.
+        assert!(only_rebuildable(
+            &names(&["e2e/", "e2e/node_modules/"]),
+            &[]
+        ));
+        assert!(!only_rebuildable(
+            &names(&["e2e/", "e2e/node_modules/", "e2e/.env"]),
+            &[]
+        ));
+        // Local configuration or data that only lives here keeps the worktree.
+        assert!(!only_rebuildable(&names(&["target/", ".env"]), &[]));
+        assert!(!only_rebuildable(
+            &names(&["notes/"]),
+            &names(&["build/cache"])
+        ));
     }
 
     #[test]

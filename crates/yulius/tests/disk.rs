@@ -473,3 +473,83 @@ async fn a_ci_cache_stays_while_a_run_executes_and_goes_once_it_ends() -> BoxRes
     w.h.app.ci_release(&w.sandbox.id);
     Ok(())
 }
+
+/// SPEC-019 DSK-003: a closed task's worktree whose only ignored files are rebuildable (the
+/// repository's tool directory, Node modules) is removed; before, any ignored file kept it forever.
+#[tokio::test]
+async fn an_ended_worktree_holding_only_rebuildable_files_is_removed() -> BoxResult<()> {
+    let w = world().await?;
+    let closed = w.task("t-tools", TaskStatus::Closed, None).await?;
+    let exclude = git(&closed, &["rev-parse", "--git-path", "info/exclude"])?;
+    let exclude = if Path::new(&exclude).is_absolute() {
+        PathBuf::from(exclude)
+    } else {
+        closed.join(exclude)
+    };
+    std::fs::create_dir_all(exclude.parent().ok_or("parent")?)?;
+    std::fs::write(&exclude, ".tools\nnode_modules\n")?;
+    std::fs::create_dir_all(closed.join(".tools/bin"))?;
+    std::fs::write(closed.join(".tools/bin/cargo-nextest"), vec![1u8; 64])?;
+    std::fs::create_dir_all(closed.join("e2e/node_modules/x"))?;
+    std::fs::write(closed.join("e2e/node_modules/x/index.js"), "x")?;
+    w.later();
+    let report = w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert_eq!(report.worktrees, 1, "{report:?}");
+    assert!(!closed.exists());
+    Ok(())
+}
+
+/// SPEC-019 DSK-002: an idle task that has not moved for hours loses its caches without any
+/// quota pressure (it keeps its worktree).
+#[tokio::test]
+async fn a_long_idle_task_loses_its_caches_without_pressure() -> BoxResult<()> {
+    let w = world().await?;
+    let idle = w
+        .task("t-idle", TaskStatus::Running, Some(Activity::Waiting))
+        .await?;
+    let report = w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert_eq!(report.caches, 0, "a recently idle task keeps its caches");
+    w.h.clock.0.fetch_add(
+        yulius_domain::disk::IDLE_PRUNE_AFTER_MS + 1_000,
+        Ordering::SeqCst,
+    );
+    let report = w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert!(report.caches >= 1, "{report:?}");
+    assert!(idle.exists() && !idle.join("target").exists());
+    Ok(())
+}
+
+/// SPEC-019 DSK-004: a worktree no task owns (an agent's own `git worktree add`) loses its
+/// caches once untouched for a day.
+#[tokio::test]
+async fn an_orphan_worktree_loses_its_caches_after_a_day() -> BoxResult<()> {
+    let w = world().await?;
+    let orphan = w.root.join("worktrees").join("wt-206");
+    git(
+        &w.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "fix/206",
+            orphan.to_str().ok_or("path")?,
+        ],
+    )?;
+    std::fs::create_dir_all(orphan.join("target"))?;
+    std::fs::write(orphan.join("target").join("blob"), vec![7u8; BIG])?;
+    let report = w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert_eq!(report.caches, 0, "a fresh one is left alone");
+    // The directory's age is real time: the clock moves to a day after its real mtime.
+    let real_now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis();
+    w.h.clock.0.store(
+        i64::try_from(real_now)? + 25 * 60 * 60 * 1000,
+        Ordering::SeqCst,
+    );
+    let report = w.h.app.disk_upkeep(&w.sandbox, false).await?;
+    assert!(report.caches >= 1, "{report:?}");
+    assert!(orphan.exists() && !orphan.join("target").exists());
+    Ok(())
+}

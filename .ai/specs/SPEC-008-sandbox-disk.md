@@ -108,3 +108,9 @@ directories of closed and cancelled tasks (38, 46, 11 and 7 GB).
 - Follow-up (PR #205 review, 2026-10-11): `cargo test -p yulius --test disk`: 9 passed (2 new for CI job
   caches: over a quarter of the quota at once, under pressure and before a refusal). Renamed from
   SPEC-005 (taken by #194).
+
+## Later changes
+
+- 2026-10-12: SPEC-019 prunes long-idle tasks' caches without pressure, keeps caches while
+  background shells run, removes worktrees whose ignored files are only rebuildable, and purges
+  orphan worktrees and removed sandboxes.

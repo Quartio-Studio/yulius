@@ -157,6 +157,10 @@ fn main() -> ExitCode {
     // (SPEC-002 ADR-20). Handled before argument parsing: the command is opaque text.
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some(yulius_app::vault::SCRUB_EXEC_FLAG) {
+        // Under memory pressure the kernel kills the agent's command (a build it can rerun)
+        // before the agent itself: rust-lld's OOM killed `claude` and ended tasks #10 and #15
+        // (F 2026-10-12). Raising one's own score needs no privilege; children inherit it.
+        let _ignored = std::fs::write("/proc/self/oom_score_adj", "500");
         let code =
             yulius_harness::scrub_client::run_scrub_exec(&args[1..], &|k| std::env::var(k).ok());
         return ExitCode::from(u8::try_from(code).unwrap_or(1));

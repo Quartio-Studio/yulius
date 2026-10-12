@@ -1007,6 +1007,72 @@ impl App {
         }
     }
 
+    /// Gives a task that has no spec path yet the next free `SPEC-NNN-<slug>.md` of its specs
+    /// directory, when the repository numbers its specs that way: parallel tasks each took the
+    /// same number (nine `SPEC-010`s on 2026-10-12). The number is free in the worktree's specs
+    /// and among the paths given to the sandbox's other tasks; allocation is serialized.
+    pub(crate) async fn allocate_spec_path(&self, task: &TaskRecord, worktree: &Path) {
+        static ALLOCATING: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+        if task.spec_path.is_some() {
+            return;
+        }
+        let _guard = ALLOCATING
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await;
+        let (dir, found) = self.dlv_discover_spec(task, worktree).await;
+        if found.is_some() || !safe_relative(&dir) {
+            return;
+        }
+        let number_of = |name: &str| -> Option<u32> {
+            let rest = name.rsplit('/').next()?.strip_prefix("SPEC-")?;
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            (!digits.is_empty() && rest[digits.len()..].starts_with('-'))
+                .then(|| digits.parse().ok())
+                .flatten()
+        };
+        let mut numbers: Vec<u32> = Vec::new();
+        if let Ok(mut entries) = tokio::fs::read_dir(worktree.join(&dir)).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                if let Some(n) = number_of(&entry.file_name().to_string_lossy()) {
+                    numbers.push(n);
+                }
+            }
+        }
+        // Only a repository that numbers its specs this way gets a number.
+        if numbers.is_empty() {
+            return;
+        }
+        if let Ok(tasks) = self.deps.store.tasks(&task.sandbox_id, false).await {
+            numbers.extend(
+                tasks
+                    .iter()
+                    .filter_map(|t| t.spec_path.as_deref().and_then(number_of)),
+            );
+        }
+        let next = numbers.iter().max().copied().unwrap_or(0) + 1;
+        let slug = task
+            .branch
+            .as_deref()
+            .and_then(|b| b.split_once('/').map(|(_, rest)| rest))
+            .and_then(|rest| rest.split_once('-').map(|(_, slug)| slug))
+            .filter(|slug| !slug.is_empty())
+            .unwrap_or("task");
+        let path = format!("{dir}/SPEC-{next:03}-{slug}.md");
+        let update = TaskFieldUpdate {
+            spec_path: Some(path),
+            ..TaskFieldUpdate::default()
+        };
+        if let Err(err) = self
+            .deps
+            .store
+            .update_task(&task.id, &update, self.now())
+            .await
+        {
+            tracing::warn!(task = %task.id, error = %err, "allocating the spec path failed");
+        }
+    }
+
     /// The repository path of the task's spec: the registered one while that file exists, else
     /// the one whose frontmatter names the task — registered on the way, so a renamed spec is
     /// followed instead of blocking the agent on a path it cannot change (F 2026-10-11).
@@ -2196,11 +2262,47 @@ impl App {
     /// means merge now, red means fix it (F 2026-10-11: agents deliver without a person). A pull
     /// request that conflicts with its base comes first: GitHub runs no checks on it, so without
     /// this the agent would wait for checks that never come.
+    /// When the latest Yulius CI run at `sha` ended in an error (it could not run), its reason
+    /// and whether it was queued again now: an errored run is retried once by itself.
+    async fn ci_errored_at(&self, task: &TaskRecord, sha: &str) -> Option<(String, bool)> {
+        let runs = self
+            .deps
+            .store
+            .ci_runs_for_sha(&task.sandbox_id, sha)
+            .await
+            .ok()?;
+        let latest = runs.first()?;
+        if latest.state != yulius_domain::ci::RunState::Error {
+            return None;
+        }
+        let reason = latest
+            .reason
+            .clone()
+            .unwrap_or_else(|| "an infrastructure error".to_owned());
+        // Retried once: two errored runs at the same commit wait for a person or the agent.
+        let errored = runs
+            .iter()
+            .filter(|r| r.state == yulius_domain::ci::RunState::Error)
+            .count();
+        let mut requeued = false;
+        if errored < 2
+            && let Ok(Some(sandbox)) = self.deps.store.sandbox(&task.sandbox_id).await
+        {
+            requeued = self.ci_rerun(&sandbox, &latest.id, "yulius").await.is_ok();
+        }
+        Some((reason, requeued || runs.iter().any(|r| r.state.is_active())))
+    }
+
     async fn tell_checks(&self, task: &TaskRecord, observed: &Observed) {
         let Some(pull) = observed.pr.as_ref().filter(|p| is_open(p)) else {
             return;
         };
         let conflicts = pull.mergeable == Some(false);
+        let errored = if observed.checks == ChecksState::Failure && !conflicts {
+            self.ci_errored_at(task, &pull.head_sha).await
+        } else {
+            None
+        };
         let (subject, body) = match observed.checks {
             _ if conflicts => (
                 "Your pull request conflicts with its base: resolve it",
@@ -2243,6 +2345,26 @@ impl App {
                     pull.head_sha.chars().take(9).collect::<String>()
                 ),
             ),
+            // A run that could not run (disk quota, a lost runner, a timeout) is not the code's
+            // fault: it is queued again once by itself, and the agent is told so instead of
+            // "fix the cause test-first" (F 2026-10-12: agents chased infrastructure errors).
+            ChecksState::Failure if errored.is_some() => {
+                let (reason, requeued) = errored.unwrap_or_default();
+                (
+                    "Your pull request's checks could not run",
+                    format!(
+                        "The checks of pull request #{} could not run at {} ({reason}). That is \
+                         not your code. {} Wait with `yulius wait`; do not change code for it.",
+                        pull.number,
+                        pull.head_sha.chars().take(9).collect::<String>(),
+                        if requeued {
+                            "Yulius queued them again."
+                        } else {
+                            "Run them again with `ci_rerun` once the cause is gone."
+                        }
+                    ),
+                )
+            }
             ChecksState::Failure => (
                 "Your pull request's checks failed: fix them",
                 format!(

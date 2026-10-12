@@ -57,13 +57,16 @@ export function backgroundShells(task) {
 }
 
 /** "1 background shell still running" (TSK-014). */
-export function shellsLine(count) {
-  return `${count} background shell${count === 1 ? '' : 's'} still running`;
+export function shellsLine(count, since) {
+  // How long they have run (complaint 1: a wait that never ends shows its age).
+  const minutes = since ? Math.floor((Date.now() - Date.parse(since)) / 60000) : NaN;
+  const age = minutes >= 1 ? ` · ${minutes < 120 ? `${minutes} min` : `${Math.floor(minutes / 60)} h`}` : '';
+  return `${count} background shell${count === 1 ? '' : 's'} still running${age}`;
 }
 
 /** A finished task that still has background shells reads as Working, with them said (TSK-014). */
-function stillWorking(count) {
-  return { glyph: '●', icon: 'st-working', tone: 'working', label: 'Working', group: 'working', shells: count, detail: shellsLine(count) };
+function stillWorking(count, since) {
+  return { glyph: '●', icon: 'st-working', tone: 'working', label: 'Working', group: 'working', shells: count, shellsSince: since, detail: shellsLine(count, since) };
 }
 
 const DONE = { glyph: '✓', icon: 'check', tone: 'done', label: 'Done', group: 'done' };
@@ -91,13 +94,13 @@ export function statusInfo(task) {
     if (activity === 'needs_attention') return { glyph: '!', icon: 'st-attention', tone: 'attention', label: 'Needs your action', group: 'needs' };
     if (activity === 'done') {
       const shells = backgroundShells(task);
-      return shells ? stillWorking(shells) : { ...DONE };
+      return shells ? stillWorking(shells, task.background_shells_since) : { ...DONE };
     }
     if (activity === 'waiting') {
       // Background shells keep the agent going: it wakes by itself when they report, so the next
       // move is not the user's yet.
       const shells = backgroundShells(task);
-      if (shells) return stillWorking(shells);
+      if (shells) return stillWorking(shells, task.background_shells_since);
       return { glyph: '○', icon: 'st-input', tone: 'waiting', label: 'Your turn', group: 'needs' };
     }
     if (activity === 'working') return { glyph: '●', icon: 'st-working', tone: 'working', label: 'Working', group: 'working' };
@@ -155,7 +158,7 @@ export function pausedLine(task) {
 export function activityLine(task, info = statusInfo(task)) {
   if (info.request) return info.request.reason || 'Do something in the sandbox browser';
   if (info.held) return 'A prompt was held · choose what to do';
-  if (info.shells) return shellsLine(info.shells);
+  if (info.shells) return shellsLine(info.shells, info.shellsSince);
   if (info.pr) return info.label;
   const steps = task.steps || {};
   if (task.status === 'running') {
@@ -211,7 +214,7 @@ export function taskInfo(task, actionRequests, pr) {
     if (pr.state === 'open' && pr.checks === 'failure') return { ...info, icon: 'branch', tone: 'attention', label: `PR #${pr.number} · checks failing`, group: 'needs', pr };
     if (planOpen(task)) return info;
     const shells = backgroundShells(task);
-    if (shells) return { ...info, ...stillWorking(shells), pr };
+    if (shells) return { ...info, ...stillWorking(shells, task.background_shells_since), pr };
     const done = { ...info, ...DONE, label: pr.state === 'merged' ? `Done · PR #${pr.number} merged` : `Done · PR #${pr.number}`, pr };
     // An achieved goal is done whatever the checks are still doing (TSK-014).
     if (task.activity === 'done') return done;

@@ -6,6 +6,17 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- Agents meet fewer avoidable obstacles (SPEC-020):
+  - pinned tools are built once per home and linked into each worktree;
+  - the changes log merges with Git's union driver;
+  - memory pressure kills an agent's build before the agent, and agent Rust builds use a third of
+    the CPUs;
+  - CI reuses the result of a tree it already tested, stops a run's jobs when one fails, keeps a
+    superseded pull request's queue place, retries an errored run once and says it is not the code,
+    and tests a pull request with its own CI jobs;
+  - proactive switches wait for background shells;
+  - Yulius gives each task its spec number;
+  - onboarding runs as a goal task that must run every CI job.
 - Nothing refers to GitHub Actions runs any more: the delivery steps, the pull request template,
   the `yulius-git` and `yulius-verify` skills and the branch policy's promotion evidence use the
   `yulius/ci` status of the exact dev head (#184).
@@ -18,6 +29,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   `dev` (never promote unless asked) and fit Claude Code's hook limit; tasks run Opus by default
   with auto-compact on and 10-minute Bash timeouts.
 - Tasks can start by a logical rule: besides "run after #N", a new task can wait for a sentence such as `#12 done and #13 done` or `#12 done or #14 ended` (composer: Run after → "When a rule is true…", API `start_rule`); it starts the moment the sentence is true and goes to Needs you when it never can be ([SPEC-017](../.ai/specs/SPEC-017-task-start-rules.md), ADR-0018).
+- Sandboxes stay clean and background shells stay honest (SPEC-019): an idle task's caches go after
+  4 hours whatever the quota, never while its background shells still run a build; ended tasks'
+  worktrees go when only rebuildable directories are ignored; orphan worktrees and removed
+  sandboxes' worktrees and CI checkouts are pruned after a day; a Bash `pgrep -f`/`pkill -f` that
+  would match itself is refused before it runs; an idle agent is told once when its background
+  shells run 30 minutes, and the UI shows their age.
 - Task-to-task messaging is removed for now: `message_send` only tells or asks people (`to="people"`), `scope_claim` shows an overlap to the claiming agent only and messages nobody, and the briefing, digest and Messages panel speak of Yulius's notices. Notices, the inbox, the digest and the idle wake-up are unchanged (SPEC-012, COM-002 withdrawn).
 - A task's state reads the same everywhere and matches what it waits for (tasks #11, #13, #14):
   an idle agent whose background shells still run is Working, not "Your turn", and the task view

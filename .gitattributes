@@ -2,3 +2,6 @@
 .agents/** text eol=lf
 .claude/** text eol=lf
 apm.lock.yaml text eol=lf
+# Every change adds a line at the top of the changes log; parallel branches always collided there.
+# Git's built-in union driver keeps both sides when an agent merges the integration branch.
+docs/changes.md merge=union
