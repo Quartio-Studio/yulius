@@ -14,7 +14,7 @@ pub const TARGET_PERCENT: u64 = 80;
 pub const IDLE_PRUNE_AFTER_MS: i64 = 4 * 60 * 60 * 1000;
 /// Names of ignored directories that only hold what a build or an install recreates: a worktree
 /// whose ignored files are all such directories loses nothing when it is removed.
-pub const REBUILDABLE: [&str; 12] = [
+pub const REBUILDABLE: [&str; 14] = [
     "target",
     "node_modules",
     ".tools",
@@ -27,6 +27,10 @@ pub const REBUILDABLE: [&str; 12] = [
     ".next",
     ".turbo",
     ".cache",
+    // End-to-end runners' output and the Agent Package Manager's package cache (F 2026-10-12:
+    // they kept seven ended worktrees).
+    ".e2e",
+    "apm_modules",
 ];
 
 /// Whose cache it is.
@@ -84,6 +88,10 @@ pub fn only_rebuildable(ignored: &[String], caches: &[String]) -> bool {
             return true;
         }
         let entry = entry.trim_end_matches('/');
+        // Claude Code's own state in a worktree (`.claude/scheduled_tasks.lock`).
+        if entry.starts_with(".claude/") {
+            return true;
+        }
         let last = entry.rsplit('/').next().unwrap_or(entry);
         REBUILDABLE.contains(&last)
             || caches
@@ -344,6 +352,16 @@ mod tests {
         ));
         // Local configuration or data that only lives here keeps the worktree.
         assert!(!only_rebuildable(&names(&["target/", ".env"]), &[]));
+        assert!(only_rebuildable(
+            &names(&[
+                "e2e/",
+                "e2e/.e2e/",
+                "e2e/node_modules/",
+                "apm_modules/",
+                ".claude/scheduled_tasks.lock"
+            ]),
+            &[]
+        ));
         assert!(!only_rebuildable(
             &names(&["notes/"]),
             &names(&["build/cache"])
