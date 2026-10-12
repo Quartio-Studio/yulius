@@ -6,13 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
-- Messages are gone for now (SPEC-028, ADR-0021; task #26): no `message_send` or `messages_inbox`,
+- Messages are gone for now (SPEC-028, ADR-0022; task #26): no `message_send` or `messages_inbox`,
   no stored notices, notice digest or "unread messages" stop reason, nothing typed into an idle
   session, and no Messages panel, unread counts, message notifications or
   `GET /api/tasks/{tid}/messages`. Agents learn about their checks, delivery and armed merges from
   `yulius wait` (which now says how an armed merge ended), `ci_status` and `delivery_status`. The
   stored messages stay as history. A `yulius wait` already running when the server updates exits
   with "cannot be reached" once (its answer changed shape); start it again.
+- A half-written new task is kept (SPEC-026, task #24): its prompt, attached files (with thumbnails)
+  and choices come back after visiting another page or reloading, per sandbox; starting the task
+  clears it, signing out removes it.
 - Every user has a Cockpit, first in the sandbox navigation: their own plain Claude Code session in
   the sandbox (no Yulius hooks, MCP or briefing) on a pool subscription, for quick questions and
   work that should not become a task. `/clear` starts over; it cannot be deleted, and after an

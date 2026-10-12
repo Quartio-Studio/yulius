@@ -58,7 +58,7 @@ before it ends the running session ([SPEC-008](../.ai/specs/SPEC-008-sandbox-dis
 ## Agent feedback
 
 Yulius has no messages for now ([SPEC-028](../.ai/specs/SPEC-028-delete-message-mechanism-for-now-until-w.md),
-[decision 0021](decisions/0021-no-messages-until-delivery-is-reliable.md)): nothing is stored for
+[decision 0022](decisions/0022-no-messages-until-delivery-is-reliable.md)): nothing is stored for
 an agent, injected by a hook or typed into its session. An agent pulls what it needs: it waits
 with `yulius wait` in a background shell, which Claude Code wakes it from, and reads
 `ci_status` and `delivery_status`. The armed merge's outcome is kept in memory for the wait.
@@ -90,6 +90,24 @@ flowchart LR
   APP -->|"plan_cockpit"| HP["Harness: claude [--resume id]"]
   APP --> SH["Shell runtime (user space, repository)"]
   UI -->|"WS /api/shells/id/terminal"| SH
+```
+
+## Web UI state
+
+The web UI is plain ES modules. Server state comes from the API and the UI event stream
+(`store.js`); what only one person's browser needs stays in `localStorage`: preferences (theme,
+column widths, model and effort), the notification history, and the new-task composer's drafts
+([decision 0021](decisions/0021-composer-drafts-in-the-browser.md)). Sign-out removes the
+notification history and the drafts.
+
+```mermaid
+flowchart LR
+  C["Composer (taskview.js)"] -->|"edit, attach"| D["drafts.js (per user and sandbox)"]
+  C -->|"upload"| U["POST /api/sandboxes/:id/attachments"]
+  D -->|"debounced, on leave or hide"| LS[("localStorage yulius.draft.*")]
+  LS -->|"after a reload"| D
+  C -->|"task started: clear"| D
+  SO["Sign-out"] -->|"forget"| LS
 ```
 
 ## Agent primitives

@@ -24,4 +24,5 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0018](0018-task-start-rules.md): Tasks start by a logical rule over other tasks' states
 - [0019](0019-start-rule-editor.md): The composer builds a start rule from picked conditions, all or any
 - [0020](0020-cockpit-as-a-plain-shell-session.md): The Cockpit is a plain Claude Code session on the shell runtime
-- [0021](0021-no-messages-until-delivery-is-reliable.md): No messages until their delivery is reliable
+- [0021](0021-composer-drafts-in-the-browser.md): New-task drafts live in the browser, per user and sandbox
+- [0022](0022-no-messages-until-delivery-is-reliable.md): No messages until their delivery is reliable

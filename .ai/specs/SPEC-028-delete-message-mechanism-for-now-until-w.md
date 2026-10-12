@@ -85,7 +85,7 @@ SPEC-011 DLV-012's "a notice arrives" (replaced by MSR-003).
 ## Decisions
 
 - Remove, not hide: a hidden panel over a live notice pipeline would keep the unreliable part (typed
-  wake-ups, digest, stop gate) running unseen. ADR-0021.
+  wake-ups, digest, stop gate) running unseen. ADR-0022.
 - Pull, not push: agents already wait with `yulius wait` (a background command Claude Code wakes them
   from); its state gains the armed-merge outcome, held in memory per task like the armed merge itself
   (lost on restart, as the armed merge is).
