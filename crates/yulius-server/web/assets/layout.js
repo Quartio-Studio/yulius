@@ -53,8 +53,8 @@ export function createTabRow(ctx) {
   const eventDot = h('span', { class: 'ev-dot', title: 'Live updates connected' });
   const eventText = h('span', { class: 'sr-only' }, ', live updates connected');
   const statusButton = h('button', { type: 'button', class: 'btn btn-status', 'aria-expanded': 'false', 'aria-haspopup': 'dialog', title: 'Status: machine and subscription usage' }, eventDot, h('span', { class: 'status-text' }, 'Status'), eventText, icon('down', { size: 12 }));
-  // Shows/hides the right tool rail (browser, editor, shell, messages); hidden by default.
-  const toolsButton = iconButton('tools', 'Show tools (browser, editor, shell, messages)', () => ctx.toggleRail && ctx.toggleRail(), { class: 'tools-toggle' });
+  // Shows/hides the right tool rail (browser, editor, shell); hidden by default.
+  const toolsButton = iconButton('tools', 'Show tools (browser, editor, shell)', () => ctx.toggleRail && ctx.toggleRail(), { class: 'tools-toggle' });
   const toolsDot = h('span', { class: 'rail-dot', hidden: true });
   toolsButton.append(toolsDot);
   toolsButton.style.position = 'relative';
@@ -62,7 +62,7 @@ export function createTabRow(ctx) {
   let toolsAttention = false;
   let railVisible = false;
   const labelTools = () => {
-    toolsButton.title = railVisible ? 'Hide tools' : 'Show tools (browser, editor, shell, messages)';
+    toolsButton.title = railVisible ? 'Hide tools' : 'Show tools (browser, editor, shell)';
     toolsButton.setAttribute('aria-label', `${toolsButton.title}${toolsAttention ? ', an agent needs your action' : ''}`);
   };
   ctx.onToolsAttention = (attention) => { toolsAttention = attention; toolsDot.hidden = !attention; labelTools(); };
@@ -638,15 +638,14 @@ export function createSidebar(ctx) {
   function rowFor(task) {
     let row = rows.get(task.id);
     if (!row) {
-      // One line: state icon, pull request, title, unread count, age. What the task needs is said by
+      // One line: state icon, pull request, title, age. What the task needs is said by
       // the icon, the tooltip and (for screen readers) the hidden sentence after the title.
       const mark = h('span', { class: 'task-mark' });
       const chips = h('span', { class: 'task-chips' });
       const title = h('span', { class: 'task-title' });
       const sub = h('span', { class: 'sr-only' });
-      const unread = h('span', { class: 'task-unread' });
       const age = h('span', { class: 'task-age' });
-      const link = h('a', { class: 'task-link' }, mark, chips, title, sub, unread, age);
+      const link = h('a', { class: 'task-link' }, mark, chips, title, sub, age);
       const kebab = iconButton('more', 'Task actions', (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -658,7 +657,7 @@ export function createSidebar(ctx) {
         openTaskMenu(ctx, { x: event.clientX, y: event.clientY }, row.task);
       });
       link.addEventListener('click', () => document.body.classList.remove('drawer-open'));
-      row = { el, link, mark, chips, title, unread, age, sub, task };
+      row = { el, link, mark, chips, title, age, sub, task };
       rows.set(task.id, row);
     }
     row.task = task;
@@ -692,9 +691,6 @@ export function createSidebar(ctx) {
     row.sub.textContent = `, ${activityLine(task, info)}`;
     row.age.textContent = relShort(task.updated_at);
     row.age.title = `Last change ${dateTime(task.updated_at)}`;
-    row.unread.hidden = !task.unread_messages;
-    setChildren(row.unread, task.unread_messages ? [String(task.unread_messages), h('span', { class: 'sr-only' }, ' unread')] : null);
-    row.unread.title = task.unread_messages ? `${task.unread_messages} unread message${task.unread_messages === 1 ? '' : 's'}` : '';
   }
 
   function groupHead(group, size) {

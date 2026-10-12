@@ -56,7 +56,7 @@ enum Command {
     #[command(name = "gh-token", hide = true)]
     GhToken,
     /// In a task's session: wait until the Yulius CI checks at this commit finish, the task's
-    /// delivery moves or Yulius sends a notice (start it in the background and end the turn).
+    /// delivery moves or an armed merge is decided (start it in the background and end the turn).
     Wait {
         /// Give up after this many minutes.
         #[arg(long, default_value_t = 90)]

@@ -45,7 +45,7 @@ Every task transcript had wait loops like `until ! pgrep -f "scripts/dev ci"`. T
 | DSK-005 | A sandbox removed more than a day ago loses its worktrees and CI checkouts; its home (sessions) and clone stay. | `disk.rs` purge |
 | DSK-006 | Recognised caches include `node_modules` and `.venv`; this repository declares `e2e/node_modules`. | `cache_paths` test |
 | SHL-001 | A Bash command whose `pgrep -f`/`pkill -f` pattern matches its own command line is refused before it runs, with the way to wait instead. | `guard_client` tests |
-| SHL-002 | An idle agent whose background shells run for 30 minutes is told once, and the UI shows how long they have run. | `finish.rs` probe; `status.js` |
+| SHL-002 | ~~An idle agent whose background shells run for 30 minutes is told once~~ (withdrawn by SPEC-028: no messages), and the UI shows how long they have run. | `finish.rs` probe; `status.js` |
 
 ## Design
 

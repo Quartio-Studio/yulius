@@ -327,8 +327,6 @@ export function mountTaskView(ctx, sandbox, task) {
       // The user left the agent session (e.g. /exit): back to the task list (HRN-002).
       if (wasLive && current.status === 'closed' && ctx.onTaskClosed) ctx.onTaskClosed(current);
     },
-    /** Focuses the terminal to answer the agent (the quick input on phones). */
-    reply,
     get task() { return current; },
     get detail() { return detail; },
     destroy() {
@@ -341,7 +339,7 @@ export function mountTaskView(ctx, sandbox, task) {
 }
 
 function pickSummary(detail) {
-  const keys = ['status', 'activity', 'title', 'steps', 'unread_messages', 'account_label', 'harness', 'branch', 'updated_at', 'archived', 'mode', 'after', 'next', 'held_prompt', 'auto'];
+  const keys = ['status', 'activity', 'title', 'steps', 'account_label', 'harness', 'branch', 'updated_at', 'archived', 'mode', 'after', 'next', 'held_prompt', 'auto'];
   const out = {};
   for (const key of keys) if (key in detail) out[key] = detail[key];
   return out;

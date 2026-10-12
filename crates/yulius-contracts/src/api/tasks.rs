@@ -50,8 +50,6 @@ pub struct TaskSummary {
     pub updated_at: String,
     /// Step progress.
     pub steps: StepProgress,
-    /// Unread messages for the task.
-    pub unread_messages: u32,
     /// Archived flag.
     pub archived: bool,
     /// Label of the account in use.
@@ -318,38 +316,4 @@ pub struct FeedbackRequest {
     /// Optional comment.
     #[serde(default)]
     pub comment: String,
-}
-
-/// Message sender.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MessageFrom {
-    /// Sending task.
-    pub task_id: Option<String>,
-    /// Sending user.
-    pub login: Option<String>,
-    /// Sender title (task title or user display name).
-    pub title: String,
-}
-
-/// A task's message: between tasks, an agent's message to people (`to="people"`, null
-/// `to_task_id`), or a person's message stored before 2026-10-10 (people now talk to the agent in
-/// its terminal).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MessageView {
-    /// Message id.
-    pub id: String,
-    /// Sender.
-    pub from: MessageFrom,
-    /// Recipient task; null = broadcast.
-    pub to_task_id: Option<String>,
-    /// `info`, `question`, `request` or `scope`.
-    pub kind: String,
-    /// Subject.
-    pub subject: String,
-    /// Body.
-    pub body: String,
-    /// Creation time.
-    pub created_at: String,
-    /// Read by the recipient.
-    pub read: bool,
 }

@@ -25,16 +25,6 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         "task_id": {"type": "string", "description": "Task id"},
         "number": {"type": "integer", "description": "Task number within this sandbox"}
     });
-    let mut message_props = json!({});
-    if let Some(obj) = message_props.as_object_mut() {
-        obj.insert("to".into(), json!({"type": "string", "enum": ["people"], "description": "Required: \"people\" tells or asks the people using Yulius something: it shows in this task's Messages and in their notifications, and they reply in this session's terminal"}));
-        obj.insert(
-            "kind".into(),
-            json!({"type": "string", "enum": ["info", "question", "request"]}),
-        );
-        obj.insert("subject".into(), json!({"type": "string"}));
-        obj.insert("body".into(), json!({"type": "string"}));
-    }
     let mut tools = vec![
         ToolDescriptor {
             name: "project_context".into(),
@@ -70,16 +60,6 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
                 "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "Most entries (default 60)"},
                 "max_chars": {"type": "integer", "minimum": 1000, "maximum": crate::session_docs::READ_CHARS_MAX, "description": "Most characters of text (default 24000)"}
             }), &[]),
-        },
-        ToolDescriptor {
-            name: "message_send".into(),
-            description: "Tell or ask the people using Yulius something with to=\"people\" (they reply in this session's terminal, not by message). Messages to other tasks are not supported.".into(),
-            input_schema: schema(message_props, &["to", "body"]),
-        },
-        ToolDescriptor {
-            name: "messages_inbox".into(),
-            description: "Read the notices Yulius sent to this task; marks them read.".into(),
-            input_schema: schema(json!({"unread_only": {"type": "boolean"}}), &[]),
         },
         ToolDescriptor {
             name: "scope_claim".into(),
@@ -158,7 +138,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "delivery_merge".into(),
-            description: "Merge this task's pull request on green (the one delivery pipeline: you deliver your own work, no person accepts it). Refused unless the checks passed on the exact head (Yulius CI), the spec is valid when the task needs one, every step is done, the head is current and an independent review in a fresh session approved exactly this head: pass that commit as reviewed_head (and a one-line review_summary). While the checks at that head still run, the call arms the merge instead: Yulius merges exactly that head as soon as they pass and tells you (start `yulius wait` with run_in_background and end your turn; never poll). Acts with the authority of the task's creator and is audited.".into(),
+            description: "Merge this task's pull request on green (the one delivery pipeline: you deliver your own work, no person accepts it). Refused unless the checks passed on the exact head (Yulius CI), the spec is valid when the task needs one, every step is done, the head is current and an independent review in a fresh session approved exactly this head: pass that commit as reviewed_head (and a one-line review_summary). While the checks at that head still run, the call arms the merge instead: Yulius merges exactly that head as soon as they pass (start `yulius wait` with run_in_background and end your turn: it says how the merge ended; never poll). Acts with the authority of the task's creator and is audited.".into(),
             input_schema: schema(json!({
                 "reviewed_head": {"type": "string", "description": "The commit SHA the independent reviewer approved (must be the branch head)"},
                 "review_summary": {"type": "string", "description": "One line: the reviewer's verdict and what it checked"}
@@ -279,7 +259,7 @@ impl App {
                     "protocolVersion": version,
                     "capabilities": {"tools": {"listChanged": false}},
                     "serverInfo": {"name": "yulius", "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": "Yulius coordinates this project's tasks. Use tasks_list and sessions_search before starting, message_send to tell or ask the people using Yulius something, and steps_set/step_update to keep a plan of similar-effort steps whose progress arrives steadily.",
+                    "instructions": "Yulius coordinates this project's tasks. Use tasks_list and sessions_search before starting, and steps_set/step_update to keep a plan of similar-effort steps whose progress arrives steadily.",
                 }))
             }
             "ping" => Ok(json!({})),
@@ -311,8 +291,6 @@ impl App {
             "task_get" => self.tool_task_get(ctx, &args).await,
             "sessions_search" => self.tool_sessions_search(ctx, &args).await,
             "session_read" => self.tool_session_read(ctx, &args).await,
-            "message_send" => self.tool_message_send(ctx, &args).await,
-            "messages_inbox" => self.tool_messages_inbox(ctx, &args).await,
             "scope_claim" => self.tool_scope_claim(ctx, &args).await,
             "scope_release" => self.tool_scope_release(ctx, &args).await,
             "scopes_list" => self.tool_scopes_list(ctx).await,

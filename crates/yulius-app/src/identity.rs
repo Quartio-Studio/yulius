@@ -106,7 +106,7 @@ exec "$real" "$@"
 }
 
 /// The `yulius` command of agent runs (SPEC-011): only `yulius wait`, which blocks until the
-/// checks at the agent's head finish, its delivery moves or Yulius sends a notice.
+/// checks at the agent's head finish, its delivery moves or an armed merge is decided.
 #[must_use]
 pub fn agent_yulius_shim(exe: &Path) -> String {
     let exe = exe.to_string_lossy().replace('\'', "'\\''");
