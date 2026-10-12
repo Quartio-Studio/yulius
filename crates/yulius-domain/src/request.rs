@@ -56,7 +56,11 @@ impl Request {
         if self.attachments.is_empty() {
             return self.text.clone();
         }
-        format!("{}\n\n{}", self.text, attachments_section(&self.attachments))
+        format!(
+            "{}\n\n{}",
+            self.text,
+            attachments_section(&self.attachments)
+        )
     }
 }
 
@@ -179,7 +183,10 @@ pub fn request_markdown(
     request: &Request,
     done: &DoneDefinition,
 ) -> String {
-    let mut out = format!("# Task #{number}: {}\n\nRequested by {author}.\n\n## Request\n\n", one_line(title));
+    let mut out = format!(
+        "# Task #{number}: {}\n\nRequested by {author}.\n\n## Request\n\n",
+        one_line(title)
+    );
     if request.text.is_empty() {
         out.push_str("(no text: see the attached files)\n");
     } else {
@@ -266,11 +273,19 @@ mod tests {
 
     #[test]
     fn a_short_request_is_the_goal_with_the_definition_of_done() {
-        let goal = goal_condition(&Request::parse("Stopped tasks flash Working, fix"), PATH, &done(&[]));
+        let goal = goal_condition(
+            &Request::parse("Stopped tasks flash Working, fix"),
+            PATH,
+            &done(&[]),
+        );
         assert!(goal.starts_with("Stopped tasks flash Working, fix | Done = repository changes merged into dev on green Yulius CI, or work"));
         assert!(goal.contains("never promote to main unless asked"));
         assert!(goal.ends_with(PATH));
-        assert!(goal.chars().count() <= GOAL_MAX_CHARS, "{}", goal.chars().count());
+        assert!(
+            goal.chars().count() <= GOAL_MAX_CHARS,
+            "{}",
+            goal.chars().count()
+        );
     }
 
     #[test]
@@ -280,14 +295,23 @@ mod tests {
             let goal = goal_condition(&request, PATH, &done(&["dev"]));
             assert!(goal.starts_with(&format!("Everything requested in {PATH} is done. Done =")));
             assert!(goal.contains("deployed to dev and verified"));
-            assert!(goal.chars().count() <= GOAL_MAX_CHARS, "{}", goal.chars().count());
+            assert!(
+                goal.chars().count() <= GOAL_MAX_CHARS,
+                "{}",
+                goal.chars().count()
+            );
         }
         // Never over the cap, whatever the names.
         let huge = DoneDefinition {
             integration_branch: "b".repeat(300),
             ..done(&[])
         };
-        assert!(goal_condition(&Request::parse("x"), PATH, &huge).chars().count() <= GOAL_MAX_CHARS);
+        assert!(
+            goal_condition(&Request::parse("x"), PATH, &huge)
+                .chars()
+                .count()
+                <= GOAL_MAX_CHARS
+        );
     }
 
     #[test]

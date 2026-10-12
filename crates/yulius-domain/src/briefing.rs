@@ -621,7 +621,8 @@ fn tools() -> String {
         .join(", ");
     format!(
         "## Yulius tools\n\nThe `yulius` MCP server (each tool's description says when to use \
-         it): {names}. In the shell, `yulius wait` waits for your checks, merge or a notice.\n\n"
+         it): {names}. `message_send` tells or asks people; tasks do not message each other. In \
+         the shell, `yulius wait` waits for your checks, merge or a notice.\n\n"
     )
 }
 

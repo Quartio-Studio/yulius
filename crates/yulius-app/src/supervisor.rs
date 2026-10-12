@@ -733,7 +733,9 @@ impl App {
                 // of done, SPEC-011); otherwise the request is the first message, with its
                 // attached files to open.
                 let prompt = prompt.clone().or_else(|| {
-                    (!goal_mode).then(|| yulius_domain::request::Request::parse(&task.prompt).first_message())
+                    (!goal_mode).then(|| {
+                        yulius_domain::request::Request::parse(&task.prompt).first_message()
+                    })
                 });
                 (
                     SessionMode::New {
@@ -905,7 +907,8 @@ impl App {
                 Ok(condition) => self.spawn_goal(&task.id, &attempt_id, &condition),
                 Err(err) => {
                     tracing::error!(task = %task.id, error = %err, "could not write the task request");
-                    self.goal_not_taken(&task.id, "Yulius could not write the task's request file").await;
+                    self.goal_not_taken(&task.id, "Yulius could not write the task's request file")
+                        .await;
                 }
             }
         }
@@ -929,7 +932,9 @@ impl App {
             integration_environments: profile
                 .environments
                 .iter()
-                .filter(|e| e.after == yulius_domain::delivery::Stage::Integration && e.command.is_some())
+                .filter(|e| {
+                    e.after == yulius_domain::delivery::Stage::Integration && e.command.is_some()
+                })
                 .map(|e| e.name.clone())
                 .collect(),
         };
@@ -959,7 +964,9 @@ impl App {
              and continue the task."
         ));
         if let Ok(Some(task)) = self.deps.store.task(task_id).await
-            && let Err(err) = self.set_task_activity(&task, Activity::NeedsAttention).await
+            && let Err(err) = self
+                .set_task_activity(&task, Activity::NeedsAttention)
+                .await
         {
             tracing::warn!(task = %task_id, error = %err, "could not flag the task");
         }
@@ -1042,7 +1049,8 @@ impl App {
             }
             if live().await && !runtime.goal_submitted.load(Ordering::SeqCst) {
                 tracing::error!(task = %task_id, "the task goal was never taken by the agent");
-                app.goal_not_taken(&task_id, "Claude Code did not take the task's goal").await;
+                app.goal_not_taken(&task_id, "Claude Code did not take the task's goal")
+                    .await;
             }
         });
     }

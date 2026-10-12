@@ -99,7 +99,12 @@ pub async fn agent_wait(
     };
     let timeout = std::time::Duration::from_secs(request.timeout_secs.unwrap_or(50));
     match app
-        .agent_wait(token, request.head.as_deref(), request.since.as_ref(), timeout)
+        .agent_wait(
+            token,
+            request.head.as_deref(),
+            request.since.as_ref(),
+            timeout,
+        )
         .await
     {
         Ok(state) => Json(state).into_response(),

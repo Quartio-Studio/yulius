@@ -1708,7 +1708,8 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
     .await?;
     assert_eq!(pending.body["result"]["isError"], false, "{}", pending.body);
     assert!(
-        tool_text(&pending).contains("\"armed\": true") || tool_text(&pending).contains("\"armed\":true"),
+        tool_text(&pending).contains("\"armed\": true")
+            || tool_text(&pending).contains("\"armed\":true"),
         "{}",
         pending.body
     );
@@ -2725,9 +2726,11 @@ async fn an_armed_merge_happens_when_the_checks_pass() -> TestResult {
         &internal,
         Method::POST,
         "/mcp",
-        Some(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+        Some(
+            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
             "name": "delivery_merge",
-            "arguments": {"reviewed_head": head, "review_summary": "approve"}}})),
+            "arguments": {"reviewed_head": head, "review_summary": "approve"}}}),
+        ),
         &agent,
     )
     .await?;
@@ -2749,6 +2752,9 @@ async fn an_armed_merge_happens_when_the_checks_pass() -> TestResult {
     let after = wait(state.body.clone()).await?;
     assert_eq!(after.body["stage"], stage, "{}", after.body);
     assert_eq!(after.body["merge_armed"], false);
-    assert_eq!(after.body["latest_notice"], "Yulius merged your pull request");
+    assert_eq!(
+        after.body["latest_notice"],
+        "Yulius merged your pull request"
+    );
     Ok(())
 }

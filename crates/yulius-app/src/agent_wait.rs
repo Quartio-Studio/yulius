@@ -286,8 +286,7 @@ impl App {
         let deadline = tokio::time::Instant::now() + timeout.min(WAIT_MAX);
         loop {
             let state = self.agent_wait_state(token, head).await?;
-            if since.is_none_or(|since| *since != state)
-                || tokio::time::Instant::now() >= deadline
+            if since.is_none_or(|since| *since != state) || tokio::time::Instant::now() >= deadline
             {
                 return Ok(state);
             }

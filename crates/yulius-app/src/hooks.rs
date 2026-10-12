@@ -266,7 +266,11 @@ impl App {
         ))
     }
 
-    pub(crate) async fn set_task_activity(&self, task: &TaskRecord, activity: Activity) -> AppResult<()> {
+    pub(crate) async fn set_task_activity(
+        &self,
+        task: &TaskRecord,
+        activity: Activity,
+    ) -> AppResult<()> {
         if task.status != TaskStatus::Running || task.activity == Some(activity) {
             return Ok(());
         }

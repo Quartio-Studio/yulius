@@ -190,7 +190,8 @@ fn main() -> ExitCode {
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Command::Wait { minutes } => {
-            let code = yulius::wait_cli::run(&mut std::io::stdout(), minutes, &|k| std::env::var(k).ok());
+            let code =
+                yulius::wait_cli::run(&mut std::io::stdout(), minutes, &|k| std::env::var(k).ok());
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Command::GhToken => {

@@ -403,7 +403,10 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
             .join("home/.yulius/tasks")
             .join(format!("{}.md", record.number));
         let request = std::fs::read_to_string(&file)?;
-        assert!(request.contains("## Request\n\nMake the header blue\n"), "{request}");
+        assert!(
+            request.contains("## Request\n\nMake the header blue\n"),
+            "{request}"
+        );
         assert!(request.contains("\n- /srv/shots/header.png"), "{request}");
         assert!(request.contains("## Definition of done"), "{request}");
         // The goal names the file (a request with attached files is never inlined).

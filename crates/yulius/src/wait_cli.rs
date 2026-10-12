@@ -207,7 +207,10 @@ mod tests {
         assert!(settled(&state("running"), None).is_none());
         assert!(settled(&state("queued"), None).is_none());
         let passed = settled(&state("passed"), None).unwrap_or_default();
-        assert!(passed.starts_with("The checks at 012345678 passed."), "{passed}");
+        assert!(
+            passed.starts_with("The checks at 012345678 passed."),
+            "{passed}"
+        );
         let failed = WaitState {
             checks_detail: Some("quality exited 101".into()),
             ..state("failed")
@@ -228,7 +231,10 @@ mod tests {
             ..state("passed")
         };
         let line = settled(&merged, Some(&armed)).unwrap_or_default();
-        assert!(line.starts_with("Delivery moved: pr_open -> merged_integration."), "{line}");
+        assert!(
+            line.starts_with("Delivery moved: pr_open -> merged_integration."),
+            "{line}"
+        );
     }
 
     #[test]
@@ -240,7 +246,10 @@ mod tests {
             ..state("running")
         };
         let line = settled(&now, Some(&before)).unwrap_or_default();
-        assert!(line.contains("1 unread notice (latest: \"Your pull request conflicts\")"), "{line}");
+        assert!(
+            line.contains("1 unread notice (latest: \"Your pull request conflicts\")"),
+            "{line}"
+        );
         // Already unread when the wait starts: said at once.
         assert!(settled(&now, None).is_some());
     }
