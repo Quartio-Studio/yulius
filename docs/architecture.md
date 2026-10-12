@@ -63,7 +63,7 @@ the CLI prompt argument, which Claude Code attaches natively (an image as an ima
 then gets its `/goal` typed into the terminal; the request file in the sandbox home keeps the
 whole request ([SPEC-011](../.ai/specs/SPEC-011-automatic-dev-delivery.md),
 [SPEC-025](../.ai/specs/SPEC-025-uploaded-attachements-should-be-clickabl.md),
-[decision 0020](decisions/0020-native-task-attachments.md)).
+[decision 0021](decisions/0021-native-task-attachments.md)).
 
 ```mermaid
 sequenceDiagram
@@ -76,6 +76,23 @@ sequenceDiagram
     C-->>C: attaches each mentioned file (image block)
     C->>S: Stop hook of that turn (goal mode)
     S->>C: types /goal <condition>
+```
+
+## Cockpit
+
+Every user has one plain Claude Code session per sandbox, the Cockpit
+([SPEC-021](../.ai/specs/SPEC-021-in-this-bar-we-need-to-add-cockpit-at-th.md),
+[decision 0020](decisions/0020-cockpit-as-a-plain-shell-session.md)). It is a sandbox shell of
+kind `cockpit` that runs `claude` instead of the login shell: no hooks, MCP or briefing, a pool
+subscription's token, and the newest conversation resumed whenever it starts again.
+
+```mermaid
+flowchart LR
+  UI["Sidebar: Cockpit"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
+  APP -->|"pool_account"| POOL[("Subscriptions")]
+  APP -->|"plan_cockpit"| HP["Harness: claude [--resume id]"]
+  APP --> SH["Shell runtime (user space, repository)"]
+  UI -->|"WS /api/shells/id/terminal"| SH
 ```
 
 ## Agent primitives

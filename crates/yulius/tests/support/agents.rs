@@ -6,8 +6,9 @@ use std::path::{Path, PathBuf};
 use yulius::wiring::harness::HarnessAdapter;
 use yulius_app::error::AppResult;
 use yulius_app::ports::harness::{
-    HarnessLaunch, HarnessPlan, HarnessPort, OutputMasker, TranscriptWatch,
+    CockpitLaunch, HarnessLaunch, HarnessPlan, HarnessPort, OutputMasker, TranscriptWatch,
 };
+use yulius_app::ports::session::LaunchPlan;
 use yulius_domain::harness::Harness;
 use yulius_domain::time::Timestamp;
 
@@ -144,6 +145,10 @@ impl HarnessPort for FakeAgentHarness {
         plan.plan.argv = argv;
         Ok(plan)
     }
+    fn plan_cockpit(&self, launch: &CockpitLaunch) -> AppResult<LaunchPlan> {
+        self.inner.plan_cockpit(launch)
+    }
+
     fn claude_transcript(&self, home: &Path, worktree: &Path, session: &str) -> PathBuf {
         self.inner.claude_transcript(home, worktree, session)
     }

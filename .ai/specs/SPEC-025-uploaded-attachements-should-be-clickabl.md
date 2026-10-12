@@ -86,7 +86,7 @@ content block), not as a path the agent has to open with the Read tool.
   ids, not local files).
 - Goal mode spends one short extra turn (the attachments message) before `/goal`. Accepted: the
   model sees the files before it plans, and a `/goal` typed while that turn runs is queued
-  (measured). Recorded as ADR-0020. Yulius types `/goal` after that turn's Stop hook, not after
+  (measured). Recorded as ADR-0021. Yulius types `/goal` after that turn's Stop hook, not after
   quiet output (a silent tool call is quiet too), and lets that Stop end the turn without gates,
   so the goal is typed once and between turns.
 - Images preview in the existing modal so the composer keeps its state. A tab opened from a blob

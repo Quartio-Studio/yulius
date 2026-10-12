@@ -1,4 +1,4 @@
-# 0020. Attached files reach Claude Code as `@path` mentions in its first message
+# 0021. Attached files reach Claude Code as `@path` mentions in its first message
 
 ## Status
 

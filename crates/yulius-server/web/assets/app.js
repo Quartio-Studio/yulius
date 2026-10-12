@@ -33,6 +33,7 @@ import { mountAutomationsPage } from './pages/automations.js';
 import { mountSessionsPage, mountSessionView } from './pages/sessions.js';
 import { mountMcpPage } from './pages/mcp.js';
 import { mountDashboardPage } from './pages/dashboard.js';
+import { mountCockpitPage } from './pages/cockpit.js';
 import { mountUsersPage, mountAccountsPage, mountGithubPage } from './pages/admin.js';
 import { mountSettingsPage } from './pages/settings.js';
 import { mountInstancePage } from './pages/instance.js';
@@ -49,6 +50,7 @@ const MOCK = params.get('mock') === '1';
 const LAST_SANDBOX_KEY = 'yulius.lastSandbox';
 
 const SANDBOX_PAGES = {
+  cockpit: (ctx, sandbox) => mountCockpitPage(ctx, sandbox),
   tasks: (ctx, sandbox) => mountTasksPage(ctx, sandbox),
   sessions: (ctx, sandbox) => mountSessionsPage(ctx, sandbox),
   git: (ctx, sandbox) => mountGitPage(ctx, sandbox),

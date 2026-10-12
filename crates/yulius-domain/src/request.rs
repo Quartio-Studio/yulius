@@ -5,7 +5,7 @@
 //! The request is written to a file the agent reads (no length limit), and the goal condition
 //! names it: Claude Code caps a goal condition at 500 characters, so a long request is never the
 //! condition itself. Attached files are mentioned (`@path`) in the session's first message, which
-//! Claude Code attaches natively, an image as an image (SPEC-025, ADR-0020).
+//! Claude Code attaches natively, an image as an image (SPEC-025, ADR-0021).
 
 /// Longest goal condition Yulius types (Claude Code caps goal conditions at 500 characters).
 pub const GOAL_MAX_CHARS: usize = 450;

@@ -550,8 +550,9 @@ and mail, and **agent secrets** agents use without seeing them.
 - Home (`/`, the default view): every sandbox as a card with its counts, last activity, Open and New task (UI-045); the
   logo, the All sandboxes tab and ⌘⇧H return to it.
 - Left sidebar (300 px, 200 px below 1024 px; resizable, UI-044): the logo and wordmark (home), New
-  task with its shortcut, the sandbox navigation (Tasks, Sessions, Git, CI, Workflows, Skills,
-  Automations, MCP, Secrets, Dashboard), then the active task list grouped by what the user must
+  task with its shortcut, the sandbox navigation (Cockpit — the user's own plain Claude Code
+  session, SPEC-021 — then Tasks, Sessions, Git, CI, Workflows, Skills, Automations, MCP, Secrets,
+  Dashboard), then the active task list grouped by what the user must
   do — "Needs you" (permission prompt, Your turn, a browser request, a held prompt, a blocked chain,
   failing checks), "Working" (working, starting, queued, paused, continuing, queued after another
   task, a background shell still running, in review), "Done" (goal achieved, or a complete plan with a tested
