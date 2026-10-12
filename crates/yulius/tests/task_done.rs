@@ -329,6 +329,37 @@ fn an_achieved_goal_with_no_shell_left_makes_the_task_done() -> TestResult {
     Ok(())
 }
 
+/// TSK-010: a goal typed into a TUI that drops the first submit is typed again until Claude
+/// Code takes it, so the task starts instead of showing the goal unsubmitted.
+#[test]
+fn a_goal_the_tui_dropped_is_submitted_again() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            drop_lines: Some(1),
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
+        wait_for("the goal to start", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "GOAL SET")
+        })
+        .await?;
+        wait_for("Done", Duration::from_secs(30), || async {
+            activity(&app, &id).await == Some(Activity::Done)
+        })
+        .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// TSK-014: the goal turn leaves a background shell (Claude Code's Bash tool shape): the task is
 /// shown Working with one background shell until the shell ends, then Done.
 #[test]

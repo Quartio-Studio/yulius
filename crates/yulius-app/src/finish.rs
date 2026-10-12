@@ -163,6 +163,9 @@ impl App {
     pub(crate) async fn goal_observed(self: &Arc<Self>, task_id: &TaskId, outcome: GoalOutcome) {
         let achieved = outcome == GoalOutcome::Met;
         self.runtime(task_id)
+            .goal_submitted
+            .store(true, Ordering::SeqCst);
+        self.runtime(task_id)
             .goal_achieved
             .store(achieved, Ordering::SeqCst);
         if achieved {
