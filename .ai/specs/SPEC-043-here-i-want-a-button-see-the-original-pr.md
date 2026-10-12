@@ -48,9 +48,9 @@ condition, so today the text cannot be read again in the UI.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] The API returns a task's original prompt text and its attached files
-- [ ] The API serves a task's attached files from the attachments folder only
-- [ ] "See the original prompt" in the task menu shows the text and the attached files
+- [x] The API returns a task's original prompt text and its attached files
+- [x] The API serves a task's attached files from the attachments folder only
+- [x] "See the original prompt" in the task menu shows the text and the attached files
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 

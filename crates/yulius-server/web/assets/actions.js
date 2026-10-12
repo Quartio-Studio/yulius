@@ -9,6 +9,8 @@ import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, badge,
 import { taskActions, taskInfo, allows, isLive } from './status.js';
 import { relLong } from './format.js';
 import { BRAND } from './brand.js';
+import { createMarkdownEditor } from './mdeditor.js';
+import { openAttachment } from './filedrop.js';
 
 // ---------------------------------------------------------------- task menu
 
@@ -25,6 +27,7 @@ export function openTaskMenu(ctx, anchor, task) {
     task.status === 'chained' ? { label: 'Start now', disabled: !can.startNow, title: can.startNow ? null : why, onSelect: () => startNow(ctx, task) } : null,
     { label: task.status === 'chained' ? 'Cancel' : 'Stop', disabled: !can.stop, title: can.stop ? null : why, onSelect: () => stopTask(ctx, task) },
     { label: 'Continue', disabled: !can.continue, title: can.continue ? null : why, onSelect: () => continueTask(ctx, task) },
+    { label: 'See the original prompt', onSelect: () => openPromptDialog(ctx, task) },
     { label: 'Delivery…', onSelect: () => openDeliveryDialog(ctx, task) },
     { label: 'Feedback…', disabled: !can.feedback, onSelect: () => openFeedbackDialog(ctx, task) },
     { separator: true },
@@ -310,6 +313,87 @@ export function openDeliveryDialog(ctx, task) {
     );
   };
   load();
+  return modal;
+}
+
+/**
+ * The prompt a task started with (SPEC-043): its text formatted as written, then the files
+ * attached to it. An image shows as a thumbnail that opens full size, another file downloads, a
+ * file that is gone (drafts are removed after a week) is named. Read when the dialog opens.
+ */
+export function openPromptDialog(ctx, task) {
+  const controller = new AbortController();
+  const urls = [];
+  let editor = null;
+  let text = '';
+  const modal = openModal({
+    title: `Original prompt · #${task.number}`,
+    body: placeholder('Loading the prompt…', 'loading'),
+    wide: true,
+    className: 'prompt-modal',
+    actions: [{ label: 'Close' }],
+    onClose: () => {
+      controller.abort();
+      urls.forEach((url) => URL.revokeObjectURL(url));
+      if (editor) editor.destroy();
+    },
+  });
+  const copy = {
+    label: 'Copy text',
+    run: async () => {
+      if (!navigator.clipboard) throw new Error('Copying needs a secure (HTTPS) page.');
+      await navigator.clipboard.writeText(text);
+      toast('Prompt copied.', { kind: 'ok' });
+      return false;
+    },
+  };
+  const fileUrl = (index) => `/api/tasks/${enc(task.id)}/prompt/attachments/${index}`;
+  const fileItem = (file, index) => {
+    if (!file.available) {
+      return h('li', { class: 'prompt-file gone' }, icon('file', { size: 16 }), h('span', { class: 'prompt-file-name' }, file.name), h('span', { class: 'muted xs' }, 'No longer on the server'));
+    }
+    if (!file.image) {
+      const download = async () => {
+        try {
+          const url = URL.createObjectURL(await ctx.api.get(fileUrl(index), { as: 'blob', signal: controller.signal }));
+          urls.push(url);
+          h('a', { href: url, download: file.name }).click();
+        } catch (error) {
+          if (error.code !== 'aborted') errorToast(error, `Couldn’t download ${file.name}`);
+        }
+      };
+      return h('li', { class: 'prompt-file' }, h('button', { type: 'button', class: 'btn btn-ghost btn-sm', 'aria-label': `Download ${file.name}`, onClick: download },
+        icon('download', { size: 16 }), h('span', { class: 'prompt-file-name' }, file.name)));
+    }
+    const img = h('img', { alt: file.name });
+    const item = h('li', { class: 'prompt-file image' },
+      h('button', { type: 'button', class: 'prompt-thumb', 'aria-label': `Open ${file.name}`, onClick: () => img.src && openAttachment({ name: file.name }, { image: img.src }) }, img),
+      h('span', { class: 'prompt-file-name' }, file.name));
+    ctx.api.get(fileUrl(index), { as: 'blob', signal: controller.signal }).then((blob) => {
+      const url = URL.createObjectURL(blob);
+      urls.push(url);
+      img.src = url;
+    }).catch((error) => {
+      if (error.code !== 'aborted') item.replaceChildren(icon('file', { size: 16 }), h('span', { class: 'prompt-file-name' }, file.name), h('span', { class: 'muted xs' }, 'Couldn’t load it'));
+    });
+    return item;
+  };
+  (async () => {
+    let prompt;
+    try {
+      prompt = await ctx.api.get(`/api/tasks/${enc(task.id)}/prompt`, { signal: controller.signal });
+    } catch (error) {
+      if (error.code !== 'aborted') setChildren(modal.body, placeholder(error.message, 'error'));
+      return;
+    }
+    text = prompt.text || '';
+    const files = Array.isArray(prompt.attachments) ? prompt.attachments : [];
+    if (text) editor = createMarkdownEditor({ markdown: text, readOnly: true });
+    setChildren(modal.body, h('div', { class: 'stack' },
+      editor ? h('div', { class: 'prompt-text' }, editor.el) : h('p', { class: 'muted' }, 'No text: only files were attached.'),
+      files.length ? h('ul', { class: 'prompt-files', 'aria-label': 'Attached files' }, files.map(fileItem)) : null));
+    modal.setActions(text ? [copy, { label: 'Close' }] : [{ label: 'Close' }]);
+  })();
   return modal;
 }
 
