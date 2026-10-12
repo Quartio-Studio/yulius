@@ -615,7 +615,6 @@ impl Hooks {
         })
     }
 
-    /// `SessionEnd` with `reason`.
     /// `SessionStart` (`source: startup`), as Claude Code runs it before its prompt box reads.
     fn session_start(&self) {
         run_hook(
@@ -626,6 +625,7 @@ impl Hooks {
         );
     }
 
+    /// `SessionEnd` with `reason`.
     fn session_end(&self, reason: &str) {
         run_hook(
             &self.exe,

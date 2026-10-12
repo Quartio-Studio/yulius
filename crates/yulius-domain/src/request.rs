@@ -46,7 +46,13 @@ impl Request {
                 None => text.push(line),
             }
         }
-        let text = text.join("\n").trim().to_owned();
+        // The text becomes a command-line argument: no escape sequence or NUL reaches it.
+        let text: String = text
+            .join("\n")
+            .chars()
+            .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+            .collect();
+        let text = text.trim().to_owned();
         Self { text, attachments }
     }
 
@@ -322,9 +328,16 @@ mod tests {
     }
 
     #[test]
-    fn a_line_with_a_control_character_is_never_an_attachment() {
-        let request = Request::parse("Look\n@/srv/a\u{1b}[2J.png\n@/srv/b\u{0}.png");
+    fn control_characters_never_reach_the_first_message() {
+        let request = Request::parse("Look\n@/srv/a\u{1b}[2J.png\n@/srv/b\u{0}.png\tok");
         assert!(request.attachments.is_empty(), "{request:?}");
+        // Such a line stays text, without its control characters (tabs and newlines kept).
+        let first = request.first_message();
+        assert!(!first.contains(['\u{1b}', '\u{0}']), "{first:?}");
+        assert!(
+            first.contains("@/srv/a[2J.png\n@/srv/b.png\tok"),
+            "{first:?}"
+        );
     }
 
     #[test]

@@ -880,6 +880,10 @@ impl App {
         };
         store.insert_attempt(&attempt).await?;
         let runtime = self.runtime(&task.id);
+        // Before the spawn, so the opening turn's Stop hook can never come first.
+        runtime
+            .opening_turn
+            .store(opens_with_turn, Ordering::SeqCst);
         let size = runtime.hub.size();
         let spawned = match self
             .deps
@@ -940,9 +944,6 @@ impl App {
                 .await?;
         }
         self.attach_run(&task.id, &attempt, &host_token).await?;
-        runtime
-            .opening_turn
-            .store(opens_with_turn, Ordering::SeqCst);
         runtime.hub.state_changed();
         self.publish_task(&task.id).await;
         if goal_mode {
@@ -1016,7 +1017,8 @@ impl App {
     }
 
     /// Types `/goal <condition>` into the attempt once its TUI reads input: after Claude Code's
-    /// SessionStart hook arrived and [`GOAL_QUIET`] without new output (or at most
+    /// SessionStart hook arrived, the turn on a first message ended (its Stop hook, at most
+    /// [`GOAL_OPENING_TIMEOUT`]) and [`GOAL_QUIET`] without new output (or at most
     /// [`GOAL_READY_TIMEOUT`] after the start). The submit is confirmed by what Claude Code
     /// records about the goal and retried with growing waits; a goal never taken flags the task.
     fn spawn_goal(self: &Arc<Self>, task_id: &TaskId, attempt_id: &AttemptId, condition: &str) {
@@ -1060,6 +1062,8 @@ impl App {
                     break;
                 }
             }
+            // The opening turn is over, or given up on: a later Stop is the goal's own.
+            runtime.opening_turn.store(false, Ordering::SeqCst);
             runtime.goal_submitted.store(false, Ordering::SeqCst);
             let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
             for (attempt, wait) in GOAL_SUBMIT_WAITS.iter().enumerate() {

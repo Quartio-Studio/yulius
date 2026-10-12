@@ -556,12 +556,6 @@ impl App {
     ) -> AppResult<HookReply> {
         let store = &self.deps.store;
         let mut task = &ctx.task;
-        // The turn on a goal session's first message (its attached files) ended: it stops as it
-        // is, without gates or rotation, so the goal is typed next (SPEC-025).
-        let opening = self
-            .runtime(&task.id)
-            .opening_turn
-            .swap(false, Ordering::SeqCst);
         // A turn held for capacity stays held while its pause lasts (also across a restart).
         let refreshed;
         if let Some(pause) = store.open_pause(&task.id).await? {
@@ -574,6 +568,12 @@ impl App {
             refreshed = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
             task = &refreshed;
         }
+        // The turn on a goal session's first message (its attached files) ended, not held: it
+        // stops as it is, without gates or rotation, so the goal is typed next (SPEC-025).
+        let opening = self
+            .runtime(&task.id)
+            .opening_turn
+            .swap(false, Ordering::SeqCst);
         if opening && task.mode == TaskMode::Goal {
             return Ok(HookReply::Output(HookOutput::default()));
         }
