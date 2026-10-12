@@ -2434,6 +2434,16 @@ const SCRIPT_CLAUDE = [
   `${c(255, '⏺')} Done with this step. Anything else before I write the UI wiring?`,
 ];
 
+// A collapsed tool group as Claude Code's full-screen transcript shows it: a click on it expands
+// the calls it groups, another click collapses them (task #25).
+const GROUP_CLOSED = `${c(255, '⏺')} Searched for 2 patterns, read 1 file ${dim('(click to expand)')}`;
+const GROUP_OPEN = `${c(255, '⏺')} Searched for 2 patterns, read 1 file`;
+const GROUP_CALLS = [
+  `  ${dim('⎿')}  ${bold('Search')}(pattern: "checkout", path: "src/")`,
+  `  ${dim('⎿')}  ${bold('Search')}(pattern: "tax_for", path: "src/")`,
+  `  ${dim('⎿')}  ${bold('Read')}(src/api/tax.rs)`,
+];
+
 /** Persistent fake PTY for one task: a scroll region above a native-looking footer. */
 class TermSession {
   constructor(db, task) {
@@ -2497,6 +2507,7 @@ class TermSession {
         `  Docs for the deploy role: ${c(39, 'https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles.html')}`,
       );
     } else {
+      this.lines.push(GROUP_CLOSED);
       for (const line of this.script.slice(0, 6)) this.lines.push(line);
       this.scriptIndex = 6;
       // File references in every form the terminal links to the editor (F 2026-10-10) — a bare
@@ -2655,9 +2666,29 @@ class TermSession {
     this.broadcast(this.snapshot());
   }
 
+  /** A primary click at 1-based `row` toggles the collapsed tool group drawn there, if any. */
+  click(row) {
+    const bottom = this.regionBottom();
+    if (row < 1 || row > bottom) return;
+    const index = this.lines.length - this.scroll - bottom + row - 1;
+    const line = this.lines[index];
+    if (line === GROUP_CLOSED) {
+      this.lines.splice(index, 1, GROUP_OPEN, ...GROUP_CALLS);
+    } else if (line === GROUP_OPEN) {
+      this.lines.splice(index, 1 + GROUP_CALLS.length, GROUP_CLOSED);
+    } else {
+      return;
+    }
+    this.broadcast(this.snapshot());
+  }
+
   onInput(data) {
-    // Mouse reports (the viewer's wheel) are not typed text.
-    const typed = data.replace(/\x1b\[<(\d+);\d+;\d+[Mm]/g, (_, button) => { this.wheel(Number(button)); return ''; });
+    // Mouse reports (the viewer's wheel and clicks) are not typed text: a wheel turn scrolls, a
+    // primary press clicks, its release does nothing.
+    const typed = data.replace(/\x1b\[<(\d+);\d+;(\d+)([Mm])/g, (_, button, row, kind) => {
+      if (Number(button) === 0) { if (kind === 'M') this.click(Number(row)); } else this.wheel(Number(button));
+      return '';
+    });
     for (const ch of typed.replace(/\x1b\[[AB]/g, '')) {
       if (ch === '\r' || ch === '\n') this.submit();
       else if (ch === '\x7f' || ch === '\b') { this.input = this.input.slice(0, -1); this.redrawPrompt(); }

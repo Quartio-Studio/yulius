@@ -256,6 +256,73 @@ test('another viewer’s size fills this box, with a chip instead of a banner, u
   await expect.poll(async () => (await layout()).rows).toBeGreaterThan(30);
 });
 
+test('a click on Claude Code’s output expands it, as in a native terminal; a drag still selects', async ({ app, browser }) => {
+  // Task #25: the mock draws full screen with mouse reporting, like Claude Code, and toggles a
+  // collapsed tool group on a primary click at its row.
+  await app.open(mock('/s/studio/t/12'));
+  await expect(rows(browser)).toHaveText(/Searched for 2 patterns, read 1 file/);
+  await holdStill(browser);
+  const expanded = /tax_for/;
+  const group = async () => {
+    const point = await spot(browser, 'Searched for 2 patterns');
+    expect(point, 'the group is on the screen').not.toBeNull();
+    return point!;
+  };
+
+  // A drag across the group selects its text and does not reach the program.
+  await selectRow(browser, 'Searched for 2 patterns');
+  await settle();
+  await expect(rows(browser)).not.toHaveText(expanded);
+
+  // A click expands it at once, a second click collapses it.
+  await clickAt(browser, await group());
+  await expect(rows(browser)).toHaveText(expanded);
+  await expect(row(browser, 'Searched for 2 patterns')).not.toHaveText(/click to expand/);
+  await clickAt(browser, await group());
+  await expect(rows(browser)).not.toHaveText(expanded);
+
+  // A double-click selects a word and toggles the group once (its second click is not sent).
+  const point = await group();
+  await browser.mouse.dblclick(point.x, point.y);
+  await expect(rows(browser)).toHaveText(expanded);
+  await settle();
+  await expect(rows(browser)).toHaveText(expanded);
+});
+
+test('a read-only viewer’s click does not reach the program', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/sandbox-3/t/1'));
+  await expect(screen.getByText('Read-only (GitHub: read)')).toBeVisible();
+  await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
+  const point = await spot(browser, 'Searched for 2 patterns');
+  expect(point, 'the group is on the screen').not.toBeNull();
+  await clickAt(browser, point!);
+  await settle();
+  await expect(rows(browser)).not.toHaveText(/tax_for/);
+});
+
+test('a click is reported in the program’s mouse encoding', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const reports = await browser.evaluate(async () => {
+    const url = '/assets/mousefilter.js';
+    const { createMouseFilter } = await import(url);
+    const on = (modes: string) => {
+      const filter = createMouseFilter();
+      filter.feed(new TextEncoder().encode(modes));
+      return filter;
+    };
+    return {
+      sgr: on('\x1b[?1000h\x1b[?1006h').clickReport(12, 7),
+      x10: on('\x1b[?1000h').clickReport(12, 7),
+      far: on('\x1b[?1000h').clickReport(500, 300),
+    };
+  });
+  expect(reports).toEqual({
+    sgr: '\x1b[<0;12;7M\x1b[<0;12;7m',
+    x10: '\x1b[M ,\'\x1b[M#,\'',
+    far: `\x1b[M ÿÿ\x1b[M#ÿÿ`,
+  });
+});
+
 test('file paths in the task terminal open the editor at the file and line', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   await expect(rows(browser)).toHaveText(/Not links:/);
