@@ -1852,7 +1852,7 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | --- | --- |
 | `project_context` | Project summary, architecture/decision index, recent changes, delivery rules (COM-004, DSC-009) |
 | `tasks_list`, `task_get` | Previous and parallel tasks: status, harness, branch, spec, steps, summary (COM-001) |
-| `message_send`, `messages_inbox` | `message_send` tells or asks people (`to="people"` only, COM-005); `messages_inbox` reads Yulius's notices (COM-002 withdrawn, SPEC-010) |
+| `message_send`, `messages_inbox` | `message_send` tells or asks people (`to="people"` only, COM-005); `messages_inbox` reads Yulius's notices (COM-002 withdrawn, SPEC-012) |
 | `scope_claim`, `scope_release`, `scopes_list` | Advisory path-glob claims with conflict report (COM-003) |
 | `steps_set`, `step_update`, `steps_get` | Step manager (STP-001/002, STP-006..008): plan bounds, effort, WIP limit, no reopening by agents, weighted `percent` and `nudges` in every result (ADR-19) |
 | `spec_check` | Run the format validator on the task spec and docs (DSC-003); `required` per the spec policy (DSC-013) and `plan_nudges` |
@@ -1873,7 +1873,7 @@ Every tool the briefing announces (`YULIUS_TOOLS`) is served; a unit test fails 
 Every tool result (and error) is redacted of the sandbox's agent secrets before it is returned
 (VLT-007).
 `scope_claim` takes one glob or up to 20, a task holds at most 50; claims of tasks that are no
-longer live are ignored, a repeated claim is kept once, and an overlap with another task's claim is returned to the claiming agent only (no message, SPEC-010).
+longer live are ignored, a repeated claim is kept once, and an overlap with another task's claim is returned to the claiming agent only (no message, SPEC-012).
 `scope_release` takes `pattern`, `patterns` or nothing (all) and refuses anything else. `spec_check` returns the Stop gate's verdict and fix-it message for
 the task spec plus the project-docs problems; `project_context` returns the briefing rebuilt now.
 
@@ -2448,7 +2448,7 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 
 ## 15. Changelog
 
-- 2026-10-12 (F 2026-10-12): task-to-task messaging is removed (COM-002 withdrawn, SPEC-010):
+- 2026-10-12 (F 2026-10-12): task-to-task messaging is removed (COM-002 withdrawn, SPEC-012):
   `message_send` accepts only `to="people"`, `scope_claim` messages nobody, notices from Yulius
   (`tell_task`, `tell_freed`, intake) and the inbox, digest, wake-up and panel are unchanged.
 - 2026-10-12 (F 2026-10-12): the wake-up notice (COM-005) is typed, then submitted with a separate

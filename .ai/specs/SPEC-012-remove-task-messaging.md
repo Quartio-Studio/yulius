@@ -3,7 +3,7 @@ yulius-task: 71572985-c2dd-4f3d-baf1-bfc91a282cee
 status: done
 ---
 
-# SPEC-010: remove task-to-task messaging for now
+# SPEC-012: remove task-to-task messaging for now
 
 Status: implemented
 Date: 2026-10-12

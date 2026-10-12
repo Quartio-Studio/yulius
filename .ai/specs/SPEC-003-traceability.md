@@ -299,7 +299,7 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 - 2026-10-09: tab keys keep focus on the strip and ignore key repeat (§6 item 54, hardening).
 - 2026-10-09: terminal follow-ups: full snapshot for late viewers, scrolling without taking control, fit by rows too (§6 item 53, hardening).
 - 2026-10-09: randomized parser tests (§6 item 52, hardening).
-- 2026-10-12: task-to-task messaging removed (F 2026-10-12; COM-002 withdrawn, SPEC-010).
+- 2026-10-12: task-to-task messaging removed (F 2026-10-12; COM-002 withdrawn, SPEC-012).
 - 2026-10-09: scope claims: no repeated messages, strict release, at most 50 per task (§6 item 51, hardening).
 - 2026-10-09: a failed usage refresh records only its error (§6 item 50, hardening).
 - 2026-10-09: repository documents are read only inside the worktree (§6 item 49, hardening).

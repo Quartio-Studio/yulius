@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
-- Task-to-task messaging is removed for now: `message_send` only tells or asks people (`to="people"`), `scope_claim` shows an overlap to the claiming agent only and messages nobody, and the briefing, digest and Messages panel speak of Yulius's notices. Notices, the inbox, the digest and the idle wake-up are unchanged (SPEC-010, COM-002 withdrawn).
+- Task-to-task messaging is removed for now: `message_send` only tells or asks people (`to="people"`), `scope_claim` shows an overlap to the claiming agent only and messages nobody, and the briefing, digest and Messages panel speak of Yulius's notices. Notices, the inbox, the digest and the idle wake-up are unchanged (SPEC-012, COM-002 withdrawn).
 - GitHub Actions are gone from this repository: Yulius CI is the only CI (`quality` and `e2e` in
   `[[ci.jobs]]`), the rulesets require only the `yulius/ci` commit status, and `.github/workflows`
   and `.github/actionlint.yaml` are deleted. macOS is checked with `scripts/dev ci` on a Mac before
