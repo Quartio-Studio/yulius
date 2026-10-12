@@ -1730,6 +1730,7 @@ route('PATCH', `/api/agent-secrets/${ID}`, ({ db, p, body }) => {
   const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
   if (secret.scope === 'sandbox') need(sandbox, 'write');
   validateAgent(body, false);
+  if (body.username && (body.injection || secret.injection) !== 'basic') fail(422, 'invalid', 'a user name is only for Basic credentials: put a login\'s user name in the notes');
   for (const key of ['name', 'description', 'hosts', 'injection', 'header_name', 'username', 'value']) if (body[key] !== undefined) secret[key] = body[key];
   secret.updated_at = new Date().toISOString();
   audit(db, 'vault.agent.update', secret.id, secret.name);
@@ -1742,7 +1743,7 @@ route('POST', `/api/agent-secrets/${ID}/reveal`, ({ db, p, body }) => {
   const refused = needFresh(db);
   if (refused) return refused;
   audit(db, body.purpose === 'copy' ? 'vault.agent.copy' : 'vault.agent.reveal', secret.id, secret.name);
-  return revealed(body, secret.value, secret.description);
+  return revealed(body, secret.value, [secret.username && `User name: ${secret.username}`, secret.description].filter(Boolean).join('\n\n'));
 });
 route('DELETE', `/api/agent-secrets/${ID}`, ({ db, p }) => {
   const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');

@@ -77,8 +77,9 @@ them), and people can now read an agent secret's value too, behind the same two-
   Agents still never receive a value.
 - R8. The seed is sealed in the vault like a secret (envelope encryption bound to the user), and
   no seed or code appears in logs, API errors or the audit trail.
-- R9. Editing a team secret's notes starts from their current text ("Edit current notes", after a
-  code), so the address, user name and seed folded into older notes are never replaced blindly.
+- R9. Editing a team secret's notes starts from their current text: stored notes are read-only in
+  the edit dialog until "Edit current notes" loads them (after a code), so the address, user name
+  and seed folded into older notes are never replaced blindly.
   A pending setup can be finished with a code from the key added earlier, or restarted.
 
 ## Plan
@@ -153,6 +154,15 @@ them), and people can now read an agent secret's value too, behind the same two-
   replacing the secret removes it. Agents keep using it for website codes until then.
 - Not in this change: a QR code in the setup dialog (the key and the `otpauth://` link work in
   every authenticator) and multi-line values (put them in the notes).
+- A correct code clears the wrong-code count (NIST counts failures "in a row"): between two of
+  the owner's unlocks a stolen session gets at most 9 guesses, each about 3 in 10^6.
+- Not in this change: clearing a stored value or notes from the page (the API takes `""`), and
+  zeroizing the request and response strings of the code and the new seed (served `no-store`,
+  like reveals).
+- Review rounds: three fresh-session rounds ran. The third found no code defect; it asked for the
+  rebase over #281 (ADR renumbered to 0030) and minor fixes, which were made test-first. A last
+  confirmation review covers exactly that delta on the final head, because merging needs an
+  approval of the exact head.
 - One pull request (more than 400 lines). The fields, the unlock and the reveal of agent secrets
   are one access-model change of the vault: shipping any part alone would leave the page in a
   state nobody asked for.
@@ -160,7 +170,7 @@ them), and people can now read an agent secret's value too, behind the same two-
 ## Evidence
 
 - `scripts/dev ci` (repository check, fmt, clippy, cargo-deny, machete, nextest, docs): exit 0,
-  1191 tests passed, 16 skipped (2026-10-12, after the second review's fixes).
+  1204 tests passed, 16 skipped (2026-10-13, on the final head rebased over #281).
 - `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^secrets::/)'`: 13 passed,
   among them `team_secrets_are_shared_and_reveals_need_a_two_factor_code` (AC1, AC3),
   `older_team_secrets_fold_into_a_value_and_notes` (AC2, and a later edit keeps the notes),
@@ -174,7 +184,9 @@ them), and people can now read an agent secret's value too, behind the same two-
 - Store unit tests (`yulius-store` `vault::tests`): accept, replay, pending replacement, the
   confirmed seed kept, wrong-code counts and clears. Domain unit tests: base32 round trips and
   `otpauth://` links parse back.
-- `cd e2e && npx e2e run`: 159 passed, 1 skipped (whole suite); `tests/secrets.e2e.ts` 6 passed
+- `cd e2e && npx e2e run` on the final head: 158 passed, 1 skipped, 1 failed:
+  `task-done.e2e.ts` "a finished task whose pull request is tested…", unrelated to this change. It
+  passed 3 of 3 alone and is filed as flaky (#294). Before the rebase the whole suite passed (159); `tests/secrets.e2e.ts` 6 passed
   after the last change (add dialog fields, setup with a wrong then right code, reveals of team
   and agent secrets, editing current notes, axe on the page and the setup dialog).
 - Visual check in the sandbox browser against the mock: the "Set up two-factor" dialog (key,
@@ -182,7 +194,9 @@ them), and people can now read an agent secret's value too, behind the same two-
 - Independent reviews in fresh sessions: round 1 requested changes (a stolen session could keep
   guessing codes; editing older notes could drop folded fields; minor items), all fixed
   test-first; round 2 approved `8017484` with minor items, fixed test-first (the locked message,
-  older agent secrets' user name and seed readable); round 3 reviews the final head.
+  older agent secrets' user name and seed readable); round 3 found no code defect and asked for
+  the rebase over #281 (ADR-0030) and minor fixes (stored notes read-only until loaded, agent tool
+  texts, SPEC-002 statements), made test-first; a confirmation review approves the final head.
 - Not tested here: a real authenticator app scanning the `otpauth://` link (the link format is
   unit-tested to parse back to the same seed); the deployed instance.
 - Follow-up: #291 (an administrator resets a lost authenticator).

@@ -146,17 +146,19 @@ function showRevealed(title, revealed) {
 function teamForm(secret, loadNotes) {
   const title = h('input', { class: 'input', value: secret ? secret.title : '', maxlength: 200, autofocus: true, placeholder: 'Shared Gmail' });
   const value = h('input', { class: 'input mono', type: 'password', autocomplete: 'new-password', placeholder: secret && secret.has_value ? 'Unchanged' : '' });
-  const notes = h('textarea', { class: 'textarea', rows: 3, placeholder: secret && secret.has_notes ? 'Unchanged' : 'User name, address, recovery codes…' });
+  const stored = Boolean(secret && secret.has_notes);
+  const notes = h('textarea', { class: 'textarea', rows: 3, readOnly: stored, placeholder: stored ? 'Stored notes stay as they are' : 'User name, address, recovery codes…' });
   const body = h('div', { class: 'stack' },
     field('Title', title),
     field('Value', value, secret ? 'Leave empty to keep the stored value.' : null),
-    field('Notes', notes, secret && secret.has_notes ? 'Leave empty to keep the stored notes; what you type replaces them.' : 'Encrypted like the value.'),
-    secret && secret.has_notes ? h('div', null, smallButton('Edit current notes', `Edit current notes of ${secret.title}`, async (event) => {
+    field('Notes', notes, stored ? 'To change them, load them first: what you save replaces them.' : 'Encrypted like the value.'),
+    stored ? h('div', null, smallButton('Edit current notes', `Edit current notes of ${secret.title}`, async (event) => {
       try {
         const values = await loadNotes();
         if (!values) return;
         notes.value = values.notes || '';
         notes.placeholder = '';
+        notes.readOnly = false;
         event.target.hidden = true;
         notes.focus();
       } catch (error) { errorToast(error, 'Couldn’t reveal'); }
