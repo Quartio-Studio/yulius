@@ -79,8 +79,9 @@ switch on.
   "Fixes #N" in the pull request). Neither it nor the tasks it starts call `issue_create`.
 - DSC-016: The briefing tells every task: when it confirms a bug (the one it was asked about or one
   found on the way), it reports it with `issue_create` unless an open issue already tracks it (then
-  it references that issue), and a task told not to create issues comments on the existing issue
-  instead. The Fix workflow's instructions say the same at the reproduction step.
+  it references that issue); a task told not to create issues never does, and comments on an
+  existing issue or says it in its summary instead. The Fix workflow's instructions say the same
+  at the reproduction step.
 - OPS-010: On this instance (project Quartio-Studio/yulius) both automations exist with the
   catalog's content and are disabled; a person enables them in the Automations section. Agents
   do not enable them (coordinator, 2026-10-13).
@@ -163,11 +164,14 @@ switch on.
   without access).
 - `cargo test -p yulius-domain briefing`: the bug-reporting rule is present (AC-DSC-10); the
   needle failed before the change.
-- e2e `tests/automations.e2e.ts` (AC-AUT-8): failed against the previous page, passes now; the
+- e2e `e2e/tests/automations.e2e.ts` (AC-AUT-8): failed against the previous page, passes now; the
   whole suite: 159 passed, 1 skipped.
-- `scripts/dev ci` (format, clippy, tests, deps, docs): exit 0 at 42e7f2b and at 87e8281.
-- Independent reviews in fresh sessions: round 1 approved 42e7f2b (minors fixed test-first in
-  fb8dfc0, 87e8281), round 2 approved 6816f32 (minors fixed in 303cd8b).
+- `scripts/dev ci` (format, clippy, tests, deps, docs): exit 0 after the docs commit and after
+  the round-1 fixes; after merging `dev` (#238), `scripts/dev lint` exit 0 and `scripts/dev test`
+  1212 tests, all pass once the briefing rule was shortened to fit the budget test.
+- Independent reviews in fresh sessions, three rounds (approvals of the branch after the docs
+  commit, after "harden the ready-made prompts after review", and after "reachable first-run
+  rule, no nightly retries"); every finding but text nits was fixed test-first.
 - AC-OPS-4: `automations_list` on the instance shows "Keep the docs up to date" (c7cfc08b,
   `wf-docs`) and "Work through open issues" (1a189dfa), both `0 3 * * *` at offset 120 with the
   catalog's prompts, `enabled: false`, no next run (disabled by the coordinator; left so).
