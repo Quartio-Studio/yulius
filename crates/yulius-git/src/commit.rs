@@ -13,6 +13,17 @@ use crate::validate::{
 /// Longest accepted commit message in bytes.
 pub const MAX_COMMIT_MESSAGE: usize = 64 * 1024;
 
+/// What merging a revision into a worktree did ([`Git::merge_into`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MergeInto {
+    /// The branch already contains the revision.
+    UpToDate,
+    /// A merge (or fast-forward) made this new head.
+    Merged(String),
+    /// The merge conflicted in these paths and was aborted.
+    Conflict(Vec<String>),
+}
+
 /// Author and committer identity for [`Git::commit_all`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Author {
@@ -130,6 +141,45 @@ impl Git {
                 .timeout(self.network_timeout),
         )?;
         Ok(())
+    }
+
+    /// Merges `rev` (an `origin/<branch>` remote-tracking ref, freshly fetched by the caller) into
+    /// the worktree's branch with the worktree's own identity, so the repository's merge drivers
+    /// (`merge=union` in `.gitattributes`) apply, which a host's server-side update does not. A
+    /// conflict is aborted and leaves the worktree as it was (SPEC-050 DLV-203).
+    ///
+    /// # Errors
+    /// Invalid revisions or Git failures other than a conflict.
+    pub fn merge_into(&self, worktree: &Path, rev: &str) -> Result<MergeInto, GitError> {
+        validate_revision(rev)?;
+        if self.is_ancestor(worktree, rev, "HEAD")? {
+            return Ok(MergeInto::UpToDate);
+        }
+        let merged = self.run(
+            Invocation::new(self, "merge", Some(worktree))
+                .args(["merge", "--no-edit", "--quiet", "--end-of-options"])
+                .arg(rev),
+        )?;
+        if merged.status.success() {
+            return Ok(MergeInto::Merged(self.rev_parse(worktree, "HEAD")?));
+        }
+        let conflicted = self.run(Invocation::new(self, "diff", Some(worktree)).args([
+            "diff",
+            "--name-only",
+            "--diff-filter=U",
+            "-z",
+        ]))?;
+        let files: Vec<String> = conflicted
+            .stdout
+            .split(|b| *b == 0)
+            .filter(|name| !name.is_empty())
+            .map(|name| String::from_utf8_lossy(name).into_owned())
+            .collect();
+        let _ = self.run(Invocation::new(self, "merge", Some(worktree)).args(["merge", "--abort"]));
+        if files.is_empty() {
+            return Err(failure("merge", &merged));
+        }
+        Ok(MergeInto::Conflict(files))
     }
 
     /// Sets `user.name`/`user.email` for this worktree only.
