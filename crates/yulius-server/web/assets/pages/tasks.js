@@ -286,7 +286,6 @@ export function mountTasksPage(ctx, sandbox) {
       h('a', { class: 'tl-link', href: href(path), dataset: { route: path }, title: `#${task.number} ${task.title}${task.branch ? ` · ${task.branch}` : ''}` },
         h('span', { class: 'tl-mark' }, statusMark(info, 16)),
         h('span', { class: 'tl-title' }, task.title || `Task #${task.number}`),
-        task.unread_messages ? h('span', { class: 'task-unread', title: `${task.unread_messages} unread messages` }, String(task.unread_messages), h('span', { class: 'sr-only' }, ' unread')) : null,
         task.origin && task.origin !== 'ui' ? h('span', { class: 'tl-origin' }, ORIGINS[task.origin] || task.origin) : null,
         h('span', { class: 'sr-only' }, `, ${what}`)),
       h('span', { class: 'tl-cell tl-status', title: what, 'aria-hidden': 'true' }, what),

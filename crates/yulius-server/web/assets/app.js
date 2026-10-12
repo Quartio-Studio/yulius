@@ -9,7 +9,7 @@
 import { createApi, realTransport, enc } from './api.js';
 import { initRouter, onRoute, navigate, currentLocation, refreshRoute, parseAppLink, href } from './router.js';
 import { createStore, readJson, writeJson } from './store.js';
-import { applyTheme, PHONE, isPhone } from './theme.js';
+import { applyTheme, PHONE } from './theme.js';
 import { BRAND } from './brand.js';
 import { h, setChildren, toast, errorToast, placeholder, icon, isLocalUrl, focusNextRegion, loadError, closeMenu } from './dom.js';
 import { notFound } from './pages/common.js';
@@ -254,7 +254,6 @@ function createApp(root, transport) {
     ctx.openNewTask = (sandbox) => openNewTask(sandbox);
     ctx.defaultSandbox = () => defaultSandbox();
     ctx.openBrowserTab = (sandbox, tabId) => openBrowserTab(sandbox, tabId);
-    ctx.replyInTerminal = (task) => replyInTerminal(task);
     ctx.toggleRail = () => panels.setRailVisible(!panels.railVisible);
     ctx.railVisible = () => panels.railVisible;
     ctx.setRailVisible = (visible) => panels.setRailVisible(visible);
@@ -401,21 +400,6 @@ function createApp(root, transport) {
     }
   }
 
-  /**
-   * "Reply in the terminal" (F 2026-10-10): people answer an agent in its terminal, not through
-   * Messages. Shows the task's session and focuses its terminal (the quick input on phones).
-   */
-  function replyInTerminal(task) {
-    if (centerView && centerView.key === `task:${task.id}` && centerView.reply) {
-      // On a phone the tool panel covers the session.
-      if (isPhone() && shell) shell.panels.close();
-      centerView.reply();
-      return;
-    }
-    const sandbox = store.sandboxById(task.sandbox_id);
-    if (sandbox) navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`);
-  }
-
   /** The viewed task closed because the user left the session: show the task list. */
   function onTaskClosed(task) {
     const sandbox = store.sandboxById(task.sandbox_id);
@@ -433,7 +417,7 @@ function createApp(root, transport) {
     shell.panels.open('editor', { file });
   }
 
-  /** Links from the terminal, messages and pages (UI-011, BRW-004). */
+  /** Links from the terminal and pages (UI-011, BRW-004). */
   function openLink(uri) {
     const me = store.state.me;
     const link = parseAppLink(uri, me && me.instance ? me.instance.public_url : null);

@@ -146,7 +146,7 @@ pub const SPLIT_MIN_WORDS: usize = 40;
 pub const SHORT_PROMPT_WORDS: usize = 3;
 /// A prompt counts as a person's only when someone typed into the task's terminal this
 /// recently; other turns are Claude Code's own (goal continuations, background agents) or
-/// Yulius's (the first prompt, continuations, wake notices).
+/// Yulius's (the first prompt, continuations).
 pub const TYPED_WINDOW_MS: i64 = 60_000;
 /// Largest task goal, user prompt and step list given to Jev (each), in bytes.
 pub const STATE_PART_BYTES: usize = 8 * 1024;
