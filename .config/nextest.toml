@@ -4,9 +4,6 @@ slow-timeout = { period = "30s", terminate-after = 4 }
 
 [profile.ci]
 fail-fast = false
-# A test that fails and then passes is reported as FLAKY instead of failing the run (SPEC-021).
-# Flaky tests are still fixed or quarantined with an issue.
-retries = 2
 
 [profile.ci.junit]
 path = "junit.xml"

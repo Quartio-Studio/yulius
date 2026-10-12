@@ -112,6 +112,9 @@ pub struct TaskRuntime {
     pub(crate) armed_merge: Mutex<Option<crate::agent_wait::ArmedMerge>>,
     /// How the last armed merge ended, for `yulius wait` (SPEC-028 MSR-003).
     pub(crate) merge_outcome: Mutex<Option<crate::agent_wait::MergeOutcome>>,
+    /// Why Yulius could not push the agent's head (the head, the text), for `yulius wait`: the
+    /// agent learns it instead of waiting for a run that never comes (SPEC-050 DLV-201).
+    pub(crate) push_problem: Mutex<Option<(String, String)>>,
     /// Armed-merge decisions in progress (the armed merge is taken out meanwhile): `yulius wait`
     /// still reads the merge as armed until it is decided or put back.
     pub(crate) merge_deciding: AtomicU32,
@@ -171,6 +174,7 @@ impl TaskRuntime {
             opening_turn: AtomicBool::new(false),
             armed_merge: Mutex::new(None),
             merge_outcome: Mutex::new(None),
+            push_problem: Mutex::new(None),
             merge_deciding: AtomicU32::new(0),
             last_stop_ms: AtomicI64::new(0),
             background_shells: AtomicI64::new(-1),
@@ -643,8 +647,7 @@ impl App {
                 );
                 return Ok(());
             }
-            let live =
-                u32::try_from(self.deps.store.live_attempts().await?.len()).unwrap_or(u32::MAX);
+            let live = self.sessions_in_use().await?;
             // While an update pauses the tasks, starts queue like at the session limit and run
             // once it is over (SPEC-002 ADR-18).
             let full = live >= self.config.max_live_sessions || self.update_holds_starts();
@@ -1666,6 +1669,28 @@ impl App {
             .await;
     }
 
+    /// Sessions that count against the session limit: live ones, except those of Done tasks.
+    /// A Done task keeps its idle session for follow-ups, but it no longer works, so it does not
+    /// keep queued tasks waiting (F 2026-10-12: "tasks put in Done doesn't unlock queue",
+    /// SPEC-050 SES-101). A follow-up prompt can take the instance over the limit for a while.
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn sessions_in_use(&self) -> AppResult<u32> {
+        let store = &self.deps.store;
+        let mut in_use = 0u32;
+        for attempt in store.live_attempts().await? {
+            let done = match store.task(&attempt.task_id).await? {
+                Some(task) => self.task_is_done_locally(&task).await,
+                None => false,
+            };
+            if !done {
+                in_use = in_use.saturating_add(1);
+            }
+        }
+        Ok(in_use)
+    }
+
     /// Starts queued tasks while capacity allows (FIFO); none while an update pauses tasks.
     pub async fn drain_queue(self: &Arc<Self>) {
         if self.update_holds_starts() {
@@ -1680,14 +1705,8 @@ impl App {
             return;
         };
         for task in queued {
-            let live = self
-                .deps
-                .store
-                .live_attempts()
-                .await
-                .map(|l| l.len())
-                .unwrap_or(usize::MAX);
-            if u32::try_from(live).unwrap_or(u32::MAX) >= self.config.max_live_sessions {
+            let live = self.sessions_in_use().await.unwrap_or(u32::MAX);
+            if live >= self.config.max_live_sessions {
                 return;
             }
             let has_lineage = self

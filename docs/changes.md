@@ -6,9 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
-- A sandbox runs two CI runs at once (`--ci-lanes`, each lane with its own job checkouts), so
-  parallel tasks no longer queue behind each other's runs; this repository's CI retries a failing
-  test twice and reports one that then passes as flaky instead of failing the run (SPEC-021).
+- Tasks run in parallel and finish without obstacles (SPEC-050):
+  - a Done task no longer holds a session slot, so queued tasks start;
+  - when Yulius cannot push an agent's head, `yulius wait` says why and how to fix it without a
+    force push, and agents bring `dev` in by merging, never by rewriting pushed commits;
+  - a shell that only runs `yulius wait` no longer counts as a build, so a waiting task reads as
+    waiting and its caches can go under disk pressure;
+  - agent commands run below CI and the agents in CPU priority;
+  - shells and the Cockpit keep GitHub across server restarts;
+  - a sandbox runs two CI runs at once, each lane with its own job checkouts, and worktree
+    registrations change one at a time (#206).
 - CI runs are no longer refused over the sandbox's disk quota by the size of test builds
   (SPEC-033, ADR-0028, task #31): the `yulius` crate's 50 integration test files, each its own
   190 MB executable linking the whole product, are now modules of one test binary
