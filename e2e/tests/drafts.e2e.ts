@@ -78,3 +78,20 @@ test('each sandbox keeps its own draft', async ({ app, browser, screen }) => {
   await expect(browser.locator('.composer-crumbs')).toHaveText(/studio/);
   await expect(prompt).toHaveValue('For studio');
 });
+
+test('the mode, workflow and "Run after" come back with the draft', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await screen.getByRole('textbox', 'Task prompt').fill('Check something first');
+  await screen.getByRole('button', /^Mode:/).click();
+  await screen.getByRole('menuitemradio', /^Goal/).click();
+  await screen.getByRole('button', /^Workflow:/).click();
+  await screen.getByRole('menuitemradio', /^Fix \(default\)/).click();
+  await screen.getByRole('button', /Run after: Start now/).click();
+  await screen.getByRole('menuitemradio', /^After #12 Checkout API/).click();
+
+  await leaveAndReturn(browser, screen);
+
+  await expect(screen.getByRole('button', 'Mode: Goal')).toBeVisible();
+  await expect(screen.getByRole('button', 'Workflow: Fix')).toBeVisible();
+  await expect(screen.getByRole('button', 'Run after: After #12')).toBeVisible();
+});

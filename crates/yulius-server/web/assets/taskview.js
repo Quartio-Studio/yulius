@@ -388,13 +388,13 @@ export function mountComposer(ctx, sandbox) {
   // A rendered, read-only view of the prompt (Preview), made on demand.
   const previewEl = h('div', { class: 'composer-preview', role: 'region', hidden: true, tabindex: 0, 'aria-label': 'Prompt preview' });
   let preview = null;
-  let mode = AUTO;
-  let workflowId = AUTO;
+  let mode = draft.mode ?? AUTO;
+  let workflowId = draft.workflowId ?? AUTO;
   let workflows = [];
   // Run after another task of this sandbox (TSK-012): the new task waits until it is Done.
-  let afterTaskId = '';
+  let afterTaskId = draft.afterTaskId;
   // Or wait for a logical sentence over the sandbox's tasks (SPEC-017), like `#12 done and #13 done`.
-  let startRule = '';
+  let startRule = draft.startRule;
   let split = null; // the split card while it shows (TSK-011)
   let modelId = findModel(readJson(MODEL_PREF_KEY, null)) ? readJson(MODEL_PREF_KEY, null) : null;
   let effortId = findEffort(readJson(EFFORT_PREF_KEY, null)) ? readJson(EFFORT_PREF_KEY, null) : null;
@@ -508,6 +508,9 @@ export function mountComposer(ctx, sandbox) {
     effortChip.hidden = effortless;
     const effort = findEffort(effortId);
     setChildren(effortChip, h('span', { class: 'sr-only' }, 'Effort: '), h('span', { class: 'chip-label' }, effort ? effort.name : 'Default effort'), icon('down', { size: 12 }));
+    // Every choice shown here is the draft's (DRF-003).
+    Object.assign(draft, { mode, workflowId, afterTaskId, startRule });
+    remember();
   }
 
   function openModeMenu(anchor) {
