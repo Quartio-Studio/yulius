@@ -98,6 +98,10 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/archived-tasks", get(tasks::archived))
         .route("/api/tasks/{tid}", get(tasks::detail).delete(tasks::delete))
         .route("/api/tasks/{tid}/prompt", get(tasks::prompt))
+        .route(
+            "/api/tasks/{tid}/prompt/attachments/{n}",
+            get(tasks::prompt_attachment),
+        )
         .route("/api/tasks/{tid}/archive", post(tasks::archive))
         .route("/api/tasks/{tid}/restore", post(tasks::restore))
         .route("/api/tasks/{tid}/feedback", post(tasks::feedback))
