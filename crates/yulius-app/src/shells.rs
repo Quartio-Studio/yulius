@@ -42,12 +42,12 @@ use crate::hub::{Hub, Subscription};
 use crate::identity::UserSpace;
 use crate::model::{SandboxRecord, Sealed};
 use crate::ports::Clock;
+use crate::ports::session::{LaunchPlan, RunEvent, RunExit, RunInspection, RunReader, RunWriter};
 
 /// Prefix of a Cockpit's Yulius MCP bearer (SPEC-037).
 pub const COCKPIT_TOKEN_PREFIX: &str = "ck_";
 /// What a Cockpit's bearer is derived for, hashed with its host token.
 const COCKPIT_TOKEN_LABEL: &[u8] = b"yulius-cockpit-mcp\0";
-use crate::ports::session::{LaunchPlan, RunEvent, RunExit, RunInspection, RunReader, RunWriter};
 
 /// Live shells allowed per user and sandbox.
 pub const MAX_SHELLS_PER_SANDBOX: usize = 8;

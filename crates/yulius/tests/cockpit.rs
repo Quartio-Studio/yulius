@@ -487,6 +487,17 @@ async fn a_running_cockpit_is_adopted_as_the_cockpit_after_a_restart() -> TestRe
         token,
         "its Yulius MCP token survives the restart (SPEC-037 MGT-005)"
     );
+    let tools = mcp(
+        &g,
+        token.as_deref().ok_or("token")?,
+        "tools/list",
+        json!({}),
+    )
+    .await?;
+    assert!(
+        tools["result"]["tools"].is_array(),
+        "accepted again: {tools}"
+    );
     assert_eq!(
         cockpit_id(&g, &g.alice).await?,
         id,
@@ -917,6 +928,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
     let id = automation["automation"]["id"].as_str().ok_or("id")?;
     let stored = f.h.store.automation(id).await?.ok_or("automation")?;
     assert_eq!(stored.created_by, alice);
+    assert_eq!(stored.created_via.as_str(), "agent");
     let audit = f.h.store.automation_audit(id, 10).await?;
     let entry = audit
         .iter()
@@ -950,6 +962,25 @@ async fn a_cockpit_whose_owner_lost_access_manages_nothing() -> TestResult {
     f.h.clock
         .0
         .fetch_add(f.h.app.config.permission_ttl_ms + 1, Ordering::SeqCst);
+    let refused = mcp(&f, &token, "tools/list", json!({})).await?;
+    assert_eq!(refused["error"]["code"], -32001, "{refused}");
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// MGT-005: a disabled owner's Cockpit token is refused.
+#[tokio::test]
+async fn a_disabled_owners_cockpit_manages_nothing() -> TestResult {
+    use yulius_app::ports::store::UserStore;
+    use yulius_domain::ids::UserId;
+
+    let f = fixture().await?;
+    cockpit_id(&f, &f.alice).await?;
+    let alice = UserId::parse("u-alice")?;
+    let token = f.h.app.cockpit_mcp_token(&alice, &sid()).ok_or("token")?;
+    f.h.store
+        .update_user_flags(&alice, Some(Some(f.h.app.now())), None)
+        .await?;
     let refused = mcp(&f, &token, "tools/list", json!({})).await?;
     assert_eq!(refused["error"]["code"], -32001, "{refused}");
     f.h.app.end_all_shells().await;

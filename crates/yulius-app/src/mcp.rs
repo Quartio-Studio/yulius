@@ -458,6 +458,7 @@ enum TaskToolResult {
 #[cfg(test)]
 mod tests {
     use super::{COCKPIT_TOOLS, cockpit_tool_descriptors, tool_descriptors};
+    use yulius_domain::briefing::YULIUS_TOOLS;
 
     #[test]
     fn a_cockpit_is_served_every_management_tool_and_nothing_else() {
@@ -470,7 +471,6 @@ mod tests {
             assert!(served.iter().any(|s| s == name), "`{name}` is not served");
         }
     }
-    use yulius_domain::briefing::YULIUS_TOOLS;
 
     #[test]
     fn every_tool_the_briefing_announces_is_served() {

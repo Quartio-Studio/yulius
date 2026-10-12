@@ -167,3 +167,58 @@ async fn tool_created_tasks_are_bounded_per_hour() -> TestResult {
     assert!(!is_error, "{text}");
     Ok(())
 }
+
+/// MGT-002: an agent whose creator lost write access creates or changes no automation either.
+#[tokio::test]
+async fn an_agent_whose_creator_lost_access_changes_no_automation() -> TestResult {
+    let h = world().await?;
+    let daily = json!({"name": "Align docs", "cron": "0 4 * * *", "prompt": "Align the docs"});
+    let created = mcp_tool(&h, "tok-agent", "automation_create", daily.clone()).await?;
+    assert_eq!(created["isError"], false, "{created}");
+    let id = tool_text(&created)["automation"]["id"]
+        .as_str()
+        .ok_or("id")?
+        .to_owned();
+    h.github
+        .set_perm("alice", "Quartio-Studio/studio", perms("read"));
+    h.clock
+        .0
+        .fetch_add(h.app.config.permission_ttl_ms + 1, Ordering::SeqCst);
+    let refused = mcp_tool(&h, "tok-agent", "automation_create", daily).await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    let refused = mcp_tool(
+        &h,
+        "tok-agent",
+        "automation_update",
+        json!({"automation_id": id, "enabled": false}),
+    )
+    .await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    Ok(())
+}
+
+/// MGT-002: a disabled creator's agent creates nothing.
+#[tokio::test]
+async fn an_agent_whose_creator_is_disabled_creates_nothing() -> TestResult {
+    use yulius_app::ports::store::UserStore;
+    let h = world().await?;
+    h.store
+        .update_user_flags(&UserId::parse("u-alice")?, Some(Some(h.app.now())), None)
+        .await?;
+    let (text, is_error) = task_create(&h, "tok-agent", json!({"prompt": "Do it"})).await?;
+    assert!(is_error, "{text}");
+    assert!(text.to_string().contains("disabled"), "{text}");
+    Ok(())
+}
+
+/// The tools a Cockpit runs without asking are among those it is served, so a rename cannot
+/// silently drop one from the allowlist (MGT-004, MGT-006).
+#[test]
+fn the_cockpits_read_only_tools_are_served_to_it() {
+    for tool in yulius_harness::launch::COCKPIT_READ_ONLY_TOOLS {
+        assert!(
+            yulius_app::mcp::COCKPIT_TOOLS.contains(&tool),
+            "`{tool}` is allowed but not served"
+        );
+    }
+}

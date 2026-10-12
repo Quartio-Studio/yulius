@@ -954,6 +954,7 @@ impl App {
         caller: &ProjectCaller,
         args: &Value,
     ) -> AppResult<Value> {
+        self.manage_authority(caller).await?;
         let offset = match args.get("utc_offset_minutes") {
             None | Some(Value::Null) => 0,
             Some(v) => v
@@ -1015,6 +1016,7 @@ impl App {
         caller: &ProjectCaller,
         args: &Value,
     ) -> AppResult<Value> {
+        self.manage_authority(caller).await?;
         let current = self.agent_automation(caller, args).await?;
         let mut next = current.clone();
         if let Some(name) = args.get("name").and_then(Value::as_str) {

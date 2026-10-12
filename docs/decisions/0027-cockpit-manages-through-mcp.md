@@ -21,7 +21,8 @@ token lives in memory and changes on every server restart, while a Cockpit outli
   gate behave the same. Origin is `agent`; the creator is the person the caller acts for. Tools
   create at most 20 tasks per project in a rolling hour (in memory).
 - A management tool acts for a person: a task's agent for the task's creator, a Cockpit for its
-  owner (`coordination::ProjectCaller`). Write access is rechecked at every call.
+  owner (`coordination::ProjectCaller`). Write access is rechecked at every
+  call that creates or changes something, and at every call of a Cockpit.
 - The Cockpit gets the `yulius` MCP server as inline `--mcp-config` JSON whose header names
   `${YULIUS_COCKPIT_TOKEN}`. The bearer goes in the secret environment only. It is
   `ck_` plus the SHA-256 of a fixed label and the Cockpit shell's sealed host token, so it

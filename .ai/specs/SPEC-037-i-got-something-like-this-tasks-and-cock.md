@@ -46,12 +46,12 @@ Yulius does it with that person's authority, without anyone copying a prompt int
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | MGT-001 | The `task_create` MCP tool creates and starts a task in the caller's project from `prompt`, with optional `title`, `workflow` (id, name or `auto`), `mode` (`goal`, `prompt`, `auto`), `after_task` (a task number) or `start_rule`, `model` and `effort`. It follows the same rules as New task in the UI: the onboarding gate, chains, start rules, workflow steps, Jev's auto choice. The new task's origin is `agent` and its creator is the person on whose authority the caller acts. The result names the task (id, number, title, status, branch). | `crates/yulius/tests/manage_tools.rs` |
-| MGT-002 | A task's agent acts with the authority of the task's creator: `task_create` is refused when that person can no longer work in the project, and tasks it creates belong to them. | `manage_tools.rs` |
+| MGT-002 | A task's agent acts with the authority of the task's creator: `task_create`, `automation_create` and `automation_update` are refused when that person is disabled or can no longer work in the project, and what it creates belongs to them. | `manage_tools.rs` |
 | MGT-003 | Tools create at most 20 tasks per project per rolling hour (task agents and Cockpits together); one more is refused with the time until the next one is allowed. UI and automation tasks do not count. | `manage_tools.rs`, unit test |
 | MGT-004 | The Cockpit gets the `yulius` MCP server: `--mcp-config` with an inline JSON naming `<YULIUS_URL>/mcp` and the header `Authorization: Bearer ${YULIUS_COCKPIT_TOKEN}`; the token only in the secret environment, never in argv or a file. Still no settings, hooks, status line, briefing, `--strict-mcp-config` (the user's own MCP servers keep working) or approval bypass. The read-only tools are allowed with `--allowedTools`; creating or changing something asks the person first. | harness unit test, `crates/yulius/tests/cockpit.rs` |
-| MGT-005 | A Cockpit token is `ck_` and the SHA-256 of a fixed label and the Cockpit shell's host token, so it survives a server restart with its Cockpit. It is valid only while that Cockpit is live, and at every call the Cockpit's owner must be enabled and able to work in its project. Otherwise the call is refused as an invalid token. | `cockpit.rs`, `manage_tools.rs` |
-| MGT-006 | A Cockpit is served the management tools: `tasks_list`, `task_get`, `task_create`, `automation_create`, `automations_list`, `automation_update`, `workflows_list`, `sessions_search`, `session_read`. Its `tools/list` serves exactly these; any other tool (steps, spec, scopes, delivery, CI, issues, browser, secrets) is refused as unknown. Tasks keep every tool, now with `task_create`. | `manage_tools.rs` |
-| MGT-007 | What a Cockpit creates is attributed to its owner: automations record `created_via = agent`, created by the owner, and audit actor `cockpit:<login>`; tasks have the owner as creator. `tasks_list` from a Cockpit lists the project's tasks without a `you` entry. | `manage_tools.rs` |
+| MGT-005 | A Cockpit token is `ck_` and the SHA-256 of a fixed label and the Cockpit shell's host token, so it survives a server restart with its Cockpit. It is valid only while that Cockpit is live, and at every call the Cockpit's owner must be enabled and able to work in its project. Otherwise the call is refused as an invalid token. | `crates/yulius/tests/cockpit.rs` |
+| MGT-006 | A Cockpit is served the management tools: `tasks_list`, `task_get`, `task_create`, `automation_create`, `automations_list`, `automation_update`, `workflows_list`, `sessions_search`, `session_read`. Its `tools/list` serves exactly these; any other tool (steps, spec, scopes, delivery, CI, issues, browser, secrets) is refused as unknown. Tasks keep every tool, now with `task_create`. | `cockpit.rs`, `mcp.rs` and `manage_tools.rs` unit/integration tests |
+| MGT-007 | What a Cockpit creates is attributed to its owner: automations record `created_via = agent`, created by the owner, and audit actor `cockpit:<login>`; tasks have the owner as creator. `tasks_list` from a Cockpit lists the project's tasks without a `you` entry. | `cockpit.rs` |
 
 ## Design
 
@@ -113,9 +113,12 @@ flowchart LR
 - Integration (`crates/yulius/tests/manage_tools.rs`, the test server with fake agents):
   - `task_create` from a task: creates, chains after a number, applies a start rule, refuses an
     empty prompt and a creator who lost access, and hits the bound;
-  - a Cockpit's token: `tools/list` set, `task_create` and `automation_create` attributed to the
-    owner, `steps_set` refused, the token refused after the Cockpit ends and for a user who lost
-    access.
+  - automation tools refused for a creator who lost access, `task_create` for a disabled one;
+  - the read-only allowlist is a subset of the Cockpit's tools.
+- Integration (`cockpit.rs`): a Cockpit's token: `tools/list` set, `task_create` and
+  `automation_create` attributed to the owner (`created_via = agent`), `steps_set` refused, the
+  token refused after the Cockpit ends, for a disabled owner and for one who lost access, and
+  accepted again after a restart.
 - Integration (`cockpit.rs`): the launched Cockpit's argv has the inline config, and its
   environment's `YULIUS_COCKPIT_TOKEN` is accepted by `/mcp`.
 - Not covered by the gate: a live model choosing the tool (needs a paid credential). The inline
@@ -147,7 +150,8 @@ flowchart LR
   workflows, Jev's auto choice, chains, start rules and the onboarding gate behave the same. The
   intake split check (`intake_check`) is a UI step and stays out: the agent writes one request.
 - **Authority of a person, never of Yulius.** A task acts for its creator (as `delivery_merge`
-  does), a Cockpit for its owner; both are rechecked at every call, so lost access stops them.
+  does), a Cockpit for its owner; both are rechecked at every
+  creating or changing call (a Cockpit's at every call), so lost access stops them.
 - **A bound on tool-created tasks.** Every queue needs a bound (AGENTS.md). Agents creating tasks
   that create tasks could grow without one. Twenty an hour per project is far above a person's
   pace and stops a loop within minutes. It is in memory: a restart forgets it, which only resets

@@ -14,11 +14,12 @@ use serde_json::{Value, json};
 use yulius_contracts::api::tasks::CreateTask;
 use yulius_domain::auto_choice::AUTO;
 use yulius_domain::ids::SandboxId;
+use yulius_domain::permission::Action;
 
 use crate::context::App;
 use crate::coordination::ProjectCaller;
 use crate::error::{AppError, AppResult};
-use crate::model::TaskOrigin;
+use crate::model::{TaskOrigin, UserRecord};
 
 /// Most tasks tools may create per project in a rolling hour (MGT-003).
 pub const MAX_TOOL_TASKS_PER_HOUR: usize = 20;
@@ -74,6 +75,25 @@ fn opt_str(args: &Value, key: &str) -> AppResult<Option<String>> {
 }
 
 impl App {
+    /// The person a caller acts for, when they may still change things in its project: enabled
+    /// and with write access, checked at every creating or changing tool call (MGT-002, MGT-005).
+    ///
+    /// # Errors
+    /// `Forbidden` for a disabled person, the access errors of [`App::require`].
+    pub(crate) async fn manage_authority(&self, caller: &ProjectCaller) -> AppResult<UserRecord> {
+        let user = self
+            .deps
+            .store
+            .user(&caller.user)
+            .await?
+            .filter(|u| u.disabled_at.is_none())
+            .ok_or_else(|| {
+                AppError::Forbidden("the person this session acts for is disabled".into())
+            })?;
+        self.require(&user, &caller.sandbox, Action::Work).await?;
+        Ok(user)
+    }
+
     /// `task_create` tool (SPEC-037 MGT-001..003): creates and starts a task in the caller's
     /// project for the person it acts for.
     ///
@@ -125,15 +145,7 @@ impl App {
             after_task_id,
             start_rule: opt_str(args, "start_rule")?,
         };
-        let user = self
-            .deps
-            .store
-            .user(&caller.user)
-            .await?
-            .filter(|u| u.disabled_at.is_none())
-            .ok_or_else(|| {
-                AppError::Forbidden("the person this session acts for is disabled".into())
-            })?;
+        let user = self.manage_authority(caller).await?;
         let now = self.now().0;
         self.tool_tasks
             .reserve(&caller.sandbox, now)
