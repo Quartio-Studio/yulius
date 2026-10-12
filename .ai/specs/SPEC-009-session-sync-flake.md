@@ -8,13 +8,15 @@ status: done
 Status: implemented
 Date: 2026-10-11
 Owner: Yulius task #5
-Scope authorization: user requests (the second adds three more flakes to PR #201: "You own flaky tests, and they now block every merge ... no retries, no sleeps"; the first: "Fix the flaky test yulius::session_sync
+Scope authorization: user requests. First: "Fix the flaky test yulius::session_sync
 the_task_follows_its_session_however_it_stops ... find the race test-first, and fix the cause
-(test or product), not by retrying or sleeping")
+(test or product), not by retrying or sleeping". Second, adding three more flakes to PR #201:
+"You own flaky tests, and they now block every merge ... no retries, no sleeps".
 
 ## Goal
 
-`crates/yulius/tests/session_sync.rs::the_task_follows_its_session_however_it_stops` passes on
+Four timing-sensitive tests no longer flake on a loaded host. The first, and the one this spec
+started from, is `crates/yulius/tests/session_sync.rs::the_task_follows_its_session_however_it_stops`; it passes on
 every run, including on a loaded host. It failed once in `scripts/dev ci` (1083 of 1084 passed)
 during onboarding and passed on the rerun. The fix removes the race; it does not retry the test
 or add a sleep.
@@ -49,6 +51,9 @@ timing-sensitive tests fail there (the e2e job took 13-16 min against 3 min on G
 | FLK-001 | The test does not assume the `closed` event has been published when the store shows `closed`; it waits, on the condition, for the event. | `session_sync.rs`, the "closed event" wait |
 | FLK-002 | No retry and no fixed sleep is added; the wait is bounded (10 s) and fails with a named message. | `wait_for` use |
 | FLK-003 | Product behavior is unchanged: the store write still precedes the event, and viewers still receive the final `closed` update. | the test's unchanged final assertion |
+| FLK-004 | The `jev` timeout test times only the call, not client construction. | `wiring::jev` test |
+| FLK-005 | The intake e2e test sees the transient status deterministically (the mock holds its proposal until released). | `intake.e2e.ts` |
+| FLK-006 | The filedrop e2e test waits for the editor as a condition and bounds the drop's outcome separately. | `filedrop.e2e.ts` |
 
 ## Design
 
@@ -67,8 +72,8 @@ event", rather than a misleading empty-list assertion. No production code or con
 - FLK-004..006: the e2e filedrop test failed 8 of 12 runs before the change on a host at load
   average 20-30; with the warm-up alone 1 of 12, with the outcome bound 0 of 16. The intake test
   passed 8 of 8 (its failure was not reproduced beforehand; the hold removes the dependence on
-  timing by construction). The jev test is verified by `scripts/dev ci` and a run under load.
-
+  timing by construction). The jev test passed 3 of 3 alone and in two `scripts/dev ci` runs; it
+  was not run under artificial load (that is not allowed in the shared sandbox).
 - The test passes 10 of 10 runs under the CPU load that failed it 3 of 14 times before.
 - `scripts/dev ci` passes.
 
@@ -102,4 +107,6 @@ event", rather than a misleading empty-list assertion. No production code or con
 
 - Load reproduction before the fix: 3 failures in 14 runs at the `seen.last()` assertion.
 - After the fix: 10 of 10 passes under the same load.
-- `scripts/dev ci` exit 0 on a quiet host: 1084 passed, 16 skipped; `session_sync` passed.
+- `scripts/dev ci` exit 0 on a quiet host before FLK-004..006: 1084 passed, 16 skipped.
+- `scripts/dev ci` exit 0 on the final change: 1091 passed, 16 skipped.
+- `session_sync` passed 5 of 5 on the shared host after the merge with `dev`.
