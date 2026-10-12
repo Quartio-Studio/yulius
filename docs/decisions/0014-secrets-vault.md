@@ -20,3 +20,4 @@ XChaCha20-Poly1305 envelope encryption with a KEK from the master key; team reve
 ## Consequences
 
 Redaction is an oracle for weak values (8-character minimum); remaining threats are listed in SPEC-002 section 2.6.
+Since [ADR-0029](0029-personal-two-factor-guards-the-vault.md), reveals need a personal two-factor code instead of a recent sign-in, and the people who manage an agent secret can read it back.

@@ -82,7 +82,7 @@ them), and people can now read an agent secret's value too, behind the same two-
 - [x] People set up two-factor and unlock the vault with a code
 - [x] Every reveal needs a vault unlock, and people can read agent secrets they manage
 - [x] Agent secrets drop the per-secret TOTP seed, and the user name serves Basic only
-- [ ] The Secrets page asks for the code, sets up two-factor and shows title, value and notes
+- [x] The Secrets page asks for the code, sets up two-factor and shows title, value and notes
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
@@ -121,7 +121,7 @@ them), and people can now read an agent secret's value too, behind the same two-
 
 ## Decisions
 
-- Two-factor is **per person, guarding the whole vault** (ADR-0028). "Per wallet" is read as
+- Two-factor is **per person, guarding the whole vault** (ADR-0029). "Per wallet" is read as
   "on the wallet, not on each secret". A single seed shared by the team would make the audit
   trail meaningless (anyone who once saw it passes as anyone holding a session) and could never be
   revoked for one person. Each person enrolls their own authenticator, so one unlock opens both

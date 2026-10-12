@@ -40,7 +40,7 @@ Python's standard-library `tomllib` means Python 3.10 and older are unsupported.
 
 Use `scripts/dev check`, `scripts/dev lint` or `scripts/dev test` during iteration.
 The `yulius` crate's integration tests are modules of one test binary, `tests/main.rs`
-([ADR-0028](../decisions/0028-one-integration-test-binary.md)): declare a new file there, and run
+([ADR-0029](../decisions/0028-one-integration-test-binary.md)): declare a new file there, and run
 one file's tests with `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^<file>::/)'`
 (`cargo test -p yulius --test main <file>::` filters by substring: `supervision::` also runs
 `pool_supervision::`).

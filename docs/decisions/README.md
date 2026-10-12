@@ -33,4 +33,5 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0027](0027-step-back-past-a-usage-limit.md): A usage limit steps the transcript back; Claude Code continues the cut turn
 - [0028](0028-one-integration-test-binary.md): The product's integration tests are one test binary
 - [0029](0029-cockpit-manages-through-mcp.md): The Cockpit and task agents manage the project through the Yulius MCP server
+- [0029](0029-personal-two-factor-guards-the-vault.md): A personal two-factor code guards the vault; a secret is a title, a value and notes
 - [0031](0031-deleting-a-done-task-closes-it.md): Deleting a Done task closes its session first

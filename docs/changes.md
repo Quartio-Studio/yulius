@@ -11,11 +11,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   work or waiting for you has to be stopped first, and its menu says "Still running: stop the
   task before deleting it".
 - CI runs are no longer refused over the sandbox's disk quota by the size of test builds
-  (SPEC-033, ADR-0028, task #31): the `yulius` crate's 50 integration test files, each its own
+  (SPEC-033, ADR-0029, task #31): the `yulius` crate's 50 integration test files, each its own
   190 MB executable linking the whole product, are now modules of one test binary
   (`tests/main.rs`); a gate build's test executables drop from 9.2 GB to 1.3 GB. The repository
   check rejects a second test binary or an undeclared test file. Run one file's tests with
   `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^<file>::/)'`.
+- Secrets are a title, a value and notes, and reading one needs your own two-factor code
+  (SPEC-040, ADR-0029, task #39). The first reveal sets two-factor up: an authenticator key and
+  link, confirmed by a first code. After that, a code unlocks the vault in that browser for 10
+  minutes. A sign-in or password alone no longer reveals anything. Older team secrets keep every
+  field: the password becomes the value, and the address, user name and seed move into the
+  notes. Agent secrets lose the per-secret seed and take a user name only for Basic credentials.
+  The people who manage an agent secret can now read it after a code. Agents still never see it.
 - A long task title in the start-rule editor stays on one line ending in an ellipsis instead of
   wrapping over the condition's border (SPEC-031, task #29).
 - The Cockpit and task agents create tasks and automations (SPEC-037, ADR-0029; task #35). A new
