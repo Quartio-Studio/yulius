@@ -42,6 +42,11 @@ use crate::hub::{Hub, Subscription};
 use crate::identity::UserSpace;
 use crate::model::{SandboxRecord, Sealed};
 use crate::ports::Clock;
+
+/// Prefix of a Cockpit's Yulius MCP bearer (SPEC-037).
+pub const COCKPIT_TOKEN_PREFIX: &str = "ck_";
+/// What a Cockpit's bearer is derived for, hashed with its host token.
+const COCKPIT_TOKEN_LABEL: &[u8] = b"yulius-cockpit-mcp\0";
 use crate::ports::session::{LaunchPlan, RunEvent, RunExit, RunInspection, RunReader, RunWriter};
 
 /// Live shells allowed per user and sandbox.
@@ -207,8 +212,17 @@ impl ShellRuntime {
         self.ended.load(Ordering::SeqCst)
     }
 
+    /// The Cockpit's bearer for the Yulius MCP server (SPEC-037 MGT-005): `ck_` and the SHA-256
+    /// of a fixed label and the host token. The host token is persisted with the shell, so the
+    /// bearer survives a server restart with its Cockpit; the hash reveals nothing about it.
+    pub(crate) fn cockpit_token(&self, crypto: &dyn crate::ports::Crypto) -> String {
+        let mut data = COCKPIT_TOKEN_LABEL.to_vec();
+        data.extend_from_slice(&self.token);
+        format!("{COCKPIT_TOKEN_PREFIX}{}", crypto.sha256_hex(&data))
+    }
+
     /// Listed and attachable: not ended and not being closed.
-    fn is_live(&self) -> bool {
+    pub(crate) fn is_live(&self) -> bool {
         !self.has_ended() && !self.closing.load(Ordering::SeqCst)
     }
 
@@ -369,6 +383,20 @@ impl App {
             .ok()
             .and_then(|map| map.get(id).cloned())
             .filter(|shell| shell.is_live())
+    }
+
+    /// Every live Cockpit of the instance.
+    pub(crate) fn live_cockpits(&self) -> Vec<Arc<ShellRuntime>> {
+        self.shells
+            .shells
+            .lock()
+            .map(|map| {
+                map.values()
+                    .filter(|shell| shell.kind == ShellKind::Cockpit && shell.is_live())
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Live shells of a sandbox (every user's; diagnostics and tests).

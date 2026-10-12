@@ -435,10 +435,18 @@ async fn a_cockpit_started_again_resumes_the_newest_conversation() -> TestResult
 async fn a_running_cockpit_is_adopted_as_the_cockpit_after_a_restart() -> TestResult {
     let f = fixture().await?;
     let id = cockpit_id(&f, &f.alice).await?;
+    let alice = yulius_domain::ids::UserId::parse("u-alice")?;
+    let token = f.h.app.cockpit_mcp_token(&alice, &sid());
+    assert!(token.is_some());
     f.h.app.stop_workspace_services().await;
 
     let g = fixture_with(true, Some(f.data.clone())).await?;
     assert_eq!(g.h.app.adopt_shells().await, (1, 0));
+    assert_eq!(
+        g.h.app.cockpit_mcp_token(&alice, &sid()),
+        token,
+        "its Yulius MCP token survives the restart (SPEC-037 MGT-005)"
+    );
     assert_eq!(
         cockpit_id(&g, &g.alice).await?,
         id,
@@ -730,5 +738,180 @@ async fn a_contained_cockpit_keeps_its_config_in_the_users_home() -> TestResult 
     assert_eq!(launch.cwd, repo);
     assert_eq!(launch.resume.as_deref(), Some("earlier"));
     assert!(h.app.sandbox_shells(&sid()).is_empty());
+    Ok(())
+}
+
+/// A JSON-RPC call to the internal `/mcp` with `token`.
+async fn mcp(
+    f: &Fixture,
+    token: &str,
+    method: &str,
+    params: Value,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let resp = call(
+        &f.h.internal,
+        Method::POST,
+        "/mcp",
+        Some(json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})),
+        &Creds {
+            bearer: Some(token.into()),
+            ..Creds::default()
+        },
+    )
+    .await?;
+    assert_eq!(resp.status, StatusCode::OK, "{:?}", resp.body);
+    Ok(resp.body)
+}
+
+/// A tool's result text parsed as JSON, and whether it is an error.
+async fn cockpit_tool(
+    f: &Fixture,
+    token: &str,
+    name: &str,
+    args: Value,
+) -> Result<(Value, bool), Box<dyn std::error::Error>> {
+    let body = mcp(
+        f,
+        token,
+        "tools/call",
+        json!({"name": name, "arguments": args}),
+    )
+    .await?;
+    let text = body["result"]["content"][0]["text"]
+        .as_str()
+        .ok_or_else(|| format!("no result: {body}"))?;
+    Ok((
+        serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.to_owned())),
+        body["result"]["isError"].as_bool().unwrap_or(true),
+    ))
+}
+
+/// AC-MGT-2, MGT-005..007: a Cockpit's own token reaches the management tools, which act for
+/// its owner; nothing else is served, and the token ends with the Cockpit and its owner's
+/// access.
+#[tokio::test]
+async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
+    use yulius_app::model::TaskOrigin;
+    use yulius_app::ports::store::TaskStore;
+    use yulius_app::ports::store_ext::AutomationStore;
+    use yulius_domain::ids::{TaskId, UserId};
+
+    let f = fixture().await?;
+    cockpit_id(&f, &f.alice).await?;
+    cockpit_id(&f, &f.carol).await?;
+    let alice = UserId::parse("u-alice")?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&alice, &sid())
+            .ok_or("alice's cockpit token")?;
+    assert!(token.starts_with("ck_"), "{token}");
+    let carols =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-carol")?, &sid())
+            .ok_or("carol's cockpit token")?;
+    assert_ne!(token, carols, "one token per Cockpit");
+
+    // Exactly the management tools (MGT-006).
+    let listed = mcp(&f, &token, "tools/list", json!({})).await?;
+    let mut names: Vec<String> = listed["result"]["tools"]
+        .as_array()
+        .ok_or("tools")?
+        .iter()
+        .filter_map(|t| t["name"].as_str().map(str::to_owned))
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "automation_create",
+            "automation_update",
+            "automations_list",
+            "session_read",
+            "sessions_search",
+            "task_create",
+            "task_get",
+            "tasks_list",
+            "workflows_list",
+        ]
+    );
+    let (refused, is_error) =
+        cockpit_tool(&f, &token, "steps_set", json!({"steps": ["x"]})).await?;
+    assert!(is_error, "{refused}");
+    assert!(refused.to_string().contains("unknown tool"), "{refused}");
+
+    // A task for alice (MGT-001, MGT-007).
+    let (created, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "task_create",
+        json!({"prompt": "Fix the onboarding wording about CI homes"}),
+    )
+    .await?;
+    assert!(!is_error, "{created}");
+    let task =
+        f.h.store
+            .task(&TaskId::parse(
+                created["task"]["task_id"].as_str().ok_or("task_id")?,
+            )?)
+            .await?
+            .ok_or("task")?;
+    assert_eq!(task.created_by, alice);
+    assert_eq!(task.origin, TaskOrigin::Agent);
+    let (listed, is_error) = cockpit_tool(&f, &token, "tasks_list", json!({})).await?;
+    assert!(!is_error, "{listed}");
+    assert!(
+        listed.get("you").is_none(),
+        "a Cockpit has no task: {listed}"
+    );
+    assert_eq!(listed["tasks"][0]["task_id"], task.id.as_str());
+
+    // "Every day at 4am align the docs": an automation of alice's.
+    let (automation, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "automation_create",
+        json!({"name": "Align docs", "cron": "0 4 * * *", "prompt": "Align the docs to the latest changes if they are not aligned"}),
+    )
+    .await?;
+    assert!(!is_error, "{automation}");
+    let id = automation["automation"]["id"].as_str().ok_or("id")?;
+    let stored = f.h.store.automation(id).await?.ok_or("automation")?;
+    assert_eq!(stored.created_by, alice);
+    let audit = f.h.store.automation_audit(id, 10).await?;
+    let entry = audit
+        .iter()
+        .find(|e| e.action == "automation.created")
+        .ok_or("audit entry")?;
+    assert_eq!(entry.actor, "cockpit:alice");
+
+    // Unknown tokens, and the token of a Cockpit that ended, are refused (MGT-005).
+    let unknown = mcp(&f, "ck_0000", "tools/list", json!({})).await?;
+    assert_eq!(unknown["error"]["code"], -32001, "{unknown}");
+    f.h.app.end_all_shells().await;
+    let ended = mcp(&f, &token, "tools/list", json!({})).await?;
+    assert_eq!(ended["error"]["code"], -32001, "{ended}");
+    Ok(())
+}
+
+/// MGT-005: once its owner can no longer work in the project, a Cockpit's token is refused.
+#[tokio::test]
+async fn a_cockpit_whose_owner_lost_access_manages_nothing() -> TestResult {
+    use yulius_domain::ids::UserId;
+
+    let f = fixture().await?;
+    cockpit_id(&f, &f.alice).await?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-alice")?, &sid())
+            .ok_or("token")?;
+    let allowed = mcp(&f, &token, "tools/list", json!({})).await?;
+    assert!(allowed["result"]["tools"].is_array(), "{allowed}");
+    f.h.github.set_perm("alice", "acme/fixture", perms("read"));
+    f.h.clock
+        .0
+        .fetch_add(f.h.app.config.permission_ttl_ms + 1, Ordering::SeqCst);
+    let refused = mcp(&f, &token, "tools/list", json!({})).await?;
+    assert_eq!(refused["error"]["code"], -32001, "{refused}");
+    f.h.app.end_all_shells().await;
     Ok(())
 }
