@@ -774,6 +774,15 @@ async fn agent_secrets_follow_sandbox_access_and_reveal_only_to_managers() -> Te
             json!({"name": "BASIC", "hosts": ["a.test"], "injection": "basic", "value": "12345678"}),
             StatusCode::UNPROCESSABLE_ENTITY,
         ),
+        // No per-secret two-factor seed; a user name only for Basic (SPEC-040 R3).
+        (
+            json!({"name": "SEEDED", "hosts": ["a.test"], "value": "12345678", "totp": SEED}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            json!({"name": "LOGIN", "hosts": ["a.test"], "injection": "none", "username": "bob", "value": "12345678"}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
         (stripe, StatusCode::CONFLICT),
         (
             json!({"name": "GLOBAL_KEY", "hosts": ["a.test"], "value": "12345678"}),
@@ -1231,7 +1240,7 @@ async fn nothing_is_stored_in_clear() -> TestResult {
     seed_sandbox(&h, "s1", "app", "u-alice").await?;
     h.github.set_perm("alice", "acme/app", perms("write"));
     let agent = call(&h.router, Method::POST, "/api/sandboxes/s1/agent-secrets",
-        Some(json!({"name": "STRIPE_KEY", "hosts": ["api.stripe.test"], "username": "stripe-user-x", "value": STRIPE, "totp": SEED})), &w_user).await?;
+        Some(json!({"name": "STRIPE_KEY", "hosts": ["api.stripe.test"], "injection": "basic", "username": "stripe-user-x", "value": STRIPE})), &w_user).await?;
     assert_eq!(agent.status, StatusCode::CREATED, "{}", agent.body);
     let seed = enroll(&h, &admin).await?;
     let backup = data.join("backup.db");
