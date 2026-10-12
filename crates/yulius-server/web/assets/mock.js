@@ -1864,7 +1864,8 @@ function saveNote(db, scope, body) {
   if (typeof body.body !== 'string' || !Number.isInteger(body.revision)) fail(422, 'invalid', 'body and revision are required');
   if (new TextEncoder().encode(body.body).length > 256 * 1024) fail(422, 'invalid', 'notes hold at most 256 KiB');
   if (noteView(db, scope).revision !== body.revision) fail(409, 'conflict', 'someone else changed these notes; load them again');
-  const note = putNote(db, scope, body.body, db.me.user.login);
+  // Like the server: the GitHub login, else the display name.
+  const note = putNote(db, scope, body.body, db.me.user.github_linked ? db.me.user.login : db.me.user.display_name);
   // Stored, but the answer does not arrive (a timeout or a dropped connection).
   if (db.loseNoteResponse) fail(503, 'unavailable', 'The answer was lost on purpose');
   return note;

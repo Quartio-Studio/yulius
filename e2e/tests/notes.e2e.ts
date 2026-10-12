@@ -363,7 +363,10 @@ test('an undo after a lost answer is not Saved until the server is checked', asy
   await expect(screen.getByRole('status', 'Save state')).toHaveText('Not saved, retrying…');
   await setMock(browser, 'loseNoteResponse', false);
   await setMock(browser, 'failNoteLoads', true);
+  const loads = await browser.evaluate(() => (window as unknown as MockNotes).__yuliusMock.noteLoads);
   await notes.fill('');
+  // Past the save delay: the undo looked at the server, and that look failed.
+  await expect.poll(() => browser.evaluate(() => (window as unknown as MockNotes).__yuliusMock.noteLoads)).toBeGreaterThan(loads);
   await expect(screen.getByRole('status', 'Save state')).toHaveText('Saving…');
   expect(await browser.evaluate(() => {
     const event = new Event('beforeunload', { cancelable: true });

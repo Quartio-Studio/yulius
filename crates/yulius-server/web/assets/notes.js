@@ -46,7 +46,7 @@ export function createNotesView(ctx, sandbox) {
   const userId = ctx.store.state.me && ctx.store.state.me.user ? ctx.store.state.me.user.id : 'anonymous';
   const me = ctx.store.state.me && ctx.store.state.me.user ? ctx.store.state.me.user : null;
   // Saves name the GitHub login, else the display name (the superadmin without GitHub).
-  const isMine = (note) => Boolean(me && note.updated_by && (me.github_linked ? note.updated_by === me.login : note.updated_by === me.display_name));
+  const isMine = (note) => Boolean(me && note.updated_by && (note.updated_by === me.login || (!me.github_linked && note.updated_by === me.display_name)));
   const pads = [
     notepad(ctx, {
       key: 'sandbox',
@@ -217,6 +217,7 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
 
   function settled() {
     unconfirmed = [];
+    checking = false; // an answered save, adopt or rebase: the server's text is known
     failed = null;
     retryDelay = RETRY_FIRST_MS;
     clearTimeout(retryTimer);
@@ -228,7 +229,7 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
   // the texts sent whose answers did not arrive.
   function keepUnsaved() {
     if (!loaded || readOnly) return;
-    if (!dirty() && !conflict && !checking) { dropUnsaved(); return; }
+    if (!dirty() && !conflict && !checking && !failed) { dropUnsaved(); return; }
     try { window.sessionStorage.setItem(unsavedKey, JSON.stringify({ body: textarea.value, base, sent: unconfirmed })); } catch { /* memory only */ }
   }
   function dropUnsaved() {
@@ -319,7 +320,7 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
       if (!loaded) { failed = 'loading'; retryLater(load); return; }
       // Behind a teammate's save, or checking an undo: try again later, never at once.
       if (retryable(error) && (checking || announcedRevision > base)) retryLater(load);
-      else checking = false;
+      else if (checking) { failed = error.message; checking = false; } // not Saved: unknown
     }).finally(() => {
       loading = null;
       onState();
@@ -358,7 +359,7 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
         retryTimer = 0;
         if (unconfirmed.length) { checking = true; load(); }
       }
-      if (!conflict && !checking) dropUnsaved();
+      if (!conflict && !checking && !failed) dropUnsaved();
       catchUp();
       onState();
       return;
