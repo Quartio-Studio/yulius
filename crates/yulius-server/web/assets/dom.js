@@ -479,12 +479,14 @@ export function closeMenu() {
 export const MENU_FILTER_MIN = 8;
 
 /**
- * Whether a menu item holds every word of `query` in its label, description or hint. Not its
- * tooltip: "Starts by itself when #N is done" on every "Run after" row would match them all.
+ * Whether a menu item holds every word of `query` in what it shows: its label, its second line (a
+ * description, or a disabled item's reason) and its hint. Not a tooltip: "Starts by itself when
+ * #N is done" on every "Run after" row would match them all.
  */
 export function menuMatches(item, query) {
   const words = String(query || '').toLowerCase().split(/\s+/).filter(Boolean);
-  const text = [item.label, item.description, item.hint].filter(Boolean).join(' ').toLowerCase();
+  const second = item.description || (item.disabled && item.title ? item.title : null);
+  const text = [item.label, second, item.hint].filter(Boolean).join(' ').toLowerCase();
   return words.every((word) => text.includes(word));
 }
 
@@ -521,7 +523,7 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
     // A disabled item says why on its second line, not only in a mouse tooltip.
     const description = item.description || (item.disabled && item.title ? item.title : null);
     const label = description
-      ? h('span', { class: 'menu-text' }, h('span', { class: 'menu-label' }, item.label), h('span', { class: 'menu-desc' }, description))
+      ? h('span', { class: 'menu-text' }, h('span', { class: 'menu-label' }, item.label), h('span', { class: 'menu-desc', title: description }, description))
       : h('span', { class: 'menu-label' }, item.label);
     const check = choice ? h('span', { class: 'menu-check' }, item.checked ? icon('check', { size: 14 }) : null) : null;
     const select = () => {
@@ -539,7 +541,7 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
       }
       if (item.onSelect) item.onSelect();
     };
-    const el = h('button', { type: 'button', role: choice ? (item.keepOpen ? 'menuitemcheckbox' : 'menuitemradio') : 'menuitem', 'aria-checked': choice ? String(item.checked) : null, class: ['menu-item', item.danger && 'danger', description && 'rich'], 'aria-disabled': item.disabled ? 'true' : null, title: item.title || description || null, onClick: select },
+    const el = h('button', { type: 'button', role: choice ? (item.keepOpen ? 'menuitemcheckbox' : 'menuitemradio') : 'menuitem', 'aria-checked': choice ? String(item.checked) : null, class: ['menu-item', item.danger && 'danger', description && 'rich'], 'aria-disabled': item.disabled ? 'true' : null, title: (!item.disabled && item.title) || null, onClick: select },
       check,
       item.icon ? h('span', { class: 'menu-icon' }, icon(item.icon, { size: 15 })) : null,
       label, item.hint ? h('span', { class: 'menu-hint' }, item.hint) : null);
@@ -560,31 +562,44 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
   };
   if (filter) filter.addEventListener('input', applyFilter);
   document.body.append(menu);
-  const rect = anchor instanceof Element ? anchor.getBoundingClientRect() : { left: anchor.x, right: anchor.x, top: anchor.y, bottom: anchor.y };
-  const mw = menu.offsetWidth;
-  let left = align === 'end' ? rect.right - mw : rect.left;
-  if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
-  if (left < 8) left = 8;
-  // Below the anchor, or above it when it fits only there or has more room; never past a window
-  // edge, the items scroll instead (SPEC-038 MNU-001).
-  const below = window.innerHeight - 8 - (rect.bottom + 4);
-  const above = rect.top - 4 - 8;
-  const mh = menu.offsetHeight;
-  const up = mh > below && above > below;
-  const room = up ? above : below;
-  menu.style.left = `${left}px`;
-  if (room < Math.min(mh, 120)) {
-    // No usable room on either side (an anchor taller than the window): over it, from the top.
-    menu.style.top = '8px';
-  } else {
-    if (mh > room) menu.style.maxHeight = `${room}px`;
-    // A menu above its anchor is held by its bottom edge, so a filtered, shorter menu stays next
-    // to the anchor.
-    if (up) menu.style.bottom = `${window.innerHeight - (rect.top - 4)}px`;
-    else menu.style.top = `${rect.bottom + 4}px`;
-  }
-  // A filtered menu keeps its width, measured once its items may scroll (with their scrollbar).
-  if (filter) menu.style.width = `${menu.offsetWidth}px`;
+  /**
+   * Below the anchor, or above it when it fits only there or has more room; never past a window
+   * edge, the items scroll instead (SPEC-038 MNU-001). Run again when the window gets shorter.
+   */
+  const place = () => {
+    menu.classList.remove('menu-from-top');
+    menu.style.top = '';
+    menu.style.bottom = '';
+    menu.style.maxHeight = '';
+    const rect = anchor instanceof Element ? anchor.getBoundingClientRect() : { left: anchor.x, right: anchor.x, top: anchor.y, bottom: anchor.y };
+    // An anchor partly outside the window (scrolled away as the window got shorter) counts from
+    // the window's edge, so the menu stays inside.
+    const anchorTop = Math.min(Math.max(rect.top, 12), window.innerHeight - 4);
+    const anchorBottom = Math.min(Math.max(rect.bottom, 4), window.innerHeight - 12);
+    const below = window.innerHeight - 8 - (anchorBottom + 4);
+    const above = anchorTop - 4 - 8;
+    const mh = menu.offsetHeight;
+    const up = mh > below && above > below;
+    const room = up ? above : below;
+    if (room < Math.min(mh, 120)) {
+      // No usable room on either side (an anchor taller than the window): over it, from the top.
+      menu.classList.add('menu-from-top');
+    } else {
+      if (mh > room) menu.style.maxHeight = `${room}px`;
+      // A menu above its anchor is held by its bottom edge, so a filtered, shorter menu stays next
+      // to the anchor.
+      if (up) menu.style.bottom = `${window.innerHeight - (anchorTop - 4)}px`;
+      else menu.style.top = `${anchorBottom + 4}px`;
+    }
+    // A filtered menu keeps its width, measured once its items may scroll (with their scrollbar),
+    // and the left edge follows the final width.
+    if (filter && !menu.style.width) menu.style.width = `${menu.offsetWidth}px`;
+    const mw = menu.offsetWidth;
+    let left = align === 'end' ? rect.right - mw : rect.left;
+    if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
+    menu.style.left = `${Math.max(8, left)}px`;
+  };
+  place();
   const onDoc = (event) => { if (!menu.contains(event.target)) closeMenu(); };
   const onKey = (event) => {
     // Keys that compose text in an input method (Enter that commits it, arrows that pick a
@@ -638,7 +653,7 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
   };
   // A window that only gets shorter is a phone's keyboard opening for the filter: keep the menu.
   const openWidth = window.innerWidth;
-  const onResize = () => { if (window.innerWidth !== openWidth) closeMenu(); };
+  const onResize = () => { if (window.innerWidth !== openWidth) closeMenu(); else place(); };
   const onBlur = () => closeMenu();
   setTimeout(() => document.addEventListener('pointerdown', onDoc, true), 0);
   document.addEventListener('keydown', onKey, true);

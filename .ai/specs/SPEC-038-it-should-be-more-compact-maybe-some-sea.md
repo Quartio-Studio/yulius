@@ -89,5 +89,10 @@ scrolling. The "Run after" menu lists tasks as one-line rows.
   focuses the first item instead of the filter; Backspace on an item edits the filter; the width
   is fixed after the scrollbar appears. Not done: announcing the number of matches (the list
   itself is read by the screen reader; "No matches" is announced).
+- **Review round 2** (fresh session): fixed test-first: a menu kept open by a height-only resize
+  is placed again, counting an anchor scrolled out of the window from the window's edge (major);
+  the tooltip moved from the item to its cut description, so screen readers do not hear it twice;
+  the left edge is clamped with the final width; a disabled item's shown reason is searched. Not
+  done: matching items by the header above them (no menu needs it; the user menu is short).
 - **Native selects stay native**: the browser's list already has type-to-select and phone pickers;
   replacing them is a separate, larger change with no reported pain.

@@ -188,6 +188,8 @@ p { margin: 0; }
 }
 /* The items scroll inside the panel when the window is too short for them (SPEC-038). */
 .menu-list { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+/* No usable room beside an anchor taller than the window: the menu covers it from the top. */
+.menu-from-top { top: 8px; }
 .menu-filter { flex: none; margin-bottom: 4px; }
 .menu-empty { padding: 4px 12px 6px; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .menu-empty:empty { display: none; }

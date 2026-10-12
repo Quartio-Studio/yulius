@@ -37,7 +37,13 @@ test('a description is one line, its full text in the tooltip', async ({ app, br
   await screen.getByRole('button', /^Workflow:/).click();
   const auto = screen.getByRole('menuitemradio', /^Auto workflow/);
   await expect(auto).toBeVisible();
-  await expect(auto).toHaveAttribute('title', /features get a spec, research and questions do not/);
+  // The tooltip is on the cut text, not the item: a screen reader would hear it twice.
+  const titles = await browser.evaluate(() => {
+    const item = [...document.querySelectorAll('.menu-item')].find((el) => el.textContent!.startsWith('Auto workflow'))!;
+    return { item: item.getAttribute('title'), desc: item.querySelector('.menu-desc')!.getAttribute('title') };
+  });
+  expect(titles.item).toBe(null);
+  expect(titles.desc).toMatch(/features get a spec, research and questions do not/);
   const height = await browser.evaluate(() => Math.round(document.querySelector('.menu-item.rich')!.getBoundingClientRect().height));
   expect(height).toBeLessThanOrEqual(44);
 });
@@ -117,9 +123,11 @@ test('an item matches when its label, description or hint holds every typed word
       menuMatches({ label: 'Settings' }, 'x'),
       // The tooltip is not searched: "Starts by itself when #N is done" is on every task row.
       menuMatches({ label: '#12 Checkout API', title: 'Starts by itself when #12 is done' }, 'starts'),
+      // A disabled item's reason is its shown second line, so it is searched.
+      menuMatches({ label: 'MCP for every sandbox', disabled: true, title: 'Open a sandbox first' }, 'sandbox first'),
     ];
   });
-  expect(result).toEqual([true, true, true, true, true, false, true, false, false]);
+  expect(result).toEqual([true, true, true, true, true, false, true, false, false, true]);
 });
 
 test('"Run after" lists each task on one line under one heading, every live task offered', async ({ app, browser, screen }) => {
@@ -191,13 +199,23 @@ test('a menu opened above its anchor stays next to it while the filter shortens 
   expect(await gap()).toBe(4);
 });
 
-test('a window that only gets shorter (a phone keyboard) keeps the menu open', async ({ app, browser, screen }) => {
+test('a window that only gets shorter (a phone keyboard) keeps the menu open, placed again', async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 1280, height: 800 });
-  await openRunAfter({ app, screen });
+  await app.open(mock('/s/studio', '&tasks=many'));
+  await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
+  await screen.getByRole('button', /Run after: Start now/).click();
   await browser.evaluate(() => { (window as unknown as { __resized: boolean }).__resized = false; addEventListener('resize', () => { (window as unknown as { __resized: boolean }).__resized = true; }); });
   await browser.setViewport({ width: 1280, height: 500 });
   await expect.poll(() => browser.evaluate(() => (window as unknown as { __resized: boolean }).__resized)).toBe(true);
   await expect(screen.getByRole('searchbox', 'Filter')).toBeVisible();
+  // Inside the shorter window and still above its chip (scrolled out of the window here), the
+  // filter on screen.
+  await expect.poll(() => browser.evaluate(() => {
+    const menu = document.querySelector('.menu')!.getBoundingClientRect();
+    const chip = document.querySelector('.chip-btn[aria-expanded="true"]')!.getBoundingClientRect();
+    const filter = document.querySelector('.menu-filter')!.getBoundingClientRect();
+    return menu.top >= 8 && menu.bottom <= innerHeight - 8 && menu.bottom <= chip.top - 4 && filter.top >= 8;
+  })).toBe(true);
   await browser.setViewport({ width: 1000, height: 500 });
   await expect(screen.getByRole('menu')).toHaveCount(0);
 });
