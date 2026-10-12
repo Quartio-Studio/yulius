@@ -1,11 +1,11 @@
 ---
 yulius-task: 50b267ff-a939-4130-9b58-3eb27c20fd51
-status: in-progress
+status: done
 ---
 
 # SPEC-041: auto-saved notes for the sandbox and the team
 
-Status: in progress
+Status: implemented
 Date: 2026-10-12
 Owner: Yulius task #40
 Scope authorization: user request: "Here we want auto-saved notes, sandbox-wise and team-wise"
@@ -69,8 +69,10 @@ without a reload. When two people type at the same time, neither text is lost wi
 - [x] A saved note is announced on the event stream to the people who may read it
 - [x] The rail's Notes panel shows both notepads and saves them by itself
 - [x] Simultaneous edits end in a choice instead of a lost text, and teammates' edits appear live
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Review round 1: no typed text lost on load, reload or a lost answer
+- [x] Review round 2: a kept conflict stays a choice and failed reloads back off
+- [x] Review round 3: nothing kept is dropped before the first load, confirmed by a focused review
+- [x] Every gate green, docs and the changes log updated
 
 ## Design
 
@@ -170,4 +172,30 @@ sequenceDiagram
   only without GitHub); a reload after an event repeats only when the note moved on or another
   event came; events do not bypass the first load's pauses; a reader who lost write access keeps
   their kept text. After three rounds the blocker was not acceptable as a known issue (it loses
-  text), so it was fixed test-first and a fourth, focused review confirmed the fix only.
+  text), so it was fixed test-first and a fourth, focused review of that fix ran.
+- Confirmation review (approve, `7e7ae29`, 3 minors): fixed before merge. A check now settles
+  with any answered save, adopt or rebase; a check refused for good shows the refusal instead of
+  "Saved" and keeps the kept text; the undo test waits for the failed check, so it fails without
+  the round 3 fix; the mock names authors like the server. Accepted: a resync that arrives during
+  a load does not repeat it (the same as before notes; the next event or tab switch loads).
+
+## Evidence
+
+- Rust: `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^notes::/)'` 5 of 5 pass
+  (all 5 failed with the routes disabled); `yulius-store` `notes::tests::a_save_needs_the_stored_revision`
+  and `yulius-contracts` `api::notes::tests::save_note_refuses_unknown_fields` pass.
+- e2e: `npx e2e run tests/notes.e2e.ts` 18 of 18 pass, three runs in a row. The first 6 failed
+  before the UI existed (no Notes button). Each later test failed before its fix: 5 after round 1
+  (one of them an original test made flaky by the first-load bug), 5 after round 2, and the
+  2 round 3 tests also fail against round 2's `notes.js` (checked by swapping the file).
+- Full e2e suite (`npx e2e run`) at `a38b810`: 33 files passed, 1 skipped (`agent.e2e.ts`, needs a
+  model); 176 tests passed.
+- `scripts/dev ci` exit 0 at `0a54a65`, `a4dab7e`, `8a24ac1`, `7e7ae29` and `a38b810`: nextest
+  1191 tests passed, 16 skipped; repository contracts, lint, deps and docs passed.
+- `python3 scripts/check_repository.py --ui`: UI contracts passed.
+- Independent reviews in fresh sessions: round 1 request changes (2 major), round 2 request
+  changes (1 blocker, 1 major), round 3 request changes (1 blocker), confirmation approve with
+  minors (fixed); the merged head's delta after that approval was approved again.
+- Not tested here: two real browsers against a real server (the mock simulates the teammate),
+  a real browser's `keepalive` request surviving a closed tab, and Safari.
+
