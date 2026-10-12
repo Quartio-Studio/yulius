@@ -1,11 +1,11 @@
 ---
 yulius-task: 019e228c-f94f-45cb-af47-0a4f111d1ab4
-status: in-progress
+status: done
 ---
 
 # SPEC-039: a Done task can be deleted; its session is closed first
 
-Status: in progress
+Status: implemented
 Date: 2026-10-12
 Owner: Yulius task #37
 Scope authorization: user request (F 2026-10-12, task #37): "This task is done but I still can't
@@ -60,8 +60,8 @@ user reported.
 - [x] Read the product context and related work, then write and validate the spec
 - [x] Deleting a Done task closes its session, then deletes it (server and API)
 - [x] Task menu offers Delete for Done tasks and says why otherwise
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -93,3 +93,23 @@ user reported.
 - The wait reuses the existing close escalation (20 s) plus 5 s for finalization; the UI request
   timeout for delete is raised to 40 s so the client does not give up first.
 - The Done rule is `task_is_done`, the same one Archive and the sidebar use; no second rule.
+
+## Evidence
+
+- Red first: `a_done_task_can_be_deleted_its_session_is_closed_first` (`task_done.rs`) failed with
+  `Conflict("stop the task before deleting it")` before the change and passes after; it asserts
+  the task was announced `closed`, the delete took well under the 20 s escalation, the record and
+  run directory are gone and the agent process no longer exists.
+- Review fix, red first: `closing_a_task_whose_session_already_ended_is_not_a_conflict`
+  (`task_delete.rs`) failed with a Conflict ("task is closed") and passes after.
+- e2e `task-done.e2e.ts`: "a Done task can be deleted from its menu; a working one says it has to be
+  stopped first" failed before the UI change (old tooltip, Delete disabled) and passes after.
+- `scripts/dev ci` exit 0 on the rebased head: 1186 tests run, 1186 passed, 16 skipped; check,
+  fmt, clippy, doctests, deny, machete, doc green.
+- e2e full suite: 159 passed, 1 skipped (the live-model test).
+- Independent review (fresh read-only session), round 1: APPROVE with minor findings. Fixed: the
+  close is inside the bound, a run that ended by itself is not a conflict, a 1 s re-check, a
+  stronger test, doc wording. Filed as follow-ups (already true for stop then delete): #284 (a failed
+  terminate counts as a dead process), #285 (deletion races with the end of finalization for chains).
+- Not covered: the 409 at the 25 s bound (needs a session host that never ends a run, see #284);
+  a deployed instance was not exercised.
