@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- Attached images reach Claude Code as pasted images (SPEC-030, ADR-0026; task #28). A task with
+  attached images starts with no CLI prompt. Yulius types its first message into the terminal:
+  each image's path is pasted (Claude Code shows `[Image #N]` and sends an image block), then the
+  text with the other files mentioned. Before this, an `@` mention showed the path and reached the
+  model as a Read tool call.
 - The sandbox navigation is shorter (SPEC-029, ADR-0025, task #27): Cockpit, Tasks, Git,
   CI (tests), Secrets and Dashboard, then "More", which expands Sessions, Workflows, Skills,
   Automations and MCP in place. Its state is remembered per browser; arriving at one of those
