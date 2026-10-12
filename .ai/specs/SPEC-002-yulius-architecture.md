@@ -1853,7 +1853,7 @@ translated. A switch resumes the task's own Claude session on another account.
 ### 7.4 Yulius MCP (internal listener `/mcp`, Streamable HTTP, JSON-RPC 2.0)
 
 Authentication: `Authorization: Bearer <task token>`; token → (task, attempt). A Cockpit's
-`ck_…` bearer (SPEC-037, ADR-0027) resolves to its owner and sandbox and is served only the
+`ck_…` bearer (SPEC-037, ADR-0029) resolves to its owner and sandbox and is served only the
 management tools (tasks, automations, workflows, sessions). Protocol versions
 accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 

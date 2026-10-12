@@ -813,7 +813,7 @@ resolves to nothing, the run gets the server without that variable or token.
     repository, as the caller's sandbox identity, with the token of the pool's best subscription
     for Opus and `CLAUDE_CONFIG_DIR=~/.claude`, otherwise a
     terminal's environment (Git as the caller); no Yulius hooks, settings or approval bypass. It
-    gets the Yulius MCP server (SPEC-037, ADR-0027): `--mcp-config` inline JSON for
+    gets the Yulius MCP server (SPEC-037, ADR-0029): `--mcp-config` inline JSON for
     `<internal URL>/mcp` with `Authorization: Bearer ${YULIUS_COCKPIT_TOKEN}` (the `ck_…` bearer
     in the secret environment, valid while that Cockpit is live and its owner may work), and
     `--allowedTools` for the read-only tools. It is served `tasks_list`, `task_get`,

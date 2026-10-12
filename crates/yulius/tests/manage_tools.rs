@@ -1,7 +1,7 @@
 //! Managing the project through the Yulius MCP server (SPEC-037): a task's agent creates tasks
 //! with `task_create` on its creator's authority, within a per-project bound.
 
-mod support;
+use crate::support;
 
 use std::sync::atomic::Ordering;
 

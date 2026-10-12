@@ -133,7 +133,7 @@ flowchart LR
     and that token is lost on every server restart;
   - a REST call with the person's login: the Cockpit has no session cookie, and handing it one
     would grant the whole UI API.
-  Recorded as ADR-0027.
+  Recorded as ADR-0029.
 - **A Cockpit token derived from the persisted host token.** A random token per launch would be
   lost when the server restarts while the Cockpit keeps running. A stored token needs a
   migration. Deriving it from the sealed host token survives the restart, ends with the Cockpit,
@@ -194,4 +194,8 @@ flowchart LR
 - Not tested here: a live model choosing `task_create` in a real Cockpit (needs a paid
   credential), and a Cockpit contained by the sandbox isolation reaching `/mcp` (it uses the
   same internal URL as contained task agents, which already reach it).
+- After rebasing onto `dev`, which in the meantime took ADR-0027 and ADR-0028 (one integration
+  test binary, SPEC-033): the ADR is renumbered 0029 and `manage_tools.rs` is a module of
+  `tests/main.rs`. `cargo test -p yulius --test main -- manage_tools:: cockpit:: automations::
+  mcp_coordination::`: 30 passed; repository check passed ("one product test binary").
 - Follow-up: #275 (stop, archive or delete tasks and delete automations through MCP).

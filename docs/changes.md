@@ -14,7 +14,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^<file>::/)'`.
 - A long task title in the start-rule editor stays on one line ending in an ellipsis instead of
   wrapping over the condition's border (SPEC-031, task #29).
-- The Cockpit and task agents create tasks and automations (SPEC-037, ADR-0027; task #35). A new
+- The Cockpit and task agents create tasks and automations (SPEC-037, ADR-0029; task #35). A new
   `task_create` MCP tool creates a task the way New task does (workflow, mode, after a task or a
   start rule), on the authority of the task's creator; tools create at most 20 tasks an hour
   per project. The Cockpit now starts with the Yulius MCP server under its own bearer. It is

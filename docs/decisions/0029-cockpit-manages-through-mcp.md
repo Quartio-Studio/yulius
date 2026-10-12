@@ -1,4 +1,4 @@
-# 0027. The Cockpit and task agents manage the project through the Yulius MCP server
+# 0029. The Cockpit and task agents manage the project through the Yulius MCP server
 
 ## Status
 

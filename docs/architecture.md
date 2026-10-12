@@ -149,7 +149,7 @@ pool subscription's token, and the newest conversation resumed whenever it start
 
 It manages the project through the Yulius MCP server
 ([SPEC-037](../.ai/specs/SPEC-037-i-got-something-like-this-tasks-and-cock.md),
-[decision 0027](decisions/0027-cockpit-manages-through-mcp.md)). Its bearer (`ck_…`) is derived
+[decision 0029](decisions/0029-cockpit-manages-through-mcp.md)). Its bearer (`ck_…`) is derived
 from the shell's persisted host token, and it is served only the management tools: tasks,
 automations, workflows and sessions. Those tools act for a person (`ProjectCaller`): the Cockpit's
 owner, or a task's creator when a task's agent calls them. `task_create` takes the same path as
