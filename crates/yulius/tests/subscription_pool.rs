@@ -7,26 +7,30 @@ mod support;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
+use async_trait::async_trait;
 use axum::extract::connect_info::MockConnectInfo;
 use axum::http::Method;
 use serde_json::json;
 use support::{
-    Creds, Harness, TestResult, admit_and_sign_in, call, configure_github_app, harness,
-    seed_sandbox, setup_superadmin_creds,
+    Creds, Harness, HarnessOptions, TestResult, admit_and_sign_in, call, configure_github_app,
+    harness, harness_with, seed_sandbox, setup_superadmin_creds,
 };
 use yulius_app::context::App;
+use yulius_app::model::Secret;
 use yulius_app::model::{
     AccountRecord, AccountStatus, AttemptRecord, LaunchKind, PauseKind, PauseRecord, TaskMode,
     TaskOrigin, TaskRecord, UsageSampleRecord,
 };
 use yulius_app::ports::store::{AccountStore, TaskStore, UserStore};
 use yulius_app::ports::store_ext::CapacityStore;
+use yulius_app::ports::usage::{UsageFailure, UsageProbe};
 use yulius_domain::harness::{Harness as Agent, Provider};
 use yulius_domain::ids::{AccountId, AttemptId, TaskId};
 use yulius_domain::task::{AttemptState, TaskStatus};
 use yulius_domain::time::Timestamp;
+use yulius_domain::usage::{AccountUsage, UsageWindow};
 
 const HOUR: i64 = 3_600_000;
 const TOKEN: &str = "pool-task-token-0123456789abcdef";
@@ -756,5 +760,70 @@ async fn a_prompt_typed_into_a_held_turn_takes_the_task_out_of_the_pause() -> Te
         .filter_map(|p| p.outcome)
         .collect();
     assert_eq!(outcomes, ["superseded", "superseded"]);
+    Ok(())
+}
+
+/// Answers every request with the 5-hour window at 55 % and counts the requests.
+struct CountingProbe(Arc<AtomicUsize>);
+
+#[async_trait]
+impl UsageProbe for CountingProbe {
+    async fn fetch(&self, _: Provider, _: &Secret) -> Result<AccountUsage, UsageFailure> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(AccountUsage {
+            primary: Some(UsageWindow {
+                used_percent: Some(55.0),
+                window_minutes: Some(300),
+                resets_at: None,
+            }),
+            ..AccountUsage::default()
+        })
+    }
+}
+
+/// A subscription whose only task is running but idle reports nothing (its session sends a
+/// reading only while it works), so its reading goes stale. The usage round reads it again once
+/// the reading is older than [`USAGE_FRESH_MS`](yulius_app::accounts::USAGE_FRESH_MS) — a
+/// running task is no reason to skip it — and leaves a fresh reading alone (production, #4).
+#[tokio::test]
+async fn a_running_but_idle_subscription_is_read_again_when_its_reading_is_old() -> TestResult {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let h = harness_with(HarnessOptions {
+        usage: Some(Arc::new(CountingProbe(Arc::clone(&calls)))),
+        ..HarnessOptions::default()
+    })?;
+    seed(&h).await?;
+    advance(&h, 10 * HOUR);
+    let t0 = now(&h);
+    let stale = json!({
+        "primary": {"used_percent": 10.0, "window_minutes": 300, "resets_at": null},
+        "observed_at": t0.plus_millis(-6 * HOUR).0,
+    })
+    .to_string();
+    let account = add_account(&h, "acc-idle", Some(stale)).await?;
+    running_task(&h, TaskMode::Prompt, &account).await?;
+
+    let mut not_before = std::collections::HashMap::new();
+    h.app.refresh_usage_round(&mut not_before).await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "the old reading was read again"
+    );
+    let read = h.store.account(&account).await?.ok_or("account")?;
+    assert!(
+        read.usage_json.as_deref().unwrap_or("").contains("55"),
+        "{:?}",
+        read.usage_json
+    );
+
+    // The reading is fresh now: neither the shared back-off nor the freshness lets another
+    // request go out.
+    h.app.refresh_usage_round(&mut not_before).await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "a fresh reading is left alone"
+    );
     Ok(())
 }

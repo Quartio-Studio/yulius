@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- A subscription whose only task is running but idle is read again: the usage round skipped every
+  subscription with a running task, but an idle session reports nothing, so its reading went stale
+  (5.6 h on production); it now skips only fresh readings (SPEC-007 USG-002, #4).
 - Agents wake on new messages again: Yulius typed its notice and Enter in one write, which Claude
   Code read as a paste with a newline, so the notice never submitted and piled up in the input box;
   Enter now follows separately, and an unsent notice is only submitted.

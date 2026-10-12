@@ -621,7 +621,6 @@ impl App {
         let Ok(accounts) = self.deps.store.accounts().await else {
             return;
         };
-        let live = self.deps.store.live_attempts().await.unwrap_or_default();
         for account in accounts.iter().filter(|a| {
             a.credential.is_some()
                 && !matches!(
@@ -633,12 +632,12 @@ impl App {
             if not_before.get(&account.id).is_some_and(|at| *at > now) {
                 continue;
             }
-            // Its running tasks report the usage already (ADR-17), and a reading from moments
-            // ago needs no request.
-            if in_use_count(&account.id, &live) > 0
-                || account_usage(account)
-                    .observed_at
-                    .is_some_and(|at| now.millis_since(at) < USAGE_FRESH_MS)
+            // A reading from moments ago needs no request. That covers a running session, which
+            // reports as it works; a running task that is idle reports nothing, so its reading
+            // ages and is asked for again (production, #4: a task in use is no reason to skip).
+            if account_usage(account)
+                .observed_at
+                .is_some_and(|at| now.millis_since(at) < USAGE_FRESH_MS)
             {
                 continue;
             }
