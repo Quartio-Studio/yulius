@@ -12,6 +12,7 @@ pub mod capacity;
 pub mod ci;
 pub mod cron;
 pub mod delivery;
+pub mod disk;
 pub mod harness;
 pub mod ids;
 pub mod intake;

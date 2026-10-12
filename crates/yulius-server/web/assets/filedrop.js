@@ -467,22 +467,61 @@ function pastedFiles(data) {
  * (terminal.js), `label` the overlay's sentence ("Drop to send to Claude").
  */
 export function attachTerminalDrop(ctx, view, { label, upload }) {
-  const zone = view.el;
-  const overlayHost = () => zone.querySelector('.term') || zone;
+  return attachPathDrop(ctx, {
+    zone: view.el,
+    overlayHost: () => view.el.querySelector('.term') || view.el,
+    label,
+    upload,
+    canWrite: () => view.canWrite,
+    unwritable: 'The terminal became read-only; the paths were not typed.',
+    insert(paths) {
+      const text = `${paths.map(shellQuote).join(' ')} `;
+      if (view.term && typeof view.term.paste === 'function') view.term.paste(text);
+      else view.sendKeys(text);
+      view.focus();
+    },
+  });
+}
+
+/**
+ * Drop files onto the new-task prompt, or paste an image into it: each file is uploaded with
+ * `upload(file, options)` (draftAttachments) and the stored paths are written into the prompt
+ * at the cursor, so the task's agent reads them by path. `box` is the zone, `prompt` its textarea.
+ */
+export function attachPromptDrop(ctx, { box, prompt, label, upload }) {
+  return attachPathDrop(ctx, {
+    zone: box,
+    overlayHost: () => box,
+    label,
+    upload,
+    canWrite: () => !prompt.readOnly,
+    unwritable: 'The prompt is being read; the paths were not added.',
+    insert(paths) {
+      const text = paths.map(shellQuote).join(' ');
+      const start = prompt.selectionStart ?? prompt.value.length;
+      const end = prompt.selectionEnd ?? start;
+      const before = prompt.value.slice(0, start);
+      const lead = before && !/\s$/.test(before) ? ' ' : '';
+      prompt.setRangeText(`${lead}${text} `, start, end, 'end');
+      prompt.dispatchEvent(new Event('input', { bubbles: true }));
+      prompt.focus();
+    },
+  });
+}
+
+/** Uploads a file dropped on the new-task composer of a sandbox, before its task exists. */
+export function draftAttachments(ctx, sandboxId) {
+  return (file, options) => ctx.api.post(`/api/sandboxes/${enc(sandboxId)}/attachments?name=${encodeURIComponent(file.name)}`, file, options);
+}
+
+/** The shared drop/paste flow: upload the files, then `insert(paths)` where the user types. */
+function attachPathDrop(ctx, { zone, overlayHost, label, upload, canWrite, unwritable, insert }) {
   const status = createStatus({ floating: true, label: 'Upload progress' });
   let queue = Promise.resolve();
   const place = () => {
     const host = overlayHost();
     if (status.el.parentElement !== host) host.append(status.el);
   };
-
-  function insert(paths) {
-    if (!paths.length) return;
-    const text = `${paths.map(shellQuote).join(' ')} `;
-    if (view.term && typeof view.term.paste === 'function') view.term.paste(text);
-    else view.sendKeys(text);
-    view.focus();
-  }
 
   async function run(carried) {
     place();
@@ -498,9 +537,9 @@ export function attachTerminalDrop(ctx, view, { label, upload }) {
     }
     if (!jobs.length) { status.end(files.length || folders ? 'Nothing was sent.' : 'The drop held no files.'); return; }
     const stored = await uploadAll(jobs, status, (index, job) => `Uploading ${jobs.length > 1 ? `${index + 1} of ${jobs.length}: ` : ''}${job.path}`);
-    if (!view.canWrite) {
-      if (stored.length) status.error('The terminal became read-only; the paths were not typed.');
-    } else {
+    if (!canWrite()) {
+      if (stored.length) status.error(unwritable);
+    } else if (stored.length) {
       insert(stored.map(({ result }) => result.path));
     }
     status.end(stored.length === 1 && jobs.length === 1 ? `Added ${stored[0].result.name}` : `Added ${counted(stored.length, jobs.length)}`);
@@ -512,7 +551,7 @@ export function attachTerminalDrop(ctx, view, { label, upload }) {
       status.end('The upload stopped.');
     });
   };
-  const readOnly = () => (view.canWrite ? null : 'Read-only: files cannot be added here');
+  const readOnly = () => (canWrite() ? null : 'Read-only: files cannot be added here');
 
   dropZone(zone, {
     overlayHost,

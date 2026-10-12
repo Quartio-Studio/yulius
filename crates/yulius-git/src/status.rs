@@ -84,6 +84,53 @@ impl Git {
         Ok(!self.status_porcelain(worktree)?.is_empty())
     }
 
+    /// Whether `relative` (a path inside `worktree`) is ignored by Git and holds no tracked
+    /// file: removing it loses nothing a commit has.
+    pub fn is_ignored_and_untracked(
+        &self,
+        worktree: &Path,
+        relative: &str,
+    ) -> Result<bool, GitError> {
+        let tracked = self.run_ok(
+            Invocation::new(self, "ls-files", Some(worktree))
+                .args([
+                    "--literal-pathspecs",
+                    "--no-optional-locks",
+                    "ls-files",
+                    "-z",
+                    "--",
+                ])
+                .arg(relative),
+        )?;
+        if !tracked.stdout.is_empty() {
+            return Ok(false);
+        }
+        let output = self.run(
+            Invocation::new(self, "check-ignore", Some(worktree))
+                .args(["check-ignore", "-q", "--"])
+                .arg(relative),
+        )?;
+        match output.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => Err(crate::runner::failure("check-ignore", &output)),
+        }
+    }
+
+    /// Whether the worktree holds files Git ignores (build output, local configuration).
+    pub fn has_ignored_files(&self, worktree: &Path) -> Result<bool, GitError> {
+        let output = self.run_ok(Invocation::new(self, "ls-files", Some(worktree)).args([
+            "--no-optional-locks",
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+            "-z",
+        ]))?;
+        Ok(!output.stdout.is_empty())
+    }
+
     /// Diff statistics of `base...head` (from their merge base to `head`, as a pull request
     /// shows them). External diff drivers and text conversion are disabled.
     pub fn diff_stat(&self, repo: &Path, base: &str, head: &str) -> Result<DiffStat, GitError> {
