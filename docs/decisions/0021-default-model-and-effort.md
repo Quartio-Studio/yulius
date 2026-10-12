@@ -16,7 +16,10 @@ opus 5.5" at high effort (task #21).
 `yulius_domain::harness` holds `DEFAULT_CLAUDE_MODEL = "claude-opus-5-5"` and
 `DEFAULT_CLAUDE_EFFORT = "high"`. Every launch plan (new run, resume, account switch) passes
 `--model` and, unless the model is a Haiku model (no effort levels), `--effort`. The defaults are
-applied at launch; a task record keeps `None` for "Default".
+applied at launch; a task record keeps `None` for "Default". The Cockpit (ADR-0020), a person's
+plain session, starts with the same `--model` and `--effort` (always Opus, so no Haiku rule) and
+takes its subscription by the weekly Opus cap, as a default task does. Because the flags are
+passed on every start, a `/model` choice in the Cockpit lasts until it starts again.
 
 ## Alternatives
 

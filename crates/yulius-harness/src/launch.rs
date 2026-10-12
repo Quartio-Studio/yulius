@@ -576,9 +576,9 @@ pub struct CockpitRequest {
     pub credential: Credential,
 }
 
-/// Builds the launch plan of a Cockpit: `claude [--resume <id>]` with the subscription's token
-/// in the secret environment and none of a task's settings, hooks, MCP servers, model or
-/// approval bypass (SPEC-021 CKP-002).
+/// Builds the launch plan of a Cockpit: `claude [--resume <id>] --model <default> --effort
+/// <default>` (SPEC-023 DEF-004) with the subscription's token in the secret environment and
+/// none of a task's settings, hooks, MCP servers or approval bypass (SPEC-021 CKP-002).
 ///
 /// # Errors
 /// [`LaunchError`] for a non-UTF-8 config dir, an unsafe session id or credential.

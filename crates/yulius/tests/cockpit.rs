@@ -552,6 +552,45 @@ async fn a_cockpit_that_cannot_start_leaves_nothing_and_starts_once_it_can() -> 
     Ok(())
 }
 
+/// SPEC-023 DEF-004: the Cockpit runs Opus 5.5, so a subscription whose weekly Opus cap is spent
+/// is passed over even when it has the most room otherwise.
+#[tokio::test]
+async fn the_cockpit_skips_a_subscription_whose_opus_cap_is_spent() -> TestResult {
+    let f = fixture_with(false, None).await?;
+    let now = f.h.clock.0.load(Ordering::SeqCst);
+    let window = |used: f64| json!({"used_percent": used, "window_minutes": 10080, "resets_at": now + 80 * 3_600_000});
+    for (id, token, usage) in [
+        (
+            "acc-a",
+            "spent-opus-token",
+            json!({"secondary": window(5.0), "weekly_opus": window(100.0)}),
+        ),
+        ("acc-b", TOKEN, json!({"secondary": window(60.0)})),
+    ] {
+        f.h.store
+            .insert_account(&AccountRecord {
+                id: AccountId::parse(id)?,
+                provider: Provider::Anthropic,
+                label: id.into(),
+                credential: Some(f.h.app.deps.crypto.seal(token.as_bytes())?),
+                status: AccountStatus::Ok,
+                usage_json: Some(usage.to_string()),
+                last_error: None,
+                created_at: Timestamp(1),
+                updated_at: Timestamp(1),
+            })
+            .await?;
+    }
+    let served = serve(f.h.router.clone()).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(printed(&screen, "token")?, TOKEN);
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
 #[tokio::test]
 async fn without_capacity_the_cockpit_waits_for_a_subscription() -> TestResult {
     let f = fixture_with(false, None).await?;

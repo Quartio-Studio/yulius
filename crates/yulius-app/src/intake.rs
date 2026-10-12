@@ -314,7 +314,10 @@ impl App {
             .map_err(|_| {
                 AppError::Capacity("other split proposals are being prepared; try again".into())
             })?;
-        let account = self.pool_account(Provider::Anthropic).await?;
+        // A split proposal runs a small model: only the account-wide windows bind.
+        let account = self
+            .pool_account(Provider::Anthropic, yulius_domain::usage::ModelFamily::Any)
+            .await?;
         let credential = self.open_credential(&account)?;
         let tasks = proposer
             .propose(&credential, prompt)
