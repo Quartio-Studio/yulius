@@ -365,6 +365,8 @@ pub struct AttentionFacts {
     pub chain_blocked: bool,
     /// The task has a plan with steps not done or skipped yet (STP-001).
     pub plan_open: bool,
+    /// The idle agent left background shells running: it wakes by itself when they report.
+    pub background_shells: bool,
     /// Its pull request, when one is known.
     pub pull: Option<PullSignal>,
 }
@@ -376,8 +378,9 @@ impl AttentionFacts {
     /// An ended task needs nobody. A held prompt or a pending browser request does, whatever the
     /// task's state. After a finished turn, failing checks do, and a tested, reviewed or merged
     /// pull request answers for a task whose plan is complete (Done or In review). Otherwise: a
-    /// permission prompt (`needs_attention`), "Your turn" (`waiting`), or a chain whose
-    /// predecessor ended otherwise.
+    /// permission prompt (`needs_attention`), "Your turn" (`waiting`, unless the agent's
+    /// background shells still run: it wakes by itself), or a chain whose predecessor ended
+    /// otherwise.
     #[must_use]
     pub fn needs_you(&self) -> bool {
         if self.status.is_resting() {
@@ -397,10 +400,11 @@ impl AttentionFacts {
             }
         }
         match self.status {
-            TaskStatus::Running => matches!(
-                self.activity,
-                Some(Activity::NeedsAttention | Activity::Waiting)
-            ),
+            TaskStatus::Running => match self.activity {
+                Some(Activity::NeedsAttention) => true,
+                Some(Activity::Waiting) => !self.background_shells,
+                _ => false,
+            },
             TaskStatus::Chained => self.chain_blocked,
             _ => false,
         }
@@ -649,6 +653,7 @@ mod tests {
             browser_request: false,
             chain_blocked: false,
             plan_open: false,
+            background_shells: false,
             pull: None,
         }
     }
@@ -665,6 +670,19 @@ mod tests {
         assert!(!running(A::Working).needs_you());
         assert!(!running(A::Done).needs_you());
         assert!(!facts(TaskStatus::Running, None).needs_you());
+        // Background shells keep an idle agent going: it wakes by itself, so it is not "Your turn".
+        let busy = |activity| AttentionFacts {
+            background_shells: true,
+            ..running(activity)
+        };
+        assert!(
+            !busy(A::Waiting).needs_you(),
+            "shells running: not your turn"
+        );
+        assert!(
+            busy(A::NeedsAttention).needs_you(),
+            "a prompt still needs you"
+        );
         // Paused for capacity, queued or switching: nobody needs to act.
         for status in [
             TaskStatus::WaitingCapacity,

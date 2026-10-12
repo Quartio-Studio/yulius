@@ -16,11 +16,12 @@ import { BRAND } from './brand.js';
 export function openTaskMenu(ctx, anchor, task) {
   const sandbox = ctx.store.sandboxById(task.sandbox_id);
   const access = sandbox ? sandbox.access : 'read';
-  const can = taskActions(task, access);
+  const pr = ctx.store.pullsOf(task.sandbox_id).get(task.id);
+  const can = taskActions(task, access, pr);
   const why = allows(access, 'write') ? 'Not available in this state' : 'Requires write access';
   openMenu(anchor, [
     // The same rule as the row it opens from (pull request, held prompt, browser request).
-    { header: `#${task.number} · ${taskInfo(task, ctx.store.state.actionRequests, ctx.store.pullsOf(task.sandbox_id).get(task.id)).label}` },
+    { header: `#${task.number} · ${taskInfo(task, ctx.store.state.actionRequests, pr).label}` },
     task.status === 'chained' ? { label: 'Start now', disabled: !can.startNow, title: can.startNow ? null : why, onSelect: () => startNow(ctx, task) } : null,
     { label: task.status === 'chained' ? 'Cancel' : 'Stop', disabled: !can.stop, title: can.stop ? null : why, onSelect: () => stopTask(ctx, task) },
     { label: 'Continue', disabled: !can.continue, title: can.continue ? null : why, onSelect: () => continueTask(ctx, task) },

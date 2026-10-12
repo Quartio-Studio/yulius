@@ -329,6 +329,46 @@ fn an_achieved_goal_with_no_shell_left_makes_the_task_done() -> TestResult {
     Ok(())
 }
 
+/// TSK-014, UI-006: a Done task (goal achieved, no shell left) can be archived: the session is
+/// closed as it is archived. A task that only waits for the user still has to be stopped first.
+#[test]
+fn a_done_task_can_be_archived() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let ctx = yulius_app::auth::AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
+        wait_for("the shell probe", Duration::from_secs(90), || async {
+            shown(&app, &id).await.ok() == Some((Some("done".into()), Some(0)))
+        })
+        .await?;
+        let archived = app.archive_task(&ctx, id.as_str(), true).await?;
+        assert!(archived.archived);
+        // Closed, not stopped: the finished session ends like one the user left.
+        wait_for("the close", Duration::from_secs(30), || async {
+            task(&app, &id)
+                .await
+                .is_ok_and(|t| t.status == TaskStatus::Closed)
+        })
+        .await?;
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// TSK-014: the goal turn leaves a background shell (Claude Code's Bash tool shape): the task is
 /// shown Working with one background shell until the shell ends, then Done.
 #[test]
