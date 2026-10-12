@@ -37,12 +37,12 @@ starts (or the person clears it).
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | DRF-001 | Leaving the composer for any other page and coming back shows the same prompt text and attachments (images as thumbnails), per sandbox. | e2e `drafts.e2e.ts` |
-| DRF-002 | An upload that finishes after the person left the composer still joins that sandbox's draft. | code review: `onAttach` writes to the draft, not the view |
+| DRF-002 | An upload that finishes after the person left the composer still joins that sandbox's draft and shows in the composer open then, removable. | e2e `drafts.e2e.ts` (held upload) |
 | DRF-003 | The mode, workflow, "run after" task and start rule come back with the draft. | e2e `drafts.e2e.ts` |
 | DRF-004 | The draft survives a reload of the browser tab: it is kept in `localStorage` per signed-in user and sandbox (text, choices, each attachment's path, name, type, upload time and, for an image, a small thumbnail). | e2e `drafts.e2e.ts` |
-| DRF-005 | Starting the task (also a split into several) clears the draft; an empty prompt with no attachments stores nothing. | e2e `drafts.e2e.ts` |
-| DRF-006 | Signing out removes every stored draft from the browser. | e2e `drafts.e2e.ts` |
-| DRF-007 | Bounded: attachments older than the server's draft age (7 days) are dropped when the draft is read; at most 12 thumbnails are stored, each scaled to at most 160 px; when storage is full the draft is stored without thumbnails, and if that fails too it lives only in memory (no error). | code review, `drafts.js` |
+| DRF-005 | Starting the task (also a split into several) clears the draft; an empty prompt with no attachments stores nothing. A task still being created is not started again from a composer opened meanwhile. | e2e `drafts.e2e.ts` |
+| DRF-006 | Signing out removes every stored draft from the browser; an upload ending after sign-out does not store one again. | e2e `drafts.e2e.ts`; code review (`attachToDraft` ignores a forgotten draft) |
+| DRF-007 | Bounded and safe: attachments older than the server's draft age (7 days) are dropped when the draft is read, and only `data:image/` thumbnails are kept; at most 12 thumbnails are stored, each scaled to at most 160 px; when storage is full the draft is stored without thumbnails, and if that fails too it lives only in memory (no error); the draft is written only when it changed. | e2e `drafts.e2e.ts` (expiry, unsafe thumbnail); code review (quota) |
 
 ## Acceptance criteria
 
@@ -76,10 +76,11 @@ thumbnails are full images while the tab lives and stored thumbnails after a rel
 
 ## Test plan
 
-Browser e2e in mock mode (`e2e/tests/drafts.e2e.ts`): AC-DRF-1 to AC-DRF-5. The existing
+Browser e2e in mock mode (`e2e/tests/drafts.e2e.ts`): AC-DRF-1 to AC-DRF-5, an upload held by
+the mock until after leaving and returning, a creation held until a second start was refused, a
+split, and a stored draft with an expired attachment and an unsafe thumbnail. The existing
 `filedrop.e2e.ts`, `new-task.e2e.ts` and `intake.e2e.ts` composer tests must keep passing. Not
-covered by a test: an upload finishing after leaving (the mock answers at once; DRF-002 by code
-review), a full `localStorage` (DRF-007 by code review).
+covered by a test: a full `localStorage` (DRF-007 by code review), Safari's thumbnail encoding.
 
 ## Decisions
 
@@ -92,3 +93,8 @@ review), a full `localStorage` (DRF-007 by code review).
   the storage quota; IndexedDB for blobs was rejected as more machinery than a preview needs.
 - Several browser tabs on the same sandbox: each keeps its own in-memory draft; the last write wins
   in storage.
+- Review round 1: the composer redraws from draft change events (not the closure of the composer
+  that received the drop); a draft being started refuses a second start rather than hiding the
+  draft, because the start may still fail and the draft must then come back; text typed in a
+  composer reopened during that start is cleared with the draft once the task opens (the person is
+  taken to the task). Text-only drafts do not expire; they are removed at start or sign-out.

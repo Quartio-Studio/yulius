@@ -99,6 +99,15 @@ test('the mode, workflow and "Run after" come back with the draft', async ({ app
 /** The draft keys this browser stores. */
 const storedDrafts = (browser: Browser) => browser.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith('yulius.draft.')));
 
+/** Thumbnails stored with studio's draft (after its debounce). */
+const storedThumbs = (browser: Browser) => browser.evaluate(() => {
+  const key = Object.keys(localStorage).find((k) => k.startsWith('yulius.draft.') && k.endsWith('.sb_studio'));
+  const draft = key ? JSON.parse(localStorage.getItem(key) || '{}') : {};
+  return (draft.attached || []).filter((item: { thumb?: string }) => item.thumb).length;
+});
+
+type Holding = Window & { __yuliusMock: { holdUpload?: Promise<void>; holdCreate?: Promise<void>; tasks: { prompt: string }[] }; __release?: () => void };
+
 test('the draft survives a reload and is cleared once the task starts', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
   await screen.getByRole('textbox', 'Task prompt').fill('Kept across a reload');
@@ -109,7 +118,9 @@ test('the draft survives a reload and is cleared once the task starts', async ({
   await screen.getByRole('menuitemradio', /^Goal/).click();
   await screen.getByRole('button', /Run after: Start now/).click();
   await screen.getByRole('menuitemradio', /^After #12 Checkout API/).click();
-  // Stored once the page goes away, whatever the debounce.
+  // The image's small thumbnail is made a moment after the drop; the draft is stored once the
+  // page goes away, whatever the debounce.
+  await expect.poll(() => storedThumbs(browser)).toBe(1);
   await browser.reload();
 
   const prompt = screen.getByRole('textbox', 'Task prompt');
@@ -148,4 +159,79 @@ test('signing out removes the stored drafts', async ({ app, browser, screen }) =
   await screen.getByRole('menuitem', 'Sign out').click();
   await expect(browser).toHaveURL(/#\/signin/);
   expect(await storedDrafts(browser)).toEqual([]);
+});
+
+test('an upload that ends after leaving and coming back shows in the composer', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await browser.evaluate(() => {
+    const w = window as unknown as Holding;
+    w.__yuliusMock.holdUpload = new Promise<void>((resolve) => { w.__release = resolve; });
+  });
+  await expect(screen.getByRole('textbox', 'Task prompt')).toBeVisible();
+  await drop(browser, [['late.pdf', 'pdf', 'application/pdf']]);
+  await leaveAndReturn(browser, screen);
+  await expect(attachmentNames(browser)).toHaveCount(0);
+  await browser.evaluate(() => (window as unknown as Holding).__release!());
+  // What will be sent is what shows, and can be removed.
+  await expect(attachmentNames(browser)).toHaveText(['late.pdf']);
+  await screen.getByRole('button', 'Remove late.pdf').click();
+  await expect(attachmentNames(browser)).toHaveCount(0);
+});
+
+test('a task still starting is not started again from a returned composer', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  const before = await browser.evaluate(() => (window as unknown as Holding).__yuliusMock.tasks.length);
+  await browser.evaluate(() => {
+    const w = window as unknown as Holding;
+    w.__yuliusMock.holdCreate = new Promise<void>((resolve) => { w.__release = resolve; });
+  });
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.fill('Only once');
+  await prompt.press('ControlOrMeta+Enter');
+  await leaveAndReturn(browser, screen);
+  await screen.getByRole('textbox', 'Task prompt').press('ControlOrMeta+Enter');
+  await expect(screen.getByText('This task is already starting.')).toBeVisible();
+  await browser.evaluate(() => (window as unknown as Holding).__release!());
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/^#\d+ Only once$/);
+  expect(await browser.evaluate(() => (window as unknown as Holding).__yuliusMock.tasks.length)).toBe(before + 1);
+});
+
+const MIXED = [
+  'Finish the release before Friday, all of this has to land together please.',
+  '1. Make the attention bar opaque over the terminal and keep its colours readable.',
+  '2. Stop the tools rail pills from overflowing the rail on narrow windows.',
+  '3. Route new tasks past exhausted accounts in the backend subscription pool.',
+  '4. Make the server mark tasks Done reliably once the pull request is tested.',
+].join('\n');
+
+test('a split into several tasks clears the draft too', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.fill(MIXED);
+  await drop(browser, [['spec.pdf', 'pdf', 'application/pdf']]);
+  await expect(attachmentNames(browser)).toHaveText(['spec.pdf']);
+  await prompt.press('ControlOrMeta+Enter');
+  const card = screen.getByRole('region', 'Split proposal');
+  await card.getByRole('button', 'Create 2 tasks').click();
+  await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
+  await browser.locator('.btn-newtask').click();
+  await expect(prompt).toHaveValue('');
+  await expect(attachmentNames(browser)).toHaveCount(0);
+  expect(await storedDrafts(browser)).toEqual([]);
+});
+
+test('a stored draft drops attachments the server no longer keeps and unsafe thumbnails', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await browser.evaluate(() => {
+    const day = 24 * 3600 * 1000;
+    const file = (name: string, at: number, thumb?: string) => ({ path: `/var/lib/yulius/sandboxes/sb_studio/attachments/drafts/usr_1/${name}`, name, type: 'image/png', at, thumb });
+    localStorage.setItem('yulius.draft.usr_1.sb_studio', JSON.stringify({
+      text: 'From last week', mode: 'nonsense', attached: [file('old.png', Date.now() - 8 * day), file('fresh.png', Date.now() - day, 'javascript:alert(1)')],
+    }));
+  });
+  await browser.reload();
+  await expect(screen.getByRole('textbox', 'Task prompt')).toHaveValue('From last week');
+  await expect(attachmentNames(browser)).toHaveText(['fresh.png']);
+  await expect(browser.locator('.composer-attachment img')).toHaveCount(0);
+  await expect(screen.getByRole('button', 'Mode: Auto mode')).toBeVisible();
 });

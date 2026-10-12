@@ -707,6 +707,8 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   if (body.mode && !['goal', 'prompt', 'auto'].includes(body.mode)) fail(422, 'invalid', 'mode must be goal, prompt or auto');
   const visible = db.workflows.filter((w) => w.scope === 'instance' || w.sandbox === sandbox.id);
   if (body.workflow_id && body.workflow_id !== 'auto' && !visible.some((w) => w.id === body.workflow_id)) fail(422, 'invalid', `unknown workflow \`${body.workflow_id}\``);
+  // A test can hold the creation (`__yuliusMock.holdCreate = promise`) to look at a starting task.
+  if (db.holdCreate) await db.holdCreate;
   // Auto (TSK-015): the mock's stand-in for Jev answers after a moment, like the server.
   const choice = body.mode === 'auto' || body.workflow_id === 'auto' ? await mockAutoChoice(body, visible) : null;
   const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === sandbox.id).map((t) => t.number)) + 1;
@@ -1508,8 +1510,10 @@ route('POST', `/api/tasks/${ID}/attachments`, ({ db, p, query, body }) => {
   needTaskWrite(db, task);
   return storeAttachment(db, task.sandbox_id, `tasks/${task.id}`, query, body);
 });
-route('POST', `/api/sandboxes/${ID}/attachments`, ({ db, p, query, body }) => {
+route('POST', `/api/sandboxes/${ID}/attachments`, async ({ db, p, query, body }) => {
   need(sandboxOf(db, p[0]), 'write');
+  // A test can hold the answer (`__yuliusMock.holdUpload = promise`) to leave the composer meanwhile.
+  if (db.holdUpload) await db.holdUpload;
   return storeAttachment(db, p[0], `drafts/${db.me.user.id}`, query, body);
 });
 route('POST', `/api/sandboxes/${ID}/shells/${ID}/attachments`, ({ db, p, query, body }) => {

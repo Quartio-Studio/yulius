@@ -2,8 +2,9 @@
 // prompt, the attached files and the choices on its edge) waits here while they visit other
 // pages or reload, and is cleared when the task starts.
 //
-// A draft is `{ text, mode, workflowId, afterTaskId, startRule, attached }`; `mode` and
-// `workflowId` are null until chosen (the composer's defaults apply). Each attachment is
+// A draft is `{ text, mode, workflowId, afterTaskId, startRule, attached, starting }`; `mode` and
+// `workflowId` are null until chosen (the composer's defaults apply); `starting` (this page only)
+// is true while its task is being created, so a composer opened meanwhile does not start it again. Each attachment is
 // `{ path, name, type, at, thumb?, file? }`: the file was uploaded at once (SPEC-014), so only its
 // server path is needed to start the task; `file` (this page only) draws its thumbnail, `thumb` (a
 // small data URL) draws it after a reload.
@@ -26,9 +27,11 @@ const SAVE_DELAY_MS = 300;
 const drafts = new Map();
 /** storage key → its pending write. */
 const timers = new Map();
+/** storage key → the callbacks told when attachments change outside the composer's own edits. */
+const listeners = new Map();
 
 function emptyDraft() {
-  return { text: '', mode: null, workflowId: null, afterTaskId: '', startRule: '', attached: [] };
+  return { text: '', mode: null, workflowId: null, afterTaskId: '', startRule: '', attached: [], starting: false };
 }
 
 const keyOf = (userId, sandboxId) => `${PREFIX}${userId || 'anonymous'}.${sandboxId}`;
@@ -54,22 +57,40 @@ export function saveDraft(userId, sandboxId, { now = false } = {}) {
 }
 
 /**
- * Adds uploaded files (`[{path, name, file}]`) to the draft and stores it. An image gets a small
- * stored thumbnail a moment later; `onThumb` is called then, to redraw.
+ * Calls `callback` whenever the sandbox's draft gains an attachment or a thumbnail, or is cleared
+ * (an upload can end after the composer that started it is gone). Returns the unsubscribe.
  */
-export function attachToDraft(userId, sandboxId, items, onThumb) {
-  const draft = draftFor(userId, sandboxId);
+export function onDraftChange(userId, sandboxId, callback) {
+  const key = keyOf(userId, sandboxId);
+  if (!listeners.has(key)) listeners.set(key, new Set());
+  listeners.get(key).add(callback);
+  return () => { const set = listeners.get(key); if (set) set.delete(callback); };
+}
+
+function changed(key) {
+  for (const callback of [...(listeners.get(key) || [])]) callback();
+}
+
+/**
+ * Adds uploaded files (`[{path, name, file}]`) to `draft`, the one the upload started from, and
+ * stores it; an image gets a small stored thumbnail a moment later. A draft forgotten meanwhile
+ * (sign-out) is left alone, so a late upload never stores it again.
+ */
+export function attachToDraft(userId, sandboxId, draft, items) {
+  const key = keyOf(userId, sandboxId);
+  if (drafts.get(key) !== draft) return;
   const at = Date.now();
   const added = items.map(({ path, name, file }) => ({ path, name, type: file.type || '', at, file }));
   draft.attached.push(...added);
   saveDraft(userId, sandboxId);
+  changed(key);
   for (const item of added) {
     if (!/^image\//.test(item.type)) continue;
     thumbnail(item.file).then((thumb) => {
-      if (!thumb || !draft.attached.includes(item)) return;
+      if (!thumb || drafts.get(key) !== draft || !draft.attached.includes(item)) return;
       item.thumb = thumb;
       saveDraft(userId, sandboxId);
-      if (onThumb) onThumb();
+      changed(key);
     });
   }
 }
@@ -81,6 +102,7 @@ export function clearDraft(userId, sandboxId) {
   clearTimeout(timers.get(key));
   timers.delete(key);
   try { window.localStorage.removeItem(key); } catch { /* storage unavailable */ }
+  changed(key);
 }
 
 /** Forgets every draft, in memory and stored (sign-out: drafts are private words). */
@@ -108,17 +130,20 @@ function store(key) {
     // Nothing typed or attached: nothing to keep.
     if (!draft.text.trim() && !draft.attached.length) { window.localStorage.removeItem(key); return; }
   } catch { return; }
-  const shape = (withThumbs) => JSON.stringify({
-    text: draft.text,
-    mode: draft.mode,
-    workflowId: draft.workflowId,
-    afterTaskId: draft.afterTaskId,
-    startRule: draft.startRule,
-    attached: draft.attached.map((item, index) => ({
-      path: item.path, name: item.name, type: item.type, at: item.at,
-      thumb: withThumbs && index < MAX_THUMBS ? item.thumb : undefined,
-    })),
-  });
+  const shape = (withThumbs) => {
+    let thumbs = 0; // the first MAX_THUMBS images keep theirs
+    return JSON.stringify({
+      text: draft.text,
+      mode: draft.mode,
+      workflowId: draft.workflowId,
+      afterTaskId: draft.afterTaskId,
+      startRule: draft.startRule,
+      attached: draft.attached.map((item) => ({
+        path: item.path, name: item.name, type: item.type, at: item.at,
+        thumb: withThumbs && item.thumb && thumbs++ < MAX_THUMBS ? item.thumb : undefined,
+      })),
+    });
+  };
   try {
     window.localStorage.setItem(key, shape(true));
   } catch {
@@ -157,7 +182,9 @@ async function thumbnail(file) {
     canvas.height = Math.max(1, Math.round(bitmap.height * scale));
     canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
     bitmap.close();
-    return canvas.toDataURL('image/webp', 0.8);
+    // A browser without WebP encoding (Safari) answers PNG, several times larger: JPEG then.
+    const webp = canvas.toDataURL('image/webp', 0.8);
+    return webp.startsWith('data:image/webp') ? webp : canvas.toDataURL('image/jpeg', 0.8);
   } catch {
     return null;
   }

@@ -19,7 +19,7 @@ import { randomQuote } from './quotes.js';
 import { brandSmoke } from './brandfx.js';
 import { BRAND } from './brand.js';
 import { isPhone } from './theme.js';
-import { draftFor, saveDraft, clearDraft, attachToDraft } from './drafts.js';
+import { draftFor, saveDraft, clearDraft, attachToDraft, onDraftChange } from './drafts.js';
 
 const STEP_MARK = { done: '✓', in_progress: '▸', pending: '·', skipped: '–', blocked: '✕' };
 const STEP_LABEL = { done: 'Done', in_progress: 'In progress', pending: 'To do', blocked: 'Blocked', skipped: 'Skipped' };
@@ -446,6 +446,7 @@ export function mountComposer(ctx, sandbox) {
   const urls = new Map();
   const tray = h('ul', { class: 'composer-attachments', 'aria-label': 'Attached files', hidden: true });
   function renderTray() {
+    forgetUrls([...urls.keys()].filter((item) => !draft.attached.includes(item)));
     for (const item of draft.attached) if (!urls.has(item) && item.file && /^image\//.test(item.type)) urls.set(item, URL.createObjectURL(item.file));
     tray.hidden = !draft.attached.length;
     setChildren(tray, draft.attached.map((item) => h('li', { class: 'composer-attachment', title: item.name },
@@ -461,7 +462,6 @@ export function mountComposer(ctx, sandbox) {
     draft.attached = draft.attached.filter((item) => !items.includes(item));
     remember();
   }
-  let destroyed = false;
   setChildren(box,
     tray,
     prompt,
@@ -478,10 +478,9 @@ export function mountComposer(ctx, sandbox) {
       intakeSlot));
   // Files dropped (or an image pasted) on the prompt reach the new task's agent by path.
   attachPromptDrop(ctx, { box, prompt, label: 'Drop to add to the prompt', upload: draftAttachments(ctx, sandbox.id), onAttach: (items) => {
-    // An upload that ends after the person left still joins the draft (DRF-002).
-    const redraw = () => { if (!destroyed) renderTray(); };
-    attachToDraft(userId, sandbox.id, items, redraw);
-    redraw();
+    // An upload that ends after the person left still joins the draft (DRF-002), and shows in the
+    // composer open then (onDraftChange below).
+    attachToDraft(userId, sandbox.id, draft, items);
   } });
 
   function renderChips() {
@@ -510,8 +509,10 @@ export function mountComposer(ctx, sandbox) {
     const effort = findEffort(effortId);
     setChildren(effortChip, h('span', { class: 'sr-only' }, 'Effort: '), h('span', { class: 'chip-label' }, effort ? effort.name : 'Default effort'), icon('down', { size: 12 }));
     // Every choice shown here is the draft's (DRF-003).
-    Object.assign(draft, { mode, workflowId, afterTaskId, startRule });
-    remember();
+    if (draft.mode !== mode || draft.workflowId !== workflowId || draft.afterTaskId !== afterTaskId || draft.startRule !== startRule) {
+      Object.assign(draft, { mode, workflowId, afterTaskId, startRule });
+      remember();
+    }
   }
 
   function openModeMenu(anchor) {
@@ -700,12 +701,12 @@ export function mountComposer(ctx, sandbox) {
 
   function opened(task) {
     prompt.value = '';
-    forgetUrls([...draft.attached]);
-    clearDraft(userId, sandbox.id);
-    renderTray();
-    fit();
+    mode = AUTO;
+    workflowId = AUTO;
     afterTaskId = '';
     startRule = '';
+    clearDraft(userId, sandbox.id); // redraws the tray (onDraftChange)
+    fit();
     ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`);
   }
 
@@ -722,6 +723,7 @@ export function mountComposer(ctx, sandbox) {
   let showTimer = 0;
   const autoStage = () => (mode === AUTO || workflowId === AUTO ? 'Choosing mode and workflow…' : 'Starting the task…');
   function working(text) {
+    draft.starting = true;
     startButton.disabled = true;
     startButton.classList.add('busy');
     prompt.readOnly = true;
@@ -735,6 +737,7 @@ export function mountComposer(ctx, sandbox) {
     }, 150);
   }
   function idle() {
+    draft.starting = false;
     clearTimeout(showTimer);
     box.classList.remove('thinking');
     prompt.readOnly = false;
@@ -786,6 +789,8 @@ export function mountComposer(ctx, sandbox) {
     const text = prompt.value.trim();
     if (!text) { if (prompt.hidden) setPreview(false); prompt.focus(); toast('Write a prompt first.', { kind: 'warn' }); return; }
     if (split || prompt.disabled) return; // the card is open (its buttons decide), or starting is blocked
+    // Started from this composer before the person left and came back: not twice.
+    if (draft.starting) { toast('This task is already starting.', { kind: 'info' }); return; }
     try {
       // A request mixing separate workstreams gets the split card first; a chosen "Run after"
       // already decided how the work is scheduled. The check never blocks for long (≤ 4 s).
@@ -815,7 +820,9 @@ export function mountComposer(ctx, sandbox) {
   renderTray();
 
   destroyers.push(ctx.store.on('sandboxes', renderBanner));
-  destroyers.push(ctx.store.on('tasks', (sid) => { if (sid === sandbox.id) { renderBanner(); renderChips(); } }));
+  // A kept "Run after" shows once the sandbox's tasks are read.
+  destroyers.push(ctx.store.on('tasks', (sid) => { if (sid === sandbox.id) { renderBanner(); if (afterTaskId) renderChips(); } }));
+  destroyers.push(onDraftChange(userId, sandbox.id, renderTray));
   renderBanner();
 
   return {
@@ -826,6 +833,6 @@ export function mountComposer(ctx, sandbox) {
       if (!prompt.disabled && !isPhone()) prompt.focus();
       if (!stopSmoke) stopSmoke = brandSmoke(niche); // the brand's smoke, when its niche shows (brandfx.js)
     },
-    destroy() { destroyed = true; forgetUrls([...urls.keys()]); remember({ now: true }); destroyers.forEach((off) => off()); if (stopSmoke) stopSmoke(); clearTimeout(showTimer); clearSplit(); if (preview) preview.destroy(); },
+    destroy() { forgetUrls([...urls.keys()]); remember({ now: true }); destroyers.forEach((off) => off()); if (stopSmoke) stopSmoke(); clearTimeout(showTimer); clearSplit(); if (preview) preview.destroy(); },
   };
 }
