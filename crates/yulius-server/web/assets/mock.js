@@ -1871,6 +1871,7 @@ function saveNote(db, scope, body) {
 }
 
 function loadNote(db, scope) {
+  db.noteLoads = (db.noteLoads || 0) + 1;
   if (db.failNoteLoads) fail(503, 'unavailable', 'The mock server is unavailable on purpose');
   return noteView(db, scope);
 }

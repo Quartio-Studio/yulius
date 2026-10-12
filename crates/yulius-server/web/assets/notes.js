@@ -44,6 +44,9 @@ export function createNotesView(ctx, sandbox) {
   const panes = h('div', { class: 'notes-panes' });
   const el = h('div', { class: 'panel-view notes' }, tablist, panes);
   const userId = ctx.store.state.me && ctx.store.state.me.user ? ctx.store.state.me.user.id : 'anonymous';
+  const me = ctx.store.state.me && ctx.store.state.me.user ? ctx.store.state.me.user : null;
+  // Saves name the GitHub login, else the display name (the superadmin without GitHub).
+  const isMine = (note) => Boolean(me && note.updated_by && (note.updated_by === me.login || note.updated_by === me.display_name));
   const pads = [
     notepad(ctx, {
       key: 'sandbox',
@@ -55,6 +58,7 @@ export function createNotesView(ctx, sandbox) {
       readOnly: !allows(sandbox.access, 'write') && 'Read-only. Editing this sandbox’s notes needs write access to the repository on GitHub.',
       placeholder: 'Notes for everyone working in this sandbox: links, decisions, what to try next…',
       onState: () => renderStatus(),
+      isMine,
     }),
     notepad(ctx, {
       key: 'team',
@@ -66,6 +70,7 @@ export function createNotesView(ctx, sandbox) {
       readOnly: false,
       placeholder: 'Notes for the whole team, the same in every sandbox…',
       onState: () => renderStatus(),
+      isMine,
     }),
   ];
   let current = pads.find((pad) => pad.key === readJson(TAB_KEY, 'sandbox')) || pads[0];
@@ -120,8 +125,13 @@ export function createNotesView(ctx, sandbox) {
     ctx.store.on('resync', () => { for (const pad of pads) pad.announced(null); }),
   ];
   // A hidden page (another tab, a closed laptop, a reload) saves what is typed at once.
-  const onHidden = () => { if (document.visibilityState === 'hidden') for (const pad of pads) pad.flush({ leaving: true }); };
-  const onPageHide = () => { for (const pad of pads) pad.flush({ leaving: true }); };
+  // Both notepads share the browser's allowance for requests that outlive the page (64 KiB).
+  const leave = () => {
+    const budget = { left: KEEPALIVE_MAX_BYTES };
+    for (const pad of pads) pad.flush({ leaving: true, budget });
+  };
+  const onHidden = () => { if (document.visibilityState === 'hidden') leave(); };
+  const onPageHide = () => leave();
   // Unsaved text makes the browser ask before leaving the page.
   const onBeforeUnload = (event) => {
     if (!pads.some((pad) => pad.unsaved())) return;
@@ -156,7 +166,7 @@ export function createNotesView(ctx, sandbox) {
 }
 
 /** One notepad: its text box, what the server holds, and the save loop. */
-function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOnly, placeholder, onState }) {
+function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOnly, placeholder, onState, isMine }) {
   const hintId = `notes-readonly-${key}`;
   const textarea = h('textarea', { class: 'notes-text', 'aria-label': textLabel, 'aria-describedby': readOnly ? hintId : null, placeholder, spellcheck: 'true', readOnly: true });
   const banner = h('div', { class: 'notes-banner', hidden: true });
@@ -211,10 +221,13 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
     retryTimer = 0;
   }
 
-  // ---- unsaved text kept for the next load (a reload, a sandbox switch, a closed panel)
+  // ---- unsaved text kept for the next load (a reload, a sandbox switch, a closed panel): the
+  // text, the revision it started from (also while a conflict is open: nothing chose yet) and
+  // the texts sent whose answers did not arrive.
   function keepUnsaved() {
-    if (!loaded || readOnly || (!dirty() && !conflict)) return;
-    try { window.sessionStorage.setItem(unsavedKey, JSON.stringify({ body: textarea.value, base })); } catch { /* memory only */ }
+    if (!loaded || readOnly) return;
+    if (!dirty() && !conflict) { dropUnsaved(); return; }
+    try { window.sessionStorage.setItem(unsavedKey, JSON.stringify({ body: textarea.value, base, sent: unconfirmed })); } catch { /* memory only */ }
   }
   function dropUnsaved() {
     try { window.sessionStorage.removeItem(unsavedKey); } catch { /* nothing kept */ }
@@ -222,9 +235,13 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
   function takeUnsaved() {
     try {
       const kept = JSON.parse(window.sessionStorage.getItem(unsavedKey) || 'null');
-      return kept && typeof kept.body === 'string' && Number.isInteger(kept.base) ? kept : null;
+      if (!kept || typeof kept.body !== 'string' || !Number.isInteger(kept.base)) return null;
+      return { body: kept.body, base: kept.base, sent: Array.isArray(kept.sent) ? kept.sent.filter((text) => typeof text === 'string') : [] };
     } catch { return null; }
   }
+
+  /** A stored note that is this person's own save whose answer was lost. */
+  const ownLostSave = (note, sent) => isMine(note) && sent.includes(note.body);
 
   /** Puts `note` into the text box, keeping the caret and the scroll where they were. */
   function adopt(note) {
@@ -241,6 +258,17 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
     renderMeta();
   }
 
+  /** Goes on from `note`, this person's own stored save, keeping the text box as it is. */
+  function rebase(note) {
+    saved = note.body;
+    base = note.revision;
+    lastEdit = { updated_by: note.updated_by, updated_at: note.updated_at };
+    settled();
+    renderMeta();
+    if (dirty()) schedule();
+    else dropUnsaved();
+  }
+
   /** The first load: the note, and the text this tab could not save last time, if any. */
   function first(note) {
     const kept = readOnly ? null : takeUnsaved();
@@ -249,29 +277,43 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
     adopt(note);
     if (!kept || kept.body === note.body) return;
     textarea.value = kept.body;
-    if (kept.base === note.revision) schedule(); // nobody saved since: it simply goes on
-    else { conflict = note; renderBanner(); } // someone did: the person decides
+    // Nobody saved since, or the newer save is this person's own: it simply goes on.
+    if (kept.base === note.revision || ownLostSave(note, kept.sent)) { schedule(); return; }
+    // Someone else did: the person decides, and until then the text keeps its own revision.
+    base = kept.base;
+    conflict = note;
+    keepUnsaved();
+    renderBanner();
+  }
+
+  /** Loads again when an event told of a newer revision and nothing is unsaved. */
+  function catchUp() {
+    if (loaded && announcedRevision > base && !dirty() && !saving && !conflict) load();
   }
 
   let loading = null;
   /** Fetches the note unless the text box holds unsaved typing. */
   function load() {
     if (loading || dirty() || saving || conflict || destroyed) return loading;
+    let again = false;
     loading = ctx.api.get(path).then((note) => {
       if (destroyed) return;
       if (!loaded) { first(note); return; }
-      if (dirty() || saving || conflict || note.revision < base) return;
+      if (saving || conflict || note.revision < base) return;
+      if (note.revision > base && ownLostSave(note, unconfirmed)) { rebase(note); return; }
+      if (dirty()) return;
       if (note.revision !== base) adopt(note);
       else settled();
-    }).catch(() => {
-      if (destroyed || loaded) return;
-      failed = 'loading';
-      retryLater(load);
+      again = true;
+    }).catch((error) => {
+      if (destroyed) return;
+      if (!loaded) { failed = 'loading'; retryLater(load); return; }
+      // Behind a teammate's save: try again later, never at once (review round 2).
+      if (retryable(error) && announcedRevision > base) retryLater(load);
     }).finally(() => {
       loading = null;
       onState();
-      // An event told of a newer revision while this load was on its way.
-      if (loaded && announcedRevision > base && !dirty() && !saving && !conflict) load();
+      if (again) catchUp();
     });
     return loading;
   }
@@ -284,17 +326,28 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
 
   /**
    * Saves now when there is something to save (blur, hide, another tab). Leaving the page also
-   * keeps the text for the next load and sends a request that outlives the page.
+   * keeps the text for the next load; with a `budget` (the page is going) the save is a request
+   * that outlives the page, while the browser's shared allowance lasts.
    */
-  function flush({ leaving = false } = {}) {
+  function flush({ leaving = false, budget = null } = {}) {
     if (timer) { clearTimeout(timer); timer = 0; }
     if (leaving) keepUnsaved();
-    save({ keepalive: leaving });
+    save({ budget });
   }
 
-  async function save({ keepalive = false } = {}) {
+  async function save({ budget = null } = {}) {
     if (!dirty()) {
-      if (failed === 'retrying') settled(); // undone back to the stored text
+      if (failed === 'retrying') {
+        // Undone back to the stored text: a lost answer may have stored the undone text, so
+        // look (the load goes on from it); else it is simply saved.
+        failed = null;
+        retryDelay = RETRY_FIRST_MS;
+        clearTimeout(retryTimer);
+        retryTimer = 0;
+        if (unconfirmed.length) load();
+      }
+      if (!conflict) dropUnsaved();
+      catchUp();
       onState();
       return;
     }
@@ -307,8 +360,12 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
     }
     clearTimeout(retryTimer);
     retryTimer = 0;
+    const payload = { body, revision: base };
+    const size = budget ? byteLength(JSON.stringify(payload)) : 0;
+    const keepalive = Boolean(budget) && size <= budget.left;
+    if (keepalive) budget.left -= size;
     unconfirmed = [...unconfirmed.slice(-7), body];
-    saving = ctx.api.put(path, { body, revision: base }, { keepalive: keepalive && byteLength(body) <= KEEPALIVE_MAX_BYTES });
+    saving = ctx.api.put(path, payload, { keepalive });
     onState();
     try {
       const note = await saving;
@@ -319,7 +376,7 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
       settled();
       renderMeta();
       if (dirty()) { if (!timer && !destroyed) schedule(); } // typed while the save was on its way
-      else dropUnsaved();
+      else { dropUnsaved(); catchUp(); }
     } catch (error) {
       saving = null;
       if (error.status === 409) await resolveConflict();
@@ -344,19 +401,15 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
       return;
     }
     if (note.body === textarea.value) { adopt(note); return; }
-    if (unconfirmed.includes(note.body)) {
+    if (ownLostSave(note, unconfirmed)) {
       // Our save was stored but its answer was lost: go on from it.
-      saved = note.body;
-      base = note.revision;
-      lastEdit = { updated_by: note.updated_by, updated_at: note.updated_at };
-      settled();
-      if (!destroyed) schedule();
+      rebase(note);
+      if (destroyed) keepUnsaved();
       return;
     }
-    if (destroyed) { keepUnsaved(); return; }
     conflict = note;
     keepUnsaved();
-    renderBanner();
+    if (!destroyed) renderBanner();
   }
 
   function renderBanner() {

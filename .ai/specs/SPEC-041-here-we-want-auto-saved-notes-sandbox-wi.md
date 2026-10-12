@@ -49,7 +49,7 @@ without a reload. When two people type at the same time, neither text is lost wi
 | NOT-005 | `GET /api/notes` and `GET /api/sandboxes/{sid}/notes` return `{scope, body, revision, updated_at, updated_by}`. A notepad never written is `{body: "", revision: 0}`. `PUT` takes `{body, revision}`, where `revision` is the revision the edit started from. It stores the text as revision + 1 and returns the note. When the stored revision differs, it answers `409 conflict` and stores nothing. | Rust `notes::*` |
 | NOT-006 | Bounded: a body holds at most 256 KiB of UTF-8 (larger: `422 invalid`; a request over 2 MiB: 413). There is exactly one row per notepad: one for the team and one per sandbox ever written. | Rust `notes::a_note_is_bounded` |
 | NOT-007 | Every stored edit publishes `note.updated {scope, sandbox_id, revision, updated_by}` on `WS /api/events`. A sandbox note's event reaches only people who can view that sandbox. An open notepad with no unsaved typing loads the newer text and keeps the caret and scroll where they were; an older answer never replaces a newer revision. | Rust `notes::an_edit_is_announced_to_viewers` (envelope scoped to the sandbox; the stream's per-sandbox filter is `http_auth::event_streams_follow_revoked_access_and_close_for_disabled_users`); e2e (a teammate's edit appears) |
-| NOT-008 | Edits at the same time: a save refused with 409 loads the current note. If it equals the local text, the notepad simply adopts it. Otherwise a banner names who changed it and offers "Keep mine" (saves the local text over the newer revision) and "Use theirs" (replaces the local text). Until the person picks one, nothing is saved and the local text stays on screen. | e2e `notes.e2e.ts` (conflict, both choices) |
+| NOT-008 | Edits at the same time: a save refused with 409 loads the current note. If it equals the local text, the notepad simply adopts it; if it is this person's own save whose answer was lost, the notepad goes on from it. Otherwise a banner names who changed it and offers "Keep mine" (saves the local text over the newer revision) and "Use theirs" (replaces the local text). Until the person picks one, nothing is saved and the local text stays on screen, also across reloads. | e2e `notes.e2e.ts` (conflict, both choices; lost answer; a conflict kept over two reloads) |
 | NOT-009 | Accessible: tabs are a `tablist` (arrows, Home, End), the text box is labelled (and described by the read-only line), the save state is a polite live region, and the open panel has no WCAG A/AA violations (axe). It works at 390 px. | e2e `notes.e2e.ts` (axe; "notes fit a phone") |
 
 ## Acceptance criteria
@@ -65,10 +65,10 @@ without a reload. When two people type at the same time, neither text is lost wi
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Sandbox and team notes are stored with revisions behind the notes API
-- [ ] A saved note is announced on the event stream to the people who may read it
-- [ ] The rail's Notes panel shows both notepads and saves them by itself
-- [ ] Simultaneous edits end in a choice instead of a lost text, and teammates' edits appear live
+- [x] Sandbox and team notes are stored with revisions behind the notes API
+- [x] A saved note is announced on the event stream to the people who may read it
+- [x] The rail's Notes panel shows both notepads and saves them by itself
+- [x] Simultaneous edits end in a choice instead of a lost text, and teammates' edits appear live
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
@@ -151,3 +151,13 @@ sequenceDiagram
   the missing tests (phone, 404 on PUT, 413). Not added: a second WebSocket test for the
   per-sandbox event filter, which is generic and already tested in `http_auth.rs`. Notes of a
   removed sandbox stay in the table, like its other history (sandboxes are removed softly).
+- Review round 2 (request changes, 1 blocker, 1 major): a conflict restored from sessionStorage
+  took the teammate's revision as its base, so a second hide or reload saved over the teammate's
+  text without a choice; the kept text now keeps the revision it started from until the person
+  picks. A failed reload after an event retried at once without end; it now backs off, and only
+  for network/408/429/5xx failures. Minors fixed: an undo after a lost answer loads the note and
+  puts the undone text back; an undone text's stash is dropped; the stash keeps the texts sent
+  whose answers were lost, so a save stored just before a reload is not a conflict with oneself
+  (a lost save counts as one's own only when the note names this person); an event that arrived
+  while text was unsaved is caught up once the notepad settles; both notepads share the browser's
+  64 KiB allowance for requests outliving the page, measured on the JSON sent.
