@@ -209,7 +209,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | UI-001 | Three zones: a left sidebar with navigation and tasks; a center that is the task's terminal; a right zone with Browser and Editor. | T 4:05–4:20, V 4:04–4:24, P(2) | E | AC-UI-1 |
 | UI-002 | Browser and Editor are hidden by default, shown as icons that expand a panel on demand. | T 4:20–4:32, T 5:50–6:00 | E | AC-UI-1 |
 | UI-003 | Everything except the left sidebar is the terminal by default, for clarity and maximum visible content. | T 4:36–4:51 | E | AC-UI-1 |
-| UI-004 | The left sidebar offers: New task, Tasks (overview), Git (incl. GitHub PRs/checks), Workflows, Skills, Automations; plus Dashboard (analytics) and MCP. Active tasks appear at the bottom of the sidebar as in Cezar. | T 5:00–5:28, T 24:39, WA 13:08, P(2) | E | AC-UI-1 |
+| UI-004 | The left sidebar offers: New task, Tasks (overview), Git (incl. GitHub PRs/checks), Workflows, Skills, Automations; plus Dashboard (analytics) and MCP. Only Cockpit, Tasks, Git, CI (tests), Secrets and Dashboard show at once; the rest is under "More" (SPEC-029). Active tasks appear at the bottom of the sidebar as in Cezar. | T 5:00–5:28, T 24:39, WA 13:08, P(2) | E | AC-UI-1 |
 | UI-005 | The sidebar's task list shows each task's status as an icon (working, waiting for input, needs attention, switching, stopped, failed); the status badge in the task header is removed. | T 16:12 | E | AC-UI-3 |
 | UI-006 | Active tasks stay in the sidebar; archived tasks are not a permanent toggle — they live in a separate "Archived tasks" page reachable from the user menu, with restore. Archiving a task remains a one-click action. | T 5:36–5:47, T 33:44–34:05, WA 13:27 | E/C | AC-ARC-1 |
 | UI-007 | The large top bar (CPU/GPU/RAM/cost) and the project-name header are removed. Resource usage moves into a hidden Status panel opened by a "Status" control. | T 6:00–6:21, V 6:00–6:27 | E | AC-STA-1 |
@@ -551,9 +551,9 @@ and mail, and **agent secrets** agents use without seeing them.
   logo, the All sandboxes tab and ⌘⇧H return to it.
 - Left sidebar (300 px, 200 px below 1024 px; resizable, UI-044): the logo and wordmark (home), New
   task with its shortcut, the sandbox navigation (Cockpit — the user's own plain Claude Code
-  session, SPEC-021 — then Tasks, Sessions, Git, CI, Workflows, Skills, Automations, MCP, Secrets,
-  Dashboard), then the active task list grouped by what the user must
-  do — "Needs you" (permission prompt, Your turn, a browser request, a held prompt, a blocked chain,
+  session, SPEC-021 — then Tasks, Git, CI (tests), Secrets, Dashboard, and "More", which expands Sessions,
+  Workflows, Skills, Automations and MCP in place, SPEC-029), then the active task list grouped
+  by what the user must do — "Needs you" (permission prompt, Your turn, a browser request, a held prompt, a blocked chain,
   failing checks), "Working" (working, starting, queued, paused, continuing, queued after another
   task, a background shell still running, in review), "Done" (goal achieved, or a complete plan with a tested
   pull request) and "Stopped" (stopped, crashed, failed; collapsible). Each row shows a distinct SVG
