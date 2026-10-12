@@ -65,14 +65,18 @@ starts (or the person clears it).
 
 ## Design
 
-A new module `assets/drafts.js` owns the drafts of this browser tab: a `Map` of sandbox id to a
-draft object `{ text, mode, workflowId, afterTaskId, startRule, attached: [{path, name, type, at,
-thumb?, file?}] }`. `draftFor(ctx, sandboxId)` returns the live object (created from
-`localStorage` the first time, key `yulius.draft.<user id>.<sandbox id>`), `saveDraft` writes it
-back (debounced; flushed when the composer is destroyed and on `pagehide`), `clearDraft` empties it
-and removes the key, `forgetDrafts()` removes every key at sign-out. The composer reads its initial
-state from the draft and writes every change into it; the `File` stays on the in-memory item, so
-thumbnails are full images while the tab lives and stored thumbnails after a reload.
+A new module `assets/drafts.js` owns the drafts of this browser tab: a `Map` of storage key
+(`yulius.draft.<user id>.<sandbox id>`) to a draft object `{ text, mode, workflowId, afterTaskId,
+startRule, attached: [{path, name, type, at, thumb?, file?}], starting }`.
+`draftFor(userId, sandboxId)` returns the live object (read from `localStorage` the first time),
+`saveDraft` writes it back (debounced; at once when the composer closes, and on `pagehide` or a
+hidden page), `attachToDraft` adds uploaded files and makes image thumbnails, `onDraftChange` tells
+the open composer about attachments added or a draft cleared elsewhere, `clearDraft` empties it
+and removes the key, and `forgetDrafts()` removes every key at sign-out and tells the browser's
+other tabs (`yulius.draftsForgotten`, a `storage` event) to drop theirs from memory. The composer
+reads its initial state from the draft and writes every change into it; the `File` stays on the
+in-memory item, so thumbnails are full images while the tab lives and stored thumbnails after a
+reload.
 
 ## Test plan
 
@@ -98,3 +102,9 @@ covered by a test: a full `localStorage` (DRF-007 by code review), Safari's thum
   draft, because the start may still fail and the draft must then come back; text typed in a
   composer reopened during that start is cleared with the draft once the task opens (the person is
   taken to the task). Text-only drafts do not expire; they are removed at start or sign-out.
+- Review round 2: a sign-out in another tab makes this tab forget its drafts in memory (a marker
+  key's `storage` event), so a later navigation or reload does not store them again. Accepted
+  limits: an upload that ends after its task was created joins the (now empty) draft, so the file
+  is kept for the next task rather than lost; files dropped in a composer reopened during a start
+  are cleared with the draft like its text; a restored "run after" reads "Start now" for the moment
+  until the sandbox's task list arrives (the choice is still sent).

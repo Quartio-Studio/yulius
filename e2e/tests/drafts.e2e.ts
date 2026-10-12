@@ -235,3 +235,17 @@ test('a stored draft drops attachments the server no longer keeps and unsafe thu
   await expect(browser.locator('.composer-attachment img')).toHaveCount(0);
   await expect(screen.getByRole('button', 'Mode: Auto mode')).toBeVisible();
 });
+
+test('signing out in another browser tab forgets this tab\'s draft too', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await screen.getByRole('textbox', 'Task prompt').fill('Typed in this tab');
+  // What another tab's sign-out leaves in the shared storage (a `storage` event here).
+  await browser.evaluate(() => {
+    for (const key of Object.keys(localStorage)) if (key.startsWith('yulius.draft.')) localStorage.removeItem(key);
+    window.dispatchEvent(new StorageEvent('storage', { key: 'yulius.draftsForgotten', newValue: String(Date.now()), storageArea: localStorage }));
+  });
+  // Leaving would store the draft again; it does not.
+  await leaveAndReturn(browser, screen);
+  await expect(screen.getByRole('textbox', 'Task prompt')).toHaveValue('');
+  expect(await storedDrafts(browser)).toEqual([]);
+});

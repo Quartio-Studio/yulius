@@ -16,6 +16,8 @@
 // THUMB_PX are stored, and a full storage keeps the draft without thumbnails, or in memory only.
 
 const PREFIX = 'yulius.draft.';
+/** Written at sign-out, so the other tabs of this browser forget their drafts too. */
+const FORGOTTEN_KEY = 'yulius.draftsForgotten';
 /** The server removes a composer's uploaded files after a week (`DRAFT_MAX_AGE`, uploads.rs). */
 const MAX_AGE_MS = 7 * 24 * 3600 * 1000;
 const MAX_THUMBS = 12;
@@ -105,15 +107,24 @@ export function clearDraft(userId, sandboxId) {
   changed(key);
 }
 
-/** Forgets every draft, in memory and stored (sign-out: drafts are private words). */
+/** Forgets every draft, in memory and stored, here and in this browser's other tabs (sign-out:
+ * drafts are private words). */
 export function forgetDrafts() {
+  forgetInMemory();
+  try {
+    for (const key of Object.keys(window.localStorage)) if (key.startsWith(PREFIX)) window.localStorage.removeItem(key);
+    window.localStorage.setItem(FORGOTTEN_KEY, String(Date.now()));
+  } catch { /* storage unavailable: nothing kept */ }
+}
+
+/** Drops this page's drafts: a composer still open holds a draft no longer stored or written. */
+function forgetInMemory() {
   for (const timer of timers.values()) clearTimeout(timer);
   timers.clear();
   drafts.clear();
-  try {
-    for (const key of Object.keys(window.localStorage)) if (key.startsWith(PREFIX)) window.localStorage.removeItem(key);
-  } catch { /* storage unavailable: nothing kept */ }
 }
+// Another tab signed out: its drafts are gone from storage, and this tab must not write them back.
+window.addEventListener('storage', (event) => { if (event.key === FORGOTTEN_KEY) forgetInMemory(); });
 
 /** Stores every pending draft now (the page is hidden or goes away). */
 function flushAll() {
