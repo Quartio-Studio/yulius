@@ -232,6 +232,15 @@ async fn shown(app: &App, id: &TaskId) -> Result<(Option<String>, Option<u32>), 
     Ok((summary.activity, summary.background_shells))
 }
 
+/// What the task's first launch asked the agent for (the fake harness records it).
+async fn first_launch(app: &App, id: &TaskId) -> Result<String, BoxError> {
+    let attempts = app.deps.store.attempts(id).await?;
+    let first = attempts.first().ok_or("the task has no attempt")?;
+    Ok(std::fs::read_to_string(
+        Path::new(&first.run_dir).join("fake-launch.txt"),
+    )?)
+}
+
 async fn screen_contains(app: &App, id: &TaskId, needle: &str) -> bool {
     app.runtime(id).hub.screen_text().contains(needle)
 }
@@ -279,6 +288,9 @@ fn an_achieved_goal_with_no_shell_left_makes_the_task_done() -> TestResult {
             screen_contains(&app, &id, "Goal achieved")
         })
         .await?;
+        // SPEC-025 ATT-003: without attached files the session starts with no first message.
+        let launch = first_launch(&app, &id).await?;
+        assert!(launch.contains("prompt: None"), "{launch}");
         wait_for("Done", Duration::from_secs(20), || async {
             activity(&app, &id).await == Some(Activity::Done)
         })
@@ -408,6 +420,14 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
             "{request}"
         );
         assert!(request.contains("\n- /srv/shots/header.png"), "{request}");
+        // SPEC-025 ATT-003: the attached file is mentioned in the session's first message, so
+        // Claude Code attaches it natively; the goal is still typed after it.
+        let launch = first_launch(&app, &id).await?;
+        assert!(
+            launch.contains("prompt: Some(\"The files attached to this task.")
+                && launch.contains("\\n\\n@/srv/shots/header.png\")"),
+            "{launch}"
+        );
         assert!(request.contains("## Definition of done"), "{request}");
         // The goal names the file (a request with attached files is never inlined).
         assert!(

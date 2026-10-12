@@ -748,12 +748,16 @@ impl App {
             ),
             (RunStart::Resume { prompt }, None) | (RunStart::Fresh { prompt }, _) => {
                 // In goal mode the task starts with its `/goal` (the request and the definition
-                // of done, SPEC-011); otherwise the request is the first message, with its
-                // attached files to open.
+                // of done, SPEC-011), after a first message with its attached files when it has
+                // any; otherwise the request is the first message. Files are mentioned, so
+                // Claude Code attaches them natively (SPEC-025).
                 let prompt = prompt.clone().or_else(|| {
-                    (!goal_mode).then(|| {
-                        yulius_domain::request::Request::parse(&task.prompt).first_message()
-                    })
+                    let request = yulius_domain::request::Request::parse(&task.prompt);
+                    if goal_mode {
+                        request.attachments_message()
+                    } else {
+                        Some(request.first_message())
+                    }
                 });
                 (
                     SessionMode::New {

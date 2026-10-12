@@ -82,7 +82,10 @@ content block), not as a path the agent has to open with the Read tool.
   ids, not local files).
 - Goal mode spends one short extra turn (the attachments message) before `/goal`. Accepted: the
   model sees the files before it plans, and a `/goal` typed while that turn runs is queued
-  (measured). Recorded as ADR-0019.
+  (measured). Recorded as ADR-0019. Limit: `/goal` is typed after 1.5 s without terminal output
+  (the spinner redraws during a turn, so normally once that turn ended); should the attachments
+  turn outlast the goal-submit retries (about 75 s), the task is flagged as needing a person, as
+  any goal not taken is.
 - Non-image files open in a new tab (the browser shows or downloads them) rather than a viewer of
   our own; images preview in the existing modal so the composer keeps its state.
 
