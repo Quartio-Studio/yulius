@@ -26,6 +26,8 @@ pub struct FakeAgentOptions {
     pub goal_background: Option<u64>,
     /// Delay the goal turn by this many milliseconds (`--goal-delay-ms`).
     pub goal_delay_ms: Option<u64>,
+    /// Lose the first typed lines like a TUI that drops a submit (`--drop-lines`).
+    pub drop_lines: Option<u32>,
     /// Handle Ctrl+C and SIGTERM like Claude Code (`--interrupts`).
     pub interrupts: bool,
     /// Run the status line command with the rate limits in this file (`--rate-limits-file`).
@@ -108,6 +110,9 @@ impl HarnessPort for FakeAgentHarness {
         }
         if let Some(ms) = self.options.goal_delay_ms {
             argv.extend(["--goal-delay-ms".into(), ms.to_string()]);
+        }
+        if let Some(n) = self.options.drop_lines {
+            argv.extend(["--drop-lines".into(), n.to_string()]);
         }
         if self.options.interrupts {
             argv.push("--interrupts".into());
