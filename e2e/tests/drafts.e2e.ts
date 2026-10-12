@@ -21,7 +21,7 @@ async function drop(browser: Browser, files: [string, string, string][]): Promis
 }
 
 /** A 2×2 PNG, so an image thumbnail can be drawn from it. */
-const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGP8z8DwnwEJMDGgAgYAPgQBAeHC6s0AAAAASUVORK5CYII=';
+const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGP4z8DwH4QZYAwAR8oH+WdZbrcAAAAASUVORK5CYII=';
 
 /** Drops a real PNG image named `name` on the composer box. */
 async function dropImage(browser: Browser, name: string): Promise<void> {
@@ -94,4 +94,58 @@ test('the mode, workflow and "Run after" come back with the draft', async ({ app
   await expect(screen.getByRole('button', 'Mode: Goal')).toBeVisible();
   await expect(screen.getByRole('button', 'Workflow: Fix')).toBeVisible();
   await expect(screen.getByRole('button', 'Run after: After #12')).toBeVisible();
+});
+
+/** The draft keys this browser stores. */
+const storedDrafts = (browser: Browser) => browser.evaluate(() => Object.keys(localStorage).filter((key) => key.startsWith('yulius.draft.')));
+
+test('the draft survives a reload and is cleared once the task starts', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await screen.getByRole('textbox', 'Task prompt').fill('Kept across a reload');
+  await dropImage(browser, 'screen.png');
+  await drop(browser, [['notes.pdf', 'pdf', 'application/pdf']]);
+  await expect(attachmentNames(browser)).toHaveText(['screen.png', 'notes.pdf']);
+  await screen.getByRole('button', /^Mode:/).click();
+  await screen.getByRole('menuitemradio', /^Goal/).click();
+  await screen.getByRole('button', /Run after: Start now/).click();
+  await screen.getByRole('menuitemradio', /^After #12 Checkout API/).click();
+  // Stored once the page goes away, whatever the debounce.
+  await browser.reload();
+
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await expect(prompt).toHaveValue('Kept across a reload');
+  await expect(attachmentNames(browser)).toHaveText(['screen.png', 'notes.pdf']);
+  // The image keeps a (stored, scaled) thumbnail.
+  await expect(browser.locator('.composer-attachment img')).toHaveCount(1);
+  await expect(screen.getByRole('button', 'Mode: Goal')).toBeVisible();
+  await expect(screen.getByRole('button', 'Run after: After #12')).toBeVisible();
+
+  await screen.getByRole('button', 'Run after: After #12').click();
+  await screen.getByRole('menuitemradio', /^Start now/).click();
+  await prompt.press('ControlOrMeta+Enter');
+  await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
+  const sent = await browser.evaluate(() => {
+    const tasks = (window as unknown as { __yuliusMock: { tasks: { prompt: string }[] } }).__yuliusMock.tasks;
+    return tasks[tasks.length - 1].prompt;
+  });
+  expect(sent).toMatch(/^Kept across a reload\n\n@\S+\/screen\.png\n@\S+\/notes\.pdf$/);
+
+  await browser.locator('.btn-newtask').click();
+  await expect(prompt).toHaveValue('');
+  await expect(attachmentNames(browser)).toHaveCount(0);
+  await expect(screen.getByRole('button', 'Mode: Auto mode')).toBeVisible();
+  expect(await storedDrafts(browser)).toEqual([]);
+  await browser.reload();
+  await expect(prompt).toHaveValue('');
+});
+
+test('signing out removes the stored drafts', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await screen.getByRole('textbox', 'Task prompt').fill('Private words');
+  await leaveAndReturn(browser, screen);
+  await expect.poll(() => storedDrafts(browser)).toHaveLength(1);
+  await screen.getByRole('button', /account menu$/).click();
+  await screen.getByRole('menuitem', 'Sign out').click();
+  await expect(browser).toHaveURL(/#\/signin/);
+  expect(await storedDrafts(browser)).toEqual([]);
 });

@@ -19,7 +19,7 @@ import { randomQuote } from './quotes.js';
 import { brandSmoke } from './brandfx.js';
 import { BRAND } from './brand.js';
 import { isPhone } from './theme.js';
-import { draftFor, saveDraft, clearDraft } from './drafts.js';
+import { draftFor, saveDraft, clearDraft, attachToDraft } from './drafts.js';
 
 const STEP_MARK = { done: '✓', in_progress: '▸', pending: '·', skipped: '–', blocked: '✕' };
 const STEP_LABEL = { done: 'Done', in_progress: 'In progress', pending: 'To do', blocked: 'Blocked', skipped: 'Skipped' };
@@ -381,14 +381,15 @@ export function mountComposer(ctx, sandbox) {
   const destroyers = [];
   const write = allows(sandbox.access, 'write');
   // What was typed, attached and chosen here waits in the sandbox's draft (SPEC-026).
-  const draft = draftFor(sandbox.id);
-  const remember = () => saveDraft(sandbox.id);
+  const userId = ctx.store.state.me && ctx.store.state.me.user ? ctx.store.state.me.user.id : null;
+  const draft = draftFor(userId, sandbox.id);
+  const remember = (options) => saveDraft(userId, sandbox.id, options);
   const prompt = h('textarea', { class: 'composer-prompt', rows: 4, placeholder: 'Describe what you want to build, fix or find out. Lists and Markdown work.', 'aria-label': 'Task prompt', 'aria-keyshortcuts': SUBMIT_ARIA, maxlength: 100000 });
   prompt.value = draft.text;
   // A rendered, read-only view of the prompt (Preview), made on demand.
   const previewEl = h('div', { class: 'composer-preview', role: 'region', hidden: true, tabindex: 0, 'aria-label': 'Prompt preview' });
   let preview = null;
-  let mode = draft.mode ?? AUTO;
+  let mode = MODES.some((m) => m.id === draft.mode) ? draft.mode : AUTO;
   let workflowId = draft.workflowId ?? AUTO;
   let workflows = [];
   // Run after another task of this sandbox (TSK-012): the new task waits until it is Done.
@@ -448,7 +449,7 @@ export function mountComposer(ctx, sandbox) {
     for (const item of draft.attached) if (!urls.has(item) && item.file && /^image\//.test(item.type)) urls.set(item, URL.createObjectURL(item.file));
     tray.hidden = !draft.attached.length;
     setChildren(tray, draft.attached.map((item) => h('li', { class: 'composer-attachment', title: item.name },
-      urls.has(item) ? h('img', { src: urls.get(item), alt: item.name }) : icon('file', { size: 20 }),
+      urls.has(item) || item.thumb ? h('img', { src: urls.get(item) || item.thumb, alt: item.name }) : icon('file', { size: 20 }),
       h('span', { class: 'composer-attachment-name' }, item.name),
       iconButton('x', `Remove ${item.name}`, () => { dropAttached([item]); renderTray(); }, { class: 'composer-attachment-remove' }))));
   }
@@ -478,10 +479,9 @@ export function mountComposer(ctx, sandbox) {
   // Files dropped (or an image pasted) on the prompt reach the new task's agent by path.
   attachPromptDrop(ctx, { box, prompt, label: 'Drop to add to the prompt', upload: draftAttachments(ctx, sandbox.id), onAttach: (items) => {
     // An upload that ends after the person left still joins the draft (DRF-002).
-    const at = Date.now();
-    draft.attached.push(...items.map(({ path, name, file }) => ({ path, name, type: file.type, at, file })));
-    remember();
-    if (!destroyed) renderTray();
+    const redraw = () => { if (!destroyed) renderTray(); };
+    attachToDraft(userId, sandbox.id, items, redraw);
+    redraw();
   } });
 
   function renderChips() {
@@ -495,8 +495,9 @@ export function mountComposer(ctx, sandbox) {
     const wfLabel = workflowId === AUTO ? 'Auto workflow' : wf ? wf.name : workflowId ? 'Workflow' : 'No workflow';
     setChildren(workflowChip, icon(workflowId === AUTO ? 'zap' : 'workflow', { size: 14 }), h('span', { class: 'sr-only' }, 'Workflow: '), h('span', { class: 'chip-label' }, wfLabel), icon('down', { size: 12 }));
     workflowChip.title = workflowId === AUTO ? 'Jev picks the workflow that fits, or none: features get a spec, research and questions do not' : wfLabel;
-    const after = (ctx.store.tasksOf(sandbox.id) || []).find((t) => t.id === afterTaskId);
-    if (afterTaskId && !after) afterTaskId = '';
+    const tasks = ctx.store.tasksOf(sandbox.id);
+    const after = (tasks || []).find((t) => t.id === afterTaskId);
+    if (afterTaskId && tasks && !after) afterTaskId = ''; // gone (a kept draft waits for the list)
     const ruleLabel = startRule.length > 28 ? `${startRule.slice(0, 27)}…` : startRule;
     setChildren(afterChip, icon('branch', { size: 14 }), h('span', { class: 'sr-only' }, 'Run after: '), h('span', { class: 'chip-label' }, startRule ? `When ${ruleLabel}` : after ? `After #${after.number}` : 'Start now'), icon('down', { size: 12 }));
     afterChip.title = startRule ? `Starts by itself when ${startRule}` : after ? `Runs after #${after.number} ${after.title} is done` : 'Starts right away; or pick a task to run after, or give a rule';
@@ -700,7 +701,7 @@ export function mountComposer(ctx, sandbox) {
   function opened(task) {
     prompt.value = '';
     forgetUrls([...draft.attached]);
-    clearDraft(sandbox.id);
+    clearDraft(userId, sandbox.id);
     renderTray();
     fit();
     afterTaskId = '';
@@ -814,7 +815,7 @@ export function mountComposer(ctx, sandbox) {
   renderTray();
 
   destroyers.push(ctx.store.on('sandboxes', renderBanner));
-  destroyers.push(ctx.store.on('tasks', (sid) => { if (sid === sandbox.id) renderBanner(); }));
+  destroyers.push(ctx.store.on('tasks', (sid) => { if (sid === sandbox.id) { renderBanner(); renderChips(); } }));
   renderBanner();
 
   return {
@@ -825,6 +826,6 @@ export function mountComposer(ctx, sandbox) {
       if (!prompt.disabled && !isPhone()) prompt.focus();
       if (!stopSmoke) stopSmoke = brandSmoke(niche); // the brand's smoke, when its niche shows (brandfx.js)
     },
-    destroy() { destroyed = true; forgetUrls([...urls.keys()]); remember(); destroyers.forEach((off) => off()); if (stopSmoke) stopSmoke(); clearTimeout(showTimer); clearSplit(); if (preview) preview.destroy(); },
+    destroy() { destroyed = true; forgetUrls([...urls.keys()]); remember({ now: true }); destroyers.forEach((off) => off()); if (stopSmoke) stopSmoke(); clearTimeout(showTimer); clearSplit(); if (preview) preview.destroy(); },
   };
 }
