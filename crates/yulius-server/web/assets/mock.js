@@ -3387,6 +3387,8 @@ export function createMockTransport(params) {
   // event, as if it were still on its way (SPEC-041).
   db.editNote = (scope, body, by = 'alice', options) => putNote(db, scope, body, by, options);
   db.keepaliveRequests = [];
+  // `noteloads=fail`: the notes cannot be loaded from the start (a server still restarting).
+  db.failNoteLoads = params.get('noteloads') === 'fail';
   notesOf(db);
   return {
     kind: 'mock',

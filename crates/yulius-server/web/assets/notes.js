@@ -46,7 +46,7 @@ export function createNotesView(ctx, sandbox) {
   const userId = ctx.store.state.me && ctx.store.state.me.user ? ctx.store.state.me.user.id : 'anonymous';
   const me = ctx.store.state.me && ctx.store.state.me.user ? ctx.store.state.me.user : null;
   // Saves name the GitHub login, else the display name (the superadmin without GitHub).
-  const isMine = (note) => Boolean(me && note.updated_by && (note.updated_by === me.login || note.updated_by === me.display_name));
+  const isMine = (note) => Boolean(me && note.updated_by && (me.github_linked ? note.updated_by === me.login : note.updated_by === me.display_name));
   const pads = [
     notepad(ctx, {
       key: 'sandbox',
@@ -188,6 +188,8 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
   let saving = null; // the save in flight
   let failed = null; // 'retrying' | 'loading' (a load is retried) | message of a refusal
   let conflict = null; // the newer note someone else saved
+  let checking = false; // undone after a lost answer: the server may hold the undone text
+  let reloadAfter = false; // an event arrived while a load was on its way
   let destroyed = false;
 
   const dirty = () => loaded && !readOnly && textarea.value !== saved;
@@ -198,7 +200,7 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
     if (conflict) return 'Not saved';
     if (failed === 'retrying') return 'Not saved, retrying…';
     if (failed) return `Not saved: ${failed}`;
-    if (saving || timer || dirty()) return 'Saving…';
+    if (saving || timer || checking || dirty()) return 'Saving…';
     return readOnly ? 'Read-only' : 'Saved';
   }
   const statusTone = () => (conflict || (failed && failed !== 'loading') ? 'warn' : '');
@@ -226,7 +228,7 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
   // the texts sent whose answers did not arrive.
   function keepUnsaved() {
     if (!loaded || readOnly) return;
-    if (!dirty() && !conflict) { dropUnsaved(); return; }
+    if (!dirty() && !conflict && !checking) { dropUnsaved(); return; }
     try { window.sessionStorage.setItem(unsavedKey, JSON.stringify({ body: textarea.value, base, sent: unconfirmed })); } catch { /* memory only */ }
   }
   function dropUnsaved() {
@@ -254,7 +256,7 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
     if (focused) textarea.setSelectionRange(Math.min(selectionStart, note.body.length), Math.min(selectionEnd, note.body.length));
     textarea.scrollTop = scrollTop;
     settled();
-    dropUnsaved();
+    if (!readOnly) dropUnsaved(); // a reader who lost write access keeps theirs for later
     renderMeta();
   }
 
@@ -278,7 +280,11 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
     if (!kept || kept.body === note.body) return;
     textarea.value = kept.body;
     // Nobody saved since, or the newer save is this person's own: it simply goes on.
-    if (kept.base === note.revision || ownLostSave(note, kept.sent)) { schedule(); return; }
+    if (kept.base === note.revision || ownLostSave(note, kept.sent)) {
+      unconfirmed = [...kept.sent, kept.body].slice(-8); // a save of it may still arrive
+      schedule();
+      return;
+    }
     // Someone else did: the person decides, and until then the text keeps its own revision.
     base = kept.base;
     conflict = note;
@@ -296,24 +302,28 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
   function load() {
     if (loading || dirty() || saving || conflict || destroyed) return loading;
     let again = false;
+    reloadAfter = false;
     loading = ctx.api.get(path).then((note) => {
       if (destroyed) return;
       if (!loaded) { first(note); return; }
+      const wasChecking = checking;
+      checking = false;
       if (saving || conflict || note.revision < base) return;
       if (note.revision > base && ownLostSave(note, unconfirmed)) { rebase(note); return; }
       if (dirty()) return;
-      if (note.revision !== base) adopt(note);
+      if (note.revision !== base) { adopt(note); again = true; } // moved on: newer may exist
       else settled();
-      again = true;
+      if (wasChecking) dropUnsaved();
     }).catch((error) => {
       if (destroyed) return;
       if (!loaded) { failed = 'loading'; retryLater(load); return; }
-      // Behind a teammate's save: try again later, never at once (review round 2).
-      if (retryable(error) && announcedRevision > base) retryLater(load);
+      // Behind a teammate's save, or checking an undo: try again later, never at once.
+      if (retryable(error) && (checking || announcedRevision > base)) retryLater(load);
+      else checking = false;
     }).finally(() => {
       loading = null;
       onState();
-      if (again) catchUp();
+      if (again || reloadAfter) catchUp();
     });
     return loading;
   }
@@ -331,22 +341,24 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
    */
   function flush({ leaving = false, budget = null } = {}) {
     if (timer) { clearTimeout(timer); timer = 0; }
+    save({ budget }); // first: the stash then names the text on its way among those sent
     if (leaving) keepUnsaved();
-    save({ budget });
   }
 
   async function save({ budget = null } = {}) {
+    // Not loaded yet: nothing typed here, and a kept text waits for the first load (round 3).
+    if (!loaded || readOnly) return;
     if (!dirty()) {
       if (failed === 'retrying') {
         // Undone back to the stored text: a lost answer may have stored the undone text, so
-        // look (the load goes on from it); else it is simply saved.
+        // look before saying Saved (the load goes on from it); else it is simply saved.
         failed = null;
         retryDelay = RETRY_FIRST_MS;
         clearTimeout(retryTimer);
         retryTimer = 0;
-        if (unconfirmed.length) load();
+        if (unconfirmed.length) { checking = true; load(); }
       }
-      if (!conflict) dropUnsaved();
+      if (!conflict && !checking) dropUnsaved();
       catchUp();
       onState();
       return;
@@ -448,6 +460,8 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
   function announced(event) {
     if (event) announcedRevision = Math.max(announcedRevision, event.revision);
     if (loaded && event && event.revision <= base) return;
+    if (!loaded && retryTimer) return; // the first load is already retrying with its pauses
+    if (loading) { reloadAfter = true; return; }
     load();
   }
 
@@ -468,7 +482,7 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
     statusText,
     statusTone,
     renderMeta,
-    unsaved: () => Boolean(conflict || saving || timer || dirty()),
+    unsaved: () => Boolean(conflict || saving || timer || checking || dirty()),
     focus() { textarea.focus(); },
     destroy() {
       flush({ leaving: true }); // kept for the next load; the save goes on after the view is gone

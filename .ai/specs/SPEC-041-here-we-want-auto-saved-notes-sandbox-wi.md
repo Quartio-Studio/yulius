@@ -161,3 +161,13 @@ sequenceDiagram
   (a lost save counts as one's own only when the note names this person); an event that arrived
   while text was unsaved is caught up once the notepad settles; both notepads share the browser's
   64 KiB allowance for requests outliving the page, measured on the JSON sent.
+- Review round 3 (request changes, 1 blocker): the round 2 stale-stash fix dropped the kept text
+  from a save on a notepad not loaded yet (a hide, a closed panel, a tab switch while the notes
+  could not load); a notepad now saves and drops nothing before its first load. Minors fixed: an
+  undo after a lost answer reads "Saving…" (and asks before leaving) until the server is checked,
+  retried with pauses; a kept text carried on after a reload remembers the saves still on their
+  way; the stash names the text being sent; own saves match the GitHub login (the display name
+  only without GitHub); a reload after an event repeats only when the note moved on or another
+  event came; events do not bypass the first load's pauses; a reader who lost write access keeps
+  their kept text. After three rounds the blocker was not acceptable as a known issue (it loses
+  text), so it was fixed test-first and a fourth, focused review confirmed the fix only.

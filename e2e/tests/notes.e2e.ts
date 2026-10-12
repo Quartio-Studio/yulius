@@ -329,3 +329,48 @@ test('a save stored just before a reload is not a conflict with oneself after it
   await expect(screen.getByRole('alert')).toBeHidden();
   expect(await stored(browser, 'sandbox:sb_studio')).toBe('stored, and more');
 });
+
+// Review round 3 (SPEC-041).
+
+test('text kept over a reload survives hides and tab switches while the notes cannot load', async ({ app, browser, screen }) => {
+  await browser.addInitScript(pageHelpers);
+  await app.open(mock('/s/studio'));
+  await openNotes(screen);
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  await setMock(browser, 'failNoteSaves', true);
+  await browser.evaluate(() => { typeInto('written during a deploy'); window.dispatchEvent(new Event('pagehide')); });
+  // Reloaded while the server is still down: the notes cannot load yet.
+  await confirmLeaving(browser);
+  await app.open(mock('/s/studio', '&noteloads=fail'));
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Notes').click();
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Couldn’t load the notes, retrying…');
+  await browser.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+  await screen.getByRole('tab', 'Team').click();
+  await screen.getByRole('tab', 'This sandbox').click();
+  await setMock(browser, 'failNoteLoads', false);
+  await expect(screen.getByRole('textbox', 'Sandbox notes')).toHaveValue('written during a deploy');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  expect(await stored(browser, 'sandbox:sb_studio')).toBe('written during a deploy');
+});
+
+test('an undo after a lost answer is not Saved until the server is checked', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen);
+  const notes = screen.getByRole('textbox', 'Sandbox notes');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  await setMock(browser, 'loseNoteResponse', true);
+  await notes.fill('typed by mistake');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Not saved, retrying…');
+  await setMock(browser, 'loseNoteResponse', false);
+  await setMock(browser, 'failNoteLoads', true);
+  await notes.fill('');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saving…');
+  expect(await browser.evaluate(() => {
+    const event = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(event);
+    return event.defaultPrevented;
+  })).toBe(true);
+  await setMock(browser, 'failNoteLoads', false);
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  await expect.poll(() => stored(browser, 'sandbox:sb_studio')).toBe('');
+});
