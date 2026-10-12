@@ -1580,20 +1580,25 @@ route('GET', `/api/automations/${ID}/runs`, ({ db, p }) => {
   return [0, 1, 2, 3, 4].map((i) => ({ scheduled_for: iso((i + 1) * DAY - 10 * HOUR), state: i === 2 ? 'skipped_previous_active' : i === 4 ? 'failed' : 'task_created', task_id: i === 2 || i === 4 ? null : 'tsk_studio_8', error: i === 4 ? 'the task could not be created: capacity reached' : null }));
 });
 
-// ------------------------------------------------------------------ secrets vault (VLT-001..009)
-// Synthetic values only. Reveals need a confirmation within 10 minutes (mock password below);
-// agent secret values are write-only and never returned.
+// ------------------------------------------------------------------ secrets vault (VLT-001..009, SPEC-040)
+// Synthetic values only. Reveals need a two-factor code within 10 minutes (the mock accepts the
+// code below); setting two-factor up needs a sign-in or confirmation within 10 minutes (the mock
+// session signed in when the page loaded; mock password below).
 
 const REAUTH_MS = 10 * MIN;
 const MOCK_SUPERADMIN_PASSWORD = 'correct horse battery';
+const MOCK_TWO_FACTOR_CODE = '123456';
+const MOCK_TWO_FACTOR_SEED = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
 
 function vaultOf(db) {
   if (!db.vault) {
     db.vault = {
-      reauthAt: 0,
-      team: [{ id: 'ts_gmail', title: 'Shared Gmail', url: 'https://mail.google.com', username: 'team@example.test', password: 'mock-not-a-real-password', notes: 'Recovery codes: mock', totp: 'JBSWY3DPEHPK3PXPJBSWY3DP', created_by: 'mkarp', updated_by: 'mkarp', updated_at: iso(3 * DAY), value_updated_at: iso(3 * DAY) }],
-      agent: [{ id: 'as_stripe', sandbox: 'sb_studio', scope: 'sandbox', name: 'STRIPE_KEY', description: 'Stripe test-mode key for the checkout', hosts: ['api.stripe.com'], injection: 'bearer', header_name: null, username: null, value: 'mock-agent-value-1', totp: null, created_by: 'mkarp', updated_at: iso(DAY), value_updated_at: iso(DAY), last_used_at: iso(2 * HOUR) }],
-      activity: [{ at: iso(HOUR), actor: 'mkarp', action: 'vault.team.reveal', secret_id: 'ts_gmail', detail: 'Shared Gmail (password)' }],
+      reauthAt: Date.now(),
+      unlockAt: 0,
+      twoFactor: 'missing',
+      team: [{ id: 'ts_gmail', title: 'Shared Gmail', value: 'mock-not-a-real-password', notes: 'User name: team@example.test\nRecovery codes: mock', created_by: 'mkarp', updated_by: 'mkarp', updated_at: iso(3 * DAY), value_updated_at: iso(3 * DAY) }],
+      agent: [{ id: 'as_stripe', sandbox: 'sb_studio', scope: 'sandbox', name: 'STRIPE_KEY', description: 'Stripe test-mode key for the checkout', hosts: ['api.stripe.com'], injection: 'bearer', header_name: null, username: null, value: 'mock-agent-value-1', created_by: 'mkarp', updated_at: iso(DAY), value_updated_at: iso(DAY), last_used_at: iso(2 * HOUR) }],
+      activity: [{ at: iso(HOUR), actor: 'mkarp', action: 'vault.team.reveal', secret_id: 'ts_gmail', detail: 'Shared Gmail (value)' }],
     };
   }
   return db.vault;
@@ -1602,27 +1607,33 @@ function vaultOf(db) {
 const INJECTION_TEXT = { bearer: 'Authorization: Bearer <value>', basic: 'Authorization: Basic <username:value>', none: 'no header (placeholders and browser filling only)' };
 
 function teamView(s) {
-  return { id: s.id, title: s.title, url: s.url || null, username: s.username || null, has_password: Boolean(s.password), has_notes: Boolean(s.notes), has_totp: Boolean(s.totp), created_by: s.created_by, updated_by: s.updated_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, rotate_due: false };
+  return { id: s.id, title: s.title, has_value: Boolean(s.value), has_notes: Boolean(s.notes), created_by: s.created_by, updated_by: s.updated_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, rotate_due: false };
 }
 
 function agentView(db, s, sandbox) {
   const manage = s.scope === 'instance' ? Boolean(db.me.user.is_instance_admin || db.me.user.is_superadmin) : RANK[sandbox.access] >= RANK.write;
-  return { id: s.id, name: s.name, description: s.description, scope: s.scope, hosts: s.hosts, injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: Boolean(s.totp), created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, can_manage: manage };
+  return { id: s.id, name: s.name, description: s.description, scope: s.scope, hosts: s.hosts, injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, can_manage: manage };
 }
 
 function reauthStatus(db) {
   const vault = vaultOf(db);
-  const fresh = Date.now() - vault.reauthAt < REAUTH_MS;
+  const fresh = Date.now() - vault.unlockAt < REAUTH_MS;
   const methods = [];
   if (db.me.user.is_superadmin) methods.push('password');
   if (db.me.user.github_linked) methods.push('github');
-  return { fresh, fresh_until: fresh ? new Date(vault.reauthAt + REAUTH_MS).toISOString() : null, methods };
+  return { fresh, fresh_until: fresh ? new Date(vault.unlockAt + REAUTH_MS).toISOString() : null, two_factor: vault.twoFactor, identity_fresh: Date.now() - vault.reauthAt < REAUTH_MS, methods };
 }
 
 function needFresh(db) {
   const status = reauthStatus(db);
   if (status.fresh) return null;
-  return json(403, { error: { code: 'reauth_required', message: 'Confirm it is you to reveal secrets (password or GitHub sign-in in the last 10 minutes).' }, reauth: status });
+  return json(403, { error: { code: 'reauth_required', message: 'Enter your two-factor code to unlock the secrets for 10 minutes.' }, reauth: status });
+}
+
+/** The fields asked of a reveal (`value`, `notes`) that are stored. */
+function revealed(body, value, notes) {
+  const fields = body.fields || ['value', 'notes'];
+  return { value: fields.includes('value') ? value || null : null, notes: fields.includes('notes') ? notes || null : null };
 }
 
 function audit(db, action, id, detail) {
@@ -1643,14 +1654,15 @@ function validateAgent(body, creating) {
 route('GET', '/api/team-secrets', ({ db }) => vaultOf(db).team.map(teamView));
 route('POST', '/api/team-secrets', ({ db, body }) => {
   if (!String(body.title || '').trim()) fail(422, 'invalid', 'a title is required');
-  const secret = { id: `ts_${db.nextId++}`, title: body.title.trim(), url: body.url || null, username: body.username || null, password: body.password || null, notes: body.notes || null, totp: body.totp || null, created_by: db.me.user.login, updated_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString() };
+  for (const key of Object.keys(body)) if (!['title', 'value', 'notes'].includes(key)) fail(422, 'invalid', `unknown field ${key}`);
+  const secret = { id: `ts_${db.nextId++}`, title: body.title.trim(), value: body.value || null, notes: body.notes || null, created_by: db.me.user.login, updated_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString() };
   vaultOf(db).team.push(secret);
   audit(db, 'vault.team.create', secret.id, secret.title);
   return json(201, teamView(secret));
 });
 route('PATCH', `/api/team-secrets/${ID}`, ({ db, p, body }) => {
   const secret = teamSecret(db, p[0]);
-  for (const key of ['title', 'url', 'username', 'password', 'notes', 'totp']) if (body[key] !== undefined) secret[key] = body[key] || (key === 'title' ? secret.title : null);
+  for (const key of ['title', 'value', 'notes']) if (body[key] !== undefined) secret[key] = body[key] || (key === 'title' ? secret.title : null);
   secret.updated_at = new Date().toISOString();
   audit(db, 'vault.team.update', secret.id, secret.title);
   return teamView(secret);
@@ -1665,17 +1677,8 @@ route('POST', `/api/team-secrets/${ID}/reveal`, ({ db, p, body }) => {
   const secret = teamSecret(db, p[0]);
   const refused = needFresh(db);
   if (refused) return refused;
-  const fields = body.fields || ['password', 'notes', 'totp'];
   audit(db, body.purpose === 'copy' ? 'vault.team.copy' : 'vault.team.reveal', secret.id, secret.title);
-  return { password: fields.includes('password') ? secret.password : null, notes: fields.includes('notes') ? secret.notes : null, totp: fields.includes('totp') ? secret.totp : null };
-});
-route('POST', `/api/team-secrets/${ID}/totp`, ({ db, p }) => {
-  const secret = teamSecret(db, p[0]);
-  const refused = needFresh(db);
-  if (refused) return refused;
-  if (!secret.totp) fail(422, 'invalid', 'this secret has no TOTP seed');
-  audit(db, 'vault.team.totp', secret.id, secret.title);
-  return { code: String(100000 + (Math.floor(Date.now() / 30000) % 900000)), period: 30, remaining: 30 - (Math.floor(Date.now() / 1000) % 30) };
+  return revealed(body, secret.value, secret.notes);
 });
 route('GET', '/api/auth/reauth', ({ db }) => reauthStatus(db));
 route('POST', '/api/auth/reauth', ({ db, body }) => {
@@ -1683,6 +1686,24 @@ route('POST', '/api/auth/reauth', ({ db, body }) => {
   if (body.password !== MOCK_SUPERADMIN_PASSWORD) { audit(db, 'vault.reauth.failed', null, 'password'); fail(403, 'forbidden', `wrong password (mock: ${MOCK_SUPERADMIN_PASSWORD})`); }
   vaultOf(db).reauthAt = Date.now();
   audit(db, 'vault.reauth', null, 'password');
+  return reauthStatus(db);
+});
+route('POST', '/api/auth/two-factor', ({ db }) => {
+  const vault = vaultOf(db);
+  if (vault.twoFactor === 'on') fail(409, 'conflict', 'two-factor is already set up');
+  const status = reauthStatus(db);
+  if (!status.identity_fresh) return json(403, { error: { code: 'reauth_required', message: 'Confirm it is you (password or GitHub sign-in) to set up two-factor.' }, reauth: status });
+  vault.twoFactor = 'pending';
+  audit(db, 'vault.2fa.setup', null, 'authenticator');
+  return json(201, { secret: MOCK_TWO_FACTOR_SEED, uri: `otpauth://totp/Yulius:${encodeURIComponent(db.me.user.login)}?secret=${MOCK_TWO_FACTOR_SEED}&issuer=Yulius&algorithm=SHA1&digits=6&period=30` });
+});
+route('POST', '/api/auth/unlock', ({ db, body }) => {
+  const vault = vaultOf(db);
+  if (vault.twoFactor === 'missing') fail(422, 'invalid', 'set up two-factor first');
+  if (body.code !== MOCK_TWO_FACTOR_CODE) { audit(db, 'vault.unlock.failed', null, 'two-factor code'); fail(403, 'forbidden', `wrong code (mock: ${MOCK_TWO_FACTOR_CODE})`); }
+  audit(db, vault.twoFactor === 'pending' ? 'vault.2fa.confirm' : 'vault.unlock', null, 'two-factor code');
+  vault.twoFactor = 'on';
+  vault.unlockAt = Date.now();
   return reauthStatus(db);
 });
 route('GET', '/api/secrets/activity', ({ db }) => vaultOf(db).activity.slice(0, 100));
@@ -1697,7 +1718,7 @@ route('POST', `/api/sandboxes/${ID}/agent-secrets`, ({ db, p, body }) => {
   if (scope === 'sandbox') need(sandbox, 'write');
   validateAgent(body, true);
   if (vaultOf(db).agent.some((s) => s.name === body.name && (s.scope === 'instance' || s.sandbox === sandbox.id))) fail(409, 'conflict', `an agent secret named ${body.name} already applies here`);
-  const secret = { id: `as_${db.nextId++}`, sandbox: scope === 'sandbox' ? sandbox.id : null, scope, name: body.name, description: body.description || '', hosts: body.hosts, injection: body.injection || 'bearer', header_name: body.header_name || null, username: body.username || null, value: body.value, totp: body.totp || null, created_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString(), last_used_at: null };
+  const secret = { id: `as_${db.nextId++}`, sandbox: scope === 'sandbox' ? sandbox.id : null, scope, name: body.name, description: body.description || '', hosts: body.hosts, injection: body.injection || 'bearer', header_name: body.header_name || null, username: body.username || null, value: body.value, created_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString(), last_used_at: null };
   vaultOf(db).agent.push(secret);
   audit(db, 'vault.agent.create', secret.id, `${secret.name} → ${secret.hosts.join(', ')}`);
   return json(201, agentView(db, secret, sandbox));
@@ -1707,10 +1728,19 @@ route('PATCH', `/api/agent-secrets/${ID}`, ({ db, p, body }) => {
   const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
   if (secret.scope === 'sandbox') need(sandbox, 'write');
   validateAgent(body, false);
-  for (const key of ['name', 'description', 'hosts', 'injection', 'header_name', 'username', 'value', 'totp']) if (body[key] !== undefined) secret[key] = body[key];
+  for (const key of ['name', 'description', 'hosts', 'injection', 'header_name', 'username', 'value']) if (body[key] !== undefined) secret[key] = body[key];
   secret.updated_at = new Date().toISOString();
   audit(db, 'vault.agent.update', secret.id, secret.name);
   return agentView(db, secret, sandbox);
+});
+route('POST', `/api/agent-secrets/${ID}/reveal`, ({ db, p, body }) => {
+  const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
+  const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
+  if (!agentView(db, secret, sandbox).can_manage) fail(403, 'forbidden', 'only people who manage this secret read it');
+  const refused = needFresh(db);
+  if (refused) return refused;
+  audit(db, body.purpose === 'copy' ? 'vault.agent.copy' : 'vault.agent.reveal', secret.id, secret.name);
+  return revealed(body, secret.value, secret.description);
 });
 route('DELETE', `/api/agent-secrets/${ID}`, ({ db, p }) => {
   const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
