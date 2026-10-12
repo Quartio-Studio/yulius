@@ -43,15 +43,16 @@ test('the tools rail keeps its items inside it, with one open tool', async ({ ap
   const rail = screen.getByRole('navigation', 'Tools');
   await expect(rail).toBeVisible();
 
-  // Task #12 has unread messages: the count shows on Messages while another tool is open.
-  await expect(rail.getByRole('button', /^Messages, \d+ unread$/)).toBeVisible();
+  // SPEC-028 (MSR-005): the tools are Browser, Editor and Shell; there are no Messages.
+  expect(await browser.evaluate(() => [...document.querySelectorAll('nav.rail button')].map((b) => b.getAttribute('aria-label'))))
+    .toEqual(['Browser', 'Editor', 'Shell']);
   await rail.getByRole('button', 'Editor').click();
   await expect(rail.getByRole('button', 'Editor')).toHaveAttribute('aria-pressed', 'true');
   expect(await railLayout(browser)).toEqual({ outside: [], pressed: ['Editor'], railInWindow: true, pageScrollsSideways: false });
 
-  await rail.getByRole('button', /^Messages/).click();
-  await expect(rail.getByRole('button', 'Messages')).toHaveAttribute('aria-pressed', 'true');
-  expect(await railLayout(browser)).toEqual({ outside: [], pressed: ['Messages'], railInWindow: true, pageScrollsSideways: false });
+  await rail.getByRole('button', 'Shell').click();
+  await expect(rail.getByRole('button', 'Shell')).toHaveAttribute('aria-pressed', 'true');
+  expect(await railLayout(browser)).toEqual({ outside: [], pressed: ['Shell'], railInWindow: true, pageScrollsSideways: false });
 
   expect(await axeViolations(browser)).toEqual([]);
 });

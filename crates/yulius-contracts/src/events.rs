@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::admin::AccountView;
 use crate::api::sandboxes::Sandbox;
-use crate::api::tasks::{MessageView, TaskSummary};
+use crate::api::tasks::TaskSummary;
 
 /// One server-pushed event. Delivery is best effort; on `Resync` clients refetch lists.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -27,14 +27,6 @@ pub enum UiEvent {
     StepsUpdated {
         /// Task id.
         task_id: String,
-    },
-    /// A message was posted to a task.
-    #[serde(rename = "message")]
-    Message {
-        /// Recipient task (or sender for broadcasts).
-        task_id: String,
-        /// The message.
-        message: MessageView,
     },
     /// A sandbox changed.
     #[serde(rename = "sandbox.updated")]

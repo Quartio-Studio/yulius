@@ -123,7 +123,6 @@ function seed(params) {
     },
     sandboxes: [],
     tasks: [],
-    messages: [],
     recovery: { available: true, locked: false, attempts_left: 3 },
     eventSockets: new Set(),
     sessions: new Map(),
@@ -164,7 +163,7 @@ function seed(params) {
       origin: extra.origin || 'ui', created_by: { login: extra.author || 'mkarp' },
       // Created before its last change (an old task's sessions never last a negative time).
       created_at: iso(Math.max(extra.age || number * 3 * HOUR, (extra.updated ?? number * 7 * MIN) + HOUR)), updated_at: iso(extra.updated ?? number * 7 * MIN),
-      unread_messages: extra.unread || 0, archived: Boolean(extra.archived),
+      archived: Boolean(extra.archived),
       account_label: LIVE.has(status) ? 'Claude #2' : null,
       stepsList: extra.noSteps ? [] : makeSteps(id, done, current),
       model: 'claude-opus-4',
@@ -185,7 +184,7 @@ function seed(params) {
     t('sb_studio', 13, 'Improve the code', 'claude', 'running', 'done', { mode: 'goal', done: 7, current: false, updated: 6 * MIN, shells: 0, delivery: { stage: 'pr_open', environment: null, pr: pr(520, 'Improve the code', 'open', 'dev', 'pending') } }),
     // Goal achieved, but a background shell (a dev server) still runs: Working, with the shell said.
     t('sb_studio', 14, 'Start the preview server', 'claude', 'running', 'done', { mode: 'goal', done: 7, current: false, updated: 2 * MIN, shells: 1 }),
-    t('sb_studio', 12, 'Checkout API', 'claude', 'running', 'working', { done: 2, unread: 2, updated: 20e3 }),
+    t('sb_studio', 12, 'Checkout API', 'claude', 'running', 'working', { done: 2, updated: 20e3 }),
     // Finished its turn with a tested pull request (checks green) and a complete plan: "Done" (#35, #139).
     t('sb_studio', 11, '3D model viewer', 'claude', 'running', 'waiting', { done: 7, current: false, author: 'anna-q', delivery: { stage: 'pr_open', environment: null, pr: pr(221, '3D model viewer', 'open', 'dev', 'success') } }),
     t('sb_studio', 10, 'AWS login for deploy', 'claude', 'running', 'needs_attention', { done: 4 }),
@@ -218,13 +217,6 @@ function seed(params) {
       invoices.heldPrompt = { id: 'hold_1', class: 'new_scope', excerpt: 'Also add a dark mode to the invoice settings page.', percent: 92, typed_by: 'mkarp', created_at: iso(2 * MIN) };
     }
   }
-  db.messages = [
-    // Notices from Yulius itself (delivery and disk notices, scope changes); tasks do not message each other.
-    { id: 'msg_1', task: 'tsk_studio_12', from: { task_id: null, login: null, title: 'Yulius' }, to_task_id: 'tsk_studio_12', kind: 'request', subject: 'Scope changed by the user', body: 'The user dropped the invoice export from this task. Stop work on it and continue with the checkout API.', created_at: iso(42 * MIN), read: true },
-    { id: 'msg_2', task: 'tsk_studio_12', from: { task_id: null, login: null, title: 'Yulius' }, to_task_id: 'tsk_studio_12', kind: 'request', subject: 'Checks failed on the pull request', body: 'The CI gate failed on the head of your pull request. Fix it on this branch, test-first, then push.', created_at: iso(8 * MIN), read: false },
-    // The agent asks people (message_send to="people"): they answer in its terminal (F 2026-10-10).
-    { id: 'msg_3', task: 'tsk_studio_12', from: { task_id: 'tsk_studio_12', login: null, title: '#12 Checkout API' }, to_task_id: null, kind: 'question', subject: 'Stripe keys', body: 'Should checkout use the Stripe test keys or the live ones? The AWS sign-in tab is open: ' + `${ORIGIN}/s/studio/browser?tab=tab-aws`, created_at: iso(3 * MIN), read: true },
-  ];
   db.accounts = [
     { id: 'acc_c1', provider: 'anthropic', label: 'Claude #1', status: 'ok', usage: { primary: { used_percent: 42.0, resets_at: isoIn(2.2 * HOUR), window_minutes: 300 }, secondary: { used_percent: 18.5, resets_at: isoIn(4 * DAY), window_minutes: 10080 }, observed_at: iso(2 * MIN) }, last_error: null, in_use_by: 1 },
     { id: 'acc_c2', provider: 'anthropic', label: 'Claude #2', status: 'ok', usage: { primary: { used_percent: 87.3, resets_at: isoIn(1.1 * HOUR), window_minutes: 300 }, secondary: { used_percent: 61.0, resets_at: isoIn(2 * DAY), window_minutes: 10080 }, observed_at: iso(1 * MIN) }, last_error: 'usage: Usage updates again in about 12 min.', in_use_by: 3 },
@@ -296,7 +288,7 @@ function summary(task) {
     id: task.id, sandbox_id: task.sandbox_id, number: task.number, title: task.title, harness: task.harness,
     status: task.status, activity: task.status === 'running' || task.status === 'waiting_capacity' ? task.activity : null,
     branch: task.branch, origin: task.origin, created_by: task.created_by, created_at: task.created_at, updated_at: task.updated_at,
-    steps: stepsSummary(task), unread_messages: task.unread_messages, archived: task.archived, account_label: task.account_label,
+    steps: stepsSummary(task), archived: task.archived, account_label: task.account_label,
     resumes_at: task.status === 'waiting_capacity' ? task.resumes_at || null : null,
     // Chained tasks (TSK-012) and a held prompt (TSK-013).
     after: task.afterLink ? { ...task.afterLink } : null,
@@ -613,7 +605,7 @@ route('POST', '/api/sandboxes', ({ db, body }) => {
     db.tasks.push({
       id, sandbox_id: sandbox.id, number: 1, title: 'Prepare repository for Yulius', harness: 'claude', status: 'closed', activity: null,
       branch: null, origin: 'onboarding', created_by: { login: db.me.user.login }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-      unread_messages: 0, archived: false, account_label: null,
+      archived: false, account_label: null,
       stepsList: ['Assess the documentation format', 'Add AGENTS.md and docs/specs', 'Open PR'].map((title, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title, status: 'pending', note: '', updated_by: null, updated_at: null })),
       model: 'claude-opus-4', effort: 'high', delivery: null, prompt: 'Adapt this repository to the Yulius documentation format.',
     });
@@ -733,7 +725,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
     id, sandbox_id: sandbox.id, number, title, harness: 'claude', status: before ? 'chained' : 'queued', activity: null,
     branch: `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || `task-${number}`}`,
     origin: 'ui', created_by: { login: db.me.user.login }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-    unread_messages: 0, archived: false, account_label: null,
+    archived: false, account_label: null,
     stepsList: wf ? wf.steps.map((title2, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title: title2, status: 'pending', note: '', updated_by: 'workflow', updated_at: new Date().toISOString() })) : [],
     model: body.model || 'claude-opus-4', effort: body.effort || 'default', prompt: body.prompt,
     delivery: null, mode: choice ? choice.mode : body.mode || 'goal', auto: choice ? choice.auto : null,
@@ -902,13 +894,6 @@ route('POST', `/api/tasks/${ID}/feedback`, ({ db, p, body }) => {
   taskOf(db, p[0]);
   if (!['correct', 'incorrect'].includes(body.verdict)) fail(422, 'invalid', 'verdict must be correct or incorrect');
   return json(204);
-});
-route('GET', `/api/tasks/${ID}/messages`, ({ db, p }) => {
-  const task = taskOf(db, p[0]);
-  const list = db.messages.filter((m) => m.task === task.id).map(({ task: _t, ...m }) => ({ ...m }));
-  db.messages.filter((m) => m.task === task.id).forEach((m) => { m.read = true; });
-  if (task.unread_messages) touch(db, task, { unread_messages: 0 });
-  return list;
 });
 route('GET', '/api/archived-tasks', ({ db }) => db.tasks.filter((t) => t.archived && db.sandboxes.some((s) => s.id === t.sandbox_id)).map(summary));
 
@@ -2290,7 +2275,7 @@ route('POST', `/api/sessions/${ID}/continue`, ({ db, p }) => {
     id, sandbox_id: sandbox.id, number, title: doc.title, harness: 'claude', status: 'starting', activity: null,
     branch: `feat/${doc.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)}`,
     origin: 'import', created_by: { login: db.me.user.login }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-    unread_messages: 0, archived: false, account_label: null, stepsList: [], model: 'claude-opus-4', effort: 'default', prompt: doc.title, delivery: null,
+    archived: false, account_label: null, stepsList: [], model: 'claude-opus-4', effort: 'default', prompt: doc.title, delivery: null,
   };
   db.tasks.push(task);
   doc.continued_in = id;
@@ -2527,7 +2512,6 @@ class TermSession {
     const contained = !(this.db.me.instance && this.db.me.instance.contained === false);
     const extras = [];
     if (!this.exited && this.task.number % 2 === 0) extras.push(c(80, '1 shell'));
-    if (!this.exited && this.task.unread_messages) extras.push(dim(`← ${this.task.unread_messages === 1 ? '1 notice' : `${this.task.unread_messages} notices`}`));
     const mode = contained
       ? ` ${c(204, '⏵⏵ bypass permissions on')}${extras.length ? '' : dim(' (shift+tab to cycle)')}`
       : ` ${dim('? for shortcuts')}`;
