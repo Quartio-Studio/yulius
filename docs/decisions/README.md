@@ -30,4 +30,4 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0024](0024-default-model-and-effort.md): Tasks default to Opus 5.5 at high effort
 - [0025](0025-sandbox-navigation-more-group.md): Six sandbox pages in the sidebar, the rest under "More"
 - [0026](0026-attached-images-are-pasted.md): Attached images are pasted into the first message, not mentioned
-- [0026](0026-task-status-follows-claude-codes-own-records.md): A task's status follows Claude Code's own records
+- [0027](0027-task-status-follows-claude-codes-own-records.md): A task's status follows Claude Code's own records
