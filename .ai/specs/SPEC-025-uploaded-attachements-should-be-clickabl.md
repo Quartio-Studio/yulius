@@ -1,11 +1,11 @@
 ---
 yulius-task: 21113514-aeb7-4592-a8bb-89140d60bc5b
-status: in-progress
+status: done
 ---
 
 # SPEC-025: Attachments open when clicked and reach Claude Code natively
 
-Status: in progress
+Status: implemented
 Date: 2026-10-12
 Owner: Yulius task #23
 Scope authorization: user request ("uploaded attachements should be clickable. Moreover, the attachement should be natively passed to claude code, not as a path"), with a screenshot of a composer attachment chip.
@@ -57,8 +57,8 @@ content block), not as a path the agent has to open with the Read tool.
 - [x] A prompt-mode task's first message attaches its files natively as @mentions
 - [x] A goal-mode task's files reach Claude Code natively in a first message before /goal
 - [x] Composer attachment chips open the file when clicked
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Test plan
 
@@ -132,6 +132,9 @@ content block), not as a path the agent has to open with the Read tool.
   `terminal_ws two_viewers_share_the_terminal_and_only_writers_type` (a terminal size at task
   start), passed 45 of 45 runs alone and under full CPU load and is not on this change's path:
   issue #253.
+- `scripts/dev ci` on the final head (with the held-Stop test): exit 0; fmt, clippy `-D warnings`,
+  cargo-deny (advisories, bans, licenses, sources ok), docs, repository contracts; nextest 1155
+  tests run, 1155 passed, 16 skipped.
 - `npx e2e run tests/filedrop.e2e.ts`: 9 passed.
 - Screenshots of the chips and of the image preview in the mock UI (scratch), checked by eye.
 - Not tested here: a live model describing an attached image (no paid credential).
