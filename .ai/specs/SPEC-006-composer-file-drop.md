@@ -52,7 +52,7 @@ Rust integration test for the endpoint; browser e2e for drop and paste on the pr
 - Drafts are kept per user and sandbox and expire after a week, instead of being tied to a task that does not exist yet. Limit: a task running longer than a week may lose a file it was given.
 - The terminal drop flow was generalised (`attachPathDrop`) rather than duplicated.
 
-- Amended 2026-10-12: attachments are chips with thumbnails, not path text in the prompt (the path was shown and sent as bare text). The agent still receives the paths, appended as "Attached files" lines, because that is how it reads a file.
+- Amended 2026-10-12: attachments are chips with thumbnails, not path text in the prompt (the path was shown and sent as bare text). The agent still receives the paths, appended as `@path` mentions, which Claude Code attaches itself (an image as an image). Not verified against a live Claude Code: no credential here.
 
 ## Evidence
 
