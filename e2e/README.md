@@ -27,7 +27,8 @@ disable`); CI sets it.
 
 | File | Flow |
 | --- | --- |
-| `navigation.e2e.ts` | Open a task from the sidebar, every sandbox page from the sandbox navigation, another sandbox from the tabs |
+| `navigation.e2e.ts` | Open a task from the sidebar, every sandbox page (Cockpit first) from the sandbox navigation, another sandbox from the tabs |
+| `cockpit.e2e.ts` | Cockpit is the first sandbox page: it opens the user's own Claude Code session with the keyboard in it (no WCAG violations) and finds it again after leaving; a stopped Cockpit offers Start again and resumes; a failed start says why with Try again; read access explains why it is not available |
 | `new-task.e2e.ts` | The new-task shortcut focuses the composer; Enter adds a line and ⌘/Ctrl+Enter starts the task and opens it with "Auto → Goal · Feature"; lists continue, end and indent, ⌘/Ctrl+B and I wrap, fences close, Preview renders (no WCAG violations); a question on Auto becomes "Auto → Prompt · Research" and picked mode and workflow show no Auto label |
 | `intake.e2e.ts` | A mixed request shows the split card below the box (shimmering rows, then "Split into 2 tasks?" with collapsed prompts, In parallel / As a chain, Create 2 tasks; no WCAG violations) and makes a chain; Keep as one task; "Run after"; a start rule built from picked conditions (all/any, reopened, removed, cleared; none offered without tasks; no WCAG violations); a held prompt's choices; Start now |
 | `sign-in.e2e.ts` | Signed out: a wrong superadmin password is refused, the right one signs in (to the home screen) |

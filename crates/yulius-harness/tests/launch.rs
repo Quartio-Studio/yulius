@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use serde_json::{Value, json};
 use yulius_domain::harness::Harness;
 use yulius_harness::launch::{
-    Credential, LaunchError, LaunchMode, LaunchPlan, LaunchRequest, McpServerSpec, McpTransport,
-    PRIVATE_FILE_MODE, PlannedFile, plan_launch,
+    CockpitRequest, Credential, LaunchError, LaunchMode, LaunchPlan, LaunchRequest, McpServerSpec,
+    McpTransport, PRIVATE_FILE_MODE, PlannedFile, plan_cockpit, plan_launch,
 };
 use yulius_harness::secret::Secret;
 
@@ -418,6 +418,79 @@ fn a_named_model_without_effort_runs_at_high_effort_unless_it_takes_none() -> Te
     assert!(
         argv.windows(2).any(|w| w == ["--model", "claude-opus-5-5"]),
         "{argv:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment() -> TestResult {
+    let request = CockpitRequest {
+        cwd: PathBuf::from("/data/sandboxes/s1/repo"),
+        config_dir: PathBuf::from("/home/alice/.claude"),
+        resume: None,
+        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
+    };
+    let plan = plan_cockpit(&request)?;
+    // No Yulius settings (hooks, status line), MCP, prompt or approval bypass (SPEC-021
+    // CKP-002): Claude Code as a person starts it, on the default Opus 5.5 at high effort
+    // (SPEC-023 DEF-004); `/model` and `/effort` still change it.
+    assert_eq!(
+        plan.argv,
+        ["claude", "--model", "claude-opus-5-5", "--effort", "high"]
+    );
+    assert_eq!(plan.cwd, PathBuf::from("/data/sandboxes/s1/repo"));
+    assert!(plan.files.is_empty());
+    assert!(
+        plan.env
+            .contains(&("CLAUDE_CONFIG_DIR".into(), "/home/alice/.claude".into()))
+    );
+    assert!(
+        plan.env
+            .contains(&("DISABLE_AUTOUPDATER".into(), "1".into()))
+    );
+    assert!(!plan.env.iter().any(|(k, _)| k.starts_with("YULIUS")));
+    assert_eq!(
+        plan.secret_env,
+        vec![(
+            "CLAUDE_CODE_OAUTH_TOKEN".to_owned(),
+            CLAUDE_TOKEN.to_owned()
+        )]
+    );
+    assert!(!format!("{plan:?}").contains("SYNTHETIC"));
+
+    let resumed = plan_cockpit(&CockpitRequest {
+        resume: Some(SESSION.into()),
+        ..request.clone()
+    })?;
+    assert_eq!(
+        resumed.argv,
+        [
+            "claude",
+            "--resume",
+            SESSION,
+            "--model",
+            "claude-opus-5-5",
+            "--effort",
+            "high"
+        ]
+    );
+    assert_eq!(resumed.session_id.as_deref(), Some(SESSION));
+
+    for bad in ["--help", "a b", ""] {
+        assert_eq!(
+            plan_cockpit(&CockpitRequest {
+                resume: Some(bad.into()),
+                ..request.clone()
+            }),
+            Err(LaunchError::Invalid("session_id"))
+        );
+    }
+    assert_eq!(
+        plan_cockpit(&CockpitRequest {
+            credential: Credential::ClaudeOauthToken(Secret::new("a\nb".into())),
+            ..request
+        }),
+        Err(LaunchError::Invalid("credential"))
     );
     Ok(())
 }

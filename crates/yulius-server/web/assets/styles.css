@@ -969,6 +969,15 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 /* ---------------------------------------------------------------- task view */
 
 .taskview { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+/* The Cockpit (SPEC-021): one header line, then the user's plain Claude Code session filling the
+   centre like a task's terminal. */
+.cockpit { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.cockpit-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; padding: 8px 16px; border-bottom: 1px solid var(--border); min-width: 0; }
+.cockpit-title { display: inline-flex; align-items: center; gap: 8px; margin: 0; font-family: var(--font-display); font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 600; }
+.cockpit-title .nav-slot { align-self: center; }
+.cockpit-sub { min-width: 0; overflow-wrap: anywhere; }
+.cockpit-term { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.cockpit-msg { padding: 24px 16px; }
 /* The terminal and what floats over it: the attention bar never resizes the terminal (each resize
    makes the agent's TUI redraw, F 2026-10-09). */
 .taskview-term { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }

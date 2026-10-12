@@ -563,6 +563,62 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
     })
 }
 
+/// A user's Cockpit (SPEC-021): a plain Claude Code session outside any task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CockpitRequest {
+    /// Working directory (the sandbox repository).
+    pub cwd: PathBuf,
+    /// Claude's config dir as the session sees it (in the user's own home).
+    pub config_dir: PathBuf,
+    /// Conversation to resume.
+    pub resume: Option<String>,
+    /// Provider credential of the pool subscription.
+    pub credential: Credential,
+}
+
+/// Builds the launch plan of a Cockpit: `claude [--resume <id>]` with the subscription's token
+/// in the secret environment and none of a task's settings, hooks, MCP servers, model or
+/// approval bypass (SPEC-021 CKP-002).
+///
+/// # Errors
+/// [`LaunchError`] for a non-UTF-8 config dir, an unsafe session id or credential.
+pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError> {
+    let Credential::ClaudeOauthToken(token) = &request.credential;
+    check(
+        !token.expose().is_empty() && !token.expose().contains(['\0', '\n', '\r']),
+        "credential",
+    )?;
+    let mut argv = vec![CLAUDE_PROGRAM.to_owned()];
+    if let Some(id) = &request.resume {
+        check(valid_session_id(id), "session_id")?;
+        argv.extend(["--resume".into(), id.clone()]);
+    }
+    // The person's own session still starts on Yulius's default model and effort (SPEC-023).
+    argv.extend([
+        "--model".into(),
+        DEFAULT_CLAUDE_MODEL.into(),
+        "--effort".into(),
+        DEFAULT_CLAUDE_EFFORT.into(),
+    ]);
+    Ok(LaunchPlan {
+        argv,
+        cwd: request.cwd.clone(),
+        env: vec![
+            (
+                "CLAUDE_CONFIG_DIR".into(),
+                utf8(&request.config_dir, "config_dir")?.to_owned(),
+            ),
+            (
+                DISABLE_AUTOUPDATER_ENV.0.into(),
+                DISABLE_AUTOUPDATER_ENV.1.into(),
+            ),
+        ],
+        secret_env: vec![("CLAUDE_CODE_OAUTH_TOKEN".into(), token.expose().clone())],
+        files: Vec::new(),
+        session_id: request.resume.clone(),
+    })
+}
+
 fn pretty(value: &Value) -> Vec<u8> {
     let mut bytes = serde_json::to_vec_pretty(value).unwrap_or_default();
     bytes.push(b'\n');

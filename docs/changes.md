@@ -8,7 +8,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - Tasks run Opus 5.5 at high effort by default (SPEC-023, task #21): a task without a model runs
   `claude-opus-5-5` instead of Claude Code's moving `opus` alias, and a task without an effort runs
-  at `high` (none for Haiku); the composer and Settings say so.
+  at `high` (none for Haiku); the Cockpit starts on them too; the composer and Settings say so.
+- Every user has a Cockpit, first in the sandbox navigation: their own plain Claude Code session in
+  the sandbox (no Yulius hooks, MCP or briefing) on a pool subscription, for quick questions and
+  work that should not become a task. `/clear` starts over; it cannot be deleted, and after an
+  exit, a day unwatched or a restart it resumes its conversation (SPEC-021, ADR-0020, task #19).
 - A start rule is picked, not typed: the composer's "When a rule is true…" opens an editor of
   conditions (a task of the sandbox and "is done", "is merged" or "has ended") joined by All or
   Any, shows the sentence it builds, opens again with what was picked and is not offered in a
