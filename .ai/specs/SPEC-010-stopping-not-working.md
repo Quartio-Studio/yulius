@@ -44,3 +44,9 @@ Working"; it fails with the old grouping.
 ## Decisions
 
 - Only the grouping changes; `stopping` remains in `LIVE_STATUSES` so actions stay disabled.
+
+## Evidence
+
+- `cd e2e && npx e2e run task-done`: 4 of 4 pass with the fix; with `stopping` back in the
+  `working` group the new test fails (3 pass, 1 fail).
+- `scripts/dev ci` was not run for this change.
