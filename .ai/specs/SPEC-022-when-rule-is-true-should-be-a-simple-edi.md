@@ -1,0 +1,99 @@
+---
+yulius-task: b35ca245-ec20-4f1c-9b80-f9c148f00648
+status: done
+---
+
+# SPEC-022: a start rule is picked in a simple editor
+
+Status: done
+Date: 2026-10-12
+Owner: Yulius task #20
+Scope authorization: user request: "when rule is true should be a simple editor, not a string to
+be written" (screenshot: the composer's Run after menu, "When a rule is true…").
+
+## Goal
+
+The composer's "When a rule is true…" opens a small editor in which a person picks conditions
+("#12 Checkout API · is done") and whether all or any of them must hold, instead of typing a
+sentence such as `#12 done and #13 done`. The editor writes that sentence for the server, so
+start rules themselves (SPEC-017) do not change.
+
+## Context
+
+- [SPEC-017](SPEC-017-task-start-rules.md) and [ADR-0018](../../docs/decisions/0018-task-start-rules.md):
+  a start rule is text over `#N done|merged|ended` atoms with `and`, `or`, `not` and parentheses,
+  parsed and evaluated by `yulius_domain::rule`; the API takes it as `start_rule`.
+- Today `openRuleDialog` in `crates/yulius-server/web/assets/taskview.js` shows one text input,
+  so people must know the grammar and the task numbers by heart; a mistake is only found when
+  the task is created.
+- The composer already lists the sandbox's tasks for "After #N" (`chainCandidates` in
+  `intake.js`); `.seg` radio groups and `.select` controls exist in `styles.css`.
+
+## Requirements
+
+| ID | Requirement | Evidence |
+| --- | --- | --- |
+| RED-001 | "When a rule is true…" opens an editor of conditions, each one a task of this sandbox (`#N title`, newest first, archived ones left out) and a state: "is done", "is merged" or "has ended". There is no text field to write the rule in. | e2e |
+| RED-002 | With two or more conditions the editor asks whether **all** (`and`) or **any** (`or`) of them must be true; Add condition adds a row (preferring a task not yet used) and each row can be removed. | e2e |
+| RED-003 | The editor shows the sentence it builds ("Starts by itself when #12 done and #13 done") and Use this rule sets it; the text is the canonical form the server stores (`#12 done and #13 done`). | in-page unit test, e2e |
+| RED-004 | Opening the editor again shows the picked conditions, so they can be changed; Start now clears them. | e2e |
+| RED-005 | In a sandbox with no other task the menu does not offer a rule. | e2e |
+| RED-006 | The API keeps the full grammar (`not`, parentheses, mixed `and`/`or`); only the composer is simpler. | unchanged API tests |
+| RED-007 | A rule has at most 16 conditions, the server's limit: Add condition is disabled with a note at 16. A picked task that is no longer offered stays in its row instead of being dropped: with its title when it is only older than the offered ones, as "#N (archived or removed)" otherwise. | e2e, in-page unit test |
+
+## Plan
+
+- [x] Read the product context and related work, then write and validate the spec
+- [x] Picked conditions become the start rule text the server reads
+- [x] The composer's "When a rule is true…" opens a condition editor instead of a text box
+- [x] A picked rule opens again for changes, and a sandbox without tasks says so
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
+
+## Acceptance criteria
+
+- Picking `#12 Checkout API is done`, adding `#4 Payment webhook has ended`, choosing Any and
+  using the rule starts a task queued "when #12 done or #4 ended".
+- No step of creating a rule needs typing.
+- The editor has no WCAG violations; `scripts/dev ci` and the e2e suite pass.
+
+## Test plan
+
+- In-page unit test of the pure `ruleText` function (one condition, all, any, empty).
+- e2e (`intake.e2e.ts`): build a two-condition rule with Any, see the chip and the queued task;
+  reopen the editor and find the conditions; remove a row; Start now clears the rule; axe on the
+  open editor.
+- e2e: a sandbox without tasks (mock switch `tasks=0`) offers no rule; archived tasks are left
+  out by `ruleChoices` (unit test).
+
+## Decisions
+
+- **A flat list of conditions joined by all/any**, not a nested tree with `not`: it covers the
+  examples people gave (`X and Y finished`, `either`) with two controls per row. Rules that need
+  `not` or parentheses are still possible through the API. Recorded in ADR-0019.
+- **No "edit as text" escape hatch** in the composer: the request is to stop writing strings, and
+  a second input mode doubles what has to be tested and explained.
+- **Native `<select>` controls** for task and state: keyboard and screen-reader support for free,
+  styled by the existing `.select` rules.
+- **A picked rule is not pruned when a task it names disappears** (review, minor): dropping a
+  condition would let the task start earlier than asked; the server refuses the rule with "the rule
+  names #N, which does not exist in this sandbox" and nothing is lost, so the person decides.
+- The editor lives in its own module (`ruleeditor.js`) with a pure `ruleText` function, so the
+  sentence it builds is unit-tested without the dialog.
+
+## Evidence
+
+- `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run tests/intake.e2e.ts` at 01dd7a2: 10 passed,
+  including the in-page unit test of `ruleText`, `ruleChoices`, `conditionChoices` and the
+  16-condition limit, the editor flow with All/Any (no WCAG violations), reopening and removing,
+  the limit, and `tasks=0`.
+- `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run` (whole suite, after the editor landed): 133
+  passed, 1 skipped (the model-driven agent test, no key).
+- `scripts/dev ci` at 6efec09: exit 0 (repository check, script tests, check, fmt, clippy,
+  nextest 1149 passed / 16 skipped, deny, machete, doc). Later commits change only web assets,
+  tests and docs; `python3 scripts/check_repository.py` passes at 01dd7a2.
+- Seen in the browser (mock, 1280 px): the editor with two conditions, All/Any and the sentence.
+- Independent review (fresh session, `om-code-review`), three rounds: round 1 approved with three
+  minors (16-condition limit, picked tasks dropped on reopening, stale rule; the last kept by
+  decision) and nits; round 2 found a wrong "(archived)" label; round 3 approved 01dd7a2 with no
+  findings.

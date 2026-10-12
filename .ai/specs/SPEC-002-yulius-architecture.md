@@ -968,7 +968,7 @@ frontmatter and registered under its new path (F 2026-10-11: features finished w
 nothing opened; a renamed spec blocked every Stop).
 
 **Delivery loop** (F 2026-10-11; SPEC-028). Yulius opens a ready task's pull request after its
-turn and says so in the task's terminal. No notice reaches the agent (ADR-0019): it waits with
+turn and says so in the task's terminal. No notice reaches the agent (ADR-0021): it waits with
 `yulius wait`, which ends when the checks at its head end, its delivery moves or an armed merge is
 decided (merged, refused with the reason, or dropped because the branch moved or the checks
 failed), and reads `ci_status` and `delivery_status`. The background reconciliation queues an
@@ -1855,7 +1855,7 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | --- | --- |
 | `project_context` | Project summary, architecture/decision index, recent changes, delivery rules (COM-004, DSC-009) |
 | `tasks_list`, `task_get` | Previous and parallel tasks: status, harness, branch, spec, steps, summary (COM-001) |
-| ~~`message_send`, `messages_inbox`~~ | Withdrawn (SPEC-028, ADR-0019): no message tools. |
+| ~~`message_send`, `messages_inbox`~~ | Withdrawn (SPEC-028, ADR-0021): no message tools. |
 | `scope_claim`, `scope_release`, `scopes_list` | Advisory path-glob claims with conflict report (COM-003) |
 | `steps_set`, `step_update`, `steps_get` | Step manager (STP-001/002, STP-006..008): plan bounds, effort, WIP limit, no reopening by agents, weighted `percent` and `nudges` in every result (ADR-19) |
 | `spec_check` | Run the format validator on the task spec and docs (DSC-003); `required` per the spec policy (DSC-013) and `plan_nudges` |
@@ -1923,7 +1923,7 @@ output) and is recorded. Responses:
   `hookSpecificOutput.updatedToolOutput` when it held an agent secret (ADR-20); without
   fingerprints in a Yulius run the result is withheld.
 
-Waking idle tasks (COM-005) is withdrawn (SPEC-028, ADR-0019): Yulius never types into an agent's
+Waking idle tasks (COM-005) is withdrawn (SPEC-028, ADR-0021): Yulius never types into an agent's
 session; an agent that waits runs `yulius wait` in a background shell, which Claude Code wakes it
 from.
 
@@ -2450,7 +2450,7 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 ## 15. Changelog
 
 - 2026-10-12 (task #26, "delete message mechanism for now until we make the infra very good";
-  SPEC-028, ADR-0019): messages are removed end to end: no `message_send` or `messages_inbox`, no
+  SPEC-028, ADR-0021): messages are removed end to end: no `message_send` or `messages_inbox`, no
   stored notices, digest, urgent-message stop reason or idle wake-up, no Messages panel, unread
   counts, message notification or `GET /api/tasks/{tid}/messages`. `yulius wait` says how an armed
   merge ended. Tables and history stay.

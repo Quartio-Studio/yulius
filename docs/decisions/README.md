@@ -22,4 +22,6 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0015](0015-yulius-ci.md): Yulius is the projects' only CI
 - [0017](0017-sandbox-disk-upkeep.md): Disk is managed by Yulius: caches of idle tasks are pruned, switches check first
 - [0018](0018-task-start-rules.md): Tasks start by a logical rule over other tasks' states
-- [0019](0019-no-messages-until-delivery-is-reliable.md): No messages until their delivery is reliable
+- [0019](0019-start-rule-editor.md): The composer builds a start rule from picked conditions, all or any
+- [0020](0020-cockpit-as-a-plain-shell-session.md): The Cockpit is a plain Claude Code session on the shell runtime
+- [0021](0021-no-messages-until-delivery-is-reliable.md): No messages until their delivery is reliable

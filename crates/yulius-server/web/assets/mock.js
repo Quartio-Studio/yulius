@@ -266,6 +266,8 @@ function seed(params) {
     db.sandboxes = [];
     db.tasks = [];
   }
+  // `tasks=0`: sandboxes without any task yet (the composer then offers no start rule, SPEC-022).
+  if (params.get('tasks') === '0') db.tasks = [];
   recount(db);
   return db;
 }
@@ -1755,7 +1757,7 @@ function shellFolder(db, shell) {
 const shellDto = (shell) => ({ id: shell.id, name: shell.name, task_id: shell.task_id, folder: shell.folder, created_at: shell.created_at });
 route('GET', `/api/sandboxes/${ID}/shells`, ({ db, p }) => {
   need(sandboxOf(db, p[0]), 'write');
-  return [...db.shells.values()].filter((shell) => shell.sandbox_id === p[0]).map(shellDto);
+  return [...db.shells.values()].filter((shell) => shell.sandbox_id === p[0] && !shell.cockpit).map(shellDto);
 });
 route('POST', `/api/sandboxes/${ID}/shells`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
@@ -1763,7 +1765,7 @@ route('POST', `/api/sandboxes/${ID}/shells`, ({ db, p, body }) => {
     const task = db.tasks.find((t) => t.id === body.task_id && t.sandbox_id === p[0]);
     if (!task) fail(404, 'not_found', 'not found');
   }
-  const own = [...db.shells.values()].filter((shell) => shell.sandbox_id === p[0]);
+  const own = [...db.shells.values()].filter((shell) => shell.sandbox_id === p[0] && !shell.cockpit);
   if (own.length >= 8) fail(429, 'capacity', 'at most 8 terminals per sandbox; close one first');
   const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim().slice(0, 40)
     : `Terminal ${[1, 2, 3, 4, 5, 6, 7, 8, 9].find((n) => !own.some((shell) => shell.name === `Terminal ${n}`))}`;
@@ -1773,10 +1775,31 @@ route('POST', `/api/sandboxes/${ID}/shells`, ({ db, p, body }) => {
   db.shells.set(shell.id, shell);
   return json(201, shellDto(shell));
 });
+// The user's Cockpit (SPEC-021): one plain Claude Code session per sandbox, started on demand,
+// never listed, renamed or closed as a terminal. `&cockpit=fail` makes it fail to start;
+// `&cockpit=gone` answers the first call with a Cockpit whose process is already gone (a reboot).
+route('POST', `/api/sandboxes/${ID}/cockpit`, ({ db, p }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  const scenario = new URLSearchParams(location.search).get('cockpit');
+  if (scenario === 'fail') fail(429, 'capacity', 'no subscription has capacity right now');
+  if (scenario === 'gone' && !db.cockpitGone) {
+    db.cockpitGone = true;
+    return { id: `ck_${p[0]}_gone`, name: 'Cockpit', task_id: null, folder: `/srv/yulius/sandboxes/studio/repo`, created_at: new Date().toISOString() };
+  }
+  let shell = [...db.shells.values()].find((s) => s.sandbox_id === p[0] && s.cockpit);
+  if (!shell) {
+    db.nextId += 1;
+    db.cockpitStarts = (db.cockpitStarts || 0) + 1;
+    shell = { id: `ck_${p[0]}_${db.nextId}`, sandbox_id: p[0], name: 'Cockpit', task_id: null, created_at: new Date().toISOString(), session: null, cockpit: true, resumed: db.cockpitStarts > 1 };
+    shell.folder = shellFolder(db, shell);
+    db.shells.set(shell.id, shell);
+  }
+  return shellDto(shell);
+});
 route('PATCH', `/api/sandboxes/${ID}/shells/${ID}`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
   const shell = db.shells.get(p[1]);
-  if (!shell || shell.sandbox_id !== p[0]) fail(404, 'not_found', 'not found');
+  if (!shell || shell.sandbox_id !== p[0] || shell.cockpit) fail(404, 'not_found', 'not found');
   const name = typeof body.name === 'string' ? body.name.trim() : '';
   if (!name || name.length > 40) fail(422, 'invalid', 'a shell name has 1 to 40 characters and no control characters');
   shell.name = name;
@@ -1785,7 +1808,7 @@ route('PATCH', `/api/sandboxes/${ID}/shells/${ID}`, ({ db, p, body }) => {
 route('DELETE', `/api/sandboxes/${ID}/shells/${ID}`, ({ db, p }) => {
   need(sandboxOf(db, p[0]), 'write');
   const shell = db.shells.get(p[1]);
-  if (!shell || shell.sandbox_id !== p[0]) fail(404, 'not_found', 'not found');
+  if (!shell || shell.sandbox_id !== p[0] || shell.cockpit) fail(404, 'not_found', 'not found');
   if (shell.session) shell.session.end(null);
   db.shells.delete(shell.id);
   return json(204);
@@ -2773,6 +2796,11 @@ class ShellSession {
     // Like bash with Yulius's PROMPT_COMMAND: the working directory as OSC 7 before each prompt.
     this.prompt = `\x1b]7;file://sandbox${shell.folder || ''}\x1b\\${c(114, `you@${slug}`)}:${c(39, cwd)}$ `;
     this.screen = `${dim('Contained sandbox shell (mock). Try: ls, pwd, git status, exit')}\r\n${this.prompt}`;
+    if (shell.cockpit) {
+      // A plain Claude Code session (mock): its welcome and prompt; /exit ends it.
+      this.prompt = `${c(39, '>')} `;
+      this.screen = `${c(208, '✻')} Welcome to Claude Code${shell.resumed ? dim(' · resumed your last conversation') : ''}\r\n${dim(`  cwd: ${shell.folder}`)}\r\n\r\n${this.prompt}`;
+    }
   }
 
   out(text) {
@@ -2812,6 +2840,12 @@ class ShellSession {
       'git status': 'On branch main\r\nYour branch is up to date with \'origin/main\'.\r\n\r\nnothing to commit, working tree clean',
       whoami: 'you',
     };
+    if (this.shell.cockpit) {
+      if (cmd === '/exit') { this.out('\r\n'); this.end(0); return; }
+      if (cmd === '/clear') { this.out(`${E}2J${E}H${this.prompt}`); return; }
+      this.out(`\r\n${cmd ? `${c(208, '⏺')} ${cmd.endsWith('?') ? 'Good question. (mock answer)' : 'Done. (mock)'}\r\n\r\n` : ''}${this.prompt}`);
+      return;
+    }
     if (cmd === 'exit') {
       this.out('\r\nlogout\r\n');
       this.end(0);

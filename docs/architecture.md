@@ -58,7 +58,7 @@ before it ends the running session ([SPEC-008](../.ai/specs/SPEC-008-sandbox-dis
 ## Agent feedback
 
 Yulius has no messages for now ([SPEC-028](../.ai/specs/SPEC-028-delete-message-mechanism-for-now-until-w.md),
-[decision 0019](decisions/0019-no-messages-until-delivery-is-reliable.md)): nothing is stored for
+[decision 0021](decisions/0021-no-messages-until-delivery-is-reliable.md)): nothing is stored for
 an agent, injected by a hook or typed into its session. An agent pulls what it needs: it waits
 with `yulius wait` in a background shell, which Claude Code wakes it from, and reads
 `ci_status` and `delivery_status`. The armed merge's outcome is kept in memory for the wait.
@@ -73,6 +73,23 @@ sequenceDiagram
     W->>Y: POST /internal/agent/wait (long poll)
     Y-->>W: checks ended / stage moved / armed merge decided (merged, refused, dropped)
     W-->>A: one line, then exits: Claude Code wakes the agent
+```
+
+## Cockpit
+
+Every user has one plain Claude Code session per sandbox, the Cockpit
+([SPEC-021](../.ai/specs/SPEC-021-in-this-bar-we-need-to-add-cockpit-at-th.md),
+[decision 0020](decisions/0020-cockpit-as-a-plain-shell-session.md)). It is a sandbox shell of
+kind `cockpit` that runs `claude` instead of the login shell: no hooks, MCP or briefing, a pool
+subscription's token, and the newest conversation resumed whenever it starts again.
+
+```mermaid
+flowchart LR
+  UI["Sidebar: Cockpit"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
+  APP -->|"pool_account"| POOL[("Subscriptions")]
+  APP -->|"plan_cockpit"| HP["Harness: claude [--resume id]"]
+  APP --> SH["Shell runtime (user space, repository)"]
+  UI -->|"WS /api/shells/id/terminal"| SH
 ```
 
 ## Agent primitives

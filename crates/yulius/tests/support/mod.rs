@@ -534,6 +534,40 @@ pub async fn call(
     })
 }
 
+/// Sends `body` as a raw upload (`Content-Length` when `declared`).
+pub async fn send(
+    router: &Router,
+    method: Method,
+    path: &str,
+    body: Body,
+    declared: Option<usize>,
+    creds: &Creds,
+) -> Result<Resp, Box<dyn std::error::Error>> {
+    let mut req = Request::builder().method(method).uri(path);
+    if let Some(cookie) = &creds.cookie {
+        req = req.header(header::COOKIE, cookie_header(cookie));
+    }
+    if let Some(csrf) = &creds.csrf {
+        req = req.header("x-yulius-csrf", csrf);
+    }
+    if let Some(token) = &creds.bearer {
+        req = req.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    if let Some(len) = declared {
+        req = req.header(header::CONTENT_LENGTH, len);
+    }
+    req = req.header(header::CONTENT_TYPE, "application/octet-stream");
+    let resp = router.clone().oneshot(req.body(body)?).await?;
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await?.to_bytes();
+    Ok(Resp {
+        status,
+        body: serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        set_cookie: None,
+        location: None,
+    })
+}
+
 /// Extracts the session value from a Set-Cookie header (`__Host-yulius_session` over HTTPS,
 /// `yulius_session` over HTTP).
 pub fn session_from(set_cookie: &Option<String>) -> Option<String> {

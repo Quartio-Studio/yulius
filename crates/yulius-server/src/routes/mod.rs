@@ -248,6 +248,8 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             "/api/sandboxes/{sid}/shells/{id}",
             patch(shells::rename).delete(shells::remove),
         )
+        // The user's Cockpit (SPEC-021): opened or started, never deleted.
+        .route("/api/sandboxes/{sid}/cockpit", post(shells::cockpit))
         .route(
             "/api/sandboxes/{sid}/files",
             get(files::list).post(files::create).delete(files::delete),

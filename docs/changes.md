@@ -6,13 +6,21 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
-- Messages are gone for now (SPEC-028, ADR-0019; task #26): no `message_send` or `messages_inbox`,
+- Messages are gone for now (SPEC-028, ADR-0021; task #26): no `message_send` or `messages_inbox`,
   no stored notices, notice digest or "unread messages" stop reason, nothing typed into an idle
   session, and no Messages panel, unread counts, message notifications or
   `GET /api/tasks/{tid}/messages`. Agents learn about their checks, delivery and armed merges from
   `yulius wait` (which now says how an armed merge ended), `ci_status` and `delivery_status`. The
   stored messages stay as history. A `yulius wait` already running when the server updates exits
   with "cannot be reached" once (its answer changed shape); start it again.
+- Every user has a Cockpit, first in the sandbox navigation: their own plain Claude Code session in
+  the sandbox (no Yulius hooks, MCP or briefing) on a pool subscription, for quick questions and
+  work that should not become a task. `/clear` starts over; it cannot be deleted, and after an
+  exit, a day unwatched or a restart it resumes its conversation (SPEC-021, ADR-0020, task #19).
+- A start rule is picked, not typed: the composer's "When a rule is true…" opens an editor of
+  conditions (a task of the sandbox and "is done", "is merged" or "has ended") joined by All or
+  Any, shows the sentence it builds, opens again with what was picked and is not offered in a
+  sandbox without tasks; the API still takes the full rule language ([SPEC-022](../.ai/specs/SPEC-022-when-rule-is-true-should-be-a-simple-edi.md), ADR-0019, #20).
 - Claude Code sessions in a task terminal no longer open Claude Code's diff side panel by themselves
   ("No changes this session" on the right); it still opens by hand within a session (SPEC-024).
 - Ended worktrees holding only end-to-end output (`.e2e`), the APM cache (`apm_modules`) or Claude
