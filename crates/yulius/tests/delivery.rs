@@ -922,8 +922,8 @@ async fn pull_request_requires_a_valid_committed_spec() -> TestResult {
     Ok(())
 }
 
-/// AC-DLV-1: standard profile — merging waits for green checks; the dev checkpoint gates the
-/// promotion, which opens a promotion PR dev → main and merges it on a later request.
+/// AC-DLV-1: standard profile — merging waits for green checks and nothing waits for a person
+/// after it; promotion opens a promotion PR dev → main and merges it on a later request.
 #[tokio::test]
 async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult {
     let f = fixture(&DeliveryProfile::standard()).await?;
@@ -1699,17 +1699,20 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
         "{}",
         stale.body
     );
+    // While the checks still run, the reviewed head's merge is armed, not refused: Yulius
+    // merges it once they pass (SPEC-011); nothing is merged yet.
     let pending = rpc(
         "tools/call",
         json!({"name": "delivery_merge", "arguments": {"reviewed_head": head}}),
     )
     .await?;
-    assert_eq!(pending.body["result"]["isError"], true);
+    assert_eq!(pending.body["result"]["isError"], false, "{}", pending.body);
     assert!(
-        tool_text(&pending).contains("merge on green only"),
+        tool_text(&pending).contains("\"armed\": true") || tool_text(&pending).contains("\"armed\":true"),
         "{}",
         pending.body
     );
+    assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
     // A person-verified or unknown environment is never run by an agent.
     let deploy = rpc(
         "tools/call",
@@ -2657,5 +2660,95 @@ async fn needs_you_counts_follow_the_sidebar_rule() -> TestResult {
     // Working again: the pull request no longer speaks for it.
     set("t1", TaskStatus::Running, Some(Activity::Working)).await?;
     assert_eq!(needs().await?, 3);
+    Ok(())
+}
+
+/// SPEC-011: `delivery_merge` while the checks of the reviewed head still run arms the merge;
+/// Yulius merges exactly that head once they pass and tells the agent, and `yulius wait` (the
+/// internal wait endpoint) sees each step without any polling by the agent.
+#[tokio::test]
+async fn an_armed_merge_happens_when_the_checks_pass() -> TestResult {
+    let f = fixture(&DeliveryProfile::studio()).await?;
+    let wt = f
+        .add_task("t1", "Landing page", "feat/1-landing", "quartio")
+        .await?;
+    commit_file(&wt, "landing.txt", "v1", "Landing")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    let opened = f
+        .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
+        .await?;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&head, ChecksState::Pending);
+    f.h.store
+        .insert_attempt(&AttemptRecord {
+            id: AttemptId::parse("a1")?,
+            task_id: TaskId::parse("t1")?,
+            seq: 1,
+            harness: Harness::ClaudeCode,
+            account_id: None,
+            provider_session_id: None,
+            launch_kind: LaunchKind::New,
+            state: AttemptState::Live,
+            run_dir: "/tmp/none".into(),
+            token_hash: f.h.app.deps.crypto.sha256_hex(b"tok-agent"),
+            host_token: Sealed(vec![0]),
+            ptyhost_pid: None,
+            child_pid: None,
+            started_at: Timestamp(1),
+            ended_at: None,
+            exit_code: None,
+            exit_reason: None,
+        })
+        .await?;
+    let internal = yulius_server::internal_router(f.h.app.clone())
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1))));
+    let agent = Creds {
+        bearer: Some("tok-agent".into()),
+        ..Creds::default()
+    };
+    let wait = |since: Value| {
+        call(
+            &internal,
+            Method::POST,
+            "/internal/agent/wait",
+            Some(json!({"head": head, "since": since, "timeout_secs": 3})),
+            &agent,
+        )
+    };
+    let before = wait(Value::Null).await?;
+    assert_eq!(before.status, StatusCode::OK, "{}", before.body);
+    assert_eq!(before.body["stage"], "pr_open");
+    assert_eq!(before.body["merge_armed"], false);
+
+    let armed = call(
+        &internal,
+        Method::POST,
+        "/mcp",
+        Some(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+            "name": "delivery_merge",
+            "arguments": {"reviewed_head": head, "review_summary": "approve"}}})),
+        &agent,
+    )
+    .await?;
+    assert_eq!(armed.body["result"]["isError"], false, "{}", armed.body);
+    let state = wait(before.body.clone()).await?;
+    assert_eq!(state.body["merge_armed"], true, "{}", state.body);
+
+    // Checks still running: nothing happens.
+    let sandbox = SandboxId::parse("s1")?;
+    f.h.app.merge_armed(&sandbox).await;
+    assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
+
+    // Green: Yulius merges the armed head, clears it and tells the agent.
+    f.h.github.set_checks(&head, ChecksState::Success);
+    f.h.app.merge_armed(&sandbox).await;
+    // Merged (the studio profile then promotes by its own policy).
+    let stage = f.delivery("t1").await?["stage"].clone();
+    assert_ne!(stage, "pr_open");
+    let after = wait(state.body.clone()).await?;
+    assert_eq!(after.body["stage"], stage, "{}", after.body);
+    assert_eq!(after.body["merge_armed"], false);
+    assert_eq!(after.body["latest_notice"], "Yulius merged your pull request");
     Ok(())
 }

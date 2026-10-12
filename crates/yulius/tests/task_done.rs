@@ -360,6 +360,64 @@ fn a_goal_the_tui_dropped_is_submitted_again() -> TestResult {
     Ok(())
 }
 
+/// SPEC-011: a goal task starts from its request file (the request, its attached files and the
+/// definition of done) and a `/goal` that names it, typed once the session started.
+#[test]
+fn a_goal_task_starts_from_its_request_file() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let record = app
+            .create_task_internal(NewTask {
+                sandbox: sandbox.clone(),
+                created_by: user.clone(),
+                prompt: "Make the header blue\n\n@/srv/shots/header.png".into(),
+                harness: Harness::ClaudeCode,
+                title: Some("Blue header".into()),
+                workflow_id: None,
+                steps: Vec::new(),
+                model: None,
+                effort: None,
+                origin: TaskOrigin::Ui,
+                automation_run: None,
+                start: true,
+                mode: TaskMode::Goal,
+            })
+            .await?;
+        let id = record.id;
+        wait_for("the goal to start", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "GOAL SET")
+        })
+        .await?;
+        let file = data
+            .join("sandboxes")
+            .join(sandbox.as_str())
+            .join("home/.yulius/tasks")
+            .join(format!("{}.md", record.number));
+        let request = std::fs::read_to_string(&file)?;
+        assert!(request.contains("## Request\n\nMake the header blue\n"), "{request}");
+        assert!(request.contains("\n- /srv/shots/header.png"), "{request}");
+        assert!(request.contains("## Definition of done"), "{request}");
+        // The goal names the file (a request with attached files is never inlined).
+        assert!(
+            screen_contains(&app, &id, "Everything requested in").await,
+            "{}",
+            app.runtime(&id).hub.screen_text()
+        );
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// TSK-014: the goal turn leaves a background shell (Claude Code's Bash tool shape): the task is
 /// shown Working with one background shell until the shell ends, then Done.
 #[test]

@@ -35,9 +35,9 @@ hold the same manual `dev` checkpoint.
 ## Design
 
 - `DeliveryProfile::standard()` returns an empty `environments`.
-- `profile_from_contract` upgrades a `standard` profile whose environments are exactly the manual
+- `yulius.toml` parsing and `profile_from_contract` upgrade a `standard` profile whose environments are exactly the manual
   `dev`/integration/no-command checkpoint to `DeliveryProfile::standard()` before validation.
-- Docs (`AGENTS.md`, `docs/engineering/git.md`, product and architecture, SPEC-001 DLV-002) say the
+- Docs (`docs/engineering/git.md`, SPEC-001 DLV-002, the changes log) say the
   merge on green is the dev delivery.
 
 ## Acceptance criteria

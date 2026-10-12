@@ -292,4 +292,5 @@ pub fn internal(_app: Arc<App>) -> Router<AppState> {
         .route("/mcp", post(mcp::post).get(mcp::get))
         .route("/hooks/{harness}/{event}", post(internal::hook))
         .route("/internal/git-credential", post(internal::git_credential))
+        .route("/internal/agent/wait", post(internal::agent_wait))
 }

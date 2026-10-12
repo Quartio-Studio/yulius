@@ -661,6 +661,12 @@ fn delivery(document: &Document) -> Result<DeliveryProfile, FormatError> {
             .map(environment)
             .collect::<Result<_, _>>()?;
     }
+    // DLV-010: the manual `dev` checkpoint of the former standard preset is gone.
+    if preset == Preset::Standard
+        && matches!(profile.environments.as_slice(), [only] if DeliveryProfile::is_legacy_standard_checkpoint(only))
+    {
+        profile.environments.clear();
+    }
     let line = document.delivery.as_ref().map_or_else(
         || document.environments.first().map_or(1, |t| t.line),
         |t| t.line,
@@ -962,6 +968,18 @@ mod tests {
             problem("[[delivery.environments]]\nafter = \"integration\"\n"),
             Some((1, ConfigProblem::MissingKey("name")))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn a_declared_legacy_dev_checkpoint_reads_as_the_standard_profile() -> TestResult {
+        let legacy = "[[delivery.environments]]\nname = \"dev\"\nafter = \"integration\"\n";
+        let config = parse_yulius_toml(legacy)?;
+        assert_eq!(config.delivery, DeliveryProfile::standard());
+        let deliberate = format!("{legacy}command = \"make deploy-dev\"\nverify = \"command\"\n");
+        let config = parse_yulius_toml(&deliberate)?;
+        assert_eq!(config.delivery.preset, Preset::Custom);
+        assert_eq!(config.delivery.environments.len(), 1);
         Ok(())
     }
 

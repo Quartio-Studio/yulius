@@ -2,6 +2,10 @@
 
 use std::fmt;
 
+/// The Claude model of a task that names none: the latest Opus (Claude Code's `opus` alias,
+/// F 2026-10-12: "it should be opus-5.5"). A subscription's own default would be Sonnet.
+pub const DEFAULT_CLAUDE_MODEL: &str = "opus";
+
 /// A coding-agent CLI Yulius can run as a task. Yulius runs only Claude Code
 /// (F 2026-10-08); another harness needs a variant here and an adapter (SPEC-001 TSK-003).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

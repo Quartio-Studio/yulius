@@ -55,6 +55,13 @@ enum Command {
     /// Internal: print the user's GitHub token for the `gh` shim of sandbox shells.
     #[command(name = "gh-token", hide = true)]
     GhToken,
+    /// In a task's session: wait until the Yulius CI checks at this commit finish, the task's
+    /// delivery moves or Yulius sends a notice (start it in the background and end the turn).
+    Wait {
+        /// Give up after this many minutes.
+        #[arg(long, default_value_t = 90)]
+        minutes: u64,
+    },
     /// Internal: a sandbox's namespace holder (SPEC-002 ADR-22).
     #[command(name = "sandbox-host", hide = true)]
     SandboxHost {
@@ -180,6 +187,10 @@ fn main() -> ExitCode {
                 &mut std::io::stdout(),
                 &|k| std::env::var(k).ok(),
             );
+            ExitCode::from(u8::try_from(code).unwrap_or(1))
+        }
+        Command::Wait { minutes } => {
+            let code = yulius::wait_cli::run(&mut std::io::stdout(), minutes, &|k| std::env::var(k).ok());
             ExitCode::from(u8::try_from(code).unwrap_or(1))
         }
         Command::GhToken => {
