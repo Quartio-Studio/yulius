@@ -23,7 +23,12 @@ use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use yulius::wiring::session::PtySessionHost;
+use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::{AccountRecord, AccountStatus};
+use yulius_app::ports::harness::{
+    CockpitLaunch, HarnessLaunch, HarnessPlan, HarnessPort, OutputMasker, TranscriptWatch,
+};
+use yulius_app::ports::session::LaunchPlan;
 use yulius_app::ports::store::AccountStore;
 use yulius_app::shells::{MAX_SHELLS_PER_SANDBOX, SHELL_IDLE_MS};
 use yulius_contracts::terminal::{KIND_OUTPUT, KIND_SNAPSHOT, decode_binary};
@@ -39,6 +44,7 @@ const TOKEN: &str = "synthetic-oauth-token";
 
 /// Prints its arguments and environment, then stays as an interactive shell.
 const FAKE_CLAUDE: &str = "#!/bin/sh\n\
+if [ \"$1\" = --resume ] && [ -f \"$CLAUDE_CONFIG_DIR/fail-resume\" ]; then exit 3; fi\n\
 echo \"cockpit-args:[$*]\"\n\
 echo \"token:${CLAUDE_CODE_OAUTH_TOKEN:-none}\"\n\
 echo \"config:$CLAUDE_CONFIG_DIR\"\n\
@@ -198,6 +204,14 @@ async fn wait_for(what: &str, mut check: impl FnMut() -> bool) -> TestResult {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     Err(format!("timed out waiting for {what}").into())
+}
+
+/// A conversation file of Claude Code, last written `secs` after the epoch.
+fn conversation(project: &Path, id: &str, secs: u64) -> TestResult {
+    std::fs::create_dir_all(project)?;
+    let file = std::fs::File::create(project.join(format!("{id}.jsonl")))?;
+    file.set_modified(std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000 + secs))?;
+    Ok(())
 }
 
 fn sid() -> SandboxId {
@@ -363,10 +377,8 @@ async fn a_cockpit_started_again_resumes_the_newest_conversation() -> TestResult
 
     // Two conversations so far, the newest one after a `/clear` (CKP-003).
     let project = yulius_harness::paths::claude_project_dir(&config, Path::new(&cwd));
-    std::fs::create_dir_all(&project)?;
-    std::fs::write(project.join("before-clear.jsonl"), "{}\n")?;
-    std::thread::sleep(Duration::from_millis(20));
-    std::fs::write(project.join("after-clear.jsonl"), "{}\n")?;
+    conversation(&project, "before-clear", 1_000)?;
+    conversation(&project, "after-clear", 2_000)?;
 
     // The user leaves it (`/exit`): the Cockpit is not running any more.
     socket
@@ -450,5 +462,224 @@ async fn without_a_subscription_the_cockpit_says_so_and_nothing_runs() -> TestRe
         .map(|entries| entries.count())
         .unwrap_or(0);
     assert_eq!(left, 0, "no run directory left behind (CKP-007)");
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_resume_that_fails_at_once_starts_fresh_the_next_time() -> TestResult {
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let config = PathBuf::from(printed(&screen, "config")?);
+    let cwd = printed(&screen, "cwd")?;
+    let project = yulius_harness::paths::claude_project_dir(&config, Path::new(&cwd));
+    conversation(&project, "broken", 1_000)?;
+    socket
+        .send(Message::text(
+            json!({"type": "input", "data": "exit\r"}).to_string(),
+        ))
+        .await?;
+    wait_for("the Cockpit to end", || {
+        f.h.app.sandbox_shells(&sid()).is_empty()
+    })
+    .await?;
+
+    // Claude Code cannot resume that conversation and exits at once: the Cockpit, which cannot
+    // be deleted, must not stay stuck on it.
+    std::fs::write(config.join("fail-resume"), "")?;
+    cockpit_id(&f, &f.alice).await?;
+    wait_for("the failed resume to end", || {
+        f.h.app.sandbox_shells(&sid()).is_empty()
+    })
+    .await?;
+    let fresh = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &fresh, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(
+        printed(&screen, "cockpit-args")?,
+        "[]",
+        "a fresh conversation"
+    );
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_cockpit_that_cannot_start_leaves_nothing_and_starts_once_it_can() -> TestResult {
+    let f = fixture().await?;
+    // Claude Code's config in the user's home is unreadable: the start fails after the shell was
+    // prepared, and nothing of it is left (CKP-007).
+    let config = f.data.join("users/u-alice/home/.claude");
+    std::fs::create_dir_all(&config)?;
+    std::fs::write(config.join(".claude.json"), "[]")?;
+    let failed = open_cockpit(&f, &f.alice).await?;
+    assert_eq!(failed.status, StatusCode::BAD_GATEWAY, "{:?}", failed.body);
+    assert!(f.h.app.sandbox_shells(&sid()).is_empty());
+    let left = std::fs::read_dir(f.data.join("shells"))
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(left, 0, "no run directory left behind");
+    std::fs::write(config.join(".claude.json"), "{}")?;
+    cockpit_id(&f, &f.alice).await?;
+
+    // Before the repository is cloned it says so.
+    seed_sandbox(&f.h, "s2", "other", "u-alice").await?;
+    f.h.github.set_perm("alice", "acme/other", perms("write"));
+    let uncloned = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s2/cockpit",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(uncloned.status, StatusCode::CONFLICT, "{:?}", uncloned.body);
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn without_capacity_the_cockpit_waits_for_a_subscription() -> TestResult {
+    let f = fixture_with(false, None).await?;
+    f.h.store
+        .insert_account(&AccountRecord {
+            id: AccountId::parse("acc-1")?,
+            provider: Provider::Anthropic,
+            label: "acc-1".into(),
+            credential: Some(f.h.app.deps.crypto.seal(TOKEN.as_bytes())?),
+            status: AccountStatus::Relogin,
+            usage_json: None,
+            last_error: None,
+            created_at: Timestamp(1),
+            updated_at: Timestamp(1),
+        })
+        .await?;
+    let resp = open_cockpit(&f, &f.alice).await?;
+    assert_eq!(
+        resp.status,
+        StatusCode::TOO_MANY_REQUESTS,
+        "{:?}",
+        resp.body
+    );
+    assert!(f.h.app.sandbox_shells(&sid()).is_empty());
+    Ok(())
+}
+
+/// Records the Cockpit launch a contained server asks for and refuses it (no bwrap needed).
+struct RecordingHarness {
+    inner: yulius::wiring::harness::HarnessAdapter,
+    cockpit: std::sync::Mutex<Option<CockpitLaunch>>,
+}
+
+impl HarnessPort for RecordingHarness {
+    fn plan(&self, launch: &HarnessLaunch) -> AppResult<HarnessPlan> {
+        self.inner.plan(launch)
+    }
+    fn plan_cockpit(&self, launch: &CockpitLaunch) -> AppResult<LaunchPlan> {
+        if let Ok(mut recorded) = self.cockpit.lock() {
+            *recorded = Some(launch.clone());
+        }
+        Err(AppError::Invalid("recorded".into()))
+    }
+    fn claude_transcript(&self, home: &Path, worktree: &Path, session: &str) -> PathBuf {
+        self.inner.claude_transcript(home, worktree, session)
+    }
+    fn newest_claude_session(
+        &self,
+        home: &Path,
+        worktree: &Path,
+        since: Timestamp,
+    ) -> AppResult<Option<(String, PathBuf)>> {
+        self.inner.newest_claude_session(home, worktree, since)
+    }
+    fn watch(
+        &self,
+        harness: yulius_domain::harness::Harness,
+        path: &Path,
+        from_start: bool,
+    ) -> AppResult<Box<dyn TranscriptWatch>> {
+        self.inner.watch(harness, path, from_start)
+    }
+    fn login_argv(&self, harness: yulius_domain::harness::Harness) -> Vec<String> {
+        self.inner.login_argv(harness)
+    }
+    fn extract_claude_token(&self, output: &str) -> Option<String> {
+        self.inner.extract_claude_token(output)
+    }
+    fn masker(&self) -> Box<dyn OutputMasker> {
+        self.inner.masker()
+    }
+    fn install_skills(&self, skills: &[(String, PathBuf)], claude_dir: &Path) -> AppResult<()> {
+        self.inner.install_skills(skills, claude_dir)
+    }
+}
+
+#[tokio::test]
+async fn a_contained_cockpit_keeps_its_config_in_the_users_home() -> TestResult {
+    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
+    let recorder = Arc::new(RecordingHarness {
+        inner: yulius::wiring::harness::HarnessAdapter::new(exe, "http://127.0.0.1:9"),
+        cockpit: std::sync::Mutex::new(None),
+    });
+    let h = harness_with(HarnessOptions {
+        harness: Some(recorder.clone()),
+        configure: Some(Box::new(|config| config.contained = true)),
+        ..HarnessOptions::default()
+    })?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    let data = h.app.config.data_dir.clone();
+    let repo = data.join("sandboxes/s1/repo");
+    std::fs::create_dir_all(&repo)?;
+    h.store
+        .insert_account(&AccountRecord {
+            id: AccountId::parse("acc-1")?,
+            provider: Provider::Anthropic,
+            label: "acc-1".into(),
+            credential: Some(h.app.deps.crypto.seal(TOKEN.as_bytes())?),
+            status: AccountStatus::Ok,
+            usage_json: None,
+            last_error: None,
+            created_at: Timestamp(1),
+            updated_at: Timestamp(1),
+        })
+        .await?;
+    // The conversation Claude Code wrote, seen from the host.
+    let home_host = data.join("users/u-alice/home");
+    let project = yulius_harness::paths::claude_project_dir(&home_host.join(".claude"), &repo);
+    conversation(&project, "earlier", 1_000)?;
+
+    let resp = call(
+        &h.router,
+        Method::POST,
+        "/api/sandboxes/s1/cockpit",
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(
+        resp.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{:?}",
+        resp.body
+    );
+    let launch = recorder
+        .cockpit
+        .lock()
+        .map_err(|_| "poisoned")?
+        .clone()
+        .ok_or("no Cockpit launch planned")?;
+    // Inside its containment the session sees its home at /home/<login>; Yulius prepares the
+    // config and finds the conversation on the host side.
+    assert_eq!(launch.config_dir, PathBuf::from("/home/alice/.claude"));
+    assert_eq!(launch.config_dir_host, home_host.join(".claude"));
+    assert_eq!(launch.cwd, repo);
+    assert_eq!(launch.resume.as_deref(), Some("earlier"));
+    assert!(h.app.sandbox_shells(&sid()).is_empty());
     Ok(())
 }

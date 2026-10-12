@@ -42,8 +42,8 @@ conversation after an exit, an idle stop or a server restart.
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | CKP-001 | Each user with write access has at most one Cockpit per sandbox. `POST /api/sandboxes/{sid}/cockpit` returns it, starting it when it is not running; concurrent calls start one. Read users are refused. | `cockpit.rs` tests |
-| CKP-002 | The Cockpit is plain Claude Code: no `--settings`, `--mcp-config`, hooks, status line, task token, briefing or `--dangerously-skip-permissions`; the Claude OAuth token of a pool subscription in its environment (never in argv), `CLAUDE_CONFIG_DIR` in the user's own home, the first-run screens and folder trust settled. | harness unit test, `cockpit.rs` |
-| CKP-003 | A Cockpit that is started again resumes the user's newest conversation in that sandbox (`--resume <id>`), after `/clear` the cleared one's successor; a first start has none. | `cockpit.rs` |
+| CKP-002 | The Cockpit is plain Claude Code: no `--settings`, `--mcp-config`, hooks, status line, task token, briefing or `--dangerously-skip-permissions`; the Claude OAuth token of a pool subscription in its environment (never in argv), `CLAUDE_CONFIG_DIR` in the user's own home (`/home/<login>/.claude` when contained), the first-run screens and folder trust settled. Its environment is otherwise the user's terminal environment (identity, Git as their GitHub account through the workspace credential, ports). | harness unit test, `cockpit.rs` |
+| CKP-003 | A Cockpit that is started again resumes the user's newest conversation in that sandbox (`--resume <id>`), after `/clear` the cleared one's successor; a first start has none; a conversation it could not resume (exit with an error within 10 s) is skipped next time, so the Cockpit never stays stuck. | `cockpit.rs` |
 | CKP-004 | The Cockpit cannot be deleted, closed or renamed: it is not in the shell list, the shell rename and close calls answer 404 for it, it does not count against the shells limit, and there is no delete route. | `cockpit.rs` |
 | CKP-005 | The Cockpit is private: only its owner can get or attach to it; other users get their own. | `cockpit.rs` |
 | CKP-006 | A running Cockpit survives a server restart (adopted as the Cockpit, not as a terminal); an idle one is ended after a day without viewers like shells and resumes on the next open. | `cockpit.rs` |
@@ -69,7 +69,7 @@ flowchart LR
   `CLAUDE_CONFIG_DIR`, `DISABLE_AUTOUPDATER=1`, secret env `CLAUDE_CODE_OAUTH_TOKEN`, and
   prepares `<home>/.claude/.claude.json` (onboarding done, theme, trust of the repository).
 - A per-app async lock serialises Cockpit starts so a double click starts one.
-- UI: `NAV` gets `['cockpit', 'Cockpit', 'terminal']` first; `pages/cockpit.js` posts, then
+- UI: `NAV` gets `['cockpit', 'Cockpit', 'gauge']` first; `pages/cockpit.js` posts, then
   mounts `createTerminalView` on `/api/shells/<id>/terminal`. Mock mode serves the call.
 
 ## Plan
@@ -120,3 +120,11 @@ flowchart LR
   session, as it already is to the agents of tasks they start.
 - **Idle**: the process ends after a day without viewers like shells; the conversation stays
   and resumes, so the Cockpit itself is permanent.
+- **Review round 1** (fresh session, REQUEST CHANGES on minors only): a running Cockpit is now
+  returned before the start lock; a resume that fails at once is skipped next time; tests cover
+  a failed start after the shell was prepared, an uncloned repository, no capacity, and the
+  contained paths (config in `/home/<login>/.claude`, prepared and searched on the host); phones
+  do not focus the terminal; CKP-002 says the environment is the user's terminal environment.
+  Not changed: workspace git credentials of a Cockpit (and of every shell) adopted after a
+  restart are not valid any more until it starts again, an existing shell limitation filed as #242;
+  files dropped on a Cockpit go when its process ends, like a terminal's.

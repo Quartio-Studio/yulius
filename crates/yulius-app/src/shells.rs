@@ -100,6 +100,9 @@ pub struct ShellState {
     pub(crate) cockpit_program: OnceLock<PathBuf>,
     /// Serialises Cockpit starts: one Cockpit per user and sandbox.
     pub(crate) cockpit_start: tokio::sync::Mutex<()>,
+    /// The conversation each user's Cockpit could not resume (it exited at once), by sandbox:
+    /// the next start begins a fresh one instead of failing the same way.
+    pub(crate) cockpit_unresumable: Mutex<HashMap<(UserId, SandboxId), String>>,
     /// The next creation number (tab order among shells created in the same millisecond).
     next_seq: AtomicU64,
 }
@@ -108,6 +111,8 @@ pub struct ShellState {
 pub struct ShellRuntime {
     id: String,
     pub(crate) kind: ShellKind,
+    /// The conversation a Cockpit was started to resume.
+    pub(crate) resumed: OnceLock<String>,
     sandbox: SandboxId,
     creator: UserId,
     task: Option<TaskId>,
@@ -657,6 +662,7 @@ impl App {
         Arc::new(ShellRuntime {
             id: id.to_owned(),
             kind,
+            resumed: OnceLock::new(),
             sandbox: sandbox.clone(),
             creator: creator.clone(),
             task,
@@ -814,6 +820,7 @@ impl App {
             return;
         }
         *runtime.writer.lock().await = None;
+        self.note_cockpit_exit(runtime, exit.and_then(|e| e.code));
         runtime.hub.exit("closed", exit.and_then(|e| e.code));
         runtime.ended_tx.send_replace(true);
         if let Ok(mut map) = self.shells.shells.lock() {
@@ -1081,6 +1088,7 @@ impl App {
         let runtime = Arc::new(ShellRuntime {
             id: file.id.clone(),
             kind: file.kind,
+            resumed: OnceLock::new(),
             sandbox,
             creator: UserId::parse(&file.creator).map_err(|_| AppError::NotFound)?,
             task,

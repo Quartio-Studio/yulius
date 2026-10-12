@@ -41,3 +41,5 @@ The Cockpit has none of a task's coordination: no activity in the sidebar, no su
 switch at a limit (Start again picks another), no session slot. Its conversations live in the
 user's home, so they survive and stay private to the user. The token is visible to the user's
 own session, as it already is to the agents of tasks they start.
+An older binary (a rollback) ignores the kind and adopts a running Cockpit as a closable terminal
+named "Cockpit"; nothing is lost.

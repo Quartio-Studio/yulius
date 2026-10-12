@@ -8,6 +8,7 @@ import { h, icon, setChildren, emptyState, loadError } from '../dom.js';
 import { createTerminalView } from '../terminal.js';
 import { allows } from '../status.js';
 import { attachTerminalDrop, shellAttachments } from '../filedrop.js';
+import { isPhone } from '../theme.js';
 
 /** Mount the Cockpit page. */
 export function mountCockpitPage(ctx, sandbox) {
@@ -57,7 +58,8 @@ export function mountCockpitPage(ctx, sandbox) {
     attachTerminalDrop(ctx, terminal, { label: 'Drop to send to Claude', upload: shellAttachments(ctx, sandbox.id, shell.id) });
     setChildren(body, terminal.el);
     terminal.start();
-    terminal.focus();
+    // On phones a focused terminal raises the soft keyboard over the page (as in the task view).
+    if (!isPhone()) terminal.focus();
   }
 
   if (allows(sandbox.access, 'write')) open();

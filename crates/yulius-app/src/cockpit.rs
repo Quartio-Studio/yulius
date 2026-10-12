@@ -30,12 +30,33 @@ use crate::shells::{ShellInfo, ShellKind, ShellRuntime};
 
 /// The Cockpit's display name.
 pub const COCKPIT_NAME: &str = "Cockpit";
+/// A resumed Cockpit that fails within this time could not resume its conversation.
+const QUICK_EXIT_MS: i64 = 10_000;
 
 impl App {
     /// Configures the Cockpit's program instead of `claude` (tests); the first call wins.
     /// Returns whether it was applied.
     pub fn set_cockpit_program(&self, program: PathBuf) -> bool {
         self.shells.cockpit_program.set(program).is_ok()
+    }
+
+    /// Remembers a conversation a Cockpit could not resume: it exited with an error right after
+    /// it started, so starting it the same way again would fail again.
+    pub(crate) fn note_cockpit_exit(&self, runtime: &ShellRuntime, code: Option<i32>) {
+        let Some(resumed) = runtime.resumed.get() else {
+            return;
+        };
+        let quick = self.now().millis_since(runtime.info().created_at) < QUICK_EXIT_MS;
+        if runtime.kind != ShellKind::Cockpit || code == Some(0) || !quick {
+            return;
+        }
+        tracing::warn!(shell = %runtime.id(), conversation = %resumed, ?code, "the cockpit could not resume its conversation; the next start begins a fresh one");
+        if let Ok(mut failed) = self.shells.cockpit_unresumable.lock() {
+            failed.insert(
+                (runtime.creator().clone(), runtime.sandbox().clone()),
+                resumed.clone(),
+            );
+        }
     }
 
     /// The caller's running Cockpit in `sandbox`.
@@ -59,6 +80,10 @@ impl App {
     ) -> AppResult<ShellInfo> {
         let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
         let (record, _) = self.require(&ctx.user, &sandbox_id, Action::Work).await?;
+        // A running Cockpit is returned without waiting for anybody's start.
+        if let Some(running) = self.running_cockpit(&ctx.user.id, &record.id) {
+            return Ok(running.info());
+        }
         let _starting = self.shells.cockpit_start.lock().await;
         if let Some(running) = self.running_cockpit(&ctx.user.id, &record.id) {
             return Ok(running.info());
@@ -108,21 +133,40 @@ impl App {
         let (join, lease) = self.isolation_join(record).await?.unzip();
         let space = self.user_space(&ctx.user, record, join)?;
         let folder = PathBuf::from(runtime.info().folder);
-        // The newest conversation of this user here: after `/clear`, the cleared one's successor.
-        let resume = self
-            .deps
-            .harness
-            .newest_claude_session(&space.home_host, &folder, Timestamp(0))
+        // The newest conversation of this user here: after `/clear`, the cleared one's successor;
+        // none when it could not be resumed last time.
+        let newest = match self.deps.harness.newest_claude_session(
+            &space.home_host,
+            &folder,
+            Timestamp(0),
+        ) {
+            Ok(found) => found.map(|(id, _)| id),
+            Err(err) => {
+                tracing::warn!(error = %err, user = %ctx.user.id, "cockpit conversations unreadable; starting a fresh one");
+                None
+            }
+        };
+        let unresumable = self
+            .shells
+            .cockpit_unresumable
+            .lock()
             .ok()
-            .flatten()
-            .map(|(id, _)| id);
+            .and_then(|failed| {
+                failed
+                    .get(&(ctx.user.id.clone(), record.id.clone()))
+                    .cloned()
+            });
+        let resume = newest.filter(|id| Some(id) != unresumable.as_ref());
         let mut plan = self.deps.harness.plan_cockpit(&CockpitLaunch {
             cwd: folder,
             config_dir: space.home.join(".claude"),
             config_dir_host: space.home_host.join(".claude"),
-            resume,
+            resume: resume.clone(),
             credential,
         })?;
+        if let Some(id) = resume {
+            let _ = runtime.resumed.set(id);
+        }
         if let (Some(program), Some(first)) =
             (self.shells.cockpit_program.get(), plan.argv.first_mut())
         {

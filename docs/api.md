@@ -812,8 +812,9 @@ resolves to nothing, the run gets the server without that variable or token.
   - `POST /api/sandboxes/{sid}/cockpit` (write) → 200 `Shell` (`name` "Cockpit"): the caller's
     running Cockpit, or a new one started (concurrent calls start one) as `claude [--resume
     <newest conversation>]` in the sandbox repository, as the caller's sandbox identity, with the
-    token of the pool's best subscription and `CLAUDE_CONFIG_DIR=~/.claude`; no Yulius hooks,
-    MCP, settings or approval bypass. 409 before the repository is cloned or without a Claude
+    token of the pool's best subscription and `CLAUDE_CONFIG_DIR=~/.claude`, otherwise a
+    terminal's environment (Git as the caller); no Yulius hooks, MCP, settings or approval bypass.
+    A conversation it could not resume (an error exit within 10 s) is skipped next time. 409 before the repository is cloned or without a Claude
     subscription, 429 while none has capacity. There is no delete: it is never in `GET …/shells`,
     `PATCH`/`DELETE …/shells/{id}` answer 404 for it, and it does not count against the 8
     terminals. Its terminal is `WS /api/shells/{id}/terminal`; files go to
