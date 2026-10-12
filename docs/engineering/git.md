@@ -14,16 +14,17 @@ These rules apply to features, fixes, documentation, tooling and policy changes.
    then **squash-merges their own PR**. No reviewer approval or waiting period is required.
 4. Delete the merged short-lived remote branch. Clean up its local branch/worktree
    after confirming it contains no unpublished work.
-5. Wait for the **push CI run on the resulting `dev` commit** to succeed. A passing
-   feature PR run does not replace this post-merge test. When a dev environment
-   exists, deployment and smoke tests belong here too.
+5. Wait for the **`yulius/ci` status of the resulting `dev` commit** (Yulius CI runs every
+   new `dev` commit). A passing feature PR run does not replace this post-merge test.
+   When a dev environment exists, deployment and smoke tests belong here too. A task's
+   work ends here; promotion is a separate step a person asks for.
 6. Open a promotion PR **from `dev` into `main`**. Its exact head must have a successful
-   post-merge `dev` push run; promotion CI verifies this and tests the proposed merge.
+   `yulius/ci` status; the branch policy (`scripts/check_git_policy.py`, checked by hand
+   until #223) verifies this.
 7. The promotion PR's author merges it with a **merge commit**, after required checks
    pass. Keep `dev`: only short-lived branches are deleted.
-8. Wait for **push CI on the new `main` commit**. Delivery is finished only when it
-   passes. When a production environment exists, verify deployment and smoke tests
-   at this point. Today CI is the available validation, not evidence of deployment.
+8. `main` then has `dev`'s tested tree. When a production environment exists, verify
+   deployment and smoke tests at this point.
 
 No environments are configured yet. Until they are, complete the full sequence
 through `main` after each finished feature instead of stopping after integration.
