@@ -3,7 +3,7 @@
 //! restart (reconcile + reattach without respawn), crash exits and stop (SPEC-001 RUN-001..006,
 //! AC-RUN-1..4).
 
-mod support;
+use crate::support;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

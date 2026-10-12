@@ -5,7 +5,7 @@
 //! hooks through the real `yulius hook` client against the internal listener; real worktrees; a
 //! server restart that replays the transcripts.
 
-mod support;
+use crate::support;
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};

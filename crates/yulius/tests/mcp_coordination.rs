@@ -1,6 +1,6 @@
 //! Yulius MCP: task awareness, messages and steps between parallel tasks (AC-COM-1/2, AC-STP-1).
 
-mod support;
+use crate::support;
 
 use std::net::SocketAddr;
 

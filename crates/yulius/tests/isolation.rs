@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! YULIUS_ISOLATION_TEST=1 [YULIUS_ISOLATION_TEST_SYSTEM=/path/to/a/data/system] \
-//!   [YULIUS_TEST_TMP=/tmp/yqa-iso-home] <test binary> --test-threads 1
+//!   [YULIUS_TEST_TMP=/tmp/yqa-iso-home] <test binary> isolation:: --test-threads 1
 //! ```
 //!
 //! `YULIUS_ISOLATION_TEST_SYSTEM` reuses a built `system/` directory (a base build copies about
@@ -17,7 +17,7 @@
 
 #![cfg(target_os = "linux")]
 
-mod support;
+use crate::support;
 
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};

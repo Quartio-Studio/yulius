@@ -1,6 +1,6 @@
 //! GitHub App connection through the manifest flow (SPEC-001 ACC-006, journey J1 step 3).
 
-mod support;
+use crate::support;
 
 use axum::http::{Method, StatusCode};
 use serde_json::json;

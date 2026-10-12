@@ -2,7 +2,7 @@
 //! discipline gate) and repository-scoped Git credentials, the task creator's own (SPEC-002
 //! §7.5, §8; AC-DSC-3, AC-COM-2, AC-COM-4, AC-GIT-3).
 
-mod support;
+use crate::support;
 
 use std::path::Path;
 use std::process::Command;

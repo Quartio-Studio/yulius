@@ -5,7 +5,7 @@
 //! input and streams synthetic frames (SPEC-001 BRW-001..008, AC-BRW-1..4, AC-BRW-6, AC-BRW-9..11;
 //! SPEC-002 ADR-15).
 
-mod support;
+use crate::support;
 
 use std::path::Path;
 use std::sync::Arc;
