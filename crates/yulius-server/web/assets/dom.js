@@ -485,11 +485,13 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
   closeMenu();
   const button = anchor instanceof HTMLElement && anchor.hasAttribute('aria-haspopup') ? anchor : null;
   if (button) button.setAttribute('aria-expanded', 'true');
-  const menu = h('div', { class: 'menu', role: 'menu' });
+  // The panel floats and holds the list of items, which scrolls when the window is too short.
+  const list = h('div', { class: 'menu-list', role: 'menu' });
+  const menu = h('div', { class: 'menu' }, list);
   for (const item of items) {
     if (!item) continue;
-    if (item.separator) { menu.append(h('div', { class: 'menu-sep', role: 'separator' })); continue; }
-    if (item.header) { menu.append(h('div', { class: 'menu-header' }, item.header)); continue; }
+    if (item.separator) { list.append(h('div', { class: 'menu-sep', role: 'separator' })); continue; }
+    if (item.header) { list.append(h('div', { class: 'menu-header' }, item.header)); continue; }
     const choice = typeof item.checked === 'boolean';
     // A disabled item says why on its second line, not only in a mouse tooltip.
     const description = item.description || (item.disabled && item.title ? item.title : null);
@@ -512,23 +514,29 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
       }
       if (item.onSelect) item.onSelect();
     };
-    const el = h('button', { type: 'button', role: choice ? (item.keepOpen ? 'menuitemcheckbox' : 'menuitemradio') : 'menuitem', 'aria-checked': choice ? String(item.checked) : null, class: ['menu-item', item.danger && 'danger', description && 'rich'], 'aria-disabled': item.disabled ? 'true' : null, title: item.title || null, onClick: select },
+    const el = h('button', { type: 'button', role: choice ? (item.keepOpen ? 'menuitemcheckbox' : 'menuitemradio') : 'menuitem', 'aria-checked': choice ? String(item.checked) : null, class: ['menu-item', item.danger && 'danger', description && 'rich'], 'aria-disabled': item.disabled ? 'true' : null, title: item.title || description || null, onClick: select },
       check,
       item.icon ? h('span', { class: 'menu-icon' }, icon(item.icon, { size: 15 })) : null,
       label, item.hint ? h('span', { class: 'menu-hint' }, item.hint) : null);
-    menu.append(el);
+    list.append(el);
   }
   document.body.append(menu);
   const rect = anchor instanceof Element ? anchor.getBoundingClientRect() : { left: anchor.x, right: anchor.x, top: anchor.y, bottom: anchor.y };
   const mw = menu.offsetWidth;
-  const mh = menu.offsetHeight;
   let left = align === 'end' ? rect.right - mw : rect.left;
-  let top = rect.bottom + 4;
   if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
   if (left < 8) left = 8;
-  if (top + mh > window.innerHeight - 8) top = Math.max(8, rect.top - mh - 4);
+  // Below the anchor, or above it when it fits only there or has more room; never past a window
+  // edge, the items scroll instead (SPEC-038 MNU-001).
+  const below = window.innerHeight - 8 - (rect.bottom + 4);
+  const above = rect.top - 4 - 8;
+  const mh = menu.offsetHeight;
+  const up = mh > below && above > below;
+  const room = Math.max(0, up ? above : below);
+  if (mh > room) menu.style.maxHeight = `${room}px`;
+  const top = up ? rect.top - 4 - Math.min(mh, room) : rect.bottom + 4;
   menu.style.left = `${left}px`;
-  menu.style.top = `${top}px`;
+  menu.style.top = `${Math.max(8, top)}px`;
   const onDoc = (event) => { if (!menu.contains(event.target)) closeMenu(); };
   const onKey = (event) => {
     // Focus goes back to the button before the menu closes (a button shown only while its menu is

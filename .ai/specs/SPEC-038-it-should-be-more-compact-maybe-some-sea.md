@@ -47,7 +47,7 @@ scrolling. The "Run after" menu lists tasks as one-line rows.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Every menu fits the window, with one-line descriptions and scrolling items
+- [x] Every menu fits the window, with one-line descriptions and scrolling items
 - [ ] A long menu has a filter box that narrows its items from the keyboard
 - [ ] "Run after" lists tasks as one-line rows under one heading
 - [ ] Independent review in a fresh session, findings fixed test-first
