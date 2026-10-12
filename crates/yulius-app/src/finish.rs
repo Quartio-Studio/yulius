@@ -244,6 +244,9 @@ impl App {
         if next == Some(Activity::Done) {
             // Tasks chained after this one start once it is Done (TSK-012).
             self.advance_chains(task_id).await;
+            // A Done task no longer counts against the session limit (SES-101): a queued task
+            // can start now.
+            self.drain_queue().await;
         }
     }
 

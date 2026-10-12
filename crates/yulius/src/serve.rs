@@ -148,6 +148,10 @@ pub struct ServeArgs {
     #[arg(long, env = "YULIUS_CI_MAX_JOBS", default_value_t = 4,
           value_parser = clap::value_parser!(u32).range(1..=64))]
     pub ci_max_jobs: u32,
+    /// CI runs of one sandbox executing at once, each in its own job checkouts.
+    #[arg(long, env = "YULIUS_CI_LANES", default_value_t = 2,
+          value_parser = clap::value_parser!(u32).range(1..=8))]
+    pub ci_lanes: u32,
     /// Wall-clock limit of one CI job, in minutes.
     #[arg(long, env = "YULIUS_CI_JOB_TIMEOUT_MIN", default_value_t = 30,
           value_parser = clap::value_parser!(u64).range(1..=360))]
@@ -414,6 +418,7 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
     config.ci = yulius_app::ci::CiSettings {
         enabled: args.ci == "on",
         max_jobs: args.ci_max_jobs,
+        lanes: args.ci_lanes,
         job_timeout: std::time::Duration::from_secs(args.ci_job_timeout_min * 60),
         poll: std::time::Duration::from_secs(args.ci_poll_secs),
     };
