@@ -105,6 +105,22 @@ exec "$real" "$@"
     )
 }
 
+/// The `yulius` command of agent runs (SPEC-011): only `yulius wait`, which blocks until the
+/// checks at the agent's head finish, its delivery moves or Yulius sends a notice.
+#[must_use]
+pub fn agent_yulius_shim(exe: &Path) -> String {
+    let exe = exe.to_string_lossy().replace('\'', "'\\''");
+    format!(
+        r#"#!/bin/sh
+# Yulius agent command: `yulius wait [--minutes N]` (start it with run_in_background).
+case "${{1:-}}" in
+  wait) exec '{exe}' "$@" ;;
+  *) echo "In a task's session yulius offers: yulius wait [--minutes N]" >&2; exit 2 ;;
+esac
+"#
+    )
+}
+
 /// Registry of workspace tokens (process-local; user processes do not survive a restart).
 #[derive(Default)]
 pub struct WorkspaceGrants {
@@ -322,12 +338,17 @@ impl App {
         Ok(dir)
     }
 
-    /// Writes the `gh` shim into `dir` when missing or out of date.
+    /// Writes the `gh` shim and the agents' `yulius` command into `dir` when missing or out of
+    /// date.
     fn write_gh_shim(&self, dir: &Path) -> AppResult<()> {
-        let shim = dir.join("gh");
-        let text = gh_shim(&self.config.yulius_exe);
-        if std::fs::read(&shim).ok().as_deref() != Some(text.as_bytes()) {
-            write_file(&shim, text.as_bytes(), 0o755)?;
+        for (name, text) in [
+            ("gh", gh_shim(&self.config.yulius_exe)),
+            ("yulius", agent_yulius_shim(&self.config.yulius_exe)),
+        ] {
+            let shim = dir.join(name);
+            if std::fs::read(&shim).ok().as_deref() != Some(text.as_bytes()) {
+                write_file(&shim, text.as_bytes(), 0o755)?;
+            }
         }
         Ok(())
     }

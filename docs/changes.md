@@ -9,12 +9,21 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - Nothing refers to GitHub Actions runs any more: the delivery steps, the pull request template,
   the `yulius-git` and `yulius-verify` skills and the branch policy's promotion evidence use the
   `yulius/ci` status of the exact dev head (#184).
+- Tasks finish on `dev` by themselves (SPEC-011; tasks #10, #12, #16): a goal task starts from a
+  request file (the request, its attached files to open, the definition of done) and a `/goal`
+  that names it, typed once Claude Code's session started and confirmed, so long requests get a
+  goal and attached images reach the model; the standard profile has no manual `dev` checkpoint;
+  `delivery_merge` while the checks run arms the merge and Yulius merges when they pass; agents
+  wait with `yulius wait` instead of polling; the briefing and notices end at the merge into
+  `dev` (never promote unless asked) and fit Claude Code's hook limit; tasks run Opus by default
+  with auto-compact on and 10-minute Bash timeouts.
 - Task-to-task messaging is removed for now: `message_send` only tells or asks people (`to="people"`), `scope_claim` shows an overlap to the claiming agent only and messages nobody, and the briefing, digest and Messages panel speak of Yulius's notices. Notices, the inbox, the digest and the idle wake-up are unchanged (SPEC-012, COM-002 withdrawn).
 - A task's state reads the same everywhere and matches what it waits for (tasks #11, #13, #14):
   an idle agent whose background shells still run is Working, not "Your turn", and the task view
   no longer asks for a reply then; a task being stopped is listed under Stopped at once; any task
   shown as Done (goal achieved, or plan complete with its pull request merged or tested) can be
   archived, and its session is closed rather than stopped (SPEC-001 TSK-014, UI-050).
+- Merging into `dev` no longer waits for a person: the `standard` delivery profile has no manual `dev` checkpoint, so after the merge on green checks the next action is promotion; stored profiles with the old checkpoint read as the new one (SPEC-011 DLV-009, DLV-010, #10).
 - GitHub Actions are gone from this repository: Yulius CI is the only CI (`quality` and `e2e` in
   `[[ci.jobs]]`), the rulesets require only the `yulius/ci` commit status, and `.github/workflows`
   and `.github/actionlint.yaml` are deleted. macOS is checked with `scripts/dev ci` on a Mac before

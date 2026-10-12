@@ -188,7 +188,12 @@ impl App {
         Ok(RotationInput {
             current,
             task_provider: task.harness.provider(),
-            family: ModelFamily::of(task.model.as_deref()),
+            // A task without a model runs the default, Opus: its weekly cap binds.
+            family: ModelFamily::of(Some(
+                task.model
+                    .as_deref()
+                    .unwrap_or(yulius_domain::harness::DEFAULT_CLAUDE_MODEL),
+            )),
             accounts: self.account_views().await?,
             now: self.now(),
             threshold: rotation::THRESHOLD,

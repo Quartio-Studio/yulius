@@ -16,8 +16,9 @@ These rules apply to features, fixes, documentation, tooling and policy changes.
    after confirming it contains no unpublished work.
 5. Wait for the **`yulius/ci` status of the resulting `dev` commit** (Yulius CI runs every
    new `dev` commit). A passing feature PR run does not replace this post-merge test.
-   When a dev environment exists, deployment and smoke tests belong here too. A task's
-   work ends here; promotion is a separate step a person asks for.
+   When a dev environment with a deploy command exists, deployment and smoke tests belong
+   here too; the standard profile has no manual dev checkpoint, so nobody confirms `dev` by
+   hand. A task's work ends here; promotion is a separate step a person asks for.
 6. Open a promotion PR **from `dev` into `main`**. Its exact head must have a successful
    `yulius/ci` status; the branch policy (`scripts/check_git_policy.py`, checked by hand
    until #223) verifies this.
