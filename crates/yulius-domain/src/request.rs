@@ -4,11 +4,16 @@
 //!
 //! The request is written to a file the agent reads (no length limit), and the goal condition
 //! names it: Claude Code caps a goal condition at 500 characters, so a long request is never the
-//! condition itself. Attached files are mentioned (`@path`) in the session's first message, which
-//! Claude Code attaches natively, an image as an image (SPEC-025, ADR-0022).
+//! condition itself. Attached files reach the session's first message natively: an image pasted
+//! into the TUI (`[Image #N]`, SPEC-030, ADR-0025), another file mentioned as `@path` (SPEC-025,
+//! ADR-0022).
 
 /// Longest goal condition Yulius types (Claude Code caps goal conditions at 500 characters).
 pub const GOAL_MAX_CHARS: usize = 450;
+
+/// How a goal-mode session's first message (its attached files) begins.
+const ATTACHMENTS_INTRO: &str = "The files attached to this task. Its goal follows in the next \
+                                 message; until then, only look at them.";
 
 /// Longest request text quoted inside the goal condition; a longer one is only named by its file.
 const INLINE_REQUEST_MAX_CHARS: usize = 150;
@@ -22,6 +27,32 @@ pub struct DoneDefinition {
     pub production_branch: String,
     /// Environments after integration that an agent deploys and verifies (they have a command).
     pub integration_environments: Vec<String>,
+}
+
+/// How a session's first message reaches Claude Code (SPEC-030).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Opening {
+    /// The CLI prompt argument (the attached files, none an image, are `@path` mentions).
+    Prompt(String),
+    /// Typed into the TUI: each image's path pasted on its own (Claude Code attaches a pasted
+    /// image natively, as `[Image #N]`; a mention would be a Read tool call), then the text
+    /// pasted (empty when there is none), then Enter.
+    Typed {
+        /// Absolute paths of the attached images, in order.
+        images: Vec<String>,
+        /// The rest of the message, the other files mentioned.
+        text: String,
+    },
+}
+
+/// Whether Claude Code takes a pasted path as an image (Claude Code 2.1.292:
+/// `/\.(png|jpe?g|gif|webp)$/i`).
+#[must_use]
+pub fn is_image(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    [".png", ".jpg", ".jpeg", ".gif", ".webp"]
+        .iter()
+        .any(|ext| lower.ends_with(ext))
 }
 
 /// A task's request split into its text and the files attached to it.
@@ -70,17 +101,38 @@ impl Request {
         format!("{}\n\n{mentions}", self.text)
     }
 
+    /// A fresh session's first message: in goal mode only when files are attached (its `/goal`
+    /// follows), else the request. With an attached image it is typed, so the image is pasted.
+    #[must_use]
+    pub fn opening(&self, goal_mode: bool) -> Option<Opening> {
+        let (images, others): (Vec<String>, Vec<String>) =
+            self.attachments.iter().cloned().partition(|p| is_image(p));
+        if images.is_empty() {
+            return if goal_mode {
+                self.attachments_message().map(Opening::Prompt)
+            } else {
+                Some(Opening::Prompt(self.first_message()))
+            };
+        }
+        let rest = Self {
+            text: self.text.clone(),
+            attachments: others,
+        };
+        let text = if goal_mode {
+            rest.attachments_message()
+                .unwrap_or_else(|| ATTACHMENTS_INTRO.to_owned())
+        } else {
+            rest.first_message()
+        };
+        Some(Opening::Typed { images, text })
+    }
+
     /// The first message of a goal-mode session, before Yulius types its `/goal`: the attached
     /// files, mentioned so Claude Code attaches them. `None` without attached files.
     #[must_use]
     pub fn attachments_message(&self) -> Option<String> {
-        (!self.attachments.is_empty()).then(|| {
-            format!(
-                "The files attached to this task. Its goal follows in the next message; until \
-                 then, only look at them.\n\n{}",
-                mentions(&self.attachments)
-            )
-        })
+        (!self.attachments.is_empty())
+            .then(|| format!("{ATTACHMENTS_INTRO}\n\n{}", mentions(&self.attachments)))
     }
 }
 

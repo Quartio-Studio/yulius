@@ -824,9 +824,7 @@ fn render_pastes(message: &str) -> String {
     while let Some(start) = rest.find(PASTE_START) {
         out.push_str(&rest[..start]);
         let after = &rest[start + PASTE_START.len()..];
-        let (pasted, next) = after
-            .split_once(PASTE_END)
-            .unwrap_or((after, ""));
+        let (pasted, next) = after.split_once(PASTE_END).unwrap_or((after, ""));
         let lower = pasted.to_ascii_lowercase();
         if pasted.starts_with('/')
             && [".png", ".jpg", ".jpeg", ".gif", ".webp"]
@@ -1230,8 +1228,7 @@ mod tests {
 
     #[test]
     fn pasted_image_paths_become_images_and_other_pastes_stay_text() {
-        let message =
-            "\x1b[200~/a/b.png\x1b[201~\x1b[200~/a/my shot.JPG\x1b[201~\x1b[200~Look\nhere\x1b[201~";
+        let message = "\x1b[200~/a/b.png\x1b[201~\x1b[200~/a/my shot.JPG\x1b[201~\x1b[200~Look\nhere\x1b[201~";
         assert_eq!(render_pastes(message), "[Image #1] [Image #2] Look\nhere");
         assert_eq!(render_pastes("/goal plain"), "/goal plain");
         assert_eq!(
@@ -1239,8 +1236,14 @@ mod tests {
             "/a/notes.txt"
         );
         let mut input = io::Cursor::new(b"\x1b[200~one\ntwo\x1b[201~\nnext\n".to_vec());
-        assert_eq!(read_message(&mut input).ok().flatten().as_deref(), Some("one\ntwo"));
-        assert_eq!(read_message(&mut input).ok().flatten().as_deref(), Some("next"));
+        assert_eq!(
+            read_message(&mut input).ok().flatten().as_deref(),
+            Some("one\ntwo")
+        );
+        assert_eq!(
+            read_message(&mut input).ok().flatten().as_deref(),
+            Some("next")
+        );
     }
 
     #[test]

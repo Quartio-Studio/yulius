@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- Attached images reach Claude Code as pasted images (SPEC-030, ADR-0025; task #28). A task with
+  attached images starts with no CLI prompt. Yulius types its first message into the terminal:
+  each image's path is pasted (Claude Code shows `[Image #N]` and sends an image block), then the
+  text with the other files mentioned. Before this, an `@` mention showed the path and reached the
+  model as a Read tool call.
 - Tasks run Opus 5.5 at high effort by default (SPEC-023, task #21): a task without a model runs
   `claude-opus-5-5` instead of Claude Code's moving `opus` alias, and a task without an effort runs
   at `high` (none for Haiku); the Cockpit starts on them too; the composer and Settings say so.
