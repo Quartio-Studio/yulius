@@ -12,6 +12,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   (`tests/main.rs`); a gate build's test executables drop from 9.2 GB to 1.3 GB. The repository
   check rejects a second test binary or an undeclared test file. Run one file's tests with
   `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^<file>::/)'`.
+- A Done task can be deleted (SPEC-039, ADR-0031, task #37). "Delete permanently…" closes its
+  idle session (`closed`, as Archive does), then deletes the task. Only a task that is still at
+  work or waiting for you has to be stopped first, and its menu says "Still running: stop the
+  task before deleting it".
 - A long task title in the start-rule editor stays on one line ending in an ellipsis instead of
   wrapping over the condition's border (SPEC-031, task #29).
 - The Cockpit and task agents create tasks and automations (SPEC-037, ADR-0029; task #35). A new
