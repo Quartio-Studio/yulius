@@ -16,6 +16,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Ten wrong codes in a row lock codes until the person confirms it is them again. Rolling back
   past this change needs care: the previous release reads secrets saved in the new form as
   having no password, and an edit there would drop the value.
+- Tasks run in parallel and finish without obstacles (SPEC-050):
+  - a Done task no longer holds a session slot, so queued tasks start;
+  - when Yulius cannot push an agent's head, `yulius wait` says why and how to fix it without a
+    force push, and agents bring `dev` in by merging, never by rewriting pushed commits;
+  - a shell that only runs `yulius wait` no longer counts as a build, so a waiting task reads as
+    waiting and its caches can go under disk pressure;
+  - agent commands run below CI and the agents in CPU priority;
+  - shells and the Cockpit keep GitHub across server restarts;
+  - a sandbox runs two CI runs at once, each lane with its own job checkouts, and worktree
+    registrations change one at a time (#206).
 - A Done task can be deleted (SPEC-039, ADR-0031, task #37). "Delete permanently…" closes its
   idle session (`closed`, as Archive does), then deletes the task. Only a task that is still at
   work or waiting for you has to be stopped first, and its menu says "Still running: stop the

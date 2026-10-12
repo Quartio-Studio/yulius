@@ -1,4 +1,4 @@
--- Yulius schema version 13 (SPEC-040): two-factor guards the vault. Each person has their own
+-- Yulius schema version 14 (SPEC-040): two-factor guards the vault. Each person has their own
 -- authenticator seed, sealed like a secret (the user id as associated data); `confirmed_at` is set
 -- by the first correct code, `last_counter` refuses a code used before, and `failed_attempts`
 -- (wrong codes in a row, the last at `failed_at`) locks codes after 10 until the person confirms
