@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- `yulius wait` says why Yulius has not pushed or opened the pull request at the end of a turn (an
+  open step, a missing plan, an invalid spec, uncommitted work) instead of waiting in silence (SPEC-050 DLV-204).
 - Tasks run in parallel and finish without obstacles (SPEC-050):
   - a Done task no longer holds a session slot, so queued tasks start;
   - when Yulius cannot push an agent's head, `yulius wait` says why and how to fix it without a
