@@ -1,6 +1,7 @@
 //! Task records, views, archive/restore, feedback and user messages (SPEC-001 §5.4, ANL-002,
 //! UI-006). Process lifecycle lives in the supervisor.
 
+use std::sync::Arc;
 use yulius_contracts::api::common::UserRef;
 use yulius_contracts::api::tasks::{
     AttemptView, FeedbackView, MessageFrom, MessageView, Metrics, StepProgress, StepView,
@@ -8,7 +9,6 @@ use yulius_contracts::api::tasks::{
 };
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::permission::Action;
-use std::sync::Arc;
 use yulius_domain::task::{Activity, TaskStatus};
 
 use crate::auth::{AuthContext, rfc3339};
