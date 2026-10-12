@@ -12,6 +12,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   team's. A teammate's edit appears without a reload. When two people type at once, the later save
   is refused and that person picks Keep mine or Use theirs. API: `GET/PUT /api/notes` and
   `/api/sandboxes/{sid}/notes`, event `note.updated`.
+- Armed pull requests stay current by themselves (SPEC-050 DLV-203): when the integration branch
+  moves on, Yulius merges it into the idle task's branch (the repository's merge drivers apply, so
+  a shared changes log no longer conflicts) and pushes a fast-forward; the merge stays armed for
+  the new head. A real conflict is left to the agent with the files named.
 - Tasks run in parallel and finish without obstacles (SPEC-050):
   - a Done task no longer holds a session slot, so queued tasks start;
   - when Yulius cannot push an agent's head, `yulius wait` says why and how to fix it without a
