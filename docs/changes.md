@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- A pull request runs its own CI jobs only when it changed them itself; a branch that is merely
+  behind `dev` runs `dev`'s current jobs (SPEC-050 CI-110).
 - `yulius wait` says why Yulius has not pushed or opened the pull request at the end of a turn (an
   open step, a missing plan, an invalid spec, uncommitted work) instead of waiting in silence (SPEC-050 DLV-204).
 - Armed pull requests stay current by themselves (SPEC-050 DLV-203): when the integration branch

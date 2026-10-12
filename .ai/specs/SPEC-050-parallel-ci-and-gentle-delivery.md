@@ -70,6 +70,7 @@ On 2026-10-12, 8 parallel tasks ran in the `yulius` sandbox.
 | CI-106 | Up to `--ci-lanes` runs of a sandbox execute at once (`YULIUS_CI_LANES`, default 2). Each lane past the first has its own job checkouts (`<job>@<lane>`), and the instance-wide job slots still bound the load. Migration 13 drops the one-running-run index. | `ci/mod.rs::lane_tests`, `exec.rs` checkout test, `yulius-store` `ci.rs` |
 | CI-107 | Disk upkeep's claim of a sandbox's CI checkouts waits for every lane, and no run starts while it holds. | `ci/mod.rs::lane_tests` |
 | CI-109 | Yulius changes worktree registrations (add, move, remove, prune) one at a time. Before, a prune during another add removed that add's half-written registration (#206). | `git_ops.rs::ci_checkouts_created_at_once_all_succeed` |
+| CI-110 | A pull request is tested with its own `[[ci.jobs]]` only when it changed them itself (against its merge base with the integration branch), never because the integration branch changed its jobs since: stale branches kept running an apt step `dev` had removed, and two lanes raced for the dpkg lock. | `ci::lane_tests::a_pull_request_runs_its_own_jobs_only_when_it_changed_them` |
 
 ## Plan
 
