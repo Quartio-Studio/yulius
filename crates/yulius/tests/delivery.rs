@@ -2670,6 +2670,7 @@ async fn needs_you_counts_follow_the_sidebar_rule() -> TestResult {
             after_number: 2,
             blocked_reason: Some("#2 stopped".into()),
             created_at: now,
+            rule: None,
         })
         .await?;
     // Nobody needs to act: paused for capacity, or ended (even with a held prompt).

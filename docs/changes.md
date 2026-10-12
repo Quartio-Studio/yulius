@@ -6,6 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- Tasks can start by a logical rule: besides "run after #N", a new task can wait for a sentence such as `#12 done and #13 done` or `#12 done or #14 ended` (composer: Run after → "When a rule is true…", API `start_rule`); it starts the moment the sentence is true and goes to Needs you when it never can be ([SPEC-010](../.ai/specs/SPEC-010-task-start-rules.md), ADR-0018).
 - A subscription whose only task is running but idle is read again: the usage round skipped every
   subscription with a running task, but an idle session reports nothing, so its reading went stale
   (5.6 h on production); it now skips only fresh readings (SPEC-007 USG-002, #4).

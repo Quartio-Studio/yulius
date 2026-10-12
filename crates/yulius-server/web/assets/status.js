@@ -113,6 +113,7 @@ export function statusInfo(task) {
   if (status === 'chained') {
     const after = task.after;
     if (after && after.blocked) return { glyph: '!', icon: 'st-attention', tone: 'attention', label: `Needs you · after #${after.number}`, group: 'needs', detail: after.blocked };
+    if (after && after.rule) return { glyph: '⛓', icon: 'st-chained', tone: 'queued', label: 'Queued by a rule', group: 'working' };
     return { glyph: '⛓', icon: 'st-chained', tone: 'queued', label: after ? `Queued after #${after.number}` : 'Queued after another task', group: 'working' };
   }
   if (status === 'closed') return { glyph: '✓', icon: 'st-closed', tone: 'closed', label: 'Closed', group: 'ended' };

@@ -451,6 +451,7 @@ async fn chain_links_and_held_prompts_persist_and_resolve_once() -> R {
                 after_number: 1,
                 blocked_reason: None,
                 created_at: Timestamp(5),
+                rule: None,
             })
             .await?;
         store.insert_hold(&hold("h1", 6)?).await?;

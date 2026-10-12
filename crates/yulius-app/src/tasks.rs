@@ -1,6 +1,8 @@
 //! Task records, views, archive/restore, feedback and user messages (SPEC-001 §5.4, ANL-002,
 //! UI-006). Process lifecycle lives in the supervisor.
 
+use std::sync::Arc;
+
 use yulius_contracts::api::common::UserRef;
 use yulius_contracts::api::tasks::{
     AttemptView, FeedbackView, MessageFrom, MessageView, Metrics, StepProgress, StepView,
@@ -303,7 +305,7 @@ impl App {
     ///
     /// # Errors
     /// `NotFound`/`Forbidden` without access; `Conflict` while the task runs or starts.
-    pub async fn delete_task(&self, ctx: &AuthContext, id: &str) -> AppResult<()> {
+    pub async fn delete_task(self: &Arc<Self>, ctx: &AuthContext, id: &str) -> AppResult<()> {
         let task = self.load_task(ctx, id, Action::Work).await?;
         let starting = matches!(
             task.status,
@@ -337,9 +339,12 @@ impl App {
         }
         // Tasks waiting for this one need a person now (TSK-012).
         self.block_successors_deleted(&task).await;
+        let deleted_in = task.sandbox_id.clone();
         if !self.deps.store.delete_task(&task.id).await? {
             return Err(AppError::NotFound);
         }
+        // A start rule naming the deleted task now sees it as ended (SPEC-010).
+        self.advance_rule_chains(&deleted_in).await;
         let runs = self.config.data_dir.join("runs");
         for attempt in attempts {
             let dir = std::path::PathBuf::from(&attempt.run_dir);

@@ -41,10 +41,10 @@ special case `#N done`.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] A start rule parses and evaluates as a logical sentence (pure domain)
-- [ ] A chained task waits on its rule and starts when it is true (store, advancer)
-- [ ] Start rules can be set through the API and shown on tasks
-- [ ] The composer offers a start rule
+- [x] A start rule parses and evaluates as a logical sentence (pure domain)
+- [x] A chained task waits on its rule and starts when it is true (store, advancer)
+- [x] Start rules can be set through the API and shown on tasks
+- [x] The composer offers a start rule
 - [ ] Review, docs, ADR and delivery
 
 ## Acceptance criteria
@@ -57,12 +57,13 @@ special case `#N done`.
 ## Test plan
 
 Domain unit tests for parsing, precedence, limits and three-valued evaluation; a store test for
-the dependency table; app/integration tests for and/or/not starting and blocking; an API test for
+the rule column; app/integration tests for and/or/not starting and blocking; an API test for
 validation; an e2e test for the composer.
 
 ## Decisions
 
-- Text syntax stored as given; the AST is reparsed, so there is one source of truth.
-- Dependencies are stored in `task_chain_deps` so an event on any named task finds the waiting
-  task; `after_task_id` stays the first named task (branch base, briefing).
+- The canonical text is stored and reparsed on every evaluation, so there is one source of truth.
+- No dependency table: when any task changes, the waiting rules of its sandbox (at most 32) are
+  evaluated again; `after_task_id` stays the first named task (branch base, briefing, links).
+  See ADR-0018.
 - Three-valued evaluation avoids a separate "can this still happen" analysis.
