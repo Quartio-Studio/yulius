@@ -3,7 +3,7 @@
 //! deduplicated session documents, idempotent re-runs and the native continuation of imported
 //! sessions (AC-IMP-1, AC-IMP-2, AC-IMP-4..6, AC-SES-1).
 
-mod support;
+use crate::support;
 
 use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;

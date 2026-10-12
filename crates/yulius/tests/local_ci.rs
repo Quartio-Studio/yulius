@@ -3,7 +3,7 @@
 //! detached ptyhost running the jobs, and the fake GitHub recording commit statuses and branch
 //! deletions.
 
-mod support;
+use crate::support;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

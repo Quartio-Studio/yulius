@@ -257,6 +257,10 @@ pub enum RunStart {
         /// Continuation prompt.
         prompt: Option<String>,
     },
+    /// Resume the latest provider session past the usage limit that cut its turn (SPEC-034):
+    /// the transcript steps back over the limit and the agent redoes the lost turn by itself,
+    /// with nothing typed or sent.
+    AfterLimit,
 }
 
 /// Supervisor-owned per-process state.
@@ -761,7 +765,7 @@ impl App {
             }
             self.publish_task(&task.id).await;
         }
-        if matches!(start, RunStart::Resume { .. }) {
+        if matches!(start, RunStart::Resume { .. } | RunStart::AfterLimit) {
             // Imported sessions get a native transcript and a worktree from the imported state.
             self.prepare_imported_resume(&task.id).await?;
         }
@@ -776,9 +780,14 @@ impl App {
         let harness = task.harness;
         let Some(account) = self.choose_account(&task, requested.as_ref()).await? else {
             // No subscription has capacity: the task waits before starting, without a process
-            // (ROT-010); the resume loop starts it when capacity returns.
-            self.pause_task(&task.id, PauseKind::Start, None, None)
-                .await?;
+            // (ROT-010); the resume loop starts it when capacity returns. A turn a limit cut
+            // keeps its `limit` pause, so it still resumes past the limit (SPEC-034).
+            let kind = if matches!(start, RunStart::AfterLimit) {
+                PauseKind::Limit
+            } else {
+                PauseKind::Start
+            };
+            self.pause_task(&task.id, kind, None, None).await?;
             return Ok(());
         };
         let credential = self.open_credential(&account)?;
@@ -798,17 +807,32 @@ impl App {
                 SessionMode::Resume {
                     session_id: prev.session_id.clone(),
                     prompt: prompt.clone(),
+                    continue_interrupted: false,
                 },
                 LaunchKind::Resume,
             ),
-            (RunStart::Resume { prompt }, None) | (RunStart::Fresh { prompt }, _) => {
+            (RunStart::AfterLimit, Some(prev)) => (
+                SessionMode::Resume {
+                    session_id: prev.session_id.clone(),
+                    prompt: None,
+                    continue_interrupted: true,
+                },
+                LaunchKind::Resume,
+            ),
+            // Without a recorded session there is nothing to resume: the task starts afresh.
+            (RunStart::Resume { .. } | RunStart::AfterLimit, None)
+            | (RunStart::Fresh { .. }, _) => {
+                let prompt = match &start {
+                    RunStart::Resume { prompt } | RunStart::Fresh { prompt } => prompt.clone(),
+                    RunStart::AfterLimit => None,
+                };
                 // In goal mode the task starts with its `/goal` (the request and the definition
                 // of done, SPEC-011), after a first message with its attached files when it has
                 // any; otherwise the request is the first message. Images are pasted into it and
                 // other files mentioned, so Claude Code attaches them natively (SPEC-025,
                 // SPEC-030).
                 use yulius_domain::request::{Opening, Request};
-                let prompt = match prompt.clone() {
+                let prompt = match prompt {
                     Some(prompt) => Some(prompt),
                     None => match Request::parse(&task.prompt).opening(goal_mode) {
                         Some(Opening::Prompt(prompt)) => Some(prompt),
@@ -828,6 +852,7 @@ impl App {
                 )
             }
         };
+        // A continued turn opens the run like a first message: the goal is set after its Stop.
         let opens_with_turn = goal_mode
             && (typed_opening.is_some()
                 || matches!(
@@ -838,8 +863,20 @@ impl App {
                     } | SessionMode::Resume {
                         prompt: Some(_),
                         ..
+                    } | SessionMode::Resume {
+                        continue_interrupted: true,
+                        ..
                     }
                 ));
+        // The plan steps this session's transcript back over a usage limit (SPEC-034).
+        let stepped_back = match &mode {
+            SessionMode::Resume {
+                session_id,
+                continue_interrupted: true,
+                ..
+            } => Some(session_id.clone()),
+            _ => None,
+        };
         let attempt_id =
             AttemptId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?;
         let run_dir = self.config.data_dir.join("runs").join(attempt_id.as_str());
@@ -856,6 +893,9 @@ impl App {
             mcp: self.mcp_attachments(&sandbox).await?,
             credential,
         })?;
+        if let Some(session_id) = &stepped_back {
+            self.reindex_session(&task.sandbox_id, session_id).await;
+        }
         let mut launch = plan.plan;
         let task_token = hex_token(&self.deps.crypto.random_bytes());
         let host_token = self.deps.crypto.random_bytes();
@@ -1819,6 +1859,32 @@ impl App {
         reason: &str,
         prompt: Option<String>,
     ) -> AppResult<()> {
+        self.switch_with(task_id, account, reason, RunStart::Resume { prompt })
+            .await
+    }
+
+    /// Switches a task whose turn a usage limit cut (SPEC-034): the session resumes on `account`
+    /// (the policy's choice when `None`) past the limit, with nothing typed or sent.
+    ///
+    /// # Errors
+    /// `Conflict` when the task is not running.
+    pub async fn switch_after_limit(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        account: Option<AccountId>,
+        reason: &str,
+    ) -> AppResult<()> {
+        self.switch_with(task_id, account, reason, RunStart::AfterLimit)
+            .await
+    }
+
+    async fn switch_with(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        account: Option<AccountId>,
+        reason: &str,
+        start: RunStart,
+    ) -> AppResult<()> {
         let store = &self.deps.store;
         let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
         let attempt = store.live_attempt(task_id).await?;
@@ -1863,9 +1929,14 @@ impl App {
         let runtime = self.runtime(task_id);
         // The subscription changes under the hood (F 2026-10-10): viewers see that the session
         // continues, not which accounts are involved (Task details lists the switches).
-        runtime
-            .hub
-            .notice("↻ Yulius continues this session on another Claude subscription…");
+        // The policy may pick the same subscription (a limit that reset): no "another" then.
+        let elsewhere = account.is_some()
+            && attempt.as_ref().map(|a| a.account_id.as_ref()) != Some(account.as_ref());
+        runtime.hub.notice(if elsewhere {
+            "↻ Yulius continues this session on another Claude subscription…"
+        } else {
+            "↻ Yulius continues this session…"
+        });
         self.publish_task(task_id).await;
         if let Some(attempt) = attempt {
             let (tx, rx) = oneshot::channel();
@@ -1906,7 +1977,6 @@ impl App {
                     .await;
             }
         }
-        let start = RunStart::Resume { prompt };
         match self.start_run(task_id, start, account).await {
             Ok(()) => {
                 // The switch found no subscription with capacity: the task paused instead.
@@ -2491,13 +2561,16 @@ impl App {
         match decision {
             Decision::Stay => {}
             Decision::Switch { account } => {
-                // Only a turn the CLI interrupted needs a message to go on, and it says nothing
-                // about accounts or limits (F 2026-10-10).
-                let prompt = limit.then(|| crate::capacity::CONTINUE_TEXT.to_owned());
-                if let Err(err) = self
-                    .switch_task_now(task_id, Some(account), &format!("{reason:?}"), prompt)
-                    .await
-                {
+                // A turn the limit cut goes on past it, with nothing typed (SPEC-034).
+                let reason = format!("{reason:?}");
+                let switched = if limit {
+                    self.switch_after_limit(task_id, Some(account), &reason)
+                        .await
+                } else {
+                    self.switch_task_now(task_id, Some(account), &reason, None)
+                        .await
+                };
+                if let Err(err) = switched {
                     tracing::warn!(error = %err, task = %task_id, "automatic switch failed");
                 }
             }

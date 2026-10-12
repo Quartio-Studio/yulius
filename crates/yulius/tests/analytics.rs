@@ -1,7 +1,7 @@
 //! Analytics summary/export over visible sandboxes and the status panel (AC-ANL-1/3,
 //! AC-STA-1; ANL-001..003, UI-007).
 
-mod support;
+use crate::support;
 
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode, header};

@@ -17,6 +17,7 @@ pub mod paths;
 pub mod scrub_client;
 pub mod secret;
 pub mod skills;
+pub mod step_back;
 pub mod tail;
 pub mod time;
 

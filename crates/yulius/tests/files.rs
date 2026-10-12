@@ -2,7 +2,7 @@
 //! change files of the sandbox repository or a task worktree; paths never leave the folder;
 //! `.git` stays hidden; a file changed on disk is not overwritten silently.
 
-mod support;
+use crate::support;
 
 use axum::http::{Method, StatusCode};
 use serde_json::json;

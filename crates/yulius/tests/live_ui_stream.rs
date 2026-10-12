@@ -12,7 +12,7 @@
 //!
 //! ```sh
 //! YULIUS_LIVE_DISPLAY=1 YULIUS_LIVE_CHROME=/usr/bin/google-chrome \
-//!   cargo test -p yulius --test live_ui_stream -- --ignored --nocapture
+//!   cargo test -p yulius --test main live_ui_stream:: -- --ignored --nocapture
 //! ```
 //! `YULIUS_LIVE_DISPLAY_BASE` (default 90) is the first display number.
 //! `YULIUS_LIVE_LINK=<kbit/s>,<one-way ms>` puts an emulated link between the viewer and the
@@ -21,7 +21,7 @@
 //! The same instrumentation measured the real path (a viewer in Poland, the VM in Germany) for the
 //! PR of F 2026-10-10.
 
-mod support;
+use crate::support;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};

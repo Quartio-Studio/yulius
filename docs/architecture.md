@@ -55,6 +55,31 @@ of closed and cancelled tasks, and a switch checks the quota and the other start
 before it ends the running session ([SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md),
 [decision 0017](decisions/0017-sandbox-disk-upkeep.md)).
 
+## Usage limits
+
+When a subscription's usage limit cuts a turn, the task goes on as if the limit never happened
+([SPEC-034](../.ai/specs/SPEC-034-in-previous-tasks-we-have-hit-a-session.md),
+[decision 0027](decisions/0027-step-back-past-a-usage-limit.md)): on another subscription at
+once, or on its own after the reset. The harness adapter steps the transcript back over the
+limit, and Claude Code resumes the same session with `CLAUDE_CODE_RESUME_INTERRUPTED_TURN=1`, so
+it redoes the lost turn by itself. Nothing is typed.
+
+```mermaid
+sequenceDiagram
+    participant C as Claude Code (account A)
+    participant T as Transcript (JSONL)
+    participant S as Supervisor
+    participant H as Harness adapter
+    participant N as Claude Code (account B)
+    C->>T: usage-limit error + limit notices
+    T->>S: LimitReached (transcript watcher)
+    S->>C: SIGTERM (idle at the limit)
+    S->>H: plan Resume { continue_interrupted }
+    H->>T: step back: drop errors and notices, relink parentUuid
+    H->>N: claude --resume id (flag set, no prompt)
+    N->>T: the lost turn, redone
+```
+
 ## Agent feedback
 
 Yulius has no messages for now ([SPEC-028](../.ai/specs/SPEC-028-delete-message-mechanism-for-now-until-w.md),
@@ -119,16 +144,28 @@ sequenceDiagram
 Every user has one plain Claude Code session per sandbox, the Cockpit
 ([SPEC-021](../.ai/specs/SPEC-021-in-this-bar-we-need-to-add-cockpit-at-th.md),
 [decision 0020](decisions/0020-cockpit-as-a-plain-shell-session.md)). It is a sandbox shell of
-kind `cockpit` that runs `claude` instead of the login shell: no hooks, MCP or briefing, a pool
-subscription's token, and the newest conversation resumed whenever it starts again.
+kind `cockpit` that runs `claude` instead of the login shell: no hooks, settings or briefing, a
+pool subscription's token, and the newest conversation resumed whenever it starts again.
+
+It manages the project through the Yulius MCP server
+([SPEC-037](../.ai/specs/SPEC-037-i-got-something-like-this-tasks-and-cock.md),
+[decision 0029](decisions/0029-cockpit-manages-through-mcp.md)). Its bearer (`ck_…`) is derived
+from the shell's persisted host token, and it is served only the management tools: tasks,
+automations, workflows and sessions. Those tools act for a person (`ProjectCaller`): the Cockpit's
+owner, or a task's creator when a task's agent calls them. `task_create` takes the same path as
+New task.
 
 ```mermaid
 flowchart LR
   UI["Sidebar: Cockpit"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
   APP -->|"pool_account"| POOL[("Subscriptions")]
-  APP -->|"plan_cockpit"| HP["Harness: claude [--resume id]"]
+  APP -->|"plan_cockpit"| HP["Harness: claude [--resume id] --mcp-config yulius"]
   APP --> SH["Shell runtime (user space, repository)"]
   UI -->|"WS /api/shells/id/terminal"| SH
+  SH -->|"Bearer ck_… (YULIUS_COCKPIT_TOKEN)"| MCP["/mcp: management tools"]
+  AG["Task agent"] -->|"Bearer task token"| MCP
+  MCP -->|"task_create"| NT["App::create_task_as (as New task)"]
+  MCP -->|"automation_*"| AU["Automations"]
 ```
 
 ## Web UI state
@@ -152,7 +189,7 @@ flowchart LR
 ## Task status
 
 A running task's activity is derived from Claude Code's own records, not guessed from the last
-event ([ADR-0027](decisions/0027-task-status-follows-claude-codes-own-records.md)):
+event ([ADR-0030](decisions/0030-task-status-follows-claude-codes-own-records.md)):
 
 ```mermaid
 flowchart LR

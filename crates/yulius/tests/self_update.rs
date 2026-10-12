@@ -6,7 +6,7 @@
 //! is cancelled, gives up or is rolled back. The real helper: `src/update_helper/tests.rs`;
 //! real processes through the hook client: `update_supervision.rs`.
 
-mod support;
+use crate::support;
 
 use std::net::SocketAddr;
 use std::sync::Arc;

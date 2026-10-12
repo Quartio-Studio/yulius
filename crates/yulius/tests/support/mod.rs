@@ -1,5 +1,6 @@
 //! Test harness: in-memory app with a fake GitHub and a controllable clock.
-// Shared by several test binaries; each uses a subset, so unused items are expected here.
+// Shared by the test modules; each uses a subset (and `isolation` is Linux-only), so unused
+// items are expected here.
 #![allow(dead_code)]
 
 use std::collections::HashMap;

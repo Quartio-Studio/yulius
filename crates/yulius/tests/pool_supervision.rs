@@ -4,7 +4,7 @@
 //! a turn in its transcript; hook holds are covered by `subscription_pool.rs`. MCP servers reach
 //! every run on every subscription (MCP-004, AC-MCP-3).
 
-mod support;
+use crate::support;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -12,7 +12,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use support::agents::{FakeAgentHarness, FakeAgentOptions};
+use support::agents::{FakeAgentHarness, FakeAgentOptions, limit_resume_problems};
 use support::{FakeGitHub, TestResult};
 use yulius::wiring::clock::SystemClock;
 use yulius::wiring::git::GitAdapter;
@@ -822,12 +822,12 @@ fn a_pause_survives_a_server_restart() -> TestResult {
     Ok(())
 }
 
-/// AC-ROT-10: a turn the CLI itself interrupted with a usage limit, with every subscription
-/// exhausted, pauses at the limit; it resumes on the subscription that recovers with the only
-/// text the harness ever sends after a pause, a neutral "Continue." (no word about accounts,
-/// limits or pauses).
+/// AC-ROT-10, SPEC-034: a turn the CLI itself interrupted with a usage limit, with every
+/// subscription exhausted, pauses at the limit; it resumes on the subscription that recovers by a
+/// native resume that steps the transcript back over the limit and lets Claude Code continue the
+/// turn itself: no prompt, nothing typed, no "Continue.".
 #[test]
-fn a_turn_interrupted_by_a_limit_resumes_with_a_neutral_continue() -> TestResult {
+fn a_turn_interrupted_by_a_limit_resumes_without_a_typed_continue() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
     let rt = runtime()?;
@@ -836,6 +836,7 @@ fn a_turn_interrupted_by_a_limit_resumes_with_a_neutral_continue() -> TestResult
         let agent = FakeAgentOptions {
             transcript: true,
             limit_after: Some(1),
+            report_env: vec!["CLAUDE_CODE_RESUME_INTERRUPTED_TURN".into()],
             ..FakeAgentOptions::default()
         };
         let app = build_with(&data, &fake, probe.clone(), agent)?;
@@ -874,12 +875,148 @@ fn a_turn_interrupted_by_a_limit_resumes_with_a_neutral_continue() -> TestResult
             attempts[1].account_id.as_ref().map(AccountId::as_str),
             Some("b-second")
         );
-        let launch =
-            std::fs::read_to_string(Path::new(&attempts[1].run_dir).join("fake-launch.txt"))?;
-        assert!(
-            launch.contains(r#"prompt: Some("Continue.")"#),
-            "only a neutral continuation: {launch}"
+        let problems = limit_resume_problems(Path::new(&attempts[1].run_dir), &data);
+        assert!(problems.is_empty(), "{problems:?}");
+        wait_for("the flag in the agent's environment", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("ENV CLAUDE_CODE_RESUME_INTERRUPTED_TURN=set") }
+        })
+        .await?;
+        assert!(!screen(&app, &id).contains("Continue."), "nothing typed");
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-034: a turn the limit cut on the only subscription resumes when that subscription
+/// recovers, on the same subscription, past the limit: a native resume of the same session with
+/// no prompt, and nothing typed into the paused process (it used to get "Continue.").
+#[test]
+fn a_limit_on_the_only_subscription_resumes_past_the_limit_when_it_recovers() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            limit_after: Some(1),
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = new_task(&app, &sandbox, &user, "Limit").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("FAKE-AGENT READY") }
+        })
+        .await?;
+        app.send_input(&id, b"hello\r").await?;
+        wait_for("the pause at the limit", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::WaitingCapacity)
+        })
+        .await?;
+        assert_eq!(
+            app.deps.store.open_pause(&id).await?.ok_or("pause")?.kind,
+            PauseKind::Limit
         );
+
+        let mut notices = app.runtime(&id).hub.watch();
+        probe.set("a-first", usage(0.0, 5 * HOUR, 30.0, 100));
+        refresh(&app, &user, "a-first").await?;
+        let _ = app.resume_round().await;
+        wait_for("the resumed run", Duration::from_secs(60), || async {
+            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+            attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
+        })
+        .await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert_eq!(
+            attempts[1].account_id.as_ref().map(AccountId::as_str),
+            Some("a-first")
+        );
+        assert_eq!(
+            attempts[0].provider_session_id, attempts[1].provider_session_id,
+            "the same session"
+        );
+        let problems = limit_resume_problems(Path::new(&attempts[1].run_dir), &data);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert!(!screen(&app, &id).contains("Continue."), "nothing typed");
+        let mut said = Vec::new();
+        while let Ok(frame) = notices.try_recv() {
+            if let yulius_app::hub::HubFrame::Notice(text) = frame {
+                said.push(text);
+            }
+        }
+        assert!(
+            said.iter().any(|n| n.contains("continues this session"))
+                && !said.iter().any(|n| n.contains("another")),
+            "the same subscription: {said:?}"
+        );
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-034 (review): a person's switch of a task paused at a usage limit resumes it past the
+/// limit too, with no prompt and the transcript stepped back.
+#[test]
+fn a_manual_switch_at_a_limit_resumes_past_the_limit() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            limit_after: Some(1),
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+        probe.set("b-second", usage(99.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "b-second").await?;
+        let id = new_task(&app, &sandbox, &user, "Limit").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("FAKE-AGENT READY") }
+        })
+        .await?;
+        app.send_input(&id, b"hello\r").await?;
+        wait_for("the pause at the limit", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::WaitingCapacity)
+        })
+        .await?;
+        probe.set("b-second", usage(10.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "b-second").await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        app.switch_task(
+            &ctx,
+            id.as_str(),
+            &yulius_contracts::api::tasks::ContinueTask {
+                account_id: Some("b-second".into()),
+            },
+        )
+        .await?;
+        wait_for("the resumed run", Duration::from_secs(60), || async {
+            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+            attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
+        })
+        .await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        let problems = limit_resume_problems(Path::new(&attempts[1].run_dir), &data);
+        assert!(problems.is_empty(), "{problems:?}");
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;

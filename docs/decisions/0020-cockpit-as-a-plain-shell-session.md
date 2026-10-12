@@ -3,6 +3,8 @@
 ## Status
 
 Accepted. Specified in [SPEC-021](../../.ai/specs/SPEC-021-in-this-bar-we-need-to-add-cockpit-at-th.md).
+Amended by [0029](0029-cockpit-manages-through-mcp.md): the Cockpit gets the Yulius MCP server with
+the management tools; everything else below still holds.
 
 ## Context
 

@@ -7,11 +7,11 @@
 //! and that `--session-id` names the session.
 //!
 //! Costs a few cents of provider usage, so it is ignored by default:
-//! `YULIUS_LIVE_CLAUDE=1 cargo test -p yulius --test live_claude -- --ignored --nocapture`.
+//! `YULIUS_LIVE_CLAUDE=1 cargo test -p yulius --test main live_claude:: -- --ignored --nocapture`.
 //! User settings are not loaded (`--setting-sources project` in an empty directory); the session
 //! transcript this creates in the user's Claude config directory is removed afterwards.
 
-mod support;
+use crate::support;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;

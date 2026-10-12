@@ -813,7 +813,13 @@ resolves to nothing, the run gets the server without that variable or token.
     <newest conversation>] --model claude-opus-5-5 --effort high` (SPEC-023) in the sandbox
     repository, as the caller's sandbox identity, with the token of the pool's best subscription
     for Opus and `CLAUDE_CONFIG_DIR=~/.claude`, otherwise a
-    terminal's environment (Git as the caller); no Yulius hooks, MCP, settings or approval bypass.
+    terminal's environment (Git as the caller); no Yulius hooks, settings or approval bypass. It
+    gets the Yulius MCP server (SPEC-037, ADR-0029): `--mcp-config` inline JSON for
+    `<internal URL>/mcp` with `Authorization: Bearer ${YULIUS_COCKPIT_TOKEN}` (the `ck_…` bearer
+    in the secret environment, valid while that Cockpit is live and its owner may work), and
+    `--allowedTools` for the read-only tools. It is served `tasks_list`, `task_get`,
+    `task_create`, `automation_create`, `automations_list`, `automation_update`,
+    `workflows_list`, `sessions_search` and `session_read`, acting for its owner.
     A conversation it could not resume (an error exit within 10 s) is skipped next time.
     409 before the repository is cloned or without a Claude
     subscription, 429 while none has capacity. There is no delete: it is never in `GET …/shells`,

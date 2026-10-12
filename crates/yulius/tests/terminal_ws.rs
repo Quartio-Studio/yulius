@@ -3,7 +3,7 @@
 //! same stream; a read-only viewer's input is refused; the writer's input reaches the agent
 //! (SPEC-001 AC-TSK-2, AC-TSK-6; SPEC-002 §7.7).
 
-mod support;
+use crate::support;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

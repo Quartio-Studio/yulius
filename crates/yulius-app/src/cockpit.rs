@@ -4,9 +4,11 @@
 //! Contract:
 //! - one Cockpit per user and sandbox, for users with write access; [`App::cockpit_open`] returns
 //!   the running one or starts it, and concurrent calls start one (CKP-001, CKP-005);
-//! - it is plain Claude Code: no Yulius hooks, MCP server, settings, briefing or gates, the
-//!   token of a pool subscription in its environment, its config in the user's own home, run in
-//!   the sandbox repository as the user's sandbox identity (CKP-002);
+//! - it is plain Claude Code: no Yulius hooks, settings, briefing or gates, the token of a pool
+//!   subscription in its environment, its config in the user's own home, run in the sandbox
+//!   repository as the user's sandbox identity (CKP-002);
+//! - it manages the project through the Yulius MCP server with its own bearer, served only the
+//!   management tools and acting for its owner, checked at every call (SPEC-037 MGT-004..007);
 //! - a Cockpit started again resumes the user's newest conversation there, so `/clear`,
 //!   `/exit`, an idle stop and a lost process never lose it (CKP-003);
 //! - it is a shell of kind [`ShellKind::Cockpit`]: private, adopted after a restart and ended
@@ -16,6 +18,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use serde_json::json;
+
 use yulius_domain::harness::Provider;
 use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::permission::Action;
@@ -23,10 +27,11 @@ use yulius_domain::time::Timestamp;
 
 use crate::auth::AuthContext;
 use crate::context::App;
+use crate::coordination::ProjectCaller;
 use crate::error::{AppError, AppResult};
 use crate::model::SandboxRecord;
 use crate::ports::harness::CockpitLaunch;
-use crate::shells::{ShellInfo, ShellKind, ShellRuntime};
+use crate::shells::{COCKPIT_TOKEN_PREFIX, ShellInfo, ShellKind, ShellRuntime};
 
 /// The Cockpit's display name.
 pub const COCKPIT_NAME: &str = "Cockpit";
@@ -59,6 +64,51 @@ impl App {
                 resumed.clone(),
             );
         }
+    }
+
+    /// The Yulius MCP bearer of `user`'s running Cockpit in `sandbox` (SPEC-037 MGT-005).
+    #[must_use]
+    pub fn cockpit_mcp_token(&self, user: &UserId, sandbox: &SandboxId) -> Option<String> {
+        self.running_cockpit(user, sandbox)
+            .map(|cockpit| cockpit.cockpit_token(self.deps.crypto.as_ref()))
+    }
+
+    /// Resolves a Cockpit's bearer to a caller of the management tools acting for its owner
+    /// (SPEC-037 MGT-005, MGT-007): the Cockpit must be live, its owner enabled and able to work
+    /// in its project, checked at every call.
+    ///
+    /// # Errors
+    /// `Unauthenticated` otherwise.
+    pub async fn cockpit_caller(&self, token: &str) -> AppResult<ProjectCaller> {
+        if !token.starts_with(COCKPIT_TOKEN_PREFIX) {
+            return Err(AppError::Unauthenticated);
+        }
+        let crypto = self.deps.crypto.as_ref();
+        // Compared as hashes, so the time taken says nothing about a token's characters.
+        let wanted = crypto.sha256_hex(token.as_bytes());
+        let cockpit = self
+            .live_cockpits()
+            .into_iter()
+            .find(|cockpit| crypto.sha256_hex(cockpit.cockpit_token(crypto).as_bytes()) == wanted)
+            .ok_or(AppError::Unauthenticated)?;
+        let user = self
+            .deps
+            .store
+            .user(cockpit.creator())
+            .await?
+            .filter(|u| u.disabled_at.is_none())
+            .ok_or(AppError::Unauthenticated)?;
+        self.require(&user, cockpit.sandbox(), Action::Work)
+            .await
+            .map_err(|_| AppError::Unauthenticated)?;
+        let login = self.login_of(&user.id).await;
+        Ok(ProjectCaller {
+            sandbox: cockpit.sandbox().clone(),
+            user: user.id,
+            task: None,
+            actor: format!("cockpit:{login}"),
+            detail: json!({"via": "cockpit", "shell": cockpit.id()}),
+        })
     }
 
     /// The caller's running Cockpit in `sandbox`.
@@ -190,6 +240,10 @@ impl App {
             config_dir_host: space.home_host.join(".claude"),
             resume: resume.clone(),
             credential,
+            yulius: Some((
+                self.config.internal_url.clone(),
+                crate::model::Secret(runtime.cockpit_token(self.deps.crypto.as_ref())),
+            )),
         })?;
         if let Some(id) = resume {
             let _ = runtime.resumed.set((id, self.now()));

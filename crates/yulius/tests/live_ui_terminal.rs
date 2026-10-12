@@ -18,10 +18,10 @@
 //!
 //! ```sh
 //! YULIUS_LIVE_CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-//!   cargo test -p yulius --test live_ui_terminal -- --ignored --nocapture
+//!   cargo test -p yulius --test main live_ui_terminal:: -- --ignored --nocapture
 //! ```
 
-mod support;
+use crate::support;
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
