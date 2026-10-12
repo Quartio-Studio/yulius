@@ -5,8 +5,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::harness::{
-    HarnessLaunch, HarnessPlan, HarnessPort, McpAttachment, Observation, OutputMasker, SessionMode,
-    TranscriptWatch, UsageSnapshot,
+    CockpitLaunch, HarnessLaunch, HarnessPlan, HarnessPort, McpAttachment, Observation,
+    OutputMasker, SessionMode, TranscriptWatch, UsageSnapshot,
 };
 use yulius_app::ports::session::{Containment, LaunchPlan, PlannedFile};
 use yulius_domain::harness::Harness;
@@ -147,6 +147,31 @@ impl HarnessPort for HarnessAdapter {
                 containment: Containment::None,
             },
             session_id: plan.session_id,
+        })
+    }
+
+    fn plan_cockpit(&self, l: &CockpitLaunch) -> AppResult<LaunchPlan> {
+        let plan = launch::plan_cockpit(&launch::CockpitRequest {
+            cwd: l.cwd.clone(),
+            config_dir: l.config_dir.clone(),
+            resume: l.resume.clone(),
+            credential: Credential::ClaudeOauthToken(HSecret::new(
+                l.credential.expose().to_owned(),
+            )),
+        })
+        .map_err(|e| AppError::Invalid(e.to_string()))?;
+        // A person answers the prompts, so approvals stay on (no bypass acceptance recorded).
+        yulius_harness::claude_config::ensure_claude_config(&l.config_dir_host, &l.cwd, false)
+            .map_err(|e| {
+                AppError::Upstream(format!("cannot prepare the Claude Code config: {e}"))
+            })?;
+        Ok(LaunchPlan {
+            argv: plan.argv,
+            cwd: plan.cwd,
+            env: plan.env,
+            secret_env: plan.secret_env,
+            files: Vec::new(),
+            containment: Containment::None,
         })
     }
 

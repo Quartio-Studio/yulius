@@ -81,6 +81,21 @@ pub struct HarnessLaunch {
     pub credential: Secret,
 }
 
+/// A user's Cockpit launch (SPEC-021): plain Claude Code outside any task.
+#[derive(Debug, Clone)]
+pub struct CockpitLaunch {
+    /// Working directory (the sandbox repository).
+    pub cwd: PathBuf,
+    /// Claude's config dir as the session sees it.
+    pub config_dir: PathBuf,
+    /// The same directory on the host, prepared before the launch.
+    pub config_dir_host: PathBuf,
+    /// Conversation to resume.
+    pub resume: Option<String>,
+    /// Provider credential (the Claude OAuth token).
+    pub credential: Secret,
+}
+
 /// A launch plan plus the session id known up front.
 #[derive(Debug, Clone)]
 pub struct HarnessPlan {
@@ -169,6 +184,12 @@ pub trait HarnessPort: Send + Sync {
     /// # Errors
     /// `Invalid` for impossible requests.
     fn plan(&self, launch: &HarnessLaunch) -> AppResult<HarnessPlan>;
+    /// Plans a Cockpit: plain Claude Code without hooks, MCP or settings, its first-run screens
+    /// and the folder trust settled in its config dir.
+    ///
+    /// # Errors
+    /// `Invalid` for impossible requests, `Upstream` when the config cannot be prepared.
+    fn plan_cockpit(&self, launch: &CockpitLaunch) -> AppResult<LaunchPlan>;
     /// Path of a Claude session transcript.
     fn claude_transcript(&self, sandbox_home: &Path, worktree: &Path, session_id: &str) -> PathBuf;
     /// Newest Claude session for `worktree` modified after `since` (session-id drift, HRN-004).

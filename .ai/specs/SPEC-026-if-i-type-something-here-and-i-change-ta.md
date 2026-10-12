@@ -90,7 +90,7 @@ covered by a test: a full `localStorage` (DRF-007 by code review), Safari's thum
 
 - Browser-side, not a server draft API: the request is about one person's unfinished input in their
   browser; uploads already live on the server, so only small metadata is stored locally. A server
-  draft would add schema, endpoints and cross-device semantics nobody asked for. (ADR 0020)
+  draft would add schema, endpoints and cross-device semantics nobody asked for. (ADR 0021)
 - `localStorage`, not `sessionStorage`: a closed tab or a crashed browser also lost work; the
   existing preference keys use `localStorage`, and sign-out clears drafts like notifications.
 - Thumbnails are stored scaled down instead of the original bytes, so a few images stay well inside
@@ -113,7 +113,7 @@ covered by a test: a full `localStorage` (DRF-007 by code review), Safari's thum
   draft's key stays stored until the next sign-out or start.
 - Merged with #20 (SPEC-022): the start rule is the editor's `{ join, conditions }` object; the
   draft stores it as such and keeps a stored one only when well formed (states done, merged or
-  ended, task numbers, at most 16 conditions). This ADR became 0020 (0019 is the rule editor's).
+  ended, task numbers, at most 16 conditions). This ADR became 0021 (0019 is the rule editor's, 0020 the Cockpit's).
 
 ## Evidence
 

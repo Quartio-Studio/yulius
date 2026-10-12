@@ -575,7 +575,8 @@ impl App {
         .await
     }
 
-    /// Starts an attachment for one of the caller's shells (only its owner, write access).
+    /// Starts an attachment for one of the caller's shells, their Cockpit included (only its
+    /// owner, write access).
     ///
     /// # Errors
     /// `NotFound` for unknown, ended or other users' shells; otherwise as
@@ -588,7 +589,7 @@ impl App {
         name: &str,
         declared: Option<u64>,
     ) -> AppResult<Upload> {
-        let runtime = self.own_shell(ctx, sandbox, shell).await?;
+        let runtime = self.own_shell_of(ctx, sandbox, shell, None).await?;
         let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
         let id = runtime.info().id;
         self.begin_attachment(ctx, &sandbox_id, &Owner::Shell(&id), name, declared)
