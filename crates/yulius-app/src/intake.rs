@@ -84,6 +84,8 @@ pub struct ChainRecord {
     pub blocked_reason: Option<String>,
     /// When the link was made.
     pub created_at: Timestamp,
+    /// The start rule text (SPEC-010); `None` means the predecessor is Done.
+    pub rule: Option<String>,
 }
 
 /// A prompt held by the scope check (SPEC-001 TSK-013).

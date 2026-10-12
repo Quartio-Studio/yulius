@@ -14,7 +14,7 @@ use yulius_domain::time::Timestamp;
 
 use crate::{SqliteStore, bad_column, db, to_u32};
 
-const CHAIN_COLS: &str = "task_id, after_task_id, after_number, blocked_reason, created_at";
+const CHAIN_COLS: &str = "task_id, after_task_id, after_number, blocked_reason, created_at, rule";
 const AUTO_COLS: &str = "task_id, mode_by, workflow_by, workflow_name, created_at";
 const HOLD_COLS: &str = "id, task_id, class, prompt, prompt_sha256, percent, typed_by, state, \
     created_at, resolved_by, resolved_at, new_task_id";
@@ -35,6 +35,7 @@ fn chain_from_row(row: &Row<'_>) -> rusqlite::Result<ChainRecord> {
         after_number: to_u32(row.get("after_number")?),
         blocked_reason: row.get("blocked_reason")?,
         created_at: Timestamp(row.get("created_at")?),
+        rule: row.get("rule")?,
     })
 }
 
@@ -87,13 +88,14 @@ impl IntakeStore for SqliteStore {
         let c = chain.clone();
         self.call(move |conn| {
             conn.execute(
-                &format!("INSERT INTO task_chains ({CHAIN_COLS}) VALUES (?1, ?2, ?3, ?4, ?5)"),
+                &format!("INSERT INTO task_chains ({CHAIN_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"),
                 params![
                     c.task_id.as_str(),
                     c.after_task_id.as_ref().map(TaskId::as_str),
                     i64::from(c.after_number),
                     c.blocked_reason,
                     c.created_at.0,
+                    c.rule,
                 ],
             )
             .map_err(db)?;

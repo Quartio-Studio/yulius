@@ -21,3 +21,4 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0014](0014-secrets-vault.md): Envelope-encrypted secrets vault with an egress proxy
 - [0015](0015-yulius-ci.md): Yulius is the projects' only CI
 - [0017](0017-sandbox-disk-upkeep.md): Disk is managed by Yulius: caches of idle tasks are pruned, switches check first
+- [0018](0018-task-start-rules.md): Tasks start by a logical rule over other tasks' states

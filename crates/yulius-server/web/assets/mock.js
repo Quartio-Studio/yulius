@@ -310,8 +310,8 @@ function summary(task) {
 }
 
 /** Links `task` to run after `before` (TSK-012); both summaries show the chain. */
-function chainAfter(task, before) {
-  task.afterLink = { task_id: before.id, number: before.number, title: before.title, status: before.status, blocked: null };
+function chainAfter(task, before, rule = null) {
+  task.afterLink = { task_id: before.id, number: before.number, title: before.title, status: before.status, blocked: null, rule };
   before.nextLinks = [...(before.nextLinks || []), { task_id: task.id, number: task.number, title: task.title, status: task.status, blocked: null }];
 }
 
@@ -714,7 +714,18 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   // While the sandbox is being prepared a new task waits after the preparation task (U-08).
   const preparing = sandbox.onboarding === 'pending' || sandbox.onboarding === 'preparing';
   const preparation = preparing ? db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding') : null;
-  const before = body.after_task_id ? db.tasks.find((x) => x.id === body.after_task_id && x.sandbox_id === sandbox.id) : preparation;
+  // A start rule (SPEC-010): the mock checks the shape the server checks, and anchors the chain
+  // on the first task the rule names.
+  let rule = null;
+  if (body.start_rule && body.start_rule.trim()) {
+    if (body.after_task_id) fail(422, 'invalid', 'give a task to run after or a start rule, not both');
+    rule = body.start_rule.trim().replace(/\s+/g, ' ');
+    if (!/^[#\w\s()!&|]+$/.test(rule) || !/#\d/.test(rule)) fail(422, 'invalid', 'the rule must name tasks like #12');
+    const named = [...rule.matchAll(/#(\d+)/g)].map((m) => Number(m[1]));
+    const missing = named.find((n) => !db.tasks.some((x) => x.sandbox_id === sandbox.id && x.number === n));
+    if (missing) fail(422, 'invalid', `the rule names #${missing}, which does not exist in this sandbox`);
+  }
+  const before = rule ? db.tasks.find((x) => x.sandbox_id === sandbox.id && x.number === Number(rule.match(/#(\d+)/)[1])) : body.after_task_id ? db.tasks.find((x) => x.id === body.after_task_id && x.sandbox_id === sandbox.id) : preparation;
   if (body.after_task_id && (!before || !(LIVE.has(before.status) || before.status === 'chained'))) fail(422, 'invalid', 'the task to run after does not exist or has ended');
   const task = {
     id, sandbox_id: sandbox.id, number, title, harness: 'claude', status: before ? 'chained' : 'queued', activity: null,
@@ -728,7 +739,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   db.tasks.push(task);
   recount(db);
   if (before) {
-    chainAfter(task, before);
+    chainAfter(task, before, rule);
     emit(db, { type: 'task.updated', task: summary(before) });
     return json(201, summary(task));
   }
