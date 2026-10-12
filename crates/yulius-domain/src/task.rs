@@ -378,8 +378,9 @@ impl AttentionFacts {
     /// An ended task needs nobody. A held prompt or a pending browser request does, whatever the
     /// task's state. After a finished turn, failing checks do, and a tested, reviewed or merged
     /// pull request answers for a task whose plan is complete (Done or In review). Otherwise: a
-    /// permission prompt (`needs_attention`), "Your turn" (`waiting`), or a chain whose
-    /// predecessor ended otherwise.
+    /// permission prompt (`needs_attention`), "Your turn" (`waiting`, unless the agent's
+    /// background shells still run: it wakes by itself), or a chain whose predecessor ended
+    /// otherwise.
     #[must_use]
     pub fn needs_you(&self) -> bool {
         if self.status.is_resting() {

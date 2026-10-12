@@ -60,12 +60,18 @@ status then reads Stopped rather than Done. No contract or storage change.
 
 - [x] Reproduce: Done task refused by the UI rule and the backend guard
 - [x] Allow archiving Done tasks (backend stop-then-archive, menu rule, mock) with a regression test
+- [x] Finished by hand (2026-10-12): the one Done rule everywhere, closed instead of stopped
 
 ## Decisions
 
 - Stop-then-archive rather than archiving a live session: nothing is left running unseen.
 - Delete permanently for Done tasks is out of scope; the request was about archiving.
 - "Your turn" tasks stay non-archivable: they wait for the user, so they are not finished.
+- Finished by hand (2026-10-12, after review): the archive rule is the sidebar's Done rule, not
+  only an achieved goal. A task whose plan is complete and whose pull request is merged or tested
+  shows a green check too, so it is archivable (the menu gets the pull request; the server uses
+  `task_is_done`). The session is closed (`EndIntent::Close`, status `closed`), not stopped: the
+  task finished, nobody cancelled it.
 
 ## Evidence
 

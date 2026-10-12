@@ -1,4 +1,4 @@
-import { test } from '@e2e-dev/web';
+import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
 import { axeViolations, failOnPageErrors, mock } from './support.ts';
 
@@ -49,7 +49,42 @@ test('a task being stopped moves straight to Stopped, never into Working', async
   await screen.getByRole('menuitem', /^Stop/).click();
   await screen.getByRole('button', 'Stop task').click();
 
-  // While the process goes away ("Stopping") the sidebar already lists it under Stopped.
-  await expect(screen.getByRole('region', 'Stopped').getByRole('link', /Checkout API\s*, Stopping/)).toBeVisible();
+  // Whether it still reads "Stopping" (the process going away) or already "Stopped", the sidebar
+  // lists it with the ended tasks, never under Working.
+  await expect(screen.getByRole('region', 'Stopped').getByRole('link', /Checkout API/)).toBeVisible();
   await expect(screen.getByRole('region', 'Working').getByRole('link', /Checkout API/)).toBeHidden();
+});
+
+/** Changes a mock task as the server would announce it. */
+const touchTask = (browser: Browser, number: number, changes: Record<string, unknown>) =>
+  browser.evaluate(([n, c]) => (window as unknown as WithMock).__yuliusMock.touchTask('sb_studio', n, c), [number, changes] as const);
+type WithMock = { __yuliusMock: { touchTask: (sandbox: string, number: number, changes: unknown) => void } };
+
+test('an idle agent with a background shell running is Working, not your turn', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+
+  // The turn ended while the agent's build runs in the background: it wakes by itself.
+  await touchTask(browser, 12, { activity: 'waiting', background_shells: 1 });
+  await expect(browser.locator('.strip-status')).toHaveText(/Working · 1 background shell still running/);
+  await expect(screen.getByRole('region', 'Working').getByRole('link', /Checkout API/)).toBeVisible();
+  await expect(browser.locator('.attention-bar')).toBeHidden();
+
+  // The shell ended and nothing else runs: now the next move is the user's.
+  await touchTask(browser, 12, { background_shells: 0 });
+  await expect(browser.locator('.strip-status')).toHaveText(/Your turn/);
+  await expect(browser.locator('.attention-bar')).toHaveText(/waiting for your reply/);
+});
+
+test('a finished task whose pull request is tested can be archived and is closed', async ({ app, browser, screen }) => {
+  // #11 finished its turn with a complete plan and green checks: Done (#35), although it idles.
+  await app.open(mock('/s/studio/t/11'));
+  await expect(browser.locator('.strip-status')).toHaveText(/^Done · PR #221/);
+
+  await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
+  await screen.getByRole('menuitem', 'Archive').click();
+  await expect(screen.getByText('Task #11 archived.')).toBeVisible();
+  await expect(screen.getByRole('region', 'Done').getByRole('link', /3D model viewer/)).toBeHidden();
+  const status = await browser.evaluate(() => (window as unknown as { __yuliusMock: { tasks: { number: number; sandbox_id: string; status: string }[] } }).__yuliusMock.tasks.find((t) => t.sandbox_id === 'sb_studio' && t.number === 11)?.status);
+  expect(status).toBe('closed');
 });

@@ -871,8 +871,11 @@ route('DELETE', `/api/tasks/${ID}`, ({ db, p }) => {
 route('POST', `/api/tasks/${ID}/archive`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
-  if (LIVE.has(task.status) && !(task.status === 'running' && task.activity === 'done' && !task.background_shells)) fail(409, 'conflict', 'Stop the task before archiving it.');
-  touch(db, task, { archived: true });
+  // A finished task (Done by the sidebar's rule, the server's task_is_done) is closed as it is
+  // archived (TSK-014); any other live task has to be stopped first.
+  const finished = task.status === 'running' && taskInfo(summary(task), null, pullOf(task)).group === 'done';
+  if (LIVE.has(task.status) && !finished) fail(409, 'conflict', 'Stop the task before archiving it.');
+  touch(db, task, finished ? { archived: true, status: 'closed', activity: null } : { archived: true });
   return summary(task);
 });
 route('POST', `/api/tasks/${ID}/restore`, ({ db, p }) => {
@@ -3237,6 +3240,8 @@ function startAmbient(db) {
 export function createMockTransport(params) {
   const db = seed(params);
   window.__yuliusMock = db; // debugging aid in the browser console (mock mode only)
+  // Tests change a task as the server would announce it (`touchTask('sb_studio', 12, {…})`).
+  db.touchTask = (sandboxId, number, changes) => touch(db, db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number), changes);
   // Simulate an outage and its end: __yuliusMock.goOffline() / .goOnline().
   db.goOffline = () => {
     db.offline = true;

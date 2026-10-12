@@ -24,8 +24,8 @@ flashed under Working until its process ended and it became `stopped_cancelled`.
 
 ## Requirements
 
-- STP-010-1: a task with status `stopping` is in the `ended` group (label "Stopping").
-- STP-010-2: stopping stays a live status: Stop, Delete and Archive stay unavailable meanwhile.
+- SST-1: a task with status `stopping` is in the `ended` group (label "Stopping").
+- SST-2: stopping stays a live status: Stop, Delete and Archive stay unavailable meanwhile.
 
 ## Plan
 

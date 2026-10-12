@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- A task's state reads the same everywhere and matches what it waits for (tasks #11, #13, #14):
+  an idle agent whose background shells still run is Working, not "Your turn", and the task view
+  no longer asks for a reply then; a task being stopped is listed under Stopped at once; any task
+  shown as Done (goal achieved, or plan complete with its pull request merged or tested) can be
+  archived, and its session is closed rather than stopped (SPEC-001 TSK-014, UI-050).
 - GitHub Actions are gone from this repository: Yulius CI is the only CI (`quality` and `e2e` in
   `[[ci.jobs]]`), the rulesets require only the `yulius/ci` commit status, and `.github/workflows`
   and `.github/actionlint.yaml` are deleted. macOS is checked with `scripts/dev ci` on a Mac before

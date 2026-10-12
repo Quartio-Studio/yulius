@@ -148,9 +148,10 @@ export function mountTaskView(ctx, sandbox, task) {
   // Where the user answers the agent: its terminal (the quick input on phones).
   const reply = () => (isPhone() ? quickInput.focus() : terminal.focus());
   function renderAttention() {
-    const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullsOf(current.sandbox_id).get(current.id));
+    const pr = ctx.store.pullsOf(current.sandbox_id).get(current.id);
+    const info = taskInfo(current, ctx.store.state.actionRequests, pr);
     let content = null;
-    const can = taskActions(current, (ctx.store.sandboxById(sandbox.id) || sandbox).access);
+    const can = taskActions(current, (ctx.store.sandboxById(sandbox.id) || sandbox).access, pr);
     if (current.status === 'chained') {
       // Waiting in a chain (TSK-012): the way out is always here.
       const after = current.after;
@@ -168,12 +169,12 @@ export function mountTaskView(ctx, sandbox, task) {
     } else if (current.status === 'running' && current.activity === 'needs_attention') {
       content = [icon('st-attention', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'The agent needs your attention. '), 'Its question is in the terminal below.'),
         h('button', { type: 'button', class: 'btn btn-sm', onClick: reply }, 'Reply')];
-    } else if (current.status === 'running' && current.activity === 'waiting') {
+    } else if (current.status === 'running' && current.activity === 'waiting' && info.group === 'needs') {
       content = [icon('st-input', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'The agent is waiting for your reply. '), 'Type it in the terminal below.'),
         h('button', { type: 'button', class: 'btn btn-sm', onClick: reply }, 'Reply')];
     }
     attention.hidden = !content;
-    attention.classList.toggle('waiting', !info.request && current.activity === 'waiting');
+    attention.classList.toggle('waiting', !info.request && current.activity === 'waiting' && info.group === 'needs');
     setChildren(attention, content);
   }
   // A browser request changes the bar and the state in the strip ("Needs you in the browser").

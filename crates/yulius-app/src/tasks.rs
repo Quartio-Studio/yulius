@@ -266,9 +266,10 @@ impl App {
         })
     }
 
-    /// Archives a resting task (UI-006), or a Done one (TSK-014): the agent finished its goal
-    /// and idles with no background shell, so there is nothing left to wait for and it is
-    /// stopped as it is archived.
+    /// Archives a resting task (UI-006), or a finished one (TSK-014): Done by the sidebar's rule
+    /// (`task_is_done`: the goal achieved, or the plan complete with its pull request merged or
+    /// tested, and no background shell), so nothing is left to wait for and it is closed as it
+    /// is archived.
     ///
     /// # Errors
     /// `Conflict` for other live tasks.
@@ -279,11 +280,9 @@ impl App {
         archive: bool,
     ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::Work).await?;
-        let done = task.status == TaskStatus::Running
-            && task.activity == Some(Activity::Done)
-            && self.background_shells_of(&task.id).unwrap_or(0) == 0;
+        let done = task.status == TaskStatus::Running && self.task_is_done(&task).await;
         if archive && done {
-            self.stop_task_now(&task.id).await?;
+            self.close_task_now(&task.id).await?;
         } else if archive && !task.status.is_resting() {
             return Err(AppError::Conflict(
                 "stop the task before archiving it".into(),

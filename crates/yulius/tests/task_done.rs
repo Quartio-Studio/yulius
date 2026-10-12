@@ -330,7 +330,7 @@ fn an_achieved_goal_with_no_shell_left_makes_the_task_done() -> TestResult {
 }
 
 /// TSK-014, UI-006: a Done task (goal achieved, no shell left) can be archived: the session is
-/// stopped as it is archived. A task that only waits for the user still has to be stopped first.
+/// closed as it is archived. A task that only waits for the user still has to be stopped first.
 #[test]
 fn a_done_task_can_be_archived() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -356,8 +356,11 @@ fn a_done_task_can_be_archived() -> TestResult {
         .await?;
         let archived = app.archive_task(&ctx, id.as_str(), true).await?;
         assert!(archived.archived);
-        wait_for("the stop", Duration::from_secs(30), || async {
-            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        // Closed, not stopped: the finished session ends like one the user left.
+        wait_for("the close", Duration::from_secs(30), || async {
+            task(&app, &id)
+                .await
+                .is_ok_and(|t| t.status == TaskStatus::Closed)
         })
         .await?;
         Ok::<(), BoxError>(())

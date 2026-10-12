@@ -85,7 +85,8 @@ export function statusInfo(task) {
   const activity = task.activity;
   if (status === 'running') {
     // needs_attention: blocked mid-turn (a permission prompt, a browser request, failing gates);
-    // waiting: the agent finished its turn and the next move is the user's;
+    // waiting: the agent finished its turn and the next move is the user's — unless its
+    // background shells still run (it wakes by itself when they report, TSK-014);
     // done: the goal is achieved and the turn ended — Done once no background shell is left.
     if (activity === 'needs_attention') return { glyph: '!', icon: 'st-attention', tone: 'attention', label: 'Needs your action', group: 'needs' };
     if (activity === 'done') {
@@ -226,8 +227,11 @@ export function allows(access, minimum) {
   return (RANK[access] || 0) >= (RANK[minimum] || 99);
 }
 
-/** Actions available for a task given sandbox access (UI-013, §6.3). */
-export function taskActions(task, access) {
+/**
+ * Actions available for a task given sandbox access (UI-013, §6.3). `pr` is the task's pull
+ * request (store.pullsOf()), so a task the sidebar shows as Done can be archived.
+ */
+export function taskActions(task, access, pr) {
   const write = allows(access, 'write');
   const live = isLive(task.status);
   const chained = task.status === 'chained';
@@ -238,8 +242,9 @@ export function taskActions(task, access) {
     continue: write && ended && !task.archived,
     deliver: write && !task.archived,
     feedback: allows(access, 'read'),
-    // A Done task (goal achieved, no shell left) is stopped as it is archived.
-    archive: write && (ended || (statusInfo(task).label === DONE.label)) && !task.archived,
+    // A finished task (Done by the one rule of taskInfo: goal achieved, or plan complete with its
+    // pull request merged or tested, and no shell left) is closed as it is archived (TSK-014).
+    archive: write && (ended || (live && taskInfo(task, null, pr).group === 'done')) && !task.archived,
     restore: write && task.archived,
     delete: write && (ended || chained) && task.status !== 'stopping',
   };

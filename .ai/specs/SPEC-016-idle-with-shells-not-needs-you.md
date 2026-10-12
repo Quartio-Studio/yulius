@@ -1,11 +1,11 @@
 ---
 yulius-task: 99b109c2-ad46-4a92-858d-70fe61d3f63c
-status: in-progress
+status: done
 ---
 
 # SPEC-016: an idle agent with background work running does not "need you"
 
-Status: draft
+Status: implemented
 Date: 2026-10-12
 Owner: Yulius task #14
 Scope authorization: user request (screenshot of task #10): "It marked 'needs you' even if it
@@ -53,9 +53,19 @@ same rule in `statusInfo`.
 
 ## Plan
 
-- [ ] Idle agent with running shells reads Working in the UI and server counts
-- [ ] Gate green
+- [x] Idle agent with running shells reads Working in the UI and server counts
+- [x] Gate green
 
 ## Decisions
 
 - Reuse the TSK-014 background-shell count instead of a new signal.
+- Finished by hand (2026-10-12, after review): the task view's attention bar ("The agent is waiting
+  for your reply", the text of the screenshot) follows the same rule, and an e2e test covers the
+  idle-with-shell case both ways. Telling a stalled or forgotten shell apart is a separate change.
+
+## Evidence
+
+- `scripts/dev ci` on macOS (2026-10-12, with tasks #11 and #13 in the same change): 1109 tests
+  passed, including the domain test of the rule.
+- e2e `task-done.e2e.ts`: an idle agent with a background shell reads "Working · 1 background
+  shell still running" and shows no reply bar; once the shell ends it is "Your turn" with the bar.
