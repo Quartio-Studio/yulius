@@ -47,45 +47,63 @@ async function withReauth(ctx, request) {
   }
 }
 
-/** Unlocks the vault: the code dialog, after setting two-factor up (and confirming identity). */
+/**
+ * Unlocks the vault: the code dialog; first the identity confirmation when codes are locked
+ * after too many wrong ones, and the setup when two-factor is not on (a pending setup can be
+ * finished with a code from the key added earlier).
+ */
 async function unlockVault(ctx, status) {
+  if (status.two_factor === 'locked') {
+    if (!(await confirmIdentity(ctx, status, 'Too many wrong codes. Confirm it’s you, then enter a code again.'))) return false;
+    return enterCode(ctx, null);
+  }
   if (status.two_factor === 'on') return enterCode(ctx, null);
-  if (!status.identity_fresh && !(await confirmIdentity(ctx, status))) return false;
+  if (status.two_factor === 'pending') {
+    const result = await enterCode(ctx, null, true);
+    if (result !== 'restart') return result;
+  }
+  if (!status.identity_fresh && !(await confirmIdentity(ctx, status, 'Setting up two-factor needs a recent sign-in. Confirm it’s you first.'))) return false;
   const setup = await ctx.api.post('/api/auth/two-factor');
   return enterCode(ctx, setup);
 }
 
-/** The code dialog; with `setup` (a new seed), it also shows the key to add to the app. */
-function enterCode(ctx, setup) {
-  const code = h('input', { class: 'input mono', id: 'unlock-code', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 8, 'aria-describedby': 'unlock-hint' });
+/**
+ * The code dialog; with `setup` (a new seed), it also shows the key to add to the app; with
+ * `pending`, it offers a new key instead (resolves `'restart'`).
+ */
+function enterCode(ctx, setup, pending = false) {
+  const code = h('input', { class: 'input mono', id: 'unlock-code', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 6, 'aria-describedby': 'unlock-hint' });
+  let hint = 'Enter the code from your authenticator app. Secrets stay readable for 10 minutes; every reveal is recorded.';
+  if (setup) hint = 'Reading secrets needs two-factor. Add this key to your authenticator app (1Password, Google Authenticator…), then enter the code it shows. You do this once.';
+  else if (pending) hint = 'Finish setting up two-factor: enter the code your authenticator app shows for the key you added, or get a new key.';
   const body = h('div', { class: 'stack' },
-    setup
-      ? h('p', { id: 'unlock-hint' }, 'Reading secrets needs two-factor. Add this key to your authenticator app (1Password, Google Authenticator…), then enter the code it shows. You do this once.')
-      : h('p', { id: 'unlock-hint' }, 'Enter the code from your authenticator app. Secrets stay readable for 10 minutes; every reveal is recorded.'),
-    setup ? h('div', { class: 'row-wrap' },
-      h('code', { class: 'mono secret-value', 'aria-label': 'Key' }, setup.secret),
-      smallButton('Copy', 'Copy key', () => copyValue(setup.secret, 'Key').catch((e) => errorToast(e, 'Couldn’t copy')))) : null,
+    h('p', { id: 'unlock-hint' }, hint),
+    setup ? h('div', { class: 'stack-tight' },
+      h('span', { class: 'field-label' }, 'Key'),
+      h('div', { class: 'row-wrap' },
+        h('code', { class: 'mono secret-value' }, setup.secret),
+        smallButton('Copy', 'Copy key', () => copyValue(setup.secret, 'Key').catch((e) => errorToast(e, 'Couldn’t copy'))))) : null,
     setup ? h('a', { href: setup.uri, class: 'small' }, 'Open in an authenticator app') : null,
     field('Code from your app', code),
   );
-  const modal = openModal({ title: setup ? 'Set up two-factor' : 'Enter your two-factor code', body, actions: [
-    { label: 'Cancel', value: false },
-    { label: 'Unlock', kind: 'primary', value: true, submit: true, run: async () => {
-      const value = code.value.replace(/\s+/g, '');
-      if (!/^\d{6,8}$/.test(value)) return invalid(code, 'Enter the 6-digit code.');
-      await ctx.api.post('/api/auth/unlock', { code: value });
-      return true;
-    } },
-  ] });
-  return modal.result.then((v) => v === true);
+  const actions = [{ label: 'Cancel', value: false }];
+  if (pending) actions.push({ label: 'New key', value: 'restart' });
+  actions.push({ label: 'Unlock', kind: 'primary', value: true, submit: true, run: async () => {
+    const value = code.value.replace(/\s+/g, '');
+    if (!/^\d{6}$/.test(value)) return invalid(code, 'Enter the 6-digit code.');
+    await ctx.api.post('/api/auth/unlock', { code: value });
+    return true;
+  } });
+  const modal = openModal({ title: setup || pending ? 'Set up two-factor' : 'Enter your two-factor code', body, actions });
+  return modal.result.then((v) => (v === 'restart' ? 'restart' : v === true));
 }
 
-/** Confirms identity before setting two-factor up; resolves true once confirmed. */
-function confirmIdentity(ctx, status) {
+/** Confirms identity (to set two-factor up, or after too many wrong codes); resolves true once confirmed. */
+function confirmIdentity(ctx, status, why) {
   const methods = status.methods || [];
   const password = h('input', { class: 'input', type: 'password', id: 'reauth-password', autocomplete: 'current-password', 'aria-describedby': 'reauth-hint' });
   const body = h('div', { class: 'stack' },
-    h('p', { id: 'reauth-hint' }, 'Setting up two-factor needs a recent sign-in. Confirm it’s you first.'),
+    h('p', { id: 'reauth-hint' }, why),
     methods.includes('password') ? field('Your password', password) : null,
     methods.includes('github') ? h('p', { class: 'muted small' }, 'Signing in with GitHub again confirms it’s you; you come back to this page.') : null,
     methods.length === 0 ? h('p', { class: 'muted' }, 'This account cannot confirm here. Sign out and sign in again, then set up two-factor within 10 minutes.') : null,
@@ -124,14 +142,25 @@ function showRevealed(title, revealed) {
 
 // ---------------------------------------------------------------- team secrets
 
-function teamForm(secret) {
+/** `loadNotes` reveals the stored notes (after a two-factor code) so they can be edited. */
+function teamForm(secret, loadNotes) {
   const title = h('input', { class: 'input', value: secret ? secret.title : '', maxlength: 200, autofocus: true, placeholder: 'Shared Gmail' });
   const value = h('input', { class: 'input mono', type: 'password', autocomplete: 'new-password', placeholder: secret && secret.has_value ? 'Unchanged' : '' });
   const notes = h('textarea', { class: 'textarea', rows: 3, placeholder: secret && secret.has_notes ? 'Unchanged' : 'User name, address, recovery codes…' });
   const body = h('div', { class: 'stack' },
     field('Title', title),
     field('Value', value, secret ? 'Leave empty to keep the stored value.' : null),
-    field('Notes', notes, 'Encrypted like the value.'),
+    field('Notes', notes, secret && secret.has_notes ? 'Leave empty to keep the stored notes; what you type replaces them.' : 'Encrypted like the value.'),
+    secret && secret.has_notes ? h('div', null, smallButton('Edit current notes', `Edit current notes of ${secret.title}`, async (event) => {
+      try {
+        const values = await loadNotes();
+        if (!values) return;
+        notes.value = values.notes || '';
+        notes.placeholder = '';
+        event.target.hidden = true;
+        notes.focus();
+      } catch (error) { errorToast(error, 'Couldn’t reveal'); }
+    })) : null,
   );
   const values = () => {
     const out = { title: title.value.trim() };
@@ -196,7 +225,7 @@ function mountTeam(ctx, host, actions) {
   });
 
   function edit(secret) {
-    const form = teamForm(secret);
+    const form = teamForm(secret, () => reveal(secret, 'show', ['notes']));
     openModal({ title: secret ? `Edit ${secret.title}` : 'Add team secret', body: form.body, actions: [
       { label: 'Cancel', value: false },
       { label: secret ? 'Save' : 'Add', kind: 'primary', submit: true, run: async () => {

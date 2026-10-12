@@ -19,6 +19,7 @@ use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::ports::vault::{VaultSecretRecord, VaultSection};
+use zeroize::Zeroizing;
 
 /// Longest description.
 const MAX_DESCRIPTION: usize = 1000;
@@ -382,8 +383,21 @@ impl App {
             return Ok(Revealed::ReauthRequired(status));
         }
         let payload: AgentPayload = self.open_payload(&record)?;
-        let notes = (!record.description.is_empty()).then(|| record.description.clone());
-        let revealed = pick(&wanted, &Some(payload.value.clone()), &notes);
+        // Basic credentials are the user name and the value: the user name leads the notes.
+        let basic_user = (record.injection == Injection::Basic.kind())
+            .then(|| payload.username.as_ref().map(|u| format!("User name: {u}")))
+            .flatten();
+        let notes = Zeroizing::new(
+            [basic_user, Some(record.description.clone())]
+                .into_iter()
+                .flatten()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        );
+        let notes = Zeroizing::new((!notes.is_empty()).then(|| notes.to_string()));
+        let value = Zeroizing::new(Some(payload.value.clone()));
+        let revealed = pick(&wanted, &value, &notes);
         self.vault_audit(
             &Self::vault_actor(ctx),
             if purpose == "copy" {

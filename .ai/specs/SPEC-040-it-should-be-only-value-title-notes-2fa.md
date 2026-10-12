@@ -65,15 +65,20 @@ them), and people can now read an agent secret's value too, behind the same two-
   10 minutes), so a stolen session cookie alone cannot enroll its own authenticator. Once
   confirmed, the seed is never shown again and cannot be replaced from the account.
 - R6. Codes are checked in constant time. A code is accepted once (a replayed or older code is
-  refused), attempts are limited to 5 a minute per person, and every unlock, failed code and
-  setup is audited (`vault.2fa.setup`, `vault.2fa.confirm`, `vault.unlock`, `vault.unlock.failed`)
-  without the code or the seed.
+  refused), attempts (and setups) are limited to 5 a minute per person, and 10 wrong codes in a row
+  lock codes (`two_factor = "locked"`) until the person confirms identity again (password or a new
+  GitHub sign-in), so a stolen session cannot keep guessing. Every unlock, failed code, lock and
+  setup is audited (`vault.2fa.setup`, `vault.2fa.confirm`, `vault.2fa.locked`, `vault.unlock`,
+  `vault.unlock.failed`) without the code or the seed.
 - R7. People who manage an agent secret (write access to its sandbox, or instance administrators
   for one used in every sandbox) can reveal its value and notes after a vault unlock. The reveal
-  is audited (`vault.agent.reveal`) and served with `Cache-Control: no-store`. Agents still never
-  receive a value.
+  is audited (`vault.agent.reveal`) and served with `Cache-Control: no-store`; for Basic
+  credentials the user name leads the notes. Agents still never receive a value.
 - R8. The seed is sealed in the vault like a secret (envelope encryption bound to the user), and
   no seed or code appears in logs, API errors or the audit trail.
+- R9. Editing a team secret's notes starts from their current text ("Edit current notes", after a
+  code), so the address, user name and seed folded into older notes are never replaced blindly.
+  A pending setup can be finished with a code from the key added earlier, or restarted.
 
 ## Plan
 
@@ -137,6 +142,12 @@ them), and people can now read an agent secret's value too, behind the same two-
   requested ("without 2FA for agents"); stored ones keep working.
 - Readers of an agent secret are the people who can already change it. Anyone who can replace a
   value could capture it anyway. Read-only members still see only names.
+- Lockout after 10 wrong codes in a row (review finding): with 5 attempts a minute alone, a stolen
+  30-day session could guess a code with about even odds. A confirmed identity, not time, lifts it,
+  because only the person can confirm. Expired `vault_unlock` rows are not pruned, like
+  `vault_reauth` rows already; both are a few bytes per browser session.
+- Not in this change: a QR code in the setup dialog (the key and the `otpauth://` link work in
+  every authenticator) and multi-line values (put them in the notes).
 - One pull request (more than 400 lines). The fields, the unlock and the reveal of agent secrets
   are one access-model change of the vault: shipping any part alone would leave the page in a
   state nobody asked for.

@@ -1,5 +1,5 @@
 //! Team secrets (VLT-001..002, SPEC-040): a title, a value and notes; flat access for every
-//! member, reveals behind a fresh re-authentication, everything audited.
+//! member, reveals behind a two-factor unlock, everything audited.
 
 use yulius_contracts::api::secrets::{
     ReauthStatus, RevealRequest, SecretReveal, TeamSecretInput, TeamSecretPatch, TeamSecretView,
@@ -253,7 +253,7 @@ impl App {
 
     /// When the caller's browser session last proved who they are: its sign-in or a
     /// re-authentication. API tokens never qualify.
-    async fn authenticated_at(&self, ctx: &AuthContext) -> AppResult<Option<Timestamp>> {
+    pub(super) async fn authenticated_at(&self, ctx: &AuthContext) -> AppResult<Option<Timestamp>> {
         let Some(hash) = &ctx.session_hash else {
             return Ok(None);
         };
@@ -294,7 +294,7 @@ impl App {
             fresh_until: unlocked
                 .filter(|_| fresh)
                 .map(|at| rfc3339(at.plus_millis(REAUTH_WINDOW_MS))),
-            two_factor: self.two_factor_state(ctx).await?.to_owned(),
+            two_factor: self.two_factor_state(ctx, identity).await?.to_owned(),
             identity_fresh: identity.is_some_and(|at| reauth_fresh(now, at)),
             methods,
         })
@@ -369,8 +369,8 @@ impl App {
         Ok((!status.fresh).then_some(status))
     }
 
-    /// `POST /api/team-secrets/{id}/reveal`: the value and/or the notes, after a fresh
-    /// re-authentication; audited as `vault.team.reveal` or `vault.team.copy`.
+    /// `POST /api/team-secrets/{id}/reveal`: the value and/or the notes, after a two-factor
+    /// unlock; audited as `vault.team.reveal` or `vault.team.copy`.
     ///
     /// # Errors
     /// `NotFound`, `Invalid` purpose or field, `Forbidden` for API tokens, store failures.

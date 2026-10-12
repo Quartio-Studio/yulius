@@ -267,7 +267,7 @@ impl VaultStore for SqliteStore {
         self.call(move |c| {
             c.query_row(
                 "SELECT user_id, kek_id, wrapped_key, ciphertext, created_at, confirmed_at, \
-                 last_counter FROM vault_two_factor WHERE user_id = ?1",
+                 last_counter, failed_attempts, failed_at FROM vault_two_factor WHERE user_id = ?1",
                 [user],
                 |r| {
                     Ok(TwoFactorRecord {
@@ -282,6 +282,8 @@ impl VaultStore for SqliteStore {
                         last_counter: r
                             .get::<_, Option<i64>>(6)?
                             .map(|n| u64::try_from(n).unwrap_or(0)),
+                        failed_attempts: to_u32(r.get(7)?),
+                        failed_at: r.get::<_, Option<i64>>(8)?.map(Timestamp),
                     })
                 },
             )
@@ -300,7 +302,8 @@ impl VaultStore for SqliteStore {
                      created_at, confirmed_at, last_counter) VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL) \
                      ON CONFLICT(user_id) DO UPDATE SET kek_id = excluded.kek_id, \
                      wrapped_key = excluded.wrapped_key, ciphertext = excluded.ciphertext, \
-                     created_at = excluded.created_at, last_counter = NULL \
+                     created_at = excluded.created_at, last_counter = NULL, \
+                     failed_attempts = 0, failed_at = NULL \
                      WHERE vault_two_factor.confirmed_at IS NULL",
                     params![
                         r.user_id,
@@ -328,12 +331,41 @@ impl VaultStore for SqliteStore {
             let n = c
                 .execute(
                     "UPDATE vault_two_factor SET last_counter = ?2, \
-                     confirmed_at = COALESCE(confirmed_at, ?3) \
+                     confirmed_at = COALESCE(confirmed_at, ?3), failed_attempts = 0, failed_at = NULL \
                      WHERE user_id = ?1 AND (last_counter IS NULL OR last_counter < ?2)",
                     params![user, counter, at.0],
                 )
                 .map_err(db)?;
             Ok(n == 1)
+        })
+        .await
+    }
+
+    async fn vault_two_factor_failed(&self, user_id: &str, at: Timestamp) -> AppResult<u32> {
+        let user = user_id.to_owned();
+        self.call(move |c| {
+            c.query_row(
+                "UPDATE vault_two_factor SET failed_attempts = failed_attempts + 1, failed_at = ?2 \
+                 WHERE user_id = ?1 RETURNING failed_attempts",
+                params![user, at.0],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()
+            .map(|n| n.map_or(0, to_u32))
+            .map_err(db)
+        })
+        .await
+    }
+
+    async fn vault_two_factor_clear_failures(&self, user_id: &str) -> AppResult<()> {
+        let user = user_id.to_owned();
+        self.call(move |c| {
+            c.execute(
+                "UPDATE vault_two_factor SET failed_attempts = 0, failed_at = NULL WHERE user_id = ?1",
+                [user],
+            )
+            .map_err(db)?;
+            Ok(())
         })
         .await
     }
@@ -624,6 +656,8 @@ mod tests {
             created_at: Timestamp(i64::from(n)),
             confirmed_at: None,
             last_counter: None,
+            failed_attempts: 0,
+            failed_at: None,
         };
         assert_eq!(store.vault_two_factor("u1").await?, None);
         assert!(store.vault_put_two_factor(&seed(1)).await?);
@@ -676,6 +710,37 @@ mod tests {
             !store
                 .vault_accept_two_factor("nobody", 1, Timestamp(1))
                 .await?
+        );
+        // Wrong codes count up; an accepted code or a clear resets them.
+        assert_eq!(store.vault_two_factor_failed("u1", Timestamp(20)).await?, 1);
+        assert_eq!(store.vault_two_factor_failed("u1", Timestamp(21)).await?, 2);
+        let got = store.vault_two_factor("u1").await?.ok_or("missing")?;
+        assert_eq!(
+            (got.failed_attempts, got.failed_at),
+            (2, Some(Timestamp(21)))
+        );
+        assert!(
+            store
+                .vault_accept_two_factor("u1", 12, Timestamp(22))
+                .await?
+        );
+        assert_eq!(
+            store
+                .vault_two_factor("u1")
+                .await?
+                .ok_or("missing")?
+                .failed_attempts,
+            0
+        );
+        assert_eq!(store.vault_two_factor_failed("u1", Timestamp(23)).await?, 1);
+        store.vault_two_factor_clear_failures("u1").await?;
+        let got = store.vault_two_factor("u1").await?.ok_or("missing")?;
+        assert_eq!((got.failed_attempts, got.failed_at), (0, None));
+        assert_eq!(
+            store
+                .vault_two_factor_failed("nobody", Timestamp(1))
+                .await?,
+            0
         );
         Ok(())
     }

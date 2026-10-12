@@ -1,6 +1,7 @@
 //! Two-factor on the vault (SPEC-040, ADR-0029): each person sets up their own authenticator
 //! once (after a recent sign-in or confirmation), and every reveal needs a current code entered
-//! in the browser session within the last 10 minutes. Codes work once and are rate limited.
+//! in the browser session within the last 10 minutes. Codes work once and are rate limited, and
+//! 10 wrong codes in a row lock codes until the person confirms it is them again.
 
 use yulius_contracts::api::secrets::{ReauthStatus, TwoFactorSetup};
 use yulius_domain::vault::totp::{base32_encode, code_from_hmac, counter, otpauth_uri, parse_otp};
@@ -11,6 +12,8 @@ use crate::auth::AuthContext;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::ports::vault::TwoFactorRecord;
+use yulius_domain::time::Timestamp;
+use zeroize::Zeroize as _;
 
 /// Seed length in bytes (160 bits, RFC 4226's recommendation).
 const SEED_BYTES: usize = 20;
@@ -18,6 +21,17 @@ const SEED_BYTES: usize = 20;
 const DRIFT_STEPS: i64 = 1;
 /// Name shown in authenticator apps.
 const ISSUER: &str = "Yulius";
+/// Wrong codes in a row after which codes are refused until the person confirms it is them
+/// (NIST SP 800-63B §5.2.2 caps them at 100; a 6-digit code needs far fewer).
+pub(super) const MAX_FAILED_CODES: u32 = 10;
+
+/// Whether `record` is locked: too many wrong codes, and no identity confirmation since.
+fn locked(record: &TwoFactorRecord, identity: Option<Timestamp>) -> bool {
+    record.failed_attempts >= MAX_FAILED_CODES
+        && !identity
+            .zip(record.failed_at)
+            .is_some_and(|(confirmed, failed)| confirmed > failed)
+}
 
 fn aad(user_id: &str) -> Vec<u8> {
     format!("{user_id}|2fa").into_bytes()
@@ -30,8 +44,13 @@ fn browser_session(ctx: &AuthContext) -> AppResult<&str> {
 }
 
 impl App {
-    /// `missing`, `pending` or `on` for the caller.
-    pub(super) async fn two_factor_state(&self, ctx: &AuthContext) -> AppResult<&'static str> {
+    /// `missing`, `pending`, `on` or `locked` (too many wrong codes) for the caller, whose
+    /// identity was last confirmed at `identity`.
+    pub(super) async fn two_factor_state(
+        &self,
+        ctx: &AuthContext,
+        identity: Option<Timestamp>,
+    ) -> AppResult<&'static str> {
         Ok(
             match self
                 .deps
@@ -40,6 +59,7 @@ impl App {
                 .await?
             {
                 None => "missing",
+                Some(record) if locked(&record, identity) => "locked",
                 Some(record) if record.confirmed_at.is_none() => "pending",
                 Some(_) => "on",
             },
@@ -54,6 +74,7 @@ impl App {
     /// `Forbidden` for API tokens, `Conflict` when two-factor is already on, store failures.
     pub async fn setup_two_factor(&self, ctx: &AuthContext) -> AppResult<Revealed<TwoFactorSetup>> {
         browser_session(ctx)?;
+        self.limit_attempts(&format!("2fa-setup:{}", ctx.user.id.as_str()))?;
         let status = self.reauth_status(ctx).await?;
         if status.two_factor == "on" {
             return Err(AppError::Conflict("two-factor is already set up".into()));
@@ -73,12 +94,14 @@ impl App {
             created_at: self.now(),
             confirmed_at: None,
             last_counter: None,
+            failed_attempts: 0,
+            failed_at: None,
         };
         if !self.deps.store.vault_put_two_factor(&record).await? {
             return Err(AppError::Conflict("two-factor is already set up".into()));
         }
         let actor = Self::vault_actor(ctx);
-        self.vault_audit(&actor, "vault.2fa.setup", None, "authenticator")
+        self.vault_audit(&actor, "vault.2fa.setup", None, "")
             .await?;
         Ok(Revealed::Values(TwoFactorSetup {
             uri: otpauth_uri(ISSUER, &actor, &secret),
@@ -90,8 +113,9 @@ impl App {
     /// for this browser session for 10 minutes; the first one also confirms the setup.
     ///
     /// # Errors
-    /// `Forbidden` for API tokens and wrong or reused codes (audited), `Invalid` without
-    /// two-factor, `Capacity` after 5 attempts a minute, store failures.
+    /// `Forbidden` for API tokens, wrong or reused codes (audited) and while locked after
+    /// [`MAX_FAILED_CODES`] wrong codes, `Invalid` without two-factor, `Capacity` after 5
+    /// attempts a minute, store failures.
     pub async fn unlock_vault(&self, ctx: &AuthContext, code: &str) -> AppResult<ReauthStatus> {
         let session = browser_session(ctx)?;
         self.limit_attempts(&format!("unlock:{}", ctx.user.id.as_str()))?;
@@ -99,13 +123,25 @@ impl App {
         let Some(record) = self.deps.store.vault_two_factor(user_id).await? else {
             return Err(AppError::Invalid("set up two-factor first".into()));
         };
+        if record.failed_attempts >= MAX_FAILED_CODES {
+            if locked(&record, self.authenticated_at(ctx).await?) {
+                return Err(AppError::Forbidden(
+                    "too many wrong codes: confirm it is you (password or GitHub sign-in), then try again"
+                        .into(),
+                ));
+            }
+            self.deps
+                .store
+                .vault_two_factor_clear_failures(user_id)
+                .await?;
+        }
         let seed = self
             .deps
             .crypto
             .envelope_open(&aad(user_id), &record.envelope)?;
         let seed =
             std::str::from_utf8(&seed).map_err(|_| AppError::Internal("two-factor seed".into()))?;
-        let config = parse_otp(seed).map_err(super::invalid)?;
+        let mut config = parse_otp(seed).map_err(super::invalid)?;
         let now = self.now();
         let current = counter(now.0, config.period);
         let code = code.trim();
@@ -127,6 +163,7 @@ impl App {
                 matched = Some(at);
             }
         }
+        config.secret.zeroize();
         let actor = Self::vault_actor(ctx);
         let accepted = match matched {
             Some(at) => {
@@ -138,8 +175,19 @@ impl App {
             None => false,
         };
         if !accepted {
-            self.vault_audit(&actor, "vault.unlock.failed", None, "two-factor code")
+            self.vault_audit(&actor, "vault.unlock.failed", None, "")
                 .await?;
+            if matched.is_none()
+                && self
+                    .deps
+                    .store
+                    .vault_two_factor_failed(user_id, now)
+                    .await?
+                    == MAX_FAILED_CODES
+            {
+                self.vault_audit(&actor, "vault.2fa.locked", None, "")
+                    .await?;
+            }
             return Err(AppError::Forbidden(
                 if matched.is_some() {
                     "this code was used already: wait for the next one"
@@ -155,8 +203,7 @@ impl App {
         } else {
             "vault.unlock"
         };
-        self.vault_audit(&actor, action, None, "two-factor code")
-            .await?;
+        self.vault_audit(&actor, action, None, "").await?;
         self.reauth_status(ctx).await
     }
 }

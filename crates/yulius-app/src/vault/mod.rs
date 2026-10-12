@@ -1,7 +1,7 @@
 //! Secrets vault (SPEC-001 VLT-001..009, SPEC-002 ADR-20).
 //!
 //! Two sections: **team secrets** (every member lists and edits them; revealing a value or notes
-//! needs a re-authentication within 10 minutes, and is audited) and
+//! needs the person's two-factor unlock within 10 minutes, and is audited) and
 //! **agent secrets** (agents use them without seeing them: the egress proxy adds them to
 //! requests for their bound hosts, `browser_fill_secret` types them into pages of those hosts,
 //! and every channel through which an agent reads is redacted of their values and encodings).
@@ -158,7 +158,13 @@ impl From<StoredTeamPayload> for TeamPayload {
             ("Two-factor seed", stored.totp.take()),
         ]
         .into_iter()
-        .filter_map(|(label, value)| value.map(|v| format!("{label}: {v}")))
+        .filter_map(|(label, value)| {
+            value.map(|mut v| {
+                let line = format!("{label}: {v}");
+                v.zeroize();
+                line
+            })
+        })
         .collect();
         let notes = stored.notes.take();
         let notes = if lines.is_empty() {
