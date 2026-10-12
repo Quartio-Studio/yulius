@@ -209,5 +209,11 @@ test('a name for a new subscription is asked for at its field, not in a toast', 
   const dialog = screen.getByRole('dialog', 'Add a Claude subscription');
   await dialog.getByRole('button', 'Continue to sign-in').click();
   await expect(dialog.getByRole('alert')).toHaveText('Give the subscription a name.');
-  expect(await browser.evaluate(() => document.querySelectorAll('#toasts .toast').length)).toBe(0);
+  // The name is not asked for in a toast. Other toasts (a background notification about a
+  // subscription that must sign in again) may show meanwhile, so only this message counts.
+  expect(
+    await browser.evaluate(
+      () => [...document.querySelectorAll('#toasts .toast')].filter((t) => /Give the subscription a name/.test(t.textContent || '')).length,
+    ),
+  ).toBe(0);
 });
