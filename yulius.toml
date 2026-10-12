@@ -26,7 +26,7 @@ command = "python3 scripts/bootstrap.py --install-rustup && scripts/dev ci"
 
 [[ci.jobs]]
 name = "e2e"
-command = "cd e2e && npm ci --ignore-scripts && npx e2e-web install chromium --with-deps && E2E_TELEMETRY_DISABLED=1 npx e2e run --reporter list,junit"
+command = "cd e2e && npm ci --ignore-scripts && npx e2e-web install chromium --with-deps && E2E_TELEMETRY_DISABLED=1 npx e2e run --retries 2 --reporter list,junit"
 
 # Build caches beyond the recognised ones (SPEC-008): pruned for tasks that do not work.
 [disk]

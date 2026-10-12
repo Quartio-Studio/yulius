@@ -175,6 +175,31 @@ fn branch_validation_matches_git_check_ref_format() -> TestResult {
 }
 
 #[test]
+fn ci_checkouts_created_at_once_all_succeed() -> TestResult {
+    // Two CI lanes create their job checkouts at the same time (SPEC-021); each creation prunes
+    // stale registrations, which must never remove another creation's half-written one.
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let sha = fx.git.rev_parse(&repo, "main")?;
+    let ci = fx.path("ci");
+    fs::create_dir(&ci)?;
+    for round in 0..2 {
+        let handles: Vec<_> = (0..8)
+            .map(|n| {
+                let (git, repo, sha) = (Clone::clone(&fx.git), repo.clone(), sha.clone());
+                let (ci, path) = (ci.clone(), ci.join("jobs").join(format!("j{round}.{n}")));
+                std::thread::spawn(move || git.ci_checkout(&repo, &path, &sha, &ci))
+            })
+            .collect();
+        for handle in handles {
+            handle.join().map_err(|_| "a checkout thread panicked")??;
+        }
+    }
+    assert_eq!(fx.git.worktree_list(&repo)?.len(), 1 + 2 * 8);
+    Ok(())
+}
+
+#[test]
 fn worktree_lifecycle_and_guarded_removal() -> TestResult {
     let fx = Fixture::new()?;
     let (_remote, repo) = fx.repo_with_remote()?;

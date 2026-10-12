@@ -82,8 +82,10 @@ Environment=YULIUS_BROWSER_DISPLAY=auto
 # Recommended behind the proxy: the secret it shares with Yulius, so sign-in limits are per client
 # (see "Per-client sign-in limits" in §4).
 #Environment=YULIUS_PROXY_SECRET_FILE=/var/lib/yulius/proxy.secret
-# Yulius-run CI (see "CI on this machine" below): jobs at once, minutes per job, seconds between checks.
+# Yulius-run CI (see "CI on this machine" below): jobs at once, runs at once per sandbox, minutes
+# per job, seconds between checks.
 Environment=YULIUS_CI_MAX_JOBS=4
+Environment=YULIUS_CI_LANES=2
 Environment=YULIUS_CI_JOB_TIMEOUT_MIN=30
 Environment=YULIUS_CI_POLL_SECS=60
 # Sandbox isolation (SPEC-002 ADR-22): auto (default), namespaces or legacy; see "Sandbox
@@ -607,6 +609,8 @@ involved.
 - Removing `ci/` (with no run active) resets a sandbox's caches. The next run rebuilds them.
 - Size `YULIUS_CI_MAX_JOBS` to the cores left after the agents. Each job gets
   `YULIUS_CI_JOB_TIMEOUT_MIN`.
+- `YULIUS_CI_LANES` (default 2) runs of one sandbox execute at once. Each lane past the first
+  keeps its own job checkouts and caches (`ci/jobs/<job>@<lane>`), so budget its disk too.
 
 **Moving a repository off GitHub Actions** (the onboarding step; agents use the `ci_setup` tool):
 

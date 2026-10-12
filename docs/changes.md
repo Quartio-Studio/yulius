@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- A sandbox runs two CI runs at once (`--ci-lanes`, each lane with its own job checkouts), so
+  parallel tasks no longer queue behind each other's runs; this repository's CI retries a failing
+  test twice and reports one that then passes as flaky instead of failing the run (SPEC-021).
 - Ended worktrees holding only end-to-end output (`.e2e`), the APM cache (`apm_modules`) or Claude
   Code's own `.claude/` state are removed too (SPEC-019; seven were kept on the first deploy).
 - Agents meet fewer avoidable obstacles (SPEC-020):
