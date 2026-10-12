@@ -328,6 +328,10 @@ p { margin: 0; }
 .nav-item:hover .icon, .nav-item.active .icon { color: var(--text-2); }
 .nav-item:hover { background: var(--surface-3); color: var(--text); text-decoration: none; }
 .nav-item.active { background: var(--accent-soft); color: var(--text); }
+/* "More" (SPEC-029): a disclosure button styled as a link, its pages below it in the same column. */
+.nav-toggle { width: 100%; border: 0; background: transparent; font-family: inherit; text-align: left; cursor: pointer; }
+.nav-more-chevron { display: inline-flex; margin-left: auto; }
+.nav-more { display: flex; flex-direction: column; gap: 4px; }
 .task-list { flex: 1 0 auto; padding: 8px 6px 12px; border-top: 1px solid var(--border); margin-top: 8px; }
 /* Active tasks (UI-005): groups — Needs you, Working, Stopped — of two-line rows. */
 /* Task list rows read like a chat list (WhatsApp, cmux): a state tile, a 16 px title with the age

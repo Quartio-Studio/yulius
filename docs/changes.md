@@ -8,6 +8,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - A long task title in the start-rule editor stays on one line ending in an ellipsis instead of
   wrapping over the condition's border (SPEC-031, task #29).
+- The sandbox navigation is shorter (SPEC-029, ADR-0025, task #27): Cockpit, Tasks, Git,
+  CI (tests), Secrets and Dashboard, then "More", which expands Sessions, Workflows, Skills,
+  Automations and MCP in place. Its state is remembered per browser; arriving at one of those
+  pages shows it open for that page.
 - Tasks run Opus 5.5 at high effort by default (SPEC-023, task #21): a task without a model runs
   `claude-opus-5-5` instead of Claude Code's moving `opus` alias, and a task without an effort runs
   at `high` (none for Haiku); the Cockpit starts on them too; the composer and Settings say so.
