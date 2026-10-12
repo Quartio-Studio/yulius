@@ -103,6 +103,10 @@ content block), not as a path the agent has to open with the Read tool.
   mentions; `/goal` typed into the opening turn; control characters), all fixed test-first.
   Round 2 approved; its minors (the opening flag's lifecycle, a held opening Stop, control
   characters in the text, spec drift) were fixed, the draft case recorded above.
+  Round 3 approved the delta; a regression test for the held opening Stop was added
+  (`subscription_pool.rs`, fails when the flag is cleared before the pause check). Accepted
+  limit: an opening Stop held for longer than the 5-minute wait is gated when it is answered (the
+  goal was typed meanwhile and Claude Code queued it).
 
 ## Evidence
 
@@ -121,6 +125,13 @@ content block), not as a path the agent has to open with the Read tool.
   - An `@path` pasted at the end of the input box: the file autocomplete takes the Enter.
 - `cargo test -p yulius-domain --lib request`: 8 passed.
 - `cargo test -p yulius --test task_done`: 8 passed (both new goal tests included).
+- `cargo test -p yulius --test subscription_pool -- a_held_opening`: passes; with the swap moved
+  back above the pause check it fails ("a held poll is not the end of the opening turn").
+- `npx e2e run` (full suite): 136 passed, 1 skipped.
+- `scripts/dev ci` on the rebased head before the last test: 1153 of 1154 passed; the failure,
+  `terminal_ws two_viewers_share_the_terminal_and_only_writers_type` (a terminal size at task
+  start), passed 45 of 45 runs alone and under full CPU load and is not on this change's path:
+  issue #253.
 - `npx e2e run tests/filedrop.e2e.ts`: 9 passed.
 - Screenshots of the chips and of the image preview in the mock UI (scratch), checked by eye.
 - Not tested here: a live model describing an attached image (no paid credential).

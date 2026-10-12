@@ -111,7 +111,7 @@ pub struct TaskRuntime {
     pub(crate) session_started: AtomicBool,
     /// The goal-mode session opened with a first message (its attached files, SPEC-025) whose
     /// turn has not ended yet: its goal is typed after that turn's Stop hook.
-    pub(crate) opening_turn: AtomicBool,
+    pub opening_turn: AtomicBool,
     /// A merge `delivery_merge` armed while the checks still ran (SPEC-011): Yulius performs it
     /// once they pass.
     pub(crate) armed_merge: Mutex<Option<crate::agent_wait::ArmedMerge>>,

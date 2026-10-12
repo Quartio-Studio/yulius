@@ -257,6 +257,57 @@ async fn an_exhausted_pool_holds_the_turn_until_capacity_returns() -> TestResult
     Ok(())
 }
 
+/// SPEC-025: the Stop of the turn on a goal session's first message (its attached files), held
+/// for capacity, is still that turn's end: the held polls keep it the opening turn, and the first
+/// Stop answered after the pause ends it.
+#[tokio::test]
+async fn a_held_opening_turn_stays_the_opening_turn_until_its_stop_is_answered() -> TestResult {
+    let h = harness()?;
+    seed(&h).await?;
+    let t0 = now(&h);
+    let only = add_account(
+        &h,
+        "acc-only",
+        Some(usage(
+            98.0,
+            t0.plus_millis(2 * HOUR),
+            40.0,
+            t0.plus_millis(90 * HOUR),
+        )),
+    )
+    .await?;
+    let task = running_task(&h, TaskMode::Goal, &only).await?;
+    // The pool ran out during the turn: a capacity pause is open when its Stop comes.
+    let (code, _, body) = hook(&h.internal, "Stop", json!({"session_id": "s"})).await?;
+    assert_eq!(code, 202, "{body}");
+    assert!(h.store.open_pause(&task).await?.is_some());
+    h.app
+        .runtime(&task)
+        .opening_turn
+        .store(true, Ordering::SeqCst);
+
+    let (code, _, body) = hook(&h.internal, "Stop", json!({})).await?;
+    assert_eq!(code, 202, "{body}");
+    assert!(
+        h.app.runtime(&task).opening_turn.load(Ordering::SeqCst),
+        "a held poll is not the end of the opening turn"
+    );
+
+    advance(&h, 2 * HOUR + 1_000);
+    let _ = h.app.resume_round().await;
+    let (code, _, body) = hook(&h.internal, "Stop", json!({})).await?;
+    assert_eq!(code, 200, "{body}");
+    assert!(
+        !h.app.runtime(&task).opening_turn.load(Ordering::SeqCst),
+        "the answered Stop ends the opening turn"
+    );
+    assert_ne!(
+        body["decision"], "block",
+        "the opening turn is not gated: {body}"
+    );
+    Ok(())
+}
+
 /// AC-ROT-10: a prompt submitted while the pool is exhausted waits at `UserPromptSubmit`; the
 /// prompt is kept for a resume on another account. A task in prompt mode that only goes idle
 /// at Stop is not held.
