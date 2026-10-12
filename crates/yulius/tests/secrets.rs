@@ -439,6 +439,22 @@ async fn ten_wrong_codes_lock_two_factor_until_identity_is_confirmed() -> TestRe
     );
     let status = call(&h.router, Method::GET, "/api/auth/reauth", None, &admin).await?;
     assert_eq!(status.body["two_factor"], "locked");
+    // Once the setup's unlock expires, a reveal says why codes do not work.
+    let id = create_team_secret(&h, &admin).await?;
+    h.clock.0.fetch_add(minutes(10), Ordering::SeqCst);
+    let refused = call(
+        &h.router,
+        Method::POST,
+        &format!("/api/team-secrets/{id}/reveal"),
+        None,
+        &admin,
+    )
+    .await?;
+    assert_eq!(refused.body["error"]["code"], "reauth_required");
+    let message = refused.body["error"]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(message.contains("Too many wrong codes"), "{message}");
 
     let confirmed = call(
         &h.router,
@@ -735,6 +751,60 @@ async fn browser_session(
         csrf: Some(format!("csrf-of-{user}")),
         bearer: None,
     })
+}
+
+/// SPEC-040 R3/R7 (second review): an older agent secret's stored user name and TOTP seed stay
+/// readable by its managers, as lines leading the notes.
+#[tokio::test]
+async fn older_agent_secrets_reveal_their_user_name_and_seed() -> TestResult {
+    use yulius_app::ports::vault::{VaultSecretRecord, VaultSection};
+    let w = world().await?;
+    let old = json!({"username": "docs-admin", "value": "docs-pass-7731-xyz", "totp": SEED});
+    let envelope =
+        w.h.app
+            .deps
+            .crypto
+            .envelope_seal(b"old-docs|agent", old.to_string().as_bytes())?;
+    let now = w.h.app.now();
+    w.h.app
+        .deps
+        .store
+        .vault_insert(&VaultSecretRecord {
+            id: "old-docs".into(),
+            section: VaultSection::Agent,
+            sandbox_id: Some(yulius_domain::ids::SandboxId::parse("s1")?),
+            name: "DOCS_LOGIN".into(),
+            description: "Docs admin login".into(),
+            hosts: vec!["docs.example".into()],
+            injection: "none".into(),
+            header_name: None,
+            fields: vec!["value".into(), "username".into(), "totp".into()],
+            envelope,
+            created_by: "u-alice".into(),
+            created_at: now,
+            updated_by: "u-alice".into(),
+            updated_at: now,
+            value_updated_at: now,
+            last_used_at: None,
+        })
+        .await?;
+    let alice = browser_session(&w.h, "u-alice").await?;
+    enroll(&w.h, &alice).await?;
+    let shown = call(
+        &w.h.router,
+        Method::POST,
+        "/api/agent-secrets/old-docs/reveal",
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(shown.status, StatusCode::OK, "{}", shown.body);
+    assert_eq!(shown.body["value"], "docs-pass-7731-xyz");
+    assert_eq!(
+        shown.body["notes"],
+        format!("User name: docs-admin\nTwo-factor seed: {SEED}\n\nDocs admin login")
+    );
+    Ok(())
 }
 
 /// AC-VLT-5, SPEC-040 AC5: who may see, manage and read agent secrets; values come back only

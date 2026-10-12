@@ -1,11 +1,11 @@
 ---
 yulius-task: 711a1e23-ce06-4ba0-b29d-5a3dc252d32c
-status: in-progress
+status: done
 ---
 
 # SPEC-040: secrets are a title, a value and notes; reading one needs your two-factor code
 
-Status: in-progress
+Status: done
 Date: 2026-10-12
 Scope authorization: user request (task #39, F 2026-10-12): "It should be only value title notes.
 2FA should be per wallet and should be mandatory. The same for the agents but without 2FA for
@@ -72,8 +72,9 @@ them), and people can now read an agent secret's value too, behind the same two-
   `vault.unlock.failed`) without the code or the seed.
 - R7. People who manage an agent secret (write access to its sandbox, or instance administrators
   for one used in every sandbox) can reveal its value and notes after a vault unlock. The reveal
-  is audited (`vault.agent.reveal`) and served with `Cache-Control: no-store`; for Basic
-  credentials the user name leads the notes. Agents still never receive a value.
+  is audited (`vault.agent.reveal`) and served with `Cache-Control: no-store`; a stored user
+  name (Basic credentials, older website logins) and an older secret's TOTP seed lead the notes.
+  Agents still never receive a value.
 - R8. The seed is sealed in the vault like a secret (envelope encryption bound to the user), and
   no seed or code appears in logs, API errors or the audit trail.
 - R9. Editing a team secret's notes starts from their current text ("Edit current notes", after a
@@ -88,8 +89,8 @@ them), and people can now read an agent secret's value too, behind the same two-
 - [x] Every reveal needs a vault unlock, and people can read agent secrets they manage
 - [x] Agent secrets drop the per-secret TOTP seed, and the user name serves Basic only
 - [x] The Secrets page asks for the code, sets up two-factor and shows title, value and notes
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -146,8 +147,43 @@ them), and people can now read an agent secret's value too, behind the same two-
   30-day session could guess a code with about even odds. A confirmed identity, not time, lifts it,
   because only the person can confirm. Expired `vault_unlock` rows are not pruned, like
   `vault_reauth` rows already; both are a few bytes per browser session.
+- The page's locked and pending flows are covered by the API integration tests, not by the e2e
+  mock (which starts signed in with no seed); the mock flow covers setup, unlock and reveals.
+- An older agent secret's TOTP seed cannot be cleared on its own (the API no longer takes `totp`);
+  replacing the secret removes it. Agents keep using it for website codes until then.
 - Not in this change: a QR code in the setup dialog (the key and the `otpauth://` link work in
   every authenticator) and multi-line values (put them in the notes).
 - One pull request (more than 400 lines). The fields, the unlock and the reveal of agent secrets
   are one access-model change of the vault: shipping any part alone would leave the page in a
   state nobody asked for.
+
+## Evidence
+
+- `scripts/dev ci` (repository check, fmt, clippy, cargo-deny, machete, nextest, docs): exit 0,
+  1191 tests passed, 16 skipped (2026-10-12, after the second review's fixes).
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^secrets::/)'`: 13 passed,
+  among them `team_secrets_are_shared_and_reveals_need_a_two_factor_code` (AC1, AC3),
+  `older_team_secrets_fold_into_a_value_and_notes` (AC2, and a later edit keeps the notes),
+  `two_factor_is_set_up_once_and_unlocks_the_vault` (AC3: wrong, reused and late codes, the rate
+  limit, API tokens, `no-store`, the audit trail),
+  `setting_up_two_factor_needs_a_recent_sign_in` (AC4),
+  `ten_wrong_codes_lock_two_factor_until_identity_is_confirmed` (R6 lockout),
+  `agent_secrets_follow_sandbox_access_and_reveal_only_to_managers` (AC5, AC6),
+  `older_agent_secrets_reveal_their_user_name_and_seed` (R7) and `nothing_is_stored_in_clear`
+  (AC7: no value or two-factor seed in the database file, its WAL or a backup).
+- Store unit tests (`yulius-store` `vault::tests`): accept, replay, pending replacement, the
+  confirmed seed kept, wrong-code counts and clears. Domain unit tests: base32 round trips and
+  `otpauth://` links parse back.
+- `cd e2e && npx e2e run`: 159 passed, 1 skipped (whole suite); `tests/secrets.e2e.ts` 6 passed
+  after the last change (add dialog fields, setup with a wrong then right code, reveals of team
+  and agent secrets, editing current notes, axe on the page and the setup dialog).
+- Visual check in the sandbox browser against the mock: the "Set up two-factor" dialog (key,
+  Copy, authenticator link, code field) and "Add team secret" with Title, Value and Notes only.
+- Independent reviews in fresh sessions: round 1 requested changes (a stolen session could keep
+  guessing codes; editing older notes could drop folded fields; minor items), all fixed
+  test-first; round 2 approved `8017484` with minor items, fixed test-first (the locked message,
+  older agent secrets' user name and seed readable); round 3 reviews the final head.
+- Not tested here: a real authenticator app scanning the `otpauth://` link (the link format is
+  unit-tested to parse back to the same seed); the deployed instance.
+- Follow-up: #291 (an administrator resets a lost authenticator).
+

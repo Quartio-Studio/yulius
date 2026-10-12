@@ -263,6 +263,7 @@ const ACTIONS = {
   'vault.reauth.failed': 'failed to confirm identity',
   'vault.2fa.setup': 'started setting up two-factor',
   'vault.2fa.confirm': 'turned on two-factor',
+  'vault.2fa.locked': 'was locked out of codes after 10 wrong ones',
   'vault.unlock': 'unlocked the secrets',
   'vault.unlock.failed': 'entered a wrong two-factor code',
   'vault.agent.reveal': 'revealed agent secret',

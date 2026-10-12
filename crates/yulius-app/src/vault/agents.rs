@@ -383,14 +383,27 @@ impl App {
             return Ok(Revealed::ReauthRequired(status));
         }
         let payload: AgentPayload = self.open_payload(&record)?;
-        // Basic credentials are the user name and the value: the user name leads the notes.
-        let basic_user = (record.injection == Injection::Basic.kind())
-            .then(|| payload.username.as_ref().map(|u| format!("User name: {u}")))
-            .flatten();
-        let notes = Zeroizing::new(
-            [basic_user, Some(record.description.clone())]
+        // Basic credentials are the user name and the value; older secrets also kept a website
+        // login's user name and a TOTP seed: they lead the notes so their managers can read them.
+        let user_line = payload
+            .username
+            .as_ref()
+            .map(|u| Zeroizing::new(format!("User name: {u}")));
+        let seed_line = payload
+            .totp
+            .as_ref()
+            .map(|t| Zeroizing::new(format!("Two-factor seed: {t}")));
+        let head = Zeroizing::new(
+            [user_line.as_deref(), seed_line.as_deref()]
                 .into_iter()
                 .flatten()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        let notes = Zeroizing::new(
+            [head.as_str(), record.description.as_str()]
+                .into_iter()
                 .filter(|part| !part.is_empty())
                 .collect::<Vec<_>>()
                 .join("\n\n"),

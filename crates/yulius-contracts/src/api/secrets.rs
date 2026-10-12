@@ -96,7 +96,8 @@ pub struct ReauthStatus {
     pub fresh: bool,
     /// Until when (RFC 3339), when unlocked.
     pub fresh_until: Option<String>,
-    /// The person's two-factor: `missing`, `pending` (set up, not confirmed) or `on`.
+    /// The person's two-factor: `missing`, `pending` (set up, not confirmed), `on`, or `locked`
+    /// (10 wrong codes in a row, until identity is confirmed again).
     pub two_factor: String,
     /// The session signed in or confirmed it is them in the last 10 minutes (needed to set up
     /// two-factor).
