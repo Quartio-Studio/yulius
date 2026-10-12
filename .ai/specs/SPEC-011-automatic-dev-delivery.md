@@ -1,11 +1,11 @@
 ---
 yulius-task: 7f2dac7e-b5cd-454e-b06b-370a2a983dae
-status: done
+status: in-progress
 ---
 
 # SPEC-011: merging into dev is automatic and test-driven; no person confirms dev
 
-Status: implemented
+Status: in progress
 Date: 2026-10-12
 Owner: Yulius task #10
 Scope authorization: user request ("Dev deployment/merge should be automatic, test-driven, and not wait for an explicit human approval")
