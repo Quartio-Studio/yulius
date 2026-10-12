@@ -29,16 +29,16 @@ the prompt box and the task never starts.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| GSB-001 | After typing the goal, Yulius confirms it was taken: any goal record or submitted prompt observed for the attempt. | `goal_submitted` in `TaskRuntime` |
-| GSB-002 | Without confirmation after 6 s, Yulius sends Enter again; at the last retry it clears the prompt box (Ctrl-U) and types the whole command again. | `spawn_goal` |
+| GSB-001 | After typing the goal, Yulius confirms it was taken: a goal record observed for the attempt (a prompt alone is not proof: it may be another). | `goal_submitted` in `TaskRuntime` |
+| GSB-002 | Without confirmation after 4 s, Yulius sends Enter again; then clears the prompt box (Ctrl-U) and types the whole command again; then Enter once more. A person typing meanwhile stops the retries. | `spawn_goal` |
 | GSB-003 | The retries are bounded (3) and stop when the attempt is no longer live or the input fails. | `spawn_goal` |
 | GSB-004 | A TUI that drops the first typed line still starts the goal. | `task_done.rs::a_goal_the_tui_dropped_is_submitted_again` |
 
 ## Design
 
 Confirmation comes from the transcript Yulius already observes, not from screen scraping. Extra
-Enter on an empty prompt box is harmless; the clear-and-retype only happens after three missed
-confirmations, so a slow transcript cannot duplicate the text in practice.
+Enter on an empty prompt box is harmless; the clear-and-retype only happens after two missed
+confirmations (8 s), so a slow transcript cannot duplicate the text in practice.
 
 ## Plan
 
@@ -60,6 +60,6 @@ confirmations, so a slow transcript cannot duplicate the text in practice.
 ## Evidence
 
 - `scripts/dev check`: finished clean (all crates compile).
-- `cargo test -p yulius --test task_done`: 5 passed, 0 failed (34.5 s), including
+- `cargo test -p yulius --test task_done`: 5 passed, 0 failed (34.5 s; rerun after the review fixes below), including
   `a_goal_the_tui_dropped_is_submitted_again` (GSB-004) and the four existing goal tests.
 - Not run: the full `scripts/dev ci` gate and the e2e suite (no web UI change).

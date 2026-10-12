@@ -101,8 +101,8 @@ pub struct TaskRuntime {
     pub(crate) typed_by: Mutex<Option<yulius_domain::ids::UserId>>,
     /// Claude Code recorded the session goal as achieved and no prompt came since (TSK-014).
     pub(crate) goal_achieved: AtomicBool,
-    /// Claude Code recorded something about the goal, or a prompt was submitted, since this
-    /// attempt started: the typed `/goal` was submitted, not left in the prompt box.
+    /// Claude Code recorded something about the goal since the `/goal` was typed: it was
+    /// submitted, not left in the prompt box (a prompt alone proves nothing: it may be another).
     pub(crate) goal_submitted: AtomicBool,
     /// When the last clean Stop ended a turn (ms), so a prompt of that turn read late from the
     /// transcript does not reopen it.
@@ -286,7 +286,7 @@ const GOAL_QUIET: Duration = Duration::from_millis(1500);
 /// Upper bound for waiting until the TUI is ready for the goal.
 const GOAL_READY_TIMEOUT: Duration = Duration::from_secs(45);
 /// How long after Enter Claude Code may take to record the goal before the submit is retried.
-const GOAL_SUBMIT_WAIT: Duration = Duration::from_secs(6);
+const GOAL_SUBMIT_WAIT: Duration = Duration::from_secs(4);
 /// How often the typed goal is submitted again when Claude Code did not take it (the TUI
 /// sometimes drops the Enter or the text typed before its prompt box was ready).
 const GOAL_SUBMIT_RETRIES: usize = 3;
@@ -943,9 +943,16 @@ impl App {
             // Code records and repeated a bounded number of times: Enter first, then the whole
             // line again over a cleared prompt box.
             runtime.goal_submitted.store(false, Ordering::SeqCst);
+            let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
             for attempt in 0..=GOAL_SUBMIT_RETRIES {
+                // A person typing meanwhile owns the prompt box: nothing is cleared or retyped.
+                if runtime.typed_at_ms.load(Ordering::SeqCst) != typed_before {
+                    return;
+                }
                 let mut input = Vec::new();
-                if attempt == 0 || attempt == GOAL_SUBMIT_RETRIES {
+                // Retries: Enter alone (the Enter was lost), then the line again over a cleared
+                // prompt box (the text was lost), then Enter alone once more.
+                if attempt == 0 || attempt == 2 {
                     if attempt > 0 {
                         input.push(0x15); // Ctrl-U: clear what is in the prompt box
                     }
@@ -959,7 +966,8 @@ impl App {
                 }
                 // A separate Enter, so the TUI sees typed text first and then a submit.
                 tokio::time::sleep(Duration::from_millis(150)).await;
-                if app.send_input(&task_id, b"\r").await.is_err() {
+                if let Err(err) = app.send_input(&task_id, b"\r").await {
+                    tracing::warn!(task = %task_id, error = %err, "could not submit the task goal");
                     return;
                 }
                 let waited = tokio::time::Instant::now();
@@ -978,6 +986,7 @@ impl App {
                 }
                 tracing::warn!(task = %task_id, attempt, "the task goal was not taken; submitting again");
             }
+            tracing::error!(task = %task_id, "the task goal was never taken by the agent");
         });
     }
 
@@ -2070,7 +2079,6 @@ impl App {
             Observation::UserTurn { at } => {
                 // A new prompt: an achieved goal no longer makes the task done (TSK-014).
                 runtime.goal_achieved.store(false, Ordering::SeqCst);
-                runtime.goal_submitted.store(true, Ordering::SeqCst);
                 // A prompt of a turn whose clean Stop already came is not a new turn.
                 if at.is_some_and(|at| at.0 <= runtime.last_stop_ms.load(Ordering::SeqCst)) {
                     return;
