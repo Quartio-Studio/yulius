@@ -230,7 +230,8 @@ export function taskActions(task, access) {
     continue: write && ended && !task.archived,
     deliver: write && !task.archived,
     feedback: allows(access, 'read'),
-    archive: write && ended && !task.archived,
+    // A Done task (goal achieved, no shell left) is stopped as it is archived.
+    archive: write && (ended || (statusInfo(task).label === DONE.label)) && !task.archived,
     restore: write && task.archived,
     delete: write && (ended || chained) && task.status !== 'stopping',
   };
