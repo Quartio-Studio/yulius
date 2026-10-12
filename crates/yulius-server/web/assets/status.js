@@ -92,7 +92,13 @@ export function statusInfo(task) {
       const shells = backgroundShells(task);
       return shells ? stillWorking(shells) : { ...DONE };
     }
-    if (activity === 'waiting') return { glyph: '○', icon: 'st-input', tone: 'waiting', label: 'Your turn', group: 'needs' };
+    if (activity === 'waiting') {
+      // Background shells keep the agent going: it wakes by itself when they report, so the next
+      // move is not the user's yet.
+      const shells = backgroundShells(task);
+      if (shells) return stillWorking(shells);
+      return { glyph: '○', icon: 'st-input', tone: 'waiting', label: 'Your turn', group: 'needs' };
+    }
     if (activity === 'working') return { glyph: '●', icon: 'st-working', tone: 'working', label: 'Working', group: 'working' };
     return { glyph: '●', icon: 'st-working', tone: 'running', label: 'Running', group: 'working' };
   }
