@@ -312,7 +312,7 @@ fn ensure_plain_dirs(base: &Path, parts: &[&str]) -> AppResult<PathBuf> {
 }
 
 /// Whether `parts` below `base` are all real directories (removal never follows a link).
-fn plain_dirs_exist(base: &Path, parts: &[&str]) -> bool {
+pub(crate) fn plain_dirs_exist(base: &Path, parts: &[&str]) -> bool {
     let mut current = base.to_path_buf();
     parts.iter().all(|part| {
         current.push(part);
@@ -430,7 +430,7 @@ impl App {
         }
     }
 
-    fn upload_slot(&self) -> AppResult<OwnedSemaphorePermit> {
+    pub(crate) fn upload_slot(&self) -> AppResult<OwnedSemaphorePermit> {
         Arc::clone(&self.uploads.slots)
             .try_acquire_owned()
             .map_err(|_| {

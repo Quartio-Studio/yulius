@@ -173,3 +173,65 @@ async fn an_attached_file_is_served_only_from_the_attachments_folder() -> TestRe
     assert_eq!(available, [true, true, false, false, false, false, false]);
     Ok(())
 }
+
+#[tokio::test]
+async fn only_the_tasks_own_attachment_folders_are_served_never_through_a_link() -> TestResult {
+    let (h, drafts, [alice, ..]) = seeded(|d| {
+        // `d` is …/sandboxes/s1/attachments/drafts/u-alice.
+        let base = d.trim_end_matches("/drafts/u-alice");
+        format!(
+            "Look\n@{base}/tasks/t1/term.png\n@{d}/../../../outside.png\n@{base}/drafts/u-bob/bob.png\n@{base}/shells/sh1/shell.png\n@{d}/shot.png"
+        )
+    })
+    .await?;
+    let attachments = std::fs::canonicalize(drafts.join("../.."))?;
+    let sandbox = std::fs::canonicalize(attachments.join(".."))?;
+    std::fs::write(sandbox.join("outside.png"), b"secret")?;
+    for (folder, name) in [
+        ("tasks/t1", "term.png"),
+        ("drafts/u-bob", "bob.png"),
+        ("shells/sh1", "shell.png"),
+    ] {
+        std::fs::create_dir_all(attachments.join(folder))?;
+        std::fs::write(attachments.join(folder).join(name), b"\x89PNG file")?;
+    }
+    let url = |n: &str| format!("/api/tasks/t1/prompt/attachments/{n}");
+
+    // The task's own terminal attachments are served; a path out of the folder, another user's
+    // drafts and a shell's files are not; neither is an index that is not a number.
+    let (status, _, body) = get_raw(&h, &url("0"), &alice).await?;
+    assert_eq!(
+        (status, body.as_slice()),
+        (StatusCode::OK, b"\x89PNG file".as_slice())
+    );
+    for n in ["1", "2", "3", "x"] {
+        let (status, _, body) = get_raw(&h, &url(n), &alice).await?;
+        assert_eq!(status, StatusCode::NOT_FOUND, "attachment {n}");
+        assert_ne!(body, b"secret");
+    }
+
+    // A sandbox process (root inside its sandbox) replaces the attachments folder with a link to
+    // a folder it controls elsewhere: nothing is served through it.
+    let elsewhere = sandbox.join("elsewhere");
+    std::fs::rename(&attachments, &elsewhere)?;
+    std::os::unix::fs::symlink(&elsewhere, &attachments)?;
+    for n in ["0", "4"] {
+        let (status, _, _) = get_raw(&h, &url(n), &alice).await?;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "attachment {n} through the link"
+        );
+    }
+    let listed = call(&h.router, Method::GET, "/api/tasks/t1/prompt", None, &alice).await?;
+    assert!(
+        listed.body["attachments"]
+            .as_array()
+            .ok_or("attachments")?
+            .iter()
+            .all(|a| a["available"] == false),
+        "{}",
+        listed.body
+    );
+    Ok(())
+}

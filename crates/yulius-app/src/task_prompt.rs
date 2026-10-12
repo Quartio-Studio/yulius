@@ -3,22 +3,32 @@
 //!
 //! The prompt is stored as the composer sent it: the text, then one `@path` line per attached
 //! file ([`Request::parse`] splits them, as the session start does). A line can name any path on
-//! the host, so a file is only ever served from the sandbox's attachments folder: its resolved
-//! path must be a regular file inside it, no larger than the upload limit. Like the upload
-//! checks, this is by path; a swap racing the check and the read is not excluded.
+//! the host, so a file is only ever served from the task's own attachment folders: its creator's
+//! composer drafts (`attachments/drafts/<user>/`) and the task's terminal attachments
+//! (`attachments/tasks/<task>/`), named exactly as an upload reports them (no `..`, no other
+//! folder). Those folders must be real folders, not links (a contained process, root in its
+//! sandbox, can plant one); the file is opened without following a link or blocking on a pipe,
+//! checked again through its handle (a regular file within the upload limit) and, where
+//! `/proc/self/fd` exists, at the path it was opened at, so a folder swapped for a link between
+//! the checks and the open is refused too. Reads share the uploads' concurrency bound.
 
-use std::path::{Path, PathBuf};
+use std::os::fd::AsRawFd as _;
+use std::os::unix::fs::OpenOptionsExt as _;
+use std::path::{Component, Path, PathBuf};
 
 use tokio::io::AsyncReadExt as _;
 use yulius_contracts::api::tasks::{PromptAttachment, TaskPrompt};
-use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::Action;
 use yulius_domain::request::{Request, is_image};
 
 use crate::auth::AuthContext;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
-use crate::uploads::ATTACHMENTS_DIR;
+use crate::model::TaskRecord;
+use crate::uploads::{ATTACHMENTS_DIR, MAX_ATTACHMENTS_PER_FOLDER, plain_dirs_exist};
+
+/// Attached files of one prompt checked on disk; any further ones are listed as not available.
+const MAX_CHECKED: usize = MAX_ATTACHMENTS_PER_FOLDER;
 
 impl App {
     /// The prompt task `id` started with, its attached files listed by name.
@@ -28,14 +38,22 @@ impl App {
     pub async fn task_prompt(&self, ctx: &AuthContext, id: &str) -> AppResult<TaskPrompt> {
         let task = self.load_task(ctx, id, Action::View).await?;
         let request = Request::parse(&task.prompt);
-        let mut attachments = Vec::with_capacity(request.attachments.len());
-        for path in &request.attachments {
-            attachments.push(PromptAttachment {
+        let folders = self.owned_attachment_folders(&task);
+        let attachments = request
+            .attachments
+            .iter()
+            .enumerate()
+            .map(|(i, path)| PromptAttachment {
                 name: file_name(path),
                 image: is_image(path),
-                available: self.attached_file(&task.sandbox_id, path).await.is_some(),
-            });
-        }
+                available: i < MAX_CHECKED
+                    && served_path(&folders, path).is_some_and(|(file, _)| {
+                        std::fs::symlink_metadata(file).is_ok_and(|meta| {
+                            meta.file_type().is_file() && meta.len() <= self.config.upload_max_bytes
+                        })
+                    }),
+            })
+            .collect();
         Ok(TaskPrompt {
             text: request.text,
             attachments,
@@ -46,7 +64,8 @@ impl App {
     ///
     /// # Errors
     /// `NotFound` for unknown tasks, without read access, and for an attachment out of range, gone
-    /// or not served (outside the attachments folder, not a regular file, over the upload limit).
+    /// or not served (not in the task's attachment folders, through a link, not a regular file,
+    /// over the upload limit); `Capacity` while the uploads' bound is reached.
     pub async fn task_prompt_attachment(
         &self,
         ctx: &AuthContext,
@@ -55,16 +74,18 @@ impl App {
     ) -> AppResult<AttachedFile> {
         let task = self.load_task(ctx, id, Action::View).await?;
         let request = Request::parse(&task.prompt);
-        let path = request.attachments.get(index).ok_or(AppError::NotFound)?;
-        let file = self
-            .attached_file(&task.sandbox_id, path)
-            .await
+        let path = request
+            .attachments
+            .get(index)
+            .filter(|_| index < MAX_CHECKED)
             .ok_or(AppError::NotFound)?;
-        let mut bytes = Vec::new();
+        let folders = self.owned_attachment_folders(&task);
+        let (file, real) = served_path(&folders, path).ok_or(AppError::NotFound)?;
+        let _slot = self.upload_slot()?;
         let limit = self.config.upload_max_bytes;
-        tokio::fs::File::open(&file)
-            .await
-            .map_err(|_| AppError::NotFound)?
+        let opened = open_attached(file, &real, limit).ok_or(AppError::NotFound)?;
+        let mut bytes = Vec::new();
+        tokio::fs::File::from_std(opened)
             .take(limit.saturating_add(1))
             .read_to_end(&mut bytes)
             .await
@@ -80,18 +101,71 @@ impl App {
         })
     }
 
-    /// `path` resolved, when it is a regular file inside the sandbox's attachments folder and
-    /// within the upload limit; `None` otherwise.
-    async fn attached_file(&self, sandbox: &SandboxId, path: &str) -> Option<PathBuf> {
-        let root = tokio::fs::canonicalize(self.sandbox_dir(sandbox).join(ATTACHMENTS_DIR))
-            .await
-            .ok()?;
-        let file = tokio::fs::canonicalize(path).await.ok()?;
-        if !file.starts_with(&root) {
-            return None;
+    /// The folders a file of `task`'s prompt may be in, as an upload names them (the sandbox
+    /// directory as processes see it, and resolved), when they are real folders, not links; each
+    /// with where it really is (below the resolved sandbox directory, which is trusted).
+    fn owned_attachment_folders(&self, task: &TaskRecord) -> Vec<(PathBuf, PathBuf)> {
+        let absolute = {
+            let dir = self.sandbox_dir(&task.sandbox_id);
+            std::path::absolute(&dir).unwrap_or(dir)
+        };
+        let Ok(resolved) = std::fs::canonicalize(&absolute) else {
+            return Vec::new();
+        };
+        let mut bases = vec![absolute.clone()];
+        if resolved != absolute {
+            bases.push(resolved.clone());
         }
-        let meta = tokio::fs::metadata(&file).await.ok()?;
-        (meta.is_file() && meta.len() <= self.config.upload_max_bytes).then_some(file)
+        let owners = [
+            [ATTACHMENTS_DIR, "drafts", task.created_by.as_str()],
+            [ATTACHMENTS_DIR, "tasks", task.id.as_str()],
+        ];
+        let mut folders = Vec::new();
+        for base in &bases {
+            for parts in &owners {
+                if plain_dirs_exist(base, parts) {
+                    let under =
+                        |root: &PathBuf| parts.iter().fold(root.clone(), |p, part| p.join(part));
+                    folders.push((under(base), under(&resolved)));
+                }
+            }
+        }
+        folders
+    }
+}
+
+/// `path` when it names a file directly inside one of `folders` (no `.` or `..` on the way),
+/// with where that file really is.
+fn served_path<'a>(folders: &[(PathBuf, PathBuf)], path: &'a str) -> Option<(&'a Path, PathBuf)> {
+    let file = Path::new(path);
+    let plain = file
+        .components()
+        .all(|c| matches!(c, Component::RootDir | Component::Normal(_)));
+    if !plain {
+        return None;
+    }
+    let (parent, name) = (file.parent()?, file.file_name()?);
+    let (_, real) = folders.iter().find(|(named, _)| named == parent)?;
+    Some((file, real.join(name)))
+}
+
+/// Opens `file` without following a link or blocking on a pipe; `None` unless it is a regular
+/// file within `limit` that was opened at `real` (where `/proc/self/fd` says).
+fn open_attached(file: &Path, real: &Path, limit: u64) -> Option<std::fs::File> {
+    use nix::fcntl::OFlag;
+    let opened = std::fs::File::options()
+        .read(true)
+        .custom_flags((OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK).bits())
+        .open(file)
+        .ok()?;
+    let meta = opened.metadata().ok()?;
+    if !meta.is_file() || meta.len() > limit {
+        return None;
+    }
+    // A folder on the way swapped for a link after the checks: the file opened is elsewhere.
+    match std::fs::read_link(format!("/proc/self/fd/{}", opened.as_raw_fd())) {
+        Ok(opened_at) => (opened_at == real).then_some(opened),
+        Err(_) => Some(opened),
     }
 }
 
@@ -139,5 +213,21 @@ mod tests {
         assert_eq!(image_type("/a/b.svg"), None);
         assert_eq!(image_type("/a/png"), None);
         assert_eq!(file_name("/a/b c.png"), "b c.png");
+        let folders = [(
+            PathBuf::from("/s/attachments/drafts/u"),
+            PathBuf::from("/real/s/attachments/drafts/u"),
+        )];
+        assert_eq!(
+            served_path(&folders, "/s/attachments/drafts/u/a.png").map(|(_, real)| real),
+            Some(PathBuf::from("/real/s/attachments/drafts/u/a.png"))
+        );
+        for path in [
+            "/s/attachments/drafts/u/../v/a.png",
+            "/s/attachments/drafts/u/x/a.png",
+            "/s/attachments/drafts/a.png",
+            "/s/attachments/drafts/u",
+        ] {
+            assert!(served_path(&folders, path).is_none(), "{path}");
+        }
     }
 }

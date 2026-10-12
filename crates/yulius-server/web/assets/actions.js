@@ -348,6 +348,8 @@ export function openPromptDialog(ctx, task) {
     },
   };
   const fileUrl = (index) => `/api/tasks/${enc(task.id)}/prompt/attachments/${index}`;
+  // An attached file can be as large as an upload (25 MiB by default): longer than a JSON read.
+  const FILE_TIMEOUT_MS = 120000;
   const fileItem = (file, index) => {
     if (!file.available) {
       return h('li', { class: 'prompt-file gone' }, icon('file', { size: 16 }), h('span', { class: 'prompt-file-name' }, file.name), h('span', { class: 'muted xs' }, 'No longer on the server'));
@@ -355,9 +357,12 @@ export function openPromptDialog(ctx, task) {
     if (!file.image) {
       const download = async () => {
         try {
-          const url = URL.createObjectURL(await ctx.api.get(fileUrl(index), { as: 'blob', signal: controller.signal }));
+          const url = URL.createObjectURL(await ctx.api.get(fileUrl(index), { as: 'blob', signal: controller.signal, timeoutMs: FILE_TIMEOUT_MS }));
           urls.push(url);
-          h('a', { href: url, download: file.name }).click();
+          const link = h('a', { href: url, download: file.name, hidden: true });
+          document.body.append(link);
+          link.click();
+          link.remove();
         } catch (error) {
           if (error.code !== 'aborted') errorToast(error, `Couldn’t download ${file.name}`);
         }
@@ -369,7 +374,7 @@ export function openPromptDialog(ctx, task) {
     const item = h('li', { class: 'prompt-file image' },
       h('button', { type: 'button', class: 'prompt-thumb', 'aria-label': `Open ${file.name}`, onClick: () => img.src && openAttachment({ name: file.name }, { image: img.src }) }, img),
       h('span', { class: 'prompt-file-name' }, file.name));
-    ctx.api.get(fileUrl(index), { as: 'blob', signal: controller.signal }).then((blob) => {
+    ctx.api.get(fileUrl(index), { as: 'blob', signal: controller.signal, timeoutMs: FILE_TIMEOUT_MS }).then((blob) => {
       const url = URL.createObjectURL(blob);
       urls.push(url);
       img.src = url;

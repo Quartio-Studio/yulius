@@ -40,8 +40,8 @@ condition, so today the text cannot be read again in the UI.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| OPR-001 | `GET /api/tasks/{tid}/prompt` (read access to the task's sandbox, like `GET /api/tasks/{tid}`; 404 otherwise) returns the task's original prompt: `text` (the prompt without its attachment lines, as the session got it) and `attachments`, in order, each with its file `name`, whether it is an `image` (the extensions Claude Code pastes as images) and whether it is `available` (a regular file in the sandbox's attachments folder). | `task_prompt.rs` |
-| OPR-002 | `GET /api/tasks/{tid}/prompt/attachments/{n}` (same access) answers with the bytes of attachment `n` only when its path, resolved, is a regular file inside the sandbox's `attachments` folder, at most the upload limit in size; anything else (out of range, gone, outside the folder, a link out of it, a folder, too large) is 404. Images are served with their image type; every other file as `application/octet-stream` with `Content-Disposition: attachment`; always `X-Content-Type-Options: nosniff` and a `sandbox` content security policy, so no file runs as a page. | `task_prompt.rs` |
+| OPR-001 | `GET /api/tasks/{tid}/prompt` (read access to the task's sandbox, like `GET /api/tasks/{tid}`; 404 otherwise) returns the task's original prompt: `text` (the prompt without its attachment lines, as the session got it) and `attachments`, in order, each with its file `name`, whether it is an `image` (the extensions Claude Code pastes as images) and whether it is `available` (served by OPR-002; at most 500 are checked, the rest are listed as not available). | `task_prompt.rs` |
+| OPR-002 | `GET /api/tasks/{tid}/prompt/attachments/{n}` (same access) answers with the bytes of attachment `n` only when its path names a file directly in one of the task's own attachment folders, as an upload names them: its creator's composer drafts (`attachments/drafts/<creator>/`) or the task's terminal attachments (`attachments/tasks/<task>/`); those folders are real folders, not links; the file is opened without following a link or blocking, is a regular file within the upload limit, and (where `/proc/self/fd` exists) was opened at the expected real path. Anything else (out of range, not a number, gone, another folder, `..`, a link, a folder, too large) is 404. Reads share the uploads' concurrency bound. Images are served with their image type; every other file as `application/octet-stream` with `Content-Disposition: attachment`; always `X-Content-Type-Options: nosniff` and a `sandbox` content security policy, so no file runs as a page. | `task_prompt.rs` |
 | OPR-003 | The task menu has "See the original prompt", enabled for everyone who sees the task. It opens a dialog titled `Original prompt · #<n>` that shows the text formatted as Markdown (read-only), then the attached files: an image as a thumbnail that opens full size, another file as a download link, a file that is gone by its name with "No longer on the server". A prompt without text says so. "Copy text" copies the text. A failed load says why in the dialog. | e2e `original-prompt.e2e.ts` |
 | OPR-004 | `docs/api.md`, SPEC-001 UI-013, an ADR, `docs/architecture.md` (if a component changes) and `docs/changes.md` describe it. | review |
 
@@ -62,7 +62,9 @@ condition, so today the text cannot be read again in the UI.
   user without access gets 404.
 - AC-OPR-2: attachment 0 is served as `image/png` with `nosniff`; attachment 1 as
   `application/octet-stream` with `Content-Disposition: attachment`; attachment 2, index 9, a
-  link in the attachments folder pointing outside it and a removed file are 404.
+  link in the attachments folder pointing outside it and a removed file are 404. The task's
+  terminal attachments are served; `..` in the prompt, another user's drafts, a shell's files and
+  everything once the attachments folder is replaced by a link are 404 (and not available).
 - AC-OPR-3: in the UI, a task's menu → "See the original prompt" shows the formatted text and
   the image thumbnail; clicking the thumbnail previews it; the dialog has no WCAG violations;
   Escape closes it.
@@ -83,7 +85,9 @@ condition, so today the text cannot be read again in the UI.
 - Its own endpoint, read when the dialog opens, rather than a `prompt` field on `TaskDetail`:
   the prompt can be 100,000 characters and the detail is read on every task update.
 - The attachments are served by index from the parsed prompt, never by a path from the client,
-  and only from the sandbox's `attachments` folder: a prompt can mention any path on the host.
+  and only from the task's own attachment folders, compared by name, never through a link: a
+  prompt can mention any path on the host, and a contained process can plant links in the
+  sandbox directory (review round 1: resolving the `attachments` folder followed such a link).
   Read access suffices: the files were given to the agent, whose terminal readers already see.
   See [ADR-0032](../../docs/decisions/0032-original-prompt-on-demand.md).
 - A file that is gone (drafts are removed after a week) is shown by name, not hidden: the person

@@ -10,6 +10,7 @@ use yulius_contracts::api::tasks::{FeedbackRequest, TaskDetail, TaskPrompt, Task
 use crate::AppState;
 use crate::auth::Auth;
 use crate::error::ApiResult;
+use yulius_app::error::AppError;
 
 #[derive(Deserialize)]
 pub struct ListQuery {
@@ -55,8 +56,10 @@ pub async fn prompt(
 pub async fn prompt_attachment(
     State(app): State<AppState>,
     Auth(ctx): Auth,
-    Path((tid, index)): Path<(String, usize)>,
+    Path((tid, index)): Path<(String, String)>,
 ) -> ApiResult<Response> {
+    // An index that is not a number names no attachment: 404, like one out of range.
+    let index = index.parse().map_err(|_| AppError::NotFound)?;
     let file = app.task_prompt_attachment(&ctx, &tid, index).await?;
     let mut response = file.bytes.into_response();
     let headers = response.headers_mut();
