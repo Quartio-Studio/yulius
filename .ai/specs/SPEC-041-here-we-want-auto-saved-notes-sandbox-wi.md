@@ -130,7 +130,7 @@ sequenceDiagram
 
 ## Decisions
 
-- Server-stored, shared notes (ADR 0029). "Team-wise" means people share them, so browser storage
+- Server-stored, shared notes (ADR 0032). "Team-wise" means people share them, so browser storage
   cannot work. One row per notepad keeps it simple and bounded.
 - Optimistic revisions instead of real-time co-editing (CRDT or OT). The team is 2 to 5 people, and
   a whole-text compare-and-set with an explicit choice on conflict never loses text silently.

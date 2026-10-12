@@ -2,7 +2,7 @@
 //! STP-001/002). Callers are agents authenticated by their run's task token.
 
 use serde_json::{Value, json};
-use yulius_domain::ids::{StepId, TaskId};
+use yulius_domain::ids::{SandboxId, StepId, TaskId, UserId};
 
 use crate::auth::rfc3339;
 use crate::context::App;
@@ -32,6 +32,35 @@ impl AgentContext {
     pub fn actor(&self) -> String {
         format!("task:{}", self.task.number)
     }
+
+    /// The task's agent as a caller of the project-management tools: it acts for the task's
+    /// creator (SPEC-037 MGT-002).
+    #[must_use]
+    pub fn caller(&self) -> ProjectCaller {
+        ProjectCaller {
+            sandbox: self.task.sandbox_id.clone(),
+            user: self.task.created_by.clone(),
+            task: Some(self.task.clone()),
+            actor: self.actor(),
+            detail: json!({"task_id": self.task.id.as_str(), "task_number": self.task.number}),
+        }
+    }
+}
+
+/// Who calls a project-management tool (tasks, automations, workflows, sessions): a task's
+/// agent or a person's Cockpit (SPEC-037).
+#[derive(Debug, Clone)]
+pub struct ProjectCaller {
+    /// The project's sandbox.
+    pub sandbox: SandboxId,
+    /// The person on whose authority it acts.
+    pub user: UserId,
+    /// The caller's own task; `None` for a Cockpit.
+    pub task: Option<TaskRecord>,
+    /// Actor label recorded in histories and audits.
+    pub actor: String,
+    /// Audit detail naming the caller.
+    pub detail: Value,
 }
 
 fn str_arg<'a>(args: &'a Value, key: &str) -> AppResult<&'a str> {
@@ -65,7 +94,7 @@ impl App {
         Ok(AgentContext { attempt, task })
     }
 
-    async fn task_brief(&self, task: &TaskRecord) -> AppResult<Value> {
+    pub(crate) async fn task_brief(&self, task: &TaskRecord) -> AppResult<Value> {
         let steps = self.deps.store.steps(&task.id).await?;
         let p = progress(&steps);
         Ok(json!({
@@ -89,18 +118,20 @@ impl App {
     ///
     /// # Errors
     /// Store failures.
-    pub async fn tool_tasks_list(&self, ctx: &AgentContext, args: &Value) -> AppResult<Value> {
+    pub async fn tool_tasks_list(&self, caller: &ProjectCaller, args: &Value) -> AppResult<Value> {
         let scope = args.get("scope").and_then(Value::as_str).unwrap_or("all");
         let limit = args
             .get("limit")
             .and_then(Value::as_u64)
             .unwrap_or(30)
             .min(200);
-        let mut tasks = self.deps.store.tasks(&ctx.task.sandbox_id, false).await?;
+        let mut tasks = self.deps.store.tasks(&caller.sandbox, false).await?;
         if scope == "all" || scope == "archived" {
-            tasks.extend(self.deps.store.tasks(&ctx.task.sandbox_id, true).await?);
+            tasks.extend(self.deps.store.tasks(&caller.sandbox, true).await?);
         }
-        tasks.retain(|t| t.id != ctx.task.id);
+        if let Some(own) = &caller.task {
+            tasks.retain(|t| t.id != own.id);
+        }
         tasks.retain(|t| match scope {
             "active" => {
                 t.status.is_live()
@@ -118,15 +149,19 @@ impl App {
         for t in tasks.iter().take(usize::try_from(limit).unwrap_or(30)) {
             out.push(self.task_brief(t).await?);
         }
-        Ok(json!({"you": self.task_brief(&ctx.task).await?, "tasks": out}))
+        // A Cockpit has no task of its own (MGT-007).
+        match &caller.task {
+            Some(own) => Ok(json!({"you": self.task_brief(own).await?, "tasks": out})),
+            None => Ok(json!({"tasks": out})),
+        }
     }
 
     /// `task_get`: one task's details including steps and recent messages it sent.
     ///
     /// # Errors
     /// `NotFound` outside the agent's sandbox.
-    pub async fn tool_task_get(&self, ctx: &AgentContext, args: &Value) -> AppResult<Value> {
-        let task = self.agent_task_ref(ctx, args).await?;
+    pub async fn tool_task_get(&self, caller: &ProjectCaller, args: &Value) -> AppResult<Value> {
+        let task = self.agent_task_ref(caller, args).await?;
         let steps = self.deps.store.steps(&task.id).await?;
         let mut brief = self.task_brief(&task).await?;
         brief["prompt"] = json!(task.prompt.chars().take(4000).collect::<String>());
@@ -134,13 +169,13 @@ impl App {
         Ok(brief)
     }
 
-    async fn agent_task_ref(&self, ctx: &AgentContext, args: &Value) -> AppResult<TaskRecord> {
+    async fn agent_task_ref(&self, caller: &ProjectCaller, args: &Value) -> AppResult<TaskRecord> {
         if let Some(number) = args.get("number").and_then(Value::as_u64) {
             let number = u32::try_from(number).map_err(|_| AppError::NotFound)?;
             return self
                 .deps
                 .store
-                .task_by_number(&ctx.task.sandbox_id, number)
+                .task_by_number(&caller.sandbox, number)
                 .await?
                 .ok_or(AppError::NotFound);
         }
@@ -149,7 +184,7 @@ impl App {
             .store
             .task(&id)
             .await?
-            .filter(|t| t.sandbox_id == ctx.task.sandbox_id)
+            .filter(|t| t.sandbox_id == caller.sandbox)
             .ok_or(AppError::NotFound)
     }
 

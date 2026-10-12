@@ -308,11 +308,23 @@ impl App {
     /// Deletes a task permanently (SPEC-001 TSK-009): write access, not live. Removes the
     /// local worktree and branch (uncommitted work included), run directories, archived
     /// transcripts and every record; remote branches and pull requests are untouched. Audited.
+    /// A finished task (`task_is_done`, as for archiving) is closed first, and deleted once its
+    /// run has ended (SPEC-039).
     ///
     /// # Errors
-    /// `NotFound`/`Forbidden` without access; `Conflict` while the task runs or starts.
+    /// `NotFound`/`Forbidden` without access; `Conflict` while the task runs or starts, or
+    /// while a finished task's session is still closing.
     pub async fn delete_task(self: &Arc<Self>, ctx: &AuthContext, id: &str) -> AppResult<()> {
-        let task = self.load_task(ctx, id, Action::Work).await?;
+        let mut task = self.load_task(ctx, id, Action::Work).await?;
+        if task.status == TaskStatus::Running && self.task_is_done(&task).await {
+            self.close_task_and_wait(&task.id).await?;
+            task = self
+                .deps
+                .store
+                .task(&task.id)
+                .await?
+                .ok_or(AppError::NotFound)?;
+        }
         let starting = matches!(
             task.status,
             TaskStatus::Starting

@@ -1,4 +1,4 @@
-# 0029. Shared notes are stored on the server and saved by revision
+# 0032. Shared notes are stored on the server and saved by revision
 
 ## Status
 
