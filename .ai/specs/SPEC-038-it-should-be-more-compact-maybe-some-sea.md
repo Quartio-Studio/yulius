@@ -36,11 +36,11 @@ scrolling. The "Run after" menu lists tasks as one-line rows.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| MNU-001 | A menu is never taller than the window less 16 px: it opens below its anchor, or above it when there is more room there, and its items scroll inside it. | e2e |
-| MNU-002 | An item's description is one line, cut with an ellipsis; the full text is the item's tooltip. Rows with a description are no taller than 44 px. | e2e |
-| MNU-003 | A menu with 8 or more items to choose from has a filter box ("Filter", a search field) above its items, focused when the menu opens. Shorter menus have none and keep today's first-letter jumps. | e2e |
+| MNU-001 | A menu is never taller than the window less 16 px: it opens below its anchor, or above it when there is more room there (and stays next to it while the filter shortens it), and its items scroll inside it. An anchor with no usable room on either side gets the menu from the window's top. A window that only gets shorter (a phone keyboard) keeps the menu open. | e2e, in-page unit test |
+| MNU-002 | An item's description is one line, cut with an ellipsis; the full text is the item's tooltip and shows on the keyboard-focused item. Rows with a description are no taller than 44 px. | e2e |
+| MNU-003 | A menu with 8 or more items to choose from has a filter box ("Filter", a search field) above its items, focused when the menu opens (on a touch screen the first item is, so the keyboard does not cover the menu). Shorter menus have none and keep today's first-letter jumps. | e2e |
 | MNU-004 | Typing in the filter shows only the items whose label, description or hint contain every typed word (case-insensitive); headers and separators hide while it has text; with no match the menu says "No matches". | e2e, in-page unit test |
-| MNU-005 | From the filter, ↓ moves to the first shown item, ↑ to the last, and Enter picks the first; ↑ on the first item goes back to the filter; a letter typed on an item goes into the filter; Escape clears a filter with text, and closes the menu when it is empty. | e2e |
+| MNU-005 | From the filter, ↓ moves to the first shown item, ↑ to the last, and Enter picks the first; ↑ on the first item goes back to the filter; a letter or Backspace typed on an item edits the filter; Tab leaves; Escape clears a filter with text, and closes the menu when it is empty. Keys composing text in an input method are left to the filter. | e2e |
 | MNU-006 | "Run after" lists each task on one line, "#N title" with its status on the right, under the heading "After a task is done", and offers every live task of the sandbox (no cut at 20) since the filter finds one. | e2e |
 | MNU-007 | An open menu, filtered or not, has no WCAG 2.x A/AA violations. | e2e (axe) |
 
@@ -65,7 +65,7 @@ scrolling. The "Run after" menu lists tasks as one-line rows.
 
 - In-page unit test of the pure `menuMatches(item, query)` (words, case, description and hint,
   empty query).
-- e2e (`menus.e2e.ts`, new): filter on "Run after" (focus, narrowing, No matches, Escape, ↓/↑,
+- e2e (`menus.e2e.ts`, new): filter on "Run after" (focus, narrowing, No matches, Escape, ↓/↑, Tab, IME, Backspace, touch focus,
   Enter), letter typed on an item goes to the filter, short Mode menu without filter, menu height
   at a short window, one-line descriptions, axe on the open filtered menu.
 - Existing suites (`intake.e2e.ts`, `new-task.e2e.ts`, `terminal.e2e.ts`) keep passing: they open
@@ -82,5 +82,12 @@ scrolling. The "Run after" menu lists tasks as one-line rows.
   the same floating panel. Recorded in ADR-0027.
 - **Descriptions are cut to one line** with the full text as tooltip rather than dropped: they
   still explain a choice at a glance (workflow steps, model notes).
+- **Review round 1** (fresh session, `om-code-review`): fixed test-first: IME composition keys
+  ignored (major); the tooltip no longer searched (every "Run after" row had "Starts by itself
+  when…"); the focused item shows its whole description; a usable menu for an anchor taller than
+  the window; a phone keyboard (height-only resize) no longer closes the menu, and a touch screen
+  focuses the first item instead of the filter; Backspace on an item edits the filter; the width
+  is fixed after the scrollbar appears. Not done: announcing the number of matches (the list
+  itself is read by the screen reader; "No matches" is announced).
 - **Native selects stay native**: the browser's list already has type-to-select and phone pickers;
   replacing them is a separate, larger change with no reported pain.

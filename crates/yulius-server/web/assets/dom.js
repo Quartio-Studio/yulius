@@ -478,10 +478,13 @@ export function closeMenu() {
 /** A menu with this many items to choose from gets a filter box (SPEC-038 MNU-003). */
 export const MENU_FILTER_MIN = 8;
 
-/** Whether a menu item holds every word of `query` in its label, description, hint or title. */
+/**
+ * Whether a menu item holds every word of `query` in its label, description or hint. Not its
+ * tooltip: "Starts by itself when #N is done" on every "Run after" row would match them all.
+ */
 export function menuMatches(item, query) {
   const words = String(query || '').toLowerCase().split(/\s+/).filter(Boolean);
-  const text = [item.label, item.description, item.hint, item.title].filter(Boolean).join(' ').toLowerCase();
+  const text = [item.label, item.description, item.hint].filter(Boolean).join(' ').toLowerCase();
   return words.every((word) => text.includes(word));
 }
 
@@ -568,16 +571,25 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
   const above = rect.top - 4 - 8;
   const mh = menu.offsetHeight;
   const up = mh > below && above > below;
-  const room = Math.max(0, up ? above : below);
-  if (mh > room) menu.style.maxHeight = `${room}px`;
+  const room = up ? above : below;
   menu.style.left = `${left}px`;
-  // A menu above its anchor is held by its bottom edge, so a filtered, shorter menu stays next to
-  // the anchor; a filtered menu keeps its width.
-  if (up) menu.style.bottom = `${window.innerHeight - (rect.top - 4)}px`;
-  else menu.style.top = `${rect.bottom + 4}px`;
-  if (filter) menu.style.width = `${mw}px`;
+  if (room < Math.min(mh, 120)) {
+    // No usable room on either side (an anchor taller than the window): over it, from the top.
+    menu.style.top = '8px';
+  } else {
+    if (mh > room) menu.style.maxHeight = `${room}px`;
+    // A menu above its anchor is held by its bottom edge, so a filtered, shorter menu stays next
+    // to the anchor.
+    if (up) menu.style.bottom = `${window.innerHeight - (rect.top - 4)}px`;
+    else menu.style.top = `${rect.bottom + 4}px`;
+  }
+  // A filtered menu keeps its width, measured once its items may scroll (with their scrollbar).
+  if (filter) menu.style.width = `${menu.offsetWidth}px`;
   const onDoc = (event) => { if (!menu.contains(event.target)) closeMenu(); };
   const onKey = (event) => {
+    // Keys that compose text in an input method (Enter that commits it, arrows that pick a
+    // candidate) belong to the filter.
+    if (event.isComposing || event.keyCode === 229) return;
     // Focus goes back to the button before the menu closes (a button shown only while its menu is
     // open would hide first and could not take focus).
     // Escape first clears a filter with text (SPEC-038 MNU-005).
@@ -601,11 +613,12 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
       if (to) { event.preventDefault(); to.focus(); }
       return;
     }
-    if (filter && ((event.key === 'ArrowUp' && index === 0) || typed)) {
-      // ↑ on the first item goes back to the filter; a letter typed on an item goes into it.
+    if (filter && ((event.key === 'ArrowUp' && index === 0) || typed || event.key === 'Backspace')) {
+      // ↑ on the first item goes back to the filter; a letter or Backspace typed on an item edits it.
       event.preventDefault();
       filter.focus();
       if (typed) { filter.value += event.key; applyFilter(); }
+      if (event.key === 'Backspace' && filter.value) { filter.value = filter.value.slice(0, -1); applyFilter(); }
       return;
     }
     let next = -1;
@@ -623,22 +636,27 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
     }
     if (next >= 0 && buttons[next]) { event.preventDefault(); buttons[next].focus(); }
   };
-  const onResize = () => closeMenu();
+  // A window that only gets shorter is a phone's keyboard opening for the filter: keep the menu.
+  const openWidth = window.innerWidth;
+  const onResize = () => { if (window.innerWidth !== openWidth) closeMenu(); };
+  const onBlur = () => closeMenu();
   setTimeout(() => document.addEventListener('pointerdown', onDoc, true), 0);
   document.addEventListener('keydown', onKey, true);
   window.addEventListener('resize', onResize);
-  window.addEventListener('blur', onResize);
+  window.addEventListener('blur', onBlur);
   openMenuEl = {
     cleanup() {
       document.removeEventListener('pointerdown', onDoc, true);
       document.removeEventListener('keydown', onKey, true);
       window.removeEventListener('resize', onResize);
-      window.removeEventListener('blur', onResize);
+      window.removeEventListener('blur', onBlur);
       menu.remove();
       if (button) button.setAttribute('aria-expanded', 'false');
     },
   };
-  const first = filter || menu.querySelector('.menu-item:not([aria-disabled="true"])') || menu.querySelector('.menu-item');
+  // On a touch screen the filter waits for a tap: focusing it would open the keyboard over the menu.
+  const coarse = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+  const first = (!coarse && filter) || menu.querySelector('.menu-item:not([aria-disabled="true"])') || menu.querySelector('.menu-item');
   if (first) first.focus({ preventScroll: true });
   return menu;
 }

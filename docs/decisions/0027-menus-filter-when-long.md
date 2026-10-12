@@ -20,10 +20,13 @@ search", and the same in every such widget.
   is more room there, and its items scroll inside it.
 - An item's description is one line cut with an ellipsis; the full text is its tooltip.
 - A menu with 8 or more items to choose from (`MENU_FILTER_MIN`) opens with a focused "Filter"
-  search field. Typed words narrow the items by label, description, hint and tooltip
-  (`menuMatches`). Headers and separators hide while it has text, and "No matches" is said in a
+  search field (on a touch screen the first item takes focus, so the keyboard does not cover the
+  menu). Typed words narrow the items by label, description and hint (`menuMatches`), not the
+  tooltip. Headers and separators hide while it has text, and "No matches" is said in a
   status. ↓/↑ move between the filter and the items, Enter picks the first shown item, a letter
-  typed on an item goes into the filter, and Escape clears the filter before it closes the menu.
+  or Backspace typed on an item edits the filter, keys composing text in an input method stay in
+  the filter, and Escape clears the filter before it closes the menu. A window that only gets
+  shorter (a phone keyboard) no longer closes a menu; a change of width still does.
 - The filter is a sibling of the `role="menu"` list inside the floating panel, because an ARIA
   menu may own only menu items.
 - "Run after" lists each live task on one line, "#N title" with its status, under the header
