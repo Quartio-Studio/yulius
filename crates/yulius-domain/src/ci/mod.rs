@@ -366,22 +366,26 @@ impl RunState {
     }
 }
 
-/// What a run tests: a pull request head or a branch head (a push).
+/// What a run tests: a pull request head, a branch head (a push) or a merge train.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CiRef {
     /// Open pull request into the integration branch.
     PullRequest(u64),
     /// The integration or production branch.
     Branch(String),
+    /// A merge train (SPEC-084): the integration branch with these pull requests merged in this
+    /// order, a commit that exists only in Yulius's clone (no commit status is published for it).
+    Train(Vec<u64>),
 }
 
 impl CiRef {
-    /// Stable key (`pr/12`, `branch/dev`): one active run per key.
+    /// Stable key (`pr/12`, `branch/dev`, `train/12+15`): one active run per key.
     #[must_use]
     pub fn key(&self) -> String {
         match self {
             Self::PullRequest(number) => format!("pr/{number}"),
             Self::Branch(name) => format!("branch/{name}"),
+            Self::Train(numbers) => format!("train/{}", joined(numbers, "+", "")),
         }
     }
 
@@ -395,19 +399,45 @@ impl CiRef {
                 .filter(|n| *n > 0)
                 .map(Self::PullRequest);
         }
+        if let Some(numbers) = key.strip_prefix("train/") {
+            let parsed: Option<Vec<u64>> = numbers
+                .split('+')
+                .map(|n| n.parse::<u64>().ok().filter(|n| *n > 0))
+                .collect();
+            return parsed.filter(|n| !n.is_empty()).map(Self::Train);
+        }
         key.strip_prefix("branch/")
             .filter(|name| !name.is_empty())
             .map(|name| Self::Branch(name.to_owned()))
     }
 
-    /// Words for people: `PR #12`, `dev`.
+    /// Words for people: `PR #12`, `dev`, `Merge train #12 + #15`.
     #[must_use]
     pub fn label(&self) -> String {
         match self {
             Self::PullRequest(number) => format!("PR #{number}"),
             Self::Branch(name) => name.clone(),
+            Self::Train(numbers) => format!("Merge train {}", joined(numbers, " + ", "#")),
         }
     }
+
+    /// Whether this run tests pull request `number`: its head, or a merge train with it.
+    #[must_use]
+    pub fn covers(&self, number: u64) -> bool {
+        match self {
+            Self::PullRequest(n) => *n == number,
+            Self::Train(numbers) => numbers.contains(&number),
+            Self::Branch(_) => false,
+        }
+    }
+}
+
+fn joined(numbers: &[u64], separator: &str, prefix: &str) -> String {
+    numbers
+        .iter()
+        .map(|n| format!("{prefix}{n}"))
+        .collect::<Vec<_>>()
+        .join(separator)
 }
 
 /// A head the CI should test now.
@@ -953,13 +983,24 @@ mod tests {
 
     #[test]
     fn refs_round_trip() {
-        for reference in [CiRef::PullRequest(12), CiRef::Branch("dev".into())] {
+        for reference in [
+            CiRef::PullRequest(12),
+            CiRef::Branch("dev".into()),
+            CiRef::Train(vec![12, 15, 3]),
+        ] {
             assert_eq!(CiRef::parse(&reference.key()), Some(reference.clone()));
         }
         assert_eq!(CiRef::parse("pr/0"), None);
         assert_eq!(CiRef::parse("branch/"), None);
         assert_eq!(CiRef::parse("tag/x"), None);
+        for bad in ["train/", "train/1+", "train/0", "train/1+x"] {
+            assert_eq!(CiRef::parse(bad), None, "{bad}");
+        }
         assert_eq!(CiRef::PullRequest(7).label(), "PR #7");
+        assert_eq!(CiRef::Train(vec![7, 9]).key(), "train/7+9");
+        assert_eq!(CiRef::Train(vec![7, 9]).label(), "Merge train #7 + #9");
+        assert!(CiRef::Train(vec![7, 9]).covers(9) && !CiRef::Train(vec![7]).covers(9));
+        assert!(CiRef::PullRequest(9).covers(9) && !CiRef::Branch("dev".into()).covers(9));
         for state in [
             RunState::Queued,
             RunState::Running,

@@ -152,7 +152,13 @@ fn describe(state: &WaitState) -> String {
     } else {
         ""
     };
-    format!("{checks}{armed}; delivery {}", state.stage)
+    // Where a merge train has this pull request (SPEC-084): shown, never the end of the wait.
+    let train = state
+        .merge_train
+        .as_deref()
+        .map(|note| format!("; {note}"))
+        .unwrap_or_default();
+    format!("{checks}{armed}; delivery {}{train}", state.stage)
 }
 
 fn short(sha: &str) -> &str {
@@ -242,6 +248,28 @@ mod tests {
         };
         let line = settled(&failed, None).unwrap_or_default();
         assert!(line.contains("ended failed (quality exited 101)"), "{line}");
+    }
+
+    /// SPEC-084 TRN-007: where a merge train has the pull request shows in the progress line and
+    /// never ends the wait (nothing for the agent to do).
+    #[test]
+    fn a_merge_train_note_shows_but_never_ends_the_wait() {
+        let armed = WaitState {
+            merge_armed: true,
+            ..state("running")
+        };
+        let in_train = WaitState {
+            merge_train: Some("pull request #2 is number 2 of 2 in merge train #1, #2".into()),
+            ..armed.clone()
+        };
+        assert!(settled(&in_train, Some(&armed)).is_none());
+        assert!(settled(&in_train, None).is_none());
+        assert!(
+            describe(&in_train)
+                .ends_with("; pull request #2 is number 2 of 2 in merge train #1, #2"),
+            "{}",
+            describe(&in_train)
+        );
     }
 
     #[test]

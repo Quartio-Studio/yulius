@@ -6,6 +6,24 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- Armed pull requests merge in trains (SPEC-084, ADR-0067). When two or more armed pull requests
+  wait and none can merge at once, Yulius builds their combined result in its clone, in arm
+  order. It merges as Yulius and GitHub will, merge drivers included, and runs CI once on it.
+  When that run passes, Yulius merges them one after another. Each is brought up to date with
+  exactly the predicted tree and gets the train's verdict, so a strict ruleset accepts every merge
+  without another run.
+  - A pull request that conflicts with the ones before it is left out, told so, and waits for
+    them.
+  - A red run, or anything unexpected, sends every member back to the one-by-one flow.
+  - A train survives restarts (`merge-trains.json`).
+  - Passes deciding armed merges take turns. Two runs ending together used to merge one pull
+    request while the other pass merged a branch it had read as up to date. GitHub refused that
+    merge as behind, and the armed merge was dropped.
+  - An armed branch still behind because its agent is busy waits instead of being refused and
+    dropped. An agent's own clean merge of `dev` keeps its armed merge (SPEC-083 REV-001): it
+    follows the new head instead of being dropped as "the branch moved on".
+  - On 2026-10-12/13, 42% of the armed merges waited at least one extra run after their last arm
+    (7.4 hours in all), and runs at updated heads took 44% of the CI time.
 - `/compact` typed into a session leaves its task as it was (SPEC-085 STT-005, ADR-0068): Claude
   Code's line for the command no longer reads as a prompt, so an idle Done task no longer reads
   Working after the compaction; a prompt typed after it is work as always. While Yulius itself
