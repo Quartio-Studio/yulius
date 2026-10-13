@@ -209,6 +209,30 @@ impl App {
         Ok(report)
     }
 
+    /// The largest consumers of the sandbox's last measurement, for people: "task #26 35.0 GB, CI
+    /// job checkouts 14.0 GB"; empty when nothing was measured (SPEC-059 DSK-202).
+    pub(crate) async fn disk_consumers(&self, sandbox: &SandboxRecord) -> String {
+        let Some(isolation) = self.isolation.get() else {
+            return String::new();
+        };
+        let mut parts = Vec::new();
+        for (path, bytes) in isolation.largest(&self.sandbox_ref(sandbox)).await {
+            let label = match path.strip_prefix("worktrees/") {
+                Some(name) => match TaskId::parse(name) {
+                    Ok(id) => match self.deps.store.task(&id).await {
+                        Ok(Some(task)) => format!("task #{}", task.number),
+                        _ => format!("worktree {name}"),
+                    },
+                    Err(_) => format!("worktree {name}"),
+                },
+                None if path == "ci/jobs" => "CI job checkouts".to_owned(),
+                None => path,
+            };
+            parts.push(format!("{label} {}", human(bytes)));
+        }
+        parts.join(", ")
+    }
+
     /// The cache directories of one worktree or checkout, with their sizes: recognised or
     /// declared paths that are real directories, ignored by Git and holding no tracked file (a
     /// path a commit has files in is the project's work, not a cache, whatever `yulius.toml`

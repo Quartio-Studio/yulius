@@ -87,6 +87,12 @@ pub trait SandboxIsolation: Send + Sync {
         None
     }
 
+    /// The largest consumers of the last measurement, largest first, as paths relative to the
+    /// sandbox directory (`worktrees/<task>`, `ci/jobs`) or `system` (SPEC-059 DSK-202).
+    async fn largest(&self, _sandbox: &SandboxRef) -> Vec<(String, u64)> {
+        Vec::new()
+    }
+
     /// Ends a lease of [`SandboxIsolation::prepare`] (may finish in the background).
     fn release(&self, sandbox: &SandboxId);
 }

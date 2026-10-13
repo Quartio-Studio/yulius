@@ -668,3 +668,57 @@ async fn an_idle_task_with_background_work_keeps_its_caches() -> BoxResult<()> {
     assert!(!idle.join("target").exists(), "{report:?}");
     Ok(())
 }
+
+/// SPEC-059 DSK-202 (#258): a start refused over the quota says who holds the space: the largest
+/// directories of the last measurement, a task's worktree by its number.
+#[tokio::test]
+async fn a_refusal_names_the_largest_consumers() -> BoxResult<()> {
+    let w = world().await?;
+    w.task("t-big", TaskStatus::Running, Some(Activity::Working))
+        .await?;
+    struct Full;
+    #[async_trait::async_trait]
+    impl SandboxIsolation for Full {
+        async fn prepare(&self, _: &SandboxRef) -> AppResult<Option<SandboxJoin>> {
+            Err(yulius_app::error::AppError::Conflict(
+                "this sandbox uses 126.0 GB of its 100.0 GB disk quota".into(),
+            ))
+        }
+        async fn disk(&self, _: &SandboxRef) -> Option<DiskUsage> {
+            Some(DiskUsage {
+                used: 126_000_000_000,
+                limit: 100_000_000_000,
+            })
+        }
+        async fn largest(&self, _: &SandboxRef) -> Vec<(String, u64)> {
+            vec![
+                ("worktrees/t-big".into(), 35_000_000_000),
+                ("ci/jobs".into(), 14_000_000_000),
+                ("worktrees/gone".into(), 9_000_000_000),
+                ("home".into(), 4_000_000_000),
+            ]
+        }
+        fn release(&self, _: &SandboxId) {}
+    }
+    assert!(w.h.app.set_isolation(Arc::new(Full)));
+    let task =
+        w.h.store
+            .task(&TaskId::parse("t-big")?)
+            .await?
+            .ok_or("task")?;
+    let refusal =
+        w.h.app
+            .preflight_start(&task, None)
+            .await
+            .err()
+            .ok_or("the start was not refused")?
+            .public_message();
+    assert!(
+        refusal.contains(&format!(
+            "largest: task #{} 35.0 GB, CI job checkouts 14.0 GB, worktree gone 9.0 GB, home 4.0 GB",
+            task.number
+        )),
+        "{refusal}"
+    );
+    Ok(())
+}
