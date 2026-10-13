@@ -168,6 +168,25 @@ flowchart LR
   MCP -->|"automation_*"| AU["Automations"]
 ```
 
+## Ready-made automations
+
+Ready-made automations are a read-only catalog like the default workflows
+([SPEC-042](../.ai/specs/SPEC-042-create-2-default-automations-that-can-be.md),
+[decision 0034](decisions/0034-ready-made-automations-catalog.md)): `catalog/automations/*.md`,
+embedded at build time. Enable copies one into an ordinary automation; a project's automation of
+the same name counts as the template's.
+
+```mermaid
+flowchart LR
+  CAT["catalog/automations/*.md"] -->|"build.rs embeds"| TPL["automations::templates"]
+  UI["Automations page: Ready-made"] -->|"GET automation-templates"| TPL
+  UI -->|"POST …/enable"| EN["App::enable_automation_template"]
+  EN -->|"same name exists"| UPD["re-enable it"]
+  EN -->|"else"| INS["insert automation (enabled)"]
+  INS --> SCH["Scheduler: one task per slot"]
+  UPD --> SCH
+```
+
 ## Web UI state
 
 The web UI is plain ES modules. Server state comes from the API and the UI event stream
