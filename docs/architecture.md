@@ -47,6 +47,21 @@ depends on domain and contracts. `scripts/check_repository.py` enforces this.
 | composition | `yulius` (configuration, wiring, subcommands) |
 | tooling | `tools/` (fake agent, xtask) |
 
+## CPU
+
+A sandbox's processes share its cgroup limits, but not equally. CI jobs run in its `ci/` leaf
+with four times the CPU weight of the agents' `agents/` leaf. Under full load CI gets 80 % of the
+sandbox and the agents 20 %, and idle CPU goes to whoever wants it. Agent Bash commands also run
+5 nice levels below the agents themselves ([SPEC-053](../.ai/specs/SPEC-053-ci-e2e-timeouts-under-agent-load-give-ci.md),
+[decision 0034](decisions/0034-ci-jobs-get-the-cpu-first.md)).
+
+```mermaid
+flowchart TD
+  SBX["sandboxes/sandbox: cpu.max, memory.max, pids.max"] --> SYS["system/ weight 100: holder, slirp4netns"]
+  SBX --> AGS["agents/ weight 100: agent runs, shells, browsers"]
+  SBX --> CIG["ci/ weight 400: CI jobs"]
+```
+
 ## Disk
 
 A sandbox has a soft disk quota. The application prunes build caches of tasks that do not

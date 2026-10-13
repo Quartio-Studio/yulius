@@ -4,6 +4,13 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-13
+
+- CI jobs get the CPU first (SPEC-053, ADR-0034, task #45, #283). A sandbox's cgroup is split
+  into `system/`, `agents/` and `ci/`, and CI jobs run with four times the agents' CPU weight. CI
+  keeps 80 % of the sandbox while agents build, and agents still get 20 %. The e2e suite in CI is
+  back to the default budgets and no retries, so a timeout there is a real failure.
+
 ## 2026-10-12
 
 - The onboarding prompt tells the truth about Yulius CI (SPEC-020 ONB-001, task #34): the jobs'

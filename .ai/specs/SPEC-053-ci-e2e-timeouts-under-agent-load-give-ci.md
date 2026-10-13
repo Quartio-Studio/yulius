@@ -66,7 +66,7 @@ patch (#286) can go.
 - [x] Spec and ADR: CI CPU priority by cgroup weight
 - [x] Sandbox cgroup split: system, agents and CI leaves with weights
 - [x] CI jobs run in the sandbox's CI leaf
-- [ ] e2e without CI-only budgets and retries, measured under agent load
+- [x] e2e without CI-only budgets and retries, measured under agent load
 - [ ] Docs, changes log and every gate green
 - [ ] Independent review findings resolved
 
@@ -134,3 +134,25 @@ than about 25 % slower than on an idle sandbox, whatever the agents run, and the
   weight until the holder restarts after its idle stop.
 - **Other sandboxes are out of scope.** Sandboxes still have equal weight under `sandboxes/`. #283
   is about one sandbox's agents against its own CI.
+
+## Evidence
+
+All on the VM, in the `yulius` sandbox (12 CPUs), on 2026-10-13.
+
+**e2e in the sandbox, at agent priority.**
+- What ran: this branch's config (default budgets, no retries) from a task shell, so the suite
+  ran under `nice 5`, the priority of the agents' own builds. Other tasks were building and CI
+  was running at the same time.
+- Load average: 25.5 at the start, 19.1 at the end.
+- `CI=true npx e2e run --reporter list`: 34 files passed (1 skipped), 195 tests passed, in 546.6 s
+  (9 min 7 s). No test was retried.
+- This is the worst case for CI. Before SPEC-050, CI ran at the same priority as these builds.
+
+**Unit and integration tests.**
+- `cargo nextest run -p yulius-sandbox`: 34 passed, including the four `cgroup::tests` above,
+  which were red before the split.
+- `cargo nextest run -p yulius-app ci::exec`: 3 passed. The new join test failed to compile before
+  `ci_join` existed.
+- `isolation::*` compiles but skips here: it needs `YULIUS_ISOLATION_TEST=1` and a delegated
+  cgroup, which a task sandbox has neither of.
+
