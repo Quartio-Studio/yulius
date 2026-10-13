@@ -132,6 +132,10 @@ struct Options {
     tui: bool,
     hooks: Option<PathBuf>,
     goal_background: Option<u64>,
+    goal_agent: Option<u64>,
+    goal_continue_ms: Option<u64>,
+    goal_continue_verdict: bool,
+    goal_continue_dies: bool,
     goal_delay_ms: u64,
     opening_turn_ms: Option<u64>,
     echo_turn_ms: u64,
@@ -162,6 +166,10 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         tui: false,
         hooks: None,
         goal_background: None,
+        goal_agent: None,
+        goal_continue_ms: None,
+        goal_continue_verdict: false,
+        goal_continue_dies: false,
         goal_delay_ms: 0,
         opening_turn_ms: None,
         echo_turn_ms: 0,
@@ -212,6 +220,16 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                 let seconds: u64 = parse_number(&flag, args.next())?;
                 options.goal_background = Some(seconds.min(MAX_SLEEP_SECONDS));
             }
+            "--goal-agent" => {
+                let seconds: u64 = parse_number(&flag, args.next())?;
+                options.goal_agent = Some(seconds.min(MAX_SLEEP_SECONDS));
+            }
+            "--goal-continue-ms" => {
+                let ms: u64 = parse_number(&flag, args.next())?;
+                options.goal_continue_ms = Some(ms.min(MAX_GOAL_DELAY_MS));
+            }
+            "--goal-continue-verdict" => options.goal_continue_verdict = true,
+            "--goal-continue-dies" => options.goal_continue_dies = true,
             "--goal-delay-ms" => {
                 let ms: u64 = parse_number(&flag, args.next())?;
                 options.goal_delay_ms = ms.min(MAX_GOAL_DELAY_MS);
@@ -498,6 +516,28 @@ impl Transcript {
         self.append(&[user])
     }
 
+    /// An assistant line that is not a turn's end (a tool call), like Claude Code writes while
+    /// the agent works.
+    fn tool_use(&mut self) -> io::Result<()> {
+        self.turns += 1;
+        let n = self.turns;
+        let uuid = format!("fake-{}-{n}-tool", self.session_id);
+        let mut assistant = self.claude_envelope("assistant", &uuid, &rfc3339(now_ms()));
+        assistant["message"] = json!({
+            "id": format!("msg_fake_{n}"),
+            "type": "message",
+            "role": "assistant",
+            "model": "fake-model",
+            "content": [{"type": "tool_use", "id": format!("toolu_fake_{n}"),
+                "name": "Bash", "input": {"command": "true"}}],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 8, "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0, "output_tokens": 6}
+        });
+        self.last_uuid = Some(uuid);
+        self.append(&[assistant])
+    }
+
     /// A `goal_status` attachment shaped like Claude Code 2.1.292's.
     fn goal_status(&mut self, goal: Value) -> io::Result<()> {
         let uuid = format!("fake-{}-goal-{}", self.session_id, self.turns);
@@ -508,7 +548,7 @@ impl Transcript {
     }
 
     /// The `system` records Claude Code writes when a turn closes after its Stop hooks.
-    fn close_turn(&mut self, duration_ms: u64) -> io::Result<()> {
+    fn close_turn(&mut self, duration_ms: u64, pending_agents: u32) -> io::Result<()> {
         let timestamp = rfc3339(now_ms());
         let summary_uuid = format!("fake-{}-{}-stop", self.session_id, self.turns);
         let mut summary = self.claude_envelope("system", &summary_uuid, &timestamp);
@@ -520,6 +560,7 @@ impl Transcript {
         let mut duration = self.claude_envelope("system", &duration_uuid, &timestamp);
         duration["subtype"] = json!("turn_duration");
         duration["durationMs"] = json!(duration_ms);
+        duration["pendingBackgroundAgentCount"] = json!(pending_agents);
         self.last_uuid = Some(duration_uuid);
         self.append(&[summary, duration])
     }
@@ -709,6 +750,34 @@ fn start_background(
     Ok(pid)
 }
 
+/// A background agent (Claude Code's `Agent` tool with `run_in_background`) that ends after
+/// `seconds`: the session is woken by a `<task-notification>` prompt, answers, runs its Stop hook
+/// and closes the turn with no agent pending.
+fn start_agent(seconds: u64, transcript: Option<Arc<Mutex<Transcript>>>, hooks: Option<Hooks>) {
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(seconds));
+        let prompt = "<task-notification>\n<task-id>agent-1</task-id>\n<status>completed</status>\n</task-notification>";
+        if let Some(hooks) = &hooks {
+            let _ = hooks.prompt(prompt);
+        }
+        let answer = "The background agent finished.";
+        if let Some(transcript) = &transcript
+            && let Ok(mut t) = transcript.lock()
+        {
+            let _ = t.turn(prompt, answer);
+        }
+        let _ = say("AGENT DONE");
+        if let Some(hooks) = &hooks {
+            let _ = hooks.stop();
+        }
+        if let Some(transcript) = &transcript
+            && let Ok(mut t) = transcript.lock()
+        {
+            let _ = t.close_turn(2_000, 0);
+        }
+    });
+}
+
 fn report_env(names: &[String]) -> io::Result<()> {
     for name in names {
         match std::env::var_os(name) {
@@ -892,6 +961,40 @@ fn goal_turn(
     if let Some(hooks) = hooks {
         hooks.stop()?;
     }
+    // A turn the stop did not end: the evaluator says "not met" (`--goal-continue-verdict`) or
+    // another Stop hook continues it, and the agent works on with no new prompt.
+    if let Some(ms) = options.goal_continue_ms {
+        let write = |f: &dyn Fn(&mut Transcript) -> io::Result<()>| -> io::Result<()> {
+            if let Some(transcript) = transcript
+                && let Ok(mut t) = transcript.lock()
+            {
+                f(&mut t)?;
+            }
+            Ok(())
+        };
+        if options.goal_continue_verdict {
+            write(&|t| {
+                t.goal_status(json!({"type": "goal_status", "met": false,
+                    "condition": condition, "reason": "Not yet: the merge is pending."}))
+            })?;
+            say("GOAL NOT MET")?;
+            std::thread::sleep(Duration::from_millis(ms));
+            if options.goal_continue_dies {
+                // An API error ended the continued turn: no Stop hook runs, the turn closes.
+                write(&|t| t.close_turn(ms, 0))?;
+                return say("CONTINUATION DIED");
+            }
+            write(&|t| t.tool_use())?;
+        } else {
+            say("STOP CONTINUED")?;
+            std::thread::sleep(Duration::from_millis(1_000));
+            write(&|t| t.tool_use())?;
+            std::thread::sleep(Duration::from_millis(ms));
+        }
+        if let Some(hooks) = hooks {
+            hooks.stop()?;
+        }
+    }
     if let Some(transcript) = transcript
         && let Ok(mut t) = transcript.lock()
     {
@@ -900,7 +1003,10 @@ fn goal_turn(
             "reason": "Done and verified.", "iterations": 1, "durationMs": 51_000,
             "tokens": 7_100}),
         )?;
-        t.close_turn(51_000)?;
+        t.close_turn(51_000, u32::from(options.goal_agent.is_some()))?;
+    }
+    if let Some(seconds) = options.goal_agent {
+        start_agent(seconds, transcript.cloned(), hooks.cloned());
     }
     say("✓ Goal achieved")
 }

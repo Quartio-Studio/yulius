@@ -116,13 +116,17 @@ fn observe_attachment(record: &Map<String, Value>) -> Vec<Observed> {
     vec![Observed::Goal { outcome }]
 }
 
-/// The records Claude Code writes when a turn closes after its Stop hooks.
+/// The record Claude Code writes when a turn closes. `stop_hook_summary` is not one: it is also
+/// written when a Stop hook blocks (a goal not met, a notice) and the turn goes on.
 fn observe_system(record: &Map<String, Value>) -> Vec<Observed> {
     if bool_of(record, "isSidechain") {
         return Vec::new();
     }
     match str_of(record, "subtype") {
-        Some("stop_hook_summary" | "turn_duration") => vec![Observed::TurnEnded],
+        Some("turn_duration") => vec![Observed::TurnEnded {
+            background_agents: u64_of(record, "pendingBackgroundAgentCount")
+                .and_then(|n| u32::try_from(n).ok()),
+        }],
         _ => Vec::new(),
     }
 }
@@ -206,6 +210,14 @@ fn observe_assistant(record: &Map<String, Value>) -> Vec<Observed> {
     }
     if str_of(message, "stop_reason") == Some("end_turn") {
         out.push(Observed::TurnComplete { duration_ms: None });
+    } else if !bool_of(record, "isSidechain")
+        && owned_str(message, "model").as_deref() != Some(SYNTHETIC_MODEL)
+    {
+        // A sub-agent's lines (sidechain) and the lines Claude Code writes itself ("No response
+        // requested.", `<synthetic>`, `stop_sequence`) are not the session's work.
+        out.push(Observed::AgentWork {
+            at: str_of(record, "timestamp").and_then(parse_rfc3339),
+        });
     }
     out
 }
@@ -468,7 +480,9 @@ mod tests {
         );
         assert_eq!(
             observe_line(r#"{"type":"system","subtype":"turn_duration","durationMs":5}"#),
-            vec![Observed::TurnEnded]
+            vec![Observed::TurnEnded {
+                background_agents: None
+            }]
         );
         assert!(observe_line(r#"{"type":"system","subtype":"away_summary"}"#).is_empty());
         assert_eq!(
@@ -479,6 +493,77 @@ mod tests {
                 at: Some(Timestamp(1_791_610_681_385))
             }]
         );
+    }
+
+    /// STA-001, STA-005 (SPEC-032): only `turn_duration` is a turn's true end and it carries the
+    /// background agents Claude Code still waits for; `stop_hook_summary` is also written when a
+    /// Stop hook blocks and the turn goes on, so it is no observation. Lines in the shapes of the
+    /// transcripts of tasks #23 and #24 (Claude Code 2.1.292).
+    #[test]
+    fn a_turn_end_says_how_many_background_agents_are_pending() {
+        let at = Some(Timestamp(1_791_610_681_385));
+        let end = |extra: &str| {
+            observe_line(&format!(
+                r#"{{"type":"system","subtype":"turn_duration","durationMs":94387,"messageCount":953{extra}}}"#
+            ))
+        };
+        assert_eq!(
+            end(r#","pendingBackgroundAgentCount":1"#),
+            vec![Observed::TurnEnded {
+                background_agents: Some(1)
+            }]
+        );
+        assert_eq!(
+            end(r#","pendingBackgroundAgentCount":0"#),
+            vec![Observed::TurnEnded {
+                background_agents: Some(0)
+            }]
+        );
+        assert_eq!(
+            end(""),
+            vec![Observed::TurnEnded {
+                background_agents: None
+            }],
+            "an older CLI does not say"
+        );
+        assert_eq!(
+            end(r#","pendingBackgroundAgentCount":"x""#),
+            vec![Observed::TurnEnded {
+                background_agents: None
+            }]
+        );
+        assert!(
+            observe_line(
+                r#"{"type":"system","subtype":"stop_hook_summary","hookCount":1,"preventedContinuation":false,"hasOutput":true}"#
+            )
+            .is_empty(),
+            "a blocked stop is not the end of the turn"
+        );
+        // An assistant line that is not the turn's end shows the agent works; its end does not.
+        let assistant = |stop: &str, sidechain: bool| {
+            observe_line(&format!(
+                r#"{{"type":"assistant","isSidechain":{sidechain},"timestamp":"2026-10-10T05:38:01.385Z","message":{{"id":"m1","model":"claude-opus-5-5","role":"assistant","content":[],"stop_reason":{stop}}}}}"#
+            ))
+        };
+        let work = |lines: Vec<Observed>| lines.contains(&Observed::AgentWork { at });
+        assert!(work(assistant(r#""tool_use""#, false)));
+        assert!(work(assistant("null", false)));
+        assert!(!work(assistant(r#""end_turn""#, false)));
+        // Claude Code's own synthetic line ("No response requested.") is not work.
+        let synthetic = observe_line(
+            r#"{"type":"assistant","isSidechain":false,"timestamp":"2026-10-10T05:38:01.385Z","message":{"id":"m2","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"No response requested."}],"stop_reason":"stop_sequence"}}"#,
+        );
+        assert!(
+            !synthetic
+                .iter()
+                .any(|o| matches!(o, Observed::AgentWork { .. }))
+        );
+        assert!(
+            assistant(r#""end_turn""#, false)
+                .contains(&Observed::TurnComplete { duration_ms: None })
+        );
+        // A sub-agent's lines are not the session's turn.
+        assert!(!work(assistant(r#""tool_use""#, true)));
     }
 
     /// Esc or Ctrl+C during a turn (Claude Code 2.1.292, shape seen on the deployed instance):
