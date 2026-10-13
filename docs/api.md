@@ -826,6 +826,16 @@ resolves to nothing, the run gets the server without that variable or token.
     terminals. Its terminal is `WS /api/shells/{id}/terminal`; files go to
     `POST …/shells/{id}/attachments`. It ends when Claude Code exits or after 24 h without
     viewers, keeps running across a restart, and the next call resumes its conversation.
+- Notes ([SPEC-041](../.ai/specs/SPEC-041-here-we-want-auto-saved-notes-sandbox-wi.md)): one
+  notepad per sandbox and one for the team, saved by the web UI as people type.
+  - `GET /api/sandboxes/{sid}/notes` (read) and `GET /api/notes` (anyone signed in) →
+    `Note {"scope":"sandbox|team","body","revision","updated_at","updated_by"}`; a notepad never
+    written is `{"body":"","revision":0,"updated_at":null,"updated_by":null}`.
+  - `PUT /api/sandboxes/{sid}/notes` (write) and `PUT /api/notes` (anyone signed in)
+    `{"body","revision"}` → `Note`: `revision` is the revision the edit started from; the text is
+    stored as revision + 1. 409 `conflict` (nothing stored) when the stored revision differs:
+    someone saved meanwhile, so the client loads the note again. 422 over 256 KiB of UTF-8.
+    Every stored edit publishes `note.updated`.
 
 ## Administration, analytics, status
 
@@ -1046,7 +1056,9 @@ after an unlock.
 "tab_id","reason","task_id"}`, `{"type":"automation.run","automation_id","state","task_id"}`,
 `{"type":"account.updated","account":Account}` (instance administrators only),
 `{"type":"update.updated","phase":"building|pausing|restarting|resuming|null"}` (an update was
-found or moved; clients refetch `GET /api/update`), `{"type":"resync"}`.
+found or moved; clients refetch `GET /api/update`), `{"type":"note.updated","scope":"team|sandbox",
+"sandbox_id","revision","updated_by"}` (a notepad was saved; a sandbox note's event reaches only
+that sandbox's viewers), `{"type":"resync"}`.
 
 Sandbox views depend on the viewer's access level, so after a sandbox change (import, create,
 onboarding transitions, removal) the server publishes `resync` to that sandbox's viewers (or
