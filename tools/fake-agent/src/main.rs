@@ -92,7 +92,8 @@
 //! Bracketed pastes (`ESC [200~ … ESC [201~`) are read like Claude Code 2.1.292 reads them: a
 //! pasted path ending in `.png`, `.jpg`, `.jpeg`, `.gif` or `.webp` becomes `[Image #N] ` (N
 //! counts the images of the message), other pasted text is kept as typed, newlines included; the
-//! message is submitted by the Enter after it.
+//! message is submitted by the Enter after it. Focus reports (`ESC [ I` / `ESC [ O`) and SGR or
+//! X10 mouse reports are dropped from a message, as Claude Code consumes them.
 //!
 //! `--tui` draws like a full-screen agent TUI (Claude Code 2.1.x): the alternate screen with a
 //! header box, the transcript and an input box between two rules along the bottom, all as wide
@@ -969,7 +970,38 @@ fn read_message(input: &mut impl BufRead) -> io::Result<Option<String>> {
         message.push('\n');
         message.push_str(&next);
     }
-    Ok(Some(render_pastes(&message)))
+    Ok(Some(render_pastes(&drop_reports(&message))))
+}
+
+/// The message without the focus reports (`ESC [ I`, `ESC [ O`) and SGR or X10 mouse reports a
+/// terminal sends by itself: Claude Code consumes them, they never reach its prompt box.
+fn drop_reports(message: &str) -> String {
+    let mut out = String::with_capacity(message.len());
+    let mut rest = message;
+    while let Some(at) = rest.find("\x1b[") {
+        out.push_str(&rest[..at]);
+        let after = &rest[at + 2..];
+        let skip = if after.starts_with('I') || after.starts_with('O') {
+            Some(1)
+        } else if let Some(sgr) = after.strip_prefix('<') {
+            sgr.find(['M', 'm'])
+                .filter(|end| sgr[..*end].bytes().all(|b| b.is_ascii_digit() || b == b';'))
+                .map(|end| end + 2)
+        } else if after.starts_with('M') {
+            Some(after.char_indices().nth(4).map_or(after.len(), |(k, _)| k))
+        } else {
+            None
+        };
+        match skip {
+            Some(n) => rest = &after[n..],
+            None => {
+                out.push_str("\x1b[");
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// A message with its bracketed pastes read like Claude Code (see the module docs).
@@ -1509,6 +1541,15 @@ mod tests {
         assert_eq!(rfc3339(0), "1970-01-01T00:00:00.000Z");
         assert_eq!(rfc3339(951_782_400_123), "2000-02-29T00:00:00.123Z");
         assert_eq!(rfc3339(1_791_368_133_456), "2026-10-07T10:15:33.456Z");
+    }
+
+    #[test]
+    fn focus_and_mouse_reports_never_reach_the_message() {
+        assert_eq!(
+            drop_reports("\x1b[I\x1b[<0;3;4Mdr\x1b[<0;3;4maft\x1b[M #%\x1b[O"),
+            "draft"
+        );
+        assert_eq!(drop_reports("\x1b[A keeps keys"), "\x1b[A keeps keys");
     }
 
     #[test]
