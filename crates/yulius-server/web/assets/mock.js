@@ -870,11 +870,20 @@ route('POST', `/api/tasks/${ID}/held-prompts/${ID}`, ({ db, p, body }) => {
   recount(db);
   return { task: summary(task), created: created ? summary(created) : null, note: notes[action] };
 });
-// Reads of a task's detail, per task, so a test can wait for a view's read to land.
-route('GET', `/api/tasks/${ID}`, ({ db, p }) => {
+// Reads of a task's detail, per task, so a test can wait for a view's read to land. A test can
+// hold the next read (`__yuliusMock.holdDetail = promise`): it answers what the task was when
+// asked, once released (`heldDetailAnswered`); `failNextDetail` fails the next one.
+route('GET', `/api/tasks/${ID}`, async ({ db, p }) => {
   db.detailReads = db.detailReads || {};
   db.detailReads[p[0]] = (db.detailReads[p[0]] || 0) + 1;
-  return detail(db, taskOf(db, p[0]));
+  if (db.failNextDetail) { db.failNextDetail = false; fail(500, 'internal', 'the mock failed this read'); }
+  const hold = db.holdDetail;
+  if (!hold) return detail(db, taskOf(db, p[0]));
+  db.holdDetail = null;
+  const answer = clone(detail(db, taskOf(db, p[0])));
+  await hold;
+  db.heldDetailAnswered = true;
+  return answer;
 });
 // The prompt a task started with (SPEC-043): `@path` lines are its attached files, served only
 // from the attachments folder.
