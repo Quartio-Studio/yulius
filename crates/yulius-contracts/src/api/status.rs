@@ -69,7 +69,7 @@ pub struct StatusAccount {
     /// Last error (instance administrators only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
-    /// Live tasks using it (instance administrators only).
+    /// Live tasks using it, except Done ones (instance administrators only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_use_by: Option<u32>,
 }

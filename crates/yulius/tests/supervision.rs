@@ -1166,6 +1166,137 @@ fn a_done_task_frees_its_slot_for_a_queued_task() -> TestResult {
     Ok(())
 }
 
+/// SPEC-057 SUB-001, SUB-003: a Done task no longer holds its subscription. A working task counts
+/// on it and keeps it from being removed; once the task is Done the subscription shows no task,
+/// and removing it closes the Done session (task #48).
+#[test]
+fn a_done_task_lets_its_subscription_go() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
+    let data = dir.path().canonicalize()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_full(&data, Some(&fake), FakeAgentOptions::default(), 1)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        seed_repo(&data, &sandbox)?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        let id = new_task(&app, &sandbox, &user, "Finished").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        let in_use = |app: Arc<App>, ctx: AuthContext| async move {
+            let accounts = app.list_accounts(&ctx).await?;
+            let status = app.status(&ctx).await?;
+            let capacity = app.capacity_view(&ctx).await?;
+            Ok::<_, Box<dyn std::error::Error>>((
+                accounts[0].in_use_by,
+                status.accounts[0].in_use_by,
+                capacity.accounts[0].in_use_by,
+            ))
+        };
+        // Working: the subscription is in use and cannot be removed.
+        assert_eq!(
+            in_use(app.clone(), ctx.clone()).await?,
+            (1, Some(1), Some(1))
+        );
+        assert!(matches!(
+            app.delete_account(&ctx, "a-claude").await,
+            Err(yulius_app::error::AppError::Conflict(_))
+        ));
+        // Done: the idle session stays, but no longer counts on the subscription.
+        app.deps
+            .store
+            .set_activity(&id, Some(Activity::Done), app.now())
+            .await?;
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Running);
+        assert_eq!(
+            in_use(app.clone(), ctx.clone()).await?,
+            (0, Some(0), Some(0))
+        );
+        // Removing the subscription closes the Done session, as archiving does.
+        app.delete_account(&ctx, "a-claude").await?;
+        assert!(
+            app.deps
+                .store
+                .account(&AccountId::parse("a-claude")?)
+                .await?
+                .is_none()
+        );
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Closed);
+        assert!(app.deps.store.live_attempt(&id).await?.is_none());
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-057 SUB-003: removing a subscription is refused while a task works on it, and then leaves
+/// its Done neighbour alone; once every task on it is Done, removal closes all of them.
+#[test]
+fn removing_a_subscription_spares_working_tasks_and_closes_every_done_one() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
+    let data = dir.path().canonicalize()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_full(&data, Some(&fake), FakeAgentOptions::default(), 2)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        seed_repo(&data, &sandbox)?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        let first = new_task(&app, &sandbox, &user, "First").await?;
+        let second = new_task(&app, &sandbox, &user, "Second").await?;
+        for id in [&first, &second] {
+            wait_for("a run", Duration::from_secs(30), || {
+                screen_contains(&app, id, "FAKE-AGENT READY")
+            })
+            .await?;
+        }
+        let done = |id: TaskId| {
+            let app = app.clone();
+            async move {
+                app.deps
+                    .store
+                    .set_activity(&id, Some(Activity::Done), app.now())
+                    .await
+            }
+        };
+        done(first.clone()).await?;
+        // The second task still works: refused, and the Done one keeps its session.
+        assert!(matches!(
+            app.delete_account(&ctx, "a-claude").await,
+            Err(yulius_app::error::AppError::Conflict(_))
+        ));
+        assert_eq!(task(&app, &first).await?.status, TaskStatus::Running);
+        assert!(app.deps.store.live_attempt(&first).await?.is_some());
+        // Both Done: removal closes both and deletes the subscription.
+        done(second.clone()).await?;
+        app.delete_account(&ctx, "a-claude").await?;
+        assert!(
+            app.deps
+                .store
+                .account(&AccountId::parse("a-claude")?)
+                .await?
+                .is_none()
+        );
+        for id in [&first, &second] {
+            assert_eq!(task(&app, id).await?.status, TaskStatus::Closed);
+            assert!(app.deps.store.live_attempt(id).await?.is_none());
+        }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// AC-TSK-3: an agent's normal exit closes its task; another task of the sandbox keeps running.
 #[test]
 fn a_normal_exit_closes_the_task() -> TestResult {
