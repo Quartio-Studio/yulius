@@ -591,3 +591,71 @@ async fn auto_choices_persist_and_go_with_their_task() -> R {
     assert_eq!(store.auto_choice(&t1).await?, None);
     Ok(())
 }
+
+/// SPEC-052 QMS-002/003: the append to a task that has not started is one conditional update:
+/// it keeps the whole prompt within the bound in bytes, and refuses a task past waiting or with a
+/// run, leaving the prompt as it was.
+#[tokio::test]
+async fn a_prompt_grows_only_while_the_task_has_not_started_and_within_the_bound() -> R {
+    let store = SqliteStore::open_in_memory()?;
+    let (sid, uid) = seed(&store).await?;
+    let t = store.insert_task(&task("t1", &sid, &uid)?).await?;
+    // `starting` (the record's status) is past waiting.
+    assert!(
+        !store
+            .append_unstarted_prompt(&t.id, "+a", 64, Timestamp(20))
+            .await?
+    );
+    store
+        .transition_task(&t.id, None, TaskStatus::Queued, None, Timestamp(21))
+        .await?;
+    // "p" is 1 byte; "ł" is 2: 1 + 1 + 2 = 4 bytes fits a bound of 4, a fifth byte does not.
+    assert!(
+        store
+            .append_unstarted_prompt(&t.id, "+ł", 4, Timestamp(22))
+            .await?
+    );
+    assert!(
+        !store
+            .append_unstarted_prompt(&t.id, "+", 4, Timestamp(23))
+            .await?
+    );
+    let grown = store.task(&t.id).await?.ok_or("task")?;
+    assert_eq!(
+        (grown.prompt.as_str(), grown.updated_at),
+        ("p+ł", Timestamp(22))
+    );
+    // A provider session (an imported session waiting for its first run here) makes it started.
+    let imported = store.insert_task(&task("t2", &sid, &uid)?).await?;
+    store
+        .transition_task(&imported.id, None, TaskStatus::Queued, None, Timestamp(21))
+        .await?;
+    store
+        .upsert_provider_session(&yulius_app::model::ProviderSessionRecord {
+            id: "ps-1".into(),
+            sandbox_id: sid.clone(),
+            task_id: imported.id.clone(),
+            harness: Harness::ClaudeCode,
+            session_id: "session-1".into(),
+            transcript_ref: None,
+            origin: "imported".into(),
+            first_seen: Timestamp(21),
+            last_seen: Timestamp(21),
+        })
+        .await?;
+    assert!(
+        !store
+            .append_unstarted_prompt(&imported.id, "+c", 1024, Timestamp(22))
+            .await?
+    );
+    assert_eq!(store.task(&imported.id).await?.ok_or("task")?.prompt, "p");
+    // A run makes it started, whatever its status.
+    store.insert_attempt(&attempt("a1", &t.id, 1)?).await?;
+    assert!(
+        !store
+            .append_unstarted_prompt(&t.id, "+b", 1024, Timestamp(24))
+            .await?
+    );
+    assert_eq!(store.task(&t.id).await?.ok_or("task")?.prompt, "p+ł");
+    Ok(())
+}

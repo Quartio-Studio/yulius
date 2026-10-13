@@ -56,6 +56,17 @@ const WHEEL_NOTCH_PX = 40;
 const WHEEL_MAX_NOTCHES = 10;
 
 /**
+ * Whether the person is typing in a text field outside `root` that is not a terminal's own input
+ * (xterm's hidden textarea), so a terminal shown late leaves the keyboard there (SPEC-052).
+ */
+function typingElsewhere(root) {
+  const active = document.activeElement;
+  if (!active || root.contains(active) || active.closest('.xterm')) return false;
+  if (active.isContentEditable || active.tagName === 'TEXTAREA') return true;
+  return active.tagName === 'INPUT' && !['button', 'checkbox', 'radio', 'submit', 'reset', 'range', 'color', 'file', 'image'].includes(active.type);
+}
+
+/**
  * Create a terminal view. Options:
  *   transport, path            WebSocket transport and path (e.g. /api/tasks/{tid}/terminal)
  *   onLink(uri, event)         link activation (web links and OSC 8 hyperlinks)
@@ -252,7 +263,10 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     el.removeAttribute('aria-busy');
     renderEmpty();
     render();
-    if (focusWanted) term.focus();
+    // Focus asked for before the terminal showed lands now, unless the person is typing in a
+    // text field meanwhile (the queued messages box beside a waiting task's terminal). Buttons,
+    // tabs and other terminals do not hold it back: the terminal asked for last still wins.
+    if (focusWanted && !typingElsewhere(el)) term.focus();
     if (onReady) onReady();
   }
 

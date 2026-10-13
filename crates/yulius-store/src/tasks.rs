@@ -356,6 +356,39 @@ impl TaskStore for SqliteStore {
         .await
     }
 
+    async fn append_unstarted_prompt(
+        &self,
+        id: &TaskId,
+        addition: &str,
+        max_bytes: usize,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let (id, addition) = (id.as_str().to_owned(), addition.to_owned());
+        let max = i64::try_from(max_bytes).unwrap_or(i64::MAX);
+        self.call(move |c| {
+            let n = c
+                .execute(
+                    "UPDATE tasks SET prompt = prompt || ?1, updated_at = ?2 \
+                     WHERE id = ?3 AND status IN (?4, ?5, ?6) \
+                     AND NOT EXISTS (SELECT 1 FROM attempts WHERE task_id = ?3) \
+                     AND NOT EXISTS (SELECT 1 FROM provider_sessions WHERE task_id = ?3) \
+                     AND length(CAST(prompt AS BLOB)) + length(CAST(?1 AS BLOB)) <= ?7",
+                    params![
+                        addition,
+                        at.0,
+                        id,
+                        TaskStatus::Queued.as_str(),
+                        TaskStatus::Chained.as_str(),
+                        TaskStatus::WaitingCapacity.as_str(),
+                        max
+                    ],
+                )
+                .map_err(db)?;
+            Ok(n == 1)
+        })
+        .await
+    }
+
     async fn update_task(&self, id: &TaskId, u: &TaskFieldUpdate, at: Timestamp) -> AppResult<()> {
         let (id, u) = (id.as_str().to_owned(), u.clone());
         self.call(move |c| {
