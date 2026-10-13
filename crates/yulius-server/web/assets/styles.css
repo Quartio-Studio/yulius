@@ -361,6 +361,9 @@ button.task-group-head:hover { color: var(--text); }
 .task-group-count { margin-left: auto; font-weight: 500; font-variant-numeric: tabular-nums; }
 .task-group-head.group-ended .task-group-count { margin-left: auto; }
 .task-group-head.group-ended .task-group-count + .icon { margin-left: 4px; }
+/* Done's "Archive all" (SPEC-062) sits after the count; it reads as a button, not a heading. */
+.task-group-action { margin-right: -8px; text-transform: none; letter-spacing: normal; font-weight: 500; }
+.task-group-action[aria-disabled="true"] { opacity: 0.4; cursor: progress; }
 /* Sidebar task rows: one compact line — state icon on the nav icons' axis, pull request, title on
    the nav labels' axis, age (the kebab takes the age's place on hover). */
 .task-row { position: relative; border-radius: var(--radius); }
@@ -385,6 +388,15 @@ button.task-group-head:hover { color: var(--text); }
 /* The menu's button stays visible while its menu is open, so Escape can return focus to it. */
 .task-row:hover .task-kebab, .task-row:focus-within .task-kebab, .task-kebab[aria-expanded="true"] { visibility: visible; }
 .task-row:hover .task-age, .task-row:focus-within .task-age { visibility: hidden; }
+/* Quick Archive (SPEC-062): left of the menu's button, shown with it. */
+.task-quick-archive { position: absolute; right: calc(8px + var(--control-sm)); top: 4px; width: var(--control-sm); height: var(--control-sm); visibility: hidden; background: var(--surface-3); }
+.task-quick-archive[hidden] { display: none; }
+.task-row:hover .task-quick-archive, .task-row:focus-within .task-quick-archive { visibility: visible; }
+/* With both buttons shown, the title ends before them (the age gives way entirely). */
+@media (min-width: 768px) {
+  .task-row.can-archive:is(:hover, :focus-within) .task-link { padding-right: calc(12px + 2 * var(--control-sm)); }
+  .task-row.can-archive:is(:hover, :focus-within) .task-age { display: none; }
+}
 .sidebar-foot { padding: 6px; border-top: 1px solid var(--border); }
 .sidebar-foot .user-btn { gap: 12px; padding: 0 12px; border-radius: var(--radius-lg); font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 500; }
 .sidebar-foot .avatar { width: 32px; height: 32px; margin: 0 2px; font-size: var(--fs-sm); line-height: var(--lh-sm); }
@@ -1905,6 +1917,10 @@ a.dl-task:hover { text-decoration: underline; }
   /* Touch: the row's actions and the notification buttons are full-size targets. */
   .task-link { height: var(--control-xl); padding: 0 48px 0 12px; }
   .task-kebab { visibility: visible; top: 0; right: 2px; width: var(--control-xl); height: var(--control-xl); background: transparent; }
+  /* One row action on a phone: Archive is in the menu (SPEC-062 QAR-004). */
+  .task-quick-archive { display: none; }
+  .task-group-head.group-done { height: var(--control-xl); }
+  .task-group-action { height: var(--control-xl); padding: 0 12px; }
   .notif-head .btn-sm { height: var(--control-xl); padding: 0 12px; }
   .nav-item { height: var(--control-xl); }
 
