@@ -242,12 +242,14 @@ fn observe_user(record: &Map<String, Value>) -> Vec<Observed> {
 
 /// A user record with text that Claude Code wrote for itself, not a prompt for the model
 /// (SPEC-085 STT-001): the summary a compaction continues from (`isCompactSummary`, shown in the
-/// transcript only), or a command's echo and output ([`OWN_RECORD_TAGS`]).
+/// transcript only), a command's echo and output ([`OWN_RECORD_TAGS`]), or the compaction command
+/// as typed (`/compact`, written before the compaction runs; no turn follows it, STT-005).
 fn own_record(record: &Map<String, Value>, text: &str) -> bool {
     let text = text.trim_start();
     bool_of(record, "isCompactSummary")
         || bool_of(record, "isVisibleInTranscriptOnly")
         || OWN_RECORD_TAGS.iter().any(|tag| text.starts_with(tag))
+        || yulius_domain::harness::is_compact_command(text)
 }
 
 /// A tool result that started background work the session is woken by (SPEC-079 BGW-002): a
@@ -1094,6 +1096,15 @@ mod tests {
             none.clone(),
         );
         assert_eq!(compacted, vec![session.clone()]);
+        // STT-005: `/compact` as typed, the line Claude Code writes before it compacts (task #8,
+        // 2026-10-12 04:22:29; no `origin`, unlike a typed prompt). No turn follows it.
+        for typed in ["/compact", "/compact keep the plan and the failing test"] {
+            assert_eq!(
+                user(serde_json::json!(typed), none.clone()),
+                vec![session.clone()],
+                "{typed}"
+            );
+        }
         let shell = user(
             serde_json::json!([{"type": "text", "text": "<bash-input>git status</bash-input>"}]),
             none.clone(),

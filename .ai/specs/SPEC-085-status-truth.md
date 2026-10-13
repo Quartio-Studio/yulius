@@ -61,8 +61,7 @@ Measured but left as they are:
 In scope: the transcript reading of user records, the process probe's `yulius wait` shells, the
 idle task's view, the sidebar rule (`status.js` `taskInfo`) and its server twin
 (`AttentionFacts::group`, SPEC-076). Not in scope: notices that ask a person (STA-002), gate
-exhaustion, held prompts and browser requests, which stay "Needs you"; the typed `/compact` line
-of a person's own compaction (below).
+exhaustion, held prompts and browser requests, which stay "Needs you".
 
 ## Requirements
 
@@ -71,6 +70,7 @@ of a person's own compaction (below).
 | STT-001 | A user record Claude Code writes for itself starts no turn: the summary a compaction continues from (`isCompactSummary` or `isVisibleInTranscriptOnly`), a slash command's echo (`<command-name>`, `<command-message>`), a local command's caveat and output (`<local-command-caveat>`, `<local-command-stdout>`, `<local-command-stderr>`) and the shell mode's records (`<bash-input>`, `<bash-stdout>`, `<bash-stderr>`). It still names the session; a failed compaction's output stays a failed compaction. An idle compaction leaves a Done or waiting task as it was. The model's own work after a command (`/goal`) shows its turn. | `claude::tests::records_claude_code_writes_for_itself_start_no_turn`, `observe::claude_goal_mode_records`, `task_done::an_idle_compaction_leaves_a_done_task_done` |
 | STT-002 | The process probe counts background shells whose only process is `yulius wait` apart from the others, which DSK-102 keeps out of the background count (disk upkeep, DLV-203, Done and the session limit are unchanged). The view of an idle task says so (`yulius_wait`). An idle agent waiting there goes on by itself: its waiting task reads "Waiting for checks or merge" in the Working group, with the tone of Working (no notification), whatever its plan or pull request say. An achieved goal stays Done. | `shells::tests::a_shell_that_only_runs_yulius_wait_does_not_count`, `task::tests::an_agent_that_goes_on_by_itself_needs_nobody`, e2e `task-done.e2e.ts` "an agent waiting for Yulius is Working, not your turn" |
 | STT-003 | Failing checks need a person only once the agent stopped: while the idle agent's background work runs (shells, pending agents, live monitors) or it waits in `yulius wait`, the task reads Working with its pull request ("Working · PR #N checks failing"). Once nothing runs, failing checks need you as before. A permission prompt needs you whatever runs. | `task::tests::an_agent_that_goes_on_by_itself_needs_nobody`, e2e `task-done.e2e.ts` "failing checks wait for the agent's own work before they need you" |
+| STT-005 | `/compact` typed into the session (by a person, or by Yulius for a full context, CTX-003) starts no work: Claude Code 2.1.292 writes the command as typed (a user line `/compact [what to keep]` with no `origin`), compacts, then writes the boundary, the summary, the command's caveat, echo and output, and runs no turn and no Stop hook. The transcript reads no turn from that line, and a `UserPromptSubmit` of it, should Claude Code run one, neither sets Working nor takes back an achieved goal. The task stays as it was during and after the compaction; a prompt typed after it starts work as always. | `harness::tests::the_compaction_command_is_known_as_typed`, `claude::tests::records_claude_code_writes_for_itself_start_no_turn`, `finish::tests::the_compaction_command_starts_no_work`, `task_done::a_typed_compaction_leaves_a_done_task_done` |
 | STT-004 | The sidebar, the task header, the attention bar, notifications and the Home and tab counts keep one rule: `taskInfo` in `status.js` and `AttentionFacts::group` give the same group for the same facts (ADR-0061). | `task::tests::group_follows_the_sidebar_rule`, `task::tests::an_agent_that_goes_on_by_itself_needs_nobody`, e2e `task-done.e2e.ts` |
 
 ## Design and contracts
@@ -102,18 +102,27 @@ of a person's own compaction (below).
 - A probe that gives no answer reports no waits: the task reads as before (Your turn).
 - Older clients ignore `yulius_wait` (`serde(default)`); older servers do not send it and the
   sidebar reads as before.
-- A typed `/compact` line (the raw input record Claude Code writes before it runs the command,
-  seen once, in Yulius's own compaction of a full session) still starts a turn: Yulius types the
-  follow-up prompt right after its compaction (CTX-003). A person's own `/compact` on an idle task
-  can read Working until the next prompt; telling that line from a prompt needs the CLI's input
-  records, which only its own wrapper writes.
+- `/compact` (STT-005), from the only manual compaction in the VM's transcripts (task #8,
+  2026-10-12 04:22:29 to 04:23:25, Yulius's own compaction of a full session): the line
+  `/compact` with a `promptId` and no `origin` at the start; at the end the `compact_boundary`
+  (`trigger: manual`), the summary, the caveat (`isMeta`) and the `<command-name>/compact` echo
+  (both dated when it was typed), the output `Compacted (ctrl+o to see full summary)` and the
+  `SessionStart:compact` hook; no `turn_duration`, no Stop hook. No `UserPromptSubmit` context
+  was recorded for the line, while the prompt before it (70 s earlier, same unread inbox) had
+  one, which suggests Claude Code runs no prompt hook for it; STT-005 covers both cases. Before STT-005 the line read as a prompt and the
+  task read Working for good. Yulius's own compaction of a full session now reads as CTX-002
+  says (the task waits, as its test with the fake agent always showed) until Yulius types the
+  follow-up prompt (CTX-003); in production it read Working by that accident.
 
 ## Delivery and acceptance
 
 - Unit: the records of task #60's idle compaction and of `/goal` and `/compact`, shapes from the
-  VM (`claude.rs`); the probe's waits (`shells.rs`); the server rule (`task.rs`).
+  VM (`claude.rs`); the probe's waits (`shells.rs`); the server rule (`task.rs`); the compaction
+  command as typed (`harness.rs`) and its prompt hook (`finish.rs`).
 - Integration: the fake agent compacts its idle session like Claude Code (`--idle-compact-ms`);
-  the Done task stays Done and is never published Working (`task_done.rs`).
+  the Done task stays Done and is never published Working. It writes Claude Code's records for a
+  typed `/compact` too: the Done task stays Done, and a prompt typed after it is Working
+  (`task_done.rs`).
 - e2e (mock): a waiting task whose agent waits for Yulius is Working; failing checks with a
   background agent are Working, and need you once it ended (`task-done.e2e.ts`).
 - Red first: each fix was removed in turn and its tests failed (Implementation evidence).
@@ -141,9 +150,15 @@ records the decision that "Needs you" waits for the agent's own work.
   `task_done`, `context_full`, `session_sync`, `disk`, `agent_hooks`, `projects` and
   `supervision` (94 passed); e2e `task-done.e2e.ts` (12 passed), `consistency`, `home`
   and `archive` (22 passed).
+- **STT-005, red first.** Without it, `claude::tests::records_claude_code_writes_for_itself_start_no_turn`
+  and `finish::tests::the_compaction_command_starts_no_work` failed, and
+  `task_done::a_typed_compaction_leaves_a_done_task_done` read `Working` instead of `Done` after
+  the compaction. With it, that test, `an_idle_compaction_leaves_a_done_task_done`,
+  `an_achieved_goal_with_no_shell_left_makes_the_task_done` and the `context_full` file pass.
 - **Not tested here:** a real Claude Code session against a deployed Yulius; the fake agent's
-  idle compaction is shaped on the records of task #60's transcript.
+  compactions are shaped on the records of tasks #60 and #8.
 
 ## Changelog
 
 - 2026-10-13: written with the fix.
+- 2026-10-14: STT-005, a typed `/compact` starts no work (the gap left open on 2026-10-13).
