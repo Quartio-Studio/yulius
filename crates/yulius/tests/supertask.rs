@@ -15,6 +15,7 @@ use support::{
 use yulius_app::model::TaskRecord;
 use yulius_app::ports::store::{AttemptUpdate, TaskStore};
 use yulius_app::supervisor::RunStart;
+use yulius_contracts::events::UiEvent;
 use yulius_domain::ids::{AttemptId, SandboxId, TaskId};
 use yulius_domain::task::{Activity, AttemptState, TaskStatus};
 
@@ -310,4 +311,98 @@ async fn end_attempt(h: &Harness, task: &str) -> TestResult {
         )
         .await?;
     Ok(())
+}
+
+/// SUP-005 (review): a queued supertask stopped while slots are free lets the tasks it held start
+/// without waiting for the next tick of the queue.
+#[tokio::test]
+async fn stopping_a_queued_supertask_starts_the_tasks_it_held() -> TestResult {
+    let (h, alice) = world(8).await?;
+    let s = create(
+        &h,
+        &alice,
+        "s1",
+        json!({"prompt": "Harden", "supertask": true}),
+    )
+    .await?;
+    let b = create(&h, &alice, "s1", json!({"prompt": "Small fix"})).await?;
+    assert_eq!(offer(&h, &b).await?, TaskStatus::Queued);
+    let r = call(
+        &h.router,
+        Method::POST,
+        &format!("/api/tasks/{}/stop", s.id),
+        None,
+        &alice,
+    )
+    .await?;
+    assert!(r.status.is_success(), "{:?}", r.body);
+    wait_until("the held task to be offered a slot", || async {
+        h.store
+            .task(&b.id)
+            .await
+            .is_ok_and(|t| t.is_some_and(|t| t.status != TaskStatus::Queued))
+    })
+    .await
+}
+
+/// SUP-006 (review): at the session limit, a new supertask relabels the project's queued tasks
+/// at once: the queue publishes them with what they wait for.
+#[tokio::test]
+async fn a_new_supertask_relabels_the_queue_at_the_session_limit() -> TestResult {
+    let (h, alice) = world(1).await?;
+    let b = create(&h, &alice, "s1", json!({"prompt": "Small fix"})).await?;
+    assert_eq!(held_by(&h, &alice, &b).await?, json!([]));
+    let mut events = h.app.events.subscribe();
+    let s = create(
+        &h,
+        &alice,
+        "s1",
+        json!({"prompt": "Harden", "supertask": true}),
+    )
+    .await?;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        let envelope = tokio::time::timeout_at(deadline, events.recv()).await??;
+        if let UiEvent::TaskUpdated { task } = envelope.event
+            && task.id == b.id.as_str()
+            && task.held_by == vec![s.number]
+        {
+            return Ok(());
+        }
+    }
+}
+
+/// A second start of a task that already runs (the queue and a direct start racing) is a no-op,
+/// not an error that tells the terminal "Could not start".
+#[tokio::test]
+async fn a_running_task_is_not_started_twice() -> TestResult {
+    let (h, _alice) = world(8).await?;
+    let agent = h
+        .store
+        .task(&TaskId::parse("t-agent")?)
+        .await?
+        .ok_or("agent")?;
+    h.app
+        .start_run(&agent.id, RunStart::Fresh { prompt: None }, None)
+        .await?;
+    assert_eq!(
+        h.store.task(&agent.id).await?.ok_or("agent")?.status,
+        TaskStatus::Running
+    );
+    Ok(())
+}
+
+async fn wait_until<F, Fut>(what: &str, mut check: F) -> TestResult
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::time::Instant::now() < deadline {
+        if check().await {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    Err(format!("timed out waiting for {what}").into())
 }

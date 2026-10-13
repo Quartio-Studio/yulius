@@ -20,13 +20,18 @@ resumed by the capacity loop after a pause before they started. All of them end 
   menu, the API or `task_create`). It cannot also run after a task or a start rule.
 - The hold applies in `start_run`, before the session limit, to every task without a live run:
   - any task waits while its project has a **pending** supertask (queued, starting, running and
-    not Done, switching, or paused for capacity); a supertask waits only for one with a lower
-    number;
+    not Done, switching, paused for capacity, or stopping until its process is reaped); a
+    supertask waits only for one with a lower number;
   - a supertask also waits while its project has a **working** task (a live run that is not Done).
   A held task stays, or becomes, `queued`; nothing new in the state machine. Live runs are never
-  stopped, paused or refused input.
+  stopped, paused or refused input. A task paused for capacity before it ran keeps its pause
+  (kind, continuation) while held; the queue wakes the resume loop when it may go.
 - The queue offers free slots to supertasks first, then FIFO, one start after the other, so the
-  first in that order takes a free slot. Starts were already serialized by the launch lock.
+  first in that order takes a free slot. Starts were already serialized by the launch lock. One
+  queue pass runs at a time; a call during a pass makes it go once more. Each pass first
+  refreshes every queued task's hold (also at the session limit). Creating, stopping, deleting or
+  failing to start a supertask runs a pass. A start from the queue goes ahead only while the task
+  is still queued under the launch lock, and a start of a task that already runs does nothing.
 - The scope is the project (sandbox). Other projects keep running; they only share the session
   limit.
 - A queued task's summary carries `held_by` (the numbers it waits for). The queue publishes a
@@ -54,3 +59,6 @@ resumed by the capacity loop after a pause before they started. All of them end 
   attempts. That is cheap next to a launch. A project without supertasks stops after one read.
 - A person typing into a Done task while a supertask runs makes it work again. That session was
   already running and is not held.
+- A task's agent can create a supertask with `task_create` and so block its project. This is an
+  accepted risk: the tool is told to do it only when the person asks, the hourly cap of tool-made
+  tasks applies, the task is audited with the caller, and anyone with write access can stop it.

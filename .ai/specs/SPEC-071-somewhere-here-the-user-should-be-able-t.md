@@ -46,19 +46,19 @@ pending or running, no other task of the project starts, so the code it changes 
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| SUP-001 | A task can be created as a **supertask**: `CreateTask.supertask` (API, default false), the MCP tool `task_create` (`supertask: true`) and the composer's start chip ("Supertask"). It is stored with the task (`tasks.supertask`, schema version 17) and returned as `TaskSummary.supertask`. A supertask starts after the running work, so it cannot also run after a task or a rule: `supertask` with `after_task_id` or `start_rule` is refused (400). | int `supertask.rs`, e2e |
-| SUP-002 | While a supertask of a project is **pending** — `queued`, `starting`, `running` (not Done), `switching` or `waiting_capacity` — no other task of that project starts a run: a new task, a released chain, a continued task and a task resuming from a capacity pause all wait `queued`. Runs already live are never stopped or paused: a Done task typed into again keeps working. | int `supertask.rs` |
+| SUP-001 | A task can be created as a **supertask**: `CreateTask.supertask` (API, default false), the MCP tool `task_create` (`supertask: true`) and the composer's start chip ("Supertask"). It is stored with the task (`tasks.supertask`, schema version 17) and returned as `TaskSummary.supertask`. A supertask starts after the running work, so it cannot also run after a task or a rule: `supertask` with `after_task_id` or `start_rule` is refused (422). | int `supertask.rs`, e2e |
+| SUP-002 | While a supertask of a project is **pending** — `queued`, `starting`, `running` (not Done), `switching`, `waiting_capacity`, or `stopping` until its process is reaped — no other task of that project starts a run: a new task, a released chain, and a continued task wait `queued`; a task paused for capacity before it ran keeps its pause (with its kind and continuation) until the hold ends. Runs already live are never stopped or paused: a Done task typed into again keeps working. | int `supertask.rs` |
 | SUP-003 | A pending supertask starts only when no other task of its project is **working** (a live run that is not Done, SES-101) and no earlier pending supertask (lower number) is waiting; it then starts like any queued task (session limit, capacity). Without a working task it starts at once. | int `supertask.rs` |
-| SUP-004 | Priority: when the queue is drained, queued supertasks are offered a free session slot before other queued tasks (instance-wide), then FIFO. | int `supertask.rs` |
+| SUP-004 | Priority: when the queue is drained, queued supertasks are offered a free session slot before other queued tasks (instance-wide), then FIFO. One queue pass runs at a time (a call during a pass makes it go once more), and a task is started from the queue only while it is still queued under the launch lock. | int `supertask.rs` |
 | SUP-005 | The hold ends when the supertask is Done, closed, stopped, failed, archived or deleted: the project's waiting tasks then start in their usual order (chains after the supertask start when it is Done). A continued supertask is pending again. | int `supertask.rs` |
-| SUP-006 | Tasks say why they wait: `TaskSummary.held_by` lists, while a task is `queued` because of a supertask, the task numbers it waits for (a supertask: the earlier supertasks and the working tasks; another task: the pending supertasks). The row and header read "Supertask · waits for #3, #5" / "Queued after supertask #7"; a supertask shows a "Supertask" mark in its header. The labels follow the change without a reload (the task is published when its hold changes). | int `supertask.rs`, e2e `supertask.e2e.ts` |
+| SUP-006 | Tasks say why they wait: `TaskSummary.held_by` lists, while a task is `queued` because of a supertask, the task numbers it waits for (a supertask: the earlier supertasks and the working tasks; another task: the pending supertasks). The row and header read "Supertask · waits for #3 and #5" / "Queued after supertask #7"; a supertask shows a "Supertask" mark in its header. The labels follow the change without a reload: every queue pass refreshes each queued task's hold, also at the session limit, and publishes the task when it changed; creating, stopping, deleting or failing to start a supertask runs a pass. | int `supertask.rs`, e2e `supertask.e2e.ts` |
 | SUP-007 | SPEC-001 (TSK-018), the API doc, an ADR, the architecture document, the product summary and `docs/changes.md` describe supertasks. | review |
 
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] A task is created and stored as a supertask through the API and the task_create tool
-- [ ] A pending supertask holds its project's starts and waits for the running tasks
+- [x] A task is created and stored as a supertask through the API and the task_create tool
+- [x] A pending supertask holds its project's starts and waits for the running tasks
 - [ ] The composer offers Supertask and waiting tasks say what they wait for
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
@@ -66,7 +66,7 @@ pending or running, no other task of the project starts, so the code it changes 
 ## Acceptance criteria
 
 - AC-SUP-1: `POST /api/sandboxes/{sid}/tasks` with `supertask: true` returns `supertask: true`;
-  with `after_task_id` or `start_rule` too it answers 400 and creates nothing; `task_create` with
+  with `after_task_id` or `start_rule` too it answers 422 and creates nothing; `task_create` with
   `supertask: true` creates a supertask.
 - AC-SUP-2 (fake agent, real processes): task A runs; supertask S is created → S stays `queued`
   with `held_by = [A]`; task B is created → B stays `queued` with `held_by = [S]`; A is stopped →
@@ -106,6 +106,12 @@ pending or running, no other task of the project starts, so the code it changes 
   hold keeps from starting (a deadlock); its meaning is "after the running work" anyway.
 - **Order among supertasks by task number.** An earlier pending supertask goes first; a later one
   holds no earlier one unless it is already working, so no cycle is possible.
+- **Review round 1** (fresh-session review, REQUEST CHANGES): labels and starts now follow a
+  hold change at once (a queue pass refreshes every queued task's hold before the session
+  limit, and a created, stopped, deleted or failed supertask runs one); the queue pass is single
+  flight; a queued start is re-checked under the launch lock; a second start of a running task is
+  a no-op (it raced and told the terminal "Could not start"); a held capacity resume keeps its
+  pause instead of losing its continuation; `stopping` counts as pending; 422, not 400.
 - **Labels from the server.** `held_by` is computed where the rule lives and republished when it
   changes during a queue pass, so the client never re-derives the rule.
 - Recorded as ADR-0054.

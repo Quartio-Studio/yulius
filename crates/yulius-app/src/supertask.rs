@@ -8,6 +8,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use yulius_domain::ids::TaskId;
 use yulius_domain::task::TaskStatus;
@@ -54,7 +55,8 @@ pub(crate) fn start_order(mut queued: Vec<TaskRecord>) -> Vec<TaskRecord> {
     queued
 }
 
-/// Statuses in which a supertask is pending (unless it is Done).
+/// Statuses in which a supertask is pending (unless it is Done); a stopping one until its
+/// process is reaped.
 fn waits_or_runs(status: TaskStatus) -> bool {
     matches!(
         status,
@@ -63,18 +65,56 @@ fn waits_or_runs(status: TaskStatus) -> bool {
             | TaskStatus::Running
             | TaskStatus::Switching
             | TaskStatus::WaitingCapacity
+            | TaskStatus::Stopping
     )
 }
 
 /// The holders last seen per held task, so a task is published when what it waits for changes
-/// (SUP-006) and not on every pass of the queue. Bounded by the queued tasks.
+/// (SUP-006) and not on every pass of the queue (bounded by the queued tasks); and the queue's
+/// single flight: one pass at a time, and one more when asked during it.
 #[derive(Default)]
-pub(crate) struct Holds(Mutex<HashMap<TaskId, Vec<u32>>>);
+pub(crate) struct Holds {
+    last: Mutex<HashMap<TaskId, Vec<u32>>>,
+    draining: AtomicBool,
+    again: AtomicBool,
+    capacity_held: AtomicBool,
+}
 
 impl Holds {
+    /// Claims the queue pass; false when this caller runs it. When a pass already runs, it is
+    /// asked to go once more and this returns true.
+    pub(crate) fn begin_drain(&self) -> bool {
+        if self.draining.swap(true, Ordering::SeqCst) {
+            self.again.store(true, Ordering::SeqCst);
+            return true;
+        }
+        self.again.store(false, Ordering::SeqCst);
+        false
+    }
+
+    /// Ends a pass; true when the caller must run another one (asked during the pass).
+    pub(crate) fn end_drain(&self) -> bool {
+        if self.again.swap(false, Ordering::SeqCst) {
+            return true;
+        }
+        self.draining.store(false, Ordering::SeqCst);
+        // Asked between the check and the release, and nobody claimed the pass since: go on.
+        self.again.swap(false, Ordering::SeqCst) && !self.draining.swap(true, Ordering::SeqCst)
+    }
+
+    /// Records that a capacity resume was held, so the next queue pass wakes the resume loop.
+    pub(crate) fn capacity_held(&self) {
+        self.capacity_held.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether a capacity resume was held since the last call.
+    pub(crate) fn take_capacity_held(&self) -> bool {
+        self.capacity_held.swap(false, Ordering::SeqCst)
+    }
+
     /// Forgets the tasks that are no longer queued.
     pub(crate) fn keep(&self, queued: &HashSet<TaskId>) {
-        self.0
+        self.last
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|task, _| queued.contains(task));
@@ -83,7 +123,7 @@ impl Holds {
     /// Records `holders` for `task`; true when they differ from the last ones.
     fn record(&self, task: &TaskId, holders: &[u32]) -> bool {
         let mut map = self
-            .0
+            .last
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if holders.is_empty() {
@@ -261,5 +301,17 @@ mod tests {
         assert!(holds.record(&a, &[1, 2]));
         assert!(holds.record(&a, &[]));
         assert!(!holds.record(&a, &[]));
+    }
+
+    #[test]
+    fn one_queue_pass_at_a_time_and_one_more_when_asked() {
+        let holds = Holds::default();
+        assert!(!holds.begin_drain(), "the first caller runs the pass");
+        assert!(holds.begin_drain(), "a second caller asks for another pass");
+        assert!(holds.begin_drain());
+        assert!(holds.end_drain(), "one more pass, however many asked");
+        assert!(!holds.end_drain(), "then the pass is released");
+        assert!(!holds.begin_drain(), "and the next caller runs it");
+        assert!(!holds.end_drain());
     }
 }

@@ -390,8 +390,12 @@ impl App {
         if !self.deps.store.delete_task(&task.id).await? {
             return Err(AppError::NotFound);
         }
-        // A start rule naming the deleted task now sees it as ended (SPEC-017).
+        // A start rule naming the deleted task now sees it as ended (SPEC-017), and a deleted
+        // supertask no longer holds its project (SPEC-071).
         self.advance_rule_chains(&deleted_in).await;
+        if task.supertask {
+            self.drain_queue().await;
+        }
         let runs = self.config.data_dir.join("runs");
         for attempt in attempts {
             let dir = std::path::PathBuf::from(&attempt.run_dir);

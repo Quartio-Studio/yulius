@@ -237,6 +237,11 @@ impl App {
                     tracing::warn!(error = %err, task = %id, "task failed to start");
                 }
             });
+            // The project's queued tasks now wait for the new supertask: their labels say so,
+            // also at the session limit (SPEC-071 SUP-006).
+            if req.supertask {
+                self.drain_queue().await;
+            }
         }
         store.task(&task.id).await?.ok_or(AppError::NotFound)
     }

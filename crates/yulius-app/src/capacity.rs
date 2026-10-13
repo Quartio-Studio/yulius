@@ -604,6 +604,12 @@ impl App {
                         tracing::warn!(error = %err, task = %task.id, "resume on another subscription failed");
                     }
                 } else {
+                    // A supertask holds the project's starts (SPEC-071): the pause stays, with
+                    // its kind and continuation, until the queue wakes this loop again.
+                    if self.held_by_supertask(&task).await.unwrap_or(false) {
+                        self.supertask_holds.capacity_held();
+                        return Resume::Waiting(None);
+                    }
                     self.end_pause(&task.id, "started").await;
                     let start = match store.provider_sessions(&task.id).await {
                         Ok(lineage) if !lineage.is_empty() && pause.kind == PauseKind::Limit => {
