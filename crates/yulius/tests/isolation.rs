@@ -720,6 +720,29 @@ async fn isolation_limits() -> TestResult {
             std::fs::read_to_string(group.join("cpu.max"))?.trim(),
             "100000 100000"
         );
+        // SPEC-053: the CPU goes to the leaves by weight, and the shell runs in `agents`.
+        if delegation.controllers.iter().any(|c| c == "cpu") {
+            assert!(std::fs::read_to_string(group.join("cgroup.subtree_control"))?.contains("cpu"));
+            for (leaf, weight) in [("system", "100"), ("agents", "100"), ("ci", "400")] {
+                assert_eq!(
+                    std::fs::read_to_string(group.join(leaf).join("cpu.weight"))?.trim(),
+                    weight,
+                    "{leaf}"
+                );
+            }
+            assert!(
+                !std::fs::read_to_string(group.join("agents/cgroup.procs"))?
+                    .trim()
+                    .is_empty(),
+                "the shell runs in agents/"
+            );
+            assert!(
+                !std::fs::read_to_string(group.join("system/cgroup.procs"))?
+                    .trim()
+                    .is_empty(),
+                "the holder runs in system/"
+            );
+        }
         // Children block on a pipe until the parent stops forking (EAGAIN at pids.max).
         let forker = "import os\nr, w = os.pipe()\nn = 0\ntry:\n    while n < 500:\n        if os.fork() == 0:\n            os.close(w); os.read(r, 1); os._exit(0)\n        n += 1\nexcept OSError as e:\n    print('fork-refused-after', n, e.errno)\nos.close(w)\nfor _ in range(n):\n    os.wait()\n";
         std::fs::write(iso.data.join("sandboxes/s1/forker.py"), forker)?;

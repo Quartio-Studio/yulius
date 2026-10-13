@@ -35,8 +35,10 @@ pub struct SandboxJoin {
     pub net_ns: u64,
     /// Expected inode of its mount namespace.
     pub mnt_ns: u64,
-    /// The sandbox's cgroup, when limits apply.
+    /// The sandbox's cgroup for agent runs, shells and browsers, when limits apply.
     pub cgroup: Option<PathBuf>,
+    /// The sandbox's cgroup for CI jobs, weighted above `cgroup` (SPEC-053 CPU-203).
+    pub ci_cgroup: Option<PathBuf>,
     /// The merged system layer inside the holder's mount namespace.
     pub system_root: PathBuf,
     /// Host name inside.
