@@ -13,6 +13,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   reminders are hidden. The transcript is faded in both themes: fainter and less saturated than a
   live terminal (`--session-*`), yet still WCAG AA. It ends with a locked prompt box, and a
   pixel-art spider web hangs in its corner.
+- Cockpit and terminal starts survive a dropped request (SPEC-077, ADR-0053, task #64; #250). The
+  part of a start from the spawn to the registration runs as a task the request awaits, so a
+  client that goes away mid-start leaves one live Cockpit or terminal (or nothing on an error),
+  never a second Cockpit, an unusable terminal or an orphan run directory. Idle Cockpit start
+  locks are dropped. New tests pin that a signal right after a resume keeps the conversation and
+  that one user's blocked start delays no other user or sandbox.
 - A task's step strip no longer draws its progress bar over "Step N/M" (SPEC-073, task #68; #341).
   A long state such as "Working · 1 background task still running" or "Done · PR #N merged" kept
   its full width, so the strip's label shrank to nothing and the step count, which nothing
