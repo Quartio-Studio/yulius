@@ -1,4 +1,5 @@
-//! Superadmin user administration (SPEC-001 ACC-004, ACC-009).
+//! User administration (SPEC-001 ACC-004, ACC-009): the superadmin admits and changes users;
+//! instance administrators also read the list, with each person's two-factor (SPEC-061).
 
 use yulius_contracts::api::admin::{AdminUser, AdmitUser, UpdateUser};
 use yulius_domain::ids::UserId;
@@ -8,7 +9,7 @@ use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::UserRecord;
 
-fn view(user: &UserRecord) -> AdminUser {
+fn view(user: &UserRecord, two_factor: &str) -> AdminUser {
     AdminUser {
         id: user.id.to_string(),
         github_login: user.github_login.clone().unwrap_or_default(),
@@ -16,6 +17,7 @@ fn view(user: &UserRecord) -> AdminUser {
         is_instance_admin: user.is_instance_admin,
         disabled: user.disabled_at.is_some(),
         github_linked: user.github_id.is_some(),
+        two_factor: two_factor.to_owned(),
     }
 }
 
@@ -32,21 +34,19 @@ fn valid_github_login(login: &str) -> bool {
 }
 
 impl App {
-    /// Lists users except the superadmin.
+    /// Lists users except the superadmin, with their two-factor (to reset a lost one).
     ///
     /// # Errors
-    /// `Forbidden` for non-superadmins.
+    /// `Forbidden` for members.
     pub async fn admin_users(&self, ctx: &AuthContext) -> AppResult<Vec<AdminUser>> {
-        self.require_superadmin(ctx)?;
-        Ok(self
-            .deps
-            .store
-            .users()
-            .await?
-            .iter()
-            .filter(|u| !u.is_superadmin)
-            .map(view)
-            .collect())
+        self.require_instance_admin(ctx)?;
+        let mut out = Vec::new();
+        for user in self.deps.store.users().await? {
+            if !user.is_superadmin {
+                out.push(view(&user, self.two_factor_of(&user.id).await?));
+            }
+        }
+        Ok(out)
     }
 
     /// Admits a GitHub user.
@@ -88,7 +88,7 @@ impl App {
             .store
             .audit(now, "superadmin", "user.admitted", Some(login), None)
             .await?;
-        Ok(view(&user))
+        Ok(view(&user, "missing"))
     }
 
     /// Disables/enables a user or changes the admin flag. Disabling revokes sessions and tokens.
@@ -128,7 +128,7 @@ impl App {
             )
             .await?;
         let updated = store.user(&id).await?.ok_or(AppError::NotFound)?;
-        Ok(view(&updated))
+        Ok(view(&updated, self.two_factor_of(&id).await?))
     }
 }
 

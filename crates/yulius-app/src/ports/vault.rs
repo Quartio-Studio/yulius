@@ -135,12 +135,13 @@ pub trait VaultStore: Send + Sync {
     async fn vault_two_factor(&self, user_id: &str) -> AppResult<Option<TwoFactorRecord>>;
     /// Stores a new seed unless a confirmed one exists; `false` when it does.
     async fn vault_put_two_factor(&self, record: &TwoFactorRecord) -> AppResult<bool>;
-    /// Accepts a code of time step `counter`: records it, confirms the seed at `at` and clears
-    /// the wrong codes; `false` when a code of this or a later step was accepted before (a
-    /// replay).
+    /// Accepts a code of time step `counter` checked against the sealed seed `ciphertext`:
+    /// records it, confirms the seed at `at` and clears the wrong codes; `false` when a code of
+    /// this or a later step was accepted before (a replay) or the seed was replaced meanwhile.
     async fn vault_accept_two_factor(
         &self,
         user_id: &str,
+        ciphertext: &[u8],
         counter: u64,
         at: Timestamp,
     ) -> AppResult<bool>;
@@ -148,6 +149,9 @@ pub trait VaultStore: Send + Sync {
     async fn vault_two_factor_failed(&self, user_id: &str, at: Timestamp) -> AppResult<u32>;
     /// Clears the wrong codes (the person confirmed it is them).
     async fn vault_two_factor_clear_failures(&self, user_id: &str) -> AppResult<()>;
+    /// Removes the person's two-factor seed and the vault unlocks of their browser sessions (an
+    /// administrator's reset); `true` when a seed was removed.
+    async fn vault_reset_two_factor(&self, user_id: &str) -> AppResult<bool>;
     /// Records a two-factor unlock of a browser session.
     async fn vault_set_unlock(&self, session_hash: &str, at: Timestamp) -> AppResult<()>;
     /// The session's last two-factor unlock.
