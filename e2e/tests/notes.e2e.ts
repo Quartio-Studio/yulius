@@ -377,3 +377,19 @@ test('an undo after a lost answer is not Saved until the server is checked', asy
   await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
   await expect.poll(() => stored(browser, 'sandbox:sb_studio')).toBe('');
 });
+
+// #310: Notes shown again because the page changed keeps the keyboard where it was; only opening
+// it focuses the notepad.
+test('Notes beside a task does not take the keyboard when another task opens', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await openNotes(screen);
+  const notes = screen.getByRole('textbox', 'Sandbox notes');
+  await expect(notes).toBeFocused();
+
+  await screen.getByRole('link', /3D model viewer/).click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#11 3D model viewer');
+  await expect(notes).toBeVisible();
+  // Past the timers the panel's show queued when the page changed (a focus is deferred by one).
+  await browser.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0))));
+  await expect(notes).not.toBeFocused();
+});

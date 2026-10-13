@@ -303,3 +303,28 @@ test('a menu placed again while filtered still fits once the filter is cleared',
   expect(box.top).toBeGreaterThanOrEqual(8);
   expect(box.bottom).toBeLessThanOrEqual(box.height - 8);
 });
+
+// #288: placing a menu again (a height-only resize, e.g. the address bar hiding) keeps its scroll;
+// only editing the filter goes back to the top.
+test('a filtered menu keeps its scroll position when the window height changes', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1280, height: 600 });
+  await app.open(mock('/s/studio', '&tasks=many'));
+  await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
+  await screen.getByRole('button', /Run after: Start now/).click();
+  await screen.getByRole('searchbox', 'Filter').fill('queued');
+  const scrolled = await browser.evaluate(() => {
+    const list = document.querySelector('.menu-list')!;
+    list.scrollTop = 120;
+    return list.scrollTop;
+  });
+  expect(scrolled).toBeGreaterThan(0);
+  await browser.evaluate(() => { (window as unknown as { __resized: boolean }).__resized = false; addEventListener('resize', () => { (window as unknown as { __resized: boolean }).__resized = true; }); });
+  await browser.setViewport({ width: 1280, height: 560 });
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __resized: boolean }).__resized)).toBe(true);
+  await expect(screen.getByRole('menu')).toBeVisible();
+  expect(await browser.evaluate(() => document.querySelector('.menu-list')!.scrollTop)).toBe(scrolled);
+  // Typing in the filter starts from the top again.
+  await screen.getByRole('searchbox', 'Filter').press('End');
+  await browser.keyboard.type(' ');
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.menu-list')!.scrollTop)).toBe(0);
+});
