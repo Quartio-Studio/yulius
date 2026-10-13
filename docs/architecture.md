@@ -149,13 +149,18 @@ with `yulius wait` in a background shell, which Claude Code wakes it from, and r
 `ci_status` and `delivery_status`. The armed merge's outcome is kept in memory for the wait,
 with the armed merge and its decisions in progress under one lock: a merge armed again while an
 earlier one is decided supersedes it ([decision 0048](decisions/0048-armed-merge-state-under-one-lock.md)).
+Before Yulius merges or arms a merge, its merge gate checks the pull request's title, head and
+base against the branch policy of `yulius.toml` `[branch_policy]` at the integration branch;
+a violation is refused with the rule in words, also for promotion pull requests
+([SPEC-069](../.ai/specs/SPEC-069-fix-223-yulius-s-merge-gate-enforces-the.md),
+[decision 0051](decisions/0051-the-merge-gate-enforces-the-branch-policy.md)).
 
 ```mermaid
 sequenceDiagram
     participant A as Agent (Claude Code)
     participant W as yulius wait (background shell)
     participant Y as Yulius (internal API)
-    A->>Y: delivery_merge (checks still running: armed)
+    A->>Y: delivery_merge (branch policy checked; checks still running: armed)
     A->>W: start, end the turn
     W->>Y: POST /internal/agent/wait (long poll)
     Y-->>W: checks ended / stage moved / armed merge decided (merged, refused, dropped)
@@ -171,8 +176,16 @@ With an image, the session starts with no prompt and Yulius types the message in
 image's path is pasted on its own, and Claude Code shows it as `[Image #N]` and sends an image
 block. The text is pasted next, with the other files mentioned, then Enter (an `@` mention of an
 image would only be a Read tool call). A goal task then gets its `/goal` typed into the terminal;
-the request file in the sandbox home keeps the whole request
-([SPEC-011](../.ai/specs/SPEC-011-automatic-dev-delivery.md),
+the request file in the sandbox home keeps the whole request. A person who typed into the
+terminal before the goal keeps their draft: no goal is typed and the task needs attention (only
+keystrokes count as typing; focus and mouse reports and terminal answers do not). A typed first
+message is pending (`opening-pending` in the run directory) until its `UserPromptSubmit`: a
+restart flags a task whose first message never reached that hook (a submitted one a hold keeps
+goes on, and a goal task's goal is typed after it), and a first message held for capacity resumes
+on another account, or a manual switch, as a fresh session that types it again with its images
+([SPEC-068](../.ai/specs/SPEC-068-fix-252-266-only-real-typing-counts-as-t.md),
+[decision 0052](decisions/0052-only-keystrokes-count-as-typing.md);
+[SPEC-011](../.ai/specs/SPEC-011-automatic-dev-delivery.md),
 [SPEC-025](../.ai/specs/SPEC-025-uploaded-attachements-should-be-clickabl.md),
 [SPEC-030](../.ai/specs/SPEC-030-i-asked-previous-task-to-attach-images-a.md),
 [decisions 0022](decisions/0022-native-task-attachments.md) and
@@ -200,9 +213,14 @@ sequenceDiagram
             C-->>S: screen shows [Image #N]
         end
         S->>C: bracketed paste of the text (+ @path mentions of other files), Enter
+        C->>S: UserPromptSubmit: the first message is no longer pending
     end
     C->>S: Stop hook of that turn (goal mode)
-    S->>C: types /goal <condition>
+    alt a person typed since the launch
+        S-->>UI: no goal; task needs attention, notice in the terminal
+    else
+        S->>C: types /goal <condition>
+    end
 ```
 
 ## Agent (the Cockpit)

@@ -14,6 +14,26 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   declines, and the asker may withdraw. From the hand-over on, the task acts on GitHub as the new
   owner, and its terminal says so. An owner who is disabled, deleted or without write access
   passes control at once. Schema version 17 (`tasks.owner_id`, the waiting request).
+- Local test runs use 4 test threads (CI keeps one per CPU): several agents running the suite
+  at once in one sandbox starved their tests into timeouts.
+- Only real typing counts as typing; a typed first message is never lost (SPEC-068, ADR-0052,
+  task #61, #252, #266). Focus and mouse reports and terminal answers no longer record typing or
+  take control of the terminal size. A goal task whose terminal a person typed into before its
+  goal leaves the draft alone and needs attention, instead of appending `/goal` to it. A first
+  message with images that a server restart cut flags its task with a notice; one held for
+  capacity and resumed (or manually switched) to another account is typed again there, images
+  included.
+- Yulius's merge gate enforces the branch policy (SPEC-069, ADR 0051, task #59; #223). Before
+  Yulius merges a task's pull request (`delivery_merge`, an armed merge, the Git page) or a
+  promotion pull request, it checks the title, head and base against `yulius.toml`
+  `[branch_policy]` at `dev`. The standard preset is the default: typed branches, conventional
+  one-line titles of at most 100 characters, and `dev` → `main` titled
+  `release: promote dev to main[ - label]`; `preset = "none"` turns it off. A violation is
+  refused with the rule in words, and `delivery_merge` refuses before it arms. Yulius's own
+  titles comply: task titles take an allowed type and are clipped to 100 characters, promotion
+  pull requests are titled `release: promote dev to main`, and a fork's pull request is never
+  taken for the promotion. `scripts/check_git_policy.py` is removed.
+
 - A stopped or closed run ends only when its processes are proven gone (SPEC-065, ADR-0050, task #54;
   #284, #285, #290). When Yulius cannot terminate a run's host after the stop or close escalation,
   the run stays live, the task's terminal says so and a running task needs attention; deleting it

@@ -320,6 +320,56 @@ pub struct SupervisorState {
 /// File in a run directory holding the run's final screen (`<cols> <rows>\n` + redraw bytes).
 pub(crate) const FINAL_SCREEN_FILE: &str = "final-screen";
 
+/// File in a run directory while the run's first message, which Yulius types (SPEC-030), was not
+/// taken by the session yet (SPEC-068 OPN-001). Empty while Yulius types it; `entered` once its
+/// `UserPromptSubmit` reached Yulius (it may be held there). The session's first prompt let
+/// through, or any Stop, removes it.
+pub(crate) const OPENING_PENDING_FILE: &str = "opening-pending";
+const OPENING_ENTERED: &[u8] = b"entered";
+
+fn opening_marker(run_dir: &str) -> PathBuf {
+    Path::new(run_dir).join(OPENING_PENDING_FILE)
+}
+
+/// Whether the run in `run_dir` has its typed first message pending (typed or held).
+pub(crate) fn opening_pending(run_dir: &str) -> bool {
+    opening_marker(run_dir).exists()
+}
+
+/// Whether the first message of the run in `run_dir` never reached Yulius's submit hook: a
+/// restart cut its typing.
+pub(crate) fn opening_unsubmitted(run_dir: &str) -> bool {
+    std::fs::read(opening_marker(run_dir)).is_ok_and(|m| m != OPENING_ENTERED)
+}
+
+/// A `UserPromptSubmit` of the run in `run_dir` reached Yulius: its pending first message was
+/// submitted (it may still be held for capacity or an update).
+pub(crate) fn opening_entered(run_dir: &str) {
+    use std::io::Write as _;
+    // Never created here: a marker removed meanwhile stays removed.
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(opening_marker(run_dir))
+        .and_then(|mut file| file.write_all(OPENING_ENTERED));
+    match written {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+            tracing::warn!(run_dir, error = %err, "could not record the submitted first message");
+        }
+        _ => {}
+    }
+}
+
+/// The run in `run_dir` took a prompt: nothing of its first message is pending.
+pub(crate) fn opening_sent(run_dir: &str) {
+    match std::fs::remove_file(opening_marker(run_dir)) {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+            tracing::warn!(run_dir, error = %err, "could not clear the pending first message");
+        }
+        _ => {}
+    }
+}
+
 /// Writes `bytes` to `path` readable by the owner only.
 pub(crate) fn write_private_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
@@ -443,6 +493,9 @@ pub fn branch_for(number: u32, title: &str) -> String {
     let slug = slug.trim_end_matches('-');
     if slug.is_empty() {
         format!("feat/{number}-task")
+    } else if !slug.bytes().any(|b| b.is_ascii_lowercase()) {
+        // The branch policy wants a word after the number (SPEC-069).
+        format!("feat/{number}-task-{slug}")
     } else {
         format!("feat/{number}-{slug}")
     }
@@ -1018,6 +1071,12 @@ impl App {
             exit_reason: None,
         };
         store.insert_attempt(&attempt).await?;
+        // Before the spawn, so the first prompt's hook always finds it (SPEC-068).
+        if typed_opening.is_some()
+            && let Err(err) = write_private_file(&run_dir.join(OPENING_PENDING_FILE), b"")
+        {
+            tracing::warn!(task = %task.id, error = %err, "could not record the pending first message");
+        }
         let runtime = self.runtime(&task.id);
         // Before the spawn, so the opening turn's Stop hook can never come first.
         runtime
@@ -1085,13 +1144,22 @@ impl App {
             self.record_lineage(&task, harness, session_id, "native")
                 .await?;
         }
+        // Typing from now on, once viewers can write to this run, is a person's draft in it
+        // (SPEC-068).
+        let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
         self.attach_run(&task.id, &attempt, &host_token).await?;
         runtime.hub.state_changed();
         self.publish_task(&task.id).await;
         if goal_mode {
             match self.write_task_request(&sandbox, &task, &home).await {
                 Ok(condition) => {
-                    self.spawn_goal(&task.id, &attempt_id, typed_opening, &condition);
+                    self.spawn_goal(
+                        &task.id,
+                        &attempt_id,
+                        typed_opening,
+                        &condition,
+                        typed_before,
+                    );
                 }
                 Err(err) => {
                     tracing::error!(task = %task.id, error = %err, "could not write the task request");
@@ -1166,6 +1234,71 @@ impl App {
             && let Err(err) = self
                 .set_task_activity(&task, Activity::NeedsAttention)
                 .await
+        {
+            tracing::warn!(task = %task_id, error = %err, "could not flag the task");
+        }
+    }
+
+    /// Whether the task's latest run still has its typed first message pending: a prompt held
+    /// for capacity in that run is this first message (SPEC-068 OPN-003).
+    pub(crate) async fn held_opening(&self, task_id: &TaskId) -> bool {
+        self.deps
+            .store
+            .attempts(task_id)
+            .await
+            .is_ok_and(|attempts| attempts.last().is_some_and(|a| opening_pending(&a.run_dir)))
+    }
+
+    /// A goal task's first message was submitted (a hold keeps it) when the server restarted:
+    /// the old server's goal typing died with it, so the goal is typed again after the turn on
+    /// that message (SPEC-068 OPN-002). The session read input already.
+    async fn goal_after_restart(self: &Arc<Self>, attempt: &AttemptRecord) {
+        let store = &self.deps.store;
+        let Ok(Some(task)) = store.task(&attempt.task_id).await else {
+            return;
+        };
+        if task.mode != TaskMode::Goal {
+            return;
+        }
+        let Ok(Some(sandbox)) = store.sandbox(&task.sandbox_id).await else {
+            return;
+        };
+        let runtime = self.runtime(&task.id);
+        runtime.session_started.store(true, Ordering::SeqCst);
+        runtime.opening_turn.store(true, Ordering::SeqCst);
+        let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
+        let home = self.sandbox_home(&sandbox.id);
+        match self.write_task_request(&sandbox, &task, &home).await {
+            Ok(condition) => {
+                self.spawn_goal(&task.id, &attempt.id, None, &condition, typed_before);
+            }
+            Err(err) => {
+                tracing::error!(task = %task.id, error = %err, "could not write the task request");
+                self.goal_not_taken(&task.id, "Yulius could not write the task's request file")
+                    .await;
+            }
+        }
+    }
+
+    /// A restart cut the typing of the run's first message (SPEC-068 OPN-002): the task needs a
+    /// person, said in its terminal.
+    async fn opening_never_sent(&self, task_id: &TaskId) {
+        let Ok(Some(task)) = self.deps.store.task(task_id).await else {
+            return;
+        };
+        let goal = if task.mode == TaskMode::Goal {
+            " Then type `/goal` and the request: the task has no goal yet."
+        } else {
+            ""
+        };
+        self.runtime(task_id).hub.notice(format!(
+            "Yulius restarted while it typed this task's first message, so the first message was \
+             never sent and may be half typed in the prompt box. Complete it (paste the attached \
+             images again if they are missing; the task's request lists them) and press Enter.{goal}"
+        ));
+        if let Err(err) = self
+            .set_task_activity(&task, Activity::NeedsAttention)
+            .await
         {
             tracing::warn!(task = %task_id, error = %err, "could not flag the task");
         }
@@ -1275,13 +1408,16 @@ impl App {
     /// message with attached images (SPEC-030), Claude Code's SessionStart hook, the turn on a
     /// first message ended and quiet output ([`Self::wait_input_ready`]). The submit is confirmed
     /// by what Claude Code records about the goal and retried with growing waits; a goal never
-    /// taken flags the task.
+    /// taken flags the task. A person who typed into the session since `typed_before` (the
+    /// typing time when the run was attached) keeps their draft: no goal is typed and the task is
+    /// flagged (SPEC-068).
     fn spawn_goal(
         self: &Arc<Self>,
         task_id: &TaskId,
         attempt_id: &AttemptId,
         opening: Option<(Vec<String>, String)>,
         condition: &str,
+        typed_before: i64,
     ) {
         let app = Arc::clone(self);
         let (task_id, attempt_id) = (task_id.clone(), attempt_id.clone());
@@ -1308,7 +1444,17 @@ impl App {
             // The opening turn is over, or given up on: a later Stop is the goal's own.
             runtime.opening_turn.store(false, Ordering::SeqCst);
             runtime.goal_submitted.store(false, Ordering::SeqCst);
-            let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
+            // A person typed before the goal: `/goal` would be appended to their draft and sent
+            // with it. The draft is theirs; the task waits for them instead (#252).
+            if runtime.typed_at_ms.load(Ordering::SeqCst) != typed_before {
+                app.goal_not_taken(
+                    &task_id,
+                    "Someone typed in the terminal before Yulius set the task's goal, so their \
+                     draft was left alone",
+                )
+                .await;
+                return;
+            }
             for (attempt, wait) in GOAL_SUBMIT_WAITS.iter().enumerate() {
                 // A person typing meanwhile owns the prompt box: nothing is cleared or retyped.
                 if runtime.typed_at_ms.load(Ordering::SeqCst) != typed_before {
@@ -2138,7 +2284,7 @@ impl App {
             .await
     }
 
-    async fn switch_with(
+    pub(crate) async fn switch_with(
         self: &Arc<Self>,
         task_id: &TaskId,
         account: Option<AccountId>,
@@ -2469,6 +2615,16 @@ impl App {
                             self.now(),
                         )
                         .await;
+                }
+                // The old server was typing the run's first message (or about to): how much of
+                // it reached the prompt box is unknown, so a person finishes it (SPEC-068
+                // OPN-002). A submitted one that a hold keeps goes on when the hold ends.
+                if opening_unsubmitted(&attempt.run_dir) {
+                    if matches!(store.open_pause(&attempt.task_id).await, Ok(None)) {
+                        self.opening_never_sent(&attempt.task_id).await;
+                    }
+                } else if opening_pending(&attempt.run_dir) {
+                    self.goal_after_restart(&attempt).await;
                 }
                 continue;
             }
@@ -3017,5 +3173,18 @@ mod tests {
         assert_eq!(branch_for(4, "  ***  "), "feat/4-task");
         assert!(branch_for(5, &"x".repeat(200)).len() <= 50);
         assert_eq!(branch_for(6, "Ünïcödé ąę"), "feat/6-n-c-d");
+        // SPEC-069 BPL-006: the branch policy wants a letter after the number.
+        assert_eq!(branch_for(7, "2026 / 42"), "feat/7-task-2026-42");
+        let policy = yulius_domain::branch_policy::BranchPolicy::standard();
+        for title in [
+            "Make me an online store!",
+            "  ***  ",
+            "2026",
+            &"x".repeat(200),
+            "Ünïcödé ąę",
+        ] {
+            let branch = branch_for(9, title);
+            assert_eq!(policy.branch_type(&branch), Some("feat"), "{branch}");
+        }
     }
 }

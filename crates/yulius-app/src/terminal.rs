@@ -177,8 +177,9 @@ impl App {
         }
         // The viewer who types controls the terminal and its size, at once (TSK-006). A
         // forwarded wheel turn is not typing: it must not move control, and with it the size, to
-        // that viewer (#78).
-        if !scroll {
+        // that viewer (#78). Nor are the focus and mouse reports and query answers xterm sends
+        // by itself (SPEC-068).
+        if !scroll && is_typing(data) {
             let change = attach.runtime.hub.claim(attach.viewer_id);
             // The keystroke matters more than the size: a failed resize never drops it.
             if let Err(err) = self.apply_control(&attach.task_id, change).await {
@@ -301,5 +302,142 @@ impl App {
         self.require(&ctx.user, &task.sandbox_id, Action::View)
             .await
             .is_ok()
+    }
+}
+
+/// Whether a viewer's input frame is a person typing (SPEC-068 TYP-001): it holds a keystroke
+/// (text, a control key, an Escape key sequence, a bracketed paste). What xterm sends by itself is
+/// not: focus reports (`ESC [ I` / `ESC [ O`), mouse reports (SGR `ESC [ < … M|m`, X10 `ESC [ M`
+/// and three bytes) and its answers to the program's queries (device attributes, cursor
+/// position, mode and status reports, OSC and DCS strings).
+fn is_typing(data: &[u8]) -> bool {
+    const ESC: u8 = 0x1b;
+    let mut i = 0;
+    while i < data.len() {
+        if data[i] != ESC {
+            return true;
+        }
+        match data.get(i + 1) {
+            Some(b'[') => {
+                let params_at = i + 2;
+                let mut j = params_at;
+                while data.get(j).is_some_and(|b| (0x30..=0x3f).contains(b)) {
+                    j += 1;
+                }
+                let params = &data[params_at..j];
+                let intermediates_at = j;
+                while data.get(j).is_some_and(|b| (0x20..=0x2f).contains(b)) {
+                    j += 1;
+                }
+                let intermediates = &data[intermediates_at..j];
+                // An unfinished sequence is a key (Alt-[), not a report.
+                let Some(&last) = data.get(j) else {
+                    return true;
+                };
+                let report = match last {
+                    // X10 mouse: the button, column and row follow as one character each, UTF-8
+                    // encoded from 96 up (the browser sends text frames).
+                    b'M' if params.is_empty() && intermediates.is_empty() => {
+                        for _ in 0..3 {
+                            j += 1;
+                            while data.get(j + 1).is_some_and(|b| b & 0xc0 == 0x80) {
+                                j += 1;
+                            }
+                        }
+                        true
+                    }
+                    // Focus in and out.
+                    b'I' | b'O' => params.is_empty(),
+                    // SGR (and urxvt) mouse.
+                    b'M' | b'm' => true,
+                    // Device attributes and status answers, window reports.
+                    b'c' | b'n' | b't' => true,
+                    // Cursor position.
+                    b'R' => params.contains(&b';'),
+                    // Mode report (DECRPM).
+                    b'y' => intermediates == b"$",
+                    // Keyboard protocol flags.
+                    b'u' => params.first() == Some(&b'?'),
+                    _ => false,
+                };
+                if !report {
+                    return true;
+                }
+                i = j + 1;
+            }
+            // OSC, DCS, APC and PM strings end with BEL (OSC only) or ST (`ESC \`).
+            Some(&kind @ (b']' | b'P' | b'_' | b'^')) => {
+                let body = &data[i + 2..];
+                let end = body.iter().enumerate().find_map(|(k, &b)| {
+                    if kind == b']' && b == 0x07 {
+                        Some(k + 1)
+                    } else if b == ESC && body.get(k + 1) == Some(&b'\\') {
+                        Some(k + 2)
+                    } else {
+                        None
+                    }
+                });
+                // Unterminated: a key (Alt-] and the like), not a string.
+                let Some(end) = end else {
+                    return true;
+                };
+                i += 2 + end;
+            }
+            // Escape alone, SS3 keys (`ESC O A`), Alt-<key>.
+            _ => return true,
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_typing;
+
+    #[test]
+    fn only_keystrokes_are_typing() {
+        let not_typing: [&[u8]; 12] = [
+            b"\x1b[I",                           // focus in
+            b"\x1b[O",                           // focus out
+            b"\x1b[I\x1b[O",                     // both in one frame
+            b"\x1b[<0;12;5M",                    // SGR press
+            b"\x1b[<0;12;5m",                    // SGR release
+            b"\x1b[M #%",                        // X10 press (button, column, row as raw bytes)
+            b"\x1b[?1;2c",                       // device attributes answer
+            b"\x1b[>0;276;0c",                   // secondary device attributes answer
+            b"\x1b[24;80R",                      // cursor position answer
+            b"\x1b[?2004;1$y",                   // mode report
+            b"\x1b]11;rgb:0000/0000/0000\x1b\\", // OSC colour answer
+            b"\x1bP>|xterm.js(5.5.0)\x1b\\",     // DCS version answer
+        ];
+        for data in not_typing {
+            assert!(
+                !is_typing(data),
+                "{:?} is not typing",
+                String::from_utf8_lossy(data)
+            );
+        }
+        assert!(!is_typing(b""));
+        // X10 coordinates from 96 up arrive UTF-8 encoded (the browser's frames are text).
+        assert!(!is_typing("\x1b[M \u{e0}\u{100}".as_bytes()));
+        assert!(!is_typing("\x1b[M \u{e0}%\x1b[I".as_bytes()));
+        let typing: [&[u8]; 9] = [
+            b"a",
+            b"\r",
+            b"\x7f", // Backspace
+            b"\t",
+            b"\x1b[A",                  // arrow up
+            b"\x1b[3~",                 // Delete
+            b"\x1b",                    // Escape
+            b"\x1b[200~draft\x1b[201~", // bracketed paste
+            b"\x1b[Ix",                 // a focus report, then a key
+        ];
+        for data in typing {
+            assert!(
+                is_typing(data),
+                "{:?} is typing",
+                String::from_utf8_lossy(data)
+            );
+        }
     }
 }
