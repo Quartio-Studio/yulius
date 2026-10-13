@@ -1288,6 +1288,20 @@ impl SessionHost for StuckHost {
     }
 }
 
+/// Kills a process group when dropped.
+struct KillGroupOnDrop(Option<i32>);
+
+impl Drop for KillGroupOnDrop {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0 {
+            let _ = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(-pid),
+                nix::sys::signal::Signal::SIGKILL,
+            );
+        }
+    }
+}
+
 /// Whether process `pid` is gone: no longer there, or a zombie waiting to be reaped.
 fn process_gone(pid: u32) -> bool {
     std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| {
@@ -1352,6 +1366,8 @@ fn a_run_whose_agent_survives_termination_is_not_ended_when_its_connection_is_lo
             attempt.ptyhost_pid.ok_or("no host pid")?,
             std::sync::atomic::Ordering::SeqCst,
         );
+        // What remains of the run goes with the test, whatever its outcome.
+        let _agent = KillGroupOnDrop(attempt.child_pid.and_then(|p| i32::try_from(p).ok()));
         app.stop_task_now(&id).await?;
         // The escalation's terminate, then the lost connection's.
         wait_for(
@@ -1373,13 +1389,6 @@ fn a_run_whose_agent_survives_termination_is_not_ended_when_its_connection_is_lo
             app.deps.store.task(&id).await?.is_some(),
             "nothing is deleted"
         );
-        // What remains of the run goes with the test.
-        if let Some(pid) = attempt.child_pid.and_then(|p| i32::try_from(p).ok()) {
-            let _ = nix::sys::signal::kill(
-                nix::unistd::Pid::from_raw(-pid),
-                nix::sys::signal::Signal::SIGKILL,
-            );
-        }
         Ok::<(), BoxError>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

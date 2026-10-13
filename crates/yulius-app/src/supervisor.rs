@@ -1554,6 +1554,10 @@ impl App {
         let Ok(Some(attempt)) = self.deps.store.attempt(attempt_id).await else {
             return;
         };
+        // Its end is recorded already (the escalation ended it).
+        if attempt.state.is_terminal() {
+            return;
+        }
         match self.deps.session_host.inspect(Path::new(&attempt.run_dir)) {
             RunInspection::Exited(exit) => self.finalize_attempt(task_id, attempt_id, exit).await,
             // The host or the agent may still run (an agent that outlived its killed host).
@@ -2034,9 +2038,25 @@ impl App {
             return Ok(());
         }
         // A task already stopping is stopped again: its escalation is armed anew (SPEC-065). One
-        // whose run has ended is about to rest: nothing would consume a new intent.
+        // whose run has ended gets no intent (nothing would consume it): it rests by itself while
+        // its ending is recorded, or now when nothing records it (records cut by a crash).
         let next = if task.status == TaskStatus::Stopping {
             if store.live_attempt(task_id).await?.is_none() {
+                if *self.runtime(task_id).finalizing.borrow() == 0
+                    && store
+                        .transition_task(
+                            task_id,
+                            Some(TaskStatus::Stopping),
+                            TaskStatus::Stopped(StopReason::Cancelled),
+                            None,
+                            self.now(),
+                        )
+                        .await?
+                {
+                    self.end_pause(task_id, "cancelled").await;
+                    self.publish_task(task_id).await;
+                    self.advance_chains(task_id).await;
+                }
                 return Ok(());
             }
             TaskStatus::Stopping

@@ -404,3 +404,21 @@ async fn closing_a_switching_task_for_deletion_is_refused_at_once() -> TestResul
     assert_eq!(why, "stop the task before deleting it");
     Ok(())
 }
+
+/// SPEC-065 END-001 (review): a task left `stopping` with no live run (its records were cut
+/// between the attempt and the task) is not stuck: stopping it again lets it rest.
+#[tokio::test]
+async fn stopping_a_task_left_stopping_without_a_run_lets_it_rest() -> TestResult {
+    let h = harness()?;
+    seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Stopping, None).await?;
+    let id = TaskId::parse("t1")?;
+    h.app.stop_task_now(&id).await?;
+    let task = h.store.task(&id).await?.ok_or("task")?;
+    assert_eq!(
+        task.status,
+        TaskStatus::Stopped(yulius_domain::task::StopReason::Cancelled)
+    );
+    Ok(())
+}
