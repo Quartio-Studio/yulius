@@ -297,8 +297,9 @@ pub fn onboarding_prompt(repo: &str, profile: &Profile, report: &ProjectReport) 
          GitHub refuses that push because the Yulius GitHub App may not change workflow files \
          (its Workflows permission), keep .github/workflows/, finish everything else, mark that \
          step skipped with this reason, and say in the pull request that the deletion follows \
-         once an admin grants the permission. When tests, lint or environments are missing, lay \
-         them as the infra-bootstrap skill describes, as follow-up pull requests.\n\
+         once an admin grants the permission. When tests, lint, a dead-code and unused-dependency \
+         check (skill dead-code-cleanup names each language's tools) or environments are \
+         missing, lay them as the infra-bootstrap skill describes, as follow-up pull requests.\n\
          8. git-crypt: encrypted files stay locked. Never unlock or decrypt them, never commit \
          decrypted content, and leave encrypted files byte-for-byte unchanged.\n\
          9. Hooks: when the repository's instructions describe a hooks setup (for example \
@@ -950,6 +951,8 @@ mod tests {
                 .any(|step| step.contains("open the pull request"))
         );
         assert!(prompt.contains("infra-bootstrap"));
+        // F 2026-10-13 (SPEC-054 DCT-002): onboarding sets up a dead-code check with its tools.
+        assert!(prompt.contains("dead-code-cleanup"));
         assert!(prompt.contains("--no-verify"));
         assert!(prompt.len() < crate::lifecycle::MAX_PROMPT_BYTES);
         Ok(())
