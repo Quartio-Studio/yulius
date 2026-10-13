@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
-- Resuming after a usage limit is safe in three more cases (SPEC-072, ADR-0053, task #57; #276,
+- Resuming after a usage limit is safe in three more cases (SPEC-072, ADR-0054, task #57; #276,
   #277, #278):
   - Claude Code sometimes continues a turn by itself at the reset. Its first agent work or turn end
     now ends the task's limit pause, so Yulius no longer terminates a turn the CLI is running. After
