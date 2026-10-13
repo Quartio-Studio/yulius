@@ -44,3 +44,6 @@ client could call it, including the CLI's bearer token from `yulius login`.
   clicks Start onboarding; until then new tasks queue behind the onboarding task (an admin can
   still Skip for now).
 - Scripts using the public API cannot start onboarding; they can still read its status.
+- The rule is about starting: once a person started onboarding (`preparing`), continuing the
+  onboarding task, for example after it was stopped, is an ordinary continue that any client with
+  write access may do.

@@ -380,6 +380,11 @@ async fn onboarding_starts_only_from_the_browser() -> TestResult {
     .await?;
     assert_eq!(resumed.status, StatusCode::FORBIDDEN, "{:?}", resumed.body);
     assert!(
+        text(&resumed.body["error"]["message"]).contains("Start onboarding on the sandbox page"),
+        "{:?}",
+        resumed.body
+    );
+    assert!(
         w.h.store.attempts(&prep).await?.is_empty(),
         "the task has not run"
     );
