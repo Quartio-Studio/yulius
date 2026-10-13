@@ -62,8 +62,10 @@ resumed by the capacity loop after a pause before they started. All of them end 
 - Known limitation: the resume loop checks the hold before it ends a capacity pause. A
   supertask created in the moment between that check and the start makes the start queue the
   task (`queued`), and that one start loses its pause's kind and continuation (it resumes the
-  session plainly). The window is one store round trip; closing it would need the hold and the
-  pause in one transaction.
+  session plainly). The window lasts until the start takes the launch lock; closing it would need
+  the hold and the pause in one transaction. A wake of the resume loop can also be missed when a
+  hold ends while a resume round runs; the task then resumes at the loop's next round (at most
+  5 minutes) or the queue's next pass.
 - A task's agent can create a supertask with `task_create` and so block its project. This is an
   accepted risk: the tool is told to do it only when the person asks, the hourly cap of tool-made
   tasks applies, the task is audited with the caller, and anyone with write access can stop it.

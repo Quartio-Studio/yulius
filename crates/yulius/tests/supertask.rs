@@ -459,6 +459,9 @@ async fn a_held_capacity_resume_keeps_its_pause() -> TestResult {
         .await?;
 
     let _ = h.app.resume_round().await;
+    // The resume loop: its first round leaves the task held, then it sleeps (5 minutes) until it
+    // is woken. The queue wakes it when the hold ends.
+    h.app.start_capacity_loop();
     assert_eq!(
         h.store.task(&paused.id).await?.ok_or("task")?.status,
         TaskStatus::WaitingCapacity
@@ -484,12 +487,13 @@ async fn a_held_capacity_resume_keeps_its_pause() -> TestResult {
     )
     .await?;
     assert!(r.status.is_success(), "{:?}", r.body);
-    let _ = h.app.resume_round().await;
-    assert!(
-        h.store.open_pause(&paused.id).await?.is_none(),
-        "it resumed"
-    );
-    Ok(())
+    wait_until("the resume loop to resume the task", || async {
+        h.store
+            .open_pause(&paused.id)
+            .await
+            .is_ok_and(|pause| pause.is_none())
+    })
+    .await
 }
 
 /// SUP-005 (review round 2): deleting a queued supertask, or a supertask that fails to start,

@@ -117,6 +117,12 @@ pending or running, no other task of the project starts, so the code it changes 
   lost request); held paused tasks cost the resume loop no stagger; `drain_queue_now` awaits one
   pass so "stays queued" assertions can fail. The capacity-path race is a known limitation
   (ADR-0054).
+- **Review round 3** (APPROVE, two minors fixed): the resume loop staggers again before a held
+  task whose process lives on (it resumes: the hold never touches a live run); the held-capacity
+  test now proves the queue wakes the sleeping resume loop (red without the wake). The stagger
+  fix has no dedicated test: it would only measure sleeps (20 s stagger), and the rule is one
+  boolean next to `paused_decision`'s own `has_process`. A panic inside a queue pass would keep
+  the runner claimed until restart (pre-existing class of risk; no panicking path is known).
 - **Labels from the server.** `held_by` is computed where the rule lives and republished when it
   changes during a queue pass, so the client never re-derives the rule.
 - Recorded as ADR-0054.
