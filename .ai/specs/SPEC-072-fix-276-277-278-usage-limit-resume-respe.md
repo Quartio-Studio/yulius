@@ -48,8 +48,8 @@ file, and the limit-resume paths SPEC-034 left untested have tests (#278).
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| LRS-001 | An open `limit` pause ends as `overtaken` (the task runs again, Working) when the transcript shows a turn after the pause started: a prompt, an interrupt, or agent work (an assistant record that is not an error, a sub-agent's or Claude Code's own synthetic line) with a timestamp after `pause.started_at`. The resume loop then finds no pause and never ends that run. `turn` and `prompt` pauses keep their rule (a prompt or interrupt, with an account). | `pool_supervision.rs`: a limit, then the agent continues by itself before capacity returns: one attempt, still live, no termination |
-| LRS-002 | A task whose last observed event is a usage limit (no prompt or agent work since, same run) is "at its limit" even without a pause. A person's switch (`POST /api/tasks/{tid}/switch`) of such a task launches `Resume { continue_interrupted: true, prompt: None }`, like a task at a `limit` pause. The marker is per run and in memory; a new run clears it. | `pool_supervision.rs`: a refused limit switch, then a person's switch |
+| LRS-001 | An open `limit` pause ends as `overtaken` (the task runs again, Working) when the transcript shows a turn after the pause started: a prompt, an interrupt, agent work (an assistant record that is not an error, a sub-agent's or Claude Code's own synthetic line) or the session's own turn end, with a timestamp after `pause.started_at`. The resume loop then finds no pause and never ends that run; its switch past a limit requires the task to still wait for capacity. After a restart, a replayed limit is acted on only when no prompt, agent work or turn end follows it. `turn` and `prompt` pauses keep their rule (a prompt or interrupt, with an account). | `pool_supervision.rs`: the agent continues by itself (a tool call, or only an answer) before capacity returns: one attempt, still live, no termination; a restart over such a transcript records nothing and pauses nothing; unit `a_replayed_limit_is_pending_until_a_turn_follows_it` |
+| LRS-002 | A task whose last observed event is a usage limit (no prompt, agent work or turn end since, same run) is "at its limit" even without a pause. A person's switch (`POST /api/tasks/{tid}/switch`) of such a task launches `Resume { continue_interrupted: true, prompt: None }`, like a task at a `limit` pause. The marker is per run and in memory; a new run clears it, and a restart sets it again only from a replayed limit still pending (LRS-001). | `pool_supervision.rs`: a refused limit switch, then a person's switch |
 | LRS-003 | The step back runs through its own harness port method (`step_back_transcript`) on a blocking thread (`spawn_blocking`), not inside `plan`; it reports whether it rewrote the file. A failure is logged and the resume goes on (LIM-002). The session index is reset only after a rewrite. | `yulius-harness` unit test `step_back_file_rewrites_only_when_needed`; `pool_supervision.rs` limit tests (stepped back, index) |
 | LRS-004 | The SPEC-034 paths have behavioral tests: a resume past a limit that finds no capacity at launch waits in a `limit` pause without a process; that pause resumes, once capacity returns, with `continue_interrupted: true`; in goal mode `/goal` is typed after the continued turn's Stop, not during it. | `pool_supervision.rs`, `task_done.rs` |
 
@@ -80,11 +80,14 @@ file, and the limit-resume paths SPEC-034 left untested have tests (#278).
 - Fake agent: `--limit-continues-ms MS` stands for Claude Code's "continuing automatically": MS
   after the limit the agent continues the cut turn by itself (a hidden `isMeta` prompt, an
   assistant `tool_use` record, then the answer ending the turn) and prints `CONTINUED` and `DONE
-  continued`. The fake harness gives a continued resume (`continue_interrupted`) the
+  continued`; `--limit-continues-answer-only` leaves out the tool call. The fake harness gives a continued resume (`continue_interrupted`) the
   `--opening-turn-ms` turn, as Claude Code redoes the cut turn on such a resume.
 - Integration (`pool_supervision.rs`, real ptyhost, fake agent, scripted usage):
-  - the CLI's own continuation ends the `limit` pause; capacity returning later starts no second
-    attempt and the first stays live (fails before the fix: a second attempt);
+  - the CLI's own continuation (a tool call, or only the answer) ends the `limit` pause; capacity
+    returning later starts no second attempt and the first stays live (fails before the fix: the
+    pause never ends);
+  - a restart over a transcript with a limit and the CLI's continuation: the subscription's usage
+    is not recorded again and no pause opens (fails before the fix: the limit is replayed);
   - a reactive limit switch refused in preflight (the other subscription's credential cannot be
     opened), then a person's switch: the launch is a continued resume without a prompt and the
     transcript has no limit record (fails before the fix: "Continue the task exactly…");
@@ -100,15 +103,18 @@ file, and the limit-resume paths SPEC-034 left untested have tests (#278).
 - **The CLI's continuation wins** (ADR-0051): agent work after the pause started is proof the CLI
   went on by itself, so the `limit` pause ends like a held turn the CLI gave up. Rejected: making a
   limit resume interrupt instead of terminate while a turn runs (it would still restart a session
-  that is working, and an interrupt can cancel a tool call too). Residual race: the resume loop and
-  the CLI both act at the reset; the loop sees the continuation only after the transcript watcher's
-  next poll (≈ 1 s). The resume loop rechecks that the pause is still open just before it switches,
-  so the window is that poll interval, not the whole round.
+  that is working, and an interrupt can cancel a tool call too). Residual race: the resume loop
+  wakes at the reset + 1 s, and Claude Code's first record of its continuation lands after the
+  model's latency (its continuation prompt is hidden). Ending the run before that record is
+  harmless: no tool has started, and the continued resume redoes the request. The harmful window is
+  a tool call already started but not yet read: one transcript poll (≈ 1 s). The loop rechecks the
+  pause just before it switches, and the switch requires the task to still wait for capacity.
 - **A refused limit switch is remembered in the run's runtime, not as a pause** (ADR-0051): a
   `limit` pause would show the task waiting for capacity it has, and the resume loop would retry a
   switch that preflight refuses every round. The marker follows the transcript: a limit sets it, a
-  prompt or agent work clears it, a new run clears it. Known limit: it does not survive a Yulius
-  restart; a person's switch after a restart sends the continuation prompt as before.
+  prompt, agent work or a turn's end clears it, a new run clears it. Known limit: a restart
+  restores it only for a first-run attempt (its transcript is replayed from the start); after a
+  restart of a resumed attempt, a person's switch sends the continuation prompt as before.
 - **A separate port method instead of an async `plan`**: the step back is the only blocking I/O of
   `plan` worth moving, and a sync method run in `spawn_blocking` keeps the port synchronous and the
   fake harness unchanged in shape.

@@ -24,8 +24,10 @@ remained:
 ## Decision
 
 1. An open `limit` pause ends as `overtaken` when the transcript shows a turn after the pause
-   started: a prompt, an interrupt, or agent work. The task runs again. Before the resume loop
-   ends a paused run, it checks that the pause is still open.
+   started: a prompt, an interrupt, agent work, or the session's own turn end. The task runs
+   again. Before the resume loop ends a paused run, it checks that the pause is still open, and its
+   switch requires the task to still wait for capacity. After a restart, a limit read again from
+   the transcript is acted on only if no prompt, agent work or turn end follows it.
 2. The run's runtime remembers that its last turn ended at a usage limit (`at_limit`). A prompt,
    agent work or a turn's end clears it, and so does a new run. A person's switch resumes past the
    limit when the task is at a `limit` pause or `at_limit`.
@@ -47,10 +49,14 @@ remained:
 
 ## Consequences
 
-- A turn the CLI continued by itself is never ended by Yulius. The CLI and the resume loop can
-  still race at the reset. The loop sees the continuation only after the transcript watcher's next
-  poll (about a second), so that poll is the window.
-- `at_limit` lives in memory: after a Yulius restart, a person's switch of a task left at its limit
-  sends the continuation prompt, as before.
+- A turn the CLI continued by itself is not ended by Yulius once its first record is read. The CLI
+  and the resume loop can still race at the reset. Ending the run before Claude Code's first
+  record of the continuation is harmless: no tool has started, and the continued resume redoes the
+  request. The harmful window is a tool call already started but not yet read: one transcript poll
+  (about a second).
+- `at_limit` lives in memory. A restart sets it again only for a first-run attempt, whose
+  transcript is replayed from the start, and only if the replayed limit is still pending. After a
+  restart of a resumed attempt, a person's switch of a task left at its limit sends the
+  continuation prompt, as before.
 - The step back still has no timeout. It is file I/O bounded by the transcript's size, and a
   timeout would not stop a blocking thread anyway.

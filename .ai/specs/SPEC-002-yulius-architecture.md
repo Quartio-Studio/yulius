@@ -784,9 +784,10 @@ task status `waiting_capacity`. A usage limit the CLI reports mid-turn turns the
 `limit`: the CLI ended that turn itself. It resumes by a native resume past the limit, also on its
 own subscription: the transcript steps back over the limit errors and notices, and Claude Code
 continues the cut turn itself (`CLAUDE_CODE_RESUME_INTERRUPTED_TURN`, SPEC-034, ADR-0027). If
-Claude Code continues that turn by itself at the reset, a prompt, interrupt or agent work written
-after the pause started ends the pause (`overtaken`), and the resume loop ends a paused run only
-while its pause is still open. A person's switch of a task left at its limit by a refused automatic
+Claude Code continues that turn by itself at the reset, a prompt, interrupt, agent work or turn end
+written after the pause started ends the pause (`overtaken`), and the resume loop ends a paused run
+only while its pause is still open; a limit replayed after a restart counts only if no turn
+follows it. A person's switch of a task left at its limit by a refused automatic
 switch also resumes past the limit (SPEC-072, ADR-0051). The harness never sends text on its own
 after a pause.
 
@@ -1593,7 +1594,7 @@ For every nonterminal state: owner, exit trigger, timeout and behavior if the tr
 | `starting` | supervisor | ptyhost Welcome + child running → `running`; spawn error → `failed` | 30 s → kill ptyhost tree, `failed(start_timeout)`. |
 | `running` | supervisor | child exit 0, or any exit after Claude Code's `SessionEnd` said the person left (`prompt_input_exit`, `logout`) → `closed`; ended by SIGTERM/SIGKILL/SIGHUP/SIGINT or exit 129/130/137/143 → `stopped(killed)`; any other exit → `stopped(crashed)`; cancel → `stopping`; switch decision → `switching`; limit with no capacity → `waiting_capacity` | Liveness ping every 10 s; 3 missed pings + no process → `stopped(lost)`. |
 | `switching` | rotation controller | new attempt `live` → `running`; failure → `stopped(switch_failed)` with retry offered | 120 s total; on expiry the old process is confirmed dead and the task becomes `stopped(switch_timeout)`. |
-| `waiting_capacity` | capacity controller (ADR-17) | a subscription becomes a candidate (a reset passes, new usage, a subscription added) → `running` in place, `switching` to another one, or `starting` without a process; the hold ends without the pool — a held hook nobody asked about for 45 s, a transcript line (prompt or interrupt; for a `limit` pause also agent work) written after the hold, or a typed prompt replacing a held turn — → `running` (held again at submit when still no capacity); the process exits → `closed`/`stopped`; cancel → `stopped` | Re-evaluated at the earliest reset, on usage readings and subscription changes, and every 5 min (every 15 s while a hook is held); the pause row survives restarts; a held hook gives up after 8 days (fails open). |
+| `waiting_capacity` | capacity controller (ADR-17) | a subscription becomes a candidate (a reset passes, new usage, a subscription added) → `running` in place, `switching` to another one, or `starting` without a process; the hold ends without the pool — a held hook nobody asked about for 45 s, a transcript line (prompt or interrupt; for a `limit` pause also agent work or a turn end) written after the hold, or a typed prompt replacing a held turn — → `running` (held again at submit when still no capacity); the process exits → `closed`/`stopped`; cancel → `stopped` | Re-evaluated at the earliest reset, on usage readings and subscription changes, and every 5 min (every 15 s while a hook is held); the pause row survives restarts; a held hook gives up after 8 days (fails open). |
 | `stopping` | supervisor | child and descendants reaped → `stopped(cancelled)` | Interrupt → 5 s → SIGTERM → 5 s → SIGKILL (bwrap: namespace dies) → 10 s; if still not reaped: `stopped(lost)` + audit alert; capacity released only after reaping or `lost`. |
 | `closed`, `stopped`, `failed` | — (terminal for the run) | Continue → `starting` (new attempt, resume) | — |
 

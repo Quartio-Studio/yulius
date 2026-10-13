@@ -8,8 +8,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - Resuming after a usage limit is safe in three more cases (SPEC-072, ADR-0051, task #57; #276,
   #277, #278):
-  - Claude Code sometimes continues a turn by itself at the reset. Its first agent work now ends
-    the task's limit pause, so Yulius no longer terminates a turn the CLI is running.
+  - Claude Code sometimes continues a turn by itself at the reset. Its first agent work or turn end
+    now ends the task's limit pause, so Yulius no longer terminates a turn the CLI is running. After
+    a restart, a limit the CLI already continued past is not acted on again.
   - When the automatic switch after a limit is refused, the run remembers it is at its limit. A
     person's switch then resumes past the limit, without "Continue the task exactly where you
     left off.".
