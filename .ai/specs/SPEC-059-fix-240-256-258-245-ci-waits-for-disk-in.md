@@ -1,11 +1,11 @@
 ---
 yulius-task: 2e2971e4-1ed0-4a81-9222-b8e19f9e1f73
-status: in-progress
+status: done
 ---
 
 # SPEC-059: CI waits for disk instead of erroring; a working task's caches stay
 
-Status: in progress
+Status: implemented
 Date: 2026-10-13
 Owner: Yulius task #50
 Scope authorization: GitHub issues #240, #256, #258 and #245, through task #50 (part of task #47,
@@ -153,12 +153,12 @@ flowchart LR
 ## Plan
 
 - [x] Spec, ADR and plan for the disk wait
-- [ ] Upkeep keeps the caches of a task whose background shell or subagent may run
-- [ ] Measurements and quota refusals name the largest consumers
-- [ ] A CI run over the quota waits in the queue and starts when space frees
-- [ ] A job refused for disk puts its run back in the queue
-- [ ] Docs, changes log and every gate green
-- [ ] Independent review findings resolved
+- [x] Upkeep keeps the caches of a task whose background shell or subagent may run
+- [x] Measurements and quota refusals name the largest consumers
+- [x] A CI run over the quota waits in the queue and starts when space frees
+- [x] A job refused for disk puts its run back in the queue
+- [x] Docs, changes log and every gate green
+- [x] Independent review findings resolved
 
 ## Decisions
 
@@ -173,3 +173,51 @@ flowchart LR
   commit.
 - **The check runs off the dispatcher's loop.** Upkeep sizes caches and the measurement walks the
   sandbox (up to tens of seconds at 100 GB). Neither may hold back other sandboxes' runs.
+- **Residual races are accepted, not fixed.** The independent reviews found two windows of a few
+  awaits each:
+  - A `ci_cancel` that reads a run as running just before a disk requeue returns `Ok(false)`, so
+    the cancel is not lost silently. Supersede retries it at the next sync.
+  - A background measurement that lands between a job's refusal and `ci_over_quota` can read
+    under the quota. The run then ends `error` once, as before this change.
+
+  A typed over-quota error from the port would close the second window. It would need an
+  `AppError` variant across every HTTP mapping, which is out of proportion for this fix.
+
+## Evidence
+
+- **#245, cause.** The server logs of 2026-10-12 are not reachable from a task sandbox. Task
+  #25's transcript (`sessions_search` "failed to move dependency graph") shows:
+  - 87 GB used on the volume at 14:52 UTC, against the sandbox's 90 GB pressure line;
+  - `target/` at 66 MB after the gate's background run;
+  - the CI quota errors that started at 15:06.
+
+  In the code, `cache_owner` read the cached probe count, where `-1` (no answer) counted as no
+  shells, and background agents were not tracked before STA-001. Both are fixed by DSK-201.
+- **Tests that failed before the fix and pass after it:**
+  - `disk::an_idle_task_with_background_work_keeps_its_caches` failed on its first assertion;
+  - `local_ci::a_run_over_the_disk_quota_waits_and_starts_when_space_frees` and
+    `local_ci::a_job_refused_for_disk_puts_its_run_back_in_the_queue` failed with the run ending
+    `error`;
+  - `local_ci::a_refusal_that_is_not_the_disk_quota_ends_the_run_in_error` was checked without
+    the quota guard: CI never settled.
+
+  New unit tests: `usage::tests::the_largest_consumers_are_kept`,
+  `ci::exec::tests::only_disk_refusals_put_a_run_back_in_the_queue`,
+  `ci::disk_wait::tests::a_waiting_run_says_how_full_the_sandbox_is_and_who_holds_the_space`, the
+  queued-status case in `yulius-domain` `ci`, and the reason-clearing case in `yulius-store`
+  `ci`.
+- **Flakiness:** the four new `local_ci` tests passed in 10 consecutive runs, and the whole
+  `local_ci` file in 5 runs after the last change. An early race in the status assertion was a
+  test that did not wait for the publish. It was fixed to poll for the condition.
+- **Gate:** `scripts/dev ci` (repository check, unit tests, `cargo check`, fmt, clippy
+  `-D warnings`, nextest, doctests, deny, shear, doc) exited 0 at 48ff3a6 and at 5870867. Both
+  runs had 1277 tests passed and 16 skipped.
+- **Review:** three independent rounds.
+  - Round 1 requested changes: one major (a non-quota `Conflict` looped) and six minors, all
+    fixed.
+  - Rounds 2 and 3 approved. Their minors were fixed (late cancel, bounded check, a stale
+    executor dropping a re-dispatched run's channel) or recorded above.
+- **Not testable here:** a real 100 GB sandbox with four to six tasks building Rust (#256
+  "four tasks building ... a queued CI run starts and finishes", #258 "six tasks ... stay under
+  the quota"). Over the quota, CI now waits and Yulius prunes what it may, but working tasks
+  alone can still hold the space (ADR-0045).

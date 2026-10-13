@@ -156,14 +156,25 @@ impl App {
         cancel: watch::Receiver<Option<String>>,
         lane: u32,
     ) {
+        let own = cancel.clone();
         self.ci_execute_inner(&run, cancel, lane).await;
-        if let Ok(mut executing) = self.ci.executing.lock() {
-            executing.remove(&run.id);
-        }
+        self.ci_forget_executor(&run.id, &own);
         if let Ok(mut busy) = self.ci.busy.lock() {
             busy.remove(&format!("{}/{lane}", run.sandbox_id.as_str()));
         }
         self.ci_wake();
+    }
+
+    /// Forgets `run_id`'s executor when it is still the one listening on `own`: a run queued
+    /// again for disk may already run in another lane, with its own.
+    fn ci_forget_executor(&self, run_id: &str, own: &watch::Receiver<Option<String>>) {
+        if let Ok(mut executing) = self.ci.executing.lock()
+            && executing
+                .get(run_id)
+                .is_some_and(|tx| own.same_channel(&tx.subscribe()))
+        {
+            executing.remove(run_id);
+        }
     }
 
     async fn ci_execute_inner(
@@ -297,9 +308,7 @@ impl App {
                     self.ci_disk_backoff(&run.sandbox_id);
                     // From here a cancel finds the run queued; one that signalled the executor
                     // meanwhile still ends it.
-                    if let Ok(mut executing) = self.ci.executing.lock() {
-                        executing.remove(&run.id);
-                    }
+                    self.ci_forget_executor(&run.id, &cancel);
                     let late = cancel.borrow().clone();
                     match late {
                         Some(reason) => {

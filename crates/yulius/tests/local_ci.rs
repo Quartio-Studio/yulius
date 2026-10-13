@@ -877,19 +877,25 @@ async fn a_job_refused_for_disk_puts_its_run_back_in_the_queue() -> TestResult {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     // The run says why it waits, from the requeue on.
-    let overview = f.get("/api/sandboxes/s1/ci").await?;
-    let waiting = overview["runs"]
-        .as_array()
-        .ok_or("runs")?
-        .iter()
-        .find(|r| r["state"] == "queued")
-        .ok_or("no queued run")?;
-    assert!(
-        waiting["reason"]
-            .as_str()
-            .is_some_and(|r| r.starts_with("waiting for disk space")),
-        "{overview}"
-    );
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        let overview = f.get("/api/sandboxes/s1/ci").await?;
+        let waiting = overview["runs"].as_array().ok_or("runs")?.iter().any(|r| {
+            r["state"] == "queued"
+                && r["reason"]
+                    .as_str()
+                    .is_some_and(|w| w.starts_with("waiting for disk space"))
+        });
+        if waiting {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err(
+                format!("the queued run does not say it waits for disk: {overview}").into(),
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     disk.used.store(50 * GB, Ordering::SeqCst);
     f.h.clock.0.fetch_add(61_000, Ordering::SeqCst);
     f.settle().await?;
