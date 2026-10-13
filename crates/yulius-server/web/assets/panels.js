@@ -27,7 +27,7 @@ const MAX_KEY = 'yulius.panelMaximized';
 const DEFAULT_FRACTION = { editor: 0.62 };
 const KINDS = [
   // The user's own Claude Code session for quick work (SPEC-035): first, the tool used most.
-  ['agent', 'spark', 'Agent'],
+  ['agent', 'spark', 'Superagent'],
   ['browser', 'globe', 'Browser'],
   ['editor', 'code', 'Editor'],
   ['shell', 'terminal', 'Shell'],

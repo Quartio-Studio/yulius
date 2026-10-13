@@ -36,7 +36,7 @@ const MORE_OPEN_KEY = 'yulius.sidebarMoreOpen';
 
 // ---------------------------------------------------------------- tab row
 
-/** Thin sandbox tab row: tabs (or a dropdown on phones), "+", Status, notifications, Agent, tools toggle. */
+/** Thin sandbox tab row: tabs (or a dropdown on phones), "+", Status, notifications, Superagent, tools toggle. */
 export function createTabRow(ctx) {
   const tabs = h('nav', { class: 'tabrow-tabs', 'aria-label': 'Sandboxes' });
   const select = h('select', { class: 'select tab-select', 'aria-label': 'Sandbox', onChange: () => {
@@ -77,13 +77,13 @@ export function createTabRow(ctx) {
   };
   // The Agent (SPEC-035 AGT-005): the user's own session for quick work, in the right panel; one
   // click opens or closes it, whether the tools rail shows or not.
-  const agentButton = h('button', { type: 'button', class: 'btn btn-agent agent-toggle', 'aria-label': 'Show Agent', 'aria-pressed': 'false', title: 'Agent: your own Claude Code session for quick work', onClick: () => ctx.toggleAgent && ctx.toggleAgent() },
-    icon('spark', { size: 16 }), h('span', { class: 'agent-toggle-text', 'aria-hidden': 'true' }, 'Agent'));
+  const agentButton = h('button', { type: 'button', class: 'btn btn-agent agent-toggle', 'aria-label': 'Show Superagent', 'aria-pressed': 'false', title: 'Superagent: your own Claude Code session that manages this project, for quick work', onClick: () => ctx.toggleAgent && ctx.toggleAgent() },
+    icon('spark', { size: 16 }), h('span', { class: 'agent-toggle-text', 'aria-hidden': 'true' }, 'Superagent'));
   ctx.onPanelChange = (kind) => {
     const open = kind === 'agent';
     agentButton.classList.toggle('active', open);
     agentButton.setAttribute('aria-pressed', String(open));
-    agentButton.setAttribute('aria-label', open ? 'Hide Agent' : 'Show Agent');
+    agentButton.setAttribute('aria-label', open ? 'Hide Superagent' : 'Show Superagent');
   };
   const notifications = createNotificationCenter(ctx);
   ctx.notifications = notifications;
