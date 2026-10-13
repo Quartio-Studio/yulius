@@ -131,6 +131,13 @@ impl App {
         self.runtime(&ctx.task.id)
             .hooks_seen
             .store(true, Ordering::SeqCst);
+        // The session's first message Yulius types (SPEC-068): its submit reached Yulius, even if
+        // held below; any Stop means the session took a prompt, so nothing of it is pending.
+        match event {
+            events::USER_PROMPT_SUBMIT => crate::supervisor::opening_entered(&ctx.attempt.run_dir),
+            events::STOP => crate::supervisor::opening_sent(&ctx.attempt.run_dir),
+            _ => {}
+        }
         // An instance update pauses every task at its turn boundary, as a capacity pause does:
         // the agent waits here and is never told (SPEC-002 ADR-18).
         if matches!(event, events::STOP | events::USER_PROMPT_SUBMIT)
@@ -452,6 +459,9 @@ impl App {
                 return Ok(self.hold_for(&ctx.task.id));
             }
         }
+        // The session took its first prompt: a first message Yulius typed is no longer pending
+        // (SPEC-068).
+        crate::supervisor::opening_sent(&ctx.attempt.run_dir);
         // A typed prompt starts new work: an achieved goal no longer makes the task done
         // (TSK-014). Claude Code's own wake-ups (a background shell ended) keep it.
         if crate::finish::is_typed_prompt(input.prompt.as_deref()) {
