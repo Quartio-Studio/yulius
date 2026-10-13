@@ -1153,6 +1153,16 @@ impl App {
         }
     }
 
+    /// Whether the task's latest run still has its typed first message pending: a prompt held
+    /// for capacity in that run is this first message (SPEC-068 OPN-003).
+    pub(crate) async fn held_opening(&self, task_id: &TaskId) -> bool {
+        self.deps
+            .store
+            .attempts(task_id)
+            .await
+            .is_ok_and(|attempts| attempts.last().is_some_and(|a| opening_pending(&a.run_dir)))
+    }
+
     /// A restart cut the typing of the run's first message (SPEC-068 OPN-002): the task needs a
     /// person, said in its terminal.
     async fn opening_never_sent(&self, task_id: &TaskId) {
@@ -2060,7 +2070,7 @@ impl App {
             .await
     }
 
-    async fn switch_with(
+    pub(crate) async fn switch_with(
         self: &Arc<Self>,
         task_id: &TaskId,
         account: Option<AccountId>,
