@@ -38,9 +38,9 @@ Done group, instead of opening each task's menu and picking Archive.
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | QAR-001 | A sidebar row whose task can be archived (`taskActions(...).archive`) has an "Archive task #n" button beside its `⋮` button, shown like it on hover and keyboard focus. One click archives the task as the menu's Archive does (toast with Undo, the row leaves, the task page is left if open). A row that cannot be archived (working, needs you, read access) has no such button. | e2e `archive.e2e.ts` |
-| QAR-002 | The Done group's head has an "Archive all" button when at least one of its tasks can be archived. One click archives every archivable Done task shown, without a confirmation: the requests run at most 4 at a time, the rows leave as they succeed, and one toast says "Archived N Done tasks." with one Undo that restores them all. The button is disabled while it runs. Other groups have no such button. | e2e `archive.e2e.ts` |
+| QAR-002 | The Done group's head has an "Archive all" button when at least one of its tasks can be archived. One click archives every archivable Done task shown, without a confirmation: the requests run at most 4 at a time, the rows leave as they succeed, and one toast says "Archived N Done tasks." with one Undo that restores them all. While it runs the button is inert (`aria-disabled`) but keeps the keyboard, also as rows leave, and the tasks it archives are in flight, so a row's quick Archive or menu Archive sends no second request. Other groups have no such button. | e2e `archive.e2e.ts` |
 | QAR-003 | When some archives of "Archive all" fail, the others stay archived and one error toast names how many failed and the first reason ("Couldn’t archive 1 of 2 tasks: …"); no toast per task. | e2e `archive.e2e.ts` |
-| QAR-004 | Phones (under 768 px, the drawer) keep one row action: the quick Archive button is not shown there (the `⋮` menu has Archive); "Archive all" is shown. | e2e `archive.e2e.ts` |
+| QAR-004 | Phones (under 768 px, the drawer) keep one row action: the quick Archive button is not shown there (the `⋮` menu has Archive); "Archive all" is shown as a 40 px touch target. | e2e `archive.e2e.ts` |
 | QAR-005 | SPEC-001 UI-006, an ADR, `docs/changes.md` and `e2e/README.md` describe it. | review |
 
 ## Plan
@@ -59,9 +59,12 @@ Done group, instead of opening each task's menu and picking Archive.
 - AC-QAR-2: the Done group's "Archive all" archives #13 and #11 in one click: "Archived 2 Done
   tasks.", the Done group is gone, the mock records both archived; Undo restores both. The
   sidebar has no WCAG violations with the buttons shown.
-- AC-QAR-3: with the archive of #11 failing (mock `&fail=`), "Archive all" archives #13, keeps
+- AC-QAR-3: with the archive of #11 failing (mock `&failpost=`), "Archive all" archives #13, keeps
   #11 in Done and says "Couldn’t archive 1 of 2 tasks".
-- AC-QAR-4: at 390 px the row has no quick Archive button; "Archive all" is visible.
+- AC-QAR-4: at 390 px the row has no quick Archive button; "Archive all" is visible and 40 px tall.
+- AC-QAR-5: with the archive answers held, "Archive all" is `aria-disabled` and focused; Enter on
+  it again and the row's quick Archive send no more requests; once done, it is enabled and still
+  focused. In a read-only sandbox a stopped row has no quick Archive and there is no Archive all.
 - `scripts/dev ci` and the e2e suite pass.
 
 ## Test plan
