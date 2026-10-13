@@ -824,6 +824,7 @@ fn the_goal_is_typed_after_the_turn_continued_past_a_limit() -> TestResult {
                 automation_run: None,
                 start: true,
                 mode: TaskMode::Goal,
+                supertask: false,
             })
             .await?
             .id;
@@ -907,6 +908,7 @@ fn a_continuation_with_hooks_ends_the_limit_pause_and_its_stop_is_answered() -> 
                 automation_run: None,
                 start: true,
                 mode: TaskMode::Prompt,
+                supertask: false,
             })
             .await?
             .id;
