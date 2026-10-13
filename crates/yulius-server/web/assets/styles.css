@@ -1933,6 +1933,22 @@ a.dl-task:hover { text-decoration: underline; }
 .term-views { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--term-bg); }
 .term-views > [hidden] { display: none; }
 .term-slot { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* Notes (SPEC-041): a notepad per sandbox and one for the team, saved while typing. */
+.notes-tabs .term-tab { padding: 0 12px; border-top: 0; border-bottom: 0; border-left: 0; background: none; font: inherit; }
+.notes-tabs .term-tab.active { background: var(--term-bg); }
+.notes-panes { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--term-bg); }
+.notes-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.notes-pane[hidden] { display: none; }
+.notes-text { flex: 1; min-height: 0; width: 100%; resize: none; padding: 12px 16px; border: 0; background: transparent; color: var(--text); font: inherit; font-size: var(--fs); line-height: var(--lh); }
+.notes-text:focus-visible { outline: none; box-shadow: inset 2px 0 0 var(--accent); }
+.notes-text[readonly] { color: var(--text-2); }
+.notes-meta { flex: none; margin: 0; padding: 4px 16px; min-height: calc(var(--lh-sm) + 8px); border-top: 1px solid var(--border); color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.notes-readonly { flex: none; margin: 0; padding: 6px 16px; border-bottom: 1px solid var(--border); background: var(--surface-2); color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.notes-banner { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--warn-border); background: var(--warn-soft); color: var(--warn-fg-strong); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.notes-banner[hidden] { display: none; }
+.notes-banner p { margin: 0; }
+.notes-status { color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); white-space: nowrap; }
+.notes-status[data-tone="warn"] { color: var(--warn-fg); }
 .ed-stage { position: relative; flex: 1; min-height: 0; }
 .ed-host { position: absolute; inset: 0; }
 .ed-host[hidden] { display: none; }

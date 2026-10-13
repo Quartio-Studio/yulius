@@ -1,4 +1,4 @@
-# 0032. Ready-made automations ship as a catalog, enabled in one click and matched by name
+# 0033. Ready-made automations ship as a catalog, enabled in one click and matched by name
 
 ## Status
 

@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- Notes in the tools rail (SPEC-041, ADR-0033, task #40): a notepad for this sandbox and one for
+  the team, below Shell. They save by themselves while people type, with no Save button. Everyone
+  who can see the sandbox reads its notes, writers edit them, and everyone signed in shares the
+  team's. A teammate's edit appears without a reload. When two people type at once, the later save
+  is refused and that person picks Keep mine or Use theirs. API: `GET/PUT /api/notes` and
+  `/api/sandboxes/{sid}/notes`, event `note.updated`.
 - A pull request runs its own CI jobs only when it changed them itself; a branch that is merely
   behind `dev` runs `dev`'s current jobs (SPEC-050 CI-110).
 - `yulius wait` says why Yulius has not pushed or opened the pull request at the end of a turn (an
@@ -29,7 +35,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   idle session (`closed`, as Archive does), then deletes the task. Only a task that is still at
   work or waiting for you has to be stopped first, and its menu says "Still running: stop the
   task before deleting it".
-- Two ready-made automations, enabled in one click on the Automations page (SPEC-042, ADR-0032,
+- Two ready-made automations, enabled in one click on the Automations page (SPEC-042, ADR-0033,
   task #41): "Keep the docs up to date" (the last day's changes, or all docs on the first run)
   and "Work through open issues" (the core team's open issues verified in parallel by
   subagents, a Fix task for each actionable one, never a new issue), both nightly at 03:00 CEST.

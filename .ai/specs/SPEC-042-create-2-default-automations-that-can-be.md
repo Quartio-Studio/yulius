@@ -130,7 +130,7 @@ switch on.
 - Templates live in a catalog like default workflows (AUT-006), not seeded rows: a release brings
   new prompt text, deleting one does not resurrect it, and nothing runs until a person enables it.
   Seeding disabled rows per project would need a creator, a migration for existing projects and a
-  way to stop re-seeding deleted ones. ADR-0032.
+  way to stop re-seeding deleted ones. ADR-0033.
 - A template is "added" when an automation of the same name exists (case-insensitive), with no
   stored link. This needs no migration (two parallel branches add migration 0013), recognises the
   automations created today through MCP, and a renamed copy simply lets the suggestion show

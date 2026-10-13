@@ -172,7 +172,7 @@ flowchart LR
 
 Ready-made automations are a read-only catalog like the default workflows
 ([SPEC-042](../.ai/specs/SPEC-042-create-2-default-automations-that-can-be.md),
-[decision 0032](decisions/0032-ready-made-automations-catalog.md)): `catalog/automations/*.md`,
+[decision 0033](decisions/0033-ready-made-automations-catalog.md)): `catalog/automations/*.md`,
 embedded at build time. Enable copies one into an ordinary automation; a project's automation of
 the same name counts as the template's.
 
@@ -203,6 +203,34 @@ flowchart LR
   LS -->|"after a reload"| D
   C -->|"task started: clear"| D
   SO["Sign-out"] -->|"forget"| LS
+```
+
+## Notes
+
+The tools rail's Notes hold a notepad per sandbox and one for the team, shared and saved while
+people type ([SPEC-041](../.ai/specs/SPEC-041-here-we-want-auto-saved-notes-sandbox-wi.md),
+[decision 0032](decisions/0032-shared-notes-with-revisions.md)). A save carries the whole text and
+the revision it started from; the store writes it only when that revision is still current, and
+every stored edit is announced on the event stream.
+
+```mermaid
+sequenceDiagram
+    participant A as Notepad (notes.js)
+    participant S as Server (App::save_note)
+    participant D as SQLite notes
+    participant B as Teammate's notepad
+    A->>S: PUT notes {body, revision: n} (600 ms after typing, blur, hide)
+    S->>D: UPDATE … WHERE revision = n
+    alt still at n
+        D-->>S: revision n + 1
+        S-->>A: Note
+        S-->>B: note.updated (sandbox viewers / everyone for team)
+        B->>S: GET notes (nothing unsaved)
+    else someone saved meanwhile
+        S-->>A: 409 conflict
+        A->>S: GET notes
+        A-->>A: same text: adopt; else Keep mine / Use theirs
+    end
 ```
 
 ## Agent primitives
