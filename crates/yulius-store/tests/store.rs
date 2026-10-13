@@ -289,6 +289,21 @@ async fn only_one_live_attempt_and_terminal_state_is_final() -> R {
             .transition_attempt(&a1, AttemptState::Killed, &AttemptUpdate::default())
             .await?
     );
+    // Nor is the same outcome recorded twice: the second observer of the end is not first
+    // (SPEC-065, a lost run seen by its escalation and by its lost connection).
+    assert!(
+        !store
+            .transition_attempt(
+                &a1,
+                AttemptState::Exited,
+                &AttemptUpdate {
+                    exit_code: Some(9),
+                    ended_at: Some(Timestamp(60)),
+                    ..Default::default()
+                }
+            )
+            .await?
+    );
     let stored = store.attempt(&a1).await?.ok_or("attempt")?;
     assert_eq!(
         (stored.state, stored.exit_code, stored.child_pid),

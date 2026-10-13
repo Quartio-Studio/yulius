@@ -113,3 +113,4 @@ user reported.
   terminate counts as a dead process), #285 (deletion races with the end of finalization for chains).
 - Not covered: the 409 at the 25 s bound (needs a session host that never ends a run, see #284);
   a deployed instance was not exercised.
+- Follow-ups #284, #285 and #290 are fixed by [SPEC-065](SPEC-065-fix-284-285-290-a-stopped-or-closed-run.md).

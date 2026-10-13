@@ -633,7 +633,9 @@ impl TaskStore for SqliteStore {
             let Some(current) = current.as_deref().and_then(AttemptState::parse) else {
                 return Err(AppError::NotFound);
             };
-            if current != next && !current.can_become(next) {
+            // One durable outcome: a terminal attempt is not transitioned again, not even to the
+            // same state (its second observer is not first, SPEC-065).
+            if (current != next || current.is_terminal()) && !current.can_become(next) {
                 return Ok(false);
             }
             tx.execute(

@@ -949,7 +949,10 @@ route('POST', `/api/tasks/${ID}/switch`, ({ db, p, body }) => {
   }, 2500);
   return summary(task);
 });
-route('DELETE', `/api/tasks/${ID}`, ({ db, p }) => {
+route('DELETE', `/api/tasks/${ID}`, async ({ db, p }) => {
+  // Tests count the requests and can hold the answer (`__yuliusMock.holdDelete = promise`).
+  db.deleteRequests = (db.deleteRequests || 0) + 1;
+  if (db.holdDelete) await db.holdDelete;
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
   // A finished task is closed as it is deleted (SPEC-039); any other live task is stopped first.
