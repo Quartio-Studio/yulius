@@ -37,3 +37,4 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0031](0031-deleting-a-done-task-closes-it.md): Deleting a Done task closes its session first
 - [0032](0032-shared-notes-with-revisions.md): Shared notes are stored on the server and saved by revision
 - [0033](0033-personal-two-factor-guards-the-vault.md): A personal two-factor code guards the vault; a secret is a title, a value and notes
+- [0033](0033-original-prompt-on-demand.md): A task's original prompt is read on demand; its files only from its own attachment folders

@@ -1209,6 +1209,19 @@ pub async fn seed_task(
     status: yulius_domain::task::TaskStatus,
     worktree: Option<&std::path::Path>,
 ) -> Result<yulius_app::model::TaskRecord, Box<dyn std::error::Error>> {
+    seed_task_with_prompt(h, id, sandbox, created_by, status, worktree, "do things").await
+}
+
+/// [`seed_task`] with the task's initial prompt.
+pub async fn seed_task_with_prompt(
+    h: &Harness,
+    id: &str,
+    sandbox: &str,
+    created_by: &str,
+    status: yulius_domain::task::TaskStatus,
+    worktree: Option<&std::path::Path>,
+    prompt: &str,
+) -> Result<yulius_app::model::TaskRecord, Box<dyn std::error::Error>> {
     use yulius_app::ports::store::TaskStore;
     use yulius_domain::ids::{SandboxId, TaskId, UserId};
     let now = h.app.now();
@@ -1217,7 +1230,7 @@ pub async fn seed_task(
         sandbox_id: SandboxId::parse(sandbox)?,
         number: 0,
         title: format!("task {id}"),
-        prompt: "do things".into(),
+        prompt: prompt.into(),
         harness: yulius_domain::harness::Harness::ClaudeCode,
         model: None,
         effort: None,

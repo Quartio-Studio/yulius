@@ -4,6 +4,15 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-13
+
+- "See the original prompt" in the task menu (SPEC-043, ADR-0033, task #42) shows the prompt a
+  task started with: the text formatted as written, with Copy text, and the files attached to it
+  (an image as a thumbnail that opens full size, another file to download, a file removed since
+  named). `GET /api/tasks/{tid}/prompt` returns it; `GET /api/tasks/{tid}/prompt/attachments/{n}`
+  serves a file only from the task's own attachment folders, never through a link or from a path a
+  prompt names elsewhere.
+
 ## 2026-10-12
 
 - Secrets are a title, a value and notes, and reading one needs your own two-factor code
