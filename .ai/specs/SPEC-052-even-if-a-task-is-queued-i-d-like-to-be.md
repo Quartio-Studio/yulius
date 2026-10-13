@@ -164,6 +164,11 @@ request, so the agent gets it as part of its request when the task starts.
     (48 passed).
   - The other failures in those full runs were outside this change and passed alone:
     `terminal.e2e.ts` file paths open the editor (2 of 2), and `menus.e2e.ts` slash menu.
+  - After the fixes, on 5531f1d: the full e2e suite has **203 passed, 1 skipped** (38 files), and
+    `scripts/dev check` passes. Since the merged head's `scripts/dev ci`, only the web UI, the
+    e2e tests and the docs changed.
+  - The merge and the fixes after round 3 go to a fresh review of their own: a merged head needs
+    the review of its exact head.
 - Not covered here: a real Claude Code session (the fake agent stands in, as in SPEC-011 and
   SPEC-030). Read access hiding the card is checked by the server (403) and the shared `allows()`
   test, not by an e2e case.
