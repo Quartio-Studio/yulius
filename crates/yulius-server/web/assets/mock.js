@@ -2197,7 +2197,8 @@ route('GET', '/api/status', ({ db }) => {
     // Disk total unknown on purpose: unknown metrics are null, never zero.
     vm: { cpu_percent: 22 + Math.sin(wobble) * 9, cpu_count: 8, memory_used_bytes: 9.4 * 2 ** 30, memory_total_bytes: 16 * 2 ** 30, disk_used_bytes: 141 * 2 ** 30, disk_total_bytes: null, load: [1.21, 0.97, 0.74], load_1m: 1.21, uptime_s: 9 * 86400 + 3600 * 4 },
     sessions: { live: db.tasks.filter((t) => t.status === 'running').length, limit: 8, queued: db.tasks.filter((t) => t.status === 'queued').length },
-    sandboxes: db.sandboxes.map((s) => ({ id: s.id, slug: s.slug, name: s.name, live_sessions: s.counts.running })),
+    // Tasks with a live process (TaskStatus::is_live), not the cards' "working" count (#170).
+    sandboxes: db.sandboxes.map((s) => ({ id: s.id, slug: s.slug, name: s.name, live_sessions: db.tasks.filter((t) => t.sandbox_id === s.id && !t.archived && ['starting', 'running', 'switching', 'stopping'].includes(t.status)).length })),
     accounts: db.accounts.map((a) => (admin
       ? { label: a.label, provider: a.provider, status: a.status, usage: a.usage, id: a.id, last_error: a.last_error, in_use_by: a.in_use_by }
       : { label: a.label, provider: a.provider, status: a.status, usage: a.usage })),

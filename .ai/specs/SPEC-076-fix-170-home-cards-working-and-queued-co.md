@@ -1,11 +1,11 @@
 ---
 yulius-task: 233afd33-bd2e-4803-9d30-ae083e8481ed
-status: in-progress
+status: done
 ---
 
 # SPEC-076: Home cards' working and queued counts follow the sidebar's rule
 
-Status: in progress
+Status: implemented
 Date: 2026-10-13
 Owner: Yulius task #62
 Scope authorization: GitHub issue #170, through task #62 (part of task #47, "fix all open
@@ -58,12 +58,12 @@ with one rule, the one `taskInfo` applies in the web UI.
 ## Plan
 
 - [x] The task's spec and plan.
-- [ ] One domain rule groups a task as the sidebar does, with unit tests.
-- [ ] The sandbox counters count by that rule, with an integration test.
-- [ ] Home, the tabs and the mock count working and queued by the sidebar's groups, with an e2e
+- [x] One domain rule groups a task as the sidebar does, with unit tests.
+- [x] The sandbox counters count by that rule, with an integration test.
+- [x] Home, the tabs and the mock count working and queued by the sidebar's groups, with an e2e
       test.
-- [ ] SPEC-001, the API document, an ADR and the changes say the rule.
-- [ ] Independent review, gates green and delivery into `dev`.
+- [x] SPEC-001, the API document, an ADR and the changes say the rule.
+- [x] Independent review, gates green and delivery into `dev`.
 
 ## Acceptance criteria
 
@@ -96,3 +96,28 @@ with one rule, the one `taskInfo` applies in the web UI.
   sidebar state, and renaming it widens the diff for no behavior.
 - A Stopping task belongs to Ended on the server too (the sidebar's rule), so a held prompt on a
   task being stopped no longer counts as needing you.
+
+## Evidence
+
+- Test-first: `cargo test -p yulius-domain --lib task::` failed to compile without
+  `AttentionFacts::group`/`TaskGroup`, then passed (13 tests, including
+  `group_follows_the_sidebar_rule` and `a_task_being_stopped_needs_nobody`).
+- `cargo test -p yulius --test main -- delivery::working_and_queued` failed on the old counters
+  (`(2, 7, 1)` against `(2, 4, 2)`: live processes and only `queued`), then passed with
+  `delivery::needs_you_counts_follow_the_sidebar_rule`.
+- `npx e2e run tests/consistency.e2e.ts` failed against the old mock (studio's card never matched
+  its sidebar; product read 1 working instead of 0), then passed with `home.e2e.ts` (15 tests).
+- `python3 scripts/bootstrap.py --install-rustup && scripts/dev ci`: exit 0; 1339 tests passed,
+  16 skipped; repository contracts, lint and docs passed.
+- Full e2e suite (`npx e2e run`, while the Rust gate ran beside it): 245 passed, 1 skipped,
+  2 failed (`archive.e2e.ts` "Archive all stays focused…", `terminal.e2e.ts` "Ctrl+C copies…").
+  Rerun alone, the failures moved to other archive and terminal tests; on an untouched `dev`
+  checkout `archive.e2e.ts` "the keyboard stays on its control when the sidebar list is rebuilt"
+  failed 1 run in 3 too. They are load-sensitive tests this change does not touch (the mock's
+  `recount` runs at the same points and only its numbers changed); reported on #170, as this
+  task creates no issues.
+- Independent review (fresh session, `om-code-review`) of `ac2eec8`: approve, no blocker or major.
+  Its minors are fixed: the mock's `/api/status` `live_sessions` counts live processes again
+  rather than the cards' working count, and the e2e test pins product's split (0 working,
+  1 queued: its chained task); its nit, a tautological domain test, is replaced by
+  `a_task_being_stopped_needs_nobody`. `needs_you()` stays as the domain's named "Needs you" query.

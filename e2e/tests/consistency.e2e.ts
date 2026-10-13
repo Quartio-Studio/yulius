@@ -80,6 +80,12 @@ const sidebarWorking = (browser: Browser) =>
 test('a card’s working and queued counts split the sidebar’s Working group', async ({ app, browser, screen }) => {
   await app.open(mock('/'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+  // product's chained task is queued, and its working one waits for you (a held prompt), so it is
+  // not working; sandbox-3's one task works. The live-process count said product 1 working, 0 queued.
+  await expect.poll(() => cardCountOf(browser, 'product', 'working')).toBe(0);
+  await expect.poll(() => cardCountOf(browser, 'product', 'queued')).toBe(1);
+  await expect.poll(() => cardCountOf(browser, 'sandbox-3', 'working')).toBe(1);
+  await expect.poll(() => cardCountOf(browser, 'sandbox-3', 'queued')).toBe(0);
   // The card's working + queued, then the sidebar's Working count, read in the same page (hash
   // navigation keeps the mock's tasks, which move on by themselves meanwhile).
   const split = async (name: string) => {
@@ -92,7 +98,7 @@ test('a card’s working and queued counts split the sidebar’s Working group',
     return working === null || queued === null ? null : working + queued === await sidebarWorking(browser);
   };
   // studio has queued, starting, switching, paused, still-working (background shells), Done and
-  // Your-turn tasks; product a chained one; sandbox-3 only a working one.
+  // Your-turn tasks: the live-process count said 8 there for a sidebar Working of 6.
   for (const name of ['studio', 'product', 'sandbox-3']) {
     await expect.poll(() => split(name), { timeout: 30000 }).toBe(true);
   }

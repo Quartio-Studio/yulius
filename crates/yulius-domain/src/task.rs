@@ -902,54 +902,17 @@ mod tests {
         assert_eq!(with(A::Working, P::Failing, false).group(), G::Working);
     }
 
-    /// "Needs you" is the Needs you group, for every status and fact.
+    /// A task being stopped is with the ended ones, as in the sidebar: a held prompt or a browser
+    /// request on it no longer needs you (#170).
     #[test]
-    fn needs_you_is_the_needs_you_group() {
-        let statuses = [
-            TaskStatus::Queued,
-            TaskStatus::Starting,
-            TaskStatus::Running,
-            TaskStatus::Switching,
-            TaskStatus::WaitingCapacity,
-            TaskStatus::Stopping,
-            TaskStatus::Closed,
-            TaskStatus::Stopped(StopReason::Cancelled),
-            TaskStatus::Failed(FailReason::SpawnError),
-            TaskStatus::Chained,
-        ];
-        let activities = [
-            None,
-            Some(Activity::Working),
-            Some(Activity::Waiting),
-            Some(Activity::NeedsAttention),
-            Some(Activity::Done),
-        ];
-        let pulls = [
-            None,
-            Some(PullSignal::Tested),
-            Some(PullSignal::InReview),
-            Some(PullSignal::Failing),
-            Some(PullSignal::Merged),
-        ];
-        for status in statuses {
-            for activity in activities {
-                for pull in pulls {
-                    for flags in 0u8..32 {
-                        let f = AttentionFacts {
-                            status,
-                            activity,
-                            held_prompt: flags & 1 != 0,
-                            browser_request: flags & 2 != 0,
-                            chain_blocked: flags & 4 != 0,
-                            plan_open: flags & 8 != 0,
-                            background_shells: flags & 16 != 0,
-                            pull,
-                        };
-                        assert_eq!(f.needs_you(), f.group() == TaskGroup::NeedsYou, "{f:?}");
-                    }
-                }
-            }
-        }
+    fn a_task_being_stopped_needs_nobody() {
+        let stopping = AttentionFacts {
+            held_prompt: true,
+            browser_request: true,
+            ..facts(TaskStatus::Stopping, Some(Activity::NeedsAttention))
+        };
+        assert!(!stopping.needs_you());
+        assert_eq!(stopping.group(), TaskGroup::Ended);
     }
 
     #[test]
