@@ -1023,3 +1023,76 @@ fn a_manual_switch_at_a_limit_resumes_past_the_limit() -> TestResult {
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// SPEC-072 LRS-001 (#276): Claude Code continues the turn a limit cut by itself at the reset
+/// ("continuing automatically") before the resume loop acts: the `limit` pause ends as
+/// overtaken and the task runs; capacity returning later starts no second run, so nothing
+/// terminates the turn the CLI continued.
+#[test]
+fn a_turn_the_cli_continues_by_itself_ends_the_limit_pause() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            limit_after: Some(1),
+            limit_continues_ms: Some(1_500),
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let since = now();
+        let id = new_task(&app, &sandbox, &user, "Limit").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("FAKE-AGENT READY") }
+        })
+        .await?;
+        app.send_input(&id, b"hello\r").await?;
+        wait_for("the pause at the limit", Duration::from_secs(30), || async {
+            matches!(
+                app.deps.store.open_pause(&id).await,
+                Ok(Some(pause)) if pause.kind == PauseKind::Limit
+            )
+        })
+        .await?;
+        wait_for("the CLI's own continuation", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("CONTINUED") }
+        })
+        .await?;
+        wait_for("the pause to end", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::Running)
+        })
+        .await?;
+        assert!(app.deps.store.open_pause(&id).await?.is_none());
+        let pauses = app.deps.store.pauses_since(since).await?;
+        assert!(
+            pauses
+                .iter()
+                .any(|p| p.kind == PauseKind::Limit && p.outcome.as_deref() == Some("overtaken")),
+            "{pauses:?}"
+        );
+
+        probe.set("a-first", usage(0.0, 5 * HOUR, 30.0, 100));
+        refresh(&app, &user, "a-first").await?;
+        let _ = app.resume_round().await;
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert_eq!(attempts.len(), 1, "no second run: {attempts:?}");
+        assert_eq!(attempts[0].state, yulius_domain::task::AttemptState::Live);
+        wait_for("the continued turn's end", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("DONE continued") }
+        })
+        .await?;
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
