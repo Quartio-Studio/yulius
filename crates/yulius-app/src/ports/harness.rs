@@ -128,6 +128,8 @@ pub enum Observation {
     UserTurn {
         /// When the prompt was recorded, if known.
         at: Option<Timestamp>,
+        /// Claude Code woke the session itself (a task notification), nobody typed it.
+        wake: bool,
     },
     /// The person interrupted the turn (Esc / Ctrl+C); the agent waits for input.
     TurnInterrupted {

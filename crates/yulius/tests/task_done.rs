@@ -1381,8 +1381,8 @@ fn a_goal_not_met_never_reads_idle_between_turns() -> TestResult {
 }
 
 /// SPEC-079 BGW-005 (#264): the goal turn's Stop waits for the verdict. "failed" makes the task
-/// wait for its person; no verdict at all settles it at the turn's record as before. Neither ever
-/// reads Done.
+/// wait for its person before the turn's record (6 s later) comes; no verdict at all settles it at
+/// that record as before, well before the 20 s bound. Neither reads Done.
 fn an_unmet_goal_leaves_the_task_waiting(verdict: &'static str) -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = data_dir()?;
@@ -1397,15 +1397,34 @@ fn an_unmet_goal_leaves_the_task_waiting(verdict: &'static str) -> TestResult {
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = goal_task(&app, &sandbox, &user, "Ship it").await?;
-        wait_for("the goal turn's end", Duration::from_secs(90), || {
-            screen_contains(&app, &id, "GOAL UNMET")
+        let settled_by = if verdict == "failed" {
+            "GOAL FAILED"
+        } else {
+            "GOAL UNMET"
+        };
+        wait_for("the verdict or the record", Duration::from_secs(90), || {
+            screen_contains(&app, &id, settled_by)
         })
         .await?;
-        // Well within the verdict's 20 s bound: the verdict or the record settled it.
-        wait_for("Your turn", Duration::from_secs(10), || async {
+        wait_for("Your turn", Duration::from_secs(4), || async {
             activity(&app, &id).await == Some(Activity::Waiting)
         })
         .await?;
+        if verdict == "failed" {
+            assert!(
+                !screen_contains(&app, &id, "GOAL UNMET").await,
+                "the verdict settled it, not the record"
+            );
+        }
+        wait_for("the turn's record", Duration::from_secs(20), || {
+            screen_contains(&app, &id, "GOAL UNMET")
+        })
+        .await?;
+        assert_eq!(
+            activity(&app, &id).await,
+            Some(Activity::Waiting),
+            "never Done"
+        );
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

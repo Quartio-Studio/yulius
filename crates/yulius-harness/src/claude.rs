@@ -198,13 +198,17 @@ fn observe_user(record: &Map<String, Value>) -> Vec<Observed> {
         return vec![Observed::CompactFailed];
     }
     let at = str_of(record, "timestamp").and_then(parse_rfc3339);
+    let text = message_text(message);
     let turn = if is_interrupt(message) {
         Observed::TurnInterrupted { at }
     } else {
-        Observed::UserTurn { at }
+        Observed::UserTurn {
+            at,
+            wake: text.trim_start().starts_with("<task-notification>"),
+        }
     };
     // A wake-up prompt says which background work ended.
-    let mut out = background_ended(&message_text(message));
+    let mut out = background_ended(&text);
     if let Some(session_id) = owned_str(record, "sessionId") {
         out.push(Observed::SessionMeta {
             session_id,
@@ -668,7 +672,8 @@ mod tests {
                 r#"{"type":"user","timestamp":"2026-10-10T05:38:01.385Z","message":{"content":"go"}}"#
             ),
             vec![Observed::UserTurn {
-                at: Some(Timestamp(1_791_610_681_385))
+                at: Some(Timestamp(1_791_610_681_385)),
+                wake: false
             }]
         );
     }
@@ -834,7 +839,7 @@ mod tests {
             vec![
                 ended("bppf4z917"),
                 ended("b71u1sesi"),
-                Observed::UserTurn { at }
+                Observed::UserTurn { at, wake: true }
             ]
         );
         // Delivered while the agent works.
@@ -886,7 +891,7 @@ mod tests {
                 "why did you stop? [Request interrupted by user]"
             ))
             .last(),
-            Some(&Observed::UserTurn { at })
+            Some(&Observed::UserTurn { at, wake: false })
         );
     }
 

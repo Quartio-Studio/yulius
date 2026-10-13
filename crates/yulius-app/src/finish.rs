@@ -72,7 +72,7 @@ pub struct TranscriptFacts {
 impl TranscriptFacts {
     /// Folds one observation, in transcript order.
     pub fn fold(&mut self, observation: &Observation) {
-        if let Observation::UserTurn { at: Some(at) }
+        if let Observation::UserTurn { at: Some(at), .. }
         | Observation::TurnInterrupted { at: Some(at) }
         | Observation::AgentWork { at: Some(at) }
         | Observation::TurnComplete { at: Some(at) } = observation
@@ -80,9 +80,12 @@ impl TranscriptFacts {
             self.last_turn_at = Some(self.last_turn_at.map_or(*at, |last| last.max(*at)));
         }
         match observation {
-            Observation::UserTurn { .. } => {
+            Observation::UserTurn { wake, .. } => {
                 self.turn_open = Some(true);
-                self.goal_achieved = Some(false);
+                // Claude Code's own wake-up keeps an achieved goal.
+                if !wake {
+                    self.goal_achieved = Some(false);
+                }
                 self.background_agents = 0;
                 self.limit_pending = false;
             }
@@ -921,6 +924,7 @@ mod tests {
 
     const PROMPT: Observation = Observation::UserTurn {
         at: Some(Timestamp(1)),
+        wake: false,
     };
 
     const ENDED: Observation = Observation::TurnEnded {
@@ -1179,6 +1183,23 @@ mod tests {
         slot.open(300);
         slot.clear();
         assert!(!slot.take(300) && !slot.take_any());
+    }
+
+    /// SPEC-079 BGW-001 (review): Claude Code's own wake-up (background work ended) keeps an
+    /// achieved goal, also in a replay; a typed prompt does not.
+    #[test]
+    fn a_wake_up_keeps_an_achieved_goal() {
+        let wake = Observation::UserTurn {
+            at: Some(Timestamp(5)),
+            wake: true,
+        };
+        let woken = reduce(&[Observation::Goal(GoalOutcome::Met), ENDED, wake]);
+        assert_eq!(
+            (woken.goal_achieved, woken.turn_open),
+            (Some(true), Some(true))
+        );
+        let typed = reduce(&[Observation::Goal(GoalOutcome::Met), ENDED, PROMPT]);
+        assert_eq!(typed.goal_achieved, Some(false));
     }
 
     /// SPEC-079 BGW-005: a goal is open from its set or "not met" record until it is achieved,

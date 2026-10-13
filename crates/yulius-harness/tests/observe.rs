@@ -210,7 +210,8 @@ fn claude_goal_mode_records() {
         vec![
             &goal(GoalOutcome::Set),
             &Observed::UserTurn {
-                at: Some(Timestamp(1_791_610_681_385))
+                at: Some(Timestamp(1_791_610_681_385)),
+                wake: false
             },
             &Observed::TurnComplete {
                 duration_ms: None,

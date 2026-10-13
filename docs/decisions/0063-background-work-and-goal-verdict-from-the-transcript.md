@@ -45,7 +45,9 @@ Decision 0044 derives a task's activity from Claude Code's own records. It left 
    - agent work after the Stop, a prompt or an interrupt: the task keeps working;
    - the turn record, or the 20 s timeout: the turn settles as before.
 4. **Every path to Done drains the queue.** The last background work ending drains it, and so does
-   a Stop that settles the task Done.
+   a Stop that settles the task Done. Claude Code's own wake-up prompt (a `<task-notification>`)
+   keeps an achieved goal, as the prompt hook already did, so a Done task's wake-up turn ends Done
+   again.
 
 ## Alternatives
 
@@ -55,7 +57,8 @@ Decision 0044 derives a task's activity from Claude Code's own records. It left 
   expiry would not bound it.
 - **Count agents ourselves instead of from `pendingBackgroundAgentCount`.** The CLI's count is
   exact once the turn closes, and survives restarts and absorbed notifications. Our own launch
-  tracking covers only the window before that record.
+  tracking fills the idle count only before that record. The switch guard is the exception: it
+  waits for any launch not yet notified as ended, since a wake-up turn resets the count.
 - **Have the Stop hook parse the transcript file itself.** That would be a second reader with its
   own offsets. One more watcher poll costs at most about two seconds, and only when a switch was
   decided.

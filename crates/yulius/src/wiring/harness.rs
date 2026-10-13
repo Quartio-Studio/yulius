@@ -305,7 +305,9 @@ impl TranscriptWatch for Watch {
                     Observed::SessionMeta {
                         session_id, cwd, ..
                     } => out.push(Observation::Session { session_id, cwd }),
-                    Observed::UserTurn { at } => out.push(Observation::UserTurn { at }),
+                    Observed::UserTurn { at, wake } => {
+                        out.push(Observation::UserTurn { at, wake });
+                    }
                     Observed::TurnInterrupted { at } => {
                         out.push(Observation::TurnInterrupted { at });
                     }

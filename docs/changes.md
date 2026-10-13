@@ -13,10 +13,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
     starts from a Done the verdict takes back.
   - Monitor streams count as background work until their stream ends or expires. Claude Code's
     turn record does not count them, and a WebSocket monitor has no process.
-  - A proactive switch at a Stop waits while a background agent launched in that turn is pending.
-    The switch used to end the agent.
+  - A proactive switch at a Stop waits while a background agent the session launched is still
+    pending, even one launched in the turn that just ended. The switch used to end the agent.
   - When a Done task's last background shell or agent ends, the queue drains at once instead of at
-    the next tick. So does a Stop that makes a task Done.
+    the next tick. So does a Stop that makes a task Done. Claude Code's wake-up prompt no longer
+    takes back an achieved goal, so the task woken by its finished work ends Done again.
 - An automation starts its tasks like New task (SPEC-078, ADR-0062, task #70; SPEC-001 AUT-013).
   The builder's **Start** row, the API (`supertask`, `after_task_id`, `start_rule`) and the tools
   `automation_create` / `automation_update` pick one of four choices: Start now (queued, the

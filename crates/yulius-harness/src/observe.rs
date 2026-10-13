@@ -32,6 +32,9 @@ pub enum Observed {
     UserTurn {
         /// When the prompt was recorded (the record's `timestamp`), if parseable.
         at: Option<Timestamp>,
+        /// Claude Code woke the session itself (a `<task-notification>` prompt: background work
+        /// ended or reported), no person or Yulius typed it.
+        wake: bool,
     },
     /// The person stopped the agent's turn (Esc, or Ctrl+C while it works): Claude Code records
     /// a user line "[Request interrupted by user]" (or "… for tool use") and waits for input.

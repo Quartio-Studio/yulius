@@ -547,12 +547,13 @@ impl App {
         // build, gate or review the agent left running would be lost (tasks #3 and #5, F
         // 2026-10-11/12, #271). An agent launched in this turn is known only from the lines
         // written before this Stop: they are read first (SPEC-079 BGW-004).
-        let busy = if matches!(decision.0, Decision::Switch { .. }) {
-            self.await_transcript_read(&task.id).await;
-            self.shells_running_now(&task.id).await
-        } else {
-            false
-        };
+        let busy =
+            if matches!(decision.0, Decision::Switch { .. }) && !self.switch_cooling(&task.id) {
+                self.await_transcript_read(&task.id).await;
+                self.shells_running_now(&task.id).await
+            } else {
+                false
+            };
         let stays = match decision {
             (Decision::Stay, _) => true,
             (Decision::Switch { .. }, _) if busy => true,

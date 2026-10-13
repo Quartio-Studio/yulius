@@ -3140,9 +3140,12 @@ impl App {
                 let account = attempt.account_id.clone();
                 tokio::spawn(async move { app.rotate(&tid, account, Trigger::LimitReached).await });
             }
-            Observation::UserTurn { at } => {
-                // A new prompt: an achieved goal no longer makes the task done (TSK-014).
-                runtime.goal_achieved.store(false, Ordering::SeqCst);
+            Observation::UserTurn { at, wake } => {
+                // A new prompt: an achieved goal no longer makes the task done (TSK-014). Claude
+                // Code's own wake-ups (background work ended) keep it, as the prompt hook does.
+                if !wake {
+                    runtime.goal_achieved.store(false, Ordering::SeqCst);
+                }
                 // A prompt of a turn whose clean Stop already came is not a new turn.
                 if at.is_some_and(|at| at.0 <= runtime.last_stop_ms.load(Ordering::SeqCst)) {
                     return;

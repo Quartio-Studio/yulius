@@ -53,8 +53,8 @@
 //! prints `✓ Goal achieved`. With `--goal-background N` the goal turn first starts a background
 //! shell shaped like Claude Code's Bash tool (`/bin/sh -c "sleep N && pwd -P >| /dev/null"`, a
 //! child of this process) and prints `BACKGROUND <pid>`; when it exits the agent is woken like
-//! Claude Code wakes it (a `queued_command` task notification and a short turn with its Stop
-//! hook) and prints `BACKGROUND DONE`. With `--goal-agent N` the goal turn launches a background
+//! Claude Code wakes an idle session (a `<task-notification>` user prompt and a short turn with
+//! its Stop hook) and prints `BACKGROUND DONE`. With `--goal-agent N` the goal turn launches a background
 //! agent (its tool result `{"status":"async_launched","agentId":"agent-1"}` before the Stop hook)
 //! that wakes the session after N seconds and prints `AGENT DONE`. With `--goal-monitor N` it
 //! starts a Monitor stream (`{"taskId":"monitor-1","timeoutMs":N000}`) that never reports; with
@@ -702,35 +702,6 @@ impl Transcript {
         self.append(&[summary, duration])
     }
 
-    /// A background shell ended: Claude Code queues a task notification and wakes the agent.
-    fn notification_turn(&mut self, pid: u32) -> io::Result<()> {
-        self.turns += 1;
-        let n = self.turns;
-        let timestamp = rfc3339(now_ms());
-        let queued_uuid = format!("fake-{}-{n}-q", self.session_id);
-        let mut queued = self.claude_envelope("attachment", &queued_uuid, &timestamp);
-        queued["attachment"] = json!({
-            "type": "queued_command",
-            "commandMode": "task-notification",
-            "prompt": format!("<task-notification>\n<task-id>bash-{pid}</task-id>\n<status>completed</status>\n</task-notification>"),
-            "origin": {"kind": "task-notification", "producer": "session-task"},
-        });
-        let assistant_uuid = format!("fake-{}-{n}-a", self.session_id);
-        let mut assistant = self.claude_envelope("assistant", &assistant_uuid, &timestamp);
-        assistant["message"] = json!({
-            "id": format!("msg_fake_{n}"),
-            "type": "message",
-            "role": "assistant",
-            "model": "fake-model",
-            "content": [{"type": "text", "text": "The background command finished."}],
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 8, "cache_creation_input_tokens": 0,
-                "cache_read_input_tokens": 0, "output_tokens": 6}
-        });
-        self.last_uuid = Some(assistant_uuid);
-        self.append(&[queued, assistant])
-    }
-
     /// The API's answer to a message too long for the context ([`Self::begin`] wrote its user
     /// line): Claude Code 2.1.292's API-error record (no Stop hook follows).
     fn prompt_too_long(&mut self) -> io::Result<()> {
@@ -924,15 +895,15 @@ fn start_background(
     let pid = child.id();
     std::thread::spawn(move || {
         let _ = child.wait();
-        if let Some(transcript) = &transcript
-            && let Ok(mut transcript) = transcript.lock()
-        {
-            let _ = transcript.notification_turn(pid);
-        }
-        let _ = say("BACKGROUND DONE");
-        if let Some(hooks) = &hooks {
-            let _ = hooks.stop();
-        }
+        let prompt = format!(
+            "<task-notification>\n<task-id>bash-{pid}</task-id>\n<status>completed</status>\n</task-notification>"
+        );
+        wake(
+            &prompt,
+            "BACKGROUND DONE",
+            transcript.as_ref(),
+            hooks.as_ref(),
+        );
     });
     Ok(pid)
 }
@@ -949,25 +920,42 @@ fn wake_after(
 ) {
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(ms));
-        if let Some(hooks) = &hooks {
-            let _ = hooks.prompt(prompt);
-        }
-        let answer = "The background work finished.";
-        if let Some(transcript) = &transcript
-            && let Ok(mut t) = transcript.lock()
-        {
-            let _ = t.turn(prompt, answer);
-        }
-        let _ = say(done);
-        if let Some(hooks) = &hooks {
-            let _ = hooks.stop();
-        }
-        if let Some(transcript) = &transcript
-            && let Ok(mut t) = transcript.lock()
-        {
-            let _ = t.close_turn(2_000, 0);
-        }
+        wake(prompt, done, transcript.as_ref(), hooks.as_ref());
     });
+}
+
+/// Claude Code wakes the idle session when background work ends: its `<task-notification>` is a
+/// user prompt (after `UserPromptSubmit`), the agent answers and prints `done`, the Stop hook runs
+/// and the turn closes with nothing pending.
+fn wake(
+    prompt: &str,
+    done: &str,
+    transcript: Option<&Arc<Mutex<Transcript>>>,
+    hooks: Option<&Hooks>,
+) {
+    if let Some(hooks) = hooks {
+        let _ = hooks.prompt(prompt);
+    }
+    let write = |f: &dyn Fn(&mut Transcript) -> io::Result<()>| {
+        if let Some(transcript) = transcript
+            && let Ok(mut t) = transcript.lock()
+        {
+            let _ = f(&mut t);
+        }
+    };
+    // The model takes a moment to answer, as a real one does: the prompt is read before the Stop.
+    write(&|t| t.begin(prompt));
+    std::thread::sleep(Duration::from_millis(1_500));
+    write(&|t| t.answer(prompt, "The background work finished."));
+    let _ = say(done);
+    if let Some(hooks) = hooks {
+        let _ = hooks.stop();
+    }
+    if let Some(transcript) = transcript
+        && let Ok(mut t) = transcript.lock()
+    {
+        let _ = t.close_turn(2_000, 0);
+    }
 }
 
 fn report_env(names: &[String]) -> io::Result<()> {
@@ -1251,9 +1239,13 @@ fn goal_turn(
                 "reason": "Done and verified.", "iterations": 1, "durationMs": 51_000,
                 "tokens": 7_100}),
             )?,
-            GoalVerdict::Failed => t
-                .goal_status(json!({"type": "goal_status", "met": false, "failed": true,
-                "condition": condition, "reason": "It cannot be done."}))?,
+            GoalVerdict::Failed => {
+                t.goal_status(json!({"type": "goal_status", "met": false, "failed": true,
+                    "condition": condition, "reason": "It cannot be done."}))?;
+                // The record that closes the turn comes late: the verdict alone settles it.
+                say("GOAL FAILED")?;
+                std::thread::sleep(Duration::from_secs(6));
+            }
             GoalVerdict::None => {}
         }
         t.close_turn(51_000, u32::from(options.goal_agent.is_some()))?;
