@@ -42,6 +42,10 @@ watching, steering and unblocking.
 - **Yulius CI**: the projects' only CI; it runs on the VM, no GitHub Actions.
 - **Browser panel**: the sandbox's real Chrome streamed as video so people can pass captchas
   and sign-ins for the agent.
+- **Automations**: tasks on a schedule. Two ready-made ones, off until a person enables them in one
+  click on the Automations page: "Keep the docs up to date" and "Work through open issues" (the
+  core team's issues verified in parallel, a Fix task for each actionable one, no new issues),
+  nightly at 03:00 CEST.
 - **Notes**: in the tools rail, a notepad per sandbox and one for the whole team, shared and saved
   while people type; a teammate's edit shows up live, and two edits at once end in a choice.
 - **Editor, terminals, Git view, automations, workflow catalog** in one web UI, whose menus fit
