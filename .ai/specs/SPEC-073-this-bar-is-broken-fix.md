@@ -1,11 +1,11 @@
 ---
 yulius-task: 9ad72835-d7ee-4604-8391-2d7f6b65b968
-status: in-progress
+status: done
 ---
 
 # SPEC-073: A long task state no longer pushes the step count under the progress bar
 
-Status: in progress
+Status: implemented
 Date: 2026-10-13
 Owner: Yulius task #68
 Scope authorization: task #68 ("this bar is broken, fix", with a screenshot of the task strip);
@@ -43,40 +43,79 @@ text is unbounded. The chips are short and already hidden below 560 px.
 
 ## Requirements
 
-- STR-1: The state text truncates with an ellipsis before the task title and step count lose
-  their room. Its full text stays in the pill's tooltip, which `title` already sets.
+- STR-1: The state takes at most 40% of the strip. Beyond that it truncates with an ellipsis, and
+  its full text stays in the pill's tooltip, which `title` already sets. A state that fits keeps
+  its words whole: the step name, then the title, give way first.
 - STR-2: Nothing in the strip's label paints outside its button. If the label is ever too long
   for its room, it is clipped inside the toggle and never drawn over the bar.
-- STR-3: On mock task #14, no strip parts overlap at 1440, 1024 and 768 px, or beside an open
-  tool panel.
+- STR-3: On mock task #14, no strip parts overlap and "Step N/M" ends inside its button at 1440,
+  1024 and 768 px, and none overlap beside an open tool panel. On task #12 at 768 px, the short
+  state ("Working") stays whole.
 
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Regression test: a long task state no longer pushes the step count under the bar
-- [ ] Fix: the state text gives way and the strip label never paints past its button
-- [ ] Review, gates and delivery to dev
+- [x] Regression test: a long task state no longer pushes the step count under the bar
+- [x] Fix: the state text gives way and the strip label never paints past its button
+- [x] Review, gates and delivery to dev
 
 ## Acceptance criteria
 
-- The new `responsive.e2e.ts` case fails on `dev` with a `step-count × step-progress`
-  overlap and passes with the fix.
+- The new `responsive.e2e.ts` long-state case fails on `dev` with a `step-count × step-progress`
+  overlap and passes with the fix. The short-state case fails on the first fix attempt
+  (`stateWhole: false`) and passes with the final one.
 - The rest of `responsive.e2e.ts` and the full e2e suite stay green.
 
 ## Test plan
 
 - e2e (`responsive.e2e.ts`): open task #14 at 1440, 1024 and 768 px, and at 1440 px with the
   Shell panel open. Wait on `layoutProblems()` until there are no overlaps and no sideways
-  scroll. The test also asserts that the state is long, so it keeps covering the case.
+  scroll, and on the step count ending inside the toggle. The overlap check trims boxes to
+  clipping ancestors, so it cannot see a count the toggle clips. The test also asserts that the
+  state is long, so it keeps covering the case.
+- e2e: on task #12 at 768 px, the short state is whole (`scrollWidth <= clientWidth`) and the
+  count is inside the toggle.
 - Full e2e suite and `scripts/dev ci` as the gates.
 
 ## Decisions
 
-- **The state gives way, not the title.** UI-046 already says the title leads. The state's full
-  text is one hover away, and its icon and colour still carry the meaning. Alternatives: lower
-  container-query breakpoints, which are guesses that the next long label breaks again, or
-  hiding the state text at a fixed width, which loses it on wide strips that have room. Neither
-  holds for unbounded text. This is a local CSS rule, so it gets no ADR.
+- **The state is capped at 40% of the strip; the label keeps the rest.** The toggle stays
+  `flex: 1; min-width: 0`, so it takes what the other parts leave, as before. `.strip-status`
+  gets `max-width: 40%` and `min-width: 0`, and `.strip-state` gets an ellipsis. A long state
+  can no longer starve the label, and a state that fits is never cut. The state's full text is
+  one hover away, and its icon and colour still carry the meaning.
+  Alternatives:
+  - The first attempt made the toggle `flex: 1 1 auto` and the pill shrinkable. The review
+    found that flex shrinks in proportion to each part's basis, so even "Working" truncated
+    while the step name still showed. That broke UI-046's order: the step name first.
+  - A floor on the toggle (`min-width: 12rem`) plus a tiny shrink factor on the pill does keep
+    that order. But the floor overflows the phone strip, where the count and state are already
+    hidden, so it would need another breakpoint.
+  - Lower container-query breakpoints are guesses that the next long label breaks again.
+  This is a local CSS rule, so it gets no ADR.
 - **The toggle clips (`overflow: hidden`) as a backstop.** The step count stays `flex: none` so it
   reads whole. If it ever still runs out of room, the toggle clips it instead of letting it paint
   over the bar.
+
+## Evidence
+
+- Reproduced on `dev` (`?mock=1#/s/studio/t/14`, 768 px). The state pill is 290 px and the toggle
+  46 px. "Step 7/7" ends at x=297 and the bar starts at x=262. A screenshot of the strip matches the
+  reported one: no title, and the bar through "Step 7/7".
+- `npx e2e run tests/responsive.e2e.ts` before the fix (commit 6e402a5):
+  `last: expected {"overlaps":["span.step-count \"Step 7/7\" × div.step-progress …"]}`, 1 failed |
+  16 passed.
+- With the first fix attempt, the new short-state case failed: `{"countInside":true,"stateWhole":false}`.
+- With the final fix, every strip case in `responsive.e2e.ts` passes: long state, short state, and
+  task #12 beside a tool panel. The only failures were page-heading timeouts on first load at load
+  average 37 to 47 on 12 CPUs, on pages unrelated to the strip.
+- Screenshots at 1440 and 768 px: the state reads in full at 1440 px and ends in "…" at 768 px, with
+  "Step 7/7" whole beside the bar.
+- `scripts/dev ci` exited 0: repository checks, check, fmt, clippy, and nextest with 1324 tests
+  run, 1324 passed.
+- The full e2e suite could not give a signal locally. About 30 tests across unrelated suites
+  (editor, menus, agent panel) timed out at load 45 on 12 CPUs. Yulius CI's e2e job at the
+  pull-request head is the authority.
+- Independent review (a fresh session, `om-code-review`). Round 1 asked for changes: the
+  proportional shrink truncated short states, and the overlap check was blind to a clipped
+  count. Both are fixed in this change, each with a test.

@@ -112,6 +112,19 @@ test('a task with a tool panel open keeps its step strip and the panel head apar
 
 // Task #68 (SPEC-073, #341): a long state ("Working · 1 background task still running · …") kept
 // its width and left the strip's label too little room, so "Step 7/7" ran under the progress bar.
+// The toggle clips its label, so the overlap check alone cannot see a count pushed out of it: the
+// count must also end inside the toggle. A short state stays whole while the step name has room.
+const stripRoom = (browser: Browser) => browser.evaluate(() => {
+  const toggle = document.querySelector('.taskview .stepstrip-toggle')!;
+  const count = document.querySelector('.taskview .step-count');
+  const state = document.querySelector('.taskview .strip-state');
+  const inner = toggle.getBoundingClientRect().right - parseFloat(getComputedStyle(toggle).paddingRight);
+  return {
+    countInside: Boolean(count && count.getBoundingClientRect().right <= inner + 0.5),
+    stateWhole: Boolean(state && state.scrollWidth <= state.clientWidth),
+  };
+});
+
 test('a task with a long state keeps its step count clear of the progress bar', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/14'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#14 Start the preview server');
@@ -119,12 +132,20 @@ test('a task with a long state keeps its step count clear of the progress bar', 
   for (const width of [1440, 1024, 768]) {
     await browser.setViewport({ width, height: 900 });
     await expect.poll(() => layoutProblems(browser)).toEqual({ overlaps: [], sideways: false });
+    await expect.poll(async () => (await stripRoom(browser)).countInside).toBe(true);
   }
   await browser.setViewport({ width: 1440, height: 900 });
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('navigation', 'Tools').getByRole('button', /^Shell/).click();
   await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
   await expect.poll(() => layoutProblems(browser)).toEqual({ overlaps: [], sideways: false });
+});
+
+test('a task with a short state keeps it whole while the step name gives way', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 768, height: 900 });
+  await app.open(mock('/s/studio/t/12'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await expect.poll(() => stripRoom(browser)).toEqual({ countInside: true, stateWhole: true });
 });
 
 // SPEC-001 UI-047 (F 2026-10-10): "here is some space at the right".
