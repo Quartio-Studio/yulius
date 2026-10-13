@@ -187,7 +187,10 @@ impl Git {
     }
 
     /// The best common ancestor of two revisions.
-    pub(crate) fn merge_base(&self, repo: &Path, a: &str, b: &str) -> Result<String, GitError> {
+    ///
+    /// # Errors
+    /// Unknown revisions, no common ancestor, or Git failures.
+    pub fn merge_base(&self, repo: &Path, a: &str, b: &str) -> Result<String, GitError> {
         let a = self.rev_parse(repo, a)?;
         let b = self.rev_parse(repo, b)?;
         let output = self.run_ok(
