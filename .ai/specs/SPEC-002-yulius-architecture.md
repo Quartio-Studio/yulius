@@ -1049,7 +1049,7 @@ ciphertext; that instance-wide command (it must also re-seal accounts, GitHub to
 secrets) is a follow-up. After a suspected leak of `master.key` together with a database copy,
 re-encryption does not help: the values themselves must be rotated at their providers.
 
-**Team section.** (Since F 2026-10-12, SPEC-040 and ADR-0034: a team secret is a title, a value
+**Team section.** (Since F 2026-10-12, SPEC-040 and ADR-0042: a team secret is a title, a value
 and notes; older ones fold in when read; reveals need the person's own two-factor code entered in
 the browser session within 10 minutes instead of a recent sign-in; there is no per-secret seed;
 the people who manage an agent secret read it back the same way. The paragraph below is the
@@ -1070,7 +1070,7 @@ injection (`Authorization: Bearer`, Basic with a user name, or a named header), 
 name and TOTP seed, and a value of at least 8 characters (shorter values cannot be recognised in
 output, VLT-006). Sandbox secrets are managed by members with write access, instance-wide ones by
 instance administrators; members who can view a sandbox see names, descriptions and bindings.
-Values are write-only for everyone (replace, never read back). (Since SPEC-040, ADR-0034: the
+Values are write-only for everyone (replace, never read back). (Since SPEC-040, ADR-0042: the
 people who manage one read it back after their two-factor code; agents still never do.)
 
 Mechanisms considered for *using* a secret:
@@ -2211,7 +2211,7 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 
 - Secrets vault (ADR-20): values only under envelope encryption (per-write data keys, KEK derived
   from the master key, row identity as associated data); reveals need the person's own two-factor
-  code entered in the browser session within 10 minutes and are audited (SPEC-040, ADR-0034);
+  code entered in the browser session within 10 minutes and are audited (SPEC-040, ADR-0042);
   agents never read agent secrets (their managers can, after the code), which are added to
   requests by the egress proxy only for their bound hosts (TLS interception only there; local
   destinations refused after resolution), typed by `browser_fill_secret` only into pages of those
