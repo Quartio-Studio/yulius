@@ -284,6 +284,25 @@ pub struct SupervisorState {
 /// File in a run directory holding the run's final screen (`<cols> <rows>\n` + redraw bytes).
 pub(crate) const FINAL_SCREEN_FILE: &str = "final-screen";
 
+/// File in a run directory while the run's first message, which Yulius types (SPEC-030), was not
+/// submitted yet: the session's first prompt let through removes it (SPEC-068 OPN-001).
+pub(crate) const OPENING_PENDING_FILE: &str = "opening-pending";
+
+/// Whether the run in `run_dir` still has its typed first message pending.
+pub(crate) fn opening_pending(run_dir: &str) -> bool {
+    Path::new(run_dir).join(OPENING_PENDING_FILE).exists()
+}
+
+/// The run in `run_dir` submitted its first prompt: nothing of its first message is pending.
+pub(crate) fn opening_sent(run_dir: &str) {
+    match std::fs::remove_file(Path::new(run_dir).join(OPENING_PENDING_FILE)) {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+            tracing::warn!(run_dir, error = %err, "could not clear the pending first message");
+        }
+        _ => {}
+    }
+}
+
 /// Writes `bytes` to `path` readable by the owner only.
 pub(crate) fn write_private_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
@@ -978,6 +997,12 @@ impl App {
             exit_reason: None,
         };
         store.insert_attempt(&attempt).await?;
+        // Before the spawn, so the first prompt's hook always finds it (SPEC-068).
+        if typed_opening.is_some()
+            && let Err(err) = write_private_file(&run_dir.join(OPENING_PENDING_FILE), b"")
+        {
+            tracing::warn!(task = %task.id, error = %err, "could not record the pending first message");
+        }
         let runtime = self.runtime(&task.id);
         // Before the spawn, so the opening turn's Stop hook can never come first.
         runtime
@@ -1123,6 +1148,30 @@ impl App {
             && let Err(err) = self
                 .set_task_activity(&task, Activity::NeedsAttention)
                 .await
+        {
+            tracing::warn!(task = %task_id, error = %err, "could not flag the task");
+        }
+    }
+
+    /// A restart cut the typing of the run's first message (SPEC-068 OPN-002): the task needs a
+    /// person, said in its terminal.
+    async fn opening_never_sent(&self, task_id: &TaskId) {
+        let Ok(Some(task)) = self.deps.store.task(task_id).await else {
+            return;
+        };
+        let goal = if task.mode == TaskMode::Goal {
+            " Then type `/goal` and the request: the task has no goal yet."
+        } else {
+            ""
+        };
+        self.runtime(task_id).hub.notice(format!(
+            "Yulius restarted while it typed this task's first message, so the first message was \
+             never sent and may be half typed in the prompt box. Complete it (paste the attached \
+             images again if they are missing; the task's request lists them) and press Enter.{goal}"
+        ));
+        if let Err(err) = self
+            .set_task_activity(&task, Activity::NeedsAttention)
+            .await
         {
             tracing::warn!(task = %task_id, error = %err, "could not flag the task");
         }
@@ -2342,6 +2391,14 @@ impl App {
                             self.now(),
                         )
                         .await;
+                }
+                // The old server was typing the run's first message (or about to): how much of
+                // it reached the prompt box is unknown, so a person finishes it (SPEC-068
+                // OPN-002). A held one resumes with the capacity pause.
+                if opening_pending(&attempt.run_dir)
+                    && matches!(store.open_pause(&attempt.task_id).await, Ok(None))
+                {
+                    self.opening_never_sent(&attempt.task_id).await;
                 }
                 continue;
             }
