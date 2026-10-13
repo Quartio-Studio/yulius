@@ -1544,16 +1544,17 @@ fn a_continuation_while_yulius_is_down_ends_the_limit_pause_at_restart() -> Test
         wait_for(
             "the pause to end at the replay",
             Duration::from_secs(30),
+            // The pause closes, then the task runs: wait for both.
             || async {
                 app.deps
                     .store
                     .open_pause(&id)
                     .await
                     .is_ok_and(|p| p.is_none())
+                    && has_status(&app, &id, TaskStatus::Running).await
             },
         )
         .await?;
-        assert_eq!(task(&app, &id).await?.status, TaskStatus::Running);
         probe.set("a-first", usage(0.0, 5 * HOUR, 30.0, 100));
         refresh(&app, &user, "a-first").await?;
         let _ = app.resume_round().await;

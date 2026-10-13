@@ -640,12 +640,21 @@ fn a_message_queued_before_the_start_reaches_the_agent() -> TestResult {
                 },
             )
             .await?;
-            app.start_run(
-                &id,
-                yulius_app::supervisor::RunStart::Fresh { prompt: None },
-                None,
-            )
-            .await?;
+            // The previous task's stop frees a session slot, so the queue may start this one first;
+            // then this start finds it running, which is the same outcome.
+            let started = app
+                .start_run(
+                    &id,
+                    yulius_app::supervisor::RunStart::Fresh { prompt: None },
+                    None,
+                )
+                .await;
+            match started {
+                Ok(()) => {}
+                Err(yulius_app::error::AppError::Conflict(_))
+                    if task(&app, &id).await?.status.is_live() => {}
+                Err(err) => return Err(err.into()),
+            }
             match mode {
                 // A goal task's request file carries the message, and a short request is
                 // quoted in the goal itself, the message with it.
