@@ -157,6 +157,8 @@ pub struct App {
     pub(crate) workspace_grants: crate::identity::WorkspaceGrants,
     /// Serializes recovery-code checks so parallel guesses cannot exceed the limit (ADR-13).
     pub(crate) recovery_lock: tokio::sync::Mutex<()>,
+    /// Serializes Enable on ready-made automations so two presses never create two (SPEC-042).
+    pub(crate) automation_template_lock: tokio::sync::Mutex<()>,
     /// Live preview handshakes and grants (SPEC-002 ADR-14).
     pub(crate) previews: crate::preview::PreviewState,
     /// Uploads in progress (SPEC-001 EDT-006, UI-048).
@@ -200,6 +202,7 @@ impl App {
             shells: crate::shells::ShellState::default(),
             workspace_grants: crate::identity::WorkspaceGrants::default(),
             recovery_lock: tokio::sync::Mutex::new(()),
+            automation_template_lock: tokio::sync::Mutex::new(()),
             previews: crate::preview::PreviewState::default(),
             uploads: crate::uploads::UploadState::default(),
             intake: OnceLock::new(),
