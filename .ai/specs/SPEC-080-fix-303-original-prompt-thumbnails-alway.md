@@ -121,5 +121,12 @@ Review round 2 of SPEC-043 left these as #303:
   control when the sidebar list is rebuilt", which this change does not touch; alone it passed
   4 of 5 runs. Already tracked by open #356 (flaky under load: archive.e2e.ts Stopped-toggle
   focus).
+- Yulius CI on e793eab failed once in `task_done::a_goal_not_met_never_reads_idle_between_turns`
+  (SPEC-079's test, not touched here) with `never idle: []`. Cause: `publish_task` reads the
+  store and builds the summary before it publishes, so the store reads Done a moment before the
+  Done update is sent, and the test drained the events once at that moment. Reproduced with a
+  300 ms delay injected before the publish (temporarily): the old test fails with the same error,
+  the fixed one passes. The test now collects the updates as they come and waits for the Done
+  update.
 - Not covered: a real browser against a deployed instance; the `/proc` fallback off Linux (the
   unit test checks the policy constant per platform).

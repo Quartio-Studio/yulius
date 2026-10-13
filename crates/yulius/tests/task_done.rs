@@ -1341,7 +1341,32 @@ fn a_goal_not_met_never_reads_idle_between_turns() -> TestResult {
             screen_contains(&app, &id, "GOAL SET")
         })
         .await?;
+        // The activities the UI is told, collected as they come: the store reads Done a moment
+        // before its update is published, so one drain at Done can miss it.
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let mut events = app.events.subscribe();
+        let collector = tokio::spawn({
+            let (seen, id) = (Arc::clone(&seen), id.as_str().to_owned());
+            async move {
+                loop {
+                    match events.recv().await {
+                        Ok(envelope) => {
+                            if let UiEvent::TaskUpdated { task } = envelope.event
+                                && task.id == id
+                            {
+                                let mut seen = seen.lock().unwrap_or_else(|e| e.into_inner());
+                                if seen.last() != task.activity.as_ref() {
+                                    seen.push(task.activity.unwrap_or_default());
+                                }
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            }
+        });
+        let seen_now = || seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
         wait_for("the verdict", Duration::from_secs(30), || {
             screen_contains(&app, &id, "GOAL NOT MET")
         })
@@ -1350,21 +1375,12 @@ fn a_goal_not_met_never_reads_idle_between_turns() -> TestResult {
             activity(&app, &id).await == Some(Activity::Done)
         })
         .await?;
-        let mut seen = Vec::new();
-        loop {
-            match events.try_recv() {
-                Ok(envelope) => {
-                    if let UiEvent::TaskUpdated { task } = envelope.event
-                        && task.id == id.as_str()
-                        && seen.last() != task.activity.as_ref()
-                    {
-                        seen.push(task.activity.unwrap_or_default());
-                    }
-                }
-                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
-                Err(_) => break,
-            }
-        }
+        wait_for("the Done update", Duration::from_secs(10), || async {
+            seen_now().last().map(String::as_str) == Some("done")
+        })
+        .await?;
+        collector.abort();
+        let seen = seen_now();
         let idle = seen
             .iter()
             .position(|a| a == "waiting" || a == "done")
