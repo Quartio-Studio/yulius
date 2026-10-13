@@ -80,12 +80,16 @@ test('the task terminal showing late does not take the keys typed into the Edito
   await screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md').click();
   const content = screen.getByRole('textbox', 'Editor content');
   await expect(content).toBeAttached();
+  // The file has loaded: keys typed before it arrives are replaced by its content (SPEC-082
+  // TST-003; before, the test typed into the empty model about one run in three).
+  const text = () => browser.evaluate(() => (window as unknown as { monaco: { editor: { getEditors(): { getValue(): string }[] } } }).monaco.editor.getEditors()[0]?.getValue() ?? '');
+  await expect.poll(text).toMatch(/^# studio/);
   await content.focus();
   await browser.keyboard.press('Control+Home');
   await browser.keyboard.type('abc');
   await browser.evaluate(() => (window as unknown as Hold).__releaseTerminal?.());
   await expect.poll(() => browser.evaluate(() => document.querySelector('.taskview .term-pending') === null)).toBe(true);
   await browser.keyboard.type('def');
-  await expect.poll(() => browser.evaluate(() => (window as unknown as { monaco: { editor: { getEditors(): { getValue(): string }[] } } }).monaco.editor.getEditors()[0].getValue().startsWith('abcdef'))).toBe(true);
+  await expect.poll(text).toMatch(/^abcdef# studio/);
   expect(await browser.evaluate(() => document.activeElement?.closest('.monaco-editor') != null)).toBe(true);
 });

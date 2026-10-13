@@ -51,6 +51,25 @@ the message is refused ("The task has started: type into its session instead"), 
 deterministically by calling `drain_queue_now()` at that point. The product is right; the test's
 premise was wrong.
 
+**2b. Four e2e tests raced the page, not the machine (test bugs).** Reported by the coordinator
+(an `archive.e2e.ts` focus check failed once in Yulius CI on #377's 9216281; on another engineer's
+Mac two `archive` tests and one `terminal` test failed on unmodified `dev`) and #356. Reproduced on
+this Mac with `--repeat-each`, at one worker as well as five:
+- `archive.e2e.ts` "the keyboard stays on its control …" (3–4 of 6 runs) and "Archive all stays
+  focused …", "Archive all archives every Done task …" (1–2 of 10): the task view asks for the
+  keyboard when it opens, and the request lands when its terminal shows its first screen, over a
+  button or link focused meanwhile (SPEC-056 WUI-102: "buttons and tabs do not hold it back"). The
+  terminal showed 30–100 ms after the sidebar, so the test's Enter went to the terminal (event
+  log: `focusin xterm-helper-textarea` between the test's focus and its key).
+- `archive.e2e.ts` "Archive all keeps what it archived when one fails …" (2 of 10): it clicked
+  Archive all before both Done tasks were listed (a task is Done once its pull request has been
+  read), so no failure was reported.
+- `editor.e2e.ts` "the task terminal showing late does not take the keys typed into the Editor"
+  (4 of 10): it typed into the editor before the file had loaded; the file's content then replaced
+  what was typed (the keyboard never left the editor).
+- `terminal.e2e.ts` "a click beside another viewer's grid …" (every run on macOS): another
+  viewer's 90-column grid left a 7 px margin with macOS's font, under the test's 8 px minimum.
+
 **3. Every process sized itself to the whole machine.**
 - Two CI lanes ran two jobs each: up to 4 CI jobs at once (52 minutes over the two days, 3 jobs
   in 39 more), each `quality` with `NEXTEST_TEST_THREADS=num-cpus` (12 threads) and Cargo's
@@ -102,6 +121,7 @@ Not in scope:
 | --- | --- | --- |
 | TST-001 | The fake agent runs Claude Code's SessionStart hook whenever it runs hooks, as every supported Claude Code does; a test of an older CLI leaves it out (`no_session_start`). The hookless fallback keeps its product default (half of 90 s); its own test shortens the bound through `AppConfig::goal_ready_ms` instead of sleeping 45 s. | `task_done::*`, `supervision::goal_mode_types_the_goal_once_the_session_is_ready` (durations in Evidence) |
 | TST-002 | `task_done::a_message_queued_before_the_start_reaches_the_agent` makes the wait real: another task holds the only session slot, so the session limit queues the task, a queue pass leaves it queued, the message is accepted, and the holder's stop lets the queue start it with the message. No state is set by hand. | the test, 10 of 10 in a row; the old test fails at once with one queue pass injected |
+| TST-003 | An e2e test that moves the keyboard on a task's page waits for the task's terminal to show first (`terminalShown`); a test acts on a list or a file once it has loaded (both Done rows, the file's text); the other viewer's grid leaves a wide margin whatever the fonts (70 columns). | `archive.e2e.ts` 105 of 105 (`--repeat-each 15`), `editor.e2e.ts` 30 of 30, `terminal.e2e.ts` 3 of 3 for the margin test; the whole suite 834 of 834 (`--repeat-each 3`) |
 | RES-001 | A sandbox's capacity is its enforced CPU and memory limits (the isolation adapter's `cpu.max` and `memory.max`, only with cgroup delegation) within the host's CPUs; without a memory limit, 2 GiB per CPU. | `resources.rs`; `local_ci::jobs_wait_for_their_cpu_budget_and_are_told_it` (limits 4 CPUs, 8 GiB) |
 | RES-002 | A `[[ci.jobs]]` entry may declare `cpus` (1–1024) and `memory_gb` (1–4096) as whole numbers; `yulius.toml` accepts whole numbers. Invalid values are configuration errors with their line. The declaration is stored with each job (schema 22), so a restart keeps it. | `spec_format::config::tests::jobs_declare_their_needs_and_the_budget_maps_to_variables`, `precise_errors_with_line_numbers`, `render_round_trips`; store `runs_jobs_transitions_and_one_running_run_per_sandbox` |
 | RES-003 | A CI job leaves `queued` only once a job slot and its budget are free: its declared CPUs and memory, else an equal share of the capacity among its run's jobs (at least one CPU; memory in proportion to the CPUs). The pools hold the capacity once, for all lanes and sandboxes, so CI jobs never ask for more CPUs or memory than the sandbox has. Waiters are served in order; a budget larger than the pool takes the whole pool; a job cancelled while it waits ends cancelled. The job's output starts with `[yulius] budget: N CPUs, M MiB …`. | `local_ci::jobs_wait_for_their_cpu_budget_and_are_told_it` (fails without the wait: three jobs ran at once), `local_ci::runs_jobs_in_parallel_publishes_statuses_and_gates_merges` |
@@ -169,6 +189,8 @@ read as "nothing declared".
 
 - AC-1 (TST-001): the goal tests run without the 45 s fallback; the slowest test of `task_done`
   takes under half of nextest's kill bound.
+- AC-2b (TST-003): `archive.e2e.ts` and `editor.e2e.ts` pass 10 or more runs in a row at the
+  runner's default workers; the whole e2e suite passes three times in a row on macOS.
 - AC-2 (TST-002): the queued-message test passes 10 of 10 in a row; the previous version fails at
   once when a queue pass runs where the stop's or Done's background pass can run.
 - AC-3 (RES-003): with a capacity of 4 CPUs and two jobs of 3 CPUs per run in two lanes, at most
@@ -238,6 +260,16 @@ no budget yet).
 - Green: the new test passed 10 of 10 in a row (`--stress-count 10`), 11 s each. Its first version
   took 33 s: it stopped the prompt task while it was still starting (the fake writes its launch
   file before the spawn), which waits for the whole stop escalation; it now waits for `running`.
+
+**TST-003: the e2e races.** On this Mac (5 workers, the runner's local default, unless said):
+- before: `archive.e2e.ts` `--repeat-each 6`: "the keyboard stays …" 2–3 of 6 passed (also 3 of
+  6 at `--workers 1`), "Archive all stays focused …" 4 of 6; at `--repeat-each 10` "Archive all
+  keeps what it archived …" 8 of 10 and, once the first two waited, "Archive all archives every
+  Done task …" 9 of 10; `editor.e2e.ts` "the task terminal showing late …" 6 of 10;
+  `terminal.e2e.ts` "a click beside another viewer's grid …" 0 of 3 (`expected 7 to be greater
+  than 8`);
+- after: `archive.e2e.ts` 105 of 105 (`--repeat-each 15`), `editor.e2e.ts` 30 of 30 (`--repeat-each
+  10`), the margin test 3 of 3; the whole suite three times in a row: 834 passed, 1 skipped.
 
 **RES-002..005.**
 - Red: `local_ci::jobs_wait_for_their_cpu_budget_and_are_told_it` with the reservation taken out

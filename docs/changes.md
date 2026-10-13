@@ -11,7 +11,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   - The fake agent runs Claude Code's SessionStart hook like the real CLI, so 17 goal tests no
     longer sleep the 45 s hookless fallback: about 980 s of the suite's 1 742 s of test time; the
     slowest went from 105 s (nextest kills at 120 s) to 19 s. The queued-message test waits for a
-    session slot for real instead of racing the queue.
+    session slot for real instead of racing the queue. Four e2e tests no longer race the page:
+    they move the keyboard once the task's terminal has taken it, act once the list or the file
+    has loaded, and leave the other viewer's grid a margin whatever the fonts.
   - Every CI job, agent run, terminal and Cockpit gets a CPU and memory budget in `YULIUS_CPUS`
     and `YULIUS_MEMORY_MB`, and in the variables a repository maps in `[resources.env]` of
     `yulius.toml` (`NEXTEST_TEST_THREADS = "{cpus}"`). CI jobs declare `cpus` and `memory_gb` in

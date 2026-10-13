@@ -403,8 +403,10 @@ test('a read-only viewer’s click does not reach the program', async ({ app, br
 });
 
 test('a click beside another viewer’s grid takes the size but does not reach the program', async ({ app, browser, screen }) => {
-  // Another viewer's 90×30 grid is centred in this wider box, with blank margins at its sides.
-  await app.open(mock('/s/studio/t/12', '&othercols=90&otherrows=30'));
+  // Another viewer's 70×30 grid is centred in this wider box, with blank margins at its sides.
+  // Ten columns or more each side whatever the fonts: at 90 columns the margin depended on the
+  // font's width and was 7 px on macOS (SPEC-082).
+  await app.open(mock('/s/studio/t/12', '&othercols=70&otherrows=30'));
   await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
   await holdStill(browser);
   const point = await spot(browser, 'Searched for 2 patterns');
