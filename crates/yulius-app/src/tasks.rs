@@ -254,6 +254,7 @@ impl App {
             });
         }
         let steps = store.steps(&task.id).await?;
+        let started = !attempts.is_empty() || !store.provider_sessions(&task.id).await?.is_empty();
         Ok(TaskDetail {
             summary,
             spec_path: task.spec_path.clone(),
@@ -264,6 +265,8 @@ impl App {
             feedback,
             delivery: self.task_detail_delivery(&task, &ctx.user).await,
             switches,
+            request: task.prompt.clone(),
+            started,
         })
     }
 

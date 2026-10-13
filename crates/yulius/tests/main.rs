@@ -43,6 +43,7 @@ mod notes;
 mod pool_supervision;
 mod preview;
 mod projects;
+mod queued_messages;
 mod recovery;
 mod secrets;
 mod secrets_redaction;

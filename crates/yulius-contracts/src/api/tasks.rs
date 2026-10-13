@@ -306,6 +306,26 @@ pub struct TaskDetail {
     pub delivery: Delivery,
     /// Switch history.
     pub switches: Vec<SwitchView>,
+    /// The whole request the agent gets when the task starts, queued messages included
+    /// (SPEC-052 QMS-005).
+    pub request: String,
+    /// Whether the task ever had a run or a provider session; until then it takes queued
+    /// messages while it waits (SPEC-052 QMS-001).
+    pub started: bool,
+}
+
+/// `POST /api/tasks/{tid}/queued-messages` (SPEC-052 QMS-001).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueueMessage {
+    /// The message, added to the request as it is (trimmed).
+    pub text: String,
+}
+
+/// Answer to a queued message: the request as the agent will get it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueuedMessage {
+    /// The whole request, the new message last.
+    pub request: String,
 }
 
 /// `POST /api/tasks/{tid}/feedback`.

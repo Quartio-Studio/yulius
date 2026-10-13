@@ -267,6 +267,22 @@ impl DoneDefinition {
     }
 }
 
+/// What a message queued into a task that has not started adds to its request (SPEC-052
+/// QMS-003): a blank line, who added it and when (`at`, already formatted), a blank line and the
+/// trimmed text. Later additions follow earlier ones, so a later line corrects an earlier one.
+/// `None` for a message with no text.
+#[must_use]
+pub fn queued_addition(login: &str, at: &str, text: &str) -> Option<String> {
+    let text = text.trim();
+    (!text.is_empty()).then(|| {
+        format!(
+            "\n\n**Added by {} before the task started ({}):**\n\n{text}",
+            one_line(login),
+            one_line(at)
+        )
+    })
+}
+
 /// The request file a task's agent reads first.
 #[must_use]
 pub fn request_markdown(
@@ -328,6 +344,30 @@ pub fn goal_condition(request: &Request, request_path: &str, done: &DoneDefiniti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_queued_message_follows_the_request_under_who_added_it_and_when() {
+        let added = queued_addition("alice", "2026-10-13 10:42 UTC", "  Keep the logo.\n")
+            .unwrap_or_default();
+        assert_eq!(
+            added,
+            "\n\n**Added by alice before the task started (2026-10-13 10:42 UTC):**\n\nKeep the logo."
+        );
+        // It joins the request text the agent gets, attachment lines in it included.
+        let request = Request::parse(&format!("Make it blue{added}\n@/srv/a.png"));
+        assert!(
+            request.text.ends_with("10:42 UTC):**\n\nKeep the logo."),
+            "{request:?}"
+        );
+        assert_eq!(request.attachments, vec!["/srv/a.png".to_owned()]);
+        assert_eq!(queued_addition("alice", "now", " \n\t "), None);
+        // A login never breaks the line it is named on.
+        assert!(
+            queued_addition("a\nb", "now", "x")
+                .unwrap_or_default()
+                .contains("Added by a b before")
+        );
+    }
 
     fn done(envs: &[&str]) -> DoneDefinition {
         DoneDefinition {

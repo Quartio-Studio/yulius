@@ -43,6 +43,7 @@ pub mod onboarding;
 pub mod ports;
 pub mod preview;
 pub mod projects;
+pub mod queued_messages;
 pub mod recovery;
 pub mod sandboxes;
 pub mod scopes;
