@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- A task's status tells the truth: Working is work, Needs you is a person's move (SPEC-085,
+  ADR-0068; F 2026-10-13 "marked as running even if was done", "needs you was too often"). A
+  replay of two days of transcripts found "Needs you" false for 43 of its 50 task-hours:
+  - An agent waiting in `yulius wait` for its checks or armed merge reads "Waiting for checks or
+    merge" under Working, not Your turn (173 periods, 37 tasks). The process probe counts such a
+    shell apart; disk upkeep, DLV-203 and Done still leave it out (DSK-102).
+  - Failing checks need you only once the agent stopped: while its background agent or shell
+    runs, or it waits for Yulius, the task reads "Working · PR #N checks failing" (task #63).
+  - Records Claude Code writes for itself start no turn: an idle compaction's summary made Done
+    task #60 read Working until it was stopped; so did command echoes and their output.
 - The original prompt's thumbnails always load (SPEC-080, ADR-0064, task #63; #303). Reading a
   prompt's attached file no longer takes an upload slot: reads have their own bound of 16 and wait
   up to 30 s for a slot, so a prompt with many images, or one opened while uploads run, shows every

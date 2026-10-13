@@ -26,7 +26,7 @@ const CONTROLS = ['--control-sm', '--control-md', '--control-lg', '--control-xl'
 const SHADOWS = [['None', 'L0 canvas · L1 cards (border only)', 'none'], ['--shadow-sm', 'L2 small: labels, chips', 'var(--shadow-sm)'], ['--shadow', 'L2/L3: menus, popovers, toasts, modals', 'var(--shadow)'], ['--shadow-raised', 'Raised inputs: the composer', 'var(--shadow-raised)']];
 const STATUSES = [
   { status: 'running', activity: 'needs_attention' }, { status: 'running', activity: 'waiting' }, { status: 'running', activity: 'working' }, { status: 'running', activity: 'done' },
-  { status: 'running', activity: 'done', background_shells: 1 },
+  { status: 'running', activity: 'done', background_shells: 1 }, { status: 'running', activity: 'waiting', yulius_wait: true },
   { status: 'queued' }, { status: 'starting' }, { status: 'waiting_capacity' }, { status: 'chained', after: { number: 4 } }, { status: 'chained', after: { number: 4, blocked: '#4 stopped' } },
   { status: 'switching' }, { status: 'stopping' },
   { status: 'closed' }, { status: 'stopped_cancelled' }, { status: 'stopped_crashed' }, { status: 'failed_spawn_error' },
@@ -41,6 +41,7 @@ const LIVE_STATES = [
   [{ status: 'running', activity: 'waiting', steps: DONE_PLAN }, null, PR('none', 'merged')],
   [{ status: 'running', activity: 'waiting', steps: DONE_PLAN }, null, PR('pending')],
   [{ status: 'running', activity: 'waiting', steps: DONE_PLAN }, null, PR('failure')],
+  [{ status: 'running', activity: 'waiting', steps: DONE_PLAN, background_shells: 1 }, null, PR('failure')],
   [{ status: 'running', activity: 'waiting', steps: { done: 2, total: 7 } }, null, PR('success')],
 ];
 
