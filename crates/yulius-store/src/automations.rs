@@ -5,7 +5,7 @@
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};
 use yulius_app::automations::{
-    AuditEntry, AutomationRecord, AutomationRunRecord, CreatedVia, RunState,
+    AuditEntry, AutomationRecord, AutomationRunRecord, AutomationStart, CreatedVia, RunState,
 };
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::store_ext::AutomationStore;
@@ -16,9 +16,33 @@ use yulius_domain::time::Timestamp;
 use crate::{SqliteStore, bad_column, db};
 
 const COLS: &str = "id, sandbox_id, name, cron, utc_offset_minutes, prompt, workflow_id, harness, \
-    enabled, created_by, created_via, created_at, last_scheduled";
+    enabled, created_by, created_via, created_at, last_scheduled, supertask, after_task_id, start_rule";
 
 const RUN_COLS: &str = "automation_id, scheduled_for, state, task_id, error, created_at";
+
+/// The start choice as its three columns: `supertask`, `after_task_id`, `start_rule`.
+fn start_columns(start: &AutomationStart) -> (bool, Option<String>, Option<String>) {
+    match start {
+        AutomationStart::Now => (false, None, None),
+        AutomationStart::Supertask => (true, None, None),
+        AutomationStart::After(task) => (false, Some(task.as_str().to_owned()), None),
+        AutomationStart::Rule(rule) => (false, None, Some(rule.clone())),
+    }
+}
+
+fn start_from_row(row: &Row<'_>) -> rusqlite::Result<AutomationStart> {
+    let after: Option<String> = row.get("after_task_id")?;
+    let rule: Option<String> = row.get("start_rule")?;
+    Ok(if row.get("supertask")? {
+        AutomationStart::Supertask
+    } else if let Some(task) = after {
+        AutomationStart::After(TaskId::parse(&task).map_err(|_| bad_column("task id", &task))?)
+    } else if let Some(rule) = rule {
+        AutomationStart::Rule(rule)
+    } else {
+        AutomationStart::Now
+    })
+}
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<AutomationRecord> {
     let sandbox: String = row.get("sandbox_id")?;
@@ -37,6 +61,7 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<AutomationRecord> {
         workflow_id: row.get("workflow_id")?,
         harness: Harness::parse(&harness).map_err(|_| bad_column("harness", &harness))?,
         enabled: row.get("enabled")?,
+        start: start_from_row(row)?,
         created_by: UserId::parse(&created_by).map_err(|_| bad_column("user id", &created_by))?,
         created_via: CreatedVia::parse(&created_via),
         created_at: Timestamp(row.get("created_at")?),
@@ -104,6 +129,7 @@ impl AutomationStore for SqliteStore {
         max_per_sandbox: u32,
     ) -> AppResult<()> {
         let a = automation.clone();
+        let (supertask, after_task_id, start_rule) = start_columns(&a.start);
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
             let count: i64 = tx
@@ -120,7 +146,7 @@ impl AutomationStore for SqliteStore {
             }
             tx.execute(
                 &format!(
-                    "INSERT INTO automations ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)"
+                    "INSERT INTO automations ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)"
                 ),
                 params![
                     a.id,
@@ -136,6 +162,9 @@ impl AutomationStore for SqliteStore {
                     a.created_via.as_str(),
                     a.created_at.0,
                     a.last_scheduled.map(|t| t.0),
+                    supertask,
+                    after_task_id,
+                    start_rule,
                 ],
             )
             .map_err(db)?;
@@ -186,11 +215,13 @@ impl AutomationStore for SqliteStore {
 
     async fn update_automation(&self, automation: &AutomationRecord) -> AppResult<bool> {
         let a = automation.clone();
+        let (supertask, after_task_id, start_rule) = start_columns(&a.start);
         self.call(move |c| {
             let n = c
                 .execute(
                     "UPDATE automations SET name = ?2, cron = ?3, utc_offset_minutes = ?4, \
-                     prompt = ?5, workflow_id = ?6, harness = ?7, enabled = ?8 WHERE id = ?1",
+                     prompt = ?5, workflow_id = ?6, harness = ?7, enabled = ?8, supertask = ?9, \
+                     after_task_id = ?10, start_rule = ?11 WHERE id = ?1",
                     params![
                         a.id,
                         a.name,
@@ -200,6 +231,9 @@ impl AutomationStore for SqliteStore {
                         a.workflow_id,
                         a.harness.as_str(),
                         a.enabled,
+                        supertask,
+                        after_task_id,
+                        start_rule,
                     ],
                 )
                 .map_err(db)?;
