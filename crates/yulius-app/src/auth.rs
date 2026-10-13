@@ -1,5 +1,8 @@
 //! Setup, sessions, GitHub sign-in, CLI device approval and API tokens (SPEC-001 ACC-001..005).
 
+use std::collections::HashMap;
+use std::sync::Mutex;
+
 use yulius_contracts::api::auth::{DevicePoll, DeviceStart, InstanceInfo, Me, MeUser};
 use yulius_domain::ids::UserId;
 use yulius_domain::time::Timestamp;
@@ -7,7 +10,8 @@ use yulius_domain::time::Timestamp;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    ApiTokenRecord, DeviceGrantRecord, GitHubTokenRecord, Secret, UserRecord, WebSessionRecord,
+    ApiTokenRecord, DeviceGrantBounds, DeviceGrantInsert, DeviceGrantRecord, GitHubTokenRecord,
+    Secret, UserRecord, WebSessionRecord,
 };
 use crate::ports::github::{GhUserToken, GitHubAppConfig};
 
@@ -18,8 +22,15 @@ pub const LOGIN_ATTEMPTS_PER_MINUTE: usize = 5;
 /// Clients the sign-in limiter tracks at once. Clients without an attempt in the last minute are
 /// forgotten first; when that many still have one, a client not yet tracked waits a minute.
 pub const MAX_LOGIN_CLIENTS: usize = 4096;
-/// The window of [`LOGIN_ATTEMPTS_PER_MINUTE`].
+/// The window of [`LOGIN_ATTEMPTS_PER_MINUTE`] and [`DEVICE_STARTS_PER_MINUTE`].
 const LOGIN_WINDOW_MS: i64 = 60_000;
+/// CLI device sign-in starts allowed per client key per minute (#169, ADR-0047); the limiter
+/// tracks at most [`MAX_LOGIN_CLIENTS`] keys, like sign-in's.
+pub const DEVICE_STARTS_PER_MINUTE: usize = 5;
+/// Live CLI device grants (not expired, not consumed) allowed per client key (#169, ADR-0047).
+pub const MAX_DEVICE_GRANTS_PER_CLIENT: usize = 10;
+/// Live CLI device grants allowed per instance (#169, ADR-0047).
+pub const MAX_DEVICE_GRANTS: usize = 1000;
 const DEVICE_TTL_MS: i64 = 10 * 60 * 1000;
 const OAUTH_STATE_TTL_MS: i64 = 10 * 60 * 1000;
 const USER_CODE_ALPHABET: &[u8] = b"BCDFGHJKLMNPQRSTVWXZ23456789";
@@ -95,6 +106,40 @@ impl GitHubSignInError {
             Self::Failed(_) => "failed",
         }
     }
+}
+
+/// Counts an attempt of `client_key` in `attempts`, a sliding one-minute window per client key
+/// holding at most [`MAX_LOGIN_CLIENTS`] keys: keys without an attempt in the last minute are
+/// forgotten first, and while that many still have one a key not yet tracked waits.
+///
+/// # Errors
+/// `Capacity` with `refusal` past `per_minute` attempts or a full table.
+fn count_client_attempt(
+    attempts: &Mutex<HashMap<String, Vec<i64>>>,
+    client_key: &str,
+    now: Timestamp,
+    per_minute: usize,
+    refusal: &str,
+) -> AppResult<()> {
+    let mut attempts = attempts
+        .lock()
+        .map_err(|_| AppError::Internal("rate limiter poisoned".into()))?;
+    if !attempts.contains_key(client_key) && attempts.len() >= MAX_LOGIN_CLIENTS {
+        attempts.retain(|_, times| {
+            times.retain(|t| now.0 - *t < LOGIN_WINDOW_MS);
+            !times.is_empty()
+        });
+        if attempts.len() >= MAX_LOGIN_CLIENTS {
+            return Err(AppError::Capacity(refusal.into()));
+        }
+    }
+    let entry = attempts.entry(client_key.to_owned()).or_default();
+    entry.retain(|t| now.0 - *t < LOGIN_WINDOW_MS);
+    if entry.len() >= per_minute {
+        return Err(AppError::Capacity(refusal.into()));
+    }
+    entry.push(now.0);
+    Ok(())
 }
 
 pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -221,31 +266,13 @@ impl App {
         client_key: &str,
     ) -> AppResult<NewSession> {
         let now = self.now();
-        {
-            let mut attempts = self
-                .login_attempts
-                .lock()
-                .map_err(|_| AppError::Internal("rate limiter poisoned".into()))?;
-            if !attempts.contains_key(client_key) && attempts.len() >= MAX_LOGIN_CLIENTS {
-                attempts.retain(|_, times| {
-                    times.retain(|t| now.0 - *t < LOGIN_WINDOW_MS);
-                    !times.is_empty()
-                });
-                if attempts.len() >= MAX_LOGIN_CLIENTS {
-                    return Err(AppError::Capacity(
-                        "too many sign-in attempts; wait a minute".into(),
-                    ));
-                }
-            }
-            let entry = attempts.entry(client_key.to_owned()).or_default();
-            entry.retain(|t| now.0 - *t < LOGIN_WINDOW_MS);
-            if entry.len() >= LOGIN_ATTEMPTS_PER_MINUTE {
-                return Err(AppError::Capacity(
-                    "too many sign-in attempts; wait a minute".into(),
-                ));
-            }
-            entry.push(now.0);
-        }
+        count_client_attempt(
+            &self.login_attempts,
+            client_key,
+            now,
+            LOGIN_ATTEMPTS_PER_MINUTE,
+            "too many sign-in attempts; wait a minute",
+        )?;
         let admin = self
             .deps
             .store
@@ -525,12 +552,20 @@ impl App {
         Ok((self.new_session(&user).await?, next))
     }
 
-    /// Starts CLI device approval.
+    /// Starts CLI device approval for the client `client_key` (chosen by the interface like
+    /// [`App::password_login`]'s), limited per client (#169, ADR-0047).
     ///
     /// # Errors
-    /// Store failures.
-    pub async fn device_start(&self) -> AppResult<DeviceStart> {
+    /// `Capacity` when rate limited; store failures.
+    pub async fn device_start(&self, client_key: &str) -> AppResult<DeviceStart> {
         let now = self.now();
+        count_client_attempt(
+            &self.device_starts,
+            client_key,
+            now,
+            DEVICE_STARTS_PER_MINUTE,
+            "too many device sign-ins; wait a minute",
+        )?;
         let device_code = hex_token(&self.deps.crypto.random_bytes());
         let raw = self.deps.crypto.random_bytes();
         let letters: String = raw
@@ -539,18 +574,32 @@ impl App {
             .map(|b| char::from(USER_CODE_ALPHABET[usize::from(*b) % USER_CODE_ALPHABET.len()]))
             .collect();
         let user_code = format!("{}-{}", &letters[..4], &letters[4..]);
-        self.deps
+        let inserted = self
+            .deps
             .store
-            .insert_device_grant(&DeviceGrantRecord {
-                user_code: user_code.clone(),
-                device_code_hash: self.deps.crypto.sha256_hex(device_code.as_bytes()),
-                status: "pending".into(),
-                user_id: None,
-                token: None,
-                created_at: now,
-                expires_at: now.plus_millis(DEVICE_TTL_MS),
-            })
+            .insert_device_grant(
+                &DeviceGrantRecord {
+                    user_code: user_code.clone(),
+                    device_code_hash: self.deps.crypto.sha256_hex(device_code.as_bytes()),
+                    status: "pending".into(),
+                    user_id: None,
+                    token: None,
+                    client_key: client_key.to_owned(),
+                    created_at: now,
+                    expires_at: now.plus_millis(DEVICE_TTL_MS),
+                },
+                DeviceGrantBounds {
+                    per_client: MAX_DEVICE_GRANTS_PER_CLIENT,
+                    total: MAX_DEVICE_GRANTS,
+                },
+            )
             .await?;
+        if inserted != DeviceGrantInsert::Inserted {
+            // Existing grants are never evicted: they expire within DEVICE_TTL_MS (ADR-0047).
+            return Err(AppError::Capacity(
+                "too many device sign-ins waiting; try again in a few minutes".into(),
+            ));
+        }
         Ok(DeviceStart {
             device_code,
             verification_url: format!("{}/device?code={user_code}", self.config.public_url),
@@ -558,6 +607,15 @@ impl App {
             interval_s: 3,
             expires_in_s: u32::try_from(DEVICE_TTL_MS / 1000).unwrap_or(600),
         })
+    }
+
+    /// Deletes expired and consumed device grants (#169); the background tick calls it every
+    /// minute, and every start does the same before checking the bounds.
+    ///
+    /// # Errors
+    /// Store failures.
+    pub async fn purge_device_grants(&self) -> AppResult<usize> {
+        self.deps.store.purge_device_grants(self.now()).await
     }
 
     /// Approves or denies a device grant as the signed-in user; approval issues an API token.

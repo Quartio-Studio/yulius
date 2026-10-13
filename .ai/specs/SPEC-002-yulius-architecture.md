@@ -1535,7 +1535,7 @@ Schema version 1 (tables; columns abbreviated):
 | `users` | id, github_login (unique), github_id, display_name, is_superadmin, is_instance_admin, disabled_at, password_hash (superadmin only, Argon2id) |
 | `web_sessions` | id_hash, user_id, csrf_token, created_at, expires_at, revoked_at |
 | `api_tokens` | id, user_id, token_hash, label, created_at, last_used_at, revoked_at |
-| `device_grants` | user_code, device_code_hash, status, user_id, expires_at |
+| `device_grants` | user_code, device_code_hash, status, user_id, expires_at, client_key (migration 0016); expired and consumed rows purged on start and every 60 s |
 | `instance` | singleton: owner_login, owner_kind (org/user), public_url, github_app (encrypted blob), setup_completed_at; jev_key (sealed), jev_key_set_at, jev_key_set_by (ADM-002) |
 | `github_tokens` | user_id, access (enc), refresh (enc), expires_at |
 | `permission_cache` | user_id, sandbox_id, level (none/read/write/admin), checked_at |
@@ -2264,6 +2264,7 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | Update check of `main` (ADR-18) | every 60 min; "Check now" reuses a result < 30 s; 15 s and 4 MiB per GitHub request; ≤ 250 commits | error shown, nothing offered |
 | Update request / helper status files | 16 KiB / 256 KiB; request valid 15 min | refused / ignored |
 | Password sign-in (ACC-013) | 5 attempts per client key per minute; ≤ 4096 client keys tracked (keys idle for a minute forgotten first) | 429; a new key while 4096 are active also waits |
+| Device sign-in start (ACC-013, ADR-0047) | 5 starts per client key per minute (≤ 4096 keys, as sign-in); live grants 10 per client key and 1000 per instance (10 min each); expired and consumed grants purged on every start and every 60 s | 429, nothing inserted, no grant evicted |
 | Helper acknowledgement | request rewritten every 20 s, given up after 90 s (not while the helper reports progress on an earlier request) | run fails or resumes, nothing installed |
 | Update build | helper 2 h; server 3 h | `failed` |
 | Pausing tasks for an update | 30 min | `cancelled`, tasks released |
@@ -2481,6 +2482,8 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 
 ## 15. Changelog
 
+- 2026-10-13 (task #55, #169; SPEC-063, ADR-0047): §5 `device_grants.client_key` (migration 0016)
+  and its purge; §9 device sign-in start limit and grant bounds.
 - 2026-10-12 (task #26, "delete message mechanism for now until we make the infra very good";
   SPEC-028, ADR-0023): messages are removed end to end: no `message_send` or `messages_inbox`, no
   stored notices, digest, urgent-message stop reason or idle wake-up, no Messages panel, unread
