@@ -223,7 +223,11 @@ It manages the project through the Yulius MCP server
 from the shell's persisted host token, and it is served only the management tools: tasks,
 automations, workflows and sessions. Those tools act for a person (`ProjectCaller`): the Cockpit's
 owner, or a task's creator when a task's agent calls them. `task_create` takes the same path as
-New task.
+New task; `task_stop`, `task_archive`, `task_delete`, `automation_delete`, `automation_run_now`
+and `automation_template_enable` call the UI's own functions with that person and the caller as
+the audit actor, never on the caller's own task
+([SPEC-066](../.ai/specs/SPEC-066-fix-275-293-cockpit-and-agents-manage-ta.md),
+[decision 0049](decisions/0049-management-tools-cover-the-task-and-automation-lifecycle.md)).
 
 ```mermaid
 flowchart LR
@@ -235,7 +239,8 @@ flowchart LR
   SH -->|"Bearer ck_… (YULIUS_COCKPIT_TOKEN)"| MCP["/mcp: management tools"]
   AG["Task agent"] -->|"Bearer task token"| MCP
   MCP -->|"task_create"| NT["App::create_task_as (as New task)"]
-  MCP -->|"automation_*"| AU["Automations"]
+  MCP -->|"task_stop / task_archive / task_delete"| TU["The UI's stop, archive, delete (never the caller's own task)"]
+  MCP -->|"automation_*, automation_template_enable"| AU["Automations and ready-made ones"]
 ```
 
 ## Ready-made automations

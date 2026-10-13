@@ -144,4 +144,4 @@ flowchart LR
 - **Workflow create and edit stay out** (#275 lists them in its current behaviour, not in its
   acceptance criteria): they are a separate surface (instance and project workflows, defaults
   read-only) and would make this change too large; said in the issue's closing comment.
-- Recorded as ADR-0048.
+- Recorded as ADR-0049.
