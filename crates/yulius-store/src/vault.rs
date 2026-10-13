@@ -322,18 +322,21 @@ impl VaultStore for SqliteStore {
     async fn vault_accept_two_factor(
         &self,
         user_id: &str,
+        ciphertext: &[u8],
         counter: u64,
         at: Timestamp,
     ) -> AppResult<bool> {
         let user = user_id.to_owned();
+        let seed = ciphertext.to_vec();
         let counter = to_i64(counter);
         self.call(move |c| {
             let n = c
                 .execute(
                     "UPDATE vault_two_factor SET last_counter = ?2, \
                      confirmed_at = COALESCE(confirmed_at, ?3), failed_attempts = 0, failed_at = NULL \
-                     WHERE user_id = ?1 AND (last_counter IS NULL OR last_counter < ?2)",
-                    params![user, counter, at.0],
+                     WHERE user_id = ?1 AND ciphertext = ?4 \
+                     AND (last_counter IS NULL OR last_counter < ?2)",
+                    params![user, counter, at.0, seed],
                 )
                 .map_err(db)?;
             Ok(n == 1)
@@ -665,7 +668,7 @@ mod tests {
         assert!(store.vault_put_two_factor(&seed(2)).await?);
         assert!(
             store
-                .vault_accept_two_factor("u1", 10, Timestamp(9))
+                .vault_accept_two_factor("u1", &[2], 10, Timestamp(9))
                 .await?
         );
         let got = store.vault_two_factor("u1").await?.ok_or("missing")?;
@@ -677,17 +680,17 @@ mod tests {
         // A used or older step is refused; a later one moves on without re-confirming.
         assert!(
             !store
-                .vault_accept_two_factor("u1", 10, Timestamp(10))
+                .vault_accept_two_factor("u1", &[2], 10, Timestamp(10))
                 .await?
         );
         assert!(
             !store
-                .vault_accept_two_factor("u1", 9, Timestamp(10))
+                .vault_accept_two_factor("u1", &[2], 9, Timestamp(10))
                 .await?
         );
         assert!(
             store
-                .vault_accept_two_factor("u1", 11, Timestamp(11))
+                .vault_accept_two_factor("u1", &[2], 11, Timestamp(11))
                 .await?
         );
         let got = store.vault_two_factor("u1").await?.ok_or("missing")?;
@@ -708,7 +711,7 @@ mod tests {
         );
         assert!(
             !store
-                .vault_accept_two_factor("nobody", 1, Timestamp(1))
+                .vault_accept_two_factor("nobody", &[2], 1, Timestamp(1))
                 .await?
         );
         // Wrong codes count up; an accepted code or a clear resets them.
@@ -721,7 +724,7 @@ mod tests {
         );
         assert!(
             store
-                .vault_accept_two_factor("u1", 12, Timestamp(22))
+                .vault_accept_two_factor("u1", &[2], 12, Timestamp(22))
                 .await?
         );
         assert_eq!(
@@ -741,6 +744,44 @@ mod tests {
                 .vault_two_factor_failed("nobody", Timestamp(1))
                 .await?,
             0
+        );
+        Ok(())
+    }
+
+    /// #295: a code checked against pending seed A never confirms seed B, set up meanwhile.
+    #[tokio::test]
+    async fn accepting_a_replaced_seed_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+        let store = store_with_sandboxes().await?;
+        let seed = |n: u8| TwoFactorRecord {
+            user_id: "u1".into(),
+            envelope: Envelope {
+                kek_id: 1,
+                wrapped_key: vec![n],
+                ciphertext: vec![n],
+            },
+            created_at: Timestamp(5),
+            confirmed_at: None,
+            last_counter: None,
+            failed_attempts: 0,
+            failed_at: None,
+        };
+        assert!(store.vault_put_two_factor(&seed(1)).await?);
+        assert!(store.vault_put_two_factor(&seed(2)).await?);
+        assert!(
+            !store
+                .vault_accept_two_factor("u1", &[1], 10, Timestamp(9))
+                .await?,
+            "a code of seed 1 confirmed seed 2"
+        );
+        let got = store.vault_two_factor("u1").await?.ok_or("missing")?;
+        assert_eq!(
+            (got.envelope.ciphertext, got.confirmed_at, got.last_counter),
+            (vec![2], None, None)
+        );
+        assert!(
+            store
+                .vault_accept_two_factor("u1", &[2], 10, Timestamp(9))
+                .await?
         );
         Ok(())
     }

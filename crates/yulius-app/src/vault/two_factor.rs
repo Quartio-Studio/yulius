@@ -44,6 +44,16 @@ fn browser_session(ctx: &AuthContext) -> AppResult<&str> {
 }
 
 impl App {
+    /// Whether the caller's seed is no longer the one in `checked`.
+    async fn seed_replaced(&self, user_id: &str, checked: &TwoFactorRecord) -> AppResult<bool> {
+        Ok(self
+            .deps
+            .store
+            .vault_two_factor(user_id)
+            .await?
+            .is_none_or(|now| now.envelope.ciphertext != checked.envelope.ciphertext))
+    }
+
     /// `missing`, `pending`, `on` or `locked` (too many wrong codes) for the caller, whose
     /// identity was last confirmed at `identity`.
     pub(super) async fn two_factor_state(
@@ -169,7 +179,7 @@ impl App {
             Some(at) => {
                 self.deps
                     .store
-                    .vault_accept_two_factor(user_id, at, now)
+                    .vault_accept_two_factor(user_id, &record.envelope.ciphertext, at, now)
                     .await?
             }
             None => false,
@@ -188,14 +198,15 @@ impl App {
                 self.vault_audit(&actor, "vault.2fa.locked", None, "")
                     .await?;
             }
-            return Err(AppError::Forbidden(
-                if matched.is_some() {
-                    "this code was used already: wait for the next one"
-                } else {
-                    "wrong code"
+            let message = match matched {
+                None => "wrong code",
+                // The checked seed was replaced by a new setup meanwhile (#295).
+                Some(_) if self.seed_replaced(user_id, &record).await? => {
+                    "two-factor was set up again meanwhile: enter a code for the new key"
                 }
-                .into(),
-            ));
+                Some(_) => "this code was used already: wait for the next one",
+            };
+            return Err(AppError::Forbidden(message.into()));
         }
         self.deps.store.vault_set_unlock(session, now).await?;
         let action = if record.confirmed_at.is_none() {

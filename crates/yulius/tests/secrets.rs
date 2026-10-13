@@ -415,6 +415,72 @@ async fn two_factor_is_set_up_once_and_unlocks_the_vault() -> TestResult {
     Ok(())
 }
 
+/// #295 (SPEC-061 AC2): seed B is set up in another tab while a code of pending seed A is being
+/// checked (forced between the check and the accept). The code is refused, B stays pending, and
+/// only a code of B confirms it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_code_confirms_only_the_seed_it_was_checked_against() -> TestResult {
+    let crypto = Arc::new(support::HookedCrypto::new()?);
+    let h = support::harness_with(support::HarnessOptions {
+        crypto: Some(crypto.clone()),
+        ..support::HarnessOptions::default()
+    })?;
+    let admin = setup_superadmin_creds(&h).await?;
+    let first = call(
+        &h.router,
+        Method::POST,
+        "/api/auth/two-factor",
+        None,
+        &admin,
+    )
+    .await?;
+    assert_eq!(first.status, StatusCode::CREATED, "{}", first.body);
+    let seed_a = first.body["secret"].as_str().ok_or("secret")?.to_owned();
+
+    let seed_b = Arc::new(std::sync::Mutex::new(None::<String>));
+    let (router, creds, out) = (h.router.clone(), admin.clone(), seed_b.clone());
+    *crypto.on_seed_open.lock().map_err(|_| "hook")? = Some(Box::new(move || {
+        let setup = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(call(
+                &router,
+                Method::POST,
+                "/api/auth/two-factor",
+                None,
+                &creds,
+            ))
+        });
+        if let Ok(setup) = setup
+            && setup.status == StatusCode::CREATED
+            && let Ok(mut out) = out.lock()
+        {
+            *out = setup.body["secret"].as_str().map(str::to_owned);
+        }
+    }));
+    let refused = unlock(&h, &admin, &code_at(&h, &seed_a, 0)?).await?;
+    let seed_b = seed_b
+        .lock()
+        .map_err(|_| "seed B")?
+        .clone()
+        .ok_or("seed B was not set up meanwhile")?;
+    assert_ne!(seed_a, seed_b);
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    assert!(
+        refused.body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("set up again")),
+        "{}",
+        refused.body
+    );
+    let status = call(&h.router, Method::GET, "/api/auth/reauth", None, &admin).await?;
+    assert_eq!(status.body["two_factor"], "pending", "{}", status.body);
+    assert_eq!(status.body["fresh"], false);
+
+    let confirmed = unlock(&h, &admin, &code_at(&h, &seed_b, 0)?).await?;
+    assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.body);
+    assert_eq!(confirmed.body["two_factor"], "on");
+    Ok(())
+}
+
 /// R6: ten wrong codes in a row lock two-factor (a stolen session cannot keep guessing) until
 /// the person confirms it is them again; the lock is audited.
 #[tokio::test]

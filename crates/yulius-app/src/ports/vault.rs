@@ -135,12 +135,13 @@ pub trait VaultStore: Send + Sync {
     async fn vault_two_factor(&self, user_id: &str) -> AppResult<Option<TwoFactorRecord>>;
     /// Stores a new seed unless a confirmed one exists; `false` when it does.
     async fn vault_put_two_factor(&self, record: &TwoFactorRecord) -> AppResult<bool>;
-    /// Accepts a code of time step `counter`: records it, confirms the seed at `at` and clears
-    /// the wrong codes; `false` when a code of this or a later step was accepted before (a
-    /// replay).
+    /// Accepts a code of time step `counter` checked against the sealed seed `ciphertext`:
+    /// records it, confirms the seed at `at` and clears the wrong codes; `false` when a code of
+    /// this or a later step was accepted before (a replay) or the seed was replaced meanwhile.
     async fn vault_accept_two_factor(
         &self,
         user_id: &str,
+        ciphertext: &[u8],
         counter: u64,
         at: Timestamp,
     ) -> AppResult<bool>;
