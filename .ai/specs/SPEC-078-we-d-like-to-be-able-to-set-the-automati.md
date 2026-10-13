@@ -1,11 +1,11 @@
 ---
 yulius-task: d4f29be7-73f4-4811-b191-7ca28a4149b3
-status: in-progress
+status: done
 ---
 
 # SPEC-078: an automation starts its tasks like New task
 
-Status: in progress
+Status: implemented
 Date: 2026-10-13
 Owner: Yulius task #70
 Scope authorization: user request (task #70), with a screenshot of the automation builder ("Keep
@@ -62,8 +62,8 @@ the automation and applies to every task it creates.
 - [x] Each run creates its task with the automation's start choice
 - [x] Agents set the start choice with the automation tools
 - [x] The automation builder offers Start now, Supertask, After a task and a rule
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -140,4 +140,45 @@ the automation and applies to every task it creates.
   - Accepted and recorded in ADR-0062: a rule's number reused after the newest task is
     deleted, and a predecessor ending mid-run failing that one run.
   - An old client's PUT without the fields clears the choice, as for `workflow_id`.
+- **Review round 2** (APPROVE): its minors fixed in 78562aa: a store compatibility test (an
+  automation of the previous schema reads back as start now), mock parity for an unchanged
+  choice and the seeded rows, `startPhrase` moved to `format.js`, and the ADR states the
+  scheduler's added wait.
+- **Review round 3** (APPROVE of 78562aa, one minor and three nits, all in the mock or the
+  wording): left as they are, because the review loop ends after three rounds and none of them
+  changes what users get. The mock's template-enable route omits the new fields, which the UI
+  reads as start now. After the reviews only `dev` was merged in: migration and ADR numbers
+  were renumbered to 0019 and 0062 because `dev` took 0018 and 0055. That is evidence-only, with
+  no logic change.
 - Recorded as ADR-0062.
+
+## Evidence
+
+- `scripts/dev ci` on the head merged with `dev` (cc74a6a): exit 0. Repository contracts, fmt,
+  clippy, deny, shear, nextest **1403 tests passed** (16 skipped), doctests. Before the merge
+  (78562aa): exit 0, 1375 passed.
+- Full e2e suite (`npx e2e run`) on cc74a6a: 270 passed, 1 skipped (41 files).
+- New tests, each red before its slice (the review's coverage tests pinned behaviour that was
+  already correct):
+  - `crates/yulius/tests/automation_start.rs`, 6 tests:
+    - the choice is stored, changed and cleared, and invalid choices are refused with 422 and
+      change nothing (AC-AUT-13/14);
+    - each run's task starts with its choice, and a waiting task skips the next run
+      (AC-AUT-15/16);
+    - a Done-and-closed predecessor and a true rule start the task at once, and a full chain
+      bound fails the run;
+    - a stored choice naming a deleted task still saves (red before the round-1 fix);
+    - the agent tools set and replace the choice (AC-AUT-17).
+  - `crates/yulius-app/src/automations.rs` unit test `a_start_choice_is_one_of_four`.
+  - `crates/yulius-store/src/lib.rs` `version_eighteen_automations_start_their_tasks_now`.
+  - `e2e/tests/automations.e2e.ts`: the builder's Start row (AC-AUT-18, no WCAG violations) and
+    `ruleFromText` (unit, in the page).
+- Checked by eye in the Yulius browser: the Start row under the workflow on the mock builder.
+- Independent review in fresh sessions:
+  - round 1: REQUEST CHANGES, fixed in 31cd455;
+  - round 2: APPROVE, its minors fixed in 78562aa;
+  - round 3: APPROVE of 78562aa.
+- `spec_check` valid; `python3 scripts/check_repository.py` passed.
+- Not testable here: real Claude sessions and a live GitHub. Runs use the in-memory harness,
+  where tasks wait queued with live sessions capped at 0, and Done comes from a seeded merged
+  delivery.
