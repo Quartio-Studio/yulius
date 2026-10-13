@@ -4,7 +4,7 @@
 //! isolation adapter's `cpu.max` and `memory.max`), else the host's CPUs and 2 GiB of memory
 //! per CPU. Yulius gives out budgets from it and says so in the environment
 //! ([`yulius_domain::resources::budget_env`]): CI jobs get their declared or default share and
-//! wait for it ([`App::ci_reserve`]); agent runs, terminals and the Cockpit get the agent budget
+//! wait for it (`App::ci_reserve`); agent runs, terminals and the Cockpit get the agent budget
 //! ([`App::agent_resource_env`]). The repository maps the budget to its tools in
 //! `[resources.env]` of the `yulius.toml` where the process starts.
 
