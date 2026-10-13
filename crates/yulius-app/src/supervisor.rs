@@ -20,8 +20,7 @@ use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, AttemptId, SandboxId, TaskId};
 use yulius_domain::rotation::{self, AccountView, Decision, Trigger};
 use yulius_domain::task::{
-    Activity, AttemptState, FailReason, STOP_INTERRUPT_GRACE_MS, STOP_KILL_WAIT_MS,
-    STOP_TERM_GRACE_MS, StopReason, TaskEvent, TaskStatus,
+    Activity, AttemptState, FailReason, STOP_INTERRUPT_GRACE_MS, StopReason, TaskEvent, TaskStatus,
 };
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{AccountUsage, UsageWindow};
@@ -53,7 +52,10 @@ pub const WATCH_INTERVAL_MS: u64 = 1_000;
 /// Reattach attempts after an unexpected host disconnect.
 pub const REATTACH_ATTEMPTS: u32 = 3;
 /// How long a closed run may take to be recorded as ended after the close escalation (SPEC-039).
-const CLOSE_SETTLE_MS: i64 = 5_000;
+const CLOSE_SETTLE_MS: u64 = 5_000;
+/// How long asking a run to shut down may take: one frame on a local socket; a host that takes
+/// longer is stuck, which the escalation handles (SPEC-065 END-005).
+const SHUTDOWN_WRITE_BOUND: Duration = Duration::from_secs(2);
 /// How often a close waiting for its run looks again without an update (SPEC-039).
 const CLOSE_RECHECK: Duration = Duration::from_secs(1);
 
@@ -160,6 +162,28 @@ pub struct TaskRuntime {
     /// The recovery of a session whose context is full (SPEC-060); outlives a run, so a fresh
     /// session counts as its second stage.
     pub(crate) context: Mutex<crate::context_full::ContextEpisode>,
+    /// Run endings being recorded (`finalize_attempt`, `mark_lost`): raised before the attempt is
+    /// marked ended, lowered once its chains and queue work is done (SPEC-065 END-003).
+    finalizing: tokio::sync::watch::Sender<u32>,
+    /// The run whose host could not be terminated after its stop or close escalation, and why
+    /// (SPEC-065 END-001): it stays live until its processes are gone.
+    end_failed: Mutex<Option<(AttemptId, String)>>,
+}
+
+/// Counts a run ending as being recorded until dropped (SPEC-065 END-003).
+struct Finalizing<'a>(&'a tokio::sync::watch::Sender<u32>);
+
+impl<'a> Finalizing<'a> {
+    fn start(count: &'a tokio::sync::watch::Sender<u32>) -> Self {
+        count.send_modify(|n| *n += 1);
+        Self(count)
+    }
+}
+
+impl Drop for Finalizing<'_> {
+    fn drop(&mut self) {
+        self.0.send_modify(|n| *n = n.saturating_sub(1));
+    }
 }
 
 /// After a switch was refused before it started, automatic switches of the task wait this long
@@ -209,7 +233,19 @@ impl TaskRuntime {
             acting_as_app_said: AtomicBool::new(false),
             switch_refused_ms: AtomicI64::new(0),
             context: Mutex::new(crate::context_full::ContextEpisode::default()),
+            finalizing: tokio::sync::watch::channel(0).0,
+            end_failed: Mutex::new(None),
         }
+    }
+
+    /// Why the host of `attempt` could not be terminated, if it could not (SPEC-065 END-001).
+    fn end_failed_for(&self, attempt: &AttemptId) -> Option<String> {
+        self.end_failed
+            .lock()
+            .ok()?
+            .as_ref()
+            .filter(|(id, _)| id == attempt)
+            .map(|(_, why)| why.clone())
     }
 
     /// Whether the run's transcript is being watched (a turn record can still arrive).
@@ -1664,18 +1700,60 @@ impl App {
         let Ok(Some(attempt)) = self.deps.store.attempt(attempt_id).await else {
             return;
         };
+        // Its end is recorded already (the escalation ended it).
+        if attempt.state.is_terminal() {
+            return;
+        }
         match self.deps.session_host.inspect(Path::new(&attempt.run_dir)) {
             RunInspection::Exited(exit) => self.finalize_attempt(task_id, attempt_id, exit).await,
+            // The host or the agent may still run (an agent that outlived its killed host).
             RunInspection::Recorded {
-                host_alive: true, ..
-            } => {
-                let _ = self
-                    .deps
-                    .session_host
-                    .terminate(Path::new(&attempt.run_dir));
-                self.mark_lost(task_id, attempt_id, StopReason::Lost).await;
+                host_alive,
+                child_alive,
+                ..
+            } if host_alive || child_alive => {
+                self.terminate_then_mark_lost(task_id, &attempt, StopReason::Lost)
+                    .await;
             }
             _ => self.mark_lost(task_id, attempt_id, StopReason::Lost).await,
+        }
+    }
+
+    /// Ends a run that did not exit after its stop or close escalation, or whose host or agent
+    /// lives on after the connection to it was lost or the server restarted: the host and agent
+    /// are killed, and only once they are proven gone is the run recorded as lost (AGENTS.md: a
+    /// timeout is not proof a subprocess died). When they cannot be killed the run stays live,
+    /// which keeps the task from being deleted; the failure is logged, said in the task's terminal
+    /// and flags a running task for a person (SPEC-065 END-001). Stopping the task again retries.
+    async fn terminate_then_mark_lost(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        attempt: &AttemptRecord,
+        reason: StopReason,
+    ) {
+        let Err(err) = self
+            .deps
+            .session_host
+            .terminate(Path::new(&attempt.run_dir))
+        else {
+            self.mark_lost(task_id, &attempt.id, reason).await;
+            return;
+        };
+        tracing::warn!(task = %task_id, error = %err, "the run's host could not be terminated; the run stays live");
+        let runtime = self.runtime(task_id);
+        if let Ok(mut failed) = runtime.end_failed.lock() {
+            *failed = Some((attempt.id.clone(), err.to_string()));
+        }
+        runtime.hub.notice(format!(
+            "Yulius could not end this session ({err}). It still counts as running, so the task \
+             cannot be deleted. Stop the task again to retry."
+        ));
+        if let Ok(Some(task)) = self.deps.store.task(task_id).await
+            && let Err(err) = self
+                .set_task_activity(&task, Activity::NeedsAttention)
+                .await
+        {
+            tracing::warn!(task = %task_id, error = %err, "could not flag the task");
         }
     }
 
@@ -1685,17 +1763,30 @@ impl App {
         attempt_id: &AttemptId,
         reason: StopReason,
     ) {
+        // `existing_runtime`: a deleted task's runtime is not brought back.
+        let runtime = self.existing_runtime(task_id);
+        let _finalizing = runtime.as_ref().map(|rt| Finalizing::start(&rt.finalizing));
         let now = self.now();
         let update = AttemptUpdate {
             ended_at: Some(now),
             exit_reason: Some("lost".into()),
             ..AttemptUpdate::default()
         };
-        let _ = self
+        let first = self
             .deps
             .store
             .transition_attempt(attempt_id, AttemptState::Lost, &update)
-            .await;
+            .await
+            .unwrap_or(false);
+        if !first {
+            return; // another observer already recorded the outcome
+        }
+        if let Some(rt) = &runtime
+            && let Ok(mut intent) = rt.intent.lock()
+        {
+            // No exit will consume it: the next run must not inherit it.
+            *intent = None;
+        }
         if let Ok(Some(task)) = self.deps.store.task(task_id).await
             && let Ok(next) = task.status.apply(TaskEvent::Lost(reason))
         {
@@ -1706,7 +1797,7 @@ impl App {
                 .await;
         }
         self.end_pause(task_id, "ended").await;
-        if let Some(rt) = self.existing_runtime(task_id) {
+        if let Some(rt) = &runtime {
             rt.watcher_alive.store(false, Ordering::SeqCst);
             *rt.run.lock().await = None;
             rt.hub.exit(TaskStatus::Stopped(reason).as_str(), None);
@@ -1725,6 +1816,7 @@ impl App {
     ) {
         let store = &self.deps.store;
         let runtime = self.runtime(task_id);
+        let _finalizing = Finalizing::start(&runtime.finalizing);
         let intent = runtime.intent.lock().ok().and_then(|mut g| g.take());
         let session_end = runtime.session_end.lock().ok().and_then(|mut g| g.take());
         runtime.watcher_alive.store(false, Ordering::SeqCst);
@@ -1938,75 +2030,82 @@ impl App {
                 task.status.as_str()
             )));
         }
+        let closed = self.live_attempt_id(task_id).await;
         let runtime = self.runtime(task_id);
         if let Ok(mut intent) = runtime.intent.lock() {
             *intent = Some(EndIntent::Close);
         }
-        let total = STOP_INTERRUPT_GRACE_MS + STOP_TERM_GRACE_MS + STOP_KILL_WAIT_MS;
-        if let Some(run) = runtime.run.lock().await.as_mut() {
-            let _ = run
-                .writer
-                .shutdown(u32::try_from(STOP_INTERRUPT_GRACE_MS).unwrap_or(5000))
-                .await;
-        }
-        let app = self.clone();
-        let tid = task_id.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(
-                u64::try_from(total).unwrap_or(20_000),
-            ))
-            .await;
-            if let Ok(Some(attempt)) = app.deps.store.live_attempt(&tid).await {
-                tracing::warn!(task = %tid, "closed run did not exit after escalation; terminating host");
-                let _ = app.deps.session_host.terminate(Path::new(&attempt.run_dir));
-                app.mark_lost(&tid, &attempt.id, StopReason::Lost).await;
-            }
-        });
+        self.arm_escalation(task_id, closed);
+        request_shutdown(&runtime).await;
         Ok(())
     }
 
     /// Closes a finished, running task like [`Self::close_task_now`] and waits until its run has
-    /// ended and the task rests (SPEC-039), so its records and directories can go. A run that
-    /// already ended by itself is not a conflict. The close and the wait are bounded together by
-    /// the close escalation, after which the run is terminated and marked lost, plus
-    /// `CLOSE_SETTLE_MS`; the wait follows the task's update events and looks again every
-    /// `CLOSE_RECHECK` in case an update is never published.
+    /// ended, the task rests and the run's ending is fully recorded (SPEC-039, SPEC-065 END-003),
+    /// so its records and directories can go. A run that already ended by itself is not a
+    /// conflict. The close and the wait are bounded together by the close escalation, after which
+    /// the run's host is terminated, plus `CLOSE_SETTLE_MS`; the wait follows the task's update
+    /// events and looks again every `CLOSE_RECHECK`, on an interval other events do not reset.
     ///
     /// # Errors
-    /// `Conflict` when the run is still there at the bound.
+    /// `Conflict` when the task was not closed and is neither resting nor stopping, when its
+    /// run's host could not be terminated, or when the run is still there at the bound.
     pub async fn close_task_and_wait(self: &Arc<Self>, task_id: &TaskId) -> AppResult<()> {
         // Subscribed before closing, so the update that says the run ended is never missed.
         let mut events = self.events.subscribe();
-        let total =
-            STOP_INTERRUPT_GRACE_MS + STOP_TERM_GRACE_MS + STOP_KILL_WAIT_MS + CLOSE_SETTLE_MS;
-        let bound = Duration::from_millis(u64::try_from(total).unwrap_or(25_000));
+        let runtime = self.runtime(task_id);
+        let mut finalizing = runtime.finalizing.subscribe();
+        let bound = Duration::from_millis(self.config.stop_escalation_ms + CLOSE_SETTLE_MS);
         let ended = tokio::time::timeout(bound, async {
             match self.close_task_now(task_id).await {
-                // Not running any more: whether it rests is checked below.
-                Ok(()) | Err(AppError::Conflict(_)) => {}
+                Ok(()) => {}
+                // Not running any more: a task that rests or is being stopped can go once its
+                // run has ended; any other (switching, starting) was not closed.
+                Err(AppError::Conflict(_)) => {
+                    let status = self.deps.store.task(task_id).await?.map(|t| t.status);
+                    if status.is_some_and(|s| !s.is_resting() && s != TaskStatus::Stopping) {
+                        return Err(AppError::Conflict(
+                            "stop the task before deleting it".into(),
+                        ));
+                    }
+                }
                 Err(err) => return Err(err),
             }
+            let mut recheck = tokio::time::interval_at(
+                tokio::time::Instant::now() + CLOSE_RECHECK,
+                CLOSE_RECHECK,
+            );
             loop {
                 let store = &self.deps.store;
                 let rests = store
                     .task(task_id)
                     .await?
                     .is_none_or(|t| t.status.is_resting());
-                if rests && store.live_attempt(task_id).await?.is_none() {
+                let live = store.live_attempt(task_id).await?;
+                if let Some(why) = live.as_ref().and_then(|a| runtime.end_failed_for(&a.id)) {
+                    return Err(AppError::Conflict(format!(
+                        "the task's session could not be ended: {why}"
+                    )));
+                }
+                if rests && live.is_none() && *finalizing.borrow_and_update() == 0 {
                     return Ok::<bool, AppError>(true);
                 }
                 loop {
-                    match tokio::time::timeout(CLOSE_RECHECK, events.recv()).await {
-                        Ok(Ok(envelope)) => {
-                            if matches!(&envelope.event, UiEvent::TaskUpdated { task }
-                                if task.id == task_id.as_str())
-                            {
-                                break;
+                    tokio::select! {
+                        _ = recheck.tick() => break,
+                        _ = finalizing.changed() => break,
+                        event = events.recv() => match event {
+                            Ok(envelope) => {
+                                if matches!(&envelope.event, UiEvent::TaskUpdated { task }
+                                    if task.id == task_id.as_str())
+                                {
+                                    break;
+                                }
                             }
-                        }
-                        // No update for a while, or updates were missed: look again.
-                        Err(_) | Ok(Err(broadcast::error::RecvError::Lagged(_))) => break,
-                        Ok(Err(broadcast::error::RecvError::Closed)) => return Ok(false),
+                            // Updates were missed: look again.
+                            Err(broadcast::error::RecvError::Lagged(_)) => break,
+                            Err(broadcast::error::RecvError::Closed) => return Ok(false),
+                        },
                     }
                 }
             }
@@ -2019,6 +2118,43 @@ impl App {
                 "the task's session is still closing; try again".into(),
             )),
         }
+    }
+
+    /// The task's live attempt, if any; a store error is logged and means none is known.
+    async fn live_attempt_id(&self, task_id: &TaskId) -> Option<AttemptId> {
+        match self.deps.store.live_attempt(task_id).await {
+            Ok(attempt) => attempt.map(|a| a.id),
+            Err(err) => {
+                tracing::warn!(task = %task_id, error = %err, "the ended run is unknown; no escalation");
+                None
+            }
+        }
+    }
+
+    /// Arms the escalation of a stop or close: if `attempt` is still the task's live run after
+    /// `stop_escalation_ms`, its host is terminated (SPEC-065 END-001). Armed before the run lock
+    /// is taken, so neither a blocked writer nor a cancelled caller leaves the run without it
+    /// (END-005). Only that run: a task continued meanwhile has a new one.
+    fn arm_escalation(self: &Arc<Self>, task_id: &TaskId, attempt: Option<AttemptId>) {
+        let Some(attempt) = attempt else {
+            return;
+        };
+        if let Ok(mut failed) = self.runtime(task_id).end_failed.lock() {
+            *failed = None;
+        }
+        let app = self.clone();
+        let tid = task_id.clone();
+        let wait = Duration::from_millis(self.config.stop_escalation_ms);
+        tokio::spawn(async move {
+            tokio::time::sleep(wait).await;
+            if let Ok(Some(live)) = app.deps.store.live_attempt(&tid).await
+                && live.id == attempt
+            {
+                tracing::warn!(task = %tid, "run did not exit after escalation; terminating host");
+                app.terminate_then_mark_lost(&tid, &live, StopReason::Lost)
+                    .await;
+            }
+        });
     }
 
     /// Stops a task: graceful shutdown with escalation, then (if needed) termination and `lost`.
@@ -2047,10 +2183,34 @@ impl App {
             self.advance_chains(task_id).await;
             return Ok(());
         }
-        let next = task
-            .status
-            .apply(TaskEvent::CancelRequested)
-            .map_err(|_| AppError::Conflict(format!("task is {}", task.status.as_str())))?;
+        // A task already stopping is stopped again: its escalation is armed anew (SPEC-065). One
+        // whose run has ended gets no intent (nothing would consume it): it rests by itself while
+        // its ending is recorded, or now when nothing records it (records cut by a crash).
+        let next = if task.status == TaskStatus::Stopping {
+            if store.live_attempt(task_id).await?.is_none() {
+                if *self.runtime(task_id).finalizing.borrow() == 0
+                    && store
+                        .transition_task(
+                            task_id,
+                            Some(TaskStatus::Stopping),
+                            TaskStatus::Stopped(StopReason::Cancelled),
+                            None,
+                            self.now(),
+                        )
+                        .await?
+                {
+                    self.end_pause(task_id, "cancelled").await;
+                    self.publish_task(task_id).await;
+                    self.advance_chains(task_id).await;
+                }
+                return Ok(());
+            }
+            TaskStatus::Stopping
+        } else {
+            task.status
+                .apply(TaskEvent::CancelRequested)
+                .map_err(|_| AppError::Conflict(format!("task is {}", task.status.as_str())))?
+        };
         let runtime = self.runtime(task_id);
         if let Ok(mut intent) = runtime.intent.lock() {
             *intent = Some(EndIntent::Cancel);
@@ -2062,37 +2222,10 @@ impl App {
         }
         self.end_pause(task_id, "cancelled").await;
         self.publish_task(task_id).await;
-        let total = STOP_INTERRUPT_GRACE_MS + STOP_TERM_GRACE_MS + STOP_KILL_WAIT_MS;
         // The run this stop ends; without it (a store error) nothing is escalated.
-        let stopped = match store.live_attempt(task_id).await {
-            Ok(attempt) => attempt.map(|a| a.id),
-            Err(err) => {
-                tracing::warn!(task = %task_id, error = %err, "the stopped run is unknown; no escalation");
-                None
-            }
-        };
-        if let Some(run) = runtime.run.lock().await.as_mut() {
-            let _ = run
-                .writer
-                .shutdown(u32::try_from(STOP_INTERRUPT_GRACE_MS).unwrap_or(5000))
-                .await;
-        }
-        let app = self.clone();
-        let tid = task_id.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(
-                u64::try_from(total).unwrap_or(20_000),
-            ))
-            .await;
-            // Only the run this stop ended: a task continued meanwhile has a new one.
-            if let Ok(Some(attempt)) = app.deps.store.live_attempt(&tid).await
-                && stopped.as_ref() == Some(&attempt.id)
-            {
-                tracing::warn!(task = %tid, "run did not exit after escalation; terminating host");
-                let _ = app.deps.session_host.terminate(Path::new(&attempt.run_dir));
-                app.mark_lost(&tid, &attempt.id, StopReason::Lost).await;
-            }
-        });
+        let stopped = self.live_attempt_id(task_id).await;
+        self.arm_escalation(task_id, stopped);
+        request_shutdown(&runtime).await;
         Ok(())
     }
 
@@ -2493,13 +2626,19 @@ impl App {
                     self.finalize_attempt(&attempt.task_id, &attempt.id, exit)
                         .await
                 }
-                RunInspection::Recorded { host_alive, .. } => {
-                    if host_alive {
-                        let _ = self
-                            .deps
-                            .session_host
-                            .terminate(Path::new(&attempt.run_dir));
-                    }
+                RunInspection::Recorded {
+                    host_alive,
+                    child_alive,
+                    ..
+                } if host_alive || child_alive => {
+                    self.terminate_then_mark_lost(
+                        &attempt.task_id,
+                        &attempt,
+                        StopReason::ServerLost,
+                    )
+                    .await;
+                }
+                RunInspection::Recorded { .. } => {
                     self.mark_lost(&attempt.task_id, &attempt.id, StopReason::ServerLost)
                         .await;
                 }
@@ -2898,6 +3037,24 @@ impl App {
                 }
             }
         }
+    }
+}
+
+/// Asks the task's run, if one is attached, to shut down gracefully (interrupt, then TERM, then
+/// kill on the host's side). Taking the run lock and writing are bounded together (SPEC-065
+/// END-005): a stuck host must not hold the lock that ending the run needs.
+async fn request_shutdown(runtime: &TaskRuntime) {
+    let asked = tokio::time::timeout(SHUTDOWN_WRITE_BOUND, async {
+        if let Some(run) = runtime.run.lock().await.as_mut() {
+            let _ = run
+                .writer
+                .shutdown(u32::try_from(STOP_INTERRUPT_GRACE_MS).unwrap_or(5000))
+                .await;
+        }
+    })
+    .await;
+    if asked.is_err() {
+        tracing::warn!("the run did not take the shutdown request in time; the escalation ends it");
     }
 }
 

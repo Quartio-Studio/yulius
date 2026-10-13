@@ -246,7 +246,9 @@ export function taskActions(task, access, pr) {
   const ended = !live && !chained;
   const finished = live && taskInfo(task, null, pr).group === 'done';
   return {
-    stop: write && (live || chained) && task.status !== 'stopping',
+    // A stopping task can be stopped again: a stop whose session could not be ended is retried
+    // (SPEC-065).
+    stop: write && (live || chained),
     startNow: write && chained,
     continue: write && ended && !task.archived,
     deliver: write && !task.archived,

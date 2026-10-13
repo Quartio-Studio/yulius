@@ -2273,7 +2273,7 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | Install and health check | health 120 s; install 15 min | rollback; `failed` |
 | Update resume stagger / hold retry | 2 s / `Retry-After: 3` | — |
 | Update backups kept | 3 | oldest removed |
-| Stop escalation | 5 s + 5 s + 10 s | `lost` + alert |
+| Stop escalation | 5 s + 5 s + 10 s (`stop_escalation_ms`); shutdown request 2 s | host terminated, then `lost`; a host that cannot be terminated keeps the run live + notice (SPEC-065) |
 | Switch total | 120 s | `stopped(switch_timeout)` |
 | Hook call | 5 s | fail-open |
 | Hook hold (Stop, `UserPromptSubmit`) | `Retry-After` 10 s (client: 1–60 s), 2 s after a failure, 8 days in total (CLI `timeout` 8 days + 1 h) | fail-open; a reported limit then pauses as `limit` |
