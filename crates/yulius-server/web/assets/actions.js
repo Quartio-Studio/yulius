@@ -34,7 +34,7 @@ export function openTaskMenu(ctx, anchor, task) {
     task.archived
       ? { label: 'Restore', disabled: !can.restore, onSelect: () => restoreTask(ctx, task) }
       : { label: 'Archive', disabled: !can.archive, title: can.archive ? null : (allows(access, 'write') ? 'Still running: stop the task before archiving it' : why), onSelect: () => archiveTask(ctx, task) },
-    { label: 'Delete permanently…', danger: true, disabled: !can.delete, title: can.delete ? null : (allows(access, 'write') ? 'Still running: stop the task before deleting it' : why), onSelect: () => deleteTask(ctx, task) },
+    { label: 'Delete permanently…', danger: true, disabled: !can.delete, title: can.delete ? null : (!allows(access, 'write') ? why : task.status === 'stopping' ? 'Stopping…' : 'Still running: stop the task before deleting it'), onSelect: () => deleteTask(ctx, task) },
   ], { align: anchor instanceof Element ? 'end' : 'start' });
 }
 
@@ -106,12 +106,20 @@ export async function deleteTask(ctx, task) {
     confirmLabel: 'Delete permanently',
     danger: true,
   });
-  if (!ok) return;
+  // One request per task: closing a Done task takes a few seconds, and a second confirmation
+  // meanwhile would end in "not found" (SPEC-065 END-007).
+  const key = `${task.id}:delete`;
+  if (!ok || inFlight.has(key)) return;
+  inFlight.add(key);
+  const progress = toast(`Deleting #${task.number}…`, { timeout: 0 });
   try {
     await ctx.api.del(`/api/tasks/${enc(task.id)}`, { timeoutMs: DELETE_TIMEOUT_MS });
   } catch (error) {
     errorToast(error, `Couldn’t delete task #${task.number}`);
     return;
+  } finally {
+    inFlight.delete(key);
+    progress();
   }
   ctx.store.removeTask(task.id, { byUser: true });
   toast(`Task #${task.number} deleted.`, { kind: 'ok' });

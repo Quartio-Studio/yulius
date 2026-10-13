@@ -109,3 +109,38 @@ test('a Done task can be deleted from its menu; a working one says it has to be 
   await expect(screen.getByText('Task #13 deleted.')).toBeVisible();
   await expect(screen.getByRole('region', 'Done').getByRole('link', /Improve the code/)).toBeHidden();
 });
+
+// #290 (SPEC-065 END-007): closing a Done task takes a few seconds; the UI says so and a second
+// confirmation meanwhile sends nothing.
+test('deleting a Done task says so while it runs and sends one request', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/13'));
+  await expect(browser.locator('.strip-status')).toHaveText(/^Done/);
+  await browser.evaluate(() => {
+    const mocked = window as unknown as { __yuliusMock: { holdDelete?: Promise<void>; releaseDelete?: () => void } };
+    mocked.__yuliusMock.holdDelete = new Promise<void>((resolve) => { mocked.__yuliusMock.releaseDelete = resolve; });
+  });
+  const confirmDelete = async () => {
+    await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
+    await screen.getByRole('menuitem', /^Delete permanently/).click();
+    await screen.getByRole('button', 'Delete permanently').click();
+  };
+  await confirmDelete();
+  await expect(screen.getByText('Deleting #13…')).toBeVisible();
+  await confirmDelete();
+  const requests = () => browser.evaluate(() => (window as unknown as { __yuliusMock: { deleteRequests?: number } }).__yuliusMock.deleteRequests || 0);
+  expect(await requests()).toBe(1);
+
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { releaseDelete: () => void } }).__yuliusMock.releaseDelete());
+  await expect(screen.getByText('Task #13 deleted.')).toBeVisible();
+  await expect(screen.getByText('Deleting #13…')).toBeHidden();
+  expect(await requests()).toBe(1);
+});
+
+test('a task being stopped says Stopping… on its Delete item', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await touchTask(browser, 12, { status: 'stopping', activity: null });
+  await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
+  const item = screen.getByRole('menuitem', /^Delete permanently/);
+  await expect(item).toHaveAttribute('aria-disabled', 'true');
+  await expect(item).toHaveText(/Stopping…/);
+});
