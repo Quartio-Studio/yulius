@@ -2002,6 +2002,47 @@ impl App {
         }
     }
 
+    /// Records why Yulius did not push or open the pull request at the end of a turn, for
+    /// `yulius wait` (SPEC-050 DLV-204): an agent that expects delivery learns what blocks it
+    /// instead of waiting for a pull request that never comes (#34 waited 42 minutes). Only for
+    /// a branch with commits to deliver.
+    async fn note_undelivered(&self, task: &TaskRecord, worktree: &str, reason: &str) {
+        let path = Path::new(worktree);
+        let Some(head) = self
+            .deps
+            .git
+            .log(path, "HEAD", 1)
+            .await
+            .ok()
+            .and_then(|log| log.into_iter().next())
+            .map(|commit| commit.sha)
+        else {
+            return;
+        };
+        let Ok(sandbox) = self.dlv_sandbox_of(task).await else {
+            return;
+        };
+        let integration = delivery_profile(&sandbox).integration_branch;
+        let ahead = self
+            .deps
+            .git
+            .ahead_behind(path, &format!("origin/{integration}"), "HEAD")
+            .await
+            .map(|(ahead, _)| ahead)
+            .unwrap_or(0);
+        if ahead == 0 {
+            return;
+        }
+        let short = head.get(..9).unwrap_or(&head);
+        let text = format!(
+            "Yulius has not delivered {short} (no push, no pull request): {reason}. It delivers \
+             at the end of your turn once nothing blocks it."
+        );
+        if let Ok(mut problem) = self.runtime(&task.id).push_problem.lock() {
+            *problem = Some((head, text));
+        }
+    }
+
     /// Records why the agent's head could not be pushed, for `yulius wait` (DLV-201). A branch
     /// rewritten after it was pushed is refused as not a fast-forward; the remedy merges the
     /// pushed head back in, so nothing is force-pushed.
@@ -2058,15 +2099,27 @@ impl App {
         };
         // Cheap checks first: most turns end with steps still open, and they need no GitHub call.
         let steps = store.steps(&task.id).await?;
-        if steps
+        let open_step = steps
             .iter()
-            .any(|s| !StepStatus::parse(&s.status).is_some_and(StepStatus::is_resolved))
-            || (steps.is_empty() && !self.branch_changed(&task).await?)
+            .find(|s| !StepStatus::parse(&s.status).is_some_and(StepStatus::is_resolved));
+        if (steps.is_empty() && !self.branch_changed(&task).await?)
             || store
                 .delivery(&task.id)
                 .await?
                 .is_some_and(|r| !matches!(r.stage, DeliveryStage::None | DeliveryStage::PrOpen))
         {
+            return Ok(None);
+        }
+        if let Some(step) = open_step {
+            self.note_undelivered(
+                &task,
+                &worktree,
+                &format!(
+                    "step \"{}\" is {}: finish it, or resolve it with `step_update` and a note",
+                    step.title, step.status
+                ),
+            )
+            .await;
             return Ok(None);
         }
         let sandbox = self.dlv_sandbox_of(&task).await?;
@@ -2081,11 +2134,22 @@ impl App {
             .dlv_observe(&sandbox, &task, &profile, Some(&token))
             .await?;
         // A task that needs a spec needs its plan too; research, docs and chores may have none.
-        if !observed.spec.valid
-            || (observed.steps.is_empty() && observed.spec.required)
-            || observed.steps_open > 0
-            || observed.dirty
-        {
+        let not_ready = if !observed.spec.valid {
+            Some(format!(
+                "the spec is not valid ({}); fix it and commit",
+                observed.spec.problems.join(" ")
+            ))
+        } else if observed.steps.is_empty() && observed.spec.required {
+            Some("the task has no plan: record its steps with `step_update`".to_owned())
+        } else if observed.steps_open > 0 {
+            Some("a step is still open: finish it or resolve it with `step_update`".to_owned())
+        } else if observed.dirty {
+            Some("the worktree has uncommitted changes: commit them".to_owned())
+        } else {
+            None
+        };
+        if let Some(reason) = not_ready {
+            self.note_undelivered(&task, &worktree, &reason).await;
             return Ok(None);
         }
         let Some(head) = observed.worktree_head.clone() else {

@@ -232,6 +232,13 @@ fn short(sha: &str) -> &str {
     sha.get(..7).unwrap_or(sha)
 }
 
+/// Whether a pull request is tested with its own jobs (`own`) instead of the integration branch's:
+/// only when it changed them itself, against what it branched off (`at_base`, unknown: assumed
+/// changed), and they differ from the integration branch's.
+fn own_jobs_apply<J: PartialEq>(own: &[J], at_base: Option<&[J]>, integration: &[J]) -> bool {
+    own != integration && at_base.is_none_or(|base| own != base)
+}
+
 /// Whether anything of `sandbox` is in `busy`: a lane (`<sandbox>/<n>`) or a claim.
 fn busy_in(busy: &HashSet<String>, sandbox: &str) -> bool {
     busy.iter().any(|key| {
@@ -591,12 +598,28 @@ impl App {
                 Ok(jobs) if !jobs.is_empty() => Some(jobs),
                 _ => None,
             };
+            // What the pull request branched off: its own jobs count only when it changed them
+            // there, not when the integration branch moved on since (F 2026-10-13: stale branches
+            // kept running an apt step `dev` had removed).
+            let at_base = match self
+                .deps
+                .git
+                .merge_base(
+                    &repo,
+                    &pull.head_sha,
+                    &format!("origin/{}", profile.integration_branch),
+                )
+                .await
+            {
+                Ok(Some(base)) => self.ci_jobs_at(&repo, &base).await.ok(),
+                _ => None,
+            };
             let gate = match &view.gate {
                 // A pull request that changes the CI (an agent scoping a monorepo's jobs to
                 // its project, F 2026-10-12) is tested with its own jobs; one that removes them
                 // all is still tested with the integration branch's.
                 Some(gate) => Some(match own {
-                    Some(jobs) if jobs != gate.jobs => Gate {
+                    Some(jobs) if own_jobs_apply(&jobs, at_base.as_deref(), &gate.jobs) => Gate {
                         jobs,
                         source: GateSource::PullRequest,
                     },
@@ -1250,7 +1273,24 @@ impl App {
 
 #[cfg(test)]
 mod lane_tests {
-    use super::{busy_in, take_lane};
+    use super::{busy_in, own_jobs_apply, take_lane};
+
+    /// CI-110: a stale branch is not tested with the integration branch's old jobs it still
+    /// carries; a pull request that changed the jobs is tested with its own.
+    #[test]
+    fn a_pull_request_runs_its_own_jobs_only_when_it_changed_them() {
+        let (old, new, scoped) = (["apt"], ["no-apt"], ["no-apt", "scoped"]);
+        assert!(
+            !own_jobs_apply(&old, Some(&old[..]), &new),
+            "behind: dev's jobs"
+        );
+        assert!(
+            own_jobs_apply(&scoped, Some(&new[..]), &new),
+            "changed by the pull request"
+        );
+        assert!(!own_jobs_apply(&new, Some(&old[..]), &new), "same as dev's");
+        assert!(own_jobs_apply(&old, None, &new), "base unknown: as before");
+    }
     use std::collections::HashSet;
 
     #[test]
