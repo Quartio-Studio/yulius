@@ -1,8 +1,8 @@
-// Secrets page (SPEC-001 VLT-001..009, SPEC-002 ADR-20): two sections.
-// Team secrets: every member's shared credentials; a password, notes, a TOTP seed or code shows
-// only after a fresh confirmation (password or GitHub sign-in in the last 10 minutes) and every
-// reveal is audited. Agent secrets: values are write-only; agents use them through Yulius' proxy
-// and browser filling and never see them.
+// Secrets page (SPEC-001 VLT-001..009, SPEC-002 ADR-20, SPEC-040): two sections.
+// Team secrets: a title, a value and notes shared by every member. Agent secrets: agents use them
+// through Yulius' proxy and browser filling and never see them. People read a value only after
+// entering their own two-factor code (set up once, mandatory; it unlocks the vault for 10
+// minutes), and every reveal is audited.
 
 import { enc } from '../api.js';
 import { h, icon, badge, iconBadge, itemCard, toast, confirmDialog, errorToast, setChildren, iconButton, emptyState, openModal, field, invalid } from '../dom.js';
@@ -33,29 +33,80 @@ async function copyValue(value, what) {
 }
 
 /**
- * Runs `request`; when the server asks for a fresh confirmation, asks the person (password, or
- * GitHub sign-in again) and retries once. Resolves `null` when they cancel.
+ * Runs `request`; when the server asks for a two-factor code, unlocks the vault (setting
+ * two-factor up first if needed) and retries once. Resolves `null` when the person cancels.
  */
 async function withReauth(ctx, request) {
   try {
     return await request();
   } catch (error) {
     if (!error || error.code !== 'reauth_required') throw error;
-    const confirmed = await confirmIdentity(ctx, (error.body && error.body.reauth) || { methods: [] });
-    if (!confirmed) return null;
+    const unlocked = await unlockVault(ctx, (error.body && error.body.reauth) || { methods: [] });
+    if (!unlocked) return null;
     return request();
   }
 }
 
-/** The confirmation dialog; resolves true once confirmed. */
-function confirmIdentity(ctx, status) {
+/**
+ * Unlocks the vault: the code dialog; first the identity confirmation when codes are locked
+ * after too many wrong ones, and the setup when two-factor is not on (a pending setup can be
+ * finished with a code from the key added earlier).
+ */
+async function unlockVault(ctx, status) {
+  if (status.two_factor === 'locked') {
+    if (!(await confirmIdentity(ctx, status, 'Too many wrong codes. Confirm it’s you, then enter a code again.'))) return false;
+    return enterCode(ctx, null);
+  }
+  if (status.two_factor === 'on') return enterCode(ctx, null);
+  if (status.two_factor === 'pending') {
+    const result = await enterCode(ctx, null, true);
+    if (result !== 'restart') return result;
+  }
+  if (!status.identity_fresh && !(await confirmIdentity(ctx, status, 'Setting up two-factor needs a recent sign-in. Confirm it’s you first.'))) return false;
+  const setup = await ctx.api.post('/api/auth/two-factor');
+  return enterCode(ctx, setup);
+}
+
+/**
+ * The code dialog; with `setup` (a new seed), it also shows the key to add to the app; with
+ * `pending`, it offers a new key instead (resolves `'restart'`).
+ */
+function enterCode(ctx, setup, pending = false) {
+  const code = h('input', { class: 'input mono', id: 'unlock-code', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 6, 'aria-describedby': 'unlock-hint' });
+  let hint = 'Enter the code from your authenticator app. Secrets stay readable for 10 minutes; every reveal is recorded.';
+  if (setup) hint = 'Reading secrets needs two-factor. Add this key to your authenticator app (1Password, Google Authenticator…), then enter the code it shows. You do this once.';
+  else if (pending) hint = 'Finish setting up two-factor: enter the code your authenticator app shows for the key you added, or get a new key.';
+  const body = h('div', { class: 'stack' },
+    h('p', { id: 'unlock-hint' }, hint),
+    setup ? h('div', { class: 'stack-tight' },
+      h('span', { class: 'field-label' }, 'Key'),
+      h('div', { class: 'row-wrap' },
+        h('code', { class: 'mono secret-value' }, setup.secret),
+        smallButton('Copy', 'Copy key', () => copyValue(setup.secret, 'Key').catch((e) => errorToast(e, 'Couldn’t copy'))))) : null,
+    setup ? h('a', { href: setup.uri, class: 'small' }, 'Open in an authenticator app') : null,
+    field('Code from your app', code),
+  );
+  const actions = [{ label: 'Cancel', value: false }];
+  if (pending) actions.push({ label: 'New key', value: 'restart' });
+  actions.push({ label: 'Unlock', kind: 'primary', value: true, submit: true, run: async () => {
+    const value = code.value.replace(/\s+/g, '');
+    if (!/^\d{6}$/.test(value)) return invalid(code, 'Enter the 6-digit code.');
+    await ctx.api.post('/api/auth/unlock', { code: value });
+    return true;
+  } });
+  const modal = openModal({ title: setup || pending ? 'Set up two-factor' : 'Enter your two-factor code', body, actions });
+  return modal.result.then((v) => (v === 'restart' ? 'restart' : v === true));
+}
+
+/** Confirms identity (to set two-factor up, or after too many wrong codes); resolves true once confirmed. */
+function confirmIdentity(ctx, status, why) {
   const methods = status.methods || [];
   const password = h('input', { class: 'input', type: 'password', id: 'reauth-password', autocomplete: 'current-password', 'aria-describedby': 'reauth-hint' });
   const body = h('div', { class: 'stack' },
-    h('p', { id: 'reauth-hint' }, 'Secrets show only within 10 minutes of confirming it’s you. Every reveal is recorded.'),
+    h('p', { id: 'reauth-hint' }, why),
     methods.includes('password') ? field('Your password', password) : null,
     methods.includes('github') ? h('p', { class: 'muted small' }, 'Signing in with GitHub again confirms it’s you; you come back to this page.') : null,
-    methods.length === 0 ? h('p', { class: 'muted' }, 'This account cannot confirm here. Sign out and sign in again, then reveal within 10 minutes.') : null,
+    methods.length === 0 ? h('p', { class: 'muted' }, 'This account cannot confirm here. Sign out and sign in again, then set up two-factor within 10 minutes.') : null,
   );
   const actions = [{ label: 'Cancel', value: false }];
   if (methods.includes('github')) {
@@ -76,67 +127,50 @@ function confirmIdentity(ctx, status) {
   return modal.result.then((v) => v === true);
 }
 
+/** Shows a revealed value and notes. */
+function showRevealed(title, revealed) {
+  const rows = [];
+  if (revealed.value) {
+    rows.push(field('Value', h('div', { class: 'row-wrap' },
+      h('code', { class: 'mono secret-value' }, revealed.value),
+      smallButton('Copy', 'Copy value', () => copyValue(revealed.value, 'Value').catch((e) => errorToast(e, 'Couldn’t copy'))))));
+  }
+  if (revealed.notes) rows.push(field('Notes', h('pre', { class: 'mono secret-notes' }, revealed.notes)));
+  if (rows.length === 0) rows.push(h('p', { class: 'muted' }, 'This secret stores no value or notes.'));
+  openModal({ title, body: h('div', { class: 'stack' }, ...rows), actions: [{ label: 'Done', kind: 'primary' }] });
+}
+
 // ---------------------------------------------------------------- team secrets
 
-function teamForm(secret) {
+/** `loadNotes` reveals the stored notes (after a two-factor code) so they can be edited. */
+function teamForm(secret, loadNotes) {
   const title = h('input', { class: 'input', value: secret ? secret.title : '', maxlength: 200, autofocus: true, placeholder: 'Shared Gmail' });
-  const url = h('input', { class: 'input', value: secret && secret.url ? secret.url : '', placeholder: 'https://mail.google.com', autocomplete: 'off' });
-  const username = h('input', { class: 'input', value: secret && secret.username ? secret.username : '', placeholder: 'team@company.com', autocomplete: 'off' });
-  const password = h('input', { class: 'input mono', type: 'password', autocomplete: 'new-password', placeholder: secret && secret.has_password ? 'Unchanged' : '' });
-  const notes = h('textarea', { class: 'textarea', rows: 3, placeholder: secret && secret.has_notes ? 'Unchanged' : 'Recovery codes, security answers…' });
-  const totp = h('input', { class: 'input mono', autocomplete: 'off', placeholder: secret && secret.has_totp ? 'Unchanged' : 'Base32 seed or otpauth:// link' });
+  const value = h('input', { class: 'input mono', type: 'password', autocomplete: 'new-password', placeholder: secret && secret.has_value ? 'Unchanged' : '' });
+  const stored = Boolean(secret && secret.has_notes);
+  const notes = h('textarea', { class: 'textarea', rows: 3, readOnly: stored, placeholder: stored ? 'Stored notes stay as they are' : 'User name, address, recovery codes…' });
   const body = h('div', { class: 'stack' },
     field('Title', title),
-    field('Address', url),
-    field('User name', username),
-    field('Password', password, secret ? 'Leave empty to keep the stored password.' : null),
-    field('Notes', notes, 'Encrypted like the password.'),
-    field('Two-factor seed (TOTP)', totp, `From the QR code’s “enter this key” text. ${BRAND.name} shows the current code.`),
+    field('Value', value, secret ? 'Leave empty to keep the stored value.' : null),
+    field('Notes', notes, stored ? 'To change them, load them first: what you save replaces them.' : 'Encrypted like the value.'),
+    stored ? h('div', null, smallButton('Edit current notes', `Edit current notes of ${secret.title}`, async (event) => {
+      try {
+        const values = await loadNotes();
+        if (!values) return;
+        notes.value = values.notes || '';
+        notes.placeholder = '';
+        notes.readOnly = false;
+        event.target.hidden = true;
+        notes.focus();
+      } catch (error) { errorToast(error, 'Couldn’t reveal'); }
+    })) : null,
   );
   const values = () => {
-    const out = { title: title.value.trim(), url: url.value.trim(), username: username.value.trim() };
-    if (!secret || password.value) out.password = password.value;
+    const out = { title: title.value.trim() };
+    if (!secret || value.value) out.value = value.value;
     if (!secret || notes.value) out.notes = notes.value;
-    if (!secret || totp.value.trim()) out.totp = totp.value.trim();
     return out;
   };
   return { body, values, title };
-}
-
-function showTeamSecret(ctx, secret, revealed) {
-  let countdown = null;
-  const rows = [];
-  if (revealed.password) {
-    rows.push(field('Password', h('div', { class: 'row-wrap' },
-      h('code', { class: 'mono secret-value' }, revealed.password),
-      smallButton('Copy', 'Copy password', () => copyValue(revealed.password, 'Password').catch((e) => errorToast(e, 'Couldn’t copy'))))));
-  }
-  if (revealed.notes) rows.push(field('Notes', h('pre', { class: 'mono secret-notes' }, revealed.notes)));
-  const code = h('code', { class: 'mono secret-value' }, '······');
-  const left = h('span', { class: 'muted small' });
-  if (secret.has_totp) {
-    const refresh = async () => {
-      try {
-        const current = await ctx.api.post(`/api/team-secrets/${enc(secret.id)}/totp`);
-        code.textContent = current.code;
-        let remaining = current.remaining;
-        left.textContent = `${remaining} s`;
-        clearInterval(countdown);
-        countdown = setInterval(() => {
-          remaining -= 1;
-          if (remaining <= 0) { clearInterval(countdown); refresh(); } else left.textContent = `${remaining} s`;
-        }, 1000);
-      } catch (error) {
-        clearInterval(countdown);
-        left.textContent = error.code === 'reauth_required' ? 'Confirm again to see codes.' : error.message;
-      }
-    };
-    refresh();
-    rows.push(field('Current code', h('div', { class: 'row-wrap' }, code, left,
-      smallButton('Copy', 'Copy code', () => copyValue(code.textContent, 'Code').catch((e) => errorToast(e, 'Couldn’t copy'))))));
-  }
-  if (rows.length === 0) rows.push(h('p', { class: 'muted' }, 'This secret stores no password, notes or seed.'));
-  openModal({ title: secret.title, body: h('div', { class: 'stack' }, ...rows), actions: [{ label: 'Done', kind: 'primary' }], onClose: () => clearInterval(countdown) });
 }
 
 function mountTeam(ctx, host, actions) {
@@ -144,7 +178,7 @@ function mountTeam(ctx, host, actions) {
   const activity = h('div');
   setChildren(actions, createButton('Add team secret', () => edit(null)));
   setChildren(host,
-    h('p', { class: 'muted small' }, 'Shared by everyone on this instance. Passwords, notes and codes show after you confirm it’s you; every reveal is recorded.'),
+    h('p', { class: 'muted small' }, 'Shared by everyone on this instance. Values and notes show after your two-factor code; every reveal is recorded.'),
     list,
     h('h2', { class: 'section-title' }, 'Activity'),
     activity);
@@ -155,28 +189,27 @@ function mountTeam(ctx, host, actions) {
   }
 
   function render(secrets) {
-    if (secrets.length === 0) return emptyState({ iconName: 'lock', title: 'No team secrets yet', text: 'Keep shared logins here instead of chats and mail: the team’s mailboxes, infrastructure consoles, their two-factor codes.', action: createButton('Add team secret', () => edit(null)) });
+    if (secrets.length === 0) return emptyState({ iconName: 'lock', title: 'No team secrets yet', text: 'Keep shared logins here instead of chats and mail: the team’s mailboxes, infrastructure consoles, recovery codes.', action: createButton('Add team secret', () => edit(null)) });
     return h('div', { class: 'item-list' }, secrets.map((secret) => itemCard({
       iconName: 'key',
       title: secret.title,
       badges: [
-        secret.has_totp ? iconBadge('clock', '2FA codes', '', `A TOTP seed is stored: ${BRAND.name} shows the current code`) : null,
         secret.rotate_due ? badge('rotate', 'warn', 'Changed more than 180 days ago') : null,
       ].filter(Boolean),
-      description: h('span', null, [secret.username, secret.url].filter(Boolean).join(' · ') || 'No user name or address'),
+      description: h('span', null, [secret.has_value && 'Value', secret.has_notes && 'notes'].filter(Boolean).join(' and ') || 'Empty'),
       extra: h('span', { class: 'muted small' }, `Changed ${relLong(secret.value_updated_at)} · by @${secret.updated_by}`),
       controls: [
-        secret.has_password ? smallButton('Copy password', `Copy password of ${secret.title}`, async () => {
+        secret.has_value ? smallButton('Copy value', `Copy value of ${secret.title}`, async () => {
           try {
-            const values = await reveal(secret, 'copy', ['password']);
-            if (values && values.password) await copyValue(values.password, 'Password');
+            const values = await reveal(secret, 'copy', ['value']);
+            if (values && values.value) await copyValue(values.value, 'Value');
           } catch (error) { errorToast(error, 'Couldn’t copy'); }
           reloadActivity();
         }) : null,
         smallButton('Show', `Show ${secret.title}`, async () => {
           try {
             const values = await reveal(secret, 'show');
-            if (values) showTeamSecret(ctx, secret, values);
+            if (values) showRevealed(secret.title, values);
           } catch (error) { errorToast(error, 'Couldn’t reveal'); }
           reloadActivity();
         }),
@@ -194,7 +227,7 @@ function mountTeam(ctx, host, actions) {
   });
 
   function edit(secret) {
-    const form = teamForm(secret);
+    const form = teamForm(secret, () => reveal(secret, 'show', ['notes']));
     openModal({ title: secret ? `Edit ${secret.title}` : 'Add team secret', body: form.body, actions: [
       { label: 'Cancel', value: false },
       { label: secret ? 'Save' : 'Add', kind: 'primary', submit: true, run: async () => {
@@ -230,6 +263,13 @@ const ACTIONS = {
   'vault.team.totp': 'read a code of',
   'vault.reauth': 'confirmed identity',
   'vault.reauth.failed': 'failed to confirm identity',
+  'vault.2fa.setup': 'started setting up two-factor',
+  'vault.2fa.confirm': 'turned on two-factor',
+  'vault.2fa.locked': 'was locked out of codes after 10 wrong ones',
+  'vault.unlock': 'unlocked the secrets',
+  'vault.unlock.failed': 'entered a wrong two-factor code',
+  'vault.agent.reveal': 'revealed agent secret',
+  'vault.agent.copy': 'copied agent secret',
   'vault.agent.create': 'added agent secret',
   'vault.agent.update': 'changed agent secret',
   'vault.agent.delete': 'deleted agent secret',
@@ -247,7 +287,9 @@ function agentForm(ctx, secret) {
     h('option', { value: 'instance' }, 'Every sandbox'));
   if (secret) scope.value = secret.scope;
   const name = h('input', { class: 'input mono', 'aria-label': 'Name', value: secret ? secret.name : '', placeholder: 'STRIPE_API_KEY', autocomplete: 'off', autofocus: true });
-  const description = h('input', { class: 'input', 'aria-label': 'What it is for', value: secret ? secret.description : '', placeholder: 'Stripe test-mode key for the checkout' });
+  const value = h('input', { class: 'input mono', type: 'password', 'aria-label': 'Value', autocomplete: 'new-password', placeholder: secret ? 'Unchanged' : '' });
+  const notes = h('textarea', { class: 'textarea', rows: 2, 'aria-label': 'Notes', placeholder: 'Stripe test-mode key for the checkout' });
+  notes.value = secret ? secret.description : '';
   const hosts = h('input', { class: 'input mono', 'aria-label': 'Hosts', value: secret ? secret.hosts.join(', ') : '', placeholder: 'api.stripe.com', autocomplete: 'off' });
   const injection = h('select', { class: 'select' },
     h('option', { value: 'bearer' }, 'Authorization: Bearer <value>'),
@@ -257,38 +299,38 @@ function agentForm(ctx, secret) {
   injection.value = secret ? secret.injection : 'bearer';
   const header = h('input', { class: 'input mono', value: secret && secret.header_name ? secret.header_name : '', placeholder: 'X-Api-Key' });
   const headerField = field('Header name', header);
-  const sync = () => { headerField.hidden = injection.value !== 'header'; };
+  const username = h('input', { class: 'input', autocomplete: 'off', placeholder: secret && secret.has_username ? 'Unchanged' : '' });
+  const usernameField = field('User name', username);
+  const sync = () => {
+    headerField.hidden = injection.value !== 'header';
+    usernameField.hidden = injection.value !== 'basic';
+  };
   injection.addEventListener('change', sync);
   sync();
-  const username = h('input', { class: 'input', autocomplete: 'off', placeholder: secret && secret.has_username ? 'Unchanged' : 'For Basic credentials and website logins' });
-  const value = h('input', { class: 'input mono', type: 'password', 'aria-label': 'Value', autocomplete: 'new-password', placeholder: secret ? 'Unchanged' : '' });
-  const totp = h('input', { class: 'input mono', autocomplete: 'off', placeholder: secret && secret.has_totp ? 'Unchanged' : 'Optional: for website two-factor codes' });
   const body = h('div', { class: 'stack' },
-    field('Scope', scope, instanceAdmin ? null : 'Secrets for every sandbox are added by instance administrators.'),
     field('Name', name, 'Agents refer to it by this name; their code reads $NAME, which holds a placeholder.'),
-    field('What it is for', description, 'Agents read this to know when to use it.'),
+    field('Value', value, secret ? 'Leave empty to keep it.' : 'At least 8 characters. Agents use it without seeing it; people who manage it read it after their two-factor code.'),
+    field('Notes', notes, 'Agents read these to know when and how to use it (a login’s user name goes here). Never the value.'),
+    field('Scope', scope, instanceAdmin ? null : 'Secrets for every sandbox are added by instance administrators.'),
     field('Hosts', hosts, 'The only destinations it is sent to or typed into, comma-separated (*.example.com for subdomains).'),
     field('Added to requests as', injection),
     headerField,
-    field('User name', username),
-    field('Value', value, secret ? 'Leave empty to keep it. Nobody can read it back.' : 'At least 8 characters. Nobody can read it back, agents included.'),
-    field('Two-factor seed (TOTP)', totp),
+    usernameField,
   );
   const values = () => {
     const out = {
       name: name.value.trim(),
-      description: description.value.trim(),
+      description: notes.value.trim(),
       hosts: hosts.value.split(/[\s,]+/).filter(Boolean),
       injection: injection.value,
       header_name: injection.value === 'header' ? header.value.trim() : null,
     };
     if (!secret) out.scope = scope.value;
-    if (username.value.trim() || !secret) out.username = username.value.trim() || null;
+    if (injection.value === 'basic' && (username.value.trim() || !secret)) out.username = username.value.trim() || null;
     if (value.value) out.value = value.value;
-    if (totp.value.trim()) out.totp = totp.value.trim();
     return out;
   };
-  return { body, values, name, hosts, value, header };
+  return { body, values, name, hosts, value, header, username };
 }
 
 function mountAgents(ctx, sandbox, host, actions) {
@@ -321,9 +363,15 @@ function mountAgents(ctx, sandbox, host, actions) {
         h('div', { class: 'chips' }, secret.hosts.map((name) => iconBadge('globe', name, '', 'Bound host'))),
         h('span', { class: 'muted small' }, `${secret.injection_text} · ${secret.last_used_at ? `used ${relLong(secret.last_used_at)}` : 'not used yet'} · changed ${relLong(secret.value_updated_at)}`)),
       controls: [
+        secret.can_manage ? smallButton('Show', `Show ${secret.name}`, async () => {
+          try {
+            const values = await withReauth(ctx, () => ctx.api.post(`/api/agent-secrets/${enc(secret.id)}/reveal`, { purpose: 'show' }));
+            if (values) showRevealed(secret.name, values);
+          } catch (error) { errorToast(error, 'Couldn’t reveal'); }
+        }) : null,
         smallButton('Edit', `Edit ${secret.name}`, () => edit(secret), { disabled: !secret.can_manage, title: secret.can_manage ? `Edit ${secret.name}` : 'You cannot change this secret' }),
         iconButton('trash', `Delete ${secret.name}`, () => remove(secret), { class: 'btn-quiet-danger', disabled: !secret.can_manage }),
-      ],
+      ].filter(Boolean),
     })));
   }
 
@@ -340,6 +388,7 @@ function mountAgents(ctx, sandbox, host, actions) {
         if (!secret && !values.value) return invalid(form.value, 'Enter the value.');
         if (values.value && [...values.value].length < 8) return invalid(form.value, 'At least 8 characters: shorter values cannot be recognised and hidden.');
         if (values.injection === 'header' && !values.header_name) return invalid(form.header, 'Name the header.');
+        if (values.injection === 'basic' && !secret && !values.username) return invalid(form.username, 'Basic credentials need a user name.');
         if (secret) await ctx.api.patch(`/api/agent-secrets/${enc(secret.id)}`, values);
         else await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/agent-secrets`, values);
         toast(secret ? 'Saved.' : 'Agent secret added. New agent sessions get its placeholder.', { kind: 'ok' });

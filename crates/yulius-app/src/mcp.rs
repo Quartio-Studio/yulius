@@ -270,7 +270,7 @@ fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "browser_fill_secret".into(),
-            description: "Type an agent secret into the project browser without seeing it: its value (password or key), its user name, or its current two-factor (TOTP) code, into the focused field or the element matching selector, in a tab whose page is on one of the secret's bound hosts. Use browser_snapshot first to find the field.".into(),
+            description: "Type an agent secret into the project browser without seeing it: its value (password or key) or, when the secret stores them (Basic credentials, older secrets), its user name or current two-factor (TOTP) code, into the focused field or the element matching selector, in a tab whose page is on one of the secret's bound hosts. Use browser_snapshot first to find the field.".into(),
             input_schema: schema(json!({
                 "tab_id": {"type": "string", "description": "Tab from browser_tabs or browser_open"},
                 "secret": {"type": "string", "description": "Secret NAME from secrets_list"},
