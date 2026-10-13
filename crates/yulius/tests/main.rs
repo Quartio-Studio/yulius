@@ -48,6 +48,7 @@ mod preview;
 mod projects;
 mod queued_messages;
 mod recovery;
+mod run_metrics;
 mod secrets;
 mod secrets_redaction;
 mod self_update;

@@ -7,6 +7,7 @@ import { enc } from '../api.js';
 import { h, icon, setChildren, placeholder, statusMark, prChip, loadError } from '../dom.js';
 import { href } from '../router.js';
 import { relLong, dateTime, duration, compact, int, plural } from '../format.js';
+import { taskTime } from '../tasktime.js';
 import { taskInfo, activityLine, isLive } from '../status.js';
 import { openDeliveryDialog, stageLabel } from '../actions.js';
 import { initials } from '../layout.js';
@@ -76,13 +77,13 @@ export function mountTaskInfoView(ctx, sandbox, task) {
     // Explicit roles keep the table a table for screen readers when a narrow page stacks it.
     const cell = (label, content, attrs = {}) => h('td', { ...attrs, role: 'cell', dataset: { label } }, h('span', null, content));
     return h('table', { class: 'table ti-sessions', role: 'table', 'aria-label': 'Sessions' },
-      h('thead', { role: 'rowgroup' }, h('tr', { role: 'row' }, ['#', 'Subscription', 'Started', 'Ended', 'Length', 'State'].map((label) => h('th', { scope: 'col', role: 'columnheader' }, label)))),
+      h('thead', { role: 'rowgroup' }, h('tr', { role: 'row' }, ['#', 'Subscription', 'Started', 'Ended', 'Open for', 'State'].map((label) => h('th', { scope: 'col', role: 'columnheader' }, label)))),
       h('tbody', { role: 'rowgroup' }, list.map((a) => h('tr', { role: 'row' },
         cell('#', String(a.seq)),
         cell('Subscription', [a.account_label || '—', a.launch_kind && a.launch_kind !== 'new' ? h('span', { class: 'muted xs' }, ` · ${LAUNCH_KIND[a.launch_kind] || a.launch_kind}`) : null]),
         cell('Started', a.started_at ? relLong(a.started_at) : '—', { title: dateTime(a.started_at) }),
         cell('Ended', a.ended_at ? relLong(a.ended_at) : 'running', { title: a.ended_at ? dateTime(a.ended_at) : null }),
-        cell('Length', a.started_at ? duration(Math.max(0, (a.ended_at ? Date.parse(a.ended_at) : Date.now()) - Date.parse(a.started_at))) : '—'),
+        cell('Open for', a.started_at ? duration(Math.max(0, (a.ended_at ? Date.parse(a.ended_at) : Date.now()) - Date.parse(a.started_at))) : '—'),
         cell('State', [ATTEMPT_STATE[a.state] || a.state || '—', a.exit_reason && exitReason(a.exit_reason) ? h('span', { class: 'muted xs' }, ` · ${exitReason(a.exit_reason)}`) : a.exit_code !== null && a.exit_code !== undefined ? h('span', { class: 'muted xs' }, ` · exit ${a.exit_code}`) : null])))));
   }
 
@@ -99,10 +100,14 @@ export function mountTaskInfoView(ctx, sandbox, task) {
     const ownerLogin = (current.owner && current.owner.login) || login;
     const delivery = detail.delivery || null;
 
+    // Each time says what it measures (SPEC-087 TIM-003, MET-005): when the task was made, how
+    // long it has been in its state, and the agent's work apart from the time its sessions stayed
+    // open (idle included).
+    const state = taskTime(current, taskInfo(current, ctx.store.state.actionRequests, pr));
     const facts = h('div', { class: 'stat-grid ti-facts' },
-      tile('Started', relLong(current.created_at), dateTime(current.created_at)),
-      tile(isLive(current.status) ? 'Running for' : 'Ran for', duration(m.wall_ms), m.active_ms ? `${duration(m.active_ms)} of it working` : null),
-      tile('Last change', relLong(current.updated_at), dateTime(current.updated_at)),
+      tile('Created', relLong(current.created_at), dateTime(current.created_at)),
+      tile('Now', state.text, state.since === null ? null : `since ${dateTime(new Date(state.since).toISOString())}`),
+      tile('Agent work', m.active_ms ? duration(m.active_ms) : '—', `${m.turns ? `${plural(m.turns, 'turn')} · ` : ''}sessions open ${duration(m.wall_ms)}${isLive(current.status) ? ' so far' : ''}`),
       tile('Plan', stepsCount.total ? `${stepsCount.done}/${stepsCount.total}` : '—', stepsCount.current || (stepsCount.total && stepsCount.done === stepsCount.total ? 'All steps done' : null),
         stepsCount.total ? h('span', { class: 'ti-progress', role: 'progressbar', 'aria-valuemin': 0, 'aria-valuemax': stepsCount.total, 'aria-valuenow': stepsCount.done, 'aria-label': 'Plan steps done' }, h('span', { class: 'ti-progress-fill', style: { width: `${Math.round((stepsCount.done / stepsCount.total) * 100)}%` } })) : null),
       tile('Changes', git && git.files_changed ? h('span', { class: 'gt-stat' }, h('span', { class: 'gt-add' }, `+${git.insertions ?? 0}`), ' ', h('span', { class: 'gt-del' }, `−${git.deletions ?? 0}`)) : '—',

@@ -99,6 +99,8 @@ export function mountSessionsPage(ctx, sandbox) {
   function row(session) {
     const path = sessionPath(sandbox, session.id, session.hits && session.hits[0] ? session.hits[0].line : undefined);
     const when = session.ended_at || session.imported_at || session.started_at;
+    // Which time it is, said (SPEC-087 TIM-003): "ended 5 h ago", not a bare "5 h ago".
+    const whenWord = session.ended_at ? 'ended' : session.imported_at ? 'imported' : 'started';
     return h('li', { class: 'ss-row' },
       h('a', { class: 'ss-row-link', href: href(path), dataset: { route: path } },
         h('span', { class: ['ss-kind', `ss-kind-${session.kind}`], 'aria-hidden': 'true' }, icon(session.kind === 'task' ? 'terminal' : 'upload', { size: 16 })),
@@ -108,7 +110,7 @@ export function mountSessionsPage(ctx, sandbox) {
             h('span', null, originLine(session)),
             session.kind === 'task' && session.author ? h('span', null, `@${session.author.login}`) : null,
             session.git_branch ? h('span', { class: 'ss-branch' }, icon('branch', { size: 12 }), session.git_branch) : null,
-            when ? h('span', { title: dateTime(when) }, relLong(when)) : null,
+            when ? h('span', { title: dateTime(when) }, `${whenWord} ${relLong(when)}`) : null,
             h('span', null, bytes(session.bytes)),
             session.redactions ? badge(`${plural(session.redactions, 'secret')} redacted`, 'warn', 'Redacted on the uploader’s computer before upload') : null,
             session.continued_in ? badge(`continued in #${session.continued_in.number}`, 'accent') : null),
@@ -446,11 +448,12 @@ export function mountSessionView(ctx, sandbox, id, route) {
     if (!session) return;
     setChildren(titleEl, session.title || 'Untitled session');
     const when = session.ended_at || session.started_at;
+    const whenWord = session.ended_at ? 'ended' : 'started';
     setChildren(meta,
       h('span', { class: 'gt-state' }, icon(session.kind === 'task' ? 'terminal' : 'upload', { size: 14 }), originLine(session)),
       session.kind === 'task' && session.author ? h('span', null, `@${session.author.login}`) : null,
       session.git_branch ? h('span', { class: 'gt-branch' }, icon('branch', { size: 12 }), session.git_branch) : null,
-      when ? h('span', { title: dateTime(when) }, relLong(when)) : null,
+      when ? h('span', { title: dateTime(when) }, `${whenWord} ${relLong(when)}`) : null,
       h('span', null, bytes(session.bytes)),
       session.redactions ? badge(`${plural(session.redactions, 'secret')} redacted before upload`, 'warn') : null);
     const items = [];

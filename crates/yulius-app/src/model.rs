@@ -293,6 +293,16 @@ pub struct ControlRequest {
     pub at: Timestamp,
 }
 
+/// Since when a task is in its current state, as a person reads it (SPEC-087 TIM-001).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TaskTimes {
+    /// The last change of its status or activity (not of anything else, nor a value set again).
+    pub state_at: Timestamp,
+    /// The start of its current working stretch, in which it has not waited for a person;
+    /// `None` while it waits for one, is queued or has ended.
+    pub working_since: Option<Timestamp>,
+}
+
 /// A task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskRecord {
