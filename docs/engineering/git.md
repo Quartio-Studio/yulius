@@ -20,8 +20,9 @@ These rules apply to features, fixes, documentation, tooling and policy changes.
    here too; the standard profile has no manual dev checkpoint, so nobody confirms `dev` by
    hand. A task's work ends here; promotion is a separate step a person asks for.
 6. Open a promotion PR **from `dev` into `main`**. Its exact head must have a successful
-   `yulius/ci` status; the branch policy (`scripts/check_git_policy.py`, checked by hand
-   until #223) verifies this.
+   `yulius/ci` status: the `yulius-main` ruleset requires it, and Yulius refuses failing,
+   running or unreadable checks (`require_checks`). Yulius's merge gate also checks its route
+   and title against the branch policy.
 7. The promotion PR's author merges it with a **merge commit**, after required checks
    pass. Keep `dev`: only short-lived branches are deleted.
 8. `main` then has `dev`'s tested tree. When a production environment exists, verify
@@ -93,8 +94,11 @@ chore(git): define delivery workflow
 Scopes use lowercase letters/digits/hyphens. `!` marks a breaking contract change;
 explain migration in the body. PR titles are limited to 100 characters. Promotion
 PRs use `release: promote dev to main` (optionally append a short release label).
-The branch policy (`scripts/check_git_policy.py`) defines names, PR titles and valid base/head
-combinations; until Yulius's merge gate enforces it (#223) the author checks it by hand.
+The branch policy defines names, PR titles and valid base/head combinations. Yulius's merge
+gate checks it before every merge it makes (task PRs, armed merges, the Git page, promotion
+PRs) and refuses a violation with the rule in words; fix the title (`gh pr edit`) or the branch
+and merge again. It is configured in `yulius.toml` `[branch_policy]` (`preset = "standard"` or
+`"none"`, optional `types`), read from `dev` (SPEC-069, ADR 0051).
 Intermediate commit wording is a convention, not an additional blocking check.
 
 ## Keep history tidy with squash, not stash

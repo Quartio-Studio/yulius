@@ -13,6 +13,17 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   beside a tool panel. The label now keeps room for the step count, the state gives its words up
   first (it takes at most 40% of the strip, and its full text stays in the tooltip), and the label
   is clipped inside its button.
+- Yulius's merge gate enforces the branch policy (SPEC-069, ADR 0051, task #59; #223). Before
+  Yulius merges a task's pull request (`delivery_merge`, an armed merge, the Git page) or a
+  promotion pull request, it checks the title, head and base against `yulius.toml`
+  `[branch_policy]` at `dev`. The standard preset is the default: typed branches, conventional
+  one-line titles of at most 100 characters, and `dev` → `main` titled
+  `release: promote dev to main[ - label]`; `preset = "none"` turns it off. A violation is
+  refused with the rule in words, and `delivery_merge` refuses before it arms. Yulius's own
+  titles comply: task titles take an allowed type and are clipped to 100 characters, promotion
+  pull requests are titled `release: promote dev to main`, and a fork's pull request is never
+  taken for the promotion. `scripts/check_git_policy.py` is removed.
+
 - A stopped or closed run ends only when its processes are proven gone (SPEC-065, ADR-0050, task #54;
   #284, #285, #290). When Yulius cannot terminate a run's host after the stop or close escalation,
   the run stays live, the task's terminal says so and a running task needs attention; deleting it
