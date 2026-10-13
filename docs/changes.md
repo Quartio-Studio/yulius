@@ -7,6 +7,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-10-12
 
 - Armed merges survive a server restart (a deploy no longer drops them) (SPEC-050 DLV-205).
+- Notes in the tools rail (SPEC-041, ADR-0032, task #40): a notepad for this sandbox and one for
+  the team, below Shell. They save by themselves while people type, with no Save button. Everyone
+  who can see the sandbox reads its notes, writers edit them, and everyone signed in shares the
+  team's. A teammate's edit appears without a reload. When two people type at once, the later save
+  is refused and that person picks Keep mine or Use theirs. API: `GET/PUT /api/notes` and
+  `/api/sandboxes/{sid}/notes`, event `note.updated`.
 - A pull request runs its own CI jobs only when it changed them itself; a branch that is merely
   behind `dev` runs `dev`'s current jobs (SPEC-050 CI-110).
 - `yulius wait` says why Yulius has not pushed or opened the pull request at the end of a turn (an
