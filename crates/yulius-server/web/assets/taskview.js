@@ -108,7 +108,11 @@ export function mountTaskView(ctx, sandbox, task) {
     transport: ctx.transport,
     path: `/api/tasks/${enc(task.id)}/terminal`,
     onLink: (uri, event) => ctx.openLink(uri, event),
-    readOnlyLabel: () => (owner() ? `Read-only: @${owner()} owns this task` : readOnlyText(ctx.store.sandboxById(sandbox.id) || sandbox)),
+    // Without write access to the sandbox that is the reason; with it, the task's owner (SPEC-070).
+    readOnlyLabel: () => {
+      const box = ctx.store.sandboxById(sandbox.id) || sandbox;
+      return owner() && allows(box.access, 'write') ? `Read-only: @${owner()} owns this task` : readOnlyText(box);
+    },
     exitMessage: (exit) => endedMessage(exit.status || current.status),
     emptyMessage: () => emptyTerminalMessage(current),
     exitActions: (exit) => {

@@ -97,9 +97,10 @@ owner for control; once the owner hands it over, the task acts on GitHub as the 
 - [x] Tasks record an owner and act on GitHub as their owner
 - [x] Only a task's owner writes to it, over the API, the terminal and the agent tools
 - [x] People ask for control and the owner hands it over or declines; an absent owner's task passes at once
-- [ ] The task view names the owner, offers Request control and the owner's hand-over
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] The task view names the owner, offers Request control and the owner's hand-over
+- [x] Review rounds 1 and 2 in a fresh session, findings fixed test-first
+- [x] Review round 3 approves the final head
+- [ ] All gates green on the final head, evidence recorded
 
 ## Acceptance criteria
 
