@@ -170,6 +170,17 @@ impl App {
         // A branch behind its base cannot be merged on green: arm it, and Yulius brings it up to
         // date and merges once the checks of what would be merged pass (DLV-203).
         let profile = crate::delivery::delivery_profile(&sandbox);
+        // A merge the branch policy refuses is never armed (SPEC-069 BPL-004).
+        if let Some(pull) = before.pr.as_ref() {
+            let facts = yulius_domain::branch_policy::PullFacts {
+                title: &pull.title,
+                head: &pull.head,
+                base: &pull.base,
+                from_fork: false,
+            };
+            self.dlv_check_policy(&sandbox, &profile, pull.number, &facts)
+                .await?;
+        }
         let behind = !self
             .deps
             .git
