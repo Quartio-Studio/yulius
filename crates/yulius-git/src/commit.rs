@@ -43,7 +43,7 @@ impl Author {
         }
     }
 
-    fn validate(&self) -> Result<(), GitError> {
+    pub(crate) fn validate(&self) -> Result<(), GitError> {
         validate_identity_part("author name", &self.name)?;
         validate_identity_part("author email", &self.email)?;
         if !self.email.contains('@') {
@@ -151,15 +151,33 @@ impl Git {
     /// # Errors
     /// Invalid revisions or Git failures other than a conflict.
     pub fn merge_into(&self, worktree: &Path, rev: &str) -> Result<MergeInto, GitError> {
+        self.merge_as(worktree, rev, None)
+    }
+
+    /// [`Git::merge_into`], committing as `author` when given (passed through
+    /// `GIT_AUTHOR_*`/`GIT_COMMITTER_*`) instead of the worktree's identity.
+    pub(crate) fn merge_as(
+        &self,
+        worktree: &Path,
+        rev: &str,
+        author: Option<&Author>,
+    ) -> Result<MergeInto, GitError> {
         validate_revision(rev)?;
         if self.is_ancestor(worktree, rev, "HEAD")? {
             return Ok(MergeInto::UpToDate);
         }
-        let merged = self.run(
-            Invocation::new(self, "merge", Some(worktree))
-                .args(["merge", "--no-edit", "--quiet", "--end-of-options"])
-                .arg(rev),
-        )?;
+        let mut invocation = Invocation::new(self, "merge", Some(worktree))
+            .args(["merge", "--no-edit", "--quiet", "--end-of-options"])
+            .arg(rev);
+        if let Some(author) = author {
+            author.validate()?;
+            invocation = invocation
+                .env("GIT_AUTHOR_NAME", author.name.as_str())
+                .env("GIT_AUTHOR_EMAIL", author.email.as_str())
+                .env("GIT_COMMITTER_NAME", author.name.as_str())
+                .env("GIT_COMMITTER_EMAIL", author.email.as_str());
+        }
+        let merged = self.run(invocation)?;
         if merged.status.success() {
             return Ok(MergeInto::Merged(self.rev_parse(worktree, "HEAD")?));
         }

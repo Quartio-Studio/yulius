@@ -518,6 +518,89 @@ fn an_idle_compaction_leaves_a_done_task_done() -> TestResult {
     Ok(())
 }
 
+/// SPEC-085 STT-005: a person types `/compact` into the idle session of a Done task. Claude Code
+/// writes the command as typed, compacts and writes its records (no turn, no Stop hook): the task
+/// stays Done throughout and after. A prompt typed right after is work as always.
+#[test]
+fn a_typed_compaction_leaves_a_done_task_done() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Fix the status").await?;
+        wait_for("Done", Duration::from_secs(90), || async {
+            shown(&app, &id).await.ok() == Some((Some("done".into()), Some(0)))
+        })
+        .await?;
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let mut events = app.events.subscribe();
+        let collector = tokio::spawn({
+            let (seen, id) = (Arc::clone(&seen), id.as_str().to_owned());
+            async move {
+                loop {
+                    match events.recv().await {
+                        Ok(envelope) => {
+                            if let UiEvent::TaskUpdated { task } = envelope.event
+                                && task.id == id
+                            {
+                                let mut seen = seen.lock().unwrap_or_else(|e| e.into_inner());
+                                seen.push(task.activity.unwrap_or_default());
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            }
+        });
+        let seen_now = || seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        app.send_input(&id, b"/compact keep the plan\r").await?;
+        wait_for("the compaction", Duration::from_secs(20), || {
+            screen_contains(&app, &id, "COMPACTED: keep the plan")
+        })
+        .await?;
+        // Its records were written before it said so: two more watcher rounds read them.
+        let runtime = app.runtime(&id);
+        let rounds = runtime.transcript_rounds();
+        wait_for("the compaction read", Duration::from_secs(20), || async {
+            runtime.transcript_rounds() >= rounds + 2
+        })
+        .await?;
+        assert_eq!(activity(&app, &id).await, Some(Activity::Done));
+        assert!(
+            seen_now().iter().all(|a| a == "done"),
+            "the compaction never made the task Working: {:?}",
+            seen_now()
+        );
+
+        // A prompt typed right after is work: Working, then (the goal no longer counts) Your turn.
+        app.send_input(&id, b"also rename the module\r").await?;
+        wait_for("the prompt's turn", Duration::from_secs(20), || {
+            screen_contains(&app, &id, "ECHO: also rename the module")
+        })
+        .await?;
+        wait_for("Your turn", Duration::from_secs(20), || async {
+            activity(&app, &id).await == Some(Activity::Waiting)
+        })
+        .await?;
+        wait_for("the Working update", Duration::from_secs(10), || async {
+            seen_now().iter().any(|a| a == "working")
+        })
+        .await?;
+        collector.abort();
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// The real session host whose probe also finds `waits` shells that only run `yulius wait`
 /// (what `yulius_ptyhost::shells::count_background` tells apart on a real process tree).
 struct WaitingHost {

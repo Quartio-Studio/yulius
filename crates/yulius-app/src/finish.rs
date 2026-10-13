@@ -33,6 +33,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
+use yulius_domain::harness::is_compact_command;
 use yulius_domain::ids::TaskId;
 use yulius_domain::task::{Activity, GoalOutcome, TaskStatus};
 
@@ -328,12 +329,21 @@ pub fn activity_on_goal_not_met(current: Option<Activity>) -> Option<Activity> {
 }
 
 /// Whether a `UserPromptSubmit` prompt is one a person (or Yulius) typed, not a wake-up Claude
-/// Code generated itself (task notifications and other tagged prompts start with `<`).
+/// Code generated itself (task notifications and other tagged prompts start with `<`), nor the
+/// compaction command, which asks for no new work (SPEC-085 STT-005).
 #[must_use]
 pub fn is_typed_prompt(prompt: Option<&str>) -> bool {
     prompt
         .map(str::trim_start)
-        .is_some_and(|p| !p.is_empty() && !p.starts_with('<'))
+        .is_some_and(|p| !p.is_empty() && !p.starts_with('<') && !is_compact_command(p))
+}
+
+/// Whether a submitted prompt starts a turn of the agent: anything but the compaction command,
+/// after which Claude Code compacts the conversation and runs no turn, so nothing would ever end
+/// it (SPEC-085 STT-005).
+#[must_use]
+pub fn prompt_starts_work(prompt: Option<&str>) -> bool {
+    !prompt.is_some_and(is_compact_command)
 }
 
 impl App {
@@ -1245,6 +1255,26 @@ mod tests {
         )));
         assert!(!is_typed_prompt(Some("   ")));
         assert!(!is_typed_prompt(None));
+    }
+
+    /// SPEC-085 STT-005: `/compact` typed into the session (its `UserPromptSubmit`, should Claude
+    /// Code run it) neither starts work nor takes back an achieved goal; a prompt typed after it
+    /// does.
+    #[test]
+    fn the_compaction_command_starts_no_work() {
+        for compact in ["/compact", "/compact keep the plan"] {
+            assert!(!prompt_starts_work(Some(compact)), "{compact}");
+            assert!(!is_typed_prompt(Some(compact)), "{compact}");
+        }
+        for prompt in [
+            "close the issues once it merges",
+            "/goal Ship it",
+            "/compactor",
+        ] {
+            assert!(prompt_starts_work(Some(prompt)), "{prompt}");
+            assert!(is_typed_prompt(Some(prompt)), "{prompt}");
+        }
+        assert!(prompt_starts_work(None), "a hook without its prompt");
     }
 
     /// SPEC-072 LRS-001: a replay whose last word is a usage limit leaves it pending; a prompt,

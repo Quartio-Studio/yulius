@@ -32,6 +32,7 @@ mod repo;
 mod review;
 mod runner;
 mod status;
+mod train;
 mod validate;
 mod worktree;
 
@@ -48,6 +49,7 @@ pub use review::{
     MAX_REVIEW_FILES, MAX_REVIEW_LINES, WorktreeDiff,
 };
 pub use status::{AheadBehind, Commit, DiffStat, MAX_LOG_ENTRIES, StatusEntry};
+pub use train::{TrainBuild, TrainInput, TrainLanding, TrainStep};
 pub use validate::{MAX_BRANCH_LEN, validate_branch_name, validate_relative_path};
 pub use worktree::{RemovalRefusal, Worktree, WorktreeRemoval};
 

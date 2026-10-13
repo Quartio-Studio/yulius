@@ -40,6 +40,7 @@ pub mod manage;
 pub mod mcp;
 pub mod mcp_config;
 pub mod mcp_text;
+pub mod merge_train;
 pub mod model;
 pub mod notes;
 pub mod onboarding;

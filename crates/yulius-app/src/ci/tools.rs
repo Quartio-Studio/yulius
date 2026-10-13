@@ -7,7 +7,7 @@ use std::path::Path;
 use serde_json::{Value, json};
 use yulius_contracts::api::ci::{HygieneCleanup, HygieneTarget};
 use yulius_domain::ci::actions::{MAX_WORKFLOW_BYTES, summarize_workflow};
-use yulius_domain::ci::{self as dom, CiRef};
+use yulius_domain::ci::{self as dom};
 use yulius_domain::spec_format::{MAX_CONFIG_BYTES, parse_yulius_toml};
 
 use super::{MAX_WORKFLOW_FILES, WORKFLOWS_DIR, run_view};
@@ -78,7 +78,8 @@ impl App {
         let mut runs = Vec::new();
         for run in self.deps.store.ci_runs(&sandbox.id, TOOL_RUNS).await? {
             let jobs = self.deps.store.ci_jobs(&run.id, false).await?;
-            let mine = pr.is_some_and(|n| run.reference == CiRef::PullRequest(n));
+            // Its pull request's runs and the merge trains it is in (SPEC-084).
+            let mine = pr.is_some_and(|n| run.reference.covers(n));
             let mut value =
                 serde_json::to_value(run_view(&run, &jobs, false)).map_err(AppError::internal)?;
             value["this_task"] = Value::Bool(mine);
