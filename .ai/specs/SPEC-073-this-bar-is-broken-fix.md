@@ -46,10 +46,6 @@ text is unbounded. The chips are short and already hidden below 560 px.
 - STR-1: The state takes at most 40% of the strip. Beyond that it truncates with an ellipsis, and
   its full text stays in the pill's tooltip, which `title` already sets. A state that fits keeps
   its words whole: the step name, then the title, give way first.
-- STR-4: While the step count shows (a strip over 420 px), the label never gets less than 8 rem,
-  room for the chevron, "Step NN/NN" and a little of the title. Below that, the state pill gives
-  its words up first, down to its icon. Where the count hides (420 px and phones), the floor
-  goes too.
 - STR-2: Nothing in the strip's label paints outside its button. If the label is ever too long
   for its room, it is clipped inside the toggle and never drawn over the bar.
 - STR-3: On mock task #14, no strip parts overlap and "Step N/M" ends inside its button at 1440,
@@ -57,6 +53,10 @@ text is unbounded. The chips are short and already hidden below 560 px.
   #520" plus its chip), #14 and #7 keep the count inside at windows from 1300 to 1440 px. That
   sweep reaches the 421 to 500 px strip band. On task #12 at 768 px, the short
   state ("Working") stays whole.
+- STR-4: While the step count shows (a strip over 420 px), the label never gets less than 8 rem,
+  room for the chevron, "Step NN/NN" and a little of the title. Below that, the state pill gives
+  its words up first, down to its icon. Where the count hides (420 px and phones), the floor
+  goes too.
 
 ## Plan
 
@@ -88,8 +88,9 @@ text is unbounded. The chips are short and already hidden below 560 px.
 ## Decisions
 
 - **The state is capped at 40% of the strip; the label keeps the rest.** The toggle stays
-  `flex: 1; min-width: 0`, so it takes what the other parts leave, as before. `.strip-status`
-  gets `max-width: 40%` and `min-width: 0`, and `.strip-state` gets an ellipsis. A long state
+  `flex: 1`, so it takes what the other parts leave, as before (its floor is the next decision).
+  `.strip-status` gets `max-width: 40%` and a floor at its icon (`min-width: 30px`: 14 px icon and
+  16 px padding), and `.strip-state` gets an ellipsis. A long state
   can no longer starve the label, and a state that fits is never cut. The state's full text is
   one hover away, and its icon and colour still carry the meaning.
   Alternatives:
@@ -107,10 +108,10 @@ text is unbounded. The chips are short and already hidden below 560 px.
   Round 2 measured "Ste" on task #13 at a 459 px strip, the reported screenshot's case.
   With the floor:
   - The toggle (`flex: 1`, basis 0) keeps at least 8 rem.
-  - The state pill, which can shrink (`min-width: 0`), gives its words up first, down to its icon.
+  - The state pill, which can shrink down to its icon (`min-width: 30px`), gives its words up first.
   - The arithmetic holds at the narrowest strip that still shows the count, 421 px: 60 px bar,
-    34 px icon-only pill, about 55 px PR chip, 28 px menu, 40 px gaps, 12 px padding and 128 px
-    floor, 357 px in all.
+    30 px icon-only pill, about 55 px PR chip, 28 px menu, 40 px gaps, 12 px padding and 128 px
+    floor, 353 px in all.
   - The 420 px container query and the phone media query set `min-width: 0` again, because the
     count is hidden there.
   Alternatives from the review:
@@ -147,5 +148,13 @@ text is unbounded. The chips are short and already hidden below 560 px.
   true` on `countInside`). With the floor (465d1e0), `responsive.e2e.ts` and `phone.e2e.ts` pass
   21 of 21.
 - A playwright sweep covered mock tasks #1 to #14, windows from 390 to 1440 px in 10 px steps,
-  with and without the Shell panel. It reported `NO PROBLEMS`: the count never ends outside its
-  button, the strip's last part never passes its edge, and nothing scrolls sideways.
+  with and without the Shell panel. It found no case where the count ends outside its button.
+  The round 3 review did find one problem the sweep's edge check missed. Beside a panel in very
+  narrow strips (770 to 960 px windows), and with Auto plus chain chips beside a panel above
+  560 px, the strip's chips still pass its edge. This is older than the change (`dev` does it as
+  well) and is filed as #348.
+- Review round 3 (59390b0) approved, with minors:
+  - The pill could shrink below its icon. Fixed: `min-width: 30px`.
+  - A Decision was stale, and this sweep claim was too broad. Both corrected.
+  - The chip overflow is #348.
+  This last delta has its own fresh review before the merge.
