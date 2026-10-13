@@ -36,5 +36,5 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0030](0030-menus-filter-when-long.md): Menus are compact and filter themselves when long
 - [0031](0031-deleting-a-done-task-closes-it.md): Deleting a Done task closes its session first
 - [0032](0032-shared-notes-with-revisions.md): Shared notes are stored on the server and saved by revision
-- [0033](0033-task-status-follows-claude-codes-own-records.md): A task's status follows Claude Code's own records
+- [0034](0034-task-status-follows-claude-codes-own-records.md): A task's status follows Claude Code's own records
 - [0033](0033-original-prompt-on-demand.md): A task's original prompt is read on demand; its files only from its own attachment folders
