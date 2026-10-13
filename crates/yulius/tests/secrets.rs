@@ -600,6 +600,57 @@ async fn administrators_reset_a_lost_two_factor() -> TestResult {
     Ok(())
 }
 
+/// #291 (SPEC-061 AC5): instance administrators read the people and their two-factor state, to
+/// reset it from the Users page; changing users stays the superadmin's.
+#[tokio::test]
+async fn instance_administrators_see_the_people_and_their_two_factor() -> TestResult {
+    let h = support::harness()?;
+    let admin = setup_superadmin_creds(&h).await?;
+    configure_github_app(&h).await?;
+    let anna = admit_and_sign_in(&h, &admin, "anna", 501, false).await?;
+    let olga = admit_and_sign_in(&h, &admin, "olga", 502, true).await?;
+    let bob = admit_and_sign_in(&h, &admin, "bob", 503, false).await?;
+    enroll(&h, &anna).await?;
+    let pending = call(&h.router, Method::POST, "/api/auth/two-factor", None, &bob).await?;
+    assert_eq!(pending.status, StatusCode::CREATED, "{}", pending.body);
+
+    let listed = call(&h.router, Method::GET, "/api/admin/users", None, &olga).await?;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.body);
+    let states: Vec<(&str, &str)> = listed
+        .body
+        .as_array()
+        .ok_or("users")?
+        .iter()
+        .filter_map(|u| Some((u["github_login"].as_str()?, u["two_factor"].as_str()?)))
+        .collect();
+    for expected in [("anna", "on"), ("bob", "pending"), ("olga", "missing")] {
+        assert!(states.contains(&expected), "{expected:?} not in {states:?}");
+    }
+    assert_hidden(&listed.body, &["secret", "ciphertext"]);
+    let member = call(&h.router, Method::GET, "/api/admin/users", None, &bob).await?;
+    assert_eq!(member.status, StatusCode::FORBIDDEN);
+    let admit = call(
+        &h.router,
+        Method::POST,
+        "/api/admin/users",
+        Some(json!({"github_login": "eve"})),
+        &olga,
+    )
+    .await?;
+    assert_eq!(admit.status, StatusCode::FORBIDDEN);
+    let anna_id = user_id(&h, &admin, "anna").await?;
+    let disable = call(
+        &h.router,
+        Method::PATCH,
+        &format!("/api/admin/users/{anna_id}"),
+        Some(json!({"disabled": true})),
+        &olga,
+    )
+    .await?;
+    assert_eq!(disable.status, StatusCode::FORBIDDEN);
+    Ok(())
+}
+
 /// R6: ten wrong codes in a row lock two-factor (a stolen session cannot keep guessing) until
 /// the person confirms it is them again; the lock is audited.
 #[tokio::test]

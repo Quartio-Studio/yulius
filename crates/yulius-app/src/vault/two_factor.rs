@@ -55,6 +55,20 @@ impl App {
             .is_none_or(|now| now.envelope.ciphertext != checked.envelope.ciphertext))
     }
 
+    /// A person's two-factor as administrators see it: `missing`, `pending` or `on`.
+    ///
+    /// # Errors
+    /// Store failures.
+    pub async fn two_factor_of(&self, user: &UserId) -> AppResult<&'static str> {
+        Ok(
+            match self.deps.store.vault_two_factor(user.as_str()).await? {
+                None => "missing",
+                Some(record) if record.confirmed_at.is_none() => "pending",
+                Some(_) => "on",
+            },
+        )
+    }
+
     /// `missing`, `pending`, `on` or `locked` (too many wrong codes) for the caller, whose
     /// identity was last confirmed at `identity`.
     pub(super) async fn two_factor_state(
