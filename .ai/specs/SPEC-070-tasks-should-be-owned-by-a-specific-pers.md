@@ -143,7 +143,7 @@ owner for control; once the owner hands it over, the task acts on GitHub as the 
 - One waiting request per task, stored on the task (two columns), not a request table: there is
   nothing to queue, and a hand-over clears it in the same update.
 - The owner approves; nobody overrides a present owner, not even an administrator: the request
-  is about protecting a person's credentials. Recorded in ADR-0051 (0050 is taken by task #54).
+  is about protecting a person's credentials. Recorded in ADR-0053 (0050-0052 were taken by parallel tasks; it was renumbered from 0051 on merging `dev`).
 - Review round 1: the waiting request is read with a separate query per summary instead of
   widening `TaskRecord`; task lists are bounded and the query is by primary key. The mock does
   not model an absent owner or a requester who lost access (no account states in it); those
@@ -185,4 +185,4 @@ owner for control; once the owner hands it over, the task acts on GitHub as the 
   access dropping a request), fixed in b19b4cb; round 3 approve with 1 minor (401 to the owner),
   fixed in 368cfa0; round 4 approve 368cfa0.
 - Not tested here: real GitHub (the fake GitHub records which token made each call); a person's
-  shell in the sandbox repository can still reach a worktree on disk (ADR-0051 consequences).
+  shell in the sandbox repository can still reach a worktree on disk (ADR-0053 consequences).

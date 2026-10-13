@@ -265,7 +265,7 @@ flowchart LR
 
 A task acts on GitHub with one person's token, so it is that person's: its owner, the creator
 until a hand-over ([SPEC-070](../.ai/specs/SPEC-070-tasks-should-be-owned-by-a-specific-pers.md),
-[decision 0051](decisions/0051-a-task-is-owned-by-one-person.md)). `tasks.owner_id` decides the
+[decision 0053](decisions/0053-a-task-is-owned-by-one-person.md)). `tasks.owner_id` decides the
 token (`App::owner_github_token`), the worktree's commit identity and the authority of the task's
 agent; `created_by` stays who asked. `App::load_task` refuses every task change to anyone but the
 owner, and the terminal opens read-only for others. Anyone else who may work in the project asks

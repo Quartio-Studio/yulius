@@ -1,4 +1,4 @@
-//! Control of a task (SPEC-070, ADR-0051): a task acts on GitHub with its owner's token, so only
+//! Control of a task (SPEC-070, ADR-0053): a task acts on GitHub with its owner's token, so only
 //! the owner changes it. Anyone else who may work in the project asks the owner for control; the
 //! owner hands it over or declines, and the asker may withdraw. One request waits per task. When
 //! the owner can no longer act (disabled, deleted, or without write access to the project), a
