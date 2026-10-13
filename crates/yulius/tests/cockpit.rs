@@ -1555,7 +1555,7 @@ async fn a_quick_second_move_keeps_resuming_the_conversation() -> TestResult {
 }
 
 /// Review round 2: several new limits read at once count as one, the newest: its reset is what
-/// the subscription is recorded with, and none of them counts again later.
+/// the subscription is recorded with.
 #[tokio::test]
 async fn limits_read_together_count_once_as_the_newest() -> TestResult {
     let f = fixture().await?;
@@ -1591,7 +1591,11 @@ async fn a_limit_from_before_the_start_does_not_move_the_cockpit() -> TestResult
     std::fs::create_dir_all(&project)?;
     std::fs::write(
         project.join("conv-1.jsonl"),
-        [prompt_record("u0", None, -86_400), limit_record("old-limit", "u0", -86_399, 1_791_500_000)].concat(),
+        [
+            prompt_record("u0", None, -86_400),
+            limit_record("old-limit", "u0", -86_399, 1_791_500_000),
+        ]
+        .concat(),
     )?;
     let served = serve(f.h.router.clone()).await?;
     let id = cockpit_id(&f, &f.alice).await?;

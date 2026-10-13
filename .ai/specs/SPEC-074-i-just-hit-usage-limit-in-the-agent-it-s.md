@@ -1,11 +1,11 @@
 ---
 yulius-task: 4134d5e1-30a0-4a57-a117-50e62b4f0f8c
-status: in-progress
+status: done
 ---
 
 # SPEC-074: the Superagent moves to a subscription with capacity when a usage limit cuts its turn
 
-Status: in progress
+Status: done
 Date: 2026-10-13
 Scope authorization: user request (task #69): "I just hit usage limit in the agent. It shouldn't
 have happened. Also, rename the agent to "Superagent" to make more straightforward what it is for",
@@ -104,8 +104,8 @@ sequenceDiagram
 - [x] The panel follows its session to the new subscription without a stopped banner
 - [x] The Agent panel is named Superagent across the UI, tests and docs
 - [x] Independent review in a fresh session, findings fixed test-first
-- [ ] Review round 2 approves the fixed head, with a reproduced flake fixed
-- [ ] Every gate green, docs and the changes log updated
+- [x] Review round 2 approves the fixed head, with a reproduced flake fixed
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -155,4 +155,41 @@ sequenceDiagram
 
 ## Evidence
 
-To be filled in when done.
+- Root cause from the code: `cockpit_open` chose a subscription with `pool_account` only at the
+  start, and nothing observed the Cockpit afterwards (no server log of the incident was
+  reachable from the task sandbox).
+- Regression tests first, each seen failing before its fix:
+  - `cockpit.rs` move, no-capacity and adoption tests failed at the missing `account` in
+    `shell.json` (stub watch).
+  - Review M1 tests (`a_handled_limit_is_not_acted_on_again_after_clear_and_resume`,
+    `..._after_a_restart`) recorded the old reset (1_791_400_000_000).
+  - `a_failed_move_still_continues_the_cut_turn_at_the_next_start` printed `interrupted:none`.
+  - `limits_read_together_count_once_as_the_newest` recorded the earliest reset.
+  - The e2e move and failed-move tests showed no resumed session and no error with Try again.
+- Mutation checks:
+  - Dropping the start-time filter fails `a_limit_from_before_the_start_does_not_move_the_cockpit`.
+  - Dropping the `switching` skip of `note_cockpit_exit` fails
+    `a_quick_second_move_keeps_resuming_the_conversation`, whose fake exits 3 on a signal.
+- Flake reproduced and fixed: 4 of 40 parallel runs of the Cockpit tests failed. The first
+  server's watch outlived `stop_workspace_services`, and a redraw appended control sequences to a
+  printed value. After the fix: 0 of 40.
+- `cargo test -p yulius --test main cockpit::`: 21 passed. `cargo test -p yulius-harness`: green.
+  `supervision::`, `shells::` and `subscription_pool::` tests: 40 passed, 1 ignored.
+- `scripts/dev ci` at `85a74ef` (before review round 2): 1331 tests run, 1331 passed, 16
+  skipped. The final head's run is in the pull request.
+- E2E: `agent-panel.e2e.ts` and `rail.e2e.ts` green (27 tests). The full suite under a load
+  average of 55–87 had timeouts in unrelated files, and every failed file passed on a rerun with
+  fewer workers (82 tests, then `notes.e2e.ts` alone, 19 tests).
+- Independent reviews in fresh sessions:
+  - Round 1: request changes, with M1, m1–m5 and nits. Fixed test-first; m2 is #346 and m4 is a
+    known limit.
+  - Round 2: approve at `3ed1c2f`, with one minor (limits read together) fixed test-first.
+  - Round 3: approve at `796824d` (the minor, and the merge of `dev` with the ADR renumbered to
+    0052). Its minor (a test comment claiming more than it checks) is fixed in the final commit.
+    Its nit (a mark assuming time-ordered records) is left: Claude Code appends in time order.
+- Not tested here:
+  - a real Claude Code session hitting a real usage limit (the fake `claude` and synthetic
+    transcripts stand in);
+  - `CLAUDE_CODE_RESUME_INTERRUPTED_TURN` in the Cockpit with the real CLI (measured for tasks in
+    SPEC-034);
+  - the contained (bubblewrap) Cockpit path of the move.
