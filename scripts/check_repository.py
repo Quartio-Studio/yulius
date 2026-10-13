@@ -155,12 +155,14 @@ def link_errors(path, root):
 
 
 def decision_errors(directory):
-    """Each decision record has its own number, also in its title, so "ADR-NNNN" names one record.
+    """Each decision record has its own number, also in its title and index line, so "ADR-NNNN"
+    names one record.
 
     Parallel tasks pick the next free number on their own; the second to merge fails here after
     merging dev and renumbers (#317)."""
     errors = []
     taken = {}
+    index = (directory / "README.md").read_text()
     for path in sorted(directory.glob("*.md")):
         if path.name == "README.md":
             continue
@@ -175,6 +177,8 @@ def decision_errors(directory):
             taken[number] = path
         if not path.read_text().startswith(f"# {number}. "):
             errors.append(f"{path}: title must start with \"# {number}. \"")
+        if f"- [{number}]({path.name})" not in index:
+            errors.append(f"{path}: list it in {directory.name}/README.md as \"- [{number}]({path.name}): <title>\"")
     return errors
 
 

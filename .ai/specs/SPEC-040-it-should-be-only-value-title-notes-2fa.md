@@ -160,9 +160,9 @@ them), and people can now read an agent secret's value too, behind the same two-
   zeroizing the request and response strings of the code and the new seed (served `no-store`,
   like reveals).
 - Review rounds: three fresh-session rounds ran. The third found no code defect; it asked for the
-  rebase over #281 (ADR renumbered, then 0034, now 0042 after #317) and minor fixes, which were made test-first. A last
-  confirmation review covers exactly that delta on the final head, because merging needs an
-  approval of the exact head.
+  rebase over #281 (ADR renumbered, then 0034, now 0042 after #317) and minor fixes, which were made
+  test-first. A last confirmation review covers exactly that delta on the final head, because
+  merging needs an approval of the exact head.
 - One pull request (more than 400 lines). The fields, the unlock and the reveal of agent secrets
   are one access-model change of the vault: shipping any part alone would leave the page in a
   state nobody asked for.
@@ -192,10 +192,11 @@ them), and people can now read an agent secret's value too, behind the same two-
 - Visual check in the sandbox browser against the mock: the "Set up two-factor" dialog (key,
   Copy, authenticator link, code field) and "Add team secret" with Title, Value and Notes only.
 - Independent reviews in fresh sessions: round 1 requested changes (a stolen session could keep
-  guessing codes; editing older notes could drop folded fields; minor items), all fixed
-  test-first; round 2 approved `8017484` with minor items, fixed test-first (the locked message,
-  older agent secrets' user name and seed readable); round 3 found no code defect and asked for
-  the rebase over #281 (the decision renumbered past dev's; it was ADR-0034 since #287 and #306 took 0030 and 0033, and is ADR-0042 since #317) and minor fixes (stored notes read-only until loaded, agent tool
+  guessing codes; editing older notes could drop folded fields; minor items), all fixed test-first;
+  round 2 approved `8017484` with minor items, fixed test-first (the locked message, older agent
+  secrets' user name and seed readable); round 3 found no code defect and asked for the rebase over
+  #281 (the decision renumbered past dev's; it was ADR-0034 since #287 and #306 took 0030 and 0033,
+  and is ADR-0042 since #317) and minor fixes (stored notes read-only until loaded, agent tool
   texts, SPEC-002 statements), made test-first; a confirmation review approves the final head.
 - Not tested here: a real authenticator app scanning the `otpauth://` link (the link format is
   unit-tested to parse back to the same seed); the deployed instance.

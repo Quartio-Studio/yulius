@@ -16,7 +16,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   path and other tasks' `~/.ci-proof.*` only when over six hours old, then runs `git worktree
   prune`. They also say that checkouts are per CI lane while by default up to two runs share the
   CI home and cache, and that system packages are installed by onboarding, never by a CI job.
-- Quick archive (SPEC-062, ADR-0040, task #65). A sidebar task row that can be archived shows an
+- Quick archive (SPEC-062, ADR-0043, task #65). A sidebar task row that can be archived shows an
   Archive button beside its `⋮` on hover or focus, and the Done group's head has **Archive all**:
   one click archives every Done task, with one Undo for the whole batch. When some fail, the
   others stay archived and one toast says how many failed and why. Phones keep the `⋮` menu as

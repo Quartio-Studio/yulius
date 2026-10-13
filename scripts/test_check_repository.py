@@ -98,10 +98,17 @@ class RepositoryContracts(unittest.TestCase):
     def test_two_decision_records_cannot_share_a_number(self):
         with tempfile.TemporaryDirectory() as tmp:
             decisions = Path(tmp)
-            (decisions / "README.md").write_text("# Decision records\n")
+            index = "# Decision records\n\n- [0006](0006-first.md): First\n- [0007](0007-second.md): Second\n"
+            (decisions / "README.md").write_text(index)
             (decisions / "0006-first.md").write_text("# 0006. First\n")
             (decisions / "0007-second.md").write_text("# 0007. Second\n")
             self.assertEqual(decision_errors(decisions), [])
+            # A record the index does not list is reported.
+            (decisions / "README.md").write_text(index.replace("- [0007](0007-second.md): Second\n", ""))
+            errors = decision_errors(decisions)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("0007-second.md", errors[0])
+            (decisions / "README.md").write_text(index + "- [0007](0007-parallel.md): Parallel\n- [0008](0008-parallel.md): Parallel\n")
             (decisions / "0007-parallel.md").write_text("# 0007. Parallel\n")
             errors = decision_errors(decisions)
             self.assertEqual(len(errors), 1)

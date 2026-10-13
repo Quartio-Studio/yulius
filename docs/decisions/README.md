@@ -22,6 +22,7 @@ task merged the same number first, take the next free one after merging `dev`.
 - [0013](0013-updates-from-main.md): Self-updates from main through a root helper
 - [0014](0014-secrets-vault.md): Envelope-encrypted secrets vault with an egress proxy
 - [0015](0015-yulius-ci.md): Yulius is the projects' only CI
+- [0016](0016-apm-for-agent-primitives.md): Agent primitives are managed with APM
 - [0017](0017-sandbox-disk-upkeep.md): Disk is managed by Yulius: caches of idle tasks are pruned, switches check first
 - [0018](0018-task-start-rules.md): Tasks start by a logical rule over other tasks' states
 - [0019](0019-start-rule-editor.md): The composer builds a start rule from picked conditions, all or any
@@ -45,7 +46,7 @@ task merged the same number first, take the next free one after merging `dev`.
 - [0037](0037-dead-code-tools.md): Dead code is cleaned with each language's established tool; Yulius's gate uses cargo-shear
 - [0038](0038-onboarding-starts-in-the-browser.md): Onboarding starts in the browser, never from the CLI
 - [0039](0039-ci-jobs-get-the-cpu-first.md): CI jobs get the CPU first through a weighted cgroup
-- [0040](0040-archive-all-runs-the-per-task-archive.md): "Archive all" runs the per-task archive; no bulk endpoint
 - [0040](0040-done-tasks-release-their-subscription.md): Done tasks release their subscription
 - [0041](0041-task-status-follows-claude-codes-own-records.md): A task's status follows Claude Code's own records
 - [0042](0042-personal-two-factor-guards-the-vault.md): A personal two-factor code guards the vault; a secret is a title, a value and notes
+- [0043](0043-archive-all-runs-the-per-task-archive.md): "Archive all" runs the per-task archive; no bulk endpoint

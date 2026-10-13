@@ -1,11 +1,11 @@
 ---
 yulius-task: 8c9bb5a5-cd5a-4d26-b87c-f8b5a081afb2
-status: done
+status: in-progress
 ---
 
 # SPEC-058: unique decision numbers with a repository check; onboarding CI-proof wording
 
-Status: implemented
+Status: in progress
 Date: 2026-10-13
 Owner: Yulius task #49 (part of task #47)
 Scope authorization: user request: "Fix GitHub issues #317 and #272 of Quartio-Studio/yulius,
@@ -45,7 +45,8 @@ onboarding rather than by a job (#272).
   record's H1, the index in `docs/decisions/README.md` (in numeric order) and every reference in
   the docs, specs and code comments follow.
 - ADR-002: `scripts/check_repository.py` fails when two files in `docs/decisions` share a number,
-  naming them, and when a record's H1 number differs from its file name's.
+  naming them, when a record's H1 number differs from its file name's, and when the index does not
+  list a record (0016 was missing).
 - ADR-003: the decisions README says the check refuses a duplicate number, so the second task to
   merge takes the next free number after merging `dev`.
 - ONB-101: `ENVIRONMENT_SETUP` and infra-bootstrap step 2 say to add `YULIUS_CI_MATRIX=<value>` to
@@ -69,8 +70,8 @@ onboarding rather than by a job (#272).
 - [x] The repository check refuses duplicate decision numbers
 - [x] The onboarding prompt covers matrix values, interrupted proofs, shared CI home and system packages
 - [x] The infra-bootstrap skill, the CI module doc and SPEC-020 match the prompt
-- [x] Gates green and an independent review approves the head
-- [x] Spec records its evidence and the pull request names both issues
+- [ ] Gates green and an independent review approves the head
+- [ ] Spec records its evidence and the pull request names both issues
 
 ## Acceptance criteria
 
@@ -99,8 +100,9 @@ onboarding rather than by a job (#272).
   number keeps meaning what it meant first. The others take free numbers in merge order: 0036 (the
   gap left when SPEC-054 took 0037), then 0040 and 0041 after `dev`'s 0039; while this branch was
   open, #328 (task #48) merged its own 0040 first, the new check failed on the merge of `dev`, and
-  the two-factor record took 0042. The issue's "0035 to 0037" was written before 0035 and 0037 were
-  taken.
+  the two-factor record took 0042; then #332 (task #65) merged a second 0040 onto `dev`, which this
+  branch renumbers to 0043 (#328's, merged first, keeps 0040). The issue's "0035 to 0037" was
+  written before 0035 and 0037 were taken.
 - **Historical notes** in SPEC-035, SPEC-040 and SPEC-052 that tell how a number was chosen at the
   time stay as written; the ones that name the record get "now 00NN (#317)" so they are not
   ambiguous.
@@ -118,16 +120,21 @@ onboarding rather than by a job (#272).
   renumber. All fixed, test-first where tested. Not changed: the manual `git worktree prune` can in
   theory race a Yulius `worktree add` outside Yulius's in-process lock; the window is tiny, the
   issue asks for the prune, and Yulius prunes before its own checkouts anyway.
-- **Parallel branches** that add a decision 0041 or 0042 or cite "ADR-0034" for the two-factor vault
+- **Parallel branches** that add a decision 0041 to 0043 or cite "ADR-0034" for the two-factor vault
   must renumber or retarget after merging `dev`; the check catches the file and link, the pull
   request says so for the prose.
 - **Review round 2** (REQUEST CHANGES at 2172770): with only the six-hour `find`, the agent's own
   killed proof stayed behind, which is the case #272 asks to recover from. The proof now prints
   its directory and the recovery removes it by that path first; the six-hour `find` is kept for
   other tasks' leftovers. Also the changelog's lane wording and long lines. Fixed test-first.
+- **Review round 3** (REQUEST CHANGES at 41e2038): every round-2 fix verified, including the
+  rendered shell; but `dev` had gained #332's second 0040 (renumbered here to 0043), the review
+  item was ticked before an approval, and SPEC-040 had long lines. All fixed; the index check
+  (every record listed) answers its nit that 0016 was missing.
 - **The plan ends before the merge:** `delivery_merge` refuses while a step is open, so merging and
   closing #317 and #272 are the delivery after the plan, reported in the task summary. The review
-  item is ticked for the head the final review round approves; `delivery_merge` refuses any other.
+  item is ticked only after a round approves, in a spec-only commit that a short confirmation
+  review covers, since `delivery_merge` needs an approval of the exact head.
 
 ## Evidence
 
@@ -147,6 +154,9 @@ onboarding rather than by a job (#272).
 - Merging `dev` after #328: `python3 scripts/check_repository.py` failed with
   "0040-personal-two-factor-guards-the-vault.md: shares decision number 0040 with
   0040-done-tasks-release-their-subscription.md"; after renumbering to 0042 it passed.
+- Merging `dev` after #332: `python3 scripts/check_repository.py` failed on #328's and #332's two
+  0040 records; after #332's became 0043 it passed. The index check, red then green: the new test
+  failed (`0 != 1`) before the check, then the real tree failed on the unlisted 0016, then passed.
 - `git grep 0034` in docs, specs and code: only the automations catalog record, its references
   and historical notes.
 - Independent review (fresh read-only sessions, skill `om-code-review`): round 1 of
