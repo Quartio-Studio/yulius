@@ -249,8 +249,11 @@ impl App {
     /// start; a limit recorded before the Cockpit was created is history.
     pub(crate) fn start_cockpit_watch(self: &Arc<Self>, runtime: &Arc<ShellRuntime>) {
         let app = Arc::clone(self);
-        let runtime = Arc::clone(runtime);
-        tokio::spawn(async move { app.watch_cockpit(runtime).await });
+        let watched = Arc::clone(runtime);
+        let task = tokio::spawn(async move { app.watch_cockpit(watched).await });
+        if let Ok(mut watch) = runtime.watch.lock() {
+            *watch = Some(task);
+        }
     }
 
     async fn watch_cockpit(self: Arc<Self>, runtime: Arc<ShellRuntime>) {

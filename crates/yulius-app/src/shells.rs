@@ -157,6 +157,8 @@ pub struct ShellRuntime {
     idle_since_ms: AtomicI64,
     /// The task that forwards the host's output; aborted when the server lets go of the shell.
     pump: Mutex<Option<JoinHandle<()>>>,
+    /// A Cockpit's usage-limit watch (SPEC-074); aborted with the pump.
+    pub(crate) watch: Mutex<Option<JoinHandle<()>>>,
 }
 
 /// A shell as its owner sees it (`GET /api/sandboxes/{sid}/shells`).
@@ -746,6 +748,7 @@ impl App {
             ended_tx: watch::channel(false).0,
             idle_since_ms: AtomicI64::new(self.now().0),
             pump: Mutex::new(None),
+            watch: Mutex::new(None),
         })
     }
 
@@ -1190,6 +1193,7 @@ impl App {
             ended_tx: watch::channel(false).0,
             idle_since_ms: AtomicI64::new(self.now().0),
             pump: Mutex::new(None),
+            watch: Mutex::new(None),
         });
         let reader = self.attach_shell(&runtime).await?;
         self.shells
@@ -1245,10 +1249,12 @@ impl App {
             .map(|mut map| map.drain().map(|(_, shell)| shell).collect())
             .unwrap_or_default();
         for shell in &shells {
-            if let Ok(mut pump) = shell.pump.lock()
-                && let Some(task) = pump.take()
-            {
-                task.abort();
+            for handle in [&shell.pump, &shell.watch] {
+                if let Ok(mut handle) = handle.lock()
+                    && let Some(task) = handle.take()
+                {
+                    task.abort();
+                }
             }
             *shell.writer.lock().await = None;
         }

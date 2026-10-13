@@ -55,11 +55,11 @@ manages the project (SPEC-037).
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | SUP-001 | A running Cockpit remembers the subscription it started on, also after a server restart (its shell record keeps the account id; older records without one stay valid). | `crates/yulius/tests/cockpit.rs` |
-| SUP-002 | While a Cockpit runs, Yulius watches its newest conversation in its folder: the one it resumed and any it starts later (`/clear`, `/resume`). A usage limit Claude Code records there at or after the process started is acted on, once. A limit recorded earlier (an old conversation) is ignored. A limit record without a readable time counts only once the conversation's history has been read. The watch ends with the process. | `cockpit.rs` |
+| SUP-002 | While a Cockpit runs, Yulius watches its newest conversation in its folder: the one it resumed and any it starts later (`/clear`, `/resume`). A usage limit Claude Code records there at or after the Cockpit was created is acted on, once: never again after `/clear` and back or a server restart, and not when its reset has passed. A limit recorded earlier (an old conversation) is ignored. A limit record without a readable time counts only once the conversation's history has been read. The watch ends with the process. | `cockpit.rs` |
 | SUP-003 | Such a limit is recorded on the Cockpit's subscription as for a task (ROT-009: `limit_reached`, its reset, the limited window full), so no task or Cockpit start picks it until it recovers. | `cockpit.rs` |
-| SUP-004 | When another subscription has capacity (the Cockpit's model family, `rotation::decide`), the Cockpit restarts on it under its start lock. It resumes the same conversation stepped back over the limit with `CLAUDE_CODE_RESUME_INTERRUPTED_TURN=1` and no prompt (SPEC-034 LIM-001/002), so Claude Code redoes the cut turn by itself. The old process ends first. Its viewers get the exit status `switched`, and its quick end never marks the conversation unresumable (CKP-003). | `cockpit.rs` |
+| SUP-004 | When another subscription has capacity (the Cockpit's model family, `rotation::decide`), the Cockpit restarts on it under its start lock. When that start fails, the next start continues the cut turn. It resumes the same conversation stepped back over the limit with `CLAUDE_CODE_RESUME_INTERRUPTED_TURN=1` and no prompt (SPEC-034 LIM-001/002), so Claude Code redoes the cut turn by itself. The old process ends first. Its viewers get the exit status `switched`, and its quick end never marks the conversation unresumable (CKP-003). | `cockpit.rs` |
 | SUP-005 | Without a subscription that has capacity, the Cockpit keeps running on its subscription, and its viewers get a notice: no other subscription has capacity, and Claude Code goes on when the limit resets. | `cockpit.rs` |
-| SUP-006 | The web panel follows a session that ended as `switched` to the running one, with no "stopped" banner or Start again, and the keyboard stays where it was. | `e2e/tests/agent-panel.e2e.ts` |
+| SUP-006 | The web panel follows a session that ended as `switched` to the running one, with no "stopped" banner or Start again, and the keyboard stays where it was. When no Superagent can start, it says why with Try again. | `e2e/tests/agent-panel.e2e.ts` |
 | SUP-007 | The UI calls the panel **Superagent**: the rail tool, the top-bar button (Show/Hide Superagent), the notice, its start, error, stopped and read-access messages. `/s/<slug>/superagent` opens it like `/agent` and `/cockpit` do. The API, the shell kind `cockpit` and stored records keep their names (ADR-0036). | `agent-panel.e2e.ts` |
 
 ## Design
@@ -86,9 +86,11 @@ sequenceDiagram
 - `ShellRuntime` gains `account` (persisted as `account` in `shell.json`) and `switching`.
   `finish_shell` sends `switched` instead of `closed` and skips `note_cockpit_exit` for it.
 - `cockpit.rs`: `start_cockpit` is shared by `cockpit_open` and the switch. `watch_cockpit`
-  polls every second and follows the newest conversation modified since the start. It opens each
-  conversation from its start and filters limits by `at`. `cockpit_limit_reached` records the
-  limit and switches or tells the viewers.
+  polls every second and follows the newest conversation in its folder. It opens each
+  conversation from its start. It acts on a limit recorded at or after the Cockpit's creation and
+  after the last limit it acted on (`limit_handled_at`, kept in `shell.json`), whose reset has not
+  passed. `cockpit_limit_reached` records the limit and switches or tells the viewers. A move
+  whose start fails leaves a pending continuation: the next `cockpit_open` continues the cut turn.
 - The step back and the interrupted-turn flag reach the Cockpit through
   `CockpitLaunch.continue_interrupted` → `CockpitRequest.continue_interrupted`.
 - The limit recording of `on_observation` moves into `App::record_limit`, shared by tasks and the
@@ -141,7 +143,14 @@ sequenceDiagram
   records catches it without replaying old limits.
 - **Keep `cockpit` in the API and records** (ADR-0036): "Superagent" is a UI name.
 - **Known limit**: a limit recorded while the server is down and seen only after an adoption
-  counts, because its time is after the process start; the Cockpit then switches at once.
+  counts, because its time is after the Cockpit's creation; the Cockpit then switches at once.
+- **Known limit** (review round 1, m4): the watch follows the newest conversation in the
+  repository folder of the user's home. A `claude` the person starts by hand in a terminal at the
+  repository root writes there too, so its usage limit would also move the Superagent. Nothing in a
+  transcript tells the two apart; this is rare (tasks run in their own worktrees).
+- **Known limit** (review round 1, m2): ending a shell does not prove its host is gone when
+  terminating it fails. This holds for every shell, so it is a follow-up for the shell runtime, as
+  ADR-0050 did for task runs, not a change here (#346).
 
 ## Evidence
 

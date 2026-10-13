@@ -209,7 +209,14 @@ fn printed(screen: &str, key: &str) -> Result<String, Box<dyn std::error::Error>
         + key.len()
         + 1;
     let rest = screen.get(start..).unwrap_or_default();
-    Ok(rest.lines().next().unwrap_or_default().trim().to_owned())
+    // The line ends at its end or at the terminal's next control sequence (a redraw under load).
+    let line = rest.lines().next().unwrap_or_default();
+    Ok(line
+        .split('\u{1b}')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_owned())
 }
 
 async fn wait_for(what: &str, mut check: impl FnMut() -> bool) -> TestResult {

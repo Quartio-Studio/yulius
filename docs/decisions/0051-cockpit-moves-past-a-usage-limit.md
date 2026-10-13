@@ -46,5 +46,7 @@ calls the panel **Superagent**. The API, the shell kind and the records keep `co
 A limit costs the person one reconnect of the panel, not a wait for the reset. The rotation
 decides where the Cockpit goes, so it skips a subscription whose Opus cap is spent (SPEC-023). A
 Cockpit adopted after a restart is watched too, and a limit recorded while the server was down
-counts. The watch reads the newest conversation every second, and its first read of a
+counts; a limit already acted on never counts again (its time is kept in `shell.json`). A `claude`
+started by hand in a terminal at the repository root shares the folder, so its limit would move
+the Superagent too. The watch reads the newest conversation every second, and its first read of a
 conversation costs its whole length once.
