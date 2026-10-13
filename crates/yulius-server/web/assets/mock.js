@@ -2774,6 +2774,10 @@ class TermSession {
     let msg;
     try { msg = JSON.parse(data); } catch { return; }
     if (msg.type === 'hello') {
+      // A test can hold a task terminal's first screen (`window.__yuliusHoldTerminal = promise`,
+      // set by an init script) to act in the view before the terminal shows.
+      const hold = window.__yuliusHoldTerminal;
+      if (hold && !this.released) { hold.then(() => { this.released = true; this.receive(ws, data); }); return; }
       this.viewers.add(ws);
       if (this.canWrite() && msg.cols && msg.rows) this.viewerSize = [msg.cols, msg.rows];
       if (this.canWrite() && !this.otherController && msg.cols && msg.rows) { this.cols = Math.max(20, Math.min(400, msg.cols)); this.rows = Math.max(8, Math.min(200, msg.rows)); }

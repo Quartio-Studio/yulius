@@ -5,31 +5,33 @@ import { axeViolations, failOnPageErrors, mock } from './support.ts';
 failOnPageErrors();
 
 // Queued messages (SPEC-052): a task that waits and has never started takes messages into its
-// request, so a person can correct it before the agent sees it.
+// request, so a person can correct it before the agent sees it. The tests that queue use the
+// chained product #7: the mock's ambient activity starts the queued studio #8 after ~12 s, which a
+// slow run would race.
 
 type MockTasks = { __yuliusMock: { tasks: { id: string; prompt?: string; started?: boolean }[] } };
 
 const storedRequest = (browser: Browser, id: string) =>
   browser.evaluate((tid) => (window as unknown as MockTasks).__yuliusMock.tasks.find((t) => t.id === tid)?.prompt ?? '', id);
 
-test('a queued task takes a message into its request', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/t/8'));
+test('a waiting task takes a message into its request', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/product/t/7'));
 
   const card = screen.getByRole('region', 'Queued messages');
   await expect(card).toBeVisible();
   const request = card.getByRole('region', 'Request');
-  await expect(request).toContainText('Nightly feedback digest');
+  await expect(request).toContainText('Invoice emails');
   expect(await axeViolations(browser)).toEqual([]);
 
   const box = card.getByRole('textbox', 'Message for the agent');
   await box.click();
-  await browser.keyboard.type('Only the last 24 hours, please.');
+  await browser.keyboard.type('Only for paid invoices, please.');
   await card.getByRole('button', 'Queue').click();
 
   await expect(box).toHaveValue('');
   await expect(request).toContainText(/Added by mkarp before the task started \(.+ UTC\):/);
-  await expect(request).toContainText('Only the last 24 hours, please.');
-  expect(await storedRequest(browser, 'tsk_studio_8')).toMatch(/Nightly feedback digest\n\n\*\*Added by mkarp before the task started \(.+ UTC\):\*\*\n\nOnly the last 24 hours, please\.$/);
+  await expect(request).toContainText('Only for paid invoices, please.');
+  expect(await storedRequest(browser, 'tsk_product_7')).toMatch(/Invoice emails\n\n\*\*Added by mkarp before the task started \(.+ UTC\):\*\*\n\nOnly for paid invoices, please\.$/);
 
   // ⌘/Ctrl+Enter queues the next one.
   await box.click();
@@ -66,15 +68,15 @@ test('a running task has no queued messages card', async ({ app, screen }) => {
 });
 
 test('once the task has started, a pause for capacity brings no card back', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/t/8'));
+  await app.open(mock('/s/product/t/7'));
   const card = screen.getByRole('region', 'Queued messages');
   await expect(card).toBeVisible();
 
   // It starts — while `starting` the server has no run recorded yet, so the detail read then
   // still says it has not started — then a turn boundary pauses it for capacity, session alive.
   type Mocked = { __yuliusMock: { touchTask: (sid: string, n: number, c: object) => void; detailReads?: Record<string, number> } };
-  const touch = (changes: object) => browser.evaluate((c) => (window as unknown as Mocked).__yuliusMock.touchTask('sb_studio', 8, c), changes);
-  const reads = () => browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.detailReads?.tsk_studio_8 ?? 0);
+  const touch = (changes: object) => browser.evaluate((c) => (window as unknown as Mocked).__yuliusMock.touchTask('sb_product', 7, c), changes);
+  const reads = () => browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.detailReads?.tsk_product_7 ?? 0);
   const before = await reads();
   await touch({ status: 'starting', started: false });
   await expect(card).toBeHidden();
@@ -84,4 +86,21 @@ test('once the task has started, a pause for capacity brings no card back', asyn
   await touch({ status: 'waiting_capacity' });
   await expect(screen.getByRole('status').filter({ hasText: 'Paused' }).first()).toBeVisible();
   await expect(card).toBeHidden();
+});
+
+test('the terminal showing late does not take the keys typed into the queue box', async ({ app, browser, screen }) => {
+  // The terminal's first screen waits until the test releases it.
+  await browser.addInitScript(() => {
+    const w = window as unknown as { __yuliusHoldTerminal?: Promise<void>; __releaseTerminal?: () => void };
+    w.__yuliusHoldTerminal = new Promise<void>((resolve) => { w.__releaseTerminal = resolve; });
+  });
+  await app.open(mock('/s/product/t/7'));
+  const box = screen.getByRole('region', 'Queued messages').getByRole('textbox', 'Message for the agent');
+  await box.click();
+  await browser.keyboard.type('Hello');
+  await browser.evaluate(() => (window as unknown as { __releaseTerminal: () => void }).__releaseTerminal());
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.term-pending') === null && document.querySelector('.term-placeholder') === null)).toBe(true);
+  await browser.keyboard.type(' world');
+  await expect(box).toHaveValue('Hello world');
+  await expect(box).toBeFocused();
 });

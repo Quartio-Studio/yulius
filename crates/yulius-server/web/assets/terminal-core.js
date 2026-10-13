@@ -76,6 +76,15 @@ const WHEEL_MAX_NOTCHES = 10;
  *                              files in the terminal's folder become links (termlinks.js)
  * Call start() after the element is in the document; destroy() when done.
  */
+/** Whether a deferred focus may take the focus: no text field outside `root` is being typed in. */
+function focusIsFree(root) {
+  const active = document.activeElement;
+  if (!active || root.contains(active)) return true;
+  const typing = active.isContentEditable || active.tagName === 'TEXTAREA'
+    || (active.tagName === 'INPUT' && !['button', 'checkbox', 'radio', 'submit', 'reset', 'range', 'color', 'file'].includes(active.type));
+  return !typing;
+}
+
 export function createTerminalView({ transport, path, onLink, readOnlyLabel, onState, onExit, onNotice, exitActions, exitMessage, emptyMessage, onReady, onConnection, onFatal, fontSize, fileLinks = null, followServerSize = false }) {
   const banner = h('div', { class: 'term-banner', hidden: true, role: 'status' });
   const noticeEl = h('div', { class: 'term-notice', hidden: true, role: 'status', 'aria-live': 'polite' });
@@ -252,7 +261,9 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     el.removeAttribute('aria-busy');
     renderEmpty();
     render();
-    if (focusWanted) term.focus();
+    // Focus asked for before the terminal showed lands now, unless the person is typing in a
+    // field elsewhere meanwhile (a box beside the terminal keeps the keys typed into it).
+    if (focusWanted && focusIsFree(el)) term.focus();
     if (onReady) onReady();
   }
 

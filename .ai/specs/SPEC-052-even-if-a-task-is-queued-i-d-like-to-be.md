@@ -148,7 +148,22 @@ request, so the agent gets it as part of its request when the task starts.
     - Two doc nits: fixed.
     - `loadDetail` keeps whichever response lands last. That predates this change and is filed as
       a follow-up issue.
-  - Round 3 reviews the head that carries these fixes.
+  - Round 3, on 2638651: APPROVE with two nits (wording), left as they are.
+- Merging `dev` (the original prompt view, SPEC-043; ready-made automations) conflicted in the mock
+  and the e2e README, and both sides were kept. ADR numbers 0033 and 0034 were taken, so this
+  decision is ADR-0035. On the merged head, `scripts/dev ci` exit 0: **1237 passed, 16 skipped**.
+- The full e2e suite on the merged head failed two of this change's tests, each time in a
+  different way. Each failure was traced to a cause and fixed, never retried:
+  - The mock's ambient activity starts the queued studio #8 after about 12 s, which a slow run
+    raced. The queueing tests now use the chained product #7, which nothing starts.
+  - A real bug: the terminal's deferred focus landed after its late first screen and took the keys
+    a person was typing into the queue box. It now yields to a text field being typed in. This is
+    reproduced deterministically by holding the mock terminal's first screen: `the terminal
+    showing late does not take the keys typed into the queue box`. It was red before the fix.
+    The terminal, shell panel, Cockpit, navigation, notes and shortcuts suites stay green
+    (48 passed).
+  - The other failures in those full runs were outside this change and passed alone:
+    `terminal.e2e.ts` file paths open the editor (2 of 2), and `menus.e2e.ts` slash menu.
 - Not covered here: a real Claude Code session (the fake agent stands in, as in SPEC-011 and
   SPEC-030). Read access hiding the card is checked by the server (403) and the shared `allows()`
   test, not by an e2e case.

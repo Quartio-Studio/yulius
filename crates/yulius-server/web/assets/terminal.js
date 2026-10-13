@@ -79,6 +79,7 @@ export function createTerminalView(options) {
       view = module.createTerminalView(options);
       setChildren(el, view.el);
       if (started) view.start();
+      // The core focuses itself once shown, if the focus is still free then (terminal-core.js).
       if (focusWanted) view.focus();
     }, () => {
       if (destroyed) return;
