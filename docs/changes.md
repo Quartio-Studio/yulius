@@ -12,6 +12,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   questions) and that anything more complex, such as writing code, belongs in a task (with a New
   task link). It is no longer in the left sidebar; `/s/<slug>/agent` and the old
   `/s/<slug>/cockpit` open the panel. The API and server keep the `cockpit` names.
+- A pull request runs its own CI jobs only when it changed them itself; a branch that is merely
+  behind `dev` runs `dev`'s current jobs (SPEC-050 CI-110).
+- `yulius wait` says why Yulius has not pushed or opened the pull request at the end of a turn (an
+  open step, a missing plan, an invalid spec, uncommitted work) instead of waiting in silence (SPEC-050 DLV-204).
 - End-to-end tests in CI get longer budgets (90 s per action, 6 min per test) and two retries: they timed out while agents' builds loaded the machine, though the same tests pass locally in seconds; CI CPU priority is #283.
 - Armed pull requests stay current by themselves (SPEC-050 DLV-203): when the integration branch
   moves on, Yulius merges it into the idle task's branch (the repository's merge drivers apply, so
