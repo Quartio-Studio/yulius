@@ -67,6 +67,9 @@ const HEAD_POLL_GAP: Duration = Duration::from_secs(1);
 /// How long a train that passed may wait for GitHub (or a member's own run) before it is
 /// dissolved and its members merge one by one.
 pub const WAIT_LIMIT_MS: i64 = 15 * 60 * 1000;
+/// How long a train's run may stay queued or running (waiting for disk, a lane, its jobs)
+/// before the train lets its members go one by one.
+pub const TEST_LIMIT_MS: i64 = 2 * 60 * 60 * 1000;
 
 /// Serializes changes to [`MERGE_TRAINS_FILE`].
 static TRAINS_FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -112,6 +115,9 @@ struct Train {
     /// Since when a passed train waits (for GitHub or a member's own run).
     #[serde(default)]
     waiting_since: Option<i64>,
+    /// When it was formed (ms; 0 when unknown).
+    #[serde(default)]
+    formed_at: i64,
 }
 
 /// A pull request in a train.
@@ -289,6 +295,10 @@ impl App {
 
     /// How a merge train holds `task`'s armed merge (SPEC-084 TRN-004).
     pub(crate) fn train_hold(&self, task: &TaskRecord) -> Hold {
+        // No CI on this instance: no train advances, so none may hold anything.
+        if !self.config.ci.enabled {
+            return Hold::Free;
+        }
         hold_of(
             self.read_trains(&task.sandbox_id).train.as_ref(),
             task.id.as_str(),
@@ -379,6 +389,11 @@ impl App {
         };
         match run.state {
             RunState::Queued | RunState::Running => {
+                if train.formed_at > 0 && self.now().0 - train.formed_at > TEST_LIMIT_MS {
+                    self.dissolve(sandbox, &train, "its CI run took too long")
+                        .await;
+                    return None;
+                }
                 if let Some(reason) = self.train_broken(sandbox, &train).await {
                     self.dissolve(sandbox, &train, &reason).await;
                     return None;
@@ -1100,6 +1115,7 @@ impl App {
             left_out,
             merging: false,
             waiting_since: None,
+            formed_at: self.now().0,
         })
     }
 
@@ -1180,6 +1196,7 @@ mod tests {
             }],
             merging: false,
             waiting_since: None,
+            formed_at: 1,
         }
     }
 
