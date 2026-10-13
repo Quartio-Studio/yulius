@@ -22,6 +22,7 @@ pub mod intake;
 pub mod permission;
 pub mod redact;
 pub mod request;
+pub mod resources;
 pub mod rotation;
 pub mod rule;
 pub mod scope;

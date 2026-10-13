@@ -11,6 +11,7 @@
 pub mod actions;
 
 use crate::delivery::ChecksState;
+use crate::resources::Need;
 
 /// Longest gate command.
 pub const MAX_GATE_BYTES: usize = 2_000;
@@ -112,6 +113,8 @@ pub struct JobDef {
     /// Matrix values: the job runs once per value, with the value in `YULIUS_CI_MATRIX`
     /// (never interpolated into the command). Empty: one job.
     pub matrix: Vec<String>,
+    /// The CPUs and memory each of its jobs declares (`cpus`, `memory_gb`; SPEC-082 RES-002).
+    pub need: Need,
 }
 
 /// One job of a run, after matrix expansion.
@@ -125,6 +128,8 @@ pub struct Job {
     pub command: String,
     /// Matrix value passed as `YULIUS_CI_MATRIX`.
     pub matrix: Option<String>,
+    /// What it declares it needs (SPEC-082 RES-002).
+    pub need: Need,
 }
 
 /// An invalid CI job configuration.
@@ -217,6 +222,7 @@ pub fn expand_jobs(defs: &[JobDef]) -> Result<Vec<Job>, CiConfigError> {
                 key: def.name.clone(),
                 command,
                 matrix: None,
+                need: def.need,
             });
         } else {
             for value in &def.matrix {
@@ -225,6 +231,7 @@ pub fn expand_jobs(defs: &[JobDef]) -> Result<Vec<Job>, CiConfigError> {
                     key: def.name.clone(),
                     command: command.clone(),
                     matrix: Some(value.clone()),
+                    need: def.need,
                 });
             }
         }
@@ -260,6 +267,7 @@ fn single_job(command: &str) -> Result<Job, GateError> {
         key: GATE_JOB.to_owned(),
         command: validate_gate(command)?,
         matrix: None,
+        need: Need::default(),
     })
 }
 
@@ -891,6 +899,7 @@ mod tests {
             } else {
                 parse_matrix(name, matrix).unwrap_or_default()
             },
+            need: Need::default(),
         };
         let jobs = expand_jobs(&[
             def("lint", "cargo clippy", ""),
@@ -920,6 +929,7 @@ mod tests {
             name: "w".into(),
             command: "x".into(),
             matrix: many,
+            need: Need::default(),
         };
         let mut defs = vec![
             wide.clone(),

@@ -1,10 +1,9 @@
 [profile.default]
 retries = 0
 slow-timeout = { period = "30s", terminate-after = 4 }
-# Several agents run this suite at once in one sandbox, next to CI, which has CPU priority: at one
-# thread per CPU each, their tests starved and timed out (load 35, CPU pressure 85 %, 2026-10-13).
-# Yulius CI's quality job sets NEXTEST_TEST_THREADS=num-cpus (yulius.toml).
-test-threads = 4
+# Test threads: one per CPU by default. Where Yulius runs the suite (agent sessions, terminals, CI
+# jobs) it sets NEXTEST_TEST_THREADS to the process's CPU budget ([resources.env] in yulius.toml,
+# SPEC-082), so several runs at once share the machine instead of each taking all of it.
 
 [profile.ci]
 fail-fast = false

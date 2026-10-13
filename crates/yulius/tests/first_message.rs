@@ -85,7 +85,6 @@ fn hooked() -> FakeAgentOptions {
     FakeAgentOptions {
         transcript: true,
         hooks: true,
-        session_start: true,
         ..FakeAgentOptions::default()
     }
 }

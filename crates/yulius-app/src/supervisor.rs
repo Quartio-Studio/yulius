@@ -450,8 +450,9 @@ pub(crate) fn git_credential_env(exe: &Path) -> Vec<(String, String)> {
 /// Quiet time after the TUI's first output before the goal is typed.
 const GOAL_QUIET: Duration = Duration::from_millis(1500);
 /// Upper bound for waiting until the TUI is ready for the goal (its SessionStart hook and quiet
-/// output); a busy host starts Claude Code slowly.
-const GOAL_READY_TIMEOUT: Duration = Duration::from_secs(90);
+/// output); a busy host starts Claude Code slowly. A TUI without hooks gets half of it. The
+/// default of [`crate::context::AppConfig::goal_ready_ms`].
+pub const GOAL_READY_TIMEOUT: Duration = Duration::from_secs(90);
 /// Upper bound for waiting until the turn on a goal session's first message ended; after it the
 /// goal is typed anyway (Claude Code queues it behind a running turn).
 const GOAL_OPENING_TIMEOUT: Duration = Duration::from_secs(300);
@@ -487,14 +488,6 @@ fn opening_pastes(images: Vec<String>, text: &str) -> Vec<(Vec<u8>, Option<Strin
         pastes.push((paste(&format!("{text}\n")), None));
     }
     pastes
-}
-
-/// Rust build jobs of one agent: a third of the host's CPUs, at least 2.
-fn agent_build_jobs() -> usize {
-    std::thread::available_parallelism()
-        .map_or(2, std::num::NonZeroUsize::get)
-        .div_ceil(3)
-        .max(2)
 }
 
 /// Branch name for a task: `feat/<number>-<slug>`.
@@ -1047,7 +1040,7 @@ impl App {
         launch
             .secret_env
             .push(("YULIUS_TASK_TOKEN".into(), task_token.clone()));
-        launch.env.extend(self.base_env(&sandbox, &home));
+        launch.env.extend(self.base_env(&sandbox, &home, &worktree));
         // Agent secrets: placeholders, the Bash redaction wrapper and the egress proxy
         // (SPEC-002 ADR-20). A vault that cannot be read fails the start, never a run without
         // redaction.
@@ -1352,9 +1345,10 @@ impl App {
     }
 
     /// Waits until the attempt's TUI reads input: Claude Code's SessionStart hook arrived and
-    /// [`GOAL_QUIET`] passed without new output (or at most [`GOAL_READY_TIMEOUT`] after
-    /// `started`); with `after_opening`, also until the turn on a first message ended (its Stop
-    /// hook, at most [`GOAL_OPENING_TIMEOUT`]). `false` once the attempt is no longer live.
+    /// [`GOAL_QUIET`] passed without new output (or at most the configured
+    /// [`GOAL_READY_TIMEOUT`] after `started`, half of it without a SessionStart hook); with
+    /// `after_opening`, also until the turn on a first message ended (its Stop hook, at most
+    /// [`GOAL_OPENING_TIMEOUT`]). `false` once the attempt is no longer live.
     async fn wait_input_ready(
         &self,
         task_id: &TaskId,
@@ -1363,6 +1357,7 @@ impl App {
         after_opening: bool,
     ) -> bool {
         let runtime = self.runtime(task_id);
+        let ready_timeout = Duration::from_millis(self.config.goal_ready_ms);
         let mut last = runtime.hub.output_seq();
         let mut quiet_since = tokio::time::Instant::now();
         loop {
@@ -1377,7 +1372,7 @@ impl App {
             }
             // Without hooks (an old CLI) the first output is the only sign of life.
             let hooked = runtime.session_started.load(Ordering::SeqCst)
-                || started.elapsed() >= GOAL_READY_TIMEOUT / 2;
+                || started.elapsed() >= ready_timeout / 2;
             // A turn on the first message (the attached files) runs: quiet output is no sign
             // its end came, its Stop hook is (SPEC-025).
             let opening = after_opening && runtime.opening_turn.load(Ordering::SeqCst);
@@ -1385,7 +1380,7 @@ impl App {
             let limit = if opening {
                 GOAL_OPENING_TIMEOUT
             } else {
-                GOAL_READY_TIMEOUT
+                ready_timeout
             };
             if ready || started.elapsed() >= limit {
                 return true;
@@ -1592,7 +1587,12 @@ impl App {
             .map_err(AppError::internal)
     }
 
-    fn base_env(&self, sandbox: &SandboxRecord, home: &Path) -> Vec<(String, String)> {
+    fn base_env(
+        &self,
+        sandbox: &SandboxRecord,
+        home: &Path,
+        worktree: &Path,
+    ) -> Vec<(String, String)> {
         let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into());
         let home_text = home.to_string_lossy().into_owned();
         let mut env = vec![
@@ -1609,11 +1609,12 @@ impl App {
             ("YULIUS_PORT_COUNT".into(), sandbox.port_count.to_string()),
             ("PORT".into(), sandbox.port_base.to_string()),
             ("YULIUS_SANDBOX".into(), sandbox.slug.clone()),
-            // Parallel tasks share the sandbox's memory: each Rust build uses a third of the
-            // CPUs (at least 2), so several tasks linking at once do not run it out (OOM kills
-            // of 2026-10-12).
-            ("CARGO_BUILD_JOBS".into(), agent_build_jobs().to_string()),
         ];
+        // Parallel tasks share the sandbox: each plans for its budget (a third of the sandbox by
+        // default), in YULIUS_CPUS and the repository's own variables (SPEC-082 RES-005). It
+        // replaces the CARGO_BUILD_JOBS Yulius set for every repository (OOM kills of
+        // 2026-10-12): a Rust repository maps it in its yulius.toml.
+        env.extend(self.agent_resource_env(worktree));
         env.extend(git_credential_env(&self.config.yulius_exe));
         env
     }

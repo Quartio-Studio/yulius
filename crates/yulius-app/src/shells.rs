@@ -496,11 +496,15 @@ impl App {
             .ok_or(AppError::NotFound)
     }
 
+    /// The environment of a terminal or Cockpit starting in `cwd`: the user's own, the
+    /// sandbox's ports, and its CPU and memory budget with the repository's `[resources.env]`
+    /// there (SPEC-082 RES-005).
     pub(crate) fn shell_env(
         &self,
         sandbox: &SandboxRecord,
         space: &UserSpace,
         program: &Path,
+        cwd: &Path,
     ) -> Vec<(String, String)> {
         let mut env = space.env.clone();
         env.extend([
@@ -517,6 +521,7 @@ impl App {
             // ignore it; a user's own PROMPT_COMMAND replaces it.
             ("PROMPT_COMMAND".into(), OSC7_PROMPT_COMMAND.into()),
         ]);
+        env.extend(self.agent_resource_env(cwd));
         env
     }
 
@@ -808,7 +813,7 @@ impl App {
         let plan = LaunchPlan {
             argv: vec![program.to_string_lossy().into_owned(), "-l".into()],
             cwd: cwd.to_path_buf(),
-            env: self.shell_env(record, space, &program),
+            env: self.shell_env(record, space, &program, cwd),
             secret_env: Vec::new(),
             files: Vec::new(),
             containment: space.containment.clone(),

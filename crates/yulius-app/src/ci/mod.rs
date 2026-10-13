@@ -46,6 +46,7 @@ use yulius_domain::ci::{
 };
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::{AccessLevel, Action};
+use yulius_domain::resources::Need;
 use yulius_domain::spec_format::{MAX_CONFIG_BYTES, parse_yulius_toml};
 use yulius_domain::time::Timestamp;
 
@@ -172,6 +173,8 @@ pub struct CiJobRecord {
     pub started_at: Option<Timestamp>,
     /// Ended at.
     pub ended_at: Option<Timestamp>,
+    /// The CPUs and memory it declared (SPEC-082 RES-002).
+    pub need: Need,
 }
 
 /// Fields set with a run transition.
@@ -217,6 +220,9 @@ pub(crate) struct GateView {
 #[derive(Default)]
 pub struct CiState {
     slots: OnceLock<Arc<Semaphore>>,
+    /// The CPUs and MiB of memory CI jobs share, sized from the sandbox capacity at the first
+    /// job (SPEC-082 RES-003).
+    pub(crate) budget: OnceLock<crate::resources::CiPools>,
     /// Executing runs: their cancellation (the reason, once cancelled).
     executing: Mutex<HashMap<String, watch::Sender<Option<String>>>>,
     /// Lanes in use (`<sandbox>/<lane>` for an executing run) and whole-sandbox claims
@@ -539,6 +545,7 @@ impl App {
                 output: String::new(),
                 started_at: None,
                 ended_at: None,
+                need: job.need,
             })
             .collect();
         self.deps.store.insert_ci_run(&run, &jobs).await?;
@@ -784,6 +791,7 @@ impl App {
                 output: format!("{note}.\n"),
                 started_at: Some(now),
                 ended_at: Some(now),
+                need: job.need,
             })
             .collect();
         self.deps.store.insert_ci_run(&run, &jobs).await?;
