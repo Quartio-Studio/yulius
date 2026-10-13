@@ -8,7 +8,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - Unique decision numbers and the onboarding CI proof (SPEC-058, task #49; #317, #272). The four
   decision records numbered 0034 now have their own numbers: the automations catalog keeps 0034,
-  the Agent in the right panel is 0036, the personal two-factor vault 0040 and the task status
+  the Agent in the right panel is 0036, the personal two-factor vault 0042 and the task status
   from Claude Code's records 0041. `scripts/check_repository.py` fails on two records with one
   number or a title whose number differs from the file name. The onboarding prompt and
   infra-bootstrap step 2 add `YULIUS_CI_MATRIX` to the proof of matrix jobs and say how to clean
@@ -57,7 +57,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - Armed merges survive a server restart (a deploy no longer drops them) (SPEC-050 DLV-205).
 - Secrets are a title, a value and notes, and reading one needs your own two-factor code
-  (SPEC-040, ADR-0040, task #39). The first reveal sets two-factor up: an authenticator key and
+  (SPEC-040, ADR-0042, task #39). The first reveal sets two-factor up: an authenticator key and
   link, confirmed by a first code. After that, a code unlocks the vault in that browser for 10
   minutes. A sign-in or password alone no longer reveals anything. Older team secrets keep every
   field: the password becomes the value, and the address, user name and seed move into the

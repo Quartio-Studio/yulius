@@ -41,7 +41,7 @@ onboarding rather than by a job (#272).
 
 - ADR-001: each decision record has a unique number: the earliest merged of the four 0034 records
   (ready-made automations, #297) keeps 0034; the Agent in the right panel becomes 0036 (a free gap),
-  the personal two-factor vault 0040 and the task status from Claude Code's records 0041. Each
+  the personal two-factor vault 0042 and the task status from Claude Code's records 0041. Each
   record's H1, the index in `docs/decisions/README.md` (in numeric order) and every reference in
   the docs, specs and code comments follow.
 - ADR-002: `scripts/check_repository.py` fails when two files in `docs/decisions` share a number,
@@ -97,8 +97,10 @@ onboarding rather than by a job (#272).
 
 - **Which record keeps 0034:** the first merged (#297 at 04:47, ready-made automations), so the
   number keeps meaning what it meant first. The others take free numbers in merge order: 0036 (the
-  gap left when SPEC-054 took 0037), then 0040 and 0041 after `dev`'s 0039. The issue's "0035 to
-  0037" was written before 0035 and 0037 were taken.
+  gap left when SPEC-054 took 0037), then 0040 and 0041 after `dev`'s 0039; while this branch was
+  open, #328 (task #48) merged its own 0040 first, the new check failed on the merge of `dev`, and
+  the two-factor record took 0042. The issue's "0035 to 0037" was written before 0035 and 0037 were
+  taken.
 - **Historical notes** in SPEC-035, SPEC-040 and SPEC-052 that tell how a number was chosen at the
   time stay as written; the ones that name the record get "now 00NN (#317)" so they are not
   ambiguous.
@@ -116,9 +118,9 @@ onboarding rather than by a job (#272).
   renumber. All fixed, test-first where tested. Not changed: the manual `git worktree prune` can in
   theory race a Yulius `worktree add` outside Yulius's in-process lock; the window is tiny, the
   issue asks for the prune, and Yulius prunes before its own checkouts anyway.
-- **Parallel branches** that add a decision 0040 or cite "ADR-0034" for the two-factor vault must
-  renumber or retarget after merging `dev`; the check catches the file and link, the pull request
-  says so for the prose.
+- **Parallel branches** that add a decision 0041 or 0042 or cite "ADR-0034" for the two-factor vault
+  must renumber or retarget after merging `dev`; the check catches the file and link, the pull
+  request says so for the prose.
 - **Review round 2** (REQUEST CHANGES at 2172770): with only the six-hour `find`, the agent's own
   killed proof stayed behind, which is the case #272 asks to recover from. The proof now prints
   its directory and the recovery removes it by that path first; the six-hour `find` is kept for
@@ -141,6 +143,9 @@ onboarding rather than by a job (#272).
 - `scripts/dev ci` at 13f6f8c (later commits change only this spec): exit 0; nextest 1266 run,
   1266 passed, 16 skipped; repository contracts and 38 Python tests OK; cargo-deny advisories,
   bans, licenses and sources ok.
+- Merging `dev` after #328: `python3 scripts/check_repository.py` failed with
+  "0040-personal-two-factor-guards-the-vault.md: shares decision number 0040 with
+  0040-done-tasks-release-their-subscription.md"; after renumbering to 0042 it passed.
 - `git grep 0034` in docs, specs and code: only the automations catalog record, its references
   and historical notes.
 - Independent review (fresh read-only sessions, skill `om-code-review`): round 1 of

@@ -45,6 +45,6 @@ task merged the same number first, take the next free one after merging `dev`.
 - [0037](0037-dead-code-tools.md): Dead code is cleaned with each language's established tool; Yulius's gate uses cargo-shear
 - [0038](0038-onboarding-starts-in-the-browser.md): Onboarding starts in the browser, never from the CLI
 - [0039](0039-ci-jobs-get-the-cpu-first.md): CI jobs get the CPU first through a weighted cgroup
-- [0040](0040-personal-two-factor-guards-the-vault.md): A personal two-factor code guards the vault; a secret is a title, a value and notes
-- [0041](0041-task-status-follows-claude-codes-own-records.md): A task's status follows Claude Code's own records
 - [0040](0040-done-tasks-release-their-subscription.md): Done tasks release their subscription
+- [0041](0041-task-status-follows-claude-codes-own-records.md): A task's status follows Claude Code's own records
+- [0042](0042-personal-two-factor-guards-the-vault.md): A personal two-factor code guards the vault; a secret is a title, a value and notes

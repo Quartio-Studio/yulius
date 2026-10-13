@@ -1,4 +1,4 @@
-//! Two-factor on the vault (SPEC-040, ADR-0040): each person sets up their own authenticator
+//! Two-factor on the vault (SPEC-040, ADR-0042): each person sets up their own authenticator
 //! once (after a recent sign-in or confirmation), and every reveal needs a current code entered
 //! in the browser session within the last 10 minutes. Codes work once and are rate limited, and
 //! 10 wrong codes in a row lock codes until the person confirms it is them again.
