@@ -88,7 +88,7 @@ pub struct AccountView {
     pub usage: AccountUsageView,
     /// Last error (no secrets).
     pub last_error: Option<String>,
-    /// Live tasks using it.
+    /// Live tasks using it, except Done ones (SPEC-057).
     pub in_use_by: u32,
     /// Tokens Yulius observed on this account in the last 24 hours (ROT-009).
     #[serde(default)]
@@ -157,7 +157,7 @@ pub struct CapacityAccount {
     /// Id (instance administrators only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// Live tasks on it (instance administrators only).
+    /// Live tasks on it, except Done ones (instance administrators only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_use_by: Option<u32>,
 }

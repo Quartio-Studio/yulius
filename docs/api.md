@@ -860,7 +860,7 @@ resolves to nothing, the run gets the server without that variable or token.
 | GET | `/api/admin/accounts` | instance admin | `[Account]` |
 | POST | `/api/admin/accounts` | instance admin | `{"provider":"anthropic","label"}` → 201 `{"account":Account,"login_id"}` (status `pending_login`) then use the login terminal; nothing is created when the login cannot start |
 | PATCH | `/api/admin/accounts/{id}` | instance admin | `{"label"}` (1–80 chars) → `Account`; the pool has no priority, order or on/off switch (F 2026-10-10): any other field is `invalid` (422) |
-| DELETE | `/api/admin/accounts/{id}` | instance admin | → 204; 409 while a live task uses it; cancels its running login |
+| DELETE | `/api/admin/accounts/{id}` | instance admin | → 204; 409 while a task that is not Done uses it; Done tasks' idle sessions on it are closed first (`closed`, as archiving does; 409 if one is still closing), SPEC-057; cancels its running login |
 | POST | `/api/admin/accounts/{id}/relogin` | instance admin | → `{"account":Account,"login_id"}`; replaces a running login of the account |
 | WS | `/api/admin/accounts/login/{login_id}/terminal` | instance admin | login terminal (below) |
 | POST | `/api/admin/accounts/{id}/usage` | instance admin | → `AccountView`: asks Claude for the account's usage windows (`/api/oauth/usage`) and stores them; at or above 98 % in a window its tasks move to the best other subscription at their next turn boundary (ADR-17). The endpoint needs the OAuth scope `user:profile`, which a `claude setup-token` sign-in does not have: its HTTP 403 is not an error — the answer is the account as it is (its usage comes from its running sessions, `StatusLine` below), an earlier `usage: …` note is cleared and the background round asks again a day later. 502 with one plain sentence (also kept as `last_error`, prefixed `usage: `) when Claude refuses the sign-in (401) or the request fails for now. `AccountView` also carries `tokens_24h` / `tokens_7d` = `{"runs","tasks","input|null","output|null","cache_read|null","cache_write|null"}` observed by Yulius (ROT-009) The server also refreshes every signed-in account in the background (every 10 min; on HTTP 429 it waits for `Retry-After`, else 30 min) and keeps the last known windows on failure; a limit the CLI reports fills its window at 100 % until the reset (ROT-009). |
@@ -901,6 +901,9 @@ administrators only) and `plan` (the subscription tier) are planned for UI-022: 
 them when present, but **the server does not report them yet** (and the mock does not either, so
 it looks like production), so today they are absent and the UI shows the label and provider. A
 task's overview names each session's subscription by its label (`TaskDetail.attempts[].account_label`).
+`in_use_by` counts the live tasks on the subscription except Done ones by the session limit's
+rule (SES-101: goal achieved, or plan complete with the change merged; SPEC-057): a Done task
+keeps its idle session but no longer holds the subscription.
 
 **Login terminal.** Each login runs Claude Code's own sign-in (`claude setup-token`) with a
 temporary config directory in a server-owned PTY 500 columns

@@ -247,7 +247,7 @@ export function mountAccountsPage(ctx, route) {
           } }, 'Sign in again') : null,
           // Removal is refused while tasks use the subscription: say so instead of offering it (UX2-12).
           h('button', { type: 'button', class: 'btn btn-sm btn-quiet-danger', disabled: account.in_use_by > 0, title: account.in_use_by > 0 ? `${account.in_use_by} live task${account.in_use_by === 1 ? '' : 's'} use this subscription; they move away at their next turn end or when stopped` : null, onClick: async () => {
-            if (!(await confirmDialog({ title: `Remove ${account.label}?`, message: 'Its stored credential is deleted and a running sign-in is cancelled. Tasks never start on it again.', confirmLabel: 'Remove', danger: true }))) return;
+            if (!(await confirmDialog({ title: `Remove ${account.label}?`, message: 'Its stored credential is deleted and a running sign-in is cancelled. Done tasks on it are closed (Continue starts them on another subscription), and tasks never start on it again.', confirmLabel: 'Remove', danger: true }))) return;
             try {
               await ctx.api.del(`/api/admin/accounts/${enc(account.id)}`);
               toast(`Subscription ${account.label} removed.`, { kind: 'ok' });
