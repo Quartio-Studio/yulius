@@ -70,7 +70,8 @@ owner for control; once the owner hands it over, the task acts on GitHub as the 
   waits (asking again does it for someone who asked earlier). A waiting asker who can no longer
   work gives way to the next person who asks; both this and a refused hand-over drop the request,
   audited `task.control_dropped`. A request never locks a task. Only a definite answer drops
-  a request (a disabled or deleted account, no write access); when GitHub cannot tell, the
+  a request (a disabled or deleted account, no write access, a GitHub sign-in that can no
+  longer be renewed); when GitHub cannot tell, the
   request stays and a hand-over fails as unreachable (502).
 - R6. A hand-over. Control passes atomically only if the owner and the request are still the
   ones the decision saw (a race answers 409). Then: the owner is the requester and the request

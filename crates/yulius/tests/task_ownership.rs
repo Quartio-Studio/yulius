@@ -665,3 +665,34 @@ async fn an_unknown_access_keeps_the_request_waiting() -> TestResult {
     assert_eq!(task.owner, root);
     Ok(())
 }
+
+/// R4 (review round 3): an asker whose GitHub sign-in can no longer be renewed cannot work; the
+/// owner's hand-over drops their request (409), never answering 401, which would sign the owner
+/// out.
+#[tokio::test]
+async fn an_asker_signed_out_of_github_gives_way() -> TestResult {
+    use yulius_app::model::GitHubTokenRecord;
+    let f = fixture().await?;
+    assert_eq!(control(&f, Method::POST, "", &f.bob).await?.status, 200);
+    // Bob's GitHub token expires and cannot be refreshed; his cached access is stale.
+    let now = f.h.app.now();
+    f.h.store
+        .save_github_token(
+            &GitHubTokenRecord {
+                user_id: UserId::parse("u-b")?,
+                access: f.h.app.deps.crypto.seal(b"token-bob")?,
+                refresh: None,
+                expires_at: Some(now.plus_millis(10 * 60 * 1000)),
+                refresh_expires_at: None,
+            },
+            now,
+        )
+        .await?;
+    f.h.clock
+        .0
+        .fetch_add(31 * 60 * 1000, std::sync::atomic::Ordering::SeqCst);
+    let refused = control(&f, Method::POST, "/accept", &f.alice).await?;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(f.h.store.control_request(&f.task.id).await?, None);
+    Ok(())
+}

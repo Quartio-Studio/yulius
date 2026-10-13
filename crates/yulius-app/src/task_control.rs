@@ -130,7 +130,11 @@ impl App {
             Some(user) if user.disabled_at.is_none() => {
                 match self.require(&user, &task.sandbox_id, Action::Work).await {
                     Ok(_) => Ok(true),
-                    Err(AppError::NotFound | AppError::Forbidden(_)) => Ok(false),
+                    // No access, or a GitHub sign-in that can no longer be renewed: they
+                    // cannot work (and the caller, often the owner, is not signed out by a 401).
+                    Err(
+                        AppError::NotFound | AppError::Forbidden(_) | AppError::Unauthenticated,
+                    ) => Ok(false),
                     Err(err) => Err(err),
                 }
             }
