@@ -36,8 +36,7 @@ code (#295).
 
 - **Match the seed by `created_at`.** Two setups in the same millisecond share it. Rejected for
   the ciphertext.
-- **Superadmin-only reset.** Simpler, but the issue asks for instance administrators too, and an
-  instance administrator is the only way back for a superadmin who lost their authenticator.
+- **Superadmin-only reset.** Simpler, but the issue asks for instance administrators too.
 - **Self-service recovery codes.** Another secret to keep, and a stolen session that reads them
   enrolls its own authenticator. A good follow-up next to passkeys, not this change.
 - **A separate two-factor list for administrators on the Secrets page.** A second list of the same
@@ -49,4 +48,9 @@ code (#295).
 - An administrator with a stolen session and their own fresh code can force someone to set up
   again, but cannot read that person's secrets or enroll for them; every reset is in the activity
   trail every member sees.
-- A superadmin without any instance administrator still cannot recover a lost authenticator.
+- The user list does not include the superadmin, so nobody can reset the superadmin's lost
+  authenticator yet: the API allows it, but an instance administrator never sees the
+  superadmin's id. That recovery (for example next to the superadmin recovery code) is a
+  follow-up.
+- An unlock counts only while the person has a confirmed seed, so an unlock stored by a request
+  that raced a reset opens nothing.

@@ -45,16 +45,6 @@ fn browser_session(ctx: &AuthContext) -> AppResult<&str> {
 }
 
 impl App {
-    /// Whether the caller's seed is no longer the one in `checked`.
-    async fn seed_replaced(&self, user_id: &str, checked: &TwoFactorRecord) -> AppResult<bool> {
-        Ok(self
-            .deps
-            .store
-            .vault_two_factor(user_id)
-            .await?
-            .is_none_or(|now| now.envelope.ciphertext != checked.envelope.ciphertext))
-    }
-
     /// A person's two-factor as administrators see it: `missing`, `pending` or `on`.
     ///
     /// # Errors
@@ -144,16 +134,21 @@ impl App {
     /// unknown user, store failures.
     pub async fn reset_two_factor(&self, ctx: &AuthContext, id: &str) -> AppResult<Revealed<()>> {
         self.require_instance_admin(ctx)?;
+        if ctx.session_hash.is_none() {
+            return Err(AppError::Forbidden(
+                "two-factor is reset only from the web UI, after entering your own code".into(),
+            ));
+        }
+        if id == ctx.user.id.as_str() {
+            return Err(AppError::Forbidden(
+                "another administrator resets your own two-factor".into(),
+            ));
+        }
         if let Some(status) = self.fresh_or_status(ctx).await? {
             return Ok(Revealed::ReauthRequired(status));
         }
         let id = UserId::parse(id).map_err(|_| AppError::NotFound)?;
         let user = self.deps.store.user(&id).await?.ok_or(AppError::NotFound)?;
-        if user.id == ctx.user.id {
-            return Err(AppError::Forbidden(
-                "another administrator resets your own two-factor".into(),
-            ));
-        }
         if self
             .deps
             .store
@@ -248,11 +243,14 @@ impl App {
             }
             let message = match matched {
                 None => "wrong code",
-                // The checked seed was replaced by a new setup meanwhile (#295).
-                Some(_) if self.seed_replaced(user_id, &record).await? => {
-                    "two-factor was set up again meanwhile: enter a code for the new key"
-                }
-                Some(_) => "this code was used already: wait for the next one",
+                // The checked seed was replaced by a new setup (#295) or reset meanwhile.
+                Some(_) => match self.deps.store.vault_two_factor(user_id).await? {
+                    None => "your two-factor was reset: set it up again",
+                    Some(now) if now.envelope.ciphertext != record.envelope.ciphertext => {
+                        "two-factor was set up again meanwhile: enter a code for the new key"
+                    }
+                    Some(_) => "this code was used already: wait for the next one",
+                },
             };
             return Err(AppError::Forbidden(message.into()));
         }

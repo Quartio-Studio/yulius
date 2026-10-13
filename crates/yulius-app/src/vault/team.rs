@@ -288,13 +288,17 @@ impl App {
             Some(hash) => self.deps.store.vault_unlock(hash).await?,
             None => None,
         };
-        let fresh = unlocked.is_some_and(|at| reauth_fresh(now, at));
+        let two_factor = self.two_factor_state(ctx, identity).await?;
+        // An unlock counts only with a confirmed seed: one stored by an unlock that raced an
+        // administrator's reset (SPEC-061) opens nothing.
+        let fresh = matches!(two_factor, "on" | "locked")
+            && unlocked.is_some_and(|at| reauth_fresh(now, at));
         Ok(ReauthStatus {
             fresh,
             fresh_until: unlocked
                 .filter(|_| fresh)
                 .map(|at| rfc3339(at.plus_millis(REAUTH_WINDOW_MS))),
-            two_factor: self.two_factor_state(ctx, identity).await?.to_owned(),
+            two_factor: two_factor.to_owned(),
             identity_fresh: identity.is_some_and(|at| reauth_fresh(now, at)),
             methods,
         })

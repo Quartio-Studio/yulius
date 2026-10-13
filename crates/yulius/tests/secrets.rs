@@ -474,6 +474,34 @@ async fn a_code_confirms_only_the_seed_it_was_checked_against() -> TestResult {
     let status = call(&h.router, Method::GET, "/api/auth/reauth", None, &admin).await?;
     assert_eq!(status.body["two_factor"], "pending", "{}", status.body);
     assert_eq!(status.body["fresh"], false);
+    // Not a wrong code (it does not count toward the lockout), but audited as a failed unlock.
+    {
+        use yulius_app::ports::store::UserStore as _;
+        use yulius_app::ports::vault::VaultStore as _;
+        let me = h.store.superadmin().await?.ok_or("superadmin")?;
+        let record = h
+            .store
+            .vault_two_factor(me.id.as_str())
+            .await?
+            .ok_or("seed")?;
+        assert_eq!(record.failed_attempts, 0);
+    }
+    let activity = call(
+        &h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &admin,
+    )
+    .await?;
+    assert!(
+        activity
+            .body
+            .as_array()
+            .is_some_and(|a| a.iter().any(|e| e["action"] == "vault.unlock.failed")),
+        "{}",
+        activity.body
+    );
 
     let confirmed = unlock(&h, &admin, &code_at(&h, &seed_b, 0)?).await?;
     assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.body);
@@ -517,9 +545,14 @@ async fn reset(
 /// #291 (SPEC-061 AC3, AC4): the superadmin and instance administrators reset a member's lost
 /// two-factor after their own unlock; members, API tokens, locked vaults and self-resets are
 /// refused. The member then sets two-factor up again, and the old seed's codes are refused.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn administrators_reset_a_lost_two_factor() -> TestResult {
-    let h = support::harness()?;
+    use yulius_app::ports::vault::VaultStore as _;
+    let crypto = Arc::new(support::HookedCrypto::new()?);
+    let h = support::harness_with(support::HarnessOptions {
+        crypto: Some(crypto.clone()),
+        ..support::HarnessOptions::default()
+    })?;
     let admin = setup_superadmin_creds(&h).await?;
     configure_github_app(&h).await?;
     let anna = admit_and_sign_in(&h, &admin, "anna", 501, false).await?;
@@ -539,19 +572,28 @@ async fn administrators_reset_a_lost_two_factor() -> TestResult {
     assert_eq!(member.status, StatusCode::FORBIDDEN, "{}", member.body);
     let token = reset(&h, &ivan_token, &anna_id).await?;
     assert_eq!(token.status, StatusCode::FORBIDDEN, "{}", token.body);
+    assert!(
+        token.body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("reset only from the web UI")),
+        "{}",
+        token.body
+    );
     let token = reset(&h, &superadmin_bearer(&h).await?, &anna_id).await?;
     assert_eq!(token.status, StatusCode::FORBIDDEN, "{}", token.body);
     let locked = reset(&h, &olga, &anna_id).await?;
     assert_eq!(locked.status, StatusCode::FORBIDDEN, "{}", locked.body);
     assert_eq!(locked.body["error"]["code"], "reauth_required");
     assert_eq!(locked.body["reauth"]["two_factor"], "missing");
-    enroll(&h, &admin).await?;
-    let unknown = reset(&h, &admin, "u-nobody").await?;
-    assert_eq!(unknown.status, StatusCode::NOT_FOUND, "{}", unknown.body);
+    // Your own two-factor is refused before any code is asked for.
     let me = call(&h.router, Method::GET, "/api/me", None, &admin).await?;
     let own = me.body["user"]["id"].as_str().ok_or("own id")?;
     let own = reset(&h, &admin, own).await?;
     assert_eq!(own.status, StatusCode::FORBIDDEN, "{}", own.body);
+    assert_eq!(own.body["error"]["code"], "forbidden", "{}", own.body);
+    enroll(&h, &admin).await?;
+    let unknown = reset(&h, &admin, "u-nobody").await?;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND, "{}", unknown.body);
     let kept = anna_status(anna.clone()).await?;
     assert_eq!(
         (&kept.body["two_factor"], &kept.body["fresh"]),
@@ -568,6 +610,31 @@ async fn administrators_reset_a_lost_two_factor() -> TestResult {
     );
     let old = unlock(&h, &anna, &code_at(&h, &old_seed, 0)?).await?;
     assert_eq!(old.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", old.body);
+    // An unlock that passed its code just before the reset and stores the unlock just after it
+    // (review of SPEC-061) opens nothing: without a confirmed seed the vault stays locked.
+    let anna_session = h
+        .app
+        .deps
+        .crypto
+        .sha256_hex(anna.cookie.as_deref().ok_or("cookie")?.as_bytes());
+    h.store.vault_set_unlock(&anna_session, h.app.now()).await?;
+    let raced = anna_status(anna.clone()).await?;
+    assert_eq!(raced.body["fresh"], false, "{}", raced.body);
+    let secret = create_team_secret(&h, &admin).await?;
+    let reveal = call(
+        &h.router,
+        Method::POST,
+        &format!("/api/team-secrets/{secret}/reveal"),
+        None,
+        &anna,
+    )
+    .await?;
+    assert_eq!(
+        reveal.body["error"]["code"], "reauth_required",
+        "{}",
+        reveal.body
+    );
+    assert_hidden(&reveal.body, &[MAIL_PASSWORD]);
     // Nothing set up: nothing to reset, and nothing audited.
     let none = reset(&h, &admin, &bob_id).await?;
     assert_eq!(none.status, StatusCode::NO_CONTENT, "{}", none.body);
@@ -597,6 +664,37 @@ async fn administrators_reset_a_lost_two_factor() -> TestResult {
         .collect();
     assert_eq!(resets, vec![("olga", "anna"), ("superadmin", "anna")]);
     assert_hidden(&activity.body, &[&old_seed, &new_seed]);
+
+    // A reset that lands while Anna's code is being checked: the code is refused, saying so.
+    h.clock.0.fetch_add(61_000, Ordering::SeqCst);
+    let setup = call(&h.router, Method::POST, "/api/auth/two-factor", None, &anna).await?;
+    assert_eq!(setup.status, StatusCode::CREATED, "{}", setup.body);
+    let pending_seed = setup.body["secret"].as_str().ok_or("secret")?.to_owned();
+    let (router, creds, target) = (h.router.clone(), olga.clone(), anna_id.clone());
+    *crypto.on_seed_open.lock().map_err(|_| "hook")? = Some(Box::new(move || {
+        let _ = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(call(
+                &router,
+                Method::DELETE,
+                &format!("/api/users/{target}/two-factor"),
+                None,
+                &creds,
+            ))
+        });
+    }));
+    let refused = unlock(&h, &anna, &code_at(&h, &pending_seed, 0)?).await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    assert!(
+        refused.body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("was reset")),
+        "{}",
+        refused.body
+    );
+    assert_eq!(
+        anna_status(anna.clone()).await?.body["two_factor"],
+        "missing"
+    );
     Ok(())
 }
 
