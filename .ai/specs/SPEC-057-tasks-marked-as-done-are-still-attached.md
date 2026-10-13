@@ -1,11 +1,11 @@
 ---
 yulius-task: 4903d493-783f-4f20-8128-f7b46d451379
-status: draft
+status: in-progress
 ---
 
 # SPEC-057: Done tasks no longer hold their subscription
 
-Status: draft
+Status: in progress
 Date: 2026-10-13
 Owner: Yulius task #48
 Scope authorization: user request: "Tasks marked as done are still attached to subscribtion. Fix."
