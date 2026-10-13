@@ -38,3 +38,4 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0032](0032-shared-notes-with-revisions.md): Shared notes are stored on the server and saved by revision
 - [0033](0033-original-prompt-on-demand.md): A task's original prompt is read on demand; its files only from its own attachment folders
 - [0034](0034-task-status-follows-claude-codes-own-records.md): A task's status follows Claude Code's own records
+- [0034](0034-ready-made-automations-catalog.md): Ready-made automations ship as a catalog, enabled in one click and matched by name

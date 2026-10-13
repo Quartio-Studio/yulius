@@ -57,3 +57,24 @@ fn default_harness() -> String {
 fn default_true() -> bool {
     true
 }
+
+/// A ready-made automation from Yulius's catalog (SPEC-042 AUT-007/008).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AutomationTemplate {
+    /// Catalog id (the file stem, e.g. `docs-up-to-date`).
+    pub id: String,
+    /// Name of the automation it creates.
+    pub name: String,
+    /// What it does, in one line.
+    pub description: String,
+    /// Five-field cron expression.
+    pub cron: String,
+    /// Fixed UTC offset used to evaluate the schedule.
+    pub utc_offset_minutes: i32,
+    /// Prompt of each created task.
+    pub prompt: String,
+    /// Workflow of created tasks.
+    pub workflow_id: Option<String>,
+    /// The project's automation with the same name (it counts as added), if any.
+    pub automation_id: Option<String>,
+}

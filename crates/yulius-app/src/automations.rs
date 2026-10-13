@@ -16,11 +16,13 @@
 //! has an anchor (the last handled time); enabling it or changing its schedule moves the anchor
 //! to "now" so no history is replayed.
 
+pub mod templates;
+
 use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use yulius_contracts::api::automations::{Automation, AutomationRunView};
+use yulius_contracts::api::automations::{Automation, AutomationRunView, AutomationTemplate};
 use yulius_contracts::events::UiEvent;
 use yulius_domain::cron::{MAX_UTC_OFFSET_MINUTES, Schedule};
 use yulius_domain::harness::Harness;
@@ -443,6 +445,106 @@ impl App {
             })
             .await?;
         self.automation_view(&record).await
+    }
+
+    /// `GET /api/sandboxes/{sid}/automation-templates`: the ready-made automations (SPEC-042
+    /// AUT-008), each with the project's automation of the same name, if any.
+    ///
+    /// # Errors
+    /// `NotFound` without access.
+    pub async fn list_automation_templates(
+        &self,
+        ctx: &AuthContext,
+        sandbox: &str,
+    ) -> AppResult<Vec<AutomationTemplate>> {
+        let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
+        self.require(&ctx.user, &sid, Action::View).await?;
+        let existing = self.deps.store.automations(&sid).await?;
+        Ok(templates::templates()
+            .iter()
+            .map(|t| AutomationTemplate {
+                id: t.id.clone(),
+                name: t.name.clone(),
+                description: t.description.clone(),
+                cron: t.cron.clone(),
+                utc_offset_minutes: t.utc_offset_minutes,
+                prompt: t.prompt.clone(),
+                workflow_id: t.workflow.clone(),
+                automation_id: existing
+                    .iter()
+                    .find(|a| templates::same_name(t, &a.name))
+                    .map(|a| a.id.clone()),
+            })
+            .collect())
+    }
+
+    /// `POST /api/sandboxes/{sid}/automation-templates/{id}/enable` (write access): creates the
+    /// ready-made automation, enabled and attributed to the caller (`true`), or enables the
+    /// project's automation of the same name, keeping its content (`false`).
+    ///
+    /// # Errors
+    /// `NotFound` for an unknown template or without access; access and capacity errors.
+    pub async fn enable_automation_template(
+        &self,
+        ctx: &AuthContext,
+        sandbox: &str,
+        template: &str,
+    ) -> AppResult<(Automation, bool)> {
+        let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
+        self.require(&ctx.user, &sid, Action::Configure).await?;
+        let template = templates::template(template).ok_or(AppError::NotFound)?;
+        let actor = self.login_of(&ctx.user.id).await;
+        let detail = json!({"template": template.id});
+        // The name check and the insert are one step: Yulius is one process (ADR-0001), and
+        // enables are rare, so one instance-wide lock is enough.
+        let _serial = self.automation_template_lock.lock().await;
+        let existing = self
+            .deps
+            .store
+            .automations(&sid)
+            .await?
+            .into_iter()
+            .find(|a| templates::same_name(template, &a.name));
+        if let Some(current) = existing {
+            if !current.enabled {
+                let next = AutomationRecord {
+                    enabled: true,
+                    ..current.clone()
+                };
+                self.save_automation(&current, &next, &actor, detail)
+                    .await?;
+            }
+            let stored = self
+                .deps
+                .store
+                .automation(&current.id)
+                .await?
+                .ok_or(AppError::NotFound)?;
+            return Ok((self.automation_view(&stored).await?, false));
+        }
+        let fields = Fields {
+            name: validate_name(&template.name)?,
+            cron: validate_cron(&template.cron)?,
+            utc_offset_minutes: validate_offset(i64::from(template.utc_offset_minutes))?,
+            prompt: validate_prompt(&template.prompt)?,
+            harness: Harness::ClaudeCode,
+        };
+        let workflow = self
+            .resolve_workflow_id(&sid, template.workflow.as_deref())
+            .await?;
+        let record = self
+            .insert_automation(NewAutomation {
+                sandbox: sid,
+                fields,
+                workflow_id: workflow,
+                enabled: true,
+                created_by: ctx.user.id.clone(),
+                created_via: CreatedVia::Ui,
+                actor,
+                detail,
+            })
+            .await?;
+        Ok((self.automation_view(&record).await?, true))
     }
 
     async fn automation_for_change(
