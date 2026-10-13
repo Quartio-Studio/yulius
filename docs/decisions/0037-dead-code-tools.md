@@ -1,4 +1,4 @@
-# 0034. Dead code is cleaned with each language's established tool; Yulius's gate uses cargo-shear
+# 0037. Dead code is cleaned with each language's established tool; Yulius's gate uses cargo-shear
 
 ## Status
 

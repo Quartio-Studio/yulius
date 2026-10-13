@@ -37,6 +37,6 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0031](0031-deleting-a-done-task-closes-it.md): Deleting a Done task closes its session first
 - [0032](0032-shared-notes-with-revisions.md): Shared notes are stored on the server and saved by revision
 - [0033](0033-original-prompt-on-demand.md): A task's original prompt is read on demand; its files only from its own attachment folders
-- [0034](0034-dead-code-tools.md): Dead code is cleaned with each language's established tool; Yulius's gate uses cargo-shear
 - [0034](0034-agent-in-the-right-panel.md): The Cockpit is shown as the Agent, a tool in the right panel
 - [0034](0034-ready-made-automations-catalog.md): Ready-made automations ship as a catalog, enabled in one click and matched by name
+- [0037](0037-dead-code-tools.md): Dead code is cleaned with each language's established tool; Yulius's gate uses cargo-shear

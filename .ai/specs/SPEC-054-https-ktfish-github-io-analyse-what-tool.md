@@ -82,7 +82,7 @@ a check up in a project's gate, and Yulius's own repository uses one.
   sandbox finds it.
 - `cargo-shear` replaces `cargo-machete` in Yulius's gate: it also checks workspace
   dependencies and caught one machete missed. See
-  [ADR-0034](../../docs/decisions/0034-dead-code-tools.md).
+  [ADR-0037](../../docs/decisions/0037-dead-code-tools.md).
 - vulture and skylos are not added to Yulius's own gate: its eight Python scripts are clean, and
   the gate installs no Python packages today; the skill runs them on demand (`uvx`/`pipx run`).
 

@@ -64,7 +64,7 @@ is under `target/doc`. Build artifacts and local tools are ignored by Git.
 
 Cleanup requests follow the bundled skill `dead-code-cleanup`
 ([catalog](../../catalog/skills/yulius/dead-code-cleanup/SKILL.md),
-[ADR-0034](../decisions/0034-dead-code-tools.md)). In this repository the gate already fails on
+[ADR-0037](../decisions/0037-dead-code-tools.md)). In this repository the gate already fails on
 Rust's `dead_code` and `unused_*` warnings (`scripts/dev lint`), on unused dependencies
 (`scripts/dev deps`, cargo-shear) and on unused web UI imports (`scripts/dev check`). On demand,
 check the Python scripts with `uvx vulture scripts/ --min-confidence 80` and

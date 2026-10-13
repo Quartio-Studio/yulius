@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
-- Dead-code tools (SPEC-054, ADR-0034, task #38): a bundled skill, `dead-code-cleanup`, is how
+- Dead-code tools (SPEC-054, ADR-0037, task #38): a bundled skill, `dead-code-cleanup`, is how
   agents clean up: the established tool per language (vulture and skylos for Python, from the ML
   in PL workshop; cargo-shear, knip, deadcode and others), a web search when the stack is not
   listed, every candidate verified, small commits. Onboarding and `infra-bootstrap` add a
