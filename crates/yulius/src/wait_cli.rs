@@ -57,8 +57,10 @@ pub fn run(out: &mut dyn Write, minutes: u64, env: &dyn Fn(&str) -> Option<Strin
     }
 }
 
-/// The line to end with when the wait is over, or `None` to keep waiting.
-fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
+/// The line to end with when the wait is over, or `None` to keep waiting (`before` is the state
+/// the wait last saw, `None` when it starts).
+#[must_use]
+pub fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
     // How an armed merge ended (MSR-003): when it is decided during this wait, or already was
     // at this head when the wait starts.
     let decided = match before {

@@ -112,17 +112,13 @@ pub struct TaskRuntime {
     /// The goal-mode session opened with a first message (its attached files, SPEC-025) whose
     /// turn has not ended yet: its goal is typed after that turn's Stop hook.
     pub opening_turn: AtomicBool,
-    /// A merge `delivery_merge` armed while the checks still ran (SPEC-011): Yulius performs it
-    /// once they pass.
-    pub(crate) armed_merge: Mutex<Option<crate::agent_wait::ArmedMerge>>,
-    /// How the last armed merge ended, for `yulius wait` (SPEC-028 MSR-003).
-    pub(crate) merge_outcome: Mutex<Option<crate::agent_wait::MergeOutcome>>,
+    /// A merge `delivery_merge` armed while the checks still ran (SPEC-011), Yulius's decisions
+    /// of it in progress and how the last one ended (SPEC-028 MSR-003), under one lock so
+    /// `yulius wait` reads them together (SPEC-064 WAI-003).
+    pub(crate) armed: Mutex<crate::agent_wait::ArmedSlot>,
     /// Why Yulius could not push the agent's head (the head, the text), for `yulius wait`: the
     /// agent learns it instead of waiting for a run that never comes (SPEC-050 DLV-201).
     pub(crate) push_problem: Mutex<Option<(String, String)>>,
-    /// Armed-merge decisions in progress (the armed merge is taken out meanwhile): `yulius wait`
-    /// still reads the merge as armed until it is decided or put back.
-    pub(crate) merge_deciding: AtomicU32,
     /// When the last clean Stop ended a turn (ms), so a prompt of that turn read late from the
     /// transcript does not reopen it.
     pub(crate) last_stop_ms: AtomicI64,
@@ -190,10 +186,8 @@ impl TaskRuntime {
             goal_submitted: AtomicBool::new(false),
             session_started: AtomicBool::new(false),
             opening_turn: AtomicBool::new(false),
-            armed_merge: Mutex::new(None),
-            merge_outcome: Mutex::new(None),
+            armed: Mutex::new(crate::agent_wait::ArmedSlot::default()),
             push_problem: Mutex::new(None),
-            merge_deciding: AtomicU32::new(0),
             last_stop_ms: AtomicI64::new(0),
             background_shells: AtomicI64::new(-1),
             shells_since_ms: AtomicI64::new(0),

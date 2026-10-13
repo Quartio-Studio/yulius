@@ -15,6 +15,7 @@ use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
 use support::{Creds, FakeRemote, Resp, TestResult, call, harness_with_git};
+use yulius_app::agent_wait::WaitState;
 use yulius_app::delivery::profile_to_contract;
 use yulius_app::delivery::runner::{CommandEnd, CommandSpec, OutputRing, run_bounded};
 use yulius_app::error::{AppError, AppResult};
@@ -2737,6 +2738,11 @@ impl ArmedTask {
 
     /// `delivery_merge` of the reviewed head; its tool result.
     async fn merge(&self) -> BoxResult<Value> {
+        self.merge_at(&self.head).await
+    }
+
+    /// `delivery_merge` of `head`, reviewed; its tool result.
+    async fn merge_at(&self, head: &str) -> BoxResult<Value> {
         let r = call(
             &self.internal,
             Method::POST,
@@ -2744,7 +2750,7 @@ impl ArmedTask {
             Some(
                 json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
                 "name": "delivery_merge",
-                "arguments": {"reviewed_head": self.head, "review_summary": "approve"}}}),
+                "arguments": {"reviewed_head": head, "review_summary": "approve"}}}),
             ),
             &self.agent,
         )
@@ -2855,6 +2861,92 @@ async fn an_armed_merge_happens_when_the_checks_pass() -> TestResult {
             .is_empty(),
         "MSR-002: no message"
     );
+    Ok(())
+}
+
+/// What `yulius wait` decides from a wait state the server answered.
+fn settled(now: &Value, before: Option<&Value>) -> BoxResult<Option<String>> {
+    let now: WaitState = serde_json::from_value(now.clone())?;
+    let before: Option<WaitState> = before.map(|b| serde_json::from_value(b.clone())).transpose()?;
+    Ok(yulius::wait_cli::settled(&now, before.as_ref()))
+}
+
+/// #249 (SPEC-064 WAI-001): with a merge armed and its checks pending, `yulius wait` keeps
+/// waiting, and ends with the merge's outcome once Yulius decides it.
+#[tokio::test]
+async fn a_wait_on_an_armed_merge_with_pending_checks_keeps_waiting() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let f = &t.f;
+    let sandbox = SandboxId::parse("s1")?;
+    t.arm().await?;
+    let first = t.wait(Value::Null).await?;
+    assert_eq!(settled(&first, None)?, None, "{first}");
+    // Yulius looks at it, the checks still run: nothing changes, so the wait goes on.
+    f.h.app.merge_armed(&sandbox).await;
+    let next = t.wait(first.clone()).await?;
+    assert_eq!(next, first, "unchanged until the server's wait times out");
+    assert_eq!(settled(&next, Some(&first))?, None);
+    // Green: the merge happens and the wait says so.
+    f.h.github.set_checks(&t.head, ChecksState::Success);
+    f.h.app.merge_armed(&sandbox).await;
+    let after = t.wait(first.clone()).await?;
+    let line = settled(&after, Some(&first))?.unwrap_or_default();
+    assert!(line.starts_with("Yulius merged pull request #1"), "{line}");
+    Ok(())
+}
+
+/// #248 (SPEC-064 WAI-002): the agent arms a new head while Yulius still decides the merge it
+/// armed before (GitHub is slow). That earlier decision neither puts the old merge back over the
+/// new one nor ends the wait on the new one with the old one's outcome.
+#[tokio::test]
+async fn a_merge_armed_while_an_earlier_one_is_decided_supersedes_it() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let f = &t.f;
+    let sandbox = SandboxId::parse("s1")?;
+    t.arm().await?;
+
+    // Yulius starts deciding the merge of the first head; GitHub holds its checks read.
+    let hold = f.h.github.hold_checks();
+    let app = f.h.app.clone();
+    let deciding = tokio::spawn(async move {
+        app.merge_armed(&SandboxId::parse("s1")?).await;
+        Ok::<_, yulius_domain::ids::IdError>(())
+    });
+    f.h.github.checks_entered.notified().await;
+    // Later reads go through; the decision stays held.
+    if let Ok(mut held) = f.h.github.checks_hold.lock() {
+        *held = None;
+    }
+
+    // Meanwhile the agent commits, gets the review and arms the new head.
+    commit_file(&t.wt, "landing.txt", "v2", "Landing v2")?;
+    let moved = git(&t.wt, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&moved, ChecksState::Pending);
+    let armed = t.merge_at(&moved).await?;
+    assert_eq!(armed["isError"], false, "{armed}");
+    let before = t.wait_at(&moved).await?;
+    assert_eq!(before["merge_armed"], true, "{before}");
+
+    // The earlier decision ends (checks pending: it would have kept its merge).
+    f.h.github.release_checks(&hold);
+    deciding.await??;
+    let now = t.wait_at(&moved).await?;
+    assert_eq!(now["merge_armed"], true, "{now}");
+    assert_eq!(now["merge_outcome"], Value::Null, "{now}");
+    assert_eq!(settled(&now, Some(&before))?, None, "{now}");
+
+    // Yulius decides again: the armed merge is the new head's, still pending.
+    f.h.app.merge_armed(&sandbox).await;
+    let again = t.wait_at(&moved).await?;
+    assert_eq!(again["merge_armed"], true, "{again}");
+    assert_eq!(settled(&again, Some(&before))?, None, "{again}");
+    let saved = std::fs::read_to_string(
+        f.h.app
+            .config
+            .data_dir
+            .join(yulius_app::agent_wait::ARMED_MERGES_FILE),
+    )?;
+    assert!(saved.contains(&moved), "the new head stays saved: {saved}");
     Ok(())
 }
 

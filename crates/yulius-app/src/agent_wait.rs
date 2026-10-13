@@ -8,7 +8,6 @@
 //! outcome): waiting never costs a GitHub request.
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -46,6 +45,96 @@ pub(crate) struct ArmedMerge {
     pub head: String,
     /// The review summary given with it.
     pub summary: String,
+}
+
+/// A task's armed merge, Yulius's decisions of it in progress and how the last one ended: one
+/// value under one lock (SPEC-064 WAI-003). `yulius wait` reads them together, so an outcome is
+/// never seen next to a merge that still reads as armed; and a merge armed while an earlier one is
+/// being decided supersedes it (WAI-002): that earlier decision changes nothing when it ends.
+#[derive(Debug, Default)]
+pub(crate) struct ArmedSlot {
+    /// The armed merge; taken out while Yulius decides it.
+    merge: Option<ArmedMerge>,
+    /// Decisions in progress, each holding the merge it took.
+    deciding: u32,
+    /// How the last armed merge ended, until another one is armed.
+    outcome: Option<MergeOutcome>,
+    /// Raised by every arm and clear: a decision taken in an older generation is superseded.
+    generation: u64,
+}
+
+/// A decision in progress: the merge taken out of the slot, and the generation it was armed in.
+#[derive(Debug)]
+struct Deciding {
+    merge: ArmedMerge,
+    generation: u64,
+}
+
+/// How Yulius decided an armed merge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Verdict {
+    /// Still waiting, for this merge (the same, or moved to a new head by DLV-203).
+    Keep(ArmedMerge),
+    /// Merged, refused or dropped: one line for the agent.
+    Decided(String),
+}
+
+impl ArmedSlot {
+    /// Arms `merge`: it replaces any armed one and supersedes a decision in progress, and the
+    /// last outcome is forgotten.
+    fn arm(&mut self, merge: ArmedMerge) {
+        self.generation += 1;
+        self.merge = Some(merge);
+        self.outcome = None;
+    }
+
+    /// Nothing is armed any more (merged at once by `delivery_merge`); a decision in progress is
+    /// superseded.
+    fn clear(&mut self) {
+        self.generation += 1;
+        self.merge = None;
+    }
+
+    /// Takes the armed merge out to decide it; it still reads as armed until [`Self::finish`].
+    fn take(&mut self) -> Option<Deciding> {
+        let merge = self.merge.take()?;
+        self.deciding += 1;
+        Some(Deciding {
+            merge,
+            generation: self.generation,
+        })
+    }
+
+    /// Ends a decision in one step: the merge is put back or its outcome kept, unless a newer
+    /// merge was armed (or cleared) meanwhile. Returns whether the armed merge changed (to save).
+    fn finish(&mut self, deciding: &Deciding, verdict: Verdict) -> bool {
+        self.deciding = self.deciding.saturating_sub(1);
+        if self.generation != deciding.generation {
+            return false;
+        }
+        match verdict {
+            Verdict::Keep(merge) => {
+                let changed = merge != deciding.merge;
+                self.merge = Some(merge);
+                changed
+            }
+            Verdict::Decided(text) => {
+                self.outcome = Some(MergeOutcome {
+                    head: deciding.merge.head.clone(),
+                    text,
+                });
+                true
+            }
+        }
+    }
+
+    /// Whether a merge is armed (counting one being decided), and how the last one ended.
+    fn view(&self) -> (bool, Option<MergeOutcome>) {
+        (
+            self.merge.is_some() || self.deciding > 0,
+            self.outcome.clone(),
+        )
+    }
 }
 
 /// What keeping an armed merge current did (DLV-203).
@@ -107,21 +196,29 @@ impl WaitState {
 impl App {
     /// Arms a merge of `head` for when its checks pass (`delivery_merge` while they still run).
     pub(crate) fn arm_merge(&self, task: &TaskRecord, head: &str, summary: &str) {
-        self.forget_merge_outcome(task);
         let merge = ArmedMerge {
             head: head.to_owned(),
             summary: summary.to_owned(),
         };
+        let runtime = self.runtime(&task.id);
+        let mut slot = lock_slot(&runtime);
         self.save_armed(&task.id, Some(&merge));
-        if let Ok(mut armed) = self.runtime(&task.id).armed_merge.lock() {
-            *armed = Some(merge);
-        }
+        slot.arm(merge);
+    }
+
+    /// Nothing is armed for `task` any more: `delivery_merge` merged it at once.
+    pub(crate) fn clear_armed(&self, task: &TaskRecord) {
+        let runtime = self.runtime(&task.id);
+        let mut slot = lock_slot(&runtime);
+        slot.clear();
+        self.save_armed(&task.id, None);
     }
 
     /// Records `task`'s armed merge, or that it has none any more, in [`ARMED_MERGES_FILE`]
-    /// (written whole, then renamed into place). Failures are logged: the merge stays armed in
+    /// (written whole, then renamed into place), called with the task's [`ArmedSlot`] locked so
+    /// the file follows the slot's order of changes. Failures are logged: the merge stays armed in
     /// memory.
-    pub(crate) fn save_armed(&self, task: &TaskId, armed: Option<&ArmedMerge>) {
+    fn save_armed(&self, task: &TaskId, armed: Option<&ArmedMerge>) {
         let _guard = ARMED_FILE_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -169,10 +266,10 @@ impl App {
                 self.save_armed(&task_id, None);
                 continue;
             }
-            if let Ok(mut armed) = self.runtime(&task_id).armed_merge.lock()
-                && armed.is_none()
-            {
-                *armed = Some(ArmedMerge {
+            let runtime = self.runtime(&task_id);
+            let mut slot = lock_slot(&runtime);
+            if slot.merge.is_none() && slot.deciding == 0 {
+                slot.merge = Some(ArmedMerge {
                     head: entry.head,
                     summary: entry.summary,
                 });
@@ -183,30 +280,7 @@ impl App {
 
     /// Forgets how an earlier armed merge ended (a new `delivery_merge` call answers for itself).
     pub(crate) fn forget_merge_outcome(&self, task: &TaskRecord) {
-        if let Ok(mut outcome) = self.runtime(&task.id).merge_outcome.lock() {
-            *outcome = None;
-        }
-    }
-
-    /// Keeps how the armed merge of `head` ended, for `yulius wait`.
-    fn merge_decided(&self, task: &TaskRecord, head: &str, text: String) {
-        if let Ok(mut outcome) = self.runtime(&task.id).merge_outcome.lock() {
-            *outcome = Some(MergeOutcome {
-                head: head.to_owned(),
-                text,
-            });
-        }
-    }
-
-    /// Whether a merge is armed, counting one being decided right now (taken out of the slot
-    /// while GitHub is asked): a wait must not read that gap as a decision.
-    fn armed_merge(&self, task: &TaskRecord) -> bool {
-        let runtime = self.runtime(&task.id);
-        runtime.merge_deciding.load(Ordering::SeqCst) > 0
-            || runtime
-                .armed_merge
-                .lock()
-                .is_ok_and(|armed| armed.is_some())
+        lock_slot(&self.runtime(&task.id)).outcome = None;
     }
 
     /// Performs the armed merges of a sandbox whose checks passed (after every CI run and from
@@ -217,36 +291,23 @@ impl App {
             return;
         };
         for task in tasks {
-            // Taken while it is decided, so a CI end and the delivery loop never merge twice; the
-            // count keeps it armed for `yulius wait` until it is decided or put back.
+            // Taken while it is decided, so a CI end and the delivery loop never merge twice; it
+            // reads as armed for `yulius wait` until the decision ends, in one step (WAI-003).
             let runtime = self.runtime(&task.id);
-            runtime.merge_deciding.fetch_add(1, Ordering::SeqCst);
-            let taken = runtime
-                .armed_merge
-                .lock()
-                .ok()
-                .and_then(|mut armed| armed.take());
-            if let Some(armed) = taken {
-                let kept = self.merge_armed_task(&task, armed.clone()).await;
-                if kept.as_ref() != Some(&armed) {
-                    self.save_armed(&task.id, kept.as_ref());
-                }
-                if let Some(kept) = kept
-                    && let Ok(mut slot) = runtime.armed_merge.lock()
-                {
-                    *slot = Some(kept);
-                }
+            let Some(deciding) = lock_slot(&runtime).take() else {
+                continue;
+            };
+            let verdict = self.merge_armed_task(&task, deciding.merge.clone()).await;
+            let mut slot = lock_slot(&runtime);
+            if slot.finish(&deciding, verdict) {
+                self.save_armed(&task.id, slot.merge.as_ref());
             }
-            runtime.merge_deciding.fetch_sub(1, Ordering::SeqCst);
         }
     }
 
-    /// Merges one armed task when its checks passed; returns the armed merge to keep waiting.
-    async fn merge_armed_task(
-        self: &Arc<Self>,
-        task: &TaskRecord,
-        armed: ArmedMerge,
-    ) -> Option<ArmedMerge> {
+    /// Merges one armed task when its checks passed; says whether to keep waiting or how it
+    /// ended.
+    async fn merge_armed_task(self: &Arc<Self>, task: &TaskRecord, armed: ArmedMerge) -> Verdict {
         let head = match task.worktree_path.as_deref() {
             Some(worktree) => self
                 .deps
@@ -259,30 +320,22 @@ impl App {
             None => None,
         };
         if head.as_deref() != Some(armed.head.as_str()) {
-            self.merge_decided(
-                task,
-                &armed.head,
-                format!(
-                    "The merge you armed was dropped: you armed {} with `delivery_merge`, but the \
-                     branch is now at {}. Get the independent review of the new head and call \
+            return Verdict::Decided(format!(
+                "The merge you armed was dropped: you armed {} with `delivery_merge`, but the \
+                 branch is now at {}. Get the independent review of the new head and call \
                      `delivery_merge` again.",
-                    short(&armed.head),
-                    head.as_deref().map_or("an unknown commit", short)
-                ),
-            );
-            return None;
+                short(&armed.head),
+                head.as_deref().map_or("an unknown commit", short)
+            ));
         }
         let user = match self.deps.store.user(&task.created_by).await {
             Ok(Some(user)) if user.disabled_at.is_none() => user,
             _ => {
-                self.merge_decided(
-                    task,
-                    &armed.head,
+                return Verdict::Decided(
                     "The merge you armed was dropped: the task's creator can no longer act. \
                      Open an issue (`issue_create`) and end with your summary."
                         .to_owned(),
                 );
-                return None;
             }
         };
         let auth = AuthContext {
@@ -292,54 +345,45 @@ impl App {
         };
         let id = task.id.to_string();
         let Ok(view) = self.task_delivery(&auth, &id).await else {
-            return Some(armed);
+            return Verdict::Keep(armed);
         };
         let Some(pr) = view.pr.as_ref() else {
-            return Some(armed);
+            return Verdict::Keep(armed);
         };
         let Ok(Some(sandbox)) = self.deps.store.sandbox(&task.sandbox_id).await else {
-            self.merge_decided(
-                task,
-                &armed.head,
+            return Verdict::Decided(
                 "The merge you armed was dropped: the project's sandbox could not be read. Check \
                  `delivery_status` and call `delivery_merge` again."
                     .to_owned(),
             );
-            return None;
         };
         // DLV-203: a branch behind its base is brought up to date first, so the run that decides
         // is on what would be merged and GitHub's up-to-date rule never refuses it.
         match self.keep_armed_current(task, &sandbox).await {
             Current::Unchanged => {}
             Current::Moved(head) => {
-                return Some(ArmedMerge {
+                return Verdict::Keep(ArmedMerge {
                     head,
                     summary: armed.summary,
                 });
             }
             Current::Conflict(text) => {
-                self.merge_decided(task, &armed.head, text);
-                return None;
+                return Verdict::Decided(text);
             }
         }
         let require_checks = crate::delivery::delivery_profile(&sandbox).require_checks;
         let green = pr.checks == "success" || (pr.checks == "none" && !require_checks);
         if pr.checks == "failure" {
-            self.merge_decided(
-                task,
-                &armed.head,
-                format!(
-                    "The merge you armed was dropped: the checks of pull request #{} failed at \
-                     {}. Read why with `ci_status`, fix it test-first, get the review of the new \
+            return Verdict::Decided(format!(
+                "The merge you armed was dropped: the checks of pull request #{} failed at \
+                 {}. Read why with `ci_status`, fix it test-first, get the review of the new \
                      head and call `delivery_merge` again.",
-                    pr.number,
-                    short(&armed.head)
-                ),
-            );
-            return None;
+                pr.number,
+                short(&armed.head)
+            ));
         }
         if !green {
-            return Some(armed);
+            return Verdict::Keep(armed);
         }
         let number = pr.number;
         let base = pr.base.clone();
@@ -368,34 +412,22 @@ impl App {
                 {
                     tracing::warn!(task = %task.id, error = %err, "audit of an armed merge failed");
                 }
-                self.merge_decided(
-                    task,
-                    &armed.head,
-                    format!(
-                        "Yulius merged pull request #{number} into `{base}` at {}: its checks \
-                         passed. Finish what the delivery profile still asks for this stage \
+                Verdict::Decided(format!(
+                    "Yulius merged pull request #{number} into `{base}` at {}: its checks \
+                     passed. Finish what the delivery profile still asks for this stage \
                          (`delivery_status`; deploy and verify an integration environment with \
                          `delivery_deploy`), then end with your summary. Do not promote unless \
                          the task asks for it.",
-                        short(&armed.head)
-                    ),
-                );
-                None
+                    short(&armed.head)
+                ))
             }
-            Err(err) => {
-                self.merge_decided(
-                    task,
-                    &armed.head,
-                    format!(
-                        "The merge you armed was refused: the checks of pull request #{number} \
-                         passed at {}, but {}. Fix that (`delivery_status` says what is missing) \
+            Err(err) => Verdict::Decided(format!(
+                "The merge you armed was refused: the checks of pull request #{number} \
+                 passed at {}, but {}. Fix that (`delivery_status` says what is missing) \
                          and call `delivery_merge` again.",
-                        short(&armed.head),
-                        err.public_message()
-                    ),
-                );
-                None
-            }
+                short(&armed.head),
+                err.public_message()
+            )),
         }
     }
 
@@ -504,12 +536,8 @@ impl App {
             .delivery(&task.id)
             .await?
             .map_or_else(|| "none".to_owned(), |record| record.stage.encode());
-        let outcome = self
-            .runtime(&task.id)
-            .merge_outcome
-            .lock()
-            .ok()
-            .and_then(|outcome| outcome.clone());
+        // One read of the slot: the outcome and whether a merge is armed agree (WAI-003).
+        let (merge_armed, outcome) = lock_slot(&self.runtime(&task.id)).view();
         let push_problem = self
             .runtime(&task.id)
             .push_problem
@@ -523,7 +551,7 @@ impl App {
             checks,
             checks_detail,
             stage,
-            merge_armed: self.armed_merge(task),
+            merge_armed,
             merge_outcome_head: outcome.as_ref().map(|o| o.head.clone()),
             merge_outcome: outcome.map(|o| o.text),
             push_problem,
@@ -555,6 +583,15 @@ impl App {
     }
 }
 
+/// The task's [`ArmedSlot`], also after a panic elsewhere held it (its values stay consistent:
+/// each change is one assignment or a whole method).
+fn lock_slot(runtime: &crate::supervisor::TaskRuntime) -> std::sync::MutexGuard<'_, ArmedSlot> {
+    runtime
+        .armed
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// The saved armed merges; none when the file is missing or unreadable.
 fn read_armed(path: &std::path::Path) -> Vec<SavedArmed> {
     std::fs::read(path)
@@ -565,4 +602,78 @@ fn read_armed(path: &std::path::Path) -> Vec<SavedArmed> {
 
 fn short(sha: &str) -> &str {
     sha.get(..9).unwrap_or(sha)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn merge(head: &str) -> ArmedMerge {
+        ArmedMerge {
+            head: head.to_owned(),
+            summary: "approve".to_owned(),
+        }
+    }
+
+    /// WAI-003 (#255): a decision ends in one step, so the wait never reads an outcome next to a
+    /// merge that still reads as armed, and always reads armed until that step.
+    #[test]
+    fn a_decision_ends_in_one_step() {
+        let mut slot = ArmedSlot::default();
+        slot.arm(merge("aaa"));
+        assert_eq!(slot.view(), (true, None));
+        let deciding = slot.take().expect("armed");
+        assert_eq!(slot.view(), (true, None), "armed while it is decided");
+        assert!(slot.take().is_none(), "decided once at a time");
+        assert!(slot.finish(&deciding, Verdict::Decided("dropped".to_owned())));
+        let outcome = MergeOutcome {
+            head: "aaa".to_owned(),
+            text: "dropped".to_owned(),
+        };
+        assert_eq!(slot.view(), (false, Some(outcome)));
+        // Arming again forgets it.
+        slot.arm(merge("bbb"));
+        assert_eq!(slot.view(), (true, None));
+    }
+
+    /// A merge kept (checks pending) goes back as it was; one moved to a new head is saved.
+    #[test]
+    fn a_kept_merge_goes_back() {
+        let mut slot = ArmedSlot::default();
+        slot.arm(merge("aaa"));
+        let deciding = slot.take().expect("armed");
+        assert!(
+            !slot.finish(&deciding, Verdict::Keep(merge("aaa"))),
+            "unchanged"
+        );
+        assert_eq!(slot.view(), (true, None));
+        let deciding = slot.take().expect("armed");
+        assert!(slot.finish(&deciding, Verdict::Keep(merge("ccc"))), "moved");
+        assert_eq!(slot.merge, Some(merge("ccc")));
+    }
+
+    /// WAI-002 (#248): a merge armed (or merged at once) while an earlier one is decided
+    /// supersedes it; that decision neither puts its merge back nor leaves its outcome.
+    #[test]
+    fn a_newer_arm_supersedes_a_decision_in_progress() {
+        for verdict in [
+            Verdict::Keep(merge("aaa")),
+            Verdict::Decided("dropped".to_owned()),
+        ] {
+            let mut slot = ArmedSlot::default();
+            slot.arm(merge("aaa"));
+            let deciding = slot.take().expect("armed");
+            slot.arm(merge("bbb"));
+            assert!(!slot.finish(&deciding, verdict.clone()), "nothing to save");
+            assert_eq!(slot.merge, Some(merge("bbb")));
+            assert_eq!(slot.view(), (true, None));
+
+            let mut slot = ArmedSlot::default();
+            slot.arm(merge("aaa"));
+            let deciding = slot.take().expect("armed");
+            slot.clear();
+            assert!(!slot.finish(&deciding, verdict));
+            assert_eq!(slot.view(), (false, None));
+        }
+    }
 }
