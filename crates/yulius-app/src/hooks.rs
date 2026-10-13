@@ -467,6 +467,11 @@ impl App {
         if crate::finish::is_typed_prompt(input.prompt.as_deref()) {
             self.prompt_submitted(&ctx.task.id);
         }
+        // `/compact` runs no turn and no Stop hook ends it: the task stays as it was (SPEC-085
+        // STT-005).
+        if !crate::finish::prompt_starts_work(input.prompt.as_deref()) {
+            return Ok(HookReply::Output(HookOutput::default()));
+        }
         if ctx.task.gate_blocks != 0 {
             let update = TaskFieldUpdate {
                 gate_blocks: Some(0),

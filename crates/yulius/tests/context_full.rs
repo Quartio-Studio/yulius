@@ -85,9 +85,9 @@ async fn started(app: &Arc<App>, data: &Path) -> Result<TaskId, Box<dyn std::err
     Ok(id)
 }
 
-/// CTX-002/003, the acceptance of #213: a prompt the full context refuses ends the turn (the
-/// task is not left `working`), Yulius compacts the session once with a focus built from the
-/// task and wakes it, and the next prompt reaches the agent.
+/// CTX-002/003, the acceptance of #213: a prompt the full context refuses ends the turn, Yulius
+/// compacts the session once with a focus built from the task and wakes it, and the next prompt
+/// reaches the agent.
 #[test]
 fn a_full_context_is_compacted_once_and_the_next_prompt_reaches_the_agent() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -166,10 +166,46 @@ fn a_full_context_is_compacted_once_and_the_next_prompt_reaches_the_agent() -> T
     Ok(())
 }
 
-/// CTX-002: the refused prompt ends the turn: the task that worked on it waits, it is not left
-/// `working` (the compaction here never finishes, so nothing else moves the task).
+/// The activities the UI is told about `id` from now on, as they come (a repeat is kept once).
+fn published(
+    app: &Arc<App>,
+    id: &TaskId,
+) -> (
+    Arc<std::sync::Mutex<Vec<String>>>,
+    tokio::task::JoinHandle<()>,
+) {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let mut events = app.events.subscribe();
+    let collector = tokio::spawn({
+        let (seen, id) = (Arc::clone(&seen), id.as_str().to_owned());
+        async move {
+            loop {
+                match events.recv().await {
+                    Ok(envelope) => {
+                        if let yulius_contracts::events::UiEvent::TaskUpdated { task } =
+                            envelope.event
+                            && task.id == id
+                        {
+                            let mut seen = seen.lock().unwrap_or_else(|e| e.into_inner());
+                            if seen.last() != task.activity.as_ref() {
+                                seen.push(task.activity.unwrap_or_default());
+                            }
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }
+    });
+    (seen, collector)
+}
+
+/// CTX-002 (SPEC-085 STT-006): the refused prompt ends the turn, and while Yulius compacts the
+/// session by itself the task reads Working, not Your turn: nobody has to act. The compaction here
+/// never finishes, so nothing else moves the task; it never read idle since the prompt.
 #[test]
-fn a_refused_prompt_does_not_leave_the_task_working() -> TestResult {
+fn a_full_session_reads_working_while_yulius_compacts_it() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
     let rt = runtime()?;
@@ -181,6 +217,7 @@ fn a_refused_prompt_does_not_leave_the_task_working() -> TestResult {
         };
         let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), options)?;
         let id = started(&app, &data).await?;
+        let (seen, collector) = published(&app, &id);
         app.send_input(&id, b"too much\r").await?;
         wait_for("the prompt worked on", Duration::from_secs(30), || {
             activity_is(&app, &id, Activity::Working)
@@ -193,11 +230,81 @@ fn a_refused_prompt_does_not_leave_the_task_working() -> TestResult {
         })
         .await?;
         assert!(screen(&app, &id).contains("PROMPT IS TOO LONG"));
-        wait_for("the task not working", Duration::from_secs(10), || {
+        assert_eq!(audited(&data, &id)?, ["context full: compacting"]);
+        // Two more watcher rounds: everything the session wrote by now was applied.
+        let runtime = app.runtime(&id);
+        let rounds = runtime.transcript_rounds();
+        wait_for("the transcript read", Duration::from_secs(20), || async {
+            runtime.transcript_rounds() >= rounds + 2
+        })
+        .await?;
+        assert!(
+            activity_is(&app, &id, Activity::Working).await,
+            "Yulius compacts"
+        );
+        collector.abort();
+        let seen = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(
+            seen.iter().all(|a| a == "working"),
+            "never Your turn while Yulius recovers: {seen:?}"
+        );
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// CTX-002, CTX-006 (SPEC-085 STT-006): a person who types into the full session takes it over;
+/// Yulius types nothing, says so, and the task waits for them (Your turn), not Working.
+#[test]
+fn a_full_session_a_person_types_into_waits_for_them() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_with(
+            &data,
+            &fake,
+            Arc::new(ScriptedUsage::default()),
+            agent(1, false),
+        )?;
+        let id = started(&app, &data).await?;
+        let person = task(&app, &id).await?.created_by;
+        let mut frames = app.runtime(&id).hub.watch();
+        // The person types all along: whenever Yulius looks before typing, they typed since the
+        // refusal.
+        let typing = tokio::spawn({
+            let (app, id) = (app.clone(), id.clone());
+            async move {
+                loop {
+                    app.record_typing(&id, &person);
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+        });
+        app.send_input(&id, b"too much\r").await?;
+        let mut said = Vec::new();
+        heard(
+            &mut frames,
+            &mut said,
+            &[&["leaves the full session to you"]],
+        )
+        .await;
+        typing.abort();
+        assert!(
+            said.iter()
+                .any(|n| n.contains("leaves the full session to you")),
+            "the terminal says it: {said:?}"
+        );
+        wait_for("Your turn", Duration::from_secs(10), || {
             activity_is(&app, &id, Activity::Waiting)
         })
         .await?;
-        assert_eq!(audited(&data, &id)?, ["context full: compacting"]);
+        assert!(
+            !screen(&app, &id).contains("COMPACT"),
+            "Yulius typed nothing"
+        );
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;

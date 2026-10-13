@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- `/compact` typed into a session leaves its task as it was (SPEC-085 STT-005, ADR-0068): Claude
+  Code's line for the command no longer reads as a prompt, so an idle Done task no longer reads
+  Working after the compaction; a prompt typed after it is work as always. While Yulius itself
+  recovers a full session the task reads Working, not Your turn, until it types the prompt that
+  carries on (STT-006, CTX-002 changed).
 - Every time next to a task says what it measures, and the dashboard's figures are the agents' real
   work (SPEC-087, ADR-0070). The sidebar showed the time since a task's last change of anything: a
   task working for two hours, woken by its own background work a minute ago, read "1m".

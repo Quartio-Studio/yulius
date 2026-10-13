@@ -122,11 +122,11 @@ impl App {
         };
         match next {
             Next::Compact => {
-                self.idle_after_full_context(&task).await;
+                self.recovering_from_full_context(&task).await;
                 self.compact(&task, attempt).await;
             }
             Next::Restart => {
-                self.idle_after_full_context(&task).await;
+                self.recovering_from_full_context(&task).await;
                 self.restart_after_full_context(
                     &task,
                     attempt,
@@ -135,7 +135,8 @@ impl App {
             }
             Next::GiveUp => self.give_up_on_full_context(&task, STILL_FULL, true).await,
             Next::Reflag => self.give_up_on_full_context(&task, STILL_FULL, false).await,
-            Next::Nothing => self.idle_after_full_context(&task).await,
+            // A refusal while Yulius compacts or restarts the session: its recovery goes on.
+            Next::Nothing => {}
         }
     }
 
@@ -169,8 +170,12 @@ impl App {
         tokio::spawn(async move {
             let compacted = |e: &ContextEpisode| *e == ContextEpisode::Compacted;
             // A person who typed after the compaction just goes on: nothing to say.
-            app.type_line(&task_id, &attempt, &line, asked_ms, None, compacted)
-                .await;
+            if !app
+                .type_line(&task_id, &attempt, &line, asked_ms, None, compacted)
+                .await
+            {
+                app.recovery_left_to_person(&task_id).await;
+            }
         });
     }
 
@@ -233,12 +238,35 @@ impl App {
         self.restart_after_full_context(&task, attempt, why);
     }
 
-    /// A turn the API refused leaves the task idle, not `working` (CTX-002).
-    async fn idle_after_full_context(&self, task: &TaskRecord) {
-        if task.activity == Some(Activity::Working)
-            && let Err(err) = self.set_task_activity(task, Activity::Waiting).await
+    /// A turn the API refused ends, and Yulius recovers the session by itself (it compacts it,
+    /// or continues the task in a fresh session): until it types the prompt that carries on, the
+    /// task reads Working, since nobody has to act (CTX-002, SPEC-085 STT-006).
+    async fn recovering_from_full_context(&self, task: &TaskRecord) {
+        if task.status == TaskStatus::Running
+            && matches!(
+                task.activity,
+                Some(Activity::Working | Activity::Waiting | Activity::Done)
+            )
+            && let Err(err) = self.set_task_activity(task, Activity::Working).await
         {
-            tracing::warn!(task = %task.id, error = %err, "could not settle a full session");
+            tracing::warn!(task = %task.id, error = %err, "could not mark a full session's recovery");
+        }
+    }
+
+    /// Yulius types nothing more into the full session (a person typed into it, the terminal
+    /// never went quiet, the input failed): the recovery is theirs, and a task Working for it
+    /// waits for them, as a refused turn did before (CTX-002). A turn a person's prompt started
+    /// meanwhile goes on.
+    async fn recovery_left_to_person(&self, task_id: &TaskId) {
+        let Ok(Some(task)) = self.deps.store.task(task_id).await else {
+            return;
+        };
+        if task.status == TaskStatus::Running
+            && task.activity == Some(Activity::Working)
+            && !self.runtime(task_id).turn_in_progress()
+            && let Err(err) = self.set_task_activity(&task, Activity::Waiting).await
+        {
+            tracing::warn!(task = %task_id, error = %err, "could not settle a full session");
         }
     }
 
@@ -273,6 +301,7 @@ impl App {
             {
                 // Not typed (the run ended, a person typed): the next refusal starts over.
                 app.context_reset_if(&task_id, asked_now);
+                app.recovery_left_to_person(&task_id).await;
                 return;
             }
             let asked = tokio::time::Instant::now();

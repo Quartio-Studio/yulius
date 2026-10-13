@@ -102,8 +102,10 @@
 //! first), like Claude Code 2.1.292 when the API refuses a prompt as too long (#213): each later
 //! message prints `PROMPT IS TOO LONG` and appends its user line and the API-error record
 //! (`error: "invalid_request"`, text `Prompt is too long`), with no Stop hook. `/compact <focus>`
-//! prints `COMPACTED: <focus>`, appends a `compact_boundary` record and empties the context for
-//! good; with `--compact-fails` it prints `COMPACTION FAILED`, appends the command's error output
+//! appends the command as typed (a user line with no `origin`), then, like Claude Code 2.1.292,
+//! the `compact_boundary` record, the summary user record (`isCompactSummary`), the command's
+//! caveat, echo and output ("Compacted"), prints `COMPACTED: <focus>` and empties the context for
+//! good; it runs no hook and no turn. With `--compact-fails` it prints `COMPACTION FAILED`, appends the command's error output
 //! ("Error during compaction") and the context stays full; with `--compact-hangs` it prints
 //! `COMPACTING` and never finishes. A refusal takes `--echo-turn-ms` after its user line, like
 //! the API's answer. `--prompt TEXT` is a first message
@@ -737,17 +739,54 @@ impl Transcript {
         self.append(&[record])
     }
 
-    /// The boundary Claude Code writes when `/compact` succeeds.
-    fn compacted(&mut self) -> io::Result<()> {
-        let uuid = format!("fake-{}-{}-compact", self.session_id, self.turns);
-        let mut record = self.claude_envelope("system", &uuid, &rfc3339(now_ms()));
-        record["subtype"] = json!("compact_boundary");
-        record["content"] = json!("Conversation compacted");
-        record["isMeta"] = json!(false);
-        record["level"] = json!("info");
-        record["compactMetadata"] = json!({"trigger": "manual", "preTokens": 213_000});
+    /// The line Claude Code 2.1.292 writes when `/compact` is typed, before it compacts: the
+    /// command as typed, with no `origin` (a typed prompt has `origin: {kind: "human"}`).
+    fn compact_typed(&mut self, line: &str) -> io::Result<()> {
+        let uuid = format!("fake-{}-{}-compact-typed", self.session_id, self.turns);
+        let mut record = self.claude_envelope("user", &uuid, &rfc3339(now_ms()));
+        record["promptId"] = json!(format!("fake-{}-{}-compact", self.session_id, self.turns));
+        record["message"] = json!({"role": "user", "content": line});
         self.last_uuid = Some(uuid);
         self.append(&[record])
+    }
+
+    /// The records Claude Code 2.1.292 writes when `/compact` succeeds, in its order: the
+    /// boundary, the summary the session continues from, the command's caveat and echo (dated
+    /// when it was typed) and its output.
+    fn compacted(&mut self, line: &str) -> io::Result<()> {
+        let at = rfc3339(now_ms());
+        let prompt = format!("fake-{}-{}-compact", self.session_id, self.turns);
+        let uuid = format!("fake-{}-{}-compact", self.session_id, self.turns);
+        let mut boundary = self.claude_envelope("system", &uuid, &at);
+        boundary["subtype"] = json!("compact_boundary");
+        boundary["content"] = json!("Conversation compacted");
+        boundary["isMeta"] = json!(false);
+        boundary["level"] = json!("info");
+        boundary["compactMetadata"] = json!({"trigger": "manual", "preTokens": 213_000});
+        let mut summary = self.claude_envelope("user", &format!("{uuid}-summary"), &at);
+        summary["promptId"] = json!(prompt);
+        summary["message"] = json!({"role": "user", "content": "This session is being continued \
+            from a previous conversation that ran out of context."});
+        summary["isVisibleInTranscriptOnly"] = json!(true);
+        summary["isCompactSummary"] = json!(true);
+        let mut caveat = self.claude_envelope("user", &format!("{uuid}-caveat"), &at);
+        caveat["promptId"] = json!(prompt);
+        caveat["isMeta"] = json!(true);
+        caveat["message"] = json!({"role": "user", "content": "<local-command-caveat>The command \
+            below was run directly in Claude Code, not sent to you as a request.\
+            </local-command-caveat>"});
+        let args = line.get("/compact".len()..).unwrap_or_default().trim();
+        let mut echo = self.claude_envelope("user", &format!("{uuid}-echo"), &at);
+        echo["promptId"] = json!(prompt);
+        echo["message"] = json!({"role": "user", "content": format!(
+            "<command-name>/compact</command-name>\n            <command-message>compact\
+            </command-message>\n            <command-args>{args}</command-args>")});
+        let mut output = self.claude_envelope("user", &format!("{uuid}-output"), &at);
+        output["promptId"] = json!(prompt);
+        output["message"] = json!({"role": "user", "content": "<local-command-stdout>\u{1b}[2m\
+            Compacted (ctrl+o to see full summary)\u{1b}[22m</local-command-stdout>"});
+        self.last_uuid = Some(format!("{uuid}-output"));
+        self.append(&[boundary, summary, caveat, echo, output])
     }
 
     /// The records of Claude Code 2.1.292's compaction of an idle session ("Compacted while idle,
@@ -1614,6 +1653,7 @@ fn compact(
     let Ok(mut t) = transcript.lock() else {
         return Ok(());
     };
+    t.compact_typed(line)?;
     if options.compact_hangs {
         return say("COMPACTING");
     }
@@ -1622,8 +1662,8 @@ fn compact(
         return t.compact_failed();
     }
     state.compacted = true;
-    say(&format!("COMPACTED: {}", line["/compact".len()..].trim()))?;
-    t.compacted()
+    t.compacted(line)?;
+    say(&format!("COMPACTED: {}", line["/compact".len()..].trim()))
 }
 
 /// Runs the status line command when `--rate-limits-file` is given (with `--hooks`).

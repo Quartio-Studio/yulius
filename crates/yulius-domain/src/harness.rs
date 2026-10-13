@@ -19,6 +19,17 @@ pub fn claude_effort<'a>(model: &str, effort: Option<&'a str>) -> Option<&'a str
     })
 }
 
+/// Whether `text` is Claude Code's compaction command as typed: `/compact`, alone or with what to
+/// keep (`/compact keep the plan`). Claude Code compacts the conversation and runs no turn: no
+/// model work, no Stop hook. So the command starts no work, and the task stays as it was
+/// (SPEC-085 STT-005).
+#[must_use]
+pub fn is_compact_command(text: &str) -> bool {
+    text.trim()
+        .strip_prefix("/compact")
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(char::is_whitespace))
+}
+
 /// A coding-agent CLI Yulius can run as a task. Yulius runs only Claude Code
 /// (F 2026-10-08); another harness needs a variant here and an adapter (SPEC-001 TSK-003).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -123,6 +134,29 @@ impl fmt::Display for Provider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-085 STT-005: the compaction command as typed, not a prompt that mentions it.
+    #[test]
+    fn the_compaction_command_is_known_as_typed() {
+        for typed in [
+            "/compact",
+            "/compact keep the plan",
+            "  /compact\n",
+            "/compact\tx",
+        ] {
+            assert!(is_compact_command(typed), "{typed:?}");
+        }
+        for prompt in [
+            "/compactor is broken",
+            "please /compact",
+            "/compaction",
+            "compact it",
+            "/goal x",
+            "",
+        ] {
+            assert!(!is_compact_command(prompt), "{prompt:?}");
+        }
+    }
 
     #[test]
     fn harness_provider_round_trip() {
