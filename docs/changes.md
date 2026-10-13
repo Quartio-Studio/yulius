@@ -16,6 +16,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   path and other tasks' `~/.ci-proof.*` only when over six hours old, then runs `git worktree
   prune`. They also say that checkouts are per CI lane while by default up to two runs share the
   CI home and cache, and that system packages are installed by onboarding, never by a CI job.
+- Quick archive (SPEC-062, ADR-0040, task #65). A sidebar task row that can be archived shows an
+  Archive button beside its `⋮` on hover or focus, and the Done group's head has **Archive all**:
+  one click archives every Done task, with one Undo for the whole batch. When some fail, the
+  others stay archived and one toast says how many failed and why. Phones keep the `⋮` menu as
+  their only row action. No API change: each task goes through `POST /api/tasks/{tid}/archive`.
 - Done tasks no longer hold their subscription (SPEC-057, ADR-0040, task #48). A subscription
   card counts only tasks still working on it, so one whose tasks are all Done (goal achieved, or
   plan complete and merged: the session limit's rule) says "No tasks right now" and can be removed. Removing it closes those Done tasks' idle sessions first, as archiving

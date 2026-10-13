@@ -252,7 +252,8 @@ home screen's first steps), `tasks=0` (sandboxes without tasks yet: no start rul
 N×M until this one types or clicks into the terminal), `update=1` (a newer `main` is on offer; Update
 now walks through its phases in about six seconds) or `update=fail` (the same, rolled back),
 `helper=0` (no update helper), `jev=config` (a Jev key file is configured), `fail=<path>` (GET
-requests of that exact API path answer 500, to see a view say what failed to load).
+requests of that exact API path answer 500, to see a view say what failed to load) or `failpost=<path>`
+(POST requests of that path answer 500, to see an action say it failed).
 
 The mock mirrors the real response shapes (it is the UI's offline test bed and
 documentation; the [end-to-end tests](../../../e2e/README.md) run against it). It has sandboxes with admin, write and read access (`studio` with the Studio
