@@ -604,15 +604,40 @@ impl App {
             map.insert(id.clone(), Arc::clone(&runtime));
             runtime
         };
-        let launched = match self.isolation_join(&record).await {
+        // Detached from the request: a client that goes away mid-start leaves the terminal live
+        // or discarded, never registered without a process (SPEC-077 DRS-002).
+        let app = Arc::clone(self);
+        let ctx = ctx.clone();
+        Self::run_detached(async move { app.start_shell(&ctx, &record, &runtime, &cwd).await })
+            .await
+    }
+
+    /// Runs `start` to its end even when the request awaiting it is dropped (its client went
+    /// away): the shell it starts ends registered or discarded, never half started (SPEC-077,
+    /// ADR-0053).
+    pub(crate) async fn run_detached<T: Send + 'static>(
+        start: impl Future<Output = AppResult<T>> + Send + 'static,
+    ) -> AppResult<T> {
+        tokio::spawn(start).await.map_err(AppError::internal)?
+    }
+
+    /// Launches a registered terminal and starts its pump, or discards it.
+    async fn start_shell(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        record: &SandboxRecord,
+        runtime: &Arc<ShellRuntime>,
+        cwd: &Path,
+    ) -> AppResult<ShellInfo> {
+        let launched = match self.isolation_join(record).await {
             Ok(joined) => {
                 let (join, lease) = joined.unzip();
-                match self.user_space(&ctx.user, &record, join) {
+                match self.user_space(&ctx.user, record, join) {
                     Ok(space) => {
-                        let launched = self.launch_shell(&record, &space, &runtime, &cwd).await;
+                        let launched = self.launch_shell(record, &space, runtime, cwd).await;
                         drop(lease);
                         match launched {
-                            Ok(reader) => self.save_shell(&runtime).map(|()| reader),
+                            Ok(reader) => self.save_shell(runtime).map(|()| reader),
                             Err(err) => Err(err),
                         }
                     }
@@ -623,12 +648,12 @@ impl App {
         };
         match launched {
             Ok(reader) => {
-                self.start_pump(&runtime, reader);
-                tracing::info!(shell = %id, sandbox = %record.slug, user = %ctx.user.id, "sandbox shell started");
+                self.start_pump(runtime, reader);
+                tracing::info!(shell = %runtime.id, sandbox = %record.slug, user = %ctx.user.id, "sandbox shell started");
                 Ok(runtime.info())
             }
             Err(err) => {
-                self.discard_shell(&runtime);
+                self.discard_shell(runtime);
                 Err(err)
             }
         }

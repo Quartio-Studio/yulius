@@ -80,6 +80,16 @@ impl App {
         }
     }
 
+    /// How many (user, sandbox) pairs have a Cockpit start running or waiting (tests,
+    /// diagnostics).
+    #[must_use]
+    pub fn cockpit_starts_pending(&self) -> usize {
+        self.shells
+            .cockpit_start
+            .lock()
+            .map_or(0, |starts| starts.len())
+    }
+
     /// The Yulius MCP bearer of `user`'s running Cockpit in `sandbox` (SPEC-037 MGT-005).
     #[must_use]
     pub fn cockpit_mcp_token(&self, user: &UserId, sandbox: &SandboxId) -> Option<String> {
@@ -150,9 +160,21 @@ impl App {
         if let Some(running) = self.running_cockpit(&ctx.user.id, &record.id) {
             return Ok(running.info());
         }
-        let starts = self.cockpit_start_lock(&ctx.user.id, &record.id)?;
-        let _starting = starts.lock().await;
-        if let Some(running) = self.running_cockpit(&ctx.user.id, &record.id) {
+        // Detached from the request: a client that goes away mid-start leaves its Cockpit
+        // registered (or discarded), and a second open waits for that start (SPEC-077 DRS-001).
+        let app = Arc::clone(self);
+        let user = ctx.user.clone();
+        Self::run_detached(async move { app.start_requested_cockpit(&user, &record).await }).await
+    }
+
+    /// Starts `user`'s Cockpit unless another start of theirs in that sandbox just did.
+    async fn start_requested_cockpit(
+        self: &Arc<Self>,
+        user: &UserRecord,
+        record: &SandboxRecord,
+    ) -> AppResult<ShellInfo> {
+        let _starting = self.cockpit_start_slot(&user.id, &record.id).await?;
+        if let Some(running) = self.running_cockpit(&user.id, &record.id) {
             return Ok(running.info());
         }
         if !self.sandbox_repo(&record.id).is_dir() {
@@ -165,7 +187,7 @@ impl App {
             .pool_account(Provider::Anthropic, cockpit_family())
             .await?;
         // A Cockpit a usage limit ended, whose move failed, continues the cut turn now.
-        let key = (ctx.user.id.clone(), record.id.clone());
+        let key = (user.id.clone(), record.id.clone());
         let pending = |remove: bool| {
             self.shells.cockpit_continue.lock().is_ok_and(|mut set| {
                 if remove {
@@ -176,26 +198,10 @@ impl App {
             })
         };
         let started = self
-            .start_cockpit(&ctx.user, &record, &account, pending(false))
+            .start_cockpit(user, record, &account, pending(false))
             .await?;
         pending(true);
         Ok(started)
-    }
-
-    /// The lock that serialises the Cockpit starts of `user` in `sandbox` (CKP-001).
-    fn cockpit_start_lock(
-        &self,
-        user: &UserId,
-        sandbox: &SandboxId,
-    ) -> AppResult<Arc<tokio::sync::Mutex<()>>> {
-        let mut starts = self
-            .shells
-            .cockpit_start
-            .lock()
-            .map_err(AppError::internal)?;
-        Ok(Arc::clone(
-            starts.entry((user.clone(), sandbox.clone())).or_default(),
-        ))
     }
 
     /// Starts `user`'s Cockpit in `record` on `account`, resuming the newest conversation; with
@@ -365,10 +371,12 @@ impl App {
         if let Some(account) = &current {
             self.record_limit(account, resets_at, window_minutes).await;
         }
-        let Ok(starts) = self.cockpit_start_lock(runtime.creator(), runtime.sandbox()) else {
+        let Ok(_starting) = self
+            .cockpit_start_slot(runtime.creator(), runtime.sandbox())
+            .await
+        else {
             return false;
         };
-        let _starting = starts.lock().await;
         if !runtime.is_live() {
             return true;
         }
@@ -405,6 +413,31 @@ impl App {
             }
         }
         true
+    }
+
+    /// Takes the start lock of `user`'s Cockpit in `sandbox`: one start at a time per user and
+    /// sandbox, other users and sandboxes never wait (CKP-001, SPEC-077 DRS-004).
+    async fn cockpit_start_slot(
+        &self,
+        user: &UserId,
+        sandbox: &SandboxId,
+    ) -> AppResult<CockpitStartSlot<'_>> {
+        let key = (user.clone(), sandbox.clone());
+        let lock = {
+            let mut starts = self
+                .shells
+                .cockpit_start
+                .lock()
+                .map_err(AppError::internal)?;
+            Arc::clone(starts.entry(key.clone()).or_default())
+        };
+        let mut slot = CockpitStartSlot {
+            app: self,
+            key,
+            guard: None,
+        };
+        slot.guard = Some(lock.lock_owned().await);
+        Ok(slot)
     }
 
     async fn launch_cockpit(
@@ -470,5 +503,28 @@ impl App {
         let reader = reader?;
         self.save_shell(runtime)?;
         Ok(reader)
+    }
+}
+
+/// A held Cockpit start lock. Dropped, it forgets the lock when no other start holds or waits for
+/// it, so the map keeps only pairs with a start running or waiting (SPEC-077 DRS-005).
+struct CockpitStartSlot<'a> {
+    app: &'a App,
+    key: (UserId, SandboxId),
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Drop for CockpitStartSlot<'_> {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        // Under the map's lock nobody can take a new handle on this mutex: a count of one is the
+        // map's own.
+        if let Ok(mut starts) = self.app.shells.cockpit_start.lock()
+            && starts
+                .get(&self.key)
+                .is_some_and(|lock| Arc::strong_count(lock) == 1)
+        {
+            starts.remove(&self.key);
+        }
     }
 }

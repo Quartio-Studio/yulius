@@ -231,14 +231,17 @@ Every user has one plain Claude Code session per sandbox, shown as the **Superag
 [decision 0020](decisions/0020-cockpit-as-a-plain-shell-session.md)); the code and the API still
 call it the Cockpit. It is a sandbox shell of kind `cockpit` that runs `claude` instead of the
 login shell: no hooks, settings or briefing, a pool subscription's token, and the newest
-conversation resumed whenever it starts again. The web UI shows it in the right tool panel beside
+conversation resumed whenever it starts again. Its start, like a terminal's, runs detached from
+the request, so a client that goes away mid-start never leaves a second or half-started session
+([SPEC-077](../.ai/specs/SPEC-077-fix-250-cockpit-and-shell-starts-survive.md),
+[decision 0053](decisions/0053-shell-starts-run-detached-from-the-request.md)). The web UI shows it in the right tool panel beside
 the page, under a notice that it is for quick work only
 ([SPEC-035](../.ai/specs/SPEC-035-move-cockpit-to-the-right-and-change-coc.md),
 [decision 0036](decisions/0036-agent-in-the-right-panel.md)).
 
 A Cockpit remembers its pool subscription (in `shell.json`) and watches its newest conversation
 while it runs ([SPEC-074](../.ai/specs/SPEC-074-i-just-hit-usage-limit-in-the-agent-it-s.md),
-[decision 0053](decisions/0053-cockpit-moves-past-a-usage-limit.md)). A usage limit recorded after
+[decision 0054](decisions/0054-cockpit-moves-past-a-usage-limit.md)). A usage limit recorded after
 it started is recorded on that subscription as a task's is. The Cockpit then starts again, under
 its start lock, on a subscription with capacity. It resumes the conversation stepped back over the
 limit with Claude Code's interrupted-turn flag, as a task does after a limit (SPEC-034). The old

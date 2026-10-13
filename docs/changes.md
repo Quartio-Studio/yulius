@@ -7,12 +7,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-10-13
 
 - The Agent panel is now called the **Superagent**, and a usage limit no longer stops it (SPEC-074,
-  ADR-0053, task #69). The Superagent chose a subscription once, when it started, and kept it, so
+  ADR-0054, task #69). The Superagent chose a subscription once, when it started, and kept it, so
   it could hit a weekly limit while tasks went on elsewhere. It now watches its conversation. A
   limit recorded after it started is recorded on its subscription, and the Superagent starts again
   on one with capacity. It continues the cut turn there, stepped back over the limit as a task's
   turn is, and the panel follows it without a "stopped" banner. Without capacity, it stays and
   says why. `/s/<slug>/superagent` opens it, as `/agent` and `/cockpit` still do.
+- Cockpit and terminal starts survive a dropped request (SPEC-077, ADR-0053, task #64; #250). The
+  part of a start from the spawn to the registration runs as a task the request awaits, so a
+  client that goes away mid-start leaves one live Cockpit or terminal (or nothing on an error),
+  never a second Cockpit, an unusable terminal or an orphan run directory. Idle Cockpit start
+  locks are dropped. New tests pin that a signal right after a resume keeps the conversation and
+  that one user's blocked start delays no other user or sandbox.
 - A task's step strip no longer draws its progress bar over "Step N/M" (SPEC-073, task #68; #341).
   A long state such as "Working · 1 background task still running" or "Done · PR #N merged" kept
   its full width, so the strip's label shrank to nothing and the step count, which nothing
