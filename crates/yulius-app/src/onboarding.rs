@@ -62,14 +62,18 @@ pyproject.toml, go.mod, Gemfile), with `sudo apt-get install` for system package
 installers for toolchains (for example rustup into your home: `curl https://sh.rustup.rs -sSf | sh \
 -s -- -y`). ~/.cargo/bin and ~/.local/bin are on PATH for every run of yours; your home persists \
 and is shared by every task's worktree, so install tools there once (never per worktree). Install \
-what the tests need too (browsers for end-to-end tests, test fixtures, services). Then run the \
+what the tests need too (browsers for end-to-end tests, test fixtures, services). System packages \
+(a browser's system libraries too) belong to the sandbox: install them now, never in a CI job, \
+where an `apt-get` or a browser's `--with-deps` races the other CI run for the dpkg lock; jobs see \
+what the sandbox installed. Then run the \
 repository's test, lint and build commands until they work and record them in yulius.toml \
 [commands]; run every \
 `[[ci.jobs]]` command exactly as written, from the repository root, until it passes. Yulius CI \
 gives the sandbox's jobs their own HOME and cache ($YULIUS_CI_CACHE), separate from yours: they \
-start empty and persist across runs, as does each job's checkout with its ignored files (build \
-outputs, dependency directories), and the job's PATH lacks that home's ~/.cargo/bin and \
-~/.local/bin. So a job must install what it needs itself (as `scripts/bootstrap.py \
+start empty and persist across runs, as does each job's checkout per CI lane with its ignored files \
+(build outputs, dependency directories); up to two runs at once share that HOME and cache, so a \
+job's installs there must tolerate a concurrent run; and the job's PATH lacks that home's \
+~/.cargo/bin and ~/.local/bin. So a job must install what it needs itself (as `scripts/bootstrap.py \
 --install-rustup` does) and never depend on anything an earlier run, your home or this worktree \
 left behind: such a job passes on the cache and fails on a fresh sandbox or after a cache prune. \
 Prove it: run each job command normally, then commit and run it once more from the root of a clean \
@@ -79,7 +83,10 @@ everything it made (`d=\"$(mktemp -d \"$HOME/.ci-proof.XXXXXX\")\"; mkdir \"$d/h
 HOME=\"$d/home\" YULIUS_CI_CACHE=\"$d/cache\" PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 \
 TERM=dumb NO_COLOR=1 CI=true GIT_TERMINAL_PROMPT=0 YULIUS_CI=1 sh -c '<command>' </dev/null); s=$?; \
 git worktree remove --force \"$d/repo\"; chmod -R u+w \"$d\"; rm -rf \"$d\"; echo \"exit $s\"`, \
-quoting the command as needed). A monorepo's jobs \
+quoting the command as needed; for a matrix job add `YULIUS_CI_MATRIX=<value>` after `env -i`, \
+once per matrix value). Run the proof with a long timeout or in the background: if it is killed, \
+its cleanup never runs, so once no proof runs remove what it left (`chmod -R u+w \
+\"$HOME\"/.ci-proof.*; rm -rf \"$HOME\"/.ci-proof.*`) and run `git worktree prune`. A monorepo's jobs \
 may run only its affected project's checks. End with a summary of what works and how it was \
 verified; a check that still cannot run is a problem to report there, never a reason to skip it \
 silently.";
@@ -1031,6 +1038,19 @@ mod tests {
                 // The proof reports the job's status, not the cleanup's, and leaves nothing.
                 "</dev/null); s=$?;",
                 "rm -rf \"$d\"; echo \"exit $s\"",
+                // #272: matrix jobs read their value, which `env -i` would drop.
+                "YULIUS_CI_MATRIX=<value>",
+                "once per matrix value",
+                // #272: a killed proof never cleans up after itself.
+                "long timeout or in the background",
+                "rm -rf \"$HOME\"/.ci-proof.*",
+                "git worktree prune",
+                // #272 (#238): checkouts are per lane, the CI home and cache are shared.
+                "checkout per CI lane",
+                "up to two runs at once share",
+                "tolerate a concurrent run",
+                // #272 (#299, #300): an apt-get in a job raced the other lane for the dpkg lock.
+                "belong to the sandbox: install them now, never in a CI job",
             ] {
                 assert!(prompt.contains(wording), "missing {wording:?}");
             }
