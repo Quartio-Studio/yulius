@@ -1395,17 +1395,22 @@ impl App {
                 welcome.snapshot.as_deref().unwrap_or_default(),
             )
             .await;
-        runtime
-            .hub
-            .reset(welcome.seq, &screen, welcome.cols, welcome.rows);
+        // The run takes input before anything of it shows: a viewer who sees the agent's screen
+        // can type into it (F 2026-10-13: input right after the banner was refused as "not
+        // running" on a fast machine).
         *runtime.run.lock().await = Some(ActiveRun {
             attempt_id: attempt.id.clone(),
             writer: attached.writer,
         });
         // A viewer who took the size while the run was starting (the PTY spawned at the size before
-        // it): the terminal takes that viewer's size now (TSK-006, F 2026-10-10).
-        if let Some((cols, rows)) = runtime.hub.controller_size()
-            && (cols, rows) != (welcome.cols, welcome.rows)
+        // it): the screen shows that viewer's size from the start, never the spawn size first,
+        // and the PTY follows (TSK-006, F 2026-10-10).
+        let (cols, rows) = runtime
+            .hub
+            .controller_size()
+            .unwrap_or((welcome.cols, welcome.rows));
+        runtime.hub.reset(welcome.seq, &screen, cols, rows);
+        if (cols, rows) != (welcome.cols, welcome.rows)
             && let Err(err) = self.resize_run(task_id, cols, rows).await
         {
             tracing::debug!(task = %task_id, error = %err, "viewer size after attach failed");
@@ -1459,16 +1464,16 @@ impl App {
                                         )
                                         .await;
                                     let rt = app.runtime(&tid);
+                                    *rt.run.lock().await = Some(ActiveRun {
+                                        attempt_id: aid.clone(),
+                                        writer: again.writer,
+                                    });
                                     rt.hub.reset(
                                         again.welcome.seq,
                                         &screen,
                                         again.welcome.cols,
                                         again.welcome.rows,
                                     );
-                                    *rt.run.lock().await = Some(ActiveRun {
-                                        attempt_id: aid.clone(),
-                                        writer: again.writer,
-                                    });
                                     reader = again.reader;
                                     continue;
                                 }
