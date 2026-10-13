@@ -1,11 +1,11 @@
 ---
 yulius-task: 154bb878-9296-4ee7-84d1-9c80b0a8ffd3
-status: in-progress
+status: done
 ---
 
 # SPEC-070: a task is owned by one person, whose GitHub credentials it uses
 
-Status: in-progress
+Status: done
 Date: 2026-10-13
 Scope authorization: task #66 (requested by MrFishPL): "Tasks should be owned by a specific
 person because it uses their github credentials. Other users shouldnt be able to write to the
@@ -100,7 +100,7 @@ owner for control; once the owner hands it over, the task acts on GitHub as the 
 - [x] The task view names the owner, offers Request control and the owner's hand-over
 - [x] Review rounds 1 and 2 in a fresh session, findings fixed test-first
 - [x] Review round 3 approves the final head
-- [ ] All gates green on the final head, evidence recorded
+- [x] All gates green on the final head, evidence recorded
 
 ## Acceptance criteria
 
@@ -153,4 +153,36 @@ owner for control; once the owner hands it over, the task acts on GitHub as the 
 
 ## Evidence
 
-(to fill)
+- Tests written first and seen failing for the right reason before each change:
+  `task_ownership::a_task_acts_on_github_as_its_owner` (Alice's token with the creator rule),
+  `only_the_owner_writes_to_a_task`, `a_non_owner_watches_the_terminal_read_only`,
+  `an_agent_changes_only_its_persons_tasks` (200 / write access before the gate), the control
+  tests (404 before the routes), `a_hand_over_moves_the_commit_identity`,
+  `a_non_owner_cannot_write_into_the_task_worktree` (409 from the editor, i.e. Bob reached the
+  write), `a_waiting_request_never_locks_the_task` and `a_requester_who_cannot_work_gives_way`
+  (409 "@bob already asked"), `shells::a_task_shell_stops_taking_input_once_the_task_is_handed_over`
+  (input accepted), `an_unknown_access_keeps_the_request_waiting` (request dropped, 409),
+  `an_asker_signed_out_of_github_gives_way` (401 to the owner); store
+  `version_sixteen_databases_give_each_task_its_creator_as_owner`.
+- `cargo test -p yulius --test main -- task_ownership::`: 16 passed; `shells::`: 6 passed;
+  `cargo test -p yulius-store`: control and migration tests pass.
+- `scripts/dev ci` on the Rust tree of 368cfa0: check, fmt, clippy, deps, repository contracts
+  green; nextest 1343 run, 1342 passed, 1 failed:
+  `task_done::a_done_task_can_be_deleted_its_session_is_closed_first` ("timed out waiting for the
+  shell probe" at load average ~46 on 12 cores); alone it passes (47.9 s), and it passed in the
+  previous full run on 1331c57. Later commits change only the web UI and this spec.
+- Existing tests that had a second person write to a task were changed to the owner (terminal_ws:
+  the owner's second device; sessions: carol's own task; delivery: the superadmin's own task and a
+  hand-over to Bob before he merges) or to expect the refusal (http_auth: the superadmin archiving
+  and typing into Alice's task).
+- e2e, full suite on 45b336a: 246 passed, 1 skipped, 4 timed out (editor, agent-panel, navigation)
+  at load average ~36; those three files then passed alone (3, 20 and 5 tests). `ownership.e2e.ts`
+  4 passed, `terminal.e2e.ts` 11 passed (it caught the read-only label regression fixed in
+  45b336a), `archive.e2e.ts` 7, `queued-messages.e2e.ts` 14.
+- Independent review in a fresh session (`om-code-review`), four rounds: round 1 request changes
+  (2 major: worktree writes and shells, a waiting request locking a task; minors), fixed
+  test-first in 1331c57; round 2 approve with 2 minors (shells opened before a hand-over, unknown
+  access dropping a request), fixed in b19b4cb; round 3 approve with 1 minor (401 to the owner),
+  fixed in 368cfa0; round 4 approve 368cfa0.
+- Not tested here: real GitHub (the fake GitHub records which token made each call); a person's
+  shell in the sandbox repository can still reach a worktree on disk (ADR-0051 consequences).
