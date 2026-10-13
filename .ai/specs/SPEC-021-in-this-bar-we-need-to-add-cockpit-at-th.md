@@ -68,7 +68,8 @@ flowchart LR
 - `HarnessPort::plan_cockpit` builds the plain launch: argv `claude [--resume <id>] --model claude-opus-5-5 --effort high` (SPEC-023), env
   `CLAUDE_CONFIG_DIR`, `DISABLE_AUTOUPDATER=1`, secret env `CLAUDE_CODE_OAUTH_TOKEN`, and
   prepares `<home>/.claude/.claude.json` (onboarding done, theme, trust of the repository).
-- A per-app async lock serialises Cockpit starts so a double click starts one.
+- An async lock per user and sandbox serialises Cockpit starts so a double click starts one; the
+  start runs detached from its request (SPEC-077, ADR-0053).
 - UI: `NAV` gets `['cockpit', 'Cockpit', 'gauge']` first; `pages/cockpit.js` posts, then
   mounts `createTerminalView` on `/api/shells/<id>/terminal`. Mock mode serves the call.
 
