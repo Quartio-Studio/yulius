@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
-- Notes in the tools rail (SPEC-041, ADR-0033, task #40): a notepad for this sandbox and one for
+- Notes in the tools rail (SPEC-041, ADR-0032, task #40): a notepad for this sandbox and one for
   the team, below Shell. They save by themselves while people type, with no Save button. Everyone
   who can see the sandbox reads its notes, writers edit them, and everyone signed in shares the
   team's. A teammate's edit appears without a reload. When two people type at once, the later save
