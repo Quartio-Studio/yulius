@@ -36,12 +36,16 @@ pub struct Limits {
 }
 
 impl Limits {
-    /// Defaults for a host: half the memory (at least 2 GiB), every CPU but two (at least one),
-    /// 8192 tasks.
+    /// Defaults for a host: the memory but a reserve for the host and Yulius (an eighth, at
+    /// least 4 GiB; the sandbox gets at least 2 GiB), every CPU but two (at least one), 8192
+    /// tasks. Half the memory was too little for one sandbox running all the agents: ten
+    /// sessions and two CI lanes thrashed its page cache at 25 GiB while 20 GiB of the host stayed
+    /// free, and CI jobs timed out (F 2026-10-13).
     #[must_use]
     pub fn defaults(total_memory: u64, cpus: u32) -> Self {
+        let reserve = (total_memory / 8).max(4 << 30);
         Self {
-            memory_max: Some((total_memory / 2).max(2 << 30)),
+            memory_max: Some(total_memory.saturating_sub(reserve).max(2 << 30)),
             cpus: Some(cpus.saturating_sub(2).max(1)),
             pids_max: Some(8192),
         }
@@ -229,7 +233,12 @@ mod tests {
     #[test]
     fn defaults_leave_room_for_the_host() {
         let limits = Limits::defaults(48 << 30, 12);
-        assert_eq!(limits.memory_max, Some(24 << 30));
+        assert_eq!(limits.memory_max, Some(42 << 30), "all but an eighth");
+        assert_eq!(
+            Limits::defaults(16 << 30, 4).memory_max,
+            Some(12 << 30),
+            "a 4 GiB reserve at least"
+        );
         assert_eq!(limits.cpus, Some(10));
         assert_eq!(limits.pids_max, Some(8192));
         let small = Limits::defaults(2 << 30, 2);
