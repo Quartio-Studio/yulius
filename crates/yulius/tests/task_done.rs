@@ -760,6 +760,104 @@ fn the_goal_is_typed_after_the_turn_on_the_attached_files() -> TestResult {
     Ok(())
 }
 
+/// SPEC-034 LIM-003, SPEC-072 LRS-004 (#278): a goal session whose turn a usage limit cut moves to
+/// another subscription by a continued resume; Claude Code redoes the cut turn first, and the goal
+/// is typed again after that turn's Stop, not during it, and once.
+#[test]
+fn the_goal_is_typed_after_the_turn_continued_past_a_limit() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            session_start: true,
+            // The goal turn is the first, the next message hits the limit.
+            limit_after: Some(2),
+            // The continued turn: silent for longer than the quiet time after which a goal is
+            // otherwise typed.
+            opening_turn_ms: Some(6_000),
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        app.deps
+            .store
+            .insert_account(&AccountRecord {
+                id: AccountId::parse("b-claude")?,
+                provider: Provider::Anthropic,
+                label: "Claude second".into(),
+                credential: Some(app.deps.crypto.seal(b"sk-ant-oat01-second-credential")?),
+                status: AccountStatus::Ok,
+                usage_json: None,
+                last_error: None,
+                created_at: Timestamp(1),
+                updated_at: Timestamp(1),
+            })
+            .await?;
+        let id = app
+            .create_task_internal(NewTask {
+                sandbox: sandbox.clone(),
+                created_by: user.clone(),
+                prompt: "Make the header blue".into(),
+                harness: Harness::ClaudeCode,
+                title: Some("Blue header".into()),
+                workflow_id: None,
+                steps: Vec::new(),
+                model: None,
+                effort: None,
+                origin: TaskOrigin::Ui,
+                automation_run: None,
+                start: true,
+                mode: TaskMode::Goal,
+            })
+            .await?
+            .id;
+        wait_for("the goal to start", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "GOAL SET")
+        })
+        .await?;
+        app.send_input(&id, b"hello\r").await?;
+        wait_for("the continued run", Duration::from_secs(90), || async {
+            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+            attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
+        })
+        .await?;
+        let launch = std::fs::read_to_string(
+            Path::new(&app.deps.store.attempts(&id).await?[1].run_dir).join("fake-launch.txt"),
+        )?;
+        assert!(launch.contains("continue_interrupted: true"), "{launch}");
+        // The new run's screen only: its continued turn, then the goal.
+        wait_for(
+            "the goal after the continued turn",
+            Duration::from_secs(90),
+            || {
+                let app = app.clone();
+                let id = id.clone();
+                async move {
+                    let screen = app.runtime(&id).hub.screen_text();
+                    screen
+                        .find("DONE opening")
+                        .is_some_and(|done| screen[done..].contains("GOAL SET"))
+                }
+            },
+        )
+        .await?;
+        let screen = app.runtime(&id).hub.screen_text();
+        let done = screen.find("DONE opening").ok_or_else(|| screen.clone())?;
+        let typed = screen.find("/goal ").ok_or_else(|| screen.clone())?;
+        assert!(
+            done < typed,
+            "the goal was typed during the continued turn:\n{screen}"
+        );
+        assert_eq!(screen.matches("GOAL SET").count(), 1, "{screen}");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-030 PIMG-002: a prompt-mode task with an attached image starts with no command-line
 /// prompt; its first message is typed into the TUI with the image pasted (`[Image #1]`, as
 /// Claude Code attaches a pasted image) and the other files mentioned.
