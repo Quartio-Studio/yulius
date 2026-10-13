@@ -385,6 +385,10 @@ button.task-group-head:hover { color: var(--text); }
 /* The menu's button stays visible while its menu is open, so Escape can return focus to it. */
 .task-row:hover .task-kebab, .task-row:focus-within .task-kebab, .task-kebab[aria-expanded="true"] { visibility: visible; }
 .task-row:hover .task-age, .task-row:focus-within .task-age { visibility: hidden; }
+/* Quick Archive (SPEC-062): left of the menu's button, shown with it. */
+.task-quick-archive { position: absolute; right: calc(8px + var(--control-sm)); top: 4px; width: var(--control-sm); height: var(--control-sm); visibility: hidden; background: var(--surface-3); }
+.task-quick-archive[hidden] { display: none; }
+.task-row:hover .task-quick-archive, .task-row:focus-within .task-quick-archive { visibility: visible; }
 .sidebar-foot { padding: 6px; border-top: 1px solid var(--border); }
 .sidebar-foot .user-btn { gap: 12px; padding: 0 12px; border-radius: var(--radius-lg); font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 500; }
 .sidebar-foot .avatar { width: 32px; height: 32px; margin: 0 2px; font-size: var(--fs-sm); line-height: var(--lh-sm); }
@@ -1905,6 +1909,8 @@ a.dl-task:hover { text-decoration: underline; }
   /* Touch: the row's actions and the notification buttons are full-size targets. */
   .task-link { height: var(--control-xl); padding: 0 48px 0 12px; }
   .task-kebab { visibility: visible; top: 0; right: 2px; width: var(--control-xl); height: var(--control-xl); background: transparent; }
+  /* One row action on a phone: Archive is in the menu (SPEC-062 QAR-004). */
+  .task-quick-archive { display: none; }
   .notif-head .btn-sm { height: var(--control-xl); padding: 0 12px; }
   .nav-item { height: var(--control-xl); }
 

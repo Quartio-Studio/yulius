@@ -3,9 +3,9 @@
 
 import { h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip } from './dom.js';
 import { relShort, relLong, bytes, duration, dateTime, resetLabel } from './format.js';
-import { taskInfo, activityLine, allows } from './status.js';
+import { taskInfo, taskActions, activityLine, allows } from './status.js';
 import { href } from './router.js';
-import { openSandboxDialog, confirmRemoveSandbox, openTaskMenu } from './actions.js';
+import { openSandboxDialog, confirmRemoveSandbox, openTaskMenu, archiveTask } from './actions.js';
 import { createNotificationCenter } from './notifications.js';
 import { BRAND } from './brand.js';
 import { readJson, writeJson } from './store.js';
@@ -699,13 +699,15 @@ export function createSidebar(ctx) {
         event.stopPropagation();
         openTaskMenu(ctx, kebab, row.task);
       }, { class: 'task-kebab', 'aria-haspopup': 'menu' });
-      const el = h('div', { class: 'task-row', role: 'listitem' }, link, kebab);
+      // One click archives a task that can be (SPEC-062 QAR-001), as the menu's Archive does.
+      const archive = iconButton('archive', 'Archive task', () => archiveTask(ctx, row.task), { class: 'task-quick-archive' });
+      const el = h('div', { class: 'task-row', role: 'listitem' }, link, archive, kebab);
       el.addEventListener('contextmenu', (event) => {
         event.preventDefault();
         openTaskMenu(ctx, { x: event.clientX, y: event.clientY }, row.task);
       });
       link.addEventListener('click', () => document.body.classList.remove('drawer-open'));
-      row = { el, link, mark, chips, title, age, sub, task };
+      row = { el, link, mark, chips, title, age, sub, archive, task };
       rows.set(task.id, row);
     }
     row.task = task;
@@ -713,7 +715,7 @@ export function createSidebar(ctx) {
     // Repaint only a row whose content would change (PERF-02): the key holds all it shows.
     const active = Boolean(route && route.name === 'task' && route.number === task.number);
     row.pr = ctx.store.pullsOf(sandbox.id).get(task.id) || null;
-    const key = JSON.stringify([task, row.info, active, relShort(task.updated_at), sandbox.slug, row.pr]);
+    const key = JSON.stringify([task, row.info, active, relShort(task.updated_at), sandbox.slug, sandbox.access, row.pr]);
     if (row.key !== key) {
       row.key = key;
       paintRow(row, active);
@@ -739,6 +741,10 @@ export function createSidebar(ctx) {
     row.sub.textContent = `, ${activityLine(task, info)}`;
     row.age.textContent = relShort(task.updated_at);
     row.age.title = `Last change ${dateTime(task.updated_at)}`;
+    const label = `Archive task #${task.number}`;
+    row.archive.hidden = !taskActions(task, sandbox.access, row.pr).archive;
+    row.archive.setAttribute('aria-label', label);
+    row.archive.title = label;
   }
 
   function groupHead(group, size) {
