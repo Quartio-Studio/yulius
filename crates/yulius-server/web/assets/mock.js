@@ -609,7 +609,9 @@ route('POST', '/api/sandboxes', ({ db, body }) => {
     access: 'admin', default_branch: 'main',
     profile: clone(PRESETS.standard),
     // An imported repository that does not follow the documentation format gets a resting
-    // preparation task; created projects start from a conforming template.
+    // preparation task; created projects start from a conforming template. The real server starts
+    // a browser import's onboarding at once; the mock leaves it `pending`, standing in for a
+    // repository added with `yulius onboard` (SPEC-051), so Start onboarding can be tested.
     onboarding: body.mode === 'import' ? 'pending' : 'not_needed',
     port_base: 20000 + db.sandboxes.length * 20, port_count: 20, counts: { running: 0, needs_attention: 0, queued: 0 },
   };

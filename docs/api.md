@@ -155,8 +155,8 @@ it holds the caller's earlier copy, `taken` = another person uploaded a session 
 branches become `import/<login>/<branch>`; the snapshot is committed on
 `import/<login>/snapshot-<YYYY-MM-DD>[-n]` created from the client's `HEAD`; each session is
 stored as a read-only session document of the sandbox attributed to the caller (a changed one
-replaces the caller's copy); then the sandbox's preparation task starts when it waits. Only Claude
-Code sessions are imported.
+replaces the caller's copy). It never starts onboarding: a `pending` sandbox waits for Start
+onboarding in the browser (SPEC-051). Only Claude Code sessions are imported.
 
 `PATCH /api/sandboxes/{sid}` validates the profile (branch names, distinct branches, environment
 names, single-line commands ≤ 2000 bytes, `verify: command` needs a command, ≤ 8 environments) and
