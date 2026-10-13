@@ -100,7 +100,7 @@ file, and the limit-resume paths SPEC-034 left untested have tests (#278).
 
 ## Decisions
 
-- **The CLI's continuation wins** (ADR-0051): agent work after the pause started is proof the CLI
+- **The CLI's continuation wins** (ADR-0052): agent work after the pause started is proof the CLI
   went on by itself, so the `limit` pause ends like a held turn the CLI gave up. Rejected: making a
   limit resume interrupt instead of terminate while a turn runs (it would still restart a session
   that is working, and an interrupt can cancel a tool call too). Residual race: the resume loop
@@ -109,7 +109,7 @@ file, and the limit-resume paths SPEC-034 left untested have tests (#278).
   harmless: no tool has started, and the continued resume redoes the request. The harmful window is
   a tool call already started but not yet read: one transcript poll (≈ 1 s). The loop rechecks the
   pause just before it switches, and the switch requires the task to still wait for capacity.
-- **A refused limit switch is remembered in the run's runtime, not as a pause** (ADR-0051): a
+- **A refused limit switch is remembered in the run's runtime, not as a pause** (ADR-0052): a
   `limit` pause would show the task waiting for capacity it has, and the resume loop would retry a
   switch that preflight refuses every round. The marker follows the transcript: a limit sets it, a
   prompt, agent work or a turn's end clears it, a new run clears it. Known limit: a restart

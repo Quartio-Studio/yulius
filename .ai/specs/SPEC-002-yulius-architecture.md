@@ -788,7 +788,7 @@ Claude Code continues that turn by itself at the reset, a prompt, interrupt, age
 written after the pause started ends the pause (`overtaken`), and the resume loop ends a paused run
 only while its pause is still open; a limit replayed after a restart counts only if no turn
 follows it. A person's switch of a task left at its limit by a refused automatic
-switch also resumes past the limit (SPEC-072, ADR-0051). The harness never sends text on its own
+switch also resumes past the limit (SPEC-072, ADR-0052). The harness never sends text on its own
 after a pause.
 
 **Resume.** One loop (`App::start_capacity_loop`) wakes on usage readings, an added or removed

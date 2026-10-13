@@ -53,10 +53,10 @@ title whose number differs from the file name, and a record this index does not 
 - [0041](0041-administrators-reset-a-lost-two-factor.md): Administrators reset a lost two-factor; a code confirms only the seed it was checked against
 - [0047](0047-device-sign-in-start-is-limited-and-bounded.md): Device sign-in start is limited per client, its grants bounded and purged
 - [0050](0050-a-run-ends-only-when-its-host-is-proven-gone.md): A stopped or closed run ends only when its host is proven gone
-- [0051](0051-the-clis-own-continuation-ends-a-limit-pause.md): The CLI's own continuation ends a limit pause; a refused limit switch is remembered per run
 - [0042](0042-personal-two-factor-guards-the-vault.md): A personal two-factor code guards the vault; a secret is a title, a value and notes
 - [0043](0043-archive-all-runs-the-per-task-archive.md): "Archive all" runs the per-task archive; no bulk endpoint
 - [0044](0044-task-status-follows-claude-codes-own-records.md): A task's status follows Claude Code's own records
 - [0048](0048-armed-merge-state-under-one-lock.md): An armed merge, its decisions and its outcome are one value under one lock
 - [0049](0049-management-tools-cover-the-task-and-automation-lifecycle.md): Management tools cover the task and automation lifecycle, never the caller's own task
 - [0051](0051-the-merge-gate-enforces-the-branch-policy.md): Yulius's merge gate enforces the branch policy
+- [0052](0052-the-clis-own-continuation-ends-a-limit-pause.md): The CLI's own continuation ends a limit pause; a refused limit switch is remembered per run
