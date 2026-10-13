@@ -939,7 +939,10 @@ route('DELETE', `/api/tasks/${ID}`, ({ db, p }) => {
   emit(db, { type: 'task.removed', task_id: task.id });
   return json(204);
 });
-route('POST', `/api/tasks/${ID}/archive`, ({ db, p }) => {
+route('POST', `/api/tasks/${ID}/archive`, async ({ db, p }) => {
+  // Tests count the requests and can hold the answers (`__yuliusMock.holdArchive = promise`).
+  db.archiveRequests = (db.archiveRequests || 0) + 1;
+  if (db.holdArchive) await db.holdArchive;
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
   // A finished task (Done by the sidebar's rule, the server's task_is_done) is closed as it is

@@ -744,21 +744,24 @@ export function createSidebar(ctx) {
     row.age.title = `Last change ${dateTime(task.updated_at)}`;
     const label = `Archive task #${task.number}`;
     row.archive.hidden = !taskActions(task, sandbox.access, row.pr).archive;
+    row.el.classList.toggle('can-archive', !row.archive.hidden);
     row.archive.setAttribute('aria-label', label);
     row.archive.title = label;
   }
 
-  const archivable = (rows) => rows.filter((row) => taskActions(row.task, sandbox.access, row.pr).archive).map((row) => row.task);
+  const archivable = (groupRows) => groupRows.filter((row) => taskActions(row.task, sandbox.access, row.pr).archive).map((row) => row.task);
 
-  /** Done's "Archive all" (SPEC-062 QAR-002): every archivable Done task, one click, one Undo. */
-  function archiveAllButton(rows) {
-    if (!archivable(rows).length) return null;
-    return h('button', { type: 'button', class: 'btn btn-sm btn-ghost task-group-action', disabled: archivingAll, title: 'Archive every Done task', onClick: async () => {
-      const tasks = archivable(rows);
+  /**
+   * Done's "Archive all" (SPEC-062 QAR-002): every archivable Done task, one click, one Undo. While
+   * it runs it stays focusable but inert (aria-disabled), so the keyboard stays on it.
+   */
+  function archiveAllButton(groupRows) {
+    if (!archivable(groupRows).length) return null;
+    const button = h('button', { type: 'button', class: 'btn btn-sm btn-ghost task-group-action', 'aria-disabled': archivingAll ? 'true' : null, title: 'Archive every Done task', onClick: async () => {
+      const tasks = archivable(groupRows);
       if (archivingAll || !tasks.length) return;
       archivingAll = true;
-      shape = '';
-      renderTasks();
+      button.setAttribute('aria-disabled', 'true');
       try {
         await archiveAll(ctx, tasks, 'Done task');
       } finally {
@@ -767,12 +770,13 @@ export function createSidebar(ctx) {
         renderTasks();
       }
     } }, icon('archive', { size: 14 }), 'Archive all');
+    return button;
   }
 
-  function groupHead(group, rows) {
-    const size = rows.length;
+  function groupHead(group, groupRows) {
+    const size = groupRows.length;
     const label = [h('span', { class: 'nav-slot' }, icon(group.icon, { size: 16 })), h('span', { class: 'task-group-name' }, group.name), h('span', { class: 'task-group-count' }, String(size))];
-    if (group.id === 'done') return h('div', { class: ['task-group-head', `group-${group.id}`] }, label, archiveAllButton(rows));
+    if (group.id === 'done') return h('div', { class: ['task-group-head', `group-${group.id}`] }, label, archiveAllButton(groupRows));
     if (group.id !== 'ended') return h('div', { class: ['task-group-head', `group-${group.id}`] }, label);
     return h('button', { type: 'button', class: ['task-group-head', 'group-ended'], 'aria-expanded': String(endedOpen), onClick: () => {
       endedOpen = !endedOpen;
@@ -824,9 +828,13 @@ export function createSidebar(ctx) {
     const next = `${sandbox.access}|${GROUPS.map((g) => `${g.id}:${g.id === 'ended' && !endedOpen ? 'closed' : ''}:${grouped.get(g.id).map((r) => r.task.id).join(',')}`).join('|')}`;
     if (next === shape) return;
     shape = next;
+    // "Archive all" is rebuilt as its rows leave: the keyboard stays on it (SPEC-062).
+    const onArchiveAll = Boolean(document.activeElement && document.activeElement.classList.contains('task-group-action'));
     setChildren(list, GROUPS.filter((g) => grouped.get(g.id).length).map((g) => h('section', { class: ['task-group', `group-${g.id}`], 'aria-label': g.name },
       groupHead(g, grouped.get(g.id)),
       g.id === 'ended' && !endedOpen ? null : h('div', { role: 'list' }, grouped.get(g.id).map((r) => r.el)))));
+    const again = onArchiveAll ? list.querySelector('.task-group-action') : null;
+    if (again) again.focus({ preventScroll: true });
   }
 
   const repaint = coalesce(() => renderTasks(), { minInterval: 150 });

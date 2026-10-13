@@ -168,16 +168,23 @@ async function eachBounded(items, run) {
  * and one error toast for those that failed.
  */
 export async function archiveAll(ctx, tasks, what) {
+  // A task already being archived (its row's button, its menu) is left to that request; the
+  // others are marked in flight, so those buttons send nothing more meanwhile.
+  const own = tasks.filter((task) => !inFlight.has(`${task.id}:archive`));
+  own.forEach((task) => inFlight.add(`${task.id}:archive`));
   const archived = [];
-  const failed = await eachBounded(tasks, async (task) => {
-    const updated = await ctx.api.post(`/api/tasks/${enc(task.id)}/archive`);
-    if (updated && updated.id) ctx.store.upsertTask(updated);
-    ctx.store.removeTask(task.id, { byUser: true });
-    archived.push(task);
+  const failed = await eachBounded(own, async (task) => {
+    try {
+      const updated = await ctx.api.post(`/api/tasks/${enc(task.id)}/archive`);
+      if (updated && updated.id) ctx.store.upsertTask(updated);
+      ctx.store.removeTask(task.id, { byUser: true });
+      archived.push(task);
+    } finally {
+      inFlight.delete(`${task.id}:archive`);
+    }
   });
   if (archived.length) {
-    const n = archived.length;
-    toast(`Archived ${n} ${what}${n === 1 ? '' : 's'}.`, { kind: 'ok', action: { label: 'Undo', run: () => restoreAll(ctx, archived) } });
+    toast(`Archived ${counted(archived.length, what)}.`, { kind: 'ok', action: { label: 'Undo', run: () => restoreAll(ctx, archived) } });
     // The tasks are one sandbox's (one sidebar group): leave the page of one that was archived.
     const route = ctx.route();
     const sandbox = ctx.store.sandboxById(archived[0].sandbox_id);
@@ -185,7 +192,7 @@ export async function archiveAll(ctx, tasks, what) {
       ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}`);
     }
   }
-  if (failed.length) errorToast(failed[0].error, `Couldn’t archive ${failed.length} of ${tasks.length} tasks`);
+  if (failed.length) errorToast(failed[0].error, `Couldn’t archive ${failed.length} of ${counted(own.length, 'task')}`);
 }
 
 /** Undo of "Archive all": restores the tasks it archived, with one toast. */
@@ -195,9 +202,12 @@ async function restoreAll(ctx, tasks) {
     if (updated && updated.id) ctx.store.upsertTask(updated);
   });
   const restored = tasks.length - failed.length;
-  if (restored) toast(`Restored ${restored} task${restored === 1 ? '' : 's'}.`, { kind: 'ok' });
-  if (failed.length) errorToast(failed[0].error, `Couldn’t restore ${failed.length} of ${tasks.length} tasks`);
+  if (restored) toast(`Restored ${counted(restored, 'task')}.`, { kind: 'ok' });
+  if (failed.length) errorToast(failed[0].error, `Couldn’t restore ${failed.length} of ${counted(tasks.length, 'task')}`);
 }
+
+/** "1 task", "2 tasks". */
+const counted = (n, noun) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 
 // ---------------------------------------------------------------- feedback
 
