@@ -786,6 +786,14 @@ export function createSidebar(ctx) {
     } }, label, icon(endedOpen ? 'down' : 'right', { size: 12 }));
   }
 
+  /** A selector for the rebuilt copy of a group's head or "Archive all" (null for a row). */
+  function sameControl(el) {
+    const kind = ['task-group-action', 'task-group-head'].find((name) => el.classList.contains(name));
+    const group = kind && el.closest('.task-group');
+    const id = group && GROUPS.find((g) => group.classList.contains(`group-${g.id}`));
+    return id ? `.task-group.group-${id.id} .${kind}` : null;
+  }
+
   function renderTasks() {
     if (!sandbox) {
       shape = '';
@@ -828,15 +836,19 @@ export function createSidebar(ctx) {
     const next = `${sandbox.access}|${GROUPS.map((g) => `${g.id}:${g.id === 'ended' && !endedOpen ? 'closed' : ''}:${grouped.get(g.id).map((r) => r.task.id).join(',')}`).join('|')}`;
     if (next === shape) return;
     shape = next;
-    // The keyboard stays in the list across a rebuild (SPEC-062): on "Archive all" while its rows
-    // leave, on the same row if it is still listed, else on the first task left.
+    // The keyboard stays in the list across a rebuild (SPEC-062): on the same control (a group's
+    // head or "Archive all", rebuilt here), on the same row if it is still listed, else on the
+    // row next to the one that left, else on the first task.
     const focused = list.contains(document.activeElement) ? document.activeElement : null;
-    const onArchiveAll = Boolean(focused && focused.classList.contains('task-group-action'));
+    const control = focused ? sameControl(focused) : null;
+    const row = focused && focused.closest('.task-row');
+    const neighbours = row ? [row.nextElementSibling, row.previousElementSibling].map((el) => el && el.querySelector('.task-link')) : [];
     setChildren(list, GROUPS.filter((g) => grouped.get(g.id).length).map((g) => h('section', { class: ['task-group', `group-${g.id}`], 'aria-label': g.name },
       groupHead(g, grouped.get(g.id)),
       g.id === 'ended' && !endedOpen ? null : h('div', { role: 'list' }, grouped.get(g.id).map((r) => r.el)))));
-    if (focused && !list.contains(document.activeElement)) {
-      const target = (onArchiveAll && list.querySelector('.task-group-action')) || (list.contains(focused) ? focused : null) || list.querySelector('a.task-link, button.task-group-head');
+    if (focused && document.activeElement !== focused) {
+      const target = [control && list.querySelector(control), focused, ...neighbours].find((el) => el && list.contains(el))
+        || list.querySelector('a.task-link, button.task-group-head');
       if (target) target.focus({ preventScroll: true });
     }
   }

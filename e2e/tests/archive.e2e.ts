@@ -150,8 +150,39 @@ test('read access shows neither the quick Archive nor Archive all', async ({ app
   await row.hover();
   await expect(row.getByRole('button', 'Task actions')).toBeVisible();
   await expect(browser.locator('.task-row:has-text("Explore data model") .task-quick-archive')).toBeHidden();
-  // Its other task is Done: the group is there, without Archive all.
+  // Now Done: the group is there, without Archive all.
   await browser.evaluate(() => (window as unknown as WithMock).__yuliusMock.touchTask('sb_three', 1, { status: 'running', activity: 'done' }));
   await expect(screen.getByRole('region', 'Done').getByRole('link', /Explore data model/)).toBeVisible();
   await expect(screen.getByRole('button', 'Archive all')).toHaveCount(0);
+});
+
+test('the keyboard stays on its control when the sidebar list is rebuilt', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await mockReady(browser);
+  // The Stopped toggle keeps the keyboard: Enter folds it, Enter again unfolds it, no task opens.
+  const stopped = screen.getByRole('region', 'Stopped').getByRole('button', /Stopped/);
+  await stopped.focus();
+  await browser.keyboard.press('Enter');
+  await expect(stopped).toHaveAttribute('aria-expanded', 'false');
+  await expect(stopped).toBeFocused();
+  await browser.keyboard.press('Enter');
+  await expect(stopped).toHaveAttribute('aria-expanded', 'true');
+  await expect(stopped).toBeFocused();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+
+  // A row keeps it while another task changes group.
+  const link = screen.getByRole('region', 'Working').getByRole('link', /Checkout API/);
+  await link.focus();
+  await browser.evaluate(() => (window as unknown as WithMock).__yuliusMock.touchTask('sb_studio', 14, { background_shells: 0 }));
+  await expect(screen.getByRole('region', 'Done').getByRole('link', /Start the preview server/)).toBeVisible();
+  await expect(link).toBeFocused();
+
+  // After a quick Archive the keyboard moves to the next row of the group.
+  await browser.locator('.task-row:has-text("Start the preview server")').hover();
+  const quick = screen.getByRole('button', /Archive task #(13|14)/).first();
+  const name = await quick.getAttribute('aria-label');
+  await quick.focus();
+  await browser.keyboard.press('Enter');
+  await expect(screen.getByText(`Task ${name!.replace('Archive task ', '')} archived.`)).toBeVisible();
+  await expect.poll(() => browser.evaluate(() => document.activeElement?.closest('.task-group')?.getAttribute('aria-label'))).toBe('Done');
 });
