@@ -136,7 +136,15 @@ pub enum Observation {
     /// Claude Code recorded the session goal's state (TSK-014).
     Goal(GoalOutcome),
     /// Claude Code closed a turn after its Stop hooks (only used to reduce a replay).
-    TurnEnded,
+    TurnEnded {
+        /// Background agents Claude Code still waits for; `None` when it does not say.
+        background_agents: Option<u32>,
+    },
+    /// The agent works: an assistant line that is not a turn's end.
+    AgentWork {
+        /// When it was recorded, if known.
+        at: Option<Timestamp>,
+    },
     /// The provider reported a usage limit.
     LimitReached {
         /// Reset time if known.

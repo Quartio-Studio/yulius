@@ -61,8 +61,9 @@ pub struct TaskSummary {
     /// resets and the task resumes, RFC 3339 (ROT-010). Null otherwise or when unknown.
     #[serde(default)]
     pub resumes_at: Option<String>,
-    /// While the agent is idle (`waiting` or `done`): background shells it left running, as last
-    /// probed (TSK-014). Null when not known or not idle.
+    /// While the agent is idle (`waiting` or `done`): background work it left running: shells, as
+    /// last probed (TSK-014), and the background agents Claude Code still waited for at its last
+    /// turn end (SPEC-032), whichever is more. Null when not known or not idle.
     #[serde(default)]
     pub background_shells: Option<u32>,
     /// Since when those shells have been running, RFC 3339 (complaint 1: a wait that never

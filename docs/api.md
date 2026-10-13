@@ -261,8 +261,9 @@ default) to 3, so 9 of 10 equal steps is 90 and a plan whose one big step is ope
 `activity` is `done` when Claude Code recorded the task's goal as achieved and the turn ended
 cleanly (TSK-014); the session stays open, and any new prompt makes it `working` again.
 `background_shells` is set while the agent is idle (`waiting` or `done`): the Bash-tool shells it
-left running (Claude Code's "· 1 shell"), probed every 5 s; null when not known. The UI shows a
-`done` task as Done only when no shell is running ("Working · 1 background shell still running"
+left running (Claude Code's "· 1 shell", probed every 5 s) and the background agents its last turn
+end said it waits for (`turn_duration.pendingBackgroundAgentCount`, SPEC-032); null when not known.
+The UI shows a `done` task as Done only when no such background work is running ("Working · 1 background task still running"
 otherwise), and applies the same shell condition to Done by a tested pull request.
 
 ```json
@@ -817,7 +818,7 @@ resolves to nothing, the run gets the server without that variable or token.
     ends when its process exits (the server sends `exit` and closes), when it is closed, or after
     24 h without viewers; it keeps running across a server restart. Shells never change tasks.
 - Cockpit (SPEC-021, ADR-0020): every user's own plain Claude Code session per sandbox, a shell
-  of kind `cockpit`.
+  of kind `cockpit`; the web UI calls it the Agent and shows it in the right panel (SPEC-035).
   - `POST /api/sandboxes/{sid}/cockpit` (write) → 200 `Shell` (`name` "Cockpit"): the caller's
     running Cockpit, or a new one started (concurrent calls start one) as `claude [--resume
     <newest conversation>] --model claude-opus-5-5 --effort high` (SPEC-023) in the sandbox
@@ -1022,34 +1023,42 @@ helper's health check.
 SPEC-001 VLT-001..009, SPEC-002 ADR-20. Values are never logged; responses that carry one have
 `Cache-Control: no-store`.
 
-**Team secrets** — every signed-in member.
+**Team secrets** — every signed-in member. A team secret is a title, a value and notes (SPEC-040).
 
 | Method | Path | Body → Response |
 | --- | --- | --- |
-| GET | `/api/team-secrets` | → `[TeamSecret]`: `{id, title, url, username, has_password, has_notes, has_totp, created_by, updated_by, updated_at, value_updated_at, rotate_due}` (never a password, notes or seed) |
-| POST | `/api/team-secrets` | `{title, url?, username?, password?, notes?, totp?}` → 201 `TeamSecret`. `totp`: base32 or `otpauth://totp/…` (422 otherwise) |
+| GET | `/api/team-secrets` | → `[TeamSecret]`: `{id, title, has_value, has_notes, created_by, updated_by, updated_at, value_updated_at, rotate_due}` (never a value or notes) |
+| POST | `/api/team-secrets` | `{title, value?, notes?}` → 201 `TeamSecret` (any other field: 422) |
 | PATCH | `/api/team-secrets/{id}` | the same fields, each optional: absent keeps, `""` clears → `TeamSecret` |
 | DELETE | `/api/team-secrets/{id}` | → 204 |
-| POST | `/api/team-secrets/{id}/reveal` | `{purpose?: "show"\|"copy", fields?: ["password","notes","totp"]}` → `{password, notes, totp}` (only the asked, stored fields). Audited (`vault.team.reveal` / `vault.team.copy`) |
-| POST | `/api/team-secrets/{id}/totp` | → `{code, period, remaining}`. Audited (`vault.team.totp`) |
-| GET | `/api/auth/reauth` | → `{fresh, fresh_until, methods}`; `methods` ⊆ `["password", "github"]` |
-| POST | `/api/auth/reauth` | `{password}` (the superadmin) → the status; 403 for a wrong password (audited; the session stays signed in) or an account without a password, 429 after 5 attempts a minute |
-| GET | `/api/secrets/activity?limit=100` | → `[{at, actor, action, secret_id, detail}]`, newest first (≤ 500); an agent secret's entries only for members who can view its sandbox |
+| POST | `/api/team-secrets/{id}/reveal` | `{purpose?: "show"\|"copy", fields?: ["value","notes"]}` → `{value, notes}` (only the asked, stored fields). Audited (`vault.team.reveal` / `vault.team.copy`) |
 
-Reveal and TOTP need a **fresh re-authentication**: the browser session was created, or
-re-authenticated, within the last 10 minutes. Otherwise they answer `403`
-`{"error": {"code": "reauth_required", …}, "reauth": {fresh, fresh_until, methods}}`; the client
-confirms with `POST /api/auth/reauth` (password) or by signing in with GitHub again
-(`/api/auth/github/start?next=<page>`), then retries. Bearer tokens never reveal (403).
-
-**Agent secrets** — values are write-only (never returned).
+**Two-factor** — the vault's lock (SPEC-040, ADR-0034), per person.
 
 | Method | Path | Body → Response |
 | --- | --- | --- |
-| GET | `/api/sandboxes/{sid}/agent-secrets` | (read) → `[AgentSecret]`: `{id, name, description, scope ("sandbox"\|"instance"), hosts, injection, header_name, injection_text, placeholder, has_username, has_totp, created_by, updated_at, value_updated_at, last_used_at, rotate_due, can_manage}` — the sandbox's and the instance-wide ones |
-| POST | `/api/sandboxes/{sid}/agent-secrets` | `{scope?: "sandbox"\|"instance", name, description?, hosts: [..], injection?: "none"\|"bearer"\|"basic"\|"header", header_name?, username?, value, totp?}` → 201. Sandbox scope: write access; instance: instance administrators. `name` is `[A-Z][A-Z0-9_]*` (not a reserved environment name); `hosts` 1–16 of `api.example.com`, `*.example.com`, optionally `:port`; `value` ≥ 8 characters without line breaks; `basic` needs `username`. 409 when the name already applies to the sandbox |
-| PATCH | `/api/agent-secrets/{id}` | any of `name, description, hosts, injection, header_name, username, value, totp` → `AgentSecret` (`value` replaces it; `""` clears `username`/`totp`) |
+| GET | `/api/auth/reauth` | → `{fresh, fresh_until, two_factor, identity_fresh, methods}`: `fresh` = unlocked; `two_factor` is `missing`, `pending`, `on` or `locked` (10 wrong codes in a row, until identity is confirmed again); `identity_fresh` = signed in or confirmed in the last 10 minutes; `methods` ⊆ `["password", "github"]` (identity confirmation) |
+| POST | `/api/auth/reauth` | `{password}` (the superadmin) confirms identity → the status; 403 for a wrong password (audited; the session stays signed in) or an account without a password, 429 after 5 attempts a minute |
+| POST | `/api/auth/two-factor` | → 201 `{secret, uri}`: a new base32 seed and its `otpauth://totp/…` link (replaces a pending one). Needs `identity_fresh` (else 403 `reauth_required`); 409 once confirmed; 429 after 5 a minute. Audited (`vault.2fa.setup`) |
+| POST | `/api/auth/unlock` | `{code}` → the status: unlocks this browser session for 10 minutes; the first code confirms the setup (`vault.2fa.confirm`, later `vault.unlock`). 403 for a wrong or reused code (`vault.unlock.failed`; the 10th wrong code in a row locks codes, `vault.2fa.locked`, until `POST /api/auth/reauth` or a new GitHub sign-in) and while locked, 422 without two-factor, 429 after 5 attempts a minute |
+| GET | `/api/secrets/activity?limit=100` | → `[{at, actor, action, secret_id, detail}]`, newest first (≤ 500); an agent secret's entries only for members who can view its sandbox |
+
+A reveal needs the vault **unlocked** in this browser session. Otherwise it answers `403`
+`{"error": {"code": "reauth_required", …}, "reauth": <status>}`; the client sets two-factor up
+when `two_factor` is not `on` (confirming identity first with `POST /api/auth/reauth` or a new
+GitHub sign-in, `/api/auth/github/start?next=<page>`, when `identity_fresh` is false), sends a
+code to `POST /api/auth/unlock`, then retries. Bearer tokens never set up, unlock or reveal (403).
+
+**Agent secrets** — agents use values without seeing them; the people who manage one read it
+after an unlock.
+
+| Method | Path | Body → Response |
+| --- | --- | --- |
+| GET | `/api/sandboxes/{sid}/agent-secrets` | (read) → `[AgentSecret]`: `{id, name, description, scope ("sandbox"\|"instance"), hosts, injection, header_name, injection_text, placeholder, has_username, has_totp, created_by, updated_at, value_updated_at, last_used_at, rotate_due, can_manage}` — the sandbox's and the instance-wide ones (`has_totp`: only older secrets) |
+| POST | `/api/sandboxes/{sid}/agent-secrets` | `{scope?: "sandbox"\|"instance", name, description?, hosts: [..], injection?: "none"\|"bearer"\|"basic"\|"header", header_name?, username?, value}` → 201. Sandbox scope: write access; instance: instance administrators. `name` is `[A-Z][A-Z0-9_]*` (not a reserved environment name); `hosts` 1–16 of `api.example.com`, `*.example.com`, optionally `:port`; `value` ≥ 8 characters without line breaks; `username` only for (and required by) `basic`. 409 when the name already applies to the sandbox |
+| PATCH | `/api/agent-secrets/{id}` | any of `name, description, hosts, injection, header_name, username, value` → `AgentSecret` (`value` replaces it; `""` clears `username`) |
 | DELETE | `/api/agent-secrets/{id}` | → 204 |
+| POST | `/api/agent-secrets/{id}/reveal` | `{purpose?, fields?: ["value","notes"]}` → `{value, notes}` (`notes` = the description, led by a stored user name and, for older secrets, `Two-factor seed: …`) for people who manage it, after an unlock (403 `reauth_required` otherwise; 403 for readers, 404 without access). Audited (`vault.agent.reveal` / `vault.agent.copy`) |
 
 ## UI event stream
 

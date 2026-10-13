@@ -2965,6 +2965,47 @@ async fn an_armed_merge_is_kept_current_and_merged_on_green() -> TestResult {
     Ok(())
 }
 
+/// DLV-205: an armed merge survives a restart. It is saved when armed and put back for a running
+/// task at startup (a deploy dropped them all, and agents waited for merges that no longer
+/// existed).
+#[tokio::test]
+async fn an_armed_merge_survives_a_restart() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let f = &t.f;
+    let task = TaskId::parse("t1")?;
+    f.h.store
+        .transition_task(
+            &task,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+    t.arm().await?;
+    let file =
+        f.h.app
+            .config
+            .data_dir
+            .join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+    let saved = std::fs::read_to_string(&file)?;
+    assert!(
+        saved.contains("\"t1\"") && saved.contains(&t.head),
+        "{saved}"
+    );
+
+    // A new server process reads it back (simulated: the saved entry, restored).
+    f.h.app.restore_armed_merges().await;
+    assert_eq!(t.wait(Value::Null).await?["merge_armed"], true);
+
+    // Decided (merged): the entry goes.
+    f.h.github.set_checks(&t.head, ChecksState::Success);
+    f.h.app.merge_armed(&SandboxId::parse("s1")?).await;
+    assert_ne!(f.delivery("t1").await?["stage"], "pr_open");
+    assert!(!std::fs::read_to_string(&file)?.contains("\"t1\""));
+    Ok(())
+}
+
 /// DLV-204: when the end of a turn delivers nothing because a step is still open, `yulius wait`
 /// says so instead of waiting for a push that never comes (#34 waited 42 minutes).
 #[tokio::test]

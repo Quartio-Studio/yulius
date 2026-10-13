@@ -22,6 +22,23 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- Armed merges survive a server restart (a deploy no longer drops them) (SPEC-050 DLV-205).
+- Secrets are a title, a value and notes, and reading one needs your own two-factor code
+  (SPEC-040, ADR-0034, task #39). The first reveal sets two-factor up: an authenticator key and
+  link, confirmed by a first code. After that, a code unlocks the vault in that browser for 10
+  minutes. A sign-in or password alone no longer reveals anything. Older team secrets keep every
+  field: the password becomes the value, and the address, user name and seed move into the
+  notes. Agent secrets lose the per-secret seed and take a user name only for Basic credentials.
+  The people who manage an agent secret can now read it after a code. Agents still never see it.
+  Ten wrong codes in a row lock codes until the person confirms it is them again. Rolling back
+  past this change needs care: the previous release reads secrets saved in the new form as
+  having no password, and an edit there would drop the value.
+- The Cockpit is now the **Agent**, on the right (SPEC-035, ADR-0034; task #33): a top-bar Agent
+  button and the first tool of the right rail open the user's own Claude Code session in the tool
+  panel beside the page, under a notice that it is for quick work (setting up automations, quick
+  questions) and that anything more complex, such as writing code, belongs in a task (with a New
+  task link). It is no longer in the left sidebar; `/s/<slug>/agent` and the old
+  `/s/<slug>/cockpit` open the panel. The API and server keep the `cockpit` names.
 - A sandbox's default memory limit is the host's memory but a reserve (an eighth, at least 4 GiB),
   not half: at half, ten sessions and two CI lanes thrashed the page cache while the host had 20 GB
   free, and CI jobs timed out (SPEC-050 MEM-101).
@@ -96,6 +113,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   CI (tests), Secrets and Dashboard, then "More", which expands Sessions, Workflows, Skills,
   Automations and MCP in place. Its state is remembered per browser; arriving at one of those
   pages shows it open for that page.
+- A task's status follows what its agent is doing (SPEC-032, ADR-0034; task #30): a task whose
+  agent ended its turn but still waits for a background agent (a reviewer) is Working with "1
+  background task still running", not Done; a goal check that says "not met", or any stop the
+  session goes on from, makes the task Working again instead of leaving "Your turn" (or Done);
+  informational Claude Code notices (a background agent finished, push, quota resume, …) no longer
+  flag "Needs your action", and the agent's next work takes a real flag back once answered; a
+  restart no longer demotes a working task whose turn a Stop hook continued. Monitor streams are
+  still not counted.
 - A usage limit no longer types "Continue." into a task (SPEC-034, decision 0027, task #32): the
   session moves to another subscription (or waits for the reset) and resumes as if the limit never
   happened. The transcript steps back over the limit errors and notices, and Claude Code redoes
