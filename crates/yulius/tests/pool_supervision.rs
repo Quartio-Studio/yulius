@@ -39,7 +39,7 @@ const HOUR: i64 = 3_600_000;
 
 /// A usage probe whose answers the test sets per credential (account id = credential here).
 #[derive(Default)]
-struct ScriptedUsage(Mutex<HashMap<String, AccountUsage>>);
+pub(crate) struct ScriptedUsage(Mutex<HashMap<String, AccountUsage>>);
 
 impl ScriptedUsage {
     fn set(&self, account: &str, usage: AccountUsage) {
@@ -106,7 +106,7 @@ fn build(
     )
 }
 
-fn build_with(
+pub(crate) fn build_with(
     data: &Path,
     fake: &Path,
     usage: Arc<ScriptedUsage>,
@@ -182,7 +182,7 @@ fn seed_repo(data: &Path, sandbox: &SandboxId) -> TestResult {
 }
 
 /// User, sandbox (with its repository) and the given subscriptions (credential = id).
-async fn seed(
+pub(crate) async fn seed(
     app: &App,
     data: &Path,
     accounts: &[&str],
@@ -254,7 +254,7 @@ async fn refresh(app: &App, user: &UserId, account: &str) -> TestResult {
     Ok(())
 }
 
-async fn new_task(
+pub(crate) async fn new_task(
     app: &Arc<App>,
     sandbox: &SandboxId,
     user: &UserId,
@@ -280,7 +280,7 @@ async fn new_task(
     Ok(record.id)
 }
 
-async fn wait_for<F, Fut>(what: &str, timeout: Duration, mut check: F) -> TestResult
+pub(crate) async fn wait_for<F, Fut>(what: &str, timeout: Duration, mut check: F) -> TestResult
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = bool>,
@@ -295,7 +295,7 @@ where
     Err(format!("timed out waiting for {what}").into())
 }
 
-async fn task(app: &App, id: &TaskId) -> Result<TaskRecord, Box<dyn std::error::Error>> {
+pub(crate) async fn task(app: &App, id: &TaskId) -> Result<TaskRecord, Box<dyn std::error::Error>> {
     Ok(app.deps.store.task(id).await?.ok_or("task vanished")?)
 }
 
@@ -303,19 +303,19 @@ async fn has_status(app: &App, id: &TaskId, status: TaskStatus) -> bool {
     task(app, id).await.is_ok_and(|t| t.status == status)
 }
 
-fn screen(app: &App, id: &TaskId) -> String {
+pub(crate) fn screen(app: &App, id: &TaskId) -> String {
     app.runtime(id).hub.screen_text()
 }
 
 /// Every line the fake agent echoed: what the agent received as input.
-fn echoed(app: &App, id: &TaskId) -> Vec<String> {
+pub(crate) fn echoed(app: &App, id: &TaskId) -> Vec<String> {
     screen(app, id)
         .lines()
         .filter_map(|l| l.trim().strip_prefix("ECHO: ").map(str::to_owned))
         .collect()
 }
 
-async fn stop(app: &Arc<App>, id: &TaskId) -> TestResult {
+pub(crate) async fn stop(app: &Arc<App>, id: &TaskId) -> TestResult {
     if task(app, id).await?.status.is_resting() {
         return Ok(());
     }
@@ -326,14 +326,14 @@ async fn stop(app: &Arc<App>, id: &TaskId) -> TestResult {
     .await
 }
 
-fn runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
+pub(crate) fn runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()
 }
 
-fn temp() -> Result<(tempfile::TempDir, PathBuf), Box<dyn std::error::Error>> {
+pub(crate) fn temp() -> Result<(tempfile::TempDir, PathBuf), Box<dyn std::error::Error>> {
     let dir = tempfile::Builder::new().prefix("yp").tempdir_in("/tmp")?;
     let data = dir.path().canonicalize()?;
     Ok((dir, data))

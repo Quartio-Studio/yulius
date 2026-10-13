@@ -17,6 +17,7 @@ mod automations;
 mod browser;
 mod cli;
 mod cockpit;
+mod context_full;
 mod delivery;
 mod disk;
 mod files;

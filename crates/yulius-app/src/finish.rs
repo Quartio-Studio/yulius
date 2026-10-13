@@ -48,6 +48,9 @@ pub struct TranscriptFacts {
     /// Background agents Claude Code still waited for when the last turn ended (0 after a new
     /// prompt or when it did not say).
     pub background_agents: u32,
+    /// The last word on the session's context is that it is full (CTX-007): no reply or
+    /// compaction came after the API rejected a prompt as too long.
+    pub context_full: bool,
 }
 
 impl TranscriptFacts {
@@ -63,9 +66,17 @@ impl TranscriptFacts {
                 self.turn_open = Some(false);
                 self.background_agents = background_agents.unwrap_or(0);
             }
-            Observation::TurnComplete | Observation::TurnInterrupted { .. } => {
+            Observation::TurnComplete => {
                 self.turn_open = Some(false);
+                self.context_full = false;
             }
+            Observation::TurnInterrupted { .. } => self.turn_open = Some(false),
+            // The API rejected the prompt: the turn is over, without a Stop hook (#213).
+            Observation::ContextFull => {
+                self.turn_open = Some(false);
+                self.context_full = true;
+            }
+            Observation::Compacted => self.context_full = false,
             Observation::Goal(GoalOutcome::Met) => {
                 self.goal_achieved = Some(true);
                 self.turn_open = Some(false);
@@ -81,10 +92,15 @@ impl TranscriptFacts {
             Observation::Goal(GoalOutcome::Set | GoalOutcome::Cleared) => {
                 self.goal_achieved = Some(false);
             }
-            Observation::Session { .. } | Observation::LimitReached { .. } => {}
+            Observation::Session { .. }
+            | Observation::LimitReached { .. }
+            | Observation::CompactFailed => {}
             // An assistant line that is not a turn's end after a recorded end: a Stop hook
             // continued the turn (STA-005).
-            Observation::AgentWork { .. } => self.turn_open = Some(true),
+            Observation::AgentWork { .. } => {
+                self.turn_open = Some(true);
+                self.context_full = false;
+            }
         }
     }
 }
@@ -623,6 +639,7 @@ mod tests {
                 turn_open: Some(false),
                 goal_achieved: Some(true),
                 background_agents: 0,
+                context_full: false,
             }
         );
         // Typed again after the goal: a new open turn, the goal no longer counts.
@@ -737,5 +754,26 @@ mod tests {
         )));
         assert!(!is_typed_prompt(Some("   ")));
         assert!(!is_typed_prompt(None));
+    }
+
+    /// CTX-007: a replay that ends in a full context (no reply or compaction after it) leaves the
+    /// recovery pending and the turn closed; a later reply or compaction settles it.
+    #[test]
+    fn a_replay_ending_in_a_full_context_leaves_its_recovery_pending() {
+        let full = reduce(&[
+            PROMPT,
+            Observation::ContextFull,
+            PROMPT,
+            Observation::ContextFull,
+        ]);
+        assert!(full.context_full);
+        assert_eq!(full.turn_open, Some(false));
+        let failed = reduce(&[PROMPT, Observation::ContextFull, Observation::CompactFailed]);
+        assert!(failed.context_full);
+        for after in [Observation::Compacted, Observation::TurnComplete, WORK] {
+            let settled = reduce(&[PROMPT, Observation::ContextFull, after.clone()]);
+            assert!(!settled.context_full, "{after:?}");
+        }
+        assert!(!reduce(&[PROMPT, Observation::TurnComplete]).context_full);
     }
 }

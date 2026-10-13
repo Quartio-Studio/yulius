@@ -11,6 +11,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   most 10 device sign-ins wait per client and 1000 per instance (past either: 429, nothing
   evicted); expired and consumed grants are deleted on every start and every minute. Schema
   version 16 (`device_grants.client_key`).
+- A session whose context is full recovers (SPEC-060, ADR-0046, task #51, #213). Claude Code's
+  "Prompt is too long" ends the turn, so the task waits instead of staying `working`. Yulius then
+  types `/compact` with a focus built from the task (goal, branch, pull request, steps left) and
+  wakes the compacted session. If the compaction fails, the task continues in a fresh session
+  opened with a handoff. If the fresh session is full too, the task needs attention and says why.
+  Each step shows in the task's terminal and the audit log (`task.context_full`).
 - Unique decision numbers and the onboarding CI proof (SPEC-058, task #49; #317, #272). The four
   decision records numbered 0034 now have their own numbers: the automations catalog keeps 0034, the
   Agent in the right panel is 0036, the personal two-factor vault 0042 and the task status from
