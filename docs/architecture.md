@@ -399,7 +399,7 @@ is counted from three sources:
 
 While a goal is open, a clean Stop reads idle only after the goal verdict (or the turn record, or
 20 s). A proactive switch waits for any of this background work
-([ADR-0061](decisions/0061-background-work-and-goal-verdict-from-the-transcript.md)):
+([ADR-0063](decisions/0063-background-work-and-goal-verdict-from-the-transcript.md)):
 
 ```mermaid
 flowchart LR

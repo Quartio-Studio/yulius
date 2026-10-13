@@ -106,4 +106,4 @@ and SPEC-050 SES-101 (a Done task frees its session slot; the queue drains when 
   (bounded) instead of reading the file itself. It waits only when a switch was decided, which
   is rare, and the watcher stays the one reader.
 
-ADR: [0061](../../docs/decisions/0061-background-work-and-goal-verdict-from-the-transcript.md).
+ADR: [0063](../../docs/decisions/0063-background-work-and-goal-verdict-from-the-transcript.md).

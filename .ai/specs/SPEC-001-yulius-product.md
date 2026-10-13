@@ -953,7 +953,7 @@ observed. Live provider compatibility and deployment are reported separately fro
 
 - 2026-10-13 (task #62, #170): a sandbox's "working" and "queued" counts on Home and the tabs split
   the sidebar's Working group by its rule, as "needs you" already did; a task being stopped no
-  longer counts as needing you (UI-045, UI-050, AC-UI-45 changed; SPEC-076, ADR-0061).
+  longer counts as needing you (UI-045, UI-050, AC-UI-45 changed; SPEC-076, ADR-0063).
 - 2026-10-13 (task #66, SPEC-070, ADR-0060): a task is owned by one person, whose GitHub
   credentials it uses; only they change it, others ask for control (GIT-004, AC-GIT-4 new; GIT-003
   follows the owner).

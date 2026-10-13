@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
-- An idle task's background work and its goal verdict decide its status (SPEC-079, ADR-0061, task
+- An idle task's background work and its goal verdict decide its status (SPEC-079, ADR-0063, task
   #60; #305, #264, #265, #271):
   - While a goal is open, a clean Stop leaves the task Working until Claude Code's goal verdict,
     bounded by the turn record or 20 s. "Not met" no longer flashes Your turn or Done, and no chain
