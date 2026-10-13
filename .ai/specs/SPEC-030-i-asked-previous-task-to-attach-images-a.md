@@ -102,7 +102,7 @@ not a path the session reads with a tool.
     Enter; there is no test, since the window is a few seconds of a replaced run.
   - A server restart during typing and a held first message resumed on another account lose
     the message or its image. Rare; recorded in ADR-0026, follow-up issue #266. Fixed by
-    SPEC-068 (task #61, ADR-0051): the first message stays pending until its `UserPromptSubmit`;
+    SPEC-068 (task #61, ADR-0052): the first message stays pending until its `UserPromptSubmit`;
     a restart flags a task whose first message is still pending, and a held one resumes as a
     fresh session that types it again with its images.
   - Mentions inside a long, collapsed paste: measured, still attached.

@@ -184,7 +184,7 @@ restart flags a task whose first message never reached that hook (a submitted on
 goes on, and a goal task's goal is typed after it), and a first message held for capacity resumes
 on another account, or a manual switch, as a fresh session that types it again with its images
 ([SPEC-068](../.ai/specs/SPEC-068-fix-252-266-only-real-typing-counts-as-t.md),
-[decision 0051](decisions/0051-only-keystrokes-count-as-typing.md);
+[decision 0052](decisions/0052-only-keystrokes-count-as-typing.md);
 [SPEC-011](../.ai/specs/SPEC-011-automatic-dev-delivery.md),
 [SPEC-025](../.ai/specs/SPEC-025-uploaded-attachements-should-be-clickabl.md),
 [SPEC-030](../.ai/specs/SPEC-030-i-asked-previous-task-to-attach-images-a.md),

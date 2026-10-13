@@ -1,4 +1,4 @@
-# 0051. Only keystrokes count as typing; a typed first message stays pending until submitted
+# 0052. Only keystrokes count as typing; a typed first message stays pending until submitted
 
 ## Status
 

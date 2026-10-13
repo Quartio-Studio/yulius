@@ -98,7 +98,7 @@ is never silently lost by a server restart or carried without its images after a
   is the one that decides what typing means (any client, also the `yulius` CLI, goes through
   `terminal_input`), and the browser cannot see every report xterm.js answers by itself. Not
   typing also means no control claim: a viewer's focus report or a terminal answer must not take
-  the size from the person typing. Recorded as ADR-0051.
+  the size from the person typing. Recorded as ADR-0052.
 - A goal task with a draft gets no goal and is flagged (the issue's choice) rather than
   waiting for the draft to be submitted: a draft may never be submitted, and a submitted draft is
   a turn on its own after which the person decides.

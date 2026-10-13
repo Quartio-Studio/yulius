@@ -102,7 +102,7 @@ call; an attached image is now pasted into a first message typed in the TUI.
 - Known limit (review round 2): a person typing a draft into the terminal during the opening turn
   still gets `/goal` typed after it, as during any goal submit. Skipping the goal instead would
   misfire on focus and mouse reports, which count as typing today; follow-up issue #252. Fixed
-  by SPEC-068 (task #61, ADR-0051): only keystrokes count as typing, and a draft keeps the goal
+  by SPEC-068 (task #61, ADR-0052): only keystrokes count as typing, and a draft keeps the goal
   out (the task is flagged instead).
 - Merged with SPEC-026 (composer drafts kept in the browser, task #24): the chip reads the draft's
   items; the tab's object URL is kept by the view (never stored with the draft), and a restored

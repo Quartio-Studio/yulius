@@ -1,4 +1,4 @@
-// Whether a terminal input frame is a person typing (SPEC-068, ADR-0051), the same rule as the
+// Whether a terminal input frame is a person typing (SPEC-068, ADR-0052), the same rule as the
 // server's `is_typing` (crates/yulius-app/src/terminal.rs): a keystroke (text, a control key, an
 // Escape key sequence, a bracketed paste) is; what xterm.js sends by itself is not: focus reports,
 // SGR and X10 mouse reports and its answers to the program's queries (device attributes, cursor
