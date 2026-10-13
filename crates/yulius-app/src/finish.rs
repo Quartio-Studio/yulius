@@ -811,6 +811,7 @@ mod tests {
             resets_at: None,
             message: "limit".into(),
             window_minutes: None,
+            at: None,
         };
         assert!(reduce(&[PROMPT, limit.clone()]).limit_pending);
         assert!(reduce(&[PROMPT, limit.clone(), Observation::Compacted]).limit_pending);
