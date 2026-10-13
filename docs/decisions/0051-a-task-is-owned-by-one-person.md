@@ -21,8 +21,9 @@ someone else's GitHub token (task #66).
 - Only the owner changes a task. `App::load_task` refuses every action beyond viewing to anyone
   else (403 naming the owner), so every task route gets it; the terminal opens read-only and
   rechecks ownership on each input. Writing into the task's worktree through the editor's file
-  API or an upload, and opening a shell in it, are the owner's too (its agent commits and pushes
-  what is there as them). There is no exception for administrators or the superadmin.
+  API or an upload, and opening or typing into a shell in it, are the owner's too (its agent
+  commits and pushes what is there as them); a shell opened before a hand-over stops taking
+  input. There is no exception for administrators or the superadmin.
 - Anyone else with write access to the project asks for control. One request waits per task,
   stored on the task. The owner hands over or declines, and the asker may withdraw. A hand-over is
   one conditional update (the owner and the request the decision saw), then the commit identity,
@@ -31,7 +32,8 @@ someone else's GitHub token (task #66).
 - When the owner can no longer act (disabled, deleted, or without write access to the project), a
   request passes control at once, whatever request waits, so a task is never stuck with an absent
   owner. A waiting asker who can no longer work gives way to the next person who asks, and a
-  hand-over to them is refused; both drop the request, audited (`task.control_dropped`).
+  hand-over to them is refused; both drop the request, audited (`task.control_dropped`), but
+  only on a definite answer: when GitHub cannot tell, the request waits.
 
 ## Alternatives
 

@@ -849,3 +849,51 @@ fn bwrap_runnable() -> Result<(), String> {
         Err(err) => Err(format!("bwrap not runnable: {err}")),
     }
 }
+
+/// SPEC-070 (review): a shell in a task's worktree is its owner's. Once the task is handed to
+/// someone else, the former owner's shell there takes no more input and cannot be reopened.
+#[tokio::test]
+async fn a_task_shell_stops_taking_input_once_the_task_is_handed_over() -> TestResult {
+    use yulius_domain::ids::UserId;
+    let f = fixture().await?;
+    seed_github_user(&f.h, "u-carol", "carol").await?;
+    f.h.github.set_perm("carol", "acme/fixture", perms("write"));
+    let created = create(&f, &f.writer, "s1", Some(json!({"task_id": "t1"}))).await?;
+    assert_eq!(created.status, 201, "{}", created.body);
+    let id = created.body["id"].as_str().ok_or("shell id")?.to_owned();
+    let served = serve(f.h.router.clone()).await?;
+    let mut socket = open_terminal(served.addr, &id, &f.writer).await?;
+
+    let (task, alice, carol) = (
+        TaskId::parse("t1")?,
+        UserId::parse("u-alice")?,
+        UserId::parse("u-carol")?,
+    );
+    assert!(
+        f.h.store
+            .request_control(&task, &carol, f.h.app.now())
+            .await?
+    );
+    assert!(
+        f.h.store
+            .pass_control(&task, &alice, &carol, f.h.app.now())
+            .await?
+    );
+
+    input(&mut socket, "echo after\r").await?;
+    let refused = next_json(&mut socket).await?;
+    assert_eq!(refused["type"], "error", "{refused}");
+    assert_eq!(refused["code"], "forbidden", "{refused}");
+    let reopened = ws_connect(
+        served.addr,
+        &format!("/api/shells/{id}/terminal"),
+        &f.writer,
+        ORIGIN,
+    )
+    .await;
+    assert_eq!(
+        reopened.as_ref().err().and_then(ws_refusal_status),
+        Some(403)
+    );
+    Ok(())
+}

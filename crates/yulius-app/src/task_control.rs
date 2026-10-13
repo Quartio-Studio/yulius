@@ -58,8 +58,9 @@ impl App {
                 .await?;
             return self.control_summary(&task).await;
         }
+        // An access GitHub cannot tell right now keeps the waiting request (it may still work).
         if let Some(other) = waiting.filter(|r| r.by != ctx.user.id)
-            && !self.may_work(&other.by, &task).await
+            && !self.may_work(&other.by, &task).await.unwrap_or(true)
         {
             self.drop_request(&task, &other.by, ctx).await?;
         }
@@ -98,8 +99,10 @@ impl App {
             .control_request(&task.id)
             .await?
             .ok_or_else(|| AppError::Conflict("nobody asks for control of this task".into()))?;
+        // A hand-over needs a definite yes; an access GitHub cannot tell fails the call and the
+        // request waits.
         let asker = match store.user(&request.by).await? {
-            Some(user) if self.may_work(&user.id, &task).await => user,
+            Some(user) if self.may_work(&user.id, &task).await? => user,
             _ => {
                 self.drop_request(&task, &request.by, ctx).await?;
                 return Err(AppError::Conflict(format!(
@@ -114,13 +117,24 @@ impl App {
     }
 
     /// Whether `user` may still work in `task`'s project: an enabled account with write access.
-    async fn may_work(&self, user: &yulius_domain::ids::UserId, task: &TaskRecord) -> bool {
-        match self.deps.store.user(user).await {
-            Ok(Some(user)) if user.disabled_at.is_none() => self
-                .require(&user, &task.sandbox_id, Action::Work)
-                .await
-                .is_ok(),
-            _ => false,
+    ///
+    /// # Errors
+    /// When that cannot be told (GitHub unreachable without a usable cached answer, a store
+    /// failure): never read as a no.
+    async fn may_work(
+        &self,
+        user: &yulius_domain::ids::UserId,
+        task: &TaskRecord,
+    ) -> AppResult<bool> {
+        match self.deps.store.user(user).await? {
+            Some(user) if user.disabled_at.is_none() => {
+                match self.require(&user, &task.sandbox_id, Action::Work).await {
+                    Ok(_) => Ok(true),
+                    Err(AppError::NotFound | AppError::Forbidden(_)) => Ok(false),
+                    Err(err) => Err(err),
+                }
+            }
+            _ => Ok(false),
         }
     }
 

@@ -52,7 +52,8 @@ owner for control; once the owner hands it over, the task acts on GitHub as the 
 - R3. Only the owner writes. Every task write through the web API — terminal input and resize,
   `continue`, `switch`, `start-now`, `stop`, `archive`, `restore`, `DELETE`, queued messages,
   held-prompt decisions, attachments, opening and merging its pull request, writing into its
-  worktree through the file API or an upload and opening a shell in it — needs the owner as
+  worktree through the file API or an upload, and opening or typing into a shell in it (a shell
+  opened before a hand-over stops taking input) — needs the owner as
   well as write access to the sandbox; anyone else gets 403 "Task #N is @owner's: it acts on
   GitHub as them. Ask them for control." The same holds for the Cockpit's and task agents'
   `task_stop`, `task_archive` and `task_delete` (they act for a person). Reading is unchanged.
@@ -68,7 +69,9 @@ owner for control; once the owner hands it over, the task acts on GitHub as the 
   or it has lost write access to the sandbox — a request passes control at once, whatever request
   waits (asking again does it for someone who asked earlier). A waiting asker who can no longer
   work gives way to the next person who asks; both this and a refused hand-over drop the request,
-  audited `task.control_dropped`. A request never locks a task.
+  audited `task.control_dropped`. A request never locks a task. Only a definite answer drops
+  a request (a disabled or deleted account, no write access); when GitHub cannot tell, the
+  request stays and a hand-over fails as unreachable (502).
 - R6. A hand-over. Control passes atomically only if the owner and the request are still the
   ones the decision saw (a race answers 409). Then: the owner is the requester and the request
   is gone; the worktree's commit identity is the new owner's; the next GitHub call of the task
@@ -143,6 +146,8 @@ owner for control; once the owner hands it over, the task acts on GitHub as the 
   widening `TaskRecord`; task lists are bounded and the query is by primary key. The mock does
   not model an absent owner or a requester who lost access (no account states in it); those
   rules are covered by the integration tests.
+- Review round 2: the "waiting" colour of the attention bar is not kept on its second row when a
+  request for control is shown above it (cosmetic; the row keeps its text and buttons).
 
 ## Evidence
 

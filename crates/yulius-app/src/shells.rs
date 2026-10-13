@@ -915,6 +915,11 @@ impl App {
             .ok_or(AppError::NotFound)?;
         self.require(&ctx.user, &runtime.sandbox, Action::Work)
             .await?;
+        if !self.owns_shell_task(ctx, &runtime).await {
+            return Err(AppError::Forbidden(
+                "the shell's task now belongs to someone else (SPEC-070)".into(),
+            ));
+        }
         if runtime.hub.viewer_count() >= MAX_SHELL_VIEWERS {
             return Err(AppError::Capacity("too many viewers on this shell".into()));
         }
@@ -939,6 +944,21 @@ impl App {
                 .require(&ctx.user, &attach.runtime.sandbox, Action::Work)
                 .await
                 .is_ok()
+            && self.owns_shell_task(ctx, &attach.runtime).await
+    }
+
+    /// Whether a shell in a task's worktree is still its creator's to use: they must own the
+    /// task, whose agent commits and pushes there as its owner (SPEC-070). A shell in the
+    /// sandbox repository, or of a task that is gone, has no such condition.
+    async fn owns_shell_task(&self, ctx: &AuthContext, runtime: &ShellRuntime) -> bool {
+        let Some(task) = runtime.task.as_ref() else {
+            return true;
+        };
+        match self.deps.store.task(task).await {
+            Ok(Some(task)) => task.owner == ctx.user.id,
+            Ok(None) => true,
+            Err(_) => false,
+        }
     }
 
     /// Viewer keyboard input.

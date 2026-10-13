@@ -618,3 +618,50 @@ async fn the_agents_gh_follows_the_owner() -> TestResult {
     assert_eq!(gh.body["token"], "token-bob");
     Ok(())
 }
+
+/// R4 (review round 2): when GitHub cannot tell whether the asker may still work, their request
+/// is neither dropped nor accepted: the hand-over fails as unreachable and the request waits.
+#[tokio::test]
+async fn an_unknown_access_keeps_the_request_waiting() -> TestResult {
+    let h = harness()?;
+    crate::support::setup_superadmin_creds(&h).await?;
+    let admin = crate::support::superadmin_bearer(&h).await?;
+    let root = h.store.superadmin().await?.ok_or("superadmin")?.id;
+    let bob = seed_github_user(&h, "u-b", "bob").await?;
+    seed_sandbox(&h, "s1", "repo", root.as_str()).await?;
+    h.github.set_perm("bob", "acme/repo", perms("write"));
+    seed_task(&h, "t1", "s1", root.as_str(), TaskStatus::Running, None).await?;
+    let path = "/api/tasks/t1/control-request";
+    assert_eq!(
+        call(&h.router, Method::POST, path, None, &bob)
+            .await?
+            .status,
+        200
+    );
+
+    // Bob's cached access is past its staleness bound and GitHub fails.
+    h.clock
+        .0
+        .fetch_add(31 * 60 * 1000, std::sync::atomic::Ordering::SeqCst);
+    h.github
+        .fail_permissions
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let accept = call(
+        &h.router,
+        Method::POST,
+        &format!("{path}/accept"),
+        None,
+        &admin,
+    )
+    .await?;
+    assert_eq!(accept.status, 502, "{}", accept.body);
+    let waiting = h
+        .store
+        .control_request(&TaskId::parse("t1")?)
+        .await?
+        .ok_or("the request was dropped")?;
+    assert_eq!(waiting.by.as_str(), "u-b");
+    let task = h.store.task(&TaskId::parse("t1")?).await?.ok_or("task")?;
+    assert_eq!(task.owner, root);
+    Ok(())
+}
