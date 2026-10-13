@@ -1140,25 +1140,61 @@ impl App {
         let steps = self
             .workflow_steps(&automation.sandbox_id, automation.workflow_id.as_deref())
             .await?;
+        let (supertask, after, rule) = self.run_start(automation).await?;
         let task = self
-            .create_task_internal(NewTask {
-                sandbox: automation.sandbox_id.clone(),
-                created_by: automation.created_by.clone(),
-                prompt: automation.prompt.clone(),
-                harness: automation.harness,
-                title: Some(automation.name.clone()),
-                workflow_id: automation.workflow_id.clone(),
-                steps,
-                model: None,
-                effort: None,
-                origin: TaskOrigin::Automation,
-                automation_run: Some(key.to_owned()),
-                start: true,
-                mode: crate::model::TaskMode::Prompt,
-                supertask: false,
-            })
+            .create_task_ruled(
+                NewTask {
+                    sandbox: automation.sandbox_id.clone(),
+                    created_by: automation.created_by.clone(),
+                    prompt: automation.prompt.clone(),
+                    harness: automation.harness,
+                    title: Some(automation.name.clone()),
+                    workflow_id: automation.workflow_id.clone(),
+                    steps,
+                    model: None,
+                    effort: None,
+                    origin: TaskOrigin::Automation,
+                    automation_run: Some(key.to_owned()),
+                    start: true,
+                    mode: crate::model::TaskMode::Prompt,
+                    supertask,
+                },
+                after.as_ref(),
+                rule.as_ref(),
+            )
             .await?;
         Ok(task.id)
+    }
+
+    /// How the task of a run starts (SPEC-078 AUT-015): a supertask, after a task that has not
+    /// ended, or on a rule; after a task that has ended, on the rule `#N done`, so a recurring
+    /// automation keeps running after its predecessor finished.
+    async fn run_start(
+        &self,
+        automation: &AutomationRecord,
+    ) -> AppResult<(bool, Option<TaskRecord>, Option<Rule>)> {
+        let parse = |text: &str| Rule::parse(text).map_err(|e| AppError::Invalid(e.to_string()));
+        match &automation.start {
+            AutomationStart::Now => Ok((false, None, None)),
+            AutomationStart::Supertask => Ok((true, None, None)),
+            AutomationStart::Rule(text) => Ok((false, None, Some(parse(text)?))),
+            AutomationStart::After(id) => {
+                let task = self
+                    .deps
+                    .store
+                    .task(id)
+                    .await?
+                    .filter(|t| t.sandbox_id == automation.sandbox_id)
+                    .ok_or_else(|| {
+                        AppError::Invalid("the task to run after does not exist".into())
+                    })?;
+                if task.status.is_resting() || task.archived_at.is_some() {
+                    Ok((false, None, Some(parse(&format!("#{} done", task.number))?)))
+                } else {
+                    Ok((false, Some(task), None))
+                }
+            }
+        }
     }
 
     async fn announce_run(&self, automation: &AutomationRecord, run: &AutomationRunRecord) {
