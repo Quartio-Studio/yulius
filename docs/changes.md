@@ -9,8 +9,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - A task is owned by one person, whose GitHub credentials it uses (SPEC-070, ADR-0051, task #66).
   Every task has an owner, its creator until a hand-over. The task's Git, `gh`, pull requests,
   merges, commit identity and agent authority are the owner's. Only the owner changes the task:
-  anyone else, administrators included, gets 403 naming the owner and watches the terminal
-  read-only. They can ask for control (Request control in the task). The owner hands it over or
+  anyone else, administrators included, gets 403 naming the owner, watches the terminal
+  read-only and cannot write into the task's worktree or open a shell there. They can ask for control (Request control in the task). The owner hands it over or
   declines, and the asker may withdraw. From the hand-over on, the task acts on GitHub as the new
   owner, and its terminal says so. An owner who is disabled, deleted or without write access
   passes control at once. Schema version 17 (`tasks.owner_id`, the waiting request).

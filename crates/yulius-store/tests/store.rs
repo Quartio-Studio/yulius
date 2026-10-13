@@ -243,6 +243,21 @@ async fn control_passes_only_on_the_request_the_owner_saw() -> R {
     assert_eq!(passed.created_by, alice);
     assert_eq!(passed.updated_at, Timestamp(32));
     assert_eq!(store.control_request(&t.id).await?, None);
+
+    // Past an absent owner, control passes whatever request waits, only from the owner seen.
+    assert!(store.request_control(&t.id, &bob, Timestamp(40)).await?);
+    assert!(
+        !store
+            .take_control(&t.id, &alice, &alice, Timestamp(41))
+            .await?
+    );
+    assert!(
+        store
+            .take_control(&t.id, &carol, &alice, Timestamp(42))
+            .await?
+    );
+    assert_eq!(store.task(&t.id).await?.ok_or("task")?.owner, alice);
+    assert_eq!(store.control_request(&t.id).await?, None);
     Ok(())
 }
 

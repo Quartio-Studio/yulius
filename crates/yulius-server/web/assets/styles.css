@@ -1018,6 +1018,9 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 .attention-bar.waiting { border-left-color: var(--info); background: var(--info-soft-solid); color: var(--info-fg-strong); }
 .attention-bar .icon { flex: none; }
 .attention-text { flex: 1; min-width: 0; }
+/* A request for control (SPEC-070) above what else the task needs. */
+.attention-bar.stacked { flex-direction: column; align-items: stretch; gap: 8px; }
+.attention-row { display: flex; align-items: center; gap: 12px; }
 /* Queued messages (SPEC-052): at the bottom of a waiting task's empty terminal. */
 .queue-slot { position: absolute; left: 50%; bottom: 16px; z-index: var(--z-float); width: min(640px, calc(100% - 32px)); transform: translateX(-50%); }
 .queue-slot[hidden] { display: none; }

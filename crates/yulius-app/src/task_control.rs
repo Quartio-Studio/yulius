@@ -16,9 +16,17 @@ use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::{SandboxRecord, TaskRecord, UserRecord};
 
+/// How control passes: on a request the owner accepted, or past an absent owner (R5).
+#[derive(Debug, Clone, Copy)]
+enum Handover {
+    Requested,
+    OwnerAbsent,
+}
+
 impl App {
     /// `POST /api/tasks/{tid}/control-request`: `ctx`'s person asks the owner for control of the
-    /// task. Asking again changes nothing. With the owner absent, control passes at once.
+    /// task. Asking again changes nothing. With the owner absent, control passes at once, whatever
+    /// request waits; a waiting asker who can no longer work gives way (R5).
     ///
     /// # Errors
     /// `NotFound`/`Forbidden` without write access to the project; `Conflict` for the owner, or
@@ -39,10 +47,22 @@ impl App {
             return Err(AppError::Conflict("you already own this task".into()));
         }
         let store = &self.deps.store;
-        let already = store
-            .control_request(&task.id)
-            .await?
-            .is_some_and(|r| r.by == ctx.user.id);
+        let waiting = store.control_request(&task.id).await?;
+        let new = waiting.as_ref().is_none_or(|r| r.by != ctx.user.id);
+        if self.owner_is_absent(&task, &sandbox).await {
+            if new {
+                self.audit_control(&task, ctx, "task.control_requested", json!({}))
+                    .await;
+            }
+            self.pass_task_control(&task, &ctx.user, ctx, Handover::OwnerAbsent)
+                .await?;
+            return self.control_summary(&task).await;
+        }
+        if let Some(other) = waiting.filter(|r| r.by != ctx.user.id)
+            && !self.may_work(&other.by, &task).await
+        {
+            self.drop_request(&task, &other.by, ctx).await?;
+        }
         if !store
             .request_control(&task.id, &ctx.user.id, self.now())
             .await?
@@ -56,15 +76,11 @@ impl App {
                 self.login_of(&task.owner).await
             )));
         }
-        if !already {
+        if new {
             self.audit_control(&task, ctx, "task.control_requested", json!({}))
                 .await;
         }
-        if self.owner_is_absent(&task, &sandbox).await {
-            self.pass_task_control(&task, &ctx.user, ctx).await?;
-        } else {
-            self.publish_task(&task.id).await;
-        }
+        self.publish_task(&task.id).await;
         self.control_summary(&task).await
     }
 
@@ -82,26 +98,51 @@ impl App {
             .control_request(&task.id)
             .await?
             .ok_or_else(|| AppError::Conflict("nobody asks for control of this task".into()))?;
-        let asker = store.user(&request.by).await?;
-        let may_work = match &asker {
-            Some(user) if user.disabled_at.is_none() => self
-                .require(user, &task.sandbox_id, Action::Work)
+        let asker = match store.user(&request.by).await? {
+            Some(user) if self.may_work(&user.id, &task).await => user,
+            _ => {
+                self.drop_request(&task, &request.by, ctx).await?;
+                return Err(AppError::Conflict(format!(
+                    "@{} can no longer work in this project; their request is dropped",
+                    self.login_of(&request.by).await
+                )));
+            }
+        };
+        self.pass_task_control(&task, &asker, ctx, Handover::Requested)
+            .await?;
+        self.control_summary(&task).await
+    }
+
+    /// Whether `user` may still work in `task`'s project: an enabled account with write access.
+    async fn may_work(&self, user: &yulius_domain::ids::UserId, task: &TaskRecord) -> bool {
+        match self.deps.store.user(user).await {
+            Ok(Some(user)) if user.disabled_at.is_none() => self
+                .require(&user, &task.sandbox_id, Action::Work)
                 .await
                 .is_ok(),
             _ => false,
-        };
-        let Some(asker) = asker.filter(|_| may_work) else {
-            let login = self.login_of(&request.by).await;
-            store
-                .drop_control_request(&task.id, &request.by, self.now())
-                .await?;
+        }
+    }
+
+    /// Drops `by`'s waiting request because they can no longer work, audited and published.
+    async fn drop_request(
+        &self,
+        task: &TaskRecord,
+        by: &yulius_domain::ids::UserId,
+        ctx: &AuthContext,
+    ) -> AppResult<()> {
+        if self
+            .deps
+            .store
+            .drop_control_request(&task.id, by, self.now())
+            .await?
+        {
+            let asker = self.login_of(by).await;
+            self.audit_control(task, ctx, "task.control_dropped", json!({"by": asker}))
+                .await;
             self.publish_task(&task.id).await;
-            return Err(AppError::Conflict(format!(
-                "@{login} can no longer work in this project; their request is dropped"
-            )));
-        };
-        self.pass_task_control(&task, &asker, ctx).await?;
-        self.control_summary(&task).await
+        }
+        Ok(())
     }
 
     /// `DELETE /api/tasks/{tid}/control-request`: the asker withdraws their request, or the
@@ -156,20 +197,31 @@ impl App {
         }
     }
 
-    /// Passes control of `task` from its owner to `to`, whose request waits (R6): one
-    /// conditional update, then the worktree's commit identity, the terminal notice, the audit
+    /// Passes control of `task` from its owner to `to` (R6): whose request waits, or anyone
+    /// when the owner is absent. One conditional update, then the worktree's commit identity, the terminal notice, the audit
     /// entry and the published summary.
     async fn pass_task_control(
         &self,
         task: &TaskRecord,
         to: &UserRecord,
         ctx: &AuthContext,
+        how: Handover,
     ) -> AppResult<()> {
         let store = &self.deps.store;
-        if !store
-            .pass_control(&task.id, &task.owner, &to.id, self.now())
-            .await?
-        {
+        let now = self.now();
+        let passed = match how {
+            Handover::Requested => {
+                store
+                    .pass_control(&task.id, &task.owner, &to.id, now)
+                    .await?
+            }
+            Handover::OwnerAbsent => {
+                store
+                    .take_control(&task.id, &task.owner, &to.id, now)
+                    .await?
+            }
+        };
+        if !passed {
             return Err(AppError::Conflict(
                 "the task changed meanwhile; look again".into(),
             ));

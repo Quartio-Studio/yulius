@@ -522,7 +522,7 @@ impl App {
         let name = name.map(clean_name).transpose()?;
         let (cwd, task_id) = match task {
             Some(task) => (
-                self.sandbox_worktree(&record, task).await?,
+                self.sandbox_worktree(&record, task, Some(ctx)).await?,
                 Some(TaskId::parse(task).map_err(|_| AppError::NotFound)?),
             ),
             None => {

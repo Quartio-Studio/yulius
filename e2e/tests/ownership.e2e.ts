@@ -24,6 +24,8 @@ test("someone else's task is read-only, and its owner can hand it over", async (
   await screen.getByRole('button', 'Request control').click();
   await expect(screen.getByText('You asked @anna-q for control.')).toBeVisible();
   await expect(screen.getByRole('button', 'Withdraw')).toBeVisible();
+  // Asking again takes control once the owner can no longer act.
+  await expect(screen.getByRole('button', 'Ask again')).toBeVisible();
 
   // anna-q hands it over: the view follows the event, without a reload.
   await touch(browser, 'sb_product', 3, { owner: { login: 'mkarp' }, controlRequest: null });
@@ -51,4 +53,13 @@ test('the owner declines a request for control', async ({ app, browser, screen }
   await screen.getByRole('button', 'Decline').click();
   await expect(screen.getByText('@anna-q asks to take control of this task:')).toBeHidden();
   await expect(screen.getByText('@anna-q owns this task:')).toBeHidden();
+});
+
+test('a request for control leaves the way out of a chain', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/product/t/7'));
+  await touch(browser, 'sb_product', 7, { controlRequest: { by: { login: 'anna-q' }, at: new Date().toISOString() } });
+  await expect(screen.getByText('@anna-q asks to take control of this task:')).toBeVisible();
+  await expect(screen.getByRole('button', 'Hand over')).toBeVisible();
+  await expect(screen.getByRole('button', 'Start now')).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
 });

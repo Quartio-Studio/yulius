@@ -223,7 +223,7 @@ limited to the agent's sandbox.
 | POST | `/api/tasks/{tid}/archive` · `/restore` | write | → `TaskSummary` |
 <<<<<<< HEAD
 | DELETE | `/api/tasks/{tid}` | write | → 204; deletes a resting task permanently with its records, run directories, local worktree and branch (TSK-009); a Done running task (TSK-014) is closed first and deleted once its run has ended; the close and its wait take at most ~25 s (SPEC-039); 409 while any other task runs, or if a Done task's session is still closing then |
-| POST | `/api/tasks/{tid}/control-request` | write | → `TaskSummary`; asks the task's owner for control (SPEC-070, ADR-0051): it would act on GitHub as you. One request waits per task: 409 for the owner and while another person's request waits (naming them); asking again changes nothing. With the owner disabled, deleted or without write access, control passes at once (`owner` is you). Audited `task.control_requested` |
+| POST | `/api/tasks/{tid}/control-request` | write | → `TaskSummary`; asks the task's owner for control (SPEC-070, ADR-0051): it would act on GitHub as you. One request waits per task: 409 for the owner and while another person's request waits (naming them); asking again changes nothing. With the owner disabled, deleted or without write access, control passes at once (`owner` is you), whatever request waits; a waiting asker who can no longer work gives way (their request dropped, `task.control_dropped`). Audited `task.control_requested` |
 | DELETE | `/api/tasks/{tid}/control-request` | read (asker) · write (owner) | → `TaskSummary`; the asker withdraws (`task.control_withdrawn`) or the owner declines (`task.control_declined`); 409 when no request waits, 403 for anyone else |
 | POST | `/api/tasks/{tid}/control-request/accept` | write (owner) | → `TaskSummary` with the asker as `owner`; the task acts on GitHub as them from its next call, its worktree commits as them, its terminal says so, audited `task.control_passed`; 409 when no request waits, or when the asker can no longer work in the project (the request is dropped) |
 =======
@@ -236,7 +236,9 @@ limited to the agent's sandbox.
 Every task route marked write also needs the task's owner (SPEC-070): anyone else gets 403 "Task
 #N is @owner's: it acts on GitHub as them. Ask them for control." — also an administrator or the
 superadmin, and the Cockpit's and task agents' `task_stop`, `task_archive` and `task_delete` for
-their person. The terminal opens read-only (`can_write: false`) for anyone but the owner.
+their person. The terminal opens read-only (`can_write: false`) for anyone but the owner. The
+file API's writes and uploads with `root=task:<id>` and `POST /api/sandboxes/{sid}/shells` with
+a `task_id` need the owner too; reading a worktree does not.
 
 ```json
 TaskSummary = {

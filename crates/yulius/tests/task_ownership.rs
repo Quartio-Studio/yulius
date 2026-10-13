@@ -448,3 +448,173 @@ async fn a_hand_over_moves_the_commit_identity() -> TestResult {
     assert_eq!(config("user.email")?.trim(), "bob@users.noreply.github.com");
     Ok(())
 }
+
+/// R3 (review): the task's worktree is the owner's too: a non-owner reads its files but cannot
+/// write, create, delete or upload there, nor open a shell in it; the owner can.
+#[tokio::test]
+async fn a_non_owner_cannot_write_into_the_task_worktree() -> TestResult {
+    let f = fixture().await?;
+    let worktree = f.h.app.config.data_dir.join("sandboxes/s1/worktrees/t-wt");
+    std::fs::create_dir_all(&worktree)?;
+    std::fs::write(worktree.join("README.md"), "# hi\n")?;
+    seed_task(
+        &f.h,
+        "t-wt",
+        "s1",
+        "u-a",
+        TaskStatus::Closed,
+        Some(&worktree),
+    )
+    .await?;
+    let root = "task:t-wt";
+
+    let read = call(
+        &f.h.router,
+        Method::GET,
+        &format!("/api/sandboxes/s1/files/content?root={root}&path=README.md"),
+        None,
+        &f.bob,
+    )
+    .await?;
+    assert_eq!(read.status, 200, "{}", read.body);
+    let writes = [
+        (
+            Method::PUT,
+            "/api/sandboxes/s1/files/content".to_owned(),
+            Some(json!({"root": root, "path": "README.md", "content": "# bob\n"})),
+        ),
+        (
+            Method::POST,
+            "/api/sandboxes/s1/files".to_owned(),
+            Some(json!({"root": root, "path": "new.txt", "kind": "file"})),
+        ),
+        (
+            Method::POST,
+            "/api/sandboxes/s1/files".to_owned(),
+            Some(json!({"root": root, "path": "dir", "kind": "dir"})),
+        ),
+        (
+            Method::DELETE,
+            format!("/api/sandboxes/s1/files?root={root}&path=README.md"),
+            None,
+        ),
+        (
+            Method::PUT,
+            format!("/api/sandboxes/s1/files/upload?root={root}&path=up.txt"),
+            Some(json!("data")),
+        ),
+        (
+            Method::POST,
+            "/api/sandboxes/s1/shells".to_owned(),
+            Some(json!({"task_id": "t-wt"})),
+        ),
+    ];
+    for (method, path, body) in writes {
+        let refused = call(&f.h.router, method.clone(), &path, body, &f.bob).await?;
+        assert_eq!(refused.status, 403, "{method} {path}: {}", refused.body);
+        assert!(
+            refused.body.to_string().contains("@alice"),
+            "{path}: {}",
+            refused.body
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("README.md"))?,
+        "# hi\n"
+    );
+    assert!(!worktree.join("new.txt").exists() && !worktree.join("up.txt").exists());
+    let created = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/files",
+        Some(json!({"root": root, "path": "alice.txt", "kind": "file"})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(created.status, 201, "{}", created.body);
+    Ok(())
+}
+
+async fn disable(h: &Harness, id: &str) -> TestResult {
+    h.store
+        .update_user_flags(&UserId::parse(id)?, Some(Some(h.app.now())), None)
+        .await?;
+    Ok(())
+}
+
+/// R5 (review): a request that waits never locks a task. When the owner becomes absent, asking
+/// again passes control whatever request waits; a waiting requester who can no longer work is
+/// replaced by the next person who asks.
+#[tokio::test]
+async fn a_waiting_request_never_locks_the_task() -> TestResult {
+    let f = fixture().await?;
+
+    // Bob waits; Alice is then disabled: Bob asking again takes control.
+    assert_eq!(control(&f, Method::POST, "", &f.bob).await?.status, 200);
+    disable(&f.h, "u-a").await?;
+    let again = control(&f, Method::POST, "", &f.bob).await?;
+    assert_eq!(again.status, 200, "{}", again.body);
+    assert_eq!(again.body["owner"]["login"], "bob");
+
+    // Bob waits, then Alice and Bob are both disabled: Carol takes control past his request.
+    let g = fixture().await?;
+    let carol = seed_github_user(&g.h, "u-c", "carol").await?;
+    g.h.github.set_perm("carol", "acme/repo", perms("write"));
+    assert_eq!(control(&g, Method::POST, "", &g.bob).await?.status, 200);
+    disable(&g.h, "u-a").await?;
+    disable(&g.h, "u-b").await?;
+    let taken = control(&g, Method::POST, "", &carol).await?;
+    assert_eq!(taken.status, 200, "{}", taken.body);
+    assert_eq!(taken.body["owner"]["login"], "carol");
+    assert_eq!(taken.body["control_request"], serde_json::Value::Null);
+    Ok(())
+}
+
+/// R4 (review): with the owner present, a waiting requester who can no longer work no longer
+/// blocks others; a disabled requester's request cannot be accepted and is dropped, audited.
+#[tokio::test]
+async fn a_requester_who_cannot_work_gives_way() -> TestResult {
+    let f = fixture().await?;
+    let carol = seed_github_user(&f.h, "u-c", "carol").await?;
+    f.h.github.set_perm("carol", "acme/repo", perms("write"));
+
+    assert_eq!(control(&f, Method::POST, "", &f.bob).await?.status, 200);
+    disable(&f.h, "u-b").await?;
+    let replaced = control(&f, Method::POST, "", &carol).await?;
+    assert_eq!(replaced.status, 200, "{}", replaced.body);
+    assert_eq!(replaced.body["control_request"]["by"]["login"], "carol");
+    assert_eq!(replaced.body["owner"]["login"], "alice");
+
+    disable(&f.h, "u-c").await?;
+    let refused = control(&f, Method::POST, "/accept", &f.alice).await?;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert_eq!(f.h.store.control_request(&f.task.id).await?, None);
+    assert_eq!(audited(&f.h, "task.control_dropped").await?, 2);
+    Ok(())
+}
+
+/// AC2 (review): after a hand-over the agent's `gh` (a credential asked without a repository
+/// path) is the new owner's too.
+#[tokio::test]
+async fn the_agents_gh_follows_the_owner() -> TestResult {
+    let f = fixture().await?;
+    assert_eq!(control(&f, Method::POST, "", &f.bob).await?.status, 200);
+    assert_eq!(
+        control(&f, Method::POST, "/accept", &f.alice).await?.status,
+        200
+    );
+    let gh = call(
+        &f.h.internal,
+        Method::POST,
+        "/internal/git-credential",
+        Some(json!({"protocol": "https", "host": "github.com"})),
+        &Creds {
+            bearer: Some("tt".into()),
+            ..Creds::default()
+        },
+    )
+    .await?;
+    assert_eq!(gh.status, 200, "{}", gh.body);
+    assert_eq!(gh.body["token"], "token-bob");
+    Ok(())
+}

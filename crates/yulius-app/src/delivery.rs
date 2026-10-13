@@ -1820,7 +1820,7 @@ impl App {
 
     /// Pushes the task branch and opens its pull request into the integration branch, both with
     /// `token` (its account pushes and authors the pull request: the person who delivers, or for
-    /// Yulius the task's creator, F 2026-10-11); records `pr_open`, audits it as `actor` and
+    /// Yulius the task's owner, F 2026-10-11); records `pr_open`, audits it as `actor` and
     /// publishes the task. The caller has checked the domain rules and the worktree
     /// (`open_task_pr` for a person, `try_auto_open_pr` for Yulius).
     #[allow(clippy::too_many_arguments)]
@@ -2127,7 +2127,7 @@ impl App {
         if branch == profile.integration_branch || branch == profile.production_branch {
             return Ok(None);
         }
-        // The task's creator pushes and authors the pull request (their GitHub account, as if
+        // The task's owner pushes and authors the pull request (their GitHub account, as if
         // they had pressed Deliver…, F 2026-10-11); without a usable token the App does.
         let token = self.task_github_token(&task, &sandbox).await?;
         let observed = self
@@ -2422,8 +2422,8 @@ impl App {
         self.dlv_merge(ctx, task, &token).await
     }
 
-    /// [`App::merge_task_pr`] for the task's agent (`delivery_merge`) under its creator's
-    /// authority `ctx`: GitHub sees the creator merge, or the App when the creator has no usable
+    /// [`App::merge_task_pr`] for the task's agent (`delivery_merge`) under its owner's
+    /// authority `ctx`: GitHub sees the owner merge, or the App when the owner has no usable
     /// GitHub token (F 2026-10-11).
     ///
     /// # Errors
@@ -2947,8 +2947,8 @@ impl App {
         .await
     }
 
-    /// [`App::promote_sandbox`] for `task`'s agent (`delivery_promote`) under its creator's
-    /// authority `ctx`: GitHub sees the creator promote, or the App when the creator has no
+    /// [`App::promote_sandbox`] for `task`'s agent (`delivery_promote`) under its owner's
+    /// authority `ctx`: GitHub sees the owner promote, or the App when the owner has no
     /// usable GitHub token (F 2026-10-11).
     ///
     /// # Errors
@@ -3042,7 +3042,7 @@ impl App {
     }
 
     /// [`App::start_environment_run`]; for a task's agent (`delivery_deploy`, `for_task`) the
-    /// automatic promotion after the run uses the task's GitHub token (its creator's, else the
+    /// automatic promotion after the run uses the task's GitHub token (its owner's, else the
     /// App's, F 2026-10-11) instead of the caller's own.
     pub(crate) async fn dlv_start_environment_run(
         self: &Arc<Self>,

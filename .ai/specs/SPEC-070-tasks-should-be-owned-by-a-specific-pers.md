@@ -51,7 +51,8 @@ owner for control; once the owner hands it over, the task acts on GitHub as the 
   armed-merge decision.
 - R3. Only the owner writes. Every task write through the web API — terminal input and resize,
   `continue`, `switch`, `start-now`, `stop`, `archive`, `restore`, `DELETE`, queued messages,
-  held-prompt decisions, attachments, opening and merging its pull request — needs the owner as
+  held-prompt decisions, attachments, opening and merging its pull request, writing into its
+  worktree through the file API or an upload and opening a shell in it — needs the owner as
   well as write access to the sandbox; anyone else gets 403 "Task #N is @owner's: it acts on
   GitHub as them. Ask them for control." The same holds for the Cockpit's and task agents'
   `task_stop`, `task_archive` and `task_delete` (they act for a person). Reading is unchanged.
@@ -64,7 +65,10 @@ owner for control; once the owner hands it over, the task acts on GitHub as the 
   (`POST /api/tasks/{tid}/control-request/accept`). A hand-over whose requester can no longer
   work in the sandbox is refused (409) and the request is dropped.
 - R5. An absent owner. When the owner can no longer act — the account is disabled or deleted,
-  or it has lost write access to the sandbox — a request passes control at once.
+  or it has lost write access to the sandbox — a request passes control at once, whatever request
+  waits (asking again does it for someone who asked earlier). A waiting asker who can no longer
+  work gives way to the next person who asks; both this and a refused hand-over drop the request,
+  audited `task.control_dropped`. A request never locks a task.
 - R6. A hand-over. Control passes atomically only if the owner and the request are still the
   ones the decision saw (a race answers 409). Then: the owner is the requester and the request
   is gone; the worktree's commit identity is the new owner's; the next GitHub call of the task
@@ -76,9 +80,10 @@ owner for control; once the owner hands it over, the task acts on GitHub as the 
   read-only with the label "Read-only: @owner owns this task", the task menu's write items,
   the queued-message card, the exit actions and the phone quick keys are off (titled "@owner
   owns this task"), and a bar says "@owner owns this task: it acts on GitHub as them." with
-  Request control (after asking: "You asked @owner for control." with Withdraw). The owner sees
-  "@login asks to take control of this task: it will act on GitHub as them." with Hand over and
-  Decline. When control passes, both people's views follow the `task.updated` event without a
+  Request control (after asking: "You asked @owner for control." with Ask again and Withdraw).
+  The owner with write access sees "@login asks to take control of this task: it will act on
+  GitHub as them." with Hand over and Decline, on its own row above what else the task needs
+  (a chained task keeps Start now). When control passes, both people's views follow the `task.updated` event without a
   reload, and the new owner's terminal reconnects and accepts input. The Tasks list and the
   sidebar quick archive offer archive only on the viewer's own tasks.
 
@@ -134,6 +139,10 @@ owner for control; once the owner hands it over, the task acts on GitHub as the 
   nothing to queue, and a hand-over clears it in the same update.
 - The owner approves; nobody overrides a present owner, not even an administrator: the request
   is about protecting a person's credentials. Recorded in ADR-0051 (0050 is taken by task #54).
+- Review round 1: the waiting request is read with a separate query per summary instead of
+  widening `TaskRecord`; task lists are bounded and the query is by primary key. The mock does
+  not model an absent owner or a requester who lost access (no account states in it); those
+  rules are covered by the integration tests.
 
 ## Evidence
 

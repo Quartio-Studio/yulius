@@ -452,6 +452,32 @@ impl TaskStore for SqliteStore {
         .await
     }
 
+    async fn take_control(
+        &self,
+        task: &TaskId,
+        from: &UserId,
+        to: &UserId,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let (id, from, to) = (
+            task.as_str().to_owned(),
+            from.as_str().to_owned(),
+            to.as_str().to_owned(),
+        );
+        self.call(move |c| {
+            let n = c
+                .execute(
+                    "UPDATE tasks SET owner_id = ?3, control_requested_by = NULL, \
+                     control_requested_at = NULL, updated_at = ?4 \
+                     WHERE id = ?1 AND owner_id = ?2",
+                    params![id, from, to, at.0],
+                )
+                .map_err(db)?;
+            Ok(n == 1)
+        })
+        .await
+    }
+
     async fn append_unstarted_prompt(
         &self,
         id: &TaskId,

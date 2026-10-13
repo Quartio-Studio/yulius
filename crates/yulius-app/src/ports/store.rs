@@ -303,6 +303,16 @@ pub trait TaskStore: Send + Sync {
         to: &UserId,
         at: Timestamp,
     ) -> AppResult<bool>;
+    /// Passes control of `task` from `from`, an owner who can no longer act, to `to` whatever
+    /// request waits, and drops that request, in one statement: false unless `from` still owns
+    /// the task (SPEC-070 R5).
+    async fn take_control(
+        &self,
+        task: &TaskId,
+        from: &UserId,
+        to: &UserId,
+        at: Timestamp,
+    ) -> AppResult<bool>;
     /// Appends `addition` to the prompt of a task that has never started (SPEC-052 QMS-002): it is
     /// `queued`, `chained` or `waiting_capacity` with no attempt and no provider session, and the
     /// prompt stays within `max_bytes`. One statement, so a start's compare-and-set to `starting`

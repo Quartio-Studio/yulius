@@ -164,19 +164,24 @@ export function mountTaskView(ctx, sandbox, task) {
     const access = (ctx.store.sandboxById(sandbox.id) || sandbox).access;
     const can = taskActions(current, access, pr, me());
     const request = current.control_request;
+    // Control of the task (SPEC-070), on its own row above what else the task needs.
+    let control = null;
     if (owner() && allows(access, 'write')) {
-      // Someone else's task (SPEC-070): it acts on GitHub as them; its owner may hand it over.
+      // Someone else's task: it acts on GitHub as them; its owner may hand it over. Asking again
+      // takes control at once once the owner can no longer act.
       const mine = request && request.by.login === me();
-      content = [icon('lock', { size: 16 }), h('span', { class: 'attention-text' },
+      control = [icon('lock', { size: 16 }), h('span', { class: 'attention-text' },
         mine ? [h('strong', null, `You asked @${owner()} for control. `), 'Until they hand it over, the task acts on GitHub as them.']
           : [h('strong', null, `@${owner()} owns this task: `), 'it acts on GitHub as them.', request ? ` @${request.by.login} asked for control.` : '']),
+      mine ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => requestControl(ctx, current) }, 'Ask again') : null,
       mine ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => dropControlRequest(ctx, current) }, 'Withdraw')
         : request ? null : h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => requestControl(ctx, current) }, 'Request control')];
-    } else if (!owner() && request) {
-      content = [icon('st-attention', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, `@${request.by.login} asks to take control of this task: `), 'it will act on GitHub as them.'),
+    } else if (!owner() && request && allows(access, 'write')) {
+      control = [icon('st-attention', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, `@${request.by.login} asks to take control of this task: `), 'it will act on GitHub as them.'),
         h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => handOverTask(ctx, current) }, 'Hand over'),
         h('button', { type: 'button', class: 'btn btn-sm', onClick: () => dropControlRequest(ctx, current) }, 'Decline')];
-    } else if (current.status === 'chained') {
+    }
+    if (current.status === 'chained') {
       // Waiting in a chain (TSK-012): the way out is always here.
       const after = current.after;
       const label = after && after.blocked
@@ -198,9 +203,12 @@ export function mountTaskView(ctx, sandbox, task) {
       content = [icon('st-input', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'The agent is waiting for your reply. '), 'Type it in the terminal below.'),
         h('button', { type: 'button', class: 'btn btn-sm', onClick: reply }, 'Reply')];
     }
-    attention.hidden = !content;
-    attention.classList.toggle('waiting', !info.request && current.activity === 'waiting' && info.group === 'needs');
-    setChildren(attention, content);
+    attention.hidden = !content && !control;
+    attention.classList.toggle('waiting', !control && !info.request && current.activity === 'waiting' && info.group === 'needs');
+    attention.classList.toggle('stacked', Boolean(control && content));
+    setChildren(attention, control && content
+      ? [h('div', { class: 'attention-row' }, control), h('div', { class: 'attention-row' }, content)]
+      : control || content);
   }
   // A browser request changes the bar and the state in the strip ("Needs you in the browser").
   destroyers.push(ctx.store.on('browser-action', (event) => { if (event.sandbox_id === sandbox.id) renderStrip(); }));
