@@ -836,6 +836,7 @@ async fn insert_live_attempt(h: &support::Harness, account: &AccountId) -> TestR
             gate_blocks: 0,
             wake_enabled: true,
             mode: yulius_app::model::TaskMode::Prompt,
+            supertask: false,
         })
         .await?;
     h.store

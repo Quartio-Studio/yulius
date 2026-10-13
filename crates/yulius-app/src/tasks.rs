@@ -143,6 +143,12 @@ impl App {
             next,
             held_prompt: self.held_prompt_view(&task.id).await,
             auto: self.auto_choice_view(&task.id).await,
+            supertask: task.supertask,
+            held_by: if task.status == TaskStatus::Queued {
+                self.supertask_holders(task).await.unwrap_or_default()
+            } else {
+                Vec::new()
+            },
             background_shells: (task.status == TaskStatus::Running
                 && task.activity.is_some_and(Activity::is_idle))
             .then(|| self.background_shells_of(&task.id))
@@ -424,8 +430,12 @@ impl App {
         if !self.deps.store.delete_task(&task.id).await? {
             return Err(AppError::NotFound);
         }
-        // A start rule naming the deleted task now sees it as ended (SPEC-017).
+        // A start rule naming the deleted task now sees it as ended (SPEC-017), and a deleted
+        // supertask no longer holds its project (SPEC-071).
         self.advance_rule_chains(&deleted_in).await;
+        if task.supertask {
+            self.drain_queue().await;
+        }
         let runs = self.config.data_dir.join("runs");
         for attempt in attempts {
             let dir = std::path::PathBuf::from(&attempt.run_dir);

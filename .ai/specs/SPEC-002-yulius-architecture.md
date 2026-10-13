@@ -1541,7 +1541,7 @@ Schema version 1 (tables; columns abbreviated):
 | `github_tokens` | user_id, access (enc), refresh (enc), expires_at |
 | `permission_cache` | user_id, sandbox_id, level (none/read/write/admin), checked_at |
 | `sandboxes` | id, slug, repo_owner, repo_name, github_repo_id, default_branch, profile (json), port_base, created_by, onboarding_state, removed_at |
-| `tasks` | id, sandbox_id, number (per sandbox), title, harness, workflow_id, status, activity, branch, worktree_path, spec_path, created_by, created_at, closed_at, archived_at, origin (ui/automation/import/onboarding), automation_run_id |
+| `tasks` | id, sandbox_id, number (per sandbox), title, harness, workflow_id, status, activity, branch, worktree_path, spec_path, created_by, created_at, closed_at, archived_at, origin (ui/automation/import/onboarding), automation_run_id, supertask (SPEC-071, schema version 17) |
 | `attempts` | id, task_id, seq, harness, account_id, provider_session_id, launch_kind (new/resume), state, ptyhost_pid, child_pid, started_at, ended_at, exit_code, exit_reason; partial unique index: one attempt per task in (spawning, live) |
 | `provider_sessions` | id, task_id, harness, session_id, transcript_ref, first_seen, last_seen, origin |
 | `accounts` | id, provider, label, credential (enc), status, usage (json), last_error (version 4 drops priority and enabled, ADR-17) |
@@ -2487,7 +2487,7 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 ## 15. Changelog
 
 - 2026-10-13 (task #66, SPEC-070, ADR-0055): §5 `tasks.owner_id`, `control_requested_by` and
-  `control_requested_at` (migration 0017); §8 a task acts on GitHub as its owner, only the owner
+  `control_requested_at` (migration 0018); §8 a task acts on GitHub as its owner, only the owner
   changes it (`App::load_task`), and control passes on request.
 - 2026-10-13 (task #55, #169; SPEC-063, ADR-0047): §5 `device_grants.client_key` (migration 0016)
   and its purge; §9 device sign-in start limit and grant bounds.

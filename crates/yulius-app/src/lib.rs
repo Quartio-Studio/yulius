@@ -52,6 +52,7 @@ pub mod session_docs;
 pub mod shells;
 pub mod skills;
 pub mod status;
+mod supertask;
 pub mod supervisor;
 pub mod task_control;
 pub mod task_prompt;

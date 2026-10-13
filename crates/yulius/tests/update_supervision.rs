@@ -234,6 +234,7 @@ fn a_prompt_typed_during_an_update_reaches_the_same_agent_after_the_restart() ->
                 automation_run: None,
                 start: true,
                 mode: TaskMode::Prompt,
+                supertask: false,
             })
             .await?;
         let id = task.id;

@@ -38,6 +38,9 @@ watching, steering and unblocking.
   builds from picked conditions (a task, its state, all or any).
   A task that waits and has not started yet takes queued messages: each is added to its request,
   so the agent gets the correction when the task starts.
+  A **supertask** (the composer's start menu, for broad work such as security hardening) waits
+  for the running tasks of its project, then runs alone: the project's other tasks wait for it,
+  also those queued or chained before it, and say so.
   A half-written task (its prompt, attached files and choices) waits in the composer while
   people look elsewhere, also across a reload, until it starts.
   A task is its owner's: it acts on GitHub with their credentials, so only they change it. Others

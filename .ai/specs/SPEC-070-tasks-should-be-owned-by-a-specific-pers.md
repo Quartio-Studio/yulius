@@ -41,7 +41,7 @@ owner for control; once the owner hands it over, the task acts on GitHub as the 
 
 ## Requirements
 
-- R1. Ownership. A task has an owner (`tasks.owner_id`, schema version 17), the person who
+- R1. Ownership. A task has an owner (`tasks.owner_id`, schema version 18), the person who
   created it when it is created; existing tasks get their creator. `created_by` stays who asked.
   `TaskSummary` gains `owner: {login}`.
 - R2. Credentials follow the owner. Everything GIT-003 gives the creator's token, identity or

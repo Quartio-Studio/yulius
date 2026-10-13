@@ -15,7 +15,7 @@ someone else's GitHub token (task #66).
 
 ## Decision
 
-- Every task has an owner (`tasks.owner_id`, schema version 17), its creator when created.
+- Every task has an owner (`tasks.owner_id`, schema version 18), its creator when created.
   `created_by` stays who asked; everything that acts on GitHub or for a person (the token, the
   worktree's commit identity, the agent's management and delivery authority) follows the owner.
 - Only the owner changes a task. `App::load_task` refuses every action beyond viewing to anyone

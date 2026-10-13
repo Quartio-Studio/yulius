@@ -57,7 +57,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0014_notes.sql"),
     include_str!("migrations/0015_vault_two_factor.sql"),
     include_str!("migrations/0016_device_grant_client.sql"),
-    include_str!("migrations/0017_task_owner.sql"),
+    include_str!("migrations/0017_supertask.sql"),
+    include_str!("migrations/0018_task_owner.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -313,8 +314,8 @@ mod tests {
         Ok(())
     }
 
-    /// A version-16 database migrates to task owners (SPEC-070): each task is its creator's, and
-    /// nobody has asked for control.
+    /// A version-16 database migrates through supertasks (17) to task owners (18, SPEC-070): each
+    /// task is its creator's, and nobody has asked for control.
     #[tokio::test]
     async fn version_sixteen_databases_give_each_task_its_creator_as_owner()
     -> Result<(), Box<dyn std::error::Error>> {

@@ -750,6 +750,18 @@ impl App {
         start: RunStart,
         account: Option<AccountId>,
     ) -> BoxFuture<'a, AppResult<()>> {
+        self.start_run_if(task_id, start, account, None)
+    }
+
+    /// [`App::start_run`], only while the task still has the status `only` (when given), checked
+    /// under the launch lock.
+    fn start_run_if<'a>(
+        self: &'a Arc<Self>,
+        task_id: &'a TaskId,
+        start: RunStart,
+        account: Option<AccountId>,
+        only: Option<TaskStatus>,
+    ) -> BoxFuture<'a, AppResult<()>> {
         Box::pin(async move {
             let guard = self.supervisor.launch.lock().await;
             let task = self
@@ -758,6 +770,14 @@ impl App {
                 .task(task_id)
                 .await?
                 .ok_or(AppError::NotFound)?;
+            if only.is_some_and(|status| status != task.status) {
+                return Ok(());
+            }
+            // Already running: another start won the race (the queue and a direct start).
+            if task.status == TaskStatus::Running {
+                tracing::info!(task = %task.id, "start of a running task skipped");
+                return Ok(());
+            }
             // A fresh start is for a task that waits to start (queued, paused for capacity). One
             // that ended meanwhile — closed before the start spawned at its creation ran — stays
             // ended: only Continue (a resume) brings a resting task back.
@@ -769,10 +789,13 @@ impl App {
                 );
                 return Ok(());
             }
+            // A pending supertask of the project, or the running work a supertask waits for,
+            // keeps a new run queued (SPEC-071); a live run is never held.
+            let held = !task.status.is_live() && self.held_by_supertask(&task).await?;
             let live = self.sessions_in_use().await?;
             // While an update pauses the tasks, starts queue like at the session limit and run
             // once it is over (SPEC-002 ADR-18).
-            let full = live >= self.config.max_live_sessions || self.update_holds_starts();
+            let full = held || live >= self.config.max_live_sessions || self.update_holds_starts();
             if full && task.status != TaskStatus::Switching {
                 let queued = self
                     .deps
@@ -827,6 +850,8 @@ impl App {
                     .hub
                     .notice(format!("Could not start: {}", err.public_message()));
                 self.publish_task(task_id).await;
+                // A supertask that could not start no longer holds its project (SUP-005).
+                self.drain_queue().await;
             }
             result
         })
@@ -1979,8 +2004,32 @@ impl App {
         Ok(working)
     }
 
-    /// Starts queued tasks while capacity allows (FIFO); none while an update pauses tasks.
+    /// Starts queued tasks while capacity allows, supertasks first, then FIFO (SPEC-071 SUP-004);
+    /// none while an update pauses tasks. One pass runs at a time; a call during a pass makes it
+    /// go once more (ADR-0054), so a burst of run ends costs at most two passes.
     pub async fn drain_queue(self: &Arc<Self>) {
+        if self.update_holds_starts() || self.supertask_holds.begin_drain() {
+            return;
+        }
+        let app = self.clone();
+        tokio::spawn(async move {
+            loop {
+                while app.supertask_holds.take_drain() {
+                    app.drain_queue_now().await;
+                }
+                if !app.supertask_holds.release_drain() {
+                    break;
+                }
+            }
+        });
+    }
+
+    /// One pass of the queue, awaited ([`App::drain_queue`] runs them one at a time in the
+    /// background). Every queued task's supertask hold is refreshed first (its label follows, also
+    /// at the session limit, SUP-006); then the tasks no supertask holds are offered a slot one
+    /// after the other (launches are serialized anyway), so the first in that order takes a free
+    /// slot first.
+    pub async fn drain_queue_now(self: &Arc<Self>) {
         if self.update_holds_starts() {
             return;
         }
@@ -1992,7 +2041,19 @@ impl App {
         else {
             return;
         };
+        self.supertask_holds
+            .keep(&queued.iter().map(|t| t.id.clone()).collect());
+        let mut free = Vec::new();
         for task in queued {
+            if !self.held_by_supertask(&task).await.unwrap_or(true) {
+                free.push(task);
+            }
+        }
+        // A capacity resume a supertask held waits for the resume loop (SPEC-071): wake it.
+        if self.supertask_holds.take_capacity_held() {
+            self.capacity_changed();
+        }
+        for task in crate::supertask::start_order(free) {
             let live = self.sessions_in_use().await.unwrap_or(u32::MAX);
             if live >= self.config.max_live_sessions {
                 return;
@@ -2009,13 +2070,14 @@ impl App {
             } else {
                 RunStart::Fresh { prompt: None }
             };
-            let app = self.clone();
-            let id = task.id.clone();
-            tokio::spawn(async move {
-                if let Err(err) = app.start_run(&id, start, None).await {
-                    tracing::warn!(error = %err, task = %id, "queued task failed to start");
-                }
-            });
+            // Only while it is still queued, checked under the launch lock: a task stopped or
+            // started meanwhile is not resumed here.
+            if let Err(err) = self
+                .start_run_if(&task.id, start, None, Some(TaskStatus::Queued))
+                .await
+            {
+                tracing::warn!(error = %err, task = %task.id, "queued task failed to start");
+            }
         }
     }
 
@@ -2188,6 +2250,8 @@ impl App {
             self.end_pause(task_id, "cancelled").await;
             self.publish_task(task_id).await;
             self.advance_chains(task_id).await;
+            // A cancelled supertask no longer holds its project (SUP-005).
+            self.drain_queue().await;
             return Ok(());
         }
         // A task already stopping is stopped again: its escalation is armed anew (SPEC-065). One

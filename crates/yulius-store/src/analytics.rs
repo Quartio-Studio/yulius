@@ -267,6 +267,7 @@ mod tests {
                     gate_blocks: 0,
                     wake_enabled: true,
                     mode: yulius_app::model::TaskMode::Prompt,
+                    supertask: false,
                 })
                 .await?;
             let attempt = AttemptId::parse(&format!("a-{task}"))?;

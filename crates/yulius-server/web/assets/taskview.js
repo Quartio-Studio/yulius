@@ -5,7 +5,7 @@ import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, skeleton, openMenu, statusMark, singleFlight, keepFocus } from './dom.js';
 import { openRuleEditor, ruleChoices, ruleText } from './ruleeditor.js';
 import { createTerminalView } from './terminal.js';
-import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, statusInfo, pausedLine, resetAround, shellsLine } from './status.js';
+import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, statusInfo, pausedLine, resetAround, shellsLine, heldBy, supertaskLine } from './status.js';
 import { heldPromptCard, splitCard, looksSeveral, chainCandidates, intakeStatus, SPLIT_MIN_WORDS } from './intake.js';
 import { attachMarkdownInput } from './mdinput.js';
 import { createMarkdownEditor } from './mdeditor.js';
@@ -195,6 +195,12 @@ export function mountTaskView(ctx, sandbox, task) {
       content = [icon(after && after.blocked ? 'st-attention' : 'clock', { size: 16 }), h('span', { class: 'attention-text' }, label),
         can.startNow ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => startNow(ctx, current) }, 'Start now') : null,
         can.stop ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => stopTask(ctx, current) }, 'Cancel') : null];
+    } else if (current.status === 'queued' && heldBy(current).length) {
+      // Held by a supertask (SPEC-071): it starts by itself; Cancel is the way out.
+      const held = heldBy(current);
+      content = [icon('clock', { size: 16 }), h('span', { class: 'attention-text' },
+        h('strong', null, current.supertask ? 'Supertask. ' : `Queued after supertask #${held[0]}. `), supertaskLine(current)),
+      can.stop ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => stopTask(ctx, current) }, 'Cancel') : null];
     } else if (info.held) {
       content = null; // the held-prompt card says it
     } else if (info.request) {
@@ -353,7 +359,11 @@ export function mountTaskView(ctx, sandbox, task) {
     const next = (current.next || []).map((link) => chainLink(link, `Then #${link.number}`, `#${link.number} ${link.title || ''} runs after this task`));
     // How the task runs: "Auto → Goal · Feature" when Auto chose it (TSK-015), else Goal.
     const auto = autoChoiceLabel(current);
+    const supertask = current.supertask
+      ? h('span', { class: 'chip strip-extra supertask-chip', title: 'A supertask: it runs alone in its project, the other tasks wait for it' }, icon('shield', { size: 12 }), 'Supertask')
+      : null;
     setChildren(extrasEl,
+      supertask,
       auto ? h('span', { class: 'chip strip-extra auto-chip', title: auto.title }, icon('zap', { size: 12 }), auto.text)
         : current.mode === 'goal' ? h('span', { class: 'chip strip-extra', title: 'Runs as a goal (/goal): the agent keeps working until it is met' }, 'Goal') : null,
       after,
@@ -495,6 +505,9 @@ export function autoChoiceLabel(task) {
   };
 }
 
+/** What a supertask is, in the start menu and on its chip (SPEC-071). */
+const SUPERTASK_HELP = 'Waits for this project’s running tasks, then runs alone: its other tasks wait for it. For broad work like security hardening';
+
 /**
  * New-task composer (J3, UI-021, F 2026-10-10): a rounded prompt box whose bottom edge holds the
  * task's choices — mode and workflow (Auto by default: Jev decides), run after, model and effort
@@ -523,6 +536,8 @@ export function mountComposer(ctx, sandbox) {
   // Or wait for a logical sentence over the sandbox's tasks (SPEC-017), like `#12 done and #13 done`,
   // picked as conditions in the rule editor (SPEC-022): `{ join, conditions }` or null.
   let startRule = draft.startRule;
+  // Or run as a supertask (SPEC-071): after the project's running tasks, then alone.
+  let supertask = Boolean(draft.supertask);
   let split = null; // the split card while it shows (TSK-011)
   let modelId = findModel(readJson(MODEL_PREF_KEY, null)) ? readJson(MODEL_PREF_KEY, null) : null;
   let effortId = findEffort(readJson(EFFORT_PREF_KEY, null)) ? readJson(EFFORT_PREF_KEY, null) : null;
@@ -640,8 +655,8 @@ export function mountComposer(ctx, sandbox) {
     if (afterTaskId && tasks && !after) afterTaskId = ''; // gone (a kept draft waits for the list)
     const rule = startRule ? ruleText(startRule) : '';
     const ruleLabel = rule.length > 28 ? `${rule.slice(0, 27)}…` : rule;
-    setChildren(afterChip, icon('branch', { size: 14 }), h('span', { class: 'sr-only' }, 'Run after: '), h('span', { class: 'chip-label' }, rule ? `When ${ruleLabel}` : after ? `After #${after.number}` : 'Start now'), icon('down', { size: 12 }));
-    afterChip.title = rule ? `Starts by itself when ${rule}` : after ? `Runs after #${after.number} ${after.title} is done` : 'Starts right away; or pick a task to run after, or give a rule';
+    setChildren(afterChip, icon(supertask ? 'shield' : 'branch', { size: 14 }), h('span', { class: 'sr-only' }, 'Run after: '), h('span', { class: 'chip-label' }, supertask ? 'Supertask' : rule ? `When ${ruleLabel}` : after ? `After #${after.number}` : 'Start now'), icon('down', { size: 12 }));
+    afterChip.title = supertask ? SUPERTASK_HELP : rule ? `Starts by itself when ${rule}` : after ? `Runs after #${after.number} ${after.title} is done` : 'Starts right away; or pick a task to run after, or give a rule';
     const found = findModel(modelId);
     setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
     modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Model: default, Opus 5.5';
@@ -651,8 +666,8 @@ export function mountComposer(ctx, sandbox) {
     const effort = findEffort(effortId);
     setChildren(effortChip, h('span', { class: 'sr-only' }, 'Effort: '), h('span', { class: 'chip-label' }, effort ? effort.name : 'Default effort'), icon('down', { size: 12 }));
     // Every choice shown here is the draft's (DRF-003).
-    if (draft.mode !== mode || draft.workflowId !== workflowId || draft.afterTaskId !== afterTaskId || draft.startRule !== startRule) {
-      Object.assign(draft, { mode, workflowId, afterTaskId, startRule });
+    if (draft.mode !== mode || draft.workflowId !== workflowId || draft.afterTaskId !== afterTaskId || draft.startRule !== startRule || draft.supertask !== supertask) {
+      Object.assign(draft, { mode, workflowId, afterTaskId, startRule, supertask });
       remember();
     }
   }
@@ -678,10 +693,11 @@ export function mountComposer(ctx, sandbox) {
   function openAfterMenu(anchor) {
     const candidates = chainCandidates(ctx, sandbox);
     openMenu(anchor, [
-      { label: 'Start now', icon: 'up', description: 'The task starts as soon as a session slot is free', checked: !afterTaskId && !startRule, onSelect: () => { afterTaskId = ''; startRule = null; renderChips(); prompt.focus(); } },
+      { label: 'Start now', icon: 'up', description: 'The task starts as soon as a session slot is free', checked: !afterTaskId && !startRule && !supertask, onSelect: () => { afterTaskId = ''; startRule = null; supertask = false; renderChips(); prompt.focus(); } },
+      { label: 'Supertask', icon: 'shield', description: SUPERTASK_HELP, checked: supertask, onSelect: () => { afterTaskId = ''; startRule = null; supertask = true; renderChips(); prompt.focus(); } },
       // One line per task under one heading, every live one: the menu's filter finds it (SPEC-038).
       ...(candidates.length ? [{ separator: true }, { header: 'After a task is done' }] : []),
-      ...candidates.map((t) => ({ label: `#${t.number} ${t.title}`, hint: statusInfo(t).label, title: `Starts by itself when #${t.number} is done`, checked: t.id === afterTaskId, onSelect: () => { afterTaskId = t.id; startRule = null; renderChips(); prompt.focus(); } })),
+      ...candidates.map((t) => ({ label: `#${t.number} ${t.title}`, hint: statusInfo(t).label, title: `Starts by itself when #${t.number} is done`, checked: t.id === afterTaskId, onSelect: () => { afterTaskId = t.id; startRule = null; supertask = false; renderChips(); prompt.focus(); } })),
       // A rule names tasks of this sandbox, so a sandbox without any offers none (SPEC-022).
       ...(ruleChoices(ctx.store.tasksOf(sandbox.id)).length ? [
         { separator: true },
@@ -698,6 +714,7 @@ export function mountComposer(ctx, sandbox) {
       onUse: (rule) => {
         startRule = rule;
         afterTaskId = '';
+        supertask = false;
         renderChips();
         prompt.focus();
       },
@@ -845,6 +862,7 @@ export function mountComposer(ctx, sandbox) {
     workflowId = AUTO;
     afterTaskId = '';
     startRule = null;
+    supertask = false;
     clearDraft(userId, sandbox.id); // redraws the tray (onDraftChange)
     fit();
     ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`);
@@ -933,8 +951,9 @@ export function mountComposer(ctx, sandbox) {
     if (draft.starting) { toast('This task is already starting.', { kind: 'info' }); return; }
     try {
       // A request mixing separate workstreams gets the split card first; a chosen "Run after"
-      // already decided how the work is scheduled. The check never blocks for long (≤ 4 s).
-      if (!afterTaskId && !startRule && text.split(/\s+/).filter(Boolean).length >= SPLIT_MIN_WORDS) {
+      // already decided how the work is scheduled, and a supertask is one broad task by intent.
+      // The check never blocks for long (≤ 4 s).
+      if (!afterTaskId && !startRule && !supertask && text.split(/\s+/).filter(Boolean).length >= SPLIT_MIN_WORDS) {
         working('Reading your request…');
         if (await looksSeveral(ctx, sandbox, text)) {
           showSplit(text);
@@ -945,6 +964,7 @@ export function mountComposer(ctx, sandbox) {
       const body = bodyFor(text);
       if (afterTaskId) body.after_task_id = afterTaskId;
       if (startRule) body.start_rule = ruleText(startRule);
+      if (supertask) body.supertask = true;
       opened(await createTask(body));
     } catch (error) {
       errorToast(error, 'Couldn’t start the task');

@@ -13,7 +13,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   read-only and cannot write into the task's worktree or open a shell there. They can ask for control (Request control in the task). The owner hands it over or
   declines, and the asker may withdraw. From the hand-over on, the task acts on GitHub as the new
   owner, and its terminal says so. An owner who is disabled, deleted or without write access
-  passes control at once. Schema version 17 (`tasks.owner_id`, the waiting request).
+  passes control at once. Schema version 18 (`tasks.owner_id`, the waiting request).
+- Supertasks (SPEC-071, ADR-0054, task #67; SPEC-001 TSK-018). Choose **Supertask** in the
+  composer's start menu (API `supertask: true`, `task_create`) for broad work such as security
+  hardening. The task waits for its project's running tasks, then runs alone. While it waits or
+  runs, no other task of the project starts, also tasks queued or chained before it; they wait
+  `queued` and say "Queued after supertask #N". A queued supertask says "Supertask · waits for
+  #3 and #5". Running sessions are never interrupted, and other projects keep running. At the
+  session limit, a supertask gets the next free slot first. Schema version 17
+  (`tasks.supertask`).
 - Cockpit and terminal starts survive a dropped request (SPEC-077, ADR-0053, task #64; #250). The
   part of a start from the spawn to the registration runs as a task the request awaits, so a
   client that goes away mid-start leaves one live Cockpit or terminal (or nothing on an error),

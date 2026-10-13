@@ -1339,6 +1339,7 @@ pub async fn seed_task_with_prompt(
         gate_blocks: 0,
         wake_enabled: true,
         mode: yulius_app::model::TaskMode::Prompt,
+        supertask: false,
     };
     Ok(h.store.insert_task(&task).await?)
 }

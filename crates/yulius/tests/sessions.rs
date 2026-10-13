@@ -140,6 +140,7 @@ async fn insert_task(
             gate_blocks: 0,
             wake_enabled: true,
             mode: TaskMode::Prompt,
+            supertask: false,
         })
         .await?)
 }
