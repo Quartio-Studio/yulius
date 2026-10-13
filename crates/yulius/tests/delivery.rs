@@ -2657,6 +2657,86 @@ async fn needs_you_counts_follow_the_sidebar_rule() -> TestResult {
     Ok(())
 }
 
+/// #170: a sandbox's counters split the sidebar's groups with its rule (`taskInfo`): "working"
+/// plus "queued" is the Working group, "queued" its queued and chained tasks, and "needs you" the
+/// Needs you group. A Done task, a task being stopped and an ended one count nowhere.
+#[tokio::test]
+async fn working_and_queued_counts_split_the_sidebar_working_group() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let set = async |id: &str, status: TaskStatus, activity: Option<Activity>| -> BoxResult<()> {
+        f.h.store
+            .transition_task(&TaskId::parse(id)?, None, status, activity, Timestamp(5))
+            .await?;
+        Ok(())
+    };
+    // (needs you, working, queued)
+    let counts = async || -> BoxResult<(u64, u64, u64)> {
+        let r = f.req(Method::GET, "/api/sandboxes", None, &f.bob).await?;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+        let sandbox = r
+            .body
+            .as_array()
+            .and_then(|list| list.iter().find(|s| s["id"] == "s1"))
+            .ok_or("s1")?;
+        let count = |name: &str| sandbox["counts"][name].as_u64().ok_or(format!("{sandbox}"));
+        Ok((
+            count("needs_attention")?,
+            count("running")?,
+            count("queued")?,
+        ))
+    };
+
+    // t1 finished its turn with an open pull request whose checks still run, its plan complete.
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    let opened = f
+        .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
+        .await?;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    set_steps(&f, "t1", &["done", "done"]).await?;
+    set("t1", TaskStatus::Running, Some(Activity::Waiting)).await?;
+    let tasks: [(&str, TaskStatus, Option<Activity>); 9] = [
+        // Queued: in line, or after another task.
+        ("t2", TaskStatus::Queued, None),
+        ("t3", TaskStatus::Chained, None),
+        // Working: on its way, paused for capacity, or working.
+        ("t4", TaskStatus::Starting, None),
+        ("t5", TaskStatus::WaitingCapacity, Some(Activity::Working)),
+        ("t6", TaskStatus::Running, Some(Activity::Working)),
+        ("t7", TaskStatus::Switching, None),
+        // Your turn needs you; an achieved goal is Done; a stop asked for is with the ended.
+        ("t8", TaskStatus::Running, Some(Activity::Waiting)),
+        ("t9", TaskStatus::Running, Some(Activity::Done)),
+        ("t10", TaskStatus::Stopping, Some(Activity::Working)),
+    ];
+    for (id, status, activity) in tasks {
+        f.add_task(id, id, &format!("feat/{id}"), "dev").await?;
+        set(id, status, activity).await?;
+    }
+
+    // Before any Git overview read, t1's pull request is not known: Your turn.
+    assert_eq!(counts().await?, (2, 4, 2));
+
+    // Checks running, read by the Git overview: t1 is In review, in the Working group.
+    f.h.github.set_checks(&head, ChecksState::Pending);
+    let page = f
+        .req(Method::GET, "/api/sandboxes/s1/git", None, &f.rita)
+        .await?;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert_eq!(counts().await?, (1, 5, 2));
+
+    // Green: Done, counted nowhere.
+    f.h.github.set_checks(&head, ChecksState::Success);
+    f.req(Method::GET, "/api/sandboxes/s1/git", None, &f.rita)
+        .await?;
+    assert_eq!(counts().await?, (1, 4, 2));
+    Ok(())
+}
+
 /// A task with an open pull request at `head` (checks pending) and a live run whose agent calls
 /// the internal endpoints with `agent`.
 struct ArmedTask {
