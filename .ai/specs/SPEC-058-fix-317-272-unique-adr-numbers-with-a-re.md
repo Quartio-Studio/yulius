@@ -151,10 +151,10 @@ onboarding rather than by a job (#272).
   before the prompt change, with `infra-bootstrap misses ...` before the skill change, and with
   `missing "find \"$HOME\" -maxdepth 1 -name '.ci-proof.*' -mmin +360"` before the review fix;
   passed after each.
-- `scripts/dev ci`: exit 0 at 13f6f8c (1266 passed), at aa59cad (1268), at e634281 (1268) and at
-  5da77ef, the head after round 4's nits and the merge of `dev` #330 (later commits change only
-  this spec and `docs/changes.md`): nextest 1268 run, 1268 passed, 16 skipped; repository contracts and 39 Python tests
-  OK; cargo-deny advisories, bans, licenses and sources ok.
+- `scripts/dev ci`: exit 0 at 13f6f8c (1266 passed), aa59cad, e634281 and 5da77ef (1268 each),
+  and at c4a474a, the head after merging `dev` #333 (later commits change only this spec): nextest
+  1273 run, 1273 passed, 16 skipped; repository contracts and 39 Python tests OK; cargo-deny
+  advisories, bans, licenses and sources ok.
 - Merging `dev` after #328: `python3 scripts/check_repository.py` failed with
   "0040-personal-two-factor-guards-the-vault.md: shares decision number 0040 with
   0040-done-tasks-release-their-subscription.md"; after renumbering to 0042 it passed.
@@ -174,7 +174,8 @@ onboarding rather than by a job (#272).
   missing index reported, not raised), fixed in f6ca9d4. A confirmation review covers the final
   head's delta from e634281: APPROVE at 7006140, with one minor: the union merge driver of
   `docs/changes.md` had cut #332's "Quick archive" entry in two, keeping the old ADR-0040 in the
-  copy. The cut line is removed and the entry says 0043; a last confirmation covers that fix.
+  copy. The cut line is removed and the entry says 0043. The final review covers that fix and the
+  merge of #333 (c4a474a).
 - The rendered prompt's commands, run in a scratch repository with a scratch `HOME`: the proof
   killed by `timeout 3` printed `proof <dir>` and left the directory and a worktree entry; the
   own-path recovery plus `git worktree prune` removed both (exit 0); the six-hour `find` removed a
