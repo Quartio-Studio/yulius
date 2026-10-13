@@ -1,11 +1,11 @@
 ---
 yulius-task: 831042b3-96c4-40eb-bb79-8642438dd5e1
-status: in-progress
+status: done
 ---
 
 # SPEC-079: an idle task's background work and goal verdict decide its status
 
-Status: in progress
+Status: implemented
 Date: 2026-10-13
 Owner: Yulius task #60 (part of task #47, "fix all open actionable GitHub issues")
 Scope authorization: task request: fix GitHub issues #305, #264, #265 and #271 following their
@@ -67,12 +67,12 @@ and SPEC-050 SES-101 (a Done task frees its session slot; the queue drains when 
 ## Plan
 
 - [x] Spec written and validated
-- [ ] A Done task whose last background work ends drains the queue at once
-- [ ] Background launches and their ends are read from the transcript
-- [ ] An idle task with a live Monitor reads Working until its stream ends or expires
-- [ ] A proactive switch at a Stop waits for a background agent launched in that turn
-- [ ] A goal task's clean Stop waits for the goal verdict before it reads idle
-- [ ] Docs, ADR, independent review and every gate green
+- [x] A Done task whose last background work ends drains the queue at once
+- [x] Background launches and their ends are read from the transcript
+- [x] An idle task with a live Monitor reads Working until its stream ends or expires
+- [x] A proactive switch at a Stop waits for a background agent launched in that turn
+- [x] A goal task's clean Stop waits for the goal verdict before it reads idle
+- [x] Docs, ADR, independent review and every gate green
 
 ## Acceptance criteria
 
@@ -109,3 +109,49 @@ and SPEC-050 SES-101 (a Done task frees its session slot; the queue drains when 
   is rare, and the watcher stays the one reader.
 
 ADR: [0063](../../docs/decisions/0063-background-work-and-goal-verdict-from-the-transcript.md).
+
+## Evidence
+
+- **Claude Code's records, from the sandbox transcripts (2.1.292).**
+  - `toolUseResult` `{taskId, timeoutMs, persistent}` with "Monitor started (task …)";
+    `{status: "async_launched", agentId}`.
+  - `<task-notification>` ends: `<status>completed|failed|stopped</status>`, "Monitor expired".
+  - `turn_duration` had no `pendingBackgroundAgentCount` while monitors were live.
+  - A live `Monitor` of this session ran as `/bin/bash -c … eval '<cmd>' … pwd -P >| …`, so the
+    process probe counts a command monitor.
+- **Red first.** Each fix was removed in turn and its test failed:
+  - the drains (#305): the queued task never started;
+  - the wake flag: the woken task settled Waiting and held the slot;
+  - monitors in the count (#265): no monitor counted;
+  - the launch guard (#271): the switch was made while the agent was pending;
+  - the verdict wait (#264): `waiting` was published before Done.
+  The files were restored byte for byte after each run.
+- **Tests.**
+  - `cargo nextest run -p yulius-app -p yulius-harness`: 270 passed.
+  - `task_done` integration file: 27 passed.
+- **Independent review, three rounds in fresh read-only sessions.**
+  - Round 1 requested changes:
+    - agents launched in earlier turns were not counted;
+    - ADR number collision with dev;
+    - probe before chains;
+    - a late launch was not probed;
+    - clocks;
+    - Monitor detection;
+    - verdict evidence;
+    - the watcher wait.
+  - Round 2 requested changes:
+    - the renumber had rewritten task #62's ADR-0061 references;
+    - wake-up prompts reset an achieved goal, so #305 did not hold in production;
+    - the failed-verdict test did not prove the verdict settled the turn;
+    - the cooldown wait.
+  - All findings were fixed test-first. Round 3 approved `0d396c4`. Its nits were left:
+    - the prompt hook's wider wake-up test;
+    - a duplicate `switch_cooling` call;
+    - the fake holding its lock for 6 s.
+  - A race was accepted without change: a typed prompt landing between `settle_waited_turn`'s
+    read and its write. The window is the same as on the Stop path that already existed.
+- **Gate.** `scripts/dev ci` on `0d396c4` (merged with dev at 567586e) passed:
+  - 1428 tests run, 1428 passed;
+  - format, clippy, deps and repository contracts.
+- **Not tested here:** a real Claude Code session against a deployed Yulius. Everything above
+  runs the fake agent, shaped on the real records.
