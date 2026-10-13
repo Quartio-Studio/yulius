@@ -58,7 +58,8 @@ Me = {
 CLI device approval: `POST /api/device/start` → `{"device_code","user_code","verification_url",
 "interval_s","expires_in_s"}`; `POST /api/device/poll {"device_code"}` →
 `{"status":"pending|approved|denied|expired","token":"yul_…|null"}`; `POST /api/device/approve
-{"user_code","approve":bool}` (web session) → 204.
+{"user_code","approve":bool}` (web session) → 204. Device start needs no session and is limited per client: 5 starts a
+minute, at most 10 live grants per client and 1000 per instance; past either it answers 429.
 
 ## Sandboxes
 
