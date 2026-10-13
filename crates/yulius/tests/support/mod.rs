@@ -753,6 +753,8 @@ pub async fn insert_sandbox(
 
 /// The real harness planning with the fake agent executable.
 pub mod agents;
+/// The real ptyhost whose next attach a test can hold (SPEC-077).
+pub mod gated;
 /// Repository fixtures (real Git over local remotes) for project and import tests.
 pub mod repos;
 /// A fake `main` source and update helper for instance update tests (SPEC-002 ADR-18).
