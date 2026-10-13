@@ -145,6 +145,12 @@ pub enum Observation {
         /// When it was recorded, if known.
         at: Option<Timestamp>,
     },
+    /// The API rejected the prompt as too long: the session's context is full (#213).
+    ContextFull,
+    /// Claude Code compacted the conversation.
+    Compacted,
+    /// A compaction failed.
+    CompactFailed,
     /// The provider reported a usage limit.
     LimitReached {
         /// Reset time if known.

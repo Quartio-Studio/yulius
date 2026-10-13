@@ -14,6 +14,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   not reproduce on `dev`; a regression test now covers it). The automatic retry of an errored
   Yulius CI run at a pull request's head is tested: once, never a third time, never when the pull
   request conflicts.
+- A session whose context is full recovers (SPEC-060, ADR-0046, task #51, #213). Claude Code's
+  "Prompt is too long" ends the turn, so the task waits instead of staying `working`. Yulius then
+  types `/compact` with a focus built from the task (goal, branch, pull request, steps left) and
+  wakes the compacted session. If the compaction fails, the task continues in a fresh session
+  opened with a handoff. If the fresh session is full too, the task needs attention and says why.
+  Each step shows in the task's terminal and the audit log (`task.context_full`).
 - Unique decision numbers and the onboarding CI proof (SPEC-058, task #49; #317, #272). The four
   decision records numbered 0034 now have their own numbers: the automations catalog keeps 0034, the
   Agent in the right panel is 0036, the personal two-factor vault 0042 and the task status from
