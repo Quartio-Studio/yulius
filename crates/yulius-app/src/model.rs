@@ -150,10 +150,32 @@ pub struct DeviceGrantRecord {
     pub user_id: Option<UserId>,
     /// Sealed issued token until consumed.
     pub token: Option<Sealed>,
+    /// The starting client's limit key (bounds live grants per client, #169).
+    pub client_key: String,
     /// Created.
     pub created_at: Timestamp,
     /// Expires.
     pub expires_at: Timestamp,
+}
+
+/// Bounds on live device grants (#169, ADR-0042): rows not expired and not consumed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceGrantBounds {
+    /// Live grants of one client key.
+    pub per_client: usize,
+    /// Live grants of the instance.
+    pub total: usize,
+}
+
+/// Outcome of inserting a device grant under [`DeviceGrantBounds`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceGrantInsert {
+    /// Stored.
+    Inserted,
+    /// The client already has its bound of live grants; nothing stored.
+    ClientFull,
+    /// The instance already has its bound of live grants; nothing stored.
+    InstanceFull,
 }
 
 /// Sandbox (project).

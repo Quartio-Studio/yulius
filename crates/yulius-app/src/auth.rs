@@ -10,7 +10,8 @@ use yulius_domain::time::Timestamp;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::{
-    ApiTokenRecord, DeviceGrantRecord, GitHubTokenRecord, Secret, UserRecord, WebSessionRecord,
+    ApiTokenRecord, DeviceGrantBounds, DeviceGrantInsert, DeviceGrantRecord, GitHubTokenRecord,
+    Secret, UserRecord, WebSessionRecord,
 };
 use crate::ports::github::{GhUserToken, GitHubAppConfig};
 
@@ -26,6 +27,10 @@ const LOGIN_WINDOW_MS: i64 = 60_000;
 /// CLI device sign-in starts allowed per client key per minute (#169, ADR-0042); the limiter
 /// tracks at most [`MAX_LOGIN_CLIENTS`] keys, like sign-in's.
 pub const DEVICE_STARTS_PER_MINUTE: usize = 5;
+/// Live CLI device grants (not expired, not consumed) allowed per client key (#169, ADR-0042).
+pub const MAX_DEVICE_GRANTS_PER_CLIENT: usize = 10;
+/// Live CLI device grants allowed per instance (#169, ADR-0042).
+pub const MAX_DEVICE_GRANTS: usize = 1000;
 const DEVICE_TTL_MS: i64 = 10 * 60 * 1000;
 const OAUTH_STATE_TTL_MS: i64 = 10 * 60 * 1000;
 const USER_CODE_ALPHABET: &[u8] = b"BCDFGHJKLMNPQRSTVWXZ23456789";
@@ -569,18 +574,32 @@ impl App {
             .map(|b| char::from(USER_CODE_ALPHABET[usize::from(*b) % USER_CODE_ALPHABET.len()]))
             .collect();
         let user_code = format!("{}-{}", &letters[..4], &letters[4..]);
-        self.deps
+        let inserted = self
+            .deps
             .store
-            .insert_device_grant(&DeviceGrantRecord {
-                user_code: user_code.clone(),
-                device_code_hash: self.deps.crypto.sha256_hex(device_code.as_bytes()),
-                status: "pending".into(),
-                user_id: None,
-                token: None,
-                created_at: now,
-                expires_at: now.plus_millis(DEVICE_TTL_MS),
-            })
+            .insert_device_grant(
+                &DeviceGrantRecord {
+                    user_code: user_code.clone(),
+                    device_code_hash: self.deps.crypto.sha256_hex(device_code.as_bytes()),
+                    status: "pending".into(),
+                    user_id: None,
+                    token: None,
+                    client_key: client_key.to_owned(),
+                    created_at: now,
+                    expires_at: now.plus_millis(DEVICE_TTL_MS),
+                },
+                DeviceGrantBounds {
+                    per_client: MAX_DEVICE_GRANTS_PER_CLIENT,
+                    total: MAX_DEVICE_GRANTS,
+                },
+            )
             .await?;
+        if inserted != DeviceGrantInsert::Inserted {
+            // Existing grants are never evicted: they expire within DEVICE_TTL_MS (ADR-0042).
+            return Err(AppError::Capacity(
+                "too many device sign-ins waiting; try again in a few minutes".into(),
+            ));
+        }
         Ok(DeviceStart {
             device_code,
             verification_url: format!("{}/device?code={user_code}", self.config.public_url),

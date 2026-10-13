@@ -9,6 +9,8 @@ use support::{
     Creds, TestResult, call, harness, perms, seed_github_user, seed_sandbox, seed_task,
     session_from,
 };
+use yulius_app::auth::{DEVICE_STARTS_PER_MINUTE, MAX_DEVICE_GRANTS, MAX_DEVICE_GRANTS_PER_CLIENT};
+use yulius_app::error::AppError;
 use yulius_app::model::SandboxRecord;
 use yulius_app::ports::store::{InstanceStore, SandboxStore};
 use yulius_domain::ids::{SandboxId, UserId};
@@ -668,6 +670,37 @@ async fn device_approval_issues_a_single_use_cli_token() -> TestResult {
     )
     .await?;
     assert_eq!(me.status, StatusCode::OK);
+    Ok(())
+}
+
+/// #169: live device grants are bounded per client and per instance, whatever the per-minute
+/// limit lets through; past either bound a start is refused with `Capacity` (429).
+#[tokio::test]
+async fn device_grants_are_bounded_per_client_and_instance() -> TestResult {
+    let h = harness()?;
+    let minute = || {
+        h.clock
+            .0
+            .fetch_add(61_000, std::sync::atomic::Ordering::SeqCst)
+    };
+    for n in 0..MAX_DEVICE_GRANTS_PER_CLIENT {
+        if n > 0 && n % DEVICE_STARTS_PER_MINUTE == 0 {
+            minute();
+        }
+        h.app.device_start("one").await?;
+    }
+    minute();
+    assert!(matches!(
+        h.app.device_start("one").await,
+        Err(AppError::Capacity(_))
+    ));
+    for n in MAX_DEVICE_GRANTS_PER_CLIENT..MAX_DEVICE_GRANTS {
+        h.app.device_start(&format!("client-{n}")).await?;
+    }
+    assert!(matches!(
+        h.app.device_start("newcomer").await,
+        Err(AppError::Capacity(_))
+    ));
     Ok(())
 }
 

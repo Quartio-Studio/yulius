@@ -51,7 +51,7 @@ consumed grants are deleted.
 
 - [x] Spec, ADR and limits recorded in SPEC-001 and SPEC-002
 - [x] Device start limited per client with a shared sliding-window limiter
-- [ ] Grants record their client and are bounded per client and instance-wide
+- [x] Grants record their client and are bounded per client and instance-wide
 - [ ] Expired and consumed grants purged on start and every minute
 - [ ] Independent review, gates green, changes entry and evidence
 

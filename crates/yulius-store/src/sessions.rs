@@ -4,7 +4,8 @@ use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};
 use yulius_app::error::AppResult;
 use yulius_app::model::{
-    ApiTokenRecord, CachedAccess, DeviceGrantRecord, Sealed, WebSessionRecord,
+    ApiTokenRecord, CachedAccess, DeviceGrantBounds, DeviceGrantInsert, DeviceGrantRecord, Sealed,
+    WebSessionRecord,
 };
 use yulius_app::ports::store::{PermissionStore, SessionStore};
 use yulius_domain::ids::{SandboxId, UserId};
@@ -37,13 +38,19 @@ fn grant_from_row(row: &Row<'_>) -> rusqlite::Result<DeviceGrantRecord> {
         status: row.get("status")?,
         user_id: uid.as_deref().map(user_id).transpose()?,
         token: row.get::<_, Option<Vec<u8>>>("token_plain")?.map(Sealed),
+        client_key: row.get("client_key")?,
         created_at: Timestamp(row.get("created_at")?),
         expires_at: Timestamp(row.get("expires_at")?),
     })
 }
 
-const GRANT_COLS: &str =
-    "user_code, device_code_hash, status, user_id, token_plain, created_at, expires_at";
+const GRANT_COLS: &str = "user_code, device_code_hash, status, user_id, token_plain, created_at, \
+     expires_at, client_key";
+
+/// Deletes expired grants (any status) and consumed ones (#169); denied grants stay until they
+/// expire so the CLI still reads "denied".
+const PURGE_GRANTS: &str =
+    "DELETE FROM device_grants WHERE expires_at <= ?1 OR status = 'consumed'";
 
 #[async_trait]
 impl SessionStore for SqliteStore {
@@ -143,12 +150,33 @@ impl SessionStore for SqliteStore {
         .await
     }
 
-    async fn insert_device_grant(&self, g: &DeviceGrantRecord) -> AppResult<()> {
+    async fn insert_device_grant(
+        &self,
+        g: &DeviceGrantRecord,
+        bounds: DeviceGrantBounds,
+    ) -> AppResult<DeviceGrantInsert> {
         let g = g.clone();
+        let per_client = i64::try_from(bounds.per_client).unwrap_or(i64::MAX);
+        let total = i64::try_from(bounds.total).unwrap_or(i64::MAX);
         self.call(move |c| {
-            c.execute(
+            let tx = c.transaction().map_err(db)?;
+            tx.execute(PURGE_GRANTS, [g.created_at.0]).map_err(db)?;
+            let (live, of_client): (i64, i64) = tx
+                .query_row(
+                    "SELECT COUNT(*), COUNT(*) FILTER (WHERE client_key = ?1) FROM device_grants",
+                    [&g.client_key],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(db)?;
+            if of_client >= per_client {
+                return Ok(DeviceGrantInsert::ClientFull);
+            }
+            if live >= total {
+                return Ok(DeviceGrantInsert::InstanceFull);
+            }
+            tx.execute(
                 &format!(
-                    "INSERT INTO device_grants ({GRANT_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
+                    "INSERT INTO device_grants ({GRANT_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"
                 ),
                 params![
                     g.user_code,
@@ -157,11 +185,13 @@ impl SessionStore for SqliteStore {
                     g.user_id.as_ref().map(UserId::as_str),
                     g.token.map(|t| t.0),
                     g.created_at.0,
-                    g.expires_at.0
+                    g.expires_at.0,
+                    g.client_key
                 ],
             )
             .map_err(db)?;
-            Ok(())
+            tx.commit().map_err(db)?;
+            Ok(DeviceGrantInsert::Inserted)
         })
         .await
     }
