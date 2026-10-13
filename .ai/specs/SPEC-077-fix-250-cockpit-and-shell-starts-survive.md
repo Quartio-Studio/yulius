@@ -1,11 +1,11 @@
 ---
 yulius-task: f92dbbba-5e79-41d6-87b9-e09a3cbb5278
-status: in-progress
+status: done
 ---
 
 # SPEC-077: Cockpit and shell starts survive a dropped request
 
-Status: in progress
+Status: implemented
 Date: 2026-10-13
 Owner: Yulius task #64
 Scope authorization: task #64 (part of #47), fix GitHub issue #250.
@@ -62,14 +62,14 @@ round 2 get the regression tests they lack.
 
 ## Plan
 
-- [ ] Write and validate SPEC-077
-- [ ] A Cockpit start finishes or cleans up when its request is dropped (test-first)
-- [ ] A shell start finishes or cleans up when its request is dropped (test-first)
-- [ ] A signal after a resume keeps the conversation resumable (test)
-- [ ] One user's blocked Cockpit start does not delay other users or sandboxes (test)
-- [ ] The start-lock map drops idle entries
-- [ ] Docs, ADR, changes log and every gate green
-- [ ] Independent review in a fresh session and its findings fixed
+- [x] Write and validate SPEC-077
+- [x] A Cockpit start finishes or cleans up when its request is dropped (test-first)
+- [x] A shell start finishes or cleans up when its request is dropped (test-first)
+- [x] A signal after a resume keeps the conversation resumable (test)
+- [x] One user's blocked Cockpit start does not delay other users or sandboxes (test)
+- [x] The start-lock map drops idle entries
+- [x] Docs, ADR, changes log and every gate green
+- [x] Independent review in a fresh session and its findings fixed
 
 ## Acceptance criteria
 
@@ -104,6 +104,25 @@ round 2 get the regression tests they lack.
   holder under the map lock, so a waiting start always finds the same mutex. Exposed as a count
   (`cockpit_starts_pending`) for the test.
 
+- **Review round 1** (fresh read-only session, APPROVE at ef453a5 with minors): added a second open
+  of the same user and sandbox while the first start is held (it waits and gets the same
+  Cockpit) and the lock-map check after the concurrent opens; ADR-0053 now says a start that a
+  server shutdown cancels is adopted if saved or cleaned up at the next start; a test comment no
+  longer claims an untested restart. Not changed: a panic inside the detached start does not
+  discard the shell (as before; no code there panics), recorded in ADR-0053.
+
 ## Evidence
 
-To be filled at the end.
+- Before the change (tests written first, `cargo nextest run -p yulius -E 'binary_id(yulius::main)
+  & (test(/^cockpit::/) | test(/^shells::a_terminal_start_whose/))'`): the dropped Cockpit start
+  timed out waiting for its registration, the dropped terminal start never saved its record
+  (timed out), and the lock map held 3 entries after the starts (`left: 3, right: 0`).
+- After the change: `cockpit::` and `shells::` tests, 21 passed (4 new).
+- DRS-003 mutation check: with `note_cockpit_exit` treating any exit but `Some(0)` as a failure,
+  `a_resumed_cockpit_killed_by_a_signal_resumes_the_same_conversation` fails
+  (`[--model …]` instead of `[--resume kept --model …]`); restored, it passes.
+- `scripts/dev ci` (repository contracts, script tests, check, fmt, clippy `-D warnings`, nextest,
+  doctests, deny, shear, doc) on the head merged with `dev` (9146803): exit 0, 1352 tests run,
+  1352 passed, 16 skipped.
+- Not verified here: a real browser dropping the request (the tests drop the request future,
+  which is what axum does when the client disconnects) and a contained (bwrap) Cockpit.
