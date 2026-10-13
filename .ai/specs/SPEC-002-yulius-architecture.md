@@ -2486,7 +2486,7 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 
 ## 15. Changelog
 
-- 2026-10-13 (task #66, SPEC-070, ADR-0055): §5 `tasks.owner_id`, `control_requested_by` and
+- 2026-10-13 (task #66, SPEC-070, ADR-0060): §5 `tasks.owner_id`, `control_requested_by` and
   `control_requested_at` (migration 0018); §8 a task acts on GitHub as its owner, only the owner
   changes it (`App::load_task`), and control passes on request.
 - 2026-10-13 (task #55, #169; SPEC-063, ADR-0047): §5 `device_grants.client_key` (migration 0016)

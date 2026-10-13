@@ -21,16 +21,19 @@ watching, steering and unblocking.
   layer, home, shells per user, browser and editor. The CLI only uploads: the onboarding task that
   adapts the repository to the Yulius standards starts when someone clicks Start onboarding on the
   sandbox page.
-- **Agent** (formerly the Cockpit): every user's own plain Claude Code session per sandbox, in the
-  right tool panel beside any page (top-bar Agent button, first in the tools rail), for quick work
+- **Superagent** (formerly the Agent, and before that the Cockpit): every user's own plain Claude
+  Code session per sandbox, in the right tool panel beside any page (top-bar Superagent button,
+  first in the tools rail), for quick work
   such as setting up automations or asking a quick question; anything more complex, such as
   writing code, belongs in a task, and its panel says so. `/clear` starts over, it cannot be
   deleted and comes back with its conversation. It manages the project for its owner: asked to
   "create a task from that" or to do something "every day at 4am", it creates the task or the
   automation through Yulius's tools, and it stops, archives or deletes tasks, runs or deletes
   automations and enables the ready-made ones, asking the person before each change. Task agents
-  can do the same for their task's owner, except to their own task.
-- **Sidebar**: the sandbox pages used every day (Tasks, Git, CI (tests), Secrets, Dashboard; the Agent is on the right),
+  can do the same for their task's owner, except to their own task. When a usage limit cuts its
+  turn, it moves to a subscription with capacity and goes on with the turn, as a task does; the
+  panel follows it.
+- **Sidebar**: the sandbox pages used every day (Tasks, Git, CI (tests), Secrets, Dashboard; the Superagent is on the right),
   then "More" for Sessions, Workflows, Skills, Automations and MCP, then the active tasks.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions
   outlive server restarts. Task intake splits mixed requests, holds scope changes and chains

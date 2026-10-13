@@ -1979,11 +1979,13 @@ route('POST', `/api/sandboxes/${ID}/shells`, ({ db, p, body }) => {
 // never listed, renamed or closed as a terminal. `&cockpit=fail` makes it fail to start;
 // `&cockpit=gone` answers the first call with a Cockpit whose process is already gone (a reboot);
 // a test can hold the answer (`__yuliusMock.holdCockpit = promise`) to act while it starts;
-// `__yuliusMock.rebootCockpits()` ends running ones abruptly.
+// `__yuliusMock.rebootCockpits()` ends running ones abruptly; `switchCockpits()` moves them to
+// another subscription (SPEC-074).
 route('POST', `/api/sandboxes/${ID}/cockpit`, async ({ db, p }) => {
   need(sandboxOf(db, p[0]), 'write');
   const scenario = new URLSearchParams(location.search).get('cockpit');
   if (scenario === 'fail') fail(429, 'capacity', 'no subscription has capacity right now');
+  if (db.cockpitFailsOnce) { db.cockpitFailsOnce = false; fail(429, 'capacity', 'no subscription has capacity right now'); }
   if (db.holdCockpit) await db.holdCockpit;
   if (scenario === 'gone' && !db.cockpitGone) {
     db.cockpitGone = true;
@@ -3184,9 +3186,9 @@ class ShellSession {
   }
 
   /** The shell process ended: the server sends `exit` and closes every viewer's socket. */
-  end(code) {
+  end(code, status = 'closed') {
     for (const ws of [...this.viewers]) {
-      ws.push(JSON.stringify({ type: 'exit', status: 'closed', code }));
+      ws.push(JSON.stringify({ type: 'exit', status, code }));
       setTimeout(() => ws.serverClose(1000, 'shell ended'), 50);
     }
     this.viewers.clear();
@@ -3619,6 +3621,21 @@ export function createMockTransport(params) {
       if (!shell.cockpit) continue;
       db.shells.delete(shell.id);
       for (const ws of [...((shell.session && shell.session.viewers) || [])]) ws.serverClose(1006, '');
+    }
+  };
+  // A usage limit moved every Cockpit to another subscription (SPEC-074): each ends as `switched`
+  // and a new one, resuming its conversation, is already running in its place.
+  // `switchCockpits(true)`: the start on the other subscription failed, and the next start fails
+  // once for lack of capacity.
+  db.switchCockpits = (failed = false) => {
+    for (const shell of [...db.shells.values()]) {
+      if (!shell.cockpit) continue;
+      db.nextId += 1;
+      const next = { ...shell, id: `ck_${shell.sandbox_id}_${db.nextId}`, session: null, resumed: true };
+      if (shell.session) shell.session.end(null, 'switched');
+      db.shells.delete(shell.id);
+      if (failed) db.cockpitFailsOnce = true;
+      else db.shells.set(next.id, next);
     }
   };
   // A teammate's save of a notepad (`team` or `sandbox:<sid>`); `announce: false` holds back its
