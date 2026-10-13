@@ -1,11 +1,11 @@
 ---
 yulius-task: 11930dd3-70c1-4b2b-8411-8a797b83103d
-status: in-progress
+status: done
 ---
 
 # SPEC-056: open GitHub issues triaged; the web UI keeps the person's keyboard, scroll and text
 
-Status: in progress
+Status: implemented
 Date: 2026-10-13
 Owner: Yulius task #47
 Scope authorization: user request: "Fix all open actionable issues from github without creating
@@ -80,7 +80,7 @@ covered:
 | WUI-102 | A focus request records its order across all terminals of the page. A request made before the terminal showed lands only if no later request was made, or if the keyboard is on nothing (the page body). The terminal asked for last keeps the keyboard (#323). | `queued-messages.e2e.ts` |
 | WUI-103 | Notes shown again because the page or task changed (`{ context: true }`) does not take the keyboard. Opened by the person, it focuses its notepad (#310). | `notes.e2e.ts` |
 | WUI-104 | Placing a menu again keeps its list's scroll position. Only editing the filter scrolls the list back to its top (#288). | `menus.e2e.ts` |
-| WUI-105 | The task view never applies a detail answer older than one it already applied (#316). If the newest read fails, an older answer still counts. | `queued-messages.e2e.ts` |
+| WUI-105 | The task view never applies a detail answer older than one it already applied, and only the latest read's answer sets the task's summary (its status) or reports a failure (#316). If the newest read fails, an older answer's details still count. | `queued-messages.e2e.ts` |
 | WUI-106 | A queued messages card that holds unsent text or a refusal stays when the task starts (`starting` or running). It says the task started, keeps the text selectable, disables Queue, and can be dismissed (#324, SPEC-052 QMS-006). A task that ends or is archived instead takes the card away. A task that waits again before it ran gets the plain box back, without the old refusal. | `queued-messages.e2e.ts` |
 | WUI-107 | Leaving the composer revokes every object URL it created: thumbnails and files opened in a tab (#259). | `filedrop.e2e.ts` |
 
@@ -91,8 +91,8 @@ covered:
 - [x] Notes and filtered menus keep the person's place (#310, #288)
 - [x] The task view applies only its latest detail and keeps an interrupted queued message (#316, #324)
 - [x] Leaving the composer revokes every object URL it made (#259)
-- [ ] Independent review approves the head, findings fixed test-first
-- [ ] Gates green, spec evidence and changes log written, issues closed
+- [x] Independent review approves the head, findings fixed test-first
+- [x] Gates green, spec evidence and changes log written, issues closed
 
 ## Acceptance criteria
 
@@ -138,3 +138,43 @@ covered:
     earlier can still take the keyboard from it when it shows. This was the behaviour before too.
   - Closing either gap means changing focus rules shared by every terminal, beyond this fix.
 - No ADR: nothing lasting about the architecture is decided.
+
+## Evidence
+
+- **Regression tests fail before their fix.** Each test was committed before its fix and run
+  against the unfixed assets. They failed on their own assertion:
+  - #325: `editor.e2e.ts`, the Editor value after the release;
+  - #323: `queued-messages.e2e.ts:146`, the Shell no longer focused;
+  - #310: `notes.e2e.ts`, the notepad focused;
+  - #288: `menus.e2e.ts`, `expected 0 to be 120`;
+  - #316: `queued-messages.e2e.ts:174`, "Starting" again after the held read;
+  - #324: "The task has started" missing;
+  - #259: `filedrop.e2e.ts`, the URL not revoked.
+- **Review rounds.**
+  - Round 1's new tests failed before their fixes:
+    - the older read is not applied when the newer one fails;
+    - a cancelled task keeps the card;
+    - a stale refusal stays after a wait.
+  - Round 2's new test failed before its fix: `queued-messages.e2e.ts:297`, "Starting" again after
+    a failed newer read.
+  - All of them pass with their fixes.
+- **The reviewer re-checked round 1's tests.** In a separate checkout with the old
+  `terminal-core.js`, `notes.js`, `dom.js` and `taskview.js`, all 8 new tests failed.
+- **Gates at 81369b8:**
+  - `cd e2e && npx e2e run`: exit 0, 235 passed, 1 skipped. The skipped one is the agent test,
+    which needs a model key.
+  - `scripts/dev ci`: exit 0, nextest 1266 passed, 16 skipped (the opt-in live tests).
+  - The earlier run at b852dec was also green: e2e 231 passed, `scripts/dev ci` exit 0.
+- **Independent reviews** (fresh read-only sessions, skill `om-code-review`):
+  - Round 1, b852dec: APPROVE. Minors 1, 2, 3 and 6 were fixed test-first; 4 and 5 are recorded
+    under Decisions.
+  - Round 2, 165d35d: APPROVE. Its two minors were fixed test-first: an older answer no longer
+    restores the status, and a superseded read no longer warns. Its comment nit was fixed too.
+  - The final head's review is recorded in the merge.
+- **Issues.**
+  - Closed with comments: #242, #253, #301, #308, #280, #282 and #44.
+  - #325, #323, #310, #288, #316, #324 and #259 are closed after the merge.
+  - Handed to the chained tasks listed in Context, which close their own.
+  - Left open (not actionable here): #5, #6, #7, #11, #14, #15 and #321.
+- **Not tested here:** Safari and Firefox, which have no EditContext; the rule there is the
+  textarea case, already covered.
