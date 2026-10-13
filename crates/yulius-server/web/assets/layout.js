@@ -75,8 +75,8 @@ export function createTabRow(ctx) {
     toolsButton.setAttribute('aria-pressed', String(visible));
     labelTools();
   };
-  // The Superagent (SPEC-035 AGT-005, SPEC-074): the user's own session for quick work, in the right panel; one
-  // click opens or closes it, whether the tools rail shows or not.
+  // The Superagent (SPEC-035 AGT-005, SPEC-074): the user's own session for quick work, in the right
+  // panel; one click opens or closes it, whether the tools rail shows or not.
   const agentButton = h('button', { type: 'button', class: 'btn btn-agent agent-toggle', 'aria-label': 'Show Superagent', 'aria-pressed': 'false', title: 'Superagent: your own Claude Code session that manages this project, for quick work', onClick: () => ctx.toggleAgent && ctx.toggleAgent() },
     icon('spark', { size: 16 }), h('span', { class: 'agent-toggle-text', 'aria-hidden': 'true' }, 'Superagent'));
   ctx.onPanelChange = (kind) => {
