@@ -135,6 +135,12 @@ pub struct TaskRuntime {
     /// `turn_duration` record, STA-001): they wake the session by themselves, so the idle task
     /// is not done. Counted with the shells.
     pub(crate) background_agents: AtomicU32,
+    /// Background agents the agent started that Claude Code has not said ended (their
+    /// transcript lines, ROT-021): known at once, before the record that closes the turn, which
+    /// is written after the Stop hook that decides a switch.
+    pub(crate) open_agents: Mutex<std::collections::BTreeSet<String>>,
+    /// When (ms) the transcript watcher last finished reading the transcript (0 = not yet).
+    pub(crate) transcript_read_ms: AtomicI64,
     /// When (ms) a notice that asks a person to act flagged the task `needs_attention` (0 = no
     /// such flag): the agent's work after it shows the person answered (STA-003).
     pub(crate) notice_attention_ms: AtomicI64,
@@ -223,6 +229,8 @@ impl TaskRuntime {
             background_shells: AtomicI64::new(-1),
             shells_since_ms: AtomicI64::new(0),
             background_agents: AtomicU32::new(0),
+            open_agents: Mutex::new(std::collections::BTreeSet::new()),
+            transcript_read_ms: AtomicI64::new(0),
             notice_attention_ms: AtomicI64::new(0),
             turn_record_ms: AtomicI64::new(0),
             resumed_turn: AtomicBool::new(false),
@@ -249,6 +257,16 @@ impl TaskRuntime {
     }
 
     /// Whether the run's transcript is being watched (a turn record can still arrive).
+    /// Background agents the session still runs: the larger of the count the last turn record
+    /// gave and the ones its transcript named since that have not ended (ROT-021).
+    pub(crate) fn background_agents_running(&self) -> u32 {
+        let named = self
+            .open_agents
+            .lock()
+            .map_or(0, |open| u32::try_from(open.len()).unwrap_or(u32::MAX));
+        self.background_agents.load(Ordering::SeqCst).max(named)
+    }
+
     pub(crate) fn is_watching(&self) -> bool {
         self.watcher_alive.load(Ordering::SeqCst)
     }
@@ -2722,6 +2740,10 @@ impl App {
         runtime.goal_submitted.store(false, Ordering::SeqCst);
         runtime.background_shells.store(-1, Ordering::SeqCst);
         runtime.background_agents.store(0, Ordering::SeqCst);
+        if let Ok(mut open) = runtime.open_agents.lock() {
+            open.clear();
+        }
+        runtime.transcript_read_ms.store(0, Ordering::SeqCst);
         runtime.notice_attention_ms.store(0, Ordering::SeqCst);
         runtime.turn_record_ms.store(0, Ordering::SeqCst);
         runtime.resumed_turn.store(false, Ordering::SeqCst);
@@ -2869,6 +2891,9 @@ impl App {
                     self.on_observation(&task_id, &attempt, observation).await;
                 }
             }
+            runtime
+                .transcript_read_ms
+                .store(self.now().0, Ordering::SeqCst);
             // Live metrics (#31): the dashboard counts a run while it goes, saved after each turn
             // and at most every 30 s while something changes.
             let now = self.now();
@@ -2973,9 +2998,25 @@ impl App {
             }
             Observation::Goal(outcome) => self.goal_observed(task_id, outcome).await,
             Observation::TurnEnded { background_agents } => {
+                // Claude Code waits for no background agent: none the transcript named runs.
+                if background_agents == Some(0)
+                    && let Ok(mut open) = runtime.open_agents.lock()
+                {
+                    open.clear();
+                }
                 self.background_agents_observed(task_id, background_agents.unwrap_or(0))
                     .await;
                 self.turn_record_seen(task_id).await;
+            }
+            Observation::BackgroundAgentStarted { id } => {
+                if let Ok(mut open) = runtime.open_agents.lock() {
+                    open.insert(id);
+                }
+            }
+            Observation::BackgroundTaskEnded { id } => {
+                if let Ok(mut open) = runtime.open_agents.lock() {
+                    open.remove(&id);
+                }
             }
             Observation::AgentWork { at } => {
                 self.context_replied(task_id, &attempt.id);

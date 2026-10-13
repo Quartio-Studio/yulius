@@ -33,6 +33,7 @@ use yulius_domain::harness::{Harness, Provider};
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;
+use yulius_domain::usage::{AccountUsage, UsageWindow};
 use yulius_ptyhost::test_support::locate_fake_agent;
 use yulius_store::SqliteStore;
 use yulius_store::crypto::MasterKeyCrypto;
@@ -908,6 +909,136 @@ fn a_pending_background_agent_keeps_the_task_working_until_it_finishes() -> Test
                 })
         })
         .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
+/// ROT-020, ROT-021 (SPEC-050, task #71 at 14:52 on 2026-10-13): the agent starts a background
+/// agent (an independent review) and ends its turn to wait for it, while its subscription is at
+/// the switch threshold and another one has room. A switch restarts the session and would kill
+/// the review, so the session stays until the review ended; the turn its end wakes is the
+/// boundary where it moves.
+#[test]
+fn a_switch_waits_for_the_background_agent_the_turn_started() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            answers_first_message: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let record = app
+            .create_task_internal(NewTask {
+                sandbox: sandbox.clone(),
+                created_by: user.clone(),
+                prompt: "Review the parser".into(),
+                harness: Harness::ClaudeCode,
+                title: Some("Review the parser".into()),
+                workflow_id: None,
+                steps: Vec::new(),
+                model: None,
+                effort: None,
+                origin: TaskOrigin::Ui,
+                automation_run: None,
+                start: true,
+                mode: TaskMode::Prompt,
+            })
+            .await?;
+        let id = record.id;
+        let first_turn = wait_for("the first turn", Duration::from_secs(60), || async {
+            screen_contains(&app, &id, "ECHO: Review the parser").await
+                && activity(&app, &id).await == Some(Activity::Waiting)
+        })
+        .await;
+        if let Err(err) = first_turn {
+            return Err(format!(
+                "{err}: {:?} {}",
+                activity(&app, &id).await,
+                app.runtime(&id).hub.screen_text()
+            )
+            .into());
+        }
+        // The task's subscription is at the threshold; another one has room.
+        let store = &app.deps.store;
+        let window = |percent: f64, minutes: u32, hours: i64| UsageWindow {
+            used_percent: Some(percent),
+            window_minutes: Some(minutes),
+            resets_at: Some(Timestamp(now_ms() + hours * 3_600_000)),
+        };
+        let usage = |five: f64| {
+            yulius_app::usage_json::to_json(&AccountUsage {
+                primary: Some(window(five, 300, 4)),
+                secondary: Some(window(10.0, 10_080, 100)),
+                observed_at: Some(Timestamp(now_ms())),
+                ..AccountUsage::default()
+            })
+        };
+        let first = AccountId::parse("a-claude")?;
+        store
+            .set_account_state(
+                &first,
+                AccountStatus::Ok,
+                Some(&usage(99.0)),
+                None,
+                Timestamp(now_ms()),
+            )
+            .await?;
+        store
+            .insert_account(&AccountRecord {
+                id: AccountId::parse("a-claude-2")?,
+                provider: Provider::Anthropic,
+                label: "Claude roomy".into(),
+                credential: Some(app.deps.crypto.seal(b"sk-ant-oat01-second-credential")?),
+                status: AccountStatus::Ok,
+                usage_json: Some(usage(5.0)),
+                last_error: None,
+                created_at: Timestamp(1),
+                updated_at: Timestamp(1),
+            })
+            .await?;
+
+        app.send_input(&id, b"/agent 6\r").await?;
+        wait_for("the review started", Duration::from_secs(20), || {
+            screen_contains(&app, &id, "AGENT STARTED")
+        })
+        .await?;
+        // While the review runs the session stays on its subscription.
+        while !screen_contains(&app, &id, "AGENT DONE").await {
+            assert_eq!(
+                store.attempts(&id).await?.len(),
+                1,
+                "no switch while the background agent runs"
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        // The review ended and woke the session: at that turn's end the session moves.
+        wait_for("the switch", Duration::from_secs(60), || async {
+            let attempts = store.attempts(&id).await.unwrap_or_default();
+            attempts.len() >= 2 && attempts.last().is_some_and(|a| !a.state.is_terminal())
+        })
+        .await?;
+        let attempts = store.attempts(&id).await?;
+        assert_eq!(
+            attempts[1].account_id.as_ref().map(AccountId::as_str),
+            Some("a-claude-2")
+        );
+        assert_eq!(
+            attempts[0].provider_session_id,
+            attempts[1].provider_session_id
+        );
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

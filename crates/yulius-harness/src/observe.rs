@@ -79,6 +79,18 @@ pub enum Observed {
         /// session wakes by itself when they finish. `None` when the CLI does not say.
         background_agents: Option<u32>,
     },
+    /// The agent started a background agent: an `Agent` call Claude Code runs asynchronously
+    /// (its tool result's `toolUseResult` says `isAsync`). It wakes the session when it ends.
+    BackgroundAgentStarted {
+        /// Claude Code's id of the agent (`agentId`).
+        id: String,
+    },
+    /// Claude Code said a background task ended: a `<task-notification>` prompt naming its
+    /// `<task-id>` (an agent or a background command, finished, failed or stopped).
+    BackgroundTaskEnded {
+        /// The task's id.
+        id: String,
+    },
     /// The agent works: an assistant line that is not the end of a turn (a tool call, partial
     /// output). After a recorded turn end it shows the turn goes on (a Stop hook continued it).
     AgentWork {

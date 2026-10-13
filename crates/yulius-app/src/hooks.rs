@@ -542,12 +542,21 @@ impl App {
             .store(false, Ordering::SeqCst);
         let current = ctx.attempt.account_id.clone();
         let pool = self.rotation_input(task, current.clone()).await?;
-        // A switch restarts the session and kills its background shells: a build or gate the
-        // agent left running would be lost (tasks #3 and #5, F 2026-10-11/12).
-        let shells_busy = self.shells_running_now(&task.id).await;
-        let stays = match rotation::decide(&pool, Trigger::Proactive) {
+        let decision = rotation::decide(&pool, Trigger::Proactive);
+        // A switch restarts the session and kills its background work: a build or gate the
+        // agent left running (tasks #3 and #5, F 2026-10-11/12, ROT-020), or the review agent it
+        // started just before it ended the turn to wait for it (six of seven switches on
+        // 2026-10-13, ROT-021). The transcript is read once more first: that start may be newer
+        // than the watcher's last read.
+        let busy = if matches!(decision.0, Decision::Switch { .. }) {
+            self.await_transcript_read(&task.id).await;
+            self.shells_running_now(&task.id).await
+        } else {
+            false
+        };
+        let stays = match decision {
             (Decision::Stay, _) => true,
-            (Decision::Switch { .. }, _) if shells_busy => true,
+            (Decision::Switch { .. }, _) if busy => true,
             // A switch was refused moments ago (the new session could not start): the agent
             // keeps working on its current subscription instead of being held.
             (Decision::Switch { .. }, _) if self.switch_cooling(&task.id) => true,

@@ -140,6 +140,16 @@ pub enum Observation {
         /// Background agents Claude Code still waits for; `None` when it does not say.
         background_agents: Option<u32>,
     },
+    /// The agent started a background agent (Claude Code's asynchronous `Agent` call).
+    BackgroundAgentStarted {
+        /// Claude Code's id of the agent.
+        id: String,
+    },
+    /// Claude Code said a background task (an agent or a command) ended.
+    BackgroundTaskEnded {
+        /// The task's id.
+        id: String,
+    },
     /// The agent works: an assistant line that is not a turn's end.
     AgentWork {
         /// When it was recorded, if known.

@@ -63,6 +63,11 @@
 //! (`prompt_input_exit`), prints `BYE` and exits 0; SIGTERM runs `SessionEnd` (`other`) and
 //! exits 143.
 //!
+//! `/agent <seconds>` is a turn that starts a background agent (an asynchronous `Agent` call and
+//! its tool result, as Claude Code records them), prints `AGENT STARTED`, runs its Stop hook and
+//! closes the turn with one agent pending; the agent ends after `<seconds>` and wakes the session
+//! with a task notification, a short turn and its Stop hook (prints `AGENT DONE`).
+//!
 //! `--rate-limits-file PATH` runs Claude Code's status line command as Yulius configures it
 //! (`YULIUS_EXE hook claude StatusLine`, with `--hooks`) at the start and after every turn, with
 //! the `rate_limits` object read from PATH (when it exists) in its input, and prints
@@ -534,6 +539,38 @@ impl Transcript {
         self.append(&[assistant])
     }
 
+    /// An `Agent` call Claude Code runs in the background: its tool use and the tool result whose
+    /// `toolUseResult` says it was launched asynchronously (Claude Code 2.1.x).
+    fn agent_launched(&mut self, agent_id: &str) -> io::Result<()> {
+        let n = self.turns;
+        let timestamp = rfc3339(now_ms());
+        let tool_id = format!("toolu_fake_agent_{n}");
+        let use_uuid = format!("fake-{}-{n}-agent", self.session_id);
+        let mut assistant = self.claude_envelope("assistant", &use_uuid, &timestamp);
+        assistant["message"] = json!({
+            "id": format!("msg_fake_agent_{n}"),
+            "type": "message",
+            "role": "assistant",
+            "model": "fake-model",
+            "content": [{"type": "tool_use", "id": tool_id, "name": "Agent",
+                "input": {"description": "Review", "prompt": "Review the change.",
+                    "run_in_background": true}}],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 8, "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0, "output_tokens": 6}
+        });
+        self.last_uuid = Some(use_uuid);
+        let result_uuid = format!("fake-{}-{n}-agent-result", self.session_id);
+        let mut result = self.claude_envelope("user", &result_uuid, &timestamp);
+        result["message"] = json!({"role": "user", "content": [{"tool_use_id": tool_id,
+            "type": "tool_result", "content": [{"type": "text",
+                "text": format!("Async agent launched successfully.\nagentId: {agent_id}")}]}]});
+        result["toolUseResult"] =
+            json!({"isAsync": true, "status": "async_launched", "agentId": agent_id});
+        self.last_uuid = Some(result_uuid);
+        self.append(&[assistant, result])
+    }
+
     /// The person interrupted the turn: Claude Code's user line, shaped like 2.1.292's.
     fn interrupted(&mut self) -> io::Result<()> {
         let uuid = format!("fake-{}-{}-interrupt", self.session_id, self.turns);
@@ -854,6 +891,41 @@ fn start_agent(seconds: u64, transcript: Option<Arc<Mutex<Transcript>>>, hooks: 
             let _ = t.close_turn(2_000, 0);
         }
     });
+}
+
+/// `/agent <seconds>`: a turn that starts a background agent and ends to wait for it, as an
+/// agent does with an independent review; the agent ends after `seconds` ([`start_agent`]).
+fn agent_turn(
+    line: &str,
+    transcript: Option<&Arc<Mutex<Transcript>>>,
+    hooks: Option<&Hooks>,
+) -> io::Result<()> {
+    let seconds = line["/agent ".len()..]
+        .trim()
+        .parse::<u64>()
+        .unwrap_or(0)
+        .min(MAX_SLEEP_SECONDS);
+    if let Some(reason) = hooks.and_then(|h| h.prompt(line)) {
+        return say(&format!("PROMPT BLOCKED: {reason}"));
+    }
+    if let Some(transcript) = transcript
+        && let Ok(mut t) = transcript.lock()
+    {
+        t.begin(line)?;
+        t.agent_launched("agent-1")?;
+        t.answer(line, "The review runs in the background.")?;
+    }
+    say("AGENT STARTED")?;
+    if let Some(hooks) = hooks {
+        hooks.stop()?;
+    }
+    if let Some(transcript) = transcript
+        && let Ok(mut t) = transcript.lock()
+    {
+        t.close_turn(1_000, 1)?;
+    }
+    start_agent(seconds, transcript.cloned(), hooks.cloned());
+    Ok(())
 }
 
 fn report_env(names: &[String]) -> io::Result<()> {
@@ -1235,6 +1307,10 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
             _ if line.starts_with("/work ") => {
                 state.turns += 1;
                 work_turn(options, &line, transcript.as_ref(), hooks.as_ref(), keys)?;
+            }
+            _ if line.starts_with("/agent ") => {
+                state.turns += 1;
+                agent_turn(&line, transcript.as_ref(), hooks.as_ref())?;
             }
             _ => echo_message(
                 options,

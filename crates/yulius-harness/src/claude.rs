@@ -170,7 +170,13 @@ fn observe_user(record: &Map<String, Value>) -> Vec<Observed> {
     let Some(message) = obj_of(record, "message") else {
         return vec![Observed::Malformed];
     };
-    if bool_of(record, "isSidechain") || bool_of(record, "isMeta") || !is_prompt(message) {
+    if bool_of(record, "isSidechain") || bool_of(record, "isMeta") {
+        return Vec::new();
+    }
+    if let Some(id) = async_agent_started(record) {
+        return vec![Observed::BackgroundAgentStarted { id }];
+    }
+    if !is_prompt(message) {
         return Vec::new();
     }
     if compact_failed(message) {
@@ -182,18 +188,41 @@ fn observe_user(record: &Map<String, Value>) -> Vec<Observed> {
     } else {
         Observed::UserTurn { at }
     };
-    let Some(session_id) = owned_str(record, "sessionId") else {
-        return vec![turn];
-    };
-    vec![
-        Observed::SessionMeta {
+    let mut out = Vec::new();
+    if let Some(id) = notified_task(message) {
+        out.push(Observed::BackgroundTaskEnded { id });
+    }
+    if let Some(session_id) = owned_str(record, "sessionId") {
+        out.push(Observed::SessionMeta {
             session_id,
             cwd: owned_str(record, "cwd"),
             model: None,
             version: owned_str(record, "version"),
-        },
-        turn,
-    ]
+        });
+    }
+    out.push(turn);
+    out
+}
+
+/// The agent id of an `Agent` call Claude Code launched in the background: the tool result
+/// record's `toolUseResult` is `{"isAsync": true, "agentId": …}` (2.1.x).
+fn async_agent_started(record: &Map<String, Value>) -> Option<String> {
+    let result = obj_of(record, "toolUseResult")?;
+    bool_of(result, "isAsync")
+        .then(|| owned_str(result, "agentId"))
+        .flatten()
+        .filter(|id| !id.is_empty())
+}
+
+/// The `<task-id>` of a `<task-notification>` prompt: Claude Code wakes the session with one
+/// when a background agent or command ended.
+fn notified_task(message: &Map<String, Value>) -> Option<String> {
+    let text = message_text(message);
+    let rest = text.trim_start().strip_prefix("<task-notification>")?;
+    let (_, rest) = rest.split_once("<task-id>")?;
+    let (id, _) = rest.split_once("</task-id>")?;
+    let id = id.trim();
+    (!id.is_empty()).then(|| id.to_owned())
 }
 
 /// A user line that only says the person interrupted the turn ([`INTERRUPT_MARKERS`]).
@@ -538,6 +567,47 @@ mod tests {
             vec![Observed::UserTurn {
                 at: Some(Timestamp(1_791_610_681_385))
             }]
+        );
+    }
+
+    /// ROT-021 (SPEC-050): a background agent's start and its end are read from the transcript
+    /// as they happen, before the turn record that counts them. Lines in the shapes of task
+    /// #71's transcript (Claude Code 2.1.x, 2026-10-13).
+    #[test]
+    fn a_background_agents_start_and_end_are_read_as_they_happen() {
+        let launched = r#"{"type":"user","isSidechain":false,"sessionId":"s1","timestamp":"2026-10-13T14:52:36.000Z","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":[{"type":"text","text":"Async agent launched successfully.\nagentId: a2d71daad1e4f9dae"}]}]},"toolUseResult":{"isAsync":true,"status":"async_launched","agentId":"a2d71daad1e4f9dae","description":"Confirm final head"}}"#;
+        assert_eq!(
+            observe_line(launched),
+            vec![Observed::BackgroundAgentStarted {
+                id: "a2d71daad1e4f9dae".into()
+            }]
+        );
+        // A synchronous agent's result and a sub-agent's own lines start nothing.
+        let sync = launched.replace(r#""isAsync":true"#, r#""isAsync":false"#);
+        assert!(observe_line(&sync).is_empty());
+        let sidechain = launched.replace(r#""isSidechain":false"#, r#""isSidechain":true"#);
+        assert!(observe_line(&sidechain).is_empty());
+
+        let notified = r#"{"type":"user","isSidechain":false,"sessionId":"s1","timestamp":"2026-10-13T14:52:41.000Z","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification>\n<task-id>a2d71daad1e4f9dae</task-id>\n<output-file>/tmp/x.output</output-file>\n<status>stopped</status>\n</task-notification>"}}"#;
+        let observed = observe_line(notified);
+        assert_eq!(
+            observed.first(),
+            Some(&Observed::BackgroundTaskEnded {
+                id: "a2d71daad1e4f9dae".into()
+            })
+        );
+        assert!(
+            observed
+                .iter()
+                .any(|o| matches!(o, Observed::UserTurn { .. })),
+            "the notification still wakes the session: {observed:?}"
+        );
+        // A prompt that only mentions a notification ends nothing.
+        let typed = r#"{"type":"user","message":{"content":"what is a <task-notification>?"}}"#;
+        assert!(
+            !observe_line(typed)
+                .iter()
+                .any(|o| matches!(o, Observed::BackgroundTaskEnded { .. }))
         );
     }
 

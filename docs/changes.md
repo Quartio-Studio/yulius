@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- A switch to another subscription waits while a background agent the agent started still runs
+  (a review it ended its turn to wait for); before, the switch restarted the session and killed it
+  (SPEC-050 ROT-021).
 - A CI run that could not run (disk, a timeout, the host) reads "CI could not run (not the code)"
   instead of "checks failing · Needs you"; an armed merge stays armed and the agent is told to run
   the checks again (SPEC-050 STA-101).

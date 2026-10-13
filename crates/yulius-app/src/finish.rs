@@ -92,8 +92,11 @@ impl TranscriptFacts {
             Observation::Goal(GoalOutcome::Set | GoalOutcome::Cleared) => {
                 self.goal_achieved = Some(false);
             }
+            // A replay keeps the turn record's count of background agents.
             Observation::Session { .. }
             | Observation::LimitReached { .. }
+            | Observation::BackgroundAgentStarted { .. }
+            | Observation::BackgroundTaskEnded { .. }
             | Observation::CompactFailed => {}
             // An assistant line that is not a turn's end after a recorded end: a Stop hook
             // continued the turn (STA-005).
@@ -124,6 +127,10 @@ pub(crate) fn turn_record_pending(stop_ms: i64, record_ms: i64, now_ms: i64) -> 
         && record_ms < stop_ms
         && now_ms.saturating_sub(stop_ms) < TURN_RECORD_WAIT.as_millis() as i64
 }
+
+/// How long a switch decision waits for the transcript watcher's next read (it reads every
+/// second).
+const TRANSCRIPT_READ_WAIT: Duration = Duration::from_millis(2_500);
 
 /// How long a decision at a clean Stop waits for the record that closes the turn, which says how
 /// many background agents are pending (it is written after the Stop hooks, about a poll later).
@@ -473,7 +480,7 @@ impl App {
         // in its turn record (STA-001). The count is the larger of the two views of the same
         // background work (a background Bash command is in both).
         let count = if idle {
-            combine_background(count, runtime.background_agents.load(Ordering::SeqCst))
+            combine_background(count, runtime.background_agents_running())
         } else {
             count
         };
@@ -511,6 +518,23 @@ impl App {
         }
     }
 
+    /// Waits (bounded) until the transcript watcher read the transcript once more: what the
+    /// agent recorded before this moment (a background agent it started just before its Stop
+    /// hook, ROT-021) is applied then. No wait for a run that is not watched.
+    pub(crate) async fn await_transcript_read(&self, task_id: &TaskId) {
+        let runtime = self.runtime(task_id);
+        if !runtime.is_watching() {
+            return;
+        }
+        let since = self.now().0;
+        let deadline = std::time::Instant::now() + TRANSCRIPT_READ_WAIT;
+        while runtime.transcript_read_ms.load(Ordering::SeqCst) < since
+            && std::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     /// Whether the task's agent has background work running right now: a fresh probe of its
     /// shells, or background agents its last turn end said it waits for.
     pub(crate) async fn shells_running_now(&self, task_id: &TaskId) -> bool {
@@ -524,7 +548,7 @@ impl App {
     pub(crate) async fn background_work_now(&self, task_id: &TaskId) -> Option<bool> {
         if self
             .existing_runtime(task_id)
-            .is_some_and(|runtime| runtime.background_agents.load(Ordering::SeqCst) > 0)
+            .is_some_and(|runtime| runtime.background_agents_running() > 0)
         {
             return Some(true);
         }
