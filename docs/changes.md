@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
-- A session whose context is full recovers (SPEC-060, ADR-0040, task #51, #213). Claude Code's
+- A session whose context is full recovers (SPEC-060, ADR-0041, task #51, #213). Claude Code's
   "Prompt is too long" ends the turn, so the task waits instead of staying `working`. Yulius then
   types `/compact` with a focus built from the task (goal, branch, pull request, steps left) and
   wakes the compacted session. If the compaction fails, the task continues in a fresh session
@@ -22,12 +22,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   - the task view ignores an older detail read (#316);
   - the queued messages card keeps unsent text and a refusal when the task starts (#324);
   - leaving the composer revokes every object URL it made (#259).
-- Quick archive (SPEC-062, ADR-0040, task #65). A sidebar task row that can be archived shows an
+- Quick archive (SPEC-062, ADR-0041, task #65). A sidebar task row that can be archived shows an
   Archive button beside its `⋮` on hover or focus, and the Done group's head has **Archive all**:
   one click archives every Done task, with one Undo for the whole batch. When some fail, the
   others stay archived and one toast says how many failed and why. Phones keep the `⋮` menu as
   their only row action. No API change: each task goes through `POST /api/tasks/{tid}/archive`.
-- Done tasks no longer hold their subscription (SPEC-057, ADR-0040, task #48). A subscription
+- Done tasks no longer hold their subscription (SPEC-057, ADR-0041, task #48). A subscription
   card counts only tasks still working on it, so one whose tasks are all Done (goal achieved, or
   plan complete and merged: the session limit's rule) says "No tasks right now" and can be removed. Removing it closes those Done tasks' idle sessions first, as archiving
   does. The pool's load and the Status panel count the same way as the session limit (SES-101).

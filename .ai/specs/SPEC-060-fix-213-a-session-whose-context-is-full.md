@@ -105,7 +105,7 @@ retries without bound: the last stage is a person.
 
 ## Decisions
 
-- **Compact first, then a fresh session, then a person** (ADR-0040). `/compact` keeps the most
+- **Compact first, then a fresh session, then a person** (ADR-0041). `/compact` keeps the most
   work and is what the person did by hand in #213. A fresh session loses the conversation but not
   the work on disk, so it is the fallback. A third automatic try would loop on a task whose
   briefing alone overflows the context.

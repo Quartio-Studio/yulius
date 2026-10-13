@@ -1,4 +1,4 @@
-# 0040. A full session is compacted, then restarted fresh, then handed to a person
+# 0041. A full session is compacted, then restarted fresh, then handed to a person
 
 ## Status
 
