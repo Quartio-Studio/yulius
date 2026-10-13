@@ -319,7 +319,7 @@ impl App {
             let now = self.now();
             // Several read at once count as one, the newest (transcript order): its reset is the
             // subscription's, and the mark passes them all.
-            let limit = observations.into_iter().filter_map(|o| match o {
+            let mut limit = observations.into_iter().filter_map(|o| match o {
                 Observation::LimitReached {
                     resets_at,
                     window_minutes,
@@ -332,7 +332,7 @@ impl App {
                 }
                 _ => None,
             });
-            let limit = limit.last();
+            let limit = limit.next_back();
             history_read = history_read || watch.caught_up();
             if let Some((resets_at, window_minutes, at)) = limit {
                 runtime
