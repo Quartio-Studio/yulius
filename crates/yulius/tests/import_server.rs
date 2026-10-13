@@ -365,6 +365,34 @@ async fn onboarding_starts_only_from_the_browser() -> TestResult {
         "a CLI token changes nothing"
     );
 
+    // Nor can a CLI token continue the resting onboarding task itself.
+    let prep = unchanged
+        .onboarding_task_id
+        .clone()
+        .ok_or("onboarding task")?;
+    let resumed = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/tasks/{prep}/continue"),
+        Some(json!({})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(resumed.status, StatusCode::FORBIDDEN, "{:?}", resumed.body);
+    assert!(
+        w.h.store.attempts(&prep).await?.is_empty(),
+        "the task has not run"
+    );
+    let api = call(
+        &w.h.router,
+        Method::GET,
+        &format!("/api/sandboxes/{}", sandbox.id),
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(api.body["onboarding"], "pending", "{:?}", api.body);
+
     let browser = w.browser(&alice_user).await?;
     let started = call(&w.h.router, Method::POST, &approve, None, &browser).await?;
     assert_eq!(started.status, StatusCode::OK, "{:?}", started.body);

@@ -414,7 +414,9 @@ impl App {
                     .trim()
                     .split_once('/')
                     .ok_or_else(|| AppError::Invalid("repo must be owner/name".into()))?;
-                self.import_repository(&ctx.user, owner.trim(), name.trim(), true)
+                // Adding it in the browser is the explicit action that starts onboarding; a token
+                // import (the CLI, a script) waits for Start onboarding (SPEC-051).
+                self.import_repository(&ctx.user, owner.trim(), name.trim(), ctx.is_browser())
                     .await?
             }
             CreateSandbox::Create {

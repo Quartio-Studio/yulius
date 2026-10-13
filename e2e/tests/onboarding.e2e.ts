@@ -38,7 +38,8 @@ test('a task started while the sandbox is being prepared waits for it, then star
 });
 
 // SPEC-051 (task #43): `yulius onboard` only uploads; adapting the repository to the Yulius
-// standards waits for a person to click Start onboarding on the sandbox page.
+// standards waits for a person to click Start onboarding on the sandbox page. The mock's import
+// leaves the sandbox `pending`, standing in for a repository added with `yulius onboard`.
 test('a pending sandbox waits for Start onboarding in the browser', async ({ app, browser, screen }) => {
   await app.open(mock('/'));
   await screen.getByRole('button', 'Import repository').click();

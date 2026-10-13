@@ -351,7 +351,47 @@ fn onboarding_steps() -> Vec<String> {
     .collect()
 }
 
+/// Refuses a caller that is not a person in the browser: onboarding starts only from the sandbox
+/// page (SPEC-051 OBD-002, ADR-0038).
+fn ensure_browser(ctx: &AuthContext) -> AppResult<()> {
+    if ctx.is_browser() {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden(
+            "Start onboarding on the sandbox page in the browser; the CLI only uploads".into(),
+        ))
+    }
+}
+
 impl App {
+    /// Continuing the onboarding task of a `pending` sandbox starts onboarding, so it needs a
+    /// person in the browser too (SPEC-051 OBD-002); every other task is unaffected.
+    ///
+    /// # Errors
+    /// `Forbidden` for a bearer token; `NotFound` for unknown sandboxes.
+    pub(crate) async fn ensure_onboarding_continue_allowed(
+        &self,
+        ctx: &AuthContext,
+        task: &TaskRecord,
+    ) -> AppResult<()> {
+        if task.origin != TaskOrigin::Onboarding || ctx.is_browser() {
+            return Ok(());
+        }
+        let record = self
+            .deps
+            .store
+            .sandbox(&task.sandbox_id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        let starts_onboarding = OnboardingState::parse(&record.onboarding_state)
+            == Some(OnboardingState::Pending)
+            && record.onboarding_task_id.as_ref() == Some(&task.id);
+        if starts_onboarding {
+            ensure_browser(ctx)?;
+        }
+        Ok(())
+    }
+
     /// Creates the preparation meta-task of an imported sandbox: resting (not started) and kept
     /// in the active task list so it can be approved.
     ///
@@ -448,8 +488,8 @@ impl App {
     }
 
     /// Re-evaluates a `pending`/`preparing` sandbox and returns its (possibly new) onboarding
-    /// state: `preparing` once the preparation task has been started (also through
-    /// `POST /api/tasks/{tid}/continue`), `ready` once it has finished — it rests after running,
+    /// state: `preparing` once the preparation task has been started (Start onboarding, or
+    /// continuing it in the browser), `ready` once it has finished — it rests after running,
     /// or its turn ended with every step of its plan resolved — and the project validates in its
     /// worktree or in the sandbox clone. Other states are returned unchanged.
     /// Cheap for settled sandboxes (one store read); call it on task close and on reads.
@@ -807,11 +847,7 @@ impl App {
         ctx: &AuthContext,
         sid: &str,
     ) -> AppResult<Sandbox> {
-        if ctx.csrf_token.is_none() {
-            return Err(AppError::Forbidden(
-                "Start onboarding on the sandbox page in the browser; the CLI only uploads".into(),
-            ));
-        }
+        ensure_browser(ctx)?;
         let id = SandboxId::parse(sid).map_err(|_| AppError::NotFound)?;
         let (record, level) = self.require(&ctx.user, &id, Action::Work).await?;
         match OnboardingState::parse(&record.onboarding_state) {

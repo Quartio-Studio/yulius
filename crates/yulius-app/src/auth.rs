@@ -35,6 +35,15 @@ pub struct AuthContext {
     pub session_hash: Option<String>,
 }
 
+impl AuthContext {
+    /// Whether the caller is a person in the browser (a cookie session, which carries a CSRF
+    /// token), not a bearer token of the CLI or a script.
+    #[must_use]
+    pub fn is_browser(&self) -> bool {
+        self.csrf_token.is_some()
+    }
+}
+
 /// A newly created browser session.
 #[derive(Debug, Clone)]
 pub struct NewSession {

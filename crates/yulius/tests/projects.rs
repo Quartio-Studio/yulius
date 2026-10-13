@@ -253,7 +253,8 @@ async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() ->
     let malformed = import(&w, &alice, "no-slash").await?;
     assert_eq!(malformed.status, StatusCode::UNPROCESSABLE_ENTITY);
 
-    let shop = import(&w, &alice, "Quartio-Studio/shop").await?;
+    // Adding a repository in the browser is the explicit action: its onboarding starts at once.
+    let shop = import(&w, &alice_browser, "Quartio-Studio/shop").await?;
     assert_eq!(shop.status, StatusCode::CREATED, "{:?}", shop.body);
     let shop = shop.body;
     assert_eq!(shop["slug"], "shop");
@@ -293,6 +294,8 @@ async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() ->
     // F 2026-10-11: a validating project still gets its environment set up by an onboarding
     // task (not the full preparation).
     assert_ne!(ready["onboarding"], "not_needed", "{ready}");
+    // A token import (the CLI, a script) waits for Start onboarding in the browser (SPEC-051).
+    assert_eq!(ready["onboarding"], "pending", "{ready}");
     let ready_record =
         w.h.store
             .sandbox(&SandboxId::parse(text(&ready["id"]))?)
@@ -417,7 +420,9 @@ async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() ->
 #[tokio::test]
 async fn onboarding_becomes_ready_when_the_preparation_task_lands() -> TestResult {
     let w = World::new("org").await?;
-    let (_, alice) = w.user("alice", false).await?;
+    let (alice_user, _) = w.user("alice", false).await?;
+    // Added in the browser, so onboarding starts at once (SPEC-051).
+    let alice = w.browser(&alice_user).await?;
     w.remote(
         OWNER,
         "product",

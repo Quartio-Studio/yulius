@@ -22,6 +22,9 @@ client could call it, including the CLI's bearer token from `yulius login`.
   resting task, and new tasks wait after it as before (IMP-010).
 - The approve endpoint is the **Start onboarding** button and accepts only a browser session (a
   cookie session, which carries a CSRF token). A bearer token gets 403 before the sandbox is read.
+- Every other way to start it follows the same rule: continuing a `pending` sandbox's onboarding
+  task needs a browser session, and adding a repository through `POST /api/sandboxes` starts
+  onboarding at once only from the browser (a token import stays `pending`).
 - The CLI prints that onboarding waits for Start onboarding, with the sandbox page's URL.
 
 ## Alternatives

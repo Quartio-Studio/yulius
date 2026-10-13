@@ -1679,7 +1679,8 @@ triggers: `pending → preparing` when the preparation task starts — at once f
 added in the UI; for `yulius onboard` only when a person clicks Start onboarding on the sandbox
 page (`POST …/onboarding/approve`, which accepts only a browser session: a bearer token gets 403,
 SPEC-051, ADR-0038; it also serves a UI-added sandbox whose start failed; a missing preparation
-task is created then); `preparing → ready` when the task has finished — it rests after running, or its turn ended
+task is created then; continuing a `pending` sandbox's onboarding task and importing through
+`POST /api/sandboxes` start it only from a browser session too); `preparing → ready` when the task has finished — it rests after running, or its turn ended
 with every step of its plan resolved — and the project validates in its worktree or the clone
 (re-evaluated on reads, turn ends, task closes and the gate);
 `→ skipped` by an admin. Failure: a start failure leaves `pending` (shown with what is pending);
