@@ -11,7 +11,8 @@
 // URL options (with ?mock=1): setup=1 (setup required), signedout=1 (start signed out),
 // role=member|admin|superadmin (default superadmin), contained=0 (not isolated), github=0,
 // update=1|fail (an update is on offer | its install rolls back), helper=0 (no update helper),
-// jev=config (a Jev key file is configured), fail=<path> (GETs of that path answer 500).
+// jev=config (a Jev key file is configured), fail=<path> (GETs of that path answer 500),
+// failpost=<path> (POSTs of that path answer 500).
 
 import { taskInfo } from './status.js';
 
@@ -148,6 +149,8 @@ function seed(params) {
     // fail=<path> answers 500 to GET requests of that exact path, to show how a view says a load
     // failed (in place, naming what failed, with Try again; #147).
     failPath: params.get('fail') || null,
+    // failpost=<path> does the same to POST requests, to show how an action says it failed.
+    failPostPath: params.get('failpost') || null,
 
     nextId: 100,
   };
@@ -258,10 +261,10 @@ function seed(params) {
   ];
   // AdminUser (the superadmin is not listed).
   db.users = [
-    { id: 'usr_1', github_login: 'mkarp', display_name: 'Michal Karp', is_instance_admin: true, disabled: false, github_linked: true },
-    { id: 'usr_2', github_login: 'anna-q', display_name: 'Anna', is_instance_admin: false, disabled: false, github_linked: true },
-    { id: 'usr_3', github_login: 'new-hire', display_name: 'new-hire', is_instance_admin: false, disabled: false, github_linked: false },
-    { id: 'usr_4', github_login: 'old-contractor', display_name: 'old-contractor', is_instance_admin: false, disabled: true, github_linked: true },
+    { id: 'usr_1', github_login: 'mkarp', display_name: 'Michal Karp', is_instance_admin: true, disabled: false, github_linked: true, two_factor: 'on' },
+    { id: 'usr_2', github_login: 'anna-q', display_name: 'Anna', is_instance_admin: false, disabled: false, github_linked: true, two_factor: 'on' },
+    { id: 'usr_3', github_login: 'new-hire', display_name: 'new-hire', is_instance_admin: false, disabled: false, github_linked: false, two_factor: 'missing' },
+    { id: 'usr_4', github_login: 'old-contractor', display_name: 'old-contractor', is_instance_admin: false, disabled: true, github_linked: true, two_factor: 'pending' },
   ];
   db.runs = []; // EnvironmentRun records, newest last
   db.ci = seedCi();
@@ -867,11 +870,20 @@ route('POST', `/api/tasks/${ID}/held-prompts/${ID}`, ({ db, p, body }) => {
   recount(db);
   return { task: summary(task), created: created ? summary(created) : null, note: notes[action] };
 });
-// Reads of a task's detail, per task, so a test can wait for a view's read to land.
-route('GET', `/api/tasks/${ID}`, ({ db, p }) => {
+// Reads of a task's detail, per task, so a test can wait for a view's read to land. A test can
+// hold the next read (`__yuliusMock.holdDetail = promise`): it answers what the task was when
+// asked, once released (`heldDetailAnswered`); `failNextDetail` fails the next one.
+route('GET', `/api/tasks/${ID}`, async ({ db, p }) => {
   db.detailReads = db.detailReads || {};
   db.detailReads[p[0]] = (db.detailReads[p[0]] || 0) + 1;
-  return detail(db, taskOf(db, p[0]));
+  if (db.failNextDetail) { db.failNextDetail = false; fail(500, 'internal', 'the mock failed this read'); }
+  const hold = db.holdDetail;
+  if (!hold) return detail(db, taskOf(db, p[0]));
+  db.holdDetail = null;
+  const answer = clone(detail(db, taskOf(db, p[0])));
+  await hold;
+  db.heldDetailAnswered = true;
+  return answer;
 });
 // The prompt a task started with (SPEC-043): `@path` lines are its attached files, served only
 // from the attachments folder.
@@ -925,7 +937,10 @@ route('POST', `/api/tasks/${ID}/switch`, ({ db, p, body }) => {
   }, 2500);
   return summary(task);
 });
-route('DELETE', `/api/tasks/${ID}`, ({ db, p }) => {
+route('DELETE', `/api/tasks/${ID}`, async ({ db, p }) => {
+  // Tests count the requests and can hold the answer (`__yuliusMock.holdDelete = promise`).
+  db.deleteRequests = (db.deleteRequests || 0) + 1;
+  if (db.holdDelete) await db.holdDelete;
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
   // A finished task is closed as it is deleted (SPEC-039); any other live task is stopped first.
@@ -936,7 +951,9 @@ route('DELETE', `/api/tasks/${ID}`, ({ db, p }) => {
   emit(db, { type: 'task.removed', task_id: task.id });
   return json(204);
 });
-route('POST', `/api/tasks/${ID}/archive`, ({ db, p }) => {
+route('POST', `/api/tasks/${ID}/archive`, async ({ db, p }) => {
+  // Tests can hold the answers (`__yuliusMock.holdArchive = promise`).
+  if (db.holdArchive) await db.holdArchive;
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
   // A finished task (Done by the sidebar's rule, the server's task_is_done) is closed as it is
@@ -962,7 +979,10 @@ route('GET', '/api/archived-tasks', ({ db }) => db.tasks.filter((t) => t.archive
 // ---- Git and delivery
 
 route('GET', '/api/delivery/presets', () => [clone(PRESETS.standard), clone(PRESETS.product), clone(PRESETS.studio)]);
-route('GET', `/api/sandboxes/${ID}/git`, ({ db, p }) => {
+route('GET', `/api/sandboxes/${ID}/git`, async ({ db, p }) => {
+  // A test can hold these reads, the page's first included (`window.__yuliusHoldGit = promise`,
+  // set by an init script), to show a view drawn before its pull requests are known.
+  if (window.__yuliusHoldGit) await window.__yuliusHoldGit;
   const sandbox = sandboxOf(db, p[0]);
   const tasks = db.tasks.filter((t) => t.sandbox_id === sandbox.id && !t.archived && t.branch);
   const pull = pullOf;
@@ -2008,13 +2028,26 @@ route('PUT', `/api/sandboxes/${ID}/notes`, ({ db, p, body }) => {
 
 const adminOnly = (db) => { if (!db.me.user.is_instance_admin && !db.me.user.is_superadmin) fail(403, 'forbidden', 'instance administrators only'); };
 const superOnly = (db) => { if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only'); };
-route('GET', '/api/admin/users', ({ db }) => { superOnly(db); return db.users; });
+// Instance administrators read the people and their two-factor (SPEC-061); changing them is the superadmin's.
+route('GET', '/api/admin/users', ({ db }) => { adminOnly(db); return db.users; });
+// SPEC-061: an administrator resets another person's two-factor after their own code.
+route('DELETE', `/api/users/${ID}/two-factor`, ({ db, p }) => {
+  adminOnly(db);
+  const locked = needFresh(db);
+  if (locked) return locked;
+  const user = db.users.find((u) => u.id === p[0]);
+  if (!user) fail(404, 'not_found', 'not found');
+  if (user.id === db.me.user.id) fail(403, 'forbidden', 'another administrator resets your own two-factor');
+  if (user.two_factor !== 'missing') audit(db, 'vault.2fa.reset', null, user.github_login);
+  user.two_factor = 'missing';
+  return json(204);
+});
 route('POST', '/api/admin/users', ({ db, body }) => {
   superOnly(db);
   if (!/^[A-Za-z0-9-]{1,39}$/.test(body.github_login || '')) fail(422, 'invalid', 'not a valid GitHub login');
   if (db.users.some((u) => u.github_login.toLowerCase() === String(body.github_login).toLowerCase())) fail(409, 'conflict', 'Already admitted.');
   db.nextId += 1;
-  const user = { id: `usr_${db.nextId}`, github_login: body.github_login, display_name: body.display_name || body.github_login, is_instance_admin: Boolean(body.is_instance_admin), disabled: false, github_linked: false };
+  const user = { id: `usr_${db.nextId}`, github_login: body.github_login, display_name: body.display_name || body.github_login, is_instance_admin: Boolean(body.is_instance_admin), disabled: false, github_linked: false, two_factor: 'missing' };
   db.users.push(user);
   return json(201, user);
 });
@@ -2523,6 +2556,9 @@ async function handleFetch(db, url, init = {}) {
   }
   if (!PUBLIC.includes(u.pathname) && !db.signedIn) return json(401, { error: { code: 'unauthenticated', message: 'Sign in first.' } });
   if (db.failPath && method === 'GET' && u.pathname === db.failPath) return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
+  // Tests count archive requests (`__yuliusMock.archiveRequests`), also those failed on purpose.
+  if (method === 'POST' && /^\/api\/tasks\/[^/]+\/archive$/.test(u.pathname)) db.archiveRequests = (db.archiveRequests || 0) + 1;
+  if (db.failPostPath && method === 'POST' && u.pathname === db.failPostPath) return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
   const headers = init.headers || {};
   if (method !== 'GET' && !PUBLIC.includes(u.pathname) && headers['X-Yulius-CSRF'] !== db.me.csrf_token) {
     return json(403, { error: { code: 'forbidden', message: 'Missing or wrong CSRF token.' } });
@@ -3471,7 +3507,11 @@ function openSocket(db, path) {
   return ws;
 }
 
-/** Ambient activity so live updates are visible: one bounded timer for the whole mock. */
+/**
+ * Ambient activity so live updates are visible: one bounded timer for the whole mock. The browser
+ * request about 5 s after the start is awaited by task-done.e2e.ts ("…its pull request is read
+ * late"): keep its delay well under 15 s and its reason, or change that test with it.
+ */
 function startAmbient(db) {
   if (db.ambient) return;
   db.ambient = true;

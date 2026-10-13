@@ -20,11 +20,13 @@ use yulius::wiring::git::GitAdapter;
 use yulius::wiring::harness::HarnessAdapter;
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::context::{App, AppConfig, Deps};
+use yulius_app::error::AppResult;
 use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{
     AccountRecord, AccountStatus, SandboxRecord, TaskMode, TaskOrigin, TaskRecord, UserRecord,
 };
 use yulius_app::ports::harness::HarnessPort;
+use yulius_app::ports::session::{AttachedRun, LaunchPlan, RunInspection, SessionHost, SpawnedRun};
 use yulius_app::ports::store::TaskStore;
 use yulius_contracts::events::UiEvent;
 use yulius_domain::harness::{Harness, Provider};
@@ -45,6 +47,74 @@ async fn start(
     agent: FakeAgentOptions,
     port: u16,
 ) -> Result<(Arc<App>, u16), BoxError> {
+    start_on(data, fake, agent, port, None, None, false).await
+}
+
+/// A session host that connects to a run only once the agent's SessionStart hook was answered, so
+/// the hook lands before the supervisor watches the run, as on a busy host (#243). Bounded: without
+/// a hook the attach goes ahead after 30 s.
+struct AttachAfterSessionStart {
+    inner: PtySessionHost,
+    session_started: tokio::sync::watch::Receiver<bool>,
+}
+
+#[async_trait::async_trait]
+impl SessionHost for AttachAfterSessionStart {
+    async fn spawn(
+        &self,
+        run_dir: &Path,
+        attempt_id: &str,
+        task_id: &str,
+        plan: &LaunchPlan,
+        token: &[u8; 32],
+        size: (u16, u16),
+    ) -> AppResult<SpawnedRun> {
+        self.inner
+            .spawn(run_dir, attempt_id, task_id, plan, token, size)
+            .await
+    }
+
+    async fn attach(&self, run_dir: &Path, token: &[u8; 32]) -> AppResult<AttachedRun> {
+        let mut started = self.session_started.clone();
+        let _ = tokio::time::timeout(Duration::from_secs(30), started.wait_for(|s| *s)).await;
+        self.inner.attach(run_dir, token).await
+    }
+
+    fn inspect(&self, run_dir: &Path) -> RunInspection {
+        self.inner.inspect(run_dir)
+    }
+
+    fn terminate(&self, run_dir: &Path) -> AppResult<()> {
+        self.inner.terminate(run_dir)
+    }
+
+    fn background_shells(&self, child_pid: u32) -> Option<u32> {
+        self.inner.background_shells(child_pid)
+    }
+}
+
+/// [`start`], and with `attach_late` the run is attached only after its SessionStart hook.
+async fn start_with(
+    data: &Path,
+    fake: &Path,
+    agent: FakeAgentOptions,
+    port: u16,
+    attach_late: bool,
+) -> Result<(Arc<App>, u16), BoxError> {
+    start_on(data, fake, agent, port, None, None, attach_late).await
+}
+
+/// [`start`] on `host` (default: the real one, attached late with `attach_late`), with the stop
+/// and close escalation shortened to `escalation_ms`.
+async fn start_on(
+    data: &Path,
+    fake: &Path,
+    agent: FakeAgentOptions,
+    port: u16,
+    host: Option<Arc<dyn SessionHost>>,
+    escalation_ms: Option<u64>,
+    attach_late: bool,
+) -> Result<(Arc<App>, u16), BoxError> {
     let socket = tokio::net::TcpSocket::new_v4()?;
     socket.set_reuseaddr(true)?;
     socket.bind(SocketAddr::from(([127, 0, 0, 1], port)))?;
@@ -53,13 +123,26 @@ async fn start(
     let url = format!("http://127.0.0.1:{port}");
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let mut config = AppConfig::new(data.to_path_buf(), "https://yulius.test", &url, exe.clone());
+    let (session_started, session_started_rx) = tokio::sync::watch::channel(false);
     config.contained = false;
+    if let Some(ms) = escalation_ms {
+        config.stop_escalation_ms = ms;
+    }
     let deps = Deps {
         store: Arc::new(SqliteStore::open(&data.join("yulius.db"))?),
         clock: Arc::new(SystemClock),
         crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
         github: Arc::new(support::FakeGitHub::default()),
-        session_host: Arc::new(PtySessionHost::new(exe.clone())),
+        session_host: if let Some(host) = host {
+            host
+        } else if attach_late {
+            Arc::new(AttachAfterSessionStart {
+                inner: PtySessionHost::new(exe.clone()),
+                session_started: session_started_rx,
+            })
+        } else {
+            Arc::new(PtySessionHost::new(exe.clone()))
+        },
         harness: Arc::new(FakeAgentHarness {
             inner: HarnessAdapter::new(exe.clone(), url),
             fake: fake.to_path_buf(),
@@ -72,7 +155,22 @@ async fn start(
         usage: Arc::new(yulius_app::ports::usage::NoUsageProbe),
     };
     let app = App::new(config, deps);
+    // Says when a SessionStart hook was answered (the hook client waits for that answer).
+    let session_start_answered = axum::middleware::from_fn(
+        move |request: axum::extract::Request, next: axum::middleware::Next| {
+            let session_started = session_started.clone();
+            async move {
+                let start = request.uri().path().ends_with("/SessionStart");
+                let response = next.run(request).await;
+                if start {
+                    session_started.send_replace(true);
+                }
+                response
+            }
+        },
+    );
     let internal = yulius_server::internal_router(app.clone())
+        .layer(session_start_answered)
         .into_make_service_with_connect_info::<SocketAddr>();
     tokio::spawn(async move { axum::serve(listener, internal).await });
     Ok((app, port))
@@ -352,18 +450,51 @@ fn a_goal_the_tui_dropped_is_submitted_again() -> TestResult {
         let agent = FakeAgentOptions {
             transcript: true,
             hooks: true,
+            // Like Claude Code: the goal is typed once the TUI is ready, not after the hookless
+            // fallback (#243). The dropped submit costs the first two submit waits (13 s).
+            session_start: true,
             drop_lines: Some(1),
             ..FakeAgentOptions::default()
         };
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
-        wait_for("the goal to start", Duration::from_secs(90), || {
+        wait_for("the goal to start", Duration::from_secs(60), || {
             screen_contains(&app, &id, "GOAL SET")
         })
         .await?;
-        wait_for("Done", Duration::from_secs(30), || async {
+        // About a second after the goal turn, also at a load average of 60 (SPEC-067).
+        wait_for("Done", Duration::from_secs(45), || async {
             activity(&app, &id).await == Some(Activity::Done)
+        })
+        .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// TSK-010 (#243): a SessionStart hook answered before the supervisor watches the run (a fast
+/// TUI, a busy host) still counts: the goal is typed once the TUI is quiet, not after the 45 s
+/// fallback for a TUI without hooks.
+#[test]
+fn a_session_start_before_the_run_is_watched_still_types_the_goal_at_once() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            session_start: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start_with(&data, &fake, agent, 0, true).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
+        // Well under the hookless fallback (45 s): the goal follows the hook, not the fallback.
+        wait_for("the goal to start", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "GOAL SET")
         })
         .await?;
         stop(&app, &id).await
@@ -1147,6 +1278,308 @@ fn a_done_task_can_be_deleted_its_session_is_closed_first() -> TestResult {
                 .is_err(),
             "the session ended before the task was deleted"
         );
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// The real process host, except that asking a run to shut down never completes (a host that
+/// stopped reading its socket) and, with `survivor`, its agent outlives termination: only the
+/// host (`survivor_host`, its pid) is killed, `terminate` fails and the run reads as an agent
+/// still alive without its host.
+#[derive(Default)]
+struct StuckHost {
+    inner: Option<PtySessionHost>,
+    survivor: bool,
+    survivor_host: std::sync::atomic::AtomicU32,
+    killed: std::sync::atomic::AtomicBool,
+    terminations: std::sync::atomic::AtomicU32,
+}
+
+impl StuckHost {
+    fn new(survivor: bool) -> Self {
+        let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
+        Self {
+            inner: Some(PtySessionHost::new(exe)),
+            survivor,
+            ..Self::default()
+        }
+    }
+
+    fn inner(&self) -> yulius_app::error::AppResult<&PtySessionHost> {
+        self.inner
+            .as_ref()
+            .ok_or_else(|| yulius_app::error::AppError::Upstream("no host".into()))
+    }
+}
+
+struct StuckShutdownWriter(Box<dyn yulius_app::ports::session::RunWriter>);
+
+#[async_trait::async_trait]
+impl yulius_app::ports::session::RunWriter for StuckShutdownWriter {
+    async fn input(&mut self, bytes: &[u8]) -> yulius_app::error::AppResult<()> {
+        self.0.input(bytes).await
+    }
+    async fn resize(&mut self, cols: u16, rows: u16) -> yulius_app::error::AppResult<()> {
+        self.0.resize(cols, rows).await
+    }
+    async fn signal(
+        &mut self,
+        signal: yulius_app::ports::session::RunSignal,
+    ) -> yulius_app::error::AppResult<()> {
+        self.0.signal(signal).await
+    }
+    async fn shutdown(&mut self, _: u32) -> yulius_app::error::AppResult<()> {
+        std::future::pending().await
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionHost for StuckHost {
+    async fn spawn(
+        &self,
+        run_dir: &Path,
+        attempt_id: &str,
+        task_id: &str,
+        plan: &yulius_app::ports::session::LaunchPlan,
+        token: &[u8; 32],
+        size: (u16, u16),
+    ) -> yulius_app::error::AppResult<yulius_app::ports::session::SpawnedRun> {
+        self.inner()?
+            .spawn(run_dir, attempt_id, task_id, plan, token, size)
+            .await
+    }
+    async fn attach(
+        &self,
+        run_dir: &Path,
+        token: &[u8; 32],
+    ) -> yulius_app::error::AppResult<yulius_app::ports::session::AttachedRun> {
+        let mut run = self.inner()?.attach(run_dir, token).await?;
+        run.writer = Box::new(StuckShutdownWriter(run.writer));
+        Ok(run)
+    }
+    fn inspect(&self, run_dir: &Path) -> yulius_app::ports::session::RunInspection {
+        if self.killed.load(std::sync::atomic::Ordering::SeqCst) {
+            return yulius_app::ports::session::RunInspection::Recorded {
+                host_alive: false,
+                child_alive: true,
+                same_boot: true,
+            };
+        }
+        self.inner().map_or(
+            yulius_app::ports::session::RunInspection::Missing,
+            |inner| inner.inspect(run_dir),
+        )
+    }
+    fn terminate(&self, run_dir: &Path) -> yulius_app::error::AppResult<()> {
+        self.terminations
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if !self.survivor {
+            return self.inner()?.terminate(run_dir);
+        }
+        self.killed.store(true, std::sync::atomic::Ordering::SeqCst);
+        let host = self.survivor_host.load(std::sync::atomic::Ordering::SeqCst);
+        if let Ok(pid) = i32::try_from(host)
+            && pid > 0
+        {
+            let _ = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(pid),
+                nix::sys::signal::Signal::SIGKILL,
+            );
+        }
+        Err(yulius_app::error::AppError::Upstream(
+            "process 4242 still alive after SIGKILL".into(),
+        ))
+    }
+}
+
+/// Kills a process group when dropped.
+struct KillGroupOnDrop(Option<i32>);
+
+impl Drop for KillGroupOnDrop {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0 {
+            let _ = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(-pid),
+                nix::sys::signal::Signal::SIGKILL,
+            );
+        }
+    }
+}
+
+/// Whether process `pid` is gone: no longer there, or a zombie waiting to be reaped.
+fn process_gone(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| {
+        stat.rsplit_once(')')
+            .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z'))
+    })
+}
+
+/// A running goal task on `host` (escalation 300 ms), its auth context and its live run.
+async fn running_task(
+    data: &Path,
+    fake: &Path,
+    host: Arc<StuckHost>,
+) -> Result<
+    (
+        Arc<App>,
+        yulius_app::auth::AuthContext,
+        TaskId,
+        yulius_app::model::AttemptRecord,
+    ),
+    BoxError,
+> {
+    let (app, _) = start_on(
+        data,
+        fake,
+        FakeAgentOptions::default(),
+        0,
+        Some(host),
+        Some(300),
+        false,
+    )
+    .await?;
+    let (sandbox, user) = seed(&app, data).await?;
+    let ctx = yulius_app::auth::AuthContext {
+        user: app.deps.store.user(&user).await?.ok_or("user")?,
+        csrf_token: None,
+        session_hash: None,
+    };
+    let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
+    wait_for("the session", Duration::from_secs(60), || async {
+        app.deps
+            .store
+            .live_attempt(&id)
+            .await
+            .is_ok_and(|a| a.is_some_and(|a| a.child_pid.is_some()))
+            // Output arrives once Yulius is attached to the run (it holds its writer).
+            && !app.runtime(&id).hub.screen_text().trim().is_empty()
+    })
+    .await?;
+    let attempt = app
+        .deps
+        .store
+        .live_attempt(&id)
+        .await?
+        .ok_or("no live run")?;
+    Ok((app, ctx, id, attempt))
+}
+
+/// SPEC-065 END-001 (#284, review): when the agent survives termination but its host is gone,
+/// the connection to the run is lost; the run is still not recorded as ended, so the task stays
+/// undeletable.
+#[test]
+fn a_run_whose_agent_survives_termination_is_not_ended_when_its_connection_is_lost() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let host = Arc::new(StuckHost::new(true));
+        let (app, ctx, id, attempt) = running_task(&data, &fake, host.clone()).await?;
+        host.survivor_host.store(
+            attempt.ptyhost_pid.ok_or("no host pid")?,
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        // What remains of the run goes with the test, whatever its outcome.
+        let _agent = KillGroupOnDrop(attempt.child_pid.and_then(|p| i32::try_from(p).ok()));
+        app.stop_task_now(&id).await?;
+        // The escalation's terminate, then the lost connection's.
+        wait_for(
+            "the second termination",
+            Duration::from_secs(20),
+            || async { host.terminations.load(std::sync::atomic::Ordering::SeqCst) >= 2 },
+        )
+        .await?;
+        assert!(
+            app.deps.store.live_attempt(&id).await?.is_some(),
+            "the run is not recorded as ended"
+        );
+        let refused = app.delete_task(&ctx, id.as_str()).await;
+        assert!(
+            matches!(refused, Err(yulius_app::error::AppError::Conflict(_))),
+            "{refused:?}"
+        );
+        assert!(
+            app.deps.store.task(&id).await?.is_some(),
+            "nothing is deleted"
+        );
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-065 END-005 and END-003 (#290, #285): a run whose host never takes the shutdown request
+/// is still escalated and ended when it is closed for deletion; when the close returns, the run's
+/// ending is fully recorded, so the task chained after it already has its outcome, and deleting
+/// the predecessor then gives it one outcome: "#N was deleted".
+#[test]
+fn a_close_whose_shutdown_blocks_still_ends_the_run_and_its_successor_sees_one_outcome()
+-> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let (app, ctx, id, attempt) =
+            running_task(&data, &fake, Arc::new(StuckHost::new(false))).await?;
+        let agent_pid = attempt.child_pid.ok_or("no agent pid")?;
+        let before = task(&app, &id).await?;
+
+        // A task waiting for this one ("Run after #N").
+        let now = app.now();
+        let mut waiting = before.clone();
+        waiting.id = TaskId::parse("t-next")?;
+        waiting.title = "Next".into();
+        waiting.status = TaskStatus::Chained;
+        waiting.activity = None;
+        waiting.branch = None;
+        waiting.worktree_path = None;
+        let waiting = app.deps.store.insert_task(&waiting).await?;
+        yulius_app::ports::store_ext::IntakeStore::insert_chain(
+            app.deps.store.as_ref(),
+            &yulius_app::intake::ChainRecord {
+                task_id: waiting.id.clone(),
+                after_task_id: Some(id.clone()),
+                after_number: before.number,
+                blocked_reason: None,
+                created_at: now,
+                rule: None,
+            },
+        )
+        .await?;
+        let chain = || async {
+            yulius_app::ports::store_ext::IntakeStore::chain(app.deps.store.as_ref(), &waiting.id)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|c| c.blocked_reason)
+        };
+
+        tokio::time::timeout(Duration::from_secs(10), app.close_task_and_wait(&id)).await??;
+        assert!(
+            app.deps.store.live_attempt(&id).await?.is_none(),
+            "the run ended"
+        );
+        assert!(process_gone(agent_pid), "the agent process is gone");
+        let decided = chain().await.ok_or("the waiting task has no outcome yet")?;
+        assert!(
+            decided.starts_with(&format!("#{} ", before.number)),
+            "{decided}"
+        );
+
+        app.delete_task(&ctx, id.as_str()).await?;
+        assert_eq!(
+            chain().await.as_deref(),
+            Some(
+                format!(
+                    "#{} was deleted. Start this task now or cancel it.",
+                    before.number
+                )
+                .as_str()
+            )
+        );
+        assert_eq!(task(&app, &waiting.id).await?.status, TaskStatus::Chained);
         Ok::<(), BoxError>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

@@ -68,7 +68,27 @@ A sandbox has a soft disk quota. The application prunes build caches of tasks th
 work every 5 minutes (ended tasks, then idle ones from 90 % of the quota), removes the worktrees
 of closed and cancelled tasks, and a switch checks the quota and the other start preconditions
 before it ends the running session ([SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md),
-[decision 0017](decisions/0017-sandbox-disk-upkeep.md)).
+[decision 0017](decisions/0017-sandbox-disk-upkeep.md)). A running task's caches go only when a
+fresh probe finds no background shell and no background subagent. An unanswered probe keeps them.
+
+Over the quota, a CI run waits in the queue instead of erroring
+([SPEC-059](../.ai/specs/SPEC-059-fix-240-256-258-245-ci-waits-for-disk-in.md),
+[decision 0045](decisions/0045-ci-waits-for-disk-under-the-shared-quota.md)). The dispatcher
+starts a check off its loop, at most once a minute per sandbox: upkeep under pressure, then a fresh
+measurement. The run's reason and its `pending` commit status name the largest consumers, and the
+run starts at the first dispatch under the quota. A job refused after its run started puts the
+run back in the queue.
+
+```mermaid
+flowchart LR
+  Q[queued run] -->|dispatch| R{under the quota?}
+  R -->|yes| L[lane: jobs run]
+  R -->|no, check due| C[prune caches of tasks that do not work, measure]
+  C -->|still over| N[reason + largest consumers, status pending, recheck in 1 min]
+  C -->|under| L
+  N --> Q
+  L -->|job refused for disk| Q
+```
 
 ## Usage limits
 
@@ -95,20 +115,52 @@ sequenceDiagram
     N->>T: the lost turn, redone
 ```
 
+## Full context
+
+A session whose context is full gets "Prompt is too long" for every prompt, and no Stop hook ends
+the turn ([SPEC-060](../.ai/specs/SPEC-060-fix-213-a-session-whose-context-is-full.md),
+[decision 0046](decisions/0046-compact-then-restart-a-full-session.md), #213). The harness
+observes the refusal (`ContextFull`), the compaction boundary (`Compacted`) and a failed compaction
+(`CompactFailed`). The supervisor ends the turn so the task waits instead of working, and keeps
+one recovery episode per task in its runtime. The episode outlives a run and ends at the agent's
+next successful reply. Each stage is said in the task's terminal and audited as
+`task.context_full`. A replay after a restart that ends in a refusal starts the same recovery.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Clear
+    Clear --> Compacting: ContextFull / type "/compact <focus>"
+    Compacting --> Compacted: Compacted / type the wake-up line
+    Compacting --> Restarted: CompactFailed or 10 min / fresh session + handoff
+    Compacted --> Restarted: ContextFull / fresh session + handoff
+    Restarted --> GaveUp: ContextFull in the fresh session / needs attention + reason
+    Compacting --> Clear: a successful reply
+    Compacted --> Clear: a successful reply
+    Restarted --> Clear: a successful reply
+    GaveUp --> Clear: a successful reply
+```
+
 ## Agent feedback
 
 Yulius has no messages for now ([SPEC-028](../.ai/specs/SPEC-028-delete-message-mechanism-for-now-until-w.md),
 [decision 0023](decisions/0023-no-messages-until-delivery-is-reliable.md)): nothing is stored for
 an agent, injected by a hook or typed into its session. An agent pulls what it needs: it waits
 with `yulius wait` in a background shell, which Claude Code wakes it from, and reads
-`ci_status` and `delivery_status`. The armed merge's outcome is kept in memory for the wait.
+`ci_status` and `delivery_status`. The armed merge's outcome is kept in memory for the wait,
+with the armed merge and its decisions in progress under one lock: a merge armed again while an
+earlier one is decided supersedes it ([decision 0048](decisions/0048-armed-merge-state-under-one-lock.md)).
+Before Yulius merges or arms a merge, its merge gate checks the pull request's title, head and
+base against the branch policy of `yulius.toml` `[branch_policy]` at the integration branch;
+a violation is refused with the rule in words, also for promotion pull requests
+([SPEC-069](../.ai/specs/SPEC-069-fix-223-yulius-s-merge-gate-enforces-the.md),
+[decision 0051](decisions/0051-the-merge-gate-enforces-the-branch-policy.md)).
 
 ```mermaid
 sequenceDiagram
     participant A as Agent (Claude Code)
     participant W as yulius wait (background shell)
     participant Y as Yulius (internal API)
-    A->>Y: delivery_merge (checks still running: armed)
+    A->>Y: delivery_merge (branch policy checked; checks still running: armed)
     A->>W: start, end the turn
     W->>Y: POST /internal/agent/wait (long poll)
     Y-->>W: checks ended / stage moved / armed merge decided (merged, refused, dropped)
@@ -124,8 +176,16 @@ With an image, the session starts with no prompt and Yulius types the message in
 image's path is pasted on its own, and Claude Code shows it as `[Image #N]` and sends an image
 block. The text is pasted next, with the other files mentioned, then Enter (an `@` mention of an
 image would only be a Read tool call). A goal task then gets its `/goal` typed into the terminal;
-the request file in the sandbox home keeps the whole request
-([SPEC-011](../.ai/specs/SPEC-011-automatic-dev-delivery.md),
+the request file in the sandbox home keeps the whole request. A person who typed into the
+terminal before the goal keeps their draft: no goal is typed and the task needs attention (only
+keystrokes count as typing; focus and mouse reports and terminal answers do not). A typed first
+message is pending (`opening-pending` in the run directory) until its `UserPromptSubmit`: a
+restart flags a task whose first message never reached that hook (a submitted one a hold keeps
+goes on, and a goal task's goal is typed after it), and a first message held for capacity resumes
+on another account, or a manual switch, as a fresh session that types it again with its images
+([SPEC-068](../.ai/specs/SPEC-068-fix-252-266-only-real-typing-counts-as-t.md),
+[decision 0052](decisions/0052-only-keystrokes-count-as-typing.md);
+[SPEC-011](../.ai/specs/SPEC-011-automatic-dev-delivery.md),
 [SPEC-025](../.ai/specs/SPEC-025-uploaded-attachements-should-be-clickabl.md),
 [SPEC-030](../.ai/specs/SPEC-030-i-asked-previous-task-to-attach-images-a.md),
 [decisions 0022](decisions/0022-native-task-attachments.md) and
@@ -153,9 +213,14 @@ sequenceDiagram
             C-->>S: screen shows [Image #N]
         end
         S->>C: bracketed paste of the text (+ @path mentions of other files), Enter
+        C->>S: UserPromptSubmit: the first message is no longer pending
     end
     C->>S: Stop hook of that turn (goal mode)
-    S->>C: types /goal <condition>
+    alt a person typed since the launch
+        S-->>UI: no goal; task needs attention, notice in the terminal
+    else
+        S->>C: types /goal <condition>
+    end
 ```
 
 ## Agent (the Cockpit)
@@ -168,7 +233,7 @@ login shell: no hooks, settings or briefing, a pool subscription's token, and th
 conversation resumed whenever it starts again. The web UI shows it in the right tool panel beside
 the page, under a notice that it is for quick work only
 ([SPEC-035](../.ai/specs/SPEC-035-move-cockpit-to-the-right-and-change-coc.md),
-[decision 0034](decisions/0034-agent-in-the-right-panel.md)).
+[decision 0036](decisions/0036-agent-in-the-right-panel.md)).
 
 It manages the project through the Yulius MCP server
 ([SPEC-037](../.ai/specs/SPEC-037-i-got-something-like-this-tasks-and-cock.md),
@@ -176,7 +241,11 @@ It manages the project through the Yulius MCP server
 from the shell's persisted host token, and it is served only the management tools: tasks,
 automations, workflows and sessions. Those tools act for a person (`ProjectCaller`): the Cockpit's
 owner, or a task's creator when a task's agent calls them. `task_create` takes the same path as
-New task.
+New task; `task_stop`, `task_archive`, `task_delete`, `automation_delete`, `automation_run_now`
+and `automation_template_enable` call the UI's own functions with that person and the caller as
+the audit actor, never on the caller's own task
+([SPEC-066](../.ai/specs/SPEC-066-fix-275-293-cockpit-and-agents-manage-ta.md),
+[decision 0049](decisions/0049-management-tools-cover-the-task-and-automation-lifecycle.md)).
 
 ```mermaid
 flowchart LR
@@ -188,7 +257,8 @@ flowchart LR
   SH -->|"Bearer ck_… (YULIUS_COCKPIT_TOKEN)"| MCP["/mcp: management tools"]
   AG["Task agent"] -->|"Bearer task token"| MCP
   MCP -->|"task_create"| NT["App::create_task_as (as New task)"]
-  MCP -->|"automation_*"| AU["Automations"]
+  MCP -->|"task_stop / task_archive / task_delete"| TU["The UI's stop, archive, delete (never the caller's own task)"]
+  MCP -->|"automation_*, automation_template_enable"| AU["Automations and ready-made ones"]
 ```
 
 ## Ready-made automations
@@ -235,7 +305,7 @@ flowchart LR
 ## Task status
 
 A running task's activity is derived from Claude Code's own records, not guessed from the last
-event ([ADR-0034](decisions/0034-task-status-follows-claude-codes-own-records.md)):
+event ([ADR-0044](decisions/0044-task-status-follows-claude-codes-own-records.md)):
 
 ```mermaid
 flowchart LR

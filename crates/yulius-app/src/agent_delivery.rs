@@ -170,6 +170,18 @@ impl App {
         // A branch behind its base cannot be merged on green: arm it, and Yulius brings it up to
         // date and merges once the checks of what would be merged pass (DLV-203).
         let profile = crate::delivery::delivery_profile(&sandbox);
+        // A merge the branch policy refuses is never armed (SPEC-069 BPL-004). The view has no
+        // fork flag; `dlv_merge` checks again with GitHub's before it merges.
+        if let Some(pull) = before.pr.as_ref() {
+            let facts = yulius_domain::branch_policy::PullFacts {
+                title: &pull.title,
+                head: &pull.head,
+                base: &pull.base,
+                from_fork: false,
+            };
+            self.dlv_check_policy(&sandbox, &profile, pull.number, &facts)
+                .await?;
+        }
         let behind = !self
             .deps
             .git
@@ -219,10 +231,7 @@ impl App {
         }
         let view = self.merge_task_pr_for_task(&auth, &task_id).await?;
         // Merged now: nothing is left armed for this task.
-        if let Ok(mut armed) = self.runtime(&ctx.task.id).armed_merge.lock() {
-            *armed = None;
-        }
-        self.save_armed(&ctx.task.id, None);
+        self.clear_armed(&ctx.task);
         self.agent_audit(
             ctx,
             "delivery.agent.merge",

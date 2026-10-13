@@ -203,7 +203,15 @@ fn printed(screen: &str, key: &str) -> Result<String, Box<dyn std::error::Error>
         + key.len()
         + 1;
     let rest = screen.get(start..).unwrap_or_default();
-    Ok(rest.lines().next().unwrap_or_default().trim().to_owned())
+    // The value ends at the line's end or at the terminal's own control output that can follow
+    // it on the same line (`\x1b>`, cursor moves: CI on the VM read them as part of the value).
+    let line = rest.lines().next().unwrap_or_default();
+    Ok(line
+        .split('\u{1b}')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_owned())
 }
 
 async fn wait_for(what: &str, mut check: impl FnMut() -> bool) -> TestResult {
@@ -875,12 +883,18 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
         names,
         [
             "automation_create",
+            "automation_delete",
+            "automation_run_now",
+            "automation_template_enable",
             "automation_update",
             "automations_list",
             "session_read",
             "sessions_search",
+            "task_archive",
             "task_create",
+            "task_delete",
             "task_get",
+            "task_stop",
             "tasks_list",
             "workflows_list",
         ]
@@ -935,6 +949,72 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
         .find(|e| e.action == "automation.created")
         .ok_or("audit entry")?;
     assert_eq!(entry.actor, "cockpit:alice");
+
+    // Runs it now, then deletes it, and archives and deletes the task (which ended: no
+    // repository here): each audited with the Cockpit (SPEC-066 MGT-010, MGT-011).
+    let (ran, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "automation_run_now",
+        json!({"automation_id": id}),
+    )
+    .await?;
+    assert!(!is_error, "{ran}");
+    let (deleted, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "automation_delete",
+        json!({"automation_id": id}),
+    )
+    .await?;
+    assert!(!is_error, "{deleted}");
+    assert!(f.h.store.automation(id).await?.is_none());
+    let (archived, is_error) =
+        cockpit_tool(&f, &token, "task_archive", json!({"number": task.number})).await?;
+    assert!(!is_error, "{archived}");
+    let (deleted, is_error) =
+        cockpit_tool(&f, &token, "task_delete", json!({"number": task.number})).await?;
+    assert!(!is_error, "{deleted}");
+    assert!(f.h.store.task(&task.id).await?.is_none());
+    // A ready-made automation, enabled for alice.
+    let (ready, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "automation_template_enable",
+        json!({"template": "open-issues"}),
+    )
+    .await?;
+    assert!(!is_error, "{ready}");
+    let ready = ready["automation"]["id"].as_str().ok_or("id")?;
+    assert_eq!(
+        f.h.store
+            .automation(ready)
+            .await?
+            .ok_or("ready-made")?
+            .created_by,
+        alice
+    );
+    for (target, action) in [
+        (id, "automation.run_now"),
+        (id, "automation.deleted"),
+        (task.id.as_str(), "task.archived"),
+        (task.id.as_str(), "task.deleted"),
+        (ready, "automation.created"),
+    ] {
+        let audit = f.h.store.automation_audit(target, 10).await?;
+        let entry = audit
+            .iter()
+            .find(|e| e.action == action && e.actor == "cockpit:alice")
+            .ok_or_else(|| format!("{action}: {audit:?}"))?;
+        // The caller's audit detail names the Cockpit (MGT-010).
+        assert!(
+            entry
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains("\"via\":\"cockpit\"")),
+            "{action}: {entry:?}"
+        );
+    }
 
     // Unknown tokens, and the token of a Cockpit that ended, are refused (MGT-005).
     let unknown = mcp(&f, "ck_0000", "tools/list", json!({})).await?;

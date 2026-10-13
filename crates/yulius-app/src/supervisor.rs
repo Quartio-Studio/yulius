@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -20,8 +20,7 @@ use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, AttemptId, SandboxId, TaskId};
 use yulius_domain::rotation::{self, AccountView, Decision, Trigger};
 use yulius_domain::task::{
-    Activity, AttemptState, FailReason, STOP_INTERRUPT_GRACE_MS, STOP_KILL_WAIT_MS,
-    STOP_TERM_GRACE_MS, StopReason, TaskEvent, TaskStatus,
+    Activity, AttemptState, FailReason, STOP_INTERRUPT_GRACE_MS, StopReason, TaskEvent, TaskStatus,
 };
 use yulius_domain::time::Timestamp;
 use yulius_domain::usage::{AccountUsage, UsageWindow};
@@ -53,7 +52,10 @@ pub const WATCH_INTERVAL_MS: u64 = 1_000;
 /// Reattach attempts after an unexpected host disconnect.
 pub const REATTACH_ATTEMPTS: u32 = 3;
 /// How long a closed run may take to be recorded as ended after the close escalation (SPEC-039).
-const CLOSE_SETTLE_MS: i64 = 5_000;
+const CLOSE_SETTLE_MS: u64 = 5_000;
+/// How long asking a run to shut down may take: one frame on a local socket; a host that takes
+/// longer is stuck, which the escalation handles (SPEC-065 END-005).
+const SHUTDOWN_WRITE_BOUND: Duration = Duration::from_secs(2);
 /// How often a close waiting for its run looks again without an update (SPEC-039).
 const CLOSE_RECHECK: Duration = Duration::from_secs(1);
 
@@ -80,6 +82,9 @@ pub struct TaskRuntime {
     intent: Mutex<Option<EndIntent>>,
     usage: Arc<Mutex<UsageSnapshot>>,
     watcher_alive: Arc<AtomicBool>,
+    /// The latest transcript watcher started: an older one ends even when the next run starts
+    /// before it saw its own run end (it would read the new run's lines as its own).
+    watcher_generation: AtomicU64,
     /// Last keyboard input from a viewer (ms).
     pub last_input_ms: AtomicI64,
     /// Proactive switch requested at the next turn boundary.
@@ -112,17 +117,13 @@ pub struct TaskRuntime {
     /// The goal-mode session opened with a first message (its attached files, SPEC-025) whose
     /// turn has not ended yet: its goal is typed after that turn's Stop hook.
     pub opening_turn: AtomicBool,
-    /// A merge `delivery_merge` armed while the checks still ran (SPEC-011): Yulius performs it
-    /// once they pass.
-    pub(crate) armed_merge: Mutex<Option<crate::agent_wait::ArmedMerge>>,
-    /// How the last armed merge ended, for `yulius wait` (SPEC-028 MSR-003).
-    pub(crate) merge_outcome: Mutex<Option<crate::agent_wait::MergeOutcome>>,
+    /// A merge `delivery_merge` armed while the checks still ran (SPEC-011), Yulius's decisions
+    /// of it in progress and how the last one ended (SPEC-028 MSR-003), under one lock so
+    /// `yulius wait` reads them together (SPEC-064 WAI-003).
+    pub(crate) armed: Mutex<crate::agent_wait::ArmedSlot>,
     /// Why Yulius could not push the agent's head (the head, the text), for `yulius wait`: the
     /// agent learns it instead of waiting for a run that never comes (SPEC-050 DLV-201).
     pub(crate) push_problem: Mutex<Option<(String, String)>>,
-    /// Armed-merge decisions in progress (the armed merge is taken out meanwhile): `yulius wait`
-    /// still reads the merge as armed until it is decided or put back.
-    pub(crate) merge_deciding: AtomicU32,
     /// When the last clean Stop ended a turn (ms), so a prompt of that turn read late from the
     /// transcript does not reopen it.
     pub(crate) last_stop_ms: AtomicI64,
@@ -158,6 +159,31 @@ pub struct TaskRuntime {
     /// When a switch of this task was last refused before it started (ms, 0 = never): an
     /// automatic switch waits [`SWITCH_COOLDOWN_MS`] before it tries again.
     pub(crate) switch_refused_ms: AtomicI64,
+    /// The recovery of a session whose context is full (SPEC-060); outlives a run, so a fresh
+    /// session counts as its second stage.
+    pub(crate) context: Mutex<crate::context_full::ContextEpisode>,
+    /// Run endings being recorded (`finalize_attempt`, `mark_lost`): raised before the attempt is
+    /// marked ended, lowered once its chains and queue work is done (SPEC-065 END-003).
+    finalizing: tokio::sync::watch::Sender<u32>,
+    /// The run whose host could not be terminated after its stop or close escalation, and why
+    /// (SPEC-065 END-001): it stays live until its processes are gone.
+    end_failed: Mutex<Option<(AttemptId, String)>>,
+}
+
+/// Counts a run ending as being recorded until dropped (SPEC-065 END-003).
+struct Finalizing<'a>(&'a tokio::sync::watch::Sender<u32>);
+
+impl<'a> Finalizing<'a> {
+    fn start(count: &'a tokio::sync::watch::Sender<u32>) -> Self {
+        count.send_modify(|n| *n += 1);
+        Self(count)
+    }
+}
+
+impl Drop for Finalizing<'_> {
+    fn drop(&mut self) {
+        self.0.send_modify(|n| *n = n.saturating_sub(1));
+    }
 }
 
 /// After a switch was refused before it started, automatic switches of the task wait this long
@@ -177,6 +203,7 @@ impl TaskRuntime {
             intent: Mutex::new(None),
             usage: Arc::new(Mutex::new(UsageSnapshot::default())),
             watcher_alive: Arc::new(AtomicBool::new(false)),
+            watcher_generation: AtomicU64::new(0),
             last_input_ms: AtomicI64::new(0),
             proactive_switch: AtomicBool::new(false),
             hooks_seen: AtomicBool::new(false),
@@ -190,10 +217,8 @@ impl TaskRuntime {
             goal_submitted: AtomicBool::new(false),
             session_started: AtomicBool::new(false),
             opening_turn: AtomicBool::new(false),
-            armed_merge: Mutex::new(None),
-            merge_outcome: Mutex::new(None),
+            armed: Mutex::new(crate::agent_wait::ArmedSlot::default()),
             push_problem: Mutex::new(None),
-            merge_deciding: AtomicU32::new(0),
             last_stop_ms: AtomicI64::new(0),
             background_shells: AtomicI64::new(-1),
             shells_since_ms: AtomicI64::new(0),
@@ -207,7 +232,20 @@ impl TaskRuntime {
             nudged: Mutex::new(std::collections::BTreeSet::new()),
             acting_as_app_said: AtomicBool::new(false),
             switch_refused_ms: AtomicI64::new(0),
+            context: Mutex::new(crate::context_full::ContextEpisode::default()),
+            finalizing: tokio::sync::watch::channel(0).0,
+            end_failed: Mutex::new(None),
         }
+    }
+
+    /// Why the host of `attempt` could not be terminated, if it could not (SPEC-065 END-001).
+    fn end_failed_for(&self, attempt: &AttemptId) -> Option<String> {
+        self.end_failed
+            .lock()
+            .ok()?
+            .as_ref()
+            .filter(|(id, _)| id == attempt)
+            .map(|(_, why)| why.clone())
     }
 
     /// Whether the run's transcript is being watched (a turn record can still arrive).
@@ -281,6 +319,56 @@ pub struct SupervisorState {
 
 /// File in a run directory holding the run's final screen (`<cols> <rows>\n` + redraw bytes).
 pub(crate) const FINAL_SCREEN_FILE: &str = "final-screen";
+
+/// File in a run directory while the run's first message, which Yulius types (SPEC-030), was not
+/// taken by the session yet (SPEC-068 OPN-001). Empty while Yulius types it; `entered` once its
+/// `UserPromptSubmit` reached Yulius (it may be held there). The session's first prompt let
+/// through, or any Stop, removes it.
+pub(crate) const OPENING_PENDING_FILE: &str = "opening-pending";
+const OPENING_ENTERED: &[u8] = b"entered";
+
+fn opening_marker(run_dir: &str) -> PathBuf {
+    Path::new(run_dir).join(OPENING_PENDING_FILE)
+}
+
+/// Whether the run in `run_dir` has its typed first message pending (typed or held).
+pub(crate) fn opening_pending(run_dir: &str) -> bool {
+    opening_marker(run_dir).exists()
+}
+
+/// Whether the first message of the run in `run_dir` never reached Yulius's submit hook: a
+/// restart cut its typing.
+pub(crate) fn opening_unsubmitted(run_dir: &str) -> bool {
+    std::fs::read(opening_marker(run_dir)).is_ok_and(|m| m != OPENING_ENTERED)
+}
+
+/// A `UserPromptSubmit` of the run in `run_dir` reached Yulius: its pending first message was
+/// submitted (it may still be held for capacity or an update).
+pub(crate) fn opening_entered(run_dir: &str) {
+    use std::io::Write as _;
+    // Never created here: a marker removed meanwhile stays removed.
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(opening_marker(run_dir))
+        .and_then(|mut file| file.write_all(OPENING_ENTERED));
+    match written {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+            tracing::warn!(run_dir, error = %err, "could not record the submitted first message");
+        }
+        _ => {}
+    }
+}
+
+/// The run in `run_dir` took a prompt: nothing of its first message is pending.
+pub(crate) fn opening_sent(run_dir: &str) {
+    match std::fs::remove_file(opening_marker(run_dir)) {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+            tracing::warn!(run_dir, error = %err, "could not clear the pending first message");
+        }
+        _ => {}
+    }
+}
 
 /// Writes `bytes` to `path` readable by the owner only.
 pub(crate) fn write_private_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -405,6 +493,9 @@ pub fn branch_for(number: u32, title: &str) -> String {
     let slug = slug.trim_end_matches('-');
     if slug.is_empty() {
         format!("feat/{number}-task")
+    } else if !slug.bytes().any(|b| b.is_ascii_lowercase()) {
+        // The branch policy wants a word after the number (SPEC-069).
+        format!("feat/{number}-task-{slug}")
     } else {
         format!("feat/{number}-{slug}")
     }
@@ -478,10 +569,10 @@ impl App {
         self.sandbox_dir(sandbox).join("home")
     }
 
-    /// Account views for the rotation policy.
+    /// Account views for the rotation policy; Done tasks' idle sessions are no load (SPEC-057).
     pub(crate) async fn account_views(&self) -> AppResult<Vec<AccountView>> {
         let accounts = self.deps.store.accounts().await?;
-        let live = self.deps.store.live_attempts().await?;
+        let live = self.working_attempts().await?;
         Ok(accounts
             .iter()
             .filter(|a| a.credential.is_some())
@@ -494,12 +585,7 @@ impl App {
                     .as_deref()
                     .map(usage_json::from_json)
                     .unwrap_or_default(),
-                in_use: u32::try_from(
-                    live.iter()
-                        .filter(|r| r.account_id.as_ref() == Some(&a.id))
-                        .count(),
-                )
-                .unwrap_or(u32::MAX),
+                in_use: crate::accounts::in_use_count(&a.id, &live),
             })
             .collect())
     }
@@ -981,11 +1067,20 @@ impl App {
             exit_reason: None,
         };
         store.insert_attempt(&attempt).await?;
+        // Before the spawn, so the first prompt's hook always finds it (SPEC-068).
+        if typed_opening.is_some()
+            && let Err(err) = write_private_file(&run_dir.join(OPENING_PENDING_FILE), b"")
+        {
+            tracing::warn!(task = %task.id, error = %err, "could not record the pending first message");
+        }
         let runtime = self.runtime(&task.id);
         // Before the spawn, so the opening turn's Stop hook can never come first.
         runtime
             .opening_turn
             .store(opens_with_turn, Ordering::SeqCst);
+        // So is the new session's SessionStart: its hook can be answered before the run is
+        // attached and watched, and must not be forgotten then (#243).
+        runtime.session_started.store(false, Ordering::SeqCst);
         let size = runtime.hub.size();
         let spawned = match self
             .deps
@@ -1045,13 +1140,22 @@ impl App {
             self.record_lineage(&task, harness, session_id, "native")
                 .await?;
         }
+        // Typing from now on, once viewers can write to this run, is a person's draft in it
+        // (SPEC-068).
+        let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
         self.attach_run(&task.id, &attempt, &host_token).await?;
         runtime.hub.state_changed();
         self.publish_task(&task.id).await;
         if goal_mode {
             match self.write_task_request(&sandbox, &task, &home).await {
                 Ok(condition) => {
-                    self.spawn_goal(&task.id, &attempt_id, typed_opening, &condition);
+                    self.spawn_goal(
+                        &task.id,
+                        &attempt_id,
+                        typed_opening,
+                        &condition,
+                        typed_before,
+                    );
                 }
                 Err(err) => {
                     tracing::error!(task = %task.id, error = %err, "could not write the task request");
@@ -1131,6 +1235,71 @@ impl App {
         }
     }
 
+    /// Whether the task's latest run still has its typed first message pending: a prompt held
+    /// for capacity in that run is this first message (SPEC-068 OPN-003).
+    pub(crate) async fn held_opening(&self, task_id: &TaskId) -> bool {
+        self.deps
+            .store
+            .attempts(task_id)
+            .await
+            .is_ok_and(|attempts| attempts.last().is_some_and(|a| opening_pending(&a.run_dir)))
+    }
+
+    /// A goal task's first message was submitted (a hold keeps it) when the server restarted:
+    /// the old server's goal typing died with it, so the goal is typed again after the turn on
+    /// that message (SPEC-068 OPN-002). The session read input already.
+    async fn goal_after_restart(self: &Arc<Self>, attempt: &AttemptRecord) {
+        let store = &self.deps.store;
+        let Ok(Some(task)) = store.task(&attempt.task_id).await else {
+            return;
+        };
+        if task.mode != TaskMode::Goal {
+            return;
+        }
+        let Ok(Some(sandbox)) = store.sandbox(&task.sandbox_id).await else {
+            return;
+        };
+        let runtime = self.runtime(&task.id);
+        runtime.session_started.store(true, Ordering::SeqCst);
+        runtime.opening_turn.store(true, Ordering::SeqCst);
+        let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
+        let home = self.sandbox_home(&sandbox.id);
+        match self.write_task_request(&sandbox, &task, &home).await {
+            Ok(condition) => {
+                self.spawn_goal(&task.id, &attempt.id, None, &condition, typed_before);
+            }
+            Err(err) => {
+                tracing::error!(task = %task.id, error = %err, "could not write the task request");
+                self.goal_not_taken(&task.id, "Yulius could not write the task's request file")
+                    .await;
+            }
+        }
+    }
+
+    /// A restart cut the typing of the run's first message (SPEC-068 OPN-002): the task needs a
+    /// person, said in its terminal.
+    async fn opening_never_sent(&self, task_id: &TaskId) {
+        let Ok(Some(task)) = self.deps.store.task(task_id).await else {
+            return;
+        };
+        let goal = if task.mode == TaskMode::Goal {
+            " Then type `/goal` and the request: the task has no goal yet."
+        } else {
+            ""
+        };
+        self.runtime(task_id).hub.notice(format!(
+            "Yulius restarted while it typed this task's first message, so the first message was \
+             never sent and may be half typed in the prompt box. Complete it (paste the attached \
+             images again if they are missing; the task's request lists them) and press Enter.{goal}"
+        ));
+        if let Err(err) = self
+            .set_task_activity(&task, Activity::NeedsAttention)
+            .await
+        {
+            tracing::warn!(task = %task_id, error = %err, "could not flag the task");
+        }
+    }
+
     /// Waits until the attempt's TUI reads input: Claude Code's SessionStart hook arrived and
     /// [`GOAL_QUIET`] passed without new output (or at most [`GOAL_READY_TIMEOUT`] after
     /// `started`); with `after_opening`, also until the turn on a first message ended (its Stop
@@ -1173,7 +1342,7 @@ impl App {
         }
     }
 
-    async fn attempt_live(&self, task_id: &TaskId, attempt_id: &AttemptId) -> bool {
+    pub(crate) async fn attempt_live(&self, task_id: &TaskId, attempt_id: &AttemptId) -> bool {
         matches!(
             self.deps.store.live_attempt(task_id).await,
             Ok(Some(a)) if a.id == *attempt_id
@@ -1235,13 +1404,16 @@ impl App {
     /// message with attached images (SPEC-030), Claude Code's SessionStart hook, the turn on a
     /// first message ended and quiet output ([`Self::wait_input_ready`]). The submit is confirmed
     /// by what Claude Code records about the goal and retried with growing waits; a goal never
-    /// taken flags the task.
+    /// taken flags the task. A person who typed into the session since `typed_before` (the
+    /// typing time when the run was attached) keeps their draft: no goal is typed and the task is
+    /// flagged (SPEC-068).
     fn spawn_goal(
         self: &Arc<Self>,
         task_id: &TaskId,
         attempt_id: &AttemptId,
         opening: Option<(Vec<String>, String)>,
         condition: &str,
+        typed_before: i64,
     ) {
         let app = Arc::clone(self);
         let (task_id, attempt_id) = (task_id.clone(), attempt_id.clone());
@@ -1268,7 +1440,17 @@ impl App {
             // The opening turn is over, or given up on: a later Stop is the goal's own.
             runtime.opening_turn.store(false, Ordering::SeqCst);
             runtime.goal_submitted.store(false, Ordering::SeqCst);
-            let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
+            // A person typed before the goal: `/goal` would be appended to their draft and sent
+            // with it. The draft is theirs; the task waits for them instead (#252).
+            if runtime.typed_at_ms.load(Ordering::SeqCst) != typed_before {
+                app.goal_not_taken(
+                    &task_id,
+                    "Someone typed in the terminal before Yulius set the task's goal, so their \
+                     draft was left alone",
+                )
+                .await;
+                return;
+            }
             for (attempt, wait) in GOAL_SUBMIT_WAITS.iter().enumerate() {
                 // A person typing meanwhile owns the prompt box: nothing is cleared or retyped.
                 if runtime.typed_at_ms.load(Ordering::SeqCst) != typed_before {
@@ -1521,18 +1703,60 @@ impl App {
         let Ok(Some(attempt)) = self.deps.store.attempt(attempt_id).await else {
             return;
         };
+        // Its end is recorded already (the escalation ended it).
+        if attempt.state.is_terminal() {
+            return;
+        }
         match self.deps.session_host.inspect(Path::new(&attempt.run_dir)) {
             RunInspection::Exited(exit) => self.finalize_attempt(task_id, attempt_id, exit).await,
+            // The host or the agent may still run (an agent that outlived its killed host).
             RunInspection::Recorded {
-                host_alive: true, ..
-            } => {
-                let _ = self
-                    .deps
-                    .session_host
-                    .terminate(Path::new(&attempt.run_dir));
-                self.mark_lost(task_id, attempt_id, StopReason::Lost).await;
+                host_alive,
+                child_alive,
+                ..
+            } if host_alive || child_alive => {
+                self.terminate_then_mark_lost(task_id, &attempt, StopReason::Lost)
+                    .await;
             }
             _ => self.mark_lost(task_id, attempt_id, StopReason::Lost).await,
+        }
+    }
+
+    /// Ends a run that did not exit after its stop or close escalation, or whose host or agent
+    /// lives on after the connection to it was lost or the server restarted: the host and agent
+    /// are killed, and only once they are proven gone is the run recorded as lost (AGENTS.md: a
+    /// timeout is not proof a subprocess died). When they cannot be killed the run stays live,
+    /// which keeps the task from being deleted; the failure is logged, said in the task's terminal
+    /// and flags a running task for a person (SPEC-065 END-001). Stopping the task again retries.
+    async fn terminate_then_mark_lost(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        attempt: &AttemptRecord,
+        reason: StopReason,
+    ) {
+        let Err(err) = self
+            .deps
+            .session_host
+            .terminate(Path::new(&attempt.run_dir))
+        else {
+            self.mark_lost(task_id, &attempt.id, reason).await;
+            return;
+        };
+        tracing::warn!(task = %task_id, error = %err, "the run's host could not be terminated; the run stays live");
+        let runtime = self.runtime(task_id);
+        if let Ok(mut failed) = runtime.end_failed.lock() {
+            *failed = Some((attempt.id.clone(), err.to_string()));
+        }
+        runtime.hub.notice(format!(
+            "Yulius could not end this session ({err}). It still counts as running, so the task \
+             cannot be deleted. Stop the task again to retry."
+        ));
+        if let Ok(Some(task)) = self.deps.store.task(task_id).await
+            && let Err(err) = self
+                .set_task_activity(&task, Activity::NeedsAttention)
+                .await
+        {
+            tracing::warn!(task = %task_id, error = %err, "could not flag the task");
         }
     }
 
@@ -1542,17 +1766,30 @@ impl App {
         attempt_id: &AttemptId,
         reason: StopReason,
     ) {
+        // `existing_runtime`: a deleted task's runtime is not brought back.
+        let runtime = self.existing_runtime(task_id);
+        let _finalizing = runtime.as_ref().map(|rt| Finalizing::start(&rt.finalizing));
         let now = self.now();
         let update = AttemptUpdate {
             ended_at: Some(now),
             exit_reason: Some("lost".into()),
             ..AttemptUpdate::default()
         };
-        let _ = self
+        let first = self
             .deps
             .store
             .transition_attempt(attempt_id, AttemptState::Lost, &update)
-            .await;
+            .await
+            .unwrap_or(false);
+        if !first {
+            return; // another observer already recorded the outcome
+        }
+        if let Some(rt) = &runtime
+            && let Ok(mut intent) = rt.intent.lock()
+        {
+            // No exit will consume it: the next run must not inherit it.
+            *intent = None;
+        }
         if let Ok(Some(task)) = self.deps.store.task(task_id).await
             && let Ok(next) = task.status.apply(TaskEvent::Lost(reason))
         {
@@ -1563,7 +1800,7 @@ impl App {
                 .await;
         }
         self.end_pause(task_id, "ended").await;
-        if let Some(rt) = self.existing_runtime(task_id) {
+        if let Some(rt) = &runtime {
             rt.watcher_alive.store(false, Ordering::SeqCst);
             *rt.run.lock().await = None;
             rt.hub.exit(TaskStatus::Stopped(reason).as_str(), None);
@@ -1582,6 +1819,7 @@ impl App {
     ) {
         let store = &self.deps.store;
         let runtime = self.runtime(task_id);
+        let _finalizing = Finalizing::start(&runtime.finalizing);
         let intent = runtime.intent.lock().ok().and_then(|mut g| g.take());
         let session_end = runtime.session_end.lock().ok().and_then(|mut g| g.take());
         runtime.watcher_alive.store(false, Ordering::SeqCst);
@@ -1714,18 +1952,27 @@ impl App {
     /// # Errors
     /// Store failures.
     pub(crate) async fn sessions_in_use(&self) -> AppResult<u32> {
+        Ok(u32::try_from(self.working_attempts().await?.len()).unwrap_or(u32::MAX))
+    }
+
+    /// Live attempts except those of Done tasks: what holds a session slot (SES-101) and a
+    /// subscription (SPEC-057 SUB-001, SUB-002). A Done task typed into again counts again.
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn working_attempts(&self) -> AppResult<Vec<AttemptRecord>> {
         let store = &self.deps.store;
-        let mut in_use = 0u32;
+        let mut working = Vec::new();
         for attempt in store.live_attempts().await? {
             let done = match store.task(&attempt.task_id).await? {
                 Some(task) => self.task_is_done_locally(&task).await,
                 None => false,
             };
             if !done {
-                in_use = in_use.saturating_add(1);
+                working.push(attempt);
             }
         }
-        Ok(in_use)
+        Ok(working)
     }
 
     /// Starts queued tasks while capacity allows (FIFO); none while an update pauses tasks.
@@ -1786,75 +2033,82 @@ impl App {
                 task.status.as_str()
             )));
         }
+        let closed = self.live_attempt_id(task_id).await;
         let runtime = self.runtime(task_id);
         if let Ok(mut intent) = runtime.intent.lock() {
             *intent = Some(EndIntent::Close);
         }
-        let total = STOP_INTERRUPT_GRACE_MS + STOP_TERM_GRACE_MS + STOP_KILL_WAIT_MS;
-        if let Some(run) = runtime.run.lock().await.as_mut() {
-            let _ = run
-                .writer
-                .shutdown(u32::try_from(STOP_INTERRUPT_GRACE_MS).unwrap_or(5000))
-                .await;
-        }
-        let app = self.clone();
-        let tid = task_id.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(
-                u64::try_from(total).unwrap_or(20_000),
-            ))
-            .await;
-            if let Ok(Some(attempt)) = app.deps.store.live_attempt(&tid).await {
-                tracing::warn!(task = %tid, "closed run did not exit after escalation; terminating host");
-                let _ = app.deps.session_host.terminate(Path::new(&attempt.run_dir));
-                app.mark_lost(&tid, &attempt.id, StopReason::Lost).await;
-            }
-        });
+        self.arm_escalation(task_id, closed);
+        request_shutdown(&runtime).await;
         Ok(())
     }
 
     /// Closes a finished, running task like [`Self::close_task_now`] and waits until its run has
-    /// ended and the task rests (SPEC-039), so its records and directories can go. A run that
-    /// already ended by itself is not a conflict. The close and the wait are bounded together by
-    /// the close escalation, after which the run is terminated and marked lost, plus
-    /// `CLOSE_SETTLE_MS`; the wait follows the task's update events and looks again every
-    /// `CLOSE_RECHECK` in case an update is never published.
+    /// ended, the task rests and the run's ending is fully recorded (SPEC-039, SPEC-065 END-003),
+    /// so its records and directories can go. A run that already ended by itself is not a
+    /// conflict. The close and the wait are bounded together by the close escalation, after which
+    /// the run's host is terminated, plus `CLOSE_SETTLE_MS`; the wait follows the task's update
+    /// events and looks again every `CLOSE_RECHECK`, on an interval other events do not reset.
     ///
     /// # Errors
-    /// `Conflict` when the run is still there at the bound.
+    /// `Conflict` when the task was not closed and is neither resting nor stopping, when its
+    /// run's host could not be terminated, or when the run is still there at the bound.
     pub async fn close_task_and_wait(self: &Arc<Self>, task_id: &TaskId) -> AppResult<()> {
         // Subscribed before closing, so the update that says the run ended is never missed.
         let mut events = self.events.subscribe();
-        let total =
-            STOP_INTERRUPT_GRACE_MS + STOP_TERM_GRACE_MS + STOP_KILL_WAIT_MS + CLOSE_SETTLE_MS;
-        let bound = Duration::from_millis(u64::try_from(total).unwrap_or(25_000));
+        let runtime = self.runtime(task_id);
+        let mut finalizing = runtime.finalizing.subscribe();
+        let bound = Duration::from_millis(self.config.stop_escalation_ms + CLOSE_SETTLE_MS);
         let ended = tokio::time::timeout(bound, async {
             match self.close_task_now(task_id).await {
-                // Not running any more: whether it rests is checked below.
-                Ok(()) | Err(AppError::Conflict(_)) => {}
+                Ok(()) => {}
+                // Not running any more: a task that rests or is being stopped can go once its
+                // run has ended; any other (switching, starting) was not closed.
+                Err(AppError::Conflict(_)) => {
+                    let status = self.deps.store.task(task_id).await?.map(|t| t.status);
+                    if status.is_some_and(|s| !s.is_resting() && s != TaskStatus::Stopping) {
+                        return Err(AppError::Conflict(
+                            "stop the task before deleting it".into(),
+                        ));
+                    }
+                }
                 Err(err) => return Err(err),
             }
+            let mut recheck = tokio::time::interval_at(
+                tokio::time::Instant::now() + CLOSE_RECHECK,
+                CLOSE_RECHECK,
+            );
             loop {
                 let store = &self.deps.store;
                 let rests = store
                     .task(task_id)
                     .await?
                     .is_none_or(|t| t.status.is_resting());
-                if rests && store.live_attempt(task_id).await?.is_none() {
+                let live = store.live_attempt(task_id).await?;
+                if let Some(why) = live.as_ref().and_then(|a| runtime.end_failed_for(&a.id)) {
+                    return Err(AppError::Conflict(format!(
+                        "the task's session could not be ended: {why}"
+                    )));
+                }
+                if rests && live.is_none() && *finalizing.borrow_and_update() == 0 {
                     return Ok::<bool, AppError>(true);
                 }
                 loop {
-                    match tokio::time::timeout(CLOSE_RECHECK, events.recv()).await {
-                        Ok(Ok(envelope)) => {
-                            if matches!(&envelope.event, UiEvent::TaskUpdated { task }
-                                if task.id == task_id.as_str())
-                            {
-                                break;
+                    tokio::select! {
+                        _ = recheck.tick() => break,
+                        _ = finalizing.changed() => break,
+                        event = events.recv() => match event {
+                            Ok(envelope) => {
+                                if matches!(&envelope.event, UiEvent::TaskUpdated { task }
+                                    if task.id == task_id.as_str())
+                                {
+                                    break;
+                                }
                             }
-                        }
-                        // No update for a while, or updates were missed: look again.
-                        Err(_) | Ok(Err(broadcast::error::RecvError::Lagged(_))) => break,
-                        Ok(Err(broadcast::error::RecvError::Closed)) => return Ok(false),
+                            // Updates were missed: look again.
+                            Err(broadcast::error::RecvError::Lagged(_)) => break,
+                            Err(broadcast::error::RecvError::Closed) => return Ok(false),
+                        },
                     }
                 }
             }
@@ -1867,6 +2121,43 @@ impl App {
                 "the task's session is still closing; try again".into(),
             )),
         }
+    }
+
+    /// The task's live attempt, if any; a store error is logged and means none is known.
+    async fn live_attempt_id(&self, task_id: &TaskId) -> Option<AttemptId> {
+        match self.deps.store.live_attempt(task_id).await {
+            Ok(attempt) => attempt.map(|a| a.id),
+            Err(err) => {
+                tracing::warn!(task = %task_id, error = %err, "the ended run is unknown; no escalation");
+                None
+            }
+        }
+    }
+
+    /// Arms the escalation of a stop or close: if `attempt` is still the task's live run after
+    /// `stop_escalation_ms`, its host is terminated (SPEC-065 END-001). Armed before the run lock
+    /// is taken, so neither a blocked writer nor a cancelled caller leaves the run without it
+    /// (END-005). Only that run: a task continued meanwhile has a new one.
+    fn arm_escalation(self: &Arc<Self>, task_id: &TaskId, attempt: Option<AttemptId>) {
+        let Some(attempt) = attempt else {
+            return;
+        };
+        if let Ok(mut failed) = self.runtime(task_id).end_failed.lock() {
+            *failed = None;
+        }
+        let app = self.clone();
+        let tid = task_id.clone();
+        let wait = Duration::from_millis(self.config.stop_escalation_ms);
+        tokio::spawn(async move {
+            tokio::time::sleep(wait).await;
+            if let Ok(Some(live)) = app.deps.store.live_attempt(&tid).await
+                && live.id == attempt
+            {
+                tracing::warn!(task = %tid, "run did not exit after escalation; terminating host");
+                app.terminate_then_mark_lost(&tid, &live, StopReason::Lost)
+                    .await;
+            }
+        });
     }
 
     /// Stops a task: graceful shutdown with escalation, then (if needed) termination and `lost`.
@@ -1895,10 +2186,34 @@ impl App {
             self.advance_chains(task_id).await;
             return Ok(());
         }
-        let next = task
-            .status
-            .apply(TaskEvent::CancelRequested)
-            .map_err(|_| AppError::Conflict(format!("task is {}", task.status.as_str())))?;
+        // A task already stopping is stopped again: its escalation is armed anew (SPEC-065). One
+        // whose run has ended gets no intent (nothing would consume it): it rests by itself while
+        // its ending is recorded, or now when nothing records it (records cut by a crash).
+        let next = if task.status == TaskStatus::Stopping {
+            if store.live_attempt(task_id).await?.is_none() {
+                if *self.runtime(task_id).finalizing.borrow() == 0
+                    && store
+                        .transition_task(
+                            task_id,
+                            Some(TaskStatus::Stopping),
+                            TaskStatus::Stopped(StopReason::Cancelled),
+                            None,
+                            self.now(),
+                        )
+                        .await?
+                {
+                    self.end_pause(task_id, "cancelled").await;
+                    self.publish_task(task_id).await;
+                    self.advance_chains(task_id).await;
+                }
+                return Ok(());
+            }
+            TaskStatus::Stopping
+        } else {
+            task.status
+                .apply(TaskEvent::CancelRequested)
+                .map_err(|_| AppError::Conflict(format!("task is {}", task.status.as_str())))?
+        };
         let runtime = self.runtime(task_id);
         if let Ok(mut intent) = runtime.intent.lock() {
             *intent = Some(EndIntent::Cancel);
@@ -1910,26 +2225,10 @@ impl App {
         }
         self.end_pause(task_id, "cancelled").await;
         self.publish_task(task_id).await;
-        let total = STOP_INTERRUPT_GRACE_MS + STOP_TERM_GRACE_MS + STOP_KILL_WAIT_MS;
-        if let Some(run) = runtime.run.lock().await.as_mut() {
-            let _ = run
-                .writer
-                .shutdown(u32::try_from(STOP_INTERRUPT_GRACE_MS).unwrap_or(5000))
-                .await;
-        }
-        let app = self.clone();
-        let tid = task_id.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_millis(
-                u64::try_from(total).unwrap_or(20_000),
-            ))
-            .await;
-            if let Ok(Some(attempt)) = app.deps.store.live_attempt(&tid).await {
-                tracing::warn!(task = %tid, "run did not exit after escalation; terminating host");
-                let _ = app.deps.session_host.terminate(Path::new(&attempt.run_dir));
-                app.mark_lost(&tid, &attempt.id, StopReason::Lost).await;
-            }
-        });
+        // The run this stop ends; without it (a store error) nothing is escalated.
+        let stopped = self.live_attempt_id(task_id).await;
+        self.arm_escalation(task_id, stopped);
+        request_shutdown(&runtime).await;
         Ok(())
     }
 
@@ -1963,7 +2262,25 @@ impl App {
             .await
     }
 
-    async fn switch_with(
+    /// Continues a task whose session ran out of context in a fresh session on `account`, opened
+    /// with `handoff` (SPEC-060 CTX-004).
+    ///
+    /// # Errors
+    /// `Conflict` when the task is not running.
+    pub(crate) async fn restart_fresh(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        account: Option<AccountId>,
+        handoff: &str,
+    ) -> AppResult<()> {
+        let start = RunStart::Fresh {
+            prompt: Some(handoff.to_owned()),
+        };
+        self.switch_with(task_id, account, "context_full", start)
+            .await
+    }
+
+    pub(crate) async fn switch_with(
         self: &Arc<Self>,
         task_id: &TaskId,
         account: Option<AccountId>,
@@ -2017,7 +2334,10 @@ impl App {
         // The policy may pick the same subscription (a limit that reset): no "another" then.
         let elsewhere = account.is_some()
             && attempt.as_ref().map(|a| a.account_id.as_ref()) != Some(account.as_ref());
-        runtime.hub.notice(if elsewhere {
+        let fresh = matches!(start, RunStart::Fresh { .. });
+        runtime.hub.notice(if fresh {
+            "↻ Yulius starts a fresh session for this task…"
+        } else if elsewhere {
             "↻ Yulius continues this session on another Claude subscription…"
         } else {
             "↻ Yulius continues this session…"
@@ -2074,9 +2394,11 @@ impl App {
                 } else {
                     store.set_switch_outcome(&decision_id, "completed").await?;
                     runtime.switch_refused_ms.store(0, Ordering::SeqCst);
-                    runtime
-                        .hub
-                        .notice("↻ The session continues where it left off.");
+                    runtime.hub.notice(if fresh {
+                        "↻ The task continues in a fresh session."
+                    } else {
+                        "↻ The session continues where it left off."
+                    });
                 }
                 Ok(())
             }
@@ -2166,9 +2488,18 @@ impl App {
         if repeat {
             return;
         }
-        self.runtime(&task.id).hub.notice(format!(
-            "↻ Switching subscriptions was not possible, so this session stays as it is: {message}"
-        ));
+        self.runtime(&task.id)
+            .hub
+            .notice(if reason == "context_full" {
+                format!(
+                    "↻ A fresh session could not start, so this session stays as it is: {message}"
+                )
+            } else {
+                format!(
+                    "↻ Switching subscriptions was not possible, so this session stays as it is: \
+                 {message}"
+                )
+            });
         let record = SwitchDecisionRecord {
             id: self.deps.crypto.new_id(),
             task_id: task.id.clone(),
@@ -2281,6 +2612,16 @@ impl App {
                         )
                         .await;
                 }
+                // The old server was typing the run's first message (or about to): how much of
+                // it reached the prompt box is unknown, so a person finishes it (SPEC-068
+                // OPN-002). A submitted one that a hold keeps goes on when the hold ends.
+                if opening_unsubmitted(&attempt.run_dir) {
+                    if matches!(store.open_pause(&attempt.task_id).await, Ok(None)) {
+                        self.opening_never_sent(&attempt.task_id).await;
+                    }
+                } else if opening_pending(&attempt.run_dir) {
+                    self.goal_after_restart(&attempt).await;
+                }
                 continue;
             }
             match self.deps.session_host.inspect(Path::new(&attempt.run_dir)) {
@@ -2288,13 +2629,19 @@ impl App {
                     self.finalize_attempt(&attempt.task_id, &attempt.id, exit)
                         .await
                 }
-                RunInspection::Recorded { host_alive, .. } => {
-                    if host_alive {
-                        let _ = self
-                            .deps
-                            .session_host
-                            .terminate(Path::new(&attempt.run_dir));
-                    }
+                RunInspection::Recorded {
+                    host_alive,
+                    child_alive,
+                    ..
+                } if host_alive || child_alive => {
+                    self.terminate_then_mark_lost(
+                        &attempt.task_id,
+                        &attempt,
+                        StopReason::ServerLost,
+                    )
+                    .await;
+                }
+                RunInspection::Recorded { .. } => {
                     self.mark_lost(&attempt.task_id, &attempt.id, StopReason::ServerLost)
                         .await;
                 }
@@ -2373,7 +2720,6 @@ impl App {
         // A new attempt (or the same one after a restart) learns the goal from its transcript.
         runtime.goal_achieved.store(false, Ordering::SeqCst);
         runtime.goal_submitted.store(false, Ordering::SeqCst);
-        runtime.session_started.store(false, Ordering::SeqCst);
         runtime.background_shells.store(-1, Ordering::SeqCst);
         runtime.background_agents.store(0, Ordering::SeqCst);
         runtime.notice_attention_ms.store(0, Ordering::SeqCst);
@@ -2387,7 +2733,8 @@ impl App {
         let tid = task_id.clone();
         let attempt = attempt.clone();
         let alive = runtime.watcher_alive.clone();
-        tokio::spawn(async move { app.watch_loop(tid, attempt, alive).await });
+        let generation = runtime.watcher_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        tokio::spawn(async move { app.watch_loop(tid, attempt, alive, generation).await });
     }
 
     async fn watch_loop(
@@ -2395,6 +2742,7 @@ impl App {
         task_id: TaskId,
         attempt: AttemptRecord,
         alive: Arc<AtomicBool>,
+        generation: u64,
     ) {
         let Ok(Some(task)) = self.deps.store.task(&task_id).await else {
             return;
@@ -2422,9 +2770,16 @@ impl App {
         let mut catching_up = false;
         let mut facts = TranscriptFacts::default();
         let mut probed_at = Timestamp(0);
-        while alive.load(Ordering::SeqCst) {
+        // `existing_runtime`: a deleted task's runtime is not brought back.
+        let current = || {
+            alive.load(Ordering::SeqCst)
+                && self.existing_runtime(&task_id).is_some_and(|runtime| {
+                    runtime.watcher_generation.load(Ordering::SeqCst) == generation
+                })
+        };
+        while current() {
             tokio::time::sleep(Duration::from_millis(WATCH_INTERVAL_MS)).await;
-            if !alive.load(Ordering::SeqCst) {
+            if !current() {
                 break;
             }
             let now = self.now();
@@ -2442,6 +2797,10 @@ impl App {
                     let _ = self
                         .record_lineage(&task, Harness::ClaudeCode, &id, "native")
                         .await;
+                    // `/clear` or `/resume` in the TUI: a person took the session in hand.
+                    if session_id.is_some() {
+                        self.context_session_changed(&task_id);
+                    }
                     session_id = Some(id);
                     watch = None;
                 }
@@ -2500,6 +2859,10 @@ impl App {
                 if w.caught_up() {
                     catching_up = false;
                     self.apply_transcript_facts(&task_id, facts).await;
+                    // A session left full while Yulius was down is recovered now (CTX-007).
+                    if facts.context_full {
+                        self.context_full_replayed(&task_id, &attempt).await;
+                    }
                 }
             } else {
                 for observation in observations {
@@ -2595,6 +2958,7 @@ impl App {
                 self.publish_task(task_id).await;
             }
             Observation::TurnComplete => {
+                self.context_replied(task_id, &attempt.id);
                 runtime.end_turn(self.now());
                 // With hooks the Stop hook is the boundary that switches or pauses; the
                 // transcript decides only for a run without them.
@@ -2613,7 +2977,13 @@ impl App {
                     .await;
                 self.turn_record_seen(task_id).await;
             }
-            Observation::AgentWork { at } => self.agent_worked(task_id, at).await,
+            Observation::AgentWork { at } => {
+                self.context_replied(task_id, &attempt.id);
+                self.agent_worked(task_id, at).await;
+            }
+            Observation::ContextFull => self.context_full_observed(task_id, attempt).await,
+            Observation::Compacted => self.compacted_observed(task_id).await,
+            Observation::CompactFailed => self.compact_failed_observed(task_id, attempt).await,
             Observation::Session { .. } => {}
         }
     }
@@ -2670,6 +3040,24 @@ impl App {
                 }
             }
         }
+    }
+}
+
+/// Asks the task's run, if one is attached, to shut down gracefully (interrupt, then TERM, then
+/// kill on the host's side). Taking the run lock and writing are bounded together (SPEC-065
+/// END-005): a stuck host must not hold the lock that ending the run needs.
+async fn request_shutdown(runtime: &TaskRuntime) {
+    let asked = tokio::time::timeout(SHUTDOWN_WRITE_BOUND, async {
+        if let Some(run) = runtime.run.lock().await.as_mut() {
+            let _ = run
+                .writer
+                .shutdown(u32::try_from(STOP_INTERRUPT_GRACE_MS).unwrap_or(5000))
+                .await;
+        }
+    })
+    .await;
+    if asked.is_err() {
+        tracing::warn!("the run did not take the shutdown request in time; the escalation ends it");
     }
 }
 
@@ -2781,5 +3169,18 @@ mod tests {
         assert_eq!(branch_for(4, "  ***  "), "feat/4-task");
         assert!(branch_for(5, &"x".repeat(200)).len() <= 50);
         assert_eq!(branch_for(6, "Ünïcödé ąę"), "feat/6-n-c-d");
+        // SPEC-069 BPL-006: the branch policy wants a letter after the number.
+        assert_eq!(branch_for(7, "2026 / 42"), "feat/7-task-2026-42");
+        let policy = yulius_domain::branch_policy::BranchPolicy::standard();
+        for title in [
+            "Make me an online store!",
+            "  ***  ",
+            "2026",
+            &"x".repeat(200),
+            "Ünïcödé ąę",
+        ] {
+            let branch = branch_for(9, title);
+            assert_eq!(policy.branch_type(&branch), Some("feat"), "{branch}");
+        }
     }
 }

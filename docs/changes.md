@@ -6,6 +6,122 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- A CI run that could not run (disk, a timeout, the host) reads "CI could not run (not the code)"
+  instead of "checks failing · Needs you"; an armed merge stays armed and the agent is told to run
+  the checks again (SPEC-050 STA-101).
+- Local test runs use 4 test threads (CI keeps one per CPU): several agents running the suite
+  at once in one sandbox starved their tests into timeouts.
+- Only real typing counts as typing; a typed first message is never lost (SPEC-068, ADR-0052,
+  task #61, #252, #266). Focus and mouse reports and terminal answers no longer record typing or
+  take control of the terminal size. A goal task whose terminal a person typed into before its
+  goal leaves the draft alone and needs attention, instead of appending `/goal` to it. A first
+  message with images that a server restart cut flags its task with a notice; one held for
+  capacity and resumed (or manually switched) to another account is typed again there, images
+  included.
+- Yulius's merge gate enforces the branch policy (SPEC-069, ADR 0051, task #59; #223). Before
+  Yulius merges a task's pull request (`delivery_merge`, an armed merge, the Git page) or a
+  promotion pull request, it checks the title, head and base against `yulius.toml`
+  `[branch_policy]` at `dev`. The standard preset is the default: typed branches, conventional
+  one-line titles of at most 100 characters, and `dev` → `main` titled
+  `release: promote dev to main[ - label]`; `preset = "none"` turns it off. A violation is
+  refused with the rule in words, and `delivery_merge` refuses before it arms. Yulius's own
+  titles comply: task titles take an allowed type and are clipped to 100 characters, promotion
+  pull requests are titled `release: promote dev to main`, and a fork's pull request is never
+  taken for the promotion. `scripts/check_git_policy.py` is removed.
+
+- A stopped or closed run ends only when its processes are proven gone (SPEC-065, ADR-0050, task #54;
+  #284, #285, #290). When Yulius cannot terminate a run's host after the stop or close escalation,
+  the run stays live, the task's terminal says so and a running task needs attention; deleting it
+  answers 409 and removes nothing. Deleting a Done task now returns only after the run's end is
+  fully recorded, so a task chained after it gets one outcome. The wait re-checks every second even
+  on a busy instance, a stuck host can no longer cancel the escalation, and a task that turned
+  switching is refused at once. The web UI sends one delete per task, shows "Deleting #N…", and a
+  stopping task's Delete says "Stopping…".
+- Five flaky tests wait on what they check (SPEC-067, task #56; #243, #320, #322, #294, #269).
+  Each was reproduced next to CPU-bound processes, and none got a sleep or a retry. Two were
+  product bugs:
+  - A task's header strip now follows its pull request read. A task whose pull request is tested
+    reads "Done · PR #N" even when that read lands after the view opened. Before, it kept "Your
+    turn" until an unrelated event redrew it.
+  - A SessionStart hook answered before Yulius watched the new run was forgotten. The task's goal
+    then waited 45 s before it was typed. The flag is now reset before the agent is spawned.
+
+  The slash-menu, Auto, stored-draft and terminal-link tests now wait for the composer's focus,
+  hold the creation, store the draft before the page opens, and wait until xterm knows the link
+  and the Editor has loaded. The dropped-goal test sends Claude Code's SessionStart hook: its goal
+  starts after 16 s instead of 60 s.
+- The Cockpit and task agents manage the whole task and automation lifecycle (SPEC-066,
+  ADR-0049, task #58, #275, #293). New MCP tools `task_stop`, `task_archive`, `task_delete`,
+  `automation_delete`, `automation_run_now` and `automation_template_enable` do what the UI
+  does, for the person the caller acts for, audited with the caller (`task:<n>` /
+  `cockpit:<login>`); a task never stops, archives or deletes itself. `automations_list` lists
+  the ready-made automations (`ready_made`). The Cockpit is served them all and asks the person
+  before each. Workflow create and edit stay UI-only.
+- `yulius wait` on armed merges (SPEC-064, ADR-0048, task #53; #248, #249, #255, #251). A merge
+  armed while Yulius still decides an earlier one supersedes it: the wait on the new head no
+  longer ends with the old head's "dropped", and the new merge stays armed and saved. The armed
+  merge, its decisions in progress and its outcome are read and changed under one lock, so a wait
+  never misses a decision. A wait with a merge armed and checks pending keeps waiting (#249 did
+  not reproduce on `dev`; a regression test now covers it). The automatic retry of an errored
+  Yulius CI run at a pull request's head is tested: once, never a third time, never when the pull
+  request conflicts.
+- CLI device sign-in can no longer fill the disk (SPEC-063, ADR-0047, task #55, #169).
+  `POST /api/device/start` is limited per client like password sign-in (5 starts a minute); at
+  most 10 device sign-ins wait per client and 1000 per instance (past either: 429, nothing
+  evicted); expired and consumed grants are deleted on every start and every minute. Schema
+  version 16 (`device_grants.client_key`).
+- A session whose context is full recovers (SPEC-060, ADR-0046, task #51, #213). Claude Code's
+  "Prompt is too long" ends the turn, so the task waits instead of staying `working`. Yulius then
+  types `/compact` with a focus built from the task (goal, branch, pull request, steps left) and
+  wakes the compacted session. If the compaction fails, the task continues in a fresh session
+  opened with a handoff. If the fresh session is full too, the task needs attention and says why.
+  Each step shows in the task's terminal and the audit log (`task.context_full`).
+- Unique decision numbers and the onboarding CI proof (SPEC-058, task #49; #317, #272). The four
+  decision records numbered 0034 now have their own numbers: the automations catalog keeps 0034, the
+  Agent in the right panel is 0036, the personal two-factor vault 0042 and the task status from
+  Claude Code's records 0044 (after #333 took 0041); the archive-all record (#332), a later second
+  0040, is 0043. `scripts/check_repository.py` fails on two records with one number, a title whose
+  number differs from the file name, or a record missing from `docs/decisions/README.md` (0016 was).
+  The onboarding prompt and infra-bootstrap step 2 add `YULIUS_CI_MATRIX` to the proof of matrix
+  jobs and say how to clean up after an interrupted proof: the proof prints its directory, the agent
+  removes its own by that path and other tasks' `~/.ci-proof.*` only when over six hours old, then
+  runs `git worktree prune`. They also say that checkouts are per CI lane while by default up to two
+  runs share the CI home and cache, and that system packages are installed by onboarding, never by a
+  CI job.
+- CI waits for disk instead of erroring (SPEC-059, ADR-0045, task #50; #240, #256, #258, #245). A
+  CI run in a sandbox over its disk quota stays queued, with a `pending` status. It says who holds
+  the space, and starts by itself once Yulius has pruned the caches of tasks that do not work, or
+  other tasks have freed space. An armed merge keeps waiting for it. Quota refusals of sessions
+  name the largest consumers too. Upkeep now probes a task's background shells again before it
+  prunes. A running background build or subagent, or a probe that cannot answer, keeps the
+  task's caches.
+- Two-factor fixes (SPEC-061, ADR-0041, task #52, #291, #295). A lost authenticator no longer
+  locks someone out of the secrets for good: an instance administrator or the superadmin resets
+  their two-factor from the Users page (a confirmation, then their own code), and the person sets
+  it up again on their next reveal. The reset is in the secrets activity (`vault.2fa.reset`).
+  Instance administrators now see the Users page (read-only, with each person's two-factor). A
+  code now confirms only the seed it was checked against, so a new key set up in another tab
+  while a code is checked is not confirmed by it. API: `DELETE /api/users/{id}/two-factor`;
+  `AdminUser` gains `two_factor`.
+- Open GitHub issues triaged, and the web UI keeps the person's keyboard, scroll and text (SPEC-056,
+  task #47). Issues already fixed on `dev` were closed with the change that fixed them, and the
+  other actionable ones went to chained tasks #49–#64. In the web UI:
+  - a terminal that shows late leaves the keyboard in the Editor on Chrome (#325), and with a
+    terminal asked for after it (#323);
+  - Notes shown again for a new page does not take the keyboard (#310);
+  - a menu placed again keeps its scroll (#288);
+  - the task view ignores an older detail read (#316);
+  - the queued messages card keeps unsent text and a refusal when the task starts (#324);
+  - leaving the composer revokes every object URL it made (#259).
+- Quick archive (SPEC-062, ADR-0043, task #65). A sidebar task row that can be archived shows an
+  Archive button beside its `⋮` on hover or focus, and the Done group's head has **Archive all**:
+  one click archives every Done task, with one Undo for the whole batch. When some fail, the
+  others stay archived and one toast says how many failed and why. Phones keep the `⋮` menu as
+  their only row action. No API change: each task goes through `POST /api/tasks/{tid}/archive`.
+- Done tasks no longer hold their subscription (SPEC-057, ADR-0040, task #48). A subscription
+  card counts only tasks still working on it, so one whose tasks are all Done (goal achieved, or
+  plan complete and merged: the session limit's rule) says "No tasks right now" and can be removed. Removing it closes those Done tasks' idle sessions first, as archiving
+  does. The pool's load and the Status panel count the same way as the session limit (SES-101).
 - CI jobs get the CPU first (SPEC-053, ADR-0039, task #45, #283). A sandbox's cgroup is split
   into `system/`, `agents/` and `ci/`, and CI jobs run with four times the agents' CPU weight. CI
   gets up to 80 % of the sandbox while agents build, and agents keep at least 20 %. The e2e suite in CI is
@@ -43,7 +159,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - Armed merges survive a server restart (a deploy no longer drops them) (SPEC-050 DLV-205).
 - Secrets are a title, a value and notes, and reading one needs your own two-factor code
-  (SPEC-040, ADR-0034, task #39). The first reveal sets two-factor up: an authenticator key and
+  (SPEC-040, ADR-0042, task #39). The first reveal sets two-factor up: an authenticator key and
   link, confirmed by a first code. After that, a code unlocks the vault in that browser for 10
   minutes. A sign-in or password alone no longer reveals anything. Older team secrets keep every
   field: the password becomes the value, and the address, user name and seed move into the
@@ -52,7 +168,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Ten wrong codes in a row lock codes until the person confirms it is them again. Rolling back
   past this change needs care: the previous release reads secrets saved in the new form as
   having no password, and an edit there would drop the value.
-- The Cockpit is now the **Agent**, on the right (SPEC-035, ADR-0034; task #33): a top-bar Agent
+- The Cockpit is now the **Agent**, on the right (SPEC-035, ADR-0036; task #33): a top-bar Agent
   button and the first tool of the right rail open the user's own Claude Code session in the tool
   panel beside the page, under a notice that it is for quick work (setting up automations, quick
   questions) and that anything more complex, such as writing code, belongs in a task (with a New
@@ -132,7 +248,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   CI (tests), Secrets and Dashboard, then "More", which expands Sessions, Workflows, Skills,
   Automations and MCP in place. Its state is remembered per browser; arriving at one of those
   pages shows it open for that page.
-- A task's status follows what its agent is doing (SPEC-032, ADR-0034; task #30): a task whose
+- A task's status follows what its agent is doing (SPEC-032, ADR-0044; task #30): a task whose
   agent ended its turn but still waits for a background agent (a reviewer) is Working with "1
   background task still running", not Done; a goal check that says "not met", or any stop the
   session goes on from, makes the task Working again instead of leaving "Your turn" (or Done);

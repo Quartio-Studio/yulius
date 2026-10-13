@@ -569,6 +569,9 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
    * edge, the items scroll instead (SPEC-038 MNU-001). Run again when the window gets shorter.
    */
   const place = () => {
+    // Placing again keeps the list where the person scrolled it; only the filter scrolls it back
+    // to the top (SPEC-056 WUI-104).
+    const scroll = list.scrollTop;
     menu.classList.remove('menu-from-top');
     menu.style.top = '';
     menu.style.bottom = '';
@@ -608,6 +611,7 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
     let left = align === 'end' ? rect.right - mw : rect.left;
     if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
     menu.style.left = `${Math.max(8, left)}px`;
+    list.scrollTop = scroll;
   };
   place();
   const onDoc = (event) => { if (!menu.contains(event.target)) closeMenu(); };

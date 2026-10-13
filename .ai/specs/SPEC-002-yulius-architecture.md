@@ -1049,7 +1049,7 @@ ciphertext; that instance-wide command (it must also re-seal accounts, GitHub to
 secrets) is a follow-up. After a suspected leak of `master.key` together with a database copy,
 re-encryption does not help: the values themselves must be rotated at their providers.
 
-**Team section.** (Since F 2026-10-12, SPEC-040 and ADR-0034: a team secret is a title, a value
+**Team section.** (Since F 2026-10-12, SPEC-040 and ADR-0042: a team secret is a title, a value
 and notes; older ones fold in when read; reveals need the person's own two-factor code entered in
 the browser session within 10 minutes instead of a recent sign-in; there is no per-secret seed;
 the people who manage an agent secret read it back the same way. The paragraph below is the
@@ -1070,7 +1070,7 @@ injection (`Authorization: Bearer`, Basic with a user name, or a named header), 
 name and TOTP seed, and a value of at least 8 characters (shorter values cannot be recognised in
 output, VLT-006). Sandbox secrets are managed by members with write access, instance-wide ones by
 instance administrators; members who can view a sandbox see names, descriptions and bindings.
-Values are write-only for everyone (replace, never read back). (Since SPEC-040, ADR-0034: the
+Values are write-only for everyone (replace, never read back). (Since SPEC-040, ADR-0042: the
 people who manage one read it back after their two-factor code; agents still never do.)
 
 Mechanisms considered for *using* a secret:
@@ -1305,8 +1305,8 @@ The CI page names workflows still on the integration branch.
 
 **This repository (Quartio-Studio/yulius).** The takeover is done (2026-10-12, #184): the App has
 the permissions, `[[ci.jobs]]` holds quality and e2e, the rulesets require only `yulius/ci`
-(integration 5225204) and `.github/workflows/` is deleted. The branch policy moves into Yulius's
-merge gate (#223) and is checked by hand until then. The steps it took, in order:
+(integration 5225204) and `.github/workflows/` is deleted. The branch policy is checked by Yulius's
+merge gate (#223, SPEC-069). The steps it took, in order:
 
 1. Give the App "Commit statuses: Read and write" and "Workflows: Read and write", and accept them on
    the installation.
@@ -1315,7 +1315,8 @@ merge gate (#223) and is checked by hand until then. The steps it took, in order
    - The VM needs the Rust toolchain via rustup in the CI home, and Node ≥ 24.8 for e2e.
    - The branch policy (`scripts/check_git_policy.py`) reads the pull request's title and base from
      GitHub's event with a token. Jobs have neither, so the policy moves into Yulius's merge gate (a
-     follow-up) or stays a GitHub check until then.
+     follow-up) or stays a GitHub check until then. Done in SPEC-069: the merge gate checks it and
+     the script is removed.
    - macOS becomes a manual check.
 3. Let Yulius run beside Actions until its results match for a few days.
 4. Switch the rulesets' required checks to `yulius/ci`, or drop the rulesets on a free plan.
@@ -1535,7 +1536,7 @@ Schema version 1 (tables; columns abbreviated):
 | `users` | id, github_login (unique), github_id, display_name, is_superadmin, is_instance_admin, disabled_at, password_hash (superadmin only, Argon2id) |
 | `web_sessions` | id_hash, user_id, csrf_token, created_at, expires_at, revoked_at |
 | `api_tokens` | id, user_id, token_hash, label, created_at, last_used_at, revoked_at |
-| `device_grants` | user_code, device_code_hash, status, user_id, expires_at |
+| `device_grants` | user_code, device_code_hash, status, user_id, expires_at, client_key (migration 0016); expired and consumed rows purged on start and every 60 s |
 | `instance` | singleton: owner_login, owner_kind (org/user), public_url, github_app (encrypted blob), setup_completed_at; jev_key (sealed), jev_key_set_at, jev_key_set_by (ADM-002) |
 | `github_tokens` | user_id, access (enc), refresh (enc), expires_at |
 | `permission_cache` | user_id, sandbox_id, level (none/read/write/admin), checked_at |
@@ -1890,7 +1891,9 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | `scope_claim`, `scope_release`, `scopes_list` | Advisory path-glob claims with conflict report (COM-003) |
 | `steps_set`, `step_update`, `steps_get` | Step manager (STP-001/002, STP-006..008): plan bounds, effort, WIP limit, no reopening by agents, weighted `percent` and `nudges` in every result (ADR-19) |
 | `spec_check` | Run the format validator on the task spec and docs (DSC-003); `required` per the spec policy (DSC-013) and `plan_nudges` |
-| `automation_create`, `automations_list`, `automation_update` | Prompt-created automations (AUT-002) |
+| `task_stop`, `task_archive`, `task_delete` | The UI's stop, archive and delete of another task of the project, for the person the caller acts for, audited with the caller; never the caller's own task (SPEC-066 MGT-008..010) |
+| `automation_create`, `automations_list`, `automation_update` | Prompt-created automations (AUT-002); `automations_list` also lists the ready-made ones (`ready_made`, SPEC-066 AUT-012) |
+| `automation_delete`, `automation_run_now`, `automation_template_enable` | The Automations page's delete, Run now and Enable of a ready-made automation, audited with the caller (SPEC-066 MGT-011, AUT-012) |
 | `workflows_list` | Workflows available, the defaults first with `builtin` and `when_to_use` (AUT-004, AUT-006) |
 | `browser_tabs`, `browser_open`, `browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_screenshot`, `browser_request_user_action` | Shared sandbox browser control and user hand-off (BRW-003/004) |
 | `delivery_status` | Read-only PR/checks/profile status (GIT-001); no merge tool (GIT-002) |
@@ -2211,7 +2214,7 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 
 - Secrets vault (ADR-20): values only under envelope encryption (per-write data keys, KEK derived
   from the master key, row identity as associated data); reveals need the person's own two-factor
-  code entered in the browser session within 10 minutes and are audited (SPEC-040, ADR-0034);
+  code entered in the browser session within 10 minutes and are audited (SPEC-040, ADR-0042);
   agents never read agent secrets (their managers can, after the code), which are added to
   requests by the egress proxy only for their bound hosts (TLS interception only there; local
   destinations refused after resolution), typed by `browser_fill_secret` only into pages of those
@@ -2264,13 +2267,14 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | Update check of `main` (ADR-18) | every 60 min; "Check now" reuses a result < 30 s; 15 s and 4 MiB per GitHub request; ≤ 250 commits | error shown, nothing offered |
 | Update request / helper status files | 16 KiB / 256 KiB; request valid 15 min | refused / ignored |
 | Password sign-in (ACC-013) | 5 attempts per client key per minute; ≤ 4096 client keys tracked (keys idle for a minute forgotten first) | 429; a new key while 4096 are active also waits |
+| Device sign-in start (ACC-013, ADR-0047) | 5 starts per client key per minute (≤ 4096 keys, as sign-in); live grants 10 per client key and 1000 per instance (10 min each); expired and consumed grants purged on every start and every 60 s | 429, nothing inserted, no grant evicted |
 | Helper acknowledgement | request rewritten every 20 s, given up after 90 s (not while the helper reports progress on an earlier request) | run fails or resumes, nothing installed |
 | Update build | helper 2 h; server 3 h | `failed` |
 | Pausing tasks for an update | 30 min | `cancelled`, tasks released |
 | Install and health check | health 120 s; install 15 min | rollback; `failed` |
 | Update resume stagger / hold retry | 2 s / `Retry-After: 3` | — |
 | Update backups kept | 3 | oldest removed |
-| Stop escalation | 5 s + 5 s + 10 s | `lost` + alert |
+| Stop escalation | 5 s + 5 s + 10 s (`stop_escalation_ms`); shutdown request 2 s | host terminated, then `lost`; a host that cannot be terminated keeps the run live + notice (SPEC-065) |
 | Switch total | 120 s | `stopped(switch_timeout)` |
 | Hook call | 5 s | fail-open |
 | Hook hold (Stop, `UserPromptSubmit`) | `Retry-After` 10 s (client: 1–60 s), 2 s after a failure, 8 days in total (CLI `timeout` 8 days + 1 h) | fail-open; a reported limit then pauses as `limit` |
@@ -2481,6 +2485,8 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 
 ## 15. Changelog
 
+- 2026-10-13 (task #55, #169; SPEC-063, ADR-0047): §5 `device_grants.client_key` (migration 0016)
+  and its purge; §9 device sign-in start limit and grant bounds.
 - 2026-10-12 (task #26, "delete message mechanism for now until we make the infra very good";
   SPEC-028, ADR-0023): messages are removed end to end: no `message_send` or `messages_inbox`, no
   stored notices, digest, urgent-message stop reason or idle wake-up, no Messages panel, unread

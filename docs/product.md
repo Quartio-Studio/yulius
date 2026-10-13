@@ -27,7 +27,9 @@ watching, steering and unblocking.
   writing code, belongs in a task, and its panel says so. `/clear` starts over, it cannot be
   deleted and comes back with its conversation. It manages the project for its owner: asked to
   "create a task from that" or to do something "every day at 4am", it creates the task or the
-  automation through Yulius's tools. Task agents can create tasks the same way (`task_create`).
+  automation through Yulius's tools, and it stops, archives or deletes tasks, runs or deletes
+  automations and enables the ready-made ones, asking the person before each change. Task agents
+  can do the same for their task's creator, except to their own task.
 - **Sidebar**: the sandbox pages used every day (Tasks, Git, CI (tests), Secrets, Dashboard; the Agent is on the right),
   then "More" for Sessions, Workflows, Skills, Automations and MCP, then the active tasks.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions
@@ -42,7 +44,8 @@ watching, steering and unblocking.
   subscription-agnostic, switches and pauses are invisible to agents.
 - **Delivery discipline**: spec when it matters, effort-weighted steps, independent review,
   merge on green into `dev`, promotion to `main`, deploy and verify, cleanup. Profiles live in
-  `yulius.toml`.
+  `yulius.toml`, with the branch policy (typed branches, conventional titles, `dev` → `main`
+  promotions) that Yulius checks before every merge.
 - **Yulius CI**: the projects' only CI; it runs on the VM, no GitHub Actions.
 - **Browser panel**: the sandbox's real Chrome streamed as video so people can pass captchas
   and sign-ins for the agent.
@@ -60,7 +63,8 @@ watching, steering and unblocking.
   every harness and checked for drift; onboarding codifies a project's conventions as primitives.
 - **Secrets vault**: secrets are a title, a value and notes. Team secrets are for people; agent
   secrets are used by agents, who never see them. Reading a value needs your own two-factor code
-  (set up once, mandatory). The people who manage an agent secret can read it too.
+  (set up once, mandatory); an administrator resets it for someone who lost their authenticator.
+  The people who manage an agent secret can read it too.
 - **Updates**: Yulius updates itself from `main` without losing running work.
 
 ## Principles

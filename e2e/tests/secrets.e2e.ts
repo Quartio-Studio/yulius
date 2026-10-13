@@ -172,3 +172,34 @@ test('a click outside a dialog closes it; a click or a selection inside does not
   await browser.mouse.up();
   await expect(add).toBeHidden();
 });
+
+// Issue #291 (SPEC-061): a person who lost their authenticator cannot read secrets; an instance
+// administrator (or the superadmin) resets their two-factor from the Users page after a
+// confirmation and their own two-factor code, and the reset is in the vault's activity.
+test('an administrator resets a lost two-factor from the Users page after their own code', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/users', '&role=admin'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Users');
+  // Instance administrators read the people; admitting and changing them is the superadmin's.
+  await expect(screen.getByRole('button', 'Admit user')).toBeHidden();
+  await expect(screen.getByRole('checkbox', 'Access for anna-q')).toBeHidden();
+  expect(await browser.evaluate(() => /\bnull\b/.test(document.querySelector('main')!.innerText))).toBe(false);
+  const anna = browser.locator('tr:has-text("@anna-q")');
+  await expect(anna).toContainText('On');
+  // Their own two-factor is not reset here.
+  await expect(screen.getByRole('button', 'Reset two-factor of @mkarp')).toBeHidden();
+  expect(await axeViolations(browser)).toEqual([]);
+
+  await screen.getByRole('button', 'Reset two-factor of @anna-q').click();
+  const confirm = screen.getByRole('dialog', 'Reset two-factor of @anna-q?');
+  await expect(confirm.getByText(/set two-factor up again/)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await confirm.getByRole('button', 'Reset').click();
+  // The administrator's own code first (here: setting their own two-factor up).
+  await setUpTwoFactor(screen, browser);
+  await expect(anna).toContainText('Off');
+  await expect(screen.getByRole('button', 'Reset two-factor of @anna-q')).toBeHidden();
+
+  // In the same page (the mock keeps its state): the Secrets activity names whom.
+  await browser.evaluate(() => { window.location.hash = '#/s/studio/secrets'; });
+  await expect(screen.getByText(/reset the two-factor of/).first()).toBeVisible();
+});

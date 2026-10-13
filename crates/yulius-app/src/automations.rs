@@ -492,16 +492,43 @@ impl App {
     ) -> AppResult<(Automation, bool)> {
         let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
         self.require(&ctx.user, &sid, Action::Configure).await?;
-        let template = templates::template(template).ok_or(AppError::NotFound)?;
         let actor = self.login_of(&ctx.user.id).await;
-        let detail = json!({"template": template.id});
+        self.enable_template_as(
+            &sid,
+            template,
+            &ctx.user.id,
+            CreatedVia::Ui,
+            &actor,
+            json!({}),
+        )
+        .await
+    }
+
+    /// [`App::enable_automation_template`] once access is checked: on behalf of `created_by`,
+    /// audited as `actor` with `detail` and the template (`automation_template_enable`, SPEC-066
+    /// AUT-012, passes its caller and `created_via = agent`).
+    ///
+    /// # Errors
+    /// `NotFound` for an unknown template; capacity errors.
+    pub(crate) async fn enable_template_as(
+        &self,
+        sid: &SandboxId,
+        template: &str,
+        created_by: &UserId,
+        created_via: CreatedVia,
+        actor: &str,
+        detail: Value,
+    ) -> AppResult<(Automation, bool)> {
+        let template = templates::template(template).ok_or(AppError::NotFound)?;
+        let mut detail = detail;
+        detail["template"] = json!(template.id);
         // The name check and the insert are one step: Yulius is one process (ADR-0001), and
         // enables are rare, so one instance-wide lock is enough.
         let _serial = self.automation_template_lock.lock().await;
         let existing = self
             .deps
             .store
-            .automations(&sid)
+            .automations(sid)
             .await?
             .into_iter()
             .find(|a| templates::same_name(template, &a.name));
@@ -511,8 +538,7 @@ impl App {
                     enabled: true,
                     ..current.clone()
                 };
-                self.save_automation(&current, &next, &actor, detail)
-                    .await?;
+                self.save_automation(&current, &next, actor, detail).await?;
             }
             let stored = self
                 .deps
@@ -530,17 +556,17 @@ impl App {
             harness: Harness::ClaudeCode,
         };
         let workflow = self
-            .resolve_workflow_id(&sid, template.workflow.as_deref())
+            .resolve_workflow_id(sid, template.workflow.as_deref())
             .await?;
         let record = self
             .insert_automation(NewAutomation {
-                sandbox: sid,
+                sandbox: sid.clone(),
                 fields,
                 workflow_id: workflow,
                 enabled: true,
-                created_by: ctx.user.id.clone(),
-                created_via: CreatedVia::Ui,
-                actor,
+                created_by: created_by.clone(),
+                created_via,
+                actor: actor.to_owned(),
                 detail,
             })
             .await?;
@@ -644,20 +670,44 @@ impl App {
     /// # Errors
     /// Access errors.
     pub async fn delete_automation(&self, ctx: &AuthContext, id: &str) -> AppResult<()> {
+        let actor = self.login_of(&ctx.user.id).await;
+        self.delete_automation_as(ctx, id, &actor, None).await
+    }
+
+    /// [`App::delete_automation`] audited as `actor`; a management tool passes its caller and
+    /// the caller's audit detail (SPEC-066 MGT-010).
+    ///
+    /// # Errors
+    /// Access errors.
+    pub(crate) async fn delete_automation_as(
+        &self,
+        ctx: &AuthContext,
+        id: &str,
+        actor: &str,
+        caller_detail: Option<&Value>,
+    ) -> AppResult<()> {
         let record = self
             .automation_for_change(ctx, id, Action::Configure)
             .await?;
         if !self.deps.store.delete_automation(&record.id).await? {
             return Err(AppError::NotFound);
         }
+        let detail = match caller_detail {
+            Some(caller) => {
+                let mut detail = caller.clone();
+                detail["name"] = json!(record.name);
+                detail.to_string()
+            }
+            None => record.name.clone(),
+        };
         self.deps
             .store
             .audit(
                 self.now(),
-                &self.login_of(&ctx.user.id).await,
+                actor,
                 "automation.deleted",
                 Some(&record.id),
-                Some(&record.name),
+                Some(&detail),
             )
             .await
     }
@@ -692,19 +742,43 @@ impl App {
         ctx: &AuthContext,
         id: &str,
     ) -> AppResult<AutomationRunView> {
+        let actor = self.login_of(&ctx.user.id).await;
+        self.run_automation_now_as(ctx, id, &actor, None).await
+    }
+
+    /// [`App::run_automation_now`] audited as `actor`; a management tool passes its caller and
+    /// the caller's audit detail (SPEC-066 MGT-010).
+    ///
+    /// # Errors
+    /// Access errors and store failures.
+    pub(crate) async fn run_automation_now_as(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        id: &str,
+        actor: &str,
+        caller_detail: Option<&Value>,
+    ) -> AppResult<AutomationRunView> {
         let record = self
             .automation_for_change(ctx, id, Action::Configure)
             .await?;
         let slot = self.now();
         let run = self.process_slot(&record, slot, true).await?;
+        let detail = match caller_detail {
+            Some(caller) => {
+                let mut detail = caller.clone();
+                detail["state"] = json!(run.state.as_str());
+                detail.to_string()
+            }
+            None => run.state.as_str().to_owned(),
+        };
         self.deps
             .store
             .audit(
                 self.now(),
-                &self.login_of(&ctx.user.id).await,
+                actor,
                 "automation.run_now",
                 Some(&record.id),
-                Some(run.state.as_str()),
+                Some(&detail),
             )
             .await?;
         Ok(run_view(&run))
@@ -1001,7 +1075,7 @@ impl App {
         }
     }
 
-    async fn agent_automation(
+    pub(crate) async fn agent_automation(
         &self,
         caller: &ProjectCaller,
         args: &Value,
@@ -1097,16 +1171,35 @@ impl App {
         )
     }
 
-    /// `automations_list` agent tool.
+    /// `automations_list` agent tool: the project's automations and the ready-made ones.
     ///
     /// # Errors
     /// Store failures.
     pub async fn tool_automations_list(&self, caller: &ProjectCaller) -> AppResult<Value> {
+        let records = self.deps.store.automations(&caller.sandbox).await?;
         let mut out = Vec::new();
-        for record in self.deps.store.automations(&caller.sandbox).await? {
-            out.push(self.automation_view(&record).await?);
+        for record in &records {
+            out.push(self.automation_view(record).await?);
         }
-        Ok(json!({"automations": out}))
+        // The catalog without its prompts, which are long (SPEC-066 AUT-012).
+        let ready_made: Vec<Value> = templates::templates()
+            .iter()
+            .map(|t| {
+                json!({
+                    "id": t.id,
+                    "name": t.name,
+                    "description": t.description,
+                    "cron": t.cron,
+                    "utc_offset_minutes": t.utc_offset_minutes,
+                    "workflow_id": t.workflow,
+                    "automation_id": records
+                        .iter()
+                        .find(|a| templates::same_name(t, &a.name))
+                        .map(|a| a.id.clone()),
+                })
+            })
+            .collect();
+        Ok(json!({"automations": out, "ready_made": ready_made}))
     }
 
     /// `automation_update` agent tool: enable/disable, schedule, offset, prompt or name.

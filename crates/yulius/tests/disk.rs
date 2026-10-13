@@ -8,16 +8,19 @@ use crate::support;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
 use support::{HarnessOptions, harness_with, seed_github_user, seed_sandbox, seed_task};
 use yulius::wiring::git::GitAdapter;
 use yulius_app::error::AppResult;
 use yulius_app::model::SandboxRecord;
+use yulius_app::model::{AttemptRecord, LaunchKind};
 use yulius_app::ports::isolation::{DiskUsage, SandboxIsolation, SandboxJoin, SandboxRef};
+use yulius_app::ports::session::{AttachedRun, LaunchPlan, RunInspection, SessionHost, SpawnedRun};
 use yulius_app::ports::store::{CoordinationStore as _, TaskStore as _};
-use yulius_domain::ids::{SandboxId, TaskId};
-use yulius_domain::task::{Activity, StopReason, TaskStatus};
+use yulius_domain::harness::Harness as Agent;
+use yulius_domain::ids::{AttemptId, SandboxId, TaskId};
+use yulius_domain::task::{Activity, AttemptState, StopReason, TaskStatus};
 
 type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -75,8 +78,14 @@ struct World {
 const BIG: usize = 256 * 1024;
 
 async fn world() -> BoxResult<World> {
+    world_with(None).await
+}
+
+/// [`world`] with a process host of the test's own (default: none available).
+async fn world_with(session_host: Option<Arc<dyn SessionHost>>) -> BoxResult<World> {
     let h = harness_with(HarnessOptions {
         git: Some(Arc::new(GitAdapter::new("git"))),
+        session_host,
         ..HarnessOptions::default()
     })?;
     seed_github_user(&h, "u-alice", "alice").await?;
@@ -542,5 +551,174 @@ async fn an_orphan_worktree_loses_its_caches_after_a_day() -> BoxResult<()> {
     let report = w.h.app.disk_upkeep(&w.sandbox, false).await?;
     assert!(report.caches >= 1, "{report:?}");
     assert!(orphan.exists() && !orphan.join("target").exists());
+    Ok(())
+}
+
+/// A process host that only answers the background-shell probe, with what the test sets
+/// (negative: the probe gives no answer).
+struct Shells(AtomicI64);
+
+#[async_trait::async_trait]
+impl SessionHost for Shells {
+    async fn spawn(
+        &self,
+        _: &Path,
+        _: &str,
+        _: &str,
+        _: &LaunchPlan,
+        _: &[u8; 32],
+        _: (u16, u16),
+    ) -> AppResult<SpawnedRun> {
+        Err(yulius_app::error::AppError::Conflict("no runs here".into()))
+    }
+    async fn attach(&self, _: &Path, _: &[u8; 32]) -> AppResult<AttachedRun> {
+        Err(yulius_app::error::AppError::Conflict("no runs here".into()))
+    }
+    fn inspect(&self, _: &Path) -> RunInspection {
+        RunInspection::Missing
+    }
+    fn terminate(&self, _: &Path) -> AppResult<()> {
+        Ok(())
+    }
+    fn background_shells(&self, _: u32) -> Option<u32> {
+        u32::try_from(self.0.load(Ordering::SeqCst)).ok()
+    }
+}
+
+impl World {
+    /// Gives `task` a live session whose agent process is `pid`.
+    async fn live(&self, task: &str, pid: u32) -> BoxResult<()> {
+        let now = self.h.app.now();
+        self.h
+            .store
+            .insert_attempt(&AttemptRecord {
+                id: AttemptId::parse(&format!("at-{task}"))?,
+                task_id: TaskId::parse(task)?,
+                seq: 1,
+                harness: Agent::ClaudeCode,
+                account_id: None,
+                provider_session_id: None,
+                launch_kind: LaunchKind::New,
+                state: AttemptState::Live,
+                run_dir: self
+                    .root
+                    .join("runs")
+                    .join(task)
+                    .to_string_lossy()
+                    .into_owned(),
+                token_hash: format!("hash-{task}"),
+                host_token: self.h.app.deps.crypto.seal(&[1u8; 32])?,
+                ptyhost_pid: Some(pid),
+                child_pid: Some(pid),
+                started_at: now,
+                ended_at: None,
+                exit_code: None,
+                exit_reason: None,
+            })
+            .await?;
+        Ok(())
+    }
+}
+
+/// SPEC-059 DSK-201 (#245): under pressure, an idle task's caches go only when a fresh probe says
+/// nothing of it runs in the background. A running build in a background shell, a pending
+/// background subagent and a probe that gives no answer all keep them.
+#[tokio::test]
+async fn an_idle_task_with_background_work_keeps_its_caches() -> BoxResult<()> {
+    let shells = Arc::new(Shells(AtomicI64::new(1)));
+    let w = world_with(Some(shells.clone())).await?;
+    let idle = w
+        .task("t-gate", TaskStatus::Running, Some(Activity::Waiting))
+        .await?;
+    w.live("t-gate", 4242).await?;
+    let quota = Arc::new(Quota {
+        used: AtomicU64::new(99),
+        limit: 100,
+    });
+    assert!(w.h.app.set_isolation(quota));
+
+    // Its gate runs in a background shell: the caches stay, even over the quota.
+    w.h.app.disk_upkeep(&w.sandbox, true).await?;
+    assert!(
+        idle.join("target").exists(),
+        "a running background build keeps them"
+    );
+
+    // The probe gives no answer (a timeout under load): unknown counts as working.
+    shells.0.store(-1, Ordering::SeqCst);
+    w.h.app.disk_upkeep(&w.sandbox, true).await?;
+    assert!(
+        idle.join("target").exists(),
+        "an unanswered probe keeps them"
+    );
+
+    // No shell, but the turn ended waiting for a background subagent (a review).
+    shells.0.store(0, Ordering::SeqCst);
+    let task = TaskId::parse("t-gate")?;
+    w.h.app.background_agents_observed(&task, 1).await;
+    w.h.app.disk_upkeep(&w.sandbox, true).await?;
+    assert!(
+        idle.join("target").exists(),
+        "a running subagent keeps them"
+    );
+
+    // Nothing runs any more: now they go.
+    w.h.app.background_agents_observed(&task, 0).await;
+    let report = w.h.app.disk_upkeep(&w.sandbox, true).await?;
+    assert!(!idle.join("target").exists(), "{report:?}");
+    Ok(())
+}
+
+/// SPEC-059 DSK-202 (#258): a start refused over the quota says who holds the space: the largest
+/// directories of the last measurement, a task's worktree by its number.
+#[tokio::test]
+async fn a_refusal_names_the_largest_consumers() -> BoxResult<()> {
+    let w = world().await?;
+    w.task("t-big", TaskStatus::Running, Some(Activity::Working))
+        .await?;
+    struct Full;
+    #[async_trait::async_trait]
+    impl SandboxIsolation for Full {
+        async fn prepare(&self, _: &SandboxRef) -> AppResult<Option<SandboxJoin>> {
+            Err(yulius_app::error::AppError::Conflict(
+                "this sandbox uses 126.0 GB of its 100.0 GB disk quota".into(),
+            ))
+        }
+        async fn disk(&self, _: &SandboxRef) -> Option<DiskUsage> {
+            Some(DiskUsage {
+                used: 126_000_000_000,
+                limit: 100_000_000_000,
+            })
+        }
+        async fn largest(&self, _: &SandboxRef) -> Vec<(String, u64)> {
+            vec![
+                ("worktrees/t-big".into(), 35_000_000_000),
+                ("ci/jobs".into(), 14_000_000_000),
+                ("worktrees/gone".into(), 9_000_000_000),
+                ("home".into(), 4_000_000_000),
+            ]
+        }
+        fn release(&self, _: &SandboxId) {}
+    }
+    assert!(w.h.app.set_isolation(Arc::new(Full)));
+    let task =
+        w.h.store
+            .task(&TaskId::parse("t-big")?)
+            .await?
+            .ok_or("task")?;
+    let refusal =
+        w.h.app
+            .preflight_start(&task, None)
+            .await
+            .err()
+            .ok_or("the start was not refused")?
+            .public_message();
+    assert!(
+        refusal.contains(&format!(
+            "largest: task #{} 35.0 GB, CI job checkouts 14.0 GB, worktree gone 9.0 GB, home 4.0 GB",
+            task.number
+        )),
+        "{refusal}"
+    );
     Ok(())
 }

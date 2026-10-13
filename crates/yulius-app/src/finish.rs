@@ -48,6 +48,9 @@ pub struct TranscriptFacts {
     /// Background agents Claude Code still waited for when the last turn ended (0 after a new
     /// prompt or when it did not say).
     pub background_agents: u32,
+    /// The last word on the session's context is that it is full (CTX-007): no reply or
+    /// compaction came after the API rejected a prompt as too long.
+    pub context_full: bool,
 }
 
 impl TranscriptFacts {
@@ -63,9 +66,17 @@ impl TranscriptFacts {
                 self.turn_open = Some(false);
                 self.background_agents = background_agents.unwrap_or(0);
             }
-            Observation::TurnComplete | Observation::TurnInterrupted { .. } => {
+            Observation::TurnComplete => {
                 self.turn_open = Some(false);
+                self.context_full = false;
             }
+            Observation::TurnInterrupted { .. } => self.turn_open = Some(false),
+            // The API rejected the prompt: the turn is over, without a Stop hook (#213).
+            Observation::ContextFull => {
+                self.turn_open = Some(false);
+                self.context_full = true;
+            }
+            Observation::Compacted => self.context_full = false,
             Observation::Goal(GoalOutcome::Met) => {
                 self.goal_achieved = Some(true);
                 self.turn_open = Some(false);
@@ -81,10 +92,15 @@ impl TranscriptFacts {
             Observation::Goal(GoalOutcome::Set | GoalOutcome::Cleared) => {
                 self.goal_achieved = Some(false);
             }
-            Observation::Session { .. } | Observation::LimitReached { .. } => {}
+            Observation::Session { .. }
+            | Observation::LimitReached { .. }
+            | Observation::CompactFailed => {}
             // An assistant line that is not a turn's end after a recorded end: a Stop hook
             // continued the turn (STA-005).
-            Observation::AgentWork { .. } => self.turn_open = Some(true),
+            Observation::AgentWork { .. } => {
+                self.turn_open = Some(true);
+                self.context_full = false;
+            }
         }
     }
 }
@@ -485,11 +501,7 @@ impl App {
 
     /// Claude Code ended a turn and said how many background agents it still waits for: a change
     /// settles the idle task's background work at once (STA-001).
-    pub(crate) async fn background_agents_observed(
-        self: &Arc<Self>,
-        task_id: &TaskId,
-        agents: u32,
-    ) {
+    pub async fn background_agents_observed(self: &Arc<Self>, task_id: &TaskId, agents: u32) {
         let previous = self
             .runtime(task_id)
             .background_agents
@@ -502,26 +514,30 @@ impl App {
     /// Whether the task's agent has background work running right now: a fresh probe of its
     /// shells, or background agents its last turn end said it waits for.
     pub(crate) async fn shells_running_now(&self, task_id: &TaskId) -> bool {
+        self.background_work_now(task_id).await == Some(true)
+    }
+
+    /// Whether anything of the task's agent runs in the background right now: background agents
+    /// its last turn end said it waits for, or shells a fresh probe finds (`yulius wait` alone
+    /// does not count, DSK-102). `None` when the probe gives no answer; a task without a live
+    /// agent process has none.
+    pub(crate) async fn background_work_now(&self, task_id: &TaskId) -> Option<bool> {
         if self
-            .runtime(task_id)
-            .background_agents
-            .load(Ordering::SeqCst)
-            > 0
+            .existing_runtime(task_id)
+            .is_some_and(|runtime| runtime.background_agents.load(Ordering::SeqCst) > 0)
         {
-            return true;
+            return Some(true);
         }
-        let Ok(Some(attempt)) = self.deps.store.live_attempt(task_id).await else {
-            return false;
-        };
-        let Some(pid) = attempt.child_pid else {
-            return false;
+        let attempt = self.deps.store.live_attempt(task_id).await.ok()?;
+        let Some(pid) = attempt.and_then(|attempt| attempt.child_pid) else {
+            return Some(false);
         };
         let host = Arc::clone(&self.deps.session_host);
         let probe = tokio::task::spawn_blocking(move || host.background_shells(pid));
-        matches!(
-            tokio::time::timeout(SHELL_PROBE_TIMEOUT, probe).await,
-            Ok(Ok(Some(n))) if n > 0
-        )
+        match tokio::time::timeout(SHELL_PROBE_TIMEOUT, probe).await {
+            Ok(Ok(Some(n))) => Some(n > 0),
+            _ => None,
+        }
     }
 
     /// Since when the idle task's background shells have been running, when they are.
@@ -623,6 +639,7 @@ mod tests {
                 turn_open: Some(false),
                 goal_achieved: Some(true),
                 background_agents: 0,
+                context_full: false,
             }
         );
         // Typed again after the goal: a new open turn, the goal no longer counts.
@@ -737,5 +754,26 @@ mod tests {
         )));
         assert!(!is_typed_prompt(Some("   ")));
         assert!(!is_typed_prompt(None));
+    }
+
+    /// CTX-007: a replay that ends in a full context (no reply or compaction after it) leaves the
+    /// recovery pending and the turn closed; a later reply or compaction settles it.
+    #[test]
+    fn a_replay_ending_in_a_full_context_leaves_its_recovery_pending() {
+        let full = reduce(&[
+            PROMPT,
+            Observation::ContextFull,
+            PROMPT,
+            Observation::ContextFull,
+        ]);
+        assert!(full.context_full);
+        assert_eq!(full.turn_open, Some(false));
+        let failed = reduce(&[PROMPT, Observation::ContextFull, Observation::CompactFailed]);
+        assert!(failed.context_full);
+        for after in [Observation::Compacted, Observation::TurnComplete, WORK] {
+            let settled = reduce(&[PROMPT, Observation::ContextFull, after.clone()]);
+            assert!(!settled.context_full, "{after:?}");
+        }
+        assert!(!reduce(&[PROMPT, Observation::TurnComplete]).context_full);
     }
 }

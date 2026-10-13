@@ -15,6 +15,7 @@ use axum::extract::connect_info::MockConnectInfo;
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
 use support::{Creds, FakeRemote, Resp, TestResult, call, harness_with_git};
+use yulius_app::agent_wait::WaitState;
 use yulius_app::delivery::profile_to_contract;
 use yulius_app::delivery::runner::{CommandEnd, CommandSpec, OutputRing, run_bounded};
 use yulius_app::error::{AppError, AppResult};
@@ -23,7 +24,7 @@ use yulius_app::model::{
     TaskOrigin, TaskRecord, UserRecord,
 };
 use yulius_app::ports::git::{CommitInfo, DiffStat, GitPort, MergeIntegration};
-use yulius_app::ports::github::{ChecksReport, ChecksSource, ChecksState};
+use yulius_app::ports::github::{ChecksReport, ChecksSource, ChecksState, GhPull};
 use yulius_app::ports::store::{
     CoordinationStore, InstanceStore, SandboxStore, TaskStore, UserStore,
 };
@@ -341,6 +342,14 @@ impl GitPort for RealGit {
     }
     async fn import_bundle(&self, _: &Path, _: &Path, _: &str) -> AppResult<Vec<String>> {
         Err(AppError::Upstream("not used".into()))
+    }
+    /// The branch policy is read from `yulius.toml` at the integration branch (SPEC-069).
+    async fn show_file(&self, repo: &Path, rev: &str, path: &str) -> AppResult<Option<String>> {
+        let object = format!("{rev}:{path}");
+        if self.run(repo, &["cat-file", "-e", &object]).await.is_err() {
+            return Ok(None);
+        }
+        self.run(repo, &["show", &object]).await.map(Some)
     }
 }
 
@@ -916,7 +925,8 @@ async fn pull_request_requires_a_valid_committed_spec() -> TestResult {
         "branch pushed first"
     );
     let pull = f.h.github.pull(1).ok_or("pull")?;
-    assert_eq!(pull.title, "Checkout API");
+    // The branch policy's conventional title from the branch type (SPEC-069 BPL-006).
+    assert_eq!(pull.title, "feat: checkout API");
     assert_eq!(
         f.h.github.writes(),
         ["create_pull #1 dev<-feat/1-checkout-api"]
@@ -1183,13 +1193,13 @@ async fn product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out()
         .req(
             Method::POST,
             "/api/tasks/t1/delivery/pr",
-            Some(json!({"title": "Checkout"})),
+            Some(json!({"title": "feat: checkout"})),
             &f.bob,
         )
         .await?;
     assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
     assert_eq!(opened.body["pr"]["base"], "quartio");
-    assert_eq!(f.h.github.pull(1).ok_or("pull")?.title, "Checkout");
+    assert_eq!(f.h.github.pull(1).ok_or("pull")?.title, "feat: checkout");
     let merged = f
         .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
         .await?;
@@ -2737,6 +2747,11 @@ impl ArmedTask {
 
     /// `delivery_merge` of the reviewed head; its tool result.
     async fn merge(&self) -> BoxResult<Value> {
+        self.merge_at(&self.head).await
+    }
+
+    /// `delivery_merge` of `head`, reviewed; its tool result.
+    async fn merge_at(&self, head: &str) -> BoxResult<Value> {
         let r = call(
             &self.internal,
             Method::POST,
@@ -2744,7 +2759,7 @@ impl ArmedTask {
             Some(
                 json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
                 "name": "delivery_merge",
-                "arguments": {"reviewed_head": self.head, "review_summary": "approve"}}}),
+                "arguments": {"reviewed_head": head, "review_summary": "approve"}}}),
             ),
             &self.agent,
         )
@@ -2855,6 +2870,175 @@ async fn an_armed_merge_happens_when_the_checks_pass() -> TestResult {
             .is_empty(),
         "MSR-002: no message"
     );
+    Ok(())
+}
+
+/// What `yulius wait` decides from a wait state the server answered.
+fn settled(now: &Value, before: Option<&Value>) -> BoxResult<Option<String>> {
+    let now: WaitState = serde_json::from_value(now.clone())?;
+    let before: Option<WaitState> = before
+        .map(|b| serde_json::from_value(b.clone()))
+        .transpose()?;
+    Ok(yulius::wait_cli::settled(&now, before.as_ref()))
+}
+
+/// #249 (SPEC-064 WAI-001): with a merge armed and its checks pending, `yulius wait` keeps
+/// waiting, and ends with the merge's outcome once Yulius decides it.
+#[tokio::test]
+async fn a_wait_on_an_armed_merge_with_pending_checks_keeps_waiting() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let f = &t.f;
+    let sandbox = SandboxId::parse("s1")?;
+    t.arm().await?;
+    let first = t.wait(Value::Null).await?;
+    assert_eq!(settled(&first, None)?, None, "{first}");
+    // Yulius looks at it, the checks still run: nothing changes, so the wait goes on.
+    f.h.app.merge_armed(&sandbox).await;
+    let next = t.wait(first.clone()).await?;
+    assert_eq!(next, first, "unchanged until the server's wait times out");
+    assert_eq!(settled(&next, Some(&first))?, None);
+    // Green: the merge happens and the wait says so.
+    f.h.github.set_checks(&t.head, ChecksState::Success);
+    f.h.app.merge_armed(&sandbox).await;
+    let after = t.wait(first.clone()).await?;
+    let line = settled(&after, Some(&first))?.unwrap_or_default();
+    assert!(line.starts_with("Yulius merged pull request #1"), "{line}");
+    Ok(())
+}
+
+/// #248 (SPEC-064 WAI-002): the agent arms a new head while Yulius still decides the merge it
+/// armed before (GitHub is slow). That earlier decision neither puts the old merge back over the
+/// new one nor ends the wait on the new one with the old one's outcome.
+#[tokio::test]
+async fn a_merge_armed_while_an_earlier_one_is_decided_supersedes_it() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let f = &t.f;
+    let sandbox = SandboxId::parse("s1")?;
+    t.arm().await?;
+
+    // Yulius starts deciding the merge of the first head; GitHub holds its checks read.
+    let hold = f.h.github.hold_checks();
+    let app = f.h.app.clone();
+    let deciding = tokio::spawn(async move {
+        app.merge_armed(&SandboxId::parse("s1")?).await;
+        Ok::<_, yulius_domain::ids::IdError>(())
+    });
+    f.h.github.checks_entered.notified().await;
+    // Later reads go through; the decision stays held.
+    if let Ok(mut held) = f.h.github.checks_hold.lock() {
+        *held = None;
+    }
+
+    // Meanwhile the agent commits, gets the review and arms the new head.
+    commit_file(&t.wt, "landing.txt", "v2", "Landing v2")?;
+    let moved = git(&t.wt, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&moved, ChecksState::Pending);
+    let armed = t.merge_at(&moved).await?;
+    assert_eq!(armed["isError"], false, "{armed}");
+    let before = t.wait_at(&moved).await?;
+    assert_eq!(before["merge_armed"], true, "{before}");
+
+    // The earlier decision ends (checks pending: it would have kept its merge).
+    f.h.github.release_checks(&hold);
+    deciding.await??;
+    let now = t.wait_at(&moved).await?;
+    assert_eq!(now["merge_armed"], true, "{now}");
+    assert_eq!(now["merge_outcome"], Value::Null, "{now}");
+    assert_eq!(settled(&now, Some(&before))?, None, "{now}");
+
+    // Yulius decides again: the armed merge is the new head's, still pending.
+    f.h.app.merge_armed(&sandbox).await;
+    let again = t.wait_at(&moved).await?;
+    assert_eq!(again["merge_armed"], true, "{again}");
+    assert_eq!(settled(&again, Some(&before))?, None, "{again}");
+    let saved = std::fs::read_to_string(
+        f.h.app
+            .config
+            .data_dir
+            .join(yulius_app::agent_wait::ARMED_MERGES_FILE),
+    )?;
+    assert!(saved.contains(&moved), "the new head stays saved: {saved}");
+    Ok(())
+}
+
+/// #251 (SPEC-064 WAI-004, SPEC-020): `reconcile_deliveries` queues an errored Yulius CI run at
+/// an open pull request's head again once by itself (it could not run: not the code), never a
+/// third time, and never for a pull request that conflicts with its base.
+#[tokio::test]
+async fn an_errored_run_at_an_open_pull_request_is_retried_once() -> TestResult {
+    use yulius_app::ci::CiRunRecord;
+    use yulius_app::ports::store_ext::CiStore;
+    use yulius_domain::ci::{CiRef, GateSource, RunState};
+
+    let t = ArmedTask::new().await?;
+    let f = &t.f;
+    let sandbox = SandboxId::parse("s1")?;
+    // The project has Yulius CI (the profile's gate), so its run at the head decides the checks.
+    let record = f.h.store.sandbox(&sandbox).await?.ok_or("s1")?;
+    let mut profile: Value = serde_json::from_str(&record.profile_json)?;
+    profile["gate"] = json!("true");
+    f.h.store
+        .set_profile(&sandbox, &profile.to_string())
+        .await?;
+    let errored = |id: &str, at: i64| CiRunRecord {
+        id: id.to_owned(),
+        sandbox_id: sandbox.clone(),
+        reference: CiRef::PullRequest(1),
+        sha: t.head.clone(),
+        source: GateSource::Profile,
+        state: RunState::Error,
+        reason: Some("the job could not start".to_owned()),
+        requested_by: "yulius".to_owned(),
+        status_for: None,
+        status_note: None,
+        status_attempts: 0,
+        queued_at: Timestamp(at),
+        started_at: Some(Timestamp(at)),
+        ended_at: Some(Timestamp(at + 1)),
+    };
+    let runs = || f.h.store.ci_runs_for_sha(&sandbox, &t.head);
+
+    // A conflicting pull request is not retried: the agent has to merge its base in first.
+    f.h.store.insert_ci_run(&errored("run-1", 10), &[]).await?;
+    let set_mergeable = |mergeable: Option<bool>| {
+        if let Ok(mut pulls) = f.h.github.pulls.lock()
+            && let Some(pull) = pulls.iter_mut().find(|p| p.number == 1)
+        {
+            pull.mergeable = mergeable;
+        }
+    };
+    set_mergeable(Some(false));
+    f.h.app.reconcile_deliveries().await;
+    assert_eq!(runs().await?.len(), 1, "conflicting: not retried");
+
+    // Mergeable: the errored run is queued again, once.
+    set_mergeable(None);
+    f.h.app.reconcile_deliveries().await;
+    let after = runs().await?;
+    assert_eq!(after.len(), 2, "{after:?}");
+    let retry = &after[0];
+    assert_ne!(retry.id, "run-1");
+    assert_eq!(retry.requested_by, "yulius");
+    f.h.app.reconcile_deliveries().await;
+    assert_eq!(runs().await?.len(), 2, "not while the retry is queued");
+
+    // The retry errors too: two errored runs at the head wait for the agent.
+    assert!(
+        f.h.store
+            .transition_ci_run(
+                &retry.id,
+                &[RunState::Queued, RunState::Running],
+                RunState::Error,
+                &yulius_app::ci::CiRunUpdate::default(),
+            )
+            .await?,
+        "the retry was queued, not run: {retry:?}"
+    );
+    f.h.app.reconcile_deliveries().await;
+    f.h.app.reconcile_deliveries().await;
+    let last = runs().await?;
+    assert_eq!(last.len(), 2, "no third run: {last:?}");
+    assert!(last.iter().all(|r| r.state == RunState::Error), "{last:?}");
     Ok(())
 }
 
@@ -3006,6 +3190,44 @@ async fn an_armed_merge_survives_a_restart() -> TestResult {
     Ok(())
 }
 
+/// DLV-205 with SPEC-064 WAI-002: a restore that read the saved merges before a merge was armed
+/// and decided in this process does not bring that merge back (it would be decided again, as
+/// "dropped", over the real outcome).
+#[tokio::test]
+async fn a_restore_never_brings_back_a_merge_decided_since() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let f = &t.f;
+    let task = TaskId::parse("t1")?;
+    f.h.store
+        .transition_task(
+            &task,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+    t.arm().await?;
+    let file =
+        f.h.app
+            .config
+            .data_dir
+            .join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+    let saved = std::fs::read_to_string(&file)?;
+    // Decided in this process: the branch moved on.
+    commit_file(&t.wt, "landing.txt", "v2", "Landing v2")?;
+    f.h.app.merge_armed(&SandboxId::parse("s1")?).await;
+    let decided = t.outcome().await?;
+    assert!(decided.contains("dropped"), "{decided}");
+    // The restore read the file before that decision.
+    std::fs::write(&file, &saved)?;
+    f.h.app.restore_armed_merges().await;
+    let state = t.wait(Value::Null).await?;
+    assert_eq!(state["merge_armed"], false, "{state}");
+    assert_eq!(state["merge_outcome"], decided.as_str(), "{state}");
+    Ok(())
+}
+
 /// DLV-204: when the end of a turn delivers nothing because a step is still open, `yulius wait`
 /// says so instead of waiting for a push that never comes (#34 waited 42 minutes).
 #[tokio::test]
@@ -3069,5 +3291,226 @@ async fn an_armed_merge_says_why_it_was_dropped_or_refused() -> TestResult {
     assert_ne!(f.delivery("t1").await?["stage"], "pr_open");
     let state = t.wait(Value::Null).await?;
     assert_eq!(state["merge_outcome"], Value::Null, "{state}");
+    Ok(())
+}
+
+/// Edits pull request `number` on the fake GitHub, as a person would on github.com.
+fn edit_pull(f: &Fixture, number: u64, edit: impl FnOnce(&mut GhPull)) {
+    if let Ok(mut pulls) = f.h.github.pulls.lock()
+        && let Some(pull) = pulls.iter_mut().find(|p| p.number == number)
+    {
+        edit(pull);
+    }
+}
+
+/// SPEC-069 BPL-003/004/005 (#223): the merge gate checks every pull request against the branch
+/// policy of the integration branch's `yulius.toml` — the standard preset by default — refuses a
+/// violation with the rule in words and merges once it is fixed; promotion pull requests are
+/// titled and checked too, and a fork's is never taken.
+#[tokio::test]
+async fn the_branch_policy_gates_every_merge() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    let opened = f
+        .req(
+            Method::POST,
+            "/api/tasks/t1/delivery/pr",
+            Some(json!({"title": "Checkout API"})),
+            &f.bob,
+        )
+        .await?;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+
+    // A title that is not conventional: refused with the rule, nothing merged.
+    let refused = f
+        .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    let message = error_message(&refused);
+    for part in [
+        "branch policy",
+        "conventional",
+        "`Checkout API`",
+        "gh pr edit 1 --title",
+    ] {
+        assert!(message.contains(part), "{part}: {message}");
+    }
+    let merges = |f: &Fixture| {
+        f.h.github
+            .writes()
+            .into_iter()
+            .filter(|w| w.starts_with("merge_pull"))
+            .count()
+    };
+    assert_eq!(merges(&f), 0);
+    // Too long: refused with its length.
+    edit_pull(&f, 1, |p| p.title = format!("feat: {}", "x".repeat(120)));
+    let long = f
+        .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+        .await?;
+    assert!(
+        error_message(&long).contains("at most 100 characters; this one has 126"),
+        "{}",
+        long.body
+    );
+    // Fixed on GitHub: merges as before.
+    edit_pull(&f, 1, |p| p.title = "feat(checkout): add the API".into());
+    let merged = f
+        .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
+    assert_eq!(merges(&f), 1);
+
+    // An untyped branch: refused, whatever its title.
+    let wt2 = f.add_task("t2", "Search", "search-box", "dev").await?;
+    commit_file(&wt2, "search.txt", "find", "feat: search")?;
+    commit_file(
+        &wt2,
+        "docs/specs/2026-10-07-search.md",
+        &valid_spec("t2"),
+        "Spec",
+    )?;
+    let opened = f
+        .req(Method::POST, "/api/tasks/t2/delivery/pr", None, &f.bob)
+        .await?;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    let head2 = git(&wt2, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&head2, ChecksState::Success);
+    let untyped = f
+        .req(Method::POST, "/api/tasks/t2/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(untyped.status, StatusCode::CONFLICT, "{}", untyped.body);
+    let message = error_message(&untyped);
+    assert!(
+        message.contains("typed short-lived branch") && message.contains("`search-box`"),
+        "{message}"
+    );
+    assert_eq!(merges(&f), 1);
+
+    // Promotion: Yulius titles its pull request as the policy asks, refuses another title and
+    // never takes a fork's pull request for its own.
+    let fork = GhPull {
+        number: 3,
+        html_url: "https://github.test/Quartio-Studio/shop/pull/3".into(),
+        title: "release: promote dev to main".into(),
+        state: "open".into(),
+        merged: false,
+        base: "main".into(),
+        head: "dev".into(),
+        head_sha: head.clone(),
+        mergeable: None,
+        behind: false,
+        from_fork: true,
+    };
+    if let Ok(mut pulls) = f.h.github.pulls.lock() {
+        pulls.push(fork);
+    }
+    let promote = || {
+        f.req(
+            Method::POST,
+            "/api/sandboxes/s1/delivery/promote",
+            None,
+            &f.bob,
+        )
+    };
+    let opened = promote().await?;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    assert_eq!(opened.body["result"], "pr_opened", "{}", opened.body);
+    let promotion = f.h.github.pull(4).ok_or("promotion pull request")?;
+    assert_eq!(promotion.title, "release: promote dev to main");
+    f.h.github
+        .set_checks(&promotion.head_sha, ChecksState::Success);
+    edit_pull(&f, 4, |p| p.title = "Promote dev to main".into());
+    let refused = promote().await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    assert!(
+        error_message(&refused).contains("release: promote dev to main"),
+        "{}",
+        refused.body
+    );
+    assert_eq!(merges(&f), 1);
+    edit_pull(&f, 4, |p| {
+        p.title = "release: promote dev to main - checkout".into()
+    });
+    let promoted = promote().await?;
+    assert_eq!(promoted.status, StatusCode::OK, "{}", promoted.body);
+    assert!(
+        f.h.github
+            .writes()
+            .contains(&"merge_pull #4 merge".to_owned())
+    );
+
+    // An invalid policy at the integration branch: the standard preset applies, and says why.
+    advance_base(
+        &f,
+        "dev",
+        "yulius.toml",
+        "[branch_policy]\npreset = \"strict\"\n",
+    )?;
+    git(&f.repo, &["fetch", "--quiet", "origin"])?;
+    let invalid = f
+        .req(Method::POST, "/api/tasks/t2/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(invalid.status, StatusCode::CONFLICT, "{}", invalid.body);
+    let message = error_message(&invalid);
+    assert!(
+        message.contains("typed short-lived branch")
+            && message.contains("standard rules apply")
+            && message.contains("yulius.toml line 2"),
+        "{message}"
+    );
+
+    // The integration branch's yulius.toml turns the policy off: the same pull request merges.
+    advance_base(
+        &f,
+        "dev",
+        "yulius.toml",
+        "[branch_policy]\npreset = \"none\"\n",
+    )?;
+    git(&f.repo, &["fetch", "--quiet", "origin"])?;
+    let merged = f
+        .req(Method::POST, "/api/tasks/t2/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
+    Ok(())
+}
+
+/// SPEC-069 BPL-004: `delivery_merge` refuses a pull request the policy does not accept before
+/// it arms anything, and an armed merge whose title is changed afterwards is refused, not merged.
+#[tokio::test]
+async fn agents_cannot_arm_or_land_a_merge_the_policy_refuses() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let f = &t.f;
+    let sandbox = SandboxId::parse("s1")?;
+    // Yulius's own title passes: "Landing page" with non-conventional commits on `feat/1-landing`.
+    assert_eq!(
+        f.h.github.pull(1).ok_or("pull")?.title,
+        "feat: landing page"
+    );
+    edit_pull(f, 1, |p| p.title = "Landing page".into());
+    let refused = t.merge().await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    let text = refused["content"][0]["text"].as_str().unwrap_or_default();
+    assert!(text.contains("conventional"), "{text}");
+    let state = t.wait(Value::Null).await?;
+    assert_eq!(state["merge_armed"], false, "nothing armed: {state}");
+
+    edit_pull(f, 1, |p| p.title = "feat: landing page".into());
+    t.arm().await?;
+    edit_pull(f, 1, |p| p.title = "Landing page".into());
+    f.h.github.set_checks(&t.head, ChecksState::Success);
+    f.h.app.merge_armed(&sandbox).await;
+    let outcome = t.outcome().await?;
+    assert!(
+        outcome.contains("refused") && outcome.contains("conventional"),
+        "{outcome}"
+    );
+    assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
     Ok(())
 }

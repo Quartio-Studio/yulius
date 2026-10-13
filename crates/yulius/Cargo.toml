@@ -62,5 +62,7 @@ yulius-github = { workspace = true, features = ["fake"] }
 tokio-tungstenite = { workspace = true }
 futures = { workspace = true }
 tempfile = { workspace = true }
+rusqlite = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 http-body-util = "0.1.5"
+zeroize = { workspace = true }

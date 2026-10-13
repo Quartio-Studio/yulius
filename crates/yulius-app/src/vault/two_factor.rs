@@ -1,4 +1,4 @@
-//! Two-factor on the vault (SPEC-040, ADR-0034): each person sets up their own authenticator
+//! Two-factor on the vault (SPEC-040, ADR-0042): each person sets up their own authenticator
 //! once (after a recent sign-in or confirmation), and every reveal needs a current code entered
 //! in the browser session within the last 10 minutes. Codes work once and are rate limited, and
 //! 10 wrong codes in a row lock codes until the person confirms it is them again.
@@ -12,6 +12,7 @@ use crate::auth::AuthContext;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::ports::vault::TwoFactorRecord;
+use yulius_domain::ids::UserId;
 use yulius_domain::time::Timestamp;
 use zeroize::Zeroize as _;
 
@@ -44,26 +45,40 @@ fn browser_session(ctx: &AuthContext) -> AppResult<&str> {
 }
 
 impl App {
-    /// `missing`, `pending`, `on` or `locked` (too many wrong codes) for the caller, whose
-    /// identity was last confirmed at `identity`.
-    pub(super) async fn two_factor_state(
-        &self,
-        ctx: &AuthContext,
-        identity: Option<Timestamp>,
-    ) -> AppResult<&'static str> {
+    /// A person's two-factor as administrators see it: `missing`, `pending` or `on`.
+    ///
+    /// # Errors
+    /// Store failures.
+    pub async fn two_factor_of(&self, user: &UserId) -> AppResult<&'static str> {
         Ok(
-            match self
-                .deps
-                .store
-                .vault_two_factor(ctx.user.id.as_str())
-                .await?
-            {
+            match self.deps.store.vault_two_factor(user.as_str()).await? {
                 None => "missing",
-                Some(record) if locked(&record, identity) => "locked",
                 Some(record) if record.confirmed_at.is_none() => "pending",
                 Some(_) => "on",
             },
         )
+    }
+
+    /// `missing`, `pending`, `on` or `locked` (too many wrong codes) for the caller, whose
+    /// identity was last confirmed at `identity`, and whether their seed is confirmed.
+    pub(super) async fn two_factor_state(
+        &self,
+        ctx: &AuthContext,
+        identity: Option<Timestamp>,
+    ) -> AppResult<(&'static str, bool)> {
+        let record = self
+            .deps
+            .store
+            .vault_two_factor(ctx.user.id.as_str())
+            .await?;
+        let confirmed = record.as_ref().is_some_and(|r| r.confirmed_at.is_some());
+        let state = match record {
+            None => "missing",
+            Some(record) if locked(&record, identity) => "locked",
+            Some(_) if !confirmed => "pending",
+            Some(_) => "on",
+        };
+        Ok((state, confirmed))
     }
 
     /// `POST /api/auth/two-factor`: a new seed for the caller's authenticator. Needs a browser
@@ -107,6 +122,44 @@ impl App {
             uri: otpauth_uri(ISSUER, &actor, &secret),
             secret: secret.to_string(),
         }))
+    }
+
+    /// `DELETE /api/users/{id}/two-factor`: an instance administrator or the superadmin, with
+    /// their own vault unlock, removes another person's two-factor seed and vault unlocks (a lost
+    /// authenticator; ADR-0041). The person sets two-factor up again on their next reveal.
+    /// Audited as `vault.2fa.reset` when a seed was removed.
+    ///
+    /// # Errors
+    /// `Forbidden` for members, API tokens and the caller's own two-factor, `NotFound` for an
+    /// unknown user, store failures.
+    pub async fn reset_two_factor(&self, ctx: &AuthContext, id: &str) -> AppResult<Revealed<()>> {
+        self.require_instance_admin(ctx)?;
+        if ctx.session_hash.is_none() {
+            return Err(AppError::Forbidden(
+                "two-factor is reset only from the web UI, after entering your own code".into(),
+            ));
+        }
+        if id == ctx.user.id.as_str() {
+            return Err(AppError::Forbidden(
+                "another administrator resets your own two-factor".into(),
+            ));
+        }
+        if let Some(status) = self.fresh_or_status(ctx).await? {
+            return Ok(Revealed::ReauthRequired(status));
+        }
+        let id = UserId::parse(id).map_err(|_| AppError::NotFound)?;
+        let user = self.deps.store.user(&id).await?.ok_or(AppError::NotFound)?;
+        if self
+            .deps
+            .store
+            .vault_reset_two_factor(user.id.as_str())
+            .await?
+        {
+            let person = user.github_login.as_deref().unwrap_or("superadmin");
+            self.vault_audit(&Self::vault_actor(ctx), "vault.2fa.reset", None, person)
+                .await?;
+        }
+        Ok(Revealed::Values(()))
     }
 
     /// `POST /api/auth/unlock`: a current code of the caller's authenticator unlocks the vault
@@ -169,7 +222,7 @@ impl App {
             Some(at) => {
                 self.deps
                     .store
-                    .vault_accept_two_factor(user_id, at, now)
+                    .vault_accept_two_factor(user_id, &record.envelope.ciphertext, at, now)
                     .await?
             }
             None => false,
@@ -188,14 +241,18 @@ impl App {
                 self.vault_audit(&actor, "vault.2fa.locked", None, "")
                     .await?;
             }
-            return Err(AppError::Forbidden(
-                if matched.is_some() {
-                    "this code was used already: wait for the next one"
-                } else {
-                    "wrong code"
-                }
-                .into(),
-            ));
+            let message = match matched {
+                None => "wrong code",
+                // The checked seed was replaced by a new setup (#295) or reset meanwhile.
+                Some(_) => match self.deps.store.vault_two_factor(user_id).await? {
+                    None => "your two-factor was reset: set it up again",
+                    Some(now) if now.envelope.ciphertext != record.envelope.ciphertext => {
+                        "two-factor was set up again meanwhile: enter a code for the new key"
+                    }
+                    Some(_) => "this code was used already: wait for the next one",
+                },
+            };
+            return Err(AppError::Forbidden(message.into()));
         }
         self.deps.store.vault_set_unlock(session, now).await?;
         let action = if record.confirmed_at.is_none() {

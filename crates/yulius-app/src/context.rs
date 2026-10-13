@@ -44,6 +44,9 @@ pub struct AppConfig {
     pub viewer_recheck_ms: u64,
     /// Wait between two resumes of tasks paused for lack of subscription capacity (ROT-010).
     pub resume_stagger_ms: u64,
+    /// How long a stopped or closed run gets to exit (interrupt, TERM, kill) before its host is
+    /// terminated (SPEC-065 END-008).
+    pub stop_escalation_ms: u64,
     /// Extra host paths visible read-only inside containment (for example agent CLI install
     /// directories outside `/usr` and `/opt`).
     pub contained_readonly: Vec<PathBuf>,
@@ -92,6 +95,12 @@ impl AppConfig {
             secure_cookies: public_url.starts_with("https://"),
             viewer_recheck_ms: 60_000,
             resume_stagger_ms: crate::capacity::RESUME_STAGGER_MS,
+            stop_escalation_ms: u64::try_from(
+                yulius_domain::task::STOP_INTERRUPT_GRACE_MS
+                    + yulius_domain::task::STOP_TERM_GRACE_MS
+                    + yulius_domain::task::STOP_KILL_WAIT_MS,
+            )
+            .unwrap_or(20_000),
             contained_readonly: Vec::new(),
             allowed_origins: Vec::new(),
             public_url,
@@ -145,6 +154,8 @@ pub struct App {
     pub events: EventBus,
     /// Password-login attempts per client key (rate limiting).
     pub(crate) login_attempts: Mutex<HashMap<String, Vec<i64>>>,
+    /// CLI device sign-in starts per client key (rate limiting, #169).
+    pub(crate) device_starts: Mutex<HashMap<String, Vec<i64>>>,
     /// Session supervisor runtime state.
     pub(crate) supervisor: crate::supervisor::SupervisorState,
     /// Account login terminals.
@@ -196,6 +207,7 @@ impl App {
             deps,
             events: EventBus::new(1024),
             login_attempts: Mutex::new(HashMap::new()),
+            device_starts: Mutex::new(HashMap::new()),
             supervisor: crate::supervisor::SupervisorState::default(),
             logins: crate::accounts::LoginRegistry::default(),
             capacity: crate::capacity::CapacityState::default(),

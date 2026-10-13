@@ -34,7 +34,7 @@ export function openTaskMenu(ctx, anchor, task) {
     task.archived
       ? { label: 'Restore', disabled: !can.restore, onSelect: () => restoreTask(ctx, task) }
       : { label: 'Archive', disabled: !can.archive, title: can.archive ? null : (allows(access, 'write') ? 'Still running: stop the task before archiving it' : why), onSelect: () => archiveTask(ctx, task) },
-    { label: 'Delete permanently…', danger: true, disabled: !can.delete, title: can.delete ? null : (allows(access, 'write') ? 'Still running: stop the task before deleting it' : why), onSelect: () => deleteTask(ctx, task) },
+    { label: 'Delete permanently…', danger: true, disabled: !can.delete, title: can.delete ? null : (!allows(access, 'write') ? why : task.status === 'stopping' ? 'Stopping…' : 'Still running: stop the task before deleting it'), onSelect: () => deleteTask(ctx, task) },
   ], { align: anchor instanceof Element ? 'end' : 'start' });
 }
 
@@ -106,12 +106,20 @@ export async function deleteTask(ctx, task) {
     confirmLabel: 'Delete permanently',
     danger: true,
   });
-  if (!ok) return;
+  // One request per task: closing a Done task takes a few seconds, and a second confirmation
+  // meanwhile would end in "not found" (SPEC-065 END-007).
+  const key = `${task.id}:delete`;
+  if (!ok || inFlight.has(key)) return;
+  inFlight.add(key);
+  const progress = toast(`Deleting #${task.number}…`, { timeout: 0 });
   try {
     await ctx.api.del(`/api/tasks/${enc(task.id)}`, { timeoutMs: DELETE_TIMEOUT_MS });
   } catch (error) {
     errorToast(error, `Couldn’t delete task #${task.number}`);
     return;
+  } finally {
+    inFlight.delete(key);
+    progress();
   }
   ctx.store.removeTask(task.id, { byUser: true });
   toast(`Task #${task.number} deleted.`, { kind: 'ok' });
@@ -141,6 +149,73 @@ export async function restoreTask(ctx, task) {
   const updated = await taskPost(ctx, task, 'restore', () => ctx.api.post(`/api/tasks/${enc(task.id)}/restore`), `Restored #${task.number}`);
   return updated;
 }
+
+// "Archive all" sends at most this many archive requests at a time (SPEC-062 QAR-002).
+const BULK_CONCURRENCY = 4;
+
+/** Runs `run` on every item, at most BULK_CONCURRENCY at a time; resolves to the items that failed with their errors. */
+async function eachBounded(items, run) {
+  const queue = [...items];
+  const failed = [];
+  const worker = async () => {
+    for (let item = queue.shift(); item; item = queue.shift()) {
+      try {
+        await run(item);
+      } catch (error) {
+        failed.push({ item, error });
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(BULK_CONCURRENCY, queue.length) }, worker));
+  return failed;
+}
+
+/**
+ * Archive several tasks in one go (SPEC-062 QAR-002, QAR-003): each through the per-task archive,
+ * so the server checks each one; rows leave as they succeed; one toast with one Undo for them all,
+ * and one error toast for those that failed.
+ */
+export async function archiveAll(ctx, tasks, what) {
+  // A task already being archived (its row's button, its menu) is left to that request; the
+  // others are marked in flight, so those buttons send nothing more meanwhile.
+  const own = tasks.filter((task) => !inFlight.has(`${task.id}:archive`));
+  own.forEach((task) => inFlight.add(`${task.id}:archive`));
+  const archived = [];
+  const failed = await eachBounded(own, async (task) => {
+    try {
+      const updated = await ctx.api.post(`/api/tasks/${enc(task.id)}/archive`);
+      if (updated && updated.id) ctx.store.upsertTask(updated);
+      ctx.store.removeTask(task.id, { byUser: true });
+      archived.push(task);
+    } finally {
+      inFlight.delete(`${task.id}:archive`);
+    }
+  });
+  if (archived.length) {
+    toast(`Archived ${counted(archived.length, what)}.`, { kind: 'ok', action: { label: 'Undo', run: () => restoreAll(ctx, archived) } });
+    // The tasks are one sandbox's (one sidebar group): leave the page of one that was archived.
+    const route = ctx.route();
+    const sandbox = ctx.store.sandboxById(archived[0].sandbox_id);
+    if (sandbox && route && route.name === 'task' && route.slug === sandbox.slug && archived.some((task) => task.number === route.number)) {
+      ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}`);
+    }
+  }
+  if (failed.length) errorToast(failed[0].error, `Couldn’t archive ${failed.length} of ${counted(own.length, 'task')}`);
+}
+
+/** Undo of "Archive all": restores the tasks it archived, with one toast. */
+async function restoreAll(ctx, tasks) {
+  const failed = await eachBounded(tasks, async (task) => {
+    const updated = await ctx.api.post(`/api/tasks/${enc(task.id)}/restore`);
+    if (updated && updated.id) ctx.store.upsertTask(updated);
+  });
+  const restored = tasks.length - failed.length;
+  if (restored) toast(`Restored ${counted(restored, 'task')}.`, { kind: 'ok' });
+  if (failed.length) errorToast(failed[0].error, `Couldn’t restore ${failed.length} of ${counted(tasks.length, 'task')}`);
+}
+
+/** "1 task", "2 tasks". */
+const counted = (n, noun) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 
 // ---------------------------------------------------------------- feedback
 

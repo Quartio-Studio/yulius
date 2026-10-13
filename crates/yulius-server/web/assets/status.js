@@ -215,6 +215,9 @@ export function taskInfo(task, actionRequests, pr) {
   const finished = task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done');
   if (pr && finished && (pr.state === 'open' || pr.state === 'merged')) {
     if (pr.state === 'open' && pr.checks === 'failure') return { ...info, icon: 'branch', tone: 'attention', label: `PR #${pr.number} · checks failing`, group: 'needs', pr };
+    // CI could not run (disk, a timeout, the host): not the code, and nothing for a person yet; the
+    // agent is told to run it again (S5).
+    if (pr.state === 'open' && pr.checks === 'error') return { ...info, icon: 'branch', tone: 'waiting', label: `In review · PR #${pr.number} · CI could not run (not the code)`, group: 'working', pr };
     if (planOpen(task)) return info;
     const shells = backgroundShells(task);
     if (shells) return { ...info, ...stillWorking(shells, task.background_shells_since), pr };
@@ -246,7 +249,9 @@ export function taskActions(task, access, pr) {
   const ended = !live && !chained;
   const finished = live && taskInfo(task, null, pr).group === 'done';
   return {
-    stop: write && (live || chained) && task.status !== 'stopping',
+    // A stopping task can be stopped again: a stop whose session could not be ended is retried
+    // (SPEC-065).
+    stop: write && (live || chained),
     startNow: write && chained,
     continue: write && ended && !task.archived,
     deliver: write && !task.archived,

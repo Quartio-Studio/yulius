@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use crate::context::App;
 
-/// Queue drain interval.
+/// Queue drain interval, also the device grant purge interval (#169).
 const TICK: Duration = Duration::from_secs(60);
 /// First background usage round after start: lets the server settle first (ROT-009).
 const USAGE_FIRST: Duration = Duration::from_secs(2 * 60);
@@ -36,6 +36,10 @@ impl App {
                 app.drain_queue().await;
                 // Chained tasks start once their predecessor is Done (TSK-012).
                 app.advance_all_chains().await;
+                // Expired and consumed CLI device grants (#169).
+                if let Err(err) = app.purge_device_grants().await {
+                    tracing::warn!(error = %err, "device grants could not be purged");
+                }
             }
         });
         // Deliveries in progress follow GitHub, so the Git board moves without anyone looking.

@@ -9,6 +9,7 @@ import { accountUsage, capacityPanel } from '../layout.js';
 import { pageFrame, loader, dataTable, createButton } from './common.js';
 import { recoveryCodeCard } from './auth.js';
 import { BRAND } from '../brand.js';
+import { withReauth } from './secrets.js';
 
 function forbidden(ctx, what) {
   const frame = pageFrame({ title: what });
@@ -18,12 +19,21 @@ function forbidden(ctx, what) {
 
 // ---------------------------------------------------------------- users
 
-/** Superadmin: admit users by GitHub login, disable them, mark instance admins. */
+const TWO_FACTOR = { on: ['On', 'ok'], pending: ['Being set up', 'warn'], missing: ['Off', null] };
+
+/**
+ * Users. The superadmin admits users by GitHub login, disables them and marks instance admins;
+ * instance admins see the list. Both reset a person's lost two-factor (SPEC-061), after their own
+ * two-factor code.
+ */
 export function mountUsersPage(ctx) {
-  if (!ctx.isSuperadmin()) return forbidden(ctx, 'Users');
-  const frame = pageFrame({ title: 'Users', sub: 'who may sign in: only admitted GitHub users', actions: [createButton('Admit user', () => add())] });
+  if (!ctx.isInstanceAdmin()) return forbidden(ctx, 'Users');
+  const superadmin = ctx.isSuperadmin();
+  const me = ctx.store.state.me && ctx.store.state.me.user ? ctx.store.state.me.user.id : null;
+  const frame = pageFrame({ title: 'Users', sub: 'who may sign in: only admitted GitHub users', actions: superadmin ? [createButton('Admit user', () => add())] : [] });
   const host = h('div');
-  frame.body.append(recoveryCard(ctx), host);
+  if (superadmin) frame.body.append(recoveryCard(ctx));
+  frame.body.append(host);
 
   const patch = async (user, body, message) => {
     try {
@@ -36,21 +46,42 @@ export function mountUsersPage(ctx) {
     }
   };
 
-  // AdminUser = {id, github_login, display_name, is_instance_admin, disabled, github_linked};
-  // the superadmin is not listed.
+  // A lost authenticator (SPEC-061): confirm, then the administrator's own code when the vault is
+  // locked; the person sets two-factor up again on their next reveal.
+  const resetTwoFactor = async (u) => {
+    if (!(await confirmDialog({ title: `Reset two-factor of @${u.github_login}?`, message: `Their authenticator stops opening the secrets and their unlocks end. They set two-factor up again, after a recent sign-in, the next time they reveal a secret. The reset is recorded in the secrets activity.`, confirmLabel: 'Reset', danger: true }))) return;
+    try {
+      // `null`: the administrator cancelled the code dialog (a 204 resolves `true` here).
+      if (!(await withReauth(ctx, () => ctx.api.del(`/api/users/${enc(u.id)}/two-factor`).then(() => true)))) return;
+      toast(`Two-factor of @${u.github_login} reset.`, { kind: 'ok' });
+      reload({ quiet: true });
+    } catch (error) {
+      errorToast(error, 'Couldn’t reset two-factor');
+    }
+  };
+
+  // AdminUser = {id, github_login, display_name, is_instance_admin, disabled, github_linked,
+  // two_factor}; the superadmin is not listed.
   const reload = loader(host, 'the users', () => ctx.api.get('/api/admin/users'), (list) => dataTable([
     { label: 'GitHub login', render: (u) => h('strong', null, `@${u.github_login || '?'}`) },
     { label: 'Name', render: (u) => u.display_name || '—', phoneHide: true },
-    { label: 'Instance admin', render: (u) => toggle({ checked: Boolean(u.is_instance_admin), label: `Instance admin for ${u.github_login}`, onChange: async (checked, input) => {
+    { label: 'Instance admin', render: (u) => (superadmin ? toggle({ checked: Boolean(u.is_instance_admin), label: `Instance admin for ${u.github_login}`, onChange: async (checked, input) => {
       if (!(await patch(u, { is_instance_admin: checked }, checked ? `@${u.github_login} is now an instance admin.` : `@${u.github_login} is no longer an instance admin.`))) input.checked = !checked;
-    } }) },
-    { label: 'Access', render: (u) => toggle({ checked: !u.disabled, label: `Access for ${u.github_login}`, onChange: async (checked, input) => {
+    } }) : (u.is_instance_admin ? 'Yes' : 'No')) },
+    { label: 'Access', render: (u) => (superadmin ? toggle({ checked: !u.disabled, label: `Access for ${u.github_login}`, onChange: async (checked, input) => {
       if (!checked && !(await confirmDialog({ title: `Disable @${u.github_login}?`, message: 'They are signed out everywhere and their live terminal connections close.', confirmLabel: 'Disable', danger: true }))) { input.checked = true; return; }
       if (!(await patch(u, { disabled: !checked }, checked ? `@${u.github_login} enabled.` : `@${u.github_login} disabled.`))) input.checked = !checked;
       else u.disabled = !checked;
-    } }) },
+    } }) : (u.disabled ? badge('Disabled', 'danger') : 'Allowed')) },
     { label: 'GitHub sign-in', render: (u) => (u.github_linked ? badge('Signed in before', 'ok') : badge('Never signed in')), phoneHide: true },
-  ], Array.isArray(list) ? list : [], { empty: emptyState({ iconName: 'users', title: 'No users yet', text: 'Admit teammates by their GitHub login; they sign in with GitHub.', action: createButton('Admit user', () => add()) }) }));
+    { label: 'Two-factor', render: (u) => {
+      const [text, kind] = TWO_FACTOR[u.two_factor] || TWO_FACTOR.missing;
+      return h('div', { class: 'row' }, badge(text, kind),
+        u.two_factor && u.two_factor !== 'missing' && u.id !== me
+          ? h('button', { type: 'button', class: 'btn btn-sm btn-quiet-danger', 'aria-label': `Reset two-factor of @${u.github_login}`, title: 'For a lost authenticator: they set two-factor up again', onClick: () => resetTwoFactor(u) }, 'Reset')
+          : null);
+    } },
+  ], Array.isArray(list) ? list : [], { empty: emptyState({ iconName: 'users', title: 'No users yet', text: superadmin ? 'Admit teammates by their GitHub login; they sign in with GitHub.' : 'The superadmin admits teammates by their GitHub login.', action: superadmin ? createButton('Admit user', () => add()) : null }) }));
 
   function add() {
     const login = h('input', { class: 'input', placeholder: 'octocat', autocomplete: 'off', autofocus: true });
@@ -216,7 +247,7 @@ export function mountAccountsPage(ctx, route) {
           } }, 'Sign in again') : null,
           // Removal is refused while tasks use the subscription: say so instead of offering it (UX2-12).
           h('button', { type: 'button', class: 'btn btn-sm btn-quiet-danger', disabled: account.in_use_by > 0, title: account.in_use_by > 0 ? `${account.in_use_by} live task${account.in_use_by === 1 ? '' : 's'} use this subscription; they move away at their next turn end or when stopped` : null, onClick: async () => {
-            if (!(await confirmDialog({ title: `Remove ${account.label}?`, message: 'Its stored credential is deleted and a running sign-in is cancelled. Tasks never start on it again.', confirmLabel: 'Remove', danger: true }))) return;
+            if (!(await confirmDialog({ title: `Remove ${account.label}?`, message: 'Its stored credential is deleted and a running sign-in is cancelled. Done tasks on it are closed (Continue starts them on another subscription), and tasks never start on it again.', confirmLabel: 'Remove', danger: true }))) return;
             try {
               await ctx.api.del(`/api/admin/accounts/${enc(account.id)}`);
               toast(`Subscription ${account.label} removed.`, { kind: 'ok' });

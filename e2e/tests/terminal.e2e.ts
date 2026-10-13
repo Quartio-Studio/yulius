@@ -51,16 +51,49 @@ const spot = (browser: Browser, text: string, scope = '.taskview') => browser.ev
 /** Whether the pointer rests on a link (xterm shows the hand cursor over links). */
 const onLink = (browser: Browser) => browser.evaluate(() => Boolean(document.querySelector('.xterm-cursor-pointer')));
 
-/** Rests the pointer on `text`; resolves to its page position and whether it is a link. */
-async function hoverText(browser: Browser, text: string, scope = '.taskview'): Promise<{ x: number; y: number; link: boolean }> {
+/** Puts the pointer on `text`. */
+async function pointAt(browser: Browser, text: string, scope: string): Promise<void> {
   const point = await spot(browser, text, scope);
   expect(point, `${text} is on the screen`).not.toBeNull();
   const { x, y } = point!;
   await browser.mouse.move(x - 4, y);
   await browser.mouse.move(x, y);
-  // File links are known once the folder's listing arrived.
+}
+
+/**
+ * Rests the pointer on `text` and waits until xterm shows it as a link: a file link is known once
+ * its folder's listing arrived, which a busy runner delays (#320). A press there (without moving)
+ * then activates the link.
+ */
+async function hoverLink(browser: Browser, text: string, scope = '.taskview'): Promise<void> {
+  await pointAt(browser, text, scope);
+  await expect.poll(() => onLink(browser), { message: `${text} is a link` }).toBe(true);
+}
+
+/**
+ * Rests the pointer on `text` and says whether it is a link after a rest. Only for text expected to
+ * be plain: no signal says "the listing answered: not a link", and a late answer can only make
+ * this pass, never fail (expected links use hoverLink).
+ */
+async function hoverPlain(browser: Browser, text: string, scope = '.taskview'): Promise<boolean> {
+  await pointAt(browser, text, scope);
   await settle();
-  return { x, y, link: await onLink(browser) };
+  return onLink(browser);
+}
+
+/**
+ * Waits until the Editor a link opened shows an editor. Its first opening loads Monaco (many
+ * files), which takes however long a starved runner needs (#320): a condition, as in
+ * filedrop.e2e.ts.
+ */
+const editorLoaded = (browser: Browser) => expect
+  .poll(() => browser.evaluate(() => ((window as unknown as { monaco?: Monaco }).monaco?.editor.getEditors().length ?? 0) > 0), { timeout: 60000 })
+  .toBe(true);
+
+/** Presses and releases the primary button where the pointer rests (a click without moving). */
+async function press(browser: Browser): Promise<void> {
+  await browser.mouse.down();
+  await browser.mouse.up();
 }
 
 /** Clicks the page at `point` with the primary button. */
@@ -224,6 +257,55 @@ test('a read-only viewer cannot paste', async ({ app, browser, screen }) => {
   await expect(rows(browser)).not.toHaveText(/should not arrive/);
 });
 
+test('only keystrokes count as typing, as on the server (SPEC-068)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const table = await browser.evaluate(async () => {
+    const url = '/assets/typing.js';
+    const { isTyping } = await import(url);
+    const cases: Record<string, string> = {
+      'focus in': '\x1b[I',
+      'focus out': '\x1b[O',
+      'SGR press': '\x1b[<0;12;5M',
+      'SGR release': '\x1b[<0;12;5m',
+      'X10 press': '\x1b[M #%',
+      'X10 far right': '\x1b[M \u00e0\u0100',
+      'device attributes': '\x1b[?1;2c',
+      'cursor position': '\x1b[24;80R',
+      'mode report': '\x1b[?2004;1$y',
+      'OSC answer': '\x1b]11;rgb:0000/0000/0000\x1b\\',
+      'DCS answer': '\x1bP>|xterm.js(5.5.0)\x1b\\',
+      'text': 'a',
+      'Enter': '\r',
+      'Backspace': '\x7f',
+      'arrow': '\x1b[A',
+      'Escape': '\x1b',
+      'paste': '\x1b[200~draft\x1b[201~',
+      'focus, then a key': '\x1b[Ix',
+    };
+    return Object.fromEntries(Object.entries(cases).map(([name, data]) => [name, isTyping(data)]));
+  });
+  expect(table).toEqual({
+    'focus in': false,
+    'focus out': false,
+    'SGR press': false,
+    'SGR release': false,
+    'X10 press': false,
+    'X10 far right': false,
+    'device attributes': false,
+    'cursor position': false,
+    'mode report': false,
+    'OSC answer': false,
+    'DCS answer': false,
+    'text': true,
+    'Enter': true,
+    'Backspace': true,
+    'arrow': true,
+    'Escape': true,
+    'paste': true,
+    'focus, then a key': true,
+  });
+});
+
 test('another viewer’s size fills this box, with a chip instead of a banner, until a click takes it', async ({ app, browser, screen }) => {
   // Another, active viewer set the terminal to 90×30 (the mock's `othercols`/`otherrows`).
   await app.open(mock('/s/studio/t/12', '&othercols=90&otherrows=30'));
@@ -370,17 +452,20 @@ test('file paths in the task terminal open the editor at the file and line', asy
   // Links: a bare path, `path:line:col`, a name in parentheses, an absolute path in the worktree,
   // an OSC 8 file:// hyperlink.
   for (const text of ['docs/specs/2026-10-10-improve-the-code.md', 'src/api/checkout.rs:2:5', 'AGENTS.md', 'README.md#L3', 'the checkout source']) {
-    expect((await hoverText(browser, text)).link, `${text} is a link`).toBe(true);
+    await hoverLink(browser, text);
   }
   // Plain text: a missing file, a path above the worktree, .git, an OSC 8 link outside it.
   for (const text of ['docs/missing.md', '../outside.md', '.git/config', 'hosts']) {
-    expect((await hoverText(browser, text)).link, `${text} is plain text`).toBe(false);
+    expect(await hoverPlain(browser, text), `${text} is plain text`).toBe(false);
   }
   // Web links stay web links (UI-018).
-  expect((await hoverText(browser, 'https://example.com/docs/guide.md')).link).toBe(true);
+  await hoverLink(browser, 'https://example.com/docs/guide.md');
 
-  // A click opens the Editor at the file, line and column.
-  await clickAt(browser, await hoverText(browser, 'src/api/checkout.rs:2:5'));
+  // A click opens the Editor at the file, line and column (once xterm knows the link under the
+  // pointer: before, the click lands on plain text).
+  await hoverLink(browser, 'src/api/checkout.rs:2:5');
+  await press(browser);
+  await editorLoaded(browser);
   await expect(screen.getByRole('tab', /checkout\.rs/)).toHaveAttribute('aria-selected', 'true');
   await expect
     .poll(() => browser.evaluate(() => (window as unknown as { monaco?: Monaco }).monaco?.editor.getEditors()[0]?.getPosition() ?? null))
@@ -396,9 +481,9 @@ test('file names a shell prints open the editor', async ({ app, browser, screen 
   await expect(browser.locator(`${shell} .xterm-helper-textarea`)).toBeFocused();
   for (const key of ['l', 's', 'Enter']) await browser.keyboard.press(key);
   await expect(browser.locator(`${shell} .xterm-rows`)).toHaveText(/AGENTS\.md/);
-  expect((await hoverText(browser, 'Cargo.toml', shell)).link, 'not in the repository').toBe(false);
-  const agents = await hoverText(browser, 'AGENTS.md', shell);
-  expect(agents.link).toBe(true);
-  await clickAt(browser, agents);
+  expect(await hoverPlain(browser, 'Cargo.toml', shell), 'not in the repository').toBe(false);
+  await hoverLink(browser, 'AGENTS.md', shell);
+  await press(browser);
+  await editorLoaded(browser);
   await expect(screen.getByRole('tab', /AGENTS\.md/)).toHaveAttribute('aria-selected', 'true');
 });

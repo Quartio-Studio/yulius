@@ -3177,6 +3177,7 @@ dependencies = [
  "http-body-util",
  "nix 0.31.3",
  "reqwest",
+ "rusqlite",
  "rustls",
  "serde_json",
  "sysinfo",
@@ -3199,6 +3200,7 @@ dependencies = [
  "yulius-sandbox",
  "yulius-server",
  "yulius-store",
+ "zeroize",
 ]
 
 [[package]]

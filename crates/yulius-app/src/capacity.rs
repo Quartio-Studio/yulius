@@ -590,6 +590,13 @@ impl App {
                         PauseKind::Limit => {
                             self.switch_after_limit(&task.id, account, &reason).await
                         }
+                        // The held prompt is the session's first message, typed with its
+                        // images: a fresh session types it again, images included; the hook's
+                        // text has none (SPEC-068 OPN-003).
+                        PauseKind::Prompt if self.held_opening(&task.id).await => {
+                            let start = RunStart::Fresh { prompt: None };
+                            self.switch_with(&task.id, account, &reason, start).await
+                        }
                         kind => {
                             let continuation = match kind {
                                 PauseKind::Prompt => pause.continuation.clone(),
@@ -606,6 +613,11 @@ impl App {
                 } else {
                     self.end_pause(&task.id, "started").await;
                     let start = match store.provider_sessions(&task.id).await {
+                        _ if pause.kind == PauseKind::Prompt
+                            && self.held_opening(&task.id).await =>
+                        {
+                            RunStart::Fresh { prompt: None }
+                        }
                         Ok(lineage) if !lineage.is_empty() && pause.kind == PauseKind::Limit => {
                             RunStart::AfterLimit
                         }
@@ -664,7 +676,8 @@ impl App {
         let now = self.now();
         let threshold = rotation::THRESHOLD;
         let records = store.accounts().await?;
-        let live = store.live_attempts().await?;
+        // A subscription is held by working tasks only (SPEC-057 SUB-001).
+        let live = self.working_attempts().await?;
         let views = self.account_views().await?;
         let mut accounts = Vec::with_capacity(records.len());
         let mut members = Vec::new();

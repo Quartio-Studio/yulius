@@ -89,6 +89,27 @@ test('a finished task whose pull request is tested can be archived and is closed
   expect(status).toBe('closed');
 });
 
+// #294: the pull requests are read on their own; when that read lands after the task view drew its
+// strip (and after the task's detail), the strip follows it, as the sidebar does.
+test('a task view reads Done once its pull request is read late', async ({ app, browser, screen }) => {
+  type HoldingGit = Window & { __yuliusHoldGit?: Promise<void>; __releaseGit?: () => void };
+  await browser.addInitScript(() => {
+    const w = window as unknown as HoldingGit;
+    w.__yuliusHoldGit = new Promise<void>((resolve) => { w.__releaseGit = resolve; });
+  });
+  await app.open(mock('/s/studio/t/11'));
+  // The task's detail has been read and drawn: the strip's step list shows its steps.
+  await browser.locator('.taskview .stepstrip-toggle').click();
+  await expect(browser.locator('.taskview .step-item').first()).toBeVisible();
+  // The mock's one browser request (task #10, about 5 s after the start) redraws the strip too;
+  // it came before the release, so only the pull request read can make the strip Done.
+  await expect(screen.getByRole('link', /^Needs you in the browser AWS login for deploy/)).toBeVisible({ timeout: 15_000 });
+  const strip = browser.locator('.strip-status');
+  await expect(strip).toHaveText('Your turn');
+  await browser.evaluate(() => (window as unknown as HoldingGit).__releaseGit!());
+  await expect(strip).toHaveText(/^Done · PR #221/);
+});
+
 // F 2026-10-12 (task #37, SPEC-039): "This task is done but I still can't delete it."
 test('a Done task can be deleted from its menu; a working one says it has to be stopped first', async ({ app, browser, screen }) => {
   // #12 is still at work: Delete stays off and says why in words.
@@ -108,4 +129,41 @@ test('a Done task can be deleted from its menu; a working one says it has to be 
   await screen.getByRole('button', 'Delete permanently').click();
   await expect(screen.getByText('Task #13 deleted.')).toBeVisible();
   await expect(screen.getByRole('region', 'Done').getByRole('link', /Improve the code/)).toBeHidden();
+});
+
+// #290 (SPEC-065 END-007): closing a Done task takes a few seconds; the UI says so and a second
+// confirmation meanwhile sends nothing.
+test('deleting a Done task says so while it runs and sends one request', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/13'));
+  await expect(browser.locator('.strip-status')).toHaveText(/^Done/);
+  await browser.evaluate(() => {
+    const mocked = window as unknown as { __yuliusMock: { holdDelete?: Promise<void>; releaseDelete?: () => void } };
+    mocked.__yuliusMock.holdDelete = new Promise<void>((resolve) => { mocked.__yuliusMock.releaseDelete = resolve; });
+  });
+  const confirmDelete = async () => {
+    await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
+    await screen.getByRole('menuitem', /^Delete permanently/).click();
+    await screen.getByRole('button', 'Delete permanently').click();
+  };
+  await confirmDelete();
+  await expect(screen.getByText('Deleting #13…')).toBeVisible();
+  await confirmDelete();
+  const requests = () => browser.evaluate(() => (window as unknown as { __yuliusMock: { deleteRequests?: number } }).__yuliusMock.deleteRequests || 0);
+  expect(await requests()).toBe(1);
+
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { releaseDelete: () => void } }).__yuliusMock.releaseDelete());
+  await expect(screen.getByText('Task #13 deleted.')).toBeVisible();
+  await expect(screen.getByText('Deleting #13…')).toBeHidden();
+  expect(await requests()).toBe(1);
+});
+
+test('a task being stopped says Stopping… on its Delete item and can be stopped again', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await touchTask(browser, 12, { status: 'stopping', activity: null });
+  await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
+  const item = screen.getByRole('menuitem', /^Delete permanently/);
+  await expect(item).toHaveAttribute('aria-disabled', 'true');
+  await expect(item).toHaveText(/Stopping…/);
+  // A stop whose session could not be ended is retried from the same menu (SPEC-065).
+  await expect(screen.getByRole('menuitem', /^Stop/)).not.toHaveAttribute('aria-disabled', 'true');
 });

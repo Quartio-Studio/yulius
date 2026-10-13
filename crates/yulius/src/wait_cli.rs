@@ -57,8 +57,10 @@ pub fn run(out: &mut dyn Write, minutes: u64, env: &dyn Fn(&str) -> Option<Strin
     }
 }
 
-/// The line to end with when the wait is over, or `None` to keep waiting.
-fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
+/// The line to end with when the wait is over, or `None` to keep waiting (`before` is the state
+/// the wait last saw, `None` when it starts).
+#[must_use]
+pub fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
     // How an armed merge ended (MSR-003): when it is decided during this wait, or already was
     // at this head when the wait starts.
     let decided = match before {
@@ -90,6 +92,24 @@ fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
         return Some(format!(
             "Delivery moved: {} -> {}. Check `delivery_status` for what is left.",
             before.stage, now.stage
+        ));
+    }
+    // CI could not run at this head (disk, a timeout, the host): not the code. An armed merge
+    // stays armed and happens once a run passes (S5).
+    if now.checks == "error" && before.is_none_or(|before| before.checks != "error") {
+        return Some(format!(
+            "Yulius CI could not run the checks at {}{}: not the code. Run them again with \
+             `ci_rerun`{}.",
+            short(&now.head),
+            now.checks_detail
+                .as_deref()
+                .map(|d| format!(" ({d})"))
+                .unwrap_or_default(),
+            if now.merge_armed {
+                "; the merge stays armed and happens when they pass"
+            } else {
+                ""
+            }
         ));
     }
     if now.checks_ended() && !now.merge_armed {
@@ -284,6 +304,24 @@ mod tests {
             ..dropped
         };
         assert!(settled(&elsewhere, None).is_none());
+    }
+
+    /// S5: a run that could not happen is said as not the code, even with a merge armed.
+    #[test]
+    fn an_errored_run_says_it_was_not_the_code() {
+        let errored = WaitState {
+            checks_detail: Some("timed out after 30 min".into()),
+            merge_armed: true,
+            ..state("error")
+        };
+        let line = settled(&errored, Some(&state("running"))).unwrap_or_default();
+        assert!(
+            line.contains("could not run")
+                && line.contains("ci_rerun")
+                && line.contains("stays armed"),
+            "{line}"
+        );
+        assert!(settled(&errored, Some(&errored)).is_none(), "said once");
     }
 
     /// DLV-201: a head Yulius could not push ends the wait with why and what to do, once.

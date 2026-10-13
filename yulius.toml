@@ -18,11 +18,15 @@ preset = "standard"
 integration_branch = "dev"
 production_branch = "main"
 
-# macOS has no Yulius runner: run `scripts/dev ci` on a Mac before promotion. The branch policy
-# (scripts/check_git_policy.py) is checked by hand until it joins Yulius's merge gate (#223).
+# The rules Yulius's merge gate checks before every merge (SPEC-069): typed branches, conventional
+# titles of at most 100 characters, promotions `release: promote dev to main[ - label]`.
+[branch_policy]
+preset = "standard"
+
+# macOS has no Yulius runner: run `scripts/dev ci` on a Mac before promotion.
 [[ci.jobs]]
 name = "quality"
-command = "python3 scripts/bootstrap.py --install-rustup && scripts/dev ci"
+command = "python3 scripts/bootstrap.py --install-rustup && NEXTEST_TEST_THREADS=num-cpus scripts/dev ci"
 
 # The browser's system libraries are installed once in the sandbox (onboarding); installing them
 # on every run (`--with-deps`, apt) raced the other CI lane and agents for the dpkg lock and

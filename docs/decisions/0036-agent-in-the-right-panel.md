@@ -1,4 +1,4 @@
-# 0034. The Cockpit is shown as the Agent, a tool in the right panel
+# 0036. The Cockpit is shown as the Agent, a tool in the right panel
 
 ## Status
 
