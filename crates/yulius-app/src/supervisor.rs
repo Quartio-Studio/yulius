@@ -34,7 +34,7 @@ use crate::model::{
     AccountRecord, AccountStatus, AttemptRecord, LaunchKind, MetricsRecord, PauseKind,
     ProviderSessionRecord, SandboxRecord, Secret, SwitchDecisionRecord, TaskMode, TaskRecord,
 };
-use crate::ports::harness::{HarnessLaunch, Observation, SessionMode, UsageSnapshot};
+use crate::ports::harness::{HarnessLaunch, Observation, SessionMode, UsageSnapshot, WatchFrom};
 use crate::ports::session::{Containment, RunEvent, RunExit, RunInspection, RunWriter};
 use crate::ports::store::{AttemptUpdate, TaskFieldUpdate};
 use crate::usage_json;
@@ -98,10 +98,9 @@ pub struct TaskRuntime {
     /// (SPEC-072 LRS-002). A person's switch then resumes past the limit even without a `limit`
     /// pause (an automatic switch after the limit was refused).
     pub(crate) at_limit: AtomicBool,
-    /// When the current turn started (ms, 0 = no turn in progress), for active agent time.
+    /// When the current turn started (ms, 0 = no turn in progress). Active agent time comes
+    /// from the transcript (SPEC-087 MET-001), not from this.
     turn_started_ms: AtomicI64,
-    /// Active agent time of the current attempt: its finished turns (ms).
-    active_ms: AtomicI64,
     /// The head Yulius last tried to open a pull request for by itself (#35), so a failed try is
     /// not repeated every turn.
     pub(crate) auto_pr_head: Mutex<Option<String>>,
@@ -229,7 +228,6 @@ impl TaskRuntime {
             limit_resets_at: AtomicI64::new(0),
             at_limit: AtomicBool::new(false),
             turn_started_ms: AtomicI64::new(0),
-            active_ms: AtomicI64::new(0),
             auto_pr_head: Mutex::new(None),
             typed_at_ms: AtomicI64::new(0),
             typed_by: Mutex::new(None),
@@ -289,33 +287,16 @@ impl TaskRuntime {
         self.turn_started_ms.load(Ordering::SeqCst) > 0
     }
 
-    /// A turn started now unless one is already in progress (active agent time).
+    /// A turn started now unless one is already in progress.
     pub(crate) fn start_turn(&self, now: Timestamp) {
         let _ = self
             .turn_started_ms
             .compare_exchange(0, now.0, Ordering::SeqCst, Ordering::SeqCst);
     }
 
-    /// Ends the turn in progress, if any, adding its time to the attempt's active time.
-    pub(crate) fn end_turn(&self, now: Timestamp) {
-        let started = self.turn_started_ms.swap(0, Ordering::SeqCst);
-        if started > 0 {
-            self.active_ms
-                .fetch_add(now.0.saturating_sub(started).max(0), Ordering::SeqCst);
-        }
-    }
-
-    /// Active agent time so far: finished turns plus the one in progress.
-    fn active_ms_at(&self, now: Timestamp) -> i64 {
-        let started = self.turn_started_ms.load(Ordering::SeqCst);
-        let running = if started > 0 {
-            now.0.saturating_sub(started).max(0)
-        } else {
-            0
-        };
-        self.active_ms
-            .load(Ordering::SeqCst)
-            .saturating_add(running)
+    /// Ends the turn in progress, if any.
+    pub(crate) fn end_turn(&self, _now: Timestamp) {
+        self.turn_started_ms.store(0, Ordering::SeqCst);
     }
 }
 
@@ -2024,10 +2005,11 @@ impl App {
     }
 
     /// Stores a run's metrics: while it goes (live, #31) and once more when it ends. The store
-    /// upserts by attempt, so the last save wins and nothing is counted twice.
+    /// upserts by attempt, so the last save wins and nothing is counted twice. Every figure comes
+    /// from the run's transcript, which a restart reads again, so a save after a restart never
+    /// replaces them with less (SPEC-087 MET-002).
     async fn save_metrics(&self, task_id: &TaskId, attempt_id: &AttemptId, runtime: &TaskRuntime) {
         let snapshot = runtime.usage.lock().map(|u| u.clone()).unwrap_or_default();
-        let active = runtime.active_ms_at(self.now());
         let metrics = MetricsRecord {
             model: snapshot.model,
             input_tokens: snapshot.tokens.input,
@@ -2035,7 +2017,7 @@ impl App {
             cache_read: snapshot.tokens.cache_read,
             cache_write: snapshot.tokens.cache_write,
             turns: u32::try_from(snapshot.turns).ok().filter(|t| *t > 0),
-            active_ms: u64::try_from(active).ok().filter(|ms| *ms > 0),
+            active_ms: snapshot.active_ms.filter(|ms| *ms > 0),
         };
         let _ = self
             .deps
@@ -2933,7 +2915,6 @@ impl App {
             *u = UsageSnapshot::default();
         }
         runtime.turn_started_ms.store(0, Ordering::SeqCst);
-        runtime.active_ms.store(0, Ordering::SeqCst);
         // A new attempt (or the same one after a restart) learns the goal from its transcript.
         runtime.goal_achieved.store(false, Ordering::SeqCst);
         runtime.goal_submitted.store(false, Ordering::SeqCst);
@@ -3042,15 +3023,15 @@ impl App {
                     self.transcript_path(&sandbox, &worktree, attempt.harness, id, None)
                 && path.exists()
             {
-                watch = self
-                    .deps
-                    .harness
-                    .watch(
-                        attempt.harness,
-                        &path,
-                        attempt.launch_kind == LaunchKind::New,
-                    )
-                    .ok();
+                // A resumed session's transcript holds its earlier runs' lines: the run reads its
+                // own, from its start, whether it is watched from its launch or reattached after a
+                // restart (SPEC-087 MET-002). Reading from the end when the watch opened lost the
+                // lines written before it, and after a restart all of the run's figures.
+                let from = match attempt.launch_kind {
+                    LaunchKind::New => WatchFrom::Start,
+                    LaunchKind::Resume => WatchFrom::Since(attempt.started_at),
+                };
+                watch = self.deps.harness.watch(attempt.harness, &path, from).ok();
                 catching_up = replay && watch.is_some();
                 replay &= watch.is_none();
                 facts = TranscriptFacts::default();
@@ -3112,10 +3093,10 @@ impl App {
                 }
             }
             // Live metrics (#31): the dashboard counts a run while it goes, saved after each turn
-            // and at most every 30 s while something changes.
+            // and at most every 30 s while something changes (a turn in progress grows its
+            // active time with each line).
             let now = self.now();
-            let working = runtime.turn_started_ms.load(Ordering::SeqCst) > 0;
-            if (saved.as_ref() != Some(&usage) || working)
+            if saved.as_ref() != Some(&usage)
                 && (turn_ended || now.millis_since(saved_at) >= LIVE_METRICS_MS)
             {
                 self.save_metrics(&task_id, &attempt.id, &runtime).await;

@@ -33,7 +33,7 @@ use crate::context::App;
 use crate::coordination::ProjectCaller;
 use crate::error::{AppError, AppResult};
 use crate::model::{AccountRecord, SandboxRecord, UserRecord};
-use crate::ports::harness::{CockpitLaunch, Observation, TranscriptWatch};
+use crate::ports::harness::{CockpitLaunch, Observation, TranscriptWatch, WatchFrom};
 use crate::shells::{COCKPIT_TOKEN_PREFIX, ShellInfo, ShellKind, ShellRuntime};
 
 /// The Cockpit's display name.
@@ -299,7 +299,11 @@ impl App {
             if let Some(path) = newest
                 && watched.as_ref().is_none_or(|(current, _)| *current != path)
             {
-                match self.deps.harness.watch(Harness::ClaudeCode, &path, true) {
+                match self
+                    .deps
+                    .harness
+                    .watch(Harness::ClaudeCode, &path, WatchFrom::Start)
+                {
                     Ok(watch) => {
                         watched = Some((path, watch));
                         history_read = false;
