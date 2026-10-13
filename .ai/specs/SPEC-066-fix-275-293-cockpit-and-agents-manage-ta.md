@@ -49,7 +49,7 @@ the same rules, permissions and audits as the web UI, without opening the UI.
 | MGT-009 | A task's agent cannot stop, archive or delete its own task through these tools; the refusal says so and changes nothing. | `manage_tools.rs` |
 | MGT-010 | Each successful call is audited with the caller as actor (`task:<n>` / `cockpit:<login>`) and the caller's detail: `task.stopped`, `task.archived` / `task.unarchived`, `task.deleted` (the UI's deletion audit, now with the caller instead of the person's login), `automation.deleted`, `automation.run_now`. | `manage_tools.rs`, `cockpit.rs` |
 | MGT-011 | `automation_delete` and `automation_run_now` take an `automation_id` of the caller's project and do what the UI does (delete with its history, tasks stay; one run now, also when disabled, the previous-active rule applies), for the person the caller acts for. | `manage_tools.rs` |
-| MGT-012 | The Cockpit is served the new tools (`COCKPIT_TOOLS`); none of them is pre-allowed, so Claude Code asks the person before each one. The briefing announces them to task agents. | `mcp.rs` unit tests, `cockpit.rs`, `manage_tools.rs` |
+| MGT-012 | The Cockpit is served the new tools (`COCKPIT_TOOLS`); none of them is pre-allowed, so Claude Code asks the person before each one. Task agents are served them by `tools/list`; the briefing's tool list is unchanged. | `mcp.rs` unit tests, `cockpit.rs`, `manage_tools.rs` |
 | AUT-012 | `automations_list` also returns `ready_made`: the catalog's automations (id, name, description, schedule, workflow) with `automation_id`, the project's automation of the same name or `null`. `automation_template_enable` (`template`: a catalog id) has the semantics of `POST …/automation-templates/{id}/enable`: creates it enabled (`created: true`, `created_via: agent`, created by the person the caller acts for, audited with the caller and the template), or enables the project's automation of that name keeping its content (`created: false`). Enabling twice never makes a duplicate; an unknown id is an error naming the known ids. | `crates/yulius/tests/automations.rs` |
 
 ## Design
@@ -100,11 +100,11 @@ flowchart LR
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Agents and the Cockpit stop, archive and delete tasks through MCP, audited, never their own
-- [ ] Agents and the Cockpit delete automations and run them now through MCP
-- [ ] Agents list ready-made automations and enable one by catalog id
-- [ ] The Cockpit is served the new tools without pre-allowing them; the briefing announces them
-- [ ] Docs, ADR and architecture describe the full management tool set
+- [x] Agents and the Cockpit stop, archive and delete tasks through MCP, audited, never their own
+- [x] Agents and the Cockpit delete automations and run them now through MCP
+- [x] Agents list ready-made automations and enable one by catalog id
+- [x] The Cockpit is served the new tools without pre-allowing them
+- [x] Docs, ADR and architecture describe the full management tool set
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Gates green, delivered into dev, issues closed
 
@@ -119,7 +119,7 @@ flowchart LR
   `automation_template_enable` create, re-enable after pausing (one automation), unknown id.
 - Integration (`crates/yulius/tests/cockpit.rs`): `tools/list` of a Cockpit includes the new
   tools; a Cockpit deletes a task and an automation and runs one now, audited `cockpit:alice`.
-- Unit (`mcp.rs`): every `COCKPIT_TOOLS` name is served; the briefing's tools are served.
+- Unit (`mcp.rs`): every `COCKPIT_TOOLS` name is served; the briefing's tools are served (its list is unchanged).
 - Not covered by the gate: a live model asking the person in the Cockpit's TUI before a tool that
   is not pre-allowed (Claude Code's own behaviour, needs a paid credential).
 
@@ -144,4 +144,9 @@ flowchart LR
 - **Workflow create and edit stay out** (#275 lists them in its current behaviour, not in its
   acceptance criteria): they are a separate surface (instance and project workflows, defaults
   read-only) and would make this change too large; said in the issue's closing comment.
+- **The briefing does not announce the new tools.** Its tool list is a mandatory part of a
+  9,500-byte budget shared with the project's documents; six more names cut the decision index
+  below what `short_parts_donate_budget_to_long_ones` guarantees. Task agents get the tools from
+  `tools/list` (with their descriptions), and stopping or deleting other tasks is not something
+  every session should be nudged towards. Lowering the test's floor instead would hide the cost.
 - Recorded as ADR-0049.
