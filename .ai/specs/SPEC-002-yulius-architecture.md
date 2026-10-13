@@ -1049,7 +1049,11 @@ ciphertext; that instance-wide command (it must also re-seal accounts, GitHub to
 secrets) is a follow-up. After a suspected leak of `master.key` together with a database copy,
 re-encryption does not help: the values themselves must be rotated at their providers.
 
-**Team section.** Every signed-in member lists, adds, edits and deletes team secrets (flat, as the
+**Team section.** (Since F 2026-10-12, SPEC-040 and ADR-0034: a team secret is a title, a value
+and notes; older ones fold in when read; reveals need the person's own two-factor code entered in
+the browser session within 10 minutes instead of a recent sign-in; there is no per-secret seed;
+the people who manage an agent secret read it back the same way. The paragraph below is the
+original design.) Every signed-in member lists, adds, edits and deletes team secrets (flat, as the
 team works): title, URL, user name, password, notes and a TOTP seed (base32 or an
 `otpauth://totp/…` URI; RFC 6238 SHA-1/256/512, 6–8 digits). The list shows titles, URLs and user
 names. Revealing a password, notes or the seed, copying, and reading the current code need a
@@ -1066,7 +1070,8 @@ injection (`Authorization: Bearer`, Basic with a user name, or a named header), 
 name and TOTP seed, and a value of at least 8 characters (shorter values cannot be recognised in
 output, VLT-006). Sandbox secrets are managed by members with write access, instance-wide ones by
 instance administrators; members who can view a sandbox see names, descriptions and bindings.
-Values are write-only for everyone (replace, never read back).
+Values are write-only for everyone (replace, never read back). (Since SPEC-040, ADR-0034: the
+people who manage one read it back after their two-factor code; agents still never do.)
 
 Mechanisms considered for *using* a secret:
 
@@ -2202,8 +2207,9 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
   (ADR-14, BRW-008).
 
 - Secrets vault (ADR-20): values only under envelope encryption (per-write data keys, KEK derived
-  from the master key, row identity as associated data); team reveals need a browser session
-  authenticated within 10 minutes and are audited; agent secrets are write-only, added to
+  from the master key, row identity as associated data); reveals need the person's own two-factor
+  code entered in the browser session within 10 minutes and are audited (SPEC-040, ADR-0034);
+  agents never read agent secrets (their managers can, after the code), which are added to
   requests by the egress proxy only for their bound hosts (TLS interception only there; local
   destinations refused after resolution), typed by `browser_fill_secret` only into pages of those
   hosts, and redacted with their encodings from every channel an agent reads, from the terminal
@@ -2404,7 +2410,7 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | R-10 | The MCP server connection test makes the server connect to a user-supplied URL (SSRF). | Mitigated: the host is resolved and the client pinned to the checked addresses; link-local (cloud metadata), unspecified, multicast and broadcast targets are refused for everyone; loopback and private networks only for instance administrators; no redirects; 5 s bound; only tool names or a short error are returned. |
 | R-11 | Concurrent Claude processes in one sandbox share `.claude.json`; a running Claude may rewrite the file between Yulius' trust merge and a new launch. | Merge immediately before spawn; the window is short. Live verification of concurrent launches pending. |
 | R-12 | Closed (F 2026-10-08): Codex releases without `--no-daemon` (Codex removed). | — |
-| R-15 | Agent secrets: a manipulated agent can still misuse a credential on its bound hosts, make a bound host echo it transformed, confirm guesses of a weak value through redaction, or read a filled field over raw CDP (R-07); the end-to-end Claude Code behaviour of the shell prefix and `updatedToolOutput` is read from the 2.1.292 bundle, not exercised live. | Host binding, the 8-character minimum, write-only values, audit of every use; ADR-20 lists the threats. Open: a live smoke with Claude Code; R-07. |
+| R-15 | Agent secrets: a manipulated agent can still misuse a credential on its bound hosts, make a bound host echo it transformed, confirm guesses of a weak value through redaction, or read a filled field over raw CDP (R-07); the end-to-end Claude Code behaviour of the shell prefix and `updatedToolOutput` is read from the 2.1.292 bundle, not exercised live. | Host binding, the 8-character minimum, values agents never read (since SPEC-040 a manager's session together with their authenticator can read one: the lockout after 10 wrong codes and the audit bound that), audit of every use; ADR-20 lists the threats. Open: a live smoke with Claude Code; R-07. |
 | R-13 | The server's own Git (worktree creation, commits, status and readiness checks, fetch, delivery pushes) runs outside containment in the sandbox repository and worktrees, whose Git directories agents can write (#54). | Every server-side Git command runs with repository hooks off (`core.hooksPath=/dev/null`), fsmonitor off and `ext::` refused; agents' own Git still runs hooks, so the pre-push guard applies to them. Open (#54 part B): repository-local configuration that runs programs or redirects remotes (filter, diff and merge drivers, credential helpers, URL rewriting) — read-only Git config in containment or a Yulius-owned mirror. |
 
 ## 13. Delivery checkpoints

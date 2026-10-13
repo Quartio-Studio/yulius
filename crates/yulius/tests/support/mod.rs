@@ -480,6 +480,7 @@ pub struct Resp {
     pub body: serde_json::Value,
     pub set_cookie: Option<String>,
     pub location: Option<String>,
+    pub cache_control: Option<String>,
 }
 
 /// Session credentials.
@@ -525,6 +526,11 @@ pub async fn call(
         .get(header::LOCATION)
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
+    let cache_control = resp
+        .headers()
+        .get(header::CACHE_CONTROL)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
     let bytes = resp.into_body().collect().await?.to_bytes();
     let body = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
     Ok(Resp {
@@ -532,6 +538,7 @@ pub async fn call(
         body,
         set_cookie,
         location,
+        cache_control,
     })
 }
 
@@ -566,6 +573,7 @@ pub async fn send(
         body: serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
         set_cookie: None,
         location: None,
+        cache_control: None,
     })
 }
 

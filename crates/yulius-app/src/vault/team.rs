@@ -1,9 +1,9 @@
-//! Team secrets (VLT-001..003): flat access for every member, reveals behind a fresh
-//! re-authentication, everything audited.
+//! Team secrets (VLT-001..002, SPEC-040): a title, a value and notes; flat access for every
+//! member, reveals behind a two-factor unlock, everything audited.
 
 use yulius_contracts::api::secrets::{
-    ReauthStatus, RevealRequest, TeamSecretInput, TeamSecretPatch, TeamSecretReveal,
-    TeamSecretView, TotpCode, VaultActivity,
+    ReauthStatus, RevealRequest, SecretReveal, TeamSecretInput, TeamSecretPatch, TeamSecretView,
+    TotpCode, VaultActivity,
 };
 use yulius_domain::time::Timestamp;
 use yulius_domain::vault::totp::{code_from_hmac, counter, parse_otp, remaining_seconds};
@@ -18,8 +18,6 @@ use crate::ports::vault::{VaultSecretRecord, VaultSection};
 
 /// Longest title.
 const MAX_TITLE: usize = 200;
-/// Longest URL.
-const MAX_URL: usize = 2048;
 /// Re-authentication attempts per user and minute.
 const REAUTH_ATTEMPTS_PER_MINUTE: usize = 5;
 
@@ -32,6 +30,58 @@ pub enum Revealed<T> {
     ReauthRequired(ReauthStatus),
 }
 
+/// Validates a reveal request: its purpose (`show` or `copy`) and fields (`value`, `notes`).
+pub(super) fn reveal_request(request: &RevealRequest) -> AppResult<(&str, Vec<String>)> {
+    let purpose = request.purpose.as_deref().unwrap_or("show");
+    if !matches!(purpose, "show" | "copy") {
+        return Err(AppError::Invalid("purpose must be show or copy".into()));
+    }
+    let wanted = request
+        .fields
+        .clone()
+        .unwrap_or_else(|| vec!["value".into(), "notes".into()]);
+    if wanted.is_empty()
+        || wanted
+            .iter()
+            .any(|f| !matches!(f.as_str(), "value" | "notes"))
+    {
+        return Err(AppError::Invalid("fields are value and notes".into()));
+    }
+    Ok((purpose, wanted))
+}
+
+/// The asked fields that are stored.
+pub(super) fn pick(
+    wanted: &[String],
+    value: &Option<String>,
+    notes: &Option<String>,
+) -> SecretReveal {
+    let pick = |name: &str, field: &Option<String>| {
+        wanted
+            .iter()
+            .any(|w| w == name)
+            .then(|| field.clone())
+            .flatten()
+    };
+    SecretReveal {
+        value: pick("value", value),
+        notes: pick("notes", notes),
+    }
+}
+
+/// The revealed field names, for the audit trail.
+pub(super) fn shown(revealed: &SecretReveal) -> String {
+    [
+        ("value", revealed.value.is_some()),
+        ("notes", revealed.notes.is_some()),
+    ]
+    .into_iter()
+    .filter(|(_, present)| *present)
+    .map(|(name, _)| name)
+    .collect::<Vec<_>>()
+    .join(", ")
+}
+
 fn title(text: &str) -> AppResult<String> {
     let text = text.trim();
     if text.is_empty() || text.chars().count() > MAX_TITLE || text.chars().any(char::is_control) {
@@ -42,24 +92,6 @@ fn title(text: &str) -> AppResult<String> {
     Ok(text.to_owned())
 }
 
-fn url(text: Option<&str>) -> AppResult<Option<String>> {
-    let value = field(text, "url", true)?;
-    if let Some(value) = &value
-        && (value.len() > MAX_URL || value.chars().any(char::is_control))
-    {
-        return Err(AppError::Invalid("invalid URL".into()));
-    }
-    Ok(value)
-}
-
-fn totp_seed(text: Option<&str>) -> AppResult<Option<String>> {
-    let value = field(text, "TOTP seed", true)?;
-    if let Some(seed) = &value {
-        parse_otp(seed).map_err(invalid)?;
-    }
-    Ok(value)
-}
-
 impl App {
     async fn team_view(&self, record: &VaultSecretRecord) -> AppResult<TeamSecretView> {
         let payload: TeamPayload = self.open_payload(record)?;
@@ -67,16 +99,13 @@ impl App {
         Ok(TeamSecretView {
             id: record.id.clone(),
             title: record.name.clone(),
-            url: payload.url.clone(),
-            username: payload.username.clone(),
-            has_password: payload.password.is_some(),
+            has_value: payload.value.is_some(),
             has_notes: payload.notes.is_some(),
-            has_totp: payload.totp.is_some(),
             created_by: self.login_of_id(&record.created_by).await,
             updated_by: self.login_of_id(&record.updated_by).await,
             updated_at: rfc3339(record.updated_at),
             value_updated_at: rfc3339(record.value_updated_at),
-            rotate_due: payload.password.is_some()
+            rotate_due: payload.value.is_some()
                 && now.millis_since(record.value_updated_at) >= ROTATE_AFTER_MS,
         })
     }
@@ -97,8 +126,8 @@ impl App {
             .ok_or(AppError::NotFound)
     }
 
-    /// `GET /api/team-secrets`: every member sees every team secret (titles, addresses and
-    /// user names; secret fields only flagged).
+    /// `GET /api/team-secrets`: every member sees every team secret (titles; the value and the
+    /// notes only flagged).
     ///
     /// # Errors
     /// Store or decryption failures.
@@ -120,11 +149,8 @@ impl App {
         input: &TeamSecretInput,
     ) -> AppResult<TeamSecretView> {
         let payload = TeamPayload {
-            url: url(input.url.as_deref())?,
-            username: field(input.username.as_deref(), "user name", true)?,
-            password: field(input.password.as_deref(), "password", false)?,
+            value: field(input.value.as_deref(), "value", false)?,
             notes: field(input.notes.as_deref(), "notes", false)?,
-            totp: totp_seed(input.totp.as_deref())?,
         };
         let id = self.deps.crypto.new_id();
         let now = self.now();
@@ -176,27 +202,14 @@ impl App {
             record.name = title(text)?;
             changed.push("title");
         }
-        if patch.url.is_some() {
-            payload.url = url(patch.url.as_deref())?;
-            changed.push("url");
-        }
-        if patch.username.is_some() {
-            payload.username = field(patch.username.as_deref(), "user name", true)?;
-            changed.push("username");
-        }
-        if patch.password.is_some() {
-            payload.password = field(patch.password.as_deref(), "password", false)?;
-            changed.push("password");
+        if patch.value.is_some() {
+            payload.value = field(patch.value.as_deref(), "value", false)?;
+            changed.push("value");
             value_changed = true;
         }
         if patch.notes.is_some() {
             payload.notes = field(patch.notes.as_deref(), "notes", false)?;
             changed.push("notes");
-            value_changed = true;
-        }
-        if patch.totp.is_some() {
-            payload.totp = totp_seed(patch.totp.as_deref())?;
-            changed.push("totp");
             value_changed = true;
         }
         let now = self.now();
@@ -240,7 +253,7 @@ impl App {
 
     /// When the caller's browser session last proved who they are: its sign-in or a
     /// re-authentication. API tokens never qualify.
-    async fn authenticated_at(&self, ctx: &AuthContext) -> AppResult<Option<Timestamp>> {
+    pub(super) async fn authenticated_at(&self, ctx: &AuthContext) -> AppResult<Option<Timestamp>> {
         let Some(hash) = &ctx.session_hash else {
             return Ok(None);
         };
@@ -254,7 +267,8 @@ impl App {
         Ok(created.max(reauth))
     }
 
-    /// `GET /api/auth/reauth`: whether reveals are allowed now and how to confirm.
+    /// `GET /api/auth/reauth`: whether the vault is unlocked, the caller's two-factor, and how
+    /// to confirm identity (to set two-factor up).
     ///
     /// # Errors
     /// Store failures.
@@ -269,18 +283,43 @@ impl App {
             }
         }
         let now = self.now();
-        let at = self.authenticated_at(ctx).await?;
-        let fresh = at.is_some_and(|at| reauth_fresh(now, at));
+        let identity = self.authenticated_at(ctx).await?;
+        let unlocked = match &ctx.session_hash {
+            Some(hash) => self.deps.store.vault_unlock(hash).await?,
+            None => None,
+        };
+        let fresh = unlocked.is_some_and(|at| reauth_fresh(now, at));
         Ok(ReauthStatus {
             fresh,
-            fresh_until: at
+            fresh_until: unlocked
                 .filter(|_| fresh)
                 .map(|at| rfc3339(at.plus_millis(REAUTH_WINDOW_MS))),
+            two_factor: self.two_factor_state(ctx, identity).await?.to_owned(),
+            identity_fresh: identity.is_some_and(|at| reauth_fresh(now, at)),
             methods,
         })
     }
 
-    /// `POST /api/auth/reauth`: the superadmin confirms with the password (rate limited, audited).
+    /// Counts an attempt of `key` (a user's password confirmations or codes): at most 5 a minute.
+    pub(super) fn limit_attempts(&self, key: &str) -> AppResult<()> {
+        let now = self.now();
+        let mut attempts = self
+            .login_attempts
+            .lock()
+            .map_err(|_| AppError::Internal("rate limiter poisoned".into()))?;
+        let entry = attempts.entry(key.to_owned()).or_default();
+        entry.retain(|t| now.0 - *t < 60_000);
+        if entry.len() >= REAUTH_ATTEMPTS_PER_MINUTE {
+            return Err(AppError::Capacity(
+                "too many attempts; wait a minute".into(),
+            ));
+        }
+        entry.push(now.0);
+        Ok(())
+    }
+
+    /// `POST /api/auth/reauth`: the superadmin confirms it is them with the password (rate
+    /// limited, audited), which allows setting up two-factor.
     ///
     /// # Errors
     /// `Forbidden` without a browser session or a password and for a wrong password;
@@ -301,22 +340,7 @@ impl App {
             ));
         };
         let now = self.now();
-        {
-            let mut attempts = self
-                .login_attempts
-                .lock()
-                .map_err(|_| AppError::Internal("rate limiter poisoned".into()))?;
-            let entry = attempts
-                .entry(format!("reauth:{}", ctx.user.id.as_str()))
-                .or_default();
-            entry.retain(|t| now.0 - *t < 60_000);
-            if entry.len() >= REAUTH_ATTEMPTS_PER_MINUTE {
-                return Err(AppError::Capacity(
-                    "too many attempts; wait a minute".into(),
-                ));
-            }
-            entry.push(now.0);
-        }
+        self.limit_attempts(&format!("reauth:{}", ctx.user.id.as_str()))?;
         let actor = Self::vault_actor(ctx);
         if !self.deps.crypto.verify_password(password, phc) {
             self.vault_audit(&actor, "vault.reauth.failed", None, "password")
@@ -330,19 +354,23 @@ impl App {
         self.reauth_status(ctx).await
     }
 
-    /// Checks the re-authentication window before a reveal.
-    async fn fresh_or_status(&self, ctx: &AuthContext) -> AppResult<Option<ReauthStatus>> {
+    /// Checks the two-factor unlock before a reveal (SPEC-040 R4).
+    pub(super) async fn fresh_or_status(
+        &self,
+        ctx: &AuthContext,
+    ) -> AppResult<Option<ReauthStatus>> {
         if ctx.session_hash.is_none() {
             return Err(AppError::Forbidden(
-                "secrets are revealed only in the web UI, after confirming it is you".into(),
+                "secrets are revealed only in the web UI, after entering your two-factor code"
+                    .into(),
             ));
         }
         let status = self.reauth_status(ctx).await?;
         Ok((!status.fresh).then_some(status))
     }
 
-    /// `POST /api/team-secrets/{id}/reveal`: the requested secret fields, after a fresh
-    /// re-authentication; audited as `vault.team.reveal` or `vault.team.copy`.
+    /// `POST /api/team-secrets/{id}/reveal`: the value and/or the notes, after a two-factor
+    /// unlock; audited as `vault.team.reveal` or `vault.team.copy`.
     ///
     /// # Errors
     /// `NotFound`, `Invalid` purpose or field, `Forbidden` for API tokens, store failures.
@@ -351,50 +379,14 @@ impl App {
         ctx: &AuthContext,
         id: &str,
         request: &RevealRequest,
-    ) -> AppResult<Revealed<TeamSecretReveal>> {
-        let purpose = request.purpose.as_deref().unwrap_or("show");
-        if !matches!(purpose, "show" | "copy") {
-            return Err(AppError::Invalid("purpose must be show or copy".into()));
-        }
-        let wanted: Vec<String> = request
-            .fields
-            .clone()
-            .unwrap_or_else(|| vec!["password".into(), "notes".into(), "totp".into()]);
-        if wanted.is_empty()
-            || wanted
-                .iter()
-                .any(|f| !matches!(f.as_str(), "password" | "notes" | "totp"))
-        {
-            return Err(AppError::Invalid(
-                "fields are password, notes and totp".into(),
-            ));
-        }
+    ) -> AppResult<Revealed<SecretReveal>> {
+        let (purpose, wanted) = reveal_request(request)?;
         let record = self.team_record(id).await?;
         if let Some(status) = self.fresh_or_status(ctx).await? {
             return Ok(Revealed::ReauthRequired(status));
         }
         let payload: TeamPayload = self.open_payload(&record)?;
-        let pick = |name: &str, value: &Option<String>| {
-            wanted
-                .iter()
-                .any(|w| w == name)
-                .then(|| value.clone())
-                .flatten()
-        };
-        let revealed = TeamSecretReveal {
-            password: pick("password", &payload.password),
-            notes: pick("notes", &payload.notes),
-            totp: pick("totp", &payload.totp),
-        };
-        let shown: Vec<&str> = [
-            ("password", revealed.password.is_some()),
-            ("notes", revealed.notes.is_some()),
-            ("totp", revealed.totp.is_some()),
-        ]
-        .into_iter()
-        .filter(|(_, present)| *present)
-        .map(|(name, _)| name)
-        .collect();
+        let revealed = pick(&wanted, &payload.value, &payload.notes);
         self.vault_audit(
             &Self::vault_actor(ctx),
             if purpose == "copy" {
@@ -403,40 +395,10 @@ impl App {
                 "vault.team.reveal"
             },
             Some(id),
-            &format!("{} ({})", record.name, shown.join(", ")),
+            &format!("{} ({})", record.name, shown(&revealed)),
         )
         .await?;
         Ok(Revealed::Values(revealed))
-    }
-
-    /// `POST /api/team-secrets/{id}/totp`: the current code, after a fresh re-authentication;
-    /// audited as `vault.team.totp`.
-    ///
-    /// # Errors
-    /// `NotFound` (also without a seed), `Forbidden` for API tokens, store failures.
-    pub async fn team_secret_totp(
-        &self,
-        ctx: &AuthContext,
-        id: &str,
-    ) -> AppResult<Revealed<TotpCode>> {
-        let record = self.team_record(id).await?;
-        if let Some(status) = self.fresh_or_status(ctx).await? {
-            return Ok(Revealed::ReauthRequired(status));
-        }
-        let payload: TeamPayload = self.open_payload(&record)?;
-        let seed = payload
-            .totp
-            .as_deref()
-            .ok_or_else(|| AppError::Invalid("this secret has no TOTP seed".into()))?;
-        let code = self.totp_code(seed)?;
-        self.vault_audit(
-            &Self::vault_actor(ctx),
-            "vault.team.totp",
-            Some(id),
-            &record.name,
-        )
-        .await?;
-        Ok(Revealed::Values(code))
     }
 
     /// The current code of a seed.

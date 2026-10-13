@@ -67,6 +67,39 @@ pub fn base32_decode(text: &str) -> Result<Vec<u8>, VaultError> {
     Ok(out)
 }
 
+/// RFC 4648 base32 of `bytes`, uppercase and without padding (what authenticator apps take).
+#[must_use]
+pub fn base32_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+    let mut out = String::with_capacity(bytes.len().div_ceil(5) * 8);
+    let mut buffer: u32 = 0;
+    let mut bits = 0;
+    for &byte in bytes {
+        buffer = ((buffer << 8) | u32::from(byte)) & 0xffff;
+        bits += 8;
+        while bits >= 5 {
+            bits -= 5;
+            out.push(char::from(ALPHABET[((buffer >> bits) & 31) as usize]));
+        }
+    }
+    if bits > 0 {
+        out.push(char::from(ALPHABET[((buffer << (5 - bits)) & 31) as usize]));
+    }
+    out
+}
+
+/// The `otpauth://totp/…` link of a base32 seed with the defaults (SHA-1, 6 digits, 30 s): what
+/// an authenticator app's QR code holds.
+#[must_use]
+pub fn otpauth_uri(issuer: &str, account: &str, seed: &str) -> String {
+    use super::encode::percent;
+    let issuer = percent(issuer.as_bytes());
+    format!(
+        "otpauth://totp/{issuer}:{}?secret={seed}&issuer={issuer}&algorithm=SHA1&digits=6&period=30",
+        percent(account.as_bytes())
+    )
+}
+
 fn percent_decode(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
@@ -247,6 +280,27 @@ mod tests {
         assert!(parse_otp("otpauth://totp/x?issuer=a").is_err());
         assert!(parse_otp("GEZDGNBV").is_err(), "too short");
         assert!(!format!("{uri:?}").contains("1234"), "Debug hides the seed");
+        Ok(())
+    }
+
+    #[test]
+    fn seeds_encode_to_base32_and_links_parse_back() -> Result<(), VaultError> {
+        assert_eq!(
+            base32_encode(b"12345678901234567890"),
+            "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+        );
+        for len in 0..12 {
+            let bytes: Vec<u8> = (0..len).map(|i: u8| i.wrapping_mul(37) ^ 0xa5).collect();
+            assert_eq!(base32_decode(&base32_encode(&bytes))?, bytes, "{len} bytes");
+        }
+        let uri = otpauth_uri("Yulius", "anna smith", "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ");
+        assert!(
+            uri.starts_with("otpauth://totp/Yulius:anna%20smith?"),
+            "{uri}"
+        );
+        let parsed = parse_otp(&uri)?;
+        assert_eq!(parsed.secret, b"12345678901234567890".to_vec());
+        assert_eq!((parsed.digits, parsed.period), (6, 30));
         Ok(())
     }
 
