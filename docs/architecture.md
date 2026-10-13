@@ -139,13 +139,17 @@ sequenceDiagram
     S->>C: types /goal <condition>
 ```
 
-## Cockpit
+## Agent (the Cockpit)
 
-Every user has one plain Claude Code session per sandbox, the Cockpit
+Every user has one plain Claude Code session per sandbox, shown as the **Agent**
 ([SPEC-021](../.ai/specs/SPEC-021-in-this-bar-we-need-to-add-cockpit-at-th.md),
-[decision 0020](decisions/0020-cockpit-as-a-plain-shell-session.md)). It is a sandbox shell of
-kind `cockpit` that runs `claude` instead of the login shell: no hooks, settings or briefing, a
-pool subscription's token, and the newest conversation resumed whenever it starts again.
+[decision 0020](decisions/0020-cockpit-as-a-plain-shell-session.md)); the code and the API still
+call it the Cockpit. It is a sandbox shell of kind `cockpit` that runs `claude` instead of the
+login shell: no hooks, settings or briefing, a pool subscription's token, and the newest
+conversation resumed whenever it starts again. The web UI shows it in the right tool panel beside
+the page, under a notice that it is for quick work only
+([SPEC-035](../.ai/specs/SPEC-035-move-cockpit-to-the-right-and-change-coc.md),
+[decision 0034](decisions/0034-agent-in-the-right-panel.md)).
 
 It manages the project through the Yulius MCP server
 ([SPEC-037](../.ai/specs/SPEC-037-i-got-something-like-this-tasks-and-cock.md),
@@ -157,7 +161,7 @@ New task.
 
 ```mermaid
 flowchart LR
-  UI["Sidebar: Cockpit"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
+  UI["Right panel: Agent"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
   APP -->|"pool_account"| POOL[("Subscriptions")]
   APP -->|"plan_cockpit"| HP["Harness: claude [--resume id] --mcp-config yulius"]
   APP --> SH["Shell runtime (user space, repository)"]
