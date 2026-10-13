@@ -26,13 +26,19 @@ its images.
 - The server classifies each input frame: it is typing when it holds a keystroke (text, a control
   key, an Escape key sequence or a bracketed paste). Focus reports, SGR and X10 mouse reports and
   terminal answers (device attributes, cursor position, mode and status reports, OSC and DCS
-  strings) are sent to the session but neither record typing nor claim control.
+  strings) are sent to the session but neither record typing nor claim control. The web terminal
+  applies the same rule (`typing.js`) before it takes the size locally, so the view and the server
+  agree on who controls the size.
 - A goal task whose terminal a person typed into after the launch gets no `/goal`: the draft is
   left alone, the task needs attention and its terminal says why.
 - A run whose first message Yulius types has an `opening-pending` file in its run directory,
-  written before the spawn and removed by the session's first `UserPromptSubmit` let through.
-  - After a restart, a reattached run still pending (and not held for capacity) is flagged
-    NeedsAttention with a notice; it is not typed again.
+  written (empty) before the spawn. Any `UserPromptSubmit` that reaches Yulius marks it `entered`,
+  before a capacity or update hold can keep it; the first one let through, or any Stop, removes
+  it.
+  - After a restart, a reattached run whose first message never reached the submit hook (not
+    `entered`) and that is not held for capacity is flagged NeedsAttention with a notice; it is
+    not typed again. A submitted one that an update or capacity hold keeps goes on when the hold
+    ends.
   - A prompt held for capacity while the first message is pending resumes on another account as
     a fresh session, which types the task's own opening with its images.
 
@@ -51,12 +57,15 @@ its images.
 
 ## Consequences
 
-- Clicking into or out of the terminal no longer moves control or counts as typing.
+- A focus report (a window gaining or losing focus) and a terminal answer no longer move control
+  or count as typing. A click into the terminal still takes control (`take_control`), as before.
 - A Shift-F3 key (`ESC [ 1 ; 2 R`) reads as a cursor position answer: not typing. Claude Code has
   no use for it.
 - A person who types during a goal task's start must type `/goal` themselves (the notice says so).
 - A restart during the first message's typing needs a person to finish that message, and to paste
   its images again if they are missing.
-- A first message sent while Yulius is down (the hook client fails open) stays pending, so the
-  restart flags that task although it runs: a rare false alarm a look at the terminal clears.
+- A first message submitted while Yulius is down (the hook client fails open) is not marked
+  `entered`, so the restart flags that task although it runs: a rare false alarm a look at the
+  terminal clears. Its first Stop clears the marker, so it never turns a later held prompt into a
+  fresh session.
 - The held session is replaced by a fresh one: it had no turn yet, so nothing is lost.

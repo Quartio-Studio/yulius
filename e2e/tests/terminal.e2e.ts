@@ -224,6 +224,55 @@ test('a read-only viewer cannot paste', async ({ app, browser, screen }) => {
   await expect(rows(browser)).not.toHaveText(/should not arrive/);
 });
 
+test('only keystrokes count as typing, as on the server (SPEC-068)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const table = await browser.evaluate(async () => {
+    const url = '/assets/typing.js';
+    const { isTyping } = await import(url);
+    const cases: Record<string, string> = {
+      'focus in': '\x1b[I',
+      'focus out': '\x1b[O',
+      'SGR press': '\x1b[<0;12;5M',
+      'SGR release': '\x1b[<0;12;5m',
+      'X10 press': '\x1b[M #%',
+      'X10 far right': '\x1b[M \u00e0\u0100',
+      'device attributes': '\x1b[?1;2c',
+      'cursor position': '\x1b[24;80R',
+      'mode report': '\x1b[?2004;1$y',
+      'OSC answer': '\x1b]11;rgb:0000/0000/0000\x1b\\',
+      'DCS answer': '\x1bP>|xterm.js(5.5.0)\x1b\\',
+      'text': 'a',
+      'Enter': '\r',
+      'Backspace': '\x7f',
+      'arrow': '\x1b[A',
+      'Escape': '\x1b',
+      'paste': '\x1b[200~draft\x1b[201~',
+      'focus, then a key': '\x1b[Ix',
+    };
+    return Object.fromEntries(Object.entries(cases).map(([name, data]) => [name, isTyping(data)]));
+  });
+  expect(table).toEqual({
+    'focus in': false,
+    'focus out': false,
+    'SGR press': false,
+    'SGR release': false,
+    'X10 press': false,
+    'X10 far right': false,
+    'device attributes': false,
+    'cursor position': false,
+    'mode report': false,
+    'OSC answer': false,
+    'DCS answer': false,
+    'text': true,
+    'Enter': true,
+    'Backspace': true,
+    'arrow': true,
+    'Escape': true,
+    'paste': true,
+    'focus, then a key': true,
+  });
+});
+
 test('another viewer’s size fills this box, with a chip instead of a banner, until a click takes it', async ({ app, browser, screen }) => {
   // Another, active viewer set the terminal to 90×30 (the mock's `othercols`/`otherrows`).
   await app.open(mock('/s/studio/t/12', '&othercols=90&otherrows=30'));

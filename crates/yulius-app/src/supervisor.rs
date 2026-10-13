@@ -285,17 +285,41 @@ pub struct SupervisorState {
 pub(crate) const FINAL_SCREEN_FILE: &str = "final-screen";
 
 /// File in a run directory while the run's first message, which Yulius types (SPEC-030), was not
-/// submitted yet: the session's first prompt let through removes it (SPEC-068 OPN-001).
+/// taken by the session yet (SPEC-068 OPN-001). Empty while Yulius types it; `entered` once its
+/// `UserPromptSubmit` reached Yulius (it may be held there). The session's first prompt let
+/// through, or any Stop, removes it.
 pub(crate) const OPENING_PENDING_FILE: &str = "opening-pending";
+const OPENING_ENTERED: &[u8] = b"entered";
 
-/// Whether the run in `run_dir` still has its typed first message pending.
-pub(crate) fn opening_pending(run_dir: &str) -> bool {
-    Path::new(run_dir).join(OPENING_PENDING_FILE).exists()
+fn opening_marker(run_dir: &str) -> PathBuf {
+    Path::new(run_dir).join(OPENING_PENDING_FILE)
 }
 
-/// The run in `run_dir` submitted its first prompt: nothing of its first message is pending.
+/// Whether the run in `run_dir` has its typed first message pending (typed or held).
+pub(crate) fn opening_pending(run_dir: &str) -> bool {
+    opening_marker(run_dir).exists()
+}
+
+/// Whether the first message of the run in `run_dir` never reached Yulius's submit hook: a
+/// restart cut its typing.
+pub(crate) fn opening_unsubmitted(run_dir: &str) -> bool {
+    std::fs::read(opening_marker(run_dir)).is_ok_and(|m| m != OPENING_ENTERED)
+}
+
+/// A `UserPromptSubmit` of the run in `run_dir` reached Yulius: its pending first message was
+/// submitted (it may still be held for capacity or an update).
+pub(crate) fn opening_entered(run_dir: &str) {
+    let path = opening_marker(run_dir);
+    if path.exists()
+        && let Err(err) = write_private_file(&path, OPENING_ENTERED)
+    {
+        tracing::warn!(run_dir, error = %err, "could not record the submitted first message");
+    }
+}
+
+/// The run in `run_dir` took a prompt: nothing of its first message is pending.
 pub(crate) fn opening_sent(run_dir: &str) {
-    match std::fs::remove_file(Path::new(run_dir).join(OPENING_PENDING_FILE)) {
+    match std::fs::remove_file(opening_marker(run_dir)) {
         Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
             tracing::warn!(run_dir, error = %err, "could not clear the pending first message");
         }
@@ -1067,13 +1091,22 @@ impl App {
             self.record_lineage(&task, harness, session_id, "native")
                 .await?;
         }
+        // Typing from now on, once viewers can write to this run, is a person's draft in it
+        // (SPEC-068).
+        let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
         self.attach_run(&task.id, &attempt, &host_token).await?;
         runtime.hub.state_changed();
         self.publish_task(&task.id).await;
         if goal_mode {
             match self.write_task_request(&sandbox, &task, &home).await {
                 Ok(condition) => {
-                    self.spawn_goal(&task.id, &attempt_id, typed_opening, &condition);
+                    self.spawn_goal(
+                        &task.id,
+                        &attempt_id,
+                        typed_opening,
+                        &condition,
+                        typed_before,
+                    );
                 }
                 Err(err) => {
                     tracing::error!(task = %task.id, error = %err, "could not write the task request");
@@ -1291,14 +1324,16 @@ impl App {
     /// message with attached images (SPEC-030), Claude Code's SessionStart hook, the turn on a
     /// first message ended and quiet output ([`Self::wait_input_ready`]). The submit is confirmed
     /// by what Claude Code records about the goal and retried with growing waits; a goal never
-    /// taken flags the task. A person who typed into the session meanwhile keeps their draft: no
-    /// goal is typed and the task is flagged (SPEC-068).
+    /// taken flags the task. A person who typed into the session since `typed_before` (the
+    /// typing time when the run was attached) keeps their draft: no goal is typed and the task is
+    /// flagged (SPEC-068).
     fn spawn_goal(
         self: &Arc<Self>,
         task_id: &TaskId,
         attempt_id: &AttemptId,
         opening: Option<(Vec<String>, String)>,
         condition: &str,
+        typed_before: i64,
     ) {
         let app = Arc::clone(self);
         let (task_id, attempt_id) = (task_id.clone(), attempt_id.clone());
@@ -1307,8 +1342,6 @@ impl App {
             let runtime = app.runtime(&task_id);
             let live = || app.attempt_live(&task_id, &attempt_id);
             let started = tokio::time::Instant::now();
-            // Typing from now on is a person's draft in this session (SPEC-068).
-            let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
             if let Some(opening) = opening {
                 if !app
                     .wait_input_ready(&task_id, &attempt_id, started, false)
@@ -2404,8 +2437,8 @@ impl App {
                 }
                 // The old server was typing the run's first message (or about to): how much of
                 // it reached the prompt box is unknown, so a person finishes it (SPEC-068
-                // OPN-002). A held one resumes with the capacity pause.
-                if opening_pending(&attempt.run_dir)
+                // OPN-002). A submitted one that a hold keeps goes on when the hold ends.
+                if opening_unsubmitted(&attempt.run_dir)
                     && matches!(store.open_pause(&attempt.task_id).await, Ok(None))
                 {
                     self.opening_never_sent(&attempt.task_id).await;

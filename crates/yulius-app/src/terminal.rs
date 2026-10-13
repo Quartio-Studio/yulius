@@ -332,9 +332,15 @@ fn is_typing(data: &[u8]) -> bool {
                     return true;
                 };
                 let report = match last {
-                    // X10 mouse: the button, column and row follow as raw bytes.
+                    // X10 mouse: the button, column and row follow as one character each, UTF-8
+                    // encoded from 96 up (the browser sends text frames).
                     b'M' if params.is_empty() && intermediates.is_empty() => {
-                        j += 3;
+                        for _ in 0..3 {
+                            j += 1;
+                            while data.get(j + 1).is_some_and(|b| b & 0xc0 == 0x80) {
+                                j += 1;
+                            }
+                        }
                         true
                     }
                     // Focus in and out.
@@ -409,6 +415,9 @@ mod tests {
             );
         }
         assert!(!is_typing(b""));
+        // X10 coordinates from 96 up arrive UTF-8 encoded (the browser's frames are text).
+        assert!(!is_typing("\x1b[M \u{e0}\u{100}".as_bytes()));
+        assert!(!is_typing("\x1b[M \u{e0}%\x1b[I".as_bytes()));
         let typing: [&[u8]; 9] = [
             b"a",
             b"\r",

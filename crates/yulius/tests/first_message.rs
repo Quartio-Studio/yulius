@@ -26,9 +26,13 @@ use yulius_app::hub::HubFrame;
 use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{LaunchKind, PauseKind, TaskMode, TaskOrigin};
 use yulius_app::ports::store::TaskStore;
+use yulius_app::ports::store_ext::UpdateStore;
+use yulius_app::updates::UpdateRunRecord;
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::task::{Activity, AttemptState};
+use yulius_domain::time::Timestamp;
+use yulius_domain::update::RunState;
 use yulius_ptyhost::test_support::locate_fake_agent;
 use yulius_store::SqliteStore;
 use yulius_store::crypto::MasterKeyCrypto;
@@ -179,7 +183,7 @@ fn data_dir() -> Result<(tempfile::TempDir, PathBuf), BoxError> {
     Ok((dir, data))
 }
 
-/// A goal task with an attached text file, so it opens with a turn of 6 s (SPEC-025), and a
+/// A goal task with an attached text file, so it opens with a turn of 12 s (SPEC-025), and a
 /// writer's terminal on it once that turn runs.
 async fn goal_in_its_opening_turn(
     app: &Arc<App>,
@@ -211,7 +215,8 @@ async fn goal_in_its_opening_turn(
 
 fn opening_turn() -> FakeAgentOptions {
     FakeAgentOptions {
-        opening_turn_ms: Some(6_000),
+        // Long enough that a busy test machine still types into the running turn.
+        opening_turn_ms: Some(12_000),
         ..hooked()
     }
 }
@@ -271,7 +276,14 @@ fn a_draft_typed_during_the_opening_turn_is_left_alone() -> TestResult {
             || async { screen(&app, &id).contains("DONE opening") },
         )
         .await?;
-        wait_for("the flag", Duration::from_secs(30), || async {
+        let shown = screen(&app, &id);
+        let draft = shown.find("my own draft").ok_or_else(|| shown.clone())?;
+        let done = shown.find("DONE opening").ok_or_else(|| shown.clone())?;
+        assert!(
+            draft < done,
+            "the draft came after the opening turn:\n{shown}"
+        );
+        wait_for("the flag", Duration::from_secs(60), || async {
             activity(&app, &id).await == Some(Activity::NeedsAttention)
         })
         .await?;
@@ -308,7 +320,8 @@ fn a_first_message_cut_by_a_restart_flags_the_task() -> TestResult {
         )
         .await?;
         // The image's paste reached the terminal (its echo); the text and Enter come after the
-        // paste settled, at least 500 ms later.
+        // paste settled, at least 500 ms later (`PASTE_QUIET`). A test that missed that window
+        // would fail (the message echoed), never pass falsely.
         wait_for("the image's paste", Duration::from_secs(60), || async {
             screen(&app, &id).contains("/srv/shot.png")
         })
@@ -338,6 +351,79 @@ fn a_first_message_cut_by_a_restart_flags_the_task() -> TestResult {
             !shown.contains("ECHO:"),
             "something was submitted:\n{shown}"
         );
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-068 OPN-002: the first message's submit reached Yulius but an instance update held it
+/// when the server restarted. The new server does not flag the task: the held submit goes on and
+/// the agent gets the message once.
+#[test]
+fn a_first_message_held_by_an_update_is_not_flagged_after_the_restart() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let first = runtime()?;
+    let (port, id) = first.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, port) = start(&data, &fake, hooked(), 0, probe).await?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = new_task(
+            &app,
+            &sandbox,
+            &user,
+            "Make it blue\n\n@/srv/shot.png",
+            TaskMode::Prompt,
+        )
+        .await?;
+        let attempt = loop {
+            if let Some(attempt) = app.deps.store.live_attempt(&id).await? {
+                break attempt;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        // An update drains the instance before the first message is typed: every submit waits.
+        let now = Timestamp(1);
+        app.deps
+            .store
+            .insert_update_run(&UpdateRunRecord {
+                id: "update-1".into(),
+                target_commit: "b".repeat(40),
+                from_commit: None,
+                summary: "next".into(),
+                state: RunState::Draining,
+                outcome: None,
+                error: None,
+                requested_by: "admin".into(),
+                created_at: now,
+                state_since: now,
+                finished_at: None,
+            })
+            .await?;
+        app.restore_update_hold().await;
+        let marker = Path::new(&attempt.run_dir).join("opening-pending");
+        wait_for("the held submit", Duration::from_secs(60), || async {
+            std::fs::read(&marker).is_ok_and(|m| !m.is_empty())
+        })
+        .await?;
+        Ok::<_, BoxError>((port, id))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, _) = start(&data, &fake, hooked(), port, probe).await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        app.reconcile().await?;
+        wait_for("the first message", Duration::from_secs(60), || async {
+            screen(&app, &id).contains("ECHO: [Image #1] Make it blue")
+        })
+        .await?;
+        assert_ne!(activity(&app, &id).await, Some(Activity::NeedsAttention));
+        let said = notices(&mut watch);
+        assert!(!said.iter().any(|n| n.contains("never sent")), "{said:?}");
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -406,6 +492,12 @@ fn a_held_first_message_resumes_elsewhere_with_its_image() -> TestResult {
             Some("b-second")
         );
         assert_eq!(second.launch_kind, LaunchKind::New, "a fresh session");
+        // The new session got the image pasted (its echo), not the held prompt's text.
+        assert!(
+            screen(&app, &id).contains("/srv/shot.png"),
+            "{}",
+            screen(&app, &id)
+        );
         let launch = std::fs::read_to_string(Path::new(&second.run_dir).join("fake-launch.txt"))?;
         assert!(launch.contains("prompt: None"), "{launch}");
         stop(&app, &id).await
