@@ -189,15 +189,33 @@ pub enum Observation {
     },
 }
 
-/// Accumulated usage of one attempt.
+/// Accumulated usage of one attempt, from its transcript lines alone, so reading them again after
+/// a restart gives the same figures (SPEC-087).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct UsageSnapshot {
-    /// Token totals (unknown fields stay `None`).
+    /// Token totals, its sub-agents' included (unknown fields stay `None`).
     pub tokens: TokenUsage,
     /// Model seen.
     pub model: Option<String>,
-    /// Completed turns.
+    /// Completed turns (Claude Code's turn records).
     pub turns: u64,
+    /// Active agent time (ms): the union of the turns' spans, a turn in progress up to the
+    /// newest line (MET-001). `None` before the first turn.
+    pub active_ms: Option<u64>,
+    /// When the turn in progress started, if one is.
+    pub turn_open_since: Option<Timestamp>,
+}
+
+/// Which lines of a session transcript a watch reads (SPEC-087 MET-002).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchFrom {
+    /// All of them: the run started the session.
+    Start,
+    /// The lines recorded from the run's start on: the run resumed a session whose earlier lines
+    /// are earlier runs'. The same lines are read whether the watch starts with the run or after
+    /// a restart, so the run's figures are the same; its sub-agents' transcripts count from the
+    /// same time.
+    Since(Timestamp),
 }
 
 /// A live transcript observer.
@@ -269,7 +287,7 @@ pub trait HarnessPort: Send + Sync {
         &self,
         harness: Harness,
         path: &Path,
-        from_start: bool,
+        from: WatchFrom,
     ) -> AppResult<Box<dyn TranscriptWatch>>;
     /// Login command for a provider account.
     fn login_argv(&self, harness: Harness) -> Vec<String>;

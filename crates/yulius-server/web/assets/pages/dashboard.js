@@ -91,7 +91,7 @@ function figures(data) {
   const rated = (fb.correct || 0) + (fb.incorrect || 0);
   return {
     tasks: Number.isFinite(tasks.total) ? tasks.total : null,
-    median: Number.isFinite(d.median) ? d.median : null,
+    work: Number.isFinite(d.median_active) ? d.median_active : null,
     active: Number.isFinite(d.total_active) ? d.total_active : null,
     tokens: sumTokens(data.tokens || {}),
     switches: data.switches && Number.isFinite(data.switches.total) ? data.switches.total : null,
@@ -170,7 +170,8 @@ export function renderSummary(data, previous = null, days = 30, capacity = null)
   const rated = (feedback.correct || 0) + (feedback.incorrect || 0);
   const unknownRuns = Number.isFinite(tokens.unknown_usage_runs) ? tokens.unknown_usage_runs : 0;
 
-  const byStatus = Object.entries(tasks.by_status || {}).map(([status, count]) => ({ status, info: statusInfo({ status, activity: null }), value: count }));
+  // `done` counts running tasks whose goal is achieved: finished, though their session is open.
+  const byStatus = Object.entries(tasks.by_status || {}).map(([status, count]) => ({ status, info: status === 'done' ? statusInfo({ status: 'running', activity: 'done' }) : statusInfo({ status, activity: null }), value: count }));
   const byModel = (Array.isArray(data.tokens_by_model) ? data.tokens_by_model : []).map((r) => ({ label: r.model === 'unknown' ? 'Unknown model' : modelLabel(r.model), value: sumTokens(r) }));
   const byAccount = (Array.isArray(data.tokens_by_account) ? data.tokens_by_account : []).map((r) => ({ label: r.account_label || (r.account_id ? 'Removed subscription' : 'No subscription'), value: sumTokens(r) }));
   const byOrigin = Object.entries(tasks.by_origin || {}).map(([origin, count]) => ({ label: ORIGIN_NAMES[origin] || origin, value: count }));
@@ -184,9 +185,11 @@ export function renderSummary(data, previous = null, days = 30, capacity = null)
     data.truncated ? h('div', { class: 'banner banner-warn small' }, icon('warn', { size: 14 }), h('span', { class: 'banner-text' }, `This range has more than ${int(50000)} tasks; the figures describe the newest ${int(50000)}.`)) : null,
     h('section', { class: 'card db-kpis', 'aria-label': 'Key figures' },
       kpi({ label: 'Tasks', value: int(tasks.total), change: delta(now.tasks, was('tasks'), { days }), sub: Number.isFinite(tasks.closed) ? `${int(tasks.closed)} closed` : null, extra: sparkline(perDay.map((x) => x.count || 0)) }),
-      kpi({ label: 'Median duration', value: duration(d.median ?? null), change: delta(now.median, was('median'), { better: 'down', days }), sub: d.p90 !== undefined ? `9 in 10 within ${duration(d.p90)}` : null }),
-      kpi({ label: 'Active agent time', value: duration(d.total_active ?? null), change: delta(now.active, was('active'), { better: null, days }), sub: d.total_wall !== undefined ? `${duration(d.total_wall)} start to end` : null }),
-      kpi({ label: 'Tokens', value: compact(now.tokens), change: delta(now.tokens, was('tokens'), { better: null, days }), sub: `${compact(tokens.input)} in · ${compact(tokens.output)} out`, hint: tokenNotes || null,
+      // Agent work is the time Claude Code spent in its turns (waiting for its own background agents
+      // included), never how long a session stayed open while idle (SPEC-087 MET-005).
+      kpi({ label: 'Agent work per task', value: duration(d.median_active ?? null), change: delta(now.work, was('work'), { better: null, days }), sub: Number.isFinite(d.p90_active) ? `median · 9 in 10 within ${duration(d.p90_active)}` : 'median', hint: 'The median of each task’s agent working time: the time Claude Code spent in its turns' }),
+      kpi({ label: 'Agent working time', value: duration(d.total_active ?? null), change: delta(now.active, was('active'), { better: null, days }), sub: d.total_wall !== undefined ? `sessions open ${duration(d.total_wall)}, idle included` : null, hint: 'All tasks’ agent working time; sessions stay open while they wait for a person' }),
+      kpi({ label: 'Tokens', value: compact(now.tokens), change: delta(now.tokens, was('tokens'), { better: null, days }), sub: `${compact(tokens.input)} in · ${compact(tokens.output)} out, sub-agents included`, hint: tokenNotes || null,
         note: tokenNotes || null }),
       kpi({ label: 'Subscription switches', value: int(switches(data)), change: delta(now.switches, was('switches'), { better: 'down', days }), sub: 'made by the pool, between subscriptions' }),
       kpi({ label: 'Feedback correct', value: rated ? `${Math.round(now.correct * 100)}%` : '—', change: delta(now.correct, was('correct'), { points: true, days }), extra: feedbackBar, sub: rated ? `${feedback.correct || 0} of ${rated} rated` : 'no feedback yet' })),
@@ -220,7 +223,7 @@ function barList(rows, { format = int, empty = 'No data for this range.', limit 
 
 /** Tone class of a task status for the outcome bar: done, stopped, problem, failed, live. */
 function outcomeTone(info) {
-  if (info.tone === 'closed') return 'done';
+  if (info.tone === 'closed' || info.tone === 'done') return 'done';
   if (info.tone === 'failed') return 'failed';
   if (info.tone === 'stopped-abnormal') return 'problem';
   if (info.group === 'ended') return 'stopped';
@@ -233,7 +236,7 @@ function outcomes(rows) {
   const total = known.reduce((a, r) => a + r.value, 0);
   if (!total) return card('Outcomes', null, h('p', { class: 'db-empty' }, 'No tasks in this range.'));
   const done = known.filter((r) => outcomeTone(r.info) === 'done').reduce((a, r) => a + r.value, 0);
-  return card('Outcomes', `${Math.round((done / total) * 100)}% closed`, h('div', { class: 'db-outcomes' },
+  return card('Outcomes', `${Math.round((done / total) * 100)}% done or closed`, h('div', { class: 'db-outcomes' },
     h('div', { class: 'db-split', 'aria-hidden': 'true' }, known.map((r) => h('span', { class: ['db-split-part', `db-t-${outcomeTone(r.info)}`], style: { width: `${(r.value / total) * 100}%` }, title: `${r.info.label}: ${int(r.value)}` }))),
     h('ul', { class: 'db-legend' }, known.map((r) => h('li', null,
       h('span', { class: ['db-dot', `db-t-${outcomeTone(r.info)}`], 'aria-hidden': 'true' }),
@@ -262,7 +265,9 @@ function tasksPerDay(rows, total) {
   const wrap = h('div', { class: 'chart db-chart' });
   const table = h('table', { class: 'table db-table', hidden: true }, h('thead', null, h('tr', null, h('th', null, 'Day'), h('th', { class: 'num' }, 'Tasks'))),
     h('tbody', null, rows.map((r) => h('tr', null, h('td', null, LONG_DATE.format(parseDay(r.date))), h('td', { class: 'num' }, int(r.count))))));
-  const sub = rows.length ? `${int(total ?? values.reduce((a, b) => a + b, 0))} tasks · ${avg.toFixed(1)} a day on average` : null;
+  // Days are UTC dates, as the range's are: said, so a task made after midnight local time is not
+  // looked for on the wrong day.
+  const sub = rows.length ? `${int(total ?? values.reduce((a, b) => a + b, 0))} tasks · ${avg.toFixed(1)} a day on average · UTC days` : null;
   if (!rows.length) return card('Tasks per day', null, h('p', { class: 'db-empty' }, 'No tasks in this range.'), { className: 'db-main' });
 
   const tip = h('div', { class: 'chart-tip db-tip', hidden: true });

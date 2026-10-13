@@ -71,6 +71,7 @@ number differs from the file name, and a record this index does not list.
 - [0063](0063-background-work-and-goal-verdict-from-the-transcript.md): Background launches and the goal verdict come from the transcript; the hook does not wait
 - [0064](0064-attachment-reads-have-their-own-bound.md): A prompt's attached files are read under their own bound, streamed, and confirmed on Linux
 - [0065](0065-processes-plan-for-a-cpu-and-memory-budget.md): Processes plan for a CPU and memory budget; CI jobs wait for theirs
+- [0070](0070-run-metrics-come-from-the-transcript.md): A run's metrics come from its transcript; a task's times from its state changes
 - [0066](0066-parallel-tasks-stop-colliding-at-merge.md): Yulius gives out record numbers, merges the shared logs by union, and keeps reviews across clean integration merges
 - [0068](0068-needs-you-means-a-person-has-to-act.md): "Needs you" means a person has to act; the agent's own work and waits come first
 - [0069](0069-mcp-tools-answer-with-short-text.md): Yulius's MCP tools answer with short text; the record only when a client asks

@@ -22,6 +22,22 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
     CPUs idled); `YULIUS_SANDBOX_CPUS` still sets one.
   - This repository maps the budget to Cargo, nextest and libtest, drops the fixed 4 test threads
     and the CI job's one thread per CPU, and runs e2e with half its budget as workers.
+- Every time next to a task says what it measures, and the dashboard's figures are the agents' real
+  work (SPEC-087, ADR-0070). The sidebar showed the time since a task's last change of anything: a
+  task working for two hours, woken by its own background work a minute ago, read "1m".
+  - Each group answers its own question in words, with the exact times on hover: "working 1h 20m"
+    (since it last started working without needing anyone), "waiting 12m", "queued 2h", "paused
+    5m", "in review 3m", "done 3h ago", "stopped 2d ago". The sidebar, the Tasks page ("Created",
+    "For") and a task's overview ("Created", "Now", "Agent work … sessions open") use one rule. The
+    server keeps the times: `state_since` and `working_since` (schema version 21).
+  - A run's tokens, turns and active time come from its own transcript lines, so a restart no longer
+    zeroes them and a resumed run no longer loses its first lines or, after a restart, everything:
+    41 of 109 runs stored no active time, 17 no tokens. Active time is the union of the turns'
+    spans, a turn's wait for its own background agents included. Sub-agents' tokens (34 % of
+    output) count, and turns are Claude Code's turns (they were every answer, 2.3 times too many).
+  - The dashboard shows "Agent work per task" (median of the tasks' active time) and "Agent working
+    time" beside "sessions open, idle included", instead of the median time sessions stayed open; a
+    running task whose goal is achieved counts as done in the outcomes; its days are said to be UTC.
 - Parallel tasks stop colliding at merge (SPEC-083, ADR-0066). With 8 to 12 agents, numbered
   records, the shared logs and reviews of dev merges failed or delayed most merges (81 decision
   records renamed in 36 of 74 sessions; 33 of 57 merges spent a review round on dev merges or

@@ -252,7 +252,7 @@ TaskSummary = {
   "branch": "feat/checkout-api", "origin": "ui|automation|import|onboarding|agent",
   "created_by": {"login": "…"}, "owner": {"login": "…"},
   "control_request": {"by": {"login": "…"}, "at": "…"}|null,
-  "created_at": "…", "updated_at": "…",
+  "created_at": "…", "updated_at": "…", "state_since": "…", "working_since": "…|null",
   "steps": {"done": 3, "total": 7, "current": "Implement API|null", "percent": 42},
   "archived": false, "account_label": "Claude #2|null",
   "mode": "goal|prompt",
@@ -281,6 +281,14 @@ task paused, not an error.
 share of the plan's **effort**, 0-100, rounded down (STP-006): steps declare an effort of 1 (the
 default) to 3, so 9 of 10 equal steps is 90 and a plan whose one big step is open shows less.
 
+`updated_at` is the last change of anything (title, owner, archive, status …). `state_since` is
+the last change of the task's **status or activity** (setting the same value again does not move
+it); `working_since` is the start of its working stretch: it starts when the task starts working,
+goes on through idle turns while background work wakes it and through subscription switches, and
+is null while the task waits for a person, is queued or has ended (SPEC-087). The UI shows, per
+group, "working 1h 20m" from `working_since` and "waiting 12m", "queued 2h", "done 3h ago" from
+`state_since`.
+
 `activity` is `done` when Claude Code recorded the task's goal as achieved and the turn ended
 cleanly (TSK-014); the session stays open, and any new prompt makes it `working` again.
 `background_shells` is set while the agent is idle (`waiting` or `done`): the Bash-tool shells it
@@ -301,6 +309,12 @@ TaskDetail = TaskSummary + {
 Step = {"id","ordinal","title","status":"pending|in_progress|done|skipped|blocked","note","updated_by","updated_at","effort":1}
 Metrics = {"wall_ms","active_ms|null","input_tokens|null","output_tokens|null","cache_read_tokens|null","cache_write_tokens|null","models":["…"],"switches":0,"turns|null"}
 ```
+
+`wall_ms` is how long the task's sessions were open, idle included. `active_ms`, the tokens and
+`turns` come from each run's transcript (SPEC-087): active time is the union of its turns' spans
+(prompt to answer, and Claude Code's turn records, which include a turn's wait for its own
+background agents); tokens include the session's sub-agent transcripts; turns are Claude Code's
+turn records. A restart or a resume reads the run's own lines again, so they never reset.
 
 Status wire names (from `yulius-domain::task`): `queued`, `starting`, `running`, `switching`,
 `waiting_capacity`, `stopping`, `closed`, `stopped_cancelled`, `stopped_crashed`, `stopped_killed`,
@@ -986,7 +1000,10 @@ login, 15-minute timeout (the process is stopped), finished logins stay viewable
 one is `not_found`); `from`/`to` are inclusive UTC days `YYYY-MM-DD` that select tasks by
 creation time; every figure describes that cohort (at most 50 000 newest tasks, `truncated`).
 Token figures sum known values only and count runs without usage in `unknown_usage_runs`;
-a figure no run reported is `null`. Wall time comes from attempts, active time from metrics.
+a figure no run reported is `null`. Wall time comes from attempts (sessions open, idle
+included), active time from metrics (the agent working, SPEC-087). `median_active` and `p90_active`
+are over tasks whose runs reported active time. `by_status` counts a running task whose goal is
+achieved as `done`.
 
 ```json
 AnalyticsSummary = {
@@ -995,7 +1012,7 @@ AnalyticsSummary = {
             "by_origin": {"ui": 3}},
   "tasks_per_day": [{"date": "2026-10-01", "count": 1}],
   "duration_ms": {"median": 1800000, "p90": 2400000, "total_wall": 3600000,
-                  "total_active": 600000},
+                  "total_active": 600000, "median_active": 600000, "p90_active": 600000},
   "tokens": Tokens,
   "tokens_by_model": [{"model": "claude-opus|unknown", …Tokens}],
   "tokens_by_harness": [{"harness": "claude", …Tokens}],

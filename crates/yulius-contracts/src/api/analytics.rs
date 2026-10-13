@@ -25,7 +25,8 @@ pub struct TaskCounts {
     pub total: u32,
     /// Of those, tasks that are closed now.
     pub closed: u32,
-    /// Count per status wire name.
+    /// Count per status wire name, with `done` for a running task whose goal is achieved and
+    /// whose turn ended (TSK-014): its session stays open, but it is finished, not running.
     pub by_status: BTreeMap<String, u32>,
     /// Count per current harness (`claude`).
     pub by_harness: BTreeMap<String, u32>,
@@ -42,7 +43,8 @@ pub struct DayCount {
     pub count: u32,
 }
 
-/// Durations of the cohort, computed from attempts (wall) and metrics (active).
+/// Durations of the cohort, computed from attempts (wall: a session open, idle or not) and
+/// metrics (active: the agent working, SPEC-087 MET-001).
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct DurationStats {
     /// Median per-task wall time (ms) over tasks with at least one attempt.
@@ -53,6 +55,13 @@ pub struct DurationStats {
     pub total_wall: u64,
     /// Total active agent time (ms) of runs that reported it; `null` when none did.
     pub total_active: Option<u64>,
+    /// Median per-task active agent time (ms) over tasks whose runs reported it (SPEC-087
+    /// MET-005); `null` when none did.
+    #[serde(default)]
+    pub median_active: Option<u64>,
+    /// 90th percentile (nearest rank) of per-task active agent time (ms).
+    #[serde(default)]
+    pub p90_active: Option<u64>,
 }
 
 /// Token totals over a group of runs (attempts).

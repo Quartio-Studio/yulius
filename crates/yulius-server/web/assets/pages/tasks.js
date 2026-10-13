@@ -8,6 +8,7 @@
 
 import { h, icon, setChildren, iconButton, badge, statusMark, openMenu, loadError, singleFlight, keepFocus, coalesce, prChip, emptyState } from '../dom.js';
 import { relShort, dateTime, plural } from '../format.js';
+import { taskTime } from '../tasktime.js';
 import { statusInfo, taskInfo, activityLine, allows, taskActions } from '../status.js';
 import { openTaskMenu, restoreTask, archiveTask } from '../actions.js';
 import { href, navigate, currentLocation, replaceQuietly } from '../router.js';
@@ -154,7 +155,7 @@ export function mountTasksPage(ctx, sandbox) {
             mark: statusMark(info, 16),
             title: task.title || `Task #${task.number}`,
             sub: `#${task.number} · ${detailLine(task, info)}`,
-            meta: relShort(task.updated_at),
+            meta: taskTime(task, info).text,
             onPick: () => navigate(`/s/${encodeURIComponent(sandbox.slug)}/tasks/${task.number}`),
             onAlt: () => navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`),
           };
@@ -249,7 +250,9 @@ export function mountTasksPage(ctx, sandbox) {
     }
     rowCache = nextRows;
     // Column names over the groups (the rows say the same to screen readers in their own words).
-    const columns = h('div', { class: 'tl-columns', 'aria-hidden': 'true' }, ['Task', 'Status', 'Branch', 'Changes', 'Pull request', 'By', 'Started', 'Updated', ''].map((label) => h('span', null, label)));
+    // "Created" is when the task was made; the last column says, in words, how long it has been in
+    // its state ("working 1h 20m", "done 3h ago", SPEC-087 TIM-003).
+    const columns = h('div', { class: 'tl-columns', 'aria-hidden': 'true' }, ['Task', 'Status', 'Branch', 'Changes', 'Pull request', 'By', 'Created', 'For', ''].map((label) => h('span', null, label)));
     if (focusedId) setChildren(listHost, columns, sections);
     else keepFocus(listHost, () => setChildren(listHost, columns, sections));
     if (focusedId) listHost.querySelector(`[data-task-id="${CSS.escape(focusedId)}"] .tl-link`)?.focus({ preventScroll: true });
@@ -261,7 +264,7 @@ export function mountTasksPage(ctx, sandbox) {
   let nextRows = new Map();
   function cachedRow(item) {
     const pr = ctx.store.pullsOf(sandbox.id).get(item.task.id) || null;
-    const key = JSON.stringify([item.task, item.info, item.group, pr, ctx.store.gitRowOf(sandbox.id, item.task.id), sandbox.access, myLogin(), relShort(item.task.updated_at), relShort(item.task.created_at)]);
+    const key = JSON.stringify([item.task, item.info, item.group, pr, ctx.store.gitRowOf(sandbox.id, item.task.id), sandbox.access, myLogin(), taskTime(item.task, item.info).text, relShort(item.task.created_at)]);
     const hit = rowCache.get(item.task.id);
     const el = hit && hit.key === key ? hit.el : rowView(item);
     nextRows.set(item.task.id, { key, el });
@@ -281,6 +284,7 @@ export function mountTasksPage(ctx, sandbox) {
     const actions = taskActions(task, sandbox.access, ctx.store.pullsOf(sandbox.id).get(task.id), myLogin());
     const git = ctx.store.gitRowOf(sandbox.id, task.id);
     const what = detailLine(task, info);
+    const time = taskTime(task, info);
     const kebab = iconButton('more', `Actions for ${task.title || `task #${task.number}`}`, () => openTaskMenu(ctx, kebab, task), { class: 'tl-action', 'aria-haspopup': 'menu' });
     const row = h('li', { class: ['tl-row', `group-${group}`], dataset: { taskId: task.id, tone: info.tone } },
       h('a', { class: 'tl-link', href: href(path), dataset: { route: path }, title: `#${task.number} ${task.title}${task.branch ? ` · ${task.branch}` : ''}` },
@@ -294,8 +298,8 @@ export function mountTasksPage(ctx, sandbox) {
       prCell(ctx.store.pullsOf(sandbox.id).get(task.id)),
       // Every row says who started it, yours too, so the list answers "who did what" (#36).
       login ? authorAvatar(login) : h('span', { class: 'tl-avatar' }),
-      h('span', { class: 'tl-cell tl-started', title: `Started ${dateTime(task.created_at)}` }, relShort(task.created_at)),
-      h('span', { class: 'tl-time', title: `Updated ${dateTime(task.updated_at)} · created ${dateTime(task.created_at)}` }, relShort(task.updated_at)),
+      h('span', { class: 'tl-cell tl-started', title: `Created ${dateTime(task.created_at)}` }, relShort(task.created_at)),
+      h('span', { class: 'tl-time', title: time.title }, time.text),
       h('span', { class: 'tl-actions' },
         actions.archive ? iconButton('archive', 'Archive', () => archiveTask(ctx, task), { class: 'tl-action' }) : null,
         kebab));

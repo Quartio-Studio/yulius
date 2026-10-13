@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::harness::{
     CockpitLaunch, HarnessLaunch, HarnessPlan, HarnessPort, McpAttachment, Observation,
-    OutputMasker, SessionMode, TranscriptWatch, UsageSnapshot,
+    OutputMasker, SessionMode, TranscriptWatch, UsageSnapshot, WatchFrom,
 };
 use yulius_app::ports::session::{Containment, LaunchPlan, PlannedFile};
 use yulius_domain::harness::Harness;
@@ -16,6 +16,7 @@ use yulius_harness::launch::{
 };
 use yulius_harness::observe::{Observed, UsageAccumulator};
 use yulius_harness::secret::Secret as HSecret;
+use yulius_harness::subagents::{LinesSince, SubagentTails};
 use yulius_harness::{claude, login, paths, skills, tail};
 
 /// Harness adapter.
@@ -231,17 +232,18 @@ impl HarnessPort for HarnessAdapter {
         &self,
         harness: Harness,
         path: &Path,
-        from_start: bool,
+        from: WatchFrom,
     ) -> AppResult<Box<dyn TranscriptWatch>> {
-        let tail = if from_start {
-            tail::TranscriptTail::open(path, tail::DEFAULT_MAX_LINE_BYTES)
-        } else {
-            tail::TranscriptTail::open_at_end(path, tail::DEFAULT_MAX_LINE_BYTES)
-        }
-        .map_err(io)?;
+        // Both read the file from its start; a resumed session's run skips its earlier runs' lines.
+        let since = match from {
+            WatchFrom::Start => None,
+            WatchFrom::Since(at) => Some(at),
+        };
         Ok(Box::new(Watch {
             harness,
-            tail,
+            tail: tail::TranscriptTail::open(path, tail::DEFAULT_MAX_LINE_BYTES).map_err(io)?,
+            since: LinesSince::new(since),
+            subagents: SubagentTails::new(path, since),
             acc: UsageAccumulator::new(),
         }))
     }
@@ -288,14 +290,33 @@ impl OutputMasker for Masker {
 struct Watch {
     harness: Harness,
     tail: tail::TranscriptTail,
+    /// The run's own lines of a resumed session's transcript (SPEC-087 MET-002).
+    since: LinesSince,
+    /// Its sub-agents' transcripts: their tokens are the session's too (MET-004).
+    subagents: SubagentTails,
     acc: UsageAccumulator,
 }
 
 impl TranscriptWatch for Watch {
     fn poll(&mut self) -> AppResult<Vec<Observation>> {
         let lines = self.tail.poll().map_err(io)?;
+        // Only usage counts from a sub-agent's lines; one that cannot be read leaves the
+        // session's own observations alone.
+        match self.subagents.poll() {
+            Ok(side) => {
+                for line in side {
+                    for observed in claude::observe_line(&line) {
+                        self.acc.observe_side(&observed);
+                    }
+                }
+            }
+            Err(err) => tracing::debug!(error = %err, "a sub-agent transcript could not be read"),
+        }
         let mut out = Vec::new();
         for line in lines {
+            if !self.since.keep(&line) {
+                continue;
+            }
             let observed = match self.harness {
                 Harness::ClaudeCode => claude::observe_line(&line),
             };
@@ -315,7 +336,9 @@ impl TranscriptWatch for Watch {
                         out.push(Observation::TurnComplete { at });
                     }
                     Observed::Goal { outcome } => out.push(Observation::Goal(outcome)),
-                    Observed::TurnEnded { background_agents } => {
+                    Observed::TurnEnded {
+                        background_agents, ..
+                    } => {
                         out.push(Observation::TurnEnded { background_agents });
                     }
                     Observed::AgentWork { at } => out.push(Observation::AgentWork { at }),
@@ -358,7 +381,9 @@ impl TranscriptWatch for Watch {
         UsageSnapshot {
             tokens: self.acc.usage(),
             model: self.acc.model().map(str::to_owned),
-            turns: self.acc.turn_complete_signals(),
+            turns: self.acc.turns(),
+            active_ms: self.acc.active().total_ms(),
+            turn_open_since: self.acc.active().open_since(),
         }
     }
 

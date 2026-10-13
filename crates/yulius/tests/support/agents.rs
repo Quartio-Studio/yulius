@@ -7,6 +7,7 @@ use yulius::wiring::harness::HarnessAdapter;
 use yulius_app::error::AppResult;
 use yulius_app::ports::harness::{
     CockpitLaunch, HarnessLaunch, HarnessPlan, HarnessPort, OutputMasker, TranscriptWatch,
+    WatchFrom,
 };
 use yulius_app::ports::session::LaunchPlan;
 use yulius_domain::harness::Harness;
@@ -274,9 +275,9 @@ impl HarnessPort for FakeAgentHarness {
         &self,
         harness: Harness,
         path: &Path,
-        from_start: bool,
+        from: WatchFrom,
     ) -> AppResult<Box<dyn TranscriptWatch>> {
-        self.inner.watch(harness, path, from_start)
+        self.inner.watch(harness, path, from)
     }
     fn login_argv(&self, harness: Harness) -> Vec<String> {
         self.inner.login_argv(harness)
