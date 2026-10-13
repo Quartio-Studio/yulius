@@ -95,9 +95,14 @@ flowchart LR
 When a subscription's usage limit cuts a turn, the task goes on as if the limit never happened
 ([SPEC-034](../.ai/specs/SPEC-034-in-previous-tasks-we-have-hit-a-session.md),
 [decision 0027](decisions/0027-step-back-past-a-usage-limit.md)): on another subscription at
-once, or on its own after the reset. The harness adapter steps the transcript back over the
-limit, and Claude Code resumes the same session with `CLAUDE_CODE_RESUME_INTERRUPTED_TURN=1`, so
-it redoes the lost turn by itself. Nothing is typed.
+once, or on its own after the reset. The supervisor has the harness adapter step the transcript
+back over the limit on a blocking thread, and indexes the session again only if the file changed.
+Claude Code then resumes the same session with `CLAUDE_CODE_RESUME_INTERRUPTED_TURN=1`, so it
+redoes the lost turn by itself. Nothing is typed. If Claude Code continues the turn by itself at
+the reset, agent work after the pause ends the pause, and Yulius leaves that run alone. A person's
+switch of a task left at its limit by a refused automatic switch also resumes past the limit
+([SPEC-072](../.ai/specs/SPEC-072-fix-276-277-278-usage-limit-resume-respe.md),
+[decision 0051](decisions/0051-the-clis-own-continuation-ends-a-limit-pause.md)).
 
 ```mermaid
 sequenceDiagram
@@ -109,8 +114,9 @@ sequenceDiagram
     C->>T: usage-limit error + limit notices
     T->>S: LimitReached (transcript watcher)
     S->>C: SIGTERM (idle at the limit)
-    S->>H: plan Resume { continue_interrupted }
+    S->>H: step_back_transcript (spawn_blocking)
     H->>T: step back: drop errors and notices, relink parentUuid
+    S->>H: plan Resume { continue_interrupted }
     H->>N: claude --resume id (flag set, no prompt)
     N->>T: the lost turn, redone
 ```

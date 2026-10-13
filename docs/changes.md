@@ -6,6 +6,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- Resuming after a usage limit is safe in three more cases (SPEC-072, ADR-0051, task #57; #276,
+  #277, #278):
+  - Claude Code sometimes continues a turn by itself at the reset. Its first agent work now ends
+    the task's limit pause, so Yulius no longer terminates a turn the CLI is running.
+  - When the automatic switch after a limit is refused, the run remembers it is at its limit. A
+    person's switch then resumes past the limit, without "Continue the task exactly where you
+    left off.".
+  - The transcript step back runs on a blocking thread, off the async runtime. The session's
+    search index is rebuilt only if the step back changed the file.
+
+  New tests cover a resume past a limit that finds no capacity, a limit pause whose process is
+  gone, and goal mode after a continued turn.
 - A stopped or closed run ends only when its processes are proven gone (SPEC-065, ADR-0050, task #54;
   #284, #285, #290). When Yulius cannot terminate a run's host after the stop or close escalation,
   the run stays live, the task's terminal says so and a running task needs attention; deleting it
