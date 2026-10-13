@@ -549,8 +549,7 @@ impl Transcript {
         let meta_uuid = format!("fake-{}-continue-u", self.session_id);
         let mut meta = self.claude_envelope("user", &meta_uuid, &timestamp);
         meta["isMeta"] = json!(true);
-        meta["message"] =
-            json!({"role": "user", "content": "Continue from where you left off."});
+        meta["message"] = json!({"role": "user", "content": "Continue from where you left off."});
         self.last_uuid = Some(meta_uuid);
         let uuid = format!("fake-{}-continue-a", self.session_id);
         let mut assistant = self.claude_envelope("assistant", &uuid, &timestamp);

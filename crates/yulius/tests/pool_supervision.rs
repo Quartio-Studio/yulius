@@ -1052,18 +1052,26 @@ fn a_turn_the_cli_continues_by_itself_ends_the_limit_pause() -> TestResult {
         })
         .await?;
         app.send_input(&id, b"hello\r").await?;
-        wait_for("the pause at the limit", Duration::from_secs(30), || async {
-            matches!(
-                app.deps.store.open_pause(&id).await,
-                Ok(Some(pause)) if pause.kind == PauseKind::Limit
-            )
-        })
+        wait_for(
+            "the pause at the limit",
+            Duration::from_secs(30),
+            || async {
+                matches!(
+                    app.deps.store.open_pause(&id).await,
+                    Ok(Some(pause)) if pause.kind == PauseKind::Limit
+                )
+            },
+        )
         .await?;
-        wait_for("the CLI's own continuation", Duration::from_secs(30), || {
-            let app = app.clone();
-            let id = id.clone();
-            async move { screen(&app, &id).contains("CONTINUED") }
-        })
+        wait_for(
+            "the CLI's own continuation",
+            Duration::from_secs(30),
+            || {
+                let app = app.clone();
+                let id = id.clone();
+                async move { screen(&app, &id).contains("CONTINUED") }
+            },
+        )
         .await?;
         wait_for("the pause to end", Duration::from_secs(30), || {
             has_status(&app, &id, TaskStatus::Running)

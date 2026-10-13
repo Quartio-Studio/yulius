@@ -586,6 +586,11 @@ impl App {
                     _ => None,
                 };
                 if has_process {
+                    // The CLI may have continued a cut turn by itself while the policy was read
+                    // (#276): a run is ended only for a pause still open.
+                    if !self.pause_open(pause).await {
+                        return Resume::Gone;
+                    }
                     let switched = match pause.kind {
                         PauseKind::Limit => {
                             self.switch_after_limit(&task.id, account, &reason).await
@@ -623,6 +628,14 @@ impl App {
                 Resume::Resumed
             }
         }
+    }
+
+    /// Whether `pause` is still the task's open pause.
+    async fn pause_open(&self, pause: &PauseRecord) -> bool {
+        matches!(
+            self.deps.store.open_pause(&pause.task_id).await,
+            Ok(Some(open)) if open.id == pause.id
+        )
     }
 
     /// Capacity is back on the account the paused process uses: the pause ends and the task

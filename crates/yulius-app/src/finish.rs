@@ -214,9 +214,9 @@ impl App {
         self.probe_idle_shells(task_id).await;
     }
 
-    /// A transcript line written after a turn or prompt of `task_id` was held for capacity (at
-    /// `at`) shows the agent is not held any more: the hold ends and the task runs again with
-    /// `activity`.
+    /// A transcript line written after a turn or prompt of `task_id` was held for capacity, or
+    /// after a usage limit cut its turn (at `at`), shows the agent is not held any more: the
+    /// hold ends and the task runs again with `activity`.
     pub(crate) async fn hold_overtaken(
         &self,
         task_id: &TaskId,
@@ -227,13 +227,30 @@ impl App {
         let Ok(Some(pause)) = self.deps.store.open_pause(task_id).await else {
             return;
         };
-        if matches!(
+        let held = matches!(
             pause.kind,
             crate::model::PauseKind::Turn | crate::model::PauseKind::Prompt
-        ) && pause.account_id.is_some()
+        ) && pause.account_id.is_some();
+        if (held || pause.kind == crate::model::PauseKind::Limit) && at > pause.started_at {
+            self.hold_ended(task_id, "overtaken", activity).await;
+        }
+    }
+
+    /// Agent work written after a usage limit cut the turn of `task_id` (at `at`) shows Claude
+    /// Code continued that turn by itself at the reset (SPEC-072 LRS-001, #276): the `limit`
+    /// pause ends and the task runs, so the resume loop never ends the turn it continued.
+    pub(crate) async fn cut_turn_continued(
+        &self,
+        task_id: &TaskId,
+        at: Option<yulius_domain::time::Timestamp>,
+    ) {
+        let Some(at) = at else { return };
+        if let Ok(Some(pause)) = self.deps.store.open_pause(task_id).await
+            && pause.kind == crate::model::PauseKind::Limit
             && at > pause.started_at
         {
-            self.hold_ended(task_id, "overtaken", activity).await;
+            self.hold_ended(task_id, "overtaken", Activity::Working)
+                .await;
         }
     }
 

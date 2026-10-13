@@ -2823,6 +2823,10 @@ impl App {
             }
             Observation::AgentWork { at } => {
                 self.context_replied(task_id, &attempt.id);
+                // A usage limit ends the turn, so a `limit` pause is open only between turns.
+                if !runtime.turn_in_progress() {
+                    self.cut_turn_continued(task_id, at).await;
+                }
                 self.agent_worked(task_id, at).await;
             }
             Observation::ContextFull => self.context_full_observed(task_id, attempt).await,
