@@ -19,6 +19,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   - Passes deciding armed merges take turns. Two runs ending together used to merge one pull
     request while the other pass merged a branch it had read as up to date. GitHub refused that
     merge as behind, and the armed merge was dropped.
+  - An armed branch still behind because its agent is busy waits instead of being refused and
+    dropped. An agent's own clean merge of `dev` keeps its armed merge (SPEC-083 REV-001): it
+    follows the new head instead of being dropped as "the branch moved on".
   - On 2026-10-12/13, 42% of the armed merges waited at least one extra run after their last arm
     (7.4 hours in all), and runs at updated heads took 44% of the CI time.
 - Parallel tasks stop colliding at merge (SPEC-083, ADR-0066). With 8 to 12 agents, numbered

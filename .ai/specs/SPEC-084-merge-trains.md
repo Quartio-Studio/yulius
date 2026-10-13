@@ -127,10 +127,18 @@ gets worse: anything unexpected falls back to the one-by-one flow as it was.
   production, 13 of the 69 run ends kept for 2026-10-12/13 came within a minute of the one
   before, each starting its own pass. Eight arms read "checks behind". Yulius records no
   refusal text, so how often it happened cannot be counted.
-- **Red first.** With trains switched off (`run_merge_train` returning at once), the four train
-  tests fail: no train run. Without the turn-taking, `passes_at_the_same_time_take_turns` fails
-  with "The merge you armed was refused: … Head branch is not up to date".
-- **Tests:** listed in the table. Run on this Mac:
-  - `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^merge_train::/)'`: 5
-    passed, in parallel.
-  - The `yulius-git` train test and the `yulius-app` unit tests passed.
+- **Red first.** Each change was switched off in turn, and its test failed:
+  - trains off (`run_merge_train` returning at once): the four train tests fail, with no train
+    run;
+  - without the turn-taking: `passes_at_the_same_time_take_turns` fails with "The merge you armed
+    was refused: … Head branch is not up to date";
+  - without the behind check: `a_busy_agent_behind_its_base_waits_instead_of_being_refused` fails
+    with "… refused: … the branch is behind `dev`";
+  - without following the review: `an_armed_merge_follows_the_agents_own_clean_merge_of_dev`
+    fails with "The merge you armed was dropped: … the branch is now at …".
+- **Tests on this Mac** (merged with dev at e03ce42):
+  - the 7 `merge_train` integration tests pass, in parallel;
+  - `nextest` for `yulius-git`, `yulius-domain` and `yulius-app`: 508 passed;
+  - `delivery`, `local_ci`, `github_checks`, `git_adapter` and `merge_train`: 50 passed;
+  - `wait_cli`: 7 passed;
+  - clippy with `-D warnings` and `check_repository.py` pass.
