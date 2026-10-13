@@ -92,7 +92,7 @@ what it cannot close, and cannot be sent twice from the web UI.
 
 - A failed terminate leaves the run live instead of retrying in a loop: the run's reader stays
   attached and finalizes it if its processes go later, and stopping again re-runs the escalation.
-  Recorded in ADR-0049.
+  Recorded in ADR-0050.
 - Finalization is tracked as a per-task count in a `tokio::sync::watch` (raised before the attempt
   is marked ended, lowered by a guard at the end) rather than a one-shot "finalized" flag: a run
   that ended by itself just before the close, and two observers of the same end, need no
@@ -140,5 +140,5 @@ Gates on the reviewed head d9c7d4b:
   APPROVE with nits only.
 
 Not covered: the account or provider switch timeout still records the old run as lost without
-checking the termination (follow-up noted on #284 and in ADR-0049); a deployed instance was not
+checking the termination (follow-up noted on #284 and in ADR-0050); a deployed instance was not
 exercised.
