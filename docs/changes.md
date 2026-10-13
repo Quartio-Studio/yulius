@@ -13,6 +13,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   sidebar's Working count. A Done task or one being stopped counts in neither, and a task being
   stopped no longer counts as needing you.
 
+- A task's step strip no longer draws its progress bar over "Step N/M" (SPEC-073, task #68; #341).
+  A long state such as "Working · 1 background task still running" or "Done · PR #N merged" kept
+  its full width, so the strip's label shrank to nothing and the step count, which nothing
+  clipped, ran under the bar. The same happened with a short "Done · PR #N" in a narrow strip
+  beside a tool panel. The label now keeps room for the step count, the state gives its words up
+  first (it takes at most 40% of the strip, and its full text stays in the tooltip), and the label
+  is clipped inside its button.
 - A CI run that could not run (disk, a timeout, the host) reads "CI could not run (not the code)"
   instead of "checks failing · Needs you"; an armed merge stays armed and the agent is told to run
   the checks again (SPEC-050 STA-101).
