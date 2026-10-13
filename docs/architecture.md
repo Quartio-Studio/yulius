@@ -148,7 +148,7 @@ an agent, injected by a hook or typed into its session. An agent pulls what it n
 with `yulius wait` in a background shell, which Claude Code wakes it from, and reads
 `ci_status` and `delivery_status`. The armed merge's outcome is kept in memory for the wait,
 with the armed merge and its decisions in progress under one lock: a merge armed again while an
-earlier one is decided supersedes it ([decision 0046](decisions/0046-armed-merge-state-under-one-lock.md)).
+earlier one is decided supersedes it ([decision 0048](decisions/0048-armed-merge-state-under-one-lock.md)).
 
 ```mermaid
 sequenceDiagram

@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
-- `yulius wait` on armed merges (SPEC-064, ADR-0046, task #53; #248, #249, #255, #251). A merge
+- `yulius wait` on armed merges (SPEC-064, ADR-0048, task #53; #248, #249, #255, #251). A merge
   armed while Yulius still decides an earlier one supersedes it: the wait on the new head no
   longer ends with the old head's "dropped", and the new merge stays armed and saved. The armed
   merge, its decisions in progress and its outcome are read and changed under one lock, so a wait

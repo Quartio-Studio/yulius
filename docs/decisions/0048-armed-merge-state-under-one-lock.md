@@ -1,4 +1,4 @@
-# 0046. An armed merge, its decisions and its outcome are one value under one lock
+# 0048. An armed merge, its decisions and its outcome are one value under one lock
 
 ## Status
 

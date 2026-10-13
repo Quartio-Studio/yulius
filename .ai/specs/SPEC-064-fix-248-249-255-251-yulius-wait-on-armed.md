@@ -107,7 +107,7 @@ retry of an errored Yulius CI run at an open pull request's head is covered by a
 
 - One lock over a reordered read (the issue's first option, `merge_armed && outcome.is_none()`):
   a merge armed while an older one is decided would read as unarmed as soon as the old outcome is
-  written, so the reorder alone trades #255 for a #248 variant. ADR-0046.
+  written, so the reorder alone trades #255 for a #248 variant. ADR-0048 (numbered 0046 until `dev` took 0046 and 0047).
 - #255's window had no `await` in it (the outcome was written, then the armed merges file saved,
   then the counter lowered), so no integration test could stop a poll inside it deterministically.
   The fix removes the window by construction (`ArmedSlot::finish` is one method under the lock),
@@ -145,4 +145,4 @@ retry of an errored Yulius CI run at an open pull request's head is covered by a
   `-D warnings`, nextest 1289 passed / 16 skipped, doctests, cargo-deny, cargo-shear, docs).
 - **Independent review** (fresh read-only session, `om-code-review`): round 1 APPROVE at `6631d6c`
   with four minors and nits, fixed test-first in `e78afc4`; round 2 APPROVE at `e78afc4`; its one
-  remaining wording note on ADR-0046 is applied in the final docs commit.
+  remaining wording note on the ADR is applied in the final docs commit.
