@@ -246,13 +246,21 @@ export function mountTaskView(ctx, sandbox, task) {
       if (alive) renderQueue();
     }
   }
-  function renderQueue() {
+  /** Whether the task waits, has never started and takes queued messages from this person. */
+  function queueOpen() {
     const access = (ctx.store.sandboxById(sandbox.id) || sandbox).access;
-    const waiting = Boolean(detail && detail.id === current.id && detail.started === false
+    return Boolean(detail && detail.id === current.id && detail.started === false
       && WAITING.has(current.status) && !current.archived && allows(access, 'write'));
+  }
+  function renderQueue() {
+    const waiting = queueOpen();
     // The task started while the box held text or a refusal: the card stays with them, so the
-    // person can copy the text into the session (SPEC-052 QMS-006, SPEC-056 WUI-106).
-    const kept = !waiting && !queueSlot.hidden && Boolean(queueBox.value.trim() || queueError.textContent);
+    // person can copy the text into the session (SPEC-052 QMS-006, SPEC-056 WUI-106). A task that
+    // ended or was archived instead takes the card away.
+    const started = current.status === 'starting' || RAN.has(current.status);
+    const kept = !waiting && started && !current.archived && !queueSlot.hidden && Boolean(queueBox.value.trim() || queueError.textContent);
+    // Back to waiting before it ran: a refusal from the start no longer holds.
+    if (waiting && !queueDismiss.hidden) queueError.textContent = '';
     queueSlot.hidden = !waiting && !kept;
     if (queueSlot.hidden) return;
     queueNote.textContent = kept ? 'The task has started: copy your message into its session.' : 'The agent gets them with the request when the task starts.';
@@ -342,11 +350,15 @@ export function mountTaskView(ctx, sandbox, task) {
   // Reads overlap (every status change reads again): only the latest one's answer is applied, so
   // an older answer landing last cannot bring back an older status (SPEC-056 WUI-105).
   let detailRead = 0;
+  let appliedRead = 0;
   async function loadDetail() {
     const read = ++detailRead;
     try {
       const fresh = await ctx.api.get(`/api/tasks/${enc(current.id)}`, { signal: reads.signal });
-      if (!alive || read !== detailRead) return; // the view was left, or a newer read was asked for
+      // The view was left, or a newer read's answer was applied already (a newer read that fails
+      // leaves this one's answer standing).
+      if (!alive || read < appliedRead) return;
+      appliedRead = read;
       detail = fresh;
       if (detail && detail.id === current.id) {
         current = { ...current, ...pickSummary(detail) };
@@ -354,7 +366,7 @@ export function mountTaskView(ctx, sandbox, task) {
         renderStrip();
       }
     } catch (error) {
-      if (alive && read === detailRead && error.status !== 404) errorToast(error, 'Couldn’t load task details');
+      if (alive && read > appliedRead && error.status !== 404) errorToast(error, 'Couldn’t load task details');
     }
     if (alive) renderStepList();
   }
@@ -397,7 +409,7 @@ export function mountTaskView(ctx, sandbox, task) {
       // change reads the detail again (a start that found no capacity has not). A message someone
       // else queued changes the request: read it again too.
       if (detail && RAN.has(current.status)) detail = { ...detail, started: true };
-      if (current.status !== previousStatus || (!queueSlot.hidden && current.updated_at !== previousUpdate)) loadDetail();
+      if (current.status !== previousStatus || (queueOpen() && current.updated_at !== previousUpdate)) loadDetail();
       renderStrip();
       if (current.status !== previousStatus) terminal.refreshEmpty();
       if (current.status !== previousStatus) loadDelivery(); // a finished task may now be ready for a pull request
