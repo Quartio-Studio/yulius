@@ -1,11 +1,11 @@
 ---
 yulius-task: 9d43863b-8bb0-4bd7-b920-4549a73d5c16
-status: in-progress
+status: done
 ---
 
 # SPEC-061: a two-factor code confirms only the seed it was checked against; administrators reset a lost two-factor
 
-Status: in progress
+Status: done
 Date: 2026-10-13
 Scope authorization: task #52 (part of task #47, "fix all open actionable GitHub issues"): fix
 GitHub issues #295 and #291 following their acceptance criteria. Extends
@@ -73,13 +73,13 @@ GitHub issues #295 and #291 following their acceptance criteria. Extends
 ## Plan
 
 - [x] Write and validate the spec, the ADR and the plan
-- [ ] A two-factor code confirms only the seed it was checked against (#295)
-- [ ] Administrators reset a person's two-factor over the API, audited (#291)
-- [ ] Instance administrators see the people and their two-factor state (#291)
-- [ ] The Users page offers the reset with a confirmation (#291)
-- [ ] The API reference, architecture and changes log describe the reset
-- [ ] Independent review approves the head, findings fixed test-first
-- [ ] Every gate green and merged into dev
+- [x] A two-factor code confirms only the seed it was checked against (#295)
+- [x] Administrators reset a person's two-factor over the API, audited (#291)
+- [x] Instance administrators see the people and their two-factor state (#291)
+- [x] The Users page offers the reset with a confirmation (#291)
+- [x] The API reference, architecture and changes log describe the reset
+- [x] Independent review approves the head, findings fixed test-first
+- [x] Every gate green with the evidence recorded
 
 ## Acceptance criteria
 
@@ -138,4 +138,29 @@ GitHub issues #295 and #291 following their acceptance criteria. Extends
 
 ## Evidence
 
-To be filled in when the work is done.
+- `scripts/dev ci` (repository check, fmt, clippy, cargo-deny, cargo-shear, nextest, docs) on
+  `a92af08`: exit 0, 1271 tests passed, 16 skipped (2026-10-13).
+- `cd e2e && npx e2e run` on `a92af08`: 224 passed, 1 skipped (37 files).
+- Test-first: `accepting_a_replaced_seed_is_refused` (store, AC1) and
+  `secrets::a_code_confirms_only_the_seed_it_was_checked_against` (AC2; the harness's
+  `HookedCrypto` runs seed B's setup through the API exactly when the unlock opens seed A) both
+  failed before the fix (seed A's code confirmed seed B, 200) and pass after it, 5 of 5 runs.
+  `secrets::administrators_reset_a_lost_two_factor` (AC3, AC4, the raced unlock and a reset
+  during a code check) failed before each part was built (404 without the route; `fresh: true`
+  with `two_factor: missing` without the confirmed-seed guard, checked by disabling it) and
+  passes. `secrets::instance_administrators_see_the_people_and_their_two_factor` (AC5) failed
+  with 403 before and passes. `a_reset_removes_the_seed_and_the_persons_unlocks` (store) passes.
+- E2E (AC6): `secrets.e2e.ts` "an administrator resets a lost two-factor from the Users page
+  after their own code" failed before the page change and passes (confirmation, then the code
+  dialog, Off, the activity entry, no axe violations; it also caught a stray "null" on the
+  instance administrators' page, fixed).
+- Visual check in the sandbox browser against the mock: the Users page for an instance
+  administrator (no Admit, no toggles, Two-factor column, no Reset on their own row) and the
+  superadmin's confirmation dialog.
+- Independent review in a fresh session: round 1 approved `1539300` with minor findings (a reset
+  racing an unlock, the superadmin's reset, R2 test gaps) and nits, fixed test-first in
+  `a92af08`; a confirmation review covers that delta on the final head.
+- Not tested here: the deployed instance, and a real authenticator app (codes come from the
+  same RFC 6238 functions the server uses).
+- Follow-up (no issue created, per task #52's rules): resetting the superadmin's lost
+  authenticator, who is not in the user list.
