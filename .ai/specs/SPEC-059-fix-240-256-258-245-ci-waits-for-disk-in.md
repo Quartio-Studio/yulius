@@ -86,9 +86,10 @@ and never removes the caches of a task whose background shell or subagent may st
   - `isolation_join` appends them to a quota refusal.
 - **CI waits (CI-301..303).**
   - `App::ci.disk_waits: Mutex<HashMap<sandbox, DiskWait { until_ms, checking }>>`.
-  - `ci_dispatch` asks `ci_disk_room(sandbox)` before it takes a lane:
-    - no isolation, no reading, or under the quota: room, and any wait entry is cleared;
-    - otherwise, while `until_ms` is ahead or a check runs: no room;
+  - When a lane is free, `ci_dispatch` asks `ci_disk_room(sandbox)` before it takes it:
+    - while the sandbox's wait entry has `until_ms` ahead or a check runs: no room;
+    - no isolation, no reading (or none within a second), or under the quota: room, and any
+      wait entry is cleared;
     - otherwise it marks `checking` and spawns the check: `disk_upkeep(sandbox, true)`, then
       `measure_disk`. Still over the quota: it notes the reason on every queued run of the
       sandbox (publishing those whose reason changed) and sets `until_ms = now +
@@ -141,8 +142,10 @@ flowchart LR
 - `yulius` integration `local_ci.rs`: a fake isolation over the quota.
   - The run stays queued with the reason, and the status is `pending`.
   - Usage drops and the clock passes the recheck: dispatch starts the run and it passes.
-  - A fake whose reading is under the quota but whose `prepare` refuses once: the run goes back
-    to the queue, then passes.
+  - A fake whose next start finds usage crossed the quota (its reading goes over and `prepare`
+    refuses): the run goes back to the queue, then passes once usage is under the quota.
+  - A fake that refuses without a reading over the quota (isolation still being prepared): the
+    run ends `error`, once.
 - Store: a run's queue note goes when it starts.
 - Not automated: a real 100 GB sandbox with four to six tasks building Rust (#256, #258). The unit's
   figures stand in for it.

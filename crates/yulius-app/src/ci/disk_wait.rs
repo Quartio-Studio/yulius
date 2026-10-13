@@ -98,15 +98,19 @@ impl App {
         let app = Arc::clone(self);
         tokio::spawn(async move {
             // Bounded, and a check that panics or hangs still ends the `checking` mark.
-            let check = tokio::spawn({
+            let mut check = tokio::spawn({
                 let app = Arc::clone(&app);
                 let record = record.clone();
                 async move { app.ci_disk_check(&record).await }
             });
-            let over = !matches!(
-                tokio::time::timeout(CI_DISK_CHECK_LIMIT, check).await,
-                Ok(Ok(false))
-            );
+            let over = match tokio::time::timeout(CI_DISK_CHECK_LIMIT, &mut check).await {
+                Ok(Ok(over)) => over,
+                Ok(Err(_)) => true,
+                Err(_) => {
+                    check.abort();
+                    true
+                }
+            };
             app.ci_disk_checked(&record.id, over);
         });
         false
@@ -136,7 +140,13 @@ impl App {
     /// A job of `sandbox` was refused over the quota (CI-303): its run is queued again, and no
     /// run of the sandbox starts before the next check is due, so nothing loops.
     pub(super) fn ci_disk_backoff(&self, sandbox: &SandboxId) {
-        self.ci_disk_checked(sandbox, true);
+        let until_ms =
+            self.now().0 + i64::try_from(CI_DISK_RECHECK.as_millis()).unwrap_or(i64::MAX);
+        if let Ok(mut waits) = self.ci.disk_waits.lock() {
+            // A check that runs keeps its mark: it ends it itself.
+            let wait = waits.entry(sandbox.as_str().to_owned()).or_default();
+            wait.until_ms = wait.until_ms.max(until_ms);
+        }
     }
 
     /// Whether `sandbox`'s last reading is over its quota: what a quota refusal is based on.

@@ -45,5 +45,5 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0037](0037-dead-code-tools.md): Dead code is cleaned with each language's established tool; Yulius's gate uses cargo-shear
 - [0039](0039-ci-jobs-get-the-cpu-first.md): CI jobs get the CPU first through a weighted cgroup
 - [0038](0038-onboarding-starts-in-the-browser.md): Onboarding starts in the browser, never from the CLI
-- [0045](0045-ci-waits-for-disk-under-the-shared-quota.md): CI waits for disk under the sandbox's shared quota
 - [0040](0040-done-tasks-release-their-subscription.md): Done tasks release their subscription
+- [0045](0045-ci-waits-for-disk-under-the-shared-quota.md): CI waits for disk under the sandbox's shared quota

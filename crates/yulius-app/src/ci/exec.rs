@@ -122,6 +122,10 @@ fn requeue_for_disk(states: &[RunState], no_disk: usize) -> bool {
         && states.iter().filter(|s| **s == RunState::Error).count() == no_disk
 }
 
+/// Why a run a job refusal queued again waits, until the next check says more.
+const NO_DISK_REASON: &str = "waiting for disk space: a job was refused over the disk quota; \
+                              starts by itself once usage is under the quota";
+
 /// What a job refused over the disk quota leaves in its output when its run is queued again.
 const NO_DISK_REQUEUE: &str =
     "[yulius] queued again: the sandbox was over its disk quota when this run started\n";
@@ -291,13 +295,31 @@ impl App {
                 Ok(true) => {
                     tracing::info!(run = %run.id, "CI run queued again: the sandbox is over its disk quota");
                     self.ci_disk_backoff(&run.sandbox_id);
-                    // A cancel that arrived meanwhile still ends it (now as a queued run).
+                    // From here a cancel finds the run queued; one that signalled the executor
+                    // meanwhile still ends it.
+                    if let Ok(mut executing) = self.ci.executing.lock() {
+                        executing.remove(&run.id);
+                    }
                     let late = cancel.borrow().clone();
                     match late {
                         Some(reason) => {
                             let _ = self.ci_cancel(&run.id, &reason).await;
                         }
-                        None => self.ci_publish(&run.id).await,
+                        None => {
+                            let note = CiRunUpdate {
+                                reason: Some(NO_DISK_REASON.to_owned()),
+                                ..CiRunUpdate::default()
+                            };
+                            let _ = store
+                                .transition_ci_run(
+                                    &run.id,
+                                    &[RunState::Queued],
+                                    RunState::Queued,
+                                    &note,
+                                )
+                                .await;
+                            self.ci_publish(&run.id).await;
+                        }
                     }
                     return;
                 }
