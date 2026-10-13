@@ -704,6 +704,24 @@ pub struct ScopeClaimRecord {
     pub created_at: Timestamp,
 }
 
+/// A number Yulius gave a task for a numbered file (SPEC-083 NUM-002): a decision record, a spec,
+/// a migration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordReservation {
+    /// Sandbox.
+    pub sandbox_id: SandboxId,
+    /// Repository-relative directory of the numbered files.
+    pub dir: String,
+    /// The text before the number (`""` for `0066-x.md`, `"SPEC-"`).
+    pub prefix: String,
+    /// The number.
+    pub number: u64,
+    /// The task it was given to.
+    pub task_id: TaskId,
+    /// When.
+    pub reserved_at: Timestamp,
+}
+
 /// Per-attempt usage metrics; `None` = unknown.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MetricsRecord {

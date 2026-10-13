@@ -1558,6 +1558,7 @@ Schema version 1 (tables; columns abbreviated):
 | `messages` | id, sandbox_id, from_task (null = Yulius), to_task (null = to people), kind, subject, body, created_at. History only: nothing writes or shows messages since SPEC-028 |
 | `message_receipts` | message_id, task_id, delivered_at, read_at |
 | `scope_claims` | id, task_id, pattern, note, created_at, released_at |
+| `record_numbers` | sandbox_id, dir, prefix, number (primary key of the four), task_id, reserved_at: numbers given out for numbered files (SPEC-083, schema version 20) |
 | `workflows` | id, sandbox_id (null = instance), name, description, steps (json), instructions, gates (json) |
 | `automations` | id, sandbox_id, name, cron, timezone, prompt, workflow_id, harness, enabled, created_by, created_via (ui/agent), supertask, after_task_id, start_rule (SPEC-078, schema version 19) |
 | `automation_runs` | automation_id, scheduled_for (unique pair), state, task_id, error |
@@ -1894,6 +1895,7 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | `task_create` | Create and start a task as New task does, origin `agent`, for the task's creator or the Cockpit's owner; at most 20 per project and rolling hour (SPEC-037 MGT-001..003) |
 | ~~`message_send`, `messages_inbox`~~ | Withdrawn (SPEC-028, ADR-0023): no message tools. |
 | `scope_claim`, `scope_release`, `scopes_list` | Advisory path-glob claims with conflict report (COM-003) |
+| `record_number` | The next free number of a directory's numbered files (ADRs, specs, migrations), past the integration branch, every live task and every reservation, reserved for the task (SPEC-083 NUM-001..003) |
 | `steps_set`, `step_update`, `steps_get` | Step manager (STP-001/002, STP-006..008): plan bounds, effort, WIP limit, no reopening by agents, weighted `percent` and `nudges` in every result (ADR-19) |
 | `spec_check` | Run the format validator on the task spec and docs (DSC-003); `required` per the spec policy (DSC-013) and `plan_nudges` |
 | `task_stop`, `task_archive`, `task_delete` | The UI's stop, archive and delete of another task of the project, for the person the caller acts for, audited with the caller; never the caller's own task (SPEC-066 MGT-008..010) |
@@ -1909,7 +1911,7 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | `repo_hygiene`, `repo_cleanup` | Stale branches and worktrees; removal of safe items, `force` for unmerged branches without a pull request (DLV-007) |
 | `delivery_status` | PR/checks/profile status and next actions (GIT-001) |
 | `issue_create` | A GitHub issue meeting the Definition of Ready (one `type:`, one `priority:`, at least one `area:` label; an `## Acceptance criteria` checklist), as the task creator or the App; labels created when missing (DLV-008) |
-| `delivery_merge`, `delivery_deploy`, `delivery_promote` | Agents deliver their own work (DLV-008, ADR-19): the person paths (`merge_task_pr`, `start_environment_run`, `promote_sandbox`) run with the task creator's authority, plus an independent review of the exact head and passed checks for a merge (`reviewed_head`), command-verified environments only for a deploy; each action is also audited as `task:<n>` |
+| `delivery_merge`, `delivery_deploy`, `delivery_promote` | Agents deliver their own work (DLV-008, ADR-19): the person paths (`merge_task_pr`, `start_environment_run`, `promote_sandbox`) run with the task creator's authority, plus an independent review of the exact head (or of an earlier one the branch moved past only through clean merges of the integration branch, SPEC-083 REV-001) and passed checks for a merge (`reviewed_head`), command-verified environments only for a deploy; each action is also audited as `task:<n>` |
 
 Every tool the briefing announces (`YULIUS_TOOLS`) is served; a unit test fails otherwise (#50).
 A tool builds a record and answers with short text rendered from it (`yulius-app::mcp_text`,

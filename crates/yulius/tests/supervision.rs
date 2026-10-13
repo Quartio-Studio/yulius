@@ -998,6 +998,17 @@ fn task_worktrees_guard_protected_branches_and_status_changes_reach_the_ui() -> 
         let record = task(&app, &id).await?;
         let worktree = PathBuf::from(record.worktree_path.ok_or("worktree")?);
         let branch = record.branch.ok_or("branch")?;
+        // SPEC-083 MRG-001: the start kept the union merge of the logs every task appends to.
+        let attributes = std::fs::read_to_string(
+            data.join("sandboxes")
+                .join(sandbox.as_str())
+                .join("repo/.git/info/attributes"),
+        )?;
+        assert!(
+            attributes.contains("/docs/changes.md merge=union")
+                && attributes.contains("/docs/decisions/README.md merge=union"),
+            "{attributes}"
+        );
         let agent_git = |args: &[&str]| {
             Command::new("git")
                 .args(args)

@@ -22,6 +22,21 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
     CPUs idled); `YULIUS_SANDBOX_CPUS` still sets one.
   - This repository maps the budget to Cargo, nextest and libtest, drops the fixed 4 test threads
     and the CI job's one thread per CPU, and runs e2e with half its budget as workers.
+- Parallel tasks stop colliding at merge (SPEC-083, ADR-0066). With 8 to 12 agents, numbered
+  records, the shared logs and reviews of dev merges failed or delayed most merges (81 decision
+  records renamed in 36 of 74 sessions; 33 of 57 merges spent a review round on dev merges or
+  renumbering):
+  - `record_number` gives each task the next free number of a directory's numbered files (ADRs,
+    migrations, any `NNNN-…` or `PREFIX-NNN-…`), past the integration branch, every live task's
+    checkout and every number given out before, and reserves it (schema version 20). Spec
+    numbers come from the same reservations. The briefing points agents to it.
+  - The changes log and the decision index merge by Git's union driver in every repository:
+    Yulius keeps them in its block of the clone's `info/attributes` at every task start, so an
+    onboarded repository needs no `.gitattributes`.
+  - `delivery_merge` accepts the review of an earlier head when the branch moved past it only
+    through Git's own merges of the integration branch; anything else still needs a new review.
+  - Pull requests whose merge is not armed are not updated by Yulius: GitHub's conflict state
+    blocks nothing, and each push would cost a CI run.
 - A task's status tells the truth: Working is work, Needs you is a person's move (SPEC-085,
   ADR-0068; F 2026-10-13 "marked as running even if was done", "needs you was too often"). A
   replay of two days of transcripts found "Needs you" false for 43 of its 50 task-hours:

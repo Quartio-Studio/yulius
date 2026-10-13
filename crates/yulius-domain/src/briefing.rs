@@ -46,7 +46,7 @@ const MAX_STEPS_LISTED: usize = 100;
 const MAX_ENVIRONMENTS_LISTED: usize = 8;
 
 /// Yulius MCP tools announced to every session (SPEC-002 §7.4), as `(name, purpose)`.
-pub const YULIUS_TOOLS: [(&str, &str); 35] = [
+pub const YULIUS_TOOLS: [(&str, &str); 36] = [
     (
         "project_context",
         "project summary, architecture and decision index, recent changes, delivery rules",
@@ -71,6 +71,10 @@ pub const YULIUS_TOOLS: [(&str, &str); 35] = [
     ),
     ("scope_release", "release one of your claims"),
     ("scopes_list", "current claims and conflicts"),
+    (
+        "record_number",
+        "the number for a new numbered file (decision record, migration), reserved for you",
+    ),
     (
         "steps_set",
         "replace your plan: steps of similar effort (the spec's Plan items), optional effort 1-3",
@@ -534,7 +538,8 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          {integration} or {production}, never `--no-verify`, never rewrite pushed commits (no \
          rebase, amend or force push: Yulius pushes plainly). Small conventional commits; nothing \
          unrelated, generated or secret. No `git stash`: this worktree is yours. Stay current by \
-         merging `origin/{integration}` and rerun the tests after a conflict. One concern per pull request (about \
+         merging `origin/{integration}` and rerun the tests after a conflict. Numbered files \
+         (ADRs, migrations) take their number from `record_number`. One concern per pull request (about \
          400 changed lines outside tests); split bigger work into chained tasks.\n\
          - Before delivery, get an independent review in a fresh session (a read-only subagent \
          given only the diff range, the spec and skill `om-code-review`); fix findings \
@@ -1220,8 +1225,8 @@ mod tests {
             "{section:?}"
         );
         // The long section received far more than its weighted share (2/14) of the remainder
-        // (about 250 bytes of the 9,500-byte budget).
-        assert!(section.len() > 1_500, "{} bytes", section.len());
+        // (about 250 bytes of the 9,500-byte budget): whole lines of about 160 bytes.
+        assert!(section.len() > 1_400, "{} bytes", section.len());
         Ok(())
     }
 
