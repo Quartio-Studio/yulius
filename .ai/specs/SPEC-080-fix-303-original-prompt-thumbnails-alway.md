@@ -1,11 +1,11 @@
 ---
 yulius-task: 847009d4-0b68-41d3-8e9e-36512996e66a
-status: in-progress
+status: done
 ---
 
 # SPEC-080: the original prompt's thumbnails always load; the `/proc` check refuses on Linux
 
-Status: in progress
+Status: implemented
 Date: 2026-10-13
 Owner: Yulius task #63 (part of task #47, "fix all open actionable GitHub issues")
 Scope authorization: task request: fix GitHub issue #303 following its acceptance criteria; no
@@ -47,12 +47,12 @@ Review round 2 of SPEC-043 left these as #303:
 ## Plan
 
 - [x] Read #303, SPEC-043 and ADR-0033, write and validate the spec
-- [ ] Attachment reads have their own bound with a bounded wait and stream under their slot
-- [ ] On Linux an attachment whose /proc link cannot be read is refused, file work off the runtime
-- [ ] The mock serves only the task's own attachment folders and a prompt is never front matter
-- [ ] Docs, ADR and changes describe the new bound
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green with dev merged
+- [x] Attachment reads have their own bound with a bounded wait and stream under their slot
+- [x] On Linux an attachment whose /proc link cannot be read is refused, file work off the runtime
+- [x] The mock serves only the task's own attachment folders and a prompt is never front matter
+- [x] Docs, ADR and changes describe the new bound
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green with dev merged
 
 ## Acceptance criteria
 
