@@ -948,7 +948,7 @@ observed. Live provider compatibility and deployment are reported separately fro
 
 ## 12. Changelog
 
-- 2026-10-13 (task #66, SPEC-070, ADR-0053): a task is owned by one person, whose GitHub
+- 2026-10-13 (task #66, SPEC-070, ADR-0055): a task is owned by one person, whose GitHub
   credentials it uses; only they change it, others ask for control (GIT-004, AC-GIT-4 new; GIT-003
   follows the owner).
 - 2026-10-13 (task #55, #169): CLI device sign-in start is limited per client, its live grants

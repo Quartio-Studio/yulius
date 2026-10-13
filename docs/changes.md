@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
-- A task is owned by one person, whose GitHub credentials it uses (SPEC-070, ADR-0053, task #66).
+- A task is owned by one person, whose GitHub credentials it uses (SPEC-070, ADR-0055, task #66).
   Every task has an owner, its creator until a hand-over. The task's Git, `gh`, pull requests,
   merges, commit identity and agent authority are the owner's. Only the owner changes the task:
   anyone else, administrators included, gets 403 naming the owner, watches the terminal

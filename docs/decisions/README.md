@@ -60,5 +60,5 @@ title whose number differs from the file name, and a record this index does not 
 - [0049](0049-management-tools-cover-the-task-and-automation-lifecycle.md): Management tools cover the task and automation lifecycle, never the caller's own task
 - [0052](0052-only-keystrokes-count-as-typing.md): Only keystrokes count as typing; a typed first message stays pending until submitted
 - [0051](0051-the-merge-gate-enforces-the-branch-policy.md): Yulius's merge gate enforces the branch policy
-- [0053](0053-a-task-is-owned-by-one-person.md): A task is owned by one person, whose GitHub credentials it uses; control passes on request
+- [0055](0055-a-task-is-owned-by-one-person.md): A task is owned by one person, whose GitHub credentials it uses; control passes on request
 - [0053](0053-shell-starts-run-detached-from-the-request.md): Shell and Cockpit starts run detached from their request
