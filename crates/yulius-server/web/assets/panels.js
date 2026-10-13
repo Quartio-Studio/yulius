@@ -1,4 +1,4 @@
-// Right rail (Browser, Editor, Shell) and its resizable panel; each tool keeps the width
+// Right rail (Browser, Editor, Shell, Notes) and its resizable panel; each tool keeps the width
 // its user gave it (UI-044). The whole rail is hidden by default (F 2026-10-07) and shown with the
 // top-bar Tools toggle, remembered per browser; opening a panel from a link shows it.
 // Sandbox-scoped panels stay alive while hidden so the browser stream, editor and shell sessions
@@ -10,6 +10,7 @@ import { createTerminalView } from './terminal.js';
 import { attachTerminalDrop, shellAttachments } from './filedrop.js';
 import { createBrowserPanel } from './browser.js';
 import { createEditorView } from './editorview.js';
+import { createNotesView } from './notes.js';
 import { allows } from './status.js';
 import { readJson, writeJson } from './store.js';
 import { createSplitter, layoutPrefs } from './splitter.js';
@@ -27,6 +28,8 @@ const KINDS = [
   ['browser', 'globe', 'Browser'],
   ['editor', 'code', 'Editor'],
   ['shell', 'terminal', 'Shell'],
+  // Auto-saved notepads for this sandbox and the team (SPEC-041).
+  ['notes', 'note', 'Notes'],
 ];
 
 /** Create the rail + panel. setContext(sandbox, task) on navigation; open(kind, opts). */
@@ -150,6 +153,7 @@ export function createPanelHost(ctx) {
     if (k === 'browser') return createBrowserPanel(ctx, sandbox);
     if (k === 'editor') return createEditorView(ctx, sandbox, () => task);
     if (k === 'shell') return createShellView(ctx, sandbox, () => task);
+    if (k === 'notes') return createNotesView(ctx, sandbox);
     return simpleView(h('div'));
   }
 
@@ -220,10 +224,11 @@ export function createPanelHost(ctx) {
     buttons.get('browser').title = requests && requests.size ? 'Browser — an agent needs your action' : 'Browser';
     buttons.get('browser').setAttribute('aria-label', requests && requests.size ? 'Browser, an agent needs your action' : 'Browser');
     const write = sandbox && allows(sandbox.access, 'write');
-    for (const k of ['browser', 'editor', 'shell']) {
+    for (const k of ['browser', 'editor', 'shell', 'notes']) {
       const button = buttons.get(k);
       button.disabled = !sandbox;
-      button.classList.toggle('readonly', Boolean(sandbox) && !write);
+      // Readers still edit the team's notes.
+      button.classList.toggle('readonly', Boolean(sandbox) && !write && k !== 'notes');
     }
   }
 
