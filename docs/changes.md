@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- Open GitHub issues triaged, and the web UI keeps the person's keyboard, scroll and text (SPEC-056,
+  task #47). Issues already fixed on `dev` were closed with the change that fixed them, and the
+  other actionable ones went to chained tasks #49–#64. In the web UI:
+  - a terminal that shows late leaves the keyboard in the Editor on Chrome (#325), and with a
+    terminal asked for after it (#323);
+  - Notes shown again for a new page does not take the keyboard (#310);
+  - a menu placed again keeps its scroll (#288);
+  - the task view ignores an older detail read (#316);
+  - the queued messages card keeps unsent text and a refusal when the task starts (#324);
+  - leaving the composer revokes every object URL it made (#259).
 - CI jobs get the CPU first (SPEC-053, ADR-0039, task #45, #283). A sandbox's cgroup is split
   into `system/`, `agents/` and `ci/`, and CI jobs run with four times the agents' CPU weight. CI
   gets up to 80 % of the sandbox while agents build, and agents keep at least 20 %. The e2e suite in CI is
