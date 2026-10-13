@@ -241,6 +241,7 @@ async fn new_task(
             automation_run: None,
             start: true,
             mode: yulius_app::model::TaskMode::Prompt,
+            supertask: false,
         })
         .await?;
     Ok(record.id)
@@ -495,6 +496,7 @@ fn goal_mode_types_the_goal_once_the_session_is_ready() -> TestResult {
                 automation_run: None,
                 start: true,
                 mode: yulius_app::model::TaskMode::Goal,
+                supertask: false,
             })
             .await?;
         let id = record.id;
@@ -663,6 +665,7 @@ fn a_closed_task_continues_its_session_and_a_manual_switch_keeps_model_and_effor
                 automation_run: None,
                 start: true,
                 mode: yulius_app::model::TaskMode::Prompt,
+                supertask: false,
             })
             .await?
             .id;

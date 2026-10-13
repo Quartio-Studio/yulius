@@ -111,6 +111,7 @@ async fn running_task(
             gate_blocks: 0,
             wake_enabled: true,
             mode,
+            supertask: false,
         })
         .await?;
     h.store
@@ -436,6 +437,7 @@ async fn the_capacity_view_reports_burn_forecast_and_recommendation() -> TestRes
             gate_blocks: 0,
             wake_enabled: true,
             mode: TaskMode::Prompt,
+            supertask: false,
         })
         .await?;
     h.store

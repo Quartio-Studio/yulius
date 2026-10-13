@@ -54,6 +54,7 @@ mod sessions;
 mod shells;
 mod skills_mcp;
 mod subscription_pool;
+mod supertask;
 mod supervision;
 mod task_delete;
 mod task_done;
