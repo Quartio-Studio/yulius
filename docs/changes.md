@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- Dead-code tools (SPEC-054, ADR-0037, task #38): a bundled skill, `dead-code-cleanup`, is how
+  agents clean up: the established tool per language (vulture and skylos for Python, from the ML
+  in PL workshop; cargo-shear, knip, deadcode and others), a web search when the stack is not
+  listed, every candidate verified, small commits. Onboarding and `infra-bootstrap` add a
+  dead-code check to a project's gate; the Chore workflow points to the skill. Yulius's own
+  `scripts/dev deps` runs cargo-shear instead of cargo-machete and dropped the unused `toml`
+  workspace dependency it found.
 - "See the original prompt" in the task menu (SPEC-043, ADR-0033, task #42) shows the prompt a
   task started with: the text formatted as written, with Copy text, and the files attached to it
   (an image as a thumbnail that opens full size, another file to download, a file removed since

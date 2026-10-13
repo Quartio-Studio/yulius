@@ -29,6 +29,9 @@ example when it starts deploying for real), and record every change as a decisio
 
 1. **Gate and tests.** Add or complete:
    - formatting check and linter with warnings as errors, type checking where the language has it;
+   - a dead-code and unused-dependency check, cheap and with few false positives, pinned and with
+     its allowlist committed (skill `dead-code-cleanup` names each language's tools, for example
+     vulture or skylos for Python, cargo-shear for Rust, knip for TypeScript);
    - unit tests for the core logic and integration tests at the real boundaries (HTTP, database
      on the real engine in a disposable instance, queues, external APIs behind fakes), fast,
      deterministic and isolated (`test-driven-development`);

@@ -363,7 +363,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | SKL-004 | One skill catalog serves every Claude Code session ("skill orchestration"). | WA 13:07 | E | AC-SKL-1 |
 | SKL-005 | A Skills page lists skills, their source and enabled state, and shows their content. | T 5:28, T 24:39 | E | AC-SKL-3 |
 | SKL-006 | Skills are reduced to a small curated set included with Yulius (SKL-003), shown first and read-only with its source and a thank-you to Open Mercato, whose skills it adapts; then custom skills: the repository's (edited in place, always on) and the instance's. Two groups, no filters or search. | F 2026-10-10 ("Skills should be reduced") | C | AC-SKL-3 |
-| SKL-007 | The bundled set stays small and serves the delivery pipeline: Yulius's own `delivery-pipeline`, `git-hygiene` and `infra-bootstrap`; seven adapted Open Mercato skills; and `test-driven-development` and `verification-before-completion` adapted from obra/superpowers (MIT, with attribution). Each origin is its own source (`yulius`, `open-mercato`, `superpowers`) and keeps its license and upstream commit. | F 2026-10-10 | E | AC-SKL-2 |
+| SKL-007 | The bundled set stays small and serves the delivery pipeline: Yulius's own `delivery-pipeline`, `git-hygiene`, `infra-bootstrap` and `dead-code-cleanup` (SPEC-054); seven adapted Open Mercato skills; and `test-driven-development` and `verification-before-completion` adapted from obra/superpowers (MIT, with attribution). Each origin is its own source (`yulius`, `open-mercato`, `superpowers`) and keeps its license and upstream commit. | F 2026-10-10, F 2026-10-13 | E | AC-SKL-2 |
 
 ### 5.10 MCP (MCP)
 
@@ -653,7 +653,8 @@ duplicates (STP-006).
 Yulius embeds three small packs (`catalog/skills/<pack>/`, extracted to `<data_dir>/skills/<pack>/`;
 the Skills page lists them as included, enabled per sandbox by default):
 
-- `yulius`: `delivery-pipeline` (DLV-008), `git-hygiene`, `infra-bootstrap` (DSC-014).
+- `yulius`: `delivery-pipeline` (DLV-008), `git-hygiene`, `infra-bootstrap` (DSC-014),
+  `dead-code-cleanup` (SPEC-054).
 - `open-mercato`: adapted from `open-mercato/skills` (MIT) at
   `3fc5a1fbd84d90c6f052f3c97cb1e54d2660eb22` — `om-brainstorm`, `om-spec-writing`,
   `om-code-review`, `om-check-and-commit`, `om-root-cause`, `om-fix`, `om-ux-shape`. They are no
