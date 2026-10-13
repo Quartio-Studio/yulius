@@ -1003,6 +1003,88 @@ pub struct HarnessOptions {
     pub usage: Option<Arc<dyn yulius_app::ports::usage::UsageProbe>>,
     /// Store (default: a new in-memory database).
     pub store: Option<SqliteStore>,
+    /// Crypto (default: [`test_crypto`]).
+    pub crypto: Option<Arc<dyn yulius_app::ports::Crypto>>,
+}
+
+/// The harness's master-key crypto.
+pub fn test_crypto() -> Result<MasterKeyCrypto, Box<dyn std::error::Error>> {
+    Ok(MasterKeyCrypto::from_key(&[9u8; 32])?)
+}
+
+/// A step a test runs in the middle of a request.
+pub type Hook = Box<dyn FnOnce() + Send>;
+
+/// [`test_crypto`] that runs a test's hook once, the next time a person's two-factor seed is
+/// opened: between reading the seed and accepting a code checked against it.
+pub struct HookedCrypto {
+    inner: MasterKeyCrypto,
+    pub on_seed_open: Mutex<Option<Hook>>,
+}
+
+impl HookedCrypto {
+    pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        Ok(Self {
+            inner: test_crypto()?,
+            on_seed_open: Mutex::new(None),
+        })
+    }
+}
+
+impl yulius_app::ports::Crypto for HookedCrypto {
+    fn new_id(&self) -> String {
+        self.inner.new_id()
+    }
+    fn random_bytes(&self) -> [u8; 32] {
+        self.inner.random_bytes()
+    }
+    fn sha256_hex(&self, data: &[u8]) -> String {
+        self.inner.sha256_hex(data)
+    }
+    fn seal(&self, plaintext: &[u8]) -> AppResult<yulius_app::model::Sealed> {
+        self.inner.seal(plaintext)
+    }
+    fn open(&self, sealed: &yulius_app::model::Sealed) -> AppResult<Vec<u8>> {
+        self.inner.open(sealed)
+    }
+    fn hash_password(&self, password: &Secret) -> AppResult<String> {
+        self.inner.hash_password(password)
+    }
+    fn verify_password(&self, password: &Secret, phc: &str) -> bool {
+        self.inner.verify_password(password, phc)
+    }
+    fn envelope_seal(
+        &self,
+        aad: &[u8],
+        plaintext: &[u8],
+    ) -> AppResult<yulius_app::ports::Envelope> {
+        self.inner.envelope_seal(aad, plaintext)
+    }
+    fn envelope_open(
+        &self,
+        aad: &[u8],
+        envelope: &yulius_app::ports::Envelope,
+    ) -> AppResult<zeroize::Zeroizing<Vec<u8>>> {
+        let opened = self.inner.envelope_open(aad, envelope);
+        if aad.ends_with(b"|2fa") {
+            let hook = self.on_seed_open.lock().ok().and_then(|mut h| h.take());
+            if let Some(hook) = hook {
+                hook();
+            }
+        }
+        opened
+    }
+    fn totp_hmac(
+        &self,
+        algorithm: yulius_domain::vault::totp::OtpAlgorithm,
+        key: &[u8],
+        counter: u64,
+    ) -> Vec<u8> {
+        self.inner.totp_hmac(algorithm, key, counter)
+    }
+    fn constant_time_eq(&self, a: &[u8], b: &[u8]) -> bool {
+        self.inner.constant_time_eq(a, b)
+    }
 }
 
 /// Like [`harness`] with the given adapters. The data directory path is canonical.
@@ -1030,7 +1112,10 @@ pub fn harness_with(options: HarnessOptions) -> Result<Harness, Box<dyn std::err
     let deps = Deps {
         store: Arc::new(store.clone()),
         clock: clock.clone(),
-        crypto: Arc::new(MasterKeyCrypto::from_key(&[9u8; 32])?),
+        crypto: match options.crypto {
+            Some(crypto) => crypto,
+            None => Arc::new(test_crypto()?),
+        },
         github: github.clone(),
         session_host: options
             .session_host

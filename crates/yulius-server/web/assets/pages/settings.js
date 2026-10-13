@@ -130,7 +130,7 @@ export function mountSettingsPage(ctx) {
     frame.body.append(section('shield', 'Administration', `this ${BRAND.name} instance`,
       row('user', 'Add a subscription', 'A Claude subscription for the agents; you finish Claude’s own sign-in in a terminal here', h('a', { class: 'btn btn-primary btn-sm', href: href('/admin/accounts?add=1'), dataset: { route: '/admin/accounts?add=1' } }, icon('plus', { size: 14 }), 'Add subscription')),
       h('div', { class: 'settings-tiles' },
-        superadmin ? tile('users', 'Users', 'Who may sign in', '/admin/users') : null,
+        tile('users', 'Users', superadmin ? 'Who may sign in' : 'Who may sign in, and resetting a lost two-factor', '/admin/users'),
         tile('user', 'Subscriptions', 'Claude subscriptions, their usage and when to add more', '/admin/accounts'),
         superadmin ? tile('github', 'GitHub connection', 'The GitHub App and its installations', '/admin/github') : null,
         superadmin ? tile('download', 'Instance', 'Version, updates and the Jev key', '/admin/instance') : null,

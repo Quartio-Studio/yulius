@@ -9,15 +9,23 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - Unique decision numbers and the onboarding CI proof (SPEC-058, task #49; #317, #272). The four
   decision records numbered 0034 now have their own numbers: the automations catalog keeps 0034, the
   Agent in the right panel is 0036, the personal two-factor vault 0042 and the task status from
-  Claude Code's records 0041; the archive-all record (#332), a later second 0040, is 0043.
-  `scripts/check_repository.py` fails on two records with one number, a title whose number differs
-  from the file name, or a record missing from `docs/decisions/README.md` (0016 was). The onboarding
-  prompt and infra-bootstrap step 2 add `YULIUS_CI_MATRIX` to the proof of matrix jobs and say how
-  to clean up after an interrupted proof: the proof prints its directory, the agent removes its own
-  by that path and other tasks' `~/.ci-proof.*` only when over six hours old, then runs `git
-  worktree prune`. They also say that checkouts are per CI lane while by default up to two runs
-  share the CI home and cache, and that system packages are installed by onboarding, never by a CI
-  job.
+  Claude Code's records 0044 (after #333 took 0041); the archive-all record (#332), a later second
+  0040, is 0043. `scripts/check_repository.py` fails on two records with one number, a title whose
+  number differs from the file name, or a record missing from `docs/decisions/README.md` (0016 was).
+  The onboarding prompt and infra-bootstrap step 2 add `YULIUS_CI_MATRIX` to the proof of matrix
+  jobs and say how to clean up after an interrupted proof: the proof prints its directory, the agent
+  removes its own by that path and other tasks' `~/.ci-proof.*` only when over six hours old, then
+  runs `git worktree prune`. They also say that checkouts are per CI lane while by default up to two
+  runs share the CI home and cache, and that system packages are installed by onboarding, never by a
+  CI job.
+- Two-factor fixes (SPEC-061, ADR-0041, task #52, #291, #295). A lost authenticator no longer
+  locks someone out of the secrets for good: an instance administrator or the superadmin resets
+  their two-factor from the Users page (a confirmation, then their own code), and the person sets
+  it up again on their next reveal. The reset is in the secrets activity (`vault.2fa.reset`).
+  Instance administrators now see the Users page (read-only, with each person's two-factor). A
+  code now confirms only the seed it was checked against, so a new key set up in another tab
+  while a code is checked is not confirmed by it. API: `DELETE /api/users/{id}/two-factor`;
+  `AdminUser` gains `two_factor`.
 - Open GitHub issues triaged, and the web UI keeps the person's keyboard, scroll and text (SPEC-056,
   task #47). Issues already fixed on `dev` were closed with the change that fixed them, and the
   other actionable ones went to chained tasks #49–#64. In the web UI:
@@ -163,7 +171,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   CI (tests), Secrets and Dashboard, then "More", which expands Sessions, Workflows, Skills,
   Automations and MCP in place. Its state is remembered per browser; arriving at one of those
   pages shows it open for that page.
-- A task's status follows what its agent is doing (SPEC-032, ADR-0041; task #30): a task whose
+- A task's status follows what its agent is doing (SPEC-032, ADR-0044; task #30): a task whose
   agent ended its turn but still waits for a background agent (a reviewer) is Working with "1
   background task still running", not Done; a goal check that says "not met", or any stop the
   session goes on from, makes the task Working again instead of leaving "Your turn" (or Done);

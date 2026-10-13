@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// A user as listed for the superadmin.
+/// A user as listed for instance administrators and the superadmin.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdminUser {
     /// Id.
@@ -17,6 +17,8 @@ pub struct AdminUser {
     pub disabled: bool,
     /// Has signed in with GitHub at least once.
     pub github_linked: bool,
+    /// Vault two-factor (SPEC-061): `missing`, `pending` (set up, not confirmed) or `on`.
+    pub two_factor: String,
 }
 
 /// `POST /api/admin/users`.

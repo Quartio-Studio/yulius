@@ -36,7 +36,7 @@ async function copyValue(value, what) {
  * Runs `request`; when the server asks for a two-factor code, unlocks the vault (setting
  * two-factor up first if needed) and retries once. Resolves `null` when the person cancels.
  */
-async function withReauth(ctx, request) {
+export async function withReauth(ctx, request) {
   try {
     return await request();
   } catch (error) {
@@ -266,6 +266,7 @@ const ACTIONS = {
   'vault.2fa.setup': 'started setting up two-factor',
   'vault.2fa.confirm': 'turned on two-factor',
   'vault.2fa.locked': 'was locked out of codes after 10 wrong ones',
+  'vault.2fa.reset': 'reset the two-factor of',
   'vault.unlock': 'unlocked the secrets',
   'vault.unlock.failed': 'entered a wrong two-factor code',
   'vault.agent.reveal': 'revealed agent secret',

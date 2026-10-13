@@ -4,7 +4,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, patch, post};
+use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use yulius_app::model::Secret;
@@ -31,6 +31,7 @@ pub fn public() -> Router<AppState> {
         .route("/api/auth/reauth", get(reauth_status).post(reauth))
         .route("/api/auth/two-factor", post(two_factor_setup))
         .route("/api/auth/unlock", post(unlock))
+        .route("/api/users/{id}/two-factor", delete(two_factor_reset))
         .route("/api/secrets/activity", get(activity))
         .route(
             "/api/sandboxes/{sid}/agent-secrets",
@@ -162,6 +163,17 @@ async fn two_factor_setup(
 ) -> Result<Response, ApiError> {
     Ok(match app.setup_two_factor(&ctx).await? {
         Revealed::Values(setup) => no_store((StatusCode::CREATED, Json(setup)).into_response()),
+        Revealed::ReauthRequired(status) => reauth_required(status),
+    })
+}
+
+async fn two_factor_reset(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    Ok(match app.reset_two_factor(&ctx, &id).await? {
+        Revealed::Values(()) => StatusCode::NO_CONTENT.into_response(),
         Revealed::ReauthRequired(status) => reauth_required(status),
     })
 }

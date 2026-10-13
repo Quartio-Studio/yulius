@@ -235,7 +235,7 @@ flowchart LR
 ## Task status
 
 A running task's activity is derived from Claude Code's own records, not guessed from the last
-event ([ADR-0041](decisions/0041-task-status-follows-claude-codes-own-records.md)):
+event ([ADR-0044](decisions/0044-task-status-follows-claude-codes-own-records.md)):
 
 ```mermaid
 flowchart LR

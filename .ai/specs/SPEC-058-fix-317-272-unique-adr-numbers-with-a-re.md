@@ -41,9 +41,9 @@ onboarding rather than by a job (#272).
 
 - ADR-001: each decision record has a unique number: the earliest merged of the four 0034 records
   (ready-made automations, #297) keeps 0034; the Agent in the right panel becomes 0036 (a free gap),
-  the personal two-factor vault 0042 and the task status from Claude Code's records 0041. Each
-  record's H1, the index in `docs/decisions/README.md` (in numeric order) and every reference in
-  the docs, specs and code comments follow.
+  the personal two-factor vault 0042 and the task status from Claude Code's records 0044. Each
+  record's H1, the index in `docs/decisions/README.md` (in numeric order) and every reference in the
+  docs, specs and code comments follow.
 - ADR-002: `scripts/check_repository.py` fails when two files in `docs/decisions` share a number,
   naming them, when a record's H1 number differs from its file name's, and when the index does not
   list a record (0016 was missing).
@@ -101,7 +101,9 @@ onboarding rather than by a job (#272).
   gap left when SPEC-054 took 0037), then 0040 and 0041 after `dev`'s 0039; while this branch was
   open, #328 (task #48) merged its own 0040 first, the new check failed on the merge of `dev`, and
   the two-factor record took 0042; then #332 (task #65) merged a second 0040 onto `dev`, which this
-  branch renumbers to 0043 (#328's, merged first, keeps 0040). The issue's "0035 to 0037" was
+  branch renumbers to 0043 (#328's, merged first, keeps 0040); then #333 (task #52) merged its own
+  0041 (administrators reset a lost two-factor, citing the two-factor record as ADR-0034), so the
+  task status record became 0044 and #333's references point at 0042. The issue's "0035 to 0037" was
   written before 0035 and 0037 were taken.
 - **Historical notes** in SPEC-035, SPEC-040 and SPEC-052 that tell how a number was chosen at the
   time stay as written; the ones that name the record get "now 00NN (#317)" so they are not
@@ -120,9 +122,9 @@ onboarding rather than by a job (#272).
   renumber. All fixed, test-first where tested. Not changed: the manual `git worktree prune` can in
   theory race a Yulius `worktree add` outside Yulius's in-process lock; the window is tiny, the
   issue asks for the prune, and Yulius prunes before its own checkouts anyway.
-- **Parallel branches** that add a decision 0041 to 0043 or cite "ADR-0034" for the two-factor vault
-  must renumber or retarget after merging `dev`; the check catches the file and link, the pull
-  request says so for the prose.
+- **Parallel branches** that add a decision numbered 0041 to 0044 or cite "ADR-0034" for the
+  two-factor vault must renumber or retarget after merging `dev`; the check catches the file and
+  link, the pull request says so for the prose.
 - **Review round 2** (REQUEST CHANGES at 2172770): with only the six-hour `find`, the agent's own
   killed proof stayed behind, which is the case #272 asks to recover from. The proof now prints
   its directory and the recovery removes it by that path first; the six-hour `find` is kept for
@@ -159,8 +161,12 @@ onboarding rather than by a job (#272).
 - Merging `dev` after #332: `python3 scripts/check_repository.py` failed on #328's and #332's two
   0040 records; after #332's became 0043 it passed. The index check, red then green: the new test
   failed (`0 != 1`) before the check, then the real tree failed on the unlisted 0016, then passed.
+- Merging `dev` after #333: SPEC-001 VLT-002 conflicted (both sides edited the row; resolved as
+  `dev`'s row with its ADR-0034 as ADR-0042, the branch's only change there), and
+  `python3 scripts/check_repository.py` failed on the two 0041 records; after the task status
+  record became 0044 it passed.
 - `git grep 0034` in docs, specs and code: only the automations catalog record, its references
-  and historical notes.
+  and historical notes; every 0041 reference is #333's administrator reset.
 - Independent review (fresh read-only sessions, skill `om-code-review`): round 1 of
   81bf3aa..205fe9c APPROVE with minors; round 2 of 2172770 REQUEST CHANGES (own-proof recovery);
   round 3 of 41e2038 REQUEST CHANGES (#332's second 0040 on `dev`); round 4 of e634281 APPROVE with
