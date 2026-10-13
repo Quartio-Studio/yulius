@@ -444,7 +444,7 @@ async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
             axum::http::Method::POST,
             "/api/sandboxes/s1/agent-secrets",
             Some(json!({"name": "DOCS_LOGIN", "description": "Docs admin login",
-                "hosts": ["docs.example"], "injection": "none", "username": "alice-docs",
+                "hosts": ["docs.example"], "injection": "basic", "username": "alice-docs",
                 "value": VALUE})),
             &f.writer,
         )

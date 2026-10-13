@@ -48,7 +48,7 @@ conversation after an exit, an idle stop or a server restart.
 | CKP-005 | The Cockpit is private: only its owner can get or attach to it; other users get their own. | `cockpit.rs` |
 | CKP-006 | A running Cockpit survives a server restart (adopted as the Cockpit, not as a terminal); an idle one is ended after a day without viewers like shells and resumes on the next open. | `cockpit.rs` |
 | CKP-007 | Without a subscription with capacity the call fails with a clear reason (`Conflict`/`Capacity`), nothing is left running. | `cockpit.rs` |
-| CKP-008 | Sidebar: "Cockpit" is the first item of the sandbox navigation, opening `/s/<slug>/cockpit`: the Cockpit's terminal filling the centre with a short line saying what it is; an ended Cockpit offers "Start again"; read users see why they cannot use it. | `e2e/tests/cockpit.e2e.ts`, `navigation.e2e.ts` |
+| CKP-008 | Sidebar: "Cockpit" is the first item of the sandbox navigation, opening `/s/<slug>/cockpit`: the Cockpit's terminal filling the centre with a short line saying what it is; an ended Cockpit offers "Start again"; read users see why they cannot use it. Superseded by SPEC-035: the Agent in the right panel. | `e2e/tests/agent-panel.e2e.ts` (was `cockpit.e2e.ts`) |
 
 ## Design
 

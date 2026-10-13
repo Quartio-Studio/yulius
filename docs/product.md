@@ -18,13 +18,17 @@ watching, steering and unblocking.
 
 - **Projects and sandboxes**: import a GitHub repository (or onboard it from a local machine's
   Claude sessions with `yulius onboard`); each gets a contained sandbox with its own system
-  layer, home, shells per user, browser and editor.
-- **Cockpit**: every user's own plain Claude Code session per sandbox, first in the sidebar, for
-  quick questions and work that should not become a task; `/clear` starts over, it cannot be
+  layer, home, shells per user, browser and editor. The CLI only uploads: the onboarding task that
+  adapts the repository to the Yulius standards starts when someone clicks Start onboarding on the
+  sandbox page.
+- **Agent** (formerly the Cockpit): every user's own plain Claude Code session per sandbox, in the
+  right tool panel beside any page (top-bar Agent button, first in the tools rail), for quick work
+  such as setting up automations or asking a quick question; anything more complex, such as
+  writing code, belongs in a task, and its panel says so. `/clear` starts over, it cannot be
   deleted and comes back with its conversation. It manages the project for its owner: asked to
   "create a task from that" or to do something "every day at 4am", it creates the task or the
   automation through Yulius's tools. Task agents can create tasks the same way (`task_create`).
-- **Sidebar**: the sandbox pages used every day (Cockpit, Tasks, Git, CI (tests), Secrets, Dashboard),
+- **Sidebar**: the sandbox pages used every day (Tasks, Git, CI (tests), Secrets, Dashboard; the Agent is on the right),
   then "More" for Sessions, Workflows, Skills, Automations and MCP, then the active tasks.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions
   outlive server restarts. Task intake splits mixed requests, holds scope changes and chains
@@ -40,6 +44,10 @@ watching, steering and unblocking.
 - **Yulius CI**: the projects' only CI; it runs on the VM, no GitHub Actions.
 - **Browser panel**: the sandbox's real Chrome streamed as video so people can pass captchas
   and sign-ins for the agent.
+- **Automations**: tasks on a schedule. Two ready-made ones, off until a person enables them in one
+  click on the Automations page: "Keep the docs up to date" and "Work through open issues" (the
+  core team's issues verified in parallel, a Fix task for each actionable one, no new issues),
+  nightly at 03:00 CEST.
 - **Notes**: in the tools rail, a notepad per sandbox and one for the whole team, shared and saved
   while people type; a teammate's edit shows up live, and two edits at once end in a choice.
 - **Editor, terminals, Git view, automations, workflow catalog** in one web UI, whose menus fit
@@ -48,7 +56,9 @@ watching, steering and unblocking.
   `yulius wait`, `ci_status` and `delivery_status`.
 - **Agent primitives as code**: Yulius's own skills are APM packages with a lockfile, deployed to
   every harness and checked for drift; onboarding codifies a project's conventions as primitives.
-- **Secrets vault**: team secrets people reveal; agent secrets agents use but never see.
+- **Secrets vault**: secrets are a title, a value and notes. Team secrets are for people; agent
+  secrets are used by agents, who never see them. Reading a value needs your own two-factor code
+  (set up once, mandatory). The people who manage an agent secret can read it too.
 - **Updates**: Yulius updates itself from `main` without losing running work.
 
 ## Principles

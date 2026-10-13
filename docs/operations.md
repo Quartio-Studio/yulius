@@ -428,7 +428,7 @@ systemctl restart yulius
 | --- | --- | --- |
 | `YULIUS_ISOLATION` | `auto` | `auto`: the holder when its prerequisites hold, else the previous containment (and a failing holder never blocks work); `namespaces`: refuse runs without it; `legacy`: the previous containment. |
 | `YULIUS_SANDBOX_EGRESS` | `direct` | `none`: no egress, only the relayed endpoints (the internal listener, which also serves the secrets proxy, and `YULIUS_SANDBOX_FORWARD`). |
-| `YULIUS_SANDBOX_MEMORY_GB` | half the RAM | `memory.max` per sandbox. |
+| `YULIUS_SANDBOX_MEMORY_GB` | the RAM but an eighth (at least 4 GiB kept for the host) | `memory.max` per sandbox. One sandbox runs all its agents and CI jobs: size it to the sessions, not to half the host. |
 | `YULIUS_SANDBOX_CPUS` | all CPUs but two | `cpu.max` per sandbox. |
 | `YULIUS_SANDBOX_PIDS` | 8192 | `pids.max` per sandbox. |
 | `YULIUS_SANDBOX_DISK_GB` | 100 | Soft quota: the sandbox directory plus its installed packages, measured every 10 minutes (again when a refusal would rest on a reading older than a minute); from 90 % Yulius prunes the build caches of idle tasks, ended tasks' caches and closed or cancelled tasks' worktrees always (every 5 minutes), see [SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md); above it, new sessions are refused (live ones continue). `0` turns it off. Persistent CI job checkouts are pruned the same way while no CI run executes, and one job's cache beyond a quarter of the quota at once. A project declares its own caches in `yulius.toml`: `[disk]` `caches = "target build/cache"`. |
@@ -655,9 +655,11 @@ Each teammate runs it for their own sessions; sessions are attributed to whoever
 They are stored read-only under `<data>/sandboxes/<sid>/sessions/` (at most 128 MiB per
 transcript, 10 000 sessions and 8 GiB per sandbox), listed on the sandbox's Sessions page, and
 searched by agents (`sessions_search`, `session_read`). The uploader or an admin deletes one on
-its page; deletions are audited (`session.deleted`). A new sandbox's preparation task starts by
-itself once the upload is applied, and no other task starts there until onboarding is ready (or an
-admin skips it); `yulius onboard --status` and the sandbox page say what is pending.
+its page; deletions are audited (`session.deleted`). The command only uploads: a new sandbox's
+onboarding task (adapting the repository to the Yulius standards) waits until someone clicks
+**Start onboarding** on the sandbox page in the browser, which the CLI cannot do (SPEC-051,
+ADR-0038). New tasks wait until onboarding is ready (or an admin skips it); `yulius onboard
+--status` and the sandbox page say what is pending.
 
 ### Dropped files
 

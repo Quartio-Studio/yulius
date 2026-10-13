@@ -30,11 +30,20 @@ pub const PACKS: [Pack; 3] = [
         dir: "yulius",
         source: SkillSource::Yulius,
         upstream: None,
-        skills: &["delivery-pipeline", "git-hygiene", "infra-bootstrap"],
+        skills: &[
+            "delivery-pipeline",
+            "git-hygiene",
+            "infra-bootstrap",
+            "dead-code-cleanup",
+        ],
         files: &[
             (
                 "README.md",
                 include_bytes!("../../../../catalog/skills/yulius/README.md"),
+            ),
+            (
+                "dead-code-cleanup/SKILL.md",
+                include_bytes!("../../../../catalog/skills/yulius/dead-code-cleanup/SKILL.md"),
             ),
             (
                 "delivery-pipeline/SKILL.md",

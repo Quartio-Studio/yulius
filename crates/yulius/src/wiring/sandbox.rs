@@ -47,7 +47,7 @@ pub struct IsolationArgs {
     /// Sandbox egress: `direct` or `none`.
     #[arg(long = "sandbox-egress", env = "YULIUS_SANDBOX_EGRESS", value_enum, default_value_t = Egress::Direct)]
     pub egress: Egress,
-    /// Memory limit per sandbox in GiB (default: half the host's memory).
+    /// Memory limit per sandbox in GiB (default: the host's memory but an eighth, at least 4 GiB).
     #[arg(long = "sandbox-memory-gb", env = "YULIUS_SANDBOX_MEMORY_GB")]
     pub memory_gb: Option<u64>,
     /// CPU limit per sandbox in CPUs (default: all but two).

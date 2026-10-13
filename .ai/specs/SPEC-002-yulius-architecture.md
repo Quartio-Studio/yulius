@@ -1049,7 +1049,11 @@ ciphertext; that instance-wide command (it must also re-seal accounts, GitHub to
 secrets) is a follow-up. After a suspected leak of `master.key` together with a database copy,
 re-encryption does not help: the values themselves must be rotated at their providers.
 
-**Team section.** Every signed-in member lists, adds, edits and deletes team secrets (flat, as the
+**Team section.** (Since F 2026-10-12, SPEC-040 and ADR-0034: a team secret is a title, a value
+and notes; older ones fold in when read; reveals need the person's own two-factor code entered in
+the browser session within 10 minutes instead of a recent sign-in; there is no per-secret seed;
+the people who manage an agent secret read it back the same way. The paragraph below is the
+original design.) Every signed-in member lists, adds, edits and deletes team secrets (flat, as the
 team works): title, URL, user name, password, notes and a TOTP seed (base32 or an
 `otpauth://totp/…` URI; RFC 6238 SHA-1/256/512, 6–8 digits). The list shows titles, URLs and user
 names. Revealing a password, notes or the seed, copying, and reading the current code need a
@@ -1066,7 +1070,8 @@ injection (`Authorization: Bearer`, Basic with a user name, or a named header), 
 name and TOTP seed, and a value of at least 8 characters (shorter values cannot be recognised in
 output, VLT-006). Sandbox secrets are managed by members with write access, instance-wide ones by
 instance administrators; members who can view a sandbox see names, descriptions and bindings.
-Values are write-only for everyone (replace, never read back).
+Values are write-only for everyone (replace, never read back). (Since SPEC-040, ADR-0034: the
+people who manage one read it back after their two-factor code; agents still never do.)
 
 Mechanisms considered for *using* a secret:
 
@@ -1617,7 +1622,19 @@ wake-ups do — or a user prompt record in the transcript), a new goal, a "not m
   still running" and Done when the count drops to 0 — Claude Code also wakes the agent when a shell
   ends, and that turn's clean Stop settles the task again. A probe that fails or exceeds 3 s reports
   nothing (the task is not held back; logged). Shells ended by Claude Code's background timeout or
-  `/exit` disappear from the count by themselves.
+  `/exit` disappear from the count by themselves. **Background agents** (Claude Code's `Agent` tool
+  with `run_in_background`) are no process of that tree: the record that closes a turn says how many
+  Claude Code still waits for, and the count is the larger of the two (a background Bash command is
+  in both), so a turn that ends with a review agent running reads Working, not Done (SPEC-032
+  STA-001; Monitor streams are still not counted).
+- **Going on after a stop (SPEC-032 STA-004, STA-005):** Yulius' Stop hook runs first and makes
+  the task idle; the goal evaluator's "not met" record, or assistant work newer than the last clean
+  Stop (a hook continued the turn, a wake-up started one), makes it `working` again
+  (`activity_on_goal_not_met`, `activity_on_work`); if that turn then closes (`turn_duration`)
+  with no Stop hook of its own (an API error), the task is idle again. A replay folds the same
+  way (an assistant line after an end line means the turn is open), so a restart no longer makes
+  a continued, working task `waiting`. The pending-agent count comes with the turn record, a poll
+  after the Stop hook: chain starts wait up to 3 s for it.
 - Done also follows from a tested pull request on a `waiting` task (GIT-001); the UI combines both
   with one rule (failing checks → Needs you, shells → Working, goal achieved or PR tested → Done,
   checks still running → In review).
@@ -1665,7 +1682,8 @@ than one interval.
 (job, file, offset, sha256). Job creation adds the sandbox when needed; `applying` creates local
 import branches and the snapshot worktree, then stores each session as a session document
 (§6.10): new, replaced (same uploader, other digest), unchanged (same digest) or kept as another
-person's; finally it starts the preparation task of a `pending` sandbox (§6.6). Reapplying is
+person's. It never starts onboarding: a `pending` sandbox waits for Start onboarding in the browser
+(§6.6, SPEC-051). Reapplying is
 idempotent (same digests). Before the job, `POST /api/onboard/plan` tells the CLI the sandbox,
 its onboarding status and which fingerprints (`sha256` of the redacted transcript) the server
 already holds, so unchanged sessions are never offered. Sessions arrive redacted (IMP-008,
@@ -1674,10 +1692,12 @@ already holds, so unchanged sessions are never offered. Sessions arrive redacted
 ### 6.6 Sandbox onboarding
 
 `not_needed | pending → preparing (task id) → ready | skipped(by admin)`. Every import starts `pending` with an onboarding task: the full preparation prompt when the docs fail the format check, the environment-only prompt (`ENVIRONMENT_TITLE`) when they pass; `not_needed` is left for repositories created from a template (F 2026-10-11). Owner: the server. Exit
-triggers: `pending → preparing` when the preparation task starts — by itself, at once for a
-repository added in the UI and when the import is applied for `yulius onboard` (also
-`POST …/onboarding/approve`, kept for a pending sandbox whose start failed; a missing preparation
-task is created then); `preparing → ready` when the task has finished — it rests after running, or its turn ended
+triggers: `pending → preparing` when the preparation task starts — at once for a repository
+added in the UI; for `yulius onboard` only when a person clicks Start onboarding on the sandbox
+page (`POST …/onboarding/approve`, which accepts only a browser session: a bearer token gets 403,
+SPEC-051, ADR-0038; it also serves a UI-added sandbox whose start failed; a missing preparation
+task is created then; continuing a `pending` sandbox's onboarding task and importing through
+`POST /api/sandboxes` start it only from a browser session too); `preparing → ready` when the task has finished — it rests after running, or its turn ended
 with every step of its plan resolved — and the project validates in its worktree or the clone
 (re-evaluated on reads, turn ends, task closes and the gate);
 `→ skipped` by an admin. Failure: a start failure leaves `pending` (shown with what is pending);
@@ -1841,7 +1861,10 @@ line that is exactly "[Request interrupted by user]" or "… for tool use": the 
 prompt), `end_turn`, usage limits, the goal's
 `goal_status` attachments (`sentinel` = a goal set — or cleared when `met: true` —, `met: false` = not
 met yet, `met: true` = achieved, `failed: true` = impossible; sidechain records ignored) and the
-`system` records `stop_hook_summary` / `turn_duration` that close a turn. After a restart, the
+`system` record `turn_duration` that closes a turn, with the background agents Claude Code still
+waits for (`pendingBackgroundAgentCount`; `stop_hook_summary` is also written when a Stop hook
+blocks and the turn goes on, so it ends nothing), and assistant lines that are not an `end_turn`
+(the agent works, SPEC-032). After a restart, the
 transcript of a reattached run is caught up first: observations before the first poll that reaches
 the end are reduced to their final state (§6.1 Finish rule); usage limits keep their immediate
 effect. A run started by the current server is watched live from its first line.
@@ -1912,7 +1935,7 @@ output) and is recorded. Responses:
   until a `200` (printed as usual), a 4xx (fails open) or 8 days pass (fails open); while held, a
   refused connection or a 5xx is retried every 2 s (a server restart). The CLI's `timeout` for
   these two events is 8 days + 1 h; the other events keep 15 s.
-- `Notification` / `PermissionRequest` → `needs_attention` when it asks a person to act (a permission prompt or a question); Claude Code's idle reminder (`notification_type: idle_prompt`, "waiting for your input") and `auth_success` leave the activity as it is, so a finished task stays `waiting`/`done` (F 2026-10-11).
+- `Notification` / `PermissionRequest` → `needs_attention` only for the `notification_type`s that ask a person to act: `permission_prompt`, `worker_permission_prompt`, `elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input`. Every other type (Claude Code 2.1.292 also sends `idle_prompt`, `auth_success`, `agent_completed`, `push_notification`, `quota_auto_resume_*`, `computer_use_*`, `model_refusal_fallback`, `auth_storage_failure`, and later releases add more) leaves the activity as it is, so a finished task stays `waiting`/`done` and a working one `working` (F 2026-10-11, SPEC-032 STA-002). Without `notification_type` (older CLIs) the idle text rule applies. The agent's next assistant line after such a notice makes the task `working` again (STA-003).
 - `SessionEnd` → no output; its `reason` is kept for the run until it exits: `prompt_input_exit`
   (`/exit`, Ctrl+C twice, Ctrl+D) and `logout` make the exit a normal close whatever its code;
   `clear` (the process goes on with a new session) drops an achieved goal (§6.1).
@@ -2187,8 +2210,9 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
   (ADR-14, BRW-008).
 
 - Secrets vault (ADR-20): values only under envelope encryption (per-write data keys, KEK derived
-  from the master key, row identity as associated data); team reveals need a browser session
-  authenticated within 10 minutes and are audited; agent secrets are write-only, added to
+  from the master key, row identity as associated data); reveals need the person's own two-factor
+  code entered in the browser session within 10 minutes and are audited (SPEC-040, ADR-0034);
+  agents never read agent secrets (their managers can, after the code), which are added to
   requests by the egress proxy only for their bound hosts (TLS interception only there; local
   destinations refused after resolution), typed by `browser_fill_secret` only into pages of those
   hosts, and redacted with their encodings from every channel an agent reads, from the terminal
@@ -2389,7 +2413,7 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | R-10 | The MCP server connection test makes the server connect to a user-supplied URL (SSRF). | Mitigated: the host is resolved and the client pinned to the checked addresses; link-local (cloud metadata), unspecified, multicast and broadcast targets are refused for everyone; loopback and private networks only for instance administrators; no redirects; 5 s bound; only tool names or a short error are returned. |
 | R-11 | Concurrent Claude processes in one sandbox share `.claude.json`; a running Claude may rewrite the file between Yulius' trust merge and a new launch. | Merge immediately before spawn; the window is short. Live verification of concurrent launches pending. |
 | R-12 | Closed (F 2026-10-08): Codex releases without `--no-daemon` (Codex removed). | — |
-| R-15 | Agent secrets: a manipulated agent can still misuse a credential on its bound hosts, make a bound host echo it transformed, confirm guesses of a weak value through redaction, or read a filled field over raw CDP (R-07); the end-to-end Claude Code behaviour of the shell prefix and `updatedToolOutput` is read from the 2.1.292 bundle, not exercised live. | Host binding, the 8-character minimum, write-only values, audit of every use; ADR-20 lists the threats. Open: a live smoke with Claude Code; R-07. |
+| R-15 | Agent secrets: a manipulated agent can still misuse a credential on its bound hosts, make a bound host echo it transformed, confirm guesses of a weak value through redaction, or read a filled field over raw CDP (R-07); the end-to-end Claude Code behaviour of the shell prefix and `updatedToolOutput` is read from the 2.1.292 bundle, not exercised live. | Host binding, the 8-character minimum, values agents never read (since SPEC-040 a manager's session together with their authenticator can read one: the lockout after 10 wrong codes and the audit bound that), audit of every use; ADR-20 lists the threats. Open: a live smoke with Claude Code; R-07. |
 | R-13 | The server's own Git (worktree creation, commits, status and readiness checks, fetch, delivery pushes) runs outside containment in the sandbox repository and worktrees, whose Git directories agents can write (#54). | Every server-side Git command runs with repository hooks off (`core.hooksPath=/dev/null`), fsmonitor off and `ext::` refused; agents' own Git still runs hooks, so the pre-push guard applies to them. Open (#54 part B): repository-local configuration that runs programs or redirects remotes (filter, diff and merge drivers, credential helpers, URL rewriting) — read-only Git config in containment or a Yulius-owned mirror. |
 
 ## 13. Delivery checkpoints

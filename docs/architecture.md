@@ -154,13 +154,17 @@ sequenceDiagram
     S->>C: types /goal <condition>
 ```
 
-## Cockpit
+## Agent (the Cockpit)
 
-Every user has one plain Claude Code session per sandbox, the Cockpit
+Every user has one plain Claude Code session per sandbox, shown as the **Agent**
 ([SPEC-021](../.ai/specs/SPEC-021-in-this-bar-we-need-to-add-cockpit-at-th.md),
-[decision 0020](decisions/0020-cockpit-as-a-plain-shell-session.md)). It is a sandbox shell of
-kind `cockpit` that runs `claude` instead of the login shell: no hooks, settings or briefing, a
-pool subscription's token, and the newest conversation resumed whenever it starts again.
+[decision 0020](decisions/0020-cockpit-as-a-plain-shell-session.md)); the code and the API still
+call it the Cockpit. It is a sandbox shell of kind `cockpit` that runs `claude` instead of the
+login shell: no hooks, settings or briefing, a pool subscription's token, and the newest
+conversation resumed whenever it starts again. The web UI shows it in the right tool panel beside
+the page, under a notice that it is for quick work only
+([SPEC-035](../.ai/specs/SPEC-035-move-cockpit-to-the-right-and-change-coc.md),
+[decision 0034](decisions/0034-agent-in-the-right-panel.md)).
 
 It manages the project through the Yulius MCP server
 ([SPEC-037](../.ai/specs/SPEC-037-i-got-something-like-this-tasks-and-cock.md),
@@ -172,7 +176,7 @@ New task.
 
 ```mermaid
 flowchart LR
-  UI["Sidebar: Cockpit"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
+  UI["Right panel: Agent"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
   APP -->|"pool_account"| POOL[("Subscriptions")]
   APP -->|"plan_cockpit"| HP["Harness: claude [--resume id] --mcp-config yulius"]
   APP --> SH["Shell runtime (user space, repository)"]
@@ -181,6 +185,25 @@ flowchart LR
   AG["Task agent"] -->|"Bearer task token"| MCP
   MCP -->|"task_create"| NT["App::create_task_as (as New task)"]
   MCP -->|"automation_*"| AU["Automations"]
+```
+
+## Ready-made automations
+
+Ready-made automations are a read-only catalog like the default workflows
+([SPEC-042](../.ai/specs/SPEC-042-create-2-default-automations-that-can-be.md),
+[decision 0034](decisions/0034-ready-made-automations-catalog.md)): `catalog/automations/*.md`,
+embedded at build time. Enable copies one into an ordinary automation; a project's automation of
+the same name counts as the template's.
+
+```mermaid
+flowchart LR
+  CAT["catalog/automations/*.md"] -->|"build.rs embeds"| TPL["automations::templates"]
+  UI["Automations page: Ready-made"] -->|"GET automation-templates"| TPL
+  UI -->|"POST …/enable"| EN["App::enable_automation_template"]
+  EN -->|"same name exists"| UPD["re-enable it"]
+  EN -->|"else"| INS["insert automation (enabled)"]
+  INS --> SCH["Scheduler: one task per slot"]
+  UPD --> SCH
 ```
 
 ## Web UI state
@@ -203,6 +226,23 @@ flowchart LR
   LS -->|"after a reload"| D
   C -->|"task started: clear"| D
   SO["Sign-out"] -->|"forget"| LS
+```
+
+## Task status
+
+A running task's activity is derived from Claude Code's own records, not guessed from the last
+event ([ADR-0034](decisions/0034-task-status-follows-claude-codes-own-records.md)):
+
+```mermaid
+flowchart LR
+    prompt["prompt / wake-up\n(hook, user line)"] --> working
+    stop["clean Stop hook"] --> idle["waiting / done"]
+    turn["turn_duration:\npending background agents"] --> bg["+ background work\n(shown Working)"]
+    idle --> bg
+    verdict["goal verdict: not met"] --> working
+    work["assistant work after the stop"] --> working
+    notice["notice that asks a person"] --> attention["needs_attention"]
+    attention -.->|"agent works on"| working
 ```
 
 ## Notes
