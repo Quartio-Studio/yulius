@@ -1,11 +1,11 @@
 ---
 yulius-task: b6ac9feb-ab64-4643-bcdd-779dd524c985
-status: in-progress
+status: done
 ---
 
 # SPEC-051: onboarding through the CLI uploads; a person starts it in the browser
 
-Status: in progress
+Status: implemented
 Date: 2026-10-13
 Owner: Yulius task #43
 Scope authorization: user request: "Onboarding existing project using cli should upload things
@@ -66,12 +66,13 @@ that adapts the repository to the Yulius standards. That task starts only when a
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] An upload through yulius onboard leaves onboarding waiting for a person
-- [ ] Only a browser session can start onboarding
-- [ ] The CLI and the onboarding status say where to start onboarding
-- [ ] The sandbox page offers Start onboarding, covered end to end
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] An upload through yulius onboard leaves onboarding waiting for a person
+- [x] Only a browser session can start onboarding
+- [x] The CLI and the onboarding status say where to start onboarding
+- [x] The sandbox page offers Start onboarding, covered end to end
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Docs, ADR and the changes log say onboarding starts in the browser
+- [x] Every gate green on the reviewed head, evidence recorded
 
 ## Design
 
@@ -131,3 +132,28 @@ that adapts the repository to the Yulius standards. That task starts only when a
 - Assumed (reversible): no new endpoint or state. `pending` already means "waits for a person"
   and the approve endpoint already starts it.
 - Not now: a CLI flag to start onboarding (explicitly out of scope: "never via the CLI").
+
+## Evidence
+
+Head 87d3e8e (the reviewed fixes plus `origin/dev` merged), 2026-10-13:
+
+- `CARGO_BUILD_JOBS=2 scripts/dev ci`: exit 0. Repository checks, `cargo check`, fmt, clippy
+  `-D warnings`, nextest (1219 tests run: 1219 passed, 16 skipped), doctests, `cargo deny`,
+  `cargo machete`, `cargo doc`. Earlier runs at full parallelism were killed by the system
+  (rustc SIGKILL at a load average of about 40 on this shared machine), not by a check.
+- Test-first: `import_server::import_resumes_applies_and_reruns_idempotently` failed with
+  `onboarding: "preparing"` before OBD-001. `import_server::onboarding_starts_only_from_the_browser`
+  failed with 200 instead of 403, first for approve, then (review round 1) for continue.
+  `projects::import_links_owner_repositories_with_profiles_ports_and_onboarding` failed with
+  `preparing` for a bearer import. The CLI's `end_to_end` tests failed on the old label. All pass.
+- `cd e2e && npx e2e run`: `onboarding.e2e.ts` (2 tests, including the new Start onboarding test,
+  axe clean), `home`, `quality` and `responsive` pass. Under that load 20 tests in unrelated files
+  timed out. Rerunning those 9 files left one failure (`new-task.e2e.ts`, a transient "Choosing
+  mode and workflow…" text), and it passes when run alone.
+- Independent review (fresh read-only subagent, `om-code-review`): round 1 requested changes
+  (a bearer token could still start onboarding through `POST /api/tasks/{tid}/continue` and through
+  `POST /api/sandboxes` import), fixed test-first in 51758b8; round 2 approved 51758b8, and its two
+  nits (assert the 403 message, ADR note on continuing after start) are in 87d3e8e.
+- Not tested here: a real `yulius onboard` against a deployed server and a real browser click on
+  production. The flows are covered by the integration tests, the CLI's fake-server end-to-end
+  tests and the mock-backed browser test.
