@@ -300,6 +300,61 @@ test('a session ends with a locked prompt box and has a spider web in its corner
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+// F 2026-10-13 (SPEC-086): "Sessions are beautiful but should be always 100% width and not only
+// when minimised. Even left and right margin of the session window and border radius should be
+// thrown out to make it look similar to the original session." The well spans the content area
+// edge to edge and reaches its bottom, beside the Superagent too, in both themes and on a phone;
+// the header keeps the page's padding.
+test('a session fills the content area edge to edge, beside the Superagent and on a phone', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1920, height: 1000 });
+  await app.open(mock('/s/studio/sessions/ses_imp_checkout'));
+  await expect(browser.locator('.ss-tui .ss-locked')).toBeVisible();
+  const fit = () => browser.evaluate(() => {
+    const page = document.querySelector<HTMLElement>('.ss-page')!;
+    const well = document.querySelector('.ss-tui')!;
+    const style = getComputedStyle(well);
+    page.scrollTop = page.scrollHeight;
+    const p = page.getBoundingClientRect();
+    const w = well.getBoundingClientRect();
+    const inner = { left: p.left + page.clientLeft, right: p.left + page.clientLeft + page.clientWidth, bottom: p.top + page.clientTop + page.clientHeight };
+    return {
+      left: Math.round(w.left - inner.left),
+      right: Math.round(inner.right - w.right),
+      bottom: Math.round(inner.bottom - w.bottom),
+      radius: [style.borderTopLeftRadius, style.borderTopRightRadius, style.borderBottomRightRadius, style.borderBottomLeftRadius].join(' '),
+      sides: `${style.borderLeftWidth} ${style.borderRightWidth}`,
+      head: Math.round(document.querySelector('.ss-page .gt-back')!.getBoundingClientRect().left - inner.left),
+      width: Math.round(inner.right - inner.left),
+      sideways: document.documentElement.scrollWidth > window.innerWidth || page.scrollWidth > page.clientWidth,
+      band: style.backgroundColor !== getComputedStyle(page).backgroundColor,
+    };
+  });
+  const edgeToEdge = { left: 0, right: 0, bottom: 0, radius: '0px 0px 0px 0px', sides: '0px 0px', sideways: false, band: true };
+  const wide = await fit();
+  expect(wide).toMatchObject({ ...edgeToEdge, head: 32 });
+  expect(wide.width).toBeGreaterThan(1200);
+
+  // Beside the Superagent the content area is narrower; the well still fills it.
+  await screen.getByRole('button', 'Show Superagent').click();
+  await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
+  const beside = await fit();
+  expect(beside).toMatchObject(edgeToEdge);
+  expect(beside.width).toBeLessThan(wide.width);
+  await screen.getByRole('button', 'Hide Superagent').click();
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+
+  for (const theme of ['light', 'dark']) {
+    await browser.evaluate((name) => document.documentElement.setAttribute('data-theme', name), theme);
+    expect(await fit(), theme).toMatchObject(edgeToEdge);
+    expect(await axeViolations(browser), theme).toEqual([]);
+  }
+
+  await browser.setViewport({ width: 390, height: 844 });
+  await expect.poll(async () => (await fit()).head).toBe(12);
+  expect(await fit()).toMatchObject(edgeToEdge);
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
 // Review round 3: an entry's content-visibility clips paint at its edge, so focus and the search
 // target are drawn inside the box, where they stay visible (WCAG 2.4.7).
 test('a folded call shows its keyboard focus inside the entry, and the search target too', async ({ app, browser }) => {
