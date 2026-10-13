@@ -512,6 +512,34 @@ mod tests {
             active.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
             ["r1", "r2"]
         );
+        // SPEC-059 CI-301: a queue note (waiting for disk) goes once the run starts.
+        store
+            .insert_ci_run(&run("r3", "c", 3)?, &[job("j4", "r3", 0)])
+            .await?;
+        let note = CiRunUpdate {
+            reason: Some("waiting for disk space".into()),
+            ..CiRunUpdate::default()
+        };
+        assert!(
+            store
+                .transition_ci_run("r3", &[RunState::Queued], RunState::Queued, &note)
+                .await?
+        );
+        assert_eq!(
+            store.ci_run("r3").await?.ok_or("r3")?.reason.as_deref(),
+            Some("waiting for disk space")
+        );
+        assert!(
+            store
+                .transition_ci_run(
+                    "r3",
+                    &[RunState::Queued],
+                    RunState::Running,
+                    &CiRunUpdate::default()
+                )
+                .await?
+        );
+        assert_eq!(store.ci_run("r3").await?.ok_or("r3")?.reason, None);
         // A restart puts the running run and its jobs back.
         assert!(
             store

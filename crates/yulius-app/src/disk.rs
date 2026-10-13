@@ -13,8 +13,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use yulius_domain::disk::{
-    Candidate, Owner, bytes_to_free, cache_paths, human, job_cache_cap, only_rebuildable, owner_of,
-    plan_prune,
+    Candidate, IDLE_PRUNE_AFTER_MS, Owner, bytes_to_free, cache_paths, human, job_cache_cap,
+    only_rebuildable, owner_of, plan_prune,
 };
 use yulius_domain::ids::TaskId;
 use yulius_domain::spec_format::parse_yulius_toml_caches;
@@ -284,7 +284,7 @@ impl App {
         let mut scan = Scan::default();
         for archived in [false, true] {
             for task in self.deps.store.tasks(&sandbox.id, archived).await? {
-                let Some(owner) = self.cache_owner(&task).await else {
+                let Some(owner) = self.cache_owner(&task, pressure).await else {
                     continue;
                 };
                 if owner == Owner::Ended && !pressure && now - task.updated_at.0 < ENDED_GRACE_MS {
@@ -445,24 +445,23 @@ impl App {
     async fn owner_is(&self, task: &TaskId, owner: Owner) -> bool {
         matches!(
             self.deps.store.task(task).await,
-            Ok(Some(t)) if self.cache_owner(&t).await == Some(owner)
+            Ok(Some(t)) if self.cache_owner(&t, true).await == Some(owner)
         )
     }
 
     /// Whose caches `task`'s are now: by its state, its background work and how long it has not
     /// moved. An idle running task is probed afresh (SPEC-059 DSK-201): a background shell or
     /// subagent keeps its caches, and so does a probe that cannot answer (#245: a cached
-    /// "unknown" read as "none" under a running gate).
-    async fn cache_owner(&self, task: &TaskRecord) -> Option<Owner> {
+    /// "unknown" read as "none" under a running gate). Without `pressure` an idle task that moved
+    /// within [`IDLE_PRUNE_AFTER_MS`] is idle whatever it runs (its caches stay anyway), so it is
+    /// not probed: each probe can take up to the probe timeout.
+    async fn cache_owner(&self, task: &TaskRecord, pressure: bool) -> Option<Owner> {
+        let quiet_ms = self.now().0 - task.updated_at.0;
         let idle =
             task.status == TaskStatus::Running && task.activity.is_some_and(Activity::is_idle);
-        let busy = idle && self.background_work_now(&task.id).await != Some(false);
-        owner_of(
-            task.status,
-            task.activity,
-            busy,
-            self.now().0 - task.updated_at.0,
-        )
+        let probe = idle && (pressure || quiet_ms >= IDLE_PRUNE_AFTER_MS);
+        let busy = probe && self.background_work_now(&task.id).await != Some(false);
+        owner_of(task.status, task.activity, busy, quiet_ms)
     }
 
     /// The worktrees and CI checkouts of a sandbox removed more than a day ago (its home with

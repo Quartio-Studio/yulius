@@ -252,12 +252,17 @@ fn busy_in(busy: &HashSet<String>, sandbox: &str) -> bool {
     })
 }
 
-/// A free lane of `sandbox` (and marks it), unless the sandbox is claimed or every lane runs.
-fn take_lane(busy: &mut HashSet<String>, sandbox: &str, lanes: u32) -> Option<u32> {
+/// A free lane of `sandbox`, unless the sandbox is claimed or every lane runs.
+fn free_lane(busy: &HashSet<String>, sandbox: &str, lanes: u32) -> Option<u32> {
     if busy.contains(sandbox) {
         return None;
     }
-    let lane = (0..lanes.max(1)).find(|lane| !busy.contains(&format!("{sandbox}/{lane}")))?;
+    (0..lanes.max(1)).find(|lane| !busy.contains(&format!("{sandbox}/{lane}")))
+}
+
+/// [`free_lane`], and marks it.
+fn take_lane(busy: &mut HashSet<String>, sandbox: &str, lanes: u32) -> Option<u32> {
+    let lane = free_lane(busy, sandbox, lanes)?;
     busy.insert(format!("{sandbox}/{lane}"));
     Some(lane)
 }
@@ -1023,8 +1028,14 @@ impl App {
         };
         let lanes = self.config.ci.lanes.max(1);
         for run in active.into_iter().filter(|r| r.state == RunState::Queued) {
-            // Over the disk quota a run waits in the queue instead of erroring (CI-301).
-            if !self.ci_disk_room(&run.sandbox_id).await {
+            // Over the disk quota a run waits in the queue instead of erroring (CI-301); asked
+            // only when a lane is free.
+            let lane_free = self
+                .ci
+                .busy
+                .lock()
+                .is_ok_and(|busy| free_lane(&busy, run.sandbox_id.as_str(), lanes).is_some());
+            if !lane_free || !self.ci_disk_room(&run.sandbox_id).await {
                 continue;
             }
             let sandbox = run.sandbox_id.as_str().to_owned();

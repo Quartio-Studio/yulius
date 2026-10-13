@@ -23,6 +23,12 @@ use crate::ports::isolation::DiskUsage;
 
 /// How often a sandbox over its quota is pruned and measured again while runs wait for it.
 pub const CI_DISK_RECHECK: Duration = Duration::from_secs(60);
+/// Longest one check (upkeep and a measurement) may take; past it the sandbox counts as still
+/// over and the next check is due after [`CI_DISK_RECHECK`].
+const CI_DISK_CHECK_LIMIT: Duration = Duration::from_secs(10 * 60);
+/// Longest the dispatcher waits for a sandbox's last reading (its lock may be held by a start
+/// that measures): past it the run is started, and a job refused for disk queues it again.
+const READING_WAIT: Duration = Duration::from_secs(1);
 
 /// A sandbox whose runs wait for disk.
 #[derive(Debug, Clone, Copy, Default)]
@@ -41,8 +47,8 @@ fn wait_reason(usage: DiskUsage, consumers: &str) -> String {
         format!(" (largest: {consumers})")
     };
     format!(
-        "waiting for disk space: the sandbox uses {} of its {} quota{largest}; the run starts by \
-         itself once usage is under the quota",
+        "waiting for disk space: {} of {} used{largest}; starts by itself once usage is under \
+         the quota",
         human(usage.used),
         human(usage.limit)
     )
@@ -68,9 +74,11 @@ impl App {
         let Ok(Some(record)) = self.deps.store.sandbox(sandbox).await else {
             return true;
         };
-        let over = isolation
-            .disk(&self.sandbox_ref(&record))
+        let reference = self.sandbox_ref(&record);
+        let over = tokio::time::timeout(READING_WAIT, isolation.disk(&reference))
             .await
+            .ok()
+            .flatten()
             .is_some_and(|usage| usage.used > usage.limit);
         let Ok(mut waits) = self.ci.disk_waits.lock() else {
             return true;
@@ -88,13 +96,63 @@ impl App {
         );
         drop(waits);
         let app = Arc::clone(self);
-        tokio::spawn(async move { app.ci_disk_check(&record).await });
+        tokio::spawn(async move {
+            // Bounded, and a check that panics or hangs still ends the `checking` mark.
+            let check = tokio::spawn({
+                let app = Arc::clone(&app);
+                let record = record.clone();
+                async move { app.ci_disk_check(&record).await }
+            });
+            let over = !matches!(
+                tokio::time::timeout(CI_DISK_CHECK_LIMIT, check).await,
+                Ok(Ok(false))
+            );
+            app.ci_disk_checked(&record.id, over);
+        });
         false
     }
 
-    /// Frees what upkeep may, measures again, and either lets the runs start or notes why they
-    /// wait (CI-302).
-    async fn ci_disk_check(self: &Arc<Self>, sandbox: &SandboxRecord) {
+    /// Ends a check: still `over` waits [`CI_DISK_RECHECK`] for the next one, under lets the runs
+    /// start; the dispatcher is woken either way.
+    fn ci_disk_checked(&self, sandbox: &SandboxId, over: bool) {
+        if let Ok(mut waits) = self.ci.disk_waits.lock() {
+            if over {
+                let until_ms =
+                    self.now().0 + i64::try_from(CI_DISK_RECHECK.as_millis()).unwrap_or(i64::MAX);
+                waits.insert(
+                    sandbox.as_str().to_owned(),
+                    DiskWait {
+                        until_ms,
+                        checking: false,
+                    },
+                );
+            } else {
+                waits.remove(sandbox.as_str());
+            }
+        }
+        self.ci_wake();
+    }
+
+    /// A job of `sandbox` was refused over the quota (CI-303): its run is queued again, and no
+    /// run of the sandbox starts before the next check is due, so nothing loops.
+    pub(super) fn ci_disk_backoff(&self, sandbox: &SandboxId) {
+        self.ci_disk_checked(sandbox, true);
+    }
+
+    /// Whether `sandbox`'s last reading is over its quota: what a quota refusal is based on.
+    pub(super) async fn ci_over_quota(&self, sandbox: &SandboxRecord) -> bool {
+        match self.isolation.get() {
+            Some(isolation) => isolation
+                .disk(&self.sandbox_ref(sandbox))
+                .await
+                .is_some_and(|usage| usage.used > usage.limit),
+            None => false,
+        }
+    }
+
+    /// Frees what upkeep may, measures again, notes why the runs wait when still over (CI-302),
+    /// and says whether it is.
+    async fn ci_disk_check(self: &Arc<Self>, sandbox: &SandboxRecord) -> bool {
         let reference = self.sandbox_ref(sandbox);
         let freed = self
             .disk_upkeep(sandbox, true)
@@ -111,22 +169,7 @@ impl App {
             let reason = wait_reason(usage, &self.disk_consumers(sandbox).await);
             self.ci_note_disk_wait(&sandbox.id, &reason).await;
         }
-        if let Ok(mut waits) = self.ci.disk_waits.lock() {
-            if over.is_some() {
-                let until_ms =
-                    self.now().0 + i64::try_from(CI_DISK_RECHECK.as_millis()).unwrap_or(i64::MAX);
-                waits.insert(
-                    sandbox.id.as_str().to_owned(),
-                    DiskWait {
-                        until_ms,
-                        checking: false,
-                    },
-                );
-            } else {
-                waits.remove(sandbox.id.as_str());
-            }
-        }
-        self.ci_wake();
+        over.is_some()
     }
 
     /// Writes `reason` on the sandbox's queued runs and publishes the ones it changed.
@@ -169,7 +212,7 @@ mod tests {
         };
         let reason = wait_reason(usage, "task #26 35.0 GB, CI job checkouts 14.0 GB");
         assert!(
-            reason.starts_with("waiting for disk space: the sandbox uses 126.0 GB of its 100.0 GB"),
+            reason.starts_with("waiting for disk space: 126.0 GB of 100.0 GB used (largest: "),
             "{reason}"
         );
         assert!(reason.contains("(largest: task #26 35.0 GB, CI job checkouts 14.0 GB)"));

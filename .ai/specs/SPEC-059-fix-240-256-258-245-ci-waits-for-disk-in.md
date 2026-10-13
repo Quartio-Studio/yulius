@@ -59,11 +59,11 @@ and never removes the caches of a task whose background shell or subagent may st
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| DSK-201 | Upkeep decides whether a running, idle task's caches may go on a fresh probe at that moment. A running background shell (not `yulius wait` alone, DSK-102) or a pending background subagent keeps them. So does a probe that cannot answer: unknown counts as working. A task with no live agent process has no background work. The same check runs again just before each removal. | `disk::an_idle_task_with_background_work_keeps_its_caches` |
+| DSK-201 | Upkeep decides whether a running, idle task's caches may go on a fresh probe at that moment. A running background shell (not `yulius wait` alone, DSK-102) or a pending background subagent keeps them. So does a probe that cannot answer: unknown counts as working. A task with no live agent process has no background work. The probe runs only when the task's caches could go this round (under pressure, or idle 4 hours), and again just before each removal. | `disk::an_idle_task_with_background_work_keeps_its_caches` |
 | DSK-202 | A sandbox measurement also records the largest consumers: the five largest directories, two levels below the sandbox directory (`worktrees/<task>`, `ci/jobs`, `home/...`) or in its system layer. A quota refusal, of a session or CI, names them with their sizes ("task #26 35.0 GB, CI job checkouts 14.0 GB"). | `usage::tests::the_largest_consumers_are_kept`, `disk::a_refusal_names_the_largest_consumers` |
 | CI-301 | A queued CI run whose sandbox is over its quota is not started. Its record says why ("waiting for disk space: ... largest: ...; it starts by itself once usage is under the quota"). The commit status stays `pending` with that reason, and is published once per change of reason. | `local_ci::a_run_over_the_disk_quota_waits_and_starts_when_space_frees` |
-| CI-302 | While a run waits for disk, Yulius frees space itself: upkeep under pressure (caches of tasks that do not work, largest first, CI checkouts while no run executes), then a fresh measurement. This happens at most once per `CI_DISK_RECHECK` (1 minute) per sandbox, off the dispatcher's loop. The run starts at the first dispatch after usage is under the quota. The wait ends only that way, or when the run is superseded or cancelled. No timeout turns it into an error. | same |
-| CI-303 | A job refused for the quota after its run started (usage crossed the quota between the check and the job's start) puts the run back in the queue instead of ending it `error`. Its jobs are queued again, and the dispatcher's wait for disk applies. | `local_ci::a_job_refused_for_disk_puts_its_run_back_in_the_queue` |
+| CI-302 | While a run waits for disk, Yulius frees space itself: upkeep under pressure (caches of tasks that do not work, largest first, CI checkouts while no run executes), then a fresh measurement. This happens at most once per `CI_DISK_RECHECK` (1 minute) per sandbox, off the dispatcher's loop, and only when a lane is free. A check is bounded (10 minutes); one that fails, hangs or panics counts as still over. The dispatcher waits at most a second for a sandbox's reading and otherwise starts the run (CI-303 is the safety net). The run starts at the first dispatch after usage is under the quota. The wait ends only that way, or when the run is superseded or cancelled. No timeout turns it into an error. | same; `local_ci::a_run_waiting_for_disk_is_superseded_like_any_queued_run` |
+| CI-303 | A job refused for the quota after its run started (usage crossed the quota between the check and the job's start) stops its siblings and puts the run back in the queue instead of ending it `error`. That happens only when every errored job was refused for disk and none failed. Its jobs are queued again, and no run of the sandbox starts before the next check (one minute), so nothing loops. A cancel that arrives meanwhile still cancels it. A refusal while the reading is under the quota (isolation still being prepared) still ends the run `error`. | `local_ci::a_job_refused_for_disk_puts_its_run_back_in_the_queue`, `local_ci::a_refusal_that_is_not_the_disk_quota_ends_the_run_in_error`, `ci::exec::tests::only_disk_refusals_put_a_run_back_in_the_queue` |
 | CI-304 | A run waiting for disk keeps its commit status `pending`, so an armed `delivery_merge` keeps waiting for it and merges when it passes. | `local_ci` tests above (status stays `pending`); `merge_armed_task` drops only on `failure` |
 
 ## Design
@@ -98,10 +98,12 @@ and never removes the caches of a task whose background shell or subagent may st
     before a lane is taken.
   - The store clears a run's reason when it moves to `running`: a reason before that is only a
     queue note.
-  - A job whose `isolation_join` is refused with `Conflict` (the port's quota refusal) ends with
-    `Ended::NoDisk`. When the run's jobs are done and one of them ended that way, with none
-    failed and the run not cancelled, the run goes back to the queue (`requeue_ci_run` with the
-    note "queued again: the sandbox was over its disk quota") instead of ending `error`.
+  - A job whose `isolation_join` is refused with `Conflict` while the sandbox's reading is over
+    the quota ends with `Ended::NoDisk`. `Conflict` alone is not enough: strict isolation also
+    refuses with it while the base system is built. The `NoDisk` job stops its siblings. When
+    every errored job ended that way, none failed and the run is not cancelled, the run goes back
+    to the queue (`requeue_ci_run` with the note "queued again: the sandbox was over its disk
+    quota") and the sandbox backs off for `CI_DISK_RECHECK`.
 
 ```mermaid
 flowchart LR
@@ -141,6 +143,7 @@ flowchart LR
   - Usage drops and the clock passes the recheck: dispatch starts the run and it passes.
   - A fake whose reading is under the quota but whose `prepare` refuses once: the run goes back
     to the queue, then passes.
+- Store: a run's queue note goes when it starts.
 - Not automated: a real 100 GB sandbox with four to six tasks building Rust (#256, #258). The unit's
   figures stand in for it.
 

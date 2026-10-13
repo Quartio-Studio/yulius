@@ -113,6 +113,15 @@ enum Ended {
     NoDisk(String),
 }
 
+/// Whether a run whose jobs ended in `states` goes back to the queue to wait for disk (CI-303):
+/// `no_disk` of its jobs were refused over the quota, every error is one of those, and nothing
+/// failed. Jobs those refusals stopped end cancelled; a real error or failure keeps its verdict.
+fn requeue_for_disk(states: &[RunState], no_disk: usize) -> bool {
+    no_disk > 0
+        && !states.contains(&RunState::Failed)
+        && states.iter().filter(|s| **s == RunState::Error).count() == no_disk
+}
+
 /// What a job refused over the disk quota leaves in its output when its run is queued again.
 const NO_DISK_REQUEUE: &str =
     "[yulius] queued again: the sandbox was over its disk quota when this run started\n";
@@ -185,7 +194,7 @@ impl App {
             Some(sandbox) => self.ci_prepare(sandbox, run).await,
             None => Err("the sandbox was removed".to_owned()),
         };
-        let mut no_disk = false;
+        let mut no_disk = 0usize;
         match (sandbox, prepared) {
             (Some(sandbox), Ok(())) => {
                 let sandbox = Arc::new(sandbox);
@@ -227,15 +236,19 @@ impl App {
                                     all.iter()
                                         .any(|j| j.id == job.id && j.state == RunState::Failed)
                                 });
-                        if failed && stop_siblings.borrow().is_none() {
-                            let _ = stop_siblings
-                                .send(Some(format!("stopped early: job {} failed", job.name)));
+                        if (failed || no_disk) && stop_siblings.borrow().is_none() {
+                            let reason = if no_disk {
+                                "stopped early: the sandbox is over its disk quota".to_owned()
+                            } else {
+                                format!("stopped early: job {} failed", job.name)
+                            };
+                            let _ = stop_siblings.send(Some(reason));
                         }
                         no_disk
                     }));
                 }
                 for handle in handles {
-                    no_disk |= handle.await.unwrap_or(false);
+                    no_disk += usize::from(handle.await.unwrap_or(false));
                 }
             }
             (_, prepared) => {
@@ -273,11 +286,19 @@ impl App {
         }
         // A job the sandbox refused over its quota (usage crossed it after the dispatcher's
         // check) and nothing failed: the run waits for disk in the queue (CI-303).
-        if no_disk && state == RunState::Error {
+        if cancel.borrow().is_none() && requeue_for_disk(&states, no_disk) {
             match store.requeue_ci_run(&run.id, NO_DISK_REQUEUE).await {
                 Ok(true) => {
                     tracing::info!(run = %run.id, "CI run queued again: the sandbox is over its disk quota");
-                    self.ci_publish(&run.id).await;
+                    self.ci_disk_backoff(&run.sandbox_id);
+                    // A cancel that arrived meanwhile still ends it (now as a queued run).
+                    let late = cancel.borrow().clone();
+                    match late {
+                        Some(reason) => {
+                            let _ = self.ci_cancel(&run.id, &reason).await;
+                        }
+                        None => self.ci_publish(&run.id).await,
+                    }
                     return;
                 }
                 Ok(false) => {}
@@ -530,10 +551,13 @@ impl App {
         let _ = std::fs::remove_file(&log);
         std::fs::File::create(&log).map_err(|e| format!("creating the job log failed: {e}"))?;
         // Held until the job ends: the sandbox's holder is not stopped as idle meanwhile. A
-        // refusal (`Conflict`) is the disk quota: the run waits for disk instead (CI-303).
+        // refusal while the reading is over the quota is the quota: the run waits for disk
+        // instead (CI-303). Any other refusal (isolation still being prepared) is an error.
         let (join, _lease) = match self.isolation_join(sandbox).await {
             Ok(joined) => joined.unzip(),
-            Err(AppError::Conflict(reason)) => return Ok(Ended::NoDisk(reason)),
+            Err(AppError::Conflict(reason)) if self.ci_over_quota(sandbox).await => {
+                return Ok(Ended::NoDisk(reason));
+            }
             Err(err) => return Err(err.public_message()),
         };
         let plan = LaunchPlan {
@@ -733,6 +757,21 @@ impl LogTail {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SPEC-059 CI-303: only a run whose every error is a disk refusal, with nothing failed,
+    /// goes back to the queue; a timeout or a failure next to a refusal keeps its verdict.
+    #[test]
+    fn only_disk_refusals_put_a_run_back_in_the_queue() {
+        use RunState::{Cancelled, Error, Failed, Passed};
+        assert!(requeue_for_disk(&[Error, Cancelled, Passed], 1));
+        assert!(requeue_for_disk(&[Error, Error], 2));
+        assert!(!requeue_for_disk(&[Error, Passed], 0), "no refusal");
+        assert!(
+            !requeue_for_disk(&[Error, Error], 1),
+            "another job errored for real"
+        );
+        assert!(!requeue_for_disk(&[Error, Failed], 1), "a job failed");
+    }
 
     fn strip(chunks: &[&[u8]]) -> String {
         let mut stripper = AnsiStripper::default();
