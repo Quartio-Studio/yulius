@@ -625,6 +625,30 @@ async fn a_prompt_grows_only_while_the_task_has_not_started_and_within_the_bound
         (grown.prompt.as_str(), grown.updated_at),
         ("p+ł", Timestamp(22))
     );
+    // A provider session (an imported session waiting for its first run here) makes it started.
+    let imported = store.insert_task(&task("t2", &sid, &uid)?).await?;
+    store
+        .transition_task(&imported.id, None, TaskStatus::Queued, None, Timestamp(21))
+        .await?;
+    store
+        .upsert_provider_session(&yulius_app::model::ProviderSessionRecord {
+            id: "ps-1".into(),
+            sandbox_id: sid.clone(),
+            task_id: imported.id.clone(),
+            harness: Harness::ClaudeCode,
+            session_id: "session-1".into(),
+            transcript_ref: None,
+            origin: "imported".into(),
+            first_seen: Timestamp(21),
+            last_seen: Timestamp(21),
+        })
+        .await?;
+    assert!(
+        !store
+            .append_unstarted_prompt(&imported.id, "+c", 1024, Timestamp(22))
+            .await?
+    );
+    assert_eq!(store.task(&imported.id).await?.ok_or("task")?.prompt, "p");
     // A run makes it started, whatever its status.
     store.insert_attempt(&attempt("a1", &t.id, 1)?).await?;
     assert!(

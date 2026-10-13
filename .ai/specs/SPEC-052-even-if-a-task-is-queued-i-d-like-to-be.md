@@ -116,10 +116,13 @@ request, so the agent gets it as part of its request when the task starts.
   `cargo deny`, `cargo machete`, `cargo doc`.
 - e2e (full suite, `npx e2e run`): **199 passed, 1 skipped** (36 files).
 - Tests that fail without the change:
-  - `queued_messages.rs::a_task_that_has_started_refuses_a_message`: red with the SQL's
-    attempt/session guards removed and `starting`/`running` allowed.
-  - `store.rs::a_prompt_grows_only_while_the_task_has_not_started_and_within_the_bound`: red
-    without the byte-length clause.
+  - `queued_messages.rs::a_task_that_has_started_refuses_a_message` was red, before the app's own
+    started check existed, with the SQL's attempt and session guards removed. Since the review
+    fixes, the app refuses those cases before the SQL runs.
+  - The store test now guards the SQL itself:
+    `store.rs::a_prompt_grows_only_while_the_task_has_not_started_and_within_the_bound`. It is red
+    without the byte-length clause, and red without the provider-session clause. It also covers
+    the status guard and the attempt guard.
   - `queued_messages.rs::a_started_task_with_a_long_request_says_it_has_started`: red (422) before
     the started check moved ahead of the size check.
   - e2e `queued-messages.e2e.ts`: the first two tests were red (no card) before the UI. `once the
@@ -136,7 +139,13 @@ request, so the agent gets it as part of its request when the task starts.
     session paused for capacity. Minors: the untested SQL bound, 422 instead of 409 for a started
     task, the changes log and the plan, and mode/title unchanged by a message. Two nits.
   - All were fixed test-first in 0ad35e2 and 380793f, and the docs in the commits after.
-  - Round 2 reviews the head that carries this section.
+  - Round 2, on 7f15213: APPROVE with minors.
+    - This section overclaimed what the route test proves about the SQL: corrected above.
+    - The provider-session guard had no test: added to the store test, red without it.
+    - Two doc nits: fixed.
+    - `loadDetail` keeps whichever response lands last. That predates this change and is filed as
+      a follow-up issue.
+  - Round 3 reviews the head that carries these fixes.
 - Not covered here: a real Claude Code session (the fake agent stands in, as in SPEC-011 and
   SPEC-030). Read access hiding the card is checked by the server (403) and the shared `allows()`
   test, not by an e2e case.
