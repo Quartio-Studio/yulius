@@ -177,8 +177,24 @@ request, so the agent gets it as part of its request when the task starts.
   - None of the three touches this change, and the terminal one also failed before the focus
     fix. They are filed as #320; the umbrella issues are #282 and #283. Yulius CI on the exact
     head is the gate the merge waits for.
-- The merges and the fixes after round 3 go to a fresh review of their own: a merged head needs
-  the review of its exact head.
+- The fresh review of 7557620 (the merges and fixes after round 3) requested changes.
+  - Major: yielding to "a text field" counted xterm's hidden textarea as one. A task terminal
+    that showed while a Shell was being opened kept the keyboard, so shell commands went to the
+    agent.
+  - Fixed as the reviewer verified, the Agent panel's rule (`stayed`): the deferred focus
+    remembers where the keyboard was when focus was asked for, and lands only if it is still
+    there, nowhere, or already inside the terminal.
+  - New e2e test, with the mock holding a shell's first screen too: `a Shell opened while the task
+    terminal loads keeps the keyboard, whichever shows first`. It was red before the fix.
+  - This also covers the Editor (Monaco's edit context is not a text field). The reviewer's
+    `@path` nit is now a paragraph in ADR-0035.
+- `dev` was merged again (c617194): Agent panel, two-factor vault, dead-code tools (`cargo-shear`
+  is now a pinned tool). On c617194:
+  - `scripts/dev ci` exit 0: **1258 passed, 16 skipped**;
+  - full e2e: **220 passed, 1 skipped**;
+  - focus suites (queued-messages, terminal, terminals, agent-panel, notes, navigation, shortcuts,
+    editor) on the fix before the merge: 66 passed.
+- That head goes to a fresh review of its own.
 - Not covered here: a real Claude Code session (the fake agent stands in, as in SPEC-011 and
   SPEC-030). Read access hiding the card is checked by the server (403) and the shared `allows()`
   test, not by an e2e case.
