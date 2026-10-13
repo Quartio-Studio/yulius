@@ -107,6 +107,12 @@ mod tests {
         );
         // Tasks and automations created before the catalog refer to `wf-feature`.
         assert!(default_workflow("wf-feature").is_some_and(|w| w.require_spec));
+        // A confirmed defect is reported as an issue (SPEC-042 DSC-016).
+        assert!(default_workflow("wf-fix").is_some_and(|w| {
+            w.instructions
+                .contains("Once the defect is confirmed, report it")
+                && w.instructions.contains("never does")
+        }));
         Ok(())
     }
 
