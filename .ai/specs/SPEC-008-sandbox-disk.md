@@ -116,3 +116,6 @@ directories of closed and cancelled tasks (38, 46, 11 and 7 GB).
   orphan worktrees and removed sandboxes.
 - 2026-10-12: SPEC-033 links the `yulius` integration tests into one test binary, so a working
   task's build no longer holds fifty 190 MB copies of the product.
+- 2026-10-13: SPEC-059 (ADR-0045): a CI run over the quota waits in the queue and starts by itself
+  once upkeep or other tasks free space. Quota refusals name the largest consumers. A running
+  task's caches are pruned only after a fresh probe finds no background shell or subagent.

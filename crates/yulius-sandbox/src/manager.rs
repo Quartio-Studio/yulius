@@ -630,7 +630,7 @@ impl Manager {
         }
         if at.elapsed() >= QUOTA_RECHECK {
             let (dir, upper) = (request.dir.clone(), self.sysroot(&request.id).join("upper"));
-            let fresh = tokio::task::spawn_blocking(move || crate::usage::measure(&[&dir, &upper]))
+            let fresh = tokio::task::spawn_blocking(move || measure_sandbox(&dir, &upper))
                 .await
                 .ok()?;
             state.usage = Some((fresh, Instant::now()));
@@ -662,7 +662,7 @@ impl Manager {
         let sysroot = self.sysroot(&sandbox);
         tokio::spawn(async move {
             let usage = tokio::task::spawn_blocking(move || {
-                crate::usage::measure(&[&request.dir, &sysroot.join("upper")])
+                measure_sandbox(&request.dir, &sysroot.join("upper"))
             })
             .await
             .unwrap_or_default();
@@ -799,16 +799,28 @@ impl Manager {
         state.usage.as_ref().map(|(usage, _)| (usage.bytes, limit))
     }
 
+    /// The largest consumers of the last measurement, largest first (SPEC-059 DSK-202).
+    pub async fn largest(&self, sandbox: &str) -> Vec<(String, u64)> {
+        let entry = self.entry(sandbox);
+        let state = entry.lock().await;
+        state
+            .usage
+            .as_ref()
+            .map(|(usage, _)| usage.largest.clone())
+            .unwrap_or_default()
+    }
+
     /// Measures a sandbox now and keeps the reading (after space was freed).
     pub async fn measure_disk(&self, request: &SandboxRequest) -> Option<(u64, u64)> {
         let limit = self.config.disk_max?;
         let (dir, upper) = (request.dir.clone(), self.sysroot(&request.id).join("upper"));
-        let usage = tokio::task::spawn_blocking(move || crate::usage::measure(&[&dir, &upper]))
+        let usage = tokio::task::spawn_blocking(move || measure_sandbox(&dir, &upper))
             .await
             .ok()?;
+        let bytes = usage.bytes;
         let entry = self.entry(&request.id);
         entry.lock().await.usage = Some((usage, Instant::now()));
-        Some((usage.bytes, limit))
+        Some((bytes, limit))
     }
 
     /// Seeds a sandbox's measured usage (tests).
@@ -822,12 +834,16 @@ impl Manager {
         entry.lock().await.usage = Some((
             Usage {
                 bytes,
-                entries: 0,
-                truncated: false,
+                ..Usage::default()
             },
             Instant::now().checked_sub(age).unwrap_or_else(Instant::now),
         ));
     }
+}
+
+/// A sandbox's usage: its directory, split by consumer, and its system layer as one.
+fn measure_sandbox(dir: &Path, upper: &Path) -> Usage {
+    crate::usage::measure(&[(dir, None), (upper, Some("system"))])
 }
 
 #[cfg(test)]

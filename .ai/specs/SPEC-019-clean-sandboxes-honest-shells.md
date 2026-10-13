@@ -67,3 +67,9 @@ Every task transcript had wait loops like `until ! pgrep -f "scripts/dev ci"`. T
 
 - `cargo test -p yulius-domain disk` and `-p yulius-harness guard_client`: see the pull request.
 - Manual cleanup of the VM on 2026-10-12 (207 GB → 86 GB) followed these rules.
+
+## Later changes
+
+- 2026-10-13: SPEC-059 DSK-201 makes DSK-001 hold when the shell probe cannot answer: upkeep probes
+  again before it prunes, and an unanswered probe or a pending background subagent counts as
+  working (#245).

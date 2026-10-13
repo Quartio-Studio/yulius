@@ -234,8 +234,10 @@ impl CiStore for SqliteStore {
     ) -> AppResult<bool> {
         let (id, from, update) = (id.to_owned(), states(from), update.clone());
         self.call(move |c| {
+            // A reason before a run starts is a queue note (waiting for disk): it goes.
             let sql = format!(
-                "UPDATE ci_runs SET state = ?1, reason = COALESCE(?2, reason), \
+                "UPDATE ci_runs SET state = ?1, \
+                 reason = CASE WHEN ?1 = 'running' THEN ?2 ELSE COALESCE(?2, reason) END, \
                  started_at = COALESCE(?3, started_at), ended_at = COALESCE(?4, ended_at) \
                  WHERE id = ?5 AND state IN ({})",
                 placeholders(6, from.len())
@@ -316,8 +318,8 @@ impl CiStore for SqliteStore {
         .await
     }
 
-    async fn requeue_ci_run(&self, id: &str) -> AppResult<bool> {
-        let id = id.to_owned();
+    async fn requeue_ci_run(&self, id: &str, note: &str) -> AppResult<bool> {
+        let (id, note) = (id.to_owned(), note.to_owned());
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
             let changed = tx
@@ -330,10 +332,8 @@ impl CiStore for SqliteStore {
             if changed == 1 {
                 tx.execute(
                     "UPDATE ci_jobs SET state = 'queued', started_at = NULL, ended_at = NULL, \
-                     reason = NULL, exit_code = NULL, \
-                     output = '[yulius] queued again after a restart of Yulius\n' \
-                     WHERE run_id = ?1",
-                    [&id],
+                     reason = NULL, exit_code = NULL, output = ?2 WHERE run_id = ?1",
+                    [&id, &note],
                 )
                 .map_err(db)?;
             }
@@ -512,8 +512,40 @@ mod tests {
             active.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
             ["r1", "r2"]
         );
+        // SPEC-059 CI-301: a queue note (waiting for disk) goes once the run starts.
+        store
+            .insert_ci_run(&run("r3", "c", 3)?, &[job("j4", "r3", 0)])
+            .await?;
+        let note = CiRunUpdate {
+            reason: Some("waiting for disk space".into()),
+            ..CiRunUpdate::default()
+        };
+        assert!(
+            store
+                .transition_ci_run("r3", &[RunState::Queued], RunState::Queued, &note)
+                .await?
+        );
+        assert_eq!(
+            store.ci_run("r3").await?.ok_or("r3")?.reason.as_deref(),
+            Some("waiting for disk space")
+        );
+        assert!(
+            store
+                .transition_ci_run(
+                    "r3",
+                    &[RunState::Queued],
+                    RunState::Running,
+                    &CiRunUpdate::default()
+                )
+                .await?
+        );
+        assert_eq!(store.ci_run("r3").await?.ok_or("r3")?.reason, None);
         // A restart puts the running run and its jobs back.
-        assert!(store.requeue_ci_run("r1").await?);
+        assert!(
+            store
+                .requeue_ci_run("r1", "[yulius] queued again after a restart of Yulius\n")
+                .await?
+        );
         let again = store.ci_run("r1").await?.ok_or("r1")?;
         assert_eq!(again.state, RunState::Queued);
         assert_eq!(again.started_at, None);
