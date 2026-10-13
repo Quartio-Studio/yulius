@@ -14,6 +14,21 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   code now confirms only the seed it was checked against, so a new key set up in another tab
   while a code is checked is not confirmed by it. API: `DELETE /api/users/{id}/two-factor`;
   `AdminUser` gains `two_factor`.
+- Open GitHub issues triaged, and the web UI keeps the person's keyboard, scroll and text (SPEC-056,
+  task #47). Issues already fixed on `dev` were closed with the change that fixed them, and the
+  other actionable ones went to chained tasks #49–#64. In the web UI:
+  - a terminal that shows late leaves the keyboard in the Editor on Chrome (#325), and with a
+    terminal asked for after it (#323);
+  - Notes shown again for a new page does not take the keyboard (#310);
+  - a menu placed again keeps its scroll (#288);
+  - the task view ignores an older detail read (#316);
+  - the queued messages card keeps unsent text and a refusal when the task starts (#324);
+  - leaving the composer revokes every object URL it made (#259).
+- Quick archive (SPEC-062, ADR-0040, task #65). A sidebar task row that can be archived shows an
+  Archive button beside its `⋮` on hover or focus, and the Done group's head has **Archive all**:
+  one click archives every Done task, with one Undo for the whole batch. When some fail, the
+  others stay archived and one toast says how many failed and why. Phones keep the `⋮` menu as
+  their only row action. No API change: each task goes through `POST /api/tasks/{tid}/archive`.
 - Done tasks no longer hold their subscription (SPEC-057, ADR-0040, task #48). A subscription
   card counts only tasks still working on it, so one whose tasks are all Done (goal achieved, or
   plan complete and merged: the session limit's rule) says "No tasks right now" and can be removed. Removing it closes those Done tasks' idle sessions first, as archiving

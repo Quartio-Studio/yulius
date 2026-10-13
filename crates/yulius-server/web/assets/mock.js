@@ -11,7 +11,8 @@
 // URL options (with ?mock=1): setup=1 (setup required), signedout=1 (start signed out),
 // role=member|admin|superadmin (default superadmin), contained=0 (not isolated), github=0,
 // update=1|fail (an update is on offer | its install rolls back), helper=0 (no update helper),
-// jev=config (a Jev key file is configured), fail=<path> (GETs of that path answer 500).
+// jev=config (a Jev key file is configured), fail=<path> (GETs of that path answer 500),
+// failpost=<path> (POSTs of that path answer 500).
 
 import { taskInfo } from './status.js';
 
@@ -148,6 +149,8 @@ function seed(params) {
     // fail=<path> answers 500 to GET requests of that exact path, to show how a view says a load
     // failed (in place, naming what failed, with Try again; #147).
     failPath: params.get('fail') || null,
+    // failpost=<path> does the same to POST requests, to show how an action says it failed.
+    failPostPath: params.get('failpost') || null,
 
     nextId: 100,
   };
@@ -867,11 +870,20 @@ route('POST', `/api/tasks/${ID}/held-prompts/${ID}`, ({ db, p, body }) => {
   recount(db);
   return { task: summary(task), created: created ? summary(created) : null, note: notes[action] };
 });
-// Reads of a task's detail, per task, so a test can wait for a view's read to land.
-route('GET', `/api/tasks/${ID}`, ({ db, p }) => {
+// Reads of a task's detail, per task, so a test can wait for a view's read to land. A test can
+// hold the next read (`__yuliusMock.holdDetail = promise`): it answers what the task was when
+// asked, once released (`heldDetailAnswered`); `failNextDetail` fails the next one.
+route('GET', `/api/tasks/${ID}`, async ({ db, p }) => {
   db.detailReads = db.detailReads || {};
   db.detailReads[p[0]] = (db.detailReads[p[0]] || 0) + 1;
-  return detail(db, taskOf(db, p[0]));
+  if (db.failNextDetail) { db.failNextDetail = false; fail(500, 'internal', 'the mock failed this read'); }
+  const hold = db.holdDetail;
+  if (!hold) return detail(db, taskOf(db, p[0]));
+  db.holdDetail = null;
+  const answer = clone(detail(db, taskOf(db, p[0])));
+  await hold;
+  db.heldDetailAnswered = true;
+  return answer;
 });
 // The prompt a task started with (SPEC-043): `@path` lines are its attached files, served only
 // from the attachments folder.
@@ -936,7 +948,9 @@ route('DELETE', `/api/tasks/${ID}`, ({ db, p }) => {
   emit(db, { type: 'task.removed', task_id: task.id });
   return json(204);
 });
-route('POST', `/api/tasks/${ID}/archive`, ({ db, p }) => {
+route('POST', `/api/tasks/${ID}/archive`, async ({ db, p }) => {
+  // Tests can hold the answers (`__yuliusMock.holdArchive = promise`).
+  if (db.holdArchive) await db.holdArchive;
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
   // A finished task (Done by the sidebar's rule, the server's task_is_done) is closed as it is
@@ -2536,6 +2550,9 @@ async function handleFetch(db, url, init = {}) {
   }
   if (!PUBLIC.includes(u.pathname) && !db.signedIn) return json(401, { error: { code: 'unauthenticated', message: 'Sign in first.' } });
   if (db.failPath && method === 'GET' && u.pathname === db.failPath) return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
+  // Tests count archive requests (`__yuliusMock.archiveRequests`), also those failed on purpose.
+  if (method === 'POST' && /^\/api\/tasks\/[^/]+\/archive$/.test(u.pathname)) db.archiveRequests = (db.archiveRequests || 0) + 1;
+  if (db.failPostPath && method === 'POST' && u.pathname === db.failPostPath) return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
   const headers = init.headers || {};
   if (method !== 'GET' && !PUBLIC.includes(u.pathname) && headers['X-Yulius-CSRF'] !== db.me.csrf_token) {
     return json(403, { error: { code: 'forbidden', message: 'Missing or wrong CSRF token.' } });
