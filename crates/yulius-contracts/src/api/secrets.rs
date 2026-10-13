@@ -1,58 +1,44 @@
-//! Secrets vault (SPEC-001 VLT, SPEC-002 ADR-20): team secrets people reveal after
-//! re-authenticating, and agent secrets agents use but nobody reads back.
+//! Secrets vault (SPEC-001 VLT, SPEC-002 ADR-20, SPEC-040): team secrets and agent secrets
+//! people reveal after unlocking the vault with their two-factor code; agents use agent secrets
+//! without seeing them.
 
 use serde::{Deserialize, Serialize};
 
-/// A team secret in lists: its secret fields are only flagged.
+/// A team secret in lists: a title; its value and notes are only flagged.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TeamSecretView {
     /// Id.
     pub id: String,
     /// Title, e.g. "Shared Gmail".
     pub title: String,
-    /// Sign-in address.
-    pub url: Option<String>,
-    /// User name or email.
-    pub username: Option<String>,
-    /// Whether a password is stored.
-    pub has_password: bool,
+    /// Whether a value is stored.
+    pub has_value: bool,
     /// Whether notes are stored.
     pub has_notes: bool,
-    /// Whether a TOTP seed is stored (codes on demand).
-    pub has_totp: bool,
     /// Who added it.
     pub created_by: String,
     /// Who changed it last.
     pub updated_by: String,
     /// When it changed last.
     pub updated_at: String,
-    /// When a secret field changed last.
+    /// When the value or the notes changed last.
     pub value_updated_at: String,
-    /// The secret fields are older than 180 days: rotate them.
+    /// The value is older than 180 days: rotate it.
     pub rotate_due: bool,
 }
 
-/// Create body (every field but the title optional).
+/// Create body: a title, a value and notes (SPEC-040).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TeamSecretInput {
     /// Title.
     pub title: String,
-    /// Sign-in address.
+    /// The secret value (a password, a key, a recovery code…).
     #[serde(default)]
-    pub url: Option<String>,
-    /// User name or email.
-    #[serde(default)]
-    pub username: Option<String>,
-    /// Password.
-    #[serde(default)]
-    pub password: Option<String>,
-    /// Notes (recovery codes, security answers…).
+    pub value: Option<String>,
+    /// Notes (user name, address, security answers…), encrypted like the value.
     #[serde(default)]
     pub notes: Option<String>,
-    /// TOTP seed: base32 or an `otpauth://totp/…` URI.
-    #[serde(default)]
-    pub totp: Option<String>,
 }
 
 /// Update body: an absent field stays, an empty string clears it.
@@ -62,21 +48,12 @@ pub struct TeamSecretPatch {
     /// Title (never cleared).
     #[serde(default)]
     pub title: Option<String>,
-    /// Sign-in address.
+    /// Value.
     #[serde(default)]
-    pub url: Option<String>,
-    /// User name or email.
-    #[serde(default)]
-    pub username: Option<String>,
-    /// Password.
-    #[serde(default)]
-    pub password: Option<String>,
+    pub value: Option<String>,
     /// Notes.
     #[serde(default)]
     pub notes: Option<String>,
-    /// TOTP seed.
-    #[serde(default)]
-    pub totp: Option<String>,
 }
 
 /// `POST /api/team-secrets/{id}/reveal` body.
@@ -86,20 +63,18 @@ pub struct RevealRequest {
     /// `show` (default) or `copy`, recorded in the audit trail.
     #[serde(default)]
     pub purpose: Option<String>,
-    /// Fields to reveal: `password`, `notes`, `totp` (default: every stored one).
+    /// Fields to reveal: `value`, `notes` (default: both).
     #[serde(default)]
     pub fields: Option<Vec<String>>,
 }
 
 /// Revealed fields (served with `Cache-Control: no-store`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TeamSecretReveal {
-    /// Password.
-    pub password: Option<String>,
+pub struct SecretReveal {
+    /// The value.
+    pub value: Option<String>,
     /// Notes.
     pub notes: Option<String>,
-    /// The TOTP seed as stored.
-    pub totp: Option<String>,
 }
 
 /// A current TOTP code.
@@ -113,15 +88,39 @@ pub struct TotpCode {
     pub remaining: u64,
 }
 
-/// `GET /api/auth/reauth`: whether this browser session may reveal now, and how to confirm.
+/// `GET /api/auth/reauth`: whether this browser session may reveal now, and how to get there.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReauthStatus {
-    /// Reveals are allowed now.
+    /// The vault is unlocked: a two-factor code was entered in this session in the last 10
+    /// minutes (SPEC-040).
     pub fresh: bool,
-    /// Until when (RFC 3339), when fresh.
+    /// Until when (RFC 3339), when unlocked.
     pub fresh_until: Option<String>,
-    /// `password` (the superadmin) and/or `github` (sign in with GitHub again).
+    /// The person's two-factor: `missing`, `pending` (set up, not confirmed), `on`, or `locked`
+    /// (10 wrong codes in a row, until identity is confirmed again).
+    pub two_factor: String,
+    /// The session signed in or confirmed it is them in the last 10 minutes (needed to set up
+    /// two-factor).
+    pub identity_fresh: bool,
+    /// How to confirm identity: `password` (the superadmin) and/or `github` (sign in again).
     pub methods: Vec<String>,
+}
+
+/// `POST /api/auth/two-factor`: a new seed for the person's authenticator app.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TwoFactorSetup {
+    /// The base32 seed ("enter this key").
+    pub secret: String,
+    /// The same as an `otpauth://totp/…` link (what a QR code holds).
+    pub uri: String,
+}
+
+/// `POST /api/auth/unlock` body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UnlockRequest {
+    /// The current code of the person's authenticator.
+    pub code: String,
 }
 
 /// `POST /api/auth/reauth` body (password method).
@@ -153,9 +152,9 @@ pub struct AgentSecretView {
     pub injection_text: String,
     /// The placeholder agents' code uses (`yulius-secret-NAME`).
     pub placeholder: String,
-    /// Whether a user name is stored (Basic credentials, website logins).
+    /// Whether a user name is stored (Basic credentials; older secrets: website logins).
     pub has_username: bool,
-    /// Whether a TOTP seed is stored (website two-factor codes).
+    /// Whether an older secret stores a TOTP seed (none can be added since SPEC-040).
     pub has_totp: bool,
     /// Who added it.
     pub created_by: String,
@@ -191,18 +190,15 @@ pub struct AgentSecretInput {
     /// Header for `header`.
     #[serde(default)]
     pub header_name: Option<String>,
-    /// User name (Basic credentials, website logins).
+    /// User name of `basic` credentials (only there).
     #[serde(default)]
     pub username: Option<String>,
     /// The value (at least 8 characters).
     pub value: String,
-    /// TOTP seed (website two-factor codes).
-    #[serde(default)]
-    pub totp: Option<String>,
 }
 
-/// Update body: an absent field stays; an empty `username` or `totp` clears it; `value`
-/// replaces the value.
+/// Update body: an absent field stays; an empty `username` clears it; `value` replaces the
+/// value.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentSecretPatch {
@@ -221,15 +217,12 @@ pub struct AgentSecretPatch {
     /// Header for `header`.
     #[serde(default)]
     pub header_name: Option<String>,
-    /// User name.
+    /// User name of `basic` credentials.
     #[serde(default)]
     pub username: Option<String>,
     /// New value.
     #[serde(default)]
     pub value: Option<String>,
-    /// TOTP seed.
-    #[serde(default)]
-    pub totp: Option<String>,
 }
 
 /// One vault audit entry.

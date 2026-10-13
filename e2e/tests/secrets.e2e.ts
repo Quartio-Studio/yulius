@@ -5,49 +5,63 @@ import { axeViolations, failOnPageErrors, mock } from './support.ts';
 failOnPageErrors();
 
 // Synthetic mock values (assets/mock.js, "secrets vault"); not real credentials.
-const MOCK_PASSWORD = 'correct horse battery';
-const TEAM_PASSWORD = 'mock-not-a-real-password';
+const TEAM_VALUE = 'mock-not-a-real-password';
 const AGENT_VALUE = 'mock-agent-value-1';
+const MOCK_CODE = '123456';
 
-// F 2026-10-10 (3a): "2 sections for storing secrets … team secrets … for agents … Agent can
-// access them but never see them." A team password shows only after confirming it's you.
-test('team secrets reveal only after confirming it is you', async ({ app, browser, screen }) => {
+/** Sets up two-factor in the dialog a first reveal opens (SPEC-040): a wrong code is refused. */
+async function setUpTwoFactor(screen: any, browser: any) {
+  const setup = screen.getByRole('dialog', 'Set up two-factor');
+  await expect(setup).toBeVisible();
+  await expect(setup.getByText(/Add this key to your authenticator app/)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await expect(setup.getByRole('link', 'Open in an authenticator app')).toHaveAttribute('href', /^otpauth:\/\/totp\//);
+  await screen.getByLabel('Code from your app').fill('000000');
+  await setup.getByRole('button', 'Unlock').click();
+  await expect(setup.getByRole('alert')).toHaveText(/wrong code/i);
+  await screen.getByLabel('Code from your app').fill(MOCK_CODE);
+  await setup.getByRole('button', 'Unlock').click();
+  await expect(setup).toBeHidden();
+}
+
+// F 2026-10-12 (task #39): "It should be only value title notes. 2FA should be per wallet and
+// should be mandatory." A team secret is a title, a value and notes; reading one needs your own
+// two-factor code.
+test('team secrets are a title, a value and notes, shown after a two-factor code', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/secrets'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Secrets');
   await expect(screen.getByText('Shared Gmail')).toBeVisible();
-  await expect(screen.getByText(/team@example\.test/)).toBeVisible();
-  expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), TEAM_PASSWORD)).toBe(false);
+  expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), TEAM_VALUE)).toBe(false);
   expect(await axeViolations(browser)).toEqual([]);
 
   await screen.getByRole('button', 'Show Shared Gmail').click();
-  const confirm = screen.getByRole('dialog', 'Confirm it’s you');
-  await expect(confirm).toBeVisible();
-  await screen.getByLabel('Your password').fill('not the password');
-  await confirm.getByRole('button', 'Confirm').click();
-  await expect(confirm.getByRole('alert')).toHaveText(/wrong password/i);
-  await screen.getByLabel('Your password').fill(MOCK_PASSWORD);
-  await confirm.getByRole('button', 'Confirm').click();
-
+  await setUpTwoFactor(screen, browser);
   const shown = screen.getByRole('dialog', 'Shared Gmail');
   await expect(shown).toBeVisible();
-  await expect(shown.getByText(TEAM_PASSWORD)).toBeVisible();
+  await expect(shown.getByText(TEAM_VALUE)).toBeVisible();
   await expect(shown.getByText(/Recovery codes/)).toBeVisible();
   await shown.getByRole('button', 'Done').click();
   await expect(shown).toBeHidden();
-  // The reveal is in the activity trail.
+  // The setup and the reveal are in the activity trail.
+  await expect(screen.getByText(/turned on two-factor/).first()).toBeVisible();
   await expect(screen.getByText(/revealed/).first()).toBeVisible();
 
   await screen.getByRole('button', 'Add team secret').click();
   const add = screen.getByRole('dialog', 'Add team secret');
+  const labels = await browser.evaluate(() => [...document.querySelectorAll('dialog.modal .field-label')].map((l) => l.textContent!.trim()));
+  expect(labels).toEqual(['Title', 'Value', 'Notes']);
+  expect(await axeViolations(browser)).toEqual([]);
   await screen.getByLabel('Title').fill('AWS root');
+  await screen.getByLabel('Value').fill('mock-aws-root-value');
   await add.getByRole('button', 'Add').click();
   await expect(add).toBeHidden();
   // Listed, and recorded in the activity trail ("added AWS root").
   await expect(screen.getByText('AWS root').first()).toBeVisible();
   await expect(screen.getByText(/added/).first()).toBeVisible();
+  expect(await browser.evaluate(() => document.body.innerHTML.includes('mock-aws-root-value'))).toBe(false);
 });
 
-test('agent secrets are write-only and bound to hosts', async ({ app, browser, screen }) => {
+test('agent secrets are bound to hosts and readable by their managers after a code', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/secrets?section=agents'));
   await expect(screen.getByRole('radio', 'Agent secrets')).toHaveAttribute('aria-checked', 'true');
   await expect(screen.getByText('STRIPE_KEY')).toBeVisible();
@@ -57,12 +71,19 @@ test('agent secrets are write-only and bound to hosts', async ({ app, browser, s
 
   await screen.getByRole('button', 'Add agent secret').first().click();
   const dialog = screen.getByRole('dialog', 'Add agent secret');
+  const labels = await browser.evaluate(() => [...document.querySelectorAll('dialog.modal .field-label')].filter((l) => !l.closest('[hidden]')).map((l) => l.textContent!.trim()));
+  expect(labels).toEqual(['Name', 'Value', 'Notes', 'Scope', 'Hosts', 'Added to requests as']);
   await screen.getByLabel('Name').fill('RESEND_KEY');
   await screen.getByLabel('Hosts').fill('api.resend.com');
   await screen.getByLabel('Value').fill('short');
   await dialog.getByRole('button', 'Add').click();
   await expect(browser.locator('.field-error')).toHaveText(/At least 8 characters/);
   await screen.getByLabel('Value').fill('re_mock_value_123');
+  // A user name only for Basic credentials.
+  await browser.locator('dialog.modal select').nth(1).selectOption({ value: 'basic' });
+  await expect(screen.getByLabel('User name')).toBeVisible();
+  await browser.locator('dialog.modal select').nth(1).selectOption({ value: 'bearer' });
+  await expect(screen.getByLabel('User name')).toBeHidden();
   await dialog.getByRole('button', 'Add').click();
   await expect(dialog).toBeHidden();
   await expect(screen.getByText('RESEND_KEY')).toBeVisible();
@@ -70,11 +91,36 @@ test('agent secrets are write-only and bound to hosts', async ({ app, browser, s
   expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), 're_mock_value_123')).toBe(false);
   expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), AGENT_VALUE)).toBe(false);
 
+  // Its manager reads it back after a two-factor code.
+  await screen.getByRole('button', 'Show STRIPE_KEY').click();
+  await setUpTwoFactor(screen, browser);
+  const shown = screen.getByRole('dialog', 'STRIPE_KEY');
+  await expect(shown.getByText(AGENT_VALUE)).toBeVisible();
+  await shown.getByRole('button', 'Done').click();
+
   // The section survives a reload; the Team section is one click away.
   await browser.reload();
   await expect(screen.getByRole('radio', 'Agent secrets')).toHaveAttribute('aria-checked', 'true');
   await screen.getByRole('radio', 'Team secrets').click();
   await expect(screen.getByText('Shared Gmail')).toBeVisible();
+});
+
+// Review of SPEC-040: an older secret's address, user name and seed live in its notes, so its
+// notes are edited from their current text, never replaced blindly.
+test('editing a team secret loads its current notes after a two-factor code', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets'));
+  await screen.getByRole('button', 'Edit Shared Gmail').click();
+  const edit = screen.getByRole('dialog', 'Edit Shared Gmail');
+  // The stored notes cannot be overwritten blindly: the box opens read-only until they are loaded.
+  await expect(browser.locator('dialog.modal textarea')).toHaveAttribute('readonly', '');
+  await screen.getByRole('button', 'Edit current notes of Shared Gmail').click();
+  await setUpTwoFactor(screen, browser);
+  await expect(browser.locator('dialog.modal textarea')).toHaveValue(/User name: team@example\.test/);
+  await browser.locator('dialog.modal textarea').fill('User name: team@example.test\nRecovery codes: new');
+  await edit.getByRole('button', 'Save').click();
+  await expect(edit).toBeHidden();
+  await screen.getByRole('button', 'Show Shared Gmail').click();
+  await expect(screen.getByRole('dialog', 'Shared Gmail').getByText(/Recovery codes: new/)).toBeVisible();
 });
 
 test('members who only read a sandbox cannot add agent secrets', async ({ app, screen }) => {
