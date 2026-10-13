@@ -34,7 +34,10 @@ archived by hand. SES-101 had already stopped counting Done tasks against the se
 ## Consequences
 
 The cards, the Status panel, the capacity view and the session limit agree on what is busy. A
-Done task typed into again counts again. Removing a subscription with Done tasks on it takes up
-to the close escalation (about 25 s) and those tasks end `closed`; **Continue** starts them again
+Done task typed into again counts again. "Done" is the local rule of SES-101 (goal achieved, or
+plan complete with the change merged): a task Done only because its open pull request is green
+still holds its subscription, as it holds a session slot. Removing a subscription with Done tasks
+on it closes them together, so it takes up to one close escalation (about 25 s), and they end
+`closed`; **Continue** starts them again
 on another subscription. Counts are read when the page loads; a task becoming Done does not push
 an update to an open Subscriptions page, as task starts and ends never did.

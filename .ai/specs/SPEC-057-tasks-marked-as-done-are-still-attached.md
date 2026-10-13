@@ -79,5 +79,13 @@ sessions were not there, and the subscription can be removed.
   that no longer exists; closing is what archiving a Done task already does, and **Continue**
   starts it again on another subscription. Alternative rejected: refuse removal while Done tasks
   use it (the reported bug).
+- **Done by the local rule only.** A task Done only because its open pull request is green (a
+  GitHub call) still holds its subscription, as it holds a session slot under SES-101; counting it
+  would need GitHub on every Status and rotation read.
+- **Closes run together.** Removing a subscription with several Done tasks closes them
+  concurrently, so it takes one close escalation (about 25 s), not one per task.
+- **A prompt typed in the instant before the close is accepted risk.** Each task is re-checked just
+  before its close, as archiving and deleting a Done task do; a prompt arriving between that check
+  and the close can still be interrupted. Same window as TSK-009/TSK-014's archive and delete.
 - **Not detaching Done sessions automatically.** TSK-014 keeps a Done session attached for
   follow-ups; closing every Done task would change that contract and lose the idle session.

@@ -1235,6 +1235,68 @@ fn a_done_task_lets_its_subscription_go() -> TestResult {
     Ok(())
 }
 
+/// SPEC-057 SUB-003: removing a subscription is refused while a task works on it, and then leaves
+/// its Done neighbour alone; once every task on it is Done, removal closes all of them.
+#[test]
+fn removing_a_subscription_spares_working_tasks_and_closes_every_done_one() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
+    let data = dir.path().canonicalize()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_full(&data, Some(&fake), FakeAgentOptions::default(), 2)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        seed_repo(&data, &sandbox)?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        let first = new_task(&app, &sandbox, &user, "First").await?;
+        let second = new_task(&app, &sandbox, &user, "Second").await?;
+        for id in [&first, &second] {
+            wait_for("a run", Duration::from_secs(30), || {
+                screen_contains(&app, id, "FAKE-AGENT READY")
+            })
+            .await?;
+        }
+        let done = |id: TaskId| {
+            let app = app.clone();
+            async move {
+                app.deps
+                    .store
+                    .set_activity(&id, Some(Activity::Done), app.now())
+                    .await
+            }
+        };
+        done(first.clone()).await?;
+        // The second task still works: refused, and the Done one keeps its session.
+        assert!(matches!(
+            app.delete_account(&ctx, "a-claude").await,
+            Err(yulius_app::error::AppError::Conflict(_))
+        ));
+        assert_eq!(task(&app, &first).await?.status, TaskStatus::Running);
+        assert!(app.deps.store.live_attempt(&first).await?.is_some());
+        // Both Done: removal closes both and deletes the subscription.
+        done(second.clone()).await?;
+        app.delete_account(&ctx, "a-claude").await?;
+        assert!(
+            app.deps
+                .store
+                .account(&AccountId::parse("a-claude")?)
+                .await?
+                .is_none()
+        );
+        for id in [&first, &second] {
+            assert_eq!(task(&app, id).await?.status, TaskStatus::Closed);
+            assert!(app.deps.store.live_attempt(id).await?.is_none());
+        }
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// AC-TSK-3: an agent's normal exit closes its task; another task of the sandbox keeps running.
 #[test]
 fn a_normal_exit_closes_the_task() -> TestResult {

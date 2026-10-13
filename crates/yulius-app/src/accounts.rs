@@ -259,8 +259,8 @@ pub fn account_usage(account: &AccountRecord) -> AccountUsage {
         .unwrap_or_default()
 }
 
-/// Attempts in `live` that use `account`; callers pass working attempts, so a Done task does not
-/// count on its subscription (SPEC-057).
+/// Attempts in `live` that use `account`. The counts people see pass working attempts, so a Done
+/// task does not count on its subscription (SPEC-057).
 #[must_use]
 pub fn in_use_count(account: &AccountId, live: &[AttemptRecord]) -> u32 {
     u32::try_from(
@@ -773,13 +773,22 @@ impl App {
             .filter(|a| a.account_id.as_ref() == Some(&account.id))
             .map(|a| a.task_id)
             .collect();
-        for task in &done {
-            // Looked at again just before closing: a task typed into since is not closed.
-            if let Some(record) = store.task(task).await?
-                && self.task_is_done_locally(&record).await
-            {
-                self.close_task_and_wait(task).await?;
-            }
+        // Closed together, so removal takes one close escalation, not one per task.
+        let mut closes = tokio::task::JoinSet::new();
+        for task in done {
+            let app = Arc::clone(self);
+            closes.spawn(async move {
+                // Looked at again just before closing: a task typed into since is not closed.
+                match app.deps.store.task(&task).await? {
+                    Some(record) if app.task_is_done_locally(&record).await => {
+                        app.close_task_and_wait(&task).await
+                    }
+                    _ => Ok(()),
+                }
+            });
+        }
+        for closed in closes.join_all().await {
+            closed?;
         }
         // A Done task typed into meanwhile is working again and keeps the subscription.
         let still = in_use_count(&account.id, &store.live_attempts().await?);

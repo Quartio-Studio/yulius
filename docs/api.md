@@ -900,8 +900,9 @@ administrators only) and `plan` (the subscription tier) are planned for UI-022: 
 them when present, but **the server does not report them yet** (and the mock does not either, so
 it looks like production), so today they are absent and the UI shows the label and provider. A
 task's overview names each session's subscription by its label (`TaskDetail.attempts[].account_label`).
-`in_use_by` counts the live tasks on the subscription except Done ones (TSK-014, SPEC-057): a
-Done task keeps its idle session but no longer holds the subscription.
+`in_use_by` counts the live tasks on the subscription except Done ones by the session limit's
+rule (SES-101: goal achieved, or plan complete with the change merged; SPEC-057): a Done task
+keeps its idle session but no longer holds the subscription.
 
 **Login terminal.** Each login runs Claude Code's own sign-in (`claude setup-token`) with a
 temporary config directory in a server-owned PTY 500 columns
