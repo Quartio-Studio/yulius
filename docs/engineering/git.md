@@ -20,8 +20,9 @@ These rules apply to features, fixes, documentation, tooling and policy changes.
    here too; the standard profile has no manual dev checkpoint, so nobody confirms `dev` by
    hand. A task's work ends here; promotion is a separate step a person asks for.
 6. Open a promotion PR **from `dev` into `main`**. Its exact head must have a successful
-   `yulius/ci` status, and Yulius merges it only then (`require_checks`). Yulius's merge
-   gate also checks its route and title against the branch policy.
+   `yulius/ci` status: the `yulius-main` ruleset requires it, and Yulius refuses failing,
+   running or unreadable checks (`require_checks`). Yulius's merge gate also checks its route
+   and title against the branch policy.
 7. The promotion PR's author merges it with a **merge commit**, after required checks
    pass. Keep `dev`: only short-lived branches are deleted.
 8. `main` then has `dev`'s tested tree. When a production environment exists, verify

@@ -2526,7 +2526,9 @@ impl App {
             .check(pull, &profile.integration_branch, &profile.production_branch)
             .map_err(|violation| {
                 let fix = if violation.is_title() {
-                    format!("edit the title (`gh pr edit {number} --title \"…\"`), then merge again")
+                    format!(
+                        "edit the title on GitHub (`gh pr edit {number} --title \"…\"`), then merge again"
+                    )
                 } else {
                     "deliver the work from a branch and into a base the policy accepts".to_owned()
                 };

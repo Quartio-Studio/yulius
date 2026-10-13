@@ -1,11 +1,11 @@
 ---
 yulius-task: ae80c897-6658-4df6-82d1-81be0dc84b0b
-status: in-progress
+status: done
 ---
 
 # SPEC-069: Yulius's merge gate enforces the branch policy
 
-Status: in progress
+Status: implemented
 Date: 2026-10-13
 Owner: Yulius task #59
 Scope authorization: GitHub issue #223, through task #59 (part of task #47, "fix all open
@@ -70,13 +70,13 @@ rules are the standard preset and the default.
 ## Plan
 
 - [x] Spec SPEC-069 and ADR 0050 for the branch policy gate
-- [ ] Branch policy rules in the domain with unit tests
-- [ ] [branch_policy] table in yulius.toml parsed and validated
-- [ ] Merge gate refuses violating task pull requests (delivery_merge, armed, Git page)
-- [ ] Promotion pull requests are titled and checked by the policy
-- [ ] Yulius-generated titles and branch names pass the policy
-- [ ] Python branch policy script removed; docs and yulius.toml updated
-- [ ] Gates green, independent review, evidence and changes entry
+- [x] Branch policy rules in the domain with unit tests
+- [x] [branch_policy] table in yulius.toml parsed and validated
+- [x] Merge gate refuses violating task pull requests (delivery_merge, armed, Git page)
+- [x] Promotion pull requests are titled and checked by the policy
+- [x] Yulius-generated titles and branch names pass the policy
+- [x] Python branch policy script removed; docs and yulius.toml updated
+- [x] Gates green, independent review, evidence and changes entry
 
 ## Acceptance criteria
 
@@ -111,3 +111,30 @@ rules are the standard preset and the default.
   retitle it until then, and the refusal says exactly what to change.
 - Only `preset` and `types` are configurable: the length limits and the release title follow the
   repository's rules; the parser has no numbers, and no project needs other limits yet.
+
+## Evidence
+
+- `scripts/dev ci` (bootstrap, repository contracts, Python script tests, fmt, clippy, the
+  workspace tests with nextest, doctests) at `7093530`: exit 0, `1329 tests run: 1329 passed
+  (10 slow), 16 skipped`.
+- After the last review nits (a comment and the refusal's wording):
+  `cargo test -p yulius --test main -- delivery::the_branch_policy delivery::agents_cannot`:
+  2 passed; `cargo clippy -p yulius-app --all-targets`: clean.
+- Unit: `branch_policy::tests` (7, the removed Python tests' cases included),
+  `spec_format::config::tests::branch_policy_table_selects_a_preset_and_types`,
+  `delivery::tests::generated_titles_pass_the_policy`,
+  `supervisor::tests::branch_names_are_safe_and_bounded`,
+  `wire::tests::a_head_from_another_repository_is_marked`.
+- Integration: `delivery::the_branch_policy_gates_every_merge` (a non-conventional title, a title
+  that is too long and an untyped branch are refused with the rule, a fixed title merges; the
+  promotion pull request is titled `release: promote dev to main`, a retitled one is refused, a
+  fork's is not taken; an invalid policy falls back to the standard rules and says why;
+  `preset = "none"` lets the untyped branch merge) and
+  `delivery::agents_cannot_arm_or_land_a_merge_the_policy_refuses` (`delivery_merge` refuses
+  before arming; an armed merge retitled afterwards is refused, not merged).
+- Independent review: round 1 requested changes (configured `types` without `feat`, the fallback
+  refusal's reason, the untested fail-closed path); all fixed test-first. Round 2 approved
+  `7093530`; its minor findings (two stale doc sentences) and nits are fixed in the last commit.
+- Not tested here: merges against GitHub itself (the fake GitHub over a real bare repository
+  stands in for it).
+
