@@ -618,11 +618,11 @@ mod tests {
     /// WAI-003 (#255): a decision ends in one step, so the wait never reads an outcome next to a
     /// merge that still reads as armed, and always reads armed until that step.
     #[test]
-    fn a_decision_ends_in_one_step() {
+    fn a_decision_ends_in_one_step() -> Result<(), &'static str> {
         let mut slot = ArmedSlot::default();
         slot.arm(merge("aaa"));
         assert_eq!(slot.view(), (true, None));
-        let deciding = slot.take().expect("armed");
+        let deciding = slot.take().ok_or("armed")?;
         assert_eq!(slot.view(), (true, None), "armed while it is decided");
         assert!(slot.take().is_none(), "decided once at a time");
         assert!(slot.finish(&deciding, Verdict::Decided("dropped".to_owned())));
@@ -634,35 +634,37 @@ mod tests {
         // Arming again forgets it.
         slot.arm(merge("bbb"));
         assert_eq!(slot.view(), (true, None));
+        Ok(())
     }
 
     /// A merge kept (checks pending) goes back as it was; one moved to a new head is saved.
     #[test]
-    fn a_kept_merge_goes_back() {
+    fn a_kept_merge_goes_back() -> Result<(), &'static str> {
         let mut slot = ArmedSlot::default();
         slot.arm(merge("aaa"));
-        let deciding = slot.take().expect("armed");
+        let deciding = slot.take().ok_or("armed")?;
         assert!(
             !slot.finish(&deciding, Verdict::Keep(merge("aaa"))),
             "unchanged"
         );
         assert_eq!(slot.view(), (true, None));
-        let deciding = slot.take().expect("armed");
+        let deciding = slot.take().ok_or("armed")?;
         assert!(slot.finish(&deciding, Verdict::Keep(merge("ccc"))), "moved");
         assert_eq!(slot.merge, Some(merge("ccc")));
+        Ok(())
     }
 
     /// WAI-002 (#248): a merge armed (or merged at once) while an earlier one is decided
     /// supersedes it; that decision neither puts its merge back nor leaves its outcome.
     #[test]
-    fn a_newer_arm_supersedes_a_decision_in_progress() {
+    fn a_newer_arm_supersedes_a_decision_in_progress() -> Result<(), &'static str> {
         for verdict in [
             Verdict::Keep(merge("aaa")),
             Verdict::Decided("dropped".to_owned()),
         ] {
             let mut slot = ArmedSlot::default();
             slot.arm(merge("aaa"));
-            let deciding = slot.take().expect("armed");
+            let deciding = slot.take().ok_or("armed")?;
             slot.arm(merge("bbb"));
             assert!(!slot.finish(&deciding, verdict.clone()), "nothing to save");
             assert_eq!(slot.merge, Some(merge("bbb")));
@@ -670,10 +672,11 @@ mod tests {
 
             let mut slot = ArmedSlot::default();
             slot.arm(merge("aaa"));
-            let deciding = slot.take().expect("armed");
+            let deciding = slot.take().ok_or("armed")?;
             slot.clear();
             assert!(!slot.finish(&deciding, verdict));
             assert_eq!(slot.view(), (false, None));
         }
+        Ok(())
     }
 }
