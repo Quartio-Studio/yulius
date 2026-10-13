@@ -39,10 +39,10 @@ request, so the agent gets it as part of its request when the task starts.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| QMS-001 | `POST /api/tasks/{tid}/queued-messages` `{"text"}` (write access) adds the text to the task's request. It is accepted only while the task has never started: its status is `queued`, `chained` or `waiting_capacity`, and it has no run and no provider session. Otherwise the answer is `409` "The task has started: type into its session instead". | `queued_messages.rs` |
-| QMS-002 | The addition is atomic with the start: one conditional update in the store. A message accepted before the task moves to `starting` is part of what that start reads. One that arrives after the move is refused, and is never accepted and then lost. | `store.rs`, `queued_messages.rs` |
+| QMS-001 | (SPEC-001 TSK-017) `POST /api/tasks/{tid}/queued-messages` `{"text"}` (write access) adds the text to the task's request. It is accepted only while the task has never started: its status is `queued`, `chained` or `waiting_capacity`, and it has no run and no provider session. Otherwise the answer is `409` "The task has started: type into its session instead". | `queued_messages.rs` |
+| QMS-002 | The addition is atomic with the start: one conditional update in the store. A message accepted before the task moves to `starting` is part of what that start reads. One that arrives after the move is refused, and is never accepted and then lost. | `queued_messages.rs` |
 | QMS-003 | Each message is added under its own line, "**Added by {login} before the task started ({UTC time}):**", after a blank line. The text is trimmed; empty text is `422`. The whole request stays within the creation limit (64 KiB), else `422`. | `request.rs` unit, `queued_messages.rs` |
-| QMS-004 | The agent gets the queued messages as part of its request. The request file and the goal condition in goal mode, or the first message in prompt mode, carry them. So do `task_get`, the scope check and the export, since they read the same request. | `queued_messages.rs` (fake agent) |
+| QMS-004 | The agent gets the queued messages as part of its request. The request file and the goal condition in goal mode, or the first message in prompt mode, carry them. So do `task_get`, the scope check and the export, since they read the same request. | `task_done.rs` (fake agent) |
 | QMS-005 | `GET /api/tasks/{tid}` carries `request` (the whole request text) and `started` (whether the task ever had a run or a provider session). An accepted message publishes the task change. | `queued_messages.rs` |
 | QMS-006 | The task view of a waiting task that never started, for a person with write access, shows a "Queued messages" card over the empty terminal. It shows the request as the agent will get it, and a box "Queue a message for the agent…" with **Queue** (⌘/Ctrl+Enter). A queued message clears the box and shows in the request. A refused one keeps the text and says why in place. Read access shows no card, and neither does a task that has started. | e2e `queued-messages.e2e.ts` |
 
@@ -67,21 +67,23 @@ request, so the agent gets it as part of its request when the task starts.
 - AC-QMS-3: with a fake agent, a chained task given a message and then released starts with a
   request file containing the message, in goal mode. In prompt mode the first message contains it.
 - AC-QMS-4: in the UI (mock), a queued task shows the card. Queueing shows the message in the
-  request and clears the box. A refusal keeps the text and shows the reason. A running task and a
-  read-only sandbox show no card.
+  request and clears the box. A refusal keeps the text and shows the reason. A running task shows
+  no card. Read access is refused by the server (403, AC-QMS-1), and the card checks write access
+  as the other task actions do.
 - `scripts/dev ci` and the e2e suite pass.
 
 ## Test plan
 
 - Unit (`yulius-domain` `request.rs`): the addition's format, trimming, the blank-line separation,
   and an empty message refused.
-- Store (`crates/yulius-store/tests/store.rs`): the conditional append in each status, with and
-  without an attempt or a provider session.
 - Integration (`crates/yulius/tests/queued_messages.rs`, new): the route's answers (200, 403, 409,
-  422), the detail's `request` and `started`, the change event, and the fake-agent start carrying
-  the message in goal and prompt modes.
-- e2e (`e2e/tests/queued-messages.e2e.ts`, mock): the card, queueing, a refusal, and no card for a
-  running task or read access.
+  422) through the real SQLite store, so the conditional append is exercised in each status with
+  and without an attempt or a provider session, after the move to `starting`; the detail's
+  `request` and `started`; the change event.
+- Integration with the fake agent (`crates/yulius/tests/task_done.rs`): a queued goal task and a
+  queued prompt task start carrying the message; a later message is refused.
+- e2e (`e2e/tests/queued-messages.e2e.ts`, mock): the card, queueing with the button and
+  ⌘/Ctrl+Enter, a refusal, and no card for a running task.
 
 ## Decisions
 

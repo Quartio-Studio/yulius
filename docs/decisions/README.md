@@ -36,3 +36,4 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0030](0030-menus-filter-when-long.md): Menus are compact and filter themselves when long
 - [0031](0031-deleting-a-done-task-closes-it.md): Deleting a Done task closes its session first
 - [0032](0032-shared-notes-with-revisions.md): Shared notes are stored on the server and saved by revision
+- [0033](0033-queued-messages-join-the-request.md): Messages queued into a waiting task join its request

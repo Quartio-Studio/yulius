@@ -210,6 +210,7 @@ limited to the agent's sandbox.
 | POST | `/api/sandboxes/{sid}/intake/proposal` | write | `{"prompt"}` → `{"tasks":[{"title","prompt","after_previous":bool}]}`: Claude's smallest split, 2–4 tasks grouped by area carrying their items word for word; `[]` means keep one task. 409 when proposals are not configured or no account is connected, 429 while 2 proposals run, 502 when Claude fails or its proposal is unusable (more than 4 tasks, one per item, an item missing) |
 | POST | `/api/tasks/{tid}/start-now` | write | → `TaskSummary`; a `chained` task starts now whatever its predecessor does (409 otherwise). Cancel it with `/stop` |
 | POST | `/api/tasks/{tid}/held-prompts/{hid}` | write | `{"action":"parallel|after|send|skip_after|revert|dismiss","skip_step_ids?":[…],"confirm?":bool}` → `{"task":TaskSummary,"created":TaskSummary|null,"note"}`; one decision per held prompt (409 for a second). `send` needs a running task; `skip_after` marks the given open steps `skipped`; `revert` needs `"confirm":true` (422 otherwise) — see "Task intake" below |
+| POST | `/api/tasks/{tid}/queued-messages` | write | `{"text"}` → `{"request"}`; adds the message to the request of a task that has never started (`queued`, `chained` or `waiting_capacity`, no run, no provider session) under "**Added by {login} before the task started ({UTC time}):**", so the agent gets it when the task starts (SPEC-052 / SPEC-001 TSK-017, ADR-0033). 409 once the task has started (type into its session instead); 422 for an empty message or a request past 64 KiB; publishes `task.updated` |
 | GET | `/api/tasks/{tid}` | read | → `TaskDetail` |
 | POST | `/api/tasks/{tid}/stop` | write | → `TaskSummary` |
 | POST | `/api/tasks/{tid}/continue` | write | `{"account_id?"}` → `TaskSummary`; resumes the latest session natively, on the best Claude subscription (the pool's choice; `account_id` is an operator override the web UI never sends) |
@@ -268,7 +269,8 @@ TaskDetail = TaskSummary + {
   "worktree": "…", "attempts": [{"seq","harness","account_label","account_id (proposed)","launch_kind","state",
                                   "started_at","ended_at","exit_code","exit_reason"}],
   "steps_list": [Step], "metrics": Metrics, "feedback": [{"login","verdict","comment","at"}],
-  "delivery": Delivery, "switches": [{"at","reason","from","to"}]
+  "delivery": Delivery, "switches": [{"at","reason","from","to"}],
+  "request": "the whole request, queued messages included", "started": false
 }
 Step = {"id","ordinal","title","status":"pending|in_progress|done|skipped|blocked","note","updated_by","updated_at","effort":1}
 Metrics = {"wall_ms","active_ms|null","input_tokens|null","output_tokens|null","cache_read_tokens|null","cache_write_tokens|null","models":["…"],"switches":0,"turns|null"}

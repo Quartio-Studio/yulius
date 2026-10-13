@@ -30,6 +30,8 @@ watching, steering and unblocking.
   outlive server restarts. Task intake splits mixed requests, holds scope changes and chains
   dependent tasks, also by a logical rule such as "#12 done and #13 done", which the composer
   builds from picked conditions (a task, its state, all or any).
+  A task that waits and has not started yet takes queued messages: each is added to its request,
+  so the agent gets the correction when the task starts.
   A half-written task (its prompt, attached files and choices) waits in the composer while
   people look elsewhere, also across a reload, until it starts.
 - **Subscription pool**: Claude accounts are used as one self-managing pool; tasks are
