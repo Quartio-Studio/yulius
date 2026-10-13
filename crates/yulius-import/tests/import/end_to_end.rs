@@ -188,8 +188,8 @@ fn onboards_everything_then_sends_nothing_new_on_rerun() -> TestResult {
         "✓ Quartio-Studio/demo is on Yulius",
         "2 new · 0 updated · 0 unchanged, attributed to @alice",
         "Sessions     https://yulius.example/s/demo/sessions",
-        "Onboarding   ● preparing",
-        "· task #1 finishes",
+        "Onboarding   ● waiting for Start onboarding in the browser",
+        "· someone clicks Start onboarding on the sandbox page: https://yulius.example/s/demo",
         "New tasks wait for it and start by themselves once onboarding is ready.",
     ] {
         assert!(
@@ -550,7 +550,10 @@ fn dry_runs_status_and_declined_confirmations_upload_nothing() -> TestResult {
     )?;
     let output = status.output();
     assert!(output.contains("[2/2] Yulius"), "{output}");
-    assert!(output.contains("Onboarding   ● preparing"), "{output}");
+    assert!(
+        output.contains("Onboarding   ● waiting for Start onboarding in the browser"),
+        "{output}"
+    );
     assert!(output.contains("Not ready yet: tasks start once onboarding is done."));
     assert!(
         !output.contains("Claude Code sessions"),
