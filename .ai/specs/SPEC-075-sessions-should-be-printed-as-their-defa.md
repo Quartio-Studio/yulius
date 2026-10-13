@@ -104,7 +104,7 @@ read-only: a locked prompt box, nothing to type into.
 - The TUI look is HTML in the terminal's typeface and palette, not xterm replaying ANSI: the
   transcript keeps its semantics (a list, folded details, links to lines, search targets), axe
   can check it, and nothing in the page can take keys. Replaying `claude --resume` in a terminal
-  would start a process able to write and spend a subscription. See ADR-0053.
+  would start a process able to write and spend a subscription. See ADR-0054.
 - The fade is a palette of its own (`--session-*`), not a CSS `filter`: a filter changes what
   people see but not what axe measures, and it would blur the text's rendering. Text stays at or
   above 4.5:1 (AA); "lower contrast" means lower than the live terminal's ~15:1, not below AA.
@@ -136,7 +136,7 @@ read-only: a locked prompt box, nothing to type into.
   the keyboard (`tabindex="0"`) with an inset ring. Nits: the folded call's ring sits in the
   entry's side padding, and the time sits at the prompt's edge.
 - Review round 5 (fresh session, confirming the head): REQUEST_CHANGES at f4967d5. `dev` had
-  added its own ADR-0052 meanwhile, so this ADR is 0053 after merging `dev` again. Also, every code
+  added its own ADR-0052 meanwhile, so this ADR is 0053 after merging `dev` again (0054 after `dev` took 0053 too, #365). Also, every code
   block was a tab stop: now only content that can scroll (more than about 16 rows) is a focusable
   region named like the Git page's diffs ("Result of Bash", "Changed lines of path").
 - The spider web is drawn by code from a small grid of square pixels in an inline SVG, so it

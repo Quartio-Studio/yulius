@@ -1,4 +1,4 @@
-# 0053. A session is printed as Claude Code's TUI in HTML, faded by its own palette
+# 0054. A session is printed as Claude Code's TUI in HTML, faded by its own palette
 
 ## Status
 
