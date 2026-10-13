@@ -101,15 +101,22 @@ impl App {
             let since = runtime.hub.output_seq();
             let watch = runtime.hub.watch();
             let joined = runtime.hub.join_writer(viewer_id, size);
-            if let Some((cols, rows)) = joined.resize
-                && task.status.is_live()
-            {
-                if let Err(err) = self.resize_run(&task.id, cols, rows).await {
-                    runtime.hub.leave(viewer_id);
-                    return Err(err);
-                }
-                if runtime.hub.size() != before && runtime.has_run().await {
-                    runtime.hub.settle(watch, since, REDRAW_WAIT).await;
+            if let Some((cols, rows)) = joined.resize {
+                if task.status.is_live() {
+                    if let Err(err) = self.resize_run(&task.id, cols, rows).await {
+                        runtime.hub.leave(viewer_id);
+                        return Err(err);
+                    }
+                    if runtime.hub.size() != before && runtime.has_run().await {
+                        runtime.hub.settle(watch, since, REDRAW_WAIT).await;
+                    }
+                } else {
+                    // No run yet (queued, about to start): the screen takes the size now, so the
+                    // first state already says it and the run spawns at it (SPEC-050 TRM-101; a
+                    // viewer of a task just created saw 120x40 first on the fast VM).
+                    runtime
+                        .hub
+                        .resize(cols.clamp(10, 1000), rows.clamp(5, 1000));
                 }
             }
         }
