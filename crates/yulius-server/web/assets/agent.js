@@ -1,6 +1,6 @@
-// The Agent (SPEC-035, formerly the Cockpit of SPEC-021 CKP-008): the user's own plain Claude Code
-// session in this sandbox, in the right tool panel beside the page, for quick work that should not
-// become a task. One per user and sandbox, opened (or started, resuming its last conversation) by
+// The Superagent (SPEC-074 SUP-007; the Agent of SPEC-035, formerly the Cockpit of SPEC-021
+// CKP-008): the user's own plain Claude Code session in this sandbox, in the right tool panel beside
+// the page, for quick work that should not become a task. One per user and sandbox, opened (or started, resuming its last conversation) by
 // POST /api/sandboxes/{sid}/cockpit; its terminal is the shell terminal protocol. There is no way
 // to delete it: /clear starts over inside it.
 
@@ -12,13 +12,13 @@ import { href } from './router.js';
 import { attachTerminalDrop, shellAttachments } from './filedrop.js';
 import { isPhone } from './theme.js';
 
-/** The Agent's panel view: its quick-work notice above the session. Starts on the first show. */
+/** The Superagent's panel view: its quick-work notice above the session. Starts on the first show. */
 export function createAgentView(ctx, sandbox) {
   const write = allows(sandbox.access, 'write');
   // On phones the panel covers the page: it closes so the composer shows.
   const newTask = write ? h('a', { href: href(`/s/${encodeURIComponent(sandbox.slug)}`), dataset: { route: `/s/${encodeURIComponent(sandbox.slug)}` }, onClick: () => { if (isPhone() && ctx.closePanel) ctx.closePanel(); } }, 'New task') : null;
-  // AGT-002: what the Agent is for, and where bigger work goes.
-  const notice = h('div', { class: 'banner banner-info agent-note small', role: 'note', 'aria-label': 'About the Agent' },
+  // AGT-002: what the Superagent is for, and where bigger work goes.
+  const notice = h('div', { class: 'banner banner-info agent-note small', role: 'note', 'aria-label': 'About the Superagent' },
     icon('info', { size: 16 }),
     h('span', { class: 'banner-text' },
       h('strong', null, 'For quick work'), ': setting up automations, asking a quick question. Anything more complex, such as writing code, belongs in a task, not here', newTask ? [': ', newTask, '.'] : '.'));
@@ -39,20 +39,20 @@ export function createAgentView(ctx, sandbox) {
     terminal = null;
   }
 
-  /** Opens the session; `focus` only when the person asked for the Agent (not a new page or sandbox). */
+  /** Opens the session; `focus` only when the person asked for the Superagent (not a new page or sandbox). */
   async function open({ focus: wantFocus = true } = {}) {
     if (opening || !alive) return;
     // Where the keyboard was: a slow start does not take it once the person has moved on.
     const from = document.activeElement;
     opening = true;
     drop();
-    setChildren(body, h('div', { class: 'placeholder placeholder-loading', role: 'status' }, 'Starting your Agent…'));
+    setChildren(body, h('div', { class: 'placeholder placeholder-loading', role: 'status' }, 'Starting your Superagent…'));
     let shell;
     try {
       shell = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/cockpit`);
     } catch (err) {
       opening = false;
-      if (alive) setChildren(body, h('div', { class: 'agent-msg' }, loadError(`Couldn’t start the Agent: ${err.message}`, () => open())));
+      if (alive) setChildren(body, h('div', { class: 'agent-msg' }, loadError(`Couldn’t start the Superagent: ${err.message}`, () => open())));
       return;
     }
     opening = false;
@@ -61,7 +61,7 @@ export function createAgentView(ctx, sandbox) {
 
   /**
    * The terminal lost its session (refused as not found, or the connection dropped): ask for the
-   * Agent again, which starts it when its process is gone (a reboot), and follow it to its new id.
+   * Superagent again, which starts it when its process is gone (a reboot), and follow it to its new id.
    * The same id means it still runs; the terminal reconnects by itself.
    */
   async function recover() {
@@ -69,7 +69,7 @@ export function createAgentView(ctx, sandbox) {
     recovering = true;
     try {
       const shell = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/cockpit`);
-      // The keyboard stays where it is: in the Agent if it was there (a refused session's terminal
+      // The keyboard stays where it is: in the Superagent if it was there (a refused session's terminal
       // takes it when shown, before it is refused), or was going there when the connection dropped
       // before the first screen; else with the page beside it.
       const keep = el.contains(document.activeElement) || (asked.focus && stayed(asked.from));
@@ -81,7 +81,7 @@ export function createAgentView(ctx, sandbox) {
     }
   }
 
-  /** The keyboard is still where it was when the start began (or nowhere, or in the Agent). */
+  /** The keyboard is still where it was when the start began (or nowhere, or in the Superagent). */
   const stayed = (from) => {
     const now = document.activeElement;
     return now === from || !now || now === document.body || el.contains(now);
@@ -101,8 +101,15 @@ export function createAgentView(ctx, sandbox) {
       path: `/api/shells/${enc(shell.id)}/terminal`,
       onLink: (uri, event) => ctx.openLink(uri, event),
       readOnlyLabel: () => 'Read-only',
-      exitMessage: () => ({ tone: 'info', text: 'The Agent stopped. Its conversation is kept.' }),
-      exitActions: () => [{ label: 'Start again', run: () => open() }],
+      // A usage limit moved it to another subscription (SPEC-074 SUP-006): it goes on there, so
+      // the panel follows it instead of offering Start again.
+      exitMessage: (exit) => (exit.status === 'switched'
+        ? { tone: 'info', text: 'Moving the Superagent to another subscription…' }
+        : { tone: 'info', text: 'The Superagent stopped. Its conversation is kept.' }),
+      exitActions: (exit) => (exit.status === 'switched' ? [] : [{ label: 'Start again', run: () => open() }]),
+      // Opened again rather than recovered: the server answers once the new one runs (it holds the
+      // start), and a failure shows why with Try again instead of leaving "Moving…" on screen.
+      onExit: (exit) => { if (exit.status === 'switched') open({ focus: el.contains(document.activeElement) }); },
       onFatal: (message) => { if (message.code === 'not_found') recover(); },
       // Once its first screen shows, the wish to focus from opening it is spent: a later recovery
       // leaves the keyboard where it is.
@@ -125,7 +132,7 @@ export function createAgentView(ctx, sandbox) {
   if (!write) {
     setChildren(body, h('div', { class: 'agent-msg' }, emptyState({
       iconName: 'spark',
-      title: 'The Agent needs write access to this sandbox.',
+      title: 'The Superagent needs write access to this sandbox.',
       text: 'It runs Claude Code in the sandbox as you; GitHub gives you read access to this repository.',
     })));
   }

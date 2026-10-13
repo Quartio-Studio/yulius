@@ -2311,6 +2311,41 @@ impl App {
             .await
     }
 
+    /// Records a usage limit the CLI reported on `account`: what the CLI was told is the
+    /// account's state (ROT-009), the limited window full until its reset, even when the
+    /// provider's usage request does not answer. Shared by tasks and the Cockpit (SPEC-074).
+    pub(crate) async fn record_limit(
+        &self,
+        account: &AccountId,
+        resets_at: Option<Timestamp>,
+        window_minutes: Option<u32>,
+    ) {
+        let mut usage = match self.deps.store.account(account).await {
+            Ok(Some(a)) => a
+                .usage_json
+                .as_deref()
+                .map(usage_json::from_json)
+                .unwrap_or_default(),
+            _ => AccountUsage::default(),
+        };
+        usage.limit_reached = true;
+        usage.limit_resets_at = resets_at;
+        usage.observed_at = Some(self.now());
+        let full = |minutes: u32| UsageWindow {
+            used_percent: Some(100.0),
+            window_minutes: Some(minutes),
+            resets_at,
+        };
+        match window_minutes {
+            Some(minutes) if minutes <= SESSION_WINDOW_MINUTES => {
+                usage.primary = Some(full(minutes));
+            }
+            Some(minutes) => usage.secondary = Some(full(minutes)),
+            None => {}
+        }
+        self.record_account_usage(account, &usage).await;
+    }
+
     /// Switches a task whose turn a usage limit cut (SPEC-034): the session resumes on `account`
     /// (the policy's choice when `None`) past the limit, with nothing typed or sent.
     ///
@@ -2959,37 +2994,12 @@ impl App {
                 resets_at,
                 message,
                 window_minutes,
+                ..
             } => {
                 tracing::info!(task = %task_id, %message, "usage limit reached");
                 runtime.end_turn(self.now());
                 if let Some(account) = &attempt.account_id {
-                    let mut usage = match self.deps.store.account(account).await {
-                        Ok(Some(a)) => a
-                            .usage_json
-                            .as_deref()
-                            .map(usage_json::from_json)
-                            .unwrap_or_default(),
-                        _ => AccountUsage::default(),
-                    };
-                    usage.limit_reached = true;
-                    usage.limit_resets_at = resets_at;
-                    usage.observed_at = Some(self.now());
-                    // What the CLI was told is the account's state (ROT-009): the limited window
-                    // full until its reset, even when the provider's usage request does not
-                    // answer.
-                    let full = |minutes: u32| UsageWindow {
-                        used_percent: Some(100.0),
-                        window_minutes: Some(minutes),
-                        resets_at,
-                    };
-                    match window_minutes {
-                        Some(minutes) if minutes <= SESSION_WINDOW_MINUTES => {
-                            usage.primary = Some(full(minutes));
-                        }
-                        Some(minutes) => usage.secondary = Some(full(minutes)),
-                        None => {}
-                    }
-                    self.record_account_usage(account, &usage).await;
+                    self.record_limit(account, resets_at, window_minutes).await;
                 }
                 runtime
                     .limit_resets_at
