@@ -145,3 +145,69 @@ test('a Shell that took the keyboard keeps it when the task terminal asked earli
   await expect.poll(() => browser.evaluate(() => document.querySelector('.taskview .term-pending') === null)).toBe(true);
   await expect(shellInput).toBeFocused();
 });
+
+type Touching = { __yuliusMock: { touchTask: (sid: string, n: number, c: object) => void; detailReads?: Record<string, number>; holdDetail?: Promise<void> | null }; __releaseDetail?: () => void };
+const touchProduct7 = (browser: Browser, changes: object) => browser.evaluate((c) => (window as unknown as Touching).__yuliusMock.touchTask('sb_product', 7, c), changes);
+
+test('an older detail read that lands last does not bring back an older status (#316)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/product/t/7'));
+  const card = screen.getByRole('region', 'Queued messages');
+  await expect(card).toBeVisible();
+  const reads = () => browser.evaluate(() => (window as unknown as Touching).__yuliusMock.detailReads?.tsk_product_7 ?? 0);
+  // The next detail read answers what the server had when it was asked, once released.
+  await browser.evaluate(() => {
+    const w = window as unknown as Touching;
+    w.__yuliusMock.holdDetail = new Promise<void>((resolve) => { w.__releaseDetail = resolve; });
+  });
+  let before = await reads();
+  await touchProduct7(browser, { status: 'starting', started: false });
+  await expect.poll(reads).toBeGreaterThan(before);
+  before = await reads();
+  await touchProduct7(browser, { status: 'running', started: true });
+  await expect.poll(reads).toBeGreaterThan(before);
+  const strip = screen.getByRole('status').filter({ hasText: /Working|Running|Starting/ }).first();
+  await expect(strip).not.toContainText('Starting');
+  // The held read (taken while the task was starting) lands last: it is ignored.
+  await browser.evaluate(() => (window as unknown as Touching).__releaseDetail?.());
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __yuliusMock: { heldDetailAnswered?: boolean } }).__yuliusMock.heldDetailAnswered === true)).toBe(true);
+  await browser.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0))));
+  await expect(strip).not.toContainText('Starting');
+  await expect(card).toBeHidden();
+});
+
+test('text typed into the queue box stays, with Queue off, when the task starts (#324)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/product/t/7'));
+  const card = screen.getByRole('region', 'Queued messages');
+  const box = card.getByRole('textbox', 'Message for the agent');
+  await box.click();
+  await browser.keyboard.type('Only for paid invoices.');
+  await touchProduct7(browser, { status: 'starting', started: false });
+  await expect(card).toContainText('The task has started');
+  await expect(box).toBeVisible();
+  await expect(box).toHaveValue('Only for paid invoices.');
+  await expect(card.getByRole('button', 'Queue')).toBeDisabled();
+  // Once dismissed, the card goes like any started task's.
+  await card.getByRole('button', 'Dismiss').click();
+  await expect(card).toBeHidden();
+});
+
+test('a refusal stays in place with its text when the task starts (#324)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/product/t/7'));
+  const card = screen.getByRole('region', 'Queued messages');
+  await expect(card).toBeVisible();
+  await browser.evaluate(() => {
+    const task = (window as unknown as MockTasks).__yuliusMock.tasks.find((t) => t.id === 'tsk_product_7');
+    if (task) task.started = true;
+  });
+  const box = card.getByRole('textbox', 'Message for the agent');
+  await box.click();
+  await browser.keyboard.type('Send them in Polish too.');
+  await card.getByRole('button', 'Queue').click();
+  await expect(card.getByRole('alert')).toContainText('type into its session instead');
+  // The server says so a moment later; the reason and the text stay visible.
+  await touchProduct7(browser, { status: 'running', started: true });
+  await expect(card).toContainText('The task has started');
+  await expect(card.getByRole('alert')).toContainText('type into its session instead');
+  await expect(box).toHaveValue('Send them in Polish too.');
+  await expect(card.getByRole('button', 'Queue')).toBeDisabled();
+});
