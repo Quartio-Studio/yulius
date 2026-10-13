@@ -32,6 +32,9 @@ pub enum Observed {
     UserTurn {
         /// When the prompt was recorded (the record's `timestamp`), if parseable.
         at: Option<Timestamp>,
+        /// Claude Code woke the session itself (a `<task-notification>` prompt: background work
+        /// ended or reported), no person or Yulius typed it.
+        wake: bool,
     },
     /// The person stopped the agent's turn (Esc, or Ctrl+C while it works): Claude Code records
     /// a user line "[Request interrupted by user]" (or "… for tool use") and waits for input.
@@ -90,6 +93,25 @@ pub enum Observed {
     AgentWork {
         /// When it was recorded, if parseable.
         at: Option<Timestamp>,
+    },
+    /// The session started background work it is woken by (SPEC-079 BGW-002): a Monitor stream
+    /// (its tool result's `toolUseResult` is `{taskId, timeoutMs, …}`) or a background agent
+    /// (`{status: "async_launched", agentId, …}`).
+    BackgroundStarted {
+        /// Claude Code's task id, which the `<task-notification>` that ends it names.
+        id: String,
+        /// A background agent; otherwise a Monitor stream.
+        agent: bool,
+        /// How long a Monitor lives at most (`timeoutMs`, capped); `None` for an agent.
+        expires_in_ms: Option<u64>,
+        /// When it was recorded, if parseable.
+        at: Option<Timestamp>,
+    },
+    /// A `<task-notification>` said the background work `id` ended: it carries a `<status>`, or
+    /// it is a Monitor's expiry event.
+    BackgroundEnded {
+        /// Claude Code's task id.
+        id: String,
     },
     /// The API rejected the session's prompt as too long: its context is full, and every later
     /// prompt gets the same answer until it is compacted (#213). No Stop hook ends such a turn.

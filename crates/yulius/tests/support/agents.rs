@@ -33,6 +33,14 @@ pub struct FakeAgentOptions {
     /// The goal turn ends with a background agent pending that finishes after this many seconds
     /// and wakes the session (`--goal-agent`).
     pub goal_agent: Option<u64>,
+    /// The goal turn starts a Monitor stream that expires after this many seconds and never
+    /// reports (`--goal-monitor`), or ends after half of them (`goal_monitor_ends`).
+    pub goal_monitor: Option<u64>,
+    /// See `goal_monitor` (`--goal-monitor-ends`).
+    pub goal_monitor_ends: bool,
+    /// The goal evaluator's last verdict: `met` (default), `failed` or `none`
+    /// (`--goal-verdict`).
+    pub goal_verdict: Option<&'static str>,
     /// After the goal turn's stop the agent works on for this many milliseconds with no new prompt
     /// (`--goal-continue-ms`): with `goal_continue_verdict` the goal evaluator says "not met"
     /// (`--goal-continue-verdict`), otherwise another Stop hook continued the turn.
@@ -157,6 +165,15 @@ impl HarnessPort for FakeAgentHarness {
         }
         if let Some(seconds) = self.options.goal_agent {
             argv.extend(["--goal-agent".into(), seconds.to_string()]);
+        }
+        if let Some(seconds) = self.options.goal_monitor {
+            argv.extend(["--goal-monitor".into(), seconds.to_string()]);
+        }
+        if self.options.goal_monitor_ends {
+            argv.push("--goal-monitor-ends".into());
+        }
+        if let Some(verdict) = self.options.goal_verdict {
+            argv.extend(["--goal-verdict".into(), verdict.into()]);
         }
         if let Some(ms) = self.options.goal_continue_ms {
             argv.extend(["--goal-continue-ms".into(), ms.to_string()]);

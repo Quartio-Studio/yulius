@@ -148,6 +148,18 @@ pub struct TaskRuntime {
     /// The task was made Working again by the goal verdict or by work after a stop, not by a
     /// prompt: when the turn closes without any Stop hook (an error ended it) it is idle again.
     pub(crate) resumed_turn: AtomicBool,
+    /// Background work the transcript says the session started and no notification ended yet:
+    /// Monitor streams and background agents by Claude Code's task id (SPEC-079 BGW-002).
+    pub(crate) launches: Mutex<std::collections::BTreeMap<String, crate::finish::Launch>>,
+    /// Claude Code recorded a goal that is active and not achieved (set, or "not met"): its
+    /// evaluator gives a verdict after each Stop (SPEC-079 BGW-005).
+    pub(crate) goal_open: AtomicBool,
+    /// The clean Stop (ms) whose turn waits for the goal verdict before it reads idle (0 = none).
+    /// Whoever takes it settles that turn (SPEC-079 BGW-005).
+    pub(crate) verdict_stop_ms: crate::finish::VerdictSlot,
+    /// Polls of the transcript watcher so far: the Stop hook waits for one more before it decides
+    /// a switch, so the lines written before the Stop are read (SPEC-079 BGW-004).
+    pub(crate) watch_polls: AtomicU64,
     /// The run was reattached after a restart: the transcript it already wrote is history.
     pub(crate) replay_transcript: AtomicBool,
     /// Why Claude Code said the current session ends (`SessionEnd` hook), until the run exits.
@@ -231,6 +243,10 @@ impl TaskRuntime {
             notice_attention_ms: AtomicI64::new(0),
             turn_record_ms: AtomicI64::new(0),
             resumed_turn: AtomicBool::new(false),
+            launches: Mutex::new(std::collections::BTreeMap::new()),
+            goal_open: AtomicBool::new(false),
+            verdict_stop_ms: crate::finish::VerdictSlot::default(),
+            watch_polls: AtomicU64::new(0),
             replay_transcript: AtomicBool::new(false),
             session_end: Mutex::new(None),
             hold_polled_ms: AtomicI64::new(0),
@@ -2914,6 +2930,12 @@ impl App {
         runtime.notice_attention_ms.store(0, Ordering::SeqCst);
         runtime.turn_record_ms.store(0, Ordering::SeqCst);
         runtime.resumed_turn.store(false, Ordering::SeqCst);
+        // A new session runs none of the old one's monitors or agents.
+        if let Ok(mut launches) = runtime.launches.lock() {
+            launches.clear();
+        }
+        runtime.goal_open.store(false, Ordering::SeqCst);
+        runtime.verdict_stop_ms.clear();
         if let Ok(mut end) = runtime.session_end.lock() {
             *end = None;
         }
@@ -2973,6 +2995,11 @@ impl App {
             if !current() {
                 break;
             }
+            // A round begins: once the next one begins, every line written before this one was
+            // read and applied (a Stop hook deciding a switch waits for that, BGW-004).
+            self.runtime(&task_id)
+                .watch_polls
+                .fetch_add(1, Ordering::SeqCst);
             let now = self.now();
             // Claude session-id drift (/clear, /resume inside the TUI): adopt into the lineage.
             if attempt.harness == Harness::ClaudeCode && now.millis_since(last_drift_check) > 5_000
@@ -3113,9 +3140,12 @@ impl App {
                 let account = attempt.account_id.clone();
                 tokio::spawn(async move { app.rotate(&tid, account, Trigger::LimitReached).await });
             }
-            Observation::UserTurn { at } => {
-                // A new prompt: an achieved goal no longer makes the task done (TSK-014).
-                runtime.goal_achieved.store(false, Ordering::SeqCst);
+            Observation::UserTurn { at, wake } => {
+                // A new prompt: an achieved goal no longer makes the task done (TSK-014). Claude
+                // Code's own wake-ups (background work ended) keep it, as the prompt hook does.
+                if !wake {
+                    runtime.goal_achieved.store(false, Ordering::SeqCst);
+                }
                 // A prompt of a turn whose clean Stop already came is not a new turn.
                 if at.is_some_and(|at| at.0 <= runtime.last_stop_ms.load(Ordering::SeqCst)) {
                     return;
@@ -3128,6 +3158,8 @@ impl App {
                 runtime.background_agents.store(0, Ordering::SeqCst);
                 runtime.notice_attention_ms.store(0, Ordering::SeqCst);
                 runtime.resumed_turn.store(false, Ordering::SeqCst);
+                // A new turn: the one that waited for its verdict goes on (BGW-005).
+                runtime.verdict_stop_ms.clear();
                 runtime.start_turn(self.now());
                 let _ = self
                     .deps
@@ -3175,6 +3207,16 @@ impl App {
             Observation::ContextFull => self.context_full_observed(task_id, attempt).await,
             Observation::Compacted => self.compacted_observed(task_id).await,
             Observation::CompactFailed => self.compact_failed_observed(task_id, attempt).await,
+            Observation::BackgroundStarted {
+                id,
+                agent,
+                expires_in_ms,
+                at,
+            } => {
+                self.background_started(task_id, id, agent, expires_in_ms, at)
+                    .await;
+            }
+            Observation::BackgroundEnded { id } => self.background_ended(task_id, &id).await,
             Observation::Session { .. } => {}
         }
     }

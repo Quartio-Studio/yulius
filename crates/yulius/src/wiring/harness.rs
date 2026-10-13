@@ -305,7 +305,9 @@ impl TranscriptWatch for Watch {
                     Observed::SessionMeta {
                         session_id, cwd, ..
                     } => out.push(Observation::Session { session_id, cwd }),
-                    Observed::UserTurn { at } => out.push(Observation::UserTurn { at }),
+                    Observed::UserTurn { at, wake } => {
+                        out.push(Observation::UserTurn { at, wake });
+                    }
                     Observed::TurnInterrupted { at } => {
                         out.push(Observation::TurnInterrupted { at });
                     }
@@ -317,6 +319,20 @@ impl TranscriptWatch for Watch {
                         out.push(Observation::TurnEnded { background_agents });
                     }
                     Observed::AgentWork { at } => out.push(Observation::AgentWork { at }),
+                    Observed::BackgroundStarted {
+                        id,
+                        agent,
+                        expires_in_ms,
+                        at,
+                    } => out.push(Observation::BackgroundStarted {
+                        id,
+                        agent,
+                        expires_in_ms,
+                        at,
+                    }),
+                    Observed::BackgroundEnded { id } => {
+                        out.push(Observation::BackgroundEnded { id });
+                    }
                     Observed::ContextFull => out.push(Observation::ContextFull),
                     Observed::Compacted => out.push(Observation::Compacted),
                     Observed::CompactFailed => out.push(Observation::CompactFailed),
