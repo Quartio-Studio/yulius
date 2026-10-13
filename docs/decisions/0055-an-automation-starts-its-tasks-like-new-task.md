@@ -23,10 +23,15 @@ chain's predecessor ends once, and New task's chain refuses a predecessor that h
   numbers belong to the project) and answer 422 otherwise. Each run checks it again, because
   tasks are deleted and chain bounds fill between runs; a failure ends the run `failed` with the
   reason.
+- An update that sends the stored choice back unchanged keeps it without checking it again, so
+  an automation whose task was deleted since can still be paused or renamed; a new choice is
+  checked.
 - A run creates its task through `create_task_ruled` with that choice. **After a task that has
-  ended** becomes the rule `#N done`: it is true at once when #N was done and can never be true
-  when #N ended otherwise, so the task then waits for a person, as any rule that can no longer be
-  true does.
+  ended** becomes the rule `#N done`, with Done as the rule language defines it (TSK-014: for a
+  closed task, a complete plan and its pull request merged, or open and green). For such a
+  predecessor the rule is true, and the task starts at once. Otherwise it can never be true: a
+  task that ended some other way, or a goal reached without a pull request and then closed.
+  The task then waits for a person, as any rule that can no longer be true does.
 - The previous-active skip is kept: a task waiting `chained` or `queued` is active, so a waiting
   task never piles up behind another one.
 - Agents set it with `automation_create` / `automation_update` (`after_task` as a number,
@@ -51,3 +56,9 @@ chain's predecessor ends once, and New task's chain refuses a predecessor that h
   Automations page's switch does.
 - A rule written by an agent that the editor cannot show (parentheses, mixed and/or) is kept as
   it is. Opening it in the builder starts the rule editor empty, and saving replaces it.
+- Known limits:
+  - A rule names tasks by number. Deleting the newest task frees its number, and a stored rule
+    then names the next task created with it. New task's creation-time guard does not apply,
+    because the run's task is newer.
+  - A predecessor that ends between a run's read and the chain's own check fails that one run
+    with "#N has ended". The next run takes the rule path.

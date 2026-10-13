@@ -13,9 +13,11 @@ use support::{
     seed_live_attempt, seed_task, tool_text, user_with_token,
 };
 use yulius_app::automations::run_key;
+use yulius_app::delivery::DeliveryRecord;
 use yulius_app::model::TaskRecord;
 use yulius_app::ports::store::TaskStore;
-use yulius_app::ports::store_ext::{AutomationStore, IntakeStore};
+use yulius_app::ports::store_ext::{AutomationStore, DeliveryStore, IntakeStore};
+use yulius_domain::delivery::DeliveryStage;
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::task::TaskStatus;
 use yulius_domain::time::Timestamp;
@@ -158,6 +160,15 @@ async fn an_automation_stores_its_start_choice() -> TestResult {
     );
 
     // Invalid choices: 422, nothing created or changed.
+    let r = send(
+        &h,
+        &alice,
+        Method::PUT,
+        &path,
+        nightly(&json!({"after_task_id": "t-one"})),
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
     let count = |v: &Value| v.as_array().map_or(0, Vec::len);
     let before = count(
         &call(&h.router, Method::GET, CREATE, None, &alice)
@@ -199,8 +210,134 @@ async fn an_automation_stores_its_start_choice() -> TestResult {
     );
     assert_eq!(
         choice(&stored(&h, &alice, &ruled).await?),
-        (json!(false), Value::Null, Value::Null, Value::Null)
+        (json!(false), json!("t-one"), json!(1), Value::Null)
     );
+    Ok(())
+}
+
+/// A stored choice whose task was deleted since does not block other changes: pausing the
+/// automation (the list's switch sends the choice back) or renaming it still saves.
+#[tokio::test]
+async fn a_stored_choice_naming_a_deleted_task_still_saves() -> TestResult {
+    let (h, alice) = world().await?;
+    let gone = seed_task(&h, "t-gone", "s1", "u-alice", TaskStatus::Running, None).await?;
+    let after = create(&h, &alice, &json!({"after_task_id": "t-gone"})).await?;
+    let ruled = create(
+        &h,
+        &alice,
+        &json!({"start_rule": format!("#{} done", gone.number)}),
+    )
+    .await?;
+    assert!(h.store.delete_task(&gone.id).await?);
+
+    let mut body = nightly(&json!({"after_task_id": "t-gone", "enabled": false}));
+    let r = send(
+        &h,
+        &alice,
+        Method::PUT,
+        &format!("/api/automations/{after}"),
+        body.clone(),
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["enabled"], json!(false));
+    assert_eq!(r.body["after_task_id"], json!("t-gone"));
+
+    body = nightly(&json!({"start_rule": format!("#{} done", gone.number), "name": "Renamed"}));
+    let r = send(
+        &h,
+        &alice,
+        Method::PUT,
+        &format!("/api/automations/{ruled}"),
+        body,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["name"], json!("Renamed"));
+
+    // A new choice is still checked.
+    let r = send(
+        &h,
+        &alice,
+        Method::PUT,
+        &format!("/api/automations/{ruled}"),
+        nightly(&json!({"after_task_id": "t-gone"})),
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", r.body);
+    Ok(())
+}
+
+/// Marks a task Done by the sidebar's rule: closed with its pull request merged.
+async fn merged_and_closed(h: &Harness, id: &str, at: i64) -> Result<(), Error> {
+    let id = TaskId::parse(id)?;
+    h.store
+        .transition_delivery(
+            &DeliveryStage::None,
+            &DeliveryRecord {
+                task_id: id.clone(),
+                stage: DeliveryStage::MergedIntegration,
+                pr_number: Some(7),
+                updated_at: Timestamp(at),
+            },
+        )
+        .await?;
+    h.store
+        .transition_task(&id, None, TaskStatus::Closed, None, Timestamp(at))
+        .await?;
+    Ok(())
+}
+
+/// AC-AUT-15: after a task that was Done and has ended, a run's task starts at once (the rule
+/// `#N done` is true); a rule already true releases the task at once; a full chain bound fails
+/// the run with the reason.
+#[tokio::test]
+async fn a_finished_predecessor_or_a_true_rule_starts_the_task_at_once() -> TestResult {
+    let (h, alice) = world().await?;
+    h.clock.0.store(BASE, Ordering::SeqCst);
+    let after = create(&h, &alice, &json!({"after_task_id": "t-one"})).await?;
+    let ruled = create(&h, &alice, &json!({"start_rule": "#1 merged"})).await?;
+    merged_and_closed(&h, "t-one", BASE + HOUR).await?;
+    h.clock.0.store(BASE + 2 * HOUR, Ordering::SeqCst);
+
+    for automation in [&after, &ruled] {
+        let run = run_now(&h, &alice, automation).await?;
+        assert_eq!(run["state"], "task_created", "{run}");
+        let task = h
+            .store
+            .task(&TaskId::parse(run["task_id"].as_str().ok_or("task")?)?)
+            .await?
+            .ok_or("task")?;
+        assert_eq!(
+            task.status,
+            TaskStatus::Queued,
+            "released at once: {automation}"
+        );
+    }
+
+    // A full chain bound: the run fails and says why, and creates no task.
+    for i in 0..32 {
+        seed_task(
+            &h,
+            &format!("t-wait-{i}"),
+            "s1",
+            "u-alice",
+            TaskStatus::Chained,
+            None,
+        )
+        .await?;
+    }
+    let bound = create(&h, &alice, &json!({"start_rule": "#1 done"})).await?;
+    let run = run_now(&h, &alice, &bound).await?;
+    assert_eq!(run["state"], "failed", "{run}");
+    assert!(
+        run["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("waiting in chains"),
+        "{run}"
+    );
+    assert_eq!(run["task_id"], Value::Null);
     Ok(())
 }
 
@@ -309,6 +446,10 @@ async fn each_run_starts_its_task_with_the_start_choice() -> TestResult {
     assert_eq!(task.status, TaskStatus::Chained);
     let chain = h.store.chain(&task.id).await?.ok_or("chain")?;
     assert_eq!(chain.rule.as_deref(), Some("#1 done"));
+    assert!(
+        chain.blocked_reason.is_some(),
+        "it waits for a person: {chain:?}"
+    );
 
     // A task to run after that was deleted since: the run fails and says why.
     let gone = seed_task(&h, "t-gone", "s1", "u-alice", TaskStatus::Running, None).await?;

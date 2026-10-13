@@ -1680,7 +1680,17 @@ function automationStart(db, sandbox, body) {
   if (after && rule) fail(422, 'invalid', 'give a task to run after or a start rule, not both');
   const task = after ? db.tasks.find((t) => t.id === after && t.sandbox_id === sandbox) : null;
   if (after && !task) fail(422, 'invalid', 'the task to run after does not exist');
-  return { supertask: Boolean(body.supertask), after_task_id: after, after_task_number: task ? task.number : null, start_rule: rule };
+  // The server parses the full rule language; the mock knows the editor's sentences.
+  let canonical = null;
+  if (rule) {
+    const words = rule.toLowerCase().replace(/\s+/g, ' ');
+    if (!/^#\d+ (done|merged|ended)( (and|or) #\d+ (done|merged|ended))*$/.test(words)) fail(422, 'invalid', `the rule cannot be read: ${rule}`);
+    for (const [, n] of words.matchAll(/#(\d+)/g)) {
+      if (!db.tasks.some((t) => t.sandbox_id === sandbox && t.number === Number(n))) fail(422, 'invalid', `the rule names #${n}, which does not exist in this project`);
+    }
+    canonical = words;
+  }
+  return { supertask: Boolean(body.supertask), after_task_id: after, after_task_number: task ? task.number : null, start_rule: canonical };
 }
 route('GET', `/api/sandboxes/${ID}/automations`, ({ db, p }) => db.automations.filter((a) => a.sandbox === p[0]).map(({ sandbox: _s, ...a }) => a));
 route('POST', `/api/sandboxes/${ID}/automations`, ({ db, p, body }) => {
@@ -1705,7 +1715,7 @@ route('POST', `/api/automations/${ID}/run`, ({ db, p }) => {
   const a = db.automations.find((x) => x.id === p[0]);
   if (!a) fail(404, 'not_found', 'not found');
   const previous = a.last_run && a.last_run.task_id ? db.tasks.find((t) => t.id === a.last_run.task_id) : null;
-  const run = previous && LIVE.has(previous.status)
+  const run = previous && (LIVE.has(previous.status) || previous.status === 'chained')
     ? { scheduled_for: new Date().toISOString(), state: 'skipped_previous_active', task_id: null, error: null }
     : { scheduled_for: new Date().toISOString(), state: 'task_created', task_id: 'tsk_studio_8', error: null };
   a.last_run = run;

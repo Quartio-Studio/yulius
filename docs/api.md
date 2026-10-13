@@ -634,7 +634,8 @@ waiting `chained` or `queued`) is recorded as `skipped_previous_active`. `supert
 `after_task_id` and `start_rule` say how each created task starts, as in `CreateTask` (SPEC-078):
 none of them, it starts now (queued); at most one is given (else 422), the task to run after is a
 task of the sandbox and the rule names only its task numbers (422 otherwise; the rule is stored
-canonically). A PUT replaces them like the other fields. A run after a task that has ended waits
+canonically). A PUT replaces them like the other fields; the stored choice sent back unchanged is
+kept without that check (its task may have been deleted since). A run after a task that has ended waits
 for the rule `#N done` instead; a run whose task to run after was deleted is `failed`.
 `after_task_number` is read-only. The ready-made automations are one file each in
 `catalog/automations/` of the running release; `automation_id` is the sandbox's automation with

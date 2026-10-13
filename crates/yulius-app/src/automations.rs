@@ -364,6 +364,20 @@ enum StartInput {
     Rule(Rule),
 }
 
+impl StartInput {
+    /// Whether this is the stored choice `start`, sent back unchanged.
+    fn matches(&self, start: &AutomationStart) -> bool {
+        match (self, start) {
+            (Self::Now, AutomationStart::Now) | (Self::Supertask, AutomationStart::Supertask) => {
+                true
+            }
+            (Self::After(id), AutomationStart::After(stored)) => id == stored.as_str(),
+            (Self::Rule(rule), AutomationStart::Rule(stored)) => &rule.to_string() == stored,
+            _ => false,
+        }
+    }
+}
+
 fn str_arg<'a>(args: &'a Value, key: &str) -> AppResult<&'a str> {
     args.get(key)
         .and_then(Value::as_str)
@@ -755,9 +769,14 @@ impl App {
         let workflow_id = self
             .resolve_workflow_id(&current.sandbox_id, input.workflow_id.as_deref())
             .await?;
-        let start = self
-            .resolve_start(&current.sandbox_id, input_start(input)?)
-            .await?;
+        // The stored choice sent back unchanged is kept as it is: its task may have been deleted
+        // since, and pausing or renaming the automation must still save (runs check it).
+        let given = input_start(input)?;
+        let start = if given.matches(&current.start) {
+            current.start.clone()
+        } else {
+            self.resolve_start(&current.sandbox_id, given).await?
+        };
         let next = AutomationRecord {
             name: fields.name,
             cron: fields.cron,
@@ -1302,23 +1321,13 @@ impl App {
         };
         let after = match after {
             None => None,
-            Some(number) => {
-                let number = number
-                    .as_u64()
-                    .and_then(|n| u32::try_from(n).ok())
-                    .ok_or_else(|| {
-                        AppError::Invalid("`after_task` must be a task number".into())
-                    })?;
-                let task = self
-                    .deps
-                    .store
-                    .task_by_number(&caller.sandbox, number)
+            Some(number) => Some(
+                self.after_task_arg(caller, number)
                     .await?
-                    .ok_or_else(|| {
-                        AppError::Invalid(format!("task #{number} does not exist in this project"))
-                    })?;
-                Some(task.id.as_str().to_owned())
-            }
+                    .id
+                    .as_str()
+                    .to_owned(),
+            ),
         };
         let input = start_input(supertask, after.as_deref(), rule)?;
         Ok(Some(self.resolve_start(&caller.sandbox, input).await?))
@@ -1499,6 +1508,37 @@ mod tests {
         assert!(validate_prompt(&"x".repeat(MAX_PROMPT_BYTES + 1)).is_err());
         assert!(validate_name("").is_err());
         assert!(validate_harness("gpt").is_err());
+    }
+
+    #[test]
+    fn a_start_choice_is_one_of_four() {
+        let now = start_input(false, None, Some("  ")).ok();
+        assert!(matches!(now, Some(StartInput::Now)));
+        assert!(matches!(
+            start_input(true, Some(""), None).ok(),
+            Some(StartInput::Supertask)
+        ));
+        assert!(matches!(
+            start_input(false, Some(" t-1 "), None).ok(),
+            Some(StartInput::After(id)) if id == "t-1"
+        ));
+        assert!(matches!(
+            start_input(false, None, Some("#2  DONE")).ok(),
+            Some(StartInput::Rule(rule)) if rule.to_string() == "#2 done"
+        ));
+        for (supertask, after, rule) in [
+            (true, Some("t-1"), None),
+            (true, None, Some("#2 done")),
+            (false, Some("t-1"), Some("#2 done")),
+            (false, None, Some("#2 done and")),
+        ] {
+            assert!(start_input(supertask, after, rule).is_err());
+        }
+        // The stored choice sent back unchanged.
+        let stored = AutomationStart::Rule("#2 done".into());
+        assert!(start_input(false, None, Some("#2 DONE")).is_ok_and(|i| i.matches(&stored)));
+        assert!(start_input(false, None, Some("#3 done")).is_ok_and(|i| !i.matches(&stored)));
+        assert!(start_input(false, None, None).is_ok_and(|i| !i.matches(&stored)));
     }
 
     #[test]

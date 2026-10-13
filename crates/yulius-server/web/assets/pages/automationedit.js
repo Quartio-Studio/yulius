@@ -217,18 +217,30 @@ export function mountAutomationEditor(ctx, sandbox, id) {
 
   // ---- what
   function whatSection() {
+    renderStart(true);
     const prompt = h('textarea', { class: 'textarea au-prompt', rows: 4, value: state.prompt, readOnly: !write, placeholder: 'What the task should do each time, e.g. “Implement yesterday’s customer feedback from the Quartio MCP.”', 'aria-label': 'What the task does', onInput: (e) => { state.prompt = e.target.value; changed(); } });
     const pick = (value, label) => chip(label, (state.workflow_id || null) === value, () => { state.workflow_id = value; render(); }, { role: 'radio', 'aria-checked': String((state.workflow_id || null) === value), 'aria-pressed': null });
     return section('The task', null, h('div', { class: 'stack-sm' }, prompt,
       h('div', { class: 'au-row' }, h('span', { class: 'wf-label' }, 'Workflow'),
         h('div', { class: 'wf-chips', role: 'radiogroup', 'aria-label': 'Workflow' }, pick(null, 'None'), workflows.map((w) => pick(w.id, w.name)))),
-      startRow()));
+      startHost));
   }
 
   // ---- how each task starts (SPEC-078): New task's start choices
+  // Its own host: it follows the project's task list (loaded late on a deep link) without
+  // re-rendering the prompt being typed.
+  const startHost = h('div');
+  let startKey = '';
   function setStart(next) {
     Object.assign(state, { supertask: false, after_task_id: null, after_task_number: null, start_rule: null }, next);
-    render();
+    renderStart(true);
+    changed();
+  }
+  function renderStart(force) {
+    const row = startRow();
+    if (!force && row.key === startKey) return;
+    startKey = row.key;
+    setChildren(startHost, row.el);
   }
   function startRow() {
     const tasks = ctx.store.tasksOf(sandbox.id) || [];
@@ -242,26 +254,28 @@ export function mountAutomationEditor(ctx, sandbox, id) {
     const help = {
       now: 'Each task starts as soon as a session slot is free.',
       supertask: 'Each task waits for this project’s running tasks, then runs alone: the project’s other tasks wait for it.',
-      after: `Each task starts when #${number || '?'} is done; once #${number || '?'} has ended, at once if it was done.`,
+      after: `Each task starts when #${number || '?'} is done. Once #${number || '?'} has ended, each task starts at once if it was done, or else waits for you to start or cancel it.`,
       rule: `Each task starts by itself when ${rule}.`,
     }[kind];
-    return h('div', { class: 'au-row' }, h('span', { class: 'wf-label' }, 'Start'),
+    const key = JSON.stringify([kind, number, rule, canRule, write]);
+    return { key, el: h('div', { class: 'au-row' }, h('span', { class: 'wf-label' }, 'Start'),
       h('div', { class: 'wf-chips', role: 'radiogroup', 'aria-label': 'Start' },
         radio(kind === 'now', 'Start now', () => setStart({})),
         radio(kind === 'supertask', 'Supertask', () => setStart({ supertask: true })),
         radio(kind === 'after', kind === 'after' ? `After #${number || '?'}` : 'After a task…', (event) => openAfterMenu(event.currentTarget)),
         radio(kind === 'rule', kind === 'rule' ? `When ${ruleLabel}` : 'When a rule is true…', openRuleDialog, { title: rule || (canRule ? null : 'This project has no task a rule could name yet'), disabled: !write || (!canRule && kind !== 'rule') })),
-      h('span', { class: 'muted xs' }, help));
+      h('span', { class: 'muted xs' }, help)) };
   }
   function openAfterMenu(anchor) {
     const candidates = chainCandidates(ctx, sandbox);
-    if (!candidates.length) { live.textContent = 'No task of this project is running or waiting'; toast('No task of this project is running or waiting to run after.', { kind: 'info' }); return; }
+    if (!candidates.length) { toast('No task of this project is running or waiting to run after.', { kind: 'info' }); return; }
     openMenu(anchor, [
       { header: 'After a task is done' },
       ...candidates.map((t) => ({ label: `#${t.number} ${t.title}`, checked: t.id === state.after_task_id, onSelect: () => setStart({ after_task_id: t.id, after_task_number: t.number }) })),
     ]);
   }
   function openRuleDialog() {
+    if (!ruleChoices(ctx.store.tasksOf(sandbox.id)).length) { toast('This project has no task a rule could name yet.', { kind: 'info' }); return; }
     openRuleEditor({ tasks: ctx.store.tasksOf(sandbox.id), value: ruleFromText(state.start_rule), onUse: (rule) => setStart({ start_rule: ruleText(rule) }) });
   }
 
@@ -372,6 +386,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
     if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 's') { event.preventDefault(); doSave(); }
   });
   const offRuns = creating ? () => {} : ctx.store.on('automation-run', (event) => { if (!event || event.automation_id === id) loadRuns(); });
+  const offTasks = ctx.store.on('tasks', (sid) => { if (sid === sandbox.id && startHost.isConnected) renderStart(false); });
 
   async function load() {
     try {
@@ -399,6 +414,6 @@ export function mountAutomationEditor(ctx, sandbox, id) {
 
   return {
     el,
-    destroy() { alive = false; offRuns(); window.removeEventListener('beforeunload', onBeforeUnload); document.removeEventListener('click', onLink, true); },
+    destroy() { alive = false; offRuns(); offTasks(); window.removeEventListener('beforeunload', onBeforeUnload); document.removeEventListener('click', onLink, true); },
   };
 }
