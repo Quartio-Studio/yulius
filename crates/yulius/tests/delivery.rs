@@ -2867,7 +2867,9 @@ async fn an_armed_merge_happens_when_the_checks_pass() -> TestResult {
 /// What `yulius wait` decides from a wait state the server answered.
 fn settled(now: &Value, before: Option<&Value>) -> BoxResult<Option<String>> {
     let now: WaitState = serde_json::from_value(now.clone())?;
-    let before: Option<WaitState> = before.map(|b| serde_json::from_value(b.clone())).transpose()?;
+    let before: Option<WaitState> = before
+        .map(|b| serde_json::from_value(b.clone()))
+        .transpose()?;
     Ok(yulius::wait_cli::settled(&now, before.as_ref()))
 }
 
@@ -2947,6 +2949,86 @@ async fn a_merge_armed_while_an_earlier_one_is_decided_supersedes_it() -> TestRe
             .join(yulius_app::agent_wait::ARMED_MERGES_FILE),
     )?;
     assert!(saved.contains(&moved), "the new head stays saved: {saved}");
+    Ok(())
+}
+
+/// #251 (SPEC-064 WAI-004, SPEC-020): `reconcile_deliveries` queues an errored Yulius CI run at
+/// an open pull request's head again once by itself (it could not run: not the code), never a
+/// third time, and never for a pull request that conflicts with its base.
+#[tokio::test]
+async fn an_errored_run_at_an_open_pull_request_is_retried_once() -> TestResult {
+    use yulius_app::ci::CiRunRecord;
+    use yulius_app::ports::store_ext::CiStore;
+    use yulius_domain::ci::{CiRef, GateSource, RunState};
+
+    let t = ArmedTask::new().await?;
+    let f = &t.f;
+    let sandbox = SandboxId::parse("s1")?;
+    // The project has Yulius CI (the profile's gate), so its run at the head decides the checks.
+    let record = f.h.store.sandbox(&sandbox).await?.ok_or("s1")?;
+    let mut profile: Value = serde_json::from_str(&record.profile_json)?;
+    profile["gate"] = json!("true");
+    f.h.store
+        .set_profile(&sandbox, &profile.to_string())
+        .await?;
+    let errored = |id: &str, at: i64| CiRunRecord {
+        id: id.to_owned(),
+        sandbox_id: sandbox.clone(),
+        reference: CiRef::PullRequest(1),
+        sha: t.head.clone(),
+        source: GateSource::Profile,
+        state: RunState::Error,
+        reason: Some("the job could not start".to_owned()),
+        requested_by: "yulius".to_owned(),
+        status_for: None,
+        status_note: None,
+        status_attempts: 0,
+        queued_at: Timestamp(at),
+        started_at: Some(Timestamp(at)),
+        ended_at: Some(Timestamp(at + 1)),
+    };
+    let runs = || f.h.store.ci_runs_for_sha(&sandbox, &t.head);
+
+    // A conflicting pull request is not retried: the agent has to merge its base in first.
+    f.h.store.insert_ci_run(&errored("run-1", 10), &[]).await?;
+    let set_mergeable = |mergeable: Option<bool>| {
+        if let Ok(mut pulls) = f.h.github.pulls.lock()
+            && let Some(pull) = pulls.iter_mut().find(|p| p.number == 1)
+        {
+            pull.mergeable = mergeable;
+        }
+    };
+    set_mergeable(Some(false));
+    f.h.app.reconcile_deliveries().await;
+    assert_eq!(runs().await?.len(), 1, "conflicting: not retried");
+
+    // Mergeable: the errored run is queued again, once.
+    set_mergeable(None);
+    f.h.app.reconcile_deliveries().await;
+    let after = runs().await?;
+    assert_eq!(after.len(), 2, "{after:?}");
+    let retry = &after[0];
+    assert_ne!(retry.id, "run-1");
+    assert_eq!(retry.requested_by, "yulius");
+    f.h.app.reconcile_deliveries().await;
+    assert_eq!(runs().await?.len(), 2, "not while the retry is queued");
+
+    // The retry errors too: two errored runs at the head wait for the agent.
+    if retry.state.is_active() {
+        f.h.store
+            .transition_ci_run(
+                &retry.id,
+                &[RunState::Queued, RunState::Running],
+                RunState::Error,
+                &yulius_app::ci::CiRunUpdate::default(),
+            )
+            .await?;
+    }
+    f.h.app.reconcile_deliveries().await;
+    f.h.app.reconcile_deliveries().await;
+    let last = runs().await?;
+    assert_eq!(last.len(), 2, "no third run: {last:?}");
+    assert!(last.iter().all(|r| r.state == RunState::Error), "{last:?}");
     Ok(())
 }
 
