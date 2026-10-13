@@ -175,4 +175,10 @@ switch on.
 - AC-OPS-4: `automations_list` on the instance shows "Keep the docs up to date" (c7cfc08b,
   `wf-docs`) and "Work through open issues" (1a189dfa), both `0 3 * * *` at offset 120 with the
   catalog's prompts, `enabled: false`, no next run (disabled by the coordinator; left so).
+- Yulius CI at the head that merged `dev` (#299, #302) failed once in
+  `local_ci::runs_jobs_in_parallel_publishes_statuses_and_gates_merges` (`local_ci.rs:378`:
+  status `pending`, expected `failure`, from the CI junit). Cause: the test's `settle()` returned
+  when no run was active, before the finished run's status was published. It passed 5/5 alone and
+  12/12 under full CPU load locally; the test-only fix makes `settle()` also wait for publication
+  (`status` no longer `pending`). `local_ci::` 5/5 after the fix.
 - Follow-up: #293 (agents enable a ready-made automation by id).

@@ -203,7 +203,8 @@ impl Fixture {
         call(&self.h.router, Method::POST, path, body, &self.alice).await
     }
 
-    /// Dispatches until no run is queued or running (the background loops do not run here).
+    /// Dispatches until no run is queued or running and every run's commit status is published
+    /// (the background loops do not run here).
     async fn settle(&self) -> BoxResult<()> {
         let deadline = tokio::time::Instant::now() + WAIT;
         loop {
@@ -213,7 +214,11 @@ impl Fixture {
                 .as_array()
                 .ok_or("runs")?
                 .iter()
-                .any(|r| r["state"] == "queued" || r["state"] == "running");
+                // A finished run publishes its commit status just after its state changes;
+                // `pending` here means not yet, so the statuses are read only once published.
+                .any(|r| {
+                    r["state"] == "queued" || r["state"] == "running" || r["status"] == "pending"
+                });
             if !active {
                 return Ok(());
             }
