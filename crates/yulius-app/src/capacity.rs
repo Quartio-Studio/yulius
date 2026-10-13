@@ -544,10 +544,16 @@ impl App {
 
     async fn would_resume(&self, pause: &PauseRecord) -> bool {
         match self.deps.store.task(&pause.task_id).await {
-            Ok(Some(task)) if task.status == TaskStatus::WaitingCapacity => matches!(
-                self.paused_decision(&task).await,
-                Ok((Decision::Stay | Decision::Switch { .. }, _, _))
-            ),
+            // A task a supertask holds does not resume (SPEC-071): no stagger before it.
+            Ok(Some(task)) if task.status == TaskStatus::WaitingCapacity => {
+                matches!(
+                    self.paused_decision(&task).await,
+                    Ok((Decision::Stay | Decision::Switch { .. }, _, _))
+                ) && !self
+                    .supertask_holders(&task)
+                    .await
+                    .is_ok_and(|holders| !holders.is_empty())
+            }
             _ => false,
         }
     }

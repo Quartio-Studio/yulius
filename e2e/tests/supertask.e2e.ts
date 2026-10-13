@@ -24,7 +24,7 @@ test('Supertask is a start choice; the supertask and a task after it say what th
   await screen.getByRole('button', 'Start task').click();
   await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
   const supertask = await browser.evaluate(() => Number(location.hash.match(/\/t\/(\d+)$/)?.[1]));
-  // The studio's working tasks (#6, #9, #10, #12 …): the first four named, then a count.
+  // The studio's working tasks (#6, #9, #10, #12 …): the first three named, then a count.
   await expect(browser.locator('.strip-status')).toHaveText(/^Supertask · waits for #6, #9, #10 and \d+ more$/);
   await expect(browser.locator('.supertask-chip')).toHaveText('Supertask');
   await expect(browser.locator('.attention-bar')).toHaveText(/Supertask\. It starts once #6, #9, #10 and \d+ more finish, then runs alone/);

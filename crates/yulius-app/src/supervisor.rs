@@ -1864,19 +1864,22 @@ impl App {
         let app = self.clone();
         tokio::spawn(async move {
             loop {
-                app.drain_pass().await;
-                if !app.supertask_holds.end_drain() {
+                while app.supertask_holds.take_drain() {
+                    app.drain_queue_now().await;
+                }
+                if !app.supertask_holds.release_drain() {
                     break;
                 }
             }
         });
     }
 
-    /// One pass of the queue. Every queued task's supertask hold is refreshed first (its label
-    /// follows, also at the session limit, SUP-006); then the tasks no supertask holds are offered
-    /// a slot one after the other (launches are serialized anyway), so the first in that order
-    /// takes a free slot first.
-    async fn drain_pass(self: &Arc<Self>) {
+    /// One pass of the queue, awaited ([`App::drain_queue`] runs them one at a time in the
+    /// background). Every queued task's supertask hold is refreshed first (its label follows, also
+    /// at the session limit, SUP-006); then the tasks no supertask holds are offered a slot one
+    /// after the other (launches are serialized anyway), so the first in that order takes a free
+    /// slot first.
+    pub async fn drain_queue_now(self: &Arc<Self>) {
         if self.update_holds_starts() {
             return;
         }

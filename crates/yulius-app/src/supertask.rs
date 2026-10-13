@@ -81,25 +81,24 @@ pub(crate) struct Holds {
 }
 
 impl Holds {
-    /// Claims the queue pass; false when this caller runs it. When a pass already runs, it is
-    /// asked to go once more and this returns true.
+    /// Asks for a queue pass and claims the runner; false when this caller must run the passes,
+    /// true when a runner is already there (it sees the request). The request is recorded before
+    /// the claim, so no runner can leave without seeing it.
     pub(crate) fn begin_drain(&self) -> bool {
-        if self.draining.swap(true, Ordering::SeqCst) {
-            self.again.store(true, Ordering::SeqCst);
-            return true;
-        }
-        self.again.store(false, Ordering::SeqCst);
-        false
+        self.again.store(true, Ordering::SeqCst);
+        self.draining.swap(true, Ordering::SeqCst)
     }
 
-    /// Ends a pass; true when the caller must run another one (asked during the pass).
-    pub(crate) fn end_drain(&self) -> bool {
-        if self.again.swap(false, Ordering::SeqCst) {
-            return true;
-        }
+    /// Takes the pending request; the runner runs a pass for each true.
+    pub(crate) fn take_drain(&self) -> bool {
+        self.again.swap(false, Ordering::SeqCst)
+    }
+
+    /// Releases the runner; true when a request came in meanwhile and nobody else claimed the
+    /// runner, so the caller runs on.
+    pub(crate) fn release_drain(&self) -> bool {
         self.draining.store(false, Ordering::SeqCst);
-        // Asked between the check and the release, and nobody claimed the pass since: go on.
-        self.again.swap(false, Ordering::SeqCst) && !self.draining.swap(true, Ordering::SeqCst)
+        self.again.load(Ordering::SeqCst) && !self.draining.swap(true, Ordering::SeqCst)
     }
 
     /// Records that a capacity resume was held, so the next queue pass wakes the resume loop.
@@ -306,12 +305,19 @@ mod tests {
     #[test]
     fn one_queue_pass_at_a_time_and_one_more_when_asked() {
         let holds = Holds::default();
-        assert!(!holds.begin_drain(), "the first caller runs the pass");
+        assert!(!holds.begin_drain(), "the first caller runs the passes");
+        assert!(holds.take_drain(), "its own request");
         assert!(holds.begin_drain(), "a second caller asks for another pass");
         assert!(holds.begin_drain());
-        assert!(holds.end_drain(), "one more pass, however many asked");
-        assert!(!holds.end_drain(), "then the pass is released");
-        assert!(!holds.begin_drain(), "and the next caller runs it");
-        assert!(!holds.end_drain());
+        assert!(holds.take_drain(), "one more pass, however many asked");
+        assert!(!holds.take_drain());
+        assert!(!holds.release_drain(), "then the runner is released");
+        assert!(!holds.begin_drain(), "and the next caller runs");
+        assert!(holds.take_drain());
+        // A request that lands while the runner is leaving is not lost.
+        holds.again.store(true, Ordering::SeqCst);
+        assert!(holds.release_drain(), "the runner runs on");
+        assert!(holds.take_drain());
+        assert!(!holds.release_drain());
     }
 }

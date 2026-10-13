@@ -1148,7 +1148,7 @@ fn a_done_task_frees_its_slot_for_a_queued_task() -> TestResult {
         let second = new_task(&app, &sandbox, &user, "Second").await?;
         assert_eq!(task(&app, &second).await?.status, TaskStatus::Queued);
         // Still working: the queue waits.
-        app.drain_queue().await;
+        app.drain_queue_now().await;
         assert_eq!(task(&app, &second).await?.status, TaskStatus::Queued);
         app.deps
             .store
@@ -1724,7 +1724,7 @@ fn a_supertask_runs_alone_after_the_running_task() -> TestResult {
         .await?;
         let sup = create_task(&app, &sandbox, &user, "Harden", true).await?;
         let after = new_task(&app, &sandbox, &user, "After").await?;
-        app.drain_queue().await;
+        app.drain_queue_now().await;
         for id in [&sup, &after] {
             wait_for("the hold", Duration::from_secs(10), || async {
                 task(&app, id)
@@ -1742,7 +1742,7 @@ fn a_supertask_runs_alone_after_the_running_task() -> TestResult {
             screen_contains(&app, &sup, "FAKE-AGENT READY")
         })
         .await?;
-        app.drain_queue().await;
+        app.drain_queue_now().await;
         assert_eq!(
             task(&app, &after).await?.status,
             TaskStatus::Queued,
@@ -1789,7 +1789,7 @@ fn a_queued_supertask_takes_the_next_slot_first() -> TestResult {
             || screen_contains(&app, &sup, "FAKE-AGENT READY"),
         )
         .await?;
-        app.drain_queue().await;
+        app.drain_queue_now().await;
         assert_eq!(
             task(&app, &plain).await?.status,
             TaskStatus::Queued,

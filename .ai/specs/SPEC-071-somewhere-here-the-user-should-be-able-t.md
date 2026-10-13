@@ -86,7 +86,7 @@ pending or running, no other task of the project starts, so the code it changes 
 - `crates/yulius/tests/supertask.rs` (fake agent, real ptyhost, like `supervision.rs`):
   AC-SUP-2 .. AC-SUP-5, each red before the scheduler slice.
 - API tests (`crates/yulius/tests/supertask.rs` through the HTTP router support): AC-SUP-1,
-  including the 400s and the MCP tool.
+  including the 422s and the MCP tool.
 - Unit tests of the pure hold rule in `yulius-app/src/supertask.rs` (who holds whom, ordering of
   supertasks, Done and resting tasks not holding).
 - e2e `e2e/tests/supertask.e2e.ts` (mock): AC-SUP-6.

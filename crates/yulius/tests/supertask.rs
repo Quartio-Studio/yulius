@@ -53,7 +53,7 @@ async fn summary(h: &Harness, creds: &Creds, id: &str) -> Result<Value, Error> {
 }
 
 /// AC-SUP-1: New task and `task_create` make a supertask; it cannot also run after a task or a
-/// rule (400-class refusal, nothing created).
+/// rule (422, nothing created).
 #[tokio::test]
 async fn a_task_is_created_as_a_supertask() -> TestResult {
     let (h, alice) = world(0).await?;
@@ -405,4 +405,149 @@ where
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     Err(format!("timed out waiting for {what}").into())
+}
+
+/// SUP-002 (review round 2): a task paused for capacity before it ran keeps its pause, with its
+/// kind and continuation, while a supertask holds its project; once the hold ends the resume
+/// loop starts it.
+#[tokio::test]
+async fn a_held_capacity_resume_keeps_its_pause() -> TestResult {
+    use yulius_app::model::{AccountRecord, AccountStatus, PauseKind, PauseRecord};
+    use yulius_app::ports::store::AccountStore;
+    use yulius_app::ports::store_ext::CapacityStore;
+    let (h, alice) = world(8).await?;
+    h.store
+        .insert_account(&AccountRecord {
+            id: yulius_domain::ids::AccountId::parse("acc-1")?,
+            provider: yulius_domain::harness::Provider::Anthropic,
+            label: "acc-1".into(),
+            credential: Some(h.app.deps.crypto.seal(b"oauth-token")?),
+            status: AccountStatus::Ok,
+            usage_json: None,
+            last_error: None,
+            created_at: yulius_domain::time::Timestamp(1),
+            updated_at: yulius_domain::time::Timestamp(1),
+        })
+        .await?;
+    let s = create(
+        &h,
+        &alice,
+        "s1",
+        json!({"prompt": "Harden", "supertask": true}),
+    )
+    .await?;
+    let paused = seed_task(
+        &h,
+        "t-paused",
+        "s1",
+        "u-alice",
+        TaskStatus::WaitingCapacity,
+        None,
+    )
+    .await?;
+    h.store
+        .insert_pause(&PauseRecord {
+            id: "p-1".into(),
+            task_id: paused.id.clone(),
+            kind: PauseKind::Limit,
+            account_id: None,
+            continuation: Some("go on with the migration".into()),
+            started_at: h.app.now(),
+            ended_at: None,
+            outcome: None,
+        })
+        .await?;
+
+    let _ = h.app.resume_round().await;
+    assert_eq!(
+        h.store.task(&paused.id).await?.ok_or("task")?.status,
+        TaskStatus::WaitingCapacity
+    );
+    let pause = h
+        .store
+        .open_pause(&paused.id)
+        .await?
+        .ok_or("the pause stays")?;
+    assert_eq!(pause.kind, PauseKind::Limit);
+    assert_eq!(
+        pause.continuation.as_deref(),
+        Some("go on with the migration")
+    );
+
+    // The supertask is deleted: the hold is over and the loop resumes the task.
+    let r = call(
+        &h.router,
+        Method::DELETE,
+        &format!("/api/tasks/{}", s.id),
+        None,
+        &alice,
+    )
+    .await?;
+    assert!(r.status.is_success(), "{:?}", r.body);
+    let _ = h.app.resume_round().await;
+    assert!(
+        h.store.open_pause(&paused.id).await?.is_none(),
+        "it resumed"
+    );
+    Ok(())
+}
+
+/// SUP-005 (review round 2): deleting a queued supertask, or a supertask that fails to start,
+/// lets the tasks it held go without waiting for the next tick of the queue.
+#[tokio::test]
+async fn a_deleted_or_failed_supertask_releases_its_project() -> TestResult {
+    let (h, alice) = world(8).await?;
+    let s = create(
+        &h,
+        &alice,
+        "s1",
+        json!({"prompt": "Harden", "supertask": true}),
+    )
+    .await?;
+    let b = create(&h, &alice, "s1", json!({"prompt": "Small fix"})).await?;
+    assert_eq!(offer(&h, &b).await?, TaskStatus::Queued);
+    let r = call(
+        &h.router,
+        Method::DELETE,
+        &format!("/api/tasks/{}", s.id),
+        None,
+        &alice,
+    )
+    .await?;
+    assert!(r.status.is_success(), "{:?}", r.body);
+    wait_until("the task the deleted supertask held to go", || async {
+        h.store
+            .task(&b.id)
+            .await
+            .is_ok_and(|t| t.is_some_and(|t| t.status != TaskStatus::Queued))
+    })
+    .await?;
+
+    // A supertask whose start fails (here: no Git) releases the next one at once.
+    let (h, alice) = world(8).await?;
+    let s = create(
+        &h,
+        &alice,
+        "s1",
+        json!({"prompt": "Harden", "supertask": true}),
+    )
+    .await?;
+    let c = create(&h, &alice, "s1", json!({"prompt": "Small fix"})).await?;
+    assert_eq!(offer(&h, &c).await?, TaskStatus::Queued);
+    // The agent's run ends: the supertask is offered a slot and fails to start.
+    h.store
+        .set_activity(
+            &TaskId::parse("t-agent")?,
+            Some(Activity::Done),
+            h.app.now(),
+        )
+        .await?;
+    assert_ne!(offer(&h, &s).await?, TaskStatus::Queued);
+    wait_until("the task the failed supertask held to go", || async {
+        h.store
+            .task(&c.id)
+            .await
+            .is_ok_and(|t| t.is_some_and(|t| t.status != TaskStatus::Queued))
+    })
+    .await
 }
