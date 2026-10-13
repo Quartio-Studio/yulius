@@ -78,7 +78,7 @@ consumed grants are deleted.
 
 - Refuse past the bound instead of dropping the oldest: dropping lets a flood cancel a real
   person's approval in progress; refusing only delays new starts for at most the 10-minute TTL.
-  Recorded in ADR-0042.
+  Recorded in ADR-0047.
 - The per-client bound is counted in the database (a `client_key` column) rather than in memory,
   so it holds across restarts; the table is at most 1000 rows, so no index is needed.
 - Purge on start plus a 60 s sweep: on-start alone leaves rows when nobody starts, a timer alone

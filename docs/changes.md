@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- CLI device sign-in can no longer fill the disk (SPEC-063, ADR-0047, task #55, #169).
+  `POST /api/device/start` is limited per client like password sign-in (5 starts a minute); at
+  most 10 device sign-ins wait per client and 1000 per instance (past either: 429, nothing
+  evicted); expired and consumed grants are deleted on every start and every minute. Schema
+  version 16 (`device_grants.client_key`).
 - Two-factor fixes (SPEC-061, ADR-0041, task #52, #291, #295). A lost authenticator no longer
   locks someone out of the secrets for good: an instance administrator or the superadmin resets
   their two-factor from the Users page (a confirmation, then their own code), and the person sets

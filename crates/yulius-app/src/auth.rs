@@ -24,12 +24,12 @@ pub const LOGIN_ATTEMPTS_PER_MINUTE: usize = 5;
 pub const MAX_LOGIN_CLIENTS: usize = 4096;
 /// The window of [`LOGIN_ATTEMPTS_PER_MINUTE`] and [`DEVICE_STARTS_PER_MINUTE`].
 const LOGIN_WINDOW_MS: i64 = 60_000;
-/// CLI device sign-in starts allowed per client key per minute (#169, ADR-0042); the limiter
+/// CLI device sign-in starts allowed per client key per minute (#169, ADR-0047); the limiter
 /// tracks at most [`MAX_LOGIN_CLIENTS`] keys, like sign-in's.
 pub const DEVICE_STARTS_PER_MINUTE: usize = 5;
-/// Live CLI device grants (not expired, not consumed) allowed per client key (#169, ADR-0042).
+/// Live CLI device grants (not expired, not consumed) allowed per client key (#169, ADR-0047).
 pub const MAX_DEVICE_GRANTS_PER_CLIENT: usize = 10;
-/// Live CLI device grants allowed per instance (#169, ADR-0042).
+/// Live CLI device grants allowed per instance (#169, ADR-0047).
 pub const MAX_DEVICE_GRANTS: usize = 1000;
 const DEVICE_TTL_MS: i64 = 10 * 60 * 1000;
 const OAUTH_STATE_TTL_MS: i64 = 10 * 60 * 1000;
@@ -553,7 +553,7 @@ impl App {
     }
 
     /// Starts CLI device approval for the client `client_key` (chosen by the interface like
-    /// [`App::password_login`]'s), limited per client (#169, ADR-0042).
+    /// [`App::password_login`]'s), limited per client (#169, ADR-0047).
     ///
     /// # Errors
     /// `Capacity` when rate limited; store failures.
@@ -595,7 +595,7 @@ impl App {
             )
             .await?;
         if inserted != DeviceGrantInsert::Inserted {
-            // Existing grants are never evicted: they expire within DEVICE_TTL_MS (ADR-0042).
+            // Existing grants are never evicted: they expire within DEVICE_TTL_MS (ADR-0047).
             return Err(AppError::Capacity(
                 "too many device sign-ins waiting; try again in a few minutes".into(),
             ));

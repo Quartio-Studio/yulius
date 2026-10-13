@@ -158,7 +158,7 @@ pub struct DeviceGrantRecord {
     pub expires_at: Timestamp,
 }
 
-/// Bounds on live device grants (#169, ADR-0042): rows not expired and not consumed.
+/// Bounds on live device grants (#169, ADR-0047): rows not expired and not consumed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceGrantBounds {
     /// Live grants of one client key.

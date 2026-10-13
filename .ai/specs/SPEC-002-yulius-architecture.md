@@ -2264,7 +2264,7 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
 | Update check of `main` (ADR-18) | every 60 min; "Check now" reuses a result < 30 s; 15 s and 4 MiB per GitHub request; ≤ 250 commits | error shown, nothing offered |
 | Update request / helper status files | 16 KiB / 256 KiB; request valid 15 min | refused / ignored |
 | Password sign-in (ACC-013) | 5 attempts per client key per minute; ≤ 4096 client keys tracked (keys idle for a minute forgotten first) | 429; a new key while 4096 are active also waits |
-| Device sign-in start (ACC-013, ADR-0042) | 5 starts per client key per minute (≤ 4096 keys, as sign-in); live grants 10 per client key and 1000 per instance (10 min each); expired and consumed grants purged on every start and every 60 s | 429, nothing inserted, no grant evicted |
+| Device sign-in start (ACC-013, ADR-0047) | 5 starts per client key per minute (≤ 4096 keys, as sign-in); live grants 10 per client key and 1000 per instance (10 min each); expired and consumed grants purged on every start and every 60 s | 429, nothing inserted, no grant evicted |
 | Helper acknowledgement | request rewritten every 20 s, given up after 90 s (not while the helper reports progress on an earlier request) | run fails or resumes, nothing installed |
 | Update build | helper 2 h; server 3 h | `failed` |
 | Pausing tasks for an update | 30 min | `cancelled`, tasks released |
@@ -2482,7 +2482,7 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 
 ## 15. Changelog
 
-- 2026-10-13 (task #55, #169; SPEC-063, ADR-0042): §5 `device_grants.client_key` (migration 0016)
+- 2026-10-13 (task #55, #169; SPEC-063, ADR-0047): §5 `device_grants.client_key` (migration 0016)
   and its purge; §9 device sign-in start limit and grant bounds.
 - 2026-10-12 (task #26, "delete message mechanism for now until we make the infra very good";
   SPEC-028, ADR-0023): messages are removed end to end: no `message_send` or `messages_inbox`, no
