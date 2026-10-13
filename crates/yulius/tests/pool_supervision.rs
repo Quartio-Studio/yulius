@@ -1104,3 +1104,91 @@ fn a_turn_the_cli_continues_by_itself_ends_the_limit_pause() -> TestResult {
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// SPEC-072 LRS-002 (#277): the switch after a usage limit is refused before it ends the session
+/// (the other subscription's credential cannot be opened), so the task stays at its limit with no
+/// pause; a person's switch once the subscription works again still resumes past the limit: no
+/// prompt, the interrupted turn continued, the transcript stepped back.
+#[test]
+fn a_manual_switch_after_a_refused_limit_switch_resumes_past_the_limit() -> TestResult {
+    use yulius_app::ports::Crypto;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            limit_after: Some(1),
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+        probe.set("a-first", usage(10.0, 4 * HOUR, 20.0, 100));
+        refresh(&app, &user, "a-first").await?;
+        probe.set("b-second", usage(40.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "b-second").await?;
+        let b = AccountId::parse("b-second")?;
+        let foreign = MasterKeyCrypto::from_key(&[9u8; 32])?.seal(b"b-second")?;
+        app.deps
+            .store
+            .set_account_credential(&b, &foreign, AccountStatus::Ok, now())
+            .await?;
+        let id = new_task(&app, &sandbox, &user, "Limit").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("FAKE-AGENT READY") }
+        })
+        .await?;
+        assert_eq!(
+            app.deps.store.attempts(&id).await?[0]
+                .account_id
+                .as_ref()
+                .map(AccountId::as_str),
+            Some("a-first")
+        );
+        app.send_input(&id, b"hello\r").await?;
+        wait_for("the refused switch", Duration::from_secs(30), || async {
+            app.deps
+                .store
+                .switches(&id)
+                .await
+                .is_ok_and(|s| s.iter().any(|s| s.outcome == "refused"))
+        })
+        .await?;
+        assert!(app.deps.store.open_pause(&id).await?.is_none(), "no pause");
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Running);
+
+        let sealed = app.deps.crypto.seal(b"b-second")?;
+        app.deps
+            .store
+            .set_account_credential(&b, &sealed, AccountStatus::Ok, now())
+            .await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        app.switch_task(
+            &ctx,
+            id.as_str(),
+            &yulius_contracts::api::tasks::ContinueTask {
+                account_id: Some("b-second".into()),
+            },
+        )
+        .await?;
+        wait_for("the resumed run", Duration::from_secs(60), || async {
+            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+            attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
+        })
+        .await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        let problems = limit_resume_problems(Path::new(&attempts[1].run_dir), &data);
+        assert!(problems.is_empty(), "{problems:?}");
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
