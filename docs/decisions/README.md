@@ -48,6 +48,7 @@ title whose number differs from the file name, and a record this index does not 
 - [0038](0038-onboarding-starts-in-the-browser.md): Onboarding starts in the browser, never from the CLI
 - [0039](0039-ci-jobs-get-the-cpu-first.md): CI jobs get the CPU first through a weighted cgroup
 - [0040](0040-done-tasks-release-their-subscription.md): Done tasks release their subscription
+- [0045](0045-ci-waits-for-disk-under-the-shared-quota.md): CI waits for disk under the sandbox's shared quota
 - [0041](0041-administrators-reset-a-lost-two-factor.md): Administrators reset a lost two-factor; a code confirms only the seed it was checked against
 - [0042](0042-personal-two-factor-guards-the-vault.md): A personal two-factor code guards the vault; a secret is a title, a value and notes
 - [0043](0043-archive-all-runs-the-per-task-archive.md): "Archive all" runs the per-task archive; no bulk endpoint

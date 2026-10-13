@@ -312,6 +312,10 @@ impl SandboxIsolation for NamespaceIsolation {
         Some(DiskUsage { used, limit })
     }
 
+    async fn largest(&self, sandbox: &SandboxRef) -> Vec<(String, u64)> {
+        self.manager.largest(sandbox.id.as_str()).await
+    }
+
     fn release(&self, sandbox: &SandboxId) {
         let manager = Arc::clone(&self.manager);
         let sandbox = sandbox.as_str().to_owned();

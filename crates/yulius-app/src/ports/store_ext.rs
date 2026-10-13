@@ -419,9 +419,10 @@ pub trait CiStore: Send + Sync {
     ) -> AppResult<bool>;
     /// Replaces the output of a running job.
     async fn set_ci_job_output(&self, id: &str, output: &str) -> AppResult<()>;
-    /// Puts a `running` run and all its jobs back to `queued` (after a server restart), clearing
-    /// times and outputs; `false` when the run was not running.
-    async fn requeue_ci_run(&self, id: &str) -> AppResult<bool>;
+    /// Puts a `running` run and all its jobs back to `queued` (after a server restart, or a job
+    /// refused over the disk quota), clearing times and replacing outputs with `note`; `false`
+    /// when the run was not running.
+    async fn requeue_ci_run(&self, id: &str, note: &str) -> AppResult<bool>;
     /// Records a commit status publication: `published` is the run state GitHub accepted the
     /// status of, `None` on failure with `note`; counts the attempt.
     async fn record_ci_status(
