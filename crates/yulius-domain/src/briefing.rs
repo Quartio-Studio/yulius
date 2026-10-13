@@ -46,7 +46,7 @@ const MAX_STEPS_LISTED: usize = 100;
 const MAX_ENVIRONMENTS_LISTED: usize = 8;
 
 /// Yulius MCP tools announced to every session (SPEC-002 §7.4), as `(name, purpose)`.
-pub const YULIUS_TOOLS: [(&str, &str); 35] = [
+pub const YULIUS_TOOLS: [(&str, &str); 41] = [
     (
         "project_context",
         "project summary, architecture and decision index, recent changes, delivery rules",
@@ -57,6 +57,15 @@ pub const YULIUS_TOOLS: [(&str, &str); 35] = [
     ),
     ("task_get", "one task in detail"),
     ("task_create", "create and start a new task in this project"),
+    ("task_stop", "stop another task of this project"),
+    (
+        "task_archive",
+        "archive (or restore) another stopped or finished task",
+    ),
+    (
+        "task_delete",
+        "delete another task of this project for good",
+    ),
     (
         "sessions_search",
         "search earlier task sessions and imported Claude Code sessions (sessions are docs)",
@@ -85,8 +94,17 @@ pub const YULIUS_TOOLS: [(&str, &str); 35] = [
     ),
     ("spec_check", "validate your task spec and the project docs"),
     ("automation_create", "create a scheduled (cron) automation"),
-    ("automations_list", "list automations"),
+    (
+        "automations_list",
+        "list automations and the ready-made ones Yulius ships",
+    ),
     ("automation_update", "change or disable an automation"),
+    (
+        "automation_template_enable",
+        "enable a ready-made automation by its id",
+    ),
+    ("automation_run_now", "run an automation once now"),
+    ("automation_delete", "delete an automation"),
     ("workflows_list", "reusable task recipes"),
     ("browser_tabs", "list tabs of the shared project browser"),
     ("browser_open", "open a tab"),

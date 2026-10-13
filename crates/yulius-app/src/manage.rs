@@ -1,11 +1,16 @@
-//! Managing the project from an agent or a Cockpit (SPEC-037): creating tasks through the Yulius
-//! MCP server.
+//! Managing the project from an agent or a Cockpit (SPEC-037, SPEC-066): creating, stopping,
+//! archiving and deleting tasks, deleting and running automations and enabling ready-made ones
+//! through the Yulius MCP server.
 //!
 //! Contract:
 //! - `task_create` creates a task the way New task does ([`App::create_task_as`]), with origin
 //!   `agent`, on the authority of the person the caller acts for (MGT-001, MGT-002);
 //! - tools create at most [`MAX_TOOL_TASKS_PER_HOUR`] tasks per project in a rolling hour, task
-//!   agents and Cockpits together; the window lives in memory (MGT-003).
+//!   agents and Cockpits together; the window lives in memory (MGT-003);
+//! - `task_stop`, `task_archive`, `task_delete`, `automation_delete` and `automation_run_now` run
+//!   the UI's function for that person, never on the caller's own task, and are audited with the
+//!   caller (MGT-008..011); `automation_template_enable` enables a ready-made automation as the
+//!   Automations page does (AUT-012).
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -16,10 +21,12 @@ use yulius_domain::auto_choice::AUTO;
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::Action;
 
+use crate::auth::AuthContext;
+use crate::automations::{CreatedVia, templates};
 use crate::context::App;
 use crate::coordination::ProjectCaller;
 use crate::error::{AppError, AppResult};
-use crate::model::{TaskOrigin, UserRecord};
+use crate::model::{TaskOrigin, TaskRecord, UserRecord};
 
 /// Most tasks tools may create per project in a rolling hour (MGT-003).
 pub const MAX_TOOL_TASKS_PER_HOUR: usize = 20;
@@ -169,6 +176,192 @@ impl App {
         Ok(json!({
             "task": self.task_brief(&task).await?,
             "note": "The task is on the Tasks page of this project.",
+        }))
+    }
+}
+
+/// What a task tool does to another task (MGT-008).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskChange {
+    /// `task_stop`.
+    Stop,
+    /// `task_archive`: archive (`true`) or restore (`false`).
+    Archive(bool),
+    /// `task_delete`.
+    Delete,
+}
+
+impl TaskChange {
+    fn verb(self) -> &'static str {
+        match self {
+            Self::Stop => "stop",
+            Self::Archive(true) => "archive",
+            Self::Archive(false) => "restore",
+            Self::Delete => "delete",
+        }
+    }
+}
+
+/// The audit detail of a tool's call: the caller's detail with `extra` fields.
+fn tool_detail(caller: &ProjectCaller, extra: &Value) -> String {
+    let mut detail = caller.detail.clone();
+    if let (Some(detail), Some(extra)) = (detail.as_object_mut(), extra.as_object()) {
+        detail.extend(extra.clone());
+    }
+    detail.to_string()
+}
+
+impl App {
+    /// The person a caller acts for, as the UI's functions take them, once they may change
+    /// things in its project ([`App::manage_authority`]).
+    async fn manage_context(&self, caller: &ProjectCaller) -> AppResult<AuthContext> {
+        Ok(AuthContext {
+            user: self.manage_authority(caller).await?,
+            csrf_token: None,
+            session_hash: None,
+        })
+    }
+
+    /// `task_stop`, `task_archive` and `task_delete` (SPEC-066 MGT-008..010): the UI's stop,
+    /// archive and delete of a task of the caller's project, for the person it acts for, never
+    /// on the caller's own task; audited with the caller.
+    ///
+    /// # Errors
+    /// `NotFound` outside the project, `Forbidden` on the caller's own task or without write
+    /// access, and the UI's errors (`Conflict` for a live task that is archived or deleted).
+    pub async fn tool_task_change(
+        self: &Arc<Self>,
+        caller: &ProjectCaller,
+        args: &Value,
+        change: TaskChange,
+    ) -> AppResult<Value> {
+        let ctx = self.manage_context(caller).await?;
+        let task: TaskRecord = self.agent_task_ref(caller, args).await?;
+        if caller.task.as_ref().is_some_and(|own| own.id == task.id) {
+            return Err(AppError::Forbidden(format!(
+                "a task cannot {} itself; Yulius closes and archives a finished task by itself",
+                change.verb()
+            )));
+        }
+        let id = task.id.as_str();
+        let named = json!({"task": format!("#{} {}", task.number, task.title)});
+        let action = match change {
+            TaskChange::Delete => {
+                self.delete_task_as(&ctx, id, &caller.actor, Some(&caller.detail))
+                    .await?;
+                tracing::info!(task = %task.id, actor = %caller.actor, "task deleted by a tool");
+                return Ok(json!({"deleted": {"task_id": id, "number": task.number}}));
+            }
+            TaskChange::Stop => {
+                self.stop_task(&ctx, id).await?;
+                "task.stopped"
+            }
+            TaskChange::Archive(archived) => {
+                self.archive_task(&ctx, id, archived).await?;
+                if archived {
+                    "task.archived"
+                } else {
+                    "task.unarchived"
+                }
+            }
+        };
+        self.deps
+            .store
+            .audit(
+                self.now(),
+                &caller.actor,
+                action,
+                Some(id),
+                Some(&tool_detail(caller, &named)),
+            )
+            .await?;
+        let task = self
+            .deps
+            .store
+            .task(&task.id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        Ok(json!({"task": self.task_brief(&task).await?}))
+    }
+
+    /// `automation_delete` (SPEC-066 MGT-011): the UI's delete of an automation of the caller's
+    /// project, audited with the caller. Its tasks stay.
+    ///
+    /// # Errors
+    /// `NotFound` outside the project, `Forbidden` without write access.
+    pub async fn tool_automation_delete(
+        &self,
+        caller: &ProjectCaller,
+        args: &Value,
+    ) -> AppResult<Value> {
+        let ctx = self.manage_context(caller).await?;
+        let record = self.agent_automation(caller, args).await?;
+        self.delete_automation_as(&ctx, &record.id, &caller.actor, Some(&caller.detail))
+            .await?;
+        Ok(json!({"deleted": {"automation_id": record.id, "name": record.name}}))
+    }
+
+    /// `automation_run_now` (SPEC-066 MGT-011): one run now, as Run now on the Automations page
+    /// (also when disabled; skipped while its previous task is active), audited with the caller.
+    ///
+    /// # Errors
+    /// `NotFound` outside the project, `Forbidden` without write access, store failures.
+    pub async fn tool_automation_run_now(
+        self: &Arc<Self>,
+        caller: &ProjectCaller,
+        args: &Value,
+    ) -> AppResult<Value> {
+        let ctx = self.manage_context(caller).await?;
+        let record = self.agent_automation(caller, args).await?;
+        let run = self
+            .run_automation_now_as(&ctx, &record.id, &caller.actor, Some(&caller.detail))
+            .await?;
+        Ok(json!({"run": run}))
+    }
+
+    /// `automation_template_enable` (SPEC-066 AUT-012): enables a ready-made automation by its
+    /// catalog id as the Automations page does: created enabled for the person the caller acts
+    /// for (`created_via = agent`), or the project's automation of that name enabled unchanged.
+    ///
+    /// # Errors
+    /// `Invalid` for an unknown id (naming the known ones), `Forbidden` without write access,
+    /// capacity errors.
+    pub async fn tool_automation_template_enable(
+        &self,
+        caller: &ProjectCaller,
+        args: &Value,
+    ) -> AppResult<Value> {
+        let wanted = opt_str(args, "template")?
+            .ok_or_else(|| AppError::Invalid("missing string argument `template`".into()))?;
+        if templates::template(&wanted).is_none() {
+            let known: Vec<&str> = templates::templates()
+                .iter()
+                .map(|t| t.id.as_str())
+                .collect();
+            return Err(AppError::Invalid(format!(
+                "unknown ready-made automation `{wanted}`; the known ones are: {} (automations_list shows them under ready_made)",
+                known.join(", ")
+            )));
+        }
+        let user = self.manage_authority(caller).await?;
+        let (automation, created) = self
+            .enable_template_as(
+                &caller.sandbox,
+                &wanted,
+                &user.id,
+                CreatedVia::Agent,
+                &caller.actor,
+                caller.detail.clone(),
+            )
+            .await?;
+        Ok(json!({
+            "automation": automation,
+            "created": created,
+            "note": if created {
+                "The ready-made automation was added, enabled, to the Automations page of this project."
+            } else {
+                "The project already had this automation; it is enabled, its content unchanged."
+            },
         }))
     }
 }

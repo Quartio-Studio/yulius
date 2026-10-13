@@ -227,6 +227,296 @@ async fn an_agent_whose_creator_is_disabled_creates_nothing() -> TestResult {
     Ok(())
 }
 
+/// The audit entries about `target`, newest first, as `(action, actor)`.
+async fn audits(h: &support::Harness, target: &str) -> Result<Vec<(String, String)>, Error> {
+    Ok(h.store
+        .automation_audit(target, 20)
+        .await?
+        .into_iter()
+        .map(|e| (e.action, e.actor))
+        .collect())
+}
+
+/// AC-MGT-5 (MGT-008, MGT-010): an agent stops, archives and deletes another task of its
+/// project as the UI would, each audited with the agent as the actor.
+#[tokio::test]
+async fn an_agent_stops_archives_and_deletes_another_task() -> TestResult {
+    let h = world().await?;
+    let (created, is_error) = task_create(&h, "tok-agent", json!({"prompt": "Side work"})).await?;
+    assert!(!is_error, "{created}");
+    let number = created["task"]["number"].as_u64().ok_or("number")?;
+    let id = TaskId::parse(created["task"]["task_id"].as_str().ok_or("task_id")?)?;
+    let agent = h
+        .store
+        .task(&TaskId::parse("t-agent")?)
+        .await?
+        .ok_or("agent")?;
+    let actor = format!("task:{}", agent.number);
+
+    let stopped = mcp_tool(&h, "tok-agent", "task_stop", json!({"number": number})).await?;
+    assert_eq!(stopped["isError"], false, "{stopped}");
+    let task = h.store.task(&id).await?.ok_or("task")?;
+    assert!(task.status.is_resting(), "{:?}", task.status);
+    assert_eq!(tool_text(&stopped)["task"]["number"], json!(number));
+
+    let archived = mcp_tool(
+        &h,
+        "tok-agent",
+        "task_archive",
+        json!({"task_id": id.as_str()}),
+    )
+    .await?;
+    assert_eq!(archived["isError"], false, "{archived}");
+    assert!(
+        h.store
+            .task(&id)
+            .await?
+            .ok_or("task")?
+            .archived_at
+            .is_some()
+    );
+    let restored = mcp_tool(
+        &h,
+        "tok-agent",
+        "task_archive",
+        json!({"number": number, "archived": false}),
+    )
+    .await?;
+    assert_eq!(restored["isError"], false, "{restored}");
+    assert!(
+        h.store
+            .task(&id)
+            .await?
+            .ok_or("task")?
+            .archived_at
+            .is_none()
+    );
+
+    let deleted = mcp_tool(&h, "tok-agent", "task_delete", json!({"number": number})).await?;
+    assert_eq!(deleted["isError"], false, "{deleted}");
+    assert!(h.store.task(&id).await?.is_none(), "deleted");
+
+    let entries = audits(&h, id.as_str()).await?;
+    for action in [
+        "task.stopped",
+        "task.archived",
+        "task.unarchived",
+        "task.deleted",
+    ] {
+        assert!(
+            entries.iter().any(|(a, by)| a == action && *by == actor),
+            "{action} by {actor}: {entries:?}"
+        );
+    }
+    Ok(())
+}
+
+/// AC-MGT-6 (MGT-009): a task's agent cannot stop, archive or delete its own task.
+#[tokio::test]
+async fn an_agent_cannot_stop_archive_or_delete_its_own_task() -> TestResult {
+    let h = world().await?;
+    for tool in ["task_stop", "task_archive", "task_delete"] {
+        let refused = mcp_tool(&h, "tok-agent", tool, json!({"task_id": "t-agent"})).await?;
+        assert_eq!(refused["isError"], true, "{tool}: {refused}");
+        assert!(
+            tool_text(&refused).to_string().contains("itself"),
+            "{tool} refused for the wrong reason: {refused}"
+        );
+    }
+    let own = h
+        .store
+        .task(&TaskId::parse("t-agent")?)
+        .await?
+        .ok_or("agent")?;
+    assert_eq!(own.status, TaskStatus::Running);
+    assert!(own.archived_at.is_none());
+    Ok(())
+}
+
+/// MGT-008: the UI's rules hold (a live task is neither archived nor deleted before it is
+/// stopped), and a task of another project is not found.
+#[tokio::test]
+async fn task_tools_follow_the_uis_rules() -> TestResult {
+    let h = world().await?;
+    seed_task(&h, "t-live", "s1", "u-alice", TaskStatus::Running, None).await?;
+    seed_live_attempt(&h, "t-live", "tok-live").await?;
+    for tool in ["task_archive", "task_delete"] {
+        let refused = mcp_tool(&h, "tok-agent", tool, json!({"task_id": "t-live"})).await?;
+        assert_eq!(refused["isError"], true, "{tool}: {refused}");
+        assert!(
+            tool_text(&refused).to_string().contains("stop the task"),
+            "{tool}: {refused}"
+        );
+    }
+    assert!(h.store.task(&TaskId::parse("t-live")?).await?.is_some());
+
+    add_sandbox(&h, "s2", "other", 20010).await?;
+    h.github
+        .set_perm("alice", "Quartio-Studio/other", perms("write"));
+    seed_task(&h, "t-other", "s2", "u-alice", TaskStatus::Queued, None).await?;
+    for tool in ["task_stop", "task_archive", "task_delete"] {
+        let refused = mcp_tool(&h, "tok-agent", tool, json!({"task_id": "t-other"})).await?;
+        assert_eq!(refused["isError"], true, "{tool}: {refused}");
+        assert!(
+            tool_text(&refused).to_string().contains("not found"),
+            "{tool}: {refused}"
+        );
+    }
+    let other = h
+        .store
+        .task(&TaskId::parse("t-other")?)
+        .await?
+        .ok_or("other")?;
+    assert_eq!(other.status, TaskStatus::Queued);
+    Ok(())
+}
+
+/// AC-MGT-7 (MGT-008, MGT-011): once the creator lost write access, the agent stops, deletes
+/// and runs nothing.
+#[tokio::test]
+async fn an_agent_whose_creator_lost_access_stops_and_deletes_nothing() -> TestResult {
+    let h = world().await?;
+    seed_task(&h, "t-side", "s1", "u-alice", TaskStatus::Queued, None).await?;
+    let created = mcp_tool(
+        &h,
+        "tok-agent",
+        "automation_create",
+        json!({"name": "Nightly", "cron": "0 4 * * *", "prompt": "Check things"}),
+    )
+    .await?;
+    assert_eq!(created["isError"], false, "{created}");
+    let automation = tool_text(&created)["automation"]["id"]
+        .as_str()
+        .ok_or("id")?
+        .to_owned();
+    h.github
+        .set_perm("alice", "Quartio-Studio/studio", perms("read"));
+    h.clock
+        .0
+        .fetch_add(h.app.config.permission_ttl_ms + 1, Ordering::SeqCst);
+    for (tool, args) in [
+        ("task_stop", json!({"task_id": "t-side"})),
+        ("task_archive", json!({"task_id": "t-side"})),
+        ("task_delete", json!({"task_id": "t-side"})),
+        ("automation_delete", json!({"automation_id": automation})),
+        ("automation_run_now", json!({"automation_id": automation})),
+    ] {
+        let refused = mcp_tool(&h, "tok-agent", tool, args).await?;
+        assert_eq!(refused["isError"], true, "{tool}: {refused}");
+        assert!(
+            tool_text(&refused).to_string().contains("write access"),
+            "{tool} refused for the wrong reason: {refused}"
+        );
+    }
+    let side = h
+        .store
+        .task(&TaskId::parse("t-side")?)
+        .await?
+        .ok_or("side")?;
+    assert_eq!(side.status, TaskStatus::Queued);
+    assert!(h.store.automation(&automation).await?.is_some());
+    assert!(h.store.runs(&automation, 10).await?.is_empty(), "no run");
+    Ok(())
+}
+
+/// MGT-011: an agent runs an automation now and deletes it, as the UI does, audited with the
+/// agent; another project's automation is not found.
+#[tokio::test]
+async fn an_agent_runs_an_automation_now_and_deletes_it() -> TestResult {
+    let h = world().await?;
+    let created = mcp_tool(
+        &h,
+        "tok-agent",
+        "automation_create",
+        json!({"name": "Nightly", "cron": "0 4 * * *", "prompt": "Check things", "enabled": false}),
+    )
+    .await?;
+    let id = tool_text(&created)["automation"]["id"]
+        .as_str()
+        .ok_or("id")?
+        .to_owned();
+    let actor = format!(
+        "task:{}",
+        h.store
+            .task(&TaskId::parse("t-agent")?)
+            .await?
+            .ok_or("agent")?
+            .number
+    );
+
+    let ran = mcp_tool(
+        &h,
+        "tok-agent",
+        "automation_run_now",
+        json!({"automation_id": id}),
+    )
+    .await?;
+    assert_eq!(ran["isError"], false, "{ran}");
+    assert_eq!(tool_text(&ran)["run"]["state"], "task_created", "{ran}");
+    let task_id = TaskId::parse(
+        tool_text(&ran)["run"]["task_id"]
+            .as_str()
+            .ok_or("task_id")?,
+    )?;
+    let task = h.store.task(&task_id).await?.ok_or("run task")?;
+    assert_eq!(task.created_by, UserId::parse("u-alice")?);
+
+    let deleted = mcp_tool(
+        &h,
+        "tok-agent",
+        "automation_delete",
+        json!({"automation_id": id}),
+    )
+    .await?;
+    assert_eq!(deleted["isError"], false, "{deleted}");
+    assert!(h.store.automation(&id).await?.is_none());
+    assert!(h.store.task(&task_id).await?.is_some(), "its tasks stay");
+
+    let entries = audits(&h, &id).await?;
+    for action in ["automation.run_now", "automation.deleted"] {
+        assert!(
+            entries.iter().any(|(a, by)| a == action && *by == actor),
+            "{action} by {actor}: {entries:?}"
+        );
+    }
+    let missing = mcp_tool(
+        &h,
+        "tok-agent",
+        "automation_delete",
+        json!({"automation_id": id}),
+    )
+    .await?;
+    assert_eq!(missing["isError"], true, "{missing}");
+    assert!(
+        tool_text(&missing).to_string().contains("not found"),
+        "{missing}"
+    );
+    Ok(())
+}
+
+/// MGT-012: none of the tools that stop, delete or run something is pre-allowed in the
+/// Cockpit: Claude Code asks the person first.
+#[test]
+fn the_cockpit_asks_before_every_changing_tool() {
+    for tool in [
+        "task_stop",
+        "task_archive",
+        "task_delete",
+        "automation_delete",
+        "automation_run_now",
+        "automation_template_enable",
+    ] {
+        assert!(
+            yulius_app::mcp::COCKPIT_TOOLS.contains(&tool),
+            "`{tool}` is not served to the Cockpit"
+        );
+        assert!(
+            !yulius_harness::launch::COCKPIT_READ_ONLY_TOOLS.contains(&tool),
+            "`{tool}` runs without asking"
+        );
+    }
+}
+
 /// The tools a Cockpit runs without asking are among those it is served, so a rename cannot
 /// silently drop one from the allowlist (MGT-004, MGT-006).
 #[test]

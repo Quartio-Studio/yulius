@@ -169,7 +169,11 @@ impl App {
         Ok(brief)
     }
 
-    async fn agent_task_ref(&self, caller: &ProjectCaller, args: &Value) -> AppResult<TaskRecord> {
+    pub(crate) async fn agent_task_ref(
+        &self,
+        caller: &ProjectCaller,
+        args: &Value,
+    ) -> AppResult<TaskRecord> {
         if let Some(number) = args.get("number").and_then(Value::as_u64) {
             let number = u32::try_from(number).map_err(|_| AppError::NotFound)?;
             return self

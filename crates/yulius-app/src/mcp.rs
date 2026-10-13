@@ -11,6 +11,7 @@ use yulius_domain::ids::SandboxId;
 use crate::context::App;
 use crate::coordination::{AgentContext, ProjectCaller};
 use crate::error::{AppError, AppResult};
+use crate::manage::TaskChange;
 use crate::shells::COCKPIT_TOKEN_PREFIX;
 
 /// Maximum tool result text returned to the model.
@@ -21,14 +22,20 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 }
 
 /// The tools a Cockpit is served: managing the project's tasks and automations (SPEC-037
-/// MGT-006). Everything else belongs to a task.
-pub const COCKPIT_TOOLS: [&str; 9] = [
+/// MGT-006, SPEC-066 MGT-012). Everything else belongs to a task.
+pub const COCKPIT_TOOLS: [&str; 15] = [
     "tasks_list",
     "task_get",
     "task_create",
+    "task_stop",
+    "task_archive",
+    "task_delete",
     "automation_create",
     "automations_list",
     "automation_update",
+    "automation_delete",
+    "automation_run_now",
+    "automation_template_enable",
     "workflows_list",
     "sessions_search",
     "session_read",
@@ -96,6 +103,25 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
                 "model": {"type": "string", "description": "Model override (default Opus)"},
                 "effort": {"type": "string", "description": "Effort override (default high)"}
             }), &["prompt"]),
+        },
+        ToolDescriptor {
+            name: "task_stop".into(),
+            description: "Stop another task of this project (by task_id or number), as Stop in the UI: a queued or waiting task is cancelled, a running one is interrupted. Not your own task. Acts on behalf of the person you work for and is audited.".into(),
+            input_schema: schema(task_ref.clone(), &[]),
+        },
+        ToolDescriptor {
+            name: "task_archive".into(),
+            description: "Archive another task of this project (by task_id or number), as Archive in the UI: only a stopped or finished task (a Done one is closed first); archived: false restores it. Not your own task. Audited.".into(),
+            input_schema: schema(json!({
+                "task_id": {"type": "string", "description": "Task id"},
+                "number": {"type": "integer", "description": "Task number within this sandbox"},
+                "archived": {"type": "boolean", "description": "false restores an archived task (default true)"}
+            }), &[]),
+        },
+        ToolDescriptor {
+            name: "task_delete".into(),
+            description: "Delete another task of this project permanently (by task_id or number), as Delete in the UI: its local worktree and branch (uncommitted work included), runs and transcripts go; remote branches and pull requests stay. A running task must be stopped first (a Done one is closed first). Not your own task. Audited.".into(),
+            input_schema: schema(task_ref.clone(), &[]),
         },
         ToolDescriptor {
             name: "sessions_search".into(),
@@ -234,8 +260,25 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "automations_list".into(),
-            description: "List this project's automations with schedule, next run and last run.".into(),
+            description: "List this project's automations with schedule, next run and last run, and under ready_made the ready-made automations Yulius ships (id, what it does, schedule; automation_id is the project's automation of the same name, or null when not added). Enable one with automation_template_enable.".into(),
             input_schema: schema(json!({}), &[]),
+        },
+        ToolDescriptor {
+            name: "automation_template_enable".into(),
+            description: "Enable a ready-made automation by its id from automations_list's ready_made (e.g. docs-up-to-date), as Enable on the Automations page: it is added enabled with its catalog name, schedule, workflow and prompt, or, when the project already has an automation of that name, that one is enabled unchanged. Never creates a duplicate.".into(),
+            input_schema: schema(json!({
+                "template": {"type": "string", "description": "Ready-made automation id"}
+            }), &["template"]),
+        },
+        ToolDescriptor {
+            name: "automation_run_now".into(),
+            description: "Run an automation of this project once now, as Run now on the Automations page (also when disabled; skipped while its previous task is still active). Returns the run and the task it created.".into(),
+            input_schema: schema(json!({"automation_id": {"type": "string"}}), &["automation_id"]),
+        },
+        ToolDescriptor {
+            name: "automation_delete".into(),
+            description: "Delete an automation of this project and its run history, as Delete on the Automations page; the tasks it created stay. Audited.".into(),
+            input_schema: schema(json!({"automation_id": {"type": "string"}}), &["automation_id"]),
         },
         ToolDescriptor {
             name: "automation_update".into(),
@@ -322,7 +365,7 @@ impl App {
                     "serverInfo": {"name": "yulius", "version": env!("CARGO_PKG_VERSION")},
                     "instructions": match caller {
                         McpCaller::Agent(_) => "Yulius coordinates this project's tasks. Use tasks_list and sessions_search before starting, and steps_set/step_update to keep a plan of similar-effort steps whose progress arrives steadily.",
-                        McpCaller::Cockpit(_) => "Yulius runs this project's tasks. When the person asks for work to be done as a task (\"create a task from that\"), create it with task_create; for recurring work (\"every day at 4am …\") create an automation with automation_create (ask for their time zone if it matters). tasks_list, automations_list and workflows_list show what exists; sessions_search finds how earlier tasks did something.",
+                        McpCaller::Cockpit(_) => "Yulius runs this project's tasks. When the person asks for work to be done as a task (\"create a task from that\"), create it with task_create; for recurring work (\"every day at 4am …\") create an automation with automation_create (ask for their time zone if it matters). tasks_list, automations_list (with the ready-made automations, enabled by automation_template_enable) and workflows_list show what exists; sessions_search finds how earlier tasks did something. task_stop, task_archive and task_delete stop, archive or delete a task, automation_run_now and automation_delete run or delete an automation: do these only when the person asks, naming the task or automation.",
                     },
                 }))
             }
@@ -357,11 +400,32 @@ impl App {
             "tasks_list" => self.tool_tasks_list(&project, &args).await,
             "task_get" => self.tool_task_get(&project, &args).await,
             "task_create" => self.tool_task_create(&project, &args).await,
+            "task_stop" => {
+                self.tool_task_change(&project, &args, TaskChange::Stop)
+                    .await
+            }
+            "task_archive" => {
+                let archived = args
+                    .get("archived")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true);
+                self.tool_task_change(&project, &args, TaskChange::Archive(archived))
+                    .await
+            }
+            "task_delete" => {
+                self.tool_task_change(&project, &args, TaskChange::Delete)
+                    .await
+            }
             "sessions_search" => self.tool_sessions_search(&project, &args).await,
             "session_read" => self.tool_session_read(&project, &args).await,
             "automation_create" => self.tool_automation_create(&project, &args).await,
             "automations_list" => self.tool_automations_list(&project).await,
             "automation_update" => self.tool_automation_update(&project, &args).await,
+            "automation_delete" => self.tool_automation_delete(&project, &args).await,
+            "automation_run_now" => self.tool_automation_run_now(&project, &args).await,
+            "automation_template_enable" => {
+                self.tool_automation_template_enable(&project, &args).await
+            }
             "workflows_list" => self.tool_workflows_list(&project).await,
             _ => match caller {
                 McpCaller::Cockpit(_) => Err(AppError::Invalid(format!("unknown tool: {name}"))),
