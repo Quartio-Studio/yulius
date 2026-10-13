@@ -2198,23 +2198,28 @@ fn internal(f: &Fixture) -> axum::Router {
         .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1))))
 }
 
-/// One MCP tool call of an agent: its result (`isError`, `content`).
+/// One MCP tool call of an agent: its result (`isError`, `content`, and the tool's record as
+/// `structuredContent`).
 async fn agent_tool(f: &Fixture, agent: &Creds, name: &str, arguments: Value) -> BoxResult<Value> {
     let r = call(
         &internal(f),
         Method::POST,
         "/mcp",
         Some(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": {"name": name, "arguments": arguments}})),
+            "params": {"name": name, "arguments": arguments,
+                "_meta": {"yulius/structured": true}}})),
         agent,
     )
     .await?;
     Ok(r.body["result"].clone())
 }
 
-/// The JSON a successful tool call answered.
+/// The record a successful tool call answered.
 fn answer(result: &Value) -> BoxResult<Value> {
     assert_eq!(result["isError"], false, "{result}");
+    if let Some(record) = result.get("structuredContent") {
+        return Ok(record.clone());
+    }
     Ok(serde_json::from_str(
         result["content"][0]["text"].as_str().unwrap_or("null"),
     )?)
