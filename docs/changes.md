@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- Supertasks (SPEC-071, ADR-0054, task #67; SPEC-001 TSK-018). Choose **Supertask** in the
+  composer's start menu (API `supertask: true`, `task_create`) for broad work such as security
+  hardening. The task waits for its project's running tasks, then runs alone. While it waits or
+  runs, no other task of the project starts, also tasks queued or chained before it; they wait
+  `queued` and say "Queued after supertask #N". A queued supertask says "Supertask · waits for
+  #3 and #5". Running sessions are never interrupted, and other projects keep running. At the
+  session limit, a supertask gets the next free slot first. Schema version 17
+  (`tasks.supertask`).
 - A stopped or closed run ends only when its processes are proven gone (SPEC-065, ADR-0050, task #54;
   #284, #285, #290). When Yulius cannot terminate a run's host after the stop or close escalation,
   the run stays live, the task's terminal says so and a running task needs attention; deleting it
