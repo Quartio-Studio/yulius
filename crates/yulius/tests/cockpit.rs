@@ -619,13 +619,12 @@ async fn a_cockpit_start_whose_request_is_dropped_still_ends_as_the_one_cockpit(
         f.h.app.sandbox_shells(&sid()).len() == 1
     })
     .await?;
-    let started = f
-        .h
-        .app
-        .sandbox_shells(&sid())
-        .first()
-        .map(|shell| shell.id().to_owned())
-        .ok_or("no Cockpit")?;
+    let started =
+        f.h.app
+            .sandbox_shells(&sid())
+            .first()
+            .map(|shell| shell.id().to_owned())
+            .ok_or("no Cockpit")?;
     assert_eq!(
         cockpit_id(&f, &f.alice).await?,
         started,

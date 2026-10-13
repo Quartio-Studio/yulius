@@ -70,7 +70,10 @@ impl App {
     /// diagnostics).
     #[must_use]
     pub fn cockpit_starts_pending(&self) -> usize {
-        self.shells.cockpit_start.lock().map_or(0, |starts| starts.len())
+        self.shells
+            .cockpit_start
+            .lock()
+            .map_or(0, |starts| starts.len())
     }
 
     /// The Yulius MCP bearer of `user`'s running Cockpit in `sandbox` (SPEC-037 MGT-005).
@@ -186,10 +189,7 @@ impl App {
             &repo,
             COCKPIT_NAME.to_owned(),
         );
-        match self
-            .launch_cockpit(ctx, record, &runtime, credential)
-            .await
-        {
+        match self.launch_cockpit(ctx, record, &runtime, credential).await {
             Ok(reader) => match self.register_shell(&runtime) {
                 Ok(()) => {
                     self.start_pump(&runtime, reader);

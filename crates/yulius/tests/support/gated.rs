@@ -10,9 +10,7 @@ use async_trait::async_trait;
 use tokio::sync::watch;
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::error::AppResult;
-use yulius_app::ports::session::{
-    AttachedRun, LaunchPlan, RunInspection, SessionHost, SpawnedRun,
-};
+use yulius_app::ports::session::{AttachedRun, LaunchPlan, RunInspection, SessionHost, SpawnedRun};
 
 /// A held attach goes ahead by itself after this long, so a failing test cannot hang.
 const HOLD_LIMIT: Duration = Duration::from_secs(60);
