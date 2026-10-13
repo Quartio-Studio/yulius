@@ -137,6 +137,17 @@ covered:
   - A click straight into another terminal is not a focus request, so a task terminal asked for
     earlier can still take the keyboard from it when it shows. This was the behaviour before too.
   - Closing either gap means changing focus rules shared by every terminal, beyond this fix.
+- **The summary is not merged from a superseded read** (review round 3).
+  - If the latest detail read fails, the newest successful older answer still updates the details
+    (the step list, the request).
+  - It does not update the summary in the header (status, step counts). The status stays current
+    through task events. The step counts wait for the next successful read, and the failed read
+    has warned the person.
+  - Merging only the fields that task events do not own would close that gap, but the rule would be
+    more complex than this defect deserves.
+- **The third review round is the last full one.** After round 3, only a short confirmation pass
+  covered the documentation-only correction above, as the rules allow: decide and record why after
+  three rounds.
 - No ADR: nothing lasting about the architecture is decided.
 
 ## Evidence
@@ -168,9 +179,15 @@ covered:
 - **Independent reviews** (fresh read-only sessions, skill `om-code-review`):
   - Round 1, b852dec: APPROVE. Minors 1, 2, 3 and 6 were fixed test-first; 4 and 5 are recorded
     under Decisions.
-  - Round 2, 165d35d: APPROVE. Its two minors were fixed test-first: an older answer no longer
-    restores the status, and a superseded read no longer warns. Its comment nit was fixed too.
-  - The final head's review is recorded in the merge.
+  - Round 2, 165d35d: APPROVE, with two minors and a comment nit, all fixed.
+    - An older answer no longer restores the status. Fixed test-first: `queued-messages.e2e.ts:297`.
+    - A superseded read that fails no longer warns. This one has no automated test: it needs two
+      reads in flight at once, and the mock holds only one. The round-1 test
+      `an older read is still applied when the newer one fails` checks that the latest read's
+      failure still warns.
+  - Round 3, e48cdaf: APPROVE. Its minor about step counts is recorded under Decisions; its
+    wording findings are fixed in this section. A confirmation pass on this documentation-only
+    change approved the final head.
 - **Issues.**
   - Closed with comments: #242, #253, #301, #308, #280, #282 and #44.
   - #325, #323, #310, #288, #316, #324 and #259 are closed after the merge.
