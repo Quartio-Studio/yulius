@@ -50,4 +50,37 @@ test('a phone keeps one row action: no quick Archive beside the task menu', asyn
   await browser.locator('.task-row:has-text("Improve the code") .task-link').focus();
   await expect(browser.locator('.task-row:has-text("Improve the code") [aria-label="Task actions"]')).toBeVisible();
   await expect(browser.locator('.task-row:has-text("Improve the code") [aria-label="Archive task #13"]')).toBeHidden();
+  // The group's Archive all is there.
+  await expect(screen.getByRole('region', 'Done').getByRole('button', 'Archive all')).toBeVisible();
+});
+
+test('Archive all archives every Done task in one click, with one Undo', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  const done = screen.getByRole('region', 'Done');
+  await expect(done.getByRole('link')).toHaveCount(2);
+  // Only the Done group has it.
+  await expect(screen.getByRole('region', 'Working').getByRole('button', 'Archive all')).toHaveCount(0);
+  await expect(screen.getByRole('region', 'Stopped').getByRole('button', 'Archive all')).toHaveCount(0);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  await done.getByRole('button', 'Archive all').click();
+  await expect(screen.getByText('Archived 2 Done tasks.')).toBeVisible();
+  await expect(done).toBeHidden();
+  expect([await archived(browser, 13), await archived(browser, 11)]).toEqual([true, true]);
+
+  await screen.getByRole('button', 'Undo').click();
+  await expect.poll(async () => [await archived(browser, 13), await archived(browser, 11)]).toEqual([false, false]);
+});
+
+test('Archive all keeps what it archived when one fails and says how many failed', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&failpost=/api/tasks/tsk_studio_11/archive'));
+  const done = screen.getByRole('region', 'Done');
+  await done.getByRole('button', 'Archive all').click();
+
+  await expect(screen.getByText(/Couldn’t archive 1 of 2 tasks: The mock server failed on purpose/)).toBeVisible();
+  await expect(done.getByRole('link', /3D model viewer/)).toBeVisible();
+  await expect(done.getByRole('link', /Improve the code/)).toBeHidden();
+  expect([await archived(browser, 13), await archived(browser, 11)]).toEqual([true, false]);
+  // The one that failed can be tried again.
+  await expect(done.getByRole('button', 'Archive all')).toBeEnabled();
 });

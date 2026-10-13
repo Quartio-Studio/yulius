@@ -142,6 +142,63 @@ export async function restoreTask(ctx, task) {
   return updated;
 }
 
+// "Archive all" sends at most this many archive requests at a time (SPEC-062 QAR-002).
+const BULK_CONCURRENCY = 4;
+
+/** Runs `run` on every item, at most BULK_CONCURRENCY at a time; resolves to the items that failed with their errors. */
+async function eachBounded(items, run) {
+  const queue = [...items];
+  const failed = [];
+  const worker = async () => {
+    for (let item = queue.shift(); item; item = queue.shift()) {
+      try {
+        await run(item);
+      } catch (error) {
+        failed.push({ item, error });
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(BULK_CONCURRENCY, queue.length) }, worker));
+  return failed;
+}
+
+/**
+ * Archive several tasks in one go (SPEC-062 QAR-002, QAR-003): each through the per-task archive,
+ * so the server checks each one; rows leave as they succeed; one toast with one Undo for them all,
+ * and one error toast for those that failed.
+ */
+export async function archiveAll(ctx, tasks, what) {
+  const archived = [];
+  const failed = await eachBounded(tasks, async (task) => {
+    const updated = await ctx.api.post(`/api/tasks/${enc(task.id)}/archive`);
+    if (updated && updated.id) ctx.store.upsertTask(updated);
+    ctx.store.removeTask(task.id, { byUser: true });
+    archived.push(task);
+  });
+  if (archived.length) {
+    const n = archived.length;
+    toast(`Archived ${n} ${what}${n === 1 ? '' : 's'}.`, { kind: 'ok', action: { label: 'Undo', run: () => restoreAll(ctx, archived) } });
+    // The tasks are one sandbox's (one sidebar group): leave the page of one that was archived.
+    const route = ctx.route();
+    const sandbox = ctx.store.sandboxById(archived[0].sandbox_id);
+    if (sandbox && route && route.name === 'task' && route.slug === sandbox.slug && archived.some((task) => task.number === route.number)) {
+      ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}`);
+    }
+  }
+  if (failed.length) errorToast(failed[0].error, `Couldn’t archive ${failed.length} of ${tasks.length} tasks`);
+}
+
+/** Undo of "Archive all": restores the tasks it archived, with one toast. */
+async function restoreAll(ctx, tasks) {
+  const failed = await eachBounded(tasks, async (task) => {
+    const updated = await ctx.api.post(`/api/tasks/${enc(task.id)}/restore`);
+    if (updated && updated.id) ctx.store.upsertTask(updated);
+  });
+  const restored = tasks.length - failed.length;
+  if (restored) toast(`Restored ${restored} task${restored === 1 ? '' : 's'}.`, { kind: 'ok' });
+  if (failed.length) errorToast(failed[0].error, `Couldn’t restore ${failed.length} of ${tasks.length} tasks`);
+}
+
 // ---------------------------------------------------------------- feedback
 
 /** Was the task done correctly? (ANL-002) */

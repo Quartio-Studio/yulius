@@ -361,6 +361,8 @@ button.task-group-head:hover { color: var(--text); }
 .task-group-count { margin-left: auto; font-weight: 500; font-variant-numeric: tabular-nums; }
 .task-group-head.group-ended .task-group-count { margin-left: auto; }
 .task-group-head.group-ended .task-group-count + .icon { margin-left: 4px; }
+/* Done's "Archive all" (SPEC-062) sits after the count; it reads as a button, not a heading. */
+.task-group-action { margin-right: -8px; text-transform: none; letter-spacing: normal; font-weight: 500; }
 /* Sidebar task rows: one compact line — state icon on the nav icons' axis, pull request, title on
    the nav labels' axis, age (the kebab takes the age's place on hover). */
 .task-row { position: relative; border-radius: var(--radius); }

@@ -5,7 +5,7 @@ import { h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, k
 import { relShort, relLong, bytes, duration, dateTime, resetLabel } from './format.js';
 import { taskInfo, taskActions, activityLine, allows } from './status.js';
 import { href } from './router.js';
-import { openSandboxDialog, confirmRemoveSandbox, openTaskMenu, archiveTask } from './actions.js';
+import { openSandboxDialog, confirmRemoveSandbox, openTaskMenu, archiveTask, archiveAll } from './actions.js';
 import { createNotificationCenter } from './notifications.js';
 import { BRAND } from './brand.js';
 import { readJson, writeJson } from './store.js';
@@ -680,6 +680,7 @@ export function createSidebar(ctx) {
   const ENDED_OPEN_KEY = 'yulius.sidebarStoppedOpen';
   let endedOpen = readJson(ENDED_OPEN_KEY, true) !== false;
   let shape = '';
+  let archivingAll = false; // "Archive all" runs: its button stays disabled until it ends
 
   const rowInfo = (task) => taskInfo(task, ctx.store.state.actionRequests, ctx.store.pullsOf(task.sandbox_id).get(task.id));
 
@@ -747,8 +748,31 @@ export function createSidebar(ctx) {
     row.archive.title = label;
   }
 
-  function groupHead(group, size) {
+  const archivable = (rows) => rows.filter((row) => taskActions(row.task, sandbox.access, row.pr).archive).map((row) => row.task);
+
+  /** Done's "Archive all" (SPEC-062 QAR-002): every archivable Done task, one click, one Undo. */
+  function archiveAllButton(rows) {
+    if (!archivable(rows).length) return null;
+    return h('button', { type: 'button', class: 'btn btn-sm btn-ghost task-group-action', disabled: archivingAll, title: 'Archive every Done task', onClick: async () => {
+      const tasks = archivable(rows);
+      if (archivingAll || !tasks.length) return;
+      archivingAll = true;
+      shape = '';
+      renderTasks();
+      try {
+        await archiveAll(ctx, tasks, 'Done task');
+      } finally {
+        archivingAll = false;
+        shape = '';
+        renderTasks();
+      }
+    } }, icon('archive', { size: 14 }), 'Archive all');
+  }
+
+  function groupHead(group, rows) {
+    const size = rows.length;
     const label = [h('span', { class: 'nav-slot' }, icon(group.icon, { size: 16 })), h('span', { class: 'task-group-name' }, group.name), h('span', { class: 'task-group-count' }, String(size))];
+    if (group.id === 'done') return h('div', { class: ['task-group-head', `group-${group.id}`] }, label, archiveAllButton(rows));
     if (group.id !== 'ended') return h('div', { class: ['task-group-head', `group-${group.id}`] }, label);
     return h('button', { type: 'button', class: ['task-group-head', 'group-ended'], 'aria-expanded': String(endedOpen), onClick: () => {
       endedOpen = !endedOpen;
@@ -797,11 +821,11 @@ export function createSidebar(ctx) {
     }
     for (const id of [...rows.keys()]) if (!seen.has(id)) rows.delete(id);
     // Rebuild only when the grouping or order changed, so focus is not lost on every update.
-    const next = GROUPS.map((g) => `${g.id}:${g.id === 'ended' && !endedOpen ? 'closed' : ''}:${grouped.get(g.id).map((r) => r.task.id).join(',')}`).join('|');
+    const next = `${sandbox.access}|${GROUPS.map((g) => `${g.id}:${g.id === 'ended' && !endedOpen ? 'closed' : ''}:${grouped.get(g.id).map((r) => r.task.id).join(',')}`).join('|')}`;
     if (next === shape) return;
     shape = next;
     setChildren(list, GROUPS.filter((g) => grouped.get(g.id).length).map((g) => h('section', { class: ['task-group', `group-${g.id}`], 'aria-label': g.name },
-      groupHead(g, grouped.get(g.id).length),
+      groupHead(g, grouped.get(g.id)),
       g.id === 'ended' && !endedOpen ? null : h('div', { role: 'list' }, grouped.get(g.id).map((r) => r.el)))));
   }
 
