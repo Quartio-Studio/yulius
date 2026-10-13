@@ -41,10 +41,25 @@ example when it starts deploying for real), and record every change as a decisio
    matrices to translate): each job's run steps become the gate script or a `[[ci.jobs]]` entry,
    matrices become `matrix` values, actions (`uses:`) become the equivalent commands, services
    (databases, caches) become disposable local containers or processes started by the script,
-   and secrets come from the project's agent secrets, never inline. Run the gate locally and show
-   it passes. Then delete `.github/workflows/` in the same pull request, so gates and merges rely
-   only on Yulius CI results (`ci_status`). Merge gating needs no rulesets: Yulius enforces the
-   gate at merge.
+   and secrets come from the project's agent secrets, never inline. Yulius CI gives the jobs a
+   `HOME` and a cache (`$YULIUS_CI_CACHE`) of their own, separate from the agent's: they start
+   empty and persist across runs, as do each job's checkout and its ignored files. A job installs
+   what it needs itself and never depends on what an earlier run left behind, or it passes on the
+   cache and fails on a fresh machine. Run the gate locally and show it passes, from the
+   repository root both normally and, once committed, in a clean checkout with a fresh home and
+   CI's environment (this prints the job's exit status and removes everything it made):
+
+   ```sh
+   d="$(mktemp -d "$HOME/.ci-proof.XXXXXX")"; mkdir "$d/home" "$d/cache"
+   git worktree add --detach "$d/repo" HEAD && (cd "$d/repo" && env -i HOME="$d/home" \
+     YULIUS_CI_CACHE="$d/cache" PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 TERM=dumb \
+     NO_COLOR=1 CI=true GIT_TERMINAL_PROMPT=0 YULIUS_CI=1 sh -c '<command>' </dev/null); s=$?
+   git worktree remove --force "$d/repo"; chmod -R u+w "$d"; rm -rf "$d"; echo "exit $s"
+   ```
+
+   Then delete `.github/workflows/` in the same pull request, so gates and merges rely only on
+   Yulius CI results (`ci_status`). Merge gating needs no rulesets: Yulius enforces the gate at
+   merge.
 3. **Environments.** Define dev (after integration) and production (after promotion) in
    `yulius.toml` `[delivery]` as `[[delivery.environments]]` entries with an idempotent deploy
    `command` and `verify = "command"` for a smoke test against the deployed app (health endpoint,

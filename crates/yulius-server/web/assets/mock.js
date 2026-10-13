@@ -276,6 +276,10 @@ function seed(params) {
   }
   // `tasks=0`: sandboxes without any task yet (the composer then offers no start rule, SPEC-022).
   if (params.get('tasks') === '0') db.tasks = [];
+  // `tasks=many`: 30 more queued tasks in studio, a long "Run after" menu (SPEC-038).
+  if (params.get('tasks') === 'many') {
+    for (let number = 15; number < 45; number += 1) db.tasks.push(t('sb_studio', number, `Queued idea ${number}`, 'claude', 'queued', null, { noSteps: true }));
+  }
   recount(db);
   return db;
 }
