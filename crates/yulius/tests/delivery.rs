@@ -22,7 +22,7 @@ use yulius_app::model::{
     AttemptRecord, GitHubTokenRecord, LaunchKind, SandboxRecord, Sealed, Secret, StepRecord,
     TaskOrigin, TaskRecord, UserRecord,
 };
-use yulius_app::ports::git::{CommitInfo, DiffStat, GitPort};
+use yulius_app::ports::git::{CommitInfo, DiffStat, GitPort, MergeIntegration};
 use yulius_app::ports::github::{ChecksReport, ChecksSource, ChecksState};
 use yulius_app::ports::store::{
     CoordinationStore, InstanceStore, SandboxStore, TaskStore, UserStore,
@@ -32,7 +32,7 @@ use yulius_domain::delivery::{DeliveryProfile, DeliveryStage};
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AttemptId, SandboxId, StepId, TaskId, UserId};
 use yulius_domain::permission::GitHubPermissions;
-use yulius_domain::task::{AttemptState, TaskStatus};
+use yulius_domain::task::{Activity, AttemptState, TaskStatus};
 use yulius_domain::time::Timestamp;
 
 type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
@@ -169,6 +169,28 @@ impl GitPort for RealGit {
     }
     async fn remove_worktree(&self, _: &Path, _: &Path, _: &Path) -> AppResult<bool> {
         Ok(false)
+    }
+    async fn merge_integration(
+        &self,
+        worktree: &Path,
+        integration: &str,
+        _token: &Secret,
+    ) -> AppResult<MergeIntegration> {
+        self.run(worktree, &["fetch", "--quiet", "origin"]).await?;
+        // The product's merge (identity from the worktree's own configuration).
+        let git = yulius_git::Git::new("git")
+            .with_env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .with_env("GIT_CONFIG_NOSYSTEM", "1");
+        let (worktree, rev) = (worktree.to_path_buf(), format!("origin/{integration}"));
+        let merged = tokio::task::spawn_blocking(move || git.merge_into(&worktree, &rev))
+            .await
+            .map_err(AppError::internal)?
+            .map_err(|e| AppError::Upstream(e.to_string()))?;
+        Ok(match merged {
+            yulius_git::MergeInto::UpToDate => MergeIntegration::UpToDate,
+            yulius_git::MergeInto::Merged(head) => MergeIntegration::Merged(head),
+            yulius_git::MergeInto::Conflict(files) => MergeIntegration::Conflict(files),
+        })
     }
     async fn has_changes(&self, worktree: &Path) -> AppResult<bool> {
         Ok(!self
@@ -2514,7 +2536,6 @@ async fn needs_you_counts_follow_the_sidebar_rule() -> TestResult {
     use yulius_app::intake::{ChainRecord, HoldRecord, hold_state};
     use yulius_app::ports::store_ext::IntakeStore;
     use yulius_domain::intake::PromptClass;
-    use yulius_domain::task::Activity;
 
     let f = fixture(&DeliveryProfile::standard()).await?;
     let now = Timestamp(5);
@@ -2820,6 +2841,113 @@ async fn an_armed_merge_happens_when_the_checks_pass() -> TestResult {
             .is_empty(),
         "MSR-002: no message"
     );
+    Ok(())
+}
+
+/// Commits `file` on `base` of the fixture's origin, as another merged pull request would.
+fn advance_base(f: &Fixture, base: &str, file: &str, content: &str) -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let clone = dir.path().join("c");
+    git(
+        dir.path(),
+        &[
+            "clone",
+            "--quiet",
+            "--branch",
+            base,
+            &f.origin.to_string_lossy(),
+            &clone.to_string_lossy(),
+        ],
+    )?;
+    commit_file(&clone, file, content, &format!("Base: {file}"))?;
+    git(
+        &clone,
+        &["push", "--quiet", "origin", &format!("HEAD:{base}")],
+    )?;
+    Ok(())
+}
+
+/// DLV-203: an armed merge whose branch fell behind its base is brought up to date by Yulius (a
+/// merge in the task's worktree, pushed as a fast-forward) and stays armed for the new head,
+/// which is merged once its checks pass; a real conflict is aborted, leaves the worktree as it
+/// was and tells the agent what to resolve.
+#[tokio::test]
+async fn an_armed_merge_behind_its_base_is_brought_up_to_date() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let f = &t.f;
+    let sandbox = SandboxId::parse("s1")?;
+    let task = TaskId::parse("t1")?;
+    f.h.store
+        .transition_task(
+            &task,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+    // A task's worktree has its creator's identity (set at its start).
+    git(&t.wt, &["config", "user.name", "Bob"])?;
+    git(&t.wt, &["config", "user.email", "bob@yulius.test"])?;
+
+    // A real conflict first: the base adds the same file differently.
+    t.arm().await?;
+    advance_base(f, "quartio", "landing.txt", "base version")?;
+    f.h.app.merge_armed(&sandbox).await;
+    let outcome = t.outcome().await?;
+    assert!(
+        outcome.contains("conflicts with `quartio`") && outcome.contains("`landing.txt`"),
+        "{outcome}"
+    );
+    assert_eq!(git(&t.wt, &["rev-parse", "HEAD"])?, t.head, "aborted");
+    assert_eq!(git(&t.wt, &["status", "--porcelain"])?, "", "left clean");
+    Ok(())
+}
+
+/// DLV-203, the clean case of `an_armed_merge_behind_its_base_is_brought_up_to_date`.
+#[tokio::test]
+async fn an_armed_merge_is_kept_current_and_merged_on_green() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let f = &t.f;
+    let sandbox = SandboxId::parse("s1")?;
+    let task = TaskId::parse("t1")?;
+    f.h.store
+        .transition_task(
+            &task,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+    // A task's worktree has its creator's identity (set at its start).
+    git(&t.wt, &["config", "user.name", "Bob"])?;
+    git(&t.wt, &["config", "user.email", "bob@yulius.test"])?;
+    t.arm().await?;
+    let seen = f.h.store.task(&task).await?.ok_or("t1")?;
+    eprintln!(
+        "DEBUG status={:?} activity={:?}",
+        seen.status, seen.activity
+    );
+    advance_base(f, "quartio", "other.txt", "unrelated")?;
+    f.h.app.merge_armed(&sandbox).await;
+    let head = git(&t.wt, &["rev-parse", "HEAD"])?;
+    assert_ne!(head, t.head, "Yulius merged the base in");
+    git(&t.wt, &["merge-base", "--is-ancestor", &t.head, "HEAD"])?;
+    git(
+        &t.wt,
+        &["merge-base", "--is-ancestor", "origin/quartio", "HEAD"],
+    )?;
+    assert_eq!(
+        git(&f.origin, &["rev-parse", "feat/1-landing"])?,
+        head,
+        "pushed as a fast-forward"
+    );
+    assert_eq!(t.wait(Value::Null).await?["merge_armed"], true);
+    // Green at the new head: merged.
+    f.h.github.set_checks(&head, ChecksState::Success);
+    f.h.app.merge_armed(&sandbox).await;
+    assert_ne!(f.delivery("t1").await?["stage"], "pr_open");
     Ok(())
 }
 

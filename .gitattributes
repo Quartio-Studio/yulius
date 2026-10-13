@@ -5,3 +5,7 @@ apm.lock.yaml text eol=lf
 # Every change adds a line at the top of the changes log; parallel branches always collided there.
 # Git's built-in union driver keeps both sides when an agent merges the integration branch.
 docs/changes.md merge=union
+# The ADR index is one line per decision appended at the end; parallel branches conflicted there in
+# 24 of 27 dev updates (F 2026-10-12). Yulius merges the integration branch locally (SPEC-050
+# DLV-203), so the union driver resolves it.
+docs/decisions/README.md merge=union
