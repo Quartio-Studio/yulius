@@ -64,7 +64,7 @@ read-only: a locked prompt box, nothing to type into.
 - [x] Read the product context and related work, then write and validate the spec
 - [x] A session reads as Claude Code's TUI: prompts, Claude's messages, tool calls with results and diffs
 - [x] Recorded slash commands and their output read as the TUI shows them, without raw tags
-- [ ] The session looks old and read-only: a faded palette in both themes, a locked prompt box and a spider-web corner
+- [x] The session looks old and read-only: a faded palette in both themes, a locked prompt box and a spider-web corner
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 

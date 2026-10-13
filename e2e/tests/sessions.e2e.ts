@@ -178,6 +178,86 @@ test('a slash command, its output, a ! command and an interruption read as the T
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+// "the contrast and the saturation should be lower to communicate that this session is old and this
+// is a session not a task" — still at least WCAG AA for text, in both themes.
+test('a session is faded in both themes: less contrast and saturation than a live terminal, still AA', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/sessions/ses_imp_flaky'));
+  await expect(browser.locator('.ss-tui')).toBeVisible();
+  for (const theme of ['dark', 'light']) {
+    const m = await browser.evaluate((name) => {
+      document.documentElement.setAttribute('data-theme', name);
+      const well = document.querySelector('.ss-tui')!;
+      const rgb = (token: string) => {
+        const probe = well.appendChild(document.createElement('span'));
+        probe.style.color = `var(${token})`;
+        const [r, g, b] = getComputedStyle(probe).color.match(/\d+(\.\d+)?/g)!.map(Number);
+        probe.remove();
+        return [r, g, b];
+      };
+      const lum = (c: number[]) => {
+        const [r, g, b] = c.map((v) => { const s = v / 255; return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; });
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      };
+      const contrast = (a: string, b: string) => { const [x, y] = [lum(rgb(a)), lum(rgb(b))].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+      const saturation = (token: string) => { const c = rgb(token).map((v) => v / 255); const max = Math.max(...c); const min = Math.min(...c); const l = (max + min) / 2; return max === min ? 0 : (max - min) / (1 - Math.abs(2 * l - 1)); };
+      return {
+        live: contrast('--term-fg', '--term-bg'),
+        fg: contrast('--session-fg', '--session-bg'),
+        dim: contrast('--session-dim', '--session-bg'),
+        dimOnPrompt: contrast('--session-dim', '--session-prompt-bg'),
+        fgOnPrompt: contrast('--session-fg', '--session-prompt-bg'),
+        ok: contrast('--session-ok', '--session-bg'),
+        err: contrast('--session-err', '--session-bg'),
+        added: contrast('--session-fg', '--session-add-bg'),
+        removed: contrast('--session-fg', '--session-del-bg'),
+        sat: { ok: saturation('--session-ok'), green: saturation('--ansi-green'), err: saturation('--session-err'), red: saturation('--ansi-red') },
+      };
+    }, theme);
+    expect(m.fg, theme).toBeLessThan(m.live * 0.75);
+    for (const value of [m.fg, m.dim, m.dimOnPrompt, m.fgOnPrompt, m.ok, m.err, m.added, m.removed]) expect(value, theme).toBeGreaterThanOrEqual(4.5);
+    expect(m.sat.ok, theme).toBeLessThan(m.sat.green * 0.7);
+    expect(m.sat.err, theme).toBeLessThan(m.sat.red * 0.7);
+  }
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+// "it should be read-only … No way to write to them": the TUI's prompt box is locked, and a spider
+// web in the corner says nobody has typed here for a while.
+test('a session ends with a locked prompt box and has a spider web in its corner', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/sessions/ses_imp_checkout'));
+  const locked = browser.locator('.ss-tui .ss-locked');
+  await expect(locked).toHaveText(/>\s*Read-only session · nothing can be sent/);
+  expect(await browser.evaluate(() => {
+    const box = document.querySelector('.ss-tui .ss-locked')!;
+    return [box.matches(':last-child'), box.closest('button, a, [tabindex], [contenteditable]') === null];
+  })).toEqual([true, true]);
+  expect(await browser.evaluate(() => document.querySelectorAll('#main textarea, #main input:not([type=search]), #main [contenteditable], #main .xterm').length)).toBe(0);
+
+  const web = await browser.evaluate(() => {
+    const well = document.querySelector('.ss-tui')!.getBoundingClientRect();
+    const svg = document.querySelector('.ss-tui > svg.ss-web')!;
+    const box = svg.getBoundingClientRect();
+    return {
+      hidden: svg.getAttribute('aria-hidden'),
+      pointer: getComputedStyle(svg).pointerEvents,
+      crisp: svg.getAttribute('shape-rendering'),
+      pixels: svg.querySelectorAll('rect').length,
+      top: Math.round(box.top - well.top),
+      right: Math.round(well.right - box.right),
+      // The first lines make room for it instead of running under it.
+      clear: [...document.querySelectorAll('.ss-tui .ss-entries > li')].filter((li) => li.getBoundingClientRect().top < box.bottom).every((li) => li.getBoundingClientRect().right <= box.left + 1),
+    };
+  });
+  expect(web.hidden).toBe('true');
+  expect(web.pointer).toBe('none');
+  expect(web.crisp).toBe('crispEdges');
+  expect(web.pixels).toBeGreaterThan(20);
+  expect(web.top).toBeLessThanOrEqual(2);
+  expect(web.right).toBeLessThanOrEqual(2);
+  expect(web.clear).toBe(true);
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
 test('a search match opens the transcript at its line', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/sessions?q=fulfilling'));
   await screen.getByRole('list', 'Sessions').getByRole('link', /Add Stripe checkout/).click();

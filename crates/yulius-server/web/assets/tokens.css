@@ -131,6 +131,17 @@
   --ansi-magenta: #c882c2; --ansi-bright-magenta: #e1a7db;
   --ansi-cyan: #6fc1c5;    --ansi-bright-cyan: #96dce0;
   --ansi-white: #cdcac3;   --ansi-bright-white: #f5f1ea;
+  /* a past session (SPEC-075): the terminal faded, lower in contrast and saturation, text still ≥ 4.5:1 */
+  --session-bg: #171615;
+  --session-fg: #b9b4ab;
+  --session-dim: #94908a;
+  --session-border: #2a2928;
+  --session-prompt-bg: #232120;
+  --session-ok: #8fae99;
+  --session-err: #c99087;
+  --session-add-bg: #222a24;
+  --session-del-bg: #2f2220;
+  --session-web: #4a4744;  /* the corner's spider web, decoration */
   /* material: a fine grain and a soft light from above over the canvas, pages, sidebar and rail */
   --texture: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.94 0 0 0 0 0.92 0 0 0 0 0.88 0 0 0 0.075 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
   --light: radial-gradient(120% 60% at 50% -12%, rgba(240, 235, 225, 0.075), rgba(240, 235, 225, 0.02) 45%, transparent 70%);
@@ -198,6 +209,16 @@
   --ansi-magenta: #7c3b77; --ansi-bright-magenta: #6a2a66;
   --ansi-cyan: #147175;    --ansi-bright-cyan: #04585c;
   --ansi-white: #5d5a57;   --ansi-bright-white: #222120;
+  --session-bg: #ece8e1;
+  --session-fg: #4d4944;
+  --session-dim: #5f5a54;
+  --session-border: #d9d3c9;
+  --session-prompt-bg: #e0dbd2;
+  --session-ok: #4b6a55;
+  --session-err: #8a4b42;
+  --session-add-bg: #dfe5df;
+  --session-del-bg: #eedcd7;
+  --session-web: #c4bdb1;
   /* material: a fine grain and a soft light from above over the canvas, pages, sidebar and rail */
   --texture: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.09 0 0 0 0 0.08 0 0 0 0 0.07 0 0 0 0.06 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
   --light: radial-gradient(120% 60% at 50% -12%, rgba(255, 253, 248, 0.7), transparent 65%);
@@ -231,16 +252,6 @@
   --warn-soft-solid: color-mix(in srgb, var(--warn) 14%, var(--surface-2));
   --info-soft-solid: color-mix(in srgb, var(--info) 14%, var(--surface-2));
   --violet-border: color-mix(in srgb, var(--violet) 45%, transparent);
-  /* A session's transcript (SPEC-075): the terminal's palette. */
-  --session-bg: var(--term-bg);
-  --session-fg: var(--term-fg);
-  --session-dim: var(--ansi-bright-black);
-  --session-border: var(--border);
-  --session-prompt-bg: var(--surface-3);
-  --session-ok: var(--ansi-green);
-  --session-err: var(--ansi-red);
-  --session-add-bg: color-mix(in srgb, var(--ansi-green) 22%, var(--term-bg));
-  --session-del-bg: color-mix(in srgb, var(--ansi-red) 22%, var(--term-bg));
 
   /* Elevation: L0 canvas, L1 cards (border only), L2 menus/popovers/toasts, L3 modals/drawer. */
   --shadow-sm: 0 2px 8px var(--shadow-soft-color);

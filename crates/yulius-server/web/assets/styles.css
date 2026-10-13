@@ -2112,14 +2112,22 @@ button.task-group-head:hover { color: var(--text); }
 .ss-notice { display: inline-flex; align-items: center; gap: 4px; margin: 0; }
 .ss-body { display: flex; flex-direction: column; gap: 16px; }
 /* A session printed as Claude Code's TUI printed it (SPEC-075), in its own faded palette (--session-*). */
-.ss-tui { position: relative; display: flex; flex-direction: column; gap: 16px; padding: 16px 20px; border: 1px solid var(--session-border); border-radius: var(--radius-lg); background: var(--session-bg); color: var(--session-fg); font-family: var(--font-mono); font-size: var(--fs-term); line-height: var(--lh); }
+.ss-tui { position: relative; display: flow-root; padding: 16px 20px; border: 1px solid var(--session-border); border-radius: var(--radius-lg); background: var(--session-bg); color: var(--session-fg); font-family: var(--font-mono); font-size: var(--fs-term); line-height: var(--lh); }
 .ss-tui ::selection { background: var(--term-selection); }
 .ss-dim { color: var(--session-dim); }
-.ss-entries { display: flex; flex-direction: column; gap: 12px; margin: 0; padding: 0; list-style: none; }
+/* Block flow, so the lines beside the corner's web (a float) make room for it. */
+.ss-entries { margin: 0; padding: 0; list-style: none; }
+.ss-entry + .ss-entry { margin-top: 12px; }
+.ss-tui > .ss-more, .ss-tui > .ss-locked { margin-top: 16px; }
+.ss-web { float: right; width: 84px; height: 102px; margin: -16px -20px 8px 16px; pointer-events: none; } /* 3 px pixels */
+.ss-web-thread { fill: var(--session-web); }
+.ss-web-spider { fill: var(--session-dim); }
+.ss-locked { display: flex; align-items: center; gap: 1ch; padding: 6px 1ch; border: 1px solid var(--session-border); border-radius: var(--radius); color: var(--session-dim); cursor: not-allowed; }
+.ss-locked > .icon { flex: none; }
 .ss-entry { position: relative; display: flex; flex-direction: column; gap: 4px; min-width: 0; content-visibility: auto; contain-intrinsic-size: auto 48px; }
 .ss-entry.ss-sidechain { margin-left: 2ch; padding-left: 2ch; border-left: 1px solid var(--session-border); }
 .ss-entry.ss-target { border-radius: var(--radius-sm); box-shadow: 0 0 0 6px var(--session-bg), 0 0 0 7px var(--session-dim); }
-.ss-when { position: absolute; top: 0; right: 0; padding: 0 0 0 8px; background: var(--session-bg); }
+.ss-when { position: absolute; top: 0; right: 0; padding: 2px 1ch 0 8px; }
 .ss-block { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .ss-line { display: flex; gap: 1ch; min-width: 0; }
 .ss-line-body { flex: 1; min-width: 0; }
@@ -2160,6 +2168,7 @@ button.task-group-head:hover { color: var(--text); }
 @container page (max-width: 640px) {
   .ss-row-link { padding: 12px; }
   .ss-tui { padding: 12px; font-size: var(--fs-sm); line-height: var(--lh-sm); }
+  .ss-web { width: 56px; height: 68px; margin: -12px -12px 8px 12px; } /* 2 px pixels */
   .ss-user .ss-prompt { padding-right: 1ch; }
   .ss-when { position: static; align-self: flex-end; padding: 0; }
   .ss-summary { margin-left: 0; }

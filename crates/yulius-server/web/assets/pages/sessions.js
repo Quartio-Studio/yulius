@@ -324,6 +324,67 @@ function block(item, results, role) {
   }
 }
 
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/**
+ * A spider web in pixel art for the well's top-right corner (SPEC-075): threads from the corner,
+ * rings between them and a spider hanging from one, as rows of square pixels.
+ */
+function spiderWeb() {
+  const width = 28;
+  const height = 34;
+  const web = new Set();
+  const spider = new Set();
+  const plot = (into, x, y) => { if (x >= 0 && x < width && y >= 0 && y < height) into.add(`${x},${y}`); };
+  const line = (into, x0, y0, x1, y1) => { // Bresenham
+    const dx = Math.abs(x1 - x0);
+    const dy = -Math.abs(y1 - y0);
+    const sx = x0 < x1 ? 1 : -1;
+    const sy = y0 < y1 ? 1 : -1;
+    let err = dx + dy;
+    for (;;) {
+      plot(into, x0, y0);
+      if (x0 === x1 && y0 === y1) return;
+      const e2 = 2 * err;
+      if (e2 >= dy) { err += dy; x0 += sx; }
+      if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+  };
+  const corner = [width - 1, 0];
+  // From the top wall (0°) round to the right wall (90°); the walls carry no thread of their own.
+  const angles = [0, 22.5, 45, 67.5, 90].map((deg) => (deg * Math.PI) / 180);
+  const at = (angle, r) => [Math.round(corner[0] - r * Math.cos(angle)), Math.round(corner[1] + r * Math.sin(angle))];
+  for (const angle of angles.slice(1, -1)) line(web, ...corner, ...at(angle, 27));
+  for (const r of [8, 15, 22]) {
+    for (let i = 0; i + 1 < angles.length; i += 1) line(web, ...at(angles[i], r), ...at(angles[i + 1], r));
+  }
+  const [hx, hy] = at(angles[2], 15);
+  line(web, hx, hy, hx, 28);
+  ['.#...#.', '..###..', '#######', '..###..', '.#...#.'].forEach((row, dy) => [...row].forEach((c, dx) => { if (c === '#') plot(spider, hx - 3 + dx, 29 + dy); }));
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  for (const [name, value] of Object.entries({ class: 'ss-web', viewBox: `0 0 ${width} ${height}`, 'aria-hidden': 'true', focusable: 'false', 'shape-rendering': 'crispEdges' })) svg.setAttribute(name, value);
+  const pixels = (cells, className) => {
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        if (!cells.has(`${x},${y}`)) continue;
+        let run = 1;
+        while (cells.has(`${x + run},${y}`)) run += 1;
+        const rect = document.createElementNS(SVG_NS, 'rect');
+        for (const [name, value] of Object.entries({ class: className, x, y, width: run, height: 1 })) rect.setAttribute(name, String(value));
+        svg.append(rect);
+        x += run - 1;
+      }
+    }
+  };
+  for (const cell of spider) web.delete(cell);
+  pixels(web, 'ss-web-thread');
+  pixels(spider, 'ss-web-spider');
+  return svg;
+}
+
+/** Where the TUI's prompt box was: locked, nothing can be typed or sent (not a control). */
+const lockedPrompt = () => h('div', { class: 'ss-locked' }, mark('>', 'prompt'), h('span', { class: 'ss-line-body' }, 'Read-only session · nothing can be sent'), icon('lock', { size: 14 }));
+
 /** Mount one session's read-only transcript. */
 export function mountSessionView(ctx, sandbox, id, route) {
   const back = sessionsPath(sandbox);
@@ -437,7 +498,7 @@ export function mountSessionView(ctx, sandbox, id, route) {
       session = page.session;
       next = page.next;
       renderHead();
-      if (first) setChildren(body, earlier, h('div', { class: 'ss-tui' }, entriesEl, more));
+      if (first) setChildren(body, earlier, h('div', { class: 'ss-tui' }, spiderWeb(), entriesEl, more, lockedPrompt()));
       append(page.entries || []);
       if (first && !entriesEl.children.length && next === null) setChildren(body, emptyState({ iconName: 'chat', title: 'Nothing to show', text: 'This transcript has no messages yet, or it is no longer on the server.' }));
       if (first && target !== null) {
