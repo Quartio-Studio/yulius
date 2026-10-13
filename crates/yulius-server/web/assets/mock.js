@@ -1820,6 +1820,74 @@ route('DELETE', `/api/sandboxes/${ID}/shells/${ID}`, ({ db, p }) => {
   return json(204);
 });
 
+// ---- Notes (SPEC-041): one notepad per sandbox and one for the team; a save names the revision it
+// started from and a stale one is refused (409). Kept in sessionStorage so a reload finds them, as
+// it would on the server. Tests edit as a teammate (`editNote`), fail saves (`failNoteSaves`) and
+// loads (`failNoteLoads`), lose a stored save's answer (`loseNoteResponse`) and see which requests
+// were sent to outlive the page (`keepaliveRequests`).
+
+const NOTES_KEY = 'yulius.mock.notes';
+
+function notesOf(db) {
+  if (!db.notes) {
+    let saved = null;
+    try { saved = JSON.parse(sessionStorage.getItem(NOTES_KEY) || 'null'); } catch { /* none */ }
+    db.notes = saved && typeof saved === 'object' ? saved : {};
+  }
+  return db.notes;
+}
+
+function noteView(db, scope) {
+  const note = notesOf(db)[scope];
+  return {
+    scope: scope === 'team' ? 'team' : 'sandbox',
+    body: note ? note.body : '',
+    revision: note ? note.revision : 0,
+    updated_at: note ? note.updated_at : null,
+    updated_by: note ? note.updated_by : null,
+  };
+}
+
+/** Stores `body` as the next revision of `scope` and announces it unless `announce` is false. */
+function putNote(db, scope, body, by, { announce = true } = {}) {
+  const notes = notesOf(db);
+  const revision = (notes[scope] ? notes[scope].revision : 0) + 1;
+  notes[scope] = { body, revision, updated_by: by, updated_at: new Date().toISOString() };
+  try { sessionStorage.setItem(NOTES_KEY, JSON.stringify(notes)); } catch { /* memory only */ }
+  if (announce) {
+    const sandboxId = scope.startsWith('sandbox:') ? scope.slice('sandbox:'.length) : null;
+    emit(db, { type: 'note.updated', scope: sandboxId ? 'sandbox' : 'team', sandbox_id: sandboxId, revision, updated_by: by });
+  }
+  return noteView(db, scope);
+}
+
+function saveNote(db, scope, body) {
+  if (db.failNoteSaves) fail(503, 'unavailable', 'The mock server is unavailable on purpose');
+  if (typeof body.body !== 'string' || !Number.isInteger(body.revision)) fail(422, 'invalid', 'body and revision are required');
+  if (new TextEncoder().encode(body.body).length > 256 * 1024) fail(422, 'invalid', 'notes hold at most 256 KiB');
+  if (noteView(db, scope).revision !== body.revision) fail(409, 'conflict', 'someone else changed these notes; load them again');
+  // Like the server: the GitHub login, else the display name.
+  const note = putNote(db, scope, body.body, db.me.user.github_linked ? db.me.user.login : db.me.user.display_name);
+  // Stored, but the answer does not arrive (a timeout or a dropped connection).
+  if (db.loseNoteResponse) fail(503, 'unavailable', 'The answer was lost on purpose');
+  return note;
+}
+
+function loadNote(db, scope) {
+  db.noteLoads = (db.noteLoads || 0) + 1;
+  if (db.failNoteLoads) fail(503, 'unavailable', 'The mock server is unavailable on purpose');
+  return noteView(db, scope);
+}
+
+route('GET', '/api/notes', ({ db }) => loadNote(db, 'team'));
+route('PUT', '/api/notes', ({ db, body }) => saveNote(db, 'team', body));
+route('GET', `/api/sandboxes/${ID}/notes`, ({ db, p }) => loadNote(db, `sandbox:${sandboxOf(db, p[0]).id}`));
+route('PUT', `/api/sandboxes/${ID}/notes`, ({ db, p, body }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  need(sandbox, 'write');
+  return saveNote(db, `sandbox:${sandbox.id}`, body);
+});
+
 // ---- Administration
 
 const adminOnly = (db) => { if (!db.me.user.is_instance_admin && !db.me.user.is_superadmin) fail(403, 'forbidden', 'instance administrators only'); };
@@ -3318,10 +3386,18 @@ export function createMockTransport(params) {
     for (const session of db.sessions.values()) for (const ws of [...(session.viewers || [])]) ws.serverClose(1006, '');
   };
   db.goOnline = () => { db.offline = false; };
+  // A teammate's save of a notepad (`team` or `sandbox:<sid>`); `announce: false` holds back its
+  // event, as if it were still on its way (SPEC-041).
+  db.editNote = (scope, body, by = 'alice', options) => putNote(db, scope, body, by, options);
+  db.keepaliveRequests = [];
+  // `noteloads=fail`: the notes cannot be loaded from the start (a server still restarting).
+  db.failNoteLoads = params.get('noteloads') === 'fail';
+  notesOf(db);
   return {
     kind: 'mock',
     // Like window.fetch, an aborted signal (a timeout, a view that went away) rejects the request.
     fetch: (url, init = {}) => {
+      if (init.keepalive) db.keepaliveRequests.push(url);
       const work = handleFetch(db, url, init);
       const { signal } = init;
       if (!signal) return work;
