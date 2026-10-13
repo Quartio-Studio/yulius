@@ -4,7 +4,7 @@
 //! pre-parsed map, so the domain stays dependency-free and every problem carries a line
 //! number for the agent prompt. Supported:
 //!
-//! - `[docs]`, `[commands]`, `[delivery]` tables, `[[delivery.environments]]` and `[[ci.jobs]]`
+//! - `[docs]`, `[commands]`, `[delivery]`, `[disk]` and `[branch_policy]` tables, `[[delivery.environments]]` and `[[ci.jobs]]`
 //!   entries;
 //! - `key = "basic string"` (escapes `\" \\ \n \t \r \b \f \uXXXX \UXXXXXXXX`),
 //!   `key = 'literal string'`, `key = true|false`, and `environments = []`;
@@ -32,6 +32,9 @@
 //! command = "cargo test"
 //! matrix = "1/2 2/2"                     # one job per value, in $YULIUS_CI_MATRIX
 //!
+//! [branch_policy]                      # the merge gate's rules (SPEC-069)
+//! preset = "standard"                    # or "none"; types = "feat fix …" replaces the types
+//!
 //! [[delivery.environments]]
 //! name = "dev-vm"
 //! after = "integration"
@@ -39,6 +42,7 @@
 //! verify = "manual"
 //! ```
 
+use crate::branch_policy::BranchPolicy;
 use crate::delivery::{
     DeliveryProfile, Environment, MergeMethod, Preset, ProfileError, PromoteMethod, Stage, Verify,
 };
@@ -181,6 +185,7 @@ struct Document {
     commands: Option<Table>,
     delivery: Option<Table>,
     disk: Option<Table>,
+    branch_policy: Option<Table>,
     environments: Vec<Table>,
     ci_jobs: Vec<Table>,
 }
@@ -191,6 +196,7 @@ enum Target {
     Commands,
     Delivery,
     Disk,
+    BranchPolicy,
     Environment,
     CiJob,
 }
@@ -199,6 +205,9 @@ const DOCS_KEYS: &str = "product, architecture, decisions, specs_dir, changes, a
 const COMMAND_KEYS: &str = "test, lint, build, gate";
 const DELIVERY_KEYS: &str = "preset, integration_branch, production_branch, merge, promote, auto_promote, require_checks, environments";
 const DISK_KEYS: &str = "caches";
+const BRANCH_POLICY_KEYS: &str = "preset, types";
+const POLICY_TYPES: &str =
+    "1-20 space-separated types of 1-20 lowercase letters, like \"feat fix docs\"";
 const ENVIRONMENT_KEYS: &str = "name, after, command, verify";
 const CI_JOB_KEYS: &str = "name, command, matrix";
 
@@ -351,7 +360,7 @@ fn parse_document(text: &str) -> Result<Document, FormatError> {
                 entries: Vec::new(),
             };
             target = match (name.as_str(), array) {
-                ("docs" | "commands" | "delivery" | "disk", true) => {
+                ("docs" | "commands" | "delivery" | "disk" | "branch_policy", true) => {
                     return Err(err(line, ConfigProblem::NotAnArrayTable(name)));
                 }
                 ("delivery.environments", false) => {
@@ -368,11 +377,12 @@ fn parse_document(text: &str) -> Result<Document, FormatError> {
                     document.ci_jobs.push(fresh);
                     Target::CiJob
                 }
-                (known @ ("docs" | "commands" | "delivery" | "disk"), false) => {
+                (known @ ("docs" | "commands" | "delivery" | "disk" | "branch_policy"), false) => {
                     let (slot, target) = match known {
                         "docs" => (&mut document.docs, Target::Docs),
                         "commands" => (&mut document.commands, Target::Commands),
                         "disk" => (&mut document.disk, Target::Disk),
+                        "branch_policy" => (&mut document.branch_policy, Target::BranchPolicy),
                         _ => (&mut document.delivery, Target::Delivery),
                     };
                     if slot.is_some() {
@@ -391,6 +401,7 @@ fn parse_document(text: &str) -> Result<Document, FormatError> {
             Target::Commands => document.commands.as_mut(),
             Target::Delivery => document.delivery.as_mut(),
             Target::Disk => document.disk.as_mut(),
+            Target::BranchPolicy => document.branch_policy.as_mut(),
             Target::Environment => document.environments.last_mut(),
             Target::CiJob => document.ci_jobs.last_mut(),
         };
@@ -698,6 +709,7 @@ pub fn parse_yulius_toml(text: &str) -> Result<ProjectConfig, FormatError> {
     let document = parse_document(text)?;
     let commands = commands(document.commands.as_ref())?;
     let ci = ci_jobs(&document, &commands)?;
+    branch_policy_of(&document)?;
     Ok(ProjectConfig {
         docs: docs_layout(document.docs.as_ref())?,
         commands,
@@ -712,6 +724,73 @@ pub fn parse_yulius_toml(text: &str) -> Result<ProjectConfig, FormatError> {
 /// Returns the first [`FormatError`] with its line number.
 pub fn parse_yulius_toml_docs(text: &str) -> Result<DocsLayout, FormatError> {
     parse_yulius_toml(text).map(|config| config.docs)
+}
+
+fn branch_policy_of(document: &Document) -> Result<BranchPolicy, FormatError> {
+    let entries = document
+        .branch_policy
+        .as_ref()
+        .map(|t| t.entries.as_slice())
+        .unwrap_or_default();
+    let mut enforced = true;
+    let mut types = None;
+    for entry in entries {
+        match entry.key.as_str() {
+            "preset" => {
+                enforced = enum_value(
+                    entry,
+                    |text| match text {
+                        "standard" => Some(true),
+                        "none" => Some(false),
+                        _ => None,
+                    },
+                    "standard, none",
+                )?;
+            }
+            "types" => types = Some(entry),
+            _ => return Err(unknown("branch_policy", entry, BRANCH_POLICY_KEYS)),
+        }
+    }
+    let Some(entry) = types else {
+        return Ok(if enforced {
+            BranchPolicy::standard()
+        } else {
+            BranchPolicy::none()
+        });
+    };
+    let text = string_value(entry)?;
+    let invalid = |allowed| {
+        err(
+            entry.line,
+            ConfigProblem::InvalidValue {
+                key: entry.key.clone(),
+                value: clip(text),
+                allowed,
+            },
+        )
+    };
+    if !enforced {
+        return Err(invalid("no types with preset \"none\""));
+    }
+    let list = text.split_whitespace().map(str::to_owned).collect();
+    BranchPolicy::with_types(list).ok_or_else(|| invalid(POLICY_TYPES))
+}
+
+/// The branch policy `yulius.toml` configures (`[branch_policy]`, SPEC-069): the standard preset
+/// without the table. The syntax of the whole file is still validated.
+///
+/// # Errors
+/// The first [`FormatError`] of the file.
+///
+/// # Examples
+/// ```
+/// use yulius_domain::spec_format::parse_yulius_toml_branch_policy;
+/// let policy = parse_yulius_toml_branch_policy("[branch_policy]\npreset = \"none\"\n")?;
+/// assert!(!policy.is_enforced());
+/// # Ok::<(), yulius_domain::spec_format::FormatError>(())
+/// ```
+pub fn parse_yulius_toml_branch_policy(text: &str) -> Result<BranchPolicy, FormatError> {
+    parse_document(text).and_then(|document| branch_policy_of(&document))
 }
 
 /// The build-cache directories `yulius.toml` declares (`[disk] caches = "target build/cache"`,
@@ -1185,6 +1264,53 @@ mod tests {
         assert!(parse_yulius_toml_caches("[disk]\nother = \"x\"\n").is_err());
         // The rest of the contract still parses with the table present.
         assert!(parse_yulius_toml("[disk]\ncaches = \"target\"\n").is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn branch_policy_table_selects_a_preset_and_types() -> TestResult {
+        assert_eq!(
+            parse_yulius_toml_branch_policy("")?,
+            BranchPolicy::standard()
+        );
+        assert_eq!(
+            parse_yulius_toml_branch_policy("[branch_policy]\npreset = \"standard\"\n")?,
+            BranchPolicy::standard()
+        );
+        assert_eq!(
+            parse_yulius_toml_branch_policy("[branch_policy]\npreset = \"none\"\n")?,
+            BranchPolicy::none()
+        );
+        let custom =
+            parse_yulius_toml_branch_policy("[branch_policy]\ntypes = \"story  bug\" # ours\n")?;
+        assert_eq!(custom.types(), ["story", "bug"]);
+        // The rest of the contract parses with the table present, and validates it.
+        assert!(parse_yulius_toml("[branch_policy]\npreset = \"none\"\n").is_ok());
+        assert!(matches!(
+            problem("[branch_policy]\npreset = \"strict\"\n"),
+            Some((2, ConfigProblem::InvalidValue { .. }))
+        ));
+        assert!(matches!(
+            problem("[branch_policy]\nmax = \"3\"\n"),
+            Some((2, ConfigProblem::UnknownKey { .. }))
+        ));
+        assert!(matches!(
+            problem("[branch_policy]\ntypes = \"Feat\"\n"),
+            Some((2, ConfigProblem::InvalidValue { .. }))
+        ));
+        assert!(matches!(
+            problem("[branch_policy]\ntypes = \"\"\n"),
+            Some((2, ConfigProblem::InvalidValue { .. }))
+        ));
+        assert!(matches!(
+            problem("[branch_policy]\npreset = \"none\"\ntypes = \"feat\"\n"),
+            Some((3, ConfigProblem::InvalidValue { .. }))
+        ));
+        assert!(matches!(
+            problem("[[branch_policy]]\n"),
+            Some((1, ConfigProblem::NotAnArrayTable(_)))
+        ));
+        assert!(parse_yulius_toml_branch_policy("[branch_policy]\npreset = true\n").is_err());
         Ok(())
     }
 }
