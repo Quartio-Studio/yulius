@@ -114,7 +114,11 @@ the request file in the sandbox home keeps the whole request
 [SPEC-025](../.ai/specs/SPEC-025-uploaded-attachements-should-be-clickabl.md),
 [SPEC-030](../.ai/specs/SPEC-030-i-asked-previous-task-to-attach-images-a.md),
 [decisions 0022](decisions/0022-native-task-attachments.md) and
-[0026](decisions/0026-attached-images-are-pasted.md)).
+[0026](decisions/0026-attached-images-are-pasted.md)). The request is read when the task first
+starts, after its compare-and-set to `starting`. Until then, a message a person queues into the
+waiting task is appended to the stored request by one conditional update, so the start either
+reads it or refuses it ([SPEC-052](../.ai/specs/SPEC-052-even-if-a-task-is-queued-i-d-like-to-be.md),
+[decision 0033](decisions/0033-queued-messages-join-the-request.md)).
 
 ```mermaid
 sequenceDiagram
