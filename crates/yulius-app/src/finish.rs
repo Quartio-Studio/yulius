@@ -51,6 +51,9 @@ pub struct TranscriptFacts {
     /// The last word on the session's context is that it is full (CTX-007): no reply or
     /// compaction came after the API rejected a prompt as too long.
     pub context_full: bool,
+    /// The last turn ended at a usage limit: no prompt, agent work or turn's end came after the
+    /// limit record (SPEC-072 LRS-001). A limit Claude Code continued past is history.
+    pub limit_pending: bool,
 }
 
 impl TranscriptFacts {
@@ -61,6 +64,7 @@ impl TranscriptFacts {
                 self.turn_open = Some(true);
                 self.goal_achieved = Some(false);
                 self.background_agents = 0;
+                self.limit_pending = false;
             }
             Observation::TurnEnded { background_agents } => {
                 self.turn_open = Some(false);
@@ -69,6 +73,7 @@ impl TranscriptFacts {
             Observation::TurnComplete { .. } => {
                 self.turn_open = Some(false);
                 self.context_full = false;
+                self.limit_pending = false;
             }
             Observation::TurnInterrupted { .. } => self.turn_open = Some(false),
             // The API rejected the prompt: the turn is over, without a Stop hook (#213).
@@ -92,14 +97,14 @@ impl TranscriptFacts {
             Observation::Goal(GoalOutcome::Set | GoalOutcome::Cleared) => {
                 self.goal_achieved = Some(false);
             }
-            Observation::Session { .. }
-            | Observation::LimitReached { .. }
-            | Observation::CompactFailed => {}
+            Observation::LimitReached { .. } => self.limit_pending = true,
+            Observation::Session { .. } | Observation::CompactFailed => {}
             // An assistant line that is not a turn's end after a recorded end: a Stop hook
             // continued the turn (STA-005).
             Observation::AgentWork { .. } => {
                 self.turn_open = Some(true);
                 self.context_full = false;
+                self.limit_pending = false;
             }
         }
     }
@@ -661,6 +666,7 @@ mod tests {
                 goal_achieved: Some(true),
                 background_agents: 0,
                 context_full: false,
+                limit_pending: false,
             }
         );
         // Typed again after the goal: a new open turn, the goal no longer counts.
@@ -686,7 +692,14 @@ mod tests {
             message: "limit".into(),
             window_minutes: None,
         }]);
-        assert_eq!(limit, TranscriptFacts::default());
+        // A limit changes no turn fact; it is only pending (SPEC-072 LRS-001).
+        assert_eq!(
+            limit,
+            TranscriptFacts {
+                limit_pending: true,
+                ..TranscriptFacts::default()
+            }
+        );
     }
 
     /// STA-003, STA-005: assistant work reopens an idle task only when it is newer than the last
@@ -775,6 +788,26 @@ mod tests {
         )));
         assert!(!is_typed_prompt(Some("   ")));
         assert!(!is_typed_prompt(None));
+    }
+
+    /// SPEC-072 LRS-001: a replay whose last word is a usage limit leaves it pending; a prompt,
+    /// agent work or a turn's end after it (Claude Code continued by itself) makes it history.
+    #[test]
+    fn a_replayed_limit_is_pending_until_a_turn_follows_it() {
+        let limit = Observation::LimitReached {
+            resets_at: None,
+            message: "limit".into(),
+            window_minutes: None,
+        };
+        assert!(reduce(&[PROMPT, limit.clone()]).limit_pending);
+        assert!(reduce(&[PROMPT, limit.clone(), Observation::Compacted]).limit_pending);
+        for after in [PROMPT, WORK, Observation::TurnComplete { at: None }] {
+            assert!(
+                !reduce(&[PROMPT, limit.clone(), after.clone()]).limit_pending,
+                "{after:?}"
+            );
+        }
+        assert!(!reduce(&[PROMPT, WORK]).limit_pending);
     }
 
     /// CTX-007: a replay that ends in a full context (no reply or compaction after it) leaves the

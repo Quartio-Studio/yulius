@@ -593,7 +593,8 @@ impl App {
                     }
                     let switched = match pause.kind {
                         PauseKind::Limit => {
-                            self.switch_after_limit(&task.id, account, &reason).await
+                            self.resume_paused_after_limit(&task.id, account, &reason)
+                                .await
                         }
                         kind => {
                             let continuation = match kind {
