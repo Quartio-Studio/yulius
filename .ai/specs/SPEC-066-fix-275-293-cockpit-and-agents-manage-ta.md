@@ -1,11 +1,11 @@
 ---
 yulius-task: 9e701a79-e4f8-4a8b-b6aa-fcacb5301627
-status: in-progress
+status: done
 ---
 
 # SPEC-066: the Cockpit and agents stop, archive and delete tasks and run, delete and enable automations through MCP
 
-Status: in progress
+Status: done
 Date: 2026-10-13
 Scope authorization: task #58 (part of task #47, "fix all open actionable GitHub issues without
 creating new issues and close them"): fix GitHub issues #275 and #293 following their acceptance
@@ -105,8 +105,8 @@ flowchart LR
 - [x] Agents list ready-made automations and enable one by catalog id
 - [x] The Cockpit is served the new tools without pre-allowing them
 - [x] Docs, ADR and architecture describe the full management tool set
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Gates green, delivered into dev, issues closed
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Gates green, delivered into dev, issues closed
 
 ## Test plan
 
@@ -161,3 +161,24 @@ flowchart LR
   (as for a deletion); a task reference with neither argument names both. The duplicated
   template mapping in `automations_list` stays: it drops the prompt and the API type keeps it.
 - Recorded as ADR-0049.
+
+## Evidence
+
+- Test-first: the six new `manage_tools.rs` tests failed before the tools existed ("unknown tool"),
+  `agents_enable_ready_made_automations_by_catalog_id` failed with the tool's dispatch removed,
+  `task_archive_refuses_a_non_boolean_archived` failed before its fix (a string archived the
+  task), and the lost-access test fails when `automation_template_enable` skips
+  `manage_authority` (mutation, reverted).
+- `cargo test -p yulius --test main -- manage_tools:: cockpit:: mcp_coordination:: automations::`:
+  41 passed. `cargo test -p yulius-domain`: 247 passed (the briefing's budget test, after
+  keeping its tool list unchanged).
+- `python3 scripts/check_repository.py`: passed (unique decision numbers, links, one product test
+  binary). `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -D warnings`:
+  clean.
+- `scripts/dev ci` on a4df838: exit 0; nextest 1316 run, 1316 passed, 16 skipped.
+- Review: round 1 (fe74645) requested changes for test gaps, fixed in a4df838; round 2 approved
+  a4df838. Its remaining minor note (assert the UI's own audit strings after the `…_as`
+  refactor; the code was read unchanged) is left as a follow-up in the issue comment.
+- Not tested here: a live model in the Cockpit's TUI asking the person before a tool that is not
+  pre-allowed (Claude Code's own behaviour, needs a paid credential). No web UI changed, so the
+  e2e suite does not apply.
