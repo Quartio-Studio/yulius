@@ -1,11 +1,11 @@
 ---
 yulius-task: 8fc5fdd4-88ab-4331-a805-d1db8c56115d
-status: in-progress
+status: done
 ---
 
 # SPEC-072: usage-limit resume respects the CLI's own continuation and refused switches
 
-Status: in progress
+Status: done
 Date: 2026-10-13
 Owner: Yulius task #57
 Scope authorization: task #57, part of task #47 ("fix all open actionable GitHub issues without
@@ -56,12 +56,14 @@ file, and the limit-resume paths SPEC-034 left untested have tests (#278).
 ## Plan
 
 - [x] Spec SPEC-072 written and validated
-- [ ] A limit pause ends when the CLI continues the turn by itself (#276)
-- [ ] A person's switch after a refused limit switch resumes past the limit (#277)
-- [ ] The transcript step back runs off the async runtime and the index resets only after a rewrite (#278)
-- [ ] The untested limit-resume paths have tests (#278)
-- [ ] Independent review and fixes
-- [ ] Docs, ADR, changes and every gate green
+- [x] A limit pause ends when the CLI continues the turn by itself (#276)
+- [x] A person's switch after a refused limit switch resumes past the limit (#277)
+- [x] The transcript step back runs off the async runtime and the index resets only after a rewrite (#278)
+- [x] The untested limit-resume paths have tests (#278)
+- [x] Review round 1 findings fixed test-first (replayed limit, answer-only continuation)
+- [x] Docs, ADR and changes written (SPEC-002, SPEC-034, ADR-0053, architecture)
+- [x] Review round 2 approves the head
+- [x] Every gate green on the final head
 
 ## Acceptance criteria
 
@@ -124,3 +126,39 @@ file, and the limit-resume paths SPEC-034 left untested have tests (#278).
 - **A separate port method instead of an async `plan`**: the step back is the only blocking I/O of
   `plan` worth moving, and a sync method run in `spawn_blocking` keeps the port synchronous and the
   fake harness unchanged in shape.
+
+## Evidence
+
+- Regression tests first (commits marked "failing"): `a_turn_the_cli_continues_by_itself_ends_the_limit_pause`
+  failed with "timed out waiting for the pause to end"; `a_manual_switch_after_a_refused_limit_switch_resumes_past_the_limit`
+  failed with `prompt: Some("Continue the task exactly where you left off.")` and a limit record
+  left in the transcript; `a_resume_past_a_limit_keeps_the_index_of_a_transcript_it_did_not_rewrite`
+  failed with `indexed_bytes` 0 instead of 40 without the rewrite guard. Review round 1:
+  `a_continuation_that_only_answers_ends_the_limit_pause` timed out and
+  `a_restart_does_not_replay_a_limit_the_cli_continued_past` saw the account's usage recorded again
+  before the fixes. Review round 2: `a_continuation_while_yulius_is_down_ends_the_limit_pause_at_restart`
+  timed out with the catch-up check disabled.
+- Mutation checks: the no-capacity launch recording a `start` pause fails
+  `a_limit_pause_without_a_process_resumes_past_the_limit` (`Start` vs `Limit`); removing the
+  continued turn from `opens_with_turn` fails `the_goal_is_typed_after_the_turn_continued_past_a_limit`
+  ("the goal was typed during the continued turn").
+- Unit: `finish::tests::a_replayed_limit_is_pending_until_a_turn_follows_it`,
+  `a_replayed_transcript_reduces_to_its_final_state`; `yulius-harness` observe fixtures carry the
+  turn end's time.
+- Flaky test met in the gate and fixed: `task_done::a_message_queued_before_the_start_reaches_the_agent`
+  failed 1 of 3 runs alone (`Conflict("task is running")`): the previous task's stop frees a slot and
+  `drain_queue` starts the queued task before the test's own `start_run`. The test accepts that
+  outcome; 6 of 6 runs passed after. The new restart test's wait also covers the status change that
+  follows the pause's end (it raced once under gate load).
+- `scripts/dev ci` on `94726c1` (after merging `dev`): green, 1356 tests run, 1356 passed, 16
+  skipped; repository contracts, fmt, clippy, deny, shear and docs passed. No web UI changed, so
+  the e2e suite was not run.
+- Independent review in fresh sessions (om-code-review): round 1 requested changes (a replayed
+  limit after a restart, an answer-only continuation, minors); round 2 requested changes (a pause
+  open across a restart, the turn gate after a replayed limit, sub-agent turn ends, hooks mode); all
+  fixed test-first. The final round reviews the head with this evidence.
+- Not tested here: a real Claude Code session through Yulius (the fake agent stands in); a resumed
+  attempt reattached after a restart does not see a continuation written while Yulius was down
+  (recorded as a known limit in Decisions and ADR-0053); a limit that cuts a turn mid-way while
+  Yulius is down (the fake agent writes its limit after a completed turn; the `at_limit` gate in
+  `on_observation` covers it by reading).
