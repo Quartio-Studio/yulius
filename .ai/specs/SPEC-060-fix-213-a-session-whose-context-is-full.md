@@ -153,6 +153,10 @@ retries without bound: the last stage is a person.
   again (only a stop a person asked for is quiet), and a notice when a person's typing leaves the
   session to them. The paused fresh-session branch has no test (it needs a pool without
   capacity at the switch); it is covered by reading only.
+- Review round 4: approve 24ad739. Its one wording minor is applied after it: the "you typed"
+  notice is said only for the `/compact` (not after a successful compaction) and only while the
+  episode still wants the line; round 5 reviewed that delta (see the pull request). The failed-start (`Stopped(SwitchFailed)`) and
+  "you typed" notices have no integration test; they are covered by reading only.
 - `cargo test -p yulius --test main context_full::`: 7 passed, four runs in a row.
   `scripts/dev ci` on the merged head before the round-2 fixes: 1280 of 1281 passed. The one
   failure was a notice race in a new test (the notice arrives after the echo), fixed by waiting

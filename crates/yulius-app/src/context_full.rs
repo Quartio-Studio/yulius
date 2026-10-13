@@ -25,6 +25,11 @@ const TYPE_WAIT: Duration = Duration::from_secs(30);
 /// Output quiet this long means the TUI waits for input.
 const TYPE_QUIET: Duration = Duration::from_millis(800);
 
+/// What the terminal says when a person's typing leaves the full session to them.
+const LEFT_TO_PERSON: &str = "Yulius leaves the full session to you: you typed into it. Type \
+                              `/compact` when you are done, or send a prompt to let Yulius try \
+                              again.";
+
 /// The audit action of every step of a recovery.
 const AUDIT_ACTION: &str = "task.context_full";
 
@@ -163,7 +168,8 @@ impl App {
         let task_id = task_id.clone();
         tokio::spawn(async move {
             let compacted = |e: &ContextEpisode| *e == ContextEpisode::Compacted;
-            app.type_line(&task_id, &attempt, &line, asked_ms, compacted)
+            // A person who typed after the compaction just goes on: nothing to say.
+            app.type_line(&task_id, &attempt, &line, asked_ms, None, compacted)
                 .await;
         });
     }
@@ -255,7 +261,14 @@ impl App {
         tokio::spawn(async move {
             let asked_now = move |e: &ContextEpisode| matches!(e, ContextEpisode::Compacting { since: s, .. } if *s == since);
             if !app
-                .type_line(&task_id, &attempt.id, &command, since, asked_now)
+                .type_line(
+                    &task_id,
+                    &attempt.id,
+                    &command,
+                    since,
+                    Some(LEFT_TO_PERSON),
+                    asked_now,
+                )
                 .await
             {
                 // Not typed (the run ended, a person typed): the next refusal starts over.
@@ -456,6 +469,7 @@ impl App {
         attempt: &AttemptId,
         line: &str,
         asked_ms: i64,
+        person_notice: Option<&str>,
         wanted: impl Fn(&ContextEpisode) -> bool,
     ) -> bool {
         let runtime = self.runtime(task_id);
@@ -476,10 +490,12 @@ impl App {
             // A person who typed since: the prompt box (and any draft in it) is theirs.
             if runtime.typed_at_ms.load(Ordering::SeqCst) > asked_ms {
                 tracing::info!(task = %task_id, "a person types; Yulius does not type into the session");
-                runtime.hub.notice(
-                    "Yulius leaves the full session to you: you typed into it. Type `/compact` \
-                     when you are done, or send a prompt to let Yulius try again.",
-                );
+                // Said only while the line is still wanted and the person has a full session.
+                if let Some(notice) = person_notice
+                    && self.context_is(task_id, &wanted)
+                {
+                    runtime.hub.notice(notice);
+                }
                 return false;
             }
             ready = quiet_since.elapsed() >= TYPE_QUIET;
