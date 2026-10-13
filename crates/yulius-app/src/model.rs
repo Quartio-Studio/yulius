@@ -337,6 +337,9 @@ pub struct TaskRecord {
     pub wake_enabled: bool,
     /// Goal or prompt mode (TSK-010).
     pub mode: TaskMode,
+    /// Runs alone in its project (SPEC-071): it waits for the project's working tasks, and the
+    /// project's other tasks wait for it.
+    pub supertask: bool,
 }
 
 /// How an attempt was launched.

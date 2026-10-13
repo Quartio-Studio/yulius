@@ -223,6 +223,30 @@ sequenceDiagram
     end
 ```
 
+### Supertasks
+
+Every run starts through `App::start_run`: a new task, the queue, a released chain or rule,
+Start now, Continue, and the capacity loop. Before the session limit, it applies the supertask
+hold (`yulius-app/src/supertask.rs`,
+[SPEC-071](../.ai/specs/SPEC-071-somewhere-here-the-user-should-be-able-t.md),
+[decision 0054](decisions/0054-a-supertask-holds-its-project-at-the-start-door.md)). A task
+without a live run waits `queued` while its project has a pending supertask (only an earlier one
+counts, for a supertask). A supertask also waits while the project has a working task. Live runs
+are never touched. The queue offers free slots to supertasks first, then FIFO, one start after
+the other. A held task's summary lists what it waits for (`held_by`).
+
+```mermaid
+flowchart LR
+    N[new / queued / released / continued / resumed task] --> G{start_run: held by a supertask?}
+    G -->|plain task, project has a pending supertask| Q[stays queued, held_by = supertasks]
+    G -->|supertask, project has working tasks or an earlier supertask| Q2[stays queued, held_by = those tasks]
+    G -->|not held| L{session slot free?}
+    L -->|no| Q3[queued]
+    L -->|yes| R[launch]
+    E[a run ends or is Done] --> D[drain_queue: supertasks first, then FIFO]
+    D --> G
+```
+
 ## Superagent (the Cockpit)
 
 Every user has one plain Claude Code session per sandbox, shown as the **Superagent**
@@ -241,7 +265,7 @@ the page, under a notice that it is for quick work only
 
 A Cockpit remembers its pool subscription (in `shell.json`) and watches its newest conversation
 while it runs ([SPEC-074](../.ai/specs/SPEC-074-i-just-hit-usage-limit-in-the-agent-it-s.md),
-[decision 0054](decisions/0054-cockpit-moves-past-a-usage-limit.md)). A usage limit recorded after
+[decision 0055](decisions/0055-cockpit-moves-past-a-usage-limit.md)). A usage limit recorded after
 it started is recorded on that subscription as a task's is. The Cockpit then starts again, under
 its start lock, on a subscription with capacity. It resumes the conversation stepped back over the
 limit with Claude Code's interrupted-turn flag, as a task does after a limit (SPEC-034). The old

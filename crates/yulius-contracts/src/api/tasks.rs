@@ -84,6 +84,14 @@ pub struct TaskSummary {
     /// person picked both.
     #[serde(default)]
     pub auto: Option<AutoChoice>,
+    /// A supertask (SPEC-071): it runs alone in its project.
+    #[serde(default)]
+    pub supertask: bool,
+    /// While `queued` because of a supertask (SPEC-071): the numbers of the tasks it waits for —
+    /// for a supertask the working tasks and earlier supertasks of its project, for another task
+    /// the project's pending supertasks. Empty otherwise.
+    #[serde(default)]
+    pub held_by: Vec<u32>,
 }
 
 /// How "Auto" chose a new task's mode and workflow (SPEC-001 TSK-015).
@@ -177,6 +185,10 @@ pub struct CreateTask {
     /// `#12 done and (#13 done or #14 ended)`. Not together with `after_task_id`.
     #[serde(default)]
     pub start_rule: Option<String>,
+    /// A supertask (SPEC-071): it waits for the project's running tasks, then runs alone while
+    /// the project's other tasks wait for it. Not together with `after_task_id` or `start_rule`.
+    #[serde(default)]
+    pub supertask: bool,
 }
 
 /// `POST /api/tasks/{tid}/continue` and `/switch`.

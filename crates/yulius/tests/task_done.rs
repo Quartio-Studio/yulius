@@ -290,6 +290,7 @@ async fn goal_task(
             automation_run: None,
             start: true,
             mode: TaskMode::Goal,
+            supertask: false,
         })
         .await?;
     Ok(record.id)
@@ -537,6 +538,7 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
                 automation_run: None,
                 start: true,
                 mode: TaskMode::Goal,
+                supertask: false,
             })
             .await?;
         let id = record.id;
@@ -622,6 +624,7 @@ fn a_message_queued_before_the_start_reaches_the_agent() -> TestResult {
                     automation_run: None,
                     start: false,
                     mode,
+                    supertask: false,
                 })
                 .await?;
             let id = record.id;
@@ -739,6 +742,7 @@ fn the_goal_is_typed_after_the_turn_on_the_attached_files() -> TestResult {
                 automation_run: None,
                 start: true,
                 mode: TaskMode::Goal,
+                supertask: false,
             })
             .await?
             .id;
@@ -792,6 +796,7 @@ fn an_attached_image_is_pasted_into_the_first_message() -> TestResult {
                 automation_run: None,
                 start: true,
                 mode: TaskMode::Prompt,
+                supertask: false,
             })
             .await?
             .id;

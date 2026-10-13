@@ -7,12 +7,20 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-10-13
 
 - The Agent panel is now called the **Superagent**, and a usage limit no longer stops it (SPEC-074,
-  ADR-0054, task #69). The Superagent chose a subscription once, when it started, and kept it, so
+  ADR-0055, task #69). The Superagent chose a subscription once, when it started, and kept it, so
   it could hit a weekly limit while tasks went on elsewhere. It now watches its conversation. A
   limit recorded after it started is recorded on its subscription, and the Superagent starts again
   on one with capacity. It continues the cut turn there, stepped back over the limit as a task's
   turn is, and the panel follows it without a "stopped" banner. Without capacity, it stays and
   says why. `/s/<slug>/superagent` opens it, as `/agent` and `/cockpit` still do.
+- Supertasks (SPEC-071, ADR-0054, task #67; SPEC-001 TSK-018). Choose **Supertask** in the
+  composer's start menu (API `supertask: true`, `task_create`) for broad work such as security
+  hardening. The task waits for its project's running tasks, then runs alone. While it waits or
+  runs, no other task of the project starts, also tasks queued or chained before it; they wait
+  `queued` and say "Queued after supertask #N". A queued supertask says "Supertask · waits for
+  #3 and #5". Running sessions are never interrupted, and other projects keep running. At the
+  session limit, a supertask gets the next free slot first. Schema version 17
+  (`tasks.supertask`).
 - Cockpit and terminal starts survive a dropped request (SPEC-077, ADR-0053, task #64; #250). The
   part of a start from the spawn to the registration runs as a task the request awaits, so a
   client that goes away mid-start leaves one live Cockpit or terminal (or nothing on an error),

@@ -186,7 +186,7 @@ sequenceDiagram
     known limit.
   - Round 2: approve at `3ed1c2f`, with one minor (limits read together) fixed test-first.
   - Round 3: approve at `796824d` (the minor, and the merge of `dev` with the ADR renumbered to
-    0052, then 0054 as `dev` took 0052 and 0053). Its minor (a test comment claiming more than it checks) is fixed in the final commit.
+    0052, then 0055 as `dev` took 0052 to 0054). Its minor (a test comment claiming more than it checks) is fixed in the final commit.
     Its nit (a mark assuming time-ordered records) is left: Claude Code appends in time order.
 - Not tested here:
   - a real Claude Code session hitting a real usage limit (the fake `claude` and synthetic
