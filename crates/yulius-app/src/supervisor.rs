@@ -94,6 +94,10 @@ pub struct TaskRuntime {
     pub(crate) hooks_seen: AtomicBool,
     /// Last seen limit reset time (ms, 0 = unknown).
     pub limit_resets_at: AtomicI64,
+    /// The current run's last turn ended at a usage limit: no prompt or agent work since
+    /// (SPEC-072 LRS-002). A person's switch then resumes past the limit even without a `limit`
+    /// pause (an automatic switch after the limit was refused).
+    pub(crate) at_limit: AtomicBool,
     /// When the current turn started (ms, 0 = no turn in progress), for active agent time.
     turn_started_ms: AtomicI64,
     /// Active agent time of the current attempt: its finished turns (ms).
@@ -208,6 +212,7 @@ impl TaskRuntime {
             proactive_switch: AtomicBool::new(false),
             hooks_seen: AtomicBool::new(false),
             limit_resets_at: AtomicI64::new(0),
+            at_limit: AtomicBool::new(false),
             turn_started_ms: AtomicI64::new(0),
             active_ms: AtomicI64::new(0),
             auto_pr_head: Mutex::new(None),
@@ -2556,6 +2561,7 @@ impl App {
         let runtime = self.runtime(task_id);
         runtime.watcher_alive.store(true, Ordering::SeqCst);
         runtime.hooks_seen.store(false, Ordering::SeqCst);
+        runtime.at_limit.store(false, Ordering::SeqCst);
         if let Ok(mut u) = runtime.usage.lock() {
             *u = UsageSnapshot::default();
         }
@@ -2742,6 +2748,7 @@ impl App {
             } => {
                 tracing::info!(task = %task_id, %message, "usage limit reached");
                 runtime.end_turn(self.now());
+                runtime.at_limit.store(true, Ordering::SeqCst);
                 if let Some(account) = &attempt.account_id {
                     let mut usage = match self.deps.store.account(account).await {
                         Ok(Some(a)) => a
@@ -2790,6 +2797,7 @@ impl App {
                 // the CLI gave the hold up (an interrupt, its own hook timeout), so the task
                 // runs again (F 2026-10-10: the task follows its session).
                 self.hold_overtaken(task_id, at, Activity::Working).await;
+                runtime.at_limit.store(false, Ordering::SeqCst);
                 runtime.background_agents.store(0, Ordering::SeqCst);
                 runtime.notice_attention_ms.store(0, Ordering::SeqCst);
                 runtime.resumed_turn.store(false, Ordering::SeqCst);
@@ -2804,6 +2812,7 @@ impl App {
             Observation::TurnComplete => {
                 self.context_replied(task_id, &attempt.id);
                 runtime.end_turn(self.now());
+                runtime.at_limit.store(false, Ordering::SeqCst);
                 // With hooks the Stop hook is the boundary that switches or pauses; the
                 // transcript decides only for a run without them.
                 if !runtime.hooks_seen.load(Ordering::SeqCst) {
@@ -2827,6 +2836,7 @@ impl App {
                 if !runtime.turn_in_progress() {
                     self.cut_turn_continued(task_id, at).await;
                 }
+                runtime.at_limit.store(false, Ordering::SeqCst);
                 self.agent_worked(task_id, at).await;
             }
             Observation::ContextFull => self.context_full_observed(task_id, attempt).await,
