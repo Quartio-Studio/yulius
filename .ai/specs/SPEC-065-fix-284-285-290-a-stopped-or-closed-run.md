@@ -1,11 +1,11 @@
 ---
 yulius-task: 91b2234a-ae68-46d7-82c8-169a23821653
-status: in-progress
+status: done
 ---
 
 # SPEC-065: a stopped or closed run ends only when proven gone; deleting a Done task is consistent
 
-Status: draft
+Status: implemented
 Date: 2026-10-13
 Owner: Yulius task #54
 Scope authorization: task #54, part of task #47 ("fix all open actionable GitHub issues"): fix
@@ -54,13 +54,13 @@ what it cannot close, and cannot be sent twice from the web UI.
 ## Plan
 
 - [x] Spec SPEC-065 written and validated
-- [ ] A run whose host cannot be terminated stays live, is reported, and blocks deletion (#284)
-- [ ] Closing for deletion waits for the run's finalization to complete (#285)
-- [ ] Close re-check uses a fixed interval, the escalation is spawned first and the shutdown write is bounded (#290 1-2)
-- [ ] A switching task's deletion is refused at once (#290 3)
-- [ ] Web UI: one DELETE in flight with "Deleting #N…", a stopping task's Delete says "Stopping…" (#290 4-5)
-- [ ] Independent review in a fresh session, findings fixed
-- [ ] Docs, ADR, changes log and every gate green
+- [x] A run whose host cannot be terminated stays live, is reported, and blocks deletion (#284)
+- [x] Closing for deletion waits for the run's finalization to complete (#285)
+- [x] Close re-check uses a fixed interval, the escalation is spawned first and the shutdown write is bounded (#290 1-2)
+- [x] A switching task's deletion is refused at once (#290 3)
+- [x] Web UI: one DELETE in flight with "Deleting #N…", a stopping task's Delete says "Stopping…" (#290 4-5)
+- [x] Independent review in a fresh session, findings fixed
+- [x] Docs, ADR, changes log and every gate green
 
 ## Acceptance criteria
 
@@ -104,4 +104,41 @@ what it cannot close, and cannot be sent twice from the web UI.
 
 ## Evidence
 
-Filled in when the work is done.
+Red first, then green (each test failed on the old code for the stated reason):
+- `task_delete::a_stopped_run_whose_host_cannot_be_terminated_stays_live_and_blocks_deletion`
+  (AC-END-1, stop): timed out waiting for the failure notice (the failed terminate was ignored).
+- `task_delete::a_closed_run_whose_host_cannot_be_terminated_is_a_conflict_and_stays_live`
+  (AC-END-1, close): "expected a conflict, got Ok(())" after the 20 s escalation.
+- `task_delete::the_close_recheck_fires_while_unrelated_events_keep_arriving` (AC-END-3): the 4 s
+  test bound elapsed (the re-check was reset by every event); 1.06 s after.
+- `task_delete::closing_a_switching_task_for_deletion_is_refused_at_once` (AC-END-3): the 3 s test
+  bound elapsed; immediate Conflict "stop the task before deleting it" after.
+- `task_done::a_close_whose_shutdown_blocks_still_ends_the_run_and_its_successor_sees_one_outcome`
+  (AC-END-2, AC-END-3): on `dev`'s supervisor the close hung on the blocked writer (Elapsed);
+  with the finalization wait removed it failed "the waiting task has no outcome yet" (2 of 2
+  runs); green after.
+- Review round 1 (major): `task_done::a_run_whose_agent_survives_termination_is_not_ended_when_its_connection_is_lost`
+  timed out waiting for the second termination with the old `host_alive`-only guard; green 3/3.
+- Review round 2: the store assertion in `only_one_live_attempt_and_terminal_state_is_final`
+  (a terminal attempt is not ended twice) and
+  `task_delete::stopping_a_task_left_stopping_without_a_run_lets_it_rest` (left `Stopping`).
+- e2e `task-done.e2e.ts`: "deleting a Done task says so while it runs and sends one request"
+  (no "Deleting #13…") and "a task being stopped says Stopping… on its Delete item and can be
+  stopped again" (old tooltip, then Stop disabled) failed before and pass after.
+
+Gates on the reviewed head d9c7d4b:
+- `scripts/dev ci`: exit 0, 1314 tests run, 1314 passed, 16 skipped; check, fmt, clippy,
+  doctests, deny, shear and doc green.
+- e2e full suite: 245 passed, 1 skipped (the live-model test). An earlier full run, made while
+  `scripts/dev ci` loaded the machine, failed once in `archive.e2e.ts` ("the keyboard stays on
+  its control when the sidebar list is rebuilt", focus assertion); the file passed 3/3 alone and
+  in this full run. Not touched by this change; reported in the task summary.
+- Independent review (fresh read-only session): round 1 REQUEST CHANGES (one major: an agent that
+  outlived its killed host was recorded as lost on the lost connection; minors on Stop for
+  `stopping`, reconcile, a stale intent, a second `mark_lost`, a zombie check), round 2 APPROVE
+  with two minors (the store rewrote a same terminal state; a run-less `stopping` task), round 3
+  APPROVE with nits only.
+
+Not covered: the account or provider switch timeout still records the old run as lost without
+checking the termination (follow-up noted on #284 and in ADR-0049); a deployed instance was not
+exercised.
