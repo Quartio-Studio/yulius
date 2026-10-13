@@ -300,6 +300,26 @@ test('a session ends with a locked prompt box and has a spider web in its corner
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+// Review round 3: an entry's content-visibility clips paint at its edge, so focus and the search
+// target are drawn inside the box, where they stay visible (WCAG 2.4.7).
+test('a folded call shows its keyboard focus inside the entry, and the search target too', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/sessions/ses_imp_checkout?line=5'));
+  await expect(browser.locator('.ss-target')).toBeVisible();
+  await browser.locator('.ss-tui details.ss-tool > summary').filter({ hasText: 'npm test -- checkout' }).focus();
+  const ring = await browser.evaluate(() => {
+    const summary = document.activeElement as HTMLElement;
+    const style = getComputedStyle(summary);
+    const target = getComputedStyle(document.querySelector('.ss-target')!);
+    return {
+      focused: summary.matches('.ss-tool > summary:focus-visible'),
+      inset: style.boxShadow.includes('inset'),
+      outside: style.outlineStyle !== 'none' && parseFloat(style.outlineOffset) > -parseFloat(style.outlineWidth),
+      targetInset: target.boxShadow.includes('inset'),
+    };
+  });
+  expect(ring).toEqual({ focused: true, inset: true, outside: false, targetInset: true });
+});
+
 test('a search match opens the transcript at its line', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/sessions?q=fulfilling'));
   await screen.getByRole('list', 'Sessions').getByRole('link', /Add Stripe checkout/).click();
