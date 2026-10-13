@@ -298,10 +298,6 @@ async fn supertasks_go_one_at_a_time() -> TestResult {
     Ok(())
 }
 
-async fn status(h: &Harness, task: &TaskRecord) -> Result<TaskStatus, Error> {
-    Ok(h.store.task(&task.id).await?.ok_or("task")?.status)
-}
-
 async fn end_attempt(h: &Harness, task: &str) -> TestResult {
     h.store
         .transition_attempt(
