@@ -7,17 +7,17 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-10-13
 
 - Unique decision numbers and the onboarding CI proof (SPEC-058, task #49; #317, #272). The four
-  decision records numbered 0034 now have their own numbers: the automations catalog keeps 0034,
-  the Agent in the right panel is 0036, the personal two-factor vault 0042 and the task status
-  from Claude Code's records 0041; the archive-all record (#332), a later second 0040, is 0043.
+  decision records numbered 0034 now have their own numbers: the automations catalog keeps 0034, the
+  Agent in the right panel is 0036, the personal two-factor vault 0042 and the task status from
+  Claude Code's records 0041; the archive-all record (#332), a later second 0040, is 0043.
   `scripts/check_repository.py` fails on two records with one number, a title whose number differs
-  from the file name, or a record missing from `docs/decisions/README.md` (0016 was). The onboarding prompt and
-  infra-bootstrap step 2 add `YULIUS_CI_MATRIX` to the proof of matrix jobs and say how to clean
-  up after an interrupted proof: the proof prints its directory, the agent removes its own by that
-  path and other tasks' `~/.ci-proof.*` only when over six hours old, then runs `git worktree
-  prune`. They also say that checkouts are per CI lane while by default up to two runs share the
-  CI home and cache, and that system packages are installed by onboarding, never by a CI job.
-- Quick archive (SPEC-062, ADR-0043, task #65). A sidebar task row that can be archived shows an
+  from the file name, or a record missing from `docs/decisions/README.md` (0016 was). The onboarding
+  prompt and infra-bootstrap step 2 add `YULIUS_CI_MATRIX` to the proof of matrix jobs and say how
+  to clean up after an interrupted proof: the proof prints its directory, the agent removes its own
+  by that path and other tasks' `~/.ci-proof.*` only when over six hours old, then runs `git
+  worktree prune`. They also say that checkouts are per CI lane while by default up to two runs
+  share the CI home and cache, and that system packages are installed by onboarding, never by a CI
+  job.
 - Open GitHub issues triaged, and the web UI keeps the person's keyboard, scroll and text (SPEC-056,
   task #47). Issues already fixed on `dev` were closed with the change that fixed them, and the
   other actionable ones went to chained tasks #49–#64. In the web UI:
@@ -28,7 +28,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   - the task view ignores an older detail read (#316);
   - the queued messages card keeps unsent text and a refusal when the task starts (#324);
   - leaving the composer revokes every object URL it made (#259).
-- Quick archive (SPEC-062, ADR-0040, task #65). A sidebar task row that can be archived shows an
+- Quick archive (SPEC-062, ADR-0043, task #65). A sidebar task row that can be archived shows an
   Archive button beside its `⋮` on hover or focus, and the Done group's head has **Archive all**:
   one click archives every Done task, with one Undo for the whole batch. When some fail, the
   others stay archived and one toast says how many failed and why. Phones keep the `⋮` menu as
