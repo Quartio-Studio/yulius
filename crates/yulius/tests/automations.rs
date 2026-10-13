@@ -1407,3 +1407,102 @@ async fn agents_manage_automations_through_mcp_tools() -> TestResult {
     assert!(err, "{denied}");
     Ok(())
 }
+
+/// AC-AUT-9 (SPEC-066 AUT-012): an agent lists the ready-made automations and enables one by
+/// its catalog id through the MCP endpoint, with the Automations page's semantics: created
+/// enabled once, then re-enabled unchanged, never duplicated; an unknown id is a clear error.
+#[tokio::test]
+async fn agents_enable_ready_made_automations_by_catalog_id() -> TestResult {
+    let w = world().await?;
+    let agent = seed_agent(&w.h, "agent1", "s1", "tok-agent").await?;
+    let internal = yulius_server::internal_router(w.h.app.clone())
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1))));
+    let sid = SandboxId::parse("s1")?;
+
+    let (listed, is_error) = tool(&internal, "tok-agent", "automations_list", json!({})).await?;
+    assert!(!is_error, "{listed}");
+    let ready: Vec<&str> = listed["ready_made"]
+        .as_array()
+        .ok_or("ready_made")?
+        .iter()
+        .filter_map(|t| t["id"].as_str())
+        .collect();
+    assert_eq!(ready, ["docs-up-to-date", "open-issues"], "{listed}");
+    assert_eq!(listed["ready_made"][0]["automation_id"], Value::Null);
+    assert_eq!(listed["ready_made"][0]["cron"], "0 3 * * *");
+
+    let (enabled, is_error) = tool(
+        &internal,
+        "tok-agent",
+        "automation_template_enable",
+        json!({"template": "docs-up-to-date"}),
+    )
+    .await?;
+    assert!(!is_error, "{enabled}");
+    assert_eq!(enabled["created"], true, "{enabled}");
+    let id = enabled["automation"]["id"].as_str().ok_or("id")?.to_owned();
+    let stored = w.h.store.automation(&id).await?.ok_or("automation")?;
+    let template =
+        yulius_app::automations::templates::template("docs-up-to-date").ok_or("template")?;
+    assert!(stored.enabled);
+    assert_eq!(stored.name, template.name);
+    assert_eq!(stored.prompt, template.prompt);
+    assert_eq!(stored.created_by, UserId::parse("u-alice")?);
+    assert_eq!(stored.created_via.as_str(), "agent");
+    let audit = w.h.store.automation_audit(&id, 10).await?;
+    let created = audit
+        .iter()
+        .find(|e| e.action == "automation.created")
+        .ok_or("audit")?;
+    assert_eq!(created.actor, format!("task:{}", agent.number));
+    assert!(
+        created
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.contains("docs-up-to-date")),
+        "{created:?}"
+    );
+
+    // Paused by a person, enabled again by the agent: the same automation, its content kept.
+    let (paused, is_error) = tool(
+        &internal,
+        "tok-agent",
+        "automation_update",
+        json!({"automation_id": id, "enabled": false, "prompt": "Our own wording"}),
+    )
+    .await?;
+    assert!(!is_error, "{paused}");
+    let (again, is_error) = tool(
+        &internal,
+        "tok-agent",
+        "automation_template_enable",
+        json!({"template": "docs-up-to-date"}),
+    )
+    .await?;
+    assert!(!is_error, "{again}");
+    assert_eq!(again["created"], false, "{again}");
+    assert_eq!(again["automation"]["id"], id.as_str());
+    let stored = w.h.store.automation(&id).await?.ok_or("automation")?;
+    assert!(stored.enabled);
+    assert_eq!(stored.prompt, "Our own wording");
+    assert_eq!(w.h.store.automations(&sid).await?.len(), 1, "no duplicate");
+
+    let (listed, _) = tool(&internal, "tok-agent", "automations_list", json!({})).await?;
+    assert_eq!(listed["ready_made"][0]["automation_id"], id.as_str());
+
+    let (unknown, is_error) = tool(
+        &internal,
+        "tok-agent",
+        "automation_template_enable",
+        json!({"template": "nope"}),
+    )
+    .await?;
+    assert!(is_error, "{unknown}");
+    let text = unknown.to_string();
+    assert!(
+        text.contains("nope") && text.contains("docs-up-to-date") && text.contains("open-issues"),
+        "{text}"
+    );
+    assert_eq!(w.h.store.automations(&sid).await?.len(), 1);
+    Ok(())
+}
