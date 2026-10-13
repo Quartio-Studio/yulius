@@ -71,6 +71,7 @@ exhaustion, held prompts and browser requests, which stay "Needs you".
 | STT-002 | The process probe counts background shells whose only process is `yulius wait` apart from the others, which DSK-102 keeps out of the background count (disk upkeep, DLV-203, Done and the session limit are unchanged). The view of an idle task says so (`yulius_wait`). An idle agent waiting there goes on by itself: its waiting task reads "Waiting for checks or merge" in the Working group, with the tone of Working (no notification), whatever its plan or pull request say. An achieved goal stays Done. | `shells::tests::a_shell_that_only_runs_yulius_wait_does_not_count`, `task::tests::an_agent_that_goes_on_by_itself_needs_nobody`, e2e `task-done.e2e.ts` "an agent waiting for Yulius is Working, not your turn" |
 | STT-003 | Failing checks need a person only once the agent stopped: while the idle agent's background work runs (shells, pending agents, live monitors) or it waits in `yulius wait`, the task reads Working with its pull request ("Working · PR #N checks failing"). Once nothing runs, failing checks need you as before. A permission prompt needs you whatever runs. | `task::tests::an_agent_that_goes_on_by_itself_needs_nobody`, e2e `task-done.e2e.ts` "failing checks wait for the agent's own work before they need you" |
 | STT-005 | `/compact` typed into the session (by a person, or by Yulius for a full context, CTX-003) starts no work: Claude Code 2.1.292 writes the command as typed (a user line `/compact [what to keep]` with no `origin`), compacts, then writes the boundary, the summary, the command's caveat, echo and output, and runs no turn and no Stop hook. The transcript reads no turn from that line, and a `UserPromptSubmit` of it, should Claude Code run one, neither sets Working nor takes back an achieved goal. The task stays as it was during and after the compaction; a prompt typed after it starts work as always. | `harness::tests::the_compaction_command_is_known_as_typed`, `claude::tests::records_claude_code_writes_for_itself_start_no_turn`, `finish::tests::the_compaction_command_starts_no_work`, `task_done::a_typed_compaction_leaves_a_done_task_done` |
+| STT-006 | While Yulius recovers a full session by itself (SPEC-060: it compacts it, or continues the task in a fresh session), the task reads Working, not Your turn: nobody has to act. This lasts from the refusal until Yulius types the prompt that carries on (whose turn is Working as any) or the fresh session starts. When Yulius types nothing (a person typed into the session, the terminal never went quiet, the input failed), the task waits for the person (Your turn), unless a prompt of theirs started a turn. A recovery that fails needs a person as before (CTX-004, CTX-005). CTX-002 says so. | `context_full::a_full_session_reads_working_while_yulius_compacts_it`, `context_full::a_full_session_a_person_types_into_waits_for_them`, the other `context_full` tests |
 | STT-004 | The sidebar, the task header, the attention bar, notifications and the Home and tab counts keep one rule: `taskInfo` in `status.js` and `AttentionFacts::group` give the same group for the same facts (ADR-0061). | `task::tests::group_follows_the_sidebar_rule`, `task::tests::an_agent_that_goes_on_by_itself_needs_nobody`, e2e `task-done.e2e.ts` |
 
 ## Design and contracts
@@ -109,10 +110,14 @@ exhaustion, held prompts and browser requests, which stay "Needs you".
   (both dated when it was typed), the output `Compacted (ctrl+o to see full summary)` and the
   `SessionStart:compact` hook; no `turn_duration`, no Stop hook. No `UserPromptSubmit` context
   was recorded for the line, while the prompt before it (70 s earlier, same unread inbox) had
-  one, which suggests Claude Code runs no prompt hook for it; STT-005 covers both cases. Before STT-005 the line read as a prompt and the
-  task read Working for good. Yulius's own compaction of a full session now reads as CTX-002
-  says (the task waits, as its test with the fake agent always showed) until Yulius types the
-  follow-up prompt (CTX-003); in production it read Working by that accident.
+  one, which suggests Claude Code runs no prompt hook for it; STT-005 covers both cases. Before
+  STT-005 the line read as a prompt and the task read Working for good.
+- Yulius's own recovery of a full session (STT-006) read Working in production only by that
+  line, and Your turn in CTX-002 and its test. It now reads Working by decision, from the
+  refusal until Yulius types the prompt that carries on, and then for that prompt's turn. A
+  recovery Yulius leaves to a person (they typed into the session, the terminal never went
+  quiet, the input failed) reads Your turn; one that fails reads Needs you, as before (CTX-004,
+  CTX-005).
 
 ## Delivery and acceptance
 
@@ -155,10 +160,16 @@ records the decision that "Needs you" waits for the agent's own work.
   `task_done::a_typed_compaction_leaves_a_done_task_done` read `Working` instead of `Done` after
   the compaction. With it, that test, `an_idle_compaction_leaves_a_done_task_done`,
   `an_achieved_goal_with_no_shell_left_makes_the_task_done` and the `context_full` file pass.
+- **STT-006, red first.** With the refused turn settled to Your turn as before,
+  `context_full::a_full_session_reads_working_while_yulius_compacts_it` failed (not Working while
+  Yulius compacts). Without the hand-over to the person,
+  `context_full::a_full_session_a_person_types_into_waits_for_them` timed out waiting for Your
+  turn (Working for good). With both, the 8 `context_full` tests pass.
 - **Not tested here:** a real Claude Code session against a deployed Yulius; the fake agent's
   compactions are shaped on the records of tasks #60 and #8.
 
 ## Changelog
 
 - 2026-10-13: written with the fix.
-- 2026-10-14: STT-005, a typed `/compact` starts no work (the gap left open on 2026-10-13).
+- 2026-10-14: STT-005, a typed `/compact` starts no work (the gap left open on 2026-10-13);
+  STT-006, Yulius's own recovery of a full session reads Working (CTX-002 changed).

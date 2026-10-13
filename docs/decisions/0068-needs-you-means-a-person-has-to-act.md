@@ -59,6 +59,7 @@ was read as a prompt, so a Done task read Working until a person stopped it.
   returns; when the agent then stops, it reads Your turn or its pull request's state.
 - Failing checks read "Working · PR #N checks failing" while the agent's background work runs;
   once it ended and the agent stopped, they need you as before.
-- `/compact` leaves the task as it was, during and after the compaction. Yulius's own
-  compaction of a full session reads as CTX-002 says: the task waits until Yulius types the
-  follow-up prompt.
+- `/compact` leaves the task as it was, during and after the compaction.
+- Yulius's own recovery of a full session reads Working until it types the prompt that carries
+  on (SPEC-085 STT-006, CTX-002 changed): Yulius acts, nobody else has to. Left to a person (they
+  typed into it), the task waits for them; a recovery that fails needs a person, as before.

@@ -8,7 +8,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - `/compact` typed into a session leaves its task as it was (SPEC-085 STT-005, ADR-0068): Claude
   Code's line for the command no longer reads as a prompt, so an idle Done task no longer reads
-  Working after the compaction; a prompt typed after it is work as always.
+  Working after the compaction; a prompt typed after it is work as always. While Yulius itself
+  recovers a full session the task reads Working, not Your turn, until it types the prompt that
+  carries on (STT-006, CTX-002 changed).
 - A task's status tells the truth: Working is work, Needs you is a person's move (SPEC-085,
   ADR-0068; F 2026-10-13 "marked as running even if was done", "needs you was too often"). A
   replay of two days of transcripts found "Needs you" false for 43 of its 50 task-hours:
