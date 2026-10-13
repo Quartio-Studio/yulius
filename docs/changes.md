@@ -21,6 +21,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   questions) and that anything more complex, such as writing code, belongs in a task (with a New
   task link). It is no longer in the left sidebar; `/s/<slug>/agent` and the old
   `/s/<slug>/cockpit` open the panel. The API and server keep the `cockpit` names.
+- A sandbox's default memory limit is the host's memory but a reserve (an eighth, at least 4 GiB),
+  not half: at half, ten sessions and two CI lanes thrashed the page cache while the host had 20 GB
+  free, and CI jobs timed out (SPEC-050 MEM-101).
 - The onboarding prompt tells the truth about Yulius CI (SPEC-020 ONB-001, task #34): the jobs'
   home and `$YULIUS_CI_CACHE` are their own, start empty and persist across runs (they were
   described as "an empty home"), so a job installs what it needs and never relies on an earlier
