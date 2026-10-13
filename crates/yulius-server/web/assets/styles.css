@@ -1140,12 +1140,14 @@ a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
 }
 @container strip (max-width: 420px) {
   .strip-state, .step-count { display: none; }
+  .stepstrip .stepstrip-toggle { min-width: 0; }
 }
 .stepstrip-main { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 4px 0 8px; }
-/* The label takes the room the rest leaves; the state takes at most 40% of the strip and truncates
-   beyond it, so a long one ("Working · 1 background task still running") no longer pushes
-   "Step N/M" under the bar (#341). The label is clipped in its button, never painted over the bar. */
-.stepstrip-toggle { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; overflow: hidden; height: var(--control-md); padding: 0 6px; border: 0; border-radius: var(--radius-sm); background: transparent; cursor: pointer; text-align: left; color: var(--text-2); }
+/* The label takes the room the rest leaves, and never less than its step count needs while that
+   shows; the state takes at most 40% of the strip and gives its words up first (down to its icon),
+   so neither a long state nor a narrow strip beside a tool panel pushes "Step N/M" under the bar
+   (#341). The label is clipped in its button, never painted over the bar. */
+.stepstrip-toggle { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 8rem; overflow: hidden; height: var(--control-md); padding: 0 6px; border: 0; border-radius: var(--radius-sm); background: transparent; cursor: pointer; text-align: left; color: var(--text-2); }
 .stepstrip-toggle:hover { background: var(--surface-3); color: var(--text); }
 .stepstrip-toggle .icon { transition: transform var(--duration-fast) var(--ease); }
 .stepstrip.open .stepstrip-toggle .icon { transform: rotate(90deg); }
@@ -1940,6 +1942,7 @@ a.dl-task:hover { text-decoration: underline; }
   /* Phones: the task title keeps the strip; state shows as its icon, the step as the bar (UX2-06). */
   .strip-state, .strip-extra, .step-count { display: none; }
   .step-current { display: none; }
+  .stepstrip-toggle { min-width: 0; }
   .composer { padding-top: 16px; }
   .composer-kbd, .composer-hint-sep { display: none; }
   .page-inner { padding: 12px 12px 32px; }
