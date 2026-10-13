@@ -203,19 +203,17 @@ impl Fixture {
         call(&self.h.router, Method::POST, path, body, &self.alice).await
     }
 
-    /// Dispatches until no run is queued or running (the background loops do not run here).
+    /// Dispatches until no run is queued or running and every finished run's status is published
+    /// (the background loops do not run here).
     async fn settle(&self) -> BoxResult<()> {
         let deadline = tokio::time::Instant::now() + WAIT;
         loop {
             self.h.app.ci_dispatch().await;
             let overview = self.get("/api/sandboxes/s1/ci").await?;
-            // A run's final commit status is published just after its end is recorded: settled
-            // means ended and published (the fast VM read "pending" in between, F 2026-10-13).
+            // A finished run publishes its commit status after recording its end: settled means
+            // no run is active and none waits for its status ("pending").
             let active = overview["runs"].as_array().ok_or("runs")?.iter().any(|r| {
-                r["state"] == "queued"
-                    || r["state"] == "running"
-                    || (["passed", "failed", "error"].contains(&r["state"].as_str().unwrap_or(""))
-                        && r["status"] == "pending")
+                r["state"] == "queued" || r["state"] == "running" || r["status"] == "pending"
             });
             if !active {
                 return Ok(());

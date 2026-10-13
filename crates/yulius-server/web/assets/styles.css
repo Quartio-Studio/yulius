@@ -181,10 +181,19 @@ p { margin: 0; }
 /* ---------------------------------------------------------------- menus, modals, toasts */
 
 .menu {
-  position: fixed; z-index: var(--z-menu); min-width: 180px; max-width: 320px; padding: 4px;
+  position: fixed; z-index: var(--z-menu); display: flex; flex-direction: column;
+  min-width: 180px; max-width: 320px; max-height: calc(100vh - 16px); padding: 4px;
   background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
   box-shadow: var(--shadow);
 }
+/* The items scroll inside the panel when the window is too short for them (SPEC-038). */
+.menu-list { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+/* No usable room beside an anchor taller than the window: the menu covers it from the top. */
+.menu-from-top { top: 8px; }
+.menu-filter { flex: none; margin-bottom: 4px; }
+.menu-empty { padding: 4px 12px 6px; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+/* Rendered while empty, so screen readers announce "No matches" when it is written. */
+.menu-empty:empty { padding: 0; }
 .menu-item {
   display: flex; align-items: center; gap: 12px; width: 100%; height: var(--control-md); padding: 0 12px;
   border: 0; border-radius: var(--radius-sm); background: transparent; text-align: left; cursor: pointer;
@@ -196,9 +205,11 @@ p { margin: 0; }
 .menu-item.danger { color: var(--danger-fg); }
 .menu-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .menu-hint { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); }
-.menu-item.rich { height: auto; min-height: var(--control-md); padding: 6px 12px; align-items: flex-start; }
-.menu-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
-.menu-desc { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); white-space: normal; }
+.menu-item.rich { height: auto; min-height: var(--control-md); padding: 4px 12px; align-items: flex-start; }
+.menu-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+/* One line; the whole description is the item's tooltip, and shows on the focused item. */
+.menu-desc { overflow: hidden; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); text-overflow: ellipsis; white-space: nowrap; }
+.menu-item:focus-visible .menu-desc { white-space: normal; }
 .menu-check { display: inline-flex; width: 14px; flex: none; color: var(--accent); }
 .menu-icon { display: inline-flex; width: 16px; flex: none; color: var(--muted); }
 .menu-item:hover .menu-icon, .menu-item:focus-visible .menu-icon { color: var(--text-2); }
