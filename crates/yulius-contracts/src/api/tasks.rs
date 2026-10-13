@@ -308,6 +308,27 @@ pub struct TaskDetail {
     pub switches: Vec<SwitchView>,
 }
 
+/// `GET /api/tasks/{tid}/prompt`: the prompt a task started with (SPEC-043).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskPrompt {
+    /// The text, without its attachment lines (as the session got it).
+    pub text: String,
+    /// The attached files, in order; `GET /api/tasks/{tid}/prompt/attachments/{n}` serves one.
+    pub attachments: Vec<PromptAttachment>,
+}
+
+/// A file attached to a task's prompt (SPEC-043).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptAttachment {
+    /// File name.
+    pub name: String,
+    /// Whether Claude Code takes it as an image (it was pasted as one).
+    pub image: bool,
+    /// Whether it can be served: a regular file in the sandbox's attachments folder (drafts are
+    /// removed after a week; a path mentioned by hand is never served).
+    pub available: bool,
+}
+
 /// `POST /api/tasks/{tid}/feedback`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FeedbackRequest {
