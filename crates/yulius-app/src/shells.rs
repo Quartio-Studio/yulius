@@ -846,11 +846,14 @@ impl App {
     /// Marks a shell ended exactly once: tells viewers, forgets it and removes its run
     /// directory.
     async fn finish_shell(&self, runtime: &ShellRuntime, exit: Option<RunExit>) {
+        // Before the shell reads as ended: a Cockpit opened again right after a failed resume
+        // must see it, not resume the same conversation (it did on the fast VM, F 2026-10-13).
+        // Recording twice is harmless.
+        self.note_cockpit_exit(runtime, exit.and_then(|e| e.code));
         if runtime.ended.swap(true, Ordering::SeqCst) {
             return;
         }
         *runtime.writer.lock().await = None;
-        self.note_cockpit_exit(runtime, exit.and_then(|e| e.code));
         runtime.hub.exit("closed", exit.and_then(|e| e.code));
         runtime.ended_tx.send_replace(true);
         if let Ok(mut map) = self.shells.shells.lock() {
