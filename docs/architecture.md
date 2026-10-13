@@ -176,8 +176,16 @@ With an image, the session starts with no prompt and Yulius types the message in
 image's path is pasted on its own, and Claude Code shows it as `[Image #N]` and sends an image
 block. The text is pasted next, with the other files mentioned, then Enter (an `@` mention of an
 image would only be a Read tool call). A goal task then gets its `/goal` typed into the terminal;
-the request file in the sandbox home keeps the whole request
-([SPEC-011](../.ai/specs/SPEC-011-automatic-dev-delivery.md),
+the request file in the sandbox home keeps the whole request. A person who typed into the
+terminal before the goal keeps their draft: no goal is typed and the task needs attention (only
+keystrokes count as typing; focus and mouse reports and terminal answers do not). A typed first
+message is pending (`opening-pending` in the run directory) until its `UserPromptSubmit`: a
+restart flags a task whose first message never reached that hook (a submitted one a hold keeps
+goes on, and a goal task's goal is typed after it), and a first message held for capacity resumes
+on another account, or a manual switch, as a fresh session that types it again with its images
+([SPEC-068](../.ai/specs/SPEC-068-fix-252-266-only-real-typing-counts-as-t.md),
+[decision 0052](decisions/0052-only-keystrokes-count-as-typing.md);
+[SPEC-011](../.ai/specs/SPEC-011-automatic-dev-delivery.md),
 [SPEC-025](../.ai/specs/SPEC-025-uploaded-attachements-should-be-clickabl.md),
 [SPEC-030](../.ai/specs/SPEC-030-i-asked-previous-task-to-attach-images-a.md),
 [decisions 0022](decisions/0022-native-task-attachments.md) and
@@ -205,9 +213,14 @@ sequenceDiagram
             C-->>S: screen shows [Image #N]
         end
         S->>C: bracketed paste of the text (+ @path mentions of other files), Enter
+        C->>S: UserPromptSubmit: the first message is no longer pending
     end
     C->>S: Stop hook of that turn (goal mode)
-    S->>C: types /goal <condition>
+    alt a person typed since the launch
+        S-->>UI: no goal; task needs attention, notice in the terminal
+    else
+        S->>C: types /goal <condition>
+    end
 ```
 
 ## Superagent (the Cockpit)
