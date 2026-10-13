@@ -557,6 +557,9 @@ async fn armed_pull_requests_merge_together_on_one_run() -> TestResult {
     for (n, file) in [(1, "a.txt"), (2, "b.txt"), (3, "c.txt")] {
         worktrees.push(f.task(n, &[(file, "x\n")]).await?);
     }
+    // The heads' own runs, as the CI loop queues them.
+    app.ci_sync_sandbox(&app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?)
+        .await?;
     for (n, worktree) in (1..).zip(&worktrees) {
         f.arm(n, worktree).await?;
     }
@@ -565,6 +568,15 @@ async fn armed_pull_requests_merge_together_on_one_run() -> TestResult {
     assert_eq!(trains.len(), 1, "{trains:?}");
     let train = trains[0].clone();
     assert_eq!(train.reference.key(), "train/1+2+3");
+    // It goes ahead of the queued runs: it decides all three merges.
+    let queued = f.runs(&app).await?;
+    assert!(
+        queued
+            .iter()
+            .filter(|r| r.id != train.id)
+            .all(|r| r.state == RunState::Queued && r.queued_at > train.queued_at),
+        "{queued:?}"
+    );
     let note = f.wait(2, &worktrees[1]).await?["merge_train"]
         .as_str()
         .unwrap_or_default()
@@ -573,9 +585,6 @@ async fn armed_pull_requests_merge_together_on_one_run() -> TestResult {
         note.contains("#2 is number 2 of 3 in merge train #1, #2, #3"),
         "{note}"
     );
-    // The heads' own runs, as the CI loop queues them.
-    app.ci_sync_sandbox(&app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?)
-        .await?;
     f.settle(&app).await?;
     assert_eq!(
         app.deps.store.ci_run(&train.id).await?.ok_or("run")?.state,

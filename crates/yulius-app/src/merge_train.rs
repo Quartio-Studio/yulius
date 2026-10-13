@@ -40,6 +40,7 @@ use yulius_domain::ci::{CiRef, Gate, GateResult, GateSource, RunState};
 use yulius_domain::delivery::{DeliveryStage, MergeMethod};
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::task::{Activity, TaskStatus};
+use yulius_domain::time::Timestamp;
 
 use crate::agent_wait::{ArmedMerge, ArmedNow, Deciding, Verdict};
 use crate::auth::AuthContext;
@@ -1038,6 +1039,20 @@ impl App {
             _ => gate,
         };
         let prs = numbers(&members);
+        // Ahead of the sandbox's queued runs: it decides every member's merge at once.
+        let place = self
+            .deps
+            .store
+            .ci_runs(&sandbox.id, 50)
+            .await
+            .ok()
+            .and_then(|runs| {
+                runs.iter()
+                    .filter(|r| r.state == RunState::Queued)
+                    .map(|r| r.queued_at.0)
+                    .min()
+            })
+            .map_or_else(|| self.now(), |first| Timestamp(first - 1));
         let run = match self
             .ci_queue_placed(
                 sandbox,
@@ -1045,7 +1060,7 @@ impl App {
                 &built.head,
                 &gate,
                 "yulius",
-                self.now(),
+                place,
             )
             .await
         {
