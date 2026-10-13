@@ -18,7 +18,7 @@ use yulius_domain::disk::{
 };
 use yulius_domain::ids::TaskId;
 use yulius_domain::spec_format::parse_yulius_toml_caches;
-use yulius_domain::task::{StopReason, TaskStatus};
+use yulius_domain::task::{Activity, StopReason, TaskStatus};
 
 use crate::context::App;
 use crate::error::AppResult;
@@ -260,7 +260,7 @@ impl App {
         let mut scan = Scan::default();
         for archived in [false, true] {
             for task in self.deps.store.tasks(&sandbox.id, archived).await? {
-                let Some(owner) = self.cache_owner(&task) else {
+                let Some(owner) = self.cache_owner(&task).await else {
                     continue;
                 };
                 if owner == Owner::Ended && !pressure && now - task.updated_at.0 < ENDED_GRACE_MS {
@@ -421,18 +421,22 @@ impl App {
     async fn owner_is(&self, task: &TaskId, owner: Owner) -> bool {
         matches!(
             self.deps.store.task(task).await,
-            Ok(Some(t)) if self.cache_owner(&t) == Some(owner)
+            Ok(Some(t)) if self.cache_owner(&t).await == Some(owner)
         )
     }
 
-    /// Whose caches `task`'s are now: by its state, its background shells (an idle agent's
-    /// running build keeps them) and how long it has not moved.
-    fn cache_owner(&self, task: &TaskRecord) -> Option<Owner> {
+    /// Whose caches `task`'s are now: by its state, its background work and how long it has not
+    /// moved. An idle running task is probed afresh (SPEC-059 DSK-201): a background shell or
+    /// subagent keeps its caches, and so does a probe that cannot answer (#245: a cached
+    /// "unknown" read as "none" under a running gate).
+    async fn cache_owner(&self, task: &TaskRecord) -> Option<Owner> {
+        let idle =
+            task.status == TaskStatus::Running && task.activity.is_some_and(Activity::is_idle);
+        let busy = idle && self.background_work_now(&task.id).await != Some(false);
         owner_of(
             task.status,
             task.activity,
-            self.background_shells_of(&task.id)
-                .is_some_and(|count| count > 0),
+            busy,
             self.now().0 - task.updated_at.0,
         )
     }
