@@ -7,7 +7,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-10-13
 
 - The Agent panel is now called the **Superagent**, and a usage limit no longer stops it (SPEC-074,
-  ADR-0052, task #69). The Superagent chose a subscription once, when it started, and kept it, so
+  ADR-0053, task #69). The Superagent chose a subscription once, when it started, and kept it, so
   it could hit a weekly limit while tasks went on elsewhere. It now watches its conversation. A
   limit recorded after it started is recorded on its subscription, and the Superagent starts again
   on one with capacity. It continues the cut turn there, stepped back over the limit as a task's

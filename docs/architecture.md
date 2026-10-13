@@ -238,7 +238,7 @@ the page, under a notice that it is for quick work only
 
 A Cockpit remembers its pool subscription (in `shell.json`) and watches its newest conversation
 while it runs ([SPEC-074](../.ai/specs/SPEC-074-i-just-hit-usage-limit-in-the-agent-it-s.md),
-[decision 0052](decisions/0052-cockpit-moves-past-a-usage-limit.md)). A usage limit recorded after
+[decision 0053](decisions/0053-cockpit-moves-past-a-usage-limit.md)). A usage limit recorded after
 it started is recorded on that subscription as a task's is. The Cockpit then starts again, under
 its start lock, on a subscription with capacity. It resumes the conversation stepped back over the
 limit with Claude Code's interrupted-turn flag, as a task does after a limit (SPEC-034). The old
