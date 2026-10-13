@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
-- Onboarding follow-up (SPEC-051, task #46): `docs/api.md` no longer says an import starts the
+- Onboarding follow-up (SPEC-055, SPEC-051, task #46): `docs/api.md` no longer says an import starts the
   preparation task (a `pending` sandbox waits for Start onboarding), ADR-0038's wording and the
   decisions index order are corrected, and the import test asserts the pending onboarding summary.
 - `yulius onboard` only uploads (SPEC-051, ADR-0038, task #43): the repository, branches, snapshot
