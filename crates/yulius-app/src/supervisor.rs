@@ -158,6 +158,9 @@ pub struct TaskRuntime {
     /// When a switch of this task was last refused before it started (ms, 0 = never): an
     /// automatic switch waits [`SWITCH_COOLDOWN_MS`] before it tries again.
     pub(crate) switch_refused_ms: AtomicI64,
+    /// The recovery of a session whose context is full (SPEC-060); outlives a run, so a fresh
+    /// session counts as its second stage.
+    pub(crate) context: Mutex<crate::context_full::ContextEpisode>,
 }
 
 /// After a switch was refused before it started, automatic switches of the task wait this long
@@ -207,6 +210,7 @@ impl TaskRuntime {
             nudged: Mutex::new(std::collections::BTreeSet::new()),
             acting_as_app_said: AtomicBool::new(false),
             switch_refused_ms: AtomicI64::new(0),
+            context: Mutex::new(crate::context_full::ContextEpisode::default()),
         }
     }
 
@@ -1173,7 +1177,7 @@ impl App {
         }
     }
 
-    async fn attempt_live(&self, task_id: &TaskId, attempt_id: &AttemptId) -> bool {
+    pub(crate) async fn attempt_live(&self, task_id: &TaskId, attempt_id: &AttemptId) -> bool {
         matches!(
             self.deps.store.live_attempt(task_id).await,
             Ok(Some(a)) if a.id == *attempt_id
@@ -1963,6 +1967,24 @@ impl App {
             .await
     }
 
+    /// Continues a task whose session ran out of context in a fresh session on `account`, opened
+    /// with `handoff` (SPEC-060 CTX-004).
+    ///
+    /// # Errors
+    /// `Conflict` when the task is not running.
+    pub(crate) async fn restart_fresh(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        account: Option<AccountId>,
+        handoff: &str,
+    ) -> AppResult<()> {
+        let start = RunStart::Fresh {
+            prompt: Some(handoff.to_owned()),
+        };
+        self.switch_with(task_id, account, "context_full", start)
+            .await
+    }
+
     async fn switch_with(
         self: &Arc<Self>,
         task_id: &TaskId,
@@ -2017,7 +2039,10 @@ impl App {
         // The policy may pick the same subscription (a limit that reset): no "another" then.
         let elsewhere = account.is_some()
             && attempt.as_ref().map(|a| a.account_id.as_ref()) != Some(account.as_ref());
-        runtime.hub.notice(if elsewhere {
+        let fresh = matches!(start, RunStart::Fresh { .. });
+        runtime.hub.notice(if fresh {
+            "↻ Yulius starts a fresh session for this task…"
+        } else if elsewhere {
             "↻ Yulius continues this session on another Claude subscription…"
         } else {
             "↻ Yulius continues this session…"
@@ -2074,9 +2099,11 @@ impl App {
                 } else {
                     store.set_switch_outcome(&decision_id, "completed").await?;
                     runtime.switch_refused_ms.store(0, Ordering::SeqCst);
-                    runtime
-                        .hub
-                        .notice("↻ The session continues where it left off.");
+                    runtime.hub.notice(if fresh {
+                        "↻ The task continues in a fresh session."
+                    } else {
+                        "↻ The session continues where it left off."
+                    });
                 }
                 Ok(())
             }
@@ -2500,6 +2527,10 @@ impl App {
                 if w.caught_up() {
                     catching_up = false;
                     self.apply_transcript_facts(&task_id, facts).await;
+                    // A session left full while Yulius was down is recovered now (CTX-007).
+                    if facts.context_full {
+                        self.context_full_observed(&task_id, &attempt).await;
+                    }
                 }
             } else {
                 for observation in observations {
@@ -2595,6 +2626,7 @@ impl App {
                 self.publish_task(task_id).await;
             }
             Observation::TurnComplete => {
+                self.context_replied(task_id, &attempt.id);
                 runtime.end_turn(self.now());
                 // With hooks the Stop hook is the boundary that switches or pauses; the
                 // transcript decides only for a run without them.
@@ -2613,7 +2645,13 @@ impl App {
                     .await;
                 self.turn_record_seen(task_id).await;
             }
-            Observation::AgentWork { at } => self.agent_worked(task_id, at).await,
+            Observation::AgentWork { at } => {
+                self.context_replied(task_id, &attempt.id);
+                self.agent_worked(task_id, at).await;
+            }
+            Observation::ContextFull => self.context_full_observed(task_id, attempt).await,
+            Observation::Compacted => self.compacted_observed(task_id).await,
+            Observation::CompactFailed => self.compact_failed_observed(task_id, attempt).await,
             Observation::Session { .. } => {}
         }
     }
