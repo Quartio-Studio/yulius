@@ -146,6 +146,10 @@ flowchart LR
   two focus tests now wait until the terminal is shown (when a focus request lands) and the
   slow-start test holds the answer instead of relying on a delay; a comment says how a refused
   session keeps the keyboard.
+- **CI on 2d06cd8**: the slow-start test failed once under load (`__yuliusMock` not defined yet: the
+  mock backend is a dynamic import that can land after the page opens); it now waits for the mock
+  with `mockReady`, as the drafts tests do. The same run's 30-minute timeouts were host overload
+  (issue #280).
 
 ## Evidence
 
