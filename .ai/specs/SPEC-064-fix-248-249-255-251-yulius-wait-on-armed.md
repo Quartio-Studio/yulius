@@ -1,11 +1,11 @@
 ---
 yulius-task: 6fbdd785-4734-4f95-8e46-55f4fe729507
-status: in-progress
+status: done
 ---
 
 # SPEC-064: `yulius wait` reads an armed merge and its outcome together; the errored-CI retry is tested
 
-Status: in progress
+Status: implemented
 Date: 2026-10-13
 Owner: Yulius task #53
 Scope authorization: GitHub issues #248, #249, #255 and #251, through task #53 (part of task #47,
@@ -84,8 +84,8 @@ retry of an errored Yulius CI run at an open pull request's head is covered by a
 - [x] One-lock armed slot with superseding generations (fixes #255 and the #248 interleaving).
 - [x] Integration test of the errored-CI retry (#251).
 - [x] ADR, architecture and changes entry.
-- [ ] Gates green and independent review of the head.
-- [ ] Merged into dev on green CI; issues closed.
+- [x] Gates green and independent review of the head.
+- [x] Spec done with evidence; pull request ready (closing the issues follows the merge).
 
 ## Acceptance criteria
 
@@ -119,4 +119,30 @@ retry of an errored Yulius CI run at an open pull request's head is covered by a
 
 ## Evidence
 
-(filled at the end)
+- **#249 does not reproduce on `dev`.** `delivery::a_wait_on_an_armed_merge_with_pending_checks_keeps_waiting`
+  passed on the code before the fix (`cargo test -p yulius --test main -- delivery::a_wait_on_an_armed`):
+  with a merge armed and checks pending the wait state is armed with no outcome, the server's wait
+  returns it unchanged, and `settled` keeps waiting until the merge is decided ("Yulius merged pull
+  request #1 …"). The quoted "was decided; Yulius's notice says how" message no longer exists
+  (SPEC-028). The test stays as the regression guard.
+- **#248 reproduced, then fixed.** Before the fix,
+  `delivery::a_merge_armed_while_an_earlier_one_is_decided_supersedes_it` failed at the wait on the
+  new head with `"merge_armed":false,"merge_outcome":"The merge you armed was dropped: you armed
+  36f1d53ae … but the branch is now at a10f216a0"`, the reported symptom. It passes after the fix;
+  the independent review also reverted the three production files to the merge base and saw it
+  fail.
+- **#255** is fixed by construction (`ArmedSlot::finish`, one `view()` read); pinned by
+  `agent_wait::tests::a_decision_ends_in_one_step` and `a_newer_arm_supersedes_a_decision_in_progress`
+  (`cargo test -p yulius-app --lib agent_wait`: 3 passed).
+- **Restore guard** (review round 1): `delivery::a_restore_never_brings_back_a_merge_decided_since`
+  failed before the `generation == 0` guard (`"merge_armed":true` next to its own "dropped"
+  outcome) and passes after.
+- **#251**: `delivery::an_errored_run_at_an_open_pull_request_is_retried_once` passes. Mutating
+  `retry_errored_run` / `retry_errored_checks` makes it fail each time: `errored < 3` → "no third run";
+  dropping the `mergeable != Some(false)` check → "conflicting: not retried"; removing the call from
+  `reconcile_deliveries` → one run instead of two.
+- **Gate**: `scripts/dev ci` exit 0 at `e78afc4` (repository contracts, check, fmt, clippy
+  `-D warnings`, nextest 1289 passed / 16 skipped, doctests, cargo-deny, cargo-shear, docs).
+- **Independent review** (fresh read-only session, `om-code-review`): round 1 APPROVE at `6631d6c`
+  with four minors and nits, fixed test-first in `e78afc4`; round 2 APPROVE at `e78afc4`; its one
+  remaining wording note on ADR-0046 is applied in the final docs commit.

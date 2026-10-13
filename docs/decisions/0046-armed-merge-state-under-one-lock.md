@@ -48,7 +48,7 @@ followed:
   armed. A decision that was superseded leaves no trace beyond its audit entry (merges only).
 - In the rare case where the superseded decision did merge the pull request, the newer merge stays
   armed; the wait on it ends on the stage change ("Delivery moved: pr_open -> merged_integration"),
-  and the merge is forgotten when the task ends, like any armed merge of a task that is not
-  running.
+  and the merge stays armed until the task is deleted, or until a restart once the task no longer
+  runs (as the earlier code also left it).
 - A restore after a restart puts back a saved merge only while nothing was armed or cleared in
   the new process, so it never revives a merge armed and decided since the file was read.
