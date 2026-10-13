@@ -155,7 +155,8 @@ the runs (load average 26 to 61). Traces are under Evidence.
   an early SessionStart sets. Unlike `session_started`, every later hook (UserPromptSubmit, Stop)
   sets it again, so a wiped value repairs itself at the next hook. Until then a turn end read from
   the transcript is handled as for a hookless run. Moving that reset before the spawn too is a
-  separate slice with its own test. It is noted on #243, since this task creates no new issue.
+  separate slice with its own test. It is noted in the pull request and in #243's closing comment,
+  since this task creates no new issue.
 - **No ADR.** Nothing here sets a lasting architectural direction. These are test fixes and one UI
   listener.
 
@@ -202,10 +203,12 @@ config's `retries: 0` and default budgets.
   only e2e files, the mock and docs.
 - Full e2e, `CI=true npx e2e run` at `2d8fddc`: 38 files passed, 1 skipped; 244 tests passed,
   1 skipped (the model-driven agent test); 886.6 s.
-- Independent review in a fresh session at `08b8536`: APPROVE, with four minor findings. Three were
-  fixed in `2d8fddc`: an editor shown rather than `window.monaco`, a comment on the mock timer the
-  #294 test relies on, and the changes-log wording. The fourth (`hooks_seen`) is recorded under
-  Decisions as a follow-up.
+- Independent review in a fresh session at `08b8536`: APPROVE, with four minor findings.
+  - `2d8fddc` fixed the Editor condition (an editor shown rather than `window.monaco`) and the
+    comment on the mock timer the #294 test relies on, plus a changes-log wording nit.
+  - `fbfc7e5` filled this Evidence section.
+  - `hooks_seen` is recorded under Decisions as a follow-up.
+- A second fresh review at `fbfc7e5`: APPROVE, with two spec-wording findings, fixed after it.
 
 **Not verified here.** The #243 CI failure itself: its log has expired, and a disk over quota
 could not be recreated (`/tmp` is tmpfs here). The fixes remove the 45 s idle and the race, and
