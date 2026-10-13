@@ -196,6 +196,11 @@ impl SessionStore for SqliteStore {
         .await
     }
 
+    async fn purge_device_grants(&self, now: Timestamp) -> AppResult<usize> {
+        self.call(move |c| c.execute(PURGE_GRANTS, [now.0]).map_err(db))
+            .await
+    }
+
     async fn device_grant_by_device(
         &self,
         device_code_hash: &str,

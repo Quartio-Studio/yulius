@@ -609,6 +609,15 @@ impl App {
         })
     }
 
+    /// Deletes expired and consumed device grants (#169); the background tick calls it every
+    /// minute, and every start does the same before checking the bounds.
+    ///
+    /// # Errors
+    /// Store failures.
+    pub async fn purge_device_grants(&self) -> AppResult<usize> {
+        self.deps.store.purge_device_grants(self.now()).await
+    }
+
     /// Approves or denies a device grant as the signed-in user; approval issues an API token.
     ///
     /// # Errors

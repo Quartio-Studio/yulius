@@ -118,6 +118,8 @@ pub trait SessionStore: Send + Sync {
         grant: &DeviceGrantRecord,
         bounds: DeviceGrantBounds,
     ) -> AppResult<DeviceGrantInsert>;
+    /// Deletes device grants expired at `now` (any status) and consumed ones; returns how many.
+    async fn purge_device_grants(&self, now: Timestamp) -> AppResult<usize>;
     /// Device grant by device-code hash.
     async fn device_grant_by_device(
         &self,

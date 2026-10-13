@@ -272,6 +272,56 @@ async fn device_grants_are_bounded_per_client_and_instance() -> R {
     Ok(())
 }
 
+/// #169: the purge deletes expired grants of any status and consumed ones, keeps a live denied
+/// one; a start purges too, so a client whose grants expired starts again.
+#[tokio::test]
+async fn expired_and_consumed_device_grants_are_purged() -> R {
+    let store = SqliteStore::open_in_memory()?;
+    let (_, uid) = seed(&store).await?;
+    for (code, client) in [("P1", "a"), ("C1", "a"), ("D1", "b")] {
+        store
+            .insert_device_grant(&grant(code, code, client, 1), BOUNDS)
+            .await?;
+    }
+    let sealed = yulius_app::model::Sealed(vec![1]);
+    store
+        .resolve_device_grant("C1", "approved", Some(&uid), Some(&sealed))
+        .await?;
+    assert!(store.consume_device_grant("C1").await?);
+    store
+        .resolve_device_grant("D1", "denied", Some(&uid), None)
+        .await?;
+
+    assert_eq!(store.purge_device_grants(Timestamp(500)).await?, 1);
+    assert!(store.device_grant_by_user_code("C1").await?.is_none());
+    for kept in ["P1", "D1"] {
+        assert!(store.device_grant_by_user_code(kept).await?.is_some());
+    }
+    assert_eq!(store.purge_device_grants(Timestamp(1001)).await?, 2);
+    assert_eq!(store.purge_device_grants(Timestamp(1001)).await?, 0);
+
+    // A start purges: client "a" fills its bound, and starts again once those expired.
+    for code in ["A1", "A2"] {
+        store
+            .insert_device_grant(&grant(code, code, "a", 2000), BOUNDS)
+            .await?;
+    }
+    assert_eq!(
+        store
+            .insert_device_grant(&grant("A3", "A3", "a", 2500), BOUNDS)
+            .await?,
+        DeviceGrantInsert::ClientFull
+    );
+    assert_eq!(
+        store
+            .insert_device_grant(&grant("A3", "A3", "a", 3000), BOUNDS)
+            .await?,
+        DeviceGrantInsert::Inserted
+    );
+    assert!(store.device_grant_by_user_code("A1").await?.is_none());
+    Ok(())
+}
+
 #[tokio::test]
 async fn device_grant_is_consumed_once() -> R {
     let store = SqliteStore::open_in_memory()?;

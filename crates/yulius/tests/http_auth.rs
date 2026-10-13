@@ -12,7 +12,7 @@ use support::{
 use yulius_app::auth::{DEVICE_STARTS_PER_MINUTE, MAX_DEVICE_GRANTS, MAX_DEVICE_GRANTS_PER_CLIENT};
 use yulius_app::error::AppError;
 use yulius_app::model::SandboxRecord;
-use yulius_app::ports::store::{InstanceStore, SandboxStore};
+use yulius_app::ports::store::{InstanceStore, SandboxStore, SessionStore};
 use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::permission::GitHubPermissions;
 use yulius_domain::task::TaskStatus;
@@ -701,6 +701,56 @@ async fn device_grants_are_bounded_per_client_and_instance() -> TestResult {
         h.app.device_start("newcomer").await,
         Err(AppError::Capacity(_))
     ));
+    Ok(())
+}
+
+/// #169: the background purge deletes consumed grants at once and the rest once they expired;
+/// polling a purged grant reads "expired", like an unknown one.
+#[tokio::test]
+async fn device_grants_disappear_within_one_purge() -> TestResult {
+    let h = harness()?;
+    let admin = setup_superadmin(&h).await?;
+    let consumed = h.app.device_start("cli").await?;
+    let pending = h.app.device_start("cli").await?;
+    let approve = call(
+        &h.router,
+        Method::POST,
+        "/api/device/approve",
+        Some(json!({"user_code": consumed.user_code, "approve": true})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(approve.status, StatusCode::NO_CONTENT);
+    let got = h.app.device_poll(&consumed.device_code).await?;
+    assert_eq!(got.status, "approved");
+
+    h.app.purge_device_grants().await?;
+    assert!(
+        h.store
+            .device_grant_by_user_code(&consumed.user_code)
+            .await?
+            .is_none()
+    );
+    assert_eq!(
+        h.app.device_poll(&pending.device_code).await?.status,
+        "pending"
+    );
+
+    h.clock.0.fetch_add(
+        i64::from(pending.expires_in_s) * 1000,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    h.app.purge_device_grants().await?;
+    assert!(
+        h.store
+            .device_grant_by_user_code(&pending.user_code)
+            .await?
+            .is_none()
+    );
+    assert_eq!(
+        h.app.device_poll(&pending.device_code).await?.status,
+        "expired"
+    );
     Ok(())
 }
 
