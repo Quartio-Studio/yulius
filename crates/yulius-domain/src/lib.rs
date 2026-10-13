@@ -7,6 +7,7 @@
 //! [`time::Timestamp`] values and identifiers as already-generated strings.
 
 pub mod auto_choice;
+pub mod automation_format;
 pub mod briefing;
 pub mod capacity;
 pub mod ci;

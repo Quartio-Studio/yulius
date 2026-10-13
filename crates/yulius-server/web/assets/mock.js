@@ -1577,6 +1577,32 @@ route('PUT', `/api/workflows/${ID}`, ({ db, p, body }) => {
 });
 route('DELETE', `/api/workflows/${ID}`, ({ db, p }) => { mutableWorkflow(db, p[0]); db.workflows = db.workflows.filter((w) => w.id !== p[0]); return json(204); });
 
+// Ready-made automations (SPEC-042): the catalog, matched to a sandbox's automations by name.
+const AUTOMATION_TEMPLATES = [
+  { id: 'docs-up-to-date', name: 'Keep the docs up to date', description: 'Every night, the documentation is brought in line with what changed in the code during the last day.', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Bring this project’s documentation in line with the code, for the changes made since the last run of this automation.', workflow_id: 'wf-docs' },
+  { id: 'open-issues', name: 'Work through open issues', description: 'Every night, the core team’s open GitHub issues are verified in parallel and the actionable ones get a Fix task each.', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Work through this repository’s open GitHub issues written by the core team or their agents.', workflow_id: null },
+];
+const sameName = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
+route('GET', `/api/sandboxes/${ID}/automation-templates`, ({ db, p }) => AUTOMATION_TEMPLATES.map((t) => {
+  const own = db.automations.find((a) => a.sandbox === p[0] && sameName(a.name, t.name));
+  return { ...t, automation_id: own ? own.id : null };
+}));
+route('POST', `/api/sandboxes/${ID}/automation-templates/${ID}/enable`, ({ db, p }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  const t = AUTOMATION_TEMPLATES.find((x) => x.id === p[1]);
+  if (!t) fail(404, 'not_found', 'not found');
+  let a = db.automations.find((x) => x.sandbox === p[0] && sameName(x.name, t.name));
+  const created = !a;
+  if (created) {
+    db.nextId += 1;
+    const { id: _id, description: _d, ...fields } = t;
+    a = { id: `aut_${db.nextId}`, sandbox: p[0], ...fields, harness: 'claude', created_via: 'ui', last_run: null };
+    db.automations.push(a);
+  }
+  Object.assign(a, { enabled: true, next_run_at: isoIn(5 * HOUR) });
+  const { sandbox: _s, ...out } = a;
+  return json(created ? 201 : 200, out);
+});
 route('GET', `/api/sandboxes/${ID}/automations`, ({ db, p }) => db.automations.filter((a) => a.sandbox === p[0]).map(({ sandbox: _s, ...a }) => a));
 route('POST', `/api/sandboxes/${ID}/automations`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
