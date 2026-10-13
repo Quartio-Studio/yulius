@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- An automation starts its tasks like New task (SPEC-078, ADR-0062, task #70; SPEC-001 AUT-013).
+  The builder's **Start** row, the API (`supertask`, `after_task_id`, `start_rule`) and the tools
+  `automation_create` / `automation_update` pick one of four choices: Start now (queued, the
+  default), Supertask, After a task, or When a rule is true. Each run creates its task with that
+  choice. After a task that has ended, the task waits for the rule `#N done` instead of failing.
+  The sentence and the list row name the choice, and a waiting task keeps the next runs skipped.
+  Schema version 19.
 - Home's cards and the sandbox tabs count "working" and "queued" by the sidebar's rule (SPEC-076,
   ADR-0061, task #62; #170). One domain rule (`AttentionFacts::group`) gives each task its sidebar
   group: "queued" counts queued and chained tasks, "working" the rest of the Working group

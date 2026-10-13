@@ -28,6 +28,7 @@ use yulius_domain::cron::{MAX_UTC_OFFSET_MINUTES, Schedule};
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{SandboxId, TaskId, UserId};
 use yulius_domain::permission::Action;
+use yulius_domain::rule::Rule;
 use yulius_domain::time::Timestamp;
 
 use crate::auth::{AuthContext, rfc3339};
@@ -120,6 +121,20 @@ impl RunState {
     }
 }
 
+/// How the tasks of an automation start (SPEC-078): the choices of New task's start chip.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum AutomationStart {
+    /// Queued: the task starts as soon as a session slot is free.
+    #[default]
+    Now,
+    /// A supertask (SPEC-071): after the project's running tasks, then alone.
+    Supertask,
+    /// After this task of the project is done (TSK-012); the rule `#N done` once it has ended.
+    After(TaskId),
+    /// When this rule over the project's tasks is true (SPEC-017), in canonical text.
+    Rule(String),
+}
+
 /// A stored automation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutomationRecord {
@@ -141,6 +156,8 @@ pub struct AutomationRecord {
     pub harness: Harness,
     /// Enabled.
     pub enabled: bool,
+    /// How created tasks start.
+    pub start: AutomationStart,
     /// User the created tasks are attributed to.
     pub created_by: UserId,
     /// UI or agent.
@@ -245,6 +262,7 @@ struct NewAutomation {
     fields: Fields,
     workflow_id: Option<String>,
     enabled: bool,
+    start: AutomationStart,
     created_by: UserId,
     created_via: CreatedVia,
     actor: String,
@@ -293,6 +311,14 @@ fn validate_harness(text: &str) -> AppResult<Harness> {
     })
 }
 
+fn input_start(input: &Automation) -> AppResult<StartInput> {
+    start_input(
+        input.supertask,
+        input.after_task_id.as_deref(),
+        input.start_rule.as_deref(),
+    )
+}
+
 fn validate(input: &Automation) -> AppResult<Fields> {
     Ok(Fields {
         name: validate_name(&input.name)?,
@@ -301,6 +327,55 @@ fn validate(input: &Automation) -> AppResult<Fields> {
         prompt: validate_prompt(&input.prompt)?,
         harness: validate_harness(&input.harness)?,
     })
+}
+
+/// The start choice as given (SPEC-078 AUT-014): at most one of a supertask, a task to run after
+/// and a rule, as New task allows; the task and the rule are checked against the project by
+/// [`App::resolve_start`].
+fn start_input(
+    supertask: bool,
+    after_task_id: Option<&str>,
+    start_rule: Option<&str>,
+) -> AppResult<StartInput> {
+    let after = after_task_id.map(str::trim).filter(|t| !t.is_empty());
+    let rule = start_rule.map(str::trim).filter(|r| !r.is_empty());
+    match (supertask, after, rule) {
+        (true, None, None) => Ok(StartInput::Supertask),
+        (true, _, _) => Err(AppError::Invalid(
+            "a supertask starts after the running tasks: it cannot also run after a task or a rule"
+                .into(),
+        )),
+        (false, Some(_), Some(_)) => Err(AppError::Invalid(
+            "give a task to run after or a start rule, not both".into(),
+        )),
+        (false, Some(task), None) => Ok(StartInput::After(task.to_owned())),
+        (false, None, Some(text)) => Ok(StartInput::Rule(
+            Rule::parse(text).map_err(|e| AppError::Invalid(e.to_string()))?,
+        )),
+        (false, None, None) => Ok(StartInput::Now),
+    }
+}
+
+/// A start choice that passed [`start_input`].
+enum StartInput {
+    Now,
+    Supertask,
+    After(String),
+    Rule(Rule),
+}
+
+impl StartInput {
+    /// Whether this is the stored choice `start`, sent back unchanged.
+    fn matches(&self, start: &AutomationStart) -> bool {
+        match (self, start) {
+            (Self::Now, AutomationStart::Now) | (Self::Supertask, AutomationStart::Supertask) => {
+                true
+            }
+            (Self::After(id), AutomationStart::After(stored)) => id == stored.as_str(),
+            (Self::Rule(rule), AutomationStart::Rule(stored)) => &rule.to_string() == stored,
+            _ => false,
+        }
+    }
 }
 
 fn str_arg<'a>(args: &'a Value, key: &str) -> AppResult<&'a str> {
@@ -324,6 +399,15 @@ impl App {
         } else {
             None
         };
+        let (supertask, after_task_id, after_task_number, start_rule) = match &record.start {
+            AutomationStart::Now => (false, None, None, None),
+            AutomationStart::Supertask => (true, None, None, None),
+            AutomationStart::After(id) => {
+                let number = self.deps.store.task(id).await?.map(|t| t.number);
+                (false, Some(id.to_string()), number, None)
+            }
+            AutomationStart::Rule(rule) => (false, None, None, Some(rule.clone())),
+        };
         Ok(Automation {
             id: record.id.clone(),
             name: record.name.clone(),
@@ -333,10 +417,48 @@ impl App {
             workflow_id: record.workflow_id.clone(),
             harness: record.harness.as_str().to_owned(),
             enabled: record.enabled,
+            supertask,
+            after_task_id,
+            after_task_number,
+            start_rule,
             created_via: record.created_via.as_str().to_owned(),
             next_run_at,
             last_run: last.first().map(run_view),
         })
+    }
+
+    /// Checks a start choice against the automation's project (SPEC-078 AUT-014): the task to
+    /// run after is one of its tasks, and a rule names only its task numbers.
+    async fn resolve_start(
+        &self,
+        sandbox: &SandboxId,
+        input: StartInput,
+    ) -> AppResult<AutomationStart> {
+        let store = &self.deps.store;
+        match input {
+            StartInput::Now => Ok(AutomationStart::Now),
+            StartInput::Supertask => Ok(AutomationStart::Supertask),
+            StartInput::After(id) => {
+                let missing = || AppError::Invalid("the task to run after does not exist".into());
+                let id = TaskId::parse(&id).map_err(|_| missing())?;
+                let task = store
+                    .task(&id)
+                    .await?
+                    .filter(|t| &t.sandbox_id == sandbox)
+                    .ok_or_else(missing)?;
+                Ok(AutomationStart::After(task.id))
+            }
+            StartInput::Rule(rule) => {
+                for number in rule.numbers() {
+                    if store.task_by_number(sandbox, number).await?.is_none() {
+                        return Err(AppError::Invalid(format!(
+                            "the rule names #{number}, which does not exist in this project"
+                        )));
+                    }
+                }
+                Ok(AutomationStart::Rule(rule.to_string()))
+            }
+        }
     }
 
     async fn resolve_workflow_id(
@@ -374,6 +496,7 @@ impl App {
             fields,
             workflow_id,
             enabled,
+            start,
             created_by,
             created_via,
             actor,
@@ -390,6 +513,7 @@ impl App {
             workflow_id,
             harness: fields.harness,
             enabled,
+            start,
             created_by,
             created_via,
             created_at: now,
@@ -432,12 +556,14 @@ impl App {
         let workflow = self
             .resolve_workflow_id(&sid, input.workflow_id.as_deref())
             .await?;
+        let start = self.resolve_start(&sid, input_start(input)?).await?;
         let record = self
             .insert_automation(NewAutomation {
                 sandbox: sid,
                 fields,
                 workflow_id: workflow,
                 enabled: input.enabled,
+                start,
                 created_by: ctx.user.id.clone(),
                 created_via: CreatedVia::Ui,
                 actor: self.login_of(&ctx.user.id).await,
@@ -564,6 +690,7 @@ impl App {
                 fields,
                 workflow_id: workflow,
                 enabled: true,
+                start: AutomationStart::Now,
                 created_by: created_by.clone(),
                 created_via,
                 actor: actor.to_owned(),
@@ -642,6 +769,14 @@ impl App {
         let workflow_id = self
             .resolve_workflow_id(&current.sandbox_id, input.workflow_id.as_deref())
             .await?;
+        // The stored choice sent back unchanged is kept as it is: its task may have been deleted
+        // since, and pausing or renaming the automation must still save (runs check it).
+        let given = input_start(input)?;
+        let start = if given.matches(&current.start) {
+            current.start.clone()
+        } else {
+            self.resolve_start(&current.sandbox_id, given).await?
+        };
         let next = AutomationRecord {
             name: fields.name,
             cron: fields.cron,
@@ -650,6 +785,7 @@ impl App {
             harness: fields.harness,
             workflow_id,
             enabled: input.enabled,
+            start,
             ..current.clone()
         };
         let actor = self.login_of(&ctx.user.id).await;
@@ -1023,25 +1159,61 @@ impl App {
         let steps = self
             .workflow_steps(&automation.sandbox_id, automation.workflow_id.as_deref())
             .await?;
+        let (supertask, after, rule) = self.run_start(automation).await?;
         let task = self
-            .create_task_internal(NewTask {
-                sandbox: automation.sandbox_id.clone(),
-                created_by: automation.created_by.clone(),
-                prompt: automation.prompt.clone(),
-                harness: automation.harness,
-                title: Some(automation.name.clone()),
-                workflow_id: automation.workflow_id.clone(),
-                steps,
-                model: None,
-                effort: None,
-                origin: TaskOrigin::Automation,
-                automation_run: Some(key.to_owned()),
-                start: true,
-                mode: crate::model::TaskMode::Prompt,
-                supertask: false,
-            })
+            .create_task_ruled(
+                NewTask {
+                    sandbox: automation.sandbox_id.clone(),
+                    created_by: automation.created_by.clone(),
+                    prompt: automation.prompt.clone(),
+                    harness: automation.harness,
+                    title: Some(automation.name.clone()),
+                    workflow_id: automation.workflow_id.clone(),
+                    steps,
+                    model: None,
+                    effort: None,
+                    origin: TaskOrigin::Automation,
+                    automation_run: Some(key.to_owned()),
+                    start: true,
+                    mode: crate::model::TaskMode::Prompt,
+                    supertask,
+                },
+                after.as_ref(),
+                rule.as_ref(),
+            )
             .await?;
         Ok(task.id)
+    }
+
+    /// How the task of a run starts (SPEC-078 AUT-015): a supertask, after a task that has not
+    /// ended, or on a rule; after a task that has ended, on the rule `#N done`, so a recurring
+    /// automation keeps running after its predecessor finished.
+    async fn run_start(
+        &self,
+        automation: &AutomationRecord,
+    ) -> AppResult<(bool, Option<TaskRecord>, Option<Rule>)> {
+        let parse = |text: &str| Rule::parse(text).map_err(|e| AppError::Invalid(e.to_string()));
+        match &automation.start {
+            AutomationStart::Now => Ok((false, None, None)),
+            AutomationStart::Supertask => Ok((true, None, None)),
+            AutomationStart::Rule(text) => Ok((false, None, Some(parse(text)?))),
+            AutomationStart::After(id) => {
+                let task = self
+                    .deps
+                    .store
+                    .task(id)
+                    .await?
+                    .filter(|t| t.sandbox_id == automation.sandbox_id)
+                    .ok_or_else(|| {
+                        AppError::Invalid("the task to run after does not exist".into())
+                    })?;
+                if task.status.is_resting() || task.archived_at.is_some() {
+                    Ok((false, None, Some(parse(&format!("#{} done", task.number))?)))
+                } else {
+                    Ok((false, Some(task), None))
+                }
+            }
+        }
     }
 
     async fn announce_run(&self, automation: &AutomationRecord, run: &AutomationRunRecord) {
@@ -1120,6 +1292,47 @@ impl App {
             })
     }
 
+    /// The start choice of an `automation_create`/`automation_update` call (SPEC-078 AUT-017):
+    /// `after_task` (a task number), `start_rule` and `supertask`, as `task_create` takes them;
+    /// `None` when the call gives none of them.
+    async fn agent_start(
+        &self,
+        caller: &ProjectCaller,
+        args: &Value,
+    ) -> AppResult<Option<AutomationStart>> {
+        let given = |key: &str| args.get(key).filter(|v| !v.is_null());
+        let (after, rule, supertask) =
+            (given("after_task"), given("start_rule"), given("supertask"));
+        if after.is_none() && rule.is_none() && supertask.is_none() {
+            return Ok(None);
+        }
+        let supertask = match supertask {
+            None => false,
+            Some(flag) => flag
+                .as_bool()
+                .ok_or_else(|| AppError::Invalid("`supertask` must be true or false".into()))?,
+        };
+        let rule = match rule {
+            None => None,
+            Some(text) => Some(
+                text.as_str()
+                    .ok_or_else(|| AppError::Invalid("`start_rule` must be a string".into()))?,
+            ),
+        };
+        let after = match after {
+            None => None,
+            Some(number) => Some(
+                self.after_task_arg(caller, number)
+                    .await?
+                    .id
+                    .as_str()
+                    .to_owned(),
+            ),
+        };
+        let input = start_input(supertask, after.as_deref(), rule)?;
+        Ok(Some(self.resolve_start(&caller.sandbox, input).await?))
+    }
+
     /// `automation_create` agent tool (AUT-002): records `created_via = agent` and the caller
     /// (the agent's task or the Cockpit) in the audit log; tasks are attributed to the person the
     /// caller acts for (SPEC-037 MGT-007).
@@ -1154,12 +1367,14 @@ impl App {
         };
         let enabled = args.get("enabled").and_then(Value::as_bool).unwrap_or(true);
         let workflow = self.agent_workflow(caller, args).await?;
+        let start = self.agent_start(caller, args).await?.unwrap_or_default();
         let record = self
             .insert_automation(NewAutomation {
                 sandbox: caller.sandbox.clone(),
                 fields,
                 workflow_id: workflow,
                 enabled,
+                start,
                 created_by: caller.user.clone(),
                 created_via: CreatedVia::Agent,
                 actor: caller.actor.clone(),
@@ -1203,7 +1418,8 @@ impl App {
         Ok(json!({"automations": out, "ready_made": ready_made}))
     }
 
-    /// `automation_update` agent tool: enable/disable, schedule, offset, prompt or name.
+    /// `automation_update` agent tool: enable/disable, schedule, offset, prompt, name or the start
+    /// choice (any of `after_task`, `start_rule`, `supertask` replaces it).
     ///
     /// # Errors
     /// `NotFound` outside the agent's sandbox, validation errors.
@@ -1232,6 +1448,9 @@ impl App {
         }
         if let Some(enabled) = args.get("enabled").and_then(Value::as_bool) {
             next.enabled = enabled;
+        }
+        if let Some(start) = self.agent_start(caller, args).await? {
+            next.start = start;
         }
         self.save_automation(&current, &next, &caller.actor, caller.detail.clone())
             .await?;
@@ -1289,6 +1508,37 @@ mod tests {
         assert!(validate_prompt(&"x".repeat(MAX_PROMPT_BYTES + 1)).is_err());
         assert!(validate_name("").is_err());
         assert!(validate_harness("gpt").is_err());
+    }
+
+    #[test]
+    fn a_start_choice_is_one_of_four() {
+        let now = start_input(false, None, Some("  ")).ok();
+        assert!(matches!(now, Some(StartInput::Now)));
+        assert!(matches!(
+            start_input(true, Some(""), None).ok(),
+            Some(StartInput::Supertask)
+        ));
+        assert!(matches!(
+            start_input(false, Some(" t-1 "), None).ok(),
+            Some(StartInput::After(id)) if id == "t-1"
+        ));
+        assert!(matches!(
+            start_input(false, None, Some("#2  DONE")).ok(),
+            Some(StartInput::Rule(rule)) if rule.to_string() == "#2 done"
+        ));
+        for (supertask, after, rule) in [
+            (true, Some("t-1"), None),
+            (true, None, Some("#2 done")),
+            (false, Some("t-1"), Some("#2 done")),
+            (false, None, Some("#2 done and")),
+        ] {
+            assert!(start_input(supertask, after, rule).is_err());
+        }
+        // The stored choice sent back unchanged.
+        let stored = AutomationStart::Rule("#2 done".into());
+        assert!(start_input(false, None, Some("#2 DONE")).is_ok_and(|i| i.matches(&stored)));
+        assert!(start_input(false, None, Some("#3 done")).is_ok_and(|i| !i.matches(&stored)));
+        assert!(start_input(false, None, None).is_ok_and(|i| !i.matches(&stored)));
     }
 
     #[test]

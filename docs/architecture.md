@@ -347,6 +347,25 @@ flowchart LR
   UPD --> SCH
 ```
 
+## How an automation's tasks start
+
+An automation stores one start choice for every task it creates, the choices of New task's start
+chip ([SPEC-078](../.ai/specs/SPEC-078-we-d-like-to-be-able-to-set-the-automati.md),
+[decision 0062](decisions/0062-an-automation-starts-its-tasks-like-new-task.md)). A run creates
+its task through the same `create_task_ruled` as New task. A task to run after that has ended
+turns into the rule `#N done`, so a recurring automation keeps working once its predecessor is
+finished.
+
+```mermaid
+flowchart LR
+  RUN["Scheduler or Run now: one slot"] --> START{"automation.start"}
+  START -->|"Now"| Q["queued"]
+  START -->|"Supertask"| ST["queued supertask (SPEC-071)"]
+  START -->|"After #N, not ended"| CH["chained after #N"]
+  START -->|"After #N, ended"| RD["chained on rule #N done"]
+  START -->|"Rule"| RL["chained on the rule"]
+```
+
 ## Web UI state
 
 The web UI is plain ES modules. Server state comes from the API and the UI event stream
