@@ -35,14 +35,14 @@ use yulius_ptyhost::test_support::locate_fake_agent;
 use yulius_store::SqliteStore;
 use yulius_store::crypto::MasterKeyCrypto;
 
-const HOUR: i64 = 3_600_000;
+pub(crate) const HOUR: i64 = 3_600_000;
 
 /// A usage probe whose answers the test sets per credential (account id = credential here).
 #[derive(Default)]
 pub(crate) struct ScriptedUsage(Mutex<HashMap<String, AccountUsage>>);
 
 impl ScriptedUsage {
-    fn set(&self, account: &str, usage: AccountUsage) {
+    pub(crate) fn set(&self, account: &str, usage: AccountUsage) {
         if let Ok(mut map) = self.0.lock() {
             map.insert(account.to_owned(), usage);
         }
@@ -74,7 +74,7 @@ fn now() -> Timestamp {
 
 /// The 5-hour window at `five` % (resetting in `five_reset_ms`) and the weekly window at `week` %
 /// resetting in `week_reset_h` hours.
-fn usage(five: f64, five_reset_ms: i64, week: f64, week_reset_h: i64) -> AccountUsage {
+pub(crate) fn usage(five: f64, five_reset_ms: i64, week: f64, week_reset_h: i64) -> AccountUsage {
     AccountUsage {
         primary: Some(UsageWindow {
             used_percent: Some(five),
@@ -244,7 +244,7 @@ async fn add_account(app: &App, id: &str) -> Result<AccountId, Box<dyn std::erro
     Ok(account)
 }
 
-async fn refresh(app: &App, user: &UserId, account: &str) -> TestResult {
+pub(crate) async fn refresh(app: &App, user: &UserId, account: &str) -> TestResult {
     let ctx = AuthContext {
         user: app.deps.store.user(user).await?.ok_or("user")?,
         csrf_token: None,

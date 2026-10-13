@@ -450,6 +450,11 @@ impl App {
         ) || self.runtime(&task.id).at_limit.load(Ordering::SeqCst);
         if at_limit {
             self.switch_after_limit(&task.id, account, "manual").await?;
+        } else if self.held_opening(&task.id).await {
+            // The session never took its first message: a fresh one types it with its images
+            // (SPEC-068 OPN-003).
+            let start = crate::supervisor::RunStart::Fresh { prompt: None };
+            self.switch_with(&task.id, account, "manual", start).await?;
         } else {
             self.switch_task_now(
                 &task.id,
