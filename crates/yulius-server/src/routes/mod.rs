@@ -14,6 +14,7 @@ mod imports;
 mod internal;
 mod mcp;
 mod mcp_servers;
+mod notes;
 mod previews;
 mod projects;
 mod sandboxes;
@@ -267,6 +268,19 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
                 .layer(DefaultBodyLimit::max(6 << 20)),
         )
         .route("/api/shells/{id}/terminal", get(shells::terminal))
+        // Auto-saved notes (SPEC-041): 256 KiB of text, JSON-escaped.
+        .route(
+            "/api/notes",
+            get(notes::team)
+                .put(notes::save_team)
+                .layer(DefaultBodyLimit::max(2 << 20)),
+        )
+        .route(
+            "/api/sandboxes/{sid}/notes",
+            get(notes::sandbox)
+                .put(notes::save_sandbox)
+                .layer(DefaultBodyLimit::max(2 << 20)),
+        )
         // Dropped files (EDT-006, UI-048): raw streamed bodies, bounded by the upload limit.
         .route("/api/sandboxes/{sid}/files/upload", put(uploads::file))
         .route(

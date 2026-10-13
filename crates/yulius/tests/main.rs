@@ -39,6 +39,7 @@ mod live_ui_terminal;
 mod local_ci;
 mod manage_tools;
 mod mcp_coordination;
+mod notes;
 mod pool_supervision;
 mod preview;
 mod projects;
