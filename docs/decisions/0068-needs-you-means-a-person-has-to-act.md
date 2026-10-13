@@ -31,8 +31,9 @@ was read as a prompt, so a Done task read Working until a person stopped it.
    alone, as DSK-102 decided; only the status reads the wait, as "Waiting for checks or merge"
    with Working's tone, so it notifies nobody.
 3. **Only prompts start turns.** A user record Claude Code writes for itself (a compaction's
-   summary, a command's echo and output, the shell mode) is no prompt. The model's own work shows
-   a turn that follows a command.
+   summary, a command's echo and output, the shell mode) is no prompt. Nor is `/compact` as typed:
+   Claude Code compacts and runs no turn, so neither its line nor a prompt hook for it starts
+   work (SPEC-085 STT-005). The model's own work shows a turn that follows any other command.
 
 ## Alternatives
 
@@ -46,7 +47,11 @@ was read as a prompt, so a Done task read Working until a person stopped it.
   stops, a failing evaluator) is still "open" in the transcript; its task needs a person.
 - **Skip every typed line that starts with `/`.** The raw `/compact` line is the only one seen,
   and the fake agent and older CLIs write prompts that way; the model's work already shows a
-  command's turn.
+  command's turn. Only the compaction command is known to run no turn.
+- **End a `/compact` "turn" when the compaction ends.** It needs a flag that the boundary, a
+  failed compaction or the next prompt clears, in the right order, and the task reads Working
+  for the minute the compaction takes although the agent does no work. Never starting one needs
+  no state.
 
 ## Consequences
 
@@ -54,5 +59,7 @@ was read as a prompt, so a Done task read Working until a person stopped it.
   returns; when the agent then stops, it reads Your turn or its pull request's state.
 - Failing checks read "Working · PR #N checks failing" while the agent's background work runs;
   once it ended and the agent stopped, they need you as before.
-- A person's own `/compact` typed into an idle session can still read Working until the next
-  prompt (its raw input line looks like a prompt).
+- `/compact` leaves the task as it was, during and after the compaction.
+- Yulius's own recovery of a full session reads Working until it types the prompt that carries
+  on (SPEC-085 STT-006, CTX-002 changed): Yulius acts, nobody else has to. Left to a person (they
+  typed into it), the task waits for them; a recovery that fails needs a person, as before.
