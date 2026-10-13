@@ -518,6 +518,13 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
         "the onboarding task has not run"
     );
     assert_eq!(result.body["onboarding_status"]["ready"], false);
+    let summary = result.body["onboarding_status"]["summary"]
+        .as_str()
+        .ok_or("onboarding summary")?;
+    assert!(
+        summary.contains("waits for someone to start onboarding"),
+        "{summary}"
+    );
     let pending = result.body["onboarding_status"]["pending"].to_string();
     assert!(
         pending.contains("Start onboarding") && pending.contains("https://yulius.test/s/shop"),
