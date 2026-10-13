@@ -211,17 +211,24 @@ export function mountTaskView(ctx, sandbox, task) {
   const queueBox = h('textarea', { class: 'input queue-input', rows: 2, placeholder: 'Queue a message for the agent…', 'aria-label': 'Message for the agent', 'aria-keyshortcuts': SUBMIT_ARIA, maxlength: 65536 });
   const queueButton = h('button', { type: 'button', class: 'btn btn-primary', title: `Queue (${SUBMIT_KEYS})`, onClick: () => queueMessage() }, 'Queue');
   const queueError = h('div', { class: 'field-error', role: 'alert' });
+  const queueNote = h('span', { class: 'muted' });
+  // A card kept after the start (below) goes once the person has their text (SPEC-056 WUI-106).
+  const queueDismiss = h('button', { type: 'button', class: 'btn', hidden: true, onClick: () => {
+    queueBox.value = '';
+    queueError.textContent = '';
+    renderQueue();
+    if (!isPhone()) terminal.focus();
+  } }, 'Dismiss');
   setChildren(queueSlot, h('section', { class: 'queue-card', role: 'region', 'aria-label': 'Queued messages' },
-    h('div', { class: 'queue-head' }, icon('send', { size: 16 }), h('strong', null, 'Queued messages'),
-      h('span', { class: 'muted' }, 'The agent gets them with the request when the task starts.')),
+    h('div', { class: 'queue-head' }, icon('send', { size: 16 }), h('strong', null, 'Queued messages'), queueNote),
     requestEl,
-    h('div', { class: 'queue-compose' }, queueBox, queueButton),
+    h('div', { class: 'queue-compose' }, queueBox, queueButton, queueDismiss),
     queueError));
   attachMarkdownInput(queueBox, { onSubmit: () => queueMessage() });
   let queueing = false;
   async function queueMessage() {
     const text = queueBox.value;
-    if (queueing || !text.trim()) return;
+    if (queueing || !text.trim() || queueBox.readOnly) return;
     queueing = true;
     queueButton.disabled = true;
     queueError.textContent = '';
@@ -236,15 +243,23 @@ export function mountTaskView(ctx, sandbox, task) {
       if (alive) queueError.textContent = error.message || 'Couldn’t queue the message.';
     } finally {
       queueing = false;
-      queueButton.disabled = false;
+      if (alive) renderQueue();
     }
   }
   function renderQueue() {
     const access = (ctx.store.sandboxById(sandbox.id) || sandbox).access;
-    const show = Boolean(detail && detail.id === current.id && detail.started === false
+    const waiting = Boolean(detail && detail.id === current.id && detail.started === false
       && WAITING.has(current.status) && !current.archived && allows(access, 'write'));
-    queueSlot.hidden = !show;
-    if (!show) return;
+    // The task started while the box held text or a refusal: the card stays with them, so the
+    // person can copy the text into the session (SPEC-052 QMS-006, SPEC-056 WUI-106).
+    const kept = !waiting && !queueSlot.hidden && Boolean(queueBox.value.trim() || queueError.textContent);
+    queueSlot.hidden = !waiting && !kept;
+    if (queueSlot.hidden) return;
+    queueNote.textContent = kept ? 'The task has started: copy your message into its session.' : 'The agent gets them with the request when the task starts.';
+    queueBox.readOnly = kept;
+    queueButton.disabled = queueing || kept;
+    queueDismiss.hidden = !kept;
+    if (kept) return;
     const text = detail.request || '';
     if (requestEl.textContent !== text) {
       requestEl.textContent = text;
@@ -324,10 +339,14 @@ export function mountTaskView(ctx, sandbox, task) {
 
   let alive = true;
   const reads = new AbortController(); // leaving the task cancels its reads in flight (PERF-13)
+  // Reads overlap (every status change reads again): only the latest one's answer is applied, so
+  // an older answer landing last cannot bring back an older status (SPEC-056 WUI-105).
+  let detailRead = 0;
   async function loadDetail() {
+    const read = ++detailRead;
     try {
       const fresh = await ctx.api.get(`/api/tasks/${enc(current.id)}`, { signal: reads.signal });
-      if (!alive) return; // the view was left while the read was in flight
+      if (!alive || read !== detailRead) return; // the view was left, or a newer read was asked for
       detail = fresh;
       if (detail && detail.id === current.id) {
         current = { ...current, ...pickSummary(detail) };
@@ -335,7 +354,7 @@ export function mountTaskView(ctx, sandbox, task) {
         renderStrip();
       }
     } catch (error) {
-      if (alive && error.status !== 404) errorToast(error, 'Couldn’t load task details');
+      if (alive && read === detailRead && error.status !== 404) errorToast(error, 'Couldn’t load task details');
     }
     if (alive) renderStepList();
   }
