@@ -27,6 +27,7 @@ use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{LaunchKind, PauseKind, TaskMode, TaskOrigin};
 use yulius_app::ports::store::TaskStore;
 use yulius_app::updates::UpdateRunRecord;
+use yulius_contracts::api::tasks::ContinueTask;
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::task::{Activity, AttemptState};
@@ -356,32 +357,32 @@ fn a_first_message_cut_by_a_restart_flags_the_task() -> TestResult {
     Ok(())
 }
 
-/// SPEC-068 OPN-002: the first message's submit reached Yulius but an instance update held it
-/// when the server restarted. The new server does not flag the task: the held submit goes on and
-/// the agent gets the message once.
-#[test]
-fn a_first_message_held_by_an_update_is_not_flagged_after_the_restart() -> TestResult {
-    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
-    let (_dir, data) = data_dir()?;
+/// Phase one of a restart during an instance update: a task with an image (`mode`) whose first
+/// message's submit reached Yulius, which held it for the update. Returns the data directory's
+/// guard and path, the internal port and the task; the first server is gone.
+fn first_message_held_by_an_update(
+    fake: &Path,
+    mode: TaskMode,
+) -> Result<(tempfile::TempDir, PathBuf, u16, TaskId), BoxError> {
+    let (dir, data) = data_dir()?;
     let first = runtime()?;
     let (port, id) = first.block_on(async {
         let probe = Arc::new(ScriptedUsage::default());
-        let (app, port) = start(&data, &fake, hooked(), 0, probe).await?;
+        let (app, port) = start(&data, fake, hooked(), 0, probe).await?;
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
         let id = new_task(
             &app,
             &sandbox,
             &user,
             "Make it blue\n\n@/srv/shot.png",
-            TaskMode::Prompt,
+            mode,
         )
         .await?;
-        let attempt = loop {
-            if let Some(attempt) = app.deps.store.live_attempt(&id).await? {
-                break attempt;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        };
+        wait_for("the run", Duration::from_secs(30), || async {
+            matches!(app.deps.store.live_attempt(&id).await, Ok(Some(_)))
+        })
+        .await?;
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
         // An update drains the instance before the first message is typed: every submit waits.
         let now = Timestamp(1);
         app.deps
@@ -409,7 +410,16 @@ fn a_first_message_held_by_an_update_is_not_flagged_after_the_restart() -> TestR
         Ok::<_, BoxError>((port, id))
     })?;
     first.shutdown_timeout(Duration::from_secs(5));
+    Ok((dir, data, port, id))
+}
 
+/// SPEC-068 OPN-002: the first message's submit reached Yulius but an instance update held it
+/// when the server restarted. The new server does not flag the task: the held submit goes on and
+/// the agent gets the message once.
+#[test]
+fn a_first_message_held_by_an_update_is_not_flagged_after_the_restart() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data, port, id) = first_message_held_by_an_update(&fake, TaskMode::Prompt)?;
     let rt = runtime()?;
     rt.block_on(async {
         let probe = Arc::new(ScriptedUsage::default());
@@ -429,6 +439,111 @@ fn a_first_message_held_by_an_update_is_not_flagged_after_the_restart() -> TestR
     Ok(())
 }
 
+/// SPEC-068 OPN-002: the same for a goal task. The goal, which the old server would have typed
+/// after the turn on the first message, is typed by the new one once that turn ended, once.
+#[test]
+fn a_goal_task_held_by_an_update_still_gets_its_goal_after_the_restart() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data, port, id) = first_message_held_by_an_update(&fake, TaskMode::Goal)?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, _) = start(&data, &fake, hooked(), port, probe).await?;
+        app.reconcile().await?;
+        wait_for("the goal", Duration::from_secs(90), || async {
+            screen(&app, &id).contains("GOAL SET")
+        })
+        .await?;
+        let shown = screen(&app, &id);
+        let opening = shown
+            .find("ECHO: [Image #1]")
+            .ok_or_else(|| shown.clone())?;
+        let goal = shown.find("/goal ").ok_or_else(|| shown.clone())?;
+        assert!(
+            opening < goal,
+            "the goal came before the first message:\n{shown}"
+        );
+        assert_eq!(shown.matches("GOAL SET").count(), 1, "{shown}");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// A task with an image whose first message is held for capacity: a-first runs out once the run
+/// started; b-second, the only other subscription, is full too. Returns the task and its creator.
+async fn first_message_held_for_capacity(
+    app: &Arc<App>,
+    data: &Path,
+    probe: &ScriptedUsage,
+) -> Result<(TaskId, UserId), BoxError> {
+    let (sandbox, user) = seed(app, data, &["a-first", "b-second"]).await?;
+    probe.set("a-first", usage(10.0, 4 * HOUR, 30.0, 100));
+    probe.set("b-second", usage(99.0, 4 * HOUR, 30.0, 100));
+    refresh(app, &user, "a-first").await?;
+    refresh(app, &user, "b-second").await?;
+    let id = new_task(
+        app,
+        &sandbox,
+        &user,
+        "Make it blue\n\n@/srv/shot.png",
+        TaskMode::Prompt,
+    )
+    .await?;
+    wait_for("the run on a-first", Duration::from_secs(30), || async {
+        matches!(app.deps.store.live_attempt(&id).await, Ok(Some(_)))
+    })
+    .await?;
+    // a-first runs out before the first message is typed: it is held at its submit.
+    probe.set("a-first", usage(99.0, 4 * HOUR, 30.0, 100));
+    refresh(app, &user, "a-first").await?;
+    wait_for(
+        "the held first message",
+        Duration::from_secs(60),
+        || async {
+            matches!(
+                app.deps.store.open_pause(&id).await,
+                Ok(Some(pause)) if pause.kind == PauseKind::Prompt
+            )
+        },
+    )
+    .await?;
+    // b-second's window resets.
+    probe.set("b-second", usage(0.0, 5 * HOUR, 30.0, 100));
+    refresh(app, &user, "b-second").await?;
+    Ok((id, user))
+}
+
+/// The task moved to b-second as a fresh session that typed the task's own opening there, the
+/// image pasted, not the held prompt's text.
+async fn typed_again_on_b_second(app: &Arc<App>, id: &TaskId) -> TestResult {
+    wait_for("the run on b-second", Duration::from_secs(60), || async {
+        let attempts = app.deps.store.attempts(id).await.unwrap_or_default();
+        attempts.len() == 2 && attempts[1].state == AttemptState::Live
+    })
+    .await?;
+    wait_for("the first message", Duration::from_secs(60), || async {
+        screen(app, id).contains("ECHO: [Image #1] Make it blue")
+    })
+    .await?;
+    let attempts = app.deps.store.attempts(id).await?;
+    let second = &attempts[1];
+    assert_eq!(
+        second.account_id.as_ref().map(AccountId::as_str),
+        Some("b-second")
+    );
+    assert_eq!(second.launch_kind, LaunchKind::New, "a fresh session");
+    // The new session got the image pasted (its echo), not the held prompt's text.
+    assert!(
+        screen(app, id).contains("/srv/shot.png"),
+        "{}",
+        screen(app, id)
+    );
+    let launch = std::fs::read_to_string(Path::new(&second.run_dir).join("fake-launch.txt"))?;
+    assert!(launch.contains("prompt: None"), "{launch}");
+    Ok(())
+}
+
 /// SPEC-068 OPN-003, AC-OPN-2 (#266): the first message of a task with an image is held for
 /// capacity and resumed on another subscription: a fresh session there gets the task's own
 /// opening, the image pasted, not the held prompt's text.
@@ -440,65 +555,45 @@ fn a_held_first_message_resumes_elsewhere_with_its_image() -> TestResult {
     rt.block_on(async {
         let probe = Arc::new(ScriptedUsage::default());
         let (app, _) = start(&data, &fake, hooked(), 0, probe.clone()).await?;
-        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
-        probe.set("a-first", usage(10.0, 4 * HOUR, 30.0, 100));
-        probe.set("b-second", usage(99.0, 4 * HOUR, 30.0, 100));
-        refresh(&app, &user, "a-first").await?;
-        refresh(&app, &user, "b-second").await?;
-        let id = new_task(
-            &app,
-            &sandbox,
-            &user,
-            "Make it blue\n\n@/srv/shot.png",
-            TaskMode::Prompt,
-        )
-        .await?;
-        wait_for("the run on a-first", Duration::from_secs(30), || async {
-            matches!(app.deps.store.live_attempt(&id).await, Ok(Some(_)))
-        })
-        .await?;
-        // a-first runs out before the first message is typed: it is held at its submit.
-        probe.set("a-first", usage(99.0, 4 * HOUR, 30.0, 100));
-        refresh(&app, &user, "a-first").await?;
-        wait_for(
-            "the held first message",
-            Duration::from_secs(60),
-            || async {
-                matches!(
-                    app.deps.store.open_pause(&id).await,
-                    Ok(Some(pause)) if pause.kind == PauseKind::Prompt
-                )
+        let (id, _) = first_message_held_for_capacity(&app, &data, &probe).await?;
+        let _ = app.resume_round().await;
+        typed_again_on_b_second(&app, &id).await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-068 OPN-003: a person switches the account of a task whose first message is held: the
+/// same fresh session on the chosen account, not "continue where you left off" in an empty one.
+#[test]
+fn a_manual_switch_of_a_held_first_message_keeps_its_image() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, _) = start(&data, &fake, hooked(), 0, probe.clone()).await?;
+        let (id, user) = first_message_held_for_capacity(&app, &data, &probe).await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        app.switch_task(
+            &ctx,
+            id.as_str(),
+            &ContinueTask {
+                account_id: Some("b-second".into()),
             },
         )
         .await?;
-
-        probe.set("b-second", usage(0.0, 5 * HOUR, 30.0, 100));
-        refresh(&app, &user, "b-second").await?;
-        let _ = app.resume_round().await;
-        wait_for("the run on b-second", Duration::from_secs(60), || async {
-            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
-            attempts.len() == 2 && attempts[1].state == AttemptState::Live
-        })
-        .await?;
-        wait_for("the first message", Duration::from_secs(60), || async {
-            screen(&app, &id).contains("ECHO: [Image #1] Make it blue")
-        })
-        .await?;
-        let attempts = app.deps.store.attempts(&id).await?;
-        let second = &attempts[1];
-        assert_eq!(
-            second.account_id.as_ref().map(AccountId::as_str),
-            Some("b-second")
-        );
-        assert_eq!(second.launch_kind, LaunchKind::New, "a fresh session");
-        // The new session got the image pasted (its echo), not the held prompt's text.
+        typed_again_on_b_second(&app, &id).await?;
         assert!(
-            screen(&app, &id).contains("/srv/shot.png"),
+            !screen(&app, &id).contains("Continue the task"),
             "{}",
             screen(&app, &id)
         );
-        let launch = std::fs::read_to_string(Path::new(&second.run_dir).join("fake-launch.txt"))?;
-        assert!(launch.contains("prompt: None"), "{launch}");
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

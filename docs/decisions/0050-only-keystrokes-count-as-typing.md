@@ -38,9 +38,11 @@ its images.
   - After a restart, a reattached run whose first message never reached the submit hook (not
     `entered`) and that is not held for capacity is flagged NeedsAttention with a notice; it is
     not typed again. A submitted one that an update or capacity hold keeps goes on when the hold
-    ends.
+    ends; in goal mode the new server types the goal after that message's turn, as the old one
+    would have.
   - A prompt held for capacity while the first message is pending resumes on another account as
-    a fresh session, which types the task's own opening with its images.
+    a fresh session, which types the task's own opening with its images. A person's manual
+    account switch of such a task does the same.
 
 ## Alternatives
 
@@ -66,6 +68,7 @@ its images.
   its images again if they are missing.
 - A first message submitted while Yulius is down (the hook client fails open) is not marked
   `entered`, so the restart flags that task although it runs: a rare false alarm a look at the
-  terminal clears. Its first Stop clears the marker, so it never turns a later held prompt into a
-  fresh session.
+  terminal clears. Its first Stop that reaches Yulius clears the marker. If Yulius is down for
+  that whole first turn too, a later prompt held for capacity in that run still restarts it as a
+  fresh session: rarer still, accepted.
 - The held session is replaced by a fresh one: it had no turn yet, so nothing is lost.

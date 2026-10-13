@@ -11,7 +11,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   take control of the terminal size. A goal task whose terminal a person typed into before its
   goal leaves the draft alone and needs attention, instead of appending `/goal` to it. A first
   message with images that a server restart cut flags its task with a notice; one held for
-  capacity and resumed on another account is typed again there, images included.
+  capacity and resumed (or manually switched) to another account is typed again there, images
+  included.
 - Five flaky tests wait on what they check (SPEC-067, task #56; #243, #320, #322, #294, #269).
   Each was reproduced next to CPU-bound processes, and none got a sleep or a retry. Two were
   product bugs:

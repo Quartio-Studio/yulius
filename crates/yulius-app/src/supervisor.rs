@@ -309,11 +309,18 @@ pub(crate) fn opening_unsubmitted(run_dir: &str) -> bool {
 /// A `UserPromptSubmit` of the run in `run_dir` reached Yulius: its pending first message was
 /// submitted (it may still be held for capacity or an update).
 pub(crate) fn opening_entered(run_dir: &str) {
-    let path = opening_marker(run_dir);
-    if path.exists()
-        && let Err(err) = write_private_file(&path, OPENING_ENTERED)
-    {
-        tracing::warn!(run_dir, error = %err, "could not record the submitted first message");
+    use std::io::Write as _;
+    // Never created here: a marker removed meanwhile stays removed.
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(opening_marker(run_dir))
+        .and_then(|mut file| file.write_all(OPENING_ENTERED));
+    match written {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+            tracing::warn!(run_dir, error = %err, "could not record the submitted first message");
+        }
+        _ => {}
     }
 }
 
@@ -1197,6 +1204,37 @@ impl App {
             .attempts(task_id)
             .await
             .is_ok_and(|attempts| attempts.last().is_some_and(|a| opening_pending(&a.run_dir)))
+    }
+
+    /// A goal task's first message was submitted (a hold keeps it) when the server restarted:
+    /// the old server's goal typing died with it, so the goal is typed again after the turn on
+    /// that message (SPEC-068 OPN-002). The session read input already.
+    async fn goal_after_restart(self: &Arc<Self>, attempt: &AttemptRecord) {
+        let store = &self.deps.store;
+        let Ok(Some(task)) = store.task(&attempt.task_id).await else {
+            return;
+        };
+        if task.mode != TaskMode::Goal {
+            return;
+        }
+        let Ok(Some(sandbox)) = store.sandbox(&task.sandbox_id).await else {
+            return;
+        };
+        let runtime = self.runtime(&task.id);
+        runtime.session_started.store(true, Ordering::SeqCst);
+        runtime.opening_turn.store(true, Ordering::SeqCst);
+        let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
+        let home = self.sandbox_home(&sandbox.id);
+        match self.write_task_request(&sandbox, &task, &home).await {
+            Ok(condition) => {
+                self.spawn_goal(&task.id, &attempt.id, None, &condition, typed_before);
+            }
+            Err(err) => {
+                tracing::error!(task = %task.id, error = %err, "could not write the task request");
+                self.goal_not_taken(&task.id, "Yulius could not write the task's request file")
+                    .await;
+            }
+        }
     }
 
     /// A restart cut the typing of the run's first message (SPEC-068 OPN-002): the task needs a
@@ -2441,10 +2479,12 @@ impl App {
                 // The old server was typing the run's first message (or about to): how much of
                 // it reached the prompt box is unknown, so a person finishes it (SPEC-068
                 // OPN-002). A submitted one that a hold keeps goes on when the hold ends.
-                if opening_unsubmitted(&attempt.run_dir)
-                    && matches!(store.open_pause(&attempt.task_id).await, Ok(None))
-                {
-                    self.opening_never_sent(&attempt.task_id).await;
+                if opening_unsubmitted(&attempt.run_dir) {
+                    if matches!(store.open_pause(&attempt.task_id).await, Ok(None)) {
+                        self.opening_never_sent(&attempt.task_id).await;
+                    }
+                } else if opening_pending(&attempt.run_dir) {
+                    self.goal_after_restart(&attempt).await;
                 }
                 continue;
             }

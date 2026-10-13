@@ -1,11 +1,11 @@
 ---
 yulius-task: a12a5e62-8e55-45dc-ae03-b27e430817f8
-status: in-progress
+status: done
 ---
 
 # SPEC-068: Only real typing counts as typing; a typed first message is never lost
 
-Status: in progress
+Status: implemented
 Date: 2026-10-13
 Owner: Yulius task #61
 Scope authorization: task #61 (part of task #47, "fix all open actionable GitHub issues without
@@ -50,8 +50,8 @@ is never silently lost by a server restart or carried without its images after a
 | TYP-002 | `terminal_input` claims control and records typing only for typing input; other input is still sent to the session. The web terminal takes the size locally only for typing input (`typing.js`, the same rule). | `first_message.rs` focus test; e2e `terminal.e2e.ts` |
 | TYP-003 | A goal task whose terminal a person typed into after its run was attached and before Yulius types `/goal` gets no `/goal`: the draft is left alone, the task is flagged NeedsAttention and its terminal gets a notice saying the goal was not set. | `first_message.rs` draft test |
 | OPN-001 | A run whose first message Yulius types records that in its run directory (`opening-pending`, empty) before the session starts. Any `UserPromptSubmit` that reaches Yulius marks it `entered` before any hold; the first one let through, or any Stop, removes it. | `first_message.rs` restart, update and hold tests; `subscription_pool.rs` Stop test |
-| OPN-002 | After a server restart, a reattached run whose first message never reached the submit hook (pending, not `entered`) and that is not held for capacity is flagged NeedsAttention, with a notice in its terminal saying the first message was never sent (and, in goal mode, that the goal is not set). A submitted first message an update hold keeps is not flagged and goes on after the restart. | `first_message.rs` restart and update tests |
-| OPN-003 | A first message held for capacity and resumed on another account (or restarted without a process) starts a fresh session that types the task's own opening (`Request::opening`), images pasted, instead of resuming with the hook's prompt text. Released on the same account, the held message goes on as it is. | `first_message.rs` hold test |
+| OPN-002 | After a server restart, a reattached run whose first message never reached the submit hook (pending, not `entered`) and that is not held for capacity is flagged NeedsAttention, with a notice in its terminal saying the first message was never sent (and, in goal mode, that the goal is not set). A submitted first message an update hold keeps is not flagged and goes on after the restart; in goal mode the new server types the goal after that message's turn. | `first_message.rs` restart and update tests |
+| OPN-003 | A first message held for capacity and resumed on another account (or restarted without a process) starts a fresh session that types the task's own opening (`Request::opening`), images pasted, instead of resuming with the hook's prompt text. A manual account switch of a task whose first message is pending does the same. Released on the same account, the held message goes on as it is. | `first_message.rs` hold and manual switch tests |
 
 ## Acceptance criteria
 
@@ -68,11 +68,11 @@ is never silently lost by a server restart or carried without its images after a
 
 ## Plan
 
-- [ ] Only keystrokes count as typing in the task terminal
-- [ ] A goal task leaves a person's draft alone and flags the task
-- [ ] A first message never sent before a restart flags the task
-- [ ] A held first message resumes elsewhere with its images
-- [ ] Docs, ADRs and changes updated; independent review and gates green
+- [x] Only keystrokes count as typing in the task terminal
+- [x] A goal task leaves a person's draft alone and flags the task
+- [x] A first message never sent before a restart flags the task
+- [x] A held first message resumes elsewhere with its images
+- [x] Docs, ADRs and changes updated; independent review and gates green
 
 ## Test plan
 
@@ -114,7 +114,42 @@ is never silently lost by a server restart or carried without its images after a
   is lost, and a fresh session of a task with images types its opening (SPEC-030) with the
   images, then its goal in goal mode.
 - ADR-0026 is amended for both #266 paths.
+- A goal task whose submitted first message survives a restart (held by an update or capacity)
+  gets its goal typed by the new server after that turn, instead of a flag: the hold ends by
+  itself and the task would otherwise run without a goal (review round 2).
 
 ## Evidence
 
-(Filled in when the work is done.)
+- `cargo test -p yulius-app --lib only_keystrokes`: passes; failed against the stub that counted
+  every frame as typing (the behaviour before), and again before X10 coordinates were skipped as
+  UTF-8 characters.
+- `cargo test -p fake-agent`: 14 passed (focus and mouse reports dropped like Claude Code).
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^first_message::/)'`: 7
+  passed. Before each fix: the draft test, the restart test and the hold test timed out (no
+  flag, no flag, no `[Image #1]` in the resumed session); the update test timed out with the
+  marker never `entered`; the goal-after-update test with no `GOAL SET`; the manual switch test
+  with no first message. The focus test passes before and after: it guards the draft change
+  against clicks.
+- `subscription_pool::a_stop_ends_a_pending_first_message`: failed before Stop cleared the
+  marker, passes.
+- `first_message`, `task_done`, `subscription_pool`, `session_sync` and `terminal_ws` together
+  after merging `dev` (980059c): 36 passed. The draft test once timed out under that load with a
+  6 s opening turn (the draft landed after the turn); the turn is now 12 s and the test asserts
+  the draft precedes `DONE opening`.
+- `npx e2e run` (full suite): 244 passed, 1 skipped, including "only keystrokes count as typing"
+  (failed before `typing.js` existed).
+- `scripts/dev ci` on c008bca: exit 0 (repository checks, fmt, clippy `-D warnings`, nextest
+  1324 passed, doctests, cargo-deny ok, machete, docs). An earlier run's doctest failure (a
+  missing `rustls` rlib) came from the reviewer building in the same target directory at once.
+- Review round 1 (fresh session) requested changes: an update hold made the restart flag a
+  submitted first message; a stale marker could restart a working session fresh; the browser
+  still took the size on focus reports; `typed_before` was read after the run was attached; X10
+  coordinates of 96 and up. All fixed test-first.
+- Review round 2 approved 0c8937c with minors: a goal task held by an update lost its goal over
+  the restart (fixed: the new server types it after the first turn); the manual account switch
+  lost a held first message (fixed: fresh session); the marker could be re-created by a race
+  (fixed: never created when marking it entered); `typing.js` preloaded with the terminal core.
+- Not covered: that `send()` skips the size take for a focus report end to end (the browser test
+  covers the classifier only; the wiring is one guarded return); a real Claude Code session
+  (needs a paid credential); the fake agent stands for it, measured against Claude Code 2.1.292
+  in SPEC-030.
