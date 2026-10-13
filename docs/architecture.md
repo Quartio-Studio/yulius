@@ -68,7 +68,27 @@ A sandbox has a soft disk quota. The application prunes build caches of tasks th
 work every 5 minutes (ended tasks, then idle ones from 90 % of the quota), removes the worktrees
 of closed and cancelled tasks, and a switch checks the quota and the other start preconditions
 before it ends the running session ([SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md),
-[decision 0017](decisions/0017-sandbox-disk-upkeep.md)).
+[decision 0017](decisions/0017-sandbox-disk-upkeep.md)). A running task's caches go only when a
+fresh probe finds no background shell and no background subagent. An unanswered probe keeps them.
+
+Over the quota, a CI run waits in the queue instead of erroring
+([SPEC-059](../.ai/specs/SPEC-059-fix-240-256-258-245-ci-waits-for-disk-in.md),
+[decision 0040](decisions/0040-ci-waits-for-disk-under-the-shared-quota.md)). The dispatcher
+starts a check off its loop, at most once a minute per sandbox: upkeep under pressure, then a fresh
+measurement. The run's reason and its `pending` commit status name the largest consumers, and the
+run starts at the first dispatch under the quota. A job refused after its run started puts the
+run back in the queue.
+
+```mermaid
+flowchart LR
+  Q[queued run] -->|dispatch| R{under the quota?}
+  R -->|yes| L[lane: jobs run]
+  R -->|no, check due| C[prune caches of tasks that do not work, measure]
+  C -->|still over| N[reason + largest consumers, status pending, recheck in 1 min]
+  C -->|under| L
+  N --> Q
+  L -->|job refused for disk| Q
+```
 
 ## Usage limits
 

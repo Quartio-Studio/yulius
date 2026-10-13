@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- CI waits for disk instead of erroring (SPEC-059, ADR-0040, task #50; #240, #256, #258, #245). A
+  CI run in a sandbox over its disk quota stays queued, with a `pending` status. It says who holds
+  the space, and starts by itself once Yulius has pruned the caches of tasks that do not work, or
+  other tasks have freed space. An armed merge keeps waiting for it. Quota refusals of sessions
+  name the largest consumers too. Upkeep now probes a task's background shells again before it
+  prunes. A running background build or subagent, or a probe that cannot answer, keeps the
+  task's caches.
 - CI jobs get the CPU first (SPEC-053, ADR-0039, task #45, #283). A sandbox's cgroup is split
   into `system/`, `agents/` and `ci/`, and CI jobs run with four times the agents' CPU weight. CI
   gets up to 80 % of the sandbox while agents build, and agents keep at least 20 %. The e2e suite in CI is
