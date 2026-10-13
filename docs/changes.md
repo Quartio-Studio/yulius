@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- Unique decision numbers and the onboarding CI proof (SPEC-058, task #49; #317, #272). The four
+  decision records numbered 0034 now have their own numbers: the automations catalog keeps 0034,
+  the Agent in the right panel is 0036, the personal two-factor vault 0040 and the task status
+  from Claude Code's records 0041. `scripts/check_repository.py` fails on two records with one
+  number or a title whose number differs from the file name. The onboarding prompt and
+  infra-bootstrap step 2 add `YULIUS_CI_MATRIX` to the proof of matrix jobs, say how to clean up
+  after an interrupted proof (`~/.ci-proof.*`, `git worktree prune`), that checkouts are per CI
+  lane while two runs share the CI home and cache, and that system packages are installed by
+  onboarding, never by a CI job.
 - CI jobs get the CPU first (SPEC-053, ADR-0039, task #45, #283). A sandbox's cgroup is split
   into `system/`, `agents/` and `ci/`, and CI jobs run with four times the agents' CPU weight. CI
   gets up to 80 % of the sandbox while agents build, and agents keep at least 20 %. The e2e suite in CI is

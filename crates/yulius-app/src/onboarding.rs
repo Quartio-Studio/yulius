@@ -1056,6 +1056,35 @@ mod tests {
             }
             assert!(prompt.len() < crate::lifecycle::MAX_PROMPT_BYTES);
         }
+        // #272: infra-bootstrap step 2 gives the same proof to every later task.
+        let skill = crate::skills::pack::PACKS
+            .iter()
+            .flat_map(|pack| pack.files.iter())
+            .find(|(rel, _)| *rel == "infra-bootstrap/SKILL.md")
+            .map(|(_, bytes)| {
+                String::from_utf8_lossy(bytes)
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .ok_or("infra-bootstrap is bundled")?;
+        for wording in [
+            "git worktree add --detach",
+            "YULIUS_CI_CACHE=\"$d/cache\"",
+            "YULIUS_CI_MATRIX=<value>",
+            "once per matrix value",
+            "long timeout or in the background",
+            "rm -rf \"$HOME\"/.ci-proof.*",
+            "git worktree prune",
+            "checkout per CI lane",
+            "tolerate a concurrent run",
+            "never in a CI job",
+        ] {
+            assert!(
+                skill.contains(wording),
+                "infra-bootstrap misses {wording:?}"
+            );
+        }
         Ok(())
     }
 }
