@@ -1,11 +1,11 @@
 ---
 yulius-task: 9fcfa555-1dd9-4085-85e3-684ef985949c
-status: in-progress
+status: done
 ---
 
 # SPEC-053: CI jobs get the CPU first, whatever the agents build
 
-Status: in progress
+Status: implemented. Verification of the split on the VM after the next update: #321.
 Date: 2026-10-13
 Owner: Yulius task #45
 Scope authorization: GitHub issue #283 and task #45 ("Make CI jobs get CPU priority over agent
@@ -72,6 +72,7 @@ patch (#286) can go.
 - [x] e2e without CI-only budgets and retries, measured under agent load
 - [x] Docs, changes log and every gate green
 - [x] Independent review findings resolved
+- [x] Five consecutive CI e2e runs on the VM without retries recorded
 
 ## Design
 
@@ -158,6 +159,34 @@ All on the VM, in the `yulius` sandbox (12 CPUs), on 2026-10-13.
   (9 min 7 s). No test was retried.
 - What it shows: the default budgets are enough at agent priority under that load. It is one run,
   and not the 5 that AC-2 asks for. Those are this pull request's CI runs, below.
+
+**Yulius CI on the VM, PR #314.**
+- **Setup:**
+  - the e2e job with `retries: 0` and the default budgets;
+  - the deployed binary: CPU-101 (agent commands under `nice 5`), without the split;
+  - while agents built in the `yulius` sandbox, plus 24 CPU-bound processes at agent-command priority in a task shell, standing in for six agents each building with 4 jobs;
+  - the load average sampled every 30 s.
+
+| Run (head) | e2e job | Suite | Tests | Retries | 1-min load (5-min) during the run |
+| --- | --- | --- | --- | --- | --- |
+| `7bab15a8` (2ffad78) | 674.8 s (11m15s) | 661.7 s | 197 passed | 0 | 11–43 (29–38) |
+| `b6691aae` (2ffad78) | 692.5 s (11m33s) | 674.5 s | 197 passed | 0 | 20–65 (38–54) |
+| `0e848d75` (2ffad78) | 693.3 s (11m33s) | 682.4 s | 197 passed | 0 | 13–46 (26–39) |
+| `0b03e0df` (2ffad78) | 697.0 s (11m37s) | 682.5 s | 197 passed | 0 | 15–41 (31–38) |
+| `d51bf9aa` (2ffad78) | 747.9 s (12m28s) | 728.5 s | 197 passed | 0 | 22–61 (35–48) |
+
+- **Result:** 5 consecutive passes, no retry, no failure, under load at or above the #283 incident (about 50).
+- **Against the 12-minute bar (AC-2):** 4 of the 5 runs met it; the run with the heaviest load took 12m28s. The rest is the split's job, and it is measured after the next update (#321).
+- **Comparison, same hours and same load:** other pull requests' e2e jobs on `dev`'s config (90 s and 15 s budgets, 2 retries) took 767–818 s. So the removed budgets bought no speed, only retries.
+
+**Runs that do not count:**
+- `ec4caede` (8d37f56): 428.7 s at a load average of 9–32 (low). The runner's CI default of one retry was still in effect at that head.
+- `64ad4fb7` (8d37f56): 704.6 s. One test, "the Markdown slash menu filters too", failed its first attempt and passed on that default retry. Hence `retries: 0` explicitly from 2ffad78 on. Flake: #322.
+- `f6824726` (2ffad78): `quality` failed on the known `terminal_ws::two_viewers_share_the_terminal_and_only_writers_type` race (#307, fixed by TRM-101 in PR #309). Fail-fast stopped e2e, which had passed every file it reached. The coordinator reran it, as `7bab15a8`.
+
+**Decision on E2E-201.** The CI-only budgets and retries stay removed.
+- Five consecutive runs at incident load passed with the default budgets and no retry, even before the split is live.
+- A red e2e now means a failure, as #283 asks.
 
 **Unit and integration tests.**
 - `cargo nextest run -p yulius-sandbox`: 34 passed, including the four `cgroup::tests` above,
