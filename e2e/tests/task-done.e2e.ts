@@ -89,6 +89,27 @@ test('a finished task whose pull request is tested can be archived and is closed
   expect(status).toBe('closed');
 });
 
+// #294: the pull requests are read on their own; when that read lands after the task view drew its
+// strip (and after the task's detail), the strip follows it, as the sidebar does.
+test('a task view reads Done once its pull request is read late', async ({ app, browser, screen }) => {
+  type HoldingGit = Window & { __yuliusHoldGit?: Promise<void>; __releaseGit?: () => void };
+  await browser.addInitScript(() => {
+    const w = window as unknown as HoldingGit;
+    w.__yuliusHoldGit = new Promise<void>((resolve) => { w.__releaseGit = resolve; });
+  });
+  await app.open(mock('/s/studio/t/11'));
+  // The task's detail has been read and drawn: the strip's step list shows its steps.
+  await browser.locator('.taskview .stepstrip-toggle').click();
+  await expect(browser.locator('.taskview .step-item').first()).toBeVisible();
+  // The mock's one browser request (task #10, about 5 s after the start) redraws the strip too;
+  // it came before the release, so only the pull request read can make the strip Done.
+  await expect(screen.getByRole('link', /^Needs you in the browser AWS login for deploy/)).toBeVisible({ timeout: 15_000 });
+  const strip = browser.locator('.strip-status');
+  await expect(strip).toHaveText('Your turn');
+  await browser.evaluate(() => (window as unknown as HoldingGit).__releaseGit!());
+  await expect(strip).toHaveText(/^Done · PR #221/);
+});
+
 // F 2026-10-12 (task #37, SPEC-039): "This task is done but I still can't delete it."
 test('a Done task can be deleted from its menu; a working one says it has to be stopped first', async ({ app, browser, screen }) => {
   // #12 is still at work: Delete stays off and says why in words.

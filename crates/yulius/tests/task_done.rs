@@ -20,12 +20,13 @@ use yulius::wiring::git::GitAdapter;
 use yulius::wiring::harness::HarnessAdapter;
 use yulius::wiring::session::PtySessionHost;
 use yulius_app::context::{App, AppConfig, Deps};
+use yulius_app::error::AppResult;
 use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{
     AccountRecord, AccountStatus, SandboxRecord, TaskMode, TaskOrigin, TaskRecord, UserRecord,
 };
 use yulius_app::ports::harness::HarnessPort;
-use yulius_app::ports::session::SessionHost;
+use yulius_app::ports::session::{AttachedRun, LaunchPlan, RunInspection, SessionHost, SpawnedRun};
 use yulius_app::ports::store::TaskStore;
 use yulius_contracts::events::UiEvent;
 use yulius_domain::harness::{Harness, Provider};
@@ -46,26 +47,73 @@ async fn start(
     agent: FakeAgentOptions,
     port: u16,
 ) -> Result<(Arc<App>, u16), BoxError> {
-    let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-    start_on(
-        data,
-        fake,
-        agent,
-        port,
-        Arc::new(PtySessionHost::new(exe)),
-        None,
-    )
-    .await
+    start_on(data, fake, agent, port, None, None, false).await
 }
 
-/// [`start`] on `host`, with the stop and close escalation shortened to `escalation_ms`.
+/// A session host that connects to a run only once the agent's SessionStart hook was answered, so
+/// the hook lands before the supervisor watches the run, as on a busy host (#243). Bounded: without
+/// a hook the attach goes ahead after 30 s.
+struct AttachAfterSessionStart {
+    inner: PtySessionHost,
+    session_started: tokio::sync::watch::Receiver<bool>,
+}
+
+#[async_trait::async_trait]
+impl SessionHost for AttachAfterSessionStart {
+    async fn spawn(
+        &self,
+        run_dir: &Path,
+        attempt_id: &str,
+        task_id: &str,
+        plan: &LaunchPlan,
+        token: &[u8; 32],
+        size: (u16, u16),
+    ) -> AppResult<SpawnedRun> {
+        self.inner
+            .spawn(run_dir, attempt_id, task_id, plan, token, size)
+            .await
+    }
+
+    async fn attach(&self, run_dir: &Path, token: &[u8; 32]) -> AppResult<AttachedRun> {
+        let mut started = self.session_started.clone();
+        let _ = tokio::time::timeout(Duration::from_secs(30), started.wait_for(|s| *s)).await;
+        self.inner.attach(run_dir, token).await
+    }
+
+    fn inspect(&self, run_dir: &Path) -> RunInspection {
+        self.inner.inspect(run_dir)
+    }
+
+    fn terminate(&self, run_dir: &Path) -> AppResult<()> {
+        self.inner.terminate(run_dir)
+    }
+
+    fn background_shells(&self, child_pid: u32) -> Option<u32> {
+        self.inner.background_shells(child_pid)
+    }
+}
+
+/// [`start`], and with `attach_late` the run is attached only after its SessionStart hook.
+async fn start_with(
+    data: &Path,
+    fake: &Path,
+    agent: FakeAgentOptions,
+    port: u16,
+    attach_late: bool,
+) -> Result<(Arc<App>, u16), BoxError> {
+    start_on(data, fake, agent, port, None, None, attach_late).await
+}
+
+/// [`start`] on `host` (default: the real one, attached late with `attach_late`), with the stop
+/// and close escalation shortened to `escalation_ms`.
 async fn start_on(
     data: &Path,
     fake: &Path,
     agent: FakeAgentOptions,
     port: u16,
-    host: Arc<dyn SessionHost>,
+    host: Option<Arc<dyn SessionHost>>,
     escalation_ms: Option<u64>,
+    attach_late: bool,
 ) -> Result<(Arc<App>, u16), BoxError> {
     let socket = tokio::net::TcpSocket::new_v4()?;
     socket.set_reuseaddr(true)?;
@@ -75,6 +123,7 @@ async fn start_on(
     let url = format!("http://127.0.0.1:{port}");
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let mut config = AppConfig::new(data.to_path_buf(), "https://yulius.test", &url, exe.clone());
+    let (session_started, session_started_rx) = tokio::sync::watch::channel(false);
     config.contained = false;
     if let Some(ms) = escalation_ms {
         config.stop_escalation_ms = ms;
@@ -84,7 +133,16 @@ async fn start_on(
         clock: Arc::new(SystemClock),
         crypto: Arc::new(MasterKeyCrypto::from_key(&[7u8; 32])?),
         github: Arc::new(support::FakeGitHub::default()),
-        session_host: host,
+        session_host: if let Some(host) = host {
+            host
+        } else if attach_late {
+            Arc::new(AttachAfterSessionStart {
+                inner: PtySessionHost::new(exe.clone()),
+                session_started: session_started_rx,
+            })
+        } else {
+            Arc::new(PtySessionHost::new(exe.clone()))
+        },
         harness: Arc::new(FakeAgentHarness {
             inner: HarnessAdapter::new(exe.clone(), url),
             fake: fake.to_path_buf(),
@@ -97,7 +155,22 @@ async fn start_on(
         usage: Arc::new(yulius_app::ports::usage::NoUsageProbe),
     };
     let app = App::new(config, deps);
+    // Says when a SessionStart hook was answered (the hook client waits for that answer).
+    let session_start_answered = axum::middleware::from_fn(
+        move |request: axum::extract::Request, next: axum::middleware::Next| {
+            let session_started = session_started.clone();
+            async move {
+                let start = request.uri().path().ends_with("/SessionStart");
+                let response = next.run(request).await;
+                if start {
+                    session_started.send_replace(true);
+                }
+                response
+            }
+        },
+    );
     let internal = yulius_server::internal_router(app.clone())
+        .layer(session_start_answered)
         .into_make_service_with_connect_info::<SocketAddr>();
     tokio::spawn(async move { axum::serve(listener, internal).await });
     Ok((app, port))
@@ -377,18 +450,51 @@ fn a_goal_the_tui_dropped_is_submitted_again() -> TestResult {
         let agent = FakeAgentOptions {
             transcript: true,
             hooks: true,
+            // Like Claude Code: the goal is typed once the TUI is ready, not after the hookless
+            // fallback (#243). The dropped submit costs the first two submit waits (13 s).
+            session_start: true,
             drop_lines: Some(1),
             ..FakeAgentOptions::default()
         };
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
-        wait_for("the goal to start", Duration::from_secs(90), || {
+        wait_for("the goal to start", Duration::from_secs(60), || {
             screen_contains(&app, &id, "GOAL SET")
         })
         .await?;
-        wait_for("Done", Duration::from_secs(30), || async {
+        // About a second after the goal turn, also at a load average of 60 (SPEC-067).
+        wait_for("Done", Duration::from_secs(45), || async {
             activity(&app, &id).await == Some(Activity::Done)
+        })
+        .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// TSK-010 (#243): a SessionStart hook answered before the supervisor watches the run (a fast
+/// TUI, a busy host) still counts: the goal is typed once the TUI is quiet, not after the 45 s
+/// fallback for a TUI without hooks.
+#[test]
+fn a_session_start_before_the_run_is_watched_still_types_the_goal_at_once() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            session_start: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start_with(&data, &fake, agent, 0, true).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
+        // Well under the hookless fallback (45 s): the goal follows the hook, not the fallback.
+        wait_for("the goal to start", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "GOAL SET")
         })
         .await?;
         stop(&app, &id).await
@@ -1324,7 +1430,16 @@ async fn running_task(
     ),
     BoxError,
 > {
-    let (app, _) = start_on(data, fake, FakeAgentOptions::default(), 0, host, Some(300)).await?;
+    let (app, _) = start_on(
+        data,
+        fake,
+        FakeAgentOptions::default(),
+        0,
+        Some(host),
+        Some(300),
+        false,
+    )
+    .await?;
     let (sandbox, user) = seed(&app, data).await?;
     let ctx = yulius_app::auth::AuthContext {
         user: app.deps.store.user(&user).await?.ok_or("user")?,

@@ -4,6 +4,8 @@ import { axeViolations, failOnPageErrors, mock } from './support.ts';
 
 failOnPageErrors();
 
+type Holding = Window & { __yuliusMock: { holdCreate?: Promise<void> }; __release?: () => void };
+
 // The new-task composer (SPEC-001 UI-021, TSK-015; F 2026-10-10): Enter adds a line and continues
 // Markdown lists, ⌘/Ctrl+Enter or the ↑ button starts, and mode and workflow default to Auto.
 
@@ -101,9 +103,15 @@ test('Auto is the default; a question runs as a prompt and picked values win', a
   await expect(screen.getByRole('button', 'Workflow: Auto workflow')).toBeVisible();
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill('How does the checkout compute the cart total?');
-  // The ↑ button starts too; while Jev decides, a calm status says so.
+  // The ↑ button starts too; while Jev decides, a calm status says so. The creation is held until
+  // the status was seen: it goes when the answer comes, which a busy runner can reach first (#320).
+  await browser.evaluate(() => {
+    const w = window as unknown as Holding;
+    w.__yuliusMock.holdCreate = new Promise<void>((resolve) => { w.__release = resolve; });
+  });
   await screen.getByRole('button', 'Start task').click();
   await expect(browser.locator('.intake-status')).toHaveText('Choosing mode and workflow…');
+  await browser.evaluate(() => (window as unknown as Holding).__release!());
   await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
   // A question is a prompt with the Research workflow: no spec first.
   await expect(browser.locator('.auto-chip')).toHaveText('Auto → Prompt · Research');

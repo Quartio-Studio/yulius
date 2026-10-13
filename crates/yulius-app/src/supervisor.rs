@@ -1019,6 +1019,9 @@ impl App {
         runtime
             .opening_turn
             .store(opens_with_turn, Ordering::SeqCst);
+        // So is the new session's SessionStart: its hook can be answered before the run is
+        // attached and watched, and must not be forgotten then (#243).
+        runtime.session_started.store(false, Ordering::SeqCst);
         let size = runtime.hub.size();
         let spawned = match self
             .deps
@@ -2561,7 +2564,6 @@ impl App {
         // A new attempt (or the same one after a restart) learns the goal from its transcript.
         runtime.goal_achieved.store(false, Ordering::SeqCst);
         runtime.goal_submitted.store(false, Ordering::SeqCst);
-        runtime.session_started.store(false, Ordering::SeqCst);
         runtime.background_shells.store(-1, Ordering::SeqCst);
         runtime.background_agents.store(0, Ordering::SeqCst);
         runtime.notice_attention_ms.store(0, Ordering::SeqCst);
