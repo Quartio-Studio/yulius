@@ -1,11 +1,11 @@
 ---
 yulius-task: ce7486ce-5755-437e-b0e7-43d88ccd9c29
-status: in-progress
+status: done
 ---
 
 # SPEC-075: a session reads as Claude Code's TUI, faded and read-only
 
-Status: in progress
+Status: implemented
 Date: 2026-10-13
 Owner: Yulius task #71
 Scope authorization: user request (task #71): "Sessions should be printed as their default agents
@@ -66,8 +66,9 @@ read-only: a locked prompt box, nothing to type into.
 - [x] Recorded slash commands and their output read as the TUI shows them, without raw tags
 - [x] The session looks old and read-only: a faded palette in both themes, a locked prompt box and a spider-web corner
 - [x] Review rounds 1 and 2 in fresh sessions, findings fixed test-first
-- [ ] Review round 3 in a fresh session approves the final head
-- [ ] Every gate green, docs and the changes log updated
+- [x] Review round 3 in a fresh session approves the final head
+- [x] Every gate green, docs and the changes log updated
+- [ ] The reviewer confirms the exact head after the evidence
 
 ## Acceptance criteria
 
@@ -129,5 +130,42 @@ read-only: a locked prompt box, nothing to type into.
   Fixed test-first: both are inset, drawn in the entry's 1ch side padding, which also lines the
   prompt's `>` up with `⏺` again. Minor, filed: an edit the server cut short (16K per side, 20
   hunks, unmarked) is counted short; it needs a server-side "truncated" flag (#350).
+- Review round 4 (fresh session): APPROVE at 203554a with a minor, fixed test-first: a long diff
+  scrolled inside a box that clipped its focus ring, and axe flagged a long scroller that the
+  keyboard could not reach (`scrollable-region-focusable`). Long code, results and diffs now take
+  the keyboard (`tabindex="0"`) with an inset ring. Nits: the folded call's ring sits in the
+  entry's side padding, and the time sits at the prompt's edge.
 - The spider web is drawn by code from a small grid of square pixels in an inline SVG, so it
   needs no image file and takes the palette's colours in both themes.
+
+## Evidence
+
+- Red first, `e2e/tests/sessions.e2e.ts` (mock mode). Each test failed before its slice, for the
+  stated reason:
+  - The TUI test found no `.ss-tui`.
+  - The wrapper tests found no `metaLines` and printed the raw tags.
+  - The fade test measured the live contrast (15.08 against at most 11.31).
+  - The locked box and web test found no `.ss-locked`.
+  - The nested class arrays were caught by the colour and fold assertions: run against the
+    broken flatten, 3 tests failed.
+  - Each review finding's test failed first: the failed edit stayed unfolded; the prose mention
+    parsed as `!`; ANSI and the typed command's time were missing; there was no "Wrote" line;
+    the edit without a result was open; the focus ring was outset; the scroller was clipped.
+- Independent review in fresh sessions (`om-code-review`): round 1 at fd4e19a REQUEST_CHANGES,
+  round 2 at 0a61906 APPROVE with minors, round 3 at 187881a REQUEST_CHANGES (focus ring),
+  round 4 at 203554a APPROVE with a minor. Every finding was fixed test-first or filed (see
+  Decisions).
+- Follow-ups filed: #347 (fold non-wrapper meta notes), #350 (cut diffs counted short), #349 and
+  #356 (e2e tests flaky under load, in files this change does not touch).
+- `scripts/dev ci` at 1007d3d (origin/dev merged): exit 0. nextest ran 1336 tests: 1336 passed,
+  16 skipped. Check, fmt, clippy, doctests, deny, shear and doc are green. The repository check
+  includes the new `--session-*` contrast pairs.
+- e2e at 1007d3d:
+  - `sessions.e2e.ts`: 12 of 12 pass, axe clean in both themes.
+  - Full suite: 252 passed, 3 failed, 1 skipped. The failures were `archive.e2e.ts` (2) and
+    `editor.e2e.ts` (1), at load average about 53. Both files pass alone right after (#356).
+  - An earlier full run failed 2 `notes.e2e.ts` tests under load, which passed 19 of 19 alone (#349).
+- Looked at by hand in Chromium, from screenshots of the mock: the dark and light themes, 390 px,
+  the folded-call focus ring and the spider web.
+- Not covered: a real server with real Claude Code sessions. The e2e suite runs the mock backend,
+  whose entries follow the server's normalized format; the transcript API is unchanged.
