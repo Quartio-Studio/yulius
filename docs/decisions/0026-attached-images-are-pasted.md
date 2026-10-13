@@ -5,6 +5,8 @@
 Accepted. Specified in
 [SPEC-030](../../.ai/specs/SPEC-030-i-asked-previous-task-to-attach-images-a.md); supersedes
 [0022](0022-native-task-attachments.md) for images. Other files are still `@path` mentions.
+Amended by [0052](0052-only-keystrokes-count-as-typing.md) (SPEC-068, #266): a restart during the
+typing flags the task, and a held first message keeps its images.
 
 ## Context
 
@@ -49,11 +51,14 @@ Stop hook, as before. Tasks without images keep the CLI prompt.
 - A session with images depends on TUI readiness and paste handling. A person typing during
   start-up can mix their input into the first message. A first message the TUI lost is not
   retyped (the request file still lists the files).
-- Typing stops when its attempt ends, so a replacement session never gets half a message. A
-  server restart during the few seconds of typing loses the first message: the session waits at
-  its prompt.
-- A first message held for capacity and resumed on another account is carried as its text
-  (`[Image #1] …`), without the image. Both gaps: issue #266.
+- Typing stops when its attempt ends, so a replacement session never gets half a message. The
+  first message stays pending (`opening-pending` in the run directory) until the session's
+  `UserPromptSubmit`. A server restart during the few seconds of typing leaves it pending: the
+  new server flags the task NeedsAttention with a notice, and a person finishes the message
+  (ADR-0052).
+- A first message held for capacity and resumed on another account starts a fresh session there
+  that types the task's opening again, images included; the hook's text (`[Image #1] …`) would
+  carry no image (ADR-0052).
 - A request starting with `/` and an attached image is no longer run as a slash command: the text
   follows the pasted image.
 - The mock-API driver in SPEC-030 checks the behaviour again after a Claude Code upgrade.

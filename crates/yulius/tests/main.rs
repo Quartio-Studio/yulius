@@ -21,6 +21,7 @@ mod context_full;
 mod delivery;
 mod disk;
 mod files;
+mod first_message;
 mod git_adapter;
 mod github_admin;
 mod github_checks;

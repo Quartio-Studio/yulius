@@ -48,6 +48,7 @@ not a path the session reads with a tool.
 | PIMG-002 | A fresh session of a task with attached images starts with no CLI prompt. Once its TUI reads input, Yulius pastes each image's path as its own bracketed paste, waiting after each until the screen shows `[Image #N]` or the output settled (at most 5 s). It then pastes the text, ending in a newline so the cursor is never on a mention, and sends Enter. In prompt mode the text is the request plus a quoted mention of each other file. In goal mode it is the SPEC-025 attachments message, with images left out of the mentions. | `request.rs` unit tests; `task_done.rs` tests |
 | PIMG-003 | In goal mode, `/goal` is typed after the Stop hook of that typed first message (SPEC-025 ATT-003), and that Stop is not gated. | `task_done.rs` goal test |
 | PIMG-004 | No control character reaches a paste: attachment paths with one are not attachments, and the text keeps only newlines and tabs (as SPEC-025). | `request.rs` unit test |
+| PIMG-005 | Until the session submits it, the typed first message is pending. After a server restart a pending first message flags the task NeedsAttention with a notice; held for capacity and resumed on another account, it is typed again with its images in a fresh session (SPEC-068 OPN-001..003). | `first_message.rs` |
 
 ## Acceptance criteria
 
@@ -100,7 +101,10 @@ not a path the session reads with a tool.
   - Typing did not stop when its attempt ended. It now checks before each paste and before
     Enter; there is no test, since the window is a few seconds of a replaced run.
   - A server restart during typing and a held first message resumed on another account lose
-    the message or its image. Rare; recorded in ADR-0026, follow-up issue #266.
+    the message or its image. Rare; recorded in ADR-0026, follow-up issue #266. Fixed by
+    SPEC-068 (task #61, ADR-0052): the first message stays pending until its `UserPromptSubmit`;
+    a restart flags a task whose first message is still pending, and a held one resumes as a
+    fresh session that types it again with its images.
   - Mentions inside a long, collapsed paste: measured, still attached.
   - A request starting with `/` plus an image is no longer a slash command (ADR-0026).
 - The text paste ends with a newline: the autocomplete otherwise takes the Enter when the text
