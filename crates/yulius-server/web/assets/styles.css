@@ -2120,43 +2120,69 @@ button.task-group-head:hover { color: var(--text); }
 .ss-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .ss-notice { display: inline-flex; align-items: center; gap: 4px; margin: 0; }
 .ss-body { display: flex; flex-direction: column; gap: 16px; }
-.ss-entries { display: flex; flex-direction: column; gap: 12px; margin: 0; padding: 0; list-style: none; }
-.ss-entry { display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); content-visibility: auto; contain-intrinsic-size: auto 120px; }
-.ss-entry.ss-user { border-color: var(--accent-border); background: var(--accent-soft); }
-.ss-entry.ss-tool { padding: 0; border: 0; background: transparent; }
-.ss-entry.ss-summary, .ss-entry.ss-system { background: var(--surface-2); }
-.ss-entry.ss-sidechain { margin-left: 24px; }
-.ss-entry.ss-target { box-shadow: 0 0 0 2px var(--accent); }
-.ss-entry-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-.ss-who { font-size: var(--fs-sm); line-height: var(--lh-sm); font-weight: 600; }
+/* A session printed as Claude Code's TUI printed it (SPEC-075), in its own faded palette (--session-*). */
+.ss-tui { position: relative; display: flow-root; padding: 16px 12px; border: 1px solid var(--session-border); border-radius: var(--radius-lg); background: var(--session-bg); color: var(--session-fg); font-family: var(--font-mono); font-size: var(--fs-term); line-height: var(--lh); }
+.ss-tui ::selection { background: var(--term-selection); }
+.ss-dim { color: var(--session-dim); }
+/* Block flow, so the lines beside the corner's web (a float) make room for it. */
+.ss-entries { margin: 0; padding: 0; list-style: none; }
+.ss-entry + .ss-entry { margin-top: 12px; }
+.ss-tui > .ss-more, .ss-tui > .ss-locked { margin-top: 16px; }
+.ss-web { float: right; width: 84px; height: 102px; margin: -16px -12px 8px 16px; pointer-events: none; } /* 3 px pixels */
+.ss-web-thread { fill: var(--session-web); }
+.ss-web-spider { fill: var(--session-dim); }
+.ss-locked { display: flex; align-items: center; gap: 1ch; padding: 6px 1ch; border: 1px solid var(--session-border); border-radius: var(--radius); color: var(--session-dim); cursor: not-allowed; }
+.ss-locked > .icon { flex: none; }
+/* content-visibility clips paint at the entry's edge: what highlights it (focus, the search target,
+   the prompt's background) is drawn inside, in its 1ch side padding. */
+.ss-entry { position: relative; display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 2px 1ch; border-radius: var(--radius-sm); content-visibility: auto; contain-intrinsic-size: auto 48px; }
+.ss-entry.ss-sidechain { margin-left: 2ch; padding-left: 2ch; border-left: 1px solid var(--session-border); border-radius: 0; }
+.ss-entry.ss-target { box-shadow: inset 0 0 0 1px var(--session-dim); }
+.ss-when { position: absolute; top: 2px; right: 0; padding: 2px 1ch 0 8px; }
+.ss-block { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ss-line { display: flex; gap: 1ch; min-width: 0; }
+.ss-line-body { flex: 1; min-width: 0; }
+.ss-mark { flex: none; width: 1ch; color: var(--session-fg); user-select: none; }
+.ss-mark-prompt, .ss-mark-shell, .ss-mark-dim, .ss-mark-out, .ss-mark-think, .ss-mark-call { color: var(--session-dim); }
+.ss-mark-ok { color: var(--session-ok); }
+.ss-mark-err { color: var(--session-err); }
+.ss-prompt { padding: 2px 1ch; margin: 0 -1ch; border-radius: var(--radius-sm); background: var(--session-prompt-bg); } /* into the entry's padding */
+.ss-has-when .ss-prompt { padding-right: 16ch; }
 .ss-text { white-space: pre-wrap; overflow-wrap: anywhere; }
-.ss-block { display: flex; flex-direction: column; gap: 4px; }
-.ss-code { margin: 0; padding: 8px 12px; border-radius: var(--radius); background: var(--term-bg); color: var(--term-fg); font-family: var(--font-mono); font-size: var(--fs-sm); line-height: var(--lh-sm); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 480px; overflow: auto; }
-.ss-text .ss-code { margin: 8px 0; }
-.ss-fold { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); }
-.ss-fold > summary { display: flex; align-items: center; gap: 8px; min-height: var(--control-md); padding: 4px 12px; color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); cursor: pointer; list-style: none; }
+.ss-code { margin: 0; padding: 4px 0 4px 1ch; border-left: 1px solid var(--session-border); color: var(--session-fg); font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 480px; overflow: auto; }
+.ss-text .ss-code { margin: 4px 0; }
+.ss-input { margin-left: 3ch; color: var(--session-dim); }
+.ss-fold > summary { display: flex; flex-direction: column; gap: 2px; margin: 0 -1ch; padding: 0 1ch; border-radius: var(--radius-sm); cursor: pointer; list-style: none; }
 .ss-fold > summary::-webkit-details-marker { display: none; }
-.ss-fold > summary::before { content: "▸"; color: var(--muted); transition: transform var(--duration-fast) var(--ease); }
-.ss-fold[open] > summary::before { transform: rotate(90deg); }
-.ss-fold > summary:focus-visible { box-shadow: var(--focus-inset); }
-.ss-fold > :not(summary) { margin: 0 12px 12px; }
-.ss-tool-name { flex: none; color: var(--text); font-family: var(--font-mono); font-weight: 500; }
-.ss-tool-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); }
-.ss-tool-error { border-color: var(--danger-border); }
-.ss-result { display: flex; flex-direction: column; gap: 4px; }
-.ss-result-label { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); text-transform: uppercase; letter-spacing: 0.04em; }
-.ss-diff { border: 1px solid var(--border); border-radius: var(--radius); background: var(--term-bg); overflow: hidden; }
-.ss-diff-path { display: flex; align-items: center; gap: 6px; padding: 6px 12px; border-bottom: 1px solid var(--border); color: var(--text-2); font-family: var(--font-mono); font-size: var(--fs-xs); line-height: var(--lh-xs); }
-.ss-diff-hunk { margin: 0; padding: 8px 12px; font-family: var(--font-mono); font-size: var(--fs-sm); line-height: var(--lh-sm); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 480px; overflow: auto; }
-.ss-add { color: var(--ok-fg); }
-.ss-del { color: var(--danger-fg); }
-.ss-meta { padding: 0 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ss-fold > summary:hover .ss-call, .ss-thinking > summary:hover .ss-line-body { text-decoration: underline; text-decoration-color: var(--session-dim); text-underline-offset: 3px; }
+.ss-fold > summary:focus-visible { outline: none; box-shadow: var(--focus-inset); }
+.ss-fold > :not(summary) { margin: 4px 0 0 2ch; }
+.ss-thinking > summary .ss-line-body { color: var(--session-dim); font-style: italic; }
+.ss-call { min-width: 0; overflow-wrap: anywhere; }
+.ss-tool-name { font-weight: 600; }
+.ss-tool-flag { color: var(--session-err); }
+.ss-out { margin-left: 2ch; color: var(--session-dim); }
+.ss-out-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.ss-out-err, .ss-out-err .ss-mark { color: var(--session-err); }
+.ss-result { max-height: 480px; overflow: auto; }
+.ss-tool[open] .ss-preview-folded { display: none; }
+.ss-diff { margin-left: 4ch; }
+.ss-tui :is(.ss-code, .ss-result, .ss-diff-hunk):focus-visible { outline: none; box-shadow: var(--focus-inset); }
+.ss-diff-hunk { margin: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 480px; overflow: auto; }
+.ss-diff-hunk > span { display: block; padding: 0 1ch; }
+.ss-ctx { color: var(--session-dim); }
+.ss-add { background: var(--session-add-bg); color: var(--session-fg); }
+.ss-del { background: var(--session-del-bg); color: var(--session-fg); }
+.ss-meta { padding-left: 2ch; white-space: pre-wrap; overflow-wrap: anywhere; }
 .ss-more { display: flex; justify-content: center; }
 .ss-more:empty { display: none; }
+.ss-tui .ss-more { justify-content: flex-start; font-family: var(--font); }
 @container page (max-width: 640px) {
   .ss-row-link { padding: 12px; }
-  .ss-entry { padding: 12px; }
-  .ss-entry.ss-sidechain { margin-left: 12px; }
+  .ss-tui { padding: 12px; font-size: var(--fs-sm); line-height: var(--lh-sm); }
+  .ss-web { width: 56px; height: 68px; margin: -12px -12px 8px 12px; } /* 2 px pixels */
+  .ss-has-when .ss-prompt { padding-right: 1ch; }
+  .ss-when { position: static; align-self: flex-end; padding: 0; }
   .ss-summary { margin-left: 0; }
 }
 
