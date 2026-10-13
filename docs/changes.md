@@ -6,6 +6,19 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- Resuming after a usage limit is safe in three more cases (SPEC-072, ADR-0058, task #57; #276,
+  #277, #278):
+  - Claude Code sometimes continues a turn by itself at the reset. Its first agent work or turn end
+    now ends the task's limit pause, so Yulius no longer terminates a turn the CLI is running. After
+    a restart, a limit the CLI already continued past is not acted on again.
+  - When the automatic switch after a limit is refused, the run remembers it is at its limit. A
+    person's switch then resumes past the limit, without "Continue the task exactly where you
+    left off.".
+  - The transcript step back runs on a blocking thread, off the async runtime. The session's
+    search index is rebuilt only if the step back changed the file.
+
+  New tests cover a resume past a limit that finds no capacity, a limit pause whose process is
+  gone, and goal mode after a continued turn.
 - A task is owned by one person, whose GitHub credentials it uses (SPEC-070, ADR-0060, task #66).
   Every task has an owner, its creator until a hand-over. The task's Git, `gh`, pull requests,
   merges, commit identity and agent authority are the owner's. Only the owner changes the task:

@@ -135,7 +135,10 @@ pub enum Observation {
         at: Option<Timestamp>,
     },
     /// A turn completed.
-    TurnComplete,
+    TurnComplete {
+        /// When the session's own turn ended, if known (`None` for a sub-agent's turn).
+        at: Option<Timestamp>,
+    },
     /// Claude Code recorded the session goal's state (TSK-014).
     Goal(GoalOutcome),
     /// Claude Code closed a turn after its Stop hooks (only used to reduce a replay).
@@ -217,6 +220,18 @@ pub trait HarnessPort: Send + Sync {
     fn plan_cockpit(&self, launch: &CockpitLaunch) -> AppResult<LaunchPlan>;
     /// Path of a Claude session transcript.
     fn claude_transcript(&self, sandbox_home: &Path, worktree: &Path, session_id: &str) -> PathBuf;
+    /// Steps a Claude session's transcript back over a usage limit (SPEC-034 LIM-001); `true`
+    /// when it rewrote the file. Blocking file I/O bounded by the transcript's size: callers run
+    /// it off the async runtime (SPEC-072 LRS-003).
+    ///
+    /// # Errors
+    /// I/O failures reading or replacing the transcript.
+    fn step_back_transcript(
+        &self,
+        sandbox_home: &Path,
+        worktree: &Path,
+        session_id: &str,
+    ) -> AppResult<bool>;
     /// Newest Claude session for `worktree` modified after `since` (session-id drift, HRN-004).
     ///
     /// # Errors
