@@ -1923,12 +1923,14 @@ impl App {
         self.end_pause(task_id, "cancelled").await;
         self.publish_task(task_id).await;
         let total = STOP_INTERRUPT_GRACE_MS + STOP_TERM_GRACE_MS + STOP_KILL_WAIT_MS;
-        let stopped = store
-            .live_attempt(task_id)
-            .await
-            .ok()
-            .flatten()
-            .map(|a| a.id);
+        // The run this stop ends; without it (a store error) nothing is escalated.
+        let stopped = match store.live_attempt(task_id).await {
+            Ok(attempt) => attempt.map(|a| a.id),
+            Err(err) => {
+                tracing::warn!(task = %task_id, error = %err, "the stopped run is unknown; no escalation");
+                None
+            }
+        };
         if let Some(run) = runtime.run.lock().await.as_mut() {
             let _ = run
                 .writer

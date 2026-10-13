@@ -11,7 +11,7 @@ use yulius_domain::context_full::TaskFocus;
 use yulius_domain::ids::{AttemptId, TaskId};
 use yulius_domain::request::Request;
 use yulius_domain::steps::StepStatus;
-use yulius_domain::task::{Activity, TaskStatus};
+use yulius_domain::task::{Activity, StopReason, TaskStatus};
 
 use crate::context::App;
 use crate::model::{AttemptRecord, TaskRecord};
@@ -258,7 +258,7 @@ impl App {
                 .type_line(&task_id, &attempt.id, &command, since, asked_now)
                 .await
             {
-                // Not typed (the run ended, a person kept typing): the next refusal starts over.
+                // Not typed (the run ended, a person typed): the next refusal starts over.
                 app.context_reset_if(&task_id, asked_now);
                 return;
             }
@@ -313,21 +313,21 @@ impl App {
                 // No subscription had capacity: the task paused, and its resume would bring the
                 // full session back, not the handoff.
                 Ok(()) if app.task_status(&task.id).await == Some(TaskStatus::WaitingCapacity) => {
-                    "no subscription has capacity for a fresh session; when one does, stop the \
-                     task and start a new one from its request"
+                    "no subscription has capacity for a fresh session; once one has, start a new \
+                     task from this one's request (continuing it brings the full session back)"
                         .to_owned()
                 }
                 Ok(()) => return,
             };
-            // The full session stays (a refused switch), the task paused or it stopped: only a
-            // person can go on. A task a person is stopping needs no word of it.
+            // The full session stays (a refused switch), the task paused or the switch failed:
+            // only a person can go on. A task a person is stopping needs no word of it.
             if let Ok(mut episode) = app.runtime(&task.id).context.lock() {
                 *episode = ContextEpisode::GaveUp;
             }
             if let Ok(Some(task)) = app.deps.store.task(&task.id).await
-                && matches!(
+                && !matches!(
                     task.status,
-                    TaskStatus::Running | TaskStatus::WaitingCapacity
+                    TaskStatus::Stopping | TaskStatus::Stopped(StopReason::Cancelled)
                 )
             {
                 app.give_up_on_full_context(&task, &why, true).await;
@@ -347,10 +347,18 @@ impl App {
             return;
         }
         tracing::error!(task = %task.id, why, "a full session needs a person");
-        self.runtime(&task.id).hub.notice(format!(
-            "⚠ The task needs you: {why}. Find what fills it (a huge file, tool output or \
-             instructions), then type `/compact` or `/clear` here, or stop and continue the task."
-        ));
+        // Only a live session can be typed into.
+        self.runtime(&task.id)
+            .hub
+            .notice(if task.status == TaskStatus::Running {
+                format!(
+                    "⚠ The task needs you: {why}. Find what fills it (a huge file, tool output or \
+                     instructions), then type `/compact` or `/clear` here, or stop and continue \
+                     the task."
+                )
+            } else {
+                format!("⚠ The task needs you: {why}.")
+            });
         self.audit_context(&task.id, &format!("needs attention: {why}"))
             .await;
     }
@@ -468,6 +476,10 @@ impl App {
             // A person who typed since: the prompt box (and any draft in it) is theirs.
             if runtime.typed_at_ms.load(Ordering::SeqCst) > asked_ms {
                 tracing::info!(task = %task_id, "a person types; Yulius does not type into the session");
+                runtime.hub.notice(
+                    "Yulius leaves the full session to you: you typed into it. Type `/compact` \
+                     when you are done, or send a prompt to let Yulius try again.",
+                );
                 return false;
             }
             ready = quiet_since.elapsed() >= TYPE_QUIET;

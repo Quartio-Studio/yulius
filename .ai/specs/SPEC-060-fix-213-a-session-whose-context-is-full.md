@@ -61,7 +61,7 @@ context cannot be resumed the same way: the resumed session would be just as ful
 | CTX-003 | The first `ContextFull` of an episode makes Yulius type `/compact <focus>` into the live session once. The focus is one line built from the task: its number and title, the goal (shortened), the branch, the pull request when there is one, and the steps not yet done. When `Compacted` follows, Yulius types one prompt that tells the agent its context was compacted and to carry on with the task. That prompt reaches the agent. | domain unit tests (focus); integration test with the fake agent |
 | CTX-004 | A compaction that fails (`CompactFailed`, `ContextFull` again after the compaction, or no `Compacted` within 10 minutes of the `/compact`) continues the task in a fresh Claude Code session on the same subscription, through the switch path. Its first message is a handoff summary built from the task (goal, branch, pull request, steps left, and how to pick up). The terminal says the task continues in a fresh session. A `ContextFull` that arrives while the compaction is in flight is not a failure (a prompt queued before it). A fresh session that cannot start (the switch is refused or fails) makes the task `needs_attention` with that reason, and the terminal does not speak of subscriptions. | integration tests |
 | CTX-005 | A `ContextFull` after the fresh session started, before any successful reply, makes the task `needs_attention`. The terminal and the log give the reason ("the context is still full after compacting and a fresh session") once per episode; later refusals flag the task again silently. Yulius types nothing more. | integration test |
-| CTX-006 | An episode ends when the agent replies successfully (a turn completes or the agent works) after a recovery, when the session changes inside the TUI (`/clear`, `/resume`), or when the compaction is cut short (its run ended, or it was never typed). A refusal from another attempt while a compaction is pending starts a compaction of that attempt. A later full context starts a new episode at compaction. A person's prompt is not touched: Yulius types only into the attempt that reported the full context, only while the episode still asks for it, never while a person keeps typing (it gives up after 30 seconds), and stops once that attempt is no longer live. | integration tests; code review |
+| CTX-006 | An episode ends when the agent replies successfully (a turn completes or the agent works) after a recovery, when the session changes inside the TUI (`/clear`, `/resume`), or when the compaction is cut short (its run ended, or it was never typed). A refusal from another attempt while a compaction is pending starts a compaction of that attempt. A later full context starts a new episode at compaction. A person's prompt is not touched: Yulius types only into the attempt that reported the full context, only while the episode still asks for it, never after a person typed into it since the refusal (the session is then theirs, and the terminal says so), not when the terminal never goes quiet within 30 seconds, and stops once that attempt is no longer live. | integration tests; code review |
 | CTX-007 | After a Yulius restart, a reattached run whose replayed transcript ends in `ContextFull` (no successful reply or compaction after it) starts recovery the same way, unless the task already needs a person. | `finish.rs` unit test; integration test |
 | CTX-008 | Found on the way (pre-existing): a stop's escalation, about 20 s later, terminates only the run that stop ended, not a run of the task continued meanwhile; a transcript watcher ends when a newer one starts for the task, so it never reads the next run's lines as its own run's. | integration test (continued session); debugging evidence below |
 
@@ -105,7 +105,7 @@ retries without bound: the last stage is a person.
 
 ## Decisions
 
-- **Compact first, then a fresh session, then a person** (ADR-0041). `/compact` keeps the most
+- **Compact first, then a fresh session, then a person** (ADR-0046). `/compact` keeps the most
   work and is what the person did by hand in #213. A fresh session loses the conversation but not
   the work on disk, so it is the fallback. A third automatic try would loop on a task whose
   briefing alone overflows the context.
@@ -148,6 +148,11 @@ retries without bound: the last stage is a person.
   `docs/changes.md`) and its cheap minors and nits are applied: no typing after a person typed
   since the refusal; a paused fresh session is said; stop's store error; a deleted task's runtime;
   quiet give-ups while stopping; a log on a session change mid-recovery.
+- Review round 3: approve 2b5fe00. Its minors are applied: the typing rule in this spec and the
+  ADR, the ADR renumbered to 0046 after dev took 0041, a fresh session whose start fails is said
+  again (only a stop a person asked for is quiet), and a notice when a person's typing leaves the
+  session to them. The paused fresh-session branch has no test (it needs a pool without
+  capacity at the switch); it is covered by reading only.
 - `cargo test -p yulius --test main context_full::`: 7 passed, four runs in a row.
   `scripts/dev ci` on the merged head before the round-2 fixes: 1280 of 1281 passed. The one
   failure was a notice race in a new test (the notice arrives after the echo), fixed by waiting

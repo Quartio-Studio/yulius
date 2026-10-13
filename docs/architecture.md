@@ -119,7 +119,7 @@ sequenceDiagram
 
 A session whose context is full gets "Prompt is too long" for every prompt, and no Stop hook ends
 the turn ([SPEC-060](../.ai/specs/SPEC-060-fix-213-a-session-whose-context-is-full.md),
-[decision 0041](decisions/0041-compact-then-restart-a-full-session.md), #213). The harness
+[decision 0046](decisions/0046-compact-then-restart-a-full-session.md), #213). The harness
 observes the refusal (`ContextFull`), the compaction boundary (`Compacted`) and a failed compaction
 (`CompactFailed`). The supervisor ends the turn so the task waits instead of working, and keeps
 one recovery episode per task in its runtime. The episode outlives a run and ends at the agent's

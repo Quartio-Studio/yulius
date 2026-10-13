@@ -1,4 +1,4 @@
-# 0041. A full session is compacted, then restarted fresh, then handed to a person
+# 0046. A full session is compacted, then restarted fresh, then handed to a person
 
 ## Status
 
@@ -52,8 +52,8 @@ fills again later is compacted again. A restart does not repeat a recovery that 
 - A task never stays `working` after a refused prompt. Its terminal says what Yulius does.
 - Yulius types into a live session in two new places: the `/compact` and the wake-up line. Each
   is typed once, only into the attempt that reported the full context, and only while that attempt
-  is live, and only while the episode still asks for it. A person typing within the last 5
-  seconds delays it; one who keeps typing for 30 seconds is left alone.
+  is live, and only while the episode still asks for it. A person who typed into the session
+  since the refusal owns it: Yulius types nothing and says so.
 - The fresh session loses the conversation. The handoff points the agent at the repository, the
   steps and the delivery, where the work lives.
 - Other API errors that end a turn without a Stop hook (an image the API refuses) still leave the

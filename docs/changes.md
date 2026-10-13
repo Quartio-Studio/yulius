@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
-- A session whose context is full recovers (SPEC-060, ADR-0041, task #51, #213). Claude Code's
+- A session whose context is full recovers (SPEC-060, ADR-0046, task #51, #213). Claude Code's
   "Prompt is too long" ends the turn, so the task waits instead of staying `working`. Yulius then
   types `/compact` with a focus built from the task (goal, branch, pull request, steps left) and
   wakes the compacted session. If the compaction fails, the task continues in a fresh session
