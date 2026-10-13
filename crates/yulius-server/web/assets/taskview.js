@@ -347,26 +347,26 @@ export function mountTaskView(ctx, sandbox, task) {
 
   let alive = true;
   const reads = new AbortController(); // leaving the task cancels its reads in flight (PERF-13)
-  // Reads overlap (every status change reads again): only the latest one's answer is applied, so
-  // an older answer landing last cannot bring back an older status (SPEC-056 WUI-105).
+  // Reads overlap (every status change reads again): an answer older than one already applied is
+  // dropped, and only the latest read's answer sets the summary, so an older answer landing last
+  // never brings back an older status. A newer read that fails leaves an older answer's details
+  // standing (SPEC-056 WUI-105).
   let detailRead = 0;
   let appliedRead = 0;
   async function loadDetail() {
     const read = ++detailRead;
     try {
       const fresh = await ctx.api.get(`/api/tasks/${enc(current.id)}`, { signal: reads.signal });
-      // The view was left, or a newer read's answer was applied already (a newer read that fails
-      // leaves this one's answer standing).
-      if (!alive || read < appliedRead) return;
+      if (!alive || read < appliedRead) return; // the view was left, or a newer answer was applied
       appliedRead = read;
       detail = fresh;
       if (detail && detail.id === current.id) {
-        current = { ...current, ...pickSummary(detail) };
+        if (read === detailRead) current = { ...current, ...pickSummary(detail) };
         heldKey = '';
         renderStrip();
       }
     } catch (error) {
-      if (alive && read > appliedRead && error.status !== 404) errorToast(error, 'Couldn’t load task details');
+      if (alive && read === detailRead && error.status !== 404) errorToast(error, 'Couldn’t load task details');
     }
     if (alive) renderStepList();
   }
