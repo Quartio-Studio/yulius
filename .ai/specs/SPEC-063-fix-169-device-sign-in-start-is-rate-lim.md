@@ -1,11 +1,11 @@
 ---
 yulius-task: 8a6dbf2a-4f03-49f4-8cf8-c1e074afd792
-status: in-progress
+status: done
 ---
 
 # SPEC-063: device sign-in start is rate limited, bounded and purged
 
-Status: in-progress
+Status: done
 Date: 2026-10-13
 Scope authorization: task #55 (part of task #47, "fix all open actionable GitHub issues"): fix
 GitHub issue #169 following its acceptance criteria. Extends SPEC-001 ACC-013 and SPEC-002 §9.
@@ -56,7 +56,7 @@ consumed grants are deleted.
 - [x] Device start limited per client with a shared sliding-window limiter
 - [x] Grants record their client and are bounded per client and instance-wide
 - [x] Expired and consumed grants purged on start and every minute
-- [ ] Independent review, gates green, changes entry and evidence
+- [x] Independent review, gates green, changes entry and evidence
 
 ## Acceptance criteria
 
@@ -81,8 +81,29 @@ consumed grants are deleted.
 
 - Refuse past the bound instead of dropping the oldest: dropping lets a flood cancel a real
   person's approval in progress; refusing only delays new starts for at most the 10-minute TTL.
-  Recorded in ADR-0047.
+  Recorded in ADR-0047 (0042–0046 are taken by parallel tasks).
 - The per-client bound is counted in the database (a `client_key` column) rather than in memory,
   so it holds across restarts; the table is at most 1000 rows, so no index is needed.
 - Purge on start plus a 60 s sweep: on-start alone leaves rows when nobody starts, a timer alone
   lets the table reach the bound with dead rows between sweeps.
+
+## Evidence
+
+- Regression tests written first and seen failing without the fix:
+  `trusted_proxy::device_starts_are_limited_per_client` (200 instead of 429 with the limit
+  disabled) and `expired_and_consumed_device_grants_are_purged` (the refused-start purge, before
+  the transaction was always committed). The bound tests use constants and outcomes that did not
+  exist before.
+- `cargo test -p yulius-store --test store device`: 3 passed (bounds, purge on sweep and on start
+  including a refused one, consume once).
+- `cargo test -p yulius --test main -- http_auth::device trusted_proxy::`: 9 passed (AC1 over a
+  real listener with the proxy secret; AC2 per-client and instance bounds; AC3 purge within one
+  sweep; AC4 start → approve → poll, token once).
+- `scripts/dev ci` at `f0a3f15` (after merging `origin/dev` 86eec22): exit 0; nextest 1287 run,
+  1287 passed, 16 skipped; check, lint and docs green.
+- Independent review in a fresh session (`om-code-review`): round 1 approved with 2 minor and 2
+  nit findings; all fixed (refused start commits its purge, test-first; R5 and ADR-0047 list the
+  purged-grant differences; bound assertions name the refusal; api.md wrap); round 2 approved
+  `f0a3f15`.
+- Not tested here: a live `yulius onboard` against a deployed instance (the HTTP flow it uses is
+  covered by the integration tests above).
