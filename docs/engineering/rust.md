@@ -16,7 +16,7 @@ Do not import every upstream guideline as a new mandatory rule.
 | RUST-008 | Avoid holding synchronous locks across await; bounded channels, cancellation and owned task handles are required for long-running async work | Runtime contract tests and code review |
 | RUST-009 | Blocking Git/disk/CPU work MUST not block an async executor thread indefinitely | Adapter design, bounded blocking tasks, shutdown tests |
 | RUST-010 | Public contracts MUST have docs; examples should compile. Persisted formats MUST carry a version/migration policy | rustdoc warnings, doctests, compatibility fixtures |
-| RUST-011 | Dependencies MUST be scoped to importing crates, have compatible licenses/MSRV, and use a committed lockfile | cargo-deny, cargo-machete and review |
+| RUST-011 | Dependencies MUST be scoped to importing crates, have compatible licenses/MSRV, and use a committed lockfile | cargo-deny, cargo-shear and review |
 | RUST-012 | Tests MUST assert externally meaningful behavior and failure paths, with reproducible fixtures | Review; nextest with no automatic retries |
 
 Prefer enums for closed state sets and newtypes for domain IDs. Do not expose
