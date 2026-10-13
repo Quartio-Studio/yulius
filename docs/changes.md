@@ -13,6 +13,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   reminders are hidden. The transcript is faded in both themes: fainter and less saturated than a
   live terminal (`--session-*`), yet still WCAG AA. It ends with a locked prompt box, and a
   pixel-art spider web hangs in its corner.
+- The Agent panel is now called the **Superagent**, and a usage limit no longer stops it (SPEC-074,
+  ADR-0055, task #69). The Superagent chose a subscription once, when it started, and kept it, so
+  it could hit a weekly limit while tasks went on elsewhere. It now watches its conversation. A
+  limit recorded after it started is recorded on its subscription, and the Superagent starts again
+  on one with capacity. It continues the cut turn there, stepped back over the limit as a task's
+  turn is, and the panel follows it without a "stopped" banner. Without capacity, it stays and
+  says why. `/s/<slug>/superagent` opens it, as `/agent` and `/cockpit` still do.
 - Supertasks (SPEC-071, ADR-0054, task #67; SPEC-001 TSK-018). Choose **Supertask** in the
   composer's start menu (API `supertask: true`, `task_create`) for broad work such as security
   hardening. The task waits for its project's running tasks, then runs alone. While it waits or
@@ -56,7 +63,6 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   titles comply: task titles take an allowed type and are clipped to 100 characters, promotion
   pull requests are titled `release: promote dev to main`, and a fork's pull request is never
   taken for the promotion. `scripts/check_git_policy.py` is removed.
-
 - A stopped or closed run ends only when its processes are proven gone (SPEC-065, ADR-0050, task #54;
   #284, #285, #290). When Yulius cannot terminate a run's host after the stop or close escalation,
   the run stays live, the task's terminal says so and a running task needs attention; deleting it

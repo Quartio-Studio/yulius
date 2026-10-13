@@ -834,7 +834,8 @@ resolves to nothing, the run gets the server without that variable or token.
     ends when its process exits (the server sends `exit` and closes), when it is closed, or after
     24 h without viewers; it keeps running across a server restart. Shells never change tasks.
 - Cockpit (SPEC-021, ADR-0020): every user's own plain Claude Code session per sandbox, a shell
-  of kind `cockpit`; the web UI calls it the Agent and shows it in the right panel (SPEC-035).
+  of kind `cockpit`; the web UI calls it the Superagent (SPEC-074, formerly the Agent) and shows
+  it in the right panel (SPEC-035).
   - `POST /api/sandboxes/{sid}/cockpit` (write) → 200 `Shell` (`name` "Cockpit"): the caller's
     running Cockpit, or a new one started (concurrent calls start one) as `claude [--resume
     <newest conversation>] --model claude-opus-5-5 --effort high` (SPEC-023) in the sandbox
@@ -850,6 +851,11 @@ resolves to nothing, the run gets the server without that variable or token.
     `automation_template_enable`, `workflows_list`, `sessions_search` and `session_read`, acting
     for its owner (SPEC-066); Claude Code asks the person before every tool that is not read-only.
     A conversation it could not resume (an error exit within 10 s) is skipped next time.
+    A usage limit Claude Code records in its conversation after it started is recorded on its
+    subscription, and the Cockpit starts again on one with capacity, resuming the conversation
+    stepped back over the limit with `CLAUDE_CODE_RESUME_INTERRUPTED_TURN=1` (SPEC-074). The old
+    one's viewers get `{"type":"exit","status":"switched"}`, and the next call returns the new
+    one. Without capacity it stays, and its viewers get a `notice`.
     409 before the repository is cloned or without a Claude
     subscription, 429 while none has capacity. There is no delete: it is never in `GET …/shells`,
     `PATCH`/`DELETE …/shells/{id}` answer 404 for it, and it does not count against the 8
