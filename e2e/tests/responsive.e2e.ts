@@ -139,6 +139,32 @@ test('a task with a long state keeps its step count clear of the progress bar', 
   await screen.getByRole('navigation', 'Tools').getByRole('button', /^Shell/).click();
   await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
   await expect.poll(() => layoutProblems(browser)).toEqual({ overlaps: [], sideways: false });
+  await expect.poll(async () => (await stripRoom(browser)).countInside).toBe(true);
+});
+
+// Beside a tool panel on a laptop-sized window the strip is 421-560 px: the bar, the state and the
+// pull request chip left the label less than its count, even with a short "Done · PR #520".
+test('a task beside a tool panel keeps room for its step count in a narrow strip', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/13'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/^#13 /);
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', /^Shell/).click();
+  await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
+  const narrow = new Set<number>();
+  for (const task of [13, 14, 7]) {
+    await app.open(mock(`/s/studio/t/${task}`));
+    await expect(screen.getByRole('heading', { level: 1 })).toHaveText(new RegExp(`^#${task} `));
+    await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
+    for (let width = 1300; width <= 1440; width += 20) {
+      await browser.setViewport({ width, height: 900 });
+      await expect.poll(() => layoutProblems(browser)).toEqual({ overlaps: [], sideways: false });
+      await expect.poll(async () => (await stripRoom(browser)).countInside).toBe(true);
+      const strip = await browser.evaluate(() => document.querySelector('.taskview .stepstrip')!.getBoundingClientRect().width);
+      if (strip > 420 && strip <= 500) narrow.add(width);
+    }
+  }
+  // The sweep reached the band where the count used to run out of room.
+  expect(narrow.size).toBeGreaterThan(0);
 });
 
 test('a task with a short state keeps it whole while the step name gives way', async ({ app, browser, screen }) => {
