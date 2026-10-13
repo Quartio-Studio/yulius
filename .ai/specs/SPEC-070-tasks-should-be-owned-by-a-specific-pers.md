@@ -1,11 +1,11 @@
 ---
 yulius-task: 154bb878-9296-4ee7-84d1-9c80b0a8ffd3
-status: draft
+status: in-progress
 ---
 
 # SPEC-070: a task is owned by one person, whose GitHub credentials it uses
 
-Status: draft
+Status: in-progress
 Date: 2026-10-13
 Scope authorization: task #66 (requested by MrFishPL): "Tasks should be owned by a specific
 person because it uses their github credentials. Other users shouldnt be able to write to the
@@ -84,10 +84,10 @@ owner for control; once the owner hands it over, the task acts on GitHub as the 
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] Tasks record an owner and act on GitHub as their owner
-- [ ] Only a task's owner writes to it, over the API, the terminal and the agent tools
-- [ ] People ask for control and the owner hands it over or declines; an absent owner's task passes at once
+- [x] Read the product context and related work, then write and validate the spec
+- [x] Tasks record an owner and act on GitHub as their owner
+- [x] Only a task's owner writes to it, over the API, the terminal and the agent tools
+- [x] People ask for control and the owner hands it over or declines; an absent owner's task passes at once
 - [ ] The task view names the owner, offers Request control and the owner's hand-over
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated

@@ -29,7 +29,7 @@ watching, steering and unblocking.
   "create a task from that" or to do something "every day at 4am", it creates the task or the
   automation through Yulius's tools, and it stops, archives or deletes tasks, runs or deletes
   automations and enables the ready-made ones, asking the person before each change. Task agents
-  can do the same for their task's creator, except to their own task.
+  can do the same for their task's owner, except to their own task.
 - **Sidebar**: the sandbox pages used every day (Tasks, Git, CI (tests), Secrets, Dashboard; the Agent is on the right),
   then "More" for Sessions, Workflows, Skills, Automations and MCP, then the active tasks.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions
@@ -40,6 +40,8 @@ watching, steering and unblocking.
   so the agent gets the correction when the task starts.
   A half-written task (its prompt, attached files and choices) waits in the composer while
   people look elsewhere, also across a reload, until it starts.
+  A task is its owner's: it acts on GitHub with their credentials, so only they change it. Others
+  see it read-only and can ask the owner for control; once handed over, it acts as the new owner.
 - **Subscription pool**: Claude accounts are used as one self-managing pool; tasks are
   subscription-agnostic, switches and pauses are invisible to agents.
 - **Delivery discipline**: spec when it matters, effort-weighted steps, independent review,

@@ -743,13 +743,13 @@ export function createSidebar(ctx) {
     row.age.textContent = relShort(task.updated_at);
     row.age.title = `Last change ${dateTime(task.updated_at)}`;
     const label = `Archive task #${task.number}`;
-    row.archive.hidden = !taskActions(task, sandbox.access, row.pr).archive;
+    row.archive.hidden = !taskActions(task, sandbox.access, row.pr, ctx.store.state.me?.user?.login).archive;
     row.el.classList.toggle('can-archive', !row.archive.hidden);
     row.archive.setAttribute('aria-label', label);
     row.archive.title = label;
   }
 
-  const archivable = (groupRows) => groupRows.filter((row) => taskActions(row.task, sandbox.access, row.pr).archive).map((row) => row.task);
+  const archivable = (groupRows) => groupRows.filter((row) => taskActions(row.task, sandbox.access, row.pr, ctx.store.state.me?.user?.login).archive).map((row) => row.task);
 
   /**
    * Done's "Archive all" (SPEC-062 QAR-002): every archivable Done task, one click, one Undo. While

@@ -222,7 +222,7 @@ It manages the project through the Yulius MCP server
 [decision 0029](decisions/0029-cockpit-manages-through-mcp.md)). Its bearer (`ck_…`) is derived
 from the shell's persisted host token, and it is served only the management tools: tasks,
 automations, workflows and sessions. Those tools act for a person (`ProjectCaller`): the Cockpit's
-owner, or a task's creator when a task's agent calls them. `task_create` takes the same path as
+owner, or a task's owner when a task's agent calls them. `task_create` takes the same path as
 New task; `task_stop`, `task_archive`, `task_delete`, `automation_delete`, `automation_run_now`
 and `automation_template_enable` call the UI's own functions with that person and the caller as
 the audit actor, never on the caller's own task
@@ -241,6 +241,28 @@ flowchart LR
   MCP -->|"task_create"| NT["App::create_task_as (as New task)"]
   MCP -->|"task_stop / task_archive / task_delete"| TU["The UI's stop, archive, delete (never the caller's own task)"]
   MCP -->|"automation_*, automation_template_enable"| AU["Automations and ready-made ones"]
+```
+
+## Task ownership
+
+A task acts on GitHub with one person's token, so it is that person's: its owner, the creator
+until a hand-over ([SPEC-070](../.ai/specs/SPEC-070-tasks-should-be-owned-by-a-specific-pers.md),
+[decision 0051](decisions/0051-a-task-is-owned-by-one-person.md)). `tasks.owner_id` decides the
+token (`App::owner_github_token`), the worktree's commit identity and the authority of the task's
+agent; `created_by` stays who asked. `App::load_task` refuses every task change to anyone but the
+owner, and the terminal opens read-only for others. Anyone else who may work in the project asks
+for control; the owner hands it over or declines, and an absent owner's task passes at once.
+
+```mermaid
+flowchart LR
+  B["Bob: Request control"] -->|"POST /control-request"| REQ[("tasks.control_requested_by")]
+  REQ -->|"owner absent"| PASS["pass_control"]
+  A["Alice (owner): Hand over"] -->|"POST /control-request/accept"| PASS
+  A -->|"DELETE: decline"| REQ
+  PASS --> OWN[("tasks.owner_id = Bob")]
+  OWN --> TOK["Git, gh, PRs, merges as Bob"]
+  OWN --> ID["worktree commit identity: Bob"]
+  OWN --> GATE["load_task: only Bob writes"]
 ```
 
 ## Ready-made automations
