@@ -27,11 +27,13 @@ across runs:
 2. If the compaction fails (the CLI's error, another refusal after it, or no boundary within 10
    minutes), continue the task in a fresh session on the same subscription through the switch
    path, opened with a handoff: goal, branch, pull request, steps left and how to pick up.
-3. If the fresh session is refused too before any successful reply, set the task to
-   `needs_attention` and say why in the terminal and the audit log. Type nothing more.
+3. If the fresh session's prompt is refused too before any successful reply, or the fresh session
+   cannot start, set the task to `needs_attention` and say why in the terminal and the audit log,
+   once. Type nothing more.
 
-The episode ends at the agent's next successful reply, so a context that fills again later is
-compacted again.
+The episode ends at the agent's next successful reply, when a person changes the session in the
+TUI (`/clear`, `/resume`), or when the compaction is cut short (its run ended), so a context that
+fills again later is compacted again. A restart does not repeat a recovery that already gave up.
 
 ## Alternatives
 
@@ -50,7 +52,8 @@ compacted again.
 - A task never stays `working` after a refused prompt. Its terminal says what Yulius does.
 - Yulius types into a live session in two new places: the `/compact` and the wake-up line. Each
   is typed once, only into the attempt that reported the full context, and only while that attempt
-  is live. A person typing within the last 5 seconds delays it, for at most 30 seconds.
+  is live, and only while the episode still asks for it. A person typing within the last 5
+  seconds delays it; one who keeps typing for 30 seconds is left alone.
 - The fresh session loses the conversation. The handoff points the agent at the repository, the
   steps and the delivery, where the work lives.
 - Other API errors that end a turn without a Stop hook (an image the API refuses) still leave the

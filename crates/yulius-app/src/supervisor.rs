@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -80,6 +80,9 @@ pub struct TaskRuntime {
     intent: Mutex<Option<EndIntent>>,
     usage: Arc<Mutex<UsageSnapshot>>,
     watcher_alive: Arc<AtomicBool>,
+    /// The latest transcript watcher started: an older one ends even when the next run starts
+    /// before it saw its own run end (it would read the new run's lines as its own).
+    watcher_generation: AtomicU64,
     /// Last keyboard input from a viewer (ms).
     pub last_input_ms: AtomicI64,
     /// Proactive switch requested at the next turn boundary.
@@ -180,6 +183,7 @@ impl TaskRuntime {
             intent: Mutex::new(None),
             usage: Arc::new(Mutex::new(UsageSnapshot::default())),
             watcher_alive: Arc::new(AtomicBool::new(false)),
+            watcher_generation: AtomicU64::new(0),
             last_input_ms: AtomicI64::new(0),
             proactive_switch: AtomicBool::new(false),
             hooks_seen: AtomicBool::new(false),
@@ -1915,6 +1919,7 @@ impl App {
         self.end_pause(task_id, "cancelled").await;
         self.publish_task(task_id).await;
         let total = STOP_INTERRUPT_GRACE_MS + STOP_TERM_GRACE_MS + STOP_KILL_WAIT_MS;
+        let stopped = store.live_attempt(task_id).await?.map(|a| a.id);
         if let Some(run) = runtime.run.lock().await.as_mut() {
             let _ = run
                 .writer
@@ -1928,7 +1933,10 @@ impl App {
                 u64::try_from(total).unwrap_or(20_000),
             ))
             .await;
-            if let Ok(Some(attempt)) = app.deps.store.live_attempt(&tid).await {
+            // Only the run this stop ended: a task continued meanwhile has a new one.
+            if let Ok(Some(attempt)) = app.deps.store.live_attempt(&tid).await
+                && stopped.as_ref() == Some(&attempt.id)
+            {
                 tracing::warn!(task = %tid, "run did not exit after escalation; terminating host");
                 let _ = app.deps.session_host.terminate(Path::new(&attempt.run_dir));
                 app.mark_lost(&tid, &attempt.id, StopReason::Lost).await;
@@ -2193,9 +2201,18 @@ impl App {
         if repeat {
             return;
         }
-        self.runtime(&task.id).hub.notice(format!(
-            "↻ Switching subscriptions was not possible, so this session stays as it is: {message}"
-        ));
+        self.runtime(&task.id)
+            .hub
+            .notice(if reason == "context_full" {
+                format!(
+                    "↻ A fresh session could not start, so this session stays as it is: {message}"
+                )
+            } else {
+                format!(
+                    "↻ Switching subscriptions was not possible, so this session stays as it is: \
+                 {message}"
+                )
+            });
         let record = SwitchDecisionRecord {
             id: self.deps.crypto.new_id(),
             task_id: task.id.clone(),
@@ -2414,7 +2431,8 @@ impl App {
         let tid = task_id.clone();
         let attempt = attempt.clone();
         let alive = runtime.watcher_alive.clone();
-        tokio::spawn(async move { app.watch_loop(tid, attempt, alive).await });
+        let generation = runtime.watcher_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        tokio::spawn(async move { app.watch_loop(tid, attempt, alive, generation).await });
     }
 
     async fn watch_loop(
@@ -2422,6 +2440,7 @@ impl App {
         task_id: TaskId,
         attempt: AttemptRecord,
         alive: Arc<AtomicBool>,
+        generation: u64,
     ) {
         let Ok(Some(task)) = self.deps.store.task(&task_id).await else {
             return;
@@ -2449,9 +2468,17 @@ impl App {
         let mut catching_up = false;
         let mut facts = TranscriptFacts::default();
         let mut probed_at = Timestamp(0);
-        while alive.load(Ordering::SeqCst) {
+        let current = || {
+            alive.load(Ordering::SeqCst)
+                && self
+                    .runtime(&task_id)
+                    .watcher_generation
+                    .load(Ordering::SeqCst)
+                    == generation
+        };
+        while current() {
             tokio::time::sleep(Duration::from_millis(WATCH_INTERVAL_MS)).await;
-            if !alive.load(Ordering::SeqCst) {
+            if !current() {
                 break;
             }
             let now = self.now();
@@ -2469,6 +2496,10 @@ impl App {
                     let _ = self
                         .record_lineage(&task, Harness::ClaudeCode, &id, "native")
                         .await;
+                    // `/clear` or `/resume` in the TUI: a person took the session in hand.
+                    if session_id.is_some() {
+                        self.context_session_changed(&task_id);
+                    }
                     session_id = Some(id);
                     watch = None;
                 }
@@ -2529,7 +2560,7 @@ impl App {
                     self.apply_transcript_facts(&task_id, facts).await;
                     // A session left full while Yulius was down is recovered now (CTX-007).
                     if facts.context_full {
-                        self.context_full_observed(&task_id, &attempt).await;
+                        self.context_full_replayed(&task_id, &attempt).await;
                     }
                 }
             } else {

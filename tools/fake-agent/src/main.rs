@@ -11,7 +11,8 @@
 //!            [--limit-after N] [--report-env NAME]... [--tui]
 //!            [--hooks YULIUS_EXE] [--goal-background SECONDS] [--goal-delay-ms MS] [--drop-lines N]
 //!            [--interrupts] [--rate-limits-file PATH] [--session-start] [--opening-turn-ms MS]
-//!            [--echo-turn-ms MS] [--context-full-after N] [--compact-fails] [--prompt TEXT]
+//!            [--echo-turn-ms MS] [--context-full-after N] [--compact-fails] [--compact-hangs]
+//!            [--prompt TEXT]
 //! ```
 //!
 //! Modes:
@@ -82,7 +83,9 @@
 //! (`error: "invalid_request"`, text `Prompt is too long`), with no Stop hook. `/compact <focus>`
 //! prints `COMPACTED: <focus>`, appends a `compact_boundary` record and empties the context for
 //! good; with `--compact-fails` it prints `COMPACTION FAILED`, appends the command's error output
-//! ("Error during compaction") and the context stays full. `--prompt TEXT` is a first message
+//! ("Error during compaction") and the context stays full; with `--compact-hangs` it prints
+//! `COMPACTING` and never finishes. A refusal takes `--echo-turn-ms` after its user line, like
+//! the API's answer. `--prompt TEXT` is a first message
 //! given on the command line (Claude Code's prompt argument), answered like a typed one before
 //! input is read.
 //!
@@ -155,6 +158,7 @@ struct Options {
     rate_limits_file: Option<PathBuf>,
     context_full_after: Option<u64>,
     compact_fails: bool,
+    compact_hangs: bool,
     prompt: Option<String>,
 }
 
@@ -192,6 +196,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         rate_limits_file: None,
         context_full_after: None,
         compact_fails: false,
+        compact_hangs: false,
         prompt: None,
     };
     while let Some(flag) = args.next() {
@@ -269,6 +274,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                 options.context_full_after = Some(parse_number(&flag, args.next())?);
             }
             "--compact-fails" => options.compact_fails = true,
+            "--compact-hangs" => options.compact_hangs = true,
             "--prompt" => options.prompt = Some(args.next().ok_or("--prompt needs a text")?),
             other => return Err(format!("unknown argument {other:?}")),
         }
@@ -615,18 +621,12 @@ impl Transcript {
         self.append(&[queued, assistant])
     }
 
-    /// A message the API refused as too long: its user line and Claude Code 2.1.292's API-error
-    /// record (no Stop hook follows).
-    fn prompt_too_long(&mut self, prompt: &str) -> io::Result<()> {
-        self.turns += 1;
+    /// The API's answer to a message too long for the context ([`Self::begin`] wrote its user
+    /// line): Claude Code 2.1.292's API-error record (no Stop hook follows).
+    fn prompt_too_long(&mut self) -> io::Result<()> {
         let n = self.turns;
-        let timestamp = rfc3339(now_ms());
-        let user_uuid = format!("fake-{}-{n}-u", self.session_id);
-        let mut user = self.claude_envelope("user", &user_uuid, &timestamp);
-        user["message"] = json!({"role": "user", "content": prompt});
-        self.last_uuid = Some(user_uuid);
         let uuid = format!("fake-{}-{n}-too-long", self.session_id);
-        let mut record = self.claude_envelope("assistant", &uuid, &timestamp);
+        let mut record = self.claude_envelope("assistant", &uuid, &rfc3339(now_ms()));
         record["isApiErrorMessage"] = json!(true);
         record["error"] = json!("invalid_request");
         record["errorDetails"] = json!("prompt is too long: 213000 tokens > 200000 maximum");
@@ -641,7 +641,7 @@ impl Transcript {
                 "cache_read_input_tokens": 0, "output_tokens": 0}
         });
         self.last_uuid = Some(uuid);
-        self.append(&[user, record])
+        self.append(&[record])
     }
 
     /// The boundary Claude Code writes when `/compact` succeeds.
@@ -1250,11 +1250,17 @@ fn echo_message(
     }
     if state.context_full(options) {
         // The API refused the prompt: no turn ran, so no Stop hook runs.
+        if let Some(transcript) = transcript
+            && let Ok(mut t) = transcript.lock()
+        {
+            t.begin(line)?;
+        }
+        std::thread::sleep(Duration::from_millis(options.echo_turn_ms));
         say("PROMPT IS TOO LONG")?;
         if let Some(transcript) = transcript
             && let Ok(mut t) = transcript.lock()
         {
-            t.prompt_too_long(line)?;
+            t.prompt_too_long()?;
         }
         return status_line(options, hooks);
     }
@@ -1298,6 +1304,9 @@ fn compact(
     let Ok(mut t) = transcript.lock() else {
         return Ok(());
     };
+    if options.compact_hangs {
+        return say("COMPACTING");
+    }
     if options.compact_fails {
         say("COMPACTION FAILED")?;
         return t.compact_failed();

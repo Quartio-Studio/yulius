@@ -75,11 +75,8 @@ const INTERRUPT_MARKERS: [&str; 2] = [
 /// request (alongside `error: "rate_limit"` and HTTP 429).
 const USAGE_LIMIT_API_ERROR: &str = "usage_limit_reached";
 
-/// The text of the error record Claude Code writes when the API rejects a prompt as too long
-/// (its `PROMPT_TOO_LONG` constant; its own check is `startsWith`).
-const PROMPT_TOO_LONG_TEXT: &str = "Prompt is too long";
-
-/// Lower-case marks of a too-long prompt in the API's own error (`errorDetails`, `apiError`).
+/// Lower-case marks of a too-long prompt in an error record: Claude Code's own text ("Prompt is
+/// too long", its `PROMPT_TOO_LONG` constant), the API's error (`errorDetails`) or its code.
 const PROMPT_TOO_LONG_MARKS: [&str; 2] = ["prompt is too long", "prompt_too_long"];
 
 /// What Claude Code reports when a compaction fails.
@@ -151,22 +148,22 @@ fn observe_system(record: &Map<String, Value>) -> Vec<Observed> {
 /// A user record that carries a failed compaction's error output, not a prompt.
 fn compact_failed(message: &Map<String, Value>) -> bool {
     let text = message_text(message);
-    text.contains(LOCAL_COMMAND_STDERR) && text.contains(COMPACT_ERROR_TEXT)
+    text.trim_start().starts_with(LOCAL_COMMAND_STDERR) && text.contains(COMPACT_ERROR_TEXT)
 }
 
 /// An error record that says the prompt is too long for the model's context (#213).
+/// Only error records are asked, so an agent's answer that quotes the words is not one.
 fn prompt_too_long(record: &Map<String, Value>, text: &str) -> bool {
-    let named = |key: &str| {
-        str_of(record, key).is_some_and(|value| {
-            let lower = value.to_lowercase();
-            PROMPT_TOO_LONG_MARKS
-                .iter()
-                .any(|mark| lower.contains(mark))
-        })
+    let says = |value: &str| {
+        let lower = value.to_lowercase();
+        PROMPT_TOO_LONG_MARKS
+            .iter()
+            .any(|mark| lower.contains(mark))
     };
-    text.trim_start().starts_with(PROMPT_TOO_LONG_TEXT)
-        || named("errorDetails")
-        || named("apiError")
+    says(text)
+        || ["errorDetails", "apiError"]
+            .iter()
+            .any(|key| str_of(record, key).is_some_and(says))
 }
 
 fn observe_user(record: &Map<String, Value>) -> Vec<Observed> {
@@ -696,6 +693,9 @@ mod tests {
         assert_eq!(observe_line(details), vec![Observed::ContextFull]);
         let code = r#"{"type":"assistant","isApiErrorMessage":true,"apiError":"prompt_too_long","message":{"model":"<synthetic>","content":[]}}"#;
         assert_eq!(observe_line(code), vec![Observed::ContextFull]);
+        // Only the error text says so (an older or newer CLI's wording).
+        let text = r#"{"type":"assistant","isApiErrorMessage":true,"message":{"model":"<synthetic>","content":[{"type":"text","text":"API Error: 400 {\"error\":{\"message\":\"prompt is too long: 201000 tokens > 200000 maximum\"}}"}]}}"#;
+        assert_eq!(observe_line(text), vec![Observed::ContextFull]);
         // A sub-agent's full context is its own: the session goes on.
         let sidechain = line.replace(r#""isSidechain":false"#, r#""isSidechain":true"#);
         assert_eq!(observe_line(&sidechain), Vec::<Observed>::new());
@@ -720,6 +720,11 @@ mod tests {
             "<local-command-stderr>Error: Error during compaction: Error: API Error</local-command-stderr>",
         );
         assert_eq!(observe_line(&user), vec![Observed::CompactFailed]);
+        // A person's prompt that quotes the error output is a prompt.
+        let quoted = json_line(
+            "why did this fail? <local-command-stderr>Error: Error during compaction</local-command-stderr>",
+        );
+        assert!(!observe_line(&quoted).contains(&Observed::CompactFailed));
         // A person's prompt about compaction is a prompt.
         let prompt = json_line("why did the Error during compaction happen?");
         let observed = observe_line(&prompt);

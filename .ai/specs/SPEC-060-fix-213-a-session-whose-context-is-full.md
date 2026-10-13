@@ -59,10 +59,11 @@ context cannot be resumed the same way: the resumed session would be just as ful
 | CTX-001 | A non-sidechain Claude Code error record that says the prompt is too long (text starting `Prompt is too long`, or `errorDetails`/`apiError` naming `prompt is too long`/`prompt_too_long`) is observed as `ContextFull`. A non-sidechain `compact_boundary` record is observed as `Compacted`. A non-sidechain user or system record whose text holds "Error during compaction" is observed as `CompactFailed`. A usage-limit record is still only a limit. | `yulius-harness` unit tests |
 | CTX-002 | `ContextFull` ends the turn: the task stops reading `working` (it reads Your turn, `waiting`) and its active time stops. The terminal and the log (audit `task.context_full` and a warning) say the context is full and what Yulius does about it. | `context_full` integration tests |
 | CTX-003 | The first `ContextFull` of an episode makes Yulius type `/compact <focus>` into the live session once. The focus is one line built from the task: its number and title, the goal (shortened), the branch, the pull request when there is one, and the steps not yet done. When `Compacted` follows, Yulius types one prompt that tells the agent its context was compacted and to carry on with the task. That prompt reaches the agent. | domain unit tests (focus); integration test with the fake agent |
-| CTX-004 | A compaction that fails (`CompactFailed`, `ContextFull` again after the compaction, or no `Compacted` within 10 minutes of the `/compact`) continues the task in a fresh Claude Code session on the same subscription, through the switch path. Its first message is a handoff summary built from the task (goal, branch, pull request, steps left, and how to pick up). The terminal says the task continues in a fresh session. A `ContextFull` that arrives while the compaction is in flight is not a failure (a prompt queued before it). | integration test |
-| CTX-005 | A `ContextFull` after the fresh session started, before any successful reply, makes the task `needs_attention`. The terminal and the log give the reason ("the context is still full after compacting and a fresh session"). Yulius types nothing more. | integration test |
-| CTX-006 | An episode ends when the agent replies successfully (a turn completes or the agent works) after a recovery. A later full context starts a new episode at compaction. A person's prompt is not touched: Yulius types only into the attempt that reported the full context, and stops once that attempt is no longer live. | integration test; code review |
-| CTX-007 | After a Yulius restart, a reattached run whose replayed transcript ends in `ContextFull` (no successful reply or compaction after it) starts recovery the same way. | `finish.rs` unit test |
+| CTX-004 | A compaction that fails (`CompactFailed`, `ContextFull` again after the compaction, or no `Compacted` within 10 minutes of the `/compact`) continues the task in a fresh Claude Code session on the same subscription, through the switch path. Its first message is a handoff summary built from the task (goal, branch, pull request, steps left, and how to pick up). The terminal says the task continues in a fresh session. A `ContextFull` that arrives while the compaction is in flight is not a failure (a prompt queued before it). A fresh session that cannot start (the switch is refused or fails) makes the task `needs_attention` with that reason, and the terminal does not speak of subscriptions. | integration tests |
+| CTX-005 | A `ContextFull` after the fresh session started, before any successful reply, makes the task `needs_attention`. The terminal and the log give the reason ("the context is still full after compacting and a fresh session") once per episode; later refusals flag the task again silently. Yulius types nothing more. | integration test |
+| CTX-006 | An episode ends when the agent replies successfully (a turn completes or the agent works) after a recovery, when the session changes inside the TUI (`/clear`, `/resume`), or when the compaction is cut short (its run ended, or it was never typed). A refusal from another attempt while a compaction is pending starts a compaction of that attempt. A later full context starts a new episode at compaction. A person's prompt is not touched: Yulius types only into the attempt that reported the full context, only while the episode still asks for it, never while a person keeps typing (it gives up after 30 seconds), and stops once that attempt is no longer live. | integration tests; code review |
+| CTX-007 | After a Yulius restart, a reattached run whose replayed transcript ends in `ContextFull` (no successful reply or compaction after it) starts recovery the same way, unless the task already needs a person. | `finish.rs` unit test; integration test |
+| CTX-008 | Found on the way (pre-existing): a stop's escalation, about 20 s later, terminates only the run that stop ended, not a run of the task continued meanwhile; a transcript watcher ends when a newer one starts for the task, so it never reads the next run's lines as its own run's. | integration test (continued session); debugging evidence below |
 
 Ownership and bounds: the episode state lives in the task's runtime (`TaskRuntime`), in memory, one
 per task, and outlives a run so a fresh session counts as the second stage. Each stage types at
@@ -72,11 +73,11 @@ retries without bound: the last stage is a person.
 ## Plan
 
 - [x] Spec with root cause written and validated
-- [ ] Claude Code's full-context, compaction and compaction-failure records are observed
-- [ ] The fake agent fills its context, compacts and fails compaction on demand
-- [ ] A full session is compacted with a focus line and the next prompt reaches the agent
-- [ ] A failed compaction continues the task in a fresh session with a handoff summary
-- [ ] A second failure flags the task with the reason, also after a restart
+- [x] Claude Code's full-context, compaction and compaction-failure records are observed
+- [x] The fake agent fills its context, compacts and fails compaction on demand
+- [x] A full session is compacted with a focus line and the next prompt reaches the agent
+- [x] A failed compaction continues the task in a fresh session with a handoff summary
+- [x] A second failure flags the task with the reason, also after a restart
 - [ ] Independent review, docs, ADR and every gate green
 
 ## Acceptance criteria
@@ -116,5 +117,8 @@ retries without bound: the last stage is a person.
 - **Detect a failed compaction three ways** (the error text, another full-context error, a 10-minute
   bound). The CLI's exact record for a failed manual `/compact` is not documented, so the bound
   keeps an unknown shape from waiting forever.
+- **Fix the two races found on the way in this change** (CTX-008) rather than file them: the task
+  forbids new issues, both are a few lines, and the continued-session test cannot pass without
+  them.
 - **The reason is said, not stored.** As for a goal that was never taken, the terminal notice and
   the audit entry carry the reason. No new column is added for a flag a person clears by acting.

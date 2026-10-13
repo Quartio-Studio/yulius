@@ -61,9 +61,15 @@ pub(crate) enum ContextEpisode {
 enum Next {
     Compact,
     Restart,
+    /// Into [`ContextEpisode::GaveUp`]: said once.
     GiveUp,
+    /// Already given up: the task is flagged again, silently.
+    Reflag,
     Nothing,
 }
+
+/// Why the task needs a person when the fresh session is full too.
+const STILL_FULL: &str = "the context is still full after compacting and a fresh session";
 
 impl App {
     /// The API refused the attempt's prompt as too long (CTX-002..005).
@@ -81,12 +87,16 @@ impl App {
             };
             let next = match &*episode {
                 ContextEpisode::Clear => Next::Compact,
+                // The compaction was cut short (the run ended): the continued session is new.
+                ContextEpisode::Compacting { attempt: asked, .. } if *asked != attempt.id => {
+                    Next::Compact
+                }
                 // A prompt sent before the compaction meets the full context too.
                 ContextEpisode::Compacting { .. } => Next::Nothing,
                 ContextEpisode::Compacted => Next::Restart,
                 ContextEpisode::Restarted { from } if *from == attempt.id => Next::Nothing,
                 ContextEpisode::Restarted { .. } => Next::GiveUp,
-                ContextEpisode::GaveUp => Next::GiveUp,
+                ContextEpisode::GaveUp => Next::Reflag,
             };
             match next {
                 Next::Compact => {
@@ -101,7 +111,7 @@ impl App {
                     };
                 }
                 Next::GiveUp => *episode = ContextEpisode::GaveUp,
-                Next::Nothing => {}
+                Next::Reflag | Next::Nothing => {}
             }
             next
         };
@@ -121,7 +131,8 @@ impl App {
                     "the context is full again after compacting",
                 );
             }
-            Next::GiveUp => self.give_up_on_full_context(&task).await,
+            Next::GiveUp => self.give_up_on_full_context(&task, STILL_FULL, true).await,
+            Next::Reflag => self.give_up_on_full_context(&task, STILL_FULL, false).await,
             Next::Nothing => self.idle_after_full_context(&task).await,
         }
     }
@@ -153,7 +164,8 @@ impl App {
         let app = Arc::clone(self);
         let task_id = task_id.clone();
         tokio::spawn(async move {
-            app.type_line(&task_id, &attempt, &line).await;
+            let compacted = |e: &ContextEpisode| *e == ContextEpisode::Compacted;
+            app.type_line(&task_id, &attempt, &line, compacted).await;
         });
     }
 
@@ -242,20 +254,24 @@ impl App {
         let app = Arc::clone(self);
         let (task_id, attempt) = (task.id.clone(), attempt.clone());
         tokio::spawn(async move {
-            if !app.type_line(&task_id, &attempt.id, &command).await {
+            let asked_now = move |e: &ContextEpisode| matches!(e, ContextEpisode::Compacting { since: s, .. } if *s == since);
+            if !app
+                .type_line(&task_id, &attempt.id, &command, asked_now)
+                .await
+            {
+                // Not typed (the run ended, a person kept typing): the next refusal starts over.
+                app.context_reset_if(&task_id, asked_now);
                 return;
             }
             let asked = tokio::time::Instant::now();
             while asked.elapsed() < COMPACT_TIMEOUT {
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 if !app.attempt_live(&task_id, &attempt.id).await {
+                    // The run ended before its compaction did: a continued session starts over.
+                    app.context_reset_if(&task_id, asked_now);
                     return;
                 }
-                let waiting = matches!(
-                    app.runtime(&task_id).context.lock().map(|e| e.clone()),
-                    Ok(ContextEpisode::Compacting { since: s, .. }) if s == since
-                );
-                if !waiting {
+                if !app.context_is(&task_id, asked_now) {
                     return;
                 }
             }
@@ -292,22 +308,30 @@ impl App {
             let handoff = app.task_focus(&task).await.handoff();
             if let Err(err) = app.restart_fresh(&task.id, account, &handoff).await {
                 tracing::warn!(task = %task.id, error = %err, "no fresh session after a full context");
+                // The full session stays (a refused switch) or the task stopped: either way only
+                // a person can go on.
+                if let Ok(mut episode) = app.runtime(&task.id).context.lock() {
+                    *episode = ContextEpisode::GaveUp;
+                }
+                let why = format!("a fresh session could not start: {}", err.public_message());
+                if let Ok(Some(task)) = app.deps.store.task(&task.id).await {
+                    app.give_up_on_full_context(&task, &why, true).await;
+                }
             }
         });
     }
 
-    /// The fresh session is full too: the task waits for a person, who is told why (CTX-005).
-    async fn give_up_on_full_context(&self, task: &TaskRecord) {
-        let flagged = task.activity == Some(Activity::NeedsAttention);
+    /// Recovery did not help: the task waits for a person, told `why` when `announce` (once per
+    /// episode, CTX-005).
+    async fn give_up_on_full_context(&self, task: &TaskRecord, why: &str, announce: bool) {
         if task.status == TaskStatus::Running
             && let Err(err) = self.set_task_activity(task, Activity::NeedsAttention).await
         {
             tracing::warn!(task = %task.id, error = %err, "could not flag a full session");
         }
-        if flagged {
+        if !announce {
             return;
         }
-        let why = "the context is still full after compacting and a fresh session";
         tracing::error!(task = %task.id, why, "a full session needs a person");
         self.runtime(&task.id).hub.notice(format!(
             "⚠ The task needs you: {why}. Find what fills it (a huge file, tool output or \
@@ -348,14 +372,60 @@ impl App {
         }
     }
 
-    /// Types one line into the attempt's TUI once it waits for input, then a separate Enter;
-    /// `false` when the attempt is no longer live or the input could not be written.
-    async fn type_line(&self, task_id: &TaskId, attempt: &AttemptId, line: &str) -> bool {
+    /// Whether the task's episode is one `wanted` accepts.
+    fn context_is(&self, task_id: &TaskId, wanted: impl Fn(&ContextEpisode) -> bool) -> bool {
+        self.runtime(task_id)
+            .context
+            .lock()
+            .is_ok_and(|episode| wanted(&episode))
+    }
+
+    /// Ends the task's episode if it is still one `stale` accepts.
+    fn context_reset_if(&self, task_id: &TaskId, stale: impl Fn(&ContextEpisode) -> bool) {
+        if let Ok(mut episode) = self.runtime(task_id).context.lock()
+            && stale(&episode)
+        {
+            *episode = ContextEpisode::Clear;
+        }
+    }
+
+    /// The session changed inside the TUI (`/clear`, `/resume`): a person took the session in
+    /// hand, so its recovery is over (CTX-006).
+    pub(crate) fn context_session_changed(&self, task_id: &TaskId) {
+        self.context_reset_if(task_id, |_| true);
+    }
+
+    /// A replay after a restart ended in a refusal (CTX-007): recovery starts, unless the task
+    /// already waits for a person (the recovery before the restart gave up).
+    pub(crate) async fn context_full_replayed(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        attempt: &AttemptRecord,
+    ) {
+        match self.deps.store.task(task_id).await {
+            Ok(Some(task)) if task.activity != Some(Activity::NeedsAttention) => {
+                self.context_full_observed(task_id, attempt).await;
+            }
+            _ => {}
+        }
+    }
+
+    /// Types one line into the attempt's TUI once it waits for input, then a separate Enter,
+    /// while the episode is one `wanted` accepts; `false` when it was not typed (the attempt is
+    /// no longer live, the episode moved on, a person kept typing, the input failed).
+    async fn type_line(
+        &self,
+        task_id: &TaskId,
+        attempt: &AttemptId,
+        line: &str,
+        wanted: impl Fn(&ContextEpisode) -> bool,
+    ) -> bool {
         let runtime = self.runtime(task_id);
         let started = tokio::time::Instant::now();
         let mut last = runtime.hub.output_seq();
         let mut quiet_since = started;
-        while started.elapsed() < TYPE_WAIT {
+        let mut ready = false;
+        while !ready && started.elapsed() < TYPE_WAIT {
             tokio::time::sleep(Duration::from_millis(200)).await;
             if !self.attempt_live(task_id, attempt).await {
                 return false;
@@ -367,11 +437,14 @@ impl App {
             }
             let typed = runtime.typed_at_ms.load(Ordering::SeqCst);
             let person_typing = typed > 0 && self.now().0.saturating_sub(typed) < PERSON_TYPING_MS;
-            if quiet_since.elapsed() >= TYPE_QUIET && !person_typing {
-                break;
-            }
+            ready = quiet_since.elapsed() >= TYPE_QUIET && !person_typing;
         }
-        if !self.attempt_live(task_id, attempt).await {
+        // A person who kept typing owns the prompt box: nothing is typed into their draft.
+        if !ready {
+            tracing::info!(task = %task_id, "a person types; Yulius does not type into the session");
+            return false;
+        }
+        if !self.context_is(task_id, &wanted) || !self.attempt_live(task_id, attempt).await {
             return false;
         }
         if let Err(err) = self.send_input(task_id, line.as_bytes()).await {
@@ -380,6 +453,9 @@ impl App {
         }
         // A separate Enter, so the TUI sees typed text first and then a submit.
         tokio::time::sleep(Duration::from_millis(300)).await;
+        if !self.attempt_live(task_id, attempt).await {
+            return false;
+        }
         if let Err(err) = self.send_input(task_id, b"\r").await {
             tracing::warn!(task = %task_id, error = %err, "could not submit into a full session");
             return false;

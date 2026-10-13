@@ -13,6 +13,7 @@ use crate::pool_supervision::{
 use crate::support::TestResult;
 use crate::support::agents::FakeAgentOptions;
 use tokio::sync::broadcast::Receiver;
+use tokio::sync::broadcast::error::TryRecvError;
 use yulius_app::context::App;
 use yulius_app::hub::HubFrame;
 use yulius_app::model::LaunchKind;
@@ -20,11 +21,14 @@ use yulius_domain::ids::TaskId;
 use yulius_domain::task::{Activity, AttemptState};
 use yulius_ptyhost::test_support::locate_fake_agent;
 
-/// The notices said so far.
+/// The notices said so far (frames the receiver lagged behind on are output, not notices: a
+/// lag is skipped, not the end).
 fn notices(frames: &mut Receiver<HubFrame>, said: &mut Vec<String>) {
-    while let Ok(frame) = frames.try_recv() {
-        if let HubFrame::Notice(text) = frame {
-            said.push(text);
+    loop {
+        match frames.try_recv() {
+            Ok(HubFrame::Notice(text)) => said.push(text),
+            Ok(_) | Err(TryRecvError::Lagged(_)) => {}
+            Err(_) => return,
         }
     }
 }
@@ -141,15 +145,130 @@ fn a_full_context_is_compacted_once_and_the_next_prompt_reaches_the_agent() -> T
     Ok(())
 }
 
-/// CTX-002: the refused prompt ends the turn: the task waits, it is not left `working`.
+/// CTX-002: the refused prompt ends the turn: the task that worked on it waits, it is not left
+/// `working` (the compaction here never finishes, so nothing else moves the task).
 #[test]
 fn a_refused_prompt_does_not_leave_the_task_working() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
     let rt = runtime()?;
     rt.block_on(async {
-        // `/compact` fails and the fresh session is full from its first message: nothing the
-        // agent does after the refusal makes it work again.
+        let options = FakeAgentOptions {
+            compact_hangs: true,
+            echo_turn_ms: Some(1_500),
+            ..agent(1, false)
+        };
+        let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), options)?;
+        let id = started(&app, &data).await?;
+        app.send_input(&id, b"too much\r").await?;
+        wait_for("the prompt worked on", Duration::from_secs(30), || {
+            activity_is(&app, &id, Activity::Working)
+        })
+        .await?;
+        wait_for("the compaction asked for", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("COMPACTING") }
+        })
+        .await?;
+        assert!(screen(&app, &id).contains("PROMPT IS TOO LONG"));
+        wait_for("the task not working", Duration::from_secs(10), || {
+            activity_is(&app, &id, Activity::Waiting)
+        })
+        .await?;
+        assert_eq!(audited(&data, &id)?, ["context full: compacting"]);
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+async fn activity_is(app: &Arc<App>, id: &TaskId, activity: Activity) -> bool {
+    task(app, id)
+        .await
+        .is_ok_and(|t| t.activity == Some(activity))
+}
+
+/// CTX-006: a compaction cut short (the person stopped the task and continued it) does not keep
+/// the episode waiting: the continued session's full context is compacted in its turn.
+#[test]
+fn a_continued_session_is_compacted_after_an_unfinished_compaction() -> TestResult {
+    use yulius_app::auth::AuthContext;
+    use yulius_contracts::api::tasks::ContinueTask;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        // Full from the first message, so no answer ever ends the episode; each refusal takes a
+        // while, like the API's, so the continued run's transcript watcher (it reads from where
+        // the file ended when it opened) is attached by then.
+        let options = FakeAgentOptions {
+            compact_hangs: true,
+            echo_turn_ms: Some(2_000),
+            ..agent(0, false)
+        };
+        let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), options)?;
+        let (sandbox, user) = seed(&app, &data, &["a-only"]).await?;
+        let id = new_task(&app, &sandbox, &user, "Full").await?;
+        wait_for("the compaction asked for", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("COMPACTING") }
+        })
+        .await?;
+        stop(&app, &id).await?;
+        let record = task(&app, &id).await?;
+        let ctx = AuthContext {
+            user: app
+                .deps
+                .store
+                .user(&record.created_by)
+                .await?
+                .ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        app.continue_task(&ctx, id.as_str(), &ContinueTask { account_id: None })
+            .await?;
+        wait_for("the continued run", Duration::from_secs(30), || async {
+            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+            attempts.len() == 2 && attempts[1].state == AttemptState::Live
+        })
+        .await?;
+        wait_for("the continued agent", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("FAKE-AGENT READY") }
+        })
+        .await?;
+        // The continued session is just as full.
+        app.send_input(&id, b"one\r").await?;
+        wait_for("the second compaction", Duration::from_secs(30), || async {
+            audited(&data, &id).is_ok_and(|a| a.len() == 2)
+        })
+        .await?;
+        wait_for("the second /compact typed", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("COMPACTING") }
+        })
+        .await?;
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// CTX-004/005: a fresh session that cannot start (here the repository is gone) leaves the full
+/// session as it is, so the task needs a person, told why.
+#[test]
+fn a_fresh_session_that_cannot_start_needs_a_person() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
         let app = build_with(
             &data,
             &fake,
@@ -157,23 +276,31 @@ fn a_refused_prompt_does_not_leave_the_task_working() -> TestResult {
             agent(1, true),
         )?;
         let id = started(&app, &data).await?;
+        let record = task(&app, &id).await?;
+        let worktree = std::path::PathBuf::from(record.worktree_path.ok_or("worktree")?);
+        let repo = data.join("sandboxes").join("s-pool").join("repo");
+        std::fs::rename(worktree.join(".git"), worktree.join("git.away"))?;
+        std::fs::rename(repo.join(".git"), repo.join("git.away"))?;
+        let mut frames = app.runtime(&id).hub.watch();
         app.send_input(&id, b"too much\r").await?;
-        wait_for("the refusal", Duration::from_secs(30), || {
-            let app = app.clone();
-            let id = id.clone();
-            async move { screen(&app, &id).contains("PROMPT IS TOO LONG") }
+        wait_for("needs attention", Duration::from_secs(60), || {
+            activity_is(&app, &id, Activity::NeedsAttention)
         })
         .await?;
-        wait_for("the task not working", Duration::from_secs(10), || {
-            let app = app.clone();
-            let id = id.clone();
-            async move {
-                task(&app, &id)
-                    .await
-                    .is_ok_and(|t| t.activity != Some(Activity::Working))
-            }
-        })
-        .await?;
+        assert_eq!(app.deps.store.attempts(&id).await?.len(), 1, "no fresh run");
+        let mut said = Vec::new();
+        notices(&mut frames, &mut said);
+        assert!(
+            said.iter()
+                .any(|n| n.contains("needs you") && n.contains("fresh session could not start")),
+            "the reason in the terminal: {said:?}"
+        );
+        assert!(
+            !said.iter().any(|n| n.contains("Switching subscriptions")),
+            "no word of subscriptions: {said:?}"
+        );
+        std::fs::rename(worktree.join("git.away"), worktree.join(".git"))?;
+        std::fs::rename(repo.join("git.away"), repo.join(".git"))?;
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
