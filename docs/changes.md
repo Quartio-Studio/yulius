@@ -18,6 +18,22 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   - A train survives restarts (`merge-trains.json`).
   - On 2026-10-12/13, 42% of the armed merges waited at least one extra run after their last arm
     (7.4 hours in all), and runs at updated heads took 44% of the CI time.
+- Yulius's tools answer in a few readable lines, and sessions fill the page (SPEC-086, ADR-0069):
+  - A tool's result was its whole record as pretty JSON, which filled the agent's terminal (task
+    #66's steps list) and its context: 6.08 MB in the transcripts of 2026-10-12/13, most of it
+    `ci_status`, `step_update` and `delivery_status`. Each tool now says what changed and what is
+    next, with the numbers and ids the agent passes back: the plan as a checklist, a step update
+    as the changed step, the progress and the next step, CI as a line per run with the output of
+    failed jobs only (`job` asks for another), delivery as the stage, the pull request and what
+    blocks it. Replayed over those results, 71 % less text. A client that reads records asks
+    with `_meta: {"yulius/structured": true}`; Claude Code would show the model a
+    `structuredContent` instead of the text, so it is never sent by default.
+  - Agents read files with `cat`, `sed -n` and `grep` because Claude Code tells them to in
+    bypass mode. Measured, it costs nothing (0.3 % rereads, smaller reads than `Read`, no failed
+    edit), so it stays.
+  - A session's transcript fills the content area edge to edge, without side margins, border or
+    rounded corners, beside the Superagent too and on phones; the header keeps its padding.
+
 - The original prompt's thumbnails always load (SPEC-080, ADR-0064, task #63; #303). Reading a
   prompt's attached file no longer takes an upload slot: reads have their own bound of 16 and wait
   up to 30 s for a slot, so a prompt with many images, or one opened while uploads run, shows every

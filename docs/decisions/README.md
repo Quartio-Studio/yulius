@@ -71,3 +71,4 @@ title whose number differs from the file name, and a record this index does not 
 - [0063](0063-background-work-and-goal-verdict-from-the-transcript.md): Background launches and the goal verdict come from the transcript; the hook does not wait
 - [0064](0064-attachment-reads-have-their-own-bound.md): A prompt's attached files are read under their own bound, streamed, and confirmed on Linux
 - [0067](0067-armed-pull-requests-merge-in-trains.md): Armed pull requests merge in trains: one run on their combined result decides them all
+- [0069](0069-mcp-tools-answer-with-short-text.md): Yulius's MCP tools answer with short text; the record only when a client asks
