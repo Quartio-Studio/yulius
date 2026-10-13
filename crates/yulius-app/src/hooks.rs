@@ -154,6 +154,16 @@ impl App {
                 if notification_needs_a_person(input) {
                     self.set_task_activity(&ctx.task, Activity::NeedsAttention)
                         .await?;
+                    // The agent's next work shows the person answered (STA-003), unless the
+                    // task was flagged already (by the gate, say) or a worker asks, which the
+                    // main session's work says nothing about.
+                    if ctx.task.activity != Some(Activity::NeedsAttention)
+                        && notice_answered_by_work(input)
+                    {
+                        self.runtime(&ctx.task.id)
+                            .notice_attention_ms
+                            .store(self.now().0.max(1), Ordering::SeqCst);
+                    }
                 }
                 Ok(HookReply::Output(HookOutput::default()))
             }
@@ -234,6 +244,11 @@ impl App {
     ) -> AppResult<()> {
         if task.status != TaskStatus::Running || task.activity == Some(activity) {
             return Ok(());
+        }
+        if activity != Activity::NeedsAttention {
+            self.runtime(&task.id)
+                .notice_attention_ms
+                .store(0, Ordering::SeqCst);
         }
         self.deps
             .store
@@ -449,6 +464,9 @@ impl App {
             };
             store.update_task(&ctx.task.id, &update, self.now()).await?;
         }
+        self.runtime(&ctx.task.id)
+            .resumed_turn
+            .store(false, Ordering::SeqCst);
         self.set_task_activity(&ctx.task, Activity::Working).await?;
         Ok(HookReply::Output(HookOutput::default()))
     }
@@ -961,13 +979,35 @@ impl RepoDocs {
     }
 }
 
-/// Whether a `Notification` hook asks a person to act (a permission prompt or a question for
-/// the user) rather than reminding that the agent waits for input or reporting a sign-in.
+/// The `notification_type`s of Claude Code 2.1.292 that ask a person to act: a permission prompt
+/// (also of a worker), a question for the user (also a URL to open) and an agent that needs
+/// input. The others report something (the idle reminder, a sign-in, a background agent that
+/// finished, a push notification, a quota resume, a refusal fallback) and ask nobody: they are
+/// frequent and arrive while the agent works, so a type this list does not know is not one
+/// either (STA-002, SPEC-032).
+const NOTICES_ASKING_A_PERSON: [&str; 5] = [
+    "permission_prompt",
+    "worker_permission_prompt",
+    "elicitation_dialog",
+    "elicitation_url_dialog",
+    "agent_needs_input",
+];
+
+/// Whether the main session's next work shows the person answered the notice: a permission
+/// prompt or a question of the session itself. A worker's prompt or an agent that needs input
+/// is not answered by the session going on with something else.
+fn notice_answered_by_work(input: &HookInput) -> bool {
+    !matches!(
+        input.notification_type.as_deref(),
+        Some("worker_permission_prompt" | "agent_needs_input")
+    )
+}
+
+/// Whether a `Notification` hook asks a person to act ([`NOTICES_ASKING_A_PERSON`]).
 /// Without `notification_type` (older Claude Code) the idle reminder is known by its text.
 fn notification_needs_a_person(input: &HookInput) -> bool {
     match input.notification_type.as_deref() {
-        Some("idle_prompt" | "auth_success") => false,
-        Some(_) => true,
+        Some(kind) => NOTICES_ASKING_A_PERSON.contains(&kind),
         None => !input
             .message
             .as_deref()
@@ -977,8 +1017,75 @@ fn notification_needs_a_person(input: &HookInput) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{RepoDocs, foundations, repo_path};
+    use super::{
+        RepoDocs, foundations, notice_answered_by_work, notification_needs_a_person, repo_path,
+    };
     use std::path::Path;
+    use yulius_contracts::hooks::HookInput;
+
+    fn notice(kind: Option<&str>, message: Option<&str>) -> HookInput {
+        HookInput {
+            notification_type: kind.map(str::to_owned),
+            message: message.map(str::to_owned),
+            ..HookInput::default()
+        }
+    }
+
+    /// STA-002, STA-003 (SPEC-032): the allow-list, and which notices the session's own work
+    /// answers.
+    #[test]
+    fn only_notices_that_ask_a_person_flag_the_task() {
+        for kind in [
+            "permission_prompt",
+            "worker_permission_prompt",
+            "elicitation_dialog",
+            "elicitation_url_dialog",
+            "agent_needs_input",
+        ] {
+            assert!(
+                notification_needs_a_person(&notice(Some(kind), None)),
+                "{kind}"
+            );
+        }
+        for kind in [
+            "idle_prompt",
+            "auth_success",
+            "agent_completed",
+            "push_notification",
+            "x",
+        ] {
+            assert!(
+                !notification_needs_a_person(&notice(Some(kind), None)),
+                "{kind}"
+            );
+        }
+        // Older CLIs: the idle text is the reminder, anything else asks.
+        assert!(!notification_needs_a_person(&notice(
+            None,
+            Some("Claude is waiting for your input")
+        )));
+        assert!(notification_needs_a_person(&notice(
+            None,
+            Some("Claude needs your permission")
+        )));
+        // The session's own next work answers its prompts, not a worker's or an agent's.
+        assert!(notice_answered_by_work(&notice(
+            Some("permission_prompt"),
+            None
+        )));
+        assert!(notice_answered_by_work(&notice(
+            None,
+            Some("Claude needs your permission")
+        )));
+        assert!(!notice_answered_by_work(&notice(
+            Some("worker_permission_prompt"),
+            None
+        )));
+        assert!(!notice_answered_by_work(&notice(
+            Some("agent_needs_input"),
+            None
+        )));
+    }
 
     /// #70: a document path through a linked directory never leaves the repository (the
     /// briefing and `project_context` would hand the agent a host file otherwise).
