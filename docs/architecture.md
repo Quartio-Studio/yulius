@@ -168,7 +168,7 @@ login shell: no hooks, settings or briefing, a pool subscription's token, and th
 conversation resumed whenever it starts again. The web UI shows it in the right tool panel beside
 the page, under a notice that it is for quick work only
 ([SPEC-035](../.ai/specs/SPEC-035-move-cockpit-to-the-right-and-change-coc.md),
-[decision 0034](decisions/0034-agent-in-the-right-panel.md)).
+[decision 0036](decisions/0036-agent-in-the-right-panel.md)).
 
 It manages the project through the Yulius MCP server
 ([SPEC-037](../.ai/specs/SPEC-037-i-got-something-like-this-tasks-and-cock.md),
@@ -235,7 +235,7 @@ flowchart LR
 ## Task status
 
 A running task's activity is derived from Claude Code's own records, not guessed from the last
-event ([ADR-0034](decisions/0034-task-status-follows-claude-codes-own-records.md)):
+event ([ADR-0041](decisions/0041-task-status-follows-claude-codes-own-records.md)):
 
 ```mermaid
 flowchart LR

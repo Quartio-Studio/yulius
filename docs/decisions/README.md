@@ -3,7 +3,9 @@
 Architecture decision records, numbered `NNNN-<slug>.md`. They summarise the ADR table in
 [SPEC-002](../../.ai/specs/SPEC-002-yulius-architecture.md) section 2, which stays the
 detailed source (ADR-NN numbers there are cited in each record). New decisions get the next
-number here; a substantial one also gets an analysis section in the relevant spec.
+free number here, also in their title; a substantial one also gets an analysis section in the
+relevant spec. The repository check refuses two records with one number (#317): when a parallel
+task merged the same number first, take the next free one after merging `dev`.
 
 - [0001](0001-single-rust-binary.md): One Rust binary with an embedded static web UI
 - [0002](0002-detached-ptyhost-per-run.md): A detached ptyhost process owns every agent run
@@ -37,11 +39,11 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0031](0031-deleting-a-done-task-closes-it.md): Deleting a Done task closes its session first
 - [0032](0032-shared-notes-with-revisions.md): Shared notes are stored on the server and saved by revision
 - [0033](0033-original-prompt-on-demand.md): A task's original prompt is read on demand; its files only from its own attachment folders
-- [0034](0034-task-status-follows-claude-codes-own-records.md): A task's status follows Claude Code's own records
-- [0034](0034-personal-two-factor-guards-the-vault.md): A personal two-factor code guards the vault; a secret is a title, a value and notes
-- [0034](0034-agent-in-the-right-panel.md): The Cockpit is shown as the Agent, a tool in the right panel
 - [0034](0034-ready-made-automations-catalog.md): Ready-made automations ship as a catalog, enabled in one click and matched by name
 - [0035](0035-queued-messages-join-the-request.md): Messages queued into a waiting task join its request
+- [0036](0036-agent-in-the-right-panel.md): The Cockpit is shown as the Agent, a tool in the right panel
 - [0037](0037-dead-code-tools.md): Dead code is cleaned with each language's established tool; Yulius's gate uses cargo-shear
-- [0039](0039-ci-jobs-get-the-cpu-first.md): CI jobs get the CPU first through a weighted cgroup
 - [0038](0038-onboarding-starts-in-the-browser.md): Onboarding starts in the browser, never from the CLI
+- [0039](0039-ci-jobs-get-the-cpu-first.md): CI jobs get the CPU first through a weighted cgroup
+- [0040](0040-personal-two-factor-guards-the-vault.md): A personal two-factor code guards the vault; a secret is a title, a value and notes
+- [0041](0041-task-status-follows-claude-codes-own-records.md): A task's status follows Claude Code's own records

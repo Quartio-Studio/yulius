@@ -43,7 +43,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - Armed merges survive a server restart (a deploy no longer drops them) (SPEC-050 DLV-205).
 - Secrets are a title, a value and notes, and reading one needs your own two-factor code
-  (SPEC-040, ADR-0034, task #39). The first reveal sets two-factor up: an authenticator key and
+  (SPEC-040, ADR-0040, task #39). The first reveal sets two-factor up: an authenticator key and
   link, confirmed by a first code. After that, a code unlocks the vault in that browser for 10
   minutes. A sign-in or password alone no longer reveals anything. Older team secrets keep every
   field: the password becomes the value, and the address, user name and seed move into the
@@ -52,7 +52,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Ten wrong codes in a row lock codes until the person confirms it is them again. Rolling back
   past this change needs care: the previous release reads secrets saved in the new form as
   having no password, and an edit there would drop the value.
-- The Cockpit is now the **Agent**, on the right (SPEC-035, ADR-0034; task #33): a top-bar Agent
+- The Cockpit is now the **Agent**, on the right (SPEC-035, ADR-0036; task #33): a top-bar Agent
   button and the first tool of the right rail open the user's own Claude Code session in the tool
   panel beside the page, under a notice that it is for quick work (setting up automations, quick
   questions) and that anything more complex, such as writing code, belongs in a task (with a New
@@ -132,7 +132,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   CI (tests), Secrets and Dashboard, then "More", which expands Sessions, Workflows, Skills,
   Automations and MCP in place. Its state is remembered per browser; arriving at one of those
   pages shows it open for that page.
-- A task's status follows what its agent is doing (SPEC-032, ADR-0034; task #30): a task whose
+- A task's status follows what its agent is doing (SPEC-032, ADR-0041; task #30): a task whose
   agent ended its turn but still waits for a background agent (a reviewer) is Working with "1
   background task still running", not Done; a goal check that says "not met", or any stop the
   session goes on from, makes the task Working again instead of leaving "Your turn" (or Done);
