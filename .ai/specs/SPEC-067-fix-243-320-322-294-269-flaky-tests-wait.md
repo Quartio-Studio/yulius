@@ -151,6 +151,11 @@ the runs (load average 26 to 61). Traces are under Evidence.
   only for tests would add a production knob to save test time. Claude Code sends SessionStart, so
   the fake agent sending it is the realistic case. The hookless fallback stays covered by the tests
   that run without it.
+- **`hooks_seen` stays as it is here (follow-up).** `start_watcher` also clears `hooks_seen`, which
+  an early SessionStart sets. Unlike `session_started`, every later hook (UserPromptSubmit, Stop)
+  sets it again, so a wiped value repairs itself at the next hook. Until then a turn end read from
+  the transcript is handled as for a hookless run. Moving that reset before the spawn too is a
+  separate slice with its own test. It is noted on #243, since this task creates no new issue.
 - **No ADR.** Nothing here sets a lasting architectural direction. These are test fixes and one UI
   listener.
 

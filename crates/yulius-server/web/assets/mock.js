@@ -3504,7 +3504,11 @@ function openSocket(db, path) {
   return ws;
 }
 
-/** Ambient activity so live updates are visible: one bounded timer for the whole mock. */
+/**
+ * Ambient activity so live updates are visible: one bounded timer for the whole mock. The browser
+ * request about 5 s after the start is awaited by task-done.e2e.ts ("…its pull request is read
+ * late"): keep its delay well under 15 s and its reason, or change that test with it.
+ */
 function startAmbient(db) {
   if (db.ambient) return;
   db.ambient = true;

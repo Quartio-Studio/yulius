@@ -82,11 +82,12 @@ async function hoverPlain(browser: Browser, text: string, scope = '.taskview'): 
 }
 
 /**
- * Waits until the Editor a link opened has loaded. Its first opening loads Monaco (many files),
- * which takes however long a starved runner needs (#320): a condition, as in filedrop.e2e.ts.
+ * Waits until the Editor a link opened shows an editor. Its first opening loads Monaco (many
+ * files), which takes however long a starved runner needs (#320): a condition, as in
+ * filedrop.e2e.ts.
  */
 const editorLoaded = (browser: Browser) => expect
-  .poll(() => browser.evaluate(() => Boolean((window as unknown as { monaco?: unknown }).monaco)), { timeout: 60000 })
+  .poll(() => browser.evaluate(() => ((window as unknown as { monaco?: Monaco }).monaco?.editor.getEditors().length ?? 0) > 0), { timeout: 60000 })
   .toBe(true);
 
 /** Presses and releases the primary button where the pointer rests (a click without moving). */

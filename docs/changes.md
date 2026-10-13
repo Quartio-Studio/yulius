@@ -17,8 +17,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
   The slash-menu, Auto, stored-draft and terminal-link tests now wait for the composer's focus,
   hold the creation, store the draft before the page opens, and wait until xterm knows the link
-  and the Editor has loaded. The dropped-goal test sends Claude Code's SessionStart hook and takes
-  16 s instead of 61 s.
+  and the Editor has loaded. The dropped-goal test sends Claude Code's SessionStart hook: its goal
+  starts after 16 s instead of 60 s.
 - The Cockpit and task agents manage the whole task and automation lifecycle (SPEC-066,
   ADR-0049, task #58, #275, #293). New MCP tools `task_stop`, `task_archive`, `task_delete`,
   `automation_delete`, `automation_run_now` and `automation_template_enable` do what the UI
