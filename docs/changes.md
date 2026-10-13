@@ -6,6 +6,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- Local test runs use 4 test threads (CI keeps one per CPU): several agents running the suite
+  at once in one sandbox starved their tests into timeouts.
 - Yulius's merge gate enforces the branch policy (SPEC-069, ADR 0051, task #59; #223). Before
   Yulius merges a task's pull request (`delivery_merge`, an armed merge, the Git page) or a
   promotion pull request, it checks the title, head and base against `yulius.toml`
