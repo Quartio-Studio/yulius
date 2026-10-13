@@ -36,8 +36,8 @@ pub struct AuthContext {
 }
 
 impl AuthContext {
-    /// Whether the caller is a person in the browser (a cookie session, which carries a CSRF
-    /// token), not a bearer token of the CLI or a script.
+    /// Whether the caller signed in through the web UI (a cookie session, which carries a CSRF
+    /// token) rather than with an API token of the CLI or a script.
     #[must_use]
     pub fn is_browser(&self) -> bool {
         self.csrf_token.is_some()

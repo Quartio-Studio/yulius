@@ -33,7 +33,8 @@ client could call it, including the CLI's bearer token from `yulius login`.
   or later CLI command holding a token could still start it, so "never via the CLI" would rest on
   convention.
 - A per-token scope ("browser-only actions"). It is the more general tool, but tokens have no
-  scopes yet, and a cookie session is already exactly "a person in the browser".
+  scopes yet, and a cookie session (the web UI's sign-in, CSRF-checked) is what the browser has and
+  an API token is not.
 - Also require Start onboarding after adding a repository in the web UI. That click is already an
   explicit GUI action, so it would add a second click without a reason; it stays a reversible
   choice.

@@ -36,7 +36,6 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0030](0030-menus-filter-when-long.md): Menus are compact and filter themselves when long
 - [0031](0031-deleting-a-done-task-closes-it.md): Deleting a Done task closes its session first
 - [0032](0032-shared-notes-with-revisions.md): Shared notes are stored on the server and saved by revision
-- [0038](0038-onboarding-starts-in-the-browser.md): Onboarding starts in the browser, never from the CLI
 - [0033](0033-original-prompt-on-demand.md): A task's original prompt is read on demand; its files only from its own attachment folders
 - [0034](0034-task-status-follows-claude-codes-own-records.md): A task's status follows Claude Code's own records
 - [0034](0034-personal-two-factor-guards-the-vault.md): A personal two-factor code guards the vault; a secret is a title, a value and notes
@@ -44,3 +43,4 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0034](0034-ready-made-automations-catalog.md): Ready-made automations ship as a catalog, enabled in one click and matched by name
 - [0035](0035-queued-messages-join-the-request.md): Messages queued into a waiting task join its request
 - [0037](0037-dead-code-tools.md): Dead code is cleaned with each language's established tool; Yulius's gate uses cargo-shear
+- [0038](0038-onboarding-starts-in-the-browser.md): Onboarding starts in the browser, never from the CLI
