@@ -88,7 +88,7 @@ a check up in a project's gate, and Yulius's own repository uses one.
 
 ## Evidence
 
-- Source analysis: the site's 27 pages were fetched; only "Further resources" names dead-code
+- Source analysis: the site's 20 pages were fetched; only "Further resources" names dead-code
   tools ("skylos, vulture and other"); the instrumentation-audit page lists dead code as an
   anti-pattern. Both tools were installed (vulture 2.16, skylos 4.48.0) and run on `scripts/`:
   nothing at 80 % confidence, and skylos reports no candidates.
