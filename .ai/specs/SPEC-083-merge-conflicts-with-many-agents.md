@@ -58,7 +58,7 @@ CI runs):
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| NUM-001 | `record_number` (an MCP tool of every task) gives the next free number of a directory's numbered files (`<prefix><digits><rest>`: `0066-x.md`, `SPEC-083-x.md`, `V12__x.sql`): past every such file on the integration branch (fetched first), in every live task's checkout (uncommitted files included; its pushed branch when it has no checkout) and every number given out before. It writes the number as the directory does (prefix, zero-padded width) and names the file to create. A `prefix` picks a series; without one, the directory's largest. Dates, timestamps (8 digits or more) and versions are no sequence numbers; a directory with no numbered file, or outside the repository, is refused. | `delivery::parallel_tasks_get_their_own_record_numbers`; `numbering::tests` (5) |
+| NUM-001 | `record_number` (an MCP tool of every task) gives the next free number of a directory's numbered files (`<prefix><digits><rest>`: `0066-x.md`, `SPEC-083-x.md`, `V12__x.sql`): past every such file on the integration branch (fetched first), in every live task's checkout (uncommitted files included; its pushed branch when it has no checkout) and every number given out before. It writes the number as the directory does (prefix, zero-padded width) and names the file to create. A `prefix` picks a series; without one, the directory's largest. Dates, timestamps (8 digits or more) and versions are no sequence numbers; a directory with no numbered file, or outside the repository, is refused. | `delivery::parallel_tasks_get_their_own_record_numbers`; `numbering::tests` (5); `mcp_text::tests::a_record_number_reads_as_its_next_step` |
 | NUM-002 | A number given out is reserved for the task in the store (`record_numbers`, one per sandbox, directory, prefix and number, schema version 20): reservations survive restarts and go with a deleted task; reserving is serialized. | `store::record_numbers_are_reserved_once_and_go_with_their_task`; `delivery::parallel_tasks_get_their_own_record_numbers` |
 | NUM-003 | A task asking again before a file uses its number gets the same number back; once the file exists, the next free one. | `delivery::parallel_tasks_get_their_own_record_numbers` |
 | NUM-004 | A task's spec number (SPEC-020 SPC-001) is given out the same way, so it is never a number another task reserved or a spec merged since its checkout was made. | `delivery::a_spec_number_is_never_one_another_task_reserved` |
@@ -137,4 +137,10 @@ ADR: [0066](../../docs/decisions/0066-parallel-tasks-stop-colliding-at-merge.md)
     moved `origin/quartio` was armed;
   - `the_changes_log_merges_by_union_in_any_repository`: the second update was put on hold for
     `docs/changes.md`.
-- **Tests.** See the requirement table; the commands and counts are in the pull request.
+- **Tests** (after merging dev with SPEC-086):
+  - `cargo nextest run -p yulius-domain -p yulius-store -p yulius-git -p yulius-app`: 543 passed;
+  - the `delivery`, `mcp_coordination`, `supervision`, `projects`, `manage_tools`,
+    `agent_hooks`, `task_ownership`, `skills_mcp`, `automations`, `cockpit` and `sessions`
+    integration files: 150 passed;
+  - `cargo clippy --workspace --all-targets --all-features -D warnings` and
+    `scripts/check_repository.py` clean.
