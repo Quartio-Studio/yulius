@@ -140,9 +140,10 @@ onboarding rather than by a job (#272).
   before the prompt change, with `infra-bootstrap misses ...` before the skill change, and with
   `missing "find \"$HOME\" -maxdepth 1 -name '.ci-proof.*' -mmin +360"` before the review fix;
   passed after each.
-- `scripts/dev ci` at 13f6f8c (later commits change only this spec): exit 0; nextest 1266 run,
-  1266 passed, 16 skipped; repository contracts and 38 Python tests OK; cargo-deny advisories,
-  bans, licenses and sources ok.
+- `scripts/dev ci` at 13f6f8c: exit 0, nextest 1266 passed. At aa59cad (after round 2's fix and
+  the merge of `dev`; later commits change only this spec): exit 0; nextest 1268 run, 1268 passed,
+  16 skipped; repository contracts and 38 Python tests OK; cargo-deny advisories, bans, licenses
+  and sources ok.
 - Merging `dev` after #328: `python3 scripts/check_repository.py` failed with
   "0040-personal-two-factor-guards-the-vault.md: shares decision number 0040 with
   0040-done-tasks-release-their-subscription.md"; after renumbering to 0042 it passed.
