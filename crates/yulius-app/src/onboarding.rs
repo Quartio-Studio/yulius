@@ -71,9 +71,9 @@ repository's test, lint and build commands until they work and record them in yu
 `[[ci.jobs]]` command exactly as written, from the repository root, until it passes. Yulius CI \
 gives the sandbox's jobs their own HOME and cache ($YULIUS_CI_CACHE), separate from yours: they \
 start empty and persist across runs, as does each job's checkout per CI lane with its ignored files \
-(build outputs, dependency directories); up to two runs at once share that HOME and cache, so a \
-job's installs there must tolerate a concurrent run; and the job's PATH lacks that home's \
-~/.cargo/bin and ~/.local/bin. So a job must install what it needs itself (as `scripts/bootstrap.py \
+(build outputs, dependency directories); by default up to two runs at once share that HOME and \
+cache, so a job's installs there must tolerate a concurrent run; and the job's PATH lacks that \
+home's ~/.cargo/bin and ~/.local/bin. So a job must install what it needs itself (as `scripts/bootstrap.py \
 --install-rustup` does) and never depend on anything an earlier run, your home or this worktree \
 left behind: such a job passes on the cache and fails on a fresh sandbox or after a cache prune. \
 Prove it: run each job command normally, then commit and run it once more from the root of a clean \
@@ -85,8 +85,9 @@ TERM=dumb NO_COLOR=1 CI=true GIT_TERMINAL_PROMPT=0 YULIUS_CI=1 sh -c '<command>'
 git worktree remove --force \"$d/repo\"; chmod -R u+w \"$d\"; rm -rf \"$d\"; echo \"exit $s\"`, \
 quoting the command as needed; for a matrix job add `YULIUS_CI_MATRIX=<value>` after `env -i`, \
 once per matrix value). Run the proof with a long timeout or in the background: if it is killed, \
-its cleanup never runs, so once no proof runs remove what it left (`chmod -R u+w \
-\"$HOME\"/.ci-proof.*; rm -rf \"$HOME\"/.ci-proof.*`) and run `git worktree prune`. A monorepo's jobs \
+its cleanup never runs, so remove what proofs started over six hours ago left (your home is shared \
+with other tasks' running proofs: `find \"$HOME\" -maxdepth 1 -name '.ci-proof.*' -mmin +360 \
+-exec chmod -R u+w {} \\; -exec rm -rf {} \\;`) and run `git worktree prune`. A monorepo's jobs \
 may run only its affected project's checks. End with a summary of what works and how it was \
 verified; a check that still cannot run is a problem to report there, never a reason to skip it \
 silently.";
@@ -1043,11 +1044,12 @@ mod tests {
                 "once per matrix value",
                 // #272: a killed proof never cleans up after itself.
                 "long timeout or in the background",
-                "rm -rf \"$HOME\"/.ci-proof.*",
+                // Only stale leftovers: the home is shared with other tasks' running proofs.
+                "find \"$HOME\" -maxdepth 1 -name '.ci-proof.*' -mmin +360",
                 "git worktree prune",
                 // #272 (#238): checkouts are per lane, the CI home and cache are shared.
                 "checkout per CI lane",
-                "up to two runs at once share",
+                "by default up to two runs at once share",
                 "tolerate a concurrent run",
                 // #272 (#299, #300): an apt-get in a job raced the other lane for the dpkg lock.
                 "belong to the sandbox: install them now, never in a CI job",
@@ -1074,9 +1076,10 @@ mod tests {
             "YULIUS_CI_MATRIX=<value>",
             "once per matrix value",
             "long timeout or in the background",
-            "rm -rf \"$HOME\"/.ci-proof.*",
+            "find \"$HOME\" -maxdepth 1 -name '.ci-proof.*' -mmin +360",
             "git worktree prune",
             "checkout per CI lane",
+            "default up to two runs at once share",
             "tolerate a concurrent run",
             "never in a CI job",
         ] {

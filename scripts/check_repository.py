@@ -170,7 +170,7 @@ def decision_errors(directory):
             continue
         number = match[1]
         if number in taken:
-            errors.append(f"{path}: decision number {number} is already taken by {taken[number].name}; take the next free number")
+            errors.append(f"{path}: shares decision number {number} with {taken[number].name}; the record merged later takes the next free number")
         else:
             taken[number] = path
         if not path.read_text().startswith(f"# {number}. "):

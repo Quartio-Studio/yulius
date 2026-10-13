@@ -51,9 +51,12 @@ onboarding rather than by a job (#272).
 - ONB-101: `ENVIRONMENT_SETUP` and infra-bootstrap step 2 say to add `YULIUS_CI_MATRIX=<value>` to
   the proof once per matrix value.
 - ONB-102: both say to run the proof with a long timeout or in the background, and how to recover
-  from an interrupted one: remove any leftover `~/.ci-proof.*` and run `git worktree prune`.
-- ONB-103: both say a job's checkout is per lane while up to two runs at once share the CI `HOME`
-  and cache, so a job's installs there must tolerate a concurrent run.
+  from an interrupted one: remove the `~/.ci-proof.*` left by proofs started over six hours ago
+  (`find "$HOME" -maxdepth 1 -name '.ci-proof.*' -mmin +360 ...`; the agent home is shared with
+  other tasks' running proofs) and run `git worktree prune`.
+- ONB-103: both say a job's checkout is per lane while by default up to two runs at once share the
+  CI `HOME` and cache, so a job's installs there must tolerate a concurrent run.
+  `docs/operations.md` says the same of `ci/jobs/<job>@<lane>`, `home` and `cache`.
 - ONB-104: both say system packages (`sudo apt-get`, a browser's system libraries) belong to the
   sandbox and are installed during onboarding, never in a CI job.
 - ONB-105: the `ci/exec.rs` module doc describes per-lane checkouts; SPEC-020 ONB-001 states the

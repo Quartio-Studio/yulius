@@ -47,9 +47,9 @@ example when it starts deploying for real), and record every change as a decisio
    and secrets come from the project's agent secrets, never inline. Yulius CI gives the jobs a
    `HOME` and a cache (`$YULIUS_CI_CACHE`) of their own, separate from the agent's: they start
    empty and persist across runs, as does each job's checkout per CI lane with its ignored files.
-   Up to two runs at once share that `HOME` and cache, so a job's installs there must tolerate a
-   concurrent run. A job installs what it needs itself and never depends on what an earlier run
-   left behind, or it passes on the cache and fails on a fresh machine. System packages (`sudo
+   By default up to two runs at once share that `HOME` and cache, so a job's installs there must
+   tolerate a concurrent run. A job installs what it needs itself and never depends on what an
+   earlier run left behind, or it passes on the cache and fails on a fresh machine. System packages (`sudo
    apt-get`, a browser's system libraries) belong to the sandbox: install them during onboarding,
    never in a CI job, where they race the other CI run for the dpkg lock; jobs see what the sandbox
    installed. Run the gate locally and show it passes, from the repository root both normally and,
@@ -66,8 +66,14 @@ example when it starts deploying for real), and record every change as a decisio
    ```
 
    Run it with a long timeout or in the background: if it is killed, its cleanup never runs, so
-   once no proof runs remove what it left (`chmod -R u+w "$HOME"/.ci-proof.*; rm -rf
-   "$HOME"/.ci-proof.*`) and run `git worktree prune`.
+   remove what proofs started over six hours ago left (the home is shared with other tasks'
+   running proofs) and run `git worktree prune`:
+
+   ```sh
+   find "$HOME" -maxdepth 1 -name '.ci-proof.*' -mmin +360 \
+     -exec chmod -R u+w {} \; -exec rm -rf {} \;
+   git worktree prune
+   ```
 
    Then delete `.github/workflows/` in the same pull request, so gates and merges rely only on
    Yulius CI results (`ci_status`). Merge gating needs no rulesets: Yulius enforces the gate at
