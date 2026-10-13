@@ -2136,7 +2136,7 @@ button.task-group-head:hover { color: var(--text); }
 .ss-mark-ok { color: var(--session-ok); }
 .ss-mark-err { color: var(--session-err); }
 .ss-prompt { padding: 2px 1ch; margin: 0 -1ch; border-radius: var(--radius-sm); background: var(--session-prompt-bg); }
-.ss-user .ss-prompt { padding-right: 16ch; }
+.ss-has-when .ss-prompt { padding-right: 16ch; }
 .ss-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .ss-code { margin: 0; padding: 4px 0 4px 1ch; border-left: 1px solid var(--session-border); color: var(--session-fg); font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 480px; overflow: auto; }
 .ss-text .ss-code { margin: 4px 0; }
@@ -2169,7 +2169,7 @@ button.task-group-head:hover { color: var(--text); }
   .ss-row-link { padding: 12px; }
   .ss-tui { padding: 12px; font-size: var(--fs-sm); line-height: var(--lh-sm); }
   .ss-web { width: 56px; height: 68px; margin: -12px -12px 8px 12px; } /* 2 px pixels */
-  .ss-user .ss-prompt { padding-right: 1ch; }
+  .ss-has-when .ss-prompt { padding-right: 1ch; }
   .ss-when { position: static; align-self: flex-end; padding: 0; }
   .ss-summary { margin-left: 0; }
 }

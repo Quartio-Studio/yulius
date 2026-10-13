@@ -105,7 +105,7 @@ test('a session reads as Claude Code’s TUI: prompts, messages, calls with resu
 
 test('a failed call is marked in the TUI’s error colour and says error', async ({ app, browser }) => {
   await app.open(mock('/s/studio/sessions/ses_imp_flaky'));
-  const failed = browser.locator('.ss-tui details.ss-tool.ss-tool-error > summary');
+  const failed = browser.locator('.ss-tui details.ss-tool.ss-tool-error > summary').filter({ hasText: 'npx playwright test login' });
   await expect(failed).toContainText(/⏺\s*Bash\(npx playwright test login\).*error/s);
   await expect(failed).toContainText(/⎿\s*Error: Timed out 5000ms/);
   // The marker and the output are in the error colour.
@@ -121,6 +121,20 @@ test('a failed call is marked in the TUI’s error colour and says error', async
   expect(output).toBe(error);
   // Many output lines fold to the first three and a count.
   await expect(browser.locator('.ss-tui details.ss-tool > summary').filter({ hasText: 'waitForTimeout in e2e' })).toContainText('… +2 lines');
+  // A subagent's entries are indented and named for assistive technology.
+  await expect(browser.locator('.ss-tui li.ss-sidechain')).toHaveCount(1);
+  await expect(browser.locator('.ss-tui li.ss-sidechain .sr-only').first()).toHaveText('Claude (subagent)');
+
+  // A failed edit says why, in the error colour, folded: nothing was updated (review round 1).
+  const failedEdit = browser.locator('.ss-tui details.ss-tool.ss-tool-error').filter({ hasText: 'Update(e2e/login.spec.ts)' });
+  await expect(failedEdit).toHaveCount(1);
+  await expect(failedEdit).not.toHaveAttribute('open', '');
+  await expect(failedEdit).toContainText(/⏺\s*Update\(e2e\/login\.spec\.ts\)\s*error/);
+  await expect(failedEdit).toContainText(/⎿\s*<tool_use_error>String to replace not found in file\./);
+  await expect(failedEdit).not.toContainText('Updated e2e/login.spec.ts');
+  // A deletion counts no added line.
+  await expect(browser.locator('.ss-tui details.ss-tool > summary').filter({ hasText: 'Update(e2e/cart.spec.ts)' })).toContainText('Updated e2e/cart.spec.ts with 0 additions and 1 removal');
+  await expect(browser.locator('.ss-tui .ss-diff[aria-label="Changes to e2e/cart.spec.ts"] .ss-add')).toHaveCount(0);
 });
 
 // The attached screenshot printed `<command-name>/goal</command-name>…` raw. The TUI prints a
@@ -143,6 +157,12 @@ test('recorded wrappers parse as the TUI prints them, also when cut short (unit,
       interrupted: metaLines('[Request interrupted by user for tool use]'),
       cut: metaLines('<local-command-stdout>a very long output that the server cut'),
       note: metaLines('A session-scoped Stop hook is now active.'),
+      // Review round 1: a tag mentioned in prose is prose; text around wrappers is kept as written.
+      mention: metaLines('Use <bash-input> to run things, or <system-reminder> for notes.'),
+      after: metaLines('<local-command-stdout>done</local-command-stdout>\nthen this'),
+      two: metaLines('<command-name>/a</command-name><command-args>x</command-args><command-name>/b</command-name><command-args>y</command-args>'),
+      cutClose: metaLines('<local-command-stdout>output</local-command-std'),
+      ansi: metaLines('<local-command-stdout>\u001b[1mTotal cost:\u001b[22m $0.42</local-command-stdout>'),
     };
   });
   expect(parsed.goal).toEqual([{ kind: 'command', text: '/goal Ship it' }]);
@@ -157,12 +177,22 @@ test('recorded wrappers parse as the TUI prints them, also when cut short (unit,
   expect(parsed.interrupted).toEqual([{ kind: 'err', text: 'Interrupted by user' }]);
   expect(parsed.cut).toEqual([{ kind: 'out', text: 'a very long output that the server cut' }]);
   expect(parsed.note).toEqual([{ kind: 'note', text: 'A session-scoped Stop hook is now active.' }]);
+  expect(parsed.mention).toEqual([{ kind: 'note', text: 'Use <bash-input> to run things, or <system-reminder> for notes.' }]);
+  expect(parsed.after).toEqual([{ kind: 'out', text: 'done' }, { kind: 'note', text: 'then this' }]);
+  expect(parsed.two).toEqual([{ kind: 'command', text: '/a x' }, { kind: 'command', text: '/b y' }]);
+  expect(parsed.cutClose).toEqual([{ kind: 'out', text: 'output' }]);
+  expect(parsed.ansi).toEqual([{ kind: 'out', text: 'Total cost: $0.42' }]);
 });
 
 test('a slash command, its output, a ! command and an interruption read as the TUI prints them', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/sessions/ses_task_4'));
   const transcript = screen.getByRole('list', 'Transcript');
   await expect(transcript).toContainText(/>\s*\/goal Payment webhook ships on green CI/);
+  // A typed command is the person's prompt, with its time.
+  const goal = browser.locator('.ss-tui .ss-entries > li').filter({ hasText: '/goal Payment webhook' });
+  await expect(goal.getByText('Prompt')).toHaveCount(1);
+  await expect(goal).toContainText(/ago/);
+  await expect(browser.locator('.ss-tui li.ss-system .sr-only')).toHaveText('System');
   await expect(transcript).toContainText(/⎿\s*Goal set: Payment webhook ships on green CI/);
   await expect(transcript).toContainText(/!\s*ls src\/webhooks/);
   await expect(transcript).toContainText(/⎿\s*stripe\.ts\s*retry\.ts/);

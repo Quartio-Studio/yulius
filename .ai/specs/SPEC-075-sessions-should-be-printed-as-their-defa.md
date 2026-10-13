@@ -52,8 +52,8 @@ read-only: a locked prompt box, nothing to type into.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| STU-001 | The transcript is one terminal well in the code typeface, printed as the TUI prints a session: a prompt as `>` and its text; Claude's text as `⏺` and its text; a tool call as `⏺ Name(summary)` with its result under `⎿` (the first lines and "… +N lines" when folded, all of it and the call's input when unfolded); an edit's diff shown unfolded under its call with `+`/`-` lines; thinking folded as `✻ Thinking…`; a failed call's marker in the error colour and the word "error" in its line; a subagent's entries indented under a rule. The list keeps its accessible name "Transcript", search targets (`?line=`) and paging. | e2e `sessions.e2e.ts` |
-| STU-002 | Recorded wrappers read as the TUI shows them: a slash command as `> /name args`; command output (stdout, stderr) under `⎿` (stderr in the error colour); a `!` shell input as `! command` with its output under `⎿`; "[Request interrupted…]" as `⎿ Interrupted by user`. System reminders, hook context and the caveat line are not shown. Another meta text is shown faint, as written. No raw `<command-…>` or `<local-command-…>` tag is shown. A wrapper cut short by the server's bound still parses. | e2e `sessions.e2e.ts` (the parser unit, in the page, and the rendered page) |
+| STU-001 | The transcript is one terminal well in the code typeface, printed as the TUI prints a session: a prompt as `>` and its text; Claude's text as `⏺` and its text; a tool call as `⏺ Name(summary)` with its result under `⎿` (the first lines and "… +N lines" when folded, all of it and the call's input when unfolded); an edit's diff shown unfolded under its call with `+`/`-` lines; thinking folded as `✻ Thinking…`; a failed call's marker and output in the error colour and the word "error" in its line (a failed edit folded on why it failed, never as "Updated …"); a subagent's entries indented under a rule. The list keeps its accessible name "Transcript", search targets (`?line=`) and paging. | e2e `sessions.e2e.ts` |
+| STU-002 | Recorded wrappers read as the TUI shows them: a slash command as `> /name args`; command output (stdout, stderr) under `⎿` (stderr in the error colour); a `!` shell input as `! command` with its output under `⎿`; "[Request interrupted…]" as `⎿ Interrupted by user`. System reminders, hook context and the caveat line are not shown. Only wrappers at the start of a meta text, separated by white space, are read; other text (a tag mentioned in prose, text after the wrappers) is shown faint, as written. No raw `<command-…>` or `<local-command-…>` tag is shown. A wrapper cut short by the server's bound still parses, also when the cut falls inside its closing tag. Colour codes in command output are dropped. | e2e `sessions.e2e.ts` (the parser unit, in the page, and the rendered page) |
 | STU-003 | The well is faded in both themes: its own tokens (`--session-*` in `tokens.css`), lower in contrast and saturation than the live terminal (`--term-*`, `--ansi-*`) yet at least 4.5:1 for every text on its background, and its colours less saturated than their `--ansi-*` counterparts. | e2e (computed colours and contrast), axe |
 | STU-004 | The page says it is a session, not a task, and read-only: the well ends with a locked prompt box that is not a control ("Read-only session · nothing can be sent") and the page has no text box, `contenteditable` or terminal. | e2e |
 | STU-005 | A spider web in pixel art hangs in the well's top-right corner, drawn as an inline SVG of square pixels, hidden from assistive technology, behind the text and never catching the pointer. | e2e |
@@ -109,7 +109,13 @@ read-only: a locked prompt box, nothing to type into.
 - Wrappers are parsed in the browser, not on the server: the transcript API stays the one the
   agents' `session_read` uses, the server keeps redacting the raw text, and only the page
   decides how a TUI prints them.
-- System reminders, hook context and the caveat line are hidden as the TUI hides them; they stay
-  searchable for agents (`sessions_search`), which read the transcript, not the page.
+- System reminders, hook context and the caveat line are hidden as the TUI hides them. They stay
+  in the transcript agents read with `session_read`; like every meta text, they are not in the
+  search index (`chunk_of`).
+- Review round 1 (fresh session, `om-code-review`): a failed edit read "Updated …" with its diff
+  unfolded; it now shows its error, folded. The wrapper parser read tags anywhere in a meta text,
+  so a tag mentioned in prose became a fake `!` line; it now reads only leading wrappers. A cut
+  inside a closing tag, a deletion's phantom `+` line, two commands in one text and ANSI codes in
+  command output are handled; typed commands carry their time; subagent entries are tested.
 - The spider web is drawn by code from a small grid of square pixels in an inline SVG, so it
   needs no image file and takes the palette's colours in both themes.

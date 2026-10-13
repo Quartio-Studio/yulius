@@ -17,7 +17,7 @@ const KIND_OPTIONS = [
   { value: 'task', label: 'Tasks', icon: 'terminal' },
   { value: 'imported', label: 'Imported', icon: 'upload' },
 ];
-const ROLE_LABEL = { user: 'Prompt', assistant: 'Claude', tool: 'Tool', summary: 'Summary' };
+const ROLE_LABEL = { user: 'Prompt', assistant: 'Claude', tool: 'Tool', summary: 'Summary', system: 'System' };
 const PAGE = 200;
 
 const sessionsPath = (sandbox) => `/s/${encodeURIComponent(sandbox.slug)}/sessions`;
@@ -183,13 +183,13 @@ const linesOf = (text) => String(text || '').replace(/\n+$/, '').split('\n');
 /** The TUI's gutter mark (`>`, `⏺`, `⎿`, `✻`), decoration only. */
 const mark = (glyph, kind) => h('span', { class: ['ss-mark', kind && `ss-mark-${kind}`], 'aria-hidden': 'true' }, glyph);
 
-/** A line of the TUI: its mark in the gutter, then the content (spans, so it may sit in a summary). */
-const tuiLine = (glyph, content, { kind, className } = {}) => h('span', { class: ['ss-line', ...[className].flat(Infinity)] }, mark(glyph, kind), h('span', { class: 'ss-line-body' }, content));
+/** A line of the TUI: its mark in the gutter, then the content; spans so it may sit in a summary, divs (`block`) around block content. */
+const tuiLine = (glyph, content, { kind, className, block = false } = {}) => h(block ? 'div' : 'span', { class: ['ss-line', ...[className].flat(Infinity)] }, mark(glyph, kind), h(block ? 'div' : 'span', { class: 'ss-line-body' }, content));
 
 /** A hunk as context, removed and added lines: the lines both sides share at the start and the end are context. */
 function hunkLines(hunk) {
   const before = hunk.old ? linesOf(hunk.old) : [];
-  const after = linesOf(hunk.new);
+  const after = hunk.new ? linesOf(hunk.new) : [];
   let head = 0;
   while (head < before.length && head < after.length && before[head] === after[head]) head += 1;
   let tail = 0;
@@ -216,7 +216,7 @@ function diffView(diff) {
 
 /** What the TUI prints under a folded call's `⎿`: a summary of the edit or read, else the first lines of the result. */
 export function callPreview(call, result) {
-  if (call.diff) {
+  if (call.diff && !(result && result.is_error)) {
     let added = 0;
     let removed = 0;
     for (const hunk of call.diff.hunks) {
@@ -233,45 +233,60 @@ export function callPreview(call, result) {
   return lines.length > FOLD_LINES ? [...lines.slice(0, FOLD_LINES), `… +${plural(lines.length - FOLD_LINES, 'line')}`] : lines;
 }
 
-// Claude Code's wrappers (crates/yulius-app/src/transcripts.rs META_PREFIXES). A wrapper the server
-// cut short has no closing tag: it runs to the end of the text.
-const WRAPPER = /<(command-name|command-message|command-args|local-command-stdout|local-command-stderr|bash-input|bash-stdout|bash-stderr|system-reminder|user-prompt-submit-hook)>([\s\S]*?)(?:<\/\1>|$)/g;
+// Claude Code's wrappers (crates/yulius-app/src/transcripts.rs META_PREFIXES), recorded at the start
+// of a meta text and only separated by white space. A wrapper the server cut short runs to the end.
+const WRAPPER_TAGS = ['command-name', 'command-message', 'command-args', 'local-command-stdout', 'local-command-stderr', 'bash-input', 'bash-stdout', 'bash-stderr', 'system-reminder', 'user-prompt-submit-hook'];
+const WRAPPER_OPEN = new RegExp(`^<(${WRAPPER_TAGS.join('|')})>`);
 const HIDDEN_TAGS = new Set(['system-reminder', 'user-prompt-submit-hook', 'command-message']);
+const ANSI = /\u001b\[[0-9;?]*[A-Za-z]/g; // eslint-disable-line no-control-regex
 const OUT_TAGS = { 'local-command-stdout': 'out', 'bash-stdout': 'out', 'local-command-stderr': 'err', 'bash-stderr': 'err' };
+
+/** `value` without the start of `close` that a cut left at its end (`…</local-command-std`). */
+function withoutCutClose(value, close) {
+  for (let length = close.length - 1; length > 1; length -= 1) {
+    if (value.endsWith(close.slice(0, length))) return value.slice(0, -length);
+  }
+  return value;
+}
 
 /**
  * A recorded meta text as the TUI prints it: `{ kind, text }` lines where kind is `command`
  * (`/name args`), `shell` (a `!` command), `out` or `err` (output under ⎿) or `note` (other text,
- * shown faint). Reminders, hook context and the caveat line are not printed: `[]`.
+ * shown faint as written). Reminders, hook context and the caveat line are not printed: `[]`.
+ * Only wrappers at the start are read; a tag mentioned in prose stays prose.
  */
 export function metaLines(text) {
-  const raw = String(text || '');
+  const raw = String(text || '').trim();
   const found = [];
   let command = null;
-  let rest = '';
-  let last = 0;
-  for (const match of raw.matchAll(WRAPPER)) {
-    rest += raw.slice(last, match.index);
-    last = match.index + match[0].length;
-    const [, tag, inner] = match;
-    const value = inner.trim();
-    if (tag === 'command-name' || tag === 'command-args') {
-      if (!command) found.push(command = { kind: 'command', name: '', args: '' });
-      command[tag === 'command-name' ? 'name' : 'args'] = value;
-    } else if (tag === 'bash-input') {
-      if (value) found.push({ kind: 'shell', text: value });
-    } else if (OUT_TAGS[tag]) {
-      if (value) found.push({ kind: OUT_TAGS[tag], text: value });
-    } else if (!HIDDEN_TAGS.has(tag)) {
-      found.push({ kind: 'note', text: value });
-    }
+  let rest = raw;
+  for (let open = rest.match(WRAPPER_OPEN); open; open = rest.match(WRAPPER_OPEN)) {
+    const tag = open[1];
+    const close = `</${tag}>`;
+    const end = rest.indexOf(close, open[0].length);
+    // Command output keeps the CLI's colour codes; the page prints it plain.
+    const value = (end < 0 ? withoutCutClose(rest.slice(open[0].length), close) : rest.slice(open[0].length, end)).replace(ANSI, '').trim();
+    rest = end < 0 ? '' : rest.slice(end + close.length).trimStart();
+    if (tag === 'command-name' || (tag === 'command-args' && (!command || command.args))) found.push(command = { kind: 'command', name: '', args: '' });
+    if (tag === 'command-name') command.name = value;
+    else if (tag === 'command-args') command.args = value;
+    else if (tag === 'bash-input') found.push({ kind: 'shell', text: value });
+    else if (OUT_TAGS[tag]) found.push({ kind: OUT_TAGS[tag], text: value });
+    else if (!HIDDEN_TAGS.has(tag)) found.push({ kind: 'note', text: value });
   }
-  rest = (rest + raw.slice(last)).trim();
-  if (/^\[Request interrupted/.test(rest)) found.push({ kind: 'err', text: 'Interrupted by user' });
-  else if (rest && !rest.startsWith('Caveat: The messages below were generated')) found.push({ kind: 'note', text: rest });
+  if (rest === raw && /^\[Request interrupted/.test(rest)) found.push({ kind: 'err', text: 'Interrupted by user' });
+  else if (rest && !(rest === raw && rest.startsWith('Caveat: The messages below were generated'))) found.push({ kind: 'note', text: rest });
   return found.map((line) => (line.kind === 'command'
     ? { kind: 'command', text: [line.name, line.args].filter(Boolean).join(' ') }
     : line)).filter((line) => line.text);
+}
+
+const parsedMeta = new WeakMap(); // meta block → its lines, parsed once
+
+/** `metaLines` of a meta block. */
+function metaOf(item) {
+  if (!parsedMeta.has(item)) parsedMeta.set(item, metaLines(item.text));
+  return parsedMeta.get(item);
 }
 
 const outLines = (lines, className) => tuiLine('⎿', h('span', { class: 'ss-out-text' }, lines.join('\n')), { kind: 'out', className: ['ss-out', className] });
@@ -279,16 +294,17 @@ const outLines = (lines, className) => tuiLine('⎿', h('span', { class: 'ss-out
 function toolCall(item, result) {
   const failed = Boolean(result && result.is_error);
   const preview = callPreview(item, result);
-  return h('details', { class: ['ss-fold', 'ss-tool', failed && 'ss-tool-error'], open: Boolean(item.diff) },
+  // An edit shows its lines unfolded; a failed one stays folded on why it failed (nothing changed).
+  const diff = item.diff && !failed ? item.diff : null;
+  return h('details', { class: ['ss-fold', 'ss-tool', failed && 'ss-tool-error'], open: Boolean(diff) },
     h('summary', null,
       tuiLine('⏺', h('span', { class: 'ss-call' },
         h('span', { class: 'ss-tool-name' }, TOOL_LABEL[item.name] || item.name),
         item.summary ? ['(', h('span', { class: 'ss-tool-summary' }, item.summary), ')'] : null,
         failed ? h('span', { class: 'ss-tool-flag' }, ' error') : null), { kind: failed ? 'err' : result ? 'ok' : 'call' }),
-      preview.length ? outLines(preview, ['ss-preview', !item.diff && 'ss-preview-folded', failed && 'ss-out-err']) : null),
+      preview.length ? outLines(preview, ['ss-preview', !diff && 'ss-preview-folded', failed && 'ss-out-err']) : null),
     item.diff ? diffView(item.diff) : h('pre', { class: 'ss-code ss-input' }, h('code', null, item.input)),
-    result && !item.diff ? outLines(linesOf(result.text || '(No content)'), ['ss-result', failed && 'ss-out-err']) : null,
-    result && item.diff ? outLines(linesOf(result.text || '(No content)'), 'ss-result') : null,
+    result ? outLines(linesOf(result.text || '(No content)'), ['ss-result', failed && 'ss-out-err']) : null,
     result && result.truncated ? h('p', { class: 'ss-dim xs' }, 'Cut here: the result is longer.') : null);
 }
 
@@ -296,9 +312,9 @@ function block(item, results, role) {
   switch (item.type) {
     case 'text':
       return h('div', { class: 'ss-block' },
-        role === 'user' ? tuiLine('>', richText(item.text), { kind: 'prompt', className: 'ss-prompt' })
-          : role === 'summary' ? tuiLine('※', richText(item.text), { kind: 'dim' })
-            : tuiLine('⏺', richText(item.text), { kind: 'say' }),
+        role === 'user' ? tuiLine('>', richText(item.text), { kind: 'prompt', className: 'ss-prompt', block: true })
+          : role === 'summary' ? tuiLine('※', richText(item.text), { kind: 'dim', block: true })
+            : tuiLine('⏺', richText(item.text), { kind: 'say', block: true }),
         item.truncated ? h('p', { class: 'ss-dim xs' }, 'Cut here: the message is longer.') : null);
     case 'thinking':
       return h('details', { class: 'ss-fold ss-thinking' }, h('summary', null, tuiLine('✻', 'Thinking…', { kind: 'think' })), richText(item.text, 'ss-text ss-dim'));
@@ -311,7 +327,7 @@ function block(item, results, role) {
     case 'image':
       return tuiLine('⎿', h('span', { class: 'ss-dim' }, '[Image] (not kept)'), { kind: 'out' });
     case 'meta': {
-      const lines = metaLines(item.text).map((line) => {
+      const lines = metaOf(item).map((line) => {
         if (line.kind === 'command') return tuiLine('>', line.text, { kind: 'prompt', className: 'ss-prompt' });
         if (line.kind === 'shell') return tuiLine('!', line.text, { kind: 'shell', className: 'ss-prompt' });
         if (line.kind === 'out' || line.kind === 'err') return outLines(linesOf(line.text), line.kind === 'err' && 'ss-out-err');
@@ -463,12 +479,14 @@ export function mountSessionView(ctx, sandbox, id, route) {
     const role = item.role === 'user' && item.blocks.every((b) => b.type === 'tool_result' || b.type === 'meta') ? 'tool' : item.role;
     const shown = item.blocks.map((b) => block(b, results, role)).filter(Boolean);
     if (!shown.length) return null;
-    const typed = item.blocks.some((b) => b.type === 'meta' && metaLines(b.text).some((line) => line.kind === 'command' || line.kind === 'shell'));
+    const typed = item.blocks.some((b) => b.type === 'meta' && metaOf(b).some((line) => line.kind === 'command' || line.kind === 'shell'));
     const label = role === 'user' || typed ? 'Prompt' : role === 'assistant' ? 'Claude' : ROLE_LABEL[role] || role;
-    return h('li', { class: ['ss-entry', `ss-${role}`, item.sidechain && 'ss-sidechain', item.line === target && 'ss-target'], id: `line-${item.line}`, dataset: { line: String(item.line) } },
+    // A prompt (typed or a command) carries its time, as turns start there.
+    const when = label === 'Prompt' && item.at;
+    return h('li', { class: ['ss-entry', `ss-${role}`, item.sidechain && 'ss-sidechain', item.line === target && 'ss-target', when && 'ss-has-when'], id: `line-${item.line}`, dataset: { line: String(item.line) } },
       h('span', { class: 'sr-only' }, item.sidechain ? `${label} (subagent)` : label),
       shown,
-      role === 'user' && item.at ? h('span', { class: 'ss-when ss-dim xs', title: dateTime(item.at) }, relLong(item.at)) : null);
+      when ? h('span', { class: 'ss-when ss-dim xs', title: dateTime(item.at) }, relLong(item.at)) : null);
   }
 
   function append(entries) {

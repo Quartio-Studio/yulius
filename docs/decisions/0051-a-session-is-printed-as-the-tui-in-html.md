@@ -45,5 +45,8 @@ palette, and every page is checked with axe (WCAG 2.x AA).
 ## Consequences
 
 - The transcript API, its redaction and agents' reads are unchanged. The page alone decides the look.
-- A wrapper that Claude Code adds later shows faint, as written, until `metaLines` learns it.
-- Hidden reminders stay searchable for agents, but people do not see them on the page.
+- A wrapper that Claude Code adds later shows faint, as written, until `metaLines` learns it. Only
+  wrappers at the start of a meta text are read, so a tag mentioned in prose stays prose.
+- A failed edit shows why it failed, folded, and not its diff as if it had been applied.
+- Hidden reminders stay in the transcript agents read with `session_read` (meta texts are not in
+  the search index), but people do not see them on the page.

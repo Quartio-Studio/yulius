@@ -2407,9 +2407,13 @@ function sessionDocs(db) {
     entry(0, 'user', [text('Why is the e2e login test flaky on CI?')], { at: iso(5 * DAY) }),
     entry(1, 'assistant', [call('b1', 'Bash', 'npx playwright test login', { command: 'npx playwright test login' })]),
     entry(2, 'user', [result('b1', 'Error: Timed out 5000ms waiting for expect(locator).toBeVisible()\n  at e2e/login.spec.ts:15', true)]),
-    entry(3, 'assistant', [call('g1', 'Grep', 'waitForTimeout in e2e', { pattern: 'waitForTimeout', path: 'e2e' })]),
+    entry(3, 'assistant', [call('g1', 'Grep', 'waitForTimeout in e2e', { pattern: 'waitForTimeout', path: 'e2e' })], { sidechain: true }),
     entry(4, 'user', [result('g1', 'e2e/login.spec.ts:14:  await page.waitForTimeout(500);\ne2e/signup.spec.ts:9:  await page.waitForTimeout(300);\ne2e/cart.spec.ts:21:  await page.waitForTimeout(250);\ne2e/admin.spec.ts:7:  await page.waitForTimeout(500);\ne2e/search.spec.ts:30:  await page.waitForTimeout(100);')]),
-    entry(5, 'assistant', [text('The test sleeps 500 ms instead of waiting for the session cookie; on a slow runner the redirect is not done yet. Waiting for the dashboard heading fixes it.')]),
+    entry(5, 'assistant', [call('e1', 'Edit', 'e2e/login.spec.ts', { file_path: 'e2e/login.spec.ts' }, { path: 'e2e/login.spec.ts', hunks: [{ old: '  await page.waitForTimeout(5000);', new: '  await expect(page.getByRole(\'heading\')).toBeVisible();' }] })]),
+    entry(6, 'user', [result('e1', '<tool_use_error>String to replace not found in file.\nString:   await page.waitForTimeout(5000);</tool_use_error>', true)]),
+    entry(7, 'assistant', [call('e2', 'Edit', 'e2e/cart.spec.ts', { file_path: 'e2e/cart.spec.ts' }, { path: 'e2e/cart.spec.ts', hunks: [{ old: '  await page.waitForTimeout(250);', new: '' }] })]),
+    entry(8, 'user', [result('e2', 'The file e2e/cart.spec.ts has been updated.')]),
+    entry(9, 'assistant', [text('The test sleeps 500 ms instead of waiting for the session cookie; on a slow runner the redirect is not done yet. Waiting for the dashboard heading fixes it.')]),
   ];
   // Claude Code's wrappers as recorded (a slash command, its output, a `!` command, reminders).
   const meta = (t) => ({ type: 'meta', text: t });
