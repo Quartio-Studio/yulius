@@ -257,7 +257,7 @@ fn open_attached(
 }
 
 /// An attached file being sent: read in chunks of at most [`ATTACHMENT_CHUNK`] while it holds a
-/// read slot. Left unread for its idle bound, it gives the slot back and fails.
+/// read slot. Left unread for its idle bound, it gives the slot back, closes the file and fails.
 #[derive(Debug)]
 pub struct AttachedFile {
     /// File name.
@@ -266,15 +266,17 @@ pub struct AttachedFile {
     pub content_type: Option<&'static str>,
     /// Its length when it was opened: exactly this many bytes are sent.
     pub len: u64,
-    file: tokio::fs::File,
     remaining: u64,
     held: Arc<Mutex<Held>>,
+    watchdog: tokio::task::AbortHandle,
 }
 
-/// The read slot of an [`AttachedFile`] and when it was last read.
+/// The read slot and the open file of an [`AttachedFile`], and when it was last read. The file is
+/// out of here only while a chunk is read.
 #[derive(Debug)]
 struct Held {
     slot: Option<OwnedSemaphorePermit>,
+    file: Option<tokio::fs::File>,
     last: Instant,
 }
 
@@ -287,16 +289,17 @@ impl AttachedFile {
     ) -> Self {
         let held = Arc::new(Mutex::new(Held {
             slot: Some(slot),
+            file: Some(file),
             last: Instant::now(),
         }));
-        tokio::spawn(release_when_idle(Arc::downgrade(&held), idle));
+        let watchdog = tokio::spawn(release_when_idle(Arc::downgrade(&held), idle)).abort_handle();
         Self {
             name,
             content_type,
             len,
-            file,
             remaining: len,
             held,
+            watchdog,
         }
     }
 
@@ -305,17 +308,17 @@ impl AttachedFile {
     ///
     /// # Errors
     /// Reading fails, the file ends before its length, or it was left unread for its idle bound
-    /// (its read slot is given back then).
+    /// (its read slot was given back and the file closed then).
     pub async fn next_chunk(&mut self) -> std::io::Result<Option<Vec<u8>>> {
         if self.remaining == 0 {
             return Ok(None);
         }
-        self.touch()?;
+        let mut file = self.lock().file.take().ok_or_else(left_unread)?;
         let want = usize::try_from(self.remaining)
             .unwrap_or(usize::MAX)
             .min(ATTACHMENT_CHUNK);
         let mut chunk = vec![0; want];
-        let read = self.file.read(&mut chunk).await?;
+        let read = file.read(&mut chunk).await?;
         if read == 0 {
             return Err(std::io::ErrorKind::UnexpectedEof.into());
         }
@@ -323,25 +326,33 @@ impl AttachedFile {
         self.remaining = self
             .remaining
             .saturating_sub(u64::try_from(read).unwrap_or(u64::MAX));
-        self.touch()?;
+        let mut held = self.lock();
+        held.file = Some(file);
+        held.last = Instant::now();
         Ok(Some(chunk))
     }
 
-    /// Marks the file as read now; fails once its slot was given back.
-    fn touch(&self) -> std::io::Result<()> {
-        let mut held = self.held.lock().unwrap_or_else(PoisonError::into_inner);
-        if held.slot.is_none() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "the attached file was left unread too long",
-            ));
-        }
-        held.last = Instant::now();
-        Ok(())
+    fn lock(&self) -> std::sync::MutexGuard<'_, Held> {
+        self.held.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
-/// Gives the read slot back once the file is left unread for `idle`; ends with the file.
+impl Drop for AttachedFile {
+    fn drop(&mut self) {
+        self.watchdog.abort();
+    }
+}
+
+/// The error of a file left unread past its idle bound.
+fn left_unread() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "the attached file was left unread too long",
+    )
+}
+
+/// Gives the read slot back and closes the file once it is left unread for `idle`; ends with the
+/// file.
 async fn release_when_idle(held: Weak<Mutex<Held>>, idle: Duration) {
     loop {
         let deadline = {
@@ -350,12 +361,17 @@ async fn release_when_idle(held: Weak<Mutex<Held>>, idle: Duration) {
             if held.slot.is_none() {
                 return;
             }
-            let deadline = held.last + idle;
-            if Instant::now() >= deadline {
+            let now = Instant::now();
+            if held.file.is_none() {
+                // A chunk is being read (the file is out): not idle; look again later.
+                now + idle
+            } else if now >= held.last + idle {
                 held.slot = None;
+                held.file = None;
                 return;
+            } else {
+                held.last + idle
             }
-            deadline
         };
         tokio::time::sleep_until(deadline).await;
     }
@@ -455,6 +471,11 @@ mod tests {
             let slots = Arc::clone(&slots);
             async move { read_slot(&slots, ATTACHMENT_READ_WAIT).await }
         });
+        // It waits while every slot is taken, rather than failing at once.
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!waiting.is_finished(), "the read did not wait for a slot");
         drop(taken);
         assert!(waiting.await?.is_ok());
         Ok(())
@@ -491,6 +512,13 @@ mod tests {
         let mut unread = AttachedFile::new(("a.png".into(), None), open()?, slot, idle);
         let freed = tokio::time::timeout(Duration::from_secs(10), slots.acquire()).await??;
         drop(freed);
+        let closed = unread
+            .held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .file
+            .is_none();
+        assert!(closed, "the file stays open after its slot was given back");
         let failed = unread.next_chunk().await;
         assert!(
             failed.is_err_and(|e| e.kind() == std::io::ErrorKind::TimedOut),

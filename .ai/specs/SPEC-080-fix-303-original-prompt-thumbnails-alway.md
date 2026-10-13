@@ -38,7 +38,7 @@ Review round 2 of SPEC-043 left these as #303:
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | OPR-005 | Reading a prompt's attachment does not take an upload slot. Reads have their own bound (`MAX_CONCURRENT_ATTACHMENT_READS`, 16) and a request waits for a read slot up to `ATTACHMENT_READ_WAIT` (30 s) before it fails with 429 `capacity`. A prompt with 12 images is served whole while every upload slot is taken. | `task_prompt.rs` (integration) |
-| OPR-006 | The attachment is streamed in chunks of at most `ATTACHMENT_CHUNK` (64 KiB), with its `Content-Length`, at most the length checked when it was opened, while the read slot is held. A response nobody reads for `ATTACHMENT_IDLE` (60 s) gives its slot back and ends with an error. | unit and integration tests |
+| OPR-006 | The attachment is streamed in chunks of at most `ATTACHMENT_CHUNK` (64 KiB), with its `Content-Length`, exactly the length checked when it was opened (a file that shrank breaks the response off), while the read slot is held. A response nobody reads for `ATTACHMENT_IDLE` (60 s) gives its slot back and closes its file; it fails at the client's next read. | unit and integration tests |
 | OPR-007 | On Linux, a file whose `/proc/self/fd` link cannot be read is refused (404). Other platforms keep serving it, as ADR-0033 records. | unit test with an injected reader |
 | OPR-008 | `task_prompt.rs` does its file system work off the async runtime (`spawn_blocking`). | review |
 | OPR-009 | The mock serves a prompt's file only from the task's own attachment folders (its creator's drafts, its terminal attachments), named directly, without `..`. | e2e `original-prompt.e2e.ts` |
@@ -65,7 +65,8 @@ Review round 2 of SPEC-043 left these as #303:
 - AC-4: on Linux, `open_attached` with a reader that fails returns nothing; with a reader that
   gives the expected path it returns the file, with another path nothing.
 - AC-5: in the mock, a prompt file in another user's drafts or reached with `..` is "No longer on
-  the server"; a prompt `---\ntitle: x\n---\nBody` shows its `---` lines as text, not properties.
+  the server"; a prompt `---\ntitle: x\n---\nBody` shows `title: x` as text between two dividers,
+  not as properties.
 - `scripts/dev ci` and the e2e suite pass.
 
 ## Test plan
@@ -81,11 +82,11 @@ Review round 2 of SPEC-043 left these as #303:
 - Its own bound with a short wait, not a shared one and not one image after another in the
   dialog: reads and uploads stop starving each other, the dialog stays parallel (the browser
   limits connections per host anyway), and waiting a little absorbs a burst of thumbnails that
-  failing at once turned into broken images. 16 slots of 64 KiB chunks bound the memory of all
-  reads to about 1 MiB, against 8 × 25 MiB before.
+  failing at once turned into broken images. With 64 KiB chunks a response holds about what
+  hyper buffers ahead of the client (about 400 KiB): about 7 MiB for 16, against 8 × 25 MiB.
 - The slot is held while the body is sent, so the bound counts open files and responses in
   flight. A client that stops reading would hold it for good; an idle bound (as uploads have)
-  gives it back and ends that response.
+  gives it back and closes the file.
 - `/proc/self/fd` is required on Linux only: it is where containment exists and where `/proc`
   is always mounted for Yulius; elsewhere there is no such link, and ADR-0033 already accepts the
   race there. The reader is injected so the refusal is tested without breaking `/proc`.
@@ -107,6 +108,13 @@ Review round 2 of SPEC-043 left these as #303:
 - Red first: e2e `original-prompt.e2e.ts` "a prompt starting with --- is text…" fails with the old
   web assets (front matter shown as properties) and with the old mock alone (another user's
   draft and `..` served, the task's terminal folder not); passes after.
+- Review round 1 (fresh read-only session): APPROVE at 1ec6bb4, no blockers or majors. Minors
+  fixed: the idle watchdog now also closes the file (test asserts it) and is aborted when the
+  file is dropped; the memory and "breaks off" wording corrected (hyper buffers about 400 KiB
+  per response); `a_read_waits_for_a_slot_within_its_bound` now asserts the read is still waiting
+  before the slot frees (red with a non-waiting `try_acquire_owned`); the e2e adds an owned-folder
+  path that is `..` itself (red without the mock's component check). Nits: AC-5 wording, one
+  shared `touchTask` e2e helper.
 - `scripts/dev ci` (dev merged, up to date at 34815b5): exit 0; nextest 1433 run, 1433 passed,
   16 skipped; check, fmt, clippy, doctests, deny, machete, doc green.
 - e2e full suite: 271 passed, 1 skipped, 1 failed: `archive.e2e.ts` "the keyboard stays on its

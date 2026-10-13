@@ -9,8 +9,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - The original prompt's thumbnails always load (SPEC-080, ADR-0064, task #63; #303). Reading a
   prompt's attached file no longer takes an upload slot: reads have their own bound of 16 and wait
   up to 30 s for a slot, so a prompt with many images, or one opened while uploads run, shows every
-  thumbnail. The file is streamed in 64 KiB chunks under its slot, which a stalled reader gives
-  back after 60 s. On Linux a file whose `/proc/self/fd` link cannot be read is refused. A prompt
+  thumbnail. The file is streamed in 64 KiB chunks under its slot; a stalled reader gives the
+  slot back and its file is closed after 60 s. On Linux a file whose `/proc/self/fd` link cannot be read is refused. A prompt
   starting with `---` shows as text, not as properties, and the mock serves only the task's own
   attachment folders.
 - An idle task's background work and its goal verdict decide its status (SPEC-079, ADR-0063, task

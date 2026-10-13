@@ -1,6 +1,6 @@
-import { test, type Browser } from '@e2e-dev/web';
+import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock, mockReady } from './support.ts';
+import { axeViolations, failOnPageErrors, mock, mockReady, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -50,24 +50,21 @@ test('the sidebar menu opens it too, and a failed load says why', async ({ app, 
   await expect(dialog).toHaveText(/The mock server failed on purpose/);
 });
 
-/** Changes a mock task as the server would announce it. */
-const touchTask = (browser: Browser, number: number, changes: Record<string, unknown>) =>
-  browser.evaluate(([n, c]) => (window as unknown as WithMock).__yuliusMock.touchTask('sb_studio', n, c), [number, changes] as const);
-type WithMock = { __yuliusMock: { touchTask: (sandbox: string, number: number, changes: unknown) => void } };
-
 // #303: a prompt is shown as written, and only the task's own attachment folders are served.
 test('a prompt starting with --- is text, and files outside the task’s folders are not served', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
   await mockReady(browser);
   const attachments = '/srv/yulius/sandboxes/sb_studio/attachments';
-  await touchTask(browser, 12, {
+  await touchTask(browser, 'sb_studio', 12, {
     prompt: [
       '---', 'title: not properties', '---', 'Body of the prompt', '',
       `@${attachments}/drafts/usr_mkarp/own.png`,
       `@${attachments}/tasks/tsk_studio_12/dropped.png`,
       `@${attachments}/drafts/usr_other/theirs.png`,
       `@${attachments}/drafts/usr_mkarp/../usr_other/climb.png`,
+      // In an owned folder by name, but `..` itself.
+      `@${attachments}/drafts/usr_mkarp/..`,
       `@${attachments}/tasks/tsk_studio_3/other-task.png`,
     ].join('\n'),
   });
@@ -85,4 +82,5 @@ test('a prompt starting with --- is text, and files outside the task’s folders
   for (const name of ['theirs.png', 'climb.png', 'other-task.png']) {
     await expect(files.getByRole('listitem').filter({ hasText: name })).toHaveText(/No longer on the server/);
   }
+  await expect(files.getByRole('listitem').filter({ hasText: 'No longer on the server' })).toHaveCount(4);
 });

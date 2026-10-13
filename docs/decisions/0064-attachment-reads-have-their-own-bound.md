@@ -22,7 +22,7 @@ folder swapped for a link between the checks and the open.
   before it answers 429 `capacity`; uploads keep their own bound of 8.
 - The file is streamed in chunks of at most 64 KiB, exactly the length checked when it was opened
   (`Content-Length`), while its read slot is held. A response left unread for 60 s (the uploads'
-  idle bound) gives its slot back and breaks off.
+  idle bound) gives its slot back and closes its file; it breaks off at the client's next read.
 - On Linux an opened file whose `/proc/self/fd` link cannot be read is refused (404). Elsewhere
   there is no such link, and serving it stays as ADR-0033 records.
 - The opening and the checks on disk run off the async runtime.
@@ -35,13 +35,15 @@ folder swapped for a link between the checks and the open.
   long upload would hold up thumbnails.
 - Reading the whole file under the slot, then sending: memory per response up to the upload
   limit (25 MiB), 8 or 16 times over.
-- Releasing the slot after the open and streaming without it: responses in flight, and their open
-  files, would be unbounded.
+- Releasing the slot after the open and streaming without it: open files of responses in flight
+  would be unbounded.
 
 ## Consequences
 
 - Thumbnails load together and wait briefly when many dialogs open at once; a 429 now means 16
   reads held their slots for 30 s.
-- All attached-file responses in flight hold at most 16 × 64 KiB of file data.
-- A client that stops reading holds a slot for at most 60 s.
+- A response holds what the HTTP layer buffers ahead of the client (hyper's write buffer, about
+  400 KiB) and one 64 KiB chunk: about 7 MiB for 16 responses, against up to 8 × 25 MiB before.
+- A client that stops reading holds a slot and an open file for at most 60 s; what the HTTP layer
+  already buffered stays until the client disconnects.
 - A Linux host without `/proc` mounted serves no attached file.

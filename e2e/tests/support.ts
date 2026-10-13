@@ -79,3 +79,9 @@ export function axeViolations(browser: Browser): Promise<string[]> {
     );
   });
 }
+
+/** Changes a mock task as the server would announce it (`__yuliusMock.touchTask`). */
+export function touchTask(browser: Browser, sandbox: string, number: number, changes: Record<string, unknown>): Promise<void> {
+  type Touching = { __yuliusMock: { touchTask: (sandbox: string, number: number, changes: unknown) => void } };
+  return browser.evaluate(([s, n, c]) => (window as unknown as Touching).__yuliusMock.touchTask(s, n, c), [sandbox, number, changes] as const);
+}
