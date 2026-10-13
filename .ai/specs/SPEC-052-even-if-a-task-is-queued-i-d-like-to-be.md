@@ -87,7 +87,7 @@ request, so the agent gets it as part of its request when the task starts.
 
 ## Decisions
 
-- **The message joins the request; it gets no table of its own** (ADR-0033). Everything that
+- **The message joins the request; it gets no table of its own** (ADR-0035). Everything that
   reads the request then sees the correction: the request file, the goal, the first message, the
   scope check, `task_get` and the export. A separate list would have to be merged into each of
   them, and one left out would act on the uncorrected task. History stays readable because each
@@ -105,6 +105,9 @@ request, so the agent gets it as part of its request when the task starts.
   runs the task: a person who wants another mode or workflow cancels it and creates a new one.
 - **A started task answers 409 before anything else**, also when its request is full: the session
   is the way in. The size answer (422) is only for a task that can still take a message.
+- **"See the original prompt" (SPEC-043) shows the additions.** It shows the prompt a task
+  started with, and a task given queued messages started with them, each under its "Added by …"
+  line.
 - **Same limit as creation (64 KiB for the whole request).** One bound for the request, whatever
   path built it.
 

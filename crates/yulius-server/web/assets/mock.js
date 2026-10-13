@@ -19,6 +19,12 @@ const MIN = 60e3;
 const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
 const ORIGIN = window.location.origin;
+// Where the mock's composer attachments live, as an upload reports them (SPEC-043).
+const MOCK_ATTACHMENTS = '/srv/yulius/sandboxes/sb_studio/attachments/drafts/usr_mkarp';
+// A file gone since (drafts are removed after a week).
+const MOCK_GONE = new Set([`${MOCK_ATTACHMENTS}/old-mockup.png`]);
+// A 1×1 PNG served for every attached image.
+const MOCK_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==';
 
 const enc = new TextEncoder();
 const iso = (msAgo) => new Date(Date.now() - msAgo).toISOString();
@@ -168,6 +174,8 @@ function seed(params) {
       stepsList: extra.noSteps ? [] : makeSteps(id, done, current),
       model: 'claude-opus-4',
       effort: 'high',
+      // The prompt it started with: the text, then an `@path` line per attached file (SPEC-043).
+      prompt: extra.prompt ?? title,
       delivery: extra.delivery || null, // {stage, environment, pr} once delivery started
       // Paused for subscription capacity: when the earliest window resets (ROT-010).
       resumes_at: status === 'waiting_capacity' ? new Date(Date.now() + 38 * MIN).toISOString() : null,
@@ -184,7 +192,7 @@ function seed(params) {
     t('sb_studio', 13, 'Improve the code', 'claude', 'running', 'done', { mode: 'goal', done: 7, current: false, updated: 6 * MIN, shells: 0, delivery: { stage: 'pr_open', environment: null, pr: pr(520, 'Improve the code', 'open', 'dev', 'pending') } }),
     // Goal achieved, but a background shell (a dev server) still runs: Working, with the shell said.
     t('sb_studio', 14, 'Start the preview server', 'claude', 'running', 'done', { mode: 'goal', done: 7, current: false, updated: 2 * MIN, shells: 1 }),
-    t('sb_studio', 12, 'Checkout API', 'claude', 'running', 'working', { done: 2, updated: 20e3 }),
+    t('sb_studio', 12, 'Checkout API', 'claude', 'running', 'working', { done: 2, updated: 20e3, prompt: `# Checkout API\n\nBuild the checkout endpoint:\n\n- Stripe payment intents\n- an idempotency key per order\n\n@${MOCK_ATTACHMENTS}/checkout-error.png\n@${MOCK_ATTACHMENTS}/notes.txt\n@${MOCK_ATTACHMENTS}/old-mockup.png` }),
     // Finished its turn with a tested pull request (checks green) and a complete plan: "Done" (#35, #139).
     t('sb_studio', 11, '3D model viewer', 'claude', 'running', 'waiting', { done: 7, current: false, author: 'anna-q', delivery: { stage: 'pr_open', environment: null, pr: pr(221, '3D model viewer', 'open', 'dev', 'success') } }),
     t('sb_studio', 10, 'AWS login for deploy', 'claude', 'running', 'needs_attention', { done: 4 }),
@@ -862,6 +870,25 @@ route('GET', `/api/tasks/${ID}`, ({ db, p }) => {
   db.detailReads = db.detailReads || {};
   db.detailReads[p[0]] = (db.detailReads[p[0]] || 0) + 1;
   return detail(db, taskOf(db, p[0]));
+});
+// The prompt a task started with (SPEC-043): `@path` lines are its attached files, served only
+// from the attachments folder.
+function promptParts(task) {
+  const lines = String(task.prompt ?? task.title).split('\n');
+  const paths = lines.map((line) => line.trim().match(/^@'?(\/[^']+)'?$/)).filter(Boolean).map((m) => m[1]);
+  const text = lines.filter((line) => !/^@'?\//.test(line.trim())).join('\n').trim();
+  return { text, paths };
+}
+const promptFileServed = (path) => path.startsWith(`${MOCK_ATTACHMENTS}/`) && !MOCK_GONE.has(path);
+route('GET', `/api/tasks/${ID}/prompt`, ({ db, p }) => {
+  const { text, paths } = promptParts(taskOf(db, p[0]));
+  return { text, attachments: paths.map((path) => ({ name: path.split('/').pop(), image: /\.(png|jpe?g|gif|webp)$/i.test(path), available: promptFileServed(path) })) };
+});
+route('GET', `/api/tasks/${ID}/prompt/attachments/${ID}`, ({ db, p }) => {
+  const path = promptParts(taskOf(db, p[0])).paths[Number(p[1])];
+  if (!path || !promptFileServed(path)) fail(404, 'not_found', 'not found');
+  if (/\.png$/i.test(path)) return new Response(Uint8Array.from(atob(MOCK_PNG), (c) => c.charCodeAt(0)), { status: 200, headers: { 'Content-Type': 'image/png' } });
+  return new Response('Mock notes attached to the prompt.\n', { status: 200, headers: { 'Content-Type': 'application/octet-stream' } });
 });
 route('POST', `/api/tasks/${ID}/stop`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
@@ -1573,6 +1600,32 @@ route('PUT', `/api/workflows/${ID}`, ({ db, p, body }) => {
 });
 route('DELETE', `/api/workflows/${ID}`, ({ db, p }) => { mutableWorkflow(db, p[0]); db.workflows = db.workflows.filter((w) => w.id !== p[0]); return json(204); });
 
+// Ready-made automations (SPEC-042): the catalog, matched to a sandbox's automations by name.
+const AUTOMATION_TEMPLATES = [
+  { id: 'docs-up-to-date', name: 'Keep the docs up to date', description: 'Every night, the documentation is brought in line with what changed in the code during the last day.', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Bring this project’s documentation in line with the code, for the changes made since the last run of this automation.', workflow_id: 'wf-docs' },
+  { id: 'open-issues', name: 'Work through open issues', description: 'Every night, the core team’s open GitHub issues are verified in parallel and the actionable ones get a Fix task each.', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Work through this repository’s open GitHub issues written by the core team or their agents.', workflow_id: null },
+];
+const sameName = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
+route('GET', `/api/sandboxes/${ID}/automation-templates`, ({ db, p }) => AUTOMATION_TEMPLATES.map((t) => {
+  const own = db.automations.find((a) => a.sandbox === p[0] && sameName(a.name, t.name));
+  return { ...t, automation_id: own ? own.id : null };
+}));
+route('POST', `/api/sandboxes/${ID}/automation-templates/${ID}/enable`, ({ db, p }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  const t = AUTOMATION_TEMPLATES.find((x) => x.id === p[1]);
+  if (!t) fail(404, 'not_found', 'not found');
+  let a = db.automations.find((x) => x.sandbox === p[0] && sameName(x.name, t.name));
+  const created = !a;
+  if (created) {
+    db.nextId += 1;
+    const { id: _id, description: _d, ...fields } = t;
+    a = { id: `aut_${db.nextId}`, sandbox: p[0], ...fields, harness: 'claude', created_via: 'ui', last_run: null };
+    db.automations.push(a);
+  }
+  Object.assign(a, { enabled: true, next_run_at: isoIn(5 * HOUR) });
+  const { sandbox: _s, ...out } = a;
+  return json(created ? 201 : 200, out);
+});
 route('GET', `/api/sandboxes/${ID}/automations`, ({ db, p }) => db.automations.filter((a) => a.sandbox === p[0]).map(({ sandbox: _s, ...a }) => a));
 route('POST', `/api/sandboxes/${ID}/automations`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');

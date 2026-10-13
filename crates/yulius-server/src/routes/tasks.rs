@@ -2,13 +2,15 @@
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode, header};
+use axum::response::{IntoResponse as _, Response};
 use serde::Deserialize;
-use yulius_contracts::api::tasks::{FeedbackRequest, TaskDetail, TaskSummary};
+use yulius_contracts::api::tasks::{FeedbackRequest, TaskDetail, TaskPrompt, TaskSummary};
 
 use crate::AppState;
 use crate::auth::Auth;
 use crate::error::ApiResult;
+use yulius_app::error::AppError;
 
 #[derive(Deserialize)]
 pub struct ListQuery {
@@ -38,6 +40,59 @@ pub async fn detail(
     Path(tid): Path<String>,
 ) -> ApiResult<Json<TaskDetail>> {
     Ok(Json(app.task_detail(&ctx, &tid).await?))
+}
+
+/// `GET /api/tasks/{tid}/prompt` (SPEC-043).
+pub async fn prompt(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(tid): Path<String>,
+) -> ApiResult<Json<TaskPrompt>> {
+    Ok(Json(app.task_prompt(&ctx, &tid).await?))
+}
+
+/// `GET /api/tasks/{tid}/prompt/attachments/{n}` (SPEC-043): an image is shown, any other file
+/// downloads; with `sandbox` in the content security policy, none runs as a page.
+pub async fn prompt_attachment(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path((tid, index)): Path<(String, String)>,
+) -> ApiResult<Response> {
+    // An index that is not a number names no attachment: 404, like one out of range.
+    let index = index.parse().map_err(|_| AppError::NotFound)?;
+    let file = app.task_prompt_attachment(&ctx, &tid, index).await?;
+    let mut response = file.bytes.into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("sandbox; default-src 'none'; frame-ancestors 'none'"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    if let Some(image) = file.content_type {
+        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(image));
+    } else {
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/octet-stream"),
+        );
+        // Safe names only (an upload's are already); anything else is a generic name.
+        let name = if file
+            .name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'))
+        {
+            file.name.as_str()
+        } else {
+            "attachment"
+        };
+        if let Ok(value) = HeaderValue::from_str(&format!("attachment; filename=\"{name}\"")) {
+            headers.insert(header::CONTENT_DISPOSITION, value);
+        }
+    }
+    Ok(response)
 }
 
 pub async fn archive(

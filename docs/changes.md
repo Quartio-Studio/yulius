@@ -6,16 +6,25 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
-- Queue messages into a task that has not started (SPEC-052, ADR-0033, task #44). A task waiting
+- Queue messages into a task that has not started (SPEC-052, ADR-0035, task #44). A task waiting
   for a session slot, after another task or a rule, or paused before its first start shows a
   "Queued messages" card: the request as the agent will get it, and a box to queue a correction
   (Queue, ⌘/Ctrl+Enter). Each message is added to the request under "Added by … before the task
   started (… UTC)", so the request file, the goal, the first message, the scope check and
   `task_get` all carry it. Once the task has started, its session is the way in (409). API:
   `POST /api/tasks/{tid}/queued-messages`; `TaskDetail` gains `request` and `started`.
+- "See the original prompt" in the task menu (SPEC-043, ADR-0033, task #42) shows the prompt a
+  task started with: the text formatted as written, with Copy text, and the files attached to it
+  (an image as a thumbnail that opens full size, another file to download, a file removed since
+  named). `GET /api/tasks/{tid}/prompt` returns it; `GET /api/tasks/{tid}/prompt/attachments/{n}`
+  serves a file only from the task's own attachment folders, never through a link or from a path a
+  prompt names elsewhere.
 
 ## 2026-10-12
 
+- A sandbox's default memory limit is the host's memory but a reserve (an eighth, at least 4 GiB),
+  not half: at half, ten sessions and two CI lanes thrashed the page cache while the host had 20 GB
+  free, and CI jobs timed out (SPEC-050 MEM-101).
 - The onboarding prompt tells the truth about Yulius CI (SPEC-020 ONB-001, task #34): the jobs'
   home and `$YULIUS_CI_CACHE` are their own, start empty and persist across runs (they were
   described as "an empty home"), so a job installs what it needs and never relies on an earlier
@@ -56,6 +65,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   idle session (`closed`, as Archive does), then deletes the task. Only a task that is still at
   work or waiting for you has to be stopped first, and its menu says "Still running: stop the
   task before deleting it".
+- Two ready-made automations, enabled in one click on the Automations page (SPEC-042, ADR-0034,
+  task #41): "Keep the docs up to date" (the last day's changes, or all docs on the first run)
+  and "Work through open issues" (the core team's open issues verified in parallel by
+  subagents, a Fix task for each actionable one, never a new issue), both nightly at 03:00 CEST.
+  They live in `catalog/automations/`. Tasks now report a bug they confirm with `issue_create`
+  unless an issue already tracks it (briefing and the Fix workflow). Neither runs until a person
+  enables it; on the team's instance both exist, disabled.
 - CI runs are no longer refused over the sandbox's disk quota by the size of test builds
   (SPEC-033, ADR-0028, task #31): the `yulius` crate's 50 integration test files, each its own
   190 MB executable linking the whole product, are now modules of one test binary

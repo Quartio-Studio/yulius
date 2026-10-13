@@ -118,7 +118,7 @@ the request file in the sandbox home keeps the whole request
 starts, after its compare-and-set to `starting`. Until then, a message a person queues into the
 waiting task is appended to the stored request by one conditional update, so the start either
 reads it or refuses it ([SPEC-052](../.ai/specs/SPEC-052-even-if-a-task-is-queued-i-d-like-to-be.md),
-[decision 0033](decisions/0033-queued-messages-join-the-request.md)).
+[decision 0035](decisions/0035-queued-messages-join-the-request.md)).
 
 ```mermaid
 sequenceDiagram
@@ -170,6 +170,25 @@ flowchart LR
   AG["Task agent"] -->|"Bearer task token"| MCP
   MCP -->|"task_create"| NT["App::create_task_as (as New task)"]
   MCP -->|"automation_*"| AU["Automations"]
+```
+
+## Ready-made automations
+
+Ready-made automations are a read-only catalog like the default workflows
+([SPEC-042](../.ai/specs/SPEC-042-create-2-default-automations-that-can-be.md),
+[decision 0034](decisions/0034-ready-made-automations-catalog.md)): `catalog/automations/*.md`,
+embedded at build time. Enable copies one into an ordinary automation; a project's automation of
+the same name counts as the template's.
+
+```mermaid
+flowchart LR
+  CAT["catalog/automations/*.md"] -->|"build.rs embeds"| TPL["automations::templates"]
+  UI["Automations page: Ready-made"] -->|"GET automation-templates"| TPL
+  UI -->|"POST …/enable"| EN["App::enable_automation_template"]
+  EN -->|"same name exists"| UPD["re-enable it"]
+  EN -->|"else"| INS["insert automation (enabled)"]
+  INS --> SCH["Scheduler: one task per slot"]
+  UPD --> SCH
 ```
 
 ## Web UI state

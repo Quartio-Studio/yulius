@@ -56,6 +56,7 @@ mod subscription_pool;
 mod supervision;
 mod task_delete;
 mod task_done;
+mod task_prompt;
 mod terminal_ws;
 mod trusted_proxy;
 mod ui_contract;

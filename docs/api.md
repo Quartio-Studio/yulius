@@ -210,8 +210,10 @@ limited to the agent's sandbox.
 | POST | `/api/sandboxes/{sid}/intake/proposal` | write | `{"prompt"}` → `{"tasks":[{"title","prompt","after_previous":bool}]}`: Claude's smallest split, 2–4 tasks grouped by area carrying their items word for word; `[]` means keep one task. 409 when proposals are not configured or no account is connected, 429 while 2 proposals run, 502 when Claude fails or its proposal is unusable (more than 4 tasks, one per item, an item missing) |
 | POST | `/api/tasks/{tid}/start-now` | write | → `TaskSummary`; a `chained` task starts now whatever its predecessor does (409 otherwise). Cancel it with `/stop` |
 | POST | `/api/tasks/{tid}/held-prompts/{hid}` | write | `{"action":"parallel|after|send|skip_after|revert|dismiss","skip_step_ids?":[…],"confirm?":bool}` → `{"task":TaskSummary,"created":TaskSummary|null,"note"}`; one decision per held prompt (409 for a second). `send` needs a running task; `skip_after` marks the given open steps `skipped`; `revert` needs `"confirm":true` (422 otherwise) — see "Task intake" below |
-| POST | `/api/tasks/{tid}/queued-messages` | write | `{"text"}` → `{"request"}`; adds the message to the request of a task that has never started (`queued`, `chained` or `waiting_capacity`, no run, no provider session) under "**Added by {login} before the task started ({UTC time}):**", so the agent gets it when the task starts (SPEC-052 / SPEC-001 TSK-017, ADR-0033). 409 once the task has started (type into its session instead), or, rarely, when it changed between the check and the update (try again); 422 for an empty message or a request past 64 KiB; publishes `task.updated` |
+| POST | `/api/tasks/{tid}/queued-messages` | write | `{"text"}` → `{"request"}`; adds the message to the request of a task that has never started (`queued`, `chained` or `waiting_capacity`, no run, no provider session) under "**Added by {login} before the task started ({UTC time}):**", so the agent gets it when the task starts (SPEC-052 / SPEC-001 TSK-017, ADR-0035). 409 once the task has started (type into its session instead), or, rarely, when it changed between the check and the update (try again); 422 for an empty message or a request past 64 KiB; publishes `task.updated` |
 | GET | `/api/tasks/{tid}` | read | → `TaskDetail` |
+| GET | `/api/tasks/{tid}/prompt` | read | → `{"text","attachments":[{"name","image":bool,"available":bool}]}`: the prompt the task started with, without its `@path` attachment lines, and its attached files in order (SPEC-043). `available` is false for a file that is gone (composer drafts are removed after a week) or not in the task's own attachment folders (a path mentioned by hand, another task's or user's file); at most 500 are checked |
+| GET | `/api/tasks/{tid}/prompt/attachments/{n}` | read | → the bytes of attachment `n` (from 0) of that list, only when the prompt names it directly in one of the task's own attachment folders (its creator's composer drafts, `attachments/drafts/<user>/`, or the task's terminal attachments, `attachments/tasks/<task>/`), reached without a link, a regular file within the upload limit (404 otherwise, also out of range or not a number; 429 while the uploads' bound of 8 transfers is reached). An image (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`) is served with its image type, any other file as `application/octet-stream` with `Content-Disposition: attachment`; the content security policy includes `sandbox` (ADR-0033) |
 | POST | `/api/tasks/{tid}/stop` | write | → `TaskSummary` |
 | POST | `/api/tasks/{tid}/continue` | write | `{"account_id?"}` → `TaskSummary`; resumes the latest session natively, on the best Claude subscription (the pool's choice; `account_id` is an operator override the web UI never sends) |
 | POST | `/api/tasks/{tid}/switch` | write | `{"account_id?"}` → `TaskSummary`; operator override: moves a running task to another Claude subscription with a native resume. Tasks are subscription-agnostic (F 2026-10-10): the web UI offers no account choice; the pool switches by itself |
@@ -588,6 +590,8 @@ read-only in the UI.
 | PUT/DELETE | `/api/automations/{id}` | write | PUT replaces the editable fields → `Automation`; DELETE → 204 (removes run history; tasks stay) |
 | POST | `/api/automations/{id}/run` | write | creates one run now (also when disabled) → `AutomationRun` |
 | GET | `/api/automations/{id}/runs` | read | `[AutomationRun]`, newest first (at most 100) |
+| GET | `/api/sandboxes/{sid}/automation-templates` | read | `[AutomationTemplate]`, the ready-made automations (SPEC-042) |
+| POST | `/api/sandboxes/{sid}/automation-templates/{id}/enable` | write | creates the automation from the template, enabled → 201 `Automation`; when the sandbox already has an automation of that name, enables it unchanged → 200 `Automation`; unknown template → 404 |
 | GET/POST | `/api/sandboxes/{sid}/mcp` | read/write | `McpServer` (sandbox + inherited instance servers); POST body `McpServerInput` → 201 |
 | PUT/DELETE | `/api/mcp/{id}` | write (instance: admin) | PUT `McpServerInput` → `McpServer`; DELETE → 204 |
 | POST | `/api/mcp/{id}/test` | write (instance: admin) | `{"ok","tools":["…"],"error"}`; HTTP ≤ 5 s, stdio ≤ 10 s then the process group is killed. On a contained instance stdio tests need an instance admin (they run outside the containment). |
@@ -599,6 +603,8 @@ Workflow = {"id","name","description","steps":["Write the spec","Implement","Tes
 Automation = {"id","name","cron":"0 9 * * *","utc_offset_minutes":120,"prompt","workflow_id|null",
               "harness":"claude","enabled":true,"created_via":"ui|agent",
               "next_run_at":"…|null","last_run":AutomationRun|null}
+AutomationTemplate = {"id":"docs-up-to-date","name","description","cron","utc_offset_minutes","prompt",
+                      "workflow_id|null","automation_id|null"}
 AutomationRun = {"scheduled_for","state":"scheduled|task_created|skipped_previous_active|skipped_disabled|failed",
                  "task_id|null","error|null"}
 McpServer = {"id","scope":"instance|sandbox","name","transport":"stdio|http","command|null",
@@ -619,7 +625,10 @@ kept as the instance workflow "Feature (custom)". The file format is SPEC-002 §
 catalog format". Automation `cron` is a five-field
 expression (`yulius-domain::cron`), `utc_offset_minutes` is within ±1080, and at most 100
 automations exist per sandbox. A run whose automation's previous task is still active is
-recorded as `skipped_previous_active`.
+recorded as `skipped_previous_active`. The ready-made automations are one file each in
+`catalog/automations/` of the running release; `automation_id` is the sandbox's automation with
+the same name (case-insensitive), which counts as the template's: a template is never linked or
+run by itself.
 
 MCP secrets are write-only: responses only list key names. On update, an omitted `env`/`headers`
 keeps the stored values; a given map replaces all values of that map (`{}` clears it). Names are

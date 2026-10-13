@@ -102,6 +102,11 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/tasks/{tid}/switch", post(tasks::switch))
         .route("/api/archived-tasks", get(tasks::archived))
         .route("/api/tasks/{tid}", get(tasks::detail).delete(tasks::delete))
+        .route("/api/tasks/{tid}/prompt", get(tasks::prompt))
+        .route(
+            "/api/tasks/{tid}/prompt/attachments/{n}",
+            get(tasks::prompt_attachment),
+        )
         .route("/api/tasks/{tid}/archive", post(tasks::archive))
         .route("/api/tasks/{tid}/restore", post(tasks::restore))
         .route("/api/tasks/{tid}/feedback", post(tasks::feedback))
@@ -122,6 +127,14 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route(
             "/api/automations/{id}",
             put(automations::update).delete(automations::delete),
+        )
+        .route(
+            "/api/sandboxes/{sid}/automation-templates",
+            get(automations::templates),
+        )
+        .route(
+            "/api/sandboxes/{sid}/automation-templates/{id}/enable",
+            post(automations::enable_template),
         )
         .route("/api/automations/{id}/run", post(automations::run_now))
         .route("/api/automations/{id}/runs", get(automations::runs))
