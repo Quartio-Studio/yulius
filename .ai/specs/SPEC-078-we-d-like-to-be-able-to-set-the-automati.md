@@ -160,7 +160,7 @@ the automation and applies to every task it creates.
 - Full e2e suite (`npx e2e run`) on cc74a6a: 270 passed, 1 skipped (41 files).
 - New tests, each red before its slice (the review's coverage tests pinned behaviour that was
   already correct):
-  - `crates/yulius/tests/automation_start.rs`, 6 tests:
+  - `crates/yulius/tests/automation_start.rs`, 5 tests:
     - the choice is stored, changed and cleared, and invalid choices are refused with 422 and
       change nothing (AC-AUT-13/14);
     - each run's task starts with its choice, and a waiting task skips the next run
