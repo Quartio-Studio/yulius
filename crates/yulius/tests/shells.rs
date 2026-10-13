@@ -15,6 +15,7 @@ use std::time::Duration;
 use axum::http::{Method, StatusCode};
 use futures::{SinkExt as _, StreamExt as _};
 use serde_json::{Value, json};
+use support::gated::GatedHost;
 use support::{
     Creds, Harness, HarnessOptions, TestResult, call, harness_with, perms, seed_github_user,
     seed_sandbox, seed_task, serve, ws_connect, ws_refusal_status,
@@ -22,7 +23,7 @@ use support::{
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-use yulius::wiring::session::PtySessionHost;
+use yulius_app::ports::session::SessionHost;
 use yulius_app::ports::store::TaskStore;
 use yulius_app::shells::{MAX_SHELLS_PER_SANDBOX, SHELL_IDLE_MS};
 use yulius_contracts::terminal::{KIND_OUTPUT, KIND_SNAPSHOT, decode_binary};
@@ -36,6 +37,8 @@ const WAIT: Duration = Duration::from_secs(20);
 
 struct Fixture {
     h: Harness,
+    /// The session host: holds the next start between its spawn and its attach when armed.
+    gate: Arc<GatedHost>,
     writer: Creds,
     reader: Creds,
     data: PathBuf,
@@ -56,8 +59,9 @@ async fn fixture_with(
     // A short base: shell sockets live at <data>/shells/<16 hex>/pty.sock (Unix path limit).
     let dir = tempfile::Builder::new().prefix("ysh").tempdir_in("/tmp")?;
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
+    let gate = Arc::new(GatedHost::new(exe));
     let h = harness_with(HarnessOptions {
-        session_host: Some(Arc::new(PtySessionHost::new(exe))),
+        session_host: Some(Arc::clone(&gate) as Arc<dyn SessionHost>),
         dir: Some(dir),
         configure: Some(Box::new(move |config| {
             config.contained = contained;
@@ -102,6 +106,7 @@ async fn fixture_with(
     .await?;
     Ok(Fixture {
         h,
+        gate,
         writer,
         reader,
         data,
@@ -710,6 +715,50 @@ async fn scenario(f: &Fixture) -> TestResult {
     Ok(())
 }
 
+/// SPEC-077 DRS-002 (#250): the client goes away while its terminal's process runs but before the
+/// start finished. The terminal still ends live, usable and saved, never listed yet unusable;
+/// ending it leaves nothing.
+#[tokio::test]
+async fn a_terminal_start_whose_request_is_dropped_still_ends_live() -> TestResult {
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    f.gate.arm();
+    {
+        let start = create(&f, &f.writer, "s1", None);
+        tokio::pin!(start);
+        tokio::select! {
+            resp = &mut start => {
+                return Err(format!("the start ended before it was held: {:?}", resp.map(|r| r.status)).into());
+            }
+            () = f.gate.reached() => {}
+        }
+    }
+    f.gate.release();
+    let shells = f.data.join("shells");
+    wait_for("the dropped start's terminal to be saved", || {
+        std::fs::read_dir(&shells).is_ok_and(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .any(|entry| entry.path().join("shell.json").is_file())
+        })
+    })
+    .await?;
+    let listed = listed(&list(&f, &f.writer, "s1").await?);
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    let id = listed.first().map(|(id, _)| id.clone()).ok_or("id")?;
+    let mut socket = open_terminal(served.addr, &id, &f.writer).await?;
+    let mut screen = String::new();
+    input(&mut socket, "echo \"sum=$((6*7))\"\r").await?;
+    read_until(&mut socket, &mut screen, "sum=42").await?;
+    drop(socket);
+    f.h.app.end_all_shells().await;
+    let left = std::fs::read_dir(&shells)
+        .map(|entries| entries.count())
+        .unwrap_or(0);
+    assert_eq!(left, 0, "nothing left behind");
+    Ok(())
+}
+
 #[tokio::test]
 async fn shells_keep_running_across_a_server_restart_and_are_adopted() -> TestResult {
     let f = fixture().await?;
@@ -848,4 +897,52 @@ fn bwrap_runnable() -> Result<(), String> {
         )),
         Err(err) => Err(format!("bwrap not runnable: {err}")),
     }
+}
+
+/// SPEC-070 (review): a shell in a task's worktree is its owner's. Once the task is handed to
+/// someone else, the former owner's shell there takes no more input and cannot be reopened.
+#[tokio::test]
+async fn a_task_shell_stops_taking_input_once_the_task_is_handed_over() -> TestResult {
+    use yulius_domain::ids::UserId;
+    let f = fixture().await?;
+    seed_github_user(&f.h, "u-carol", "carol").await?;
+    f.h.github.set_perm("carol", "acme/fixture", perms("write"));
+    let created = create(&f, &f.writer, "s1", Some(json!({"task_id": "t1"}))).await?;
+    assert_eq!(created.status, 201, "{}", created.body);
+    let id = created.body["id"].as_str().ok_or("shell id")?.to_owned();
+    let served = serve(f.h.router.clone()).await?;
+    let mut socket = open_terminal(served.addr, &id, &f.writer).await?;
+
+    let (task, alice, carol) = (
+        TaskId::parse("t1")?,
+        UserId::parse("u-alice")?,
+        UserId::parse("u-carol")?,
+    );
+    assert!(
+        f.h.store
+            .request_control(&task, &carol, f.h.app.now())
+            .await?
+    );
+    assert!(
+        f.h.store
+            .pass_control(&task, &alice, &carol, f.h.app.now())
+            .await?
+    );
+
+    input(&mut socket, "echo after\r").await?;
+    let refused = next_json(&mut socket).await?;
+    assert_eq!(refused["type"], "error", "{refused}");
+    assert_eq!(refused["code"], "forbidden", "{refused}");
+    let reopened = ws_connect(
+        served.addr,
+        &format!("/api/shells/{id}/terminal"),
+        &f.writer,
+        ORIGIN,
+    )
+    .await;
+    assert_eq!(
+        reopened.as_ref().err().and_then(ws_refusal_status),
+        Some(403)
+    );
+    Ok(())
 }

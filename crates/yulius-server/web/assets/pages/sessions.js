@@ -17,7 +17,7 @@ const KIND_OPTIONS = [
   { value: 'task', label: 'Tasks', icon: 'terminal' },
   { value: 'imported', label: 'Imported', icon: 'upload' },
 ];
-const ROLE_LABEL = { user: 'Prompt', assistant: 'Claude', tool: 'Tool', summary: 'Summary' };
+const ROLE_LABEL = { user: 'Prompt', assistant: 'Claude', tool: 'Tool', summary: 'Summary', system: 'System' };
 const PAGE = 200;
 
 const sessionsPath = (sandbox) => `/s/${encodeURIComponent(sandbox.slug)}/sessions`;
@@ -162,6 +162,11 @@ export function mountSessionsPage(ctx, sandbox) {
 
 // ------------------------------------------------------------------ the read-only transcript
 
+// A session is printed as Claude Code's TUI printed it (SPEC-075): `>` prompts, `⏺` messages and
+// tool calls, `⎿` results folded to their first lines, in the terminal's typeface.
+const TOOL_LABEL = { Edit: 'Update', MultiEdit: 'Update' }; // as the TUI names them
+const FOLD_LINES = 3;
+
 /** Text with ``` fences as code blocks (never parsed as HTML). */
 function richText(text, className = 'ss-text') {
   const parts = String(text || '').split(/```/);
@@ -169,43 +174,248 @@ function richText(text, className = 'ss-text') {
     if (index % 2 === 0) return part ? h('span', null, part) : null;
     const newline = part.indexOf('\n');
     const code = newline >= 0 && /^[\w+-]*$/.test(part.slice(0, newline)) ? part.slice(newline + 1) : part;
-    return h('pre', { class: 'ss-code' }, h('code', null, code.replace(/\n$/, '')));
+    return h('pre', { class: 'ss-code', ...scroller(code, 'Code') }, h('code', null, code.replace(/\n$/, '')));
   }));
+}
+
+/**
+ * Long code, results and diffs scroll inside their box (480 px, about 20 lines): those are named
+ * regions a keyboard reaches, as the Git page's diffs. Short ones are no tab stops.
+ */
+function scroller(text, label) {
+  const lines = String(text || '').split('\n');
+  const rows = lines.reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / 80)), 0);
+  return rows > 16 ? { tabindex: '0', role: 'region', 'aria-label': label } : null;
+}
+
+const linesOf = (text) => String(text || '').replace(/\n+$/, '').split('\n');
+
+/** The TUI's gutter mark (`>`, `⏺`, `⎿`, `✻`), decoration only. */
+const mark = (glyph, kind) => h('span', { class: ['ss-mark', kind && `ss-mark-${kind}`], 'aria-hidden': 'true' }, glyph);
+
+/** A line of the TUI: its mark in the gutter, then the content; spans so it may sit in a summary, divs (`block`) around block content. */
+const tuiLine = (glyph, content, { kind, className, block = false } = {}) => h(block ? 'div' : 'span', { class: ['ss-line', ...[className].flat(Infinity)] }, mark(glyph, kind), h(block ? 'div' : 'span', { class: 'ss-line-body' }, content));
+
+/** A hunk as context, removed and added lines: the lines both sides share at the start and the end are context. */
+function hunkLines(hunk) {
+  const before = hunk.old ? linesOf(hunk.old) : [];
+  const after = hunk.new ? linesOf(hunk.new) : [];
+  let head = 0;
+  while (head < before.length && head < after.length && before[head] === after[head]) head += 1;
+  let tail = 0;
+  while (tail < before.length - head && tail < after.length - head && before[before.length - 1 - tail] === after[after.length - 1 - tail]) tail += 1;
+  return {
+    head: after.slice(0, head),
+    removed: before.slice(head, before.length - tail),
+    added: after.slice(head, after.length - tail),
+    tail: after.slice(after.length - tail),
+  };
 }
 
 function diffView(diff) {
   return h('div', { class: 'ss-diff', role: 'group', 'aria-label': `Changes to ${diff.path}` },
-    h('div', { class: 'ss-diff-path' }, icon('file', { size: 12 }), diff.path),
-    diff.hunks.map((hunk) => h('pre', { class: 'ss-diff-hunk' },
-      hunk.old ? hunk.old.split('\n').map((line) => h('span', { class: 'ss-del' }, `- ${line}\n`)) : null,
-      hunk.new.split('\n').map((line) => h('span', { class: 'ss-add' }, `+ ${line}\n`)))));
+    diff.hunks.map((hunk) => {
+      const { head, removed, added, tail } = hunkLines(hunk);
+      return h('pre', { class: 'ss-diff-hunk', ...scroller([...head, ...removed, ...added, ...tail].join('\n'), `Changed lines of ${diff.path}`) },
+        head.map((line) => h('span', { class: 'ss-ctx' }, `  ${line}\n`)),
+        removed.map((line) => h('span', { class: 'ss-del' }, `- ${line}\n`)),
+        added.map((line) => h('span', { class: 'ss-add' }, `+ ${line}\n`)),
+        tail.map((line) => h('span', { class: 'ss-ctx' }, `  ${line}\n`)));
+    }));
 }
 
-function block(item, results) {
+/**
+ * What the TUI prints under a folded call's `⎿`: a summary of an applied edit, write or read, else
+ * the first lines of the result. Without a result (the session ended, or it is on the next page)
+ * nothing is claimed.
+ */
+export function callPreview(call, result) {
+  if (!result) return [];
+  if (call.diff && !result.is_error) {
+    let added = 0;
+    let removed = 0;
+    for (const hunk of call.diff.hunks) {
+      const lines = hunkLines(hunk);
+      added += lines.added.length;
+      removed += lines.removed.length;
+    }
+    if (call.name === 'Write') return [`Wrote ${plural(added, 'line')} to ${call.diff.path}`];
+    return [`Updated ${call.diff.path} with ${plural(added, 'addition')} and ${plural(removed, 'removal')}`];
+  }
+  if (!result.text) return ['(No content)'];
+  const lines = linesOf(result.text);
+  if (call.name === 'Read' && !result.is_error) return [`Read ${plural(lines.length, 'line')}`];
+  return lines.length > FOLD_LINES ? [...lines.slice(0, FOLD_LINES), `… +${plural(lines.length - FOLD_LINES, 'line')}`] : lines;
+}
+
+// Claude Code's wrappers (crates/yulius-app/src/transcripts.rs META_PREFIXES), recorded at the start
+// of a meta text and only separated by white space. A wrapper the server cut short runs to the end.
+const WRAPPER_TAGS = ['command-name', 'command-message', 'command-args', 'local-command-stdout', 'local-command-stderr', 'bash-input', 'bash-stdout', 'bash-stderr', 'system-reminder', 'user-prompt-submit-hook'];
+const WRAPPER_OPEN = new RegExp(`^<(${WRAPPER_TAGS.join('|')})>`);
+const HIDDEN_TAGS = new Set(['system-reminder', 'user-prompt-submit-hook', 'command-message']);
+const ANSI = /\u001b\[[0-9;?]*[A-Za-z]/g; // eslint-disable-line no-control-regex
+const OUT_TAGS = { 'local-command-stdout': 'out', 'bash-stdout': 'out', 'local-command-stderr': 'err', 'bash-stderr': 'err' };
+
+/** `value` without the start of `close` that a cut left at its end (`…</local-command-std`). */
+function withoutCutClose(value, close) {
+  for (let length = close.length - 1; length > 1; length -= 1) {
+    if (value.endsWith(close.slice(0, length))) return value.slice(0, -length);
+  }
+  return value;
+}
+
+/**
+ * A recorded meta text as the TUI prints it: `{ kind, text }` lines where kind is `command`
+ * (`/name args`), `shell` (a `!` command), `out` or `err` (output under ⎿) or `note` (other text,
+ * shown faint as written). Reminders, hook context and the caveat line are not printed: `[]`.
+ * Only wrappers at the start are read; a tag mentioned in prose stays prose.
+ */
+export function metaLines(text) {
+  const raw = String(text || '').trim();
+  const found = [];
+  let command = null;
+  let rest = raw;
+  for (let open = rest.match(WRAPPER_OPEN); open; open = rest.match(WRAPPER_OPEN)) {
+    const tag = open[1];
+    const close = `</${tag}>`;
+    const end = rest.indexOf(close, open[0].length);
+    // Command output keeps the CLI's colour codes; the page prints it plain.
+    const value = (end < 0 ? withoutCutClose(rest.slice(open[0].length), close) : rest.slice(open[0].length, end)).replace(ANSI, '').trim();
+    rest = end < 0 ? '' : rest.slice(end + close.length).trimStart();
+    if (tag === 'command-name' || (tag === 'command-args' && (!command || command.args))) found.push(command = { kind: 'command', name: '', args: '' });
+    if (tag === 'command-name') command.name = value;
+    else if (tag === 'command-args') command.args = value;
+    else if (tag === 'bash-input') found.push({ kind: 'shell', text: value });
+    else if (OUT_TAGS[tag]) found.push({ kind: OUT_TAGS[tag], text: value });
+    else if (!HIDDEN_TAGS.has(tag)) found.push({ kind: 'note', text: value });
+  }
+  if (rest === raw && /^\[Request interrupted/.test(rest)) found.push({ kind: 'err', text: 'Interrupted by user' });
+  else if (rest && !(rest === raw && rest.startsWith('Caveat: The messages below were generated'))) found.push({ kind: 'note', text: rest });
+  return found.map((line) => (line.kind === 'command'
+    ? { kind: 'command', text: [line.name, line.args].filter(Boolean).join(' ') }
+    : line)).filter((line) => line.text);
+}
+
+const parsedMeta = new WeakMap(); // meta block → its lines, parsed once
+
+/** `metaLines` of a meta block. */
+function metaOf(item) {
+  if (!parsedMeta.has(item)) parsedMeta.set(item, metaLines(item.text));
+  return parsedMeta.get(item);
+}
+
+const outLines = (lines, className, attrs = null) => h('span', { class: ['ss-line', 'ss-out', ...[className].flat(Infinity)], ...attrs }, mark('⎿', 'out'), h('span', { class: 'ss-line-body' }, h('span', { class: 'ss-out-text' }, lines.join('\n'))));
+
+function toolCall(item, result) {
+  const failed = Boolean(result && result.is_error);
+  const preview = callPreview(item, result);
+  // An applied edit shows its lines unfolded; a failed one stays folded on why it failed, and one
+  // without a result folded too: nothing says it was applied.
+  const diff = item.diff && result && !failed ? item.diff : null;
+  return h('details', { class: ['ss-fold', 'ss-tool', failed && 'ss-tool-error'], open: Boolean(diff) },
+    h('summary', null,
+      tuiLine('⏺', h('span', { class: 'ss-call' },
+        h('span', { class: 'ss-tool-name' }, TOOL_LABEL[item.name] || item.name),
+        item.summary ? ['(', h('span', { class: 'ss-tool-summary' }, item.summary), ')'] : null,
+        failed ? h('span', { class: 'ss-tool-flag' }, ' error') : null), { kind: failed ? 'err' : result ? 'ok' : 'call' }),
+      preview.length ? outLines(preview, ['ss-preview', !diff && 'ss-preview-folded', failed && 'ss-out-err']) : null),
+    item.diff ? diffView(item.diff) : h('pre', { class: 'ss-code ss-input', ...scroller(item.input, `Input of ${item.name}`) }, h('code', null, item.input)),
+    result ? outLines(linesOf(result.text || '(No content)'), ['ss-result', failed && 'ss-out-err'], scroller(result.text, `Result of ${item.name}`)) : null,
+    result && result.truncated ? h('p', { class: 'ss-dim xs' }, 'Cut here: the result is longer.') : null);
+}
+
+function block(item, results, role) {
   switch (item.type) {
     case 'text':
-      return h('div', { class: 'ss-block' }, richText(item.text), item.truncated ? h('p', { class: 'muted xs' }, 'Cut here: the message is longer.') : null);
+      return h('div', { class: 'ss-block' },
+        role === 'user' ? tuiLine('>', richText(item.text), { kind: 'prompt', className: 'ss-prompt', block: true })
+          : role === 'summary' ? tuiLine('※', richText(item.text), { kind: 'dim', block: true })
+            : tuiLine('⏺', richText(item.text), { kind: 'say', block: true }),
+        item.truncated ? h('p', { class: 'ss-dim xs' }, 'Cut here: the message is longer.') : null);
     case 'thinking':
-      return h('details', { class: 'ss-fold ss-thinking' }, h('summary', null, 'Thinking'), richText(item.text, 'ss-text muted'));
-    case 'tool_call': {
-      const result = results.get(item.id);
-      return h('details', { class: ['ss-fold', 'ss-tool', result && result.is_error && 'ss-tool-error'], open: Boolean(item.diff) },
-        h('summary', null, h('span', { class: 'ss-tool-name' }, item.name), h('span', { class: 'ss-tool-summary' }, item.summary || ''), result && result.is_error ? badge('error', 'danger') : null),
-        item.diff ? diffView(item.diff) : h('pre', { class: 'ss-code' }, h('code', null, item.input)),
-        result ? h('div', { class: 'ss-result' }, h('div', { class: 'ss-result-label' }, result.is_error ? 'Error' : 'Result'), h('pre', { class: 'ss-code' }, h('code', null, result.text || '(empty)')), result.truncated ? h('p', { class: 'muted xs' }, 'Cut here: the result is longer.') : null) : null);
-    }
+      return h('details', { class: 'ss-fold ss-thinking' }, h('summary', null, tuiLine('✻', 'Thinking…', { kind: 'think' })), richText(item.text, 'ss-text ss-dim'));
+    case 'tool_call':
+      return toolCall(item, results.get(item.id));
     case 'tool_result':
       return results.has(item.tool_use_id) && results.get(item.tool_use_id).shown ? null : h('details', { class: ['ss-fold', 'ss-tool', item.is_error && 'ss-tool-error'] },
-        h('summary', null, h('span', { class: 'ss-tool-name' }, item.is_error ? 'Error' : 'Result')),
-        h('pre', { class: 'ss-code' }, h('code', null, item.text || '(empty)')));
+        h('summary', null, outLines(callPreview({ name: '' }, item), ['ss-preview', 'ss-preview-folded', item.is_error && 'ss-out-err'])),
+        outLines(linesOf(item.text || '(No content)'), ['ss-result', item.is_error && 'ss-out-err'], scroller(item.text, 'Result')));
     case 'image':
-      return h('div', { class: 'ss-block muted small' }, icon('file', { size: 12 }), ' Image (not kept)');
-    case 'meta':
-      return h('div', { class: 'ss-meta muted xs' }, item.text);
+      return tuiLine('⎿', h('span', { class: 'ss-dim' }, '[Image] (not kept)'), { kind: 'out' });
+    case 'meta': {
+      const lines = metaOf(item).map((line) => {
+        if (line.kind === 'command') return tuiLine('>', line.text, { kind: 'prompt', className: 'ss-prompt' });
+        if (line.kind === 'shell') return tuiLine('!', line.text, { kind: 'shell', className: 'ss-prompt' });
+        if (line.kind === 'out' || line.kind === 'err') return outLines(linesOf(line.text), line.kind === 'err' && 'ss-out-err');
+        return h('div', { class: 'ss-meta ss-dim' }, line.text);
+      });
+      return lines.length ? h('div', { class: 'ss-block' }, lines) : null;
+    }
     default:
       return null;
   }
 }
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/**
+ * A spider web in pixel art for the well's top-right corner (SPEC-075): threads from the corner,
+ * rings between them and a spider hanging from one, as rows of square pixels.
+ */
+function spiderWeb() {
+  const width = 28;
+  const height = 34;
+  const web = new Set();
+  const spider = new Set();
+  const plot = (into, x, y) => { if (x >= 0 && x < width && y >= 0 && y < height) into.add(`${x},${y}`); };
+  const line = (into, x0, y0, x1, y1) => { // Bresenham
+    const dx = Math.abs(x1 - x0);
+    const dy = -Math.abs(y1 - y0);
+    const sx = x0 < x1 ? 1 : -1;
+    const sy = y0 < y1 ? 1 : -1;
+    let err = dx + dy;
+    for (;;) {
+      plot(into, x0, y0);
+      if (x0 === x1 && y0 === y1) return;
+      const e2 = 2 * err;
+      if (e2 >= dy) { err += dy; x0 += sx; }
+      if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+  };
+  const corner = [width - 1, 0];
+  // From the top wall (0°) round to the right wall (90°); the walls carry no thread of their own.
+  const angles = [0, 22.5, 45, 67.5, 90].map((deg) => (deg * Math.PI) / 180);
+  const at = (angle, r) => [Math.round(corner[0] - r * Math.cos(angle)), Math.round(corner[1] + r * Math.sin(angle))];
+  for (const angle of angles.slice(1, -1)) line(web, ...corner, ...at(angle, 27));
+  for (const r of [8, 15, 22]) {
+    for (let i = 0; i + 1 < angles.length; i += 1) line(web, ...at(angles[i], r), ...at(angles[i + 1], r));
+  }
+  const [hx, hy] = at(angles[2], 15);
+  line(web, hx, hy, hx, 28);
+  ['.#...#.', '..###..', '#######', '..###..', '.#...#.'].forEach((row, dy) => [...row].forEach((c, dx) => { if (c === '#') plot(spider, hx - 3 + dx, 29 + dy); }));
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  for (const [name, value] of Object.entries({ class: 'ss-web', viewBox: `0 0 ${width} ${height}`, 'aria-hidden': 'true', focusable: 'false', 'shape-rendering': 'crispEdges' })) svg.setAttribute(name, value);
+  const pixels = (cells, className) => {
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        if (!cells.has(`${x},${y}`)) continue;
+        let run = 1;
+        while (cells.has(`${x + run},${y}`)) run += 1;
+        const rect = document.createElementNS(SVG_NS, 'rect');
+        for (const [name, value] of Object.entries({ class: className, x, y, width: run, height: 1 })) rect.setAttribute(name, String(value));
+        svg.append(rect);
+        x += run - 1;
+      }
+    }
+  };
+  for (const cell of spider) web.delete(cell);
+  pixels(web, 'ss-web-thread');
+  pixels(spider, 'ss-web-spider');
+  return svg;
+}
+
+/** Where the TUI's prompt box was: locked, nothing can be typed or sent (not a control). */
+const lockedPrompt = () => h('div', { class: 'ss-locked' }, mark('>', 'prompt'), h('span', { class: 'ss-line-body' }, 'Read-only session · nothing can be sent'), icon('lock', { size: 14 }));
 
 /** Mount one session's read-only transcript. */
 export function mountSessionView(ctx, sandbox, id, route) {
@@ -283,14 +493,16 @@ export function mountSessionView(ctx, sandbox, id, route) {
 
   function entry(item) {
     const role = item.role === 'user' && item.blocks.every((b) => b.type === 'tool_result' || b.type === 'meta') ? 'tool' : item.role;
-    const shown = item.blocks.map((b) => block(b, results)).filter(Boolean);
+    const shown = item.blocks.map((b) => block(b, results, role)).filter(Boolean);
     if (!shown.length) return null;
-    const label = role === 'user' ? 'Prompt' : role === 'assistant' ? 'Claude' : ROLE_LABEL[role] || role;
-    return h('li', { class: ['ss-entry', `ss-${role}`, item.sidechain && 'ss-sidechain', item.line === target && 'ss-target'], id: `line-${item.line}`, dataset: { line: String(item.line) } },
-      role === 'tool' ? null : h('div', { class: 'ss-entry-head' },
-        h('span', { class: 'ss-who' }, label, item.sidechain ? h('span', { class: 'muted' }, ' · subagent') : null),
-        item.at ? h('span', { class: 'muted xs', title: dateTime(item.at) }, relLong(item.at)) : null),
-      shown);
+    const typed = item.blocks.some((b) => b.type === 'meta' && metaOf(b).some((line) => line.kind === 'command' || line.kind === 'shell'));
+    const label = role === 'user' || typed ? 'Prompt' : role === 'assistant' ? 'Claude' : ROLE_LABEL[role] || role;
+    // A prompt (typed or a command) carries its time, as turns start there.
+    const when = label === 'Prompt' && item.at;
+    return h('li', { class: ['ss-entry', `ss-${role}`, item.sidechain && 'ss-sidechain', item.line === target && 'ss-target', when && 'ss-has-when'], id: `line-${item.line}`, dataset: { line: String(item.line) } },
+      h('span', { class: 'sr-only' }, item.sidechain ? `${label} (subagent)` : label),
+      shown,
+      when ? h('span', { class: 'ss-when ss-dim xs', title: dateTime(item.at) }, relLong(item.at)) : null);
   }
 
   function append(entries) {
@@ -303,7 +515,7 @@ export function mountSessionView(ctx, sandbox, id, route) {
   function renderMore() {
     setChildren(more, next !== null && next !== undefined
       ? h('button', { type: 'button', class: 'btn', disabled: loading, onClick: () => load(next) }, loading ? 'Loading…' : 'Load more')
-      : (entriesEl.children.length ? h('p', { class: 'muted small' }, 'End of the session.') : null));
+      : (entriesEl.children.length ? h('p', { class: 'ss-dim small' }, 'End of the session.') : null));
     setChildren(earlier, from > 0 && target !== null
       ? h('a', { class: 'btn btn-sm', href: href(sessionPath(sandbox, id)), dataset: { route: sessionPath(sandbox, id) } }, 'Show from the start')
       : null);
@@ -320,7 +532,7 @@ export function mountSessionView(ctx, sandbox, id, route) {
       session = page.session;
       next = page.next;
       renderHead();
-      if (first) setChildren(body, earlier, entriesEl, more);
+      if (first) setChildren(body, earlier, h('div', { class: 'ss-tui' }, spiderWeb(), entriesEl, more, lockedPrompt()));
       append(page.entries || []);
       if (first && !entriesEl.children.length && next === null) setChildren(body, emptyState({ iconName: 'chat', title: 'Nothing to show', text: 'This transcript has no messages yet, or it is no longer on the server.' }));
       if (first && target !== null) {

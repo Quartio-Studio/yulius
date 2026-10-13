@@ -935,6 +935,7 @@ async fn restarts_and_races_never_duplicate_a_run() -> TestResult {
                 automation_run: Some(run_key(&b, b_slot)),
                 start: true,
                 mode: yulius_app::model::TaskMode::Prompt,
+                supertask: false,
             })
             .await?;
 
@@ -1226,6 +1227,7 @@ async fn seed_agent(
             origin: TaskOrigin::Ui,
             automation_run: None,
             created_by: UserId::parse("u-alice")?,
+            owner: UserId::parse("u-alice")?,
             created_at: Timestamp(BASE),
             updated_at: Timestamp(BASE),
             closed_at: None,
@@ -1234,6 +1236,7 @@ async fn seed_agent(
             gate_blocks: 0,
             wake_enabled: true,
             mode: yulius_app::model::TaskMode::Prompt,
+            supertask: false,
         })
         .await?;
     h.store

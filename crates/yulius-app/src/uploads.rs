@@ -500,7 +500,7 @@ impl App {
     ) -> AppResult<Upload> {
         // The path's own rules first, so a bad name is reported before access is looked up.
         relative_components(path)?;
-        let target = self.file_target(ctx, sandbox, root, path).await?;
+        let target = self.file_target(ctx, sandbox, root, path, true).await?;
         if target.relative.is_empty() {
             return Err(AppError::Invalid("a file path is required".into()));
         }

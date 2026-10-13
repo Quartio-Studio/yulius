@@ -806,7 +806,7 @@ pub struct GitCredential {
 }
 
 impl App {
-    /// Issues the run's GitHub token (SPEC-002 §8, R-06): the task creator's own token, so the
+    /// Issues the run's GitHub token (SPEC-002 §8, R-06): the task owner's own token, so the
     /// agent's pushes are theirs on GitHub (F 2026-10-11); without a usable one, the App's
     /// installation token restricted to the run's repository, said once in the task's terminal.
     /// `gh` in the run asks the same way (`yulius gh-token`, SPEC-004). Requests for any other
@@ -844,7 +844,7 @@ impl App {
                 ));
             }
         }
-        let token = match self.creator_github_token(&ctx.task).await {
+        let token = match self.owner_github_token(&ctx.task).await {
             Some(token) => token,
             None => self.repository_installation_token(&sandbox).await?,
         };

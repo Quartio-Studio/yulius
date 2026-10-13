@@ -58,6 +58,9 @@ pub enum Observed {
         /// Length of the limited window in minutes — 300 for the five-hour session, 10080 for
         /// the weekly one — when the provider said which.
         window_minutes: Option<u32>,
+        /// When Claude Code recorded it (the record's `timestamp`), if parseable: tells a new
+        /// limit from one in a conversation's history (SPEC-074 SUP-002).
+        at: Option<Timestamp>,
     },
     /// The agent finished a turn. Claude emits this for each line of an `end_turn` message, so
     /// consumers treat it idempotently; the Stop hook remains the authoritative turn boundary.
@@ -311,11 +314,13 @@ mod tests {
                 resets_at: None,
                 message: "first".into(),
                 window_minutes: None,
+                at: None,
             },
             Observed::LimitReached {
                 resets_at: Some(Timestamp(5)),
                 message: "limit".into(),
                 window_minutes: Some(300),
+                at: None,
             },
         ]);
         assert_eq!(acc.malformed_lines(), 1);

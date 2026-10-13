@@ -138,6 +138,7 @@ async fn fixture_with_workflow(
             origin: TaskOrigin::Ui,
             automation_run: None,
             created_by: user.id.clone(),
+            owner: user.id.clone(),
             created_at: now,
             updated_at: now,
             closed_at: None,
@@ -146,6 +147,7 @@ async fn fixture_with_workflow(
             gate_blocks: 0,
             wake_enabled: true,
             mode: yulius_app::model::TaskMode::Prompt,
+            supertask: false,
         })
     };
     let mut main = mk_task("t-main", 1, "Checkout API", TaskStatus::Running)?;
@@ -741,7 +743,7 @@ async fn the_agents_git_acts_as_the_task_creator() -> TestResult {
     assert_eq!(gh.status, 200);
     assert_eq!(gh.body["token"], "token-alice");
 
-    // A task of a creator without a linked GitHub account acts as the App.
+    // A task of an owner without a linked GitHub account acts as the App.
     let store = &f.h.app.deps.store;
     let unlinked = UserRecord {
         id: UserId::parse("u-local")?,
@@ -760,6 +762,7 @@ async fn the_agents_git_acts_as_the_task_creator() -> TestResult {
     task.id = TaskId::parse("t-local")?;
     task.number = 3;
     task.created_by = unlinked.id.clone();
+    task.owner = unlinked.id.clone();
     store.insert_task(&task).await?;
     let mut attempt = store.live_attempt(&f.task).await?.ok_or("attempt")?;
     attempt.id = AttemptId::parse("at-local")?;

@@ -113,6 +113,7 @@ async fn running_task_in(
             origin: TaskOrigin::Ui,
             automation_run: None,
             created_by: yulius_domain::ids::UserId::parse("u1")?,
+            owner: yulius_domain::ids::UserId::parse("u1")?,
             created_at: created,
             updated_at: created,
             closed_at: None,
@@ -121,6 +122,7 @@ async fn running_task_in(
             gate_blocks: 0,
             wake_enabled: true,
             mode,
+            supertask: false,
         })
         .await?;
     h.store
@@ -456,6 +458,7 @@ async fn the_capacity_view_reports_burn_forecast_and_recommendation() -> TestRes
             origin: TaskOrigin::Ui,
             automation_run: None,
             created_by: alice_id.clone(),
+            owner: alice_id.clone(),
             created_at: at(-40),
             updated_at: at(-40),
             closed_at: None,
@@ -464,6 +467,7 @@ async fn the_capacity_view_reports_burn_forecast_and_recommendation() -> TestRes
             gate_blocks: 0,
             wake_enabled: true,
             mode: TaskMode::Prompt,
+            supertask: false,
         })
         .await?;
     h.store

@@ -151,6 +151,15 @@ impl App {
             mode: opt_str(args, "mode")?,
             after_task_id,
             start_rule: opt_str(args, "start_rule")?,
+            supertask: match args.get("supertask") {
+                None | Some(Value::Null) => false,
+                Some(Value::Bool(flag)) => *flag,
+                Some(_) => {
+                    return Err(AppError::Invalid(
+                        "`supertask` must be true or false".into(),
+                    ));
+                }
+            },
         };
         let user = self.manage_authority(caller).await?;
         let now = self.now().0;

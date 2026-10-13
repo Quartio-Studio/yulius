@@ -753,6 +753,8 @@ pub async fn insert_sandbox(
 
 /// The real harness planning with the fake agent executable.
 pub mod agents;
+/// The real ptyhost whose next attach a test can hold (SPEC-077).
+pub mod gated;
 /// Repository fixtures (real Git over local remotes) for project and import tests.
 pub mod repos;
 /// A fake `main` source and update helper for instance update tests (SPEC-002 ADR-18).
@@ -1328,6 +1330,7 @@ pub async fn seed_task_with_prompt(
         origin: yulius_app::model::TaskOrigin::Ui,
         automation_run: None,
         created_by: UserId::parse(created_by)?,
+        owner: UserId::parse(created_by)?,
         created_at: now,
         updated_at: now,
         closed_at: None,
@@ -1336,6 +1339,7 @@ pub async fn seed_task_with_prompt(
         gate_blocks: 0,
         wake_enabled: true,
         mode: yulius_app::model::TaskMode::Prompt,
+        supertask: false,
     };
     Ok(h.store.insert_task(&task).await?)
 }

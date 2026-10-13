@@ -177,6 +177,7 @@ impl HarnessPort for HarnessAdapter {
             cwd: l.cwd.clone(),
             config_dir: l.config_dir.clone(),
             resume: l.resume.clone(),
+            continue_interrupted: l.continue_interrupted,
             credential: Credential::ClaudeOauthToken(HSecret::new(
                 l.credential.expose().to_owned(),
             )),
@@ -191,6 +192,22 @@ impl HarnessPort for HarnessAdapter {
             .map_err(|e| {
                 AppError::Upstream(format!("cannot prepare the Claude Code config: {e}"))
             })?;
+        // Moved past a usage limit, the conversation steps back over it first (SPEC-074 SUP-004,
+        // as a task's does, SPEC-034); a failed step back still resumes.
+        if let (Some(session), true) = (&l.resume, l.continue_interrupted) {
+            let transcript = paths::claude_transcript_path(&l.config_dir_host, &l.cwd, session);
+            match yulius_harness::step_back::step_back_file(&transcript) {
+                Ok(changed) => {
+                    tracing::info!(
+                        changed,
+                        "cockpit transcript stepped back over a usage limit"
+                    )
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "could not step the cockpit transcript back")
+                }
+            }
+        }
         Ok(LaunchPlan {
             argv: plan.argv,
             cwd: plan.cwd,
@@ -318,10 +335,12 @@ impl TranscriptWatch for Watch {
                         resets_at,
                         message,
                         window_minutes,
+                        at,
                     } => out.push(Observation::LimitReached {
                         resets_at,
                         message,
                         window_minutes,
+                        at,
                     }),
                     Observed::AssistantMessage { .. } | Observed::Malformed => {}
                 }

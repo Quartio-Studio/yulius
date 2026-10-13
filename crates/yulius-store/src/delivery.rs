@@ -294,6 +294,7 @@ mod tests {
                 origin: TaskOrigin::Ui,
                 automation_run: None,
                 created_by: UserId::parse("u1")?,
+                owner: UserId::parse("u1")?,
                 created_at: Timestamp(1),
                 updated_at: Timestamp(1),
                 closed_at: None,
@@ -302,6 +303,7 @@ mod tests {
                 gate_blocks: 0,
                 wake_enabled: true,
                 mode: yulius_app::model::TaskMode::Prompt,
+                supertask: false,
             })
             .await?;
         Ok(task.id)

@@ -9,6 +9,49 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - A switch to another subscription waits while a background agent the agent started still runs
   (a review it ended its turn to wait for); before, the switch restarted the session and killed it
   (SPEC-050 ROT-021).
+- A task is owned by one person, whose GitHub credentials it uses (SPEC-070, ADR-0060, task #66).
+  Every task has an owner, its creator until a hand-over. The task's Git, `gh`, pull requests,
+  merges, commit identity and agent authority are the owner's. Only the owner changes the task:
+  anyone else, administrators included, gets 403 naming the owner, watches the terminal
+  read-only and cannot write into the task's worktree or open a shell there. They can ask for control (Request control in the task). The owner hands it over or
+  declines, and the asker may withdraw. From the hand-over on, the task acts on GitHub as the new
+  owner, and its terminal says so. An owner who is disabled, deleted or without write access
+  passes control at once. Schema version 18 (`tasks.owner_id`, the waiting request).
+- A session opened from Sessions reads as Claude Code's TUI printed it (SPEC-075, ADR-0059, task #71).
+  Prompts and slash commands show as `>` lines and messages and tool calls as `⏺`, with each result
+  under `⎿` folded to its first lines ("Read 2 lines", "… +2 lines"). Edits show as `Update(path)`
+  with their lines. The raw `<command-name>` and `<local-command-stdout>` tags are gone, and
+  reminders are hidden. The transcript is faded in both themes: fainter and less saturated than a
+  live terminal (`--session-*`), yet still WCAG AA. It ends with a locked prompt box, and a
+  pixel-art spider web hangs in its corner.
+- The Agent panel is now called the **Superagent**, and a usage limit no longer stops it (SPEC-074,
+  ADR-0055, task #69). The Superagent chose a subscription once, when it started, and kept it, so
+  it could hit a weekly limit while tasks went on elsewhere. It now watches its conversation. A
+  limit recorded after it started is recorded on its subscription, and the Superagent starts again
+  on one with capacity. It continues the cut turn there, stepped back over the limit as a task's
+  turn is, and the panel follows it without a "stopped" banner. Without capacity, it stays and
+  says why. `/s/<slug>/superagent` opens it, as `/agent` and `/cockpit` still do.
+- Supertasks (SPEC-071, ADR-0054, task #67; SPEC-001 TSK-018). Choose **Supertask** in the
+  composer's start menu (API `supertask: true`, `task_create`) for broad work such as security
+  hardening. The task waits for its project's running tasks, then runs alone. While it waits or
+  runs, no other task of the project starts, also tasks queued or chained before it; they wait
+  `queued` and say "Queued after supertask #N". A queued supertask says "Supertask · waits for
+  #3 and #5". Running sessions are never interrupted, and other projects keep running. At the
+  session limit, a supertask gets the next free slot first. Schema version 17
+  (`tasks.supertask`).
+- Cockpit and terminal starts survive a dropped request (SPEC-077, ADR-0053, task #64; #250). The
+  part of a start from the spawn to the registration runs as a task the request awaits, so a
+  client that goes away mid-start leaves one live Cockpit or terminal (or nothing on an error),
+  never a second Cockpit, an unusable terminal or an orphan run directory. Idle Cockpit start
+  locks are dropped. New tests pin that a signal right after a resume keeps the conversation and
+  that one user's blocked start delays no other user or sandbox.
+- A task's step strip no longer draws its progress bar over "Step N/M" (SPEC-073, task #68; #341).
+  A long state such as "Working · 1 background task still running" or "Done · PR #N merged" kept
+  its full width, so the strip's label shrank to nothing and the step count, which nothing
+  clipped, ran under the bar. The same happened with a short "Done · PR #N" in a narrow strip
+  beside a tool panel. The label now keeps room for the step count, the state gives its words up
+  first (it takes at most 40% of the strip, and its full text stays in the tooltip), and the label
+  is clipped inside its button.
 - A CI run that could not run (disk, a timeout, the host) reads "CI could not run (not the code)"
   instead of "checks failing · Needs you"; an armed merge stays armed and the agent is told to run
   the checks again (SPEC-050 STA-101).
@@ -31,7 +74,6 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   titles comply: task titles take an allowed type and are clipped to 100 characters, promotion
   pull requests are titled `release: promote dev to main`, and a fork's pull request is never
   taken for the promotion. `scripts/check_git_policy.py` is removed.
-
 - A stopped or closed run ends only when its processes are proven gone (SPEC-065, ADR-0050, task #54;
   #284, #285, #290). When Yulius cannot terminate a run's host after the stop or close escalation,
   the run stays live, the task's terminal says so and a running task needs attention; deleting it

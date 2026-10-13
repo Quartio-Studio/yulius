@@ -695,6 +695,7 @@ impl Fixture {
                 origin: TaskOrigin::Ui,
                 automation_run: None,
                 created_by: UserId::parse(creator)?,
+                owner: UserId::parse(creator)?,
                 created_at: Timestamp(1),
                 updated_at: Timestamp(1),
                 closed_at: None,
@@ -703,6 +704,7 @@ impl Fixture {
                 gate_blocks: 0,
                 wake_enabled: true,
                 mode: yulius_app::model::TaskMode::Prompt,
+                supertask: false,
             })
             .await?;
         Ok(worktree)
@@ -2381,8 +2383,9 @@ async fn superadmin(h: &support::Harness) -> BoxResult<Creds> {
 async fn the_superadmin_delivers_through_the_app_and_is_told_what_needs_github() -> TestResult {
     let f = fixture(&DeliveryProfile::standard()).await?;
     let owner = superadmin(&f.h).await?;
+    // The superadmin's own task: only a task's owner delivers it (SPEC-070).
     let wt = f
-        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .add_task_by("t1", "Checkout API", "feat/1-checkout-api", "dev", "u-root")
         .await?;
     commit_file(&wt, "feature.txt", "hello", "Add feature")?;
     commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
@@ -2444,7 +2447,27 @@ async fn the_superadmin_delivers_through_the_app_and_is_told_what_needs_github()
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
     assert_eq!(page.body["tasks"][0]["pr"]["number"], 1);
 
-    // A GitHub user merges the App's pull request as before.
+    // Bob may not merge the superadmin's task; once it is handed to him (SPEC-070), he merges
+    // the App's pull request as before.
+    let refused = f
+        .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    let (task, root, bob) = (
+        TaskId::parse("t1")?,
+        UserId::parse("u-root")?,
+        UserId::parse("u-bob")?,
+    );
+    assert!(
+        f.h.store
+            .request_control(&task, &bob, f.h.app.now())
+            .await?
+    );
+    assert!(
+        f.h.store
+            .pass_control(&task, &root, &bob, f.h.app.now())
+            .await?
+    );
     let merged = f
         .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
         .await?;

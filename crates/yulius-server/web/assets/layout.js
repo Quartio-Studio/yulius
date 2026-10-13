@@ -36,7 +36,7 @@ const MORE_OPEN_KEY = 'yulius.sidebarMoreOpen';
 
 // ---------------------------------------------------------------- tab row
 
-/** Thin sandbox tab row: tabs (or a dropdown on phones), "+", Status, notifications, Agent, tools toggle. */
+/** Thin sandbox tab row: tabs (or a dropdown on phones), "+", Status, notifications, Superagent, tools toggle. */
 export function createTabRow(ctx) {
   const tabs = h('nav', { class: 'tabrow-tabs', 'aria-label': 'Sandboxes' });
   const select = h('select', { class: 'select tab-select', 'aria-label': 'Sandbox', onChange: () => {
@@ -75,15 +75,15 @@ export function createTabRow(ctx) {
     toolsButton.setAttribute('aria-pressed', String(visible));
     labelTools();
   };
-  // The Agent (SPEC-035 AGT-005): the user's own session for quick work, in the right panel; one
-  // click opens or closes it, whether the tools rail shows or not.
-  const agentButton = h('button', { type: 'button', class: 'btn btn-agent agent-toggle', 'aria-label': 'Show Agent', 'aria-pressed': 'false', title: 'Agent: your own Claude Code session for quick work', onClick: () => ctx.toggleAgent && ctx.toggleAgent() },
-    icon('spark', { size: 16 }), h('span', { class: 'agent-toggle-text', 'aria-hidden': 'true' }, 'Agent'));
+  // The Superagent (SPEC-035 AGT-005, SPEC-074): the user's own session for quick work, in the right
+  // panel; one click opens or closes it, whether the tools rail shows or not.
+  const agentButton = h('button', { type: 'button', class: 'btn btn-agent agent-toggle', 'aria-label': 'Show Superagent', 'aria-pressed': 'false', title: 'Superagent: your own Claude Code session that manages this project, for quick work', onClick: () => ctx.toggleAgent && ctx.toggleAgent() },
+    icon('spark', { size: 16 }), h('span', { class: 'agent-toggle-text', 'aria-hidden': 'true' }, 'Superagent'));
   ctx.onPanelChange = (kind) => {
     const open = kind === 'agent';
     agentButton.classList.toggle('active', open);
     agentButton.setAttribute('aria-pressed', String(open));
-    agentButton.setAttribute('aria-label', open ? 'Hide Agent' : 'Show Agent');
+    agentButton.setAttribute('aria-label', open ? 'Hide Superagent' : 'Show Superagent');
   };
   const notifications = createNotificationCenter(ctx);
   ctx.notifications = notifications;
@@ -743,13 +743,13 @@ export function createSidebar(ctx) {
     row.age.textContent = relShort(task.updated_at);
     row.age.title = `Last change ${dateTime(task.updated_at)}`;
     const label = `Archive task #${task.number}`;
-    row.archive.hidden = !taskActions(task, sandbox.access, row.pr).archive;
+    row.archive.hidden = !taskActions(task, sandbox.access, row.pr, ctx.store.state.me?.user?.login).archive;
     row.el.classList.toggle('can-archive', !row.archive.hidden);
     row.archive.setAttribute('aria-label', label);
     row.archive.title = label;
   }
 
-  const archivable = (groupRows) => groupRows.filter((row) => taskActions(row.task, sandbox.access, row.pr).archive).map((row) => row.task);
+  const archivable = (groupRows) => groupRows.filter((row) => taskActions(row.task, sandbox.access, row.pr, ctx.store.state.me?.user?.login).archive).map((row) => row.task);
 
   /**
    * Done's "Archive all" (SPEC-062 QAR-002): every archivable Done task, one click, one Undo. While

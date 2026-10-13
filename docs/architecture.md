@@ -223,24 +223,61 @@ sequenceDiagram
     end
 ```
 
-## Agent (the Cockpit)
+### Supertasks
 
-Every user has one plain Claude Code session per sandbox, shown as the **Agent**
+Every run starts through `App::start_run`: a new task, the queue, a released chain or rule,
+Start now, Continue, and the capacity loop. Before the session limit, it applies the supertask
+hold (`yulius-app/src/supertask.rs`,
+[SPEC-071](../.ai/specs/SPEC-071-somewhere-here-the-user-should-be-able-t.md),
+[decision 0054](decisions/0054-a-supertask-holds-its-project-at-the-start-door.md)). A task
+without a live run waits `queued` while its project has a pending supertask (only an earlier one
+counts, for a supertask). A supertask also waits while the project has a working task. Live runs
+are never touched. The queue offers free slots to supertasks first, then FIFO, one start after
+the other. A held task's summary lists what it waits for (`held_by`).
+
+```mermaid
+flowchart LR
+    N[new / queued / released / continued / resumed task] --> G{start_run: held by a supertask?}
+    G -->|plain task, project has a pending supertask| Q[stays queued, held_by = supertasks]
+    G -->|supertask, project has working tasks or an earlier supertask| Q2[stays queued, held_by = those tasks]
+    G -->|not held| L{session slot free?}
+    L -->|no| Q3[queued]
+    L -->|yes| R[launch]
+    E[a run ends or is Done] --> D[drain_queue: supertasks first, then FIFO]
+    D --> G
+```
+
+## Superagent (the Cockpit)
+
+Every user has one plain Claude Code session per sandbox, shown as the **Superagent**
+([SPEC-074](../.ai/specs/SPEC-074-i-just-hit-usage-limit-in-the-agent-it-s.md), formerly the Agent)
 ([SPEC-021](../.ai/specs/SPEC-021-in-this-bar-we-need-to-add-cockpit-at-th.md),
 [decision 0020](decisions/0020-cockpit-as-a-plain-shell-session.md)); the code and the API still
 call it the Cockpit. It is a sandbox shell of kind `cockpit` that runs `claude` instead of the
 login shell: no hooks, settings or briefing, a pool subscription's token, and the newest
-conversation resumed whenever it starts again. The web UI shows it in the right tool panel beside
+conversation resumed whenever it starts again. Its start, like a terminal's, runs detached from
+the request, so a client that goes away mid-start never leaves a second or half-started session
+([SPEC-077](../.ai/specs/SPEC-077-fix-250-cockpit-and-shell-starts-survive.md),
+[decision 0053](decisions/0053-shell-starts-run-detached-from-the-request.md)). The web UI shows it in the right tool panel beside
 the page, under a notice that it is for quick work only
 ([SPEC-035](../.ai/specs/SPEC-035-move-cockpit-to-the-right-and-change-coc.md),
 [decision 0036](decisions/0036-agent-in-the-right-panel.md)).
+
+A Cockpit remembers its pool subscription (in `shell.json`) and watches its newest conversation
+while it runs ([SPEC-074](../.ai/specs/SPEC-074-i-just-hit-usage-limit-in-the-agent-it-s.md),
+[decision 0055](decisions/0055-cockpit-moves-past-a-usage-limit.md)). A usage limit recorded after
+it started is recorded on that subscription as a task's is. The Cockpit then starts again, under
+its start lock, on a subscription with capacity. It resumes the conversation stepped back over the
+limit with Claude Code's interrupted-turn flag, as a task does after a limit (SPEC-034). The old
+process ends with the exit status `switched`, and the panel follows it to the new one. Without
+capacity, it stays and its viewers get a notice.
 
 It manages the project through the Yulius MCP server
 ([SPEC-037](../.ai/specs/SPEC-037-i-got-something-like-this-tasks-and-cock.md),
 [decision 0029](decisions/0029-cockpit-manages-through-mcp.md)). Its bearer (`ck_…`) is derived
 from the shell's persisted host token, and it is served only the management tools: tasks,
 automations, workflows and sessions. Those tools act for a person (`ProjectCaller`): the Cockpit's
-owner, or a task's creator when a task's agent calls them. `task_create` takes the same path as
+owner, or a task's owner when a task's agent calls them. `task_create` takes the same path as
 New task; `task_stop`, `task_archive`, `task_delete`, `automation_delete`, `automation_run_now`
 and `automation_template_enable` call the UI's own functions with that person and the caller as
 the audit actor, never on the caller's own task
@@ -249,8 +286,9 @@ the audit actor, never on the caller's own task
 
 ```mermaid
 flowchart LR
-  UI["Right panel: Agent"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
+  UI["Right panel: Superagent"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
   APP -->|"pool_account"| POOL[("Subscriptions")]
+  W["Cockpit watch: newest conversation"] -->|"usage limit after the start: record_limit, start again (switched)"| APP
   APP -->|"plan_cockpit"| HP["Harness: claude [--resume id] --mcp-config yulius"]
   APP --> SH["Shell runtime (user space, repository)"]
   UI -->|"WS /api/shells/id/terminal"| SH
@@ -259,6 +297,28 @@ flowchart LR
   MCP -->|"task_create"| NT["App::create_task_as (as New task)"]
   MCP -->|"task_stop / task_archive / task_delete"| TU["The UI's stop, archive, delete (never the caller's own task)"]
   MCP -->|"automation_*, automation_template_enable"| AU["Automations and ready-made ones"]
+```
+
+## Task ownership
+
+A task acts on GitHub with one person's token, so it is that person's: its owner, the creator
+until a hand-over ([SPEC-070](../.ai/specs/SPEC-070-tasks-should-be-owned-by-a-specific-pers.md),
+[decision 0060](decisions/0060-a-task-is-owned-by-one-person.md)). `tasks.owner_id` decides the
+token (`App::owner_github_token`), the worktree's commit identity and the authority of the task's
+agent; `created_by` stays who asked. `App::load_task` refuses every task change to anyone but the
+owner, and the terminal opens read-only for others. Anyone else who may work in the project asks
+for control; the owner hands it over or declines, and an absent owner's task passes at once.
+
+```mermaid
+flowchart LR
+  B["Bob: Request control"] -->|"POST /control-request"| REQ[("tasks.control_requested_by")]
+  REQ -->|"owner absent"| PASS["pass_control"]
+  A["Alice (owner): Hand over"] -->|"POST /control-request/accept"| PASS
+  A -->|"DELETE: decline"| REQ
+  PASS --> OWN[("tasks.owner_id = Bob")]
+  OWN --> TOK["Git, gh, PRs, merges as Bob"]
+  OWN --> ID["worktree commit identity: Bob"]
+  OWN --> GATE["load_task: only Bob writes"]
 ```
 
 ## Ready-made automations

@@ -258,6 +258,7 @@ mod tests {
                     origin: TaskOrigin::Ui,
                     automation_run: None,
                     created_by: UserId::parse("u")?,
+                    owner: UserId::parse("u")?,
                     created_at: Timestamp(created),
                     updated_at: Timestamp(created),
                     closed_at: None,
@@ -266,6 +267,7 @@ mod tests {
                     gate_blocks: 0,
                     wake_enabled: true,
                     mode: yulius_app::model::TaskMode::Prompt,
+                    supertask: false,
                 })
                 .await?;
             let attempt = AttemptId::parse(&format!("a-{task}"))?;

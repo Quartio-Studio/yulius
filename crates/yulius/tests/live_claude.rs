@@ -88,6 +88,7 @@ async fn claude_code_runs_yulius_hooks_and_mcp() -> TestResult {
         origin: TaskOrigin::Ui,
         automation_run: None,
         created_by: user.id.clone(),
+        owner: user.id.clone(),
         created_at: now,
         updated_at: now,
         closed_at: None,
@@ -96,6 +97,7 @@ async fn claude_code_runs_yulius_hooks_and_mcp() -> TestResult {
         gate_blocks: 0,
         wake_enabled: false,
         mode: yulius_app::model::TaskMode::Prompt,
+        supertask: false,
     };
     store.insert_task(&task).await?;
     let work = tempfile::tempdir()?;

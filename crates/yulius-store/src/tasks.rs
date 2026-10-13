@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::{
-    AttemptRecord, FeedbackRecord, LaunchKind, MetricsRecord, ProviderSessionRecord,
-    SwitchDecisionRecord, TaskMode, TaskOrigin, TaskRecord,
+    AttemptRecord, ControlRequest, FeedbackRecord, LaunchKind, MetricsRecord,
+    ProviderSessionRecord, SwitchDecisionRecord, TaskMode, TaskOrigin, TaskRecord,
 };
 use yulius_app::ports::store::{AttemptUpdate, TaskFieldUpdate, TaskStore};
 use yulius_domain::harness::Harness;
@@ -17,7 +17,7 @@ use crate::{SqliteStore, bad_column, db, to_i64, to_u32, to_u64};
 
 const TASK_COLS: &str = "id, sandbox_id, number, title, prompt, harness, model, effort, workflow_id, \
     status, activity, branch, worktree_path, spec_path, origin, automation_run, created_by, created_at, \
-    updated_at, closed_at, archived_at, queued_at, gate_blocks, wake_enabled, mode";
+    updated_at, closed_at, archived_at, queued_at, gate_blocks, wake_enabled, mode, supertask, owner_id";
 
 const ATTEMPT_COLS: &str = "id, task_id, seq, harness, account_id, provider_session_id, launch_kind, \
     state, run_dir, token_hash, host_token, ptyhost_pid, child_pid, started_at, ended_at, exit_code, exit_reason";
@@ -40,6 +40,7 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<TaskRecord> {
     let status: String = row.get("status")?;
     let activity: Option<String> = row.get("activity")?;
     let created_by: String = row.get("created_by")?;
+    let owner: String = row.get("owner_id")?;
     let origin: String = row.get("origin")?;
     let harness_text: String = row.get("harness")?;
     Ok(TaskRecord {
@@ -60,6 +61,7 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<TaskRecord> {
         origin: TaskOrigin::parse(&origin),
         automation_run: row.get("automation_run")?,
         created_by: parse_id("user id", &created_by, UserId::parse)?,
+        owner: parse_id("user id", &owner, UserId::parse)?,
         created_at: Timestamp(row.get("created_at")?),
         updated_at: Timestamp(row.get("updated_at")?),
         closed_at: row.get::<_, Option<i64>>("closed_at")?.map(Timestamp),
@@ -71,6 +73,7 @@ fn task_from_row(row: &Row<'_>) -> rusqlite::Result<TaskRecord> {
             let mode: String = row.get("mode")?;
             TaskMode::parse(&mode).ok_or_else(|| bad_column("mode", &mode))?
         },
+        supertask: row.get("supertask")?,
     })
 }
 
@@ -166,7 +169,7 @@ impl TaskStore for SqliteStore {
                 )
                 .map_err(db)?;
             tx.execute(
-                &format!("INSERT INTO tasks ({TASK_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)"),
+                &format!("INSERT INTO tasks ({TASK_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)"),
                 params![
                     t.id.as_str(),
                     t.sandbox_id.as_str(),
@@ -193,6 +196,8 @@ impl TaskStore for SqliteStore {
                     i64::from(t.gate_blocks),
                     t.wake_enabled,
                     t.mode.as_str(),
+                    t.supertask,
+                    t.owner.as_str(),
                 ],
             )
             .map_err(db)?;
@@ -352,6 +357,125 @@ impl TaskStore for SqliteStore {
                 .map_err(db)?;
             tx.commit().map_err(db)?;
             Ok(deleted > 0)
+        })
+        .await
+    }
+
+    async fn control_request(&self, task: &TaskId) -> AppResult<Option<ControlRequest>> {
+        let id = task.as_str().to_owned();
+        self.call(move |c| {
+            let row: Option<(Option<String>, Option<i64>)> = c
+                .query_row(
+                    "SELECT control_requested_by, control_requested_at FROM tasks WHERE id = ?1",
+                    [id.as_str()],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()
+                .map_err(db)?;
+            match row {
+                Some((Some(by), Some(at))) => Ok(Some(ControlRequest {
+                    by: UserId::parse(&by).map_err(|_| AppError::internal("bad user id"))?,
+                    at: Timestamp(at),
+                })),
+                _ => Ok(None),
+            }
+        })
+        .await
+    }
+
+    async fn request_control(&self, task: &TaskId, by: &UserId, at: Timestamp) -> AppResult<bool> {
+        let (id, by) = (task.as_str().to_owned(), by.as_str().to_owned());
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            tx.execute(
+                "UPDATE tasks SET control_requested_by = ?2, control_requested_at = ?3, \
+                 updated_at = ?3 WHERE id = ?1 AND control_requested_by IS NULL",
+                params![id, by, at.0],
+            )
+            .map_err(db)?;
+            let waits = tx
+                .query_row(
+                    "SELECT 1 FROM tasks WHERE id = ?1 AND control_requested_by = ?2",
+                    params![id, by],
+                    |_| Ok(()),
+                )
+                .optional()
+                .map_err(db)?
+                .is_some();
+            tx.commit().map_err(db)?;
+            Ok(waits)
+        })
+        .await
+    }
+
+    async fn drop_control_request(
+        &self,
+        task: &TaskId,
+        by: &UserId,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let (id, by) = (task.as_str().to_owned(), by.as_str().to_owned());
+        self.call(move |c| {
+            let n = c
+                .execute(
+                    "UPDATE tasks SET control_requested_by = NULL, control_requested_at = NULL, \
+                     updated_at = ?3 WHERE id = ?1 AND control_requested_by = ?2",
+                    params![id, by, at.0],
+                )
+                .map_err(db)?;
+            Ok(n == 1)
+        })
+        .await
+    }
+
+    async fn pass_control(
+        &self,
+        task: &TaskId,
+        from: &UserId,
+        to: &UserId,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let (id, from, to) = (
+            task.as_str().to_owned(),
+            from.as_str().to_owned(),
+            to.as_str().to_owned(),
+        );
+        self.call(move |c| {
+            let n = c
+                .execute(
+                    "UPDATE tasks SET owner_id = ?3, control_requested_by = NULL, \
+                     control_requested_at = NULL, updated_at = ?4 \
+                     WHERE id = ?1 AND owner_id = ?2 AND control_requested_by = ?3",
+                    params![id, from, to, at.0],
+                )
+                .map_err(db)?;
+            Ok(n == 1)
+        })
+        .await
+    }
+
+    async fn take_control(
+        &self,
+        task: &TaskId,
+        from: &UserId,
+        to: &UserId,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let (id, from, to) = (
+            task.as_str().to_owned(),
+            from.as_str().to_owned(),
+            to.as_str().to_owned(),
+        );
+        self.call(move |c| {
+            let n = c
+                .execute(
+                    "UPDATE tasks SET owner_id = ?3, control_requested_by = NULL, \
+                     control_requested_at = NULL, updated_at = ?4 \
+                     WHERE id = ?1 AND owner_id = ?2",
+                    params![id, from, to, at.0],
+                )
+                .map_err(db)?;
+            Ok(n == 1)
         })
         .await
     }

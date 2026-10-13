@@ -463,6 +463,7 @@ impl App {
                 // finished preparation sat at "Your turn" and showed as needing a person
                 // (F 2026-10-11, task #1).
                 mode: crate::model::TaskMode::Goal,
+                supertask: false,
             })
             .await?;
         // Tasks created without a run start archived; the preparation task must stay visible.

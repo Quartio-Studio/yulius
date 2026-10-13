@@ -192,6 +192,7 @@ async fn new_task(
             automation_run: None,
             start: true,
             mode: TaskMode::Prompt,
+            supertask: false,
         })
         .await?;
     Ok(record.id)

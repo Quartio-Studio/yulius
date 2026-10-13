@@ -111,7 +111,14 @@ export function statusInfo(task) {
   }
   // Each waiting state has its own shape (#147): an hourglass in line for a slot, a ring being
   // drawn while the session starts, pause bars, and a chain link after another task.
-  if (status === 'queued') return { glyph: '⧗', icon: 'st-queued', tone: 'queued', label: 'Queued', group: 'working' };
+  if (status === 'queued') {
+    // Held by a supertask (SPEC-071): a supertask waits for the project's running tasks, any
+    // other task for the supertask.
+    const held = heldBy(task);
+    if (held.length && task.supertask) return { glyph: '⧗', icon: 'st-queued', tone: 'queued', label: `Supertask · waits for ${numbers(held)}`, group: 'working' };
+    if (held.length) return { glyph: '⧗', icon: 'st-queued', tone: 'queued', label: `Queued after supertask #${held[0]}`, group: 'working' };
+    return { glyph: '⧗', icon: 'st-queued', tone: 'queued', label: 'Queued', group: 'working' };
+  }
   if (status === 'starting') return { glyph: '◌', icon: 'st-starting', tone: 'queued', label: 'Starting', group: 'working' };
   // The pool moves the session to another subscription at a turn end (ROT-003): under the hood,
   // the task goes on (F 2026-10-10: tasks are subscription-agnostic).
@@ -136,6 +143,19 @@ export function statusInfo(task) {
   if (status in STOP_LABELS) return { glyph: '▲', icon: 'st-crashed', tone: 'stopped-abnormal', label: STOP_LABELS[status], group: 'ended' };
   if (status in FAIL_LABELS) return { glyph: '✕', icon: 'st-failed', tone: 'failed', label: FAIL_LABELS[status], group: 'ended' };
   return { glyph: '?', icon: 'st-stopped', tone: 'stopped', label: 'Unknown state', group: 'ended', detail: status };
+}
+
+/** What a queued task waits for because of a supertask (SPEC-071): task numbers, or []. */
+export function heldBy(task) {
+  return Array.isArray(task.held_by) ? task.held_by.filter(Number.isInteger) : [];
+}
+
+/** "#3", "#3 and #5", "#3, #5 and #8"; past four, "#3, #5, #8 and 2 more". */
+export function numbers(list) {
+  const named = list.slice(0, list.length > 4 ? 3 : 4).map((n) => `#${n}`);
+  const rest = list.length - named.length;
+  if (rest) return `${named.join(', ')} and ${rest} more`;
+  return named.length > 1 ? `${named.slice(0, -1).join(', ')} and ${named[named.length - 1]}` : named.join('');
 }
 
 /** "resets ~14:20" (or "~Tuesday 14:20", "~Oct 12") from a reset time; '' when unknown. */
@@ -178,8 +198,16 @@ export function activityLine(task, info = statusInfo(task)) {
     return after ? `Starts by itself when #${after.number} is done` : info.label;
   }
   if (task.status === 'waiting_capacity') return pausedLine(task);
+  if (task.status === 'queued' && heldBy(task).length) return supertaskLine(task);
   if (info.group === 'ended' && steps.total) return `${info.label} · ${steps.done || 0}/${steps.total} steps`;
   return info.label;
+}
+
+/** Why a queued task waits for a supertask, in a sentence (SPEC-071). */
+export function supertaskLine(task) {
+  const held = heldBy(task);
+  if (task.supertask) return `It starts once ${numbers(held)} ${held.length === 1 ? 'finishes' : 'finish'}, then runs alone; the project's other tasks wait for it.`;
+  return `It starts once ${numbers(held)} ${held.length === 1 ? 'is' : 'are'} done: a supertask runs alone in this project.`;
 }
 
 /**
@@ -239,11 +267,21 @@ export function allows(access, minimum) {
 }
 
 /**
- * Actions available for a task given sandbox access (UI-013, §6.3). `pr` is the task's pull
- * request (store.pullsOf()), so a task the sidebar shows as Done can be archived or deleted.
+ * Who owns `task` when it is not `me` (the viewer's login), else null: only a task's owner changes
+ * it, as it acts on GitHub with their token (SPEC-070).
  */
-export function taskActions(task, access, pr) {
-  const write = allows(access, 'write');
+export function otherOwner(task, me) {
+  const owner = task && task.owner && task.owner.login;
+  return owner && me && owner !== me ? owner : null;
+}
+
+/**
+ * Actions available for a task given sandbox access (UI-013, §6.3) and the viewer's login `me`:
+ * write actions are the owner's (SPEC-070). `pr` is the task's pull request (store.pullsOf()), so
+ * a task the sidebar shows as Done can be archived or deleted.
+ */
+export function taskActions(task, access, pr, me) {
+  const write = allows(access, 'write') && !otherOwner(task, me);
   const live = isLive(task.status);
   const chained = task.status === 'chained';
   const ended = !live && !chained;
