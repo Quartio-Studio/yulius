@@ -221,7 +221,9 @@ async fn the_superadmin_lists_and_imports_repositories_through_the_app() -> Test
 #[tokio::test]
 async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() -> TestResult {
     let w = World::new("org").await?;
-    let (_, alice) = w.user("alice", false).await?;
+    let (alice_user, alice) = w.user("alice", false).await?;
+    // Start onboarding is a browser action (SPEC-051 OBD-002).
+    let alice_browser = w.browser(&alice_user).await?;
     let (_, bob) = w.user("bob", false).await?;
     w.remote(OWNER, "shop", &[("README.md", "# Shop\n")], &[])?;
     w.remote(
@@ -364,7 +366,7 @@ async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() ->
         Method::POST,
         &format!("/api/sandboxes/{shop_id}/onboarding/approve"),
         None,
-        &alice,
+        &alice_browser,
     )
     .await?;
     assert_eq!(approve.status, StatusCode::OK, "{:?}", approve.body);
@@ -401,7 +403,7 @@ async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() ->
         Method::POST,
         &format!("/api/sandboxes/{shop_id}/onboarding/approve"),
         None,
-        &alice,
+        &alice_browser,
     )
     .await?;
     assert_eq!(

@@ -329,6 +329,49 @@ async fn foreign_and_non_github_repositories_are_refused() -> TestResult {
     Ok(())
 }
 
+/// OBD-002: the CLI uploads; only a person in the browser starts onboarding.
+#[tokio::test]
+async fn onboarding_starts_only_from_the_browser() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice_user, alice) = w.user("alice", false).await?;
+    let remote = w.remote(
+        OWNER,
+        "shop",
+        &[
+            ("README.md", "# Shop\n"),
+            ("src/app.txt", "v1\n"),
+            ("old.txt", "x\n"),
+        ],
+        &[],
+    )?;
+    w.grant("alice", "shop", "admin");
+    let offer = laptop_offer(&w, &remote)?;
+    let created = create_job(&w, &alice, offer.body()?).await?;
+    assert_eq!(created.status, StatusCode::OK, "{:?}", created.body);
+    let sandbox = w.h.store.sandboxes().await?.remove(0);
+    assert_eq!(sandbox.onboarding_state, "pending");
+    let approve = format!("/api/sandboxes/{}/onboarding/approve", sandbox.id);
+
+    let cli = call(&w.h.router, Method::POST, &approve, None, &alice).await?;
+    assert_eq!(cli.status, StatusCode::FORBIDDEN, "{:?}", cli.body);
+    assert!(
+        text(&cli.body["error"]["message"]).contains("in the browser"),
+        "{:?}",
+        cli.body
+    );
+    let unchanged = w.h.store.sandbox(&sandbox.id).await?.ok_or("sandbox")?;
+    assert_eq!(
+        unchanged.onboarding_state, "pending",
+        "a CLI token changes nothing"
+    );
+
+    let browser = w.browser(&alice_user).await?;
+    let started = call(&w.h.router, Method::POST, &approve, None, &browser).await?;
+    assert_eq!(started.status, StatusCode::OK, "{:?}", started.body);
+    assert_eq!(started.body["onboarding"], "preparing");
+    Ok(())
+}
+
 #[tokio::test]
 async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
     let w = World::new("org").await?;

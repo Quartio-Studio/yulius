@@ -35,3 +35,4 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0029](0029-cockpit-manages-through-mcp.md): The Cockpit and task agents manage the project through the Yulius MCP server
 - [0031](0031-deleting-a-done-task-closes-it.md): Deleting a Done task closes its session first
 - [0032](0032-shared-notes-with-revisions.md): Shared notes are stored on the server and saved by revision
+- [0038](0038-onboarding-starts-in-the-browser.md): Onboarding starts in the browser, never from the CLI

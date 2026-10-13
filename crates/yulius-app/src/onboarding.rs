@@ -795,16 +795,23 @@ impl App {
         })
     }
 
-    /// `POST /api/sandboxes/{sid}/onboarding/approve` (write): starts the preparation task
-    /// now (it normally starts by itself) and moves the sandbox to `preparing`.
+    /// `POST /api/sandboxes/{sid}/onboarding/approve` (write, browser only): Start onboarding —
+    /// starts the onboarding task and moves the sandbox to `preparing`. A person starts it in the
+    /// browser; a bearer token (the CLI) is refused before anything is read (SPEC-051 OBD-002).
     ///
     /// # Errors
-    /// `Conflict` when nothing awaits preparation or the task cannot start.
+    /// `Forbidden` without a browser session; `Conflict` when nothing awaits preparation or the
+    /// task cannot start.
     pub async fn approve_onboarding(
         self: &Arc<Self>,
         ctx: &AuthContext,
         sid: &str,
     ) -> AppResult<Sandbox> {
+        if ctx.csrf_token.is_none() {
+            return Err(AppError::Forbidden(
+                "Start onboarding on the sandbox page in the browser; the CLI only uploads".into(),
+            ));
+        }
         let id = SandboxId::parse(sid).map_err(|_| AppError::NotFound)?;
         let (record, level) = self.require(&ctx.user, &id, Action::Work).await?;
         match OnboardingState::parse(&record.onboarding_state) {
