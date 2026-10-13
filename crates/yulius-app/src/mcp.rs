@@ -168,6 +168,14 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
             input_schema: schema(json!({}), &[]),
         },
         ToolDescriptor {
+            name: "record_number".into(),
+            description: "The number for a new numbered file (a decision record, a migration, any file named NNNN-… or PREFIX-NNN-…) in dir: Yulius gives each task its own number, past every such file on the integration branch, in every parallel task and every number given out before, and reserves it for this task. Use it instead of counting the files yourself: parallel tasks counting the same files take the same number and collide when both merge. Name the file with the returned number at once; asking again before that file exists returns the same number.".into(),
+            input_schema: schema(json!({
+                "dir": {"type": "string", "description": "Repository-relative directory of the numbered files, e.g. docs/decisions"},
+                "prefix": {"type": "string", "description": "The text before the number when the directory mixes series, e.g. SPEC- (default: the directory's main series)"}
+            }), &["dir"]),
+        },
+        ToolDescriptor {
             name: "spec_check".into(),
             description: "Validate this task's spec in the Yulius format (frontmatter, required sections, a Plan of at most 30 unique steps) and the project documentation; says whether this task needs a spec at all (features and fixes do; research, questions, docs and chores do not) and returns the problems to fix plus nudges about the plan. The same check runs when you stop.".into(),
             input_schema: schema(json!({}), &[]),
@@ -225,9 +233,9 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "delivery_merge".into(),
-            description: "Merge this task's pull request on green (the one delivery pipeline: you deliver your own work, no person accepts it). Refused unless the checks passed on the exact head (Yulius CI), the spec is valid when the task needs one, every step is done, the head is current and an independent review in a fresh session approved exactly this head: pass that commit as reviewed_head (and a one-line review_summary). While the checks at that head still run, the call arms the merge instead: Yulius merges exactly that head as soon as they pass (start `yulius wait` with run_in_background and end your turn: it says how the merge ended; never poll). Acts with the authority of the task's owner and is audited.".into(),
+            description: "Merge this task's pull request on green (the one delivery pipeline: you deliver your own work, no person accepts it). Refused unless the checks passed on the exact head (Yulius CI), the spec is valid when the task needs one, every step is done, the head is current and an independent review in a fresh session approved exactly this head: pass that commit as reviewed_head (and a one-line review_summary). A review stays valid across clean merges of the integration branch made after it (no conflict resolved, nothing else changed). While the checks at that head still run, the call arms the merge instead: Yulius merges exactly that head as soon as they pass (start `yulius wait` with run_in_background and end your turn: it says how the merge ended; never poll). Acts with the authority of the task's owner and is audited.".into(),
             input_schema: schema(json!({
-                "reviewed_head": {"type": "string", "description": "The commit SHA the independent reviewer approved (must be the branch head)"},
+                "reviewed_head": {"type": "string", "description": "The commit SHA the independent reviewer approved: the branch head, or an earlier head followed only by clean merges of the integration branch"},
                 "review_summary": {"type": "string", "description": "One line: the reviewer's verdict and what it checked"}
             }), &["reviewed_head"]),
         },
@@ -472,6 +480,7 @@ impl App {
             "scope_claim" => self.tool_scope_claim(ctx, &args).await,
             "scope_release" => self.tool_scope_release(ctx, &args).await,
             "scopes_list" => self.tool_scopes_list(ctx).await,
+            "record_number" => self.tool_record_number(ctx, &args).await,
             "spec_check" => self.tool_spec_check(ctx).await,
             "steps_set" => self.tool_steps_set(ctx, &args).await,
             "step_update" => self.tool_step_update(ctx, &args).await,

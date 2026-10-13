@@ -34,6 +34,8 @@ pub fn render(tool: &str, args: &Value, value: &Value) -> String {
             .and_then(Value::as_str)
             .map(str::to_owned),
         "session_read" => session_read(value),
+        // The number, the file to create and what to do with it (SPEC-083).
+        "record_number" => text(value, "next").map(str::to_owned),
         _ => None,
     };
     finish(text.unwrap_or_else(|| outline(value)))
@@ -1179,6 +1181,19 @@ mod tests {
         assert_eq!(
             render("session_read", &json!({"id": "ses_1"}), &page),
             "Session ses_1 \"Checkout\" (task #12), from line 40; continue with from: 100.\n[41 user] hi\n[42 assistant] hello"
+        );
+    }
+
+    /// SPEC-083 NUM-001: a record number reads as the one line saying the number and the file.
+    #[test]
+    fn a_record_number_reads_as_its_next_step() {
+        let next =
+            "0066 is reserved for this task: name the file `docs/decisions/0066-<slug>.md` now.";
+        let record = json!({"dir": "docs/decisions", "number": "0066",
+            "file": "docs/decisions/0066-<slug>.md", "again": false, "next": next});
+        assert_eq!(
+            render("record_number", &json!({"dir": "docs/decisions"}), &record),
+            next
         );
     }
 }
