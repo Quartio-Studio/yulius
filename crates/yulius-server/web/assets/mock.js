@@ -20,8 +20,10 @@ const MIN = 60e3;
 const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
 const ORIGIN = window.location.origin;
-// Where the mock's composer attachments live, as an upload reports them (SPEC-043).
-const MOCK_ATTACHMENTS = '/srv/yulius/sandboxes/sb_studio/attachments/drafts/usr_mkarp';
+// Where the mock's sandboxes live, and its composer attachments as an upload reports them
+// (SPEC-043).
+const MOCK_SANDBOXES = '/srv/yulius/sandboxes';
+const MOCK_ATTACHMENTS = `${MOCK_SANDBOXES}/sb_studio/attachments/drafts/usr_mkarp`;
 // A file gone since (drafts are removed after a week).
 const MOCK_GONE = new Set([`${MOCK_ATTACHMENTS}/old-mockup.png`]);
 // A 1×1 PNG served for every attached image.
@@ -924,21 +926,29 @@ route('GET', `/api/tasks/${ID}`, async ({ db, p }) => {
   return answer;
 });
 // The prompt a task started with (SPEC-043): `@path` lines are its attached files, served only
-// from the attachments folder.
+// from the task's own attachment folders, named directly (SPEC-080).
 function promptParts(task) {
   const lines = String(task.prompt ?? task.title).split('\n');
   const paths = lines.map((line) => line.trim().match(/^@'?(\/[^']+)'?$/)).filter(Boolean).map((m) => m[1]);
   const text = lines.filter((line) => !/^@'?\//.test(line.trim())).join('\n').trim();
   return { text, paths };
 }
-const promptFileServed = (path) => path.startsWith(`${MOCK_ATTACHMENTS}/`) && !MOCK_GONE.has(path);
+function promptFileServed(task, path) {
+  const base = `${MOCK_SANDBOXES}/${task.sandbox_id}/attachments`;
+  const owned = [`${base}/drafts/usr_${task.created_by.login}`, `${base}/tasks/${task.id}`];
+  const slash = path.lastIndexOf('/');
+  const plain = path.split('/').slice(1).every((part) => part && part !== '.' && part !== '..');
+  return plain && owned.includes(path.slice(0, slash)) && !MOCK_GONE.has(path);
+}
 route('GET', `/api/tasks/${ID}/prompt`, ({ db, p }) => {
-  const { text, paths } = promptParts(taskOf(db, p[0]));
-  return { text, attachments: paths.map((path) => ({ name: path.split('/').pop(), image: /\.(png|jpe?g|gif|webp)$/i.test(path), available: promptFileServed(path) })) };
+  const task = taskOf(db, p[0]);
+  const { text, paths } = promptParts(task);
+  return { text, attachments: paths.map((path) => ({ name: path.split('/').pop(), image: /\.(png|jpe?g|gif|webp)$/i.test(path), available: promptFileServed(task, path) })) };
 });
 route('GET', `/api/tasks/${ID}/prompt/attachments/${ID}`, ({ db, p }) => {
-  const path = promptParts(taskOf(db, p[0])).paths[Number(p[1])];
-  if (!path || !promptFileServed(path)) fail(404, 'not_found', 'not found');
+  const task = taskOf(db, p[0]);
+  const path = promptParts(task).paths[Number(p[1])];
+  if (!path || !promptFileServed(task, path)) fail(404, 'not_found', 'not found');
   if (/\.png$/i.test(path)) return new Response(Uint8Array.from(atob(MOCK_PNG), (c) => c.charCodeAt(0)), { status: 200, headers: { 'Content-Type': 'image/png' } });
   return new Response('Mock notes attached to the prompt.\n', { status: 200, headers: { 'Content-Type': 'application/octet-stream' } });
 });

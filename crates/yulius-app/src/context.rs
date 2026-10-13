@@ -174,6 +174,8 @@ pub struct App {
     pub(crate) previews: crate::preview::PreviewState,
     /// Uploads in progress (SPEC-001 EDT-006, UI-048).
     pub(crate) uploads: crate::uploads::UploadState,
+    /// Files of original prompts being read (SPEC-080).
+    pub(crate) attachment_reads: crate::task_prompt::AttachmentReads,
     /// A random tag of this server process, sent with every response (`X-Yulius`): the preview
     /// proxy refuses an upstream that answers with it, i.e. Yulius itself (BRW-008).
     pub instance_tag: String,
@@ -219,6 +221,7 @@ impl App {
             automation_template_lock: tokio::sync::Mutex::new(()),
             previews: crate::preview::PreviewState::default(),
             uploads: crate::uploads::UploadState::default(),
+            attachment_reads: crate::task_prompt::AttachmentReads::default(),
             intake: OnceLock::new(),
             updates: crate::updates::UpdateState::default(),
             vault: crate::vault::VaultState::default(),

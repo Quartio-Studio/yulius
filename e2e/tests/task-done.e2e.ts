@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, mock, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -55,23 +55,21 @@ test('a task being stopped moves straight to Stopped, never into Working', async
   await expect(screen.getByRole('region', 'Working').getByRole('link', /Checkout API/)).toBeHidden();
 });
 
-/** Changes a mock task as the server would announce it. */
-const touchTask = (browser: Browser, number: number, changes: Record<string, unknown>) =>
-  browser.evaluate(([n, c]) => (window as unknown as WithMock).__yuliusMock.touchTask('sb_studio', n, c), [number, changes] as const);
-type WithMock = { __yuliusMock: { touchTask: (sandbox: string, number: number, changes: unknown) => void } };
+/** Changes a mock task of the studio sandbox as the server would announce it. */
+const touchStudioTask = (browser: Browser, number: number, changes: Record<string, unknown>) => touchTask(browser, 'sb_studio', number, changes);
 
 test('an idle agent with a background shell running is Working, not your turn', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
 
   // The turn ended while the agent's build runs in the background: it wakes by itself.
-  await touchTask(browser, 12, { activity: 'waiting', background_shells: 1 });
+  await touchStudioTask(browser, 12, { activity: 'waiting', background_shells: 1 });
   await expect(browser.locator('.strip-status')).toHaveText(/Working · 1 background task still running/);
   await expect(screen.getByRole('region', 'Working').getByRole('link', /Checkout API/)).toBeVisible();
   await expect(browser.locator('.attention-bar')).toBeHidden();
 
   // The shell ended and nothing else runs: now the next move is the user's.
-  await touchTask(browser, 12, { background_shells: 0 });
+  await touchStudioTask(browser, 12, { background_shells: 0 });
   await expect(browser.locator('.strip-status')).toHaveText(/Your turn/);
   await expect(browser.locator('.attention-bar')).toHaveText(/waiting for your reply/);
 });
@@ -159,7 +157,7 @@ test('deleting a Done task says so while it runs and sends one request', async (
 
 test('a task being stopped says Stopping… on its Delete item and can be stopped again', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
-  await touchTask(browser, 12, { status: 'stopping', activity: null });
+  await touchStudioTask(browser, 12, { status: 'stopping', activity: null });
   await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
   const item = screen.getByRole('menuitem', /^Delete permanently/);
   await expect(item).toHaveAttribute('aria-disabled', 'true');

@@ -14,6 +14,10 @@ use support::{
     seed_task_with_prompt,
 };
 use tower::ServiceExt as _;
+use yulius_app::auth::AuthContext;
+use yulius_app::ports::store::UserStore as _;
+use yulius_app::uploads::MAX_CONCURRENT_UPLOADS;
+use yulius_domain::ids::UserId;
 use yulius_domain::task::TaskStatus;
 
 /// Largest file served in these tests (the upload limit).
@@ -24,7 +28,15 @@ const LIMIT: u64 = 1024;
 async fn seeded(
     prompt: impl FnOnce(&str) -> String,
 ) -> Result<(Harness, PathBuf, [Creds; 3]), Box<dyn std::error::Error>> {
-    let h = harness_configured(|c| c.upload_max_bytes = LIMIT)?;
+    seeded_with(LIMIT, prompt).await
+}
+
+/// [`seeded`] with `limit` as the upload limit.
+async fn seeded_with(
+    limit: u64,
+    prompt: impl FnOnce(&str) -> String,
+) -> Result<(Harness, PathBuf, [Creds; 3]), Box<dyn std::error::Error>> {
+    let h = harness_configured(move |c| c.upload_max_bytes = limit)?;
     let alice = seed_github_user(&h, "u-alice", "alice").await?;
     let bob = seed_github_user(&h, "u-bob", "bob").await?;
     let carol = seed_github_user(&h, "u-carol", "carol").await?;
@@ -233,5 +245,101 @@ async fn only_the_tasks_own_attachment_folders_are_served_never_through_a_link()
         "{}",
         listed.body
     );
+    Ok(())
+}
+
+/// GETs `path` as `creds` and returns the response with its body not read yet.
+async fn get_unread(
+    h: &Harness,
+    path: &str,
+    creds: &Creds,
+) -> Result<axum::response::Response, Box<dyn std::error::Error>> {
+    let mut req = Request::builder().method(Method::GET).uri(path);
+    if let Some(cookie) = &creds.cookie {
+        req = req.header(header::COOKIE, support::cookie_header(cookie));
+    }
+    if let Some(token) = &creds.bearer {
+        req = req.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    Ok(h.router.clone().oneshot(req.body(Body::empty())?).await?)
+}
+
+/// #303: the dialog loads every thumbnail at once; reads used to take the uploads' slots and
+/// failed with 429 beyond 8, or while uploads ran.
+#[tokio::test]
+async fn twelve_images_are_served_together_while_every_upload_slot_is_taken() -> TestResult {
+    let (h, drafts, [alice, ..]) = seeded(|d| {
+        (0..12)
+            .map(|n| format!("@{d}/img-{n}.png"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
+    .await?;
+    for n in 0..12 {
+        std::fs::write(
+            drafts.join(format!("img-{n}.png")),
+            format!("\u{89}PNG {n}"),
+        )?;
+    }
+    let user = h
+        .store
+        .user(&UserId::parse("u-alice")?)
+        .await?
+        .ok_or("user")?;
+    let ctx = AuthContext {
+        user,
+        csrf_token: None,
+        session_hash: None,
+    };
+    let mut uploads = Vec::new();
+    for n in 0..MAX_CONCURRENT_UPLOADS {
+        uploads.push(
+            h.app
+                .begin_file_upload(&ctx, "s1", None, &format!("up-{n}.txt"), false, None)
+                .await?,
+        );
+    }
+
+    // All twelve answer while their bodies are still unread (each holds its read slot).
+    let url = |n: usize| format!("/api/tasks/t1/prompt/attachments/{n}");
+    let responses = futures::future::try_join_all((0..12).map(|n| {
+        let (h, alice, url) = (&h, &alice, url(n));
+        async move { get_unread(h, &url, alice).await }
+    }))
+    .await?;
+    for (n, response) in responses.into_iter().enumerate() {
+        assert_eq!(response.status(), StatusCode::OK, "image {n}");
+        let body = response.into_body().collect().await?.to_bytes();
+        assert_eq!(body, format!("\u{89}PNG {n}").as_bytes(), "image {n}");
+    }
+    drop(uploads);
+    Ok(())
+}
+
+/// #303: an attachment is streamed in bounded chunks, never read whole into memory.
+#[tokio::test]
+async fn an_attachment_is_streamed_in_bounded_chunks_with_its_length() -> TestResult {
+    const BIG: u64 = 1024 * 1024;
+    let (h, drafts, [alice, ..]) = seeded_with(BIG, |d| format!("@{d}/big.bin")).await?;
+    let content: Vec<u8> = (0..BIG).map(|i| (i % 251) as u8).collect();
+    std::fs::write(drafts.join("big.bin"), &content)?;
+
+    let response = get_unread(&h, "/api/tasks/t1/prompt/attachments/0", &alice).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_LENGTH], BIG.to_string());
+    let mut body = response.into_body();
+    let (mut received, mut frames) = (Vec::new(), 0);
+    while let Some(frame) = body.frame().await {
+        let data = frame?.into_data().map_err(|_| "not data")?;
+        assert!(
+            data.len() <= yulius_app::task_prompt::ATTACHMENT_CHUNK,
+            "{}",
+            data.len()
+        );
+        received.extend_from_slice(&data);
+        frames += 1;
+    }
+    assert!(frames > 1, "{frames}");
+    assert!(received == content, "the bytes differ");
     Ok(())
 }

@@ -3,7 +3,9 @@
 ## Status
 
 Accepted. Specified in
-[SPEC-043](../../.ai/specs/SPEC-043-here-i-want-a-button-see-the-original-pr.md).
+[SPEC-043](../../.ai/specs/SPEC-043-here-i-want-a-button-see-the-original-pr.md). Its read bound and
+the `/proc/self/fd` fallback on Linux are amended by
+[ADR-0064](0064-attachment-reads-have-their-own-bound.md).
 
 ## Context
 
@@ -26,7 +28,7 @@ name any file on the host, not only an upload.
   upload limit) and, where `/proc/self/fd` exists, must have been opened at its expected real
   path. Otherwise 404. Images get their image type; everything else downloads as
   `application/octet-stream`; every answer has `nosniff` and a `sandbox` content security
-  policy. Reads share the uploads' concurrency bound.
+  policy. Reads share the uploads' concurrency bound (now their own: ADR-0064).
 - Both need read access to the task's sandbox, like the task itself.
 
 ## Alternatives

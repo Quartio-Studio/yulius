@@ -1,6 +1,7 @@
 //! Task routes (non-runtime parts; lifecycle routes are added with the supervisor).
 
 use axum::Json;
+use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
@@ -52,7 +53,8 @@ pub async fn prompt(
 }
 
 /// `GET /api/tasks/{tid}/prompt/attachments/{n}` (SPEC-043): an image is shown, any other file
-/// downloads; with `sandbox` in the content security policy, none runs as a page.
+/// downloads; with `sandbox` in the content security policy, none runs as a page. The file is
+/// streamed in bounded chunks while it holds its read slot (SPEC-080).
 pub async fn prompt_attachment(
     State(app): State<AppState>,
     Auth(ctx): Auth,
@@ -61,8 +63,13 @@ pub async fn prompt_attachment(
     // An index that is not a number names no attachment: 404, like one out of range.
     let index = index.parse().map_err(|_| AppError::NotFound)?;
     let file = app.task_prompt_attachment(&ctx, &tid, index).await?;
-    let mut response = file.bytes.into_response();
+    let (name, content_type, len) = (file.name.clone(), file.content_type, file.len);
+    let chunks = futures::stream::try_unfold(file, |mut file| async move {
+        Ok::<_, std::io::Error>(file.next_chunk().await?.map(|chunk| (chunk, file)))
+    });
+    let mut response = Body::from_stream(chunks).into_response();
     let headers = response.headers_mut();
+    headers.insert(header::CONTENT_LENGTH, HeaderValue::from(len));
     headers.insert(
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static("sandbox; default-src 'none'; frame-ancestors 'none'"),
@@ -71,7 +78,7 @@ pub async fn prompt_attachment(
         header::CACHE_CONTROL,
         HeaderValue::from_static("private, no-store"),
     );
-    if let Some(image) = file.content_type {
+    if let Some(image) = content_type {
         headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(image));
     } else {
         headers.insert(
@@ -79,12 +86,11 @@ pub async fn prompt_attachment(
             HeaderValue::from_static("application/octet-stream"),
         );
         // Safe names only (an upload's are already); anything else is a generic name.
-        let name = if file
-            .name
+        let name = if name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'))
         {
-            file.name.as_str()
+            name.as_str()
         } else {
             "attachment"
         };

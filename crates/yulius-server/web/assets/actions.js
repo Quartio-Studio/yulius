@@ -486,7 +486,7 @@ export function openPromptDialog(ctx, task) {
     }
     text = prompt.text || '';
     const files = Array.isArray(prompt.attachments) ? prompt.attachments : [];
-    if (text) editor = createMarkdownEditor({ markdown: text, readOnly: true });
+    if (text) editor = createMarkdownEditor({ markdown: text, readOnly: true, frontmatter: false });
     setChildren(modal.body, h('div', { class: 'stack' },
       editor ? h('div', { class: 'prompt-text' }, editor.el) : h('p', { class: 'muted' }, 'No text: only files were attached.'),
       files.length ? h('ul', { class: 'prompt-files', 'aria-label': 'Attached files' }, files.map(fileItem)) : null));
