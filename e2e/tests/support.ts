@@ -10,6 +10,15 @@ import { expect } from 'e2e';
  */
 export const mock = (path: string, options = '') => `/?mock=1${options}#${path}`;
 
+/**
+ * Waits until the mock is installed (`window.__yuliusMock`). The app loads mock.js with a dynamic
+ * import, so the page's load event can come first; a test that touches the mock right after
+ * `app.open` calls this.
+ */
+export async function mockReady(browser: Browser): Promise<void> {
+  await expect.poll(() => browser.evaluate(() => Boolean((window as { __yuliusMock?: unknown }).__yuliusMock))).toBe(true);
+}
+
 const axeScript = createRequire(import.meta.url).resolve('axe-core/axe.min.js');
 
 type Instrumented = Window & { __e2eErrors?: string[]; axe?: { run: Function } };
