@@ -1882,7 +1882,7 @@ impl App {
             .git
             .push(Path::new(&worktree), &branch, &branch, token)
             .await?;
-        let policy = self.dlv_branch_policy(sandbox, profile).await;
+        let (policy, _) = self.dlv_branch_policy(sandbox, profile).await;
         let title = match title.map(str::trim).filter(|t| !t.is_empty()) {
             Some(title) => title.to_owned(),
             None => {
@@ -2484,28 +2484,32 @@ impl App {
 
     /// The branch policy of `yulius.toml` at the tip of the integration branch in the sandbox
     /// clone, so a pull request cannot relax the rules it is checked against (SPEC-069 BPL-003):
-    /// the standard preset without the file, and when it cannot be read or is invalid.
+    /// the standard preset without the file, and when it cannot be read or is invalid — then with
+    /// the problem, for the refusal to say why.
     pub(crate) async fn dlv_branch_policy(
         &self,
         sandbox: &SandboxRecord,
         profile: &DeliveryProfile,
-    ) -> BranchPolicy {
+    ) -> (BranchPolicy, Option<String>) {
         let repo = self.sandbox_repo(&sandbox.id);
         let rev = format!("origin/{}", profile.integration_branch);
         let problem = match self.deps.git.show_file(&repo, &rev, "yulius.toml").await {
-            Ok(None) => return BranchPolicy::standard(),
+            Ok(None) => return (BranchPolicy::standard(), None),
             Ok(Some(text)) => match spec_format::parse_yulius_toml_branch_policy(&text) {
-                Ok(policy) => return policy,
+                Ok(policy) => return (policy, None),
                 Err(err) => err.to_string(),
             },
-            Err(err) => err.public_message(),
+            Err(err) => format!(
+                "yulius.toml at `{rev}` can't be read: {}",
+                err.public_message()
+            ),
         };
         tracing::warn!(
             sandbox = %sandbox.slug,
             problem = %problem,
             "the branch policy can't be read; the standard preset applies"
         );
-        BranchPolicy::standard()
+        (BranchPolicy::standard(), Some(problem))
     }
 
     /// Refuses pull request `number` when the project's branch policy does not accept it, with
@@ -2517,7 +2521,7 @@ impl App {
         number: u64,
         pull: &PullFacts<'_>,
     ) -> AppResult<()> {
-        let policy = self.dlv_branch_policy(sandbox, profile).await;
+        let (policy, problem) = self.dlv_branch_policy(sandbox, profile).await;
         policy
             .check(pull, &profile.integration_branch, &profile.production_branch)
             .map_err(|violation| {
@@ -2526,8 +2530,12 @@ impl App {
                 } else {
                     "deliver the work from a branch and into a base the policy accepts".to_owned()
                 };
+                // A policy that can't be read is the standard one (fail closed); say so.
+                let fallback = problem.map_or_else(String::new, |problem| {
+                    format!(" (the standard rules apply because the project's policy can't be used: {problem})")
+                });
                 AppError::Conflict(format!(
-                    "the branch policy refuses pull request #{number}: {violation}. To fix it, {fix}"
+                    "the branch policy refuses pull request #{number}: {violation}{fallback}. To fix it, {fix}"
                 ))
             })
     }

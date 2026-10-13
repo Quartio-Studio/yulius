@@ -50,4 +50,8 @@ Yulius performs, however, goes through its own merge gate.
 - A promotion pull request opened by an older Yulius (`Promote dev to main`) must be retitled
   before Yulius merges it.
 - Projects without `[branch_policy]` now get the standard rules; `preset = "none"` restores the
-  earlier behaviour.
+  earlier behaviour. Configured `types` must include `feat`, the type of Yulius's task branches.
+- An imported task that keeps an untyped branch (`claude/…`) cannot be merged by Yulius under the
+  standard rules; its project delivers it by hand or turns the policy off.
+- The policy is read from the sandbox clone as last fetched; a change on GitHub applies after the
+  next fetch. An unreadable or invalid policy means the standard rules, and the refusal says why.

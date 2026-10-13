@@ -3446,6 +3446,26 @@ async fn the_branch_policy_gates_every_merge() -> TestResult {
             .contains(&"merge_pull #4 merge".to_owned())
     );
 
+    // An invalid policy at the integration branch: the standard preset applies, and says why.
+    advance_base(
+        &f,
+        "dev",
+        "yulius.toml",
+        "[branch_policy]\npreset = \"strict\"\n",
+    )?;
+    git(&f.repo, &["fetch", "--quiet", "origin"])?;
+    let invalid = f
+        .req(Method::POST, "/api/tasks/t2/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(invalid.status, StatusCode::CONFLICT, "{}", invalid.body);
+    let message = error_message(&invalid);
+    assert!(
+        message.contains("typed short-lived branch")
+            && message.contains("standard rules apply")
+            && message.contains("yulius.toml line 2"),
+        "{message}"
+    );
+
     // The integration branch's yulius.toml turns the policy off: the same pull request merges.
     advance_base(
         &f,

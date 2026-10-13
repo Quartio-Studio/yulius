@@ -1315,7 +1315,8 @@ merge gate (#223) and is checked by hand until then. The steps it took, in order
    - The VM needs the Rust toolchain via rustup in the CI home, and Node ≥ 24.8 for e2e.
    - The branch policy (`scripts/check_git_policy.py`) reads the pull request's title and base from
      GitHub's event with a token. Jobs have neither, so the policy moves into Yulius's merge gate (a
-     follow-up) or stays a GitHub check until then.
+     follow-up) or stays a GitHub check until then. Done in SPEC-069: the merge gate checks it and
+     the script is removed.
    - macOS becomes a manual check.
 3. Let Yulius run beside Actions until its results match for a few days.
 4. Switch the rulesets' required checks to `yulius/ci`, or drop the rulesets on a free plan.

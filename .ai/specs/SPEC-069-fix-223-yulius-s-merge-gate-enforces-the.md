@@ -44,9 +44,9 @@ rules are the standard preset and the default.
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | BPL-001 | The standard policy: into the integration branch, the head is `<type>/<slug>` (type one of feat, fix, refactor, perf, docs, test, build, ci, chore, revert; slug lowercase letters and digits in hyphen-separated words with at least one letter; at most 80 characters) and the title is `<type>[(scope)][!]: <description>`, one line of at most 100 characters. Into the production branch, only the integration branch of this repository, titled `release: promote <integration> to <production>` with an optional ` - <label>`. Any other base is refused. | `branch_policy::tests` |
-| BPL-002 | `yulius.toml` `[branch_policy]` configures it: `preset = "standard"` (default) or `"none"` (no checks), and `types = "feat fix …"` replacing the standard types. Unknown keys and invalid values are errors with their line, also for the CI's and the spec check's parse. Without the table the standard preset applies. | `spec_format::config::tests` |
-| BPL-003 | The policy is read from `yulius.toml` at `origin/<integration branch>` of the sandbox clone, so a pull request cannot relax the policy it is checked against. When the file is missing the default applies; when it is unreadable or invalid the standard preset applies (fail closed) and a warning is logged. | `delivery::the_branch_policy_gates_every_merge` |
-| BPL-004 | `dlv_merge` (agents' `delivery_merge`, armed merges, the Git page) refuses a pull request that violates the policy with a conflict naming the rule in words, the offending value and how to fix it (edit the title, or move the work to a typed branch); nothing is merged. `delivery_merge` refuses before arming, so no violating merge is armed. | `delivery::the_branch_policy_gates_every_merge`, `delivery::agents_merge_only_through_gated_tools` |
+| BPL-002 | `yulius.toml` `[branch_policy]` configures it: `preset = "standard"` (default) or `"none"` (no checks), and `types = "feat fix …"` replacing the standard types (it must include `feat`, the type of Yulius's task branches). Unknown keys and invalid values are errors with their line, also for the CI's and the spec check's parse. Without the table the standard preset applies. | `spec_format::config::tests` |
+| BPL-003 | The policy is read from `yulius.toml` at `origin/<integration branch>` of the sandbox clone, so a pull request cannot relax the policy it is checked against. When the file is missing the default applies; when it is unreadable or invalid the standard preset applies (fail closed), a warning is logged and a refusal says why. | `delivery::the_branch_policy_gates_every_merge` |
+| BPL-004 | `dlv_merge` (agents' `delivery_merge`, armed merges, the Git page) refuses a pull request that violates the policy with a conflict naming the rule in words, the offending value and how to fix it (edit the title, or move the work to a typed branch); nothing is merged. `delivery_merge` refuses before arming, so no violating merge is armed. | `delivery::the_branch_policy_gates_every_merge`, `delivery::agents_cannot_arm_or_land_a_merge_the_policy_refuses` |
 | BPL-005 | Promotion pull requests Yulius opens are titled `release: promote <integration> to <production>`. Merging an existing promotion pull request is refused when its title violates the policy or its head is from another repository; a fork's pull request is never taken for the promotion pull request. | `delivery::standard_flow_merges_on_green_checks_and_promotes_by_pr`, `delivery::the_branch_policy_gates_every_merge` |
 | BPL-006 | Titles and branch names Yulius generates pass the policy: `default_pr_title` uses a type the policy allows (the oldest allowed conventional commit, else the branch's type) and clips the title to the policy's 100 characters; `branch_for` always yields a slug with a letter. | `delivery::tests::generated_titles_pass_the_policy`, `supervisor::tests::branch_names_are_safe_and_bounded` |
 | BPL-007 | `scripts/check_git_policy.py` and its test are removed: the Rust rules are the single source; the docs and `yulius.toml` say the merge gate enforces the policy. | docs diff |
@@ -55,13 +55,13 @@ rules are the standard preset and the default.
 
 - `crates/yulius-domain/src/branch_policy.rs` (pure): `BranchPolicy { types: Option<Vec<String>> }`
   (`None` = preset none), `BranchPolicy::standard()`, `check(&PullFacts, integration, production)
-  -> Result<(), PolicyViolation>`, `conventional_type(title)` and `branch_type(branch)` for the
+  -> Result<(), PolicyViolation>`, `conventional_head(title)` and `branch_type(branch)` for the
   title generator. `PolicyViolation` is an enum whose `Display` states the rule in words. No regex
   dependency: the grammar is small and checked by hand.
 - `spec_format/config.rs`: the `[branch_policy]` table in `Document`, `parse_yulius_toml_branch_policy`
   and validation inside `parse_yulius_toml` (result discarded, so `ProjectConfig` is unchanged).
 - `GhPull.from_fork` (head repository differs from the base repository or is gone), mapped from
-  the GitHub wire `head.repo.full_name` / `base.repo.full_name`.
+  the GitHub wire `head.repo.id` / `base.repo.id`.
 - `App::dlv_branch_policy(sandbox, profile)` reads the policy; `App::dlv_check_policy` maps a
   violation to `AppError::Conflict` with the fix hint. Called in `dlv_merge` before the merge,
   in `tool_delivery_merge` before arming, and in `dlv_promote` before merging an existing
@@ -104,5 +104,10 @@ rules are the standard preset and the default.
   `yulius.toml`; the standard preset is on by default; the Python script is removed.
 - A new `[branch_policy]` table, not keys in `[delivery]`: `[delivery]` keys are strict, so an
   older Yulius (the one running CI) would reject this repository's `yulius.toml`.
+- The policy is read from the sandbox clone as last fetched, like the CI's configuration: no
+  fetch per merge. A policy change on GitHub applies once the clone is fetched (each CI round,
+  each merge Yulius makes).
+- Titles are checked at merge, not when the pull request is opened: an agent or a person can
+  retitle it until then, and the refusal says exactly what to change.
 - Only `preset` and `types` are configurable: the length limits and the release title follow the
   repository's rules; the parser has no numbers, and no project needs other limits yet.

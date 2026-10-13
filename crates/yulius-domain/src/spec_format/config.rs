@@ -206,8 +206,7 @@ const COMMAND_KEYS: &str = "test, lint, build, gate";
 const DELIVERY_KEYS: &str = "preset, integration_branch, production_branch, merge, promote, auto_promote, require_checks, environments";
 const DISK_KEYS: &str = "caches";
 const BRANCH_POLICY_KEYS: &str = "preset, types";
-const POLICY_TYPES: &str =
-    "1-20 space-separated types of 1-20 lowercase letters, like \"feat fix docs\"";
+const POLICY_TYPES: &str = "1-20 space-separated types of 1-20 lowercase letters including feat (Yulius's task branches), like \"feat fix docs\"";
 const ENVIRONMENT_KEYS: &str = "name, after, command, verify";
 const CI_JOB_KEYS: &str = "name, command, matrix";
 
@@ -772,7 +771,11 @@ fn branch_policy_of(document: &Document) -> Result<BranchPolicy, FormatError> {
     if !enforced {
         return Err(invalid("no types with preset \"none\""));
     }
-    let list = text.split_whitespace().map(str::to_owned).collect();
+    let list: Vec<String> = text.split_whitespace().map(str::to_owned).collect();
+    // Yulius names task branches `feat/<n>-<words>`: without `feat` it could never merge them.
+    if !list.iter().any(|t| t == "feat") {
+        return Err(invalid(POLICY_TYPES));
+    }
     BranchPolicy::with_types(list).ok_or_else(|| invalid(POLICY_TYPES))
 }
 
@@ -1282,8 +1285,13 @@ mod tests {
             BranchPolicy::none()
         );
         let custom =
-            parse_yulius_toml_branch_policy("[branch_policy]\ntypes = \"story  bug\" # ours\n")?;
-        assert_eq!(custom.types(), ["story", "bug"]);
+            parse_yulius_toml_branch_policy("[branch_policy]\ntypes = \"feat  bug\" # ours\n")?;
+        assert_eq!(custom.types(), ["feat", "bug"]);
+        // Yulius names task branches `feat/<n>-<words>`: a list without `feat` would refuse them.
+        assert!(matches!(
+            problem("[branch_policy]\ntypes = \"story bug\"\n"),
+            Some((2, ConfigProblem::InvalidValue { .. }))
+        ));
         // The rest of the contract parses with the table present, and validates it.
         assert!(parse_yulius_toml("[branch_policy]\npreset = \"none\"\n").is_ok());
         assert!(matches!(

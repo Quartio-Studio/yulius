@@ -170,7 +170,7 @@ impl From<WirePull> for PullRequest {
         };
         let cross_repository = match (&pull.head.repo, &pull.base.repo) {
             (Some(head), Some(base)) => head.id != base.id,
-            // Lists and fixtures without repositories describe this repository's branches.
+            // Fixtures without repositories describe this repository's branches.
             (None, None) => false,
             _ => true,
         };
