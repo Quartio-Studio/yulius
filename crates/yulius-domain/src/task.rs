@@ -371,6 +371,9 @@ pub struct AttentionFacts {
     pub plan_open: bool,
     /// The idle agent left background shells running: it wakes by itself when they report.
     pub background_shells: bool,
+    /// The idle agent waits in `yulius wait` (its checks, its delivery or an armed merge): it
+    /// goes on by itself when Yulius has news (SPEC-085 STT-002).
+    pub yulius_wait: bool,
     /// Its pull request, when one is known.
     pub pull: Option<PullSignal>,
 }
@@ -398,13 +401,15 @@ impl AttentionFacts {
     ///
     /// A task being stopped or ended is Ended, whatever else holds. A held prompt or a pending
     /// browser request needs you. After a finished turn the pull request speaks: failing checks
-    /// need you, a CI run that could not run keeps it Working (In review); with the plan
-    /// complete, background shells keep it Working, an achieved goal or a tested or merged pull
-    /// request makes it Done, and checks still running keep it Working (In review). Otherwise
-    /// the task's own state: a permission prompt or "Your turn" needs you (unless the agent's
-    /// background shells still run: it wakes by itself), an achieved goal is Done, a queued task
-    /// or a chain is Queued (a chain whose predecessor ended otherwise needs you), and the rest is
-    /// Working.
+    /// need you once the agent stopped (SPEC-085 STT-003: while its background work runs or it
+    /// waits in `yulius wait` it goes on by itself, and the task is Working), a CI run that
+    /// could not run keeps it Working (In review); with the plan complete, background shells
+    /// keep it Working, an achieved goal or a tested or merged pull request makes it Done, and
+    /// checks still running keep it Working (In review). Otherwise the task's own state: a
+    /// permission prompt or "Your turn" needs you (unless the agent's background shells still
+    /// run or it waits in `yulius wait`: it goes on by itself), an achieved goal is Done, a
+    /// queued task or a chain is Queued (a chain whose predecessor ended otherwise needs you), and
+    /// the rest is Working.
     #[must_use]
     pub fn group(&self) -> TaskGroup {
         use TaskGroup as G;
@@ -416,9 +421,11 @@ impl AttentionFacts {
         }
         let finished =
             self.status == TaskStatus::Running && self.activity.is_some_and(Activity::is_idle);
+        // The idle agent goes on by itself: its background work wakes it, or Yulius does.
+        let goes_on = self.background_shells || self.yulius_wait;
         if finished && let Some(pull) = self.pull {
             if pull == PullSignal::Failing {
-                return G::NeedsYou;
+                return if goes_on { G::Working } else { G::NeedsYou };
             }
             // CI could not run: In review, nothing for a person yet (the agent runs it again).
             if pull == PullSignal::Errored {
@@ -437,6 +444,7 @@ impl AttentionFacts {
         match self.status {
             TaskStatus::Running => match self.activity {
                 Some(Activity::Waiting | Activity::Done) if self.background_shells => G::Working,
+                Some(Activity::Waiting) if self.yulius_wait => G::Working,
                 Some(Activity::NeedsAttention | Activity::Waiting) => G::NeedsYou,
                 Some(Activity::Done) => G::Done,
                 Some(Activity::Working) | None => G::Working,
@@ -704,8 +712,58 @@ mod tests {
             chain_blocked: false,
             plan_open: false,
             background_shells: false,
+            yulius_wait: false,
             pull: None,
         }
+    }
+
+    /// SPEC-085 STT-002, STT-003 (task #63 on 2026-10-13: "Needs you" with failing checks while
+    /// its agent had fixed them and waited for its review agent): "Needs you" means the agent
+    /// stopped and cannot go on by itself. Its background work or a `yulius wait` keeps the idle
+    /// task Working, whatever its checks or plan say; once nothing runs, failing checks and Your
+    /// turn need you again.
+    #[test]
+    fn an_agent_that_goes_on_by_itself_needs_nobody() {
+        use Activity as A;
+        use PullSignal as P;
+        use TaskGroup as G;
+        let idle = |activity, pull, plan_open| AttentionFacts {
+            pull,
+            plan_open,
+            ..facts(TaskStatus::Running, Some(activity))
+        };
+        let shells = |facts: AttentionFacts| AttentionFacts {
+            background_shells: true,
+            ..facts
+        };
+        let waits = |facts: AttentionFacts| AttentionFacts {
+            yulius_wait: true,
+            ..facts
+        };
+        // Failing checks while a background agent or shell runs, or while the agent waits for
+        // Yulius: it sees them itself.
+        for activity in [A::Waiting, A::Done] {
+            for plan_open in [false, true] {
+                let failing = idle(activity, Some(P::Failing), plan_open);
+                assert_eq!(failing.group(), G::NeedsYou, "{activity:?}: stopped");
+                assert_eq!(shells(failing).group(), G::Working, "{activity:?}");
+                assert_eq!(waits(failing).group(), G::Working, "{activity:?}");
+            }
+        }
+        // Waiting in `yulius wait` with steps still open (the merge step): not Your turn, with or
+        // without a pull request.
+        for pull in [None, Some(P::InReview), Some(P::Tested), Some(P::Merged)] {
+            let waiting = idle(A::Waiting, pull, true);
+            assert_eq!(waiting.group(), G::NeedsYou, "{pull:?}: your turn");
+            assert_eq!(waits(waiting).group(), G::Working, "{pull:?}");
+        }
+        // An achieved goal stays Done while a leftover wait runs; a permission prompt still needs
+        // you.
+        assert_eq!(waits(idle(A::Done, None, false)).group(), G::Done);
+        assert_eq!(
+            waits(idle(A::NeedsAttention, Some(P::Failing), false)).group(),
+            G::NeedsYou
+        );
     }
 
     /// The sidebar's "Needs you" rule (UI-005, #147): the counts on Home and the tabs use it.

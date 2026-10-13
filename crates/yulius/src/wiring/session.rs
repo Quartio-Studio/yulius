@@ -223,6 +223,18 @@ impl SessionHost for PtySessionHost {
         yulius_ptyhost::shells::background_shells(child_pid)
     }
 
+    fn background_probe(
+        &self,
+        child_pid: u32,
+    ) -> Option<yulius_app::ports::session::BackgroundProbe> {
+        yulius_ptyhost::shells::background_probe(child_pid).map(|count| {
+            yulius_app::ports::session::BackgroundProbe {
+                shells: count.shells,
+                waits: count.waits,
+            }
+        })
+    }
+
     fn terminate(&self, run_dir: &Path) -> AppResult<()> {
         if let Ok(mut hosts) = self.hosts.lock() {
             hosts.remove(run_dir);

@@ -254,4 +254,20 @@ pub trait SessionHost: Send + Sync {
     fn background_shells(&self, _child_pid: u32) -> Option<u32> {
         None
     }
+    /// [`Self::background_shells`], and apart the shells that only run `yulius wait` (SPEC-085
+    /// STT-002): the agent waits for Yulius and goes on by itself. A host that cannot tell them
+    /// apart reports none.
+    fn background_probe(&self, child_pid: u32) -> Option<BackgroundProbe> {
+        self.background_shells(child_pid)
+            .map(|shells| BackgroundProbe { shells, waits: 0 })
+    }
+}
+
+/// What one probe of an agent's process tree found (SPEC-085 STT-002).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BackgroundProbe {
+    /// Background shells that run something (TSK-014).
+    pub shells: u32,
+    /// Background shells whose only process is `yulius wait` (SPEC-050 DSK-102).
+    pub waits: u32,
 }

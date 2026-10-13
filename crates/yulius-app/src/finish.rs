@@ -17,7 +17,9 @@
 //! the turn (`pendingBackgroundAgentCount`, SPEC-032), and the larger of the two counts is the
 //! idle task's background work. Monitor streams, and agents launched in a turn that has not
 //! closed yet, are read from the transcript's launches and the notifications that end them
-//! (SPEC-079): a Monitor counts until it ends or expires.
+//! (SPEC-079): a Monitor counts until it ends or expires. Shells that only run `yulius wait` are
+//! no background work (SPEC-050 DSK-102); the probe counts them apart, and the task view says the
+//! agent waits for Yulius, which wakes it (SPEC-085 STT-002).
 //!
 //! While Claude Code's goal is open, its evaluator (a Stop hook after Yulius's own) gives a
 //! verdict after each clean Stop: the turn reads idle only once the verdict, the turn's record or
@@ -731,20 +733,22 @@ impl App {
         } else {
             None
         };
-        let count = match child {
+        let (count, waits) = match child {
             Some(pid) => {
                 let host = Arc::clone(&self.deps.session_host);
-                let probe = tokio::task::spawn_blocking(move || host.background_shells(pid));
+                let probe = tokio::task::spawn_blocking(move || host.background_probe(pid));
                 match tokio::time::timeout(SHELL_PROBE_TIMEOUT, probe).await {
-                    Ok(Ok(Some(n))) => i64::from(n),
+                    Ok(Ok(Some(found))) => (i64::from(found.shells), i64::from(found.waits)),
                     _ => {
                         tracing::debug!(task = %task_id, "the background-shell probe gave no answer");
-                        -1
+                        (-1, -1)
                     }
                 }
             }
-            None => -1,
+            None => (-1, -1),
         };
+        // An agent waiting in `yulius wait` goes on by itself (SPEC-085 STT-002).
+        let waits_before = runtime.background_waits.swap(waits, Ordering::SeqCst);
         // Background agents are no process of the session's shell tree: Claude Code counts them
         // in its turn record (STA-001). The count is the larger of the two views of the same
         // background work (a background Bash command is in both).
@@ -768,8 +772,8 @@ impl App {
         } else if count <= 0 {
             runtime.shells_since_ms.store(0, Ordering::SeqCst);
         }
-        if previous != count {
-            if count > 0 {
+        if previous != count || (waits_before > 0) != (waits > 0) {
+            if count > 0 && previous != count {
                 tracing::info!(task = %task_id, shells = count, "background shells still running");
             }
             self.publish_task(task_id).await;
@@ -906,6 +910,13 @@ impl App {
     pub(crate) fn background_shells_of(&self, task_id: &TaskId) -> Option<u32> {
         let runtime = self.existing_runtime(task_id)?;
         u32::try_from(runtime.background_shells.load(Ordering::SeqCst)).ok()
+    }
+
+    /// Whether the idle task's agent waits in `yulius wait` (its checks, its delivery or an armed
+    /// merge), as last probed: it goes on by itself when Yulius has news (SPEC-085 STT-002).
+    pub(crate) fn agent_waits_on_yulius(&self, task_id: &TaskId) -> bool {
+        self.existing_runtime(task_id)
+            .is_some_and(|runtime| runtime.background_waits.load(Ordering::SeqCst) > 0)
     }
 }
 
