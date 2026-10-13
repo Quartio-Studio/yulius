@@ -9,8 +9,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - A task's step strip no longer draws its progress bar over "Step N/M" (SPEC-073, task #68; #341).
   A long state such as "Working · 1 background task still running" or "Done · PR #N merged" kept
   its full width, so the strip's label shrank to nothing and the step count, which nothing
-  clipped, ran under the bar. The state now truncates with an ellipsis (its full text stays in
-  the tooltip), and the label is clipped inside its button.
+  clipped, ran under the bar. The state now takes at most 40% of the strip and truncates beyond
+  it (its full text stays in the tooltip), and the label is clipped inside its button.
 - A stopped or closed run ends only when its processes are proven gone (SPEC-065, ADR-0050, task #54;
   #284, #285, #290). When Yulius cannot terminate a run's host after the stop or close escalation,
   the run stays live, the task's terminal says so and a running task needs attention; deleting it
