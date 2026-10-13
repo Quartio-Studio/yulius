@@ -891,6 +891,9 @@ impl HarnessPort for RecordingHarness {
     fn claude_transcript(&self, home: &Path, worktree: &Path, session: &str) -> PathBuf {
         self.inner.claude_transcript(home, worktree, session)
     }
+    fn step_back_transcript(&self, home: &Path, worktree: &Path, session: &str) -> AppResult<bool> {
+        self.inner.step_back_transcript(home, worktree, session)
+    }
     fn newest_claude_session(
         &self,
         home: &Path,

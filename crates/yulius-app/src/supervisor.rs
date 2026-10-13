@@ -94,6 +94,10 @@ pub struct TaskRuntime {
     pub(crate) hooks_seen: AtomicBool,
     /// Last seen limit reset time (ms, 0 = unknown).
     pub limit_resets_at: AtomicI64,
+    /// The current run's last turn ended at a usage limit: no prompt or agent work since
+    /// (SPEC-072 LRS-002). A person's switch then resumes past the limit even without a `limit`
+    /// pause (an automatic switch after the limit was refused).
+    pub(crate) at_limit: AtomicBool,
     /// When the current turn started (ms, 0 = no turn in progress), for active agent time.
     turn_started_ms: AtomicI64,
     /// Active agent time of the current attempt: its finished turns (ms).
@@ -208,6 +212,7 @@ impl TaskRuntime {
             proactive_switch: AtomicBool::new(false),
             hooks_seen: AtomicBool::new(false),
             limit_resets_at: AtomicI64::new(0),
+            at_limit: AtomicBool::new(false),
             turn_started_ms: AtomicI64::new(0),
             active_ms: AtomicI64::new(0),
             auto_pr_head: Mutex::new(None),
@@ -991,7 +996,7 @@ impl App {
                         ..
                     }
                 ));
-        // The plan steps this session's transcript back over a usage limit (SPEC-034).
+        // This session's transcript steps back over a usage limit before the run (SPEC-034).
         let stepped_back = match &mode {
             SessionMode::Resume {
                 session_id,
@@ -1017,7 +1022,8 @@ impl App {
             credential,
         })?;
         if let Some(session_id) = &stepped_back {
-            self.reindex_session(&task.sandbox_id, session_id).await;
+            self.step_back_transcript(&task.sandbox_id, &home, &worktree, session_id)
+                .await;
         }
         let mut launch = plan.plan;
         let task_token = hex_token(&self.deps.crypto.random_bytes());
@@ -1367,6 +1373,43 @@ impl App {
             };
             if ready || started.elapsed() >= limit {
                 return true;
+            }
+        }
+    }
+
+    /// Steps a session's transcript back over a usage limit on a blocking thread (SPEC-072
+    /// LRS-003; the file I/O is bounded by the transcript's size) and indexes it again only when
+    /// it was rewritten. A failure is logged and the resume goes on: Claude Code skips the error
+    /// row itself while it is recent (SPEC-034 LIM-002).
+    async fn step_back_transcript(
+        &self,
+        sandbox: &SandboxId,
+        home: &Path,
+        worktree: &Path,
+        session_id: &str,
+    ) {
+        let harness = Arc::clone(&self.deps.harness);
+        let (home, worktree, session) = (
+            home.to_path_buf(),
+            worktree.to_path_buf(),
+            session_id.to_owned(),
+        );
+        let stepped = tokio::task::spawn_blocking(move || {
+            harness.step_back_transcript(&home, &worktree, &session)
+        })
+        .await;
+        match stepped {
+            Ok(Ok(changed)) => {
+                tracing::info!(session = %session_id, changed, "transcript stepped back over a usage limit");
+                if changed {
+                    self.reindex_session(sandbox, session_id).await;
+                }
+            }
+            Ok(Err(err)) => {
+                tracing::warn!(session = %session_id, error = %err, "could not step the transcript back");
+            }
+            Err(err) => {
+                tracing::warn!(session = %session_id, error = %err, "the transcript step back did not finish");
             }
         }
     }
@@ -2390,8 +2433,50 @@ impl App {
         reason: &str,
         start: RunStart,
     ) -> AppResult<()> {
+        self.switch_from(task_id, None, account, reason, start)
+            .await
+    }
+
+    /// Resumes a task paused at a usage limit past it on `account` (SPEC-034), only while it is
+    /// still waiting for capacity: the CLI may have continued the turn by itself meanwhile
+    /// (SPEC-072 LRS-001), and then the run is left alone.
+    ///
+    /// # Errors
+    /// `Conflict` when the task no longer waits for capacity.
+    pub(crate) async fn resume_paused_after_limit(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        account: Option<AccountId>,
+        reason: &str,
+    ) -> AppResult<()> {
+        self.switch_from(
+            task_id,
+            Some(TaskStatus::WaitingCapacity),
+            account,
+            reason,
+            RunStart::AfterLimit,
+        )
+        .await
+    }
+
+    /// [`Self::switch_with`] of a task that must still be `expected` (any switchable status when
+    /// `None`); the status change compares with what was read, so a concurrent change refuses.
+    async fn switch_from(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        expected: Option<TaskStatus>,
+        account: Option<AccountId>,
+        reason: &str,
+        start: RunStart,
+    ) -> AppResult<()> {
         let store = &self.deps.store;
         let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
+        if expected.is_some_and(|status| status != task.status) {
+            return Err(AppError::Conflict(format!(
+                "task is {}",
+                task.status.as_str()
+            )));
+        }
         let attempt = store.live_attempt(task_id).await?;
         let next = task
             .status
@@ -2815,6 +2900,7 @@ impl App {
         let runtime = self.runtime(task_id);
         runtime.watcher_alive.store(true, Ordering::SeqCst);
         runtime.hooks_seen.store(false, Ordering::SeqCst);
+        runtime.at_limit.store(false, Ordering::SeqCst);
         if let Ok(mut u) = runtime.usage.lock() {
             *u = UsageSnapshot::default();
         }
@@ -2872,6 +2958,8 @@ impl App {
             .swap(false, Ordering::SeqCst);
         let mut catching_up = false;
         let mut facts = TranscriptFacts::default();
+        // The replay's last usage limit, acted on once caught up if no turn came after it.
+        let mut replayed_limit = None;
         let mut probed_at = Timestamp(0);
         // `existing_runtime`: a deleted task's runtime is not brought back.
         let current = || {
@@ -2926,6 +3014,7 @@ impl App {
                 catching_up = replay && watch.is_some();
                 replay &= watch.is_none();
                 facts = TranscriptFacts::default();
+                replayed_limit = None;
             }
             // Background shells of an idle task, at most every SHELL_PROBE_MS (TSK-014).
             if now.millis_since(probed_at) >= SHELL_PROBE_MS {
@@ -2950,17 +3039,27 @@ impl App {
             }
             let turn_ended = observations
                 .iter()
-                .any(|o| matches!(o, Observation::TurnComplete));
+                .any(|o| matches!(o, Observation::TurnComplete { .. }));
             if catching_up {
-                // Usage limits keep their immediate effect; turns and the goal are applied once,
-                // as the replay's final state.
-                for observation in observations {
-                    if matches!(observation, Observation::LimitReached { .. }) {
-                        self.on_observation(&task_id, &attempt, observation).await;
-                    }
+                // Turns, the goal and a usage limit are applied once, as the replay's final
+                // state: a limit that a later turn overtook (Claude Code continued by itself) is
+                // history (SPEC-072 LRS-001).
+                if let Some(limit) = observations
+                    .into_iter()
+                    .rfind(|o| matches!(o, Observation::LimitReached { .. }))
+                {
+                    replayed_limit = Some(limit);
                 }
                 if w.caught_up() {
                     catching_up = false;
+                    if let Some(limit) = replayed_limit.take()
+                        && facts.limit_pending
+                    {
+                        self.on_observation(&task_id, &attempt, limit).await;
+                    } else if !facts.limit_pending {
+                        // Claude Code continued past its limit while Yulius was down.
+                        self.cut_turn_continued(&task_id, facts.last_turn_at).await;
+                    }
                     self.apply_transcript_facts(&task_id, facts).await;
                     // A session left full while Yulius was down is recovered now (CTX-007).
                     if facts.context_full {
@@ -3002,6 +3101,7 @@ impl App {
             } => {
                 tracing::info!(task = %task_id, %message, "usage limit reached");
                 runtime.end_turn(self.now());
+                runtime.at_limit.store(true, Ordering::SeqCst);
                 if let Some(account) = &attempt.account_id {
                     self.record_limit(account, resets_at, window_minutes).await;
                 }
@@ -3024,6 +3124,7 @@ impl App {
                 // the CLI gave the hold up (an interrupt, its own hook timeout), so the task
                 // runs again (F 2026-10-10: the task follows its session).
                 self.hold_overtaken(task_id, at, Activity::Working).await;
+                runtime.at_limit.store(false, Ordering::SeqCst);
                 runtime.background_agents.store(0, Ordering::SeqCst);
                 runtime.notice_attention_ms.store(0, Ordering::SeqCst);
                 runtime.resumed_turn.store(false, Ordering::SeqCst);
@@ -3035,9 +3136,15 @@ impl App {
                     .await;
                 self.publish_task(task_id).await;
             }
-            Observation::TurnComplete => {
+            Observation::TurnComplete { at } => {
                 self.context_replied(task_id, &attempt.id);
+                // A continuation that is only the answer ending the turn has no agent work.
+                self.cut_turn_continued(task_id, at).await;
                 runtime.end_turn(self.now());
+                // A sub-agent's turn end (no time) leaves the session at its limit.
+                if at.is_some() {
+                    runtime.at_limit.store(false, Ordering::SeqCst);
+                }
                 // With hooks the Stop hook is the boundary that switches or pauses; the
                 // transcript decides only for a run without them.
                 if !runtime.hooks_seen.load(Ordering::SeqCst) {
@@ -3057,6 +3164,12 @@ impl App {
             }
             Observation::AgentWork { at } => {
                 self.context_replied(task_id, &attempt.id);
+                // A usage limit ends the turn, so a `limit` pause is open only between turns (or
+                // after a limit replayed at a restart, which may find a turn open).
+                if runtime.at_limit.load(Ordering::SeqCst) || !runtime.turn_in_progress() {
+                    self.cut_turn_continued(task_id, at).await;
+                }
+                runtime.at_limit.store(false, Ordering::SeqCst);
                 self.agent_worked(task_id, at).await;
             }
             Observation::ContextFull => self.context_full_observed(task_id, attempt).await,

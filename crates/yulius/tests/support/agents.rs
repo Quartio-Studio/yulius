@@ -19,6 +19,11 @@ pub struct FakeAgentOptions {
     pub transcript: bool,
     /// Report a usage limit after this many turns.
     pub limit_after: Option<u32>,
+    /// After the limit, continue the cut turn by itself like Claude Code at the reset, this many
+    /// milliseconds later (`--limit-continues-ms`).
+    pub limit_continues_ms: Option<u64>,
+    /// The continuation is only the answer ending the turn (`--limit-continues-answer-only`).
+    pub limit_continues_answer_only: bool,
     /// Draw full screen like Claude Code (`--tui`), redrawing on every resize.
     pub tui: bool,
     /// Run Claude Code's hooks through `yulius hook` like the real CLI (`--hooks`).
@@ -132,6 +137,12 @@ impl HarnessPort for FakeAgentHarness {
         if let Some(n) = self.options.limit_after {
             argv.extend(["--limit-after".into(), n.to_string()]);
         }
+        if let Some(ms) = self.options.limit_continues_ms {
+            argv.extend(["--limit-continues-ms".into(), ms.to_string()]);
+        }
+        if self.options.limit_continues_answer_only {
+            argv.push("--limit-continues-answer-only".into());
+        }
         if self.options.tui {
             argv.push("--tui".into());
         }
@@ -174,9 +185,15 @@ impl HarnessPort for FakeAgentHarness {
         if self.options.session_start {
             argv.push("--session-start".into());
         }
+        // A continued resume (CLAUDE_CODE_RESUME_INTERRUPTED_TURN) opens with the turn Claude
+        // Code redoes, like a first message (SPEC-034).
         let first_message = match &launch.mode {
-            yulius_app::ports::harness::SessionMode::New { prompt, .. }
-            | yulius_app::ports::harness::SessionMode::Resume { prompt, .. } => prompt.is_some(),
+            yulius_app::ports::harness::SessionMode::New { prompt, .. } => prompt.is_some(),
+            yulius_app::ports::harness::SessionMode::Resume {
+                prompt,
+                continue_interrupted,
+                ..
+            } => prompt.is_some() || *continue_interrupted,
         };
         if let Some(ms) = self.options.echo_turn_ms {
             argv.extend(["--echo-turn-ms".into(), ms.to_string()]);
@@ -215,6 +232,9 @@ impl HarnessPort for FakeAgentHarness {
 
     fn claude_transcript(&self, home: &Path, worktree: &Path, session: &str) -> PathBuf {
         self.inner.claude_transcript(home, worktree, session)
+    }
+    fn step_back_transcript(&self, home: &Path, worktree: &Path, session: &str) -> AppResult<bool> {
+        self.inner.step_back_transcript(home, worktree, session)
     }
     fn newest_claude_session(
         &self,
