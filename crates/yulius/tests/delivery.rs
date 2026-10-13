@@ -1691,14 +1691,22 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
         json!({"name": "delivery_status", "arguments": {}}),
     )
     .await?;
+    // The agent reads a few lines (SPEC-086 TOL-004): the stage, the pull request, what people
+    // do next and the profile.
     let text = status.body["result"]["content"][0]["text"]
         .as_str()
         .ok_or("text")?;
-    let status: Value = serde_json::from_str(text)?;
-    assert_eq!(status["stage"], "pr_open", "{status}");
-    assert_eq!(status["pull_request"]["number"], 1);
-    assert_eq!(status["profile"]["preset"], "studio");
-    assert_eq!(status["next_actions_for_people"], json!(["merge"]));
+    assert!(
+        text.starts_with("Stage: pr_open.\nPull request #1 open"),
+        "{text}"
+    );
+    assert!(text.contains("\nNext for people: merge.\n"), "{text}");
+    assert!(text.contains("\nProfile studio: "), "{text}");
+    assert!(
+        status.body["result"].get("structuredContent").is_none(),
+        "Claude Code would show the record instead of the text: {}",
+        status.body
+    );
     let tool_text = |r: &Resp| {
         r.body["result"]["content"][0]["text"]
             .as_str()
@@ -1737,8 +1745,7 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
     .await?;
     assert_eq!(pending.body["result"]["isError"], false, "{}", pending.body);
     assert!(
-        tool_text(&pending).contains("\"armed\": true")
-            || tool_text(&pending).contains("\"armed\":true"),
+        tool_text(&pending).contains("armed: true"),
         "{}",
         pending.body
     );
