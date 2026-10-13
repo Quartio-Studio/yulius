@@ -49,7 +49,7 @@ a check up in a project's gate, and Yulius's own repository uses one.
 ## Plan
 
 - [x] Spec SPEC-054 and ADR for dead-code tooling
-- [ ] Bundled dead-code-cleanup skill with per-language tools, shipped in the yulius pack
+- [x] Bundled dead-code-cleanup skill with per-language tools, shipped in the yulius pack
 - [ ] Onboarding, infra-bootstrap and chore workflow route cleanup to the skill
 - [ ] This repo: cargo-shear in the deps gate, unused toml dependency removed, AGENTS.md routes cleanup
 - [ ] Every gate green, independent review, changes log updated
