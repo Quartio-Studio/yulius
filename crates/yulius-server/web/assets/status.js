@@ -228,6 +228,18 @@ export function taskInfo(task, actionRequests, pr) {
   return info;
 }
 
+/**
+ * The counter a task adds to on Home's cards and the sandbox tabs (#170), from its taskInfo:
+ * `needs`, `queued` (queued or chained: the Working group's tasks in line) or `working` (the rest
+ * of the Working group), or null for Done and ended tasks. So a card's working + queued is the
+ * sidebar's Working count. The server counts the same way (`AttentionFacts::group`).
+ */
+export function counter(task, info) {
+  if (info.group === 'needs') return 'needs';
+  if (info.group !== 'working') return null;
+  return task.status === 'queued' || task.status === 'chained' ? 'queued' : 'working';
+}
+
 const RANK = { read: 1, write: 2, admin: 3 };
 
 /** Whether an access level satisfies a minimum ('read' | 'write' | 'admin'). */
