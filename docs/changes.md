@@ -7,7 +7,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-10-13
 
 - Home's cards and the sandbox tabs count "working" and "queued" by the sidebar's rule (SPEC-076,
-  ADR-0055, task #62; #170). One domain rule (`AttentionFacts::group`) gives each task its sidebar
+  ADR-0060, task #62; #170). One domain rule (`AttentionFacts::group`) gives each task its sidebar
   group: "queued" counts queued and chained tasks, "working" the rest of the Working group
   (running, starting, continuing, paused, in review), so a card's working + queued is the
   sidebar's Working count. A Done task or one being stopped counts in neither, and a task being

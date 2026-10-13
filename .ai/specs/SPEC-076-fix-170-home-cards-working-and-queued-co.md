@@ -89,7 +89,7 @@ with one rule, the one `taskInfo` applies in the web UI.
 - Keep the wire names and change what `running` counts, rather than renaming it `working`: the
   only readers are the web UI and the mock in this repository, the name stays readable as "the
   running part of the work", and a rename would break any script reading the field for no user
-  gain. Recorded in ADR-0055.
+  gain. Recorded in ADR-0060.
 - The rule lives in the domain next to `needs_you` (one `TaskGroup` from `AttentionFacts`) rather
   than as a second function in the app: the sidebar's rule is one decision tree, and keeping it in
   one place is the point of #170. `AttentionFacts` keeps its name: it is the facts of a task's
@@ -129,4 +129,4 @@ with one rule, the one `taskInfo` applies in the web UI.
   `group()`; unit cases, and `delivery::working_and_queued_counts_split_the_sidebar_working_group`
   with an errored Yulius CI run and a reopened step read `(2, 4, 2)` without the fix and
   `(1, 5, 2)` with it. ADR 0052 became 0053 when `dev` took 0052 first, then 0055 when `dev` took
-  0053 and open pull requests claimed 0054.
+  0053, then 0060 when `dev` took 0055 and open pull requests claimed 0055, 0058 and 0059.

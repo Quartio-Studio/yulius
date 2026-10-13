@@ -62,5 +62,5 @@ title whose number differs from the file name, and a record this index does not 
 - [0052](0052-only-keystrokes-count-as-typing.md): Only keystrokes count as typing; a typed first message stays pending until submitted
 - [0051](0051-the-merge-gate-enforces-the-branch-policy.md): Yulius's merge gate enforces the branch policy
 - [0053](0053-shell-starts-run-detached-from-the-request.md): Shell and Cockpit starts run detached from their request
-- [0055](0055-sandbox-counts-are-the-sidebar-groups.md): A sandbox's counts are the sidebar's groups, decided by one domain rule
+- [0060](0060-sandbox-counts-are-the-sidebar-groups.md): A sandbox's counts are the sidebar's groups, decided by one domain rule
 - [0055](0055-cockpit-moves-past-a-usage-limit.md): The Cockpit moves past a usage limit like a task, and is called the Superagent
