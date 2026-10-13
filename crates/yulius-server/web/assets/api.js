@@ -73,9 +73,11 @@ export const enc = (value) => encodeURIComponent(String(value));
 export function createApi(transport, { onUnauthenticated } = {}) {
   let csrf = null;
 
-  async function request(method, path, body, { allow401 = false, timeoutMs = REQUEST_TIMEOUT_MS, signal = null, onProgress = null } = {}) {
+  async function request(method, path, body, { allow401 = false, timeoutMs = REQUEST_TIMEOUT_MS, signal = null, onProgress = null, keepalive = false } = {}) {
     const headers = { Accept: 'application/json' };
     const init = { method, headers, credentials: 'same-origin', cache: 'no-store' };
+    // Outlives the page (a save as it hides); browsers bound such bodies to 64 KiB in all.
+    if (keepalive) init.keepalive = true;
     if (method !== 'GET') {
       if (csrf) headers['X-Yulius-CSRF'] = csrf;
       if (body instanceof Blob) {

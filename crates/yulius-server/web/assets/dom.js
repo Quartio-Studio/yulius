@@ -67,6 +67,7 @@ const ICONS = {
   // The Agent (SPEC-035): a four-point spark and a small one beside it.
   spark: [['path', { d: 'M10 3.5l1.9 5.1 5.1 1.9-5.1 1.9L10 17.5l-1.9-5.1L3 10.5l5.1-1.9z' }], ['path', { d: 'M18 15v5M15.5 17.5h5' }]],
   info: [['circle', { cx: 12, cy: 12, r: 9 }], ['path', { d: 'M12 11v5.5' }], ['circle', { cx: 12, cy: 7.8, r: 1.1, fill: 'currentColor' }]],
+  note: [['rect', { x: 4.5, y: 3, width: 15, height: 18, rx: 2 }], ['path', { d: 'M8 8h8M8 12h8M8 16h5' }]],
   mail: [['rect', { x: 3, y: 5, width: 18, height: 14, rx: 2 }], ['path', { d: 'M3.5 6.5l8.5 6.5 8.5-6.5' }]],
   menu: [['path', { d: 'M4 6h16M4 12h16M4 18h16' }]],
   more: [['circle', { cx: 12, cy: 5, r: 1.3, fill: 'currentColor' }], ['circle', { cx: 12, cy: 12, r: 1.3, fill: 'currentColor' }], ['circle', { cx: 12, cy: 19, r: 1.3, fill: 'currentColor' }]],

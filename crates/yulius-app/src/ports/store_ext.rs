@@ -9,6 +9,7 @@ use yulius_domain::time::Timestamp;
 use crate::automations::{AuditEntry, AutomationRecord, AutomationRunRecord, RunState};
 use crate::error::AppResult;
 use crate::mcp_config::McpServerRecord;
+use crate::notes::NoteRecord;
 use crate::workflows::WorkflowRecord;
 
 /// Workflow persistence (CP7).
@@ -442,6 +443,24 @@ pub trait CiStore: Send + Sync {
     async fn prune_ci_runs(&self, keep: u32, before: Timestamp) -> AppResult<u64>;
 }
 
+/// Notepads (SPEC-041): one row per scope (`team`, `sandbox:<sid>`).
+#[async_trait]
+pub trait NoteStore: Send + Sync {
+    /// The stored note of `scope`, if it was ever written.
+    async fn note(&self, scope: &str) -> AppResult<Option<NoteRecord>>;
+    /// Compare-and-set: stores `body` as `base_revision + 1` when the stored revision is
+    /// `base_revision` (0 = never written) and returns the new note; `None` (nothing stored)
+    /// when the stored revision differs.
+    async fn put_note(
+        &self,
+        scope: &str,
+        body: &str,
+        base_revision: u64,
+        updated_by: &str,
+        at: Timestamp,
+    ) -> AppResult<Option<NoteRecord>>;
+}
+
 /// All extension areas.
 pub trait ExtensionStores:
     WorkflowStore
@@ -457,6 +476,7 @@ pub trait ExtensionStores:
     + crate::ports::vault::VaultStore
     + CiStore
     + crate::ports::session_docs::SessionDocStore
+    + NoteStore
 {
 }
 
@@ -474,5 +494,6 @@ impl<T> ExtensionStores for T where
         + crate::ports::vault::VaultStore
         + CiStore
         + crate::ports::session_docs::SessionDocStore
+        + NoteStore
 {
 }
