@@ -126,7 +126,7 @@ than about 25 % slower than on an idle sandbox, whatever the agents run, and the
 ## Decisions
 
 - **cgroup weight for CI jobs, not more `nice` and not an adaptive `CARGO_BUILD_JOBS`.**
-  [ADR-0034](../../docs/decisions/0034-ci-jobs-get-the-cpu-first.md).
+  [ADR-0039](../../docs/decisions/0039-ci-jobs-get-the-cpu-first.md).
   - `nice` is per thread, so its effect shrinks with every compiler thread an agent adds. It
     reaches only what goes through `--scrub-exec`.
   - `CARGO_BUILD_JOBS` is fixed for a session's lifetime, so it cannot follow the load. It covers

@@ -403,7 +403,7 @@ shells and CI jobs join it. A sandbox gets:
   `sudo apt-get install …` works and persists for that sandbox only;
 - limits (CPU, memory, tasks) through the unit's delegated cgroup, and a soft disk quota. Inside
   a sandbox, CI jobs get four times the agents' CPU weight (`ci/` 400 against `agents/` 100), so
-  CI gets up to 80 % of the sandbox's CPU while agents build ([ADR-0034](decisions/0034-ci-jobs-get-the-cpu-first.md));
+  CI gets up to 80 % of the sandbox's CPU while agents build ([ADR-0039](decisions/0039-ci-jobs-get-the-cpu-first.md));
 - a seccomp filter: no nested user namespaces, `io_uring`, `bpf`, keyrings, module or mount calls.
 
 **Install once** (as root):

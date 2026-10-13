@@ -53,7 +53,7 @@ A sandbox's processes share its cgroup limits, but not equally. CI jobs run in i
 with four times the CPU weight of the agents' `agents/` leaf. Under full load CI gets up to 80 % of
 the sandbox and the agents at least 20 %, and idle CPU goes to whoever wants it. Agent Bash commands also run
 5 nice levels below the agents themselves ([SPEC-053](../.ai/specs/SPEC-053-ci-e2e-timeouts-under-agent-load-give-ci.md),
-[decision 0034](decisions/0034-ci-jobs-get-the-cpu-first.md)).
+[decision 0039](decisions/0039-ci-jobs-get-the-cpu-first.md)).
 
 ```mermaid
 flowchart TD
