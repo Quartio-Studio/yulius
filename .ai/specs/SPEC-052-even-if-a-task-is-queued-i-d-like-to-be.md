@@ -100,5 +100,10 @@ request, so the agent gets it as part of its request when the task starts.
   override earlier ones, which a reader (and the agent) understands.
 - **No scope check on a queued message.** A correction of a task that has not started is that
   task's scope by definition, and holding it would block the one way to correct the task.
+- **The task's mode, workflow and title stay as created.** Auto chose them from the request when
+  the task was created (TSK-015). A queued message corrects what the agent does, not how Yulius
+  runs the task: a person who wants another mode or workflow cancels it and creates a new one.
+- **A started task answers 409 before anything else**, also when its request is full: the session
+  is the way in. The size answer (422) is only for a task that can still take a message.
 - **Same limit as creation (64 KiB for the whole request).** One bound for the request, whatever
   path built it.

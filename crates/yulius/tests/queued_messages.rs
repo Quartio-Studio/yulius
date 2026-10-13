@@ -211,3 +211,28 @@ async fn a_message_needs_write_access_and_fitting_text() -> TestResult {
     assert_eq!(detail.body["request"], "do things");
     Ok(())
 }
+
+/// A task that has started says so, also when the message would not have fitted: the session is
+/// the way in, whatever the request's size.
+#[tokio::test]
+async fn a_started_task_with_a_long_request_says_it_has_started() -> TestResult {
+    let h = harness()?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    seed_task(&h, "t-long", "s1", "u-alice", TaskStatus::Queued, None).await?;
+    let id = TaskId::parse("t-long")?;
+    assert!(
+        h.store
+            .append_unstarted_prompt(&id, &"x".repeat(60 * 1024), 64 * 1024, h.app.now())
+            .await?
+    );
+    assert!(
+        h.store
+            .transition_task(&id, None, TaskStatus::Running, None, h.app.now())
+            .await?
+    );
+    let resp = queue(&h, "t-long", &"y".repeat(8 * 1024), &alice).await?;
+    assert_eq!(resp.status, StatusCode::CONFLICT, "{:?}", resp.body);
+    Ok(())
+}

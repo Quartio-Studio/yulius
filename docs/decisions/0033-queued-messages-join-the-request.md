@@ -40,4 +40,5 @@ the creation limit of 64 KiB. The task view shows the request and a box to queue
 Every reader of the request sees the correction with no extra code. The request is append-only
 while the task waits, and each addition names who added it and when. A message cannot be taken
 back: a person who changes their mind queues another one, and later lines correct earlier ones.
-A task that started takes no queued message; its session is the way in.
+A task that started takes no queued message; its session is the way in. The mode, workflow and
+title chosen at creation stay: a message corrects the work, not how Yulius runs the task.

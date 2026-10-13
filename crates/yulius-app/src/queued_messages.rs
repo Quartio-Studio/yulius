@@ -7,11 +7,13 @@
 use yulius_contracts::api::tasks::{QueueMessage, QueuedMessage};
 use yulius_domain::permission::Action;
 use yulius_domain::request::queued_addition;
+use yulius_domain::task::TaskStatus;
 
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::lifecycle::MAX_PROMPT_BYTES;
+use crate::model::TaskRecord;
 
 impl App {
     /// `POST /api/tasks/{tid}/queued-messages` (QMS-001..003): adds the message to the request
@@ -43,27 +45,47 @@ impl App {
                 MAX_PROMPT_BYTES / 1024
             ))
         };
-        if task.prompt.len() + addition.len() > MAX_PROMPT_BYTES {
-            return Err(too_long());
+        // Whether the task started decides first: its session is the way in, whatever the size.
+        // The conditional update below is what makes the answer exact; this only words it.
+        let refusal = |task: &TaskRecord, started: bool| {
+            if started {
+                AppError::Conflict("The task has started: type into its session instead".into())
+            } else if task.prompt.len() + addition.len() > MAX_PROMPT_BYTES {
+                too_long()
+            } else {
+                AppError::Conflict("The task changed meanwhile: try again".into())
+            }
+        };
+        let started = self.task_started(&task).await?;
+        if started || task.prompt.len() + addition.len() > MAX_PROMPT_BYTES {
+            return Err(refusal(&task, started));
         }
         let store = &self.deps.store;
         if !store
             .append_unstarted_prompt(&task.id, &addition, MAX_PROMPT_BYTES, now)
             .await?
         {
-            // Another message may have filled the request meanwhile; else the task started.
+            // It started meanwhile, or another message filled the request.
             let current = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
-            if current.prompt.len() + addition.len() > MAX_PROMPT_BYTES {
-                return Err(too_long());
-            }
-            return Err(AppError::Conflict(
-                "The task has started: type into its session instead".into(),
-            ));
+            return Err(refusal(&current, self.task_started(&current).await?));
         }
         self.publish_task(&task.id).await;
         let task = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
         Ok(QueuedMessage {
             request: task.prompt,
         })
+    }
+
+    /// Whether a task is past taking queued messages: it is no longer waiting, or it has had a
+    /// run or a provider session (QMS-001; the store's conditional update holds the same rule).
+    async fn task_started(&self, task: &TaskRecord) -> AppResult<bool> {
+        let waiting = matches!(
+            task.status,
+            TaskStatus::Queued | TaskStatus::Chained | TaskStatus::WaitingCapacity
+        );
+        let store = &self.deps.store;
+        Ok(!waiting
+            || !store.attempts(&task.id).await?.is_empty()
+            || !store.provider_sessions(&task.id).await?.is_empty())
     }
 }
