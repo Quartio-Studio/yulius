@@ -62,6 +62,11 @@ echo \"interrupted:${CLAUDE_CODE_RESUME_INTERRUPTED_TURN:-none}\"\n\
 echo \"config:$CLAUDE_CONFIG_DIR\"\n\
 echo \"cwd:$(pwd)\"\n\
 echo \"ready\"\n\
+if [ -f \"$CLAUDE_CONFIG_DIR/exit-3-on-signal\" ]; then\n\
+  trap 'exit 3' HUP INT TERM\n\
+  while read -r line; do eval \"$line\"; done\n\
+  exit 3\n\
+fi\n\
 exec /bin/sh\n";
 
 struct Fixture {
@@ -1196,6 +1201,11 @@ async fn other_cockpit(f: &Fixture, old: &str) -> Result<String, Box<dyn std::er
     found.ok_or_else(|| "no other Cockpit".into())
 }
 
+/// The Claude config dir of the Cockpit whose screen is `screen`.
+fn project_config(screen: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    Ok(PathBuf::from(printed(screen, "config")?))
+}
+
 /// The conversation of the Cockpit whose screen is `screen`: its project directory.
 fn project_of(screen: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let config = PathBuf::from(printed(screen, "config")?);
@@ -1422,5 +1432,116 @@ async fn a_handled_limit_is_not_acted_on_again_after_a_restart() -> TestResult {
     let usage = usage_of(&g.h, "acc-a").await?;
     assert_eq!(usage["limit_resets_at"], 1_791_600_000_000_i64, "{usage}");
     g.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// Review round 1 (m3): the start on another subscription failed after the old Cockpit ended;
+/// the next start still continues the cut turn instead of leaving the prompt unanswered.
+#[tokio::test]
+async fn a_failed_move_still_continues_the_cut_turn_at_the_next_start() -> TestResult {
+    let f = fixture_with(false, None).await?;
+    insert_account(&f.h, "acc-a", "token-a", 5.0).await?;
+    insert_account(&f.h, "acc-b", TOKEN, 60.0).await?;
+    let served = serve(f.h.router.clone()).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let config = PathBuf::from(printed(&screen, "config")?);
+    let project = project_of(&screen)?;
+    // Claude Code's config turns unreadable: the start on acc-b fails.
+    std::fs::write(config.join(".claude.json"), "[]")?;
+    std::fs::create_dir_all(&project)?;
+    let transcript = project.join("conv-1.jsonl");
+    std::fs::write(&transcript, limited_conversation(1_791_400_000))?;
+    let exit = read_message(&mut socket, "exit").await?;
+    assert_eq!(exit["status"], "switched", "{exit}");
+    wait_for("the old Cockpit to be gone", || {
+        f.h.app.sandbox_shells(&sid()).is_empty()
+    })
+    .await?;
+
+    std::fs::write(config.join(".claude.json"), "{}")?;
+    let again = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &again, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(
+        printed(&screen, "cockpit-args")?,
+        "[--resume conv-1 --model claude-opus-5-5 --effort high]"
+    );
+    assert_eq!(
+        printed(&screen, "interrupted")?,
+        "1",
+        "the cut turn goes on"
+    );
+    assert_eq!(printed(&screen, "token")?, TOKEN);
+    assert!(!std::fs::read_to_string(&transcript)?.contains("new-limit"));
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// Review round 1 (m5): a resumed Cockpit moved again right after it started is not a failed
+/// resume: its conversation stays the one the next Cockpit resumes (CKP-003).
+#[tokio::test]
+async fn a_quick_second_move_keeps_resuming_the_conversation() -> TestResult {
+    let f = fixture_with(false, None).await?;
+    insert_account(&f.h, "acc-a", "token-a", 5.0).await?;
+    insert_account(&f.h, "acc-b", "token-b", 30.0).await?;
+    insert_account(&f.h, "acc-c", TOKEN, 60.0).await?;
+    let served = serve(f.h.router.clone()).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let project = project_of(&screen)?;
+    // The next Cockpits end with an error exit on a signal, as Claude Code itself may.
+    std::fs::write(project_config(&screen)?.join("exit-3-on-signal"), "")?;
+    std::fs::create_dir_all(&project)?;
+    let transcript = project.join("conv-1.jsonl");
+    std::fs::write(&transcript, limited_conversation(1_791_400_000))?;
+    let second = other_cockpit(&f, &id).await?;
+    let mut socket = attach(served.addr, &second, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(printed(&screen, "token")?, "token-b");
+
+    // acc-b is limited too, at once: the resumed Cockpit ends within its first seconds.
+    let mut text = std::fs::read_to_string(&transcript)?;
+    text.push_str(&limit_record("b-limit", "u1", 30, 1_791_500_000));
+    std::fs::write(&transcript, text)?;
+    let third = loop {
+        let found = other_cockpit(&f, &second).await?;
+        if found != id {
+            break found;
+        }
+    };
+    let mut socket = attach(served.addr, &third, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(printed(&screen, "token")?, TOKEN);
+    assert_eq!(
+        printed(&screen, "cockpit-args")?,
+        "[--resume conv-1 --model claude-opus-5-5 --effort high]"
+    );
+    // Opened again later, it still resumes the conversation.
+    socket
+        .send(Message::text(
+            json!({"type": "input", "data": "exit\r"}).to_string(),
+        ))
+        .await?;
+    wait_for("the Cockpit to end", || {
+        f.h.app.sandbox_shells(&sid()).is_empty()
+    })
+    .await?;
+    let fourth = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &fourth, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert!(
+        printed(&screen, "cockpit-args")?.starts_with("[--resume conv-1"),
+        "{screen}"
+    );
+    f.h.app.end_all_shells().await;
     Ok(())
 }

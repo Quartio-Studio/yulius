@@ -107,7 +107,9 @@ export function createAgentView(ctx, sandbox) {
         ? { tone: 'info', text: 'Moving the Superagent to another subscription…' }
         : { tone: 'info', text: 'The Superagent stopped. Its conversation is kept.' }),
       exitActions: (exit) => (exit.status === 'switched' ? [] : [{ label: 'Start again', run: () => open() }]),
-      onExit: (exit) => { if (exit.status === 'switched') recover(); },
+      // Opened again rather than recovered: the server answers once the new one runs (it holds the
+      // start), and a failure shows why with Try again instead of leaving "Moving…" on screen.
+      onExit: (exit) => { if (exit.status === 'switched') open({ focus: el.contains(document.activeElement) }); },
       onFatal: (message) => { if (message.code === 'not_found') recover(); },
       // Once its first screen shows, the wish to focus from opening it is spent: a later recovery
       // leaves the keyboard where it is.

@@ -205,7 +205,7 @@ test('a Superagent recovered right after opening it has the keyboard', async ({ 
 });
 
 // Review round 4: a slow start leaves the keyboard where the person put it in the meantime.
-type Holding = Window & { __yuliusMock: { holdCockpit?: Promise<void>; rebootCockpits(): void; switchCockpits(): void }; __release?: () => void };
+type Holding = Window & { __yuliusMock: { holdCockpit?: Promise<void>; rebootCockpits(): void; switchCockpits(failed?: boolean): void }; __release?: () => void };
 
 test('a Superagent that starts slowly does not take the keyboard from the page', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
@@ -264,4 +264,19 @@ test('a Superagent moved to another subscription after a usage limit goes on in 
   await browser.keyboard.type('why?');
   await browser.keyboard.press('Enter');
   await expect(terminal).toHaveText(/Good question/);
+});
+
+// Review round 1 (m1): the move failed and the Superagent cannot start right now; the panel says
+// why and offers to try again instead of staying on "Moving…".
+test('a Superagent whose move to another subscription failed says why and starts again', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1920, height: 1000 });
+  await app.open(mock('/s/studio'));
+  await screen.getByRole('button', 'Show Superagent').click();
+  const terminal = browser.locator(agentTerminal);
+  await expect(terminal).toHaveText(/Welcome to Claude Code/);
+
+  await browser.evaluate(() => (window as unknown as Holding).__yuliusMock.switchCockpits(true));
+  await expect(screen.getByRole('alert')).toHaveText(/Couldn’t start the Superagent: no subscription has capacity right now/);
+  await screen.getByRole('button', 'Try again').click();
+  await expect(terminal).toHaveText(/resumed your last conversation/);
 });

@@ -1924,6 +1924,7 @@ route('POST', `/api/sandboxes/${ID}/cockpit`, async ({ db, p }) => {
   need(sandboxOf(db, p[0]), 'write');
   const scenario = new URLSearchParams(location.search).get('cockpit');
   if (scenario === 'fail') fail(429, 'capacity', 'no subscription has capacity right now');
+  if (db.cockpitFailsOnce) { db.cockpitFailsOnce = false; fail(429, 'capacity', 'no subscription has capacity right now'); }
   if (db.holdCockpit) await db.holdCockpit;
   if (scenario === 'gone' && !db.cockpitGone) {
     db.cockpitGone = true;
@@ -3562,14 +3563,17 @@ export function createMockTransport(params) {
   };
   // A usage limit moved every Cockpit to another subscription (SPEC-074): each ends as `switched`
   // and a new one, resuming its conversation, is already running in its place.
-  db.switchCockpits = () => {
+  // `switchCockpits(true)`: the start on the other subscription failed, and the next start fails
+  // once for lack of capacity.
+  db.switchCockpits = (failed = false) => {
     for (const shell of [...db.shells.values()]) {
       if (!shell.cockpit) continue;
       db.nextId += 1;
       const next = { ...shell, id: `ck_${shell.sandbox_id}_${db.nextId}`, session: null, resumed: true };
       if (shell.session) shell.session.end(null, 'switched');
       db.shells.delete(shell.id);
-      db.shells.set(next.id, next);
+      if (failed) db.cockpitFailsOnce = true;
+      else db.shells.set(next.id, next);
     }
   };
   // A teammate's save of a notepad (`team` or `sandbox:<sid>`); `announce: false` holds back its

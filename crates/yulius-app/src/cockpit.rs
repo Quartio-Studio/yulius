@@ -164,8 +164,22 @@ impl App {
         let account = self
             .pool_account(Provider::Anthropic, cockpit_family())
             .await?;
-        self.start_cockpit(&ctx.user, &record, &account, false)
-            .await
+        // A Cockpit a usage limit ended, whose move failed, continues the cut turn now.
+        let key = (ctx.user.id.clone(), record.id.clone());
+        let pending = |remove: bool| {
+            self.shells.cockpit_continue.lock().is_ok_and(|mut set| {
+                if remove {
+                    set.remove(&key)
+                } else {
+                    set.contains(&key)
+                }
+            })
+        };
+        let started = self
+            .start_cockpit(&ctx.user, &record, &account, pending(false))
+            .await?;
+        pending(true);
+        Ok(started)
     }
 
     /// The lock that serialises the Cockpit starts of `user` in `sandbox` (CKP-001).
@@ -376,9 +390,12 @@ impl App {
             Ok(started) => {
                 tracing::info!(from = %runtime.id(), to = %started.id, account = %account.id, "cockpit moved to another subscription after a usage limit");
             }
-            // The panel starts it again when it asks for its Cockpit.
+            // The panel starts it again when it asks for its Cockpit, still continuing the turn.
             Err(err) => {
                 tracing::warn!(error = %err, shell = %runtime.id(), "the cockpit could not start on another subscription");
+                if let Ok(mut pending) = self.shells.cockpit_continue.lock() {
+                    pending.insert((runtime.creator().clone(), runtime.sandbox().clone()));
+                }
             }
         }
         true

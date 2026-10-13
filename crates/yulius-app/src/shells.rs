@@ -113,6 +113,9 @@ pub struct ShellState {
     /// The conversation each user's Cockpit could not resume (it exited at once), by sandbox:
     /// the next start begins a fresh one instead of failing the same way.
     pub(crate) cockpit_unresumable: Mutex<HashMap<(UserId, SandboxId), String>>,
+    /// The Cockpits a usage limit ended whose start on another subscription failed: the next
+    /// start still continues the cut turn (SPEC-074 SUP-004).
+    pub(crate) cockpit_continue: Mutex<std::collections::HashSet<(UserId, SandboxId)>>,
     /// The next creation number (tab order among shells created in the same millisecond).
     next_seq: AtomicU64,
 }
