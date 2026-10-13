@@ -149,6 +149,9 @@ pub trait VaultStore: Send + Sync {
     async fn vault_two_factor_failed(&self, user_id: &str, at: Timestamp) -> AppResult<u32>;
     /// Clears the wrong codes (the person confirmed it is them).
     async fn vault_two_factor_clear_failures(&self, user_id: &str) -> AppResult<()>;
+    /// Removes the person's two-factor seed and the vault unlocks of their browser sessions (an
+    /// administrator's reset); `true` when a seed was removed.
+    async fn vault_reset_two_factor(&self, user_id: &str) -> AppResult<bool>;
     /// Records a two-factor unlock of a browser session.
     async fn vault_set_unlock(&self, session_hash: &str, at: Timestamp) -> AppResult<()>;
     /// The session's last two-factor unlock.

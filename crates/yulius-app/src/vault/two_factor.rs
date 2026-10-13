@@ -12,6 +12,7 @@ use crate::auth::AuthContext;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::ports::vault::TwoFactorRecord;
+use yulius_domain::ids::UserId;
 use yulius_domain::time::Timestamp;
 use zeroize::Zeroize as _;
 
@@ -117,6 +118,39 @@ impl App {
             uri: otpauth_uri(ISSUER, &actor, &secret),
             secret: secret.to_string(),
         }))
+    }
+
+    /// `DELETE /api/users/{id}/two-factor`: an instance administrator or the superadmin, with
+    /// their own vault unlock, removes another person's two-factor seed and vault unlocks (a lost
+    /// authenticator; ADR-0040). The person sets two-factor up again on their next reveal.
+    /// Audited as `vault.2fa.reset` when a seed was removed.
+    ///
+    /// # Errors
+    /// `Forbidden` for members, API tokens and the caller's own two-factor, `NotFound` for an
+    /// unknown user, store failures.
+    pub async fn reset_two_factor(&self, ctx: &AuthContext, id: &str) -> AppResult<Revealed<()>> {
+        self.require_instance_admin(ctx)?;
+        if let Some(status) = self.fresh_or_status(ctx).await? {
+            return Ok(Revealed::ReauthRequired(status));
+        }
+        let id = UserId::parse(id).map_err(|_| AppError::NotFound)?;
+        let user = self.deps.store.user(&id).await?.ok_or(AppError::NotFound)?;
+        if user.id == ctx.user.id {
+            return Err(AppError::Forbidden(
+                "another administrator resets your own two-factor".into(),
+            ));
+        }
+        if self
+            .deps
+            .store
+            .vault_reset_two_factor(user.id.as_str())
+            .await?
+        {
+            let person = user.github_login.as_deref().unwrap_or("superadmin");
+            self.vault_audit(&Self::vault_actor(ctx), "vault.2fa.reset", None, person)
+                .await?;
+        }
+        Ok(Revealed::Values(()))
     }
 
     /// `POST /api/auth/unlock`: a current code of the caller's authenticator unlocks the vault
