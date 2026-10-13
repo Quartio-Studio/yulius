@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- Menus are compact and filter themselves (SPEC-038, ADR-0030; task #36). Every drop-down stays
+  inside the window and scrolls its items. Descriptions take one line, with the full text as a
+  tooltip. A menu of 8 or more items opens with a focused Filter box: typed words narrow it,
+  ↓/↑ and Enter pick, and Escape clears the filter first. "Run after" lists every live task on one
+  line ("#12 Checkout API · Working") under "After a task is done", not just the first 20.
 - Notes in the tools rail (SPEC-041, ADR-0032, task #40): a notepad for this sandbox and one for
   the team, below Shell. They save by themselves while people type, with no Save button. Everyone
   who can see the sandbox reads its notes, writers edit them, and everyone signed in shares the

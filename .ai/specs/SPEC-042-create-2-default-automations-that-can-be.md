@@ -180,5 +180,6 @@ switch on.
   status `pending`, expected `failure`, from the CI junit). Cause: the test's `settle()` returned
   when no run was active, before the finished run's status was published. It passed 5/5 alone and
   12/12 under full CPU load locally; the test-only fix makes `settle()` also wait for publication
-  (`status` no longer `pending`). `local_ci::` 5/5 after the fix.
+  (`status` no longer `pending`). The same fix reached `dev` independently (#287), so the branch
+  takes `dev`'s version of the file and no longer changes it.
 - Follow-up: #293 (agents enable a ready-made automation by id).

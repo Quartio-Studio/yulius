@@ -195,6 +195,10 @@ column widths, model and effort), the notification history, and the new-task com
 ([decision 0021](decisions/0021-composer-drafts-in-the-browser.md)). Sign-out removes the
 notification history and the drafts.
 
+Every drop-down menu is built by `openMenu` (`dom.js`). It stays inside the window, scrolling its
+items, and a menu of 8 or more items opens with a filter box
+([decision 0030](decisions/0030-menus-filter-when-long.md)).
+
 ```mermaid
 flowchart LR
   C["Composer (taskview.js)"] -->|"edit, attach"| D["drafts.js (per user and sandbox)"]
