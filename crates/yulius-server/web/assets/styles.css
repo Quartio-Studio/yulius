@@ -1007,6 +1007,17 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 .attention-text { flex: 1; min-width: 0; }
 /* A prompt held by the scope check (TSK-013): its choices float over the terminal like the
    attention bar, so the terminal keeps its size. */
+/* Queued messages (SPEC-052): at the bottom of a waiting task's empty terminal. */
+.queue-slot { position: absolute; left: 50%; bottom: 16px; z-index: var(--z-float); width: min(640px, calc(100% - 32px)); transform: translateX(-50%); }
+.queue-slot[hidden] { display: none; }
+.queue-card { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface); color: var(--text); font-size: var(--fs-sm); line-height: var(--lh-sm); box-shadow: var(--shadow); }
+.queue-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.queue-request { margin: 0; padding: 8px 12px; max-height: 140px; overflow: auto; border-left: 2px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.queue-compose { display: flex; align-items: flex-end; gap: 8px; }
+.queue-input { flex: 1; min-width: 0; height: auto; min-height: var(--control-xl); padding: 6px 8px; resize: vertical; font: inherit; }
+.queue-card .field-error:empty { display: none; }
+/* A waiting task has no session to send keys to: the phone's quick input gives way to the card. */
+.taskview:has(.queue-slot:not([hidden])) .quickbar { display: none; }
 .held-slot { position: absolute; top: 8px; right: 16px; z-index: var(--z-float); width: min(560px, calc(100% - 32px)); }
 .held-slot[hidden] { display: none; }
 .held-card { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--border-strong); border-left: 3px solid var(--warn); border-radius: var(--radius); background: var(--surface); color: var(--text); font-size: var(--fs-sm); line-height: var(--lh-sm); box-shadow: var(--shadow); }

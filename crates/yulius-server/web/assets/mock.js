@@ -411,9 +411,15 @@ function advanceEnvironment(db, sandbox, envName) {
   }
 }
 
+/** Waiting states in which a task that never started takes queued messages (SPEC-052). */
+const WAITING = new Set(['queued', 'chained', 'waiting_capacity']);
+
+/** Whether a task ever had a run: in the mock, every task past waiting in a queue or a chain. */
+const hasStarted = (task) => task.started ?? !['queued', 'chained'].includes(task.status);
+
 function detail(db, task) {
   const live = LIVE.has(task.status);
-  const ran = task.origin !== 'onboarding' || task.stepsList.some((s) => s.status === 'done');
+  const ran = hasStarted(task) && (task.origin !== 'onboarding' || task.stepsList.some((s) => s.status === 'done'));
   return {
     ...summary(task),
     spec_path: task.stepsList.length && task.branch ? `docs/specs/2026-10-07-${task.branch.replace('feat/', '')}.md` : null,
@@ -427,6 +433,8 @@ function detail(db, task) {
     feedback: [],
     delivery: delivery(db, task),
     switches: task.number === 9 ? [{ at: iso(2 * MIN), reason: 'account exhausted', from: 'Claude Code (Claude #2)', to: 'Claude Code (Claude #4)' }] : [],
+    request: task.prompt ?? task.title,
+    started: hasStarted(task),
   };
 }
 
@@ -814,6 +822,16 @@ route('POST', `/api/tasks/${ID}/start-now`, ({ db, p }) => {
   later(() => touch(db, task, { status: 'starting' }), 700);
   later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1800);
   return summary(task);
+});
+route('POST', `/api/tasks/${ID}/queued-messages`, ({ db, p, body }) => {
+  const task = taskOf(db, p[0]);
+  needTaskWrite(db, task);
+  const text = String(body.text || '').trim();
+  if (!text) fail(422, 'invalid', 'the message is empty');
+  if (hasStarted(task) || !WAITING.has(task.status)) fail(409, 'conflict', 'The task has started: type into its session instead');
+  const at = `${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+  touch(db, task, { prompt: `${task.prompt ?? task.title}\n\n**Added by ${db.me.user.login} before the task started (${at}):**\n\n${text}` });
+  return { request: task.prompt };
 });
 route('POST', `/api/tasks/${ID}/held-prompts/${ID}`, ({ db, p, body }) => {
   const task = taskOf(db, p[0]);
