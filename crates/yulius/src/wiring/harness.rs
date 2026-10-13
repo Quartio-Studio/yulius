@@ -292,7 +292,9 @@ impl TranscriptWatch for Watch {
                     Observed::TurnInterrupted { at } => {
                         out.push(Observation::TurnInterrupted { at });
                     }
-                    Observed::TurnComplete { .. } => out.push(Observation::TurnComplete),
+                    Observed::TurnComplete { at, .. } => {
+                        out.push(Observation::TurnComplete { at });
+                    }
                     Observed::Goal { outcome } => out.push(Observation::Goal(outcome)),
                     Observed::TurnEnded { background_agents } => {
                         out.push(Observation::TurnEnded { background_agents });

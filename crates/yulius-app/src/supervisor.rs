@@ -2731,7 +2731,7 @@ impl App {
             }
             let turn_ended = observations
                 .iter()
-                .any(|o| matches!(o, Observation::TurnComplete));
+                .any(|o| matches!(o, Observation::TurnComplete { .. }));
             if catching_up {
                 // Usage limits keep their immediate effect; turns and the goal are applied once,
                 // as the replay's final state.
@@ -2843,7 +2843,7 @@ impl App {
                     .await;
                 self.publish_task(task_id).await;
             }
-            Observation::TurnComplete => {
+            Observation::TurnComplete { at } => {
                 self.context_replied(task_id, &attempt.id);
                 runtime.end_turn(self.now());
                 runtime.at_limit.store(false, Ordering::SeqCst);

@@ -22,6 +22,8 @@ pub struct FakeAgentOptions {
     /// After the limit, continue the cut turn by itself like Claude Code at the reset, this many
     /// milliseconds later (`--limit-continues-ms`).
     pub limit_continues_ms: Option<u64>,
+    /// The continuation is only the answer ending the turn (`--limit-continues-answer-only`).
+    pub limit_continues_answer_only: bool,
     /// Draw full screen like Claude Code (`--tui`), redrawing on every resize.
     pub tui: bool,
     /// Run Claude Code's hooks through `yulius hook` like the real CLI (`--hooks`).
@@ -137,6 +139,9 @@ impl HarnessPort for FakeAgentHarness {
         }
         if let Some(ms) = self.options.limit_continues_ms {
             argv.extend(["--limit-continues-ms".into(), ms.to_string()]);
+        }
+        if self.options.limit_continues_answer_only {
+            argv.push("--limit-continues-answer-only".into());
         }
         if self.options.tui {
             argv.push("--tui".into());

@@ -66,7 +66,7 @@ impl TranscriptFacts {
                 self.turn_open = Some(false);
                 self.background_agents = background_agents.unwrap_or(0);
             }
-            Observation::TurnComplete => {
+            Observation::TurnComplete { .. } => {
                 self.turn_open = Some(false);
                 self.context_full = false;
             }
@@ -602,7 +602,11 @@ mod tests {
         let pending = Observation::TurnEnded {
             background_agents: Some(2),
         };
-        let waiting = reduce(&[PROMPT, Observation::TurnComplete, pending.clone()]);
+        let waiting = reduce(&[
+            PROMPT,
+            Observation::TurnComplete { at: None },
+            pending.clone(),
+        ]);
         assert_eq!(waiting.turn_open, Some(false));
         assert_eq!(waiting.background_agents, 2);
         // The wake-up is a user line: a new turn, nothing pending until it ends.
@@ -616,14 +620,14 @@ mod tests {
     /// assistant work after the turn's last end line reopens it, however the replay ends.
     #[test]
     fn work_after_a_stop_the_hook_continued_keeps_the_turn_open() {
-        let blocked = reduce(&[PROMPT, Observation::TurnComplete, WORK]);
+        let blocked = reduce(&[PROMPT, Observation::TurnComplete { at: None }, WORK]);
         assert_eq!(blocked.turn_open, Some(true));
         // The agent finishes the continued turn: closed again by its own end.
         let closed = reduce(&[
             PROMPT,
-            Observation::TurnComplete,
+            Observation::TurnComplete { at: None },
             WORK,
-            Observation::TurnComplete,
+            Observation::TurnComplete { at: None },
             ENDED,
         ]);
         assert_eq!(closed.turn_open, Some(false));
@@ -646,7 +650,7 @@ mod tests {
         let finished = reduce(&[
             Observation::Goal(GoalOutcome::Set),
             PROMPT,
-            Observation::TurnComplete,
+            Observation::TurnComplete { at: None },
             Observation::Goal(GoalOutcome::Met),
             ENDED,
         ]);
@@ -666,7 +670,7 @@ mod tests {
         // Not met yet: the agent continues.
         let continuing = reduce(&[
             PROMPT,
-            Observation::TurnComplete,
+            Observation::TurnComplete { at: None },
             Observation::Goal(GoalOutcome::NotMet),
         ]);
         assert_eq!(continuing.turn_open, Some(true));
@@ -675,7 +679,7 @@ mod tests {
         assert_eq!(failed.turn_open, Some(false));
         assert_eq!(failed.goal_achieved, Some(false));
         // A prompt-mode session never says anything about a goal.
-        let plain = reduce(&[PROMPT, Observation::TurnComplete]);
+        let plain = reduce(&[PROMPT, Observation::TurnComplete { at: None }]);
         assert_eq!(plain.goal_achieved, Some(false));
         let limit = reduce(&[Observation::LimitReached {
             resets_at: None,
@@ -787,10 +791,14 @@ mod tests {
         assert_eq!(full.turn_open, Some(false));
         let failed = reduce(&[PROMPT, Observation::ContextFull, Observation::CompactFailed]);
         assert!(failed.context_full);
-        for after in [Observation::Compacted, Observation::TurnComplete, WORK] {
+        for after in [
+            Observation::Compacted,
+            Observation::TurnComplete { at: None },
+            WORK,
+        ] {
             let settled = reduce(&[PROMPT, Observation::ContextFull, after.clone()]);
             assert!(!settled.context_full, "{after:?}");
         }
-        assert!(!reduce(&[PROMPT, Observation::TurnComplete]).context_full);
+        assert!(!reduce(&[PROMPT, Observation::TurnComplete { at: None }]).context_full);
     }
 }

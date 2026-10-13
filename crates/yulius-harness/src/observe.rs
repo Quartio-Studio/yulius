@@ -64,6 +64,9 @@ pub enum Observed {
     TurnComplete {
         /// Turn duration in milliseconds, if reported.
         duration_ms: Option<u64>,
+        /// When the session's own turn ended (the record's `timestamp`); `None` for a
+        /// sub-agent's turn or an unparseable time.
+        at: Option<Timestamp>,
     },
     /// Claude Code recorded the session goal's state (`goal_status` attachment, TSK-014).
     Goal {
@@ -294,6 +297,7 @@ mod tests {
             Observed::Malformed,
             Observed::TurnComplete {
                 duration_ms: Some(5),
+                at: None,
             },
             Observed::LimitReached {
                 resets_at: None,

@@ -12,7 +12,7 @@
 //!            [--hooks YULIUS_EXE] [--goal-background SECONDS] [--goal-delay-ms MS] [--drop-lines N]
 //!            [--interrupts] [--rate-limits-file PATH] [--session-start] [--opening-turn-ms MS]
 //!            [--echo-turn-ms MS] [--context-full-after N] [--compact-fails] [--compact-hangs]
-//!            [--prompt TEXT] [--limit-continues-ms MS]
+//!            [--prompt TEXT] [--limit-continues-ms MS [--limit-continues-answer-only]]
 //! ```
 //!
 //! Modes:
@@ -38,7 +38,9 @@
 //! `LIMIT REACHED`. With `--limit-continues-ms MS` the agent then continues the cut turn by itself
 //! like Claude Code's "continuing automatically" at the reset (#276): MS later it appends a hidden
 //! `isMeta` prompt and an assistant `tool_use` record and prints `CONTINUED`, and MS after that it
-//! appends the answer ending the turn and prints `DONE continued`. `--report-env NAME` prints `ENV NAME=set len=<n>` or `ENV NAME=unset` (never
+//! appends the answer ending the turn and prints `DONE continued`; with
+//! `--limit-continues-answer-only` the continuation is only that answer (no tool call).
+//! `--report-env NAME` prints `ENV NAME=set len=<n>` or `ENV NAME=unset` (never
 //! the value).
 //!
 //! Goal mode (TSK-010/TSK-014), like Claude Code 2.1.292: `/goal <condition>` prints `GOAL SET`,
@@ -164,6 +166,7 @@ struct Options {
     compact_hangs: bool,
     prompt: Option<String>,
     limit_continues_ms: Option<u64>,
+    limit_continues_answer_only: bool,
 }
 
 fn parse_number<T: std::str::FromStr>(flag: &str, value: Option<String>) -> Result<T, String> {
@@ -203,6 +206,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         compact_hangs: false,
         prompt: None,
         limit_continues_ms: None,
+        limit_continues_answer_only: false,
     };
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -284,6 +288,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                 let ms: u64 = parse_number(&flag, args.next())?;
                 options.limit_continues_ms = Some(ms.min(MAX_WORK_MS));
             }
+            "--limit-continues-answer-only" => options.limit_continues_answer_only = true,
             "--prompt" => options.prompt = Some(args.next().ok_or("--prompt needs a text")?),
             other => return Err(format!("unknown argument {other:?}")),
         }
@@ -543,14 +548,17 @@ impl Transcript {
     }
 
     /// Claude Code continued the turn a usage limit cut by itself (`--limit-continues-ms`): its
-    /// hidden continuation prompt and the first answer, a tool call.
-    fn continued(&mut self) -> io::Result<()> {
+    /// hidden continuation prompt and, unless `answer_only`, the first answer, a tool call.
+    fn continued(&mut self, answer_only: bool) -> io::Result<()> {
         let timestamp = rfc3339(now_ms());
         let meta_uuid = format!("fake-{}-continue-u", self.session_id);
         let mut meta = self.claude_envelope("user", &meta_uuid, &timestamp);
         meta["isMeta"] = json!(true);
         meta["message"] = json!({"role": "user", "content": "Continue from where you left off."});
         self.last_uuid = Some(meta_uuid);
+        if answer_only {
+            return self.append(&[meta]);
+        }
         let uuid = format!("fake-{}-continue-a", self.session_id);
         let mut assistant = self.claude_envelope("assistant", &uuid, &timestamp);
         assistant["message"] = json!({
@@ -1339,7 +1347,11 @@ fn echo_message(
             t.limit()?;
         }
         if let (Some(ms), Some(transcript)) = (options.limit_continues_ms, transcript) {
-            continue_after_limit(ms, Arc::clone(transcript));
+            continue_after_limit(
+                ms,
+                options.limit_continues_answer_only,
+                Arc::clone(transcript),
+            );
         }
     } else if let Some(hooks) = hooks {
         hooks.stop()?;
@@ -1349,11 +1361,11 @@ fn echo_message(
 
 /// Claude Code continuing the turn a usage limit cut by itself, `ms` after the limit
 /// (`--limit-continues-ms`).
-fn continue_after_limit(ms: u64, transcript: Arc<Mutex<Transcript>>) {
+fn continue_after_limit(ms: u64, answer_only: bool, transcript: Arc<Mutex<Transcript>>) {
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(ms));
         if let Ok(mut t) = transcript.lock() {
-            let _ = t.continued();
+            let _ = t.continued(answer_only);
         }
         let _ = say("CONTINUED");
         std::thread::sleep(Duration::from_millis(ms));

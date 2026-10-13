@@ -132,7 +132,10 @@ pub enum Observation {
         at: Option<Timestamp>,
     },
     /// A turn completed.
-    TurnComplete,
+    TurnComplete {
+        /// When the session's own turn ended, if known (`None` for a sub-agent's turn).
+        at: Option<Timestamp>,
+    },
     /// Claude Code recorded the session goal's state (TSK-014).
     Goal(GoalOutcome),
     /// Claude Code closed a turn after its Stop hooks (only used to reduce a replay).
