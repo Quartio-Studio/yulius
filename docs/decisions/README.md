@@ -66,3 +66,4 @@ title whose number differs from the file name, and a record this index does not 
 - [0058](0058-the-clis-own-continuation-ends-a-limit-pause.md): The CLI's own continuation ends a limit pause; a refused limit switch is remembered per run
 - [0059](0059-a-session-is-printed-as-the-tui-in-html.md): A session is printed as Claude Code's TUI in HTML, faded by its own palette
 - [0055](0055-cockpit-moves-past-a-usage-limit.md): The Cockpit moves past a usage limit like a task, and is called the Superagent
+- [0061](0061-background-work-and-goal-verdict-from-the-transcript.md): Background launches and the goal verdict come from the transcript; the hook does not wait

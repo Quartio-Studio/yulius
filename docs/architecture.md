@@ -372,14 +372,24 @@ flowchart LR
 ## Task status
 
 A running task's activity is derived from Claude Code's own records, not guessed from the last
-event ([ADR-0044](decisions/0044-task-status-follows-claude-codes-own-records.md)):
+event ([ADR-0044](decisions/0044-task-status-follows-claude-codes-own-records.md)). Background work
+is counted from three sources:
+- background shells, from the process probe;
+- background agents, from the turn record;
+- Monitor streams and agents launched in the turn that ends, from the transcript.
+
+While a goal is open, a clean Stop reads idle only after the goal verdict (or the turn record, or
+20 s). A proactive switch waits for any of this background work
+([ADR-0061](decisions/0061-background-work-and-goal-verdict-from-the-transcript.md)):
 
 ```mermaid
 flowchart LR
     prompt["prompt / wake-up\n(hook, user line)"] --> working
     stop["clean Stop hook"] --> idle["waiting / done"]
     turn["turn_duration:\npending background agents"] --> bg["+ background work\n(shown Working)"]
+    launch["transcript: monitor started,\nagent launched (until it ends)"] --> bg
     idle --> bg
+    stop -.->|"goal open: until the verdict,\nthe turn record or 20 s"| working
     verdict["goal verdict: not met"] --> working
     work["assistant work after the stop"] --> working
     notice["notice that asks a person"] --> attention["needs_attention"]

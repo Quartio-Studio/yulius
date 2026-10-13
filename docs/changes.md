@@ -6,6 +6,17 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- An idle task's background work and its goal verdict decide its status (SPEC-079, ADR-0061, task
+  #60; #305, #264, #265, #271):
+  - While a goal is open, a clean Stop leaves the task Working until Claude Code's goal verdict,
+    bounded by the turn record or 20 s. "Not met" no longer flashes Your turn or Done, and no chain
+    starts from a Done the verdict takes back.
+  - Monitor streams count as background work until their stream ends or expires. Claude Code's
+    turn record does not count them, and a WebSocket monitor has no process.
+  - A proactive switch at a Stop waits while a background agent launched in that turn is pending.
+    The switch used to end the agent.
+  - When a Done task's last background shell or agent ends, the queue drains at once instead of at
+    the next tick. So does a Stop that makes a task Done.
 - Resuming after a usage limit is safe in three more cases (SPEC-072, ADR-0058, task #57; #276,
   #277, #278):
   - Claude Code sometimes continues a turn by itself at the reset. Its first agent work or turn end
