@@ -228,7 +228,7 @@ function openUserMenu(ctx, anchor) {
   ];
   if (instanceAdmin) {
     items.push({ separator: true }, { header: 'Administration' });
-    if (superadmin) items.push({ label: 'Users', icon: 'users', onSelect: () => ctx.navigate('/admin/users') });
+    items.push({ label: 'Users', icon: 'users', onSelect: () => ctx.navigate('/admin/users') });
     items.push({ label: 'Subscriptions', icon: 'user', onSelect: () => ctx.navigate('/admin/accounts') });
     if (superadmin) items.push({ label: 'GitHub connection', icon: 'github', onSelect: () => ctx.navigate('/admin/github') });
     items.push(
