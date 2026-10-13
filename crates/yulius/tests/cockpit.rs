@@ -1349,3 +1349,78 @@ async fn an_adopted_cockpit_keeps_its_subscription_and_moves_past_a_limit() -> T
     g.h.app.end_all_shells().await;
     Ok(())
 }
+
+/// Review round 1 (M1): a limit already handled is never acted on again, after `/clear` and back
+/// to its conversation (`/resume`), or after a server restart.
+#[tokio::test]
+async fn a_handled_limit_is_not_acted_on_again_after_clear_and_resume() -> TestResult {
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let project = project_of(&screen)?;
+    std::fs::create_dir_all(&project)?;
+    let first = project.join("conv-1.jsonl");
+    std::fs::write(&first, limited_conversation(1_791_400_000))?;
+    read_message(&mut socket, "notice").await?;
+    // `/clear`: a new conversation, limited too (the watch has moved to it once this is told).
+    let second = project.join("conv-2.jsonl");
+    std::fs::write(
+        &second,
+        [
+            prompt_record("v1", None, 10),
+            limit_record("second-limit", "v1", 11, 1_791_500_000),
+        ]
+        .concat(),
+    )?;
+    read_message(&mut socket, "notice").await?;
+    // `/resume` back to the first one, which is limited again: only the new limit counts.
+    let mut text = std::fs::read_to_string(&first)?;
+    text.push_str(&prompt_record("u2", Some("new-limit"), 20));
+    text.push_str(&limit_record("third-limit", "u2", 21, 1_791_600_000));
+    std::fs::write(&first, text)?;
+    let resumed = std::fs::File::options().append(true).open(&first)?;
+    resumed.set_modified(std::time::SystemTime::now() + Duration::from_secs(60))?;
+    read_message(&mut socket, "notice").await?;
+    let usage = usage_of(&f.h, "acc-1").await?;
+    assert_eq!(usage["limit_resets_at"], 1_791_600_000_000_i64, "{usage}");
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_handled_limit_is_not_acted_on_again_after_a_restart() -> TestResult {
+    let f = fixture_with(false, None).await?;
+    insert_account(&f.h, "acc-a", "token-a", 5.0).await?;
+    let served = serve(f.h.router.clone()).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let project = project_of(&screen)?;
+    std::fs::create_dir_all(&project)?;
+    let transcript = project.join("conv-1.jsonl");
+    // No other subscription: the Cockpit stays with the limit in its conversation.
+    std::fs::write(&transcript, limited_conversation(1_791_400_000))?;
+    read_message(&mut socket, "notice").await?;
+    drop(socket);
+    f.h.app.stop_workspace_services().await;
+
+    // While the server is down, the person goes on after the reset and is limited again.
+    let mut text = std::fs::read_to_string(&transcript)?;
+    text.push_str(&prompt_record("u2", Some("new-limit"), 20));
+    text.push_str(&limit_record("later-limit", "u2", 21, 1_791_600_000));
+    std::fs::write(&transcript, text)?;
+    let g = fixture_with(false, Some(f.data.clone())).await?;
+    insert_account(&g.h, "acc-a", "token-a", 5.0).await?;
+    insert_account(&g.h, "acc-b", TOKEN, 60.0).await?;
+    assert_eq!(g.h.app.adopt_shells().await, (1, 0));
+    // Only the later limit counts: acc-a is recorded with its reset, and the Cockpit moves.
+    other_cockpit(&g, &id).await?;
+    let usage = usage_of(&g.h, "acc-a").await?;
+    assert_eq!(usage["limit_resets_at"], 1_791_600_000_000_i64, "{usage}");
+    g.h.app.end_all_shells().await;
+    Ok(())
+}

@@ -296,24 +296,37 @@ impl App {
                     continue;
                 }
             };
+            // New: recorded since the Cockpit was created and after the last limit it acted on,
+            // and not reset already (SPEC-074 SUP-002).
+            let handled = runtime.limit_handled_ms.load(Ordering::SeqCst);
+            let now = self.now();
             let limit = observations.into_iter().find_map(|o| match o {
                 Observation::LimitReached {
                     resets_at,
                     window_minutes,
                     at,
                     ..
-                } if at.map_or(history_read, |at| at.0 >= started.0) => {
-                    Some((resets_at, window_minutes))
+                } if at.map_or(history_read, |at| at.0 >= started.0 && at.0 > handled)
+                    && resets_at.is_none_or(|resets| resets.0 > now.0) =>
+                {
+                    Some((resets_at, window_minutes, at))
                 }
                 _ => None,
             });
             history_read = history_read || watch.caught_up();
-            if let Some((resets_at, window_minutes)) = limit
-                && self
+            if let Some((resets_at, window_minutes, at)) = limit {
+                runtime
+                    .limit_handled_ms
+                    .fetch_max(at.unwrap_or(now).0, Ordering::SeqCst);
+                if let Err(err) = self.save_shell(&runtime) {
+                    tracing::warn!(error = %err, shell = %runtime.id(), "could not keep the cockpit's handled limit");
+                }
+                if self
                     .cockpit_limit_reached(&runtime, resets_at, window_minutes)
                     .await
-            {
-                return;
+                {
+                    return;
+                }
             }
         }
     }

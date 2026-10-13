@@ -129,6 +129,9 @@ pub struct ShellRuntime {
     /// A Cockpit ended to start again on another subscription (SPEC-074 SUP-004): its viewers
     /// are told `switched`, and its quick end says nothing about its conversation.
     pub(crate) switching: AtomicBool,
+    /// When the last usage limit a Cockpit acted on was recorded (ms; 0 for none): limits up to
+    /// it are history, also after `/clear` and back or a server restart (SPEC-074 SUP-002).
+    pub(crate) limit_handled_ms: AtomicI64,
     sandbox: SandboxId,
     creator: UserId,
     task: Option<TaskId>,
@@ -189,6 +192,9 @@ struct ShellFile {
     /// A Cockpit's pool subscription (absent in older records and for terminals).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     account: Option<String>,
+    /// When the last usage limit a Cockpit acted on was recorded (ms), if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    limit_handled_at: Option<i64>,
     /// Sealed host token, lowercase hex.
     token: String,
 }
@@ -689,6 +695,8 @@ impl App {
             seq: runtime.seq,
             kind: runtime.kind,
             account: runtime.account.get().map(|a| a.as_str().to_owned()),
+            limit_handled_at: Some(runtime.limit_handled_ms.load(Ordering::SeqCst))
+                .filter(|ms| *ms > 0),
             token: hex_token(&sealed.0),
         };
         write_shell_file(&runtime.run_dir, &file).map_err(AppError::internal)
@@ -718,6 +726,7 @@ impl App {
             resumed: OnceLock::new(),
             account: OnceLock::new(),
             switching: AtomicBool::new(false),
+            limit_handled_ms: AtomicI64::new(0),
             sandbox: sandbox.clone(),
             creator: creator.clone(),
             task,
@@ -1161,6 +1170,7 @@ impl App {
             resumed: OnceLock::new(),
             account,
             switching: AtomicBool::new(false),
+            limit_handled_ms: AtomicI64::new(file.limit_handled_at.unwrap_or(0)),
             sandbox,
             creator: UserId::parse(&file.creator).map_err(|_| AppError::NotFound)?,
             task,
