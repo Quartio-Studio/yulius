@@ -1268,6 +1268,17 @@ span.composer-attachment-open { cursor: default; }
 .composer-attachment-open:focus-visible { outline: 2px solid var(--accent-border-strong); outline-offset: -2px; }
 .composer-attachment img { width: 100%; height: 100%; object-fit: cover; }
 .attachment-modal .modal-body { display: flex; justify-content: center; }
+/* The prompt a task started with (SPEC-043): the text as written, then its attached files. */
+.prompt-text { max-height: 60vh; overflow: auto; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2, var(--surface)); }
+.prompt-text .md-blocks { min-height: 0; padding-bottom: 0; cursor: auto; }
+.prompt-files { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.prompt-file { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--text-2); }
+.prompt-file.image { flex-direction: column; align-items: stretch; width: 96px; }
+.prompt-file-name { overflow: hidden; font-size: var(--fs-sm); text-overflow: ellipsis; white-space: nowrap; }
+.prompt-file.image .prompt-file-name { font-size: var(--fs-xs); }
+.prompt-thumb { width: 96px; height: 72px; padding: 0; overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-2, var(--surface)); cursor: zoom-in; }
+.prompt-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.prompt-file.gone { opacity: 0.8; }
 .attachment-preview { display: block; max-width: 100%; max-height: 75vh; object-fit: contain; }
 .composer-attachment-name { position: absolute; inset: auto 0 0; padding: 0 4px; overflow: hidden; background: var(--surface-2); color: var(--text); font-size: var(--fs-xs); text-overflow: ellipsis; white-space: nowrap; }
 .composer-attachment-remove { position: absolute; top: 2px; right: 2px; }
