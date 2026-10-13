@@ -3,7 +3,7 @@
 ## Status
 
 Accepted. Specified in [SPEC-029](../../.ai/specs/SPEC-029-too-much-elements-here-only-cockpit-task.md).
-The Cockpit has since left `NAV` for the right panel as the Agent ([0034](0034-agent-in-the-right-panel.md)).
+The Cockpit has since left `NAV` for the right panel as the Agent ([0036](0036-agent-in-the-right-panel.md)).
 
 ## Context
 

@@ -1040,7 +1040,7 @@ SPEC-001 VLT-001..009, SPEC-002 ADR-20. Values are never logged; responses that 
 | DELETE | `/api/team-secrets/{id}` | → 204 |
 | POST | `/api/team-secrets/{id}/reveal` | `{purpose?: "show"\|"copy", fields?: ["value","notes"]}` → `{value, notes}` (only the asked, stored fields). Audited (`vault.team.reveal` / `vault.team.copy`) |
 
-**Two-factor** — the vault's lock (SPEC-040, ADR-0034), per person.
+**Two-factor** — the vault's lock (SPEC-040, ADR-0042), per person.
 
 | Method | Path | Body → Response |
 | --- | --- | --- |

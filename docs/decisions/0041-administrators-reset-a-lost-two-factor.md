@@ -2,13 +2,13 @@
 
 ## Status
 
-Accepted. Extends [ADR-0034](0034-personal-two-factor-guards-the-vault.md); specified in
+Accepted. Extends [ADR-0042](0042-personal-two-factor-guards-the-vault.md); specified in
 [SPEC-061](../../.ai/specs/SPEC-061-fix-295-291-vault-two-factor-accept-matc.md) (issues #291 and
 #295).
 
 ## Context
 
-ADR-0034 makes a personal two-factor code mandatory for every reveal, and a confirmed seed cannot
+ADR-0042 makes a personal two-factor code mandatory for every reveal, and a confirmed seed cannot
 be replaced from the account, so a stolen session cannot enroll its own authenticator. A person
 who loses their authenticator can then never read a secret again, and nobody could clear their
 seed (#291). Separately, accepting a code updated the person's two-factor row by user alone, so a
