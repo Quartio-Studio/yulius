@@ -191,6 +191,8 @@ pub struct App {
     pub(crate) observed_pulls: crate::sandboxes::ObservedPulls,
     /// Tasks created by tools in the last hour, per project (SPEC-037 MGT-003).
     pub(crate) tool_tasks: crate::manage::ToolTaskWindow,
+    /// What each queued task a supertask holds waits for, as last published (SPEC-071).
+    pub(crate) supertask_holds: crate::supertask::Holds,
 }
 
 impl App {
@@ -224,6 +226,7 @@ impl App {
             isolation: OnceLock::new(),
             observed_pulls: crate::sandboxes::ObservedPulls::default(),
             tool_tasks: crate::manage::ToolTaskWindow::default(),
+            supertask_holds: crate::supertask::Holds::default(),
         })
     }
 

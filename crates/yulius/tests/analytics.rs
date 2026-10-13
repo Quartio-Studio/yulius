@@ -68,6 +68,7 @@ async fn task(h: &support::Harness, t: TaskSpec<'_>) -> TestResult {
             gate_blocks: 0,
             wake_enabled: true,
             mode: yulius_app::model::TaskMode::Prompt,
+            supertask: false,
         })
         .await?;
     Ok(())

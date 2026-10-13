@@ -875,6 +875,7 @@ impl App {
                 automation_run: None,
                 start: false,
                 mode: crate::model::TaskMode::Prompt,
+                supertask: false,
             })
             .await
             .inspect_err(|_| {
