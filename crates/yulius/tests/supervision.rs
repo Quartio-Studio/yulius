@@ -226,6 +226,17 @@ async fn new_task(
     user: &UserId,
     title: &str,
 ) -> Result<TaskId, Box<dyn std::error::Error>> {
+    create_task(app, sandbox, user, title, false).await
+}
+
+/// A task that starts at once (or queues), as New task does; `supertask` per SPEC-071.
+async fn create_task(
+    app: &Arc<App>,
+    sandbox: &SandboxId,
+    user: &UserId,
+    title: &str,
+    supertask: bool,
+) -> Result<TaskId, Box<dyn std::error::Error>> {
     let record = app
         .create_task_internal(NewTask {
             sandbox: sandbox.clone(),
@@ -241,7 +252,7 @@ async fn new_task(
             automation_run: None,
             start: true,
             mode: yulius_app::model::TaskMode::Prompt,
-            supertask: false,
+            supertask,
         })
         .await?;
     Ok(record.id)
@@ -1649,6 +1660,147 @@ fn contained_tasks_cannot_read_other_sandboxes_or_the_data_directory() -> TestRe
             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
         })
         .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// A second project of the fixture, `s-other`, cloned from the same origin.
+async fn add_project(app: &App, data: &Path) -> Result<SandboxId, Box<dyn std::error::Error>> {
+    let store = &app.deps.store;
+    let first = store
+        .sandbox(&SandboxId::parse("s-fixture")?)
+        .await?
+        .ok_or("fixture sandbox")?;
+    let sandbox = SandboxRecord {
+        id: SandboxId::parse("s-other")?,
+        slug: "other".into(),
+        repo_name: "other".into(),
+        github_repo_id: Some(2),
+        port_base: 41100,
+        ..first
+    };
+    store.insert_sandbox(&sandbox).await?;
+    let repo = data.join("sandboxes").join("s-other").join("repo");
+    std::fs::create_dir_all(repo.parent().ok_or("no parent")?)?;
+    git(
+        data,
+        &[
+            "clone",
+            "-q",
+            &data.join("origin.git").to_string_lossy(),
+            &repo.to_string_lossy(),
+        ],
+    )?;
+    Ok(sandbox.id)
+}
+
+async fn stop_and_wait(app: &Arc<App>, id: &TaskId) -> TestResult {
+    app.stop_task_now(id).await?;
+    wait_for("the stop", Duration::from_secs(30), || async {
+        task(app, id).await.is_ok_and(|t| !t.status.is_live())
+    })
+    .await
+}
+
+/// AC-SUP-2 (SPEC-071 SUP-002, SUP-003, SUP-005): with real runs, a supertask waits for the
+/// project's running task, then runs while a task created after it waits; once it ends, that
+/// task starts.
+#[test]
+fn a_supertask_runs_alone_after_the_running_task() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
+    let data = dir.path().canonicalize()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_full(&data, Some(&fake), FakeAgentOptions::default(), 8)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        seed_repo(&data, &sandbox)?;
+        let running = new_task(&app, &sandbox, &user, "Running").await?;
+        wait_for("the running task", Duration::from_secs(30), || {
+            screen_contains(&app, &running, "FAKE-AGENT READY")
+        })
+        .await?;
+        let sup = create_task(&app, &sandbox, &user, "Harden", true).await?;
+        let after = new_task(&app, &sandbox, &user, "After").await?;
+        app.drain_queue().await;
+        for id in [&sup, &after] {
+            wait_for("the hold", Duration::from_secs(10), || async {
+                task(&app, id)
+                    .await
+                    .is_ok_and(|t| t.status == TaskStatus::Queued)
+                    && app
+                        .task_summary(&task(&app, id).await.unwrap_or_else(|_| unreachable!()))
+                        .await
+                        .is_ok_and(|s| !s.held_by.is_empty())
+            })
+            .await?;
+        }
+        stop_and_wait(&app, &running).await?;
+        wait_for("the supertask to run", Duration::from_secs(60), || {
+            screen_contains(&app, &sup, "FAKE-AGENT READY")
+        })
+        .await?;
+        app.drain_queue().await;
+        assert_eq!(
+            task(&app, &after).await?.status,
+            TaskStatus::Queued,
+            "the project waits for the supertask"
+        );
+        stop_and_wait(&app, &sup).await?;
+        wait_for("the waiting task to run", Duration::from_secs(60), || {
+            screen_contains(&app, &after, "FAKE-AGENT READY")
+        })
+        .await?;
+        stop_and_wait(&app, &after).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// AC-SUP-5 (SUP-004): at the session limit, a supertask queued after another task takes the
+/// next free slot first.
+#[test]
+fn a_queued_supertask_takes_the_next_slot_first() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
+    let data = dir.path().canonicalize()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let app = build_full(&data, Some(&fake), FakeAgentOptions::default(), 1)?;
+        let (sandbox, user) = seed_records(&app).await?;
+        seed_repo(&data, &sandbox)?;
+        let other = add_project(&app, &data).await?;
+        let first = new_task(&app, &sandbox, &user, "First").await?;
+        wait_for("the first run", Duration::from_secs(30), || {
+            screen_contains(&app, &first, "FAKE-AGENT READY")
+        })
+        .await?;
+        let plain = new_task(&app, &sandbox, &user, "Plain").await?;
+        let sup = create_task(&app, &other, &user, "Harden the other project", true).await?;
+        assert_eq!(task(&app, &plain).await?.status, TaskStatus::Queued);
+        assert_eq!(task(&app, &sup).await?.status, TaskStatus::Queued);
+        stop_and_wait(&app, &first).await?;
+        wait_for(
+            "the supertask to take the slot",
+            Duration::from_secs(60),
+            || screen_contains(&app, &sup, "FAKE-AGENT READY"),
+        )
+        .await?;
+        app.drain_queue().await;
+        assert_eq!(
+            task(&app, &plain).await?.status,
+            TaskStatus::Queued,
+            "queued first, but after the supertask"
+        );
+        stop_and_wait(&app, &sup).await?;
+        wait_for("the plain task to run", Duration::from_secs(60), || {
+            screen_contains(&app, &plain, "FAKE-AGENT READY")
+        })
+        .await?;
+        stop_and_wait(&app, &plain).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

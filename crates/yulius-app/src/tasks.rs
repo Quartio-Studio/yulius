@@ -132,6 +132,11 @@ impl App {
             held_prompt: self.held_prompt_view(&task.id).await,
             auto: self.auto_choice_view(&task.id).await,
             supertask: task.supertask,
+            held_by: if task.status == TaskStatus::Queued {
+                self.supertask_holders(task).await.unwrap_or_default()
+            } else {
+                Vec::new()
+            },
             background_shells: (task.status == TaskStatus::Running
                 && task.activity.is_some_and(Activity::is_idle))
             .then(|| self.background_shells_of(&task.id))

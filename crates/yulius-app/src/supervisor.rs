@@ -712,10 +712,13 @@ impl App {
                 );
                 return Ok(());
             }
+            // A pending supertask of the project, or the running work a supertask waits for,
+            // keeps a new run queued (SPEC-071); a live run is never held.
+            let held = !task.status.is_live() && self.held_by_supertask(&task).await?;
             let live = self.sessions_in_use().await?;
             // While an update pauses the tasks, starts queue like at the session limit and run
             // once it is over (SPEC-002 ADR-18).
-            let full = live >= self.config.max_live_sessions || self.update_holds_starts();
+            let full = held || live >= self.config.max_live_sessions || self.update_holds_starts();
             if full && task.status != TaskStatus::Switching {
                 let queued = self
                     .deps
@@ -1829,7 +1832,10 @@ impl App {
         Ok(working)
     }
 
-    /// Starts queued tasks while capacity allows (FIFO); none while an update pauses tasks.
+    /// Starts queued tasks while capacity allows, supertasks first, then FIFO (SPEC-071 SUP-004);
+    /// none while an update pauses tasks. They are offered a slot one after the other (launches
+    /// are serialized anyway), so the first in that order takes a free slot first; a task a
+    /// supertask holds stays queued and the next one is offered.
     pub async fn drain_queue(self: &Arc<Self>) {
         if self.update_holds_starts() {
             return;
@@ -1842,31 +1848,40 @@ impl App {
         else {
             return;
         };
-        for task in queued {
-            let live = self.sessions_in_use().await.unwrap_or(u32::MAX);
-            if live >= self.config.max_live_sessions {
-                return;
-            }
-            let has_lineage = self
-                .deps
-                .store
-                .provider_sessions(&task.id)
-                .await
-                .map(|l| !l.is_empty())
-                .unwrap_or(false);
-            let start = if has_lineage {
-                RunStart::Resume { prompt: None }
-            } else {
-                RunStart::Fresh { prompt: None }
-            };
-            let app = self.clone();
-            let id = task.id.clone();
-            tokio::spawn(async move {
-                if let Err(err) = app.start_run(&id, start, None).await {
-                    tracing::warn!(error = %err, task = %id, "queued task failed to start");
-                }
-            });
+        self.supertask_holds
+            .keep(&queued.iter().map(|t| t.id.clone()).collect());
+        if queued.is_empty() {
+            return;
         }
+        let app = self.clone();
+        tokio::spawn(async move {
+            for task in crate::supertask::start_order(queued) {
+                let live = app.sessions_in_use().await.unwrap_or(u32::MAX);
+                if live >= app.config.max_live_sessions {
+                    return;
+                }
+                // Started, stopped or deleted while earlier ones were offered: not resumed here.
+                if !matches!(app.deps.store.task(&task.id).await, Ok(Some(t)) if t.status == TaskStatus::Queued)
+                {
+                    continue;
+                }
+                let has_lineage = app
+                    .deps
+                    .store
+                    .provider_sessions(&task.id)
+                    .await
+                    .map(|l| !l.is_empty())
+                    .unwrap_or(false);
+                let start = if has_lineage {
+                    RunStart::Resume { prompt: None }
+                } else {
+                    RunStart::Fresh { prompt: None }
+                };
+                if let Err(err) = app.start_run(&task.id, start, None).await {
+                    tracing::warn!(error = %err, task = %task.id, "queued task failed to start");
+                }
+            }
+        });
     }
 
     /// Closes a finished, running task (TSK-014): its session is shut down gracefully and the

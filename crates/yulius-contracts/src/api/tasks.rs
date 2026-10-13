@@ -87,6 +87,11 @@ pub struct TaskSummary {
     /// A supertask (SPEC-071): it runs alone in its project.
     #[serde(default)]
     pub supertask: bool,
+    /// While `queued` because of a supertask (SPEC-071): the numbers of the tasks it waits for —
+    /// for a supertask the working tasks and earlier supertasks of its project, for another task
+    /// the project's pending supertasks. Empty otherwise.
+    #[serde(default)]
+    pub held_by: Vec<u32>,
 }
 
 /// How "Auto" chose a new task's mode and workflow (SPEC-001 TSK-015).
