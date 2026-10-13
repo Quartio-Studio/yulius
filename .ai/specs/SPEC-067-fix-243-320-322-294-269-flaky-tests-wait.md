@@ -1,11 +1,11 @@
 ---
 yulius-task: 5fcb2f23-f971-48d3-b9bb-fee39c950142
-status: in-progress
+status: done
 ---
 
 # SPEC-067: Flaky tests wait on the condition they check, under load
 
-Status: in progress
+Status: implemented
 Date: 2026-10-13
 Owner: Yulius task #56
 Scope authorization: GitHub issues #243, #320 (its two e2e cases; the cockpit case is fixed by
@@ -115,7 +115,7 @@ the runs (load average 26 to 61). Traces are under Evidence.
 - [x] Loaded repeat runs pass: 20x each e2e case, 20x nextest ci
 - [x] A SessionStart answered before the run is watched still counts (#243), test-first
 - [x] Terminal link tests wait for the Editor's first load (#320); loaded reruns pass
-- [ ] Docs, changes log, gates green and independent review
+- [x] Docs, changes log, gates green and independent review
 
 ## Test plan
 
@@ -161,4 +161,52 @@ the runs (load average 26 to 61). Traces are under Evidence.
 
 ## Evidence
 
-To be completed.
+All in task #56's sandbox (12 CPUs, shared with other tasks), on 2026-10-13. Load came from 24 or
+32 CPU-bound busy loops (`sh -c 'while :; do :; done'`) beside the runs, on top of the other
+tasks' work. The 1-minute load average was sampled every 30 s. Each e2e run used `CI=true`, the
+config's `retries: 0` and default budgets.
+
+**Reproduction (before the fixes).** Traces kept under the ignored `e2e/.e2e/r1` and `e2e/.e2e/r2`.
+
+| Test | Runs | Failed | Load | Failure |
+| --- | --- | --- | --- | --- |
+| menus "the Markdown slash menu filters too" (#322) | 10 | 2 | 26–31 | `toBeFocused` on Filter; `Task prompt [focused]` |
+| new-task "Auto is the default…" (#320) | 10 | 1 | 26–31 | `.intake-status`: no node, page already on `/t/15` |
+| task-done "…can be archived and is closed" (#294) | 10 | 1 | 26–31 | strip "Your turn" for 5 s, never Done |
+| drafts "a stored draft drops attachments…" (#269) | 10 | 1 | 26–31 | prompt empty after the reload |
+| terminal "file paths in the task terminal…" (#320) | 10 + 30 | 0 | 26–48 | none |
+| terminal "file names a shell prints…" (same helpers) | 30 | 1 | up to 48 | `AGENTS.md` tab not there after 5 s, Editor `[pressed]` |
+| `task_done::a_goal_the_tui_dropped_is_submitted_again` (#243) | 7 | 0 | 18–61 | none; GOAL SET at 59.5–59.7 s, Done 0.2–1.1 s later |
+
+**Regression tests fail without their fixes.**
+- `task-done.e2e.ts` "a task view reads Done once its pull request is read late": 0 of 3 before
+  `taskview.js` listened to `pulls` (strip "Your turn" at `tests/task-done.e2e.ts:110`), passing after.
+- `task_done::a_session_start_before_the_run_is_watched_still_types_the_goal_at_once`: failed
+  before the `supervisor.rs` change ("timed out waiting for the goal to start", 30.5 s); after it,
+  passed 5 of 5 under load in 2.7–3.1 s, so the gate saw the hook and the goal followed it.
+
+**Loaded repeats after the fixes.**
+- `npx e2e run --repeat-each 20` of the seven cases (the five issues', the new #294 test and the
+  terminal sibling), 24 busy loops, load 9–38: 139 of 140 passed. The one failure was the
+  terminal sibling's Editor cold load, which led to FLK-005's wait for the Editor.
+- After that change, both terminal cases `--repeat-each 20`, load 15–56: 40 of 40. After the
+  review's stricter Editor condition, `--repeat-each 10`, load 7–30: 20 of 20.
+- `cargo nextest run --profile ci` of the dropped-goal test, 20 consecutive runs:
+  - before the SessionStart fix, load 10–38: 20 of 20 passed, but 3 took 61 s. That is how the
+    lost SessionStart (FLK-007) showed.
+  - after the fix, load 15–56: 20 of 20, 16.8 to 18.5 s each.
+
+**Gates.**
+- `scripts/dev ci` at `08b8536` (after merging `dev` at 774f3fe): passed. Nextest 1317 run, 1317
+  passed, 16 skipped; cargo-deny advisories, bans, licenses and sources ok. Later commits touch
+  only e2e files, the mock and docs.
+- Full e2e, `CI=true npx e2e run` at `2d8fddc`: 38 files passed, 1 skipped; 244 tests passed,
+  1 skipped (the model-driven agent test); 886.6 s.
+- Independent review in a fresh session at `08b8536`: APPROVE, with four minor findings. Three were
+  fixed in `2d8fddc`: an editor shown rather than `window.monaco`, a comment on the mock timer the
+  #294 test relies on, and the changes-log wording. The fourth (`hooks_seen`) is recorded under
+  Decisions as a follow-up.
+
+**Not verified here.** The #243 CI failure itself: its log has expired, and a disk over quota
+could not be recreated (`/tmp` is tmpfs here). The fixes remove the 45 s idle and the race, and
+leave a 45 s bound for Done.
