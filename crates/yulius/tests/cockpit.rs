@@ -15,6 +15,7 @@ use axum::body::Body;
 use axum::http::{Method, StatusCode};
 use futures::{SinkExt as _, StreamExt as _};
 use serde_json::{Value, json};
+use support::gated::GatedHost;
 use support::{
     Creds, Harness, HarnessOptions, TestResult, call, harness_with, perms, seed_github_user,
     seed_sandbox, send, serve, ws_connect, ws_refusal_status,
@@ -22,13 +23,12 @@ use support::{
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-use yulius::wiring::session::PtySessionHost;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::{AccountRecord, AccountStatus};
 use yulius_app::ports::harness::{
     CockpitLaunch, HarnessLaunch, HarnessPlan, HarnessPort, OutputMasker, TranscriptWatch,
 };
-use yulius_app::ports::session::LaunchPlan;
+use yulius_app::ports::session::{LaunchPlan, SessionHost};
 use yulius_app::ports::store::AccountStore;
 use yulius_app::shells::{MAX_SHELLS_PER_SANDBOX, SHELL_IDLE_MS};
 use yulius_contracts::terminal::{KIND_OUTPUT, KIND_SNAPSHOT, decode_binary};
@@ -46,6 +46,7 @@ const TOKEN: &str = "synthetic-oauth-token";
 /// its config dir) and environment, then stays as an interactive shell.
 const FAKE_CLAUDE: &str = "#!/bin/sh\n\
 if [ \"$1\" = --resume ] && [ -f \"$CLAUDE_CONFIG_DIR/fail-resume\" ]; then exit 3; fi\n\
+if [ \"$1\" = --resume ] && [ -f \"$CLAUDE_CONFIG_DIR/kill-resume\" ]; then kill -KILL $$; fi\n\
 args=; prev=\n\
 for a in \"$@\"; do\n\
   case \"$prev\" in\n\
@@ -65,6 +66,8 @@ exec /bin/sh\n";
 
 struct Fixture {
     h: Harness,
+    /// The session host: holds the next start between its spawn and its attach when armed.
+    gate: Arc<GatedHost>,
     alice: Creds,
     bob: Creds,
     carol: Creds,
@@ -80,8 +83,9 @@ async fn fixture_with(
     // A short base: shell sockets live at <data>/shells/<16 hex>/pty.sock (Unix path limit).
     let dir = tempfile::Builder::new().prefix("yck").tempdir_in("/tmp")?;
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
+    let gate = Arc::new(GatedHost::new(exe));
     let h = harness_with(HarnessOptions {
-        session_host: Some(Arc::new(PtySessionHost::new(exe))),
+        session_host: Some(Arc::clone(&gate) as Arc<dyn SessionHost>),
         dir: Some(dir),
         configure: Some(Box::new(move |config| {
             config.contained = false;
@@ -122,6 +126,7 @@ async fn fixture_with(
     }
     Ok(Fixture {
         h,
+        gate,
         alice,
         bob,
         carol,
@@ -580,6 +585,152 @@ async fn a_resume_that_fails_at_once_starts_fresh_the_next_time() -> TestResult 
         printed(&screen, "cockpit-args")?,
         "[--model claude-opus-5-5 --effort high]",
         "a fresh conversation"
+    );
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// The run directories of shells and Cockpits on disk.
+fn run_dirs(f: &Fixture) -> usize {
+    std::fs::read_dir(f.data.join("shells"))
+        .map(|entries| entries.count())
+        .unwrap_or(0)
+}
+
+/// SPEC-077 DRS-001 (#250): the client goes away while its Cockpit's process runs but before it
+/// is registered. The start still ends as the one Cockpit: the next open returns it and no second
+/// process or orphan run directory is left.
+#[tokio::test]
+async fn a_cockpit_start_whose_request_is_dropped_still_ends_as_the_one_cockpit() -> TestResult {
+    let f = fixture().await?;
+    f.gate.arm();
+    {
+        let open = open_cockpit(&f, &f.alice);
+        tokio::pin!(open);
+        tokio::select! {
+            resp = &mut open => {
+                return Err(format!("the open ended before its start was held: {:?}", resp.map(|r| r.status)).into());
+            }
+            () = f.gate.reached() => {}
+        }
+    }
+    f.gate.release();
+    wait_for("the dropped start to register its Cockpit", || {
+        f.h.app.sandbox_shells(&sid()).len() == 1
+    })
+    .await?;
+    let started = f
+        .h
+        .app
+        .sandbox_shells(&sid())
+        .first()
+        .map(|shell| shell.id().to_owned())
+        .ok_or("no Cockpit")?;
+    assert_eq!(
+        cockpit_id(&f, &f.alice).await?,
+        started,
+        "the next open finds it"
+    );
+    assert_eq!(f.h.app.sandbox_shells(&sid()).len(), 1);
+    assert_eq!(run_dirs(&f), 1, "no orphan run directory");
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// SPEC-077 DRS-003: a signal ending a resumed Cockpit at once (the host or the machine ended it)
+/// says nothing about the conversation, which is resumed again next time; only an error exit of
+/// Claude Code itself marks it unresumable (SPEC-021 review round 2).
+#[tokio::test]
+async fn a_resumed_cockpit_killed_by_a_signal_resumes_the_same_conversation() -> TestResult {
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let config = PathBuf::from(printed(&screen, "config")?);
+    let cwd = printed(&screen, "cwd")?;
+    let project = yulius_harness::paths::claude_project_dir(&config, Path::new(&cwd));
+    conversation(&project, "kept", 1_000)?;
+    socket
+        .send(Message::text(
+            json!({"type": "input", "data": "exit\r"}).to_string(),
+        ))
+        .await?;
+    wait_for("the Cockpit to end", || {
+        f.h.app.sandbox_shells(&sid()).is_empty()
+    })
+    .await?;
+
+    // The resumed process is killed by a signal right after it started.
+    std::fs::write(config.join("kill-resume"), "")?;
+    cockpit_id(&f, &f.alice).await?;
+    wait_for("the killed resume to end", || {
+        f.h.app.sandbox_shells(&sid()).is_empty()
+    })
+    .await?;
+    std::fs::remove_file(config.join("kill-resume"))?;
+    let again = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &again, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(
+        printed(&screen, "cockpit-args")?,
+        "[--resume kept --model claude-opus-5-5 --effort high]",
+        "the same conversation"
+    );
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// SPEC-077 DRS-004, DRS-005: Cockpit starts are serialised per user and sandbox, not
+/// instance-wide. While alice's start in `s1` is held, carol's open there and alice's in `s2`
+/// return; the start-lock map keeps no entry once the starts are over.
+#[tokio::test]
+async fn a_blocked_cockpit_start_delays_no_other_user_or_sandbox() -> TestResult {
+    let f = fixture().await?;
+    seed_sandbox(&f.h, "s2", "other", "u-alice").await?;
+    f.h.github.set_perm("alice", "acme/other", perms("write"));
+    std::fs::create_dir_all(f.data.join("sandboxes/s2/repo"))?;
+    f.gate.arm();
+    let held = open_cockpit(&f, &f.alice);
+    tokio::pin!(held);
+    tokio::select! {
+        resp = &mut held => {
+            return Err(format!("the open ended before its start was held: {:?}", resp.map(|r| r.status)).into());
+        }
+        () = f.gate.reached() => {}
+    }
+    assert_eq!(f.h.app.cockpit_starts_pending(), 1, "alice's start in s1");
+
+    let carol = tokio::time::timeout(WAIT, cockpit_id(&f, &f.carol))
+        .await
+        .map_err(|_| "carol's open waited for alice's start")??;
+    let other = tokio::time::timeout(
+        WAIT,
+        call(
+            &f.h.router,
+            Method::POST,
+            "/api/sandboxes/s2/cockpit",
+            None,
+            &f.alice,
+        ),
+    )
+    .await
+    .map_err(|_| "alice's open in another sandbox waited for her start in s1")??;
+    assert_eq!(other.status, StatusCode::OK, "{:?}", other.body);
+
+    f.gate.release();
+    let alice = tokio::time::timeout(WAIT, &mut held)
+        .await
+        .map_err(|_| "the held start never ended")??;
+    assert_eq!(alice.status, StatusCode::OK, "{:?}", alice.body);
+    assert_ne!(alice.body["id"].as_str(), Some(carol.as_str()));
+    assert_ne!(alice.body["id"], other.body["id"]);
+    assert_eq!(
+        f.h.app.cockpit_starts_pending(),
+        0,
+        "no idle start lock is kept"
     );
     f.h.app.end_all_shells().await;
     Ok(())

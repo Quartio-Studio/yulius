@@ -66,6 +66,13 @@ impl App {
         }
     }
 
+    /// How many (user, sandbox) pairs have a Cockpit start running or waiting (tests,
+    /// diagnostics).
+    #[must_use]
+    pub fn cockpit_starts_pending(&self) -> usize {
+        self.shells.cockpit_start.lock().map_or(0, |starts| starts.len())
+    }
+
     /// The Yulius MCP bearer of `user`'s running Cockpit in `sandbox` (SPEC-037 MGT-005).
     #[must_use]
     pub fn cockpit_mcp_token(&self, user: &UserId, sandbox: &SandboxId) -> Option<String> {
@@ -136,19 +143,20 @@ impl App {
         if let Some(running) = self.running_cockpit(&ctx.user.id, &record.id) {
             return Ok(running.info());
         }
-        let starts = {
-            let mut starts = self
-                .shells
-                .cockpit_start
-                .lock()
-                .map_err(AppError::internal)?;
-            Arc::clone(
-                starts
-                    .entry((ctx.user.id.clone(), record.id.clone()))
-                    .or_default(),
-            )
-        };
-        let _starting = starts.lock().await;
+        // Detached from the request: a client that goes away mid-start leaves its Cockpit
+        // registered (or discarded), and a second open waits for that start (SPEC-077 DRS-001).
+        let app = Arc::clone(self);
+        let ctx = ctx.clone();
+        Self::run_detached(async move { app.start_cockpit(&ctx, &record).await }).await
+    }
+
+    /// Starts the caller's Cockpit unless another start of theirs in that sandbox just did.
+    async fn start_cockpit(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        record: &SandboxRecord,
+    ) -> AppResult<ShellInfo> {
+        let _starting = self.cockpit_start_slot(&ctx.user.id, &record.id).await?;
         if let Some(running) = self.running_cockpit(&ctx.user.id, &record.id) {
             return Ok(running.info());
         }
@@ -179,7 +187,7 @@ impl App {
             COCKPIT_NAME.to_owned(),
         );
         match self
-            .launch_cockpit(ctx, &record, &runtime, credential)
+            .launch_cockpit(ctx, record, &runtime, credential)
             .await
         {
             Ok(reader) => match self.register_shell(&runtime) {
@@ -198,6 +206,31 @@ impl App {
                 Err(err)
             }
         }
+    }
+
+    /// Takes the start lock of `user`'s Cockpit in `sandbox`: one start at a time per user and
+    /// sandbox, other users and sandboxes never wait (CKP-001, SPEC-077 DRS-004).
+    async fn cockpit_start_slot(
+        &self,
+        user: &UserId,
+        sandbox: &SandboxId,
+    ) -> AppResult<CockpitStartSlot<'_>> {
+        let key = (user.clone(), sandbox.clone());
+        let lock = {
+            let mut starts = self
+                .shells
+                .cockpit_start
+                .lock()
+                .map_err(AppError::internal)?;
+            Arc::clone(starts.entry(key.clone()).or_default())
+        };
+        let mut slot = CockpitStartSlot {
+            app: self,
+            key,
+            guard: None,
+        };
+        slot.guard = Some(lock.lock_owned().await);
+        Ok(slot)
     }
 
     async fn launch_cockpit(
@@ -265,5 +298,28 @@ impl App {
         let reader = reader?;
         self.save_shell(runtime)?;
         Ok(reader)
+    }
+}
+
+/// A held Cockpit start lock. Dropped, it forgets the lock when no other start holds or waits for
+/// it, so the map keeps only pairs with a start running or waiting (SPEC-077 DRS-005).
+struct CockpitStartSlot<'a> {
+    app: &'a App,
+    key: (UserId, SandboxId),
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Drop for CockpitStartSlot<'_> {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        // Under the map's lock nobody can take a new handle on this mutex: a count of one is the
+        // map's own.
+        if let Ok(mut starts) = self.app.shells.cockpit_start.lock()
+            && starts
+                .get(&self.key)
+                .is_some_and(|lock| Arc::strong_count(lock) == 1)
+        {
+            starts.remove(&self.key);
+        }
     }
 }
