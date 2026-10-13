@@ -158,6 +158,12 @@ impl App {
         }
     }
 
+    /// The task `id` for `action` by `ctx`'s person: viewing needs access to its sandbox;
+    /// anything more changes the task, which only its owner may (SPEC-070 R3): it acts on GitHub
+    /// with their token.
+    ///
+    /// # Errors
+    /// `NotFound` without access, `Forbidden` with insufficient access or for a non-owner.
     pub(crate) async fn load_task(
         &self,
         ctx: &AuthContext,
@@ -167,7 +173,29 @@ impl App {
         let id = TaskId::parse(id).map_err(|_| AppError::NotFound)?;
         let task = self.deps.store.task(&id).await?.ok_or(AppError::NotFound)?;
         self.require(&ctx.user, &task.sandbox_id, action).await?;
+        if action != Action::View {
+            self.require_owner(ctx, &task).await?;
+        }
         Ok(task)
+    }
+
+    /// Refuses `ctx`'s person unless they own `task` (SPEC-070 R3).
+    ///
+    /// # Errors
+    /// `Forbidden`, naming the owner and the way to control.
+    pub(crate) async fn require_owner(
+        &self,
+        ctx: &AuthContext,
+        task: &TaskRecord,
+    ) -> AppResult<()> {
+        if task.owner == ctx.user.id {
+            return Ok(());
+        }
+        Err(AppError::Forbidden(format!(
+            "Task #{} is @{}'s: it acts on GitHub as them. Ask them for control.",
+            task.number,
+            self.login_of(&task.owner).await
+        )))
     }
 
     /// Tasks of a sandbox (archived or active).

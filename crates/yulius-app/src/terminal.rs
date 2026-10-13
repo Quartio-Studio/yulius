@@ -94,7 +94,10 @@ impl App {
         if runtime.hub.viewer_count() >= MAX_VIEWERS {
             return Err(AppError::Capacity("too many viewers on this task".into()));
         }
-        let can_write = level.allows(Action::Work) && ctx.user.disabled_at.is_none();
+        // Only the owner types into the task (SPEC-070 R3).
+        let can_write = level.allows(Action::Work)
+            && ctx.user.disabled_at.is_none()
+            && task.owner == ctx.user.id;
         let viewer_id = runtime.hub.new_viewer_id();
         if can_write {
             let before = runtime.hub.size();
@@ -124,7 +127,7 @@ impl App {
         Ok(TerminalAttach {
             task_id: task.id,
             subscription,
-            can_write: level.allows(Action::Work),
+            can_write,
             viewer_id,
             runtime,
         })
@@ -277,12 +280,12 @@ impl App {
         Ok(())
     }
 
-    /// Whether the caller still has write access to the task's sandbox.
+    /// Whether the caller still owns the task and has write access to its sandbox (SPEC-070).
     pub async fn can_work(&self, ctx: &AuthContext, task_id: &TaskId) -> bool {
         let Ok(Some(task)) = self.deps.store.task(task_id).await else {
             return false;
         };
-        if ctx.user.disabled_at.is_some() {
+        if ctx.user.disabled_at.is_some() || task.owner != ctx.user.id {
             return false;
         }
         self.require(&ctx.user, &task.sandbox_id, Action::Work)

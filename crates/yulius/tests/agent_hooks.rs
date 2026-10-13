@@ -742,7 +742,7 @@ async fn the_agents_git_acts_as_the_task_creator() -> TestResult {
     assert_eq!(gh.status, 200);
     assert_eq!(gh.body["token"], "token-alice");
 
-    // A task of a creator without a linked GitHub account acts as the App.
+    // A task of an owner without a linked GitHub account acts as the App.
     let store = &f.h.app.deps.store;
     let unlinked = UserRecord {
         id: UserId::parse("u-local")?,
@@ -761,6 +761,7 @@ async fn the_agents_git_acts_as_the_task_creator() -> TestResult {
     task.id = TaskId::parse("t-local")?;
     task.number = 3;
     task.created_by = unlinked.id.clone();
+    task.owner = unlinked.id.clone();
     store.insert_task(&task).await?;
     let mut attempt = store.live_attempt(&f.task).await?.ok_or("attempt")?;
     attempt.id = AttemptId::parse("at-local")?;

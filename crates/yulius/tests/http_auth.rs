@@ -1087,7 +1087,8 @@ async fn the_superadmin_sees_and_opens_every_sandbox_without_github() -> TestRes
         "{}",
         content.body
     );
-    // Writes are admitted too: archiving the task.
+    // Changing someone's task is theirs alone, also for the superadmin (SPEC-070): it acts on
+    // GitHub as them.
     let archived = call(
         &h.router,
         Method::POST,
@@ -1096,10 +1097,10 @@ async fn the_superadmin_sees_and_opens_every_sandbox_without_github() -> TestRes
         &admin,
     )
     .await?;
+    assert_eq!(archived.status, StatusCode::FORBIDDEN, "{}", archived.body);
     assert!(
-        archived.status.is_success(),
-        "{}: {}",
-        archived.status,
+        archived.body.to_string().contains("Ask them for control"),
+        "{}",
         archived.body
     );
 
@@ -1216,7 +1217,8 @@ async fn the_superadmins_sockets_survive_the_visibility_recheck() -> TestResult 
         .map_err(|code| format!("closed: {code:?}"))?;
     let state: Value = serde_json::from_str(&state)?;
     assert_eq!(state["type"], "state");
-    assert_eq!(state["can_write"], true, "the superadmin may type");
+    // Alice owns the task: the superadmin watches it (SPEC-070).
+    assert_eq!(state["can_write"], false, "only the owner types");
     let mut events = ws_connect(served.addr, "/api/events", &admin, &origin).await?;
     let sandbox = SandboxId::parse("s1")?;
     let publish = |task: &str| {
