@@ -40,8 +40,11 @@ unusable. The per-(user, sandbox) Cockpit start-lock map also kept one entry per
 
 ## Consequences
 
-- A start always reaches its end, also during a server shutdown, where the shell is then adopted
-  after the restart like any running shell.
-- One spawned task per start; a panic in it answers 500 instead of tearing down the connection.
+- A start reaches its end whatever its client does. A server shutdown is different: dropping the
+  runtime cancels a start in flight, and the next server adopts its shell if its record was saved
+  or removes the run directory (no `shell.json`) if not.
+- One spawned task per start; a panic in it answers 500 instead of tearing down the connection,
+  but does not discard the shell (as before this decision; no code path between the spawn and the
+  registration panics).
 - Tests hold a start between its spawn and its attach with a gated session host
   (`tests/support/gated.rs`) to drop the request or to prove other users are not delayed.

@@ -256,6 +256,11 @@ async fn a_write_user_gets_one_plain_cockpit_on_a_pool_subscription() -> TestRes
     assert_eq!(second.body["id"], first.body["id"]);
     assert_eq!(f.h.app.sandbox_shells(&sid()).len(), 1);
     assert_eq!(
+        f.h.app.cockpit_starts_pending(),
+        0,
+        "the start lock goes with the starts"
+    );
+    assert_eq!(
         cockpit_id(&f, &f.alice).await?,
         id,
         "the same Cockpit again"
@@ -684,7 +689,8 @@ async fn a_resumed_cockpit_killed_by_a_signal_resumes_the_same_conversation() ->
 
 /// SPEC-077 DRS-004, DRS-005: Cockpit starts are serialised per user and sandbox, not
 /// instance-wide. While alice's start in `s1` is held, carol's open there and alice's in `s2`
-/// return; the start-lock map keeps no entry once the starts are over.
+/// return, and her second open in `s1` waits for her start and gets its Cockpit; the start-lock
+/// map keeps no entry once the starts are over.
 #[tokio::test]
 async fn a_blocked_cockpit_start_delays_no_other_user_or_sandbox() -> TestResult {
     let f = fixture().await?;
@@ -701,6 +707,21 @@ async fn a_blocked_cockpit_start_delays_no_other_user_or_sandbox() -> TestResult
         () = f.gate.reached() => {}
     }
     assert_eq!(f.h.app.cockpit_starts_pending(), 1, "alice's start in s1");
+    // A second open of hers there (another tab) waits on the same lock and gets the same Cockpit.
+    let again = {
+        let (router, alice) = (f.h.router.clone(), f.alice.clone());
+        tokio::spawn(async move {
+            call(
+                &router,
+                Method::POST,
+                "/api/sandboxes/s1/cockpit",
+                None,
+                &alice,
+            )
+            .await
+            .map_err(|err| err.to_string())
+        })
+    };
 
     let carol = tokio::time::timeout(WAIT, cockpit_id(&f, &f.carol))
         .await
@@ -724,6 +745,16 @@ async fn a_blocked_cockpit_start_delays_no_other_user_or_sandbox() -> TestResult
         .await
         .map_err(|_| "the held start never ended")??;
     assert_eq!(alice.status, StatusCode::OK, "{:?}", alice.body);
+    let again = tokio::time::timeout(WAIT, again)
+        .await
+        .map_err(|_| "alice's second open never ended")???;
+    assert_eq!(again.status, StatusCode::OK, "{:?}", again.body);
+    assert_eq!(again.body["id"], alice.body["id"], "one Cockpit for her");
+    assert_eq!(
+        f.h.app.sandbox_shells(&sid()).len(),
+        2,
+        "alice's and carol's"
+    );
     assert_ne!(alice.body["id"].as_str(), Some(carol.as_str()));
     assert_ne!(alice.body["id"], other.body["id"]);
     assert_eq!(

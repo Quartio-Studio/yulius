@@ -716,8 +716,8 @@ async fn scenario(f: &Fixture) -> TestResult {
 }
 
 /// SPEC-077 DRS-002 (#250): the client goes away while its terminal's process runs but before the
-/// start finished. The terminal still ends live and saved (adopted after a restart), never listed
-/// yet unusable; closing it leaves nothing.
+/// start finished. The terminal still ends live, usable and saved, never listed yet unusable;
+/// ending it leaves nothing.
 #[tokio::test]
 async fn a_terminal_start_whose_request_is_dropped_still_ends_live() -> TestResult {
     let f = fixture().await?;
