@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use support::{Harness, TestResult, harness_configured, setup_superadmin_creds};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-use yulius_app::auth::{LOGIN_ATTEMPTS_PER_MINUTE, MAX_LOGIN_CLIENTS};
+use yulius_app::auth::{DEVICE_STARTS_PER_MINUTE, LOGIN_ATTEMPTS_PER_MINUTE, MAX_LOGIN_CLIENTS};
 use yulius_app::error::AppError;
 use yulius_app::model::Secret;
 use yulius_server::client::{CLIENT_ADDRESS_HEADER, PROXY_SECRET_HEADER};
@@ -413,5 +413,43 @@ async fn the_sign_in_limiter_tracks_a_bounded_number_of_clients() -> TestResult 
         h.app.password_login(&wrong, "newcomer").await,
         Err(AppError::Unauthenticated)
     ));
+    Ok(())
+}
+
+/// A CLI device sign-in start with `headers`; the status.
+async fn device_start(
+    s: &Server,
+    headers: &[(&str, &str)],
+) -> Result<u16, Box<dyn std::error::Error>> {
+    Ok(exchange(s.addr, "POST", "/api/device/start", headers, None)
+        .await?
+        .0)
+}
+
+/// #169: device start is limited per client like password sign-in, in its own buckets: a
+/// proxied client's starts past the burst get 429 while another client and password sign-in
+/// are unaffected; a minute later the first client starts again.
+#[tokio::test]
+async fn device_starts_are_limited_per_client() -> TestResult {
+    let s = start(Some(SECRET)).await?;
+    for _ in 0..DEVICE_STARTS_PER_MINUTE {
+        assert_eq!(device_start(&s, &proxied("203.0.113.7")).await?, 200);
+    }
+    assert_eq!(device_start(&s, &proxied("203.0.113.7")).await?, 429);
+    assert_eq!(device_start(&s, &proxied("198.51.100.9")).await?, 200);
+    assert_eq!(
+        device_start(&s, &[]).await?,
+        200,
+        "the peer has its own bucket"
+    );
+    assert_eq!(
+        sign_in(&s, PASSWORD, &proxied("203.0.113.7")).await?.0,
+        200,
+        "device starts do not use up the sign-in bucket"
+    );
+    s.h.clock
+        .0
+        .fetch_add(61_000, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(device_start(&s, &proxied("203.0.113.7")).await?, 200);
     Ok(())
 }

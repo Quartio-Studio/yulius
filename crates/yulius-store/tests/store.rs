@@ -2,8 +2,8 @@
 
 use yulius_app::error::AppError;
 use yulius_app::model::{
-    AttemptRecord, LaunchKind, MessageRecord, SandboxRecord, StepRecord, TaskOrigin, TaskRecord,
-    UserRecord,
+    AttemptRecord, DeviceGrantBounds, DeviceGrantInsert, DeviceGrantRecord, LaunchKind,
+    MessageRecord, SandboxRecord, StepRecord, TaskOrigin, TaskRecord, UserRecord,
 };
 use yulius_app::ports::store::{
     AttemptUpdate, CoordinationStore, InstanceStore, SandboxStore, SessionStore, TaskStore,
@@ -232,20 +232,117 @@ async fn only_one_live_attempt_and_terminal_state_is_final() -> R {
     Ok(())
 }
 
+/// Bounds small enough to reach in a test.
+const BOUNDS: DeviceGrantBounds = DeviceGrantBounds {
+    per_client: 2,
+    total: 3,
+};
+
+/// A pending grant of `client` created at `at`, live for 1000 ms.
+fn grant(user_code: &str, hash: &str, client: &str, at: i64) -> DeviceGrantRecord {
+    DeviceGrantRecord {
+        user_code: user_code.into(),
+        device_code_hash: hash.into(),
+        status: "pending".into(),
+        user_id: None,
+        token: None,
+        client_key: client.into(),
+        created_at: Timestamp(at),
+        expires_at: Timestamp(at + 1000),
+    }
+}
+
+/// #169: live grants are bounded per client and per instance; a refused grant is not stored.
+#[tokio::test]
+async fn device_grants_are_bounded_per_client_and_instance() -> R {
+    let store = SqliteStore::open_in_memory()?;
+    let insert = async |code: &str, client: &str| {
+        store
+            .insert_device_grant(&grant(code, code, client, 1), BOUNDS)
+            .await
+    };
+    assert_eq!(insert("A1", "a").await?, DeviceGrantInsert::Inserted);
+    assert_eq!(insert("A2", "a").await?, DeviceGrantInsert::Inserted);
+    assert_eq!(insert("A3", "a").await?, DeviceGrantInsert::ClientFull);
+    assert_eq!(insert("B1", "b").await?, DeviceGrantInsert::Inserted);
+    assert_eq!(insert("C1", "c").await?, DeviceGrantInsert::InstanceFull);
+    for refused in ["A3", "C1"] {
+        assert!(store.device_grant_by_user_code(refused).await?.is_none());
+    }
+    Ok(())
+}
+
+/// #169: the purge deletes expired grants of any status and consumed ones, keeps a live denied
+/// one; a start purges too, so a client whose grants expired starts again.
+#[tokio::test]
+async fn expired_and_consumed_device_grants_are_purged() -> R {
+    let store = SqliteStore::open_in_memory()?;
+    let (_, uid) = seed(&store).await?;
+    for (code, client) in [("P1", "a"), ("C1", "a"), ("D1", "b")] {
+        store
+            .insert_device_grant(&grant(code, code, client, 1), BOUNDS)
+            .await?;
+    }
+    let sealed = yulius_app::model::Sealed(vec![1]);
+    store
+        .resolve_device_grant("C1", "approved", Some(&uid), Some(&sealed))
+        .await?;
+    assert!(store.consume_device_grant("C1").await?);
+    store
+        .resolve_device_grant("D1", "denied", Some(&uid), None)
+        .await?;
+
+    assert_eq!(store.purge_device_grants(Timestamp(500)).await?, 1);
+    assert!(store.device_grant_by_user_code("C1").await?.is_none());
+    for kept in ["P1", "D1"] {
+        assert!(store.device_grant_by_user_code(kept).await?.is_some());
+    }
+    assert_eq!(store.purge_device_grants(Timestamp(1001)).await?, 2);
+    assert_eq!(store.purge_device_grants(Timestamp(1001)).await?, 0);
+
+    // A start purges: client "a" fills its bound, and starts again once those expired.
+    for code in ["A1", "A2"] {
+        store
+            .insert_device_grant(&grant(code, code, "a", 2000), BOUNDS)
+            .await?;
+    }
+    assert_eq!(
+        store
+            .insert_device_grant(&grant("A3", "A3", "a", 2500), BOUNDS)
+            .await?,
+        DeviceGrantInsert::ClientFull
+    );
+    assert_eq!(
+        store
+            .insert_device_grant(&grant("A3", "A3", "a", 3000), BOUNDS)
+            .await?,
+        DeviceGrantInsert::Inserted
+    );
+    assert!(store.device_grant_by_user_code("A1").await?.is_none());
+
+    // A refused start purges too: "b"'s grant expired while "a" sits at its bound.
+    store
+        .insert_device_grant(&grant("B1", "B1", "b", 2600), BOUNDS)
+        .await?;
+    store
+        .insert_device_grant(&grant("A4", "A4", "a", 3100), BOUNDS)
+        .await?;
+    assert_eq!(
+        store
+            .insert_device_grant(&grant("A5", "A5", "a", 3700), BOUNDS)
+            .await?,
+        DeviceGrantInsert::ClientFull
+    );
+    assert!(store.device_grant_by_user_code("B1").await?.is_none());
+    Ok(())
+}
+
 #[tokio::test]
 async fn device_grant_is_consumed_once() -> R {
     let store = SqliteStore::open_in_memory()?;
     let (_, uid) = seed(&store).await?;
     store
-        .insert_device_grant(&yulius_app::model::DeviceGrantRecord {
-            user_code: "ABCD-EFGH".into(),
-            device_code_hash: "dh".into(),
-            status: "pending".into(),
-            user_id: None,
-            token: None,
-            created_at: Timestamp(1),
-            expires_at: Timestamp(1000),
-        })
+        .insert_device_grant(&grant("ABCD-EFGH", "dh", "client", 1), BOUNDS)
         .await?;
     let sealed = yulius_app::model::Sealed(vec![1, 2, 3]);
     assert!(
