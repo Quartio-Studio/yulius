@@ -1890,7 +1890,9 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | `scope_claim`, `scope_release`, `scopes_list` | Advisory path-glob claims with conflict report (COM-003) |
 | `steps_set`, `step_update`, `steps_get` | Step manager (STP-001/002, STP-006..008): plan bounds, effort, WIP limit, no reopening by agents, weighted `percent` and `nudges` in every result (ADR-19) |
 | `spec_check` | Run the format validator on the task spec and docs (DSC-003); `required` per the spec policy (DSC-013) and `plan_nudges` |
-| `automation_create`, `automations_list`, `automation_update` | Prompt-created automations (AUT-002) |
+| `task_stop`, `task_archive`, `task_delete` | The UI's stop, archive and delete of another task of the project, for the person the caller acts for, audited with the caller; never the caller's own task (SPEC-066 MGT-008..010) |
+| `automation_create`, `automations_list`, `automation_update` | Prompt-created automations (AUT-002); `automations_list` also lists the ready-made ones (`ready_made`, SPEC-066 AUT-012) |
+| `automation_delete`, `automation_run_now`, `automation_template_enable` | The Automations page's delete, Run now and Enable of a ready-made automation, audited with the caller (SPEC-066 MGT-011, AUT-012) |
 | `workflows_list` | Workflows available, the defaults first with `builtin` and `when_to_use` (AUT-004, AUT-006) |
 | `browser_tabs`, `browser_open`, `browser_navigate`, `browser_click`, `browser_type`, `browser_snapshot`, `browser_screenshot`, `browser_request_user_action` | Shared sandbox browser control and user hand-off (BRW-003/004) |
 | `delivery_status` | Read-only PR/checks/profile status (GIT-001); no merge tool (GIT-002) |
