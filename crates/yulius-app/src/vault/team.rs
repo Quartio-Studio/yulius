@@ -288,11 +288,10 @@ impl App {
             Some(hash) => self.deps.store.vault_unlock(hash).await?,
             None => None,
         };
-        let two_factor = self.two_factor_state(ctx, identity).await?;
+        let (two_factor, confirmed) = self.two_factor_state(ctx, identity).await?;
         // An unlock counts only with a confirmed seed: one stored by an unlock that raced an
-        // administrator's reset (SPEC-061) opens nothing.
-        let fresh = matches!(two_factor, "on" | "locked")
-            && unlocked.is_some_and(|at| reauth_fresh(now, at));
+        // administrator's reset (SPEC-061) opens nothing, also once a new pending seed locks.
+        let fresh = confirmed && unlocked.is_some_and(|at| reauth_fresh(now, at));
         Ok(ReauthStatus {
             fresh,
             fresh_until: unlocked

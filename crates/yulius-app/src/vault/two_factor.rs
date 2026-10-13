@@ -60,25 +60,25 @@ impl App {
     }
 
     /// `missing`, `pending`, `on` or `locked` (too many wrong codes) for the caller, whose
-    /// identity was last confirmed at `identity`.
+    /// identity was last confirmed at `identity`, and whether their seed is confirmed.
     pub(super) async fn two_factor_state(
         &self,
         ctx: &AuthContext,
         identity: Option<Timestamp>,
-    ) -> AppResult<&'static str> {
-        Ok(
-            match self
-                .deps
-                .store
-                .vault_two_factor(ctx.user.id.as_str())
-                .await?
-            {
-                None => "missing",
-                Some(record) if locked(&record, identity) => "locked",
-                Some(record) if record.confirmed_at.is_none() => "pending",
-                Some(_) => "on",
-            },
-        )
+    ) -> AppResult<(&'static str, bool)> {
+        let record = self
+            .deps
+            .store
+            .vault_two_factor(ctx.user.id.as_str())
+            .await?;
+        let confirmed = record.as_ref().is_some_and(|r| r.confirmed_at.is_some());
+        let state = match record {
+            None => "missing",
+            Some(record) if locked(&record, identity) => "locked",
+            Some(_) if !confirmed => "pending",
+            Some(_) => "on",
+        };
+        Ok((state, confirmed))
     }
 
     /// `POST /api/auth/two-factor`: a new seed for the caller's authenticator. Needs a browser

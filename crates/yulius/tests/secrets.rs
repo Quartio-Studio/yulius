@@ -635,6 +635,28 @@ async fn administrators_reset_a_lost_two_factor() -> TestResult {
         reveal.body
     );
     assert_hidden(&reveal.body, &[MAIL_PASSWORD]);
+    // Nor does it once a new pending seed is locked by ten wrong codes (confirmation review).
+    h.clock.0.fetch_add(61_000, Ordering::SeqCst);
+    let setup = call(&h.router, Method::POST, "/api/auth/two-factor", None, &anna).await?;
+    assert_eq!(setup.status, StatusCode::CREATED, "{}", setup.body);
+    let wrong = wrong_code(&h, setup.body["secret"].as_str().ok_or("secret")?)?;
+    for _ in 0..2 {
+        for _ in 0..5 {
+            let refused = unlock(&h, &anna, &wrong).await?;
+            assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+        }
+        h.clock.0.fetch_add(61_000, Ordering::SeqCst);
+    }
+    let locked_pending = anna_status(anna.clone()).await?;
+    assert_eq!(
+        (
+            &locked_pending.body["two_factor"],
+            &locked_pending.body["fresh"]
+        ),
+        (&json!("locked"), &json!(false)),
+        "{}",
+        locked_pending.body
+    );
     // Nothing set up: nothing to reset, and nothing audited.
     let none = reset(&h, &admin, &bob_id).await?;
     assert_eq!(none.status, StatusCode::NO_CONTENT, "{}", none.body);

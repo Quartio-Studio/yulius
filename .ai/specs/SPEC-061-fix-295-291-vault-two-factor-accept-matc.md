@@ -129,10 +129,14 @@ GitHub issues #295 and #291 following their acceptance criteria. Extends
 - Review round 1 (approved `1539300`, minor findings fixed test-first): an unlock counts only
   while the person has a confirmed seed, so an unlock that raced a reset opens nothing; the
   reset checks the browser session and the caller's own id before asking for a code, with its
-  own messages; a code whose seed was reset meanwhile says so. The superadmin is not in the user list, so
-  their lost authenticator cannot be reset yet (an instance administrator never sees their id):
-  recorded in ADR-0041 and the API reference as a follow-up, since #291 is about members. The user list reads each person's two-factor with one query each (an instance has
+  own messages; a code whose seed was reset meanwhile says so. The superadmin is not in the
+  user list, so their lost authenticator cannot be reset yet (an instance administrator never
+  sees their id): recorded in ADR-0041 and the API reference as a follow-up, since #291 is about
+  members. The user list reads each person's two-factor with one query each (an instance has
   tens of people), kept simple on purpose.
+- Review round 2 (confirmation, approved `1d60c1d`, one minor finding fixed test-first): a
+  pending seed locked by ten wrong codes reads `locked`, which counted as confirmed; freshness
+  now follows `confirmed_at` itself, not the state's name.
 - One pull request for both issues: Yulius delivers one pull request per task, and both touch
   the same two-factor row and tests.
 
@@ -159,7 +163,9 @@ GitHub issues #295 and #291 following their acceptance criteria. Extends
   superadmin's confirmation dialog.
 - Independent review in a fresh session: round 1 approved `1539300` with minor findings (a reset
   racing an unlock, the superadmin's reset, R2 test gaps) and nits, fixed test-first in
-  `a92af08`; a confirmation review covers that delta on the final head.
+  `a92af08`; round 2 (confirmation) approved `1d60c1d` with one minor finding (a locked pending
+  seed counted as confirmed), fixed test-first; a last confirmation review covers that delta on
+  the final head.
 - Not tested here: the deployed instance, and a real authenticator app (codes come from the
   same RFC 6238 functions the server uses).
 - Follow-up (no issue created, per task #52's rules): resetting the superadmin's lost
