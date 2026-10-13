@@ -319,6 +319,21 @@ async fn expired_and_consumed_device_grants_are_purged() -> R {
         DeviceGrantInsert::Inserted
     );
     assert!(store.device_grant_by_user_code("A1").await?.is_none());
+
+    // A refused start purges too: "b"'s grant expired while "a" sits at its bound.
+    store
+        .insert_device_grant(&grant("B1", "B1", "b", 2600), BOUNDS)
+        .await?;
+    store
+        .insert_device_grant(&grant("A4", "A4", "a", 3100), BOUNDS)
+        .await?;
+    assert_eq!(
+        store
+            .insert_device_grant(&grant("A5", "A5", "a", 3700), BOUNDS)
+            .await?,
+        DeviceGrantInsert::ClientFull
+    );
+    assert!(store.device_grant_by_user_code("B1").await?.is_none());
     Ok(())
 }
 

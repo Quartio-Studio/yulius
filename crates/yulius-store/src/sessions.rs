@@ -168,30 +168,32 @@ impl SessionStore for SqliteStore {
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .map_err(db)?;
-            if of_client >= per_client {
-                return Ok(DeviceGrantInsert::ClientFull);
-            }
-            if live >= total {
-                return Ok(DeviceGrantInsert::InstanceFull);
-            }
-            tx.execute(
-                &format!(
-                    "INSERT INTO device_grants ({GRANT_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"
-                ),
-                params![
-                    g.user_code,
-                    g.device_code_hash,
-                    g.status,
-                    g.user_id.as_ref().map(UserId::as_str),
-                    g.token.map(|t| t.0),
-                    g.created_at.0,
-                    g.expires_at.0,
-                    g.client_key
-                ],
-            )
-            .map_err(db)?;
+            // A refused start still commits its purge (#169).
+            let outcome = if of_client >= per_client {
+                DeviceGrantInsert::ClientFull
+            } else if live >= total {
+                DeviceGrantInsert::InstanceFull
+            } else {
+                tx.execute(
+                    &format!(
+                        "INSERT INTO device_grants ({GRANT_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"
+                    ),
+                    params![
+                        g.user_code,
+                        g.device_code_hash,
+                        g.status,
+                        g.user_id.as_ref().map(UserId::as_str),
+                        g.token.map(|t| t.0),
+                        g.created_at.0,
+                        g.expires_at.0,
+                        g.client_key
+                    ],
+                )
+                .map_err(db)?;
+                DeviceGrantInsert::Inserted
+            };
             tx.commit().map_err(db)?;
-            Ok(DeviceGrantInsert::Inserted)
+            Ok(outcome)
         })
         .await
     }

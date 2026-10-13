@@ -44,8 +44,11 @@ consumed grants are deleted.
 - R4. Purge: expired grants (any status) and consumed grants are deleted on every start (in the
   same transaction as the bound check and the insert) and by the background tick every 60 s.
   Denied grants stay until they expire so the CLI's poll still reads "denied".
-- R5. The device flow is unchanged otherwise: start, approve and poll behave as before; polling a
-  purged grant reads "expired", as polling a consumed or unknown one did.
+- R5. The device flow is unchanged otherwise: start, approve and poll behave as before while a
+  grant lives. Once purged, a grant reads like an unknown one: polling it reads "expired" (also a
+  denied grant after its 10 minutes, and an approved one the CLI did not poll in time, whose
+  issued API token then stays unused), and approving its user code answers 404 instead of 409.
+  The CLI stops polling at `expires_in_s`, so none of these reaches it.
 
 ## Plan
 

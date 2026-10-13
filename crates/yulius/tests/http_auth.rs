@@ -690,17 +690,18 @@ async fn device_grants_are_bounded_per_client_and_instance() -> TestResult {
         h.app.device_start("one").await?;
     }
     minute();
-    assert!(matches!(
-        h.app.device_start("one").await,
-        Err(AppError::Capacity(_))
-    ));
+    let waiting = |refused: Result<_, AppError>| matches!(refused, Err(AppError::Capacity(m)) if m.contains("sign-ins waiting"));
+    assert!(
+        waiting(h.app.device_start("one").await),
+        "the client's bound"
+    );
     for n in MAX_DEVICE_GRANTS_PER_CLIENT..MAX_DEVICE_GRANTS {
         h.app.device_start(&format!("client-{n}")).await?;
     }
-    assert!(matches!(
-        h.app.device_start("newcomer").await,
-        Err(AppError::Capacity(_))
-    ));
+    assert!(
+        waiting(h.app.device_start("newcomer").await),
+        "the instance's bound"
+    );
     Ok(())
 }
 

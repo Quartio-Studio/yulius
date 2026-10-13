@@ -38,5 +38,7 @@ slowly by calling it in a loop, and make every lookup by user code scan a larger
   for every migration.
 - A flood from more than 100 clients (or /64 networks) can keep new device sign-ins refused for
   up to 10 minutes; the web sign-in and existing API tokens are unaffected.
-- A grant approved but not polled within its 10 minutes is deleted; polling it reads "expired"
-  and the API token issued for it stays unused (revocable in Settings).
+- A purged grant reads like an unknown one. A grant approved but not polled within its 10
+  minutes is deleted; polling it reads "expired" and the API token issued for it stays unused
+  (revocable in Settings). A denied grant reads "expired" after its 10 minutes, and approving a
+  consumed grant's code answers 404 instead of 409. The CLI stops polling at `expires_in_s`.
