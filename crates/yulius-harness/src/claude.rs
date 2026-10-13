@@ -75,6 +75,19 @@ const INTERRUPT_MARKERS: [&str; 2] = [
 /// request (alongside `error: "rate_limit"` and HTTP 429).
 const USAGE_LIMIT_API_ERROR: &str = "usage_limit_reached";
 
+/// The text of the error record Claude Code writes when the API rejects a prompt as too long
+/// (its `PROMPT_TOO_LONG` constant; its own check is `startsWith`).
+const PROMPT_TOO_LONG_TEXT: &str = "Prompt is too long";
+
+/// Lower-case marks of a too-long prompt in the API's own error (`errorDetails`, `apiError`).
+const PROMPT_TOO_LONG_MARKS: [&str; 2] = ["prompt is too long", "prompt_too_long"];
+
+/// What Claude Code reports when a compaction fails.
+const COMPACT_ERROR_TEXT: &str = "Error during compaction";
+
+/// The error output of a local command (`/compact`) in a transcript record.
+const LOCAL_COMMAND_STDERR: &str = "<local-command-stderr>";
+
 /// Normalizes one Claude Code transcript line.
 #[must_use]
 pub fn observe_line(line: &str) -> Vec<Observed> {
@@ -127,8 +140,29 @@ fn observe_system(record: &Map<String, Value>) -> Vec<Observed> {
             background_agents: u64_of(record, "pendingBackgroundAgentCount")
                 .and_then(|n| u32::try_from(n).ok()),
         }],
+        Some("compact_boundary") => vec![Observed::Compacted],
+        _ if str_of(record, "content").is_some_and(|c| c.contains(COMPACT_ERROR_TEXT)) => {
+            vec![Observed::CompactFailed]
+        }
         _ => Vec::new(),
     }
+}
+
+/// A user record that carries a failed compaction's error output, not a prompt.
+fn compact_failed(message: &Map<String, Value>) -> bool {
+    let text = message_text(message);
+    text.contains(LOCAL_COMMAND_STDERR) && text.contains(COMPACT_ERROR_TEXT)
+}
+
+/// An error record that says the prompt is too long for the model's context (#213).
+fn prompt_too_long(record: &Map<String, Value>, text: &str) -> bool {
+    let named = |key: &str| {
+        str_of(record, key).is_some_and(|value| {
+            let lower = value.to_lowercase();
+            PROMPT_TOO_LONG_MARKS.iter().any(|mark| lower.contains(mark))
+        })
+    };
+    text.trim_start().starts_with(PROMPT_TOO_LONG_TEXT) || named("errorDetails") || named("apiError")
 }
 
 fn observe_user(record: &Map<String, Value>) -> Vec<Observed> {
@@ -137,6 +171,9 @@ fn observe_user(record: &Map<String, Value>) -> Vec<Observed> {
     };
     if bool_of(record, "isSidechain") || bool_of(record, "isMeta") || !is_prompt(message) {
         return Vec::new();
+    }
+    if compact_failed(message) {
+        return vec![Observed::CompactFailed];
     }
     let at = str_of(record, "timestamp").and_then(parse_rfc3339);
     let turn = if is_interrupt(message) {
@@ -194,10 +231,18 @@ fn observe_assistant(record: &Map<String, Value>) -> Vec<Observed> {
         bool_of(record, "isApiErrorMessage") || record.get("error").is_some_and(|e| !e.is_null());
     if is_error {
         let text = message_text(message);
-        return structured_limit(record, &text)
-            .or_else(|| limit_signal(&text))
-            .into_iter()
-            .collect();
+        if let Some(limit) = structured_limit(record, &text) {
+            return vec![limit];
+        }
+        if prompt_too_long(record, &text) {
+            // A sub-agent's full context is its own; the session goes on.
+            return if bool_of(record, "isSidechain") {
+                Vec::new()
+            } else {
+                vec![Observed::ContextFull]
+            };
+        }
+        return limit_signal(&text).into_iter().collect();
     }
     let model = owned_str(message, "model").filter(|m| m != SYNTHETIC_MODEL);
     let mut out = Vec::new();
@@ -634,5 +679,47 @@ mod tests {
         // A transient rate limit that was retried is not a usage limit.
         let transient = r#"{"type":"assistant","isApiErrorMessage":true,"error":"rate_limit","quotaLimits":{"status":"allowed_warning","resetsAt":1760000000},"message":{"model":"<synthetic>","content":[{"type":"text","text":"API Error: Request rejected (429) · retrying"}]}}"#;
         assert_eq!(observe_line(transient), Vec::<Observed>::new());
+    }
+
+    /// The record Claude Code 2.1.292 writes when the API rejects a prompt as too long (#213):
+    /// its API-error helper with `error: "invalid_request"` and the `PROMPT_TOO_LONG` text.
+    #[test]
+    fn a_prompt_too_long_error_is_a_full_context() {
+        let line = r#"{"type":"assistant","isSidechain":false,"isApiErrorMessage":true,"error":"invalid_request","errorDetails":"prompt is too long: 213000 tokens > 200000 maximum","message":{"model":"<synthetic>","id":"m","type":"message","role":"assistant","content":[{"type":"text","text":"Prompt is too long"}],"stop_reason":"stop_sequence"}}"#;
+        assert_eq!(observe_line(line), vec![Observed::ContextFull]);
+        // Only the API's own wording (another CLI build's text), or its error code.
+        let details = r#"{"type":"assistant","isApiErrorMessage":true,"error":"invalid_request","errorDetails":"400 {\"error\":{\"message\":\"Prompt is too long: 201000 tokens\"}}","message":{"model":"<synthetic>","content":[{"type":"text","text":"API Error"}]}}"#;
+        assert_eq!(observe_line(details), vec![Observed::ContextFull]);
+        let code = r#"{"type":"assistant","isApiErrorMessage":true,"apiError":"prompt_too_long","message":{"model":"<synthetic>","content":[]}}"#;
+        assert_eq!(observe_line(code), vec![Observed::ContextFull]);
+        // A sub-agent's full context is its own: the session goes on.
+        let sidechain = line.replace(r#""isSidechain":false"#, r#""isSidechain":true"#);
+        assert_eq!(observe_line(&sidechain), Vec::<Observed>::new());
+        // An agent's ordinary answer that quotes the words is no error record.
+        let answer = r#"{"type":"assistant","message":{"model":"claude","id":"m2","content":[{"type":"text","text":"Prompt is too long"}],"stop_reason":"end_turn"}}"#;
+        assert!(!observe_line(answer).contains(&Observed::ContextFull));
+        // Another API error is still nothing (or a limit).
+        let other = r#"{"type":"assistant","isApiErrorMessage":true,"error":"invalid_request","message":{"model":"<synthetic>","content":[{"type":"text","text":"Credit balance is too low"}]}}"#;
+        assert_eq!(observe_line(other), Vec::<Observed>::new());
+    }
+
+    /// A compaction's boundary record and the error a failed `/compact` reports.
+    #[test]
+    fn compactions_and_their_failures_are_observed() {
+        let boundary = r#"{"type":"system","subtype":"compact_boundary","content":"Conversation compacted","isMeta":false,"isSidechain":false,"level":"info","compactMetadata":{"trigger":"manual","preTokens":190000}}"#;
+        assert_eq!(observe_line(boundary), vec![Observed::Compacted]);
+        let sidechain = boundary.replace(r#""isSidechain":false"#, r#""isSidechain":true"#);
+        assert_eq!(observe_line(&sidechain), Vec::<Observed>::new());
+        let system = r#"{"type":"system","subtype":"local_command","content":"<local-command-stderr>Error: Error during compaction: Conversation too long. Press esc twice to go up a few messages and try again.</local-command-stderr>","isSidechain":false}"#;
+        assert_eq!(observe_line(system), vec![Observed::CompactFailed]);
+        let user = json_line(
+            "<local-command-stderr>Error: Error during compaction: Error: API Error</local-command-stderr>",
+        );
+        assert_eq!(observe_line(&user), vec![Observed::CompactFailed]);
+        // A person's prompt about compaction is a prompt.
+        let prompt = json_line("why did the Error during compaction happen?");
+        let observed = observe_line(&prompt);
+        assert!(observed.iter().any(|o| matches!(o, Observed::UserTurn { .. })));
+        assert!(!observed.contains(&Observed::CompactFailed));
     }
 }

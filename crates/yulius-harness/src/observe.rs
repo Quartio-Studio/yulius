@@ -85,6 +85,14 @@ pub enum Observed {
         /// When it was recorded, if parseable.
         at: Option<Timestamp>,
     },
+    /// The API rejected the session's prompt as too long: its context is full, and every later
+    /// prompt gets the same answer until it is compacted (#213). No Stop hook ends such a turn.
+    ContextFull,
+    /// Claude Code compacted the conversation (a `compact_boundary` record; `/compact` or its
+    /// automatic compaction).
+    Compacted,
+    /// A compaction failed ("Error during compaction" in the command's error output).
+    CompactFailed,
     /// The line is not a JSON object or lacks a required field.
     Malformed,
 }

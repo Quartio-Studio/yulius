@@ -305,6 +305,9 @@ impl TranscriptWatch for Watch {
                         out.push(Observation::TurnEnded { background_agents });
                     }
                     Observed::AgentWork { at } => out.push(Observation::AgentWork { at }),
+                    Observed::ContextFull => out.push(Observation::ContextFull),
+                    Observed::Compacted => out.push(Observation::Compacted),
+                    Observed::CompactFailed => out.push(Observation::CompactFailed),
                     Observed::LimitReached {
                         resets_at,
                         message,
