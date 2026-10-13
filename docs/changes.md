@@ -14,6 +14,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   on a busy instance, a stuck host can no longer cancel the escalation, and a task that turned
   switching is refused at once. The web UI sends one delete per task, shows "Deleting #N…", and a
   stopping task's Delete says "Stopping…".
+- `yulius wait` on armed merges (SPEC-064, ADR-0048, task #53; #248, #249, #255, #251). A merge
+  armed while Yulius still decides an earlier one supersedes it: the wait on the new head no
+  longer ends with the old head's "dropped", and the new merge stays armed and saved. The armed
+  merge, its decisions in progress and its outcome are read and changed under one lock, so a wait
+  never misses a decision. A wait with a merge armed and checks pending keeps waiting (#249 did
+  not reproduce on `dev`; a regression test now covers it). The automatic retry of an errored
+  Yulius CI run at a pull request's head is tested: once, never a third time, never when the pull
+  request conflicts.
 - CLI device sign-in can no longer fill the disk (SPEC-063, ADR-0047, task #55, #169).
   `POST /api/device/start` is limited per client like password sign-in (5 starts a minute); at
   most 10 device sign-ins wait per client and 1000 per instance (past either: 429, nothing
