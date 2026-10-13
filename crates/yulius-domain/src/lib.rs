@@ -8,6 +8,7 @@
 
 pub mod auto_choice;
 pub mod automation_format;
+pub mod branch_policy;
 pub mod briefing;
 pub mod capacity;
 pub mod ci;

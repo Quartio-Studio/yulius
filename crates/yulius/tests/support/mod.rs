@@ -238,10 +238,9 @@ impl GitHubPort for FakeGitHub {
             .and_then(|r| r.branch_sha(&pull.head))
             .ok_or_else(|| AppError::Upstream("head branch not found".into()))?;
         let mut pulls = self.pulls.lock().map_err(AppError::internal)?;
-        if pulls
-            .iter()
-            .any(|p| p.state == "open" && p.head == pull.head && p.base == pull.base)
-        {
+        if pulls.iter().any(|p| {
+            p.state == "open" && !p.from_fork && p.head == pull.head && p.base == pull.base
+        }) {
             return Err(AppError::Upstream("a pull request already exists".into()));
         }
         let number = u64::try_from(pulls.len()).unwrap_or(0) + 1;
@@ -256,6 +255,7 @@ impl GitHubPort for FakeGitHub {
             head_sha,
             mergeable: None,
             behind: false,
+            from_fork: false,
         };
         pulls.push(created.clone());
         if let Ok(mut authors) = self.pull_authors.lock() {
