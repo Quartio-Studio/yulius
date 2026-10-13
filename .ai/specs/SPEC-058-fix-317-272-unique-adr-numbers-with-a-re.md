@@ -1,11 +1,11 @@
 ---
 yulius-task: 8c9bb5a5-cd5a-4d26-b87c-f8b5a081afb2
-status: in-progress
+status: done
 ---
 
 # SPEC-058: unique decision numbers with a repository check; onboarding CI-proof wording
 
-Status: in progress
+Status: implemented
 Date: 2026-10-13
 Owner: Yulius task #49 (part of task #47)
 Scope authorization: user request: "Fix GitHub issues #317 and #272 of Quartio-Studio/yulius,
@@ -70,8 +70,8 @@ onboarding rather than by a job (#272).
 - [x] The repository check refuses duplicate decision numbers
 - [x] The onboarding prompt covers matrix values, interrupted proofs, shared CI home and system packages
 - [x] The infra-bootstrap skill, the CI module doc and SPEC-020 match the prompt
-- [ ] Gates green and an independent review approves the head
-- [ ] Spec records its evidence and the pull request names both issues
+- [x] Gates green and an independent review approves the head
+- [x] Spec records its evidence and the pull request names both issues
 
 ## Acceptance criteria
 
@@ -131,6 +131,8 @@ onboarding rather than by a job (#272).
   rendered shell; but `dev` had gained #332's second 0040 (renumbered here to 0043), the review
   item was ticked before an approval, and SPEC-040 had long lines. All fixed; the index check
   (every record listed) answers its nit that 0016 was missing.
+- **Not changed after round 4:** the Plan line of the prompt step is 104 columns because it must
+  equal the Yulius step title.
 - **The plan ends before the merge:** `delivery_merge` refuses while a step is open, so merging and
   closing #317 and #272 are the delivery after the plan, reported in the task summary. The review
   item is ticked only after a round approves, in a spec-only commit that a short confirmation
@@ -147,10 +149,10 @@ onboarding rather than by a job (#272).
   before the prompt change, with `infra-bootstrap misses ...` before the skill change, and with
   `missing "find \"$HOME\" -maxdepth 1 -name '.ci-proof.*' -mmin +360"` before the review fix;
   passed after each.
-- `scripts/dev ci` at 13f6f8c: exit 0, nextest 1266 passed. At aa59cad (after round 2's fix and
-  the merge of `dev`; later commits change only this spec): exit 0; nextest 1268 run, 1268 passed,
-  16 skipped; repository contracts and 38 Python tests OK; cargo-deny advisories, bans, licenses
-  and sources ok.
+- `scripts/dev ci`: exit 0 at 13f6f8c (1266 passed), at aa59cad (1268), at e634281 (1268) and at
+  5da77ef, the head after round 4's nits and the merge of `dev` #330 (later commits change only
+  this spec): nextest 1268 run, 1268 passed, 16 skipped; repository contracts and 39 Python tests
+  OK; cargo-deny advisories, bans, licenses and sources ok.
 - Merging `dev` after #328: `python3 scripts/check_repository.py` failed with
   "0040-personal-two-factor-guards-the-vault.md: shares decision number 0040 with
   0040-done-tasks-release-their-subscription.md"; after renumbering to 0042 it passed.
@@ -160,8 +162,11 @@ onboarding rather than by a job (#272).
 - `git grep 0034` in docs, specs and code: only the automations catalog record, its references
   and historical notes.
 - Independent review (fresh read-only sessions, skill `om-code-review`): round 1 of
-  81bf3aa..205fe9c APPROVE with three minors and four nits; round 2 of 2172770 REQUEST CHANGES (one
-  major, the own-proof recovery); both handled above. A third round reviews the final head.
+  81bf3aa..205fe9c APPROVE with minors; round 2 of 2172770 REQUEST CHANGES (own-proof recovery);
+  round 3 of 41e2038 REQUEST CHANGES (#332's second 0040 on `dev`); round 4 of e634281 APPROVE with
+  one minor and nits (the changelog and README name all three rules; the index test split out; a
+  missing index reported, not raised), fixed in f6ca9d4. A confirmation review covers the final
+  head's delta from e634281.
 - The rendered prompt's commands, run in a scratch repository with a scratch `HOME`: the proof
   killed by `timeout 3` printed `proof <dir>` and left the directory and a worktree entry; the
   own-path recovery plus `git worktree prune` removed both (exit 0); the six-hour `find` removed a
