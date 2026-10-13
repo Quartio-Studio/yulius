@@ -84,52 +84,9 @@ async fn seed_run(
     Ok(())
 }
 
-async fn rpc(
-    router: &axum::Router,
-    token: &str,
-    method: &str,
-    params: Value,
-) -> Result<Value, Box<dyn std::error::Error>> {
-    let r = call(
-        router,
-        Method::POST,
-        "/mcp",
-        Some(json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})),
-        &Creds {
-            bearer: Some(token.into()),
-            ..Creds::default()
-        },
-    )
-    .await?;
-    assert_eq!(r.status, StatusCode::OK);
-    Ok(r.body)
-}
-
-async fn tool(
-    router: &axum::Router,
-    token: &str,
-    name: &str,
-    args: Value,
-) -> Result<(Value, bool), Box<dyn std::error::Error>> {
-    let body = rpc(
-        router,
-        token,
-        "tools/call",
-        json!({"name": name, "arguments": args}),
-    )
-    .await?;
-    let text = body["result"]["content"][0]["text"]
-        .as_str()
-        .ok_or("text")?;
-    let is_error = body["result"]["isError"].as_bool().unwrap_or(true);
-    Ok((
-        serde_json::from_str(text).unwrap_or(Value::String(text.to_owned())),
-        is_error,
-    ))
-}
-
-#[tokio::test]
-async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
+/// A project (sandbox `s1` of user `u1`) with two live Claude Code tasks, `tok-claude` and
+/// `tok-other`, and the internal router their agents call.
+async fn project() -> Result<(support::Harness, axum::Router), Box<dyn std::error::Error>> {
     let h = harness()?;
     h.store
         .insert_user(&UserRecord {
@@ -167,6 +124,58 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
     seed_run(&h, "claude2", Harness::ClaudeCode, "tok-other").await?;
     let internal = yulius_server::internal_router(h.app.clone())
         .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1))));
+    Ok((h, internal))
+}
+
+async fn rpc(
+    router: &axum::Router,
+    token: &str,
+    method: &str,
+    params: Value,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let r = call(
+        router,
+        Method::POST,
+        "/mcp",
+        Some(json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params})),
+        &Creds {
+            bearer: Some(token.into()),
+            ..Creds::default()
+        },
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK);
+    Ok(r.body)
+}
+
+async fn tool(
+    router: &axum::Router,
+    token: &str,
+    name: &str,
+    args: Value,
+) -> Result<(Value, bool), Box<dyn std::error::Error>> {
+    let body = rpc(
+        router,
+        token,
+        "tools/call",
+        json!({"name": name, "arguments": args, "_meta": {"yulius/structured": true}}),
+    )
+    .await?;
+    let text = body["result"]["content"][0]["text"]
+        .as_str()
+        .ok_or("text")?;
+    let is_error = body["result"]["isError"].as_bool().unwrap_or(true);
+    // The tool's record (asked for with `_meta`), or the text of an error.
+    let record = body["result"]
+        .get("structuredContent")
+        .cloned()
+        .unwrap_or_else(|| Value::String(text.to_owned()));
+    Ok((record, is_error))
+}
+
+#[tokio::test]
+async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
+    let (h, internal) = project().await?;
 
     let init = rpc(
         &internal,
@@ -559,5 +568,110 @@ async fn parallel_tasks_coordinate_through_yulius() -> TestResult {
     )
     .await?;
     assert_eq!(none.status, StatusCode::ACCEPTED);
+    Ok(())
+}
+
+/// The text of a tool's result as the agent gets it (no `_meta`), checking that the result has
+/// nothing Claude Code would show instead of it.
+async fn agent_text(
+    router: &axum::Router,
+    name: &str,
+    args: Value,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let body = rpc(
+        router,
+        "tok-claude",
+        "tools/call",
+        json!({"name": name, "arguments": args}),
+    )
+    .await?;
+    assert_eq!(body["result"]["isError"], false, "{body}");
+    assert!(
+        body["result"].get("structuredContent").is_none(),
+        "Claude Code would give the model the record instead of the text: {body}"
+    );
+    let content = body["result"]["content"].as_array().ok_or("content")?;
+    assert_eq!(content.len(), 1, "{body}");
+    Ok(content[0]["text"].as_str().ok_or("text")?.to_owned())
+}
+
+/// SPEC-086 TOL-001, TOL-002, TOL-005 (F 2026-10-13: "too much text, like meaningless json"): the
+/// step tools answer in a few readable lines: what changed, the progress and what is next; the
+/// whole plan as a checklist only when it is set or asked for; no step ids, times or JSON. A
+/// client that asks for the record gets it as structured content, ids and times included.
+#[tokio::test]
+async fn step_tools_answer_with_short_text_not_records() -> TestResult {
+    let (_h, internal) = project().await?;
+    let planned = agent_text(
+        &internal,
+        "steps_set",
+        json!({"steps": ["Parse the CSV upload", {"title": "Store rows per tenant", "effort": 2}, "Show the import summary"]}),
+    )
+    .await?;
+    assert_eq!(
+        planned,
+        "Plan set: 3 steps.\n\
+         Progress: 0/3 steps done, 0% by effort.\n\
+         1 [ ] Parse the CSV upload\n\
+         2 [ ] Store rows per tenant (effort 2)\n\
+         3 [ ] Show the import summary\n\
+         Nudge: No step is in progress. Mark \"Parse the CSV upload\" in_progress when you start \
+         it, and done as soon as it is finished."
+    );
+    let started = agent_text(
+        &internal,
+        "step_update",
+        json!({"ordinal": 1, "status": "in_progress"}),
+    )
+    .await?;
+    assert_eq!(
+        started,
+        "Step 1 \"Parse the CSV upload\" is in progress.\n\
+         Progress: 0/3 steps done, 0% by effort.\n\
+         Next: 2 \"Store rows per tenant\" (pending)."
+    );
+    let done = agent_text(
+        &internal,
+        "step_update",
+        json!({"title": "parse the csv upload", "status": "done"}),
+    )
+    .await?;
+    assert!(
+        done.starts_with(
+            "Step 1 \"Parse the CSV upload\" is done.\nProgress: 1/3 steps done, 25% by effort.\nNext: 2"
+        ),
+        "{done}"
+    );
+    let plan = agent_text(&internal, "steps_get", json!({})).await?;
+    assert!(plan.contains("\n1 [x] Parse the CSV upload\n"), "{plan}");
+
+    // The record is there for a client that asks, with what the text leaves out.
+    let (record, err) = tool(&internal, "tok-claude", "steps_get", json!({})).await?;
+    assert!(!err, "{record}");
+    let pretty = serde_json::to_string_pretty(&record)?;
+    for step in record["steps"].as_array().ok_or("steps")? {
+        let id = step["id"].as_str().ok_or("id")?;
+        assert!(!plan.contains(id) && !done.contains(id), "{id} in the text");
+    }
+    assert!(record["steps"][0]["finished_at"].is_string(), "{record}");
+    assert!(
+        !plan.contains('{') && !plan.contains("finished_at"),
+        "{plan}"
+    );
+    assert!(
+        plan.len() * 3 < pretty.len(),
+        "the text ({} bytes) is a fraction of the record ({} bytes)",
+        plan.len(),
+        pretty.len()
+    );
+
+    // Other tools read as text too: the tasks list is a line per task, named by number.
+    let tasks = agent_text(&internal, "tasks_list", json!({})).await?;
+    assert!(tasks.starts_with("You: #"), "{tasks}");
+    assert!(
+        tasks.contains("\n- #") && tasks.contains("task claude2 · running"),
+        "{tasks}"
+    );
+    assert!(!tasks.contains('{'), "{tasks}");
     Ok(())
 }

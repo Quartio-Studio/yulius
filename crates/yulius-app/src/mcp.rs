@@ -7,6 +7,7 @@ use yulius_contracts::mcp::{
     RpcRequest, RpcResponse, SUPPORTED_PROTOCOL_VERSIONS, ToolDescriptor, text_result,
 };
 use yulius_domain::ids::SandboxId;
+use yulius_domain::vault::redact::redact_text;
 
 use crate::context::App;
 use crate::coordination::{AgentContext, ProjectCaller};
@@ -186,12 +187,12 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "step_update".into(),
-            description: "Update one step (by step_id, ordinal or title). Mark a step in_progress when you start it and done the moment it is finished, one at a time (at most 2 in progress), so progress arrives steadily. A finished step stays finished: add a follow-up step with steps_set instead. blocked and skipped need a note saying why. Returns the steps, the progress and nudges.".into(),
+            description: "Update one step (by step_id, ordinal or title). Mark a step in_progress when you start it and done the moment it is finished, one at a time (at most 2 in progress), so progress arrives steadily. A finished step stays finished: add a follow-up step with steps_set instead. blocked and skipped need a note saying why. Answers with the step's new state, the progress, the next step and nudges (steps_get shows the whole plan).".into(),
             input_schema: schema(json!({"step_id": {"type": "string"}, "ordinal": {"type": "integer"}, "title": {"type": "string"}, "status": {"type": "string", "enum": ["pending", "in_progress", "done", "skipped", "blocked"]}, "note": {"type": "string"}}), &["status"]),
         },
         ToolDescriptor {
             name: "steps_get".into(),
-            description: "Get this task's steps, the effort-weighted progress (percent) and nudges about the plan and its pace.".into(),
+            description: "Get this task's plan as a checklist (ordinal, status, title, effort, note), the effort-weighted progress (percent) and nudges about the plan and its pace.".into(),
             input_schema: schema(json!({}), &[]),
         },
         ToolDescriptor {
@@ -201,8 +202,11 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "ci_status".into(),
-            description: "This project's CI, run by Yulius (the only CI; no GitHub Actions): the jobs in force and where they come from, the latest runs (this task's pull request first) and their state. With run_id, one run with the end of each job's output. A merge that requires checks waits until the latest run at the pull request head passed.".into(),
-            input_schema: schema(json!({"run_id": {"type": "string", "description": "A run id from the list, to read its jobs' output"}}), &[]),
+            description: "This project's CI, run by Yulius (the only CI; no GitHub Actions): the jobs in force and where they come from, the latest runs (this task's pull request first) and their state. With run_id, one run with the end of the output of each job that failed or errored; with run_id and job, that job's output whatever its state. A merge that requires checks waits until the latest run at the pull request head passed.".into(),
+            input_schema: schema(json!({
+                "run_id": {"type": "string", "description": "A run id from the list, to read its jobs' output"},
+                "job": {"type": "string", "description": "With run_id: the name of the job whose output to show"}
+            }), &[]),
         },
         ToolDescriptor {
             name: "ci_rerun".into(),
@@ -410,6 +414,12 @@ impl App {
             .get("arguments")
             .cloned()
             .unwrap_or_else(|| json!({}));
+        // A client that reads records rather than text asks for them (SPEC-086 TOL-005).
+        let structured = params
+            .get("_meta")
+            .and_then(|meta| meta.get(STRUCTURED_META))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let project = caller.project();
         let outcome: AppResult<Value> = match name {
             "tasks_list" => self.tool_tasks_list(&project, &args).await,
@@ -453,7 +463,8 @@ impl App {
                 },
             },
         };
-        self.tool_result(&project.sandbox, outcome).await
+        self.tool_result(&project.sandbox, name, &args, outcome, structured)
+            .await
     }
 
     /// A tool only a task's agent is served.
@@ -503,13 +514,26 @@ impl App {
         })
     }
 
-    /// The `tools/call` result of a tool's outcome: redacted and bounded.
-    async fn tool_result(&self, sandbox: &SandboxId, outcome: AppResult<Value>) -> Value {
+    /// The `tools/call` result of a tool's outcome: short text rendered from the tool's record
+    /// (SPEC-086), redacted and bounded; with `structured`, the record too.
+    async fn tool_result(
+        &self,
+        sandbox: &SandboxId,
+        name: &str,
+        args: &Value,
+        outcome: AppResult<Value>,
+        structured: bool,
+    ) -> Value {
         match outcome {
             Ok(value) => {
                 // No tool result carries an agent secret's value (SPEC-002 ADR-20): page text,
-                // messages, task prompts and everything else are redacted before the agent.
-                let text = serde_json::to_string_pretty(&value).unwrap_or_default();
+                // messages, task prompts and everything else are redacted before the agent. Each
+                // text of the record is redacted before rendering, which indents multi-line text
+                // and could split what the matcher looks for, and the rendered text again.
+                let Some(value) = self.redact_strings(sandbox, value).await else {
+                    return text_result(WITHHELD, false);
+                };
+                let text = crate::mcp_text::render(name, args, &value);
                 let mut text = self.redact_for_sandbox(sandbox, &text).await;
                 if text.len() > MAX_RESULT_BYTES {
                     let mut cut = MAX_RESULT_BYTES;
@@ -519,7 +543,13 @@ impl App {
                     text.truncate(cut);
                     text.push_str("\n…(truncated)");
                 }
-                text_result(text, false)
+                let mut result = text_result(text, false);
+                // Never by default: Claude Code gives the model a result's structuredContent
+                // instead of its text when both are present (ADR-0069).
+                if structured {
+                    result["structuredContent"] = structured_record(value);
+                }
+                result
             }
             Err(err) => text_result(
                 self.redact_for_sandbox(sandbox, &err.public_message())
@@ -527,6 +557,53 @@ impl App {
                 true,
             ),
         }
+    }
+
+    /// The record with every text in it redacted of the sandbox's agent secrets; `None` when
+    /// they could not be loaded.
+    async fn redact_strings(&self, sandbox: &SandboxId, value: Value) -> Option<Value> {
+        match self.agent_secret_matcher(sandbox).await {
+            Ok(matcher) => Some(map_strings(value, &|text| {
+                redact_text(matcher.as_ref(), text).0
+            })),
+            Err(err) => {
+                tracing::error!(error = %err, "agent secrets could not be loaded for redaction");
+                None
+            }
+        }
+    }
+}
+
+/// What a result says when its record could not be checked for agent secrets.
+const WITHHELD: &str = "[withheld: Yulius could not check this text for agent secrets]";
+
+/// A (redacted) record as `structuredContent`: an object, so another value is wrapped as
+/// `{"value": …}`, and one larger than [`MAX_RESULT_BYTES`] is withheld (results stay bounded).
+fn structured_record(value: Value) -> Value {
+    let record = match value {
+        Value::Object(_) => value,
+        other => json!({ "value": other }),
+    };
+    if serde_json::to_vec(&record).map_or(usize::MAX, |bytes| bytes.len()) > MAX_RESULT_BYTES {
+        return json!({ "withheld": "the record is larger than 256 KiB; its text is the result" });
+    }
+    record
+}
+
+/// The `tools/call` `_meta` key with which a client asks for each result's record as
+/// `structuredContent` besides its text (SPEC-086 TOL-005).
+pub const STRUCTURED_META: &str = "yulius/structured";
+
+fn map_strings(value: Value, f: &dyn Fn(&str) -> String) -> Value {
+    match value {
+        Value::String(text) => Value::String(f(&text)),
+        Value::Array(items) => Value::Array(items.into_iter().map(|v| map_strings(v, f)).collect()),
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(key, v)| (key, map_strings(v, f)))
+                .collect(),
+        ),
+        other => other,
     }
 }
 
