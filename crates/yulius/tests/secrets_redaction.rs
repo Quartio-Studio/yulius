@@ -206,14 +206,14 @@ async fn the_bash_wrapper_redacts_every_form_of_a_value() -> TestResult {
     let outside = scrub_exec(None, &work, "echo outside")?;
     assert_eq!(String::from_utf8_lossy(&outside.stdout), "outside\n");
 
-    // Agent commands run 5 nice levels below the agent (CI jobs keep the CPU first).
+    // Agent commands run 10 nice levels below the agent (CI jobs keep the CPU first).
     if Path::new("/usr/bin/nice").exists() {
         let level = |out: &[u8]| String::from_utf8_lossy(out).trim().parse::<i32>();
         // `ps` reads the niceness on Linux and macOS (BSD `nice` prints nothing on its own).
         let probe = "ps -o nice= -p $$";
         let own = level(&Command::new("/bin/sh").args(["-c", probe]).output()?.stdout)?;
         let wrapped = level(&scrub_exec(Some(&scrub), &work, probe)?.stdout)?;
-        assert_eq!(wrapped, (own + 5).min(19));
+        assert_eq!(wrapped, (own + 10).min(19));
     }
     Ok(())
 }

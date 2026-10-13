@@ -15,6 +15,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- Armed merges survive a server restart (a deploy no longer drops them) (SPEC-050 DLV-205).
 - Secrets are a title, a value and notes, and reading one needs your own two-factor code
   (SPEC-040, ADR-0034, task #39). The first reveal sets two-factor up: an authenticator key and
   link, confirmed by a first code. After that, a code unlocks the vault in that browser for 10
