@@ -173,6 +173,7 @@ async fn fixture_with(contained: bool, toml: impl Fn(&Path) -> String) -> BoxRes
             head_sha: head,
             mergeable: None,
             behind: false,
+            from_fork: false,
         });
     }
     let repo = data.join("sandboxes/s1/repo");
@@ -507,6 +508,7 @@ async fn hygiene_lists_and_cleans_up_stale_branches() -> TestResult {
             head_sha: git(&f.origin, &["rev-parse", "feat/closed"])?,
             mergeable: None,
             behind: false,
+            from_fork: false,
         });
     }
     let scan = f.post("/api/sandboxes/s1/hygiene/scan", None).await?;
