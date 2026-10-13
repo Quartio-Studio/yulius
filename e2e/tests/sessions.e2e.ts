@@ -135,6 +135,18 @@ test('a failed call is marked in the TUI’s error colour and says error', async
   // A deletion counts no added line.
   await expect(browser.locator('.ss-tui details.ss-tool > summary').filter({ hasText: 'Update(e2e/cart.spec.ts)' })).toContainText('Updated e2e/cart.spec.ts with 0 additions and 1 removal');
   await expect(browser.locator('.ss-tui .ss-diff[aria-label="Changes to e2e/cart.spec.ts"] .ss-add')).toHaveCount(0);
+  // A new file reads as the TUI's "Wrote N lines to path" (review round 2).
+  await expect(browser.locator('.ss-tui details.ss-tool > summary').filter({ hasText: 'Write(e2e/wait.ts)' })).toContainText(/⎿\s*Wrote 3 lines to e2e\/wait\.ts/);
+});
+
+// Review round 2: an edit whose result is not in the transcript (the session ended, or the result
+// is on the next page) claims nothing: it stays folded with no "Updated" line.
+test('an edit without its result yet claims no update', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/sessions/ses_task_12'));
+  const edit = browser.locator('.ss-tui details.ss-tool').filter({ hasText: 'Update(src/api/checkout.ts)' });
+  await expect(edit).toHaveCount(1);
+  await expect(edit).not.toHaveAttribute('open', '');
+  await expect(edit).not.toContainText('Updated src/api/checkout.ts');
 });
 
 // The attached screenshot printed `<command-name>/goal</command-name>…` raw. The TUI prints a

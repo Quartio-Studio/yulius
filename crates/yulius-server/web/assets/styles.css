@@ -2135,7 +2135,8 @@ button.task-group-head:hover { color: var(--text); }
 .ss-mark-prompt, .ss-mark-shell, .ss-mark-dim, .ss-mark-out, .ss-mark-think, .ss-mark-call { color: var(--session-dim); }
 .ss-mark-ok { color: var(--session-ok); }
 .ss-mark-err { color: var(--session-err); }
-.ss-prompt { padding: 2px 1ch; margin: 0 -1ch; border-radius: var(--radius-sm); background: var(--session-prompt-bg); }
+/* No bleeding margin: .ss-entry's content-visibility clips paint at its edge. */
+.ss-prompt { padding: 2px 1ch; border-radius: var(--radius-sm); background: var(--session-prompt-bg); }
 .ss-has-when .ss-prompt { padding-right: 16ch; }
 .ss-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .ss-code { margin: 0; padding: 4px 0 4px 1ch; border-left: 1px solid var(--session-border); color: var(--session-fg); font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 480px; overflow: auto; }

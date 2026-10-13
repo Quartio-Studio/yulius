@@ -2413,7 +2413,9 @@ function sessionDocs(db) {
     entry(6, 'user', [result('e1', '<tool_use_error>String to replace not found in file.\nString:   await page.waitForTimeout(5000);</tool_use_error>', true)]),
     entry(7, 'assistant', [call('e2', 'Edit', 'e2e/cart.spec.ts', { file_path: 'e2e/cart.spec.ts' }, { path: 'e2e/cart.spec.ts', hunks: [{ old: '  await page.waitForTimeout(250);', new: '' }] })]),
     entry(8, 'user', [result('e2', 'The file e2e/cart.spec.ts has been updated.')]),
-    entry(9, 'assistant', [text('The test sleeps 500 ms instead of waiting for the session cookie; on a slow runner the redirect is not done yet. Waiting for the dashboard heading fixes it.')]),
+    entry(9, 'assistant', [call('w1', 'Write', 'e2e/wait.ts', { file_path: 'e2e/wait.ts' }, { path: 'e2e/wait.ts', hunks: [{ old: '', new: 'export async function signedIn(page) {\n  await page.waitForURL(/dashboard/);\n}' }] })]),
+    entry(10, 'user', [result('w1', 'File created successfully at: e2e/wait.ts')]),
+    entry(11, 'assistant', [text('The test sleeps 500 ms instead of waiting for the session cookie; on a slow runner the redirect is not done yet. Waiting for the dashboard heading fixes it.')]),
   ];
   // Claude Code's wrappers as recorded (a slash command, its output, a `!` command, reminders).
   const meta = (t) => ({ type: 'meta', text: t });

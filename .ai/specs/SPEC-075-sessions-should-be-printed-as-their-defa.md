@@ -117,5 +117,11 @@ read-only: a locked prompt box, nothing to type into.
   so a tag mentioned in prose became a fake `!` line; it now reads only leading wrappers. A cut
   inside a closing tag, a deletion's phantom `+` line, two commands in one text and ANSI codes in
   command output are handled; typed commands carry their time; subagent entries are tested.
+- Review round 2 (fresh session): APPROVE at 0a61906 with minors, fixed test-first: an edit
+  without its result (session ended, or the result on the next page) claimed "Updated"; it now
+  claims nothing and stays folded. A Write reads "Wrote N lines to path". The prompt background
+  no longer bleeds past the entry (clipped by `content-visibility`). Hiding non-wrapper meta
+  notes (skill bodies, injected context) as the TUI does is follow-up #347: they were shown
+  before this change too.
 - The spider web is drawn by code from a small grid of square pixels in an inline SVG, so it
   needs no image file and takes the palette's colours in both themes.

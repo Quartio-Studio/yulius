@@ -214,9 +214,14 @@ function diffView(diff) {
     }));
 }
 
-/** What the TUI prints under a folded call's `⎿`: a summary of the edit or read, else the first lines of the result. */
+/**
+ * What the TUI prints under a folded call's `⎿`: a summary of an applied edit, write or read, else
+ * the first lines of the result. Without a result (the session ended, or it is on the next page)
+ * nothing is claimed.
+ */
 export function callPreview(call, result) {
-  if (call.diff && !(result && result.is_error)) {
+  if (!result) return [];
+  if (call.diff && !result.is_error) {
     let added = 0;
     let removed = 0;
     for (const hunk of call.diff.hunks) {
@@ -224,9 +229,9 @@ export function callPreview(call, result) {
       added += lines.added.length;
       removed += lines.removed.length;
     }
+    if (call.name === 'Write') return [`Wrote ${plural(added, 'line')} to ${call.diff.path}`];
     return [`Updated ${call.diff.path} with ${plural(added, 'addition')} and ${plural(removed, 'removal')}`];
   }
-  if (!result) return [];
   if (!result.text) return ['(No content)'];
   const lines = linesOf(result.text);
   if (call.name === 'Read' && !result.is_error) return [`Read ${plural(lines.length, 'line')}`];
@@ -294,8 +299,9 @@ const outLines = (lines, className) => tuiLine('⎿', h('span', { class: 'ss-out
 function toolCall(item, result) {
   const failed = Boolean(result && result.is_error);
   const preview = callPreview(item, result);
-  // An edit shows its lines unfolded; a failed one stays folded on why it failed (nothing changed).
-  const diff = item.diff && !failed ? item.diff : null;
+  // An applied edit shows its lines unfolded; a failed one stays folded on why it failed, and one
+  // without a result folded too: nothing says it was applied.
+  const diff = item.diff && result && !failed ? item.diff : null;
   return h('details', { class: ['ss-fold', 'ss-tool', failed && 'ss-tool-error'], open: Boolean(diff) },
     h('summary', null,
       tuiLine('⏺', h('span', { class: 'ss-call' },
