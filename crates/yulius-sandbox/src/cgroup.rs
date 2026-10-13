@@ -14,6 +14,8 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Where cgroup v2 is mounted.
 pub const CGROUP_ROOT: &str = "/sys/fs/cgroup";
@@ -26,7 +28,7 @@ const LEGACY_LEAF: &str = "legacy";
 /// The parent of sandbox groups.
 const SANDBOXES: &str = "sandboxes";
 /// A sandbox's leaves and their `cpu.weight` (SPEC-053 CPU-201): CI gets four times the agents'
-/// share, so 80 % of the sandbox under full contention while the holder idles.
+/// share, so up to 80 % of the sandbox under full contention while the holder idles.
 const LEAVES: [(&str, u32); 3] = [("system", 100), ("agents", 100), ("ci", 400)];
 
 /// Limits of one sandbox; `None` leaves a limit unset (`max`).
@@ -78,13 +80,24 @@ impl Limits {
 }
 
 /// The delegated subtree (the unit's cgroup directory).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Delegation {
     /// `<unit>` under [`CGROUP_ROOT`].
     pub unit: PathBuf,
     /// Controllers enabled for sandboxes.
     pub controllers: Vec<String>,
+    /// Set by [`Delegation::unsplit_all`]: a preparation racing the server's stop does not split
+    /// again (shared by clones).
+    stopping: Arc<AtomicBool>,
 }
+
+impl PartialEq for Delegation {
+    fn eq(&self, other: &Self) -> bool {
+        self.unit == other.unit && self.controllers == other.controllers
+    }
+}
+
+impl Eq for Delegation {}
 
 /// The cgroup path of this process from the text of `/proc/self/cgroup` (cgroup v2 line).
 #[must_use]
@@ -190,6 +203,7 @@ pub fn prepare(unit: &Path) -> io::Result<Delegation> {
     Ok(Delegation {
         unit: unit.to_path_buf(),
         controllers,
+        stopping: Arc::new(AtomicBool::new(false)),
     })
 }
 
@@ -255,6 +269,9 @@ impl Delegation {
         }
         // Joining a leaf works without the weights too; the next preparation tries again.
         // A failure that persists (a process that cannot be moved) logs at every preparation.
+        if self.stopping.load(Ordering::SeqCst) {
+            return Ok(groups);
+        }
         if let Err(error) = split_cpu(&dir, &groups) {
             tracing::warn!(sandbox, %error, "CI jobs run without CPU priority for now");
         }
@@ -266,6 +283,7 @@ impl Delegation {
     /// itself, which the kernel refuses while the group passes a controller down. Processes stay
     /// in their leaves; the next preparation splits again.
     pub fn unsplit_all(&self) {
+        self.stopping.store(true, Ordering::SeqCst);
         let Ok(entries) = std::fs::read_dir(self.unit.join(SANDBOXES)) else {
             return;
         };
@@ -504,7 +522,16 @@ mod tests {
             "-cpu"
         );
         assert!(!other.join("cgroup.subtree_control").exists());
-        delegation.sandbox_group("s1", &Limits::default())?;
+        // A run that starts while the server stops still gets its leaf, but no split again.
+        let groups = delegation.sandbox_group("s1", &Limits::default())?;
+        assert_eq!(groups.ci, dir.join("ci"));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("cgroup.subtree_control"))?,
+            "-cpu"
+        );
+        // The next server splits again.
+        let unit = dir.parent().and_then(Path::parent).ok_or("unit")?;
+        prepare(unit)?.sandbox_group("s1", &Limits::default())?;
         assert_eq!(
             std::fs::read_to_string(dir.join("cgroup.subtree_control"))?,
             "+cpu"

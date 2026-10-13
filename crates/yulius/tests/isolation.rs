@@ -718,6 +718,9 @@ async fn isolation_limits() -> TestResult {
             Some("agents"),
             "a stray moves to agents/: {stray_group}"
         );
+        // Gone before `agents/` is checked for the shell below.
+        stray.kill()?;
+        stray.wait()?;
         assert_eq!(
             std::fs::read_to_string(group.join("pids.max"))?.trim(),
             "64"
@@ -798,10 +801,7 @@ async fn isolation_limits() -> TestResult {
         eprintln!("memory.max 256 MiB: {} oom_kill={kills}", out.trim());
         Ok::<_, Box<dyn std::error::Error>>(())
     };
-    let result = guarded(&iso, body).await;
-    let _ = stray.kill();
-    let _ = stray.wait();
-    result
+    guarded(&iso, body).await
 }
 
 /// A sandbox over its disk quota starts no new runs; the message names the figures.
