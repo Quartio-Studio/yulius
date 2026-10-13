@@ -128,6 +128,6 @@ read-only: a locked prompt box, nothing to type into.
   entry clipped the folded call's outset focus ring (WCAG 2.4.7) and the search target's ring.
   Fixed test-first: both are inset, drawn in the entry's 1ch side padding, which also lines the
   prompt's `>` up with `⏺` again. Minor, filed: an edit the server cut short (16K per side, 20
-  hunks, unmarked) is counted short; it needs a server-side "truncated" flag.
+  hunks, unmarked) is counted short; it needs a server-side "truncated" flag (#350).
 - The spider web is drawn by code from a small grid of square pixels in an inline SVG, so it
   needs no image file and takes the palette's colours in both themes.
