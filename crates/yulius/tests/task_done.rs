@@ -1179,8 +1179,34 @@ fn a_done_task_can_be_deleted_its_session_is_closed_first() -> TestResult {
 }
 
 /// The real process host, except that asking a run to shut down never completes (a host that
-/// stopped reading its socket).
-struct StuckShutdownHost(PtySessionHost);
+/// stopped reading its socket) and, with `survivor`, its agent outlives termination: only the
+/// host (`survivor_host`, its pid) is killed, `terminate` fails and the run reads as an agent
+/// still alive without its host.
+#[derive(Default)]
+struct StuckHost {
+    inner: Option<PtySessionHost>,
+    survivor: bool,
+    survivor_host: std::sync::atomic::AtomicU32,
+    killed: std::sync::atomic::AtomicBool,
+    terminations: std::sync::atomic::AtomicU32,
+}
+
+impl StuckHost {
+    fn new(survivor: bool) -> Self {
+        let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
+        Self {
+            inner: Some(PtySessionHost::new(exe)),
+            survivor,
+            ..Self::default()
+        }
+    }
+
+    fn inner(&self) -> yulius_app::error::AppResult<&PtySessionHost> {
+        self.inner
+            .as_ref()
+            .ok_or_else(|| yulius_app::error::AppError::Upstream("no host".into()))
+    }
+}
 
 struct StuckShutdownWriter(Box<dyn yulius_app::ports::session::RunWriter>);
 
@@ -1204,7 +1230,7 @@ impl yulius_app::ports::session::RunWriter for StuckShutdownWriter {
 }
 
 #[async_trait::async_trait]
-impl SessionHost for StuckShutdownHost {
+impl SessionHost for StuckHost {
     async fn spawn(
         &self,
         run_dir: &Path,
@@ -1214,7 +1240,7 @@ impl SessionHost for StuckShutdownHost {
         token: &[u8; 32],
         size: (u16, u16),
     ) -> yulius_app::error::AppResult<yulius_app::ports::session::SpawnedRun> {
-        self.0
+        self.inner()?
             .spawn(run_dir, attempt_id, task_id, plan, token, size)
             .await
     }
@@ -1223,16 +1249,141 @@ impl SessionHost for StuckShutdownHost {
         run_dir: &Path,
         token: &[u8; 32],
     ) -> yulius_app::error::AppResult<yulius_app::ports::session::AttachedRun> {
-        let mut run = self.0.attach(run_dir, token).await?;
+        let mut run = self.inner()?.attach(run_dir, token).await?;
         run.writer = Box::new(StuckShutdownWriter(run.writer));
         Ok(run)
     }
     fn inspect(&self, run_dir: &Path) -> yulius_app::ports::session::RunInspection {
-        self.0.inspect(run_dir)
+        if self.killed.load(std::sync::atomic::Ordering::SeqCst) {
+            return yulius_app::ports::session::RunInspection::Recorded {
+                host_alive: false,
+                child_alive: true,
+                same_boot: true,
+            };
+        }
+        self.inner().map_or(
+            yulius_app::ports::session::RunInspection::Missing,
+            |inner| inner.inspect(run_dir),
+        )
     }
     fn terminate(&self, run_dir: &Path) -> yulius_app::error::AppResult<()> {
-        self.0.terminate(run_dir)
+        self.terminations
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if !self.survivor {
+            return self.inner()?.terminate(run_dir);
+        }
+        self.killed.store(true, std::sync::atomic::Ordering::SeqCst);
+        let host = self.survivor_host.load(std::sync::atomic::Ordering::SeqCst);
+        if let Ok(pid) = i32::try_from(host)
+            && pid > 0
+        {
+            let _ = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(pid),
+                nix::sys::signal::Signal::SIGKILL,
+            );
+        }
+        Err(yulius_app::error::AppError::Upstream(
+            "process 4242 still alive after SIGKILL".into(),
+        ))
     }
+}
+
+/// Whether process `pid` is gone: no longer there, or a zombie waiting to be reaped.
+fn process_gone(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or(true, |stat| {
+        stat.rsplit_once(')')
+            .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z'))
+    })
+}
+
+/// A running goal task on `host` (escalation 300 ms), its auth context and its live run.
+async fn running_task(
+    data: &Path,
+    fake: &Path,
+    host: Arc<StuckHost>,
+) -> Result<
+    (
+        Arc<App>,
+        yulius_app::auth::AuthContext,
+        TaskId,
+        yulius_app::model::AttemptRecord,
+    ),
+    BoxError,
+> {
+    let (app, _) = start_on(data, fake, FakeAgentOptions::default(), 0, host, Some(300)).await?;
+    let (sandbox, user) = seed(&app, data).await?;
+    let ctx = yulius_app::auth::AuthContext {
+        user: app.deps.store.user(&user).await?.ok_or("user")?,
+        csrf_token: None,
+        session_hash: None,
+    };
+    let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
+    wait_for("the session", Duration::from_secs(60), || async {
+        app.deps
+            .store
+            .live_attempt(&id)
+            .await
+            .is_ok_and(|a| a.is_some_and(|a| a.child_pid.is_some()))
+            // Output arrives once Yulius is attached to the run (it holds its writer).
+            && !app.runtime(&id).hub.screen_text().trim().is_empty()
+    })
+    .await?;
+    let attempt = app
+        .deps
+        .store
+        .live_attempt(&id)
+        .await?
+        .ok_or("no live run")?;
+    Ok((app, ctx, id, attempt))
+}
+
+/// SPEC-065 END-001 (#284, review): when the agent survives termination but its host is gone,
+/// the connection to the run is lost; the run is still not recorded as ended, so the task stays
+/// undeletable.
+#[test]
+fn a_run_whose_agent_survives_termination_is_not_ended_when_its_connection_is_lost() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let host = Arc::new(StuckHost::new(true));
+        let (app, ctx, id, attempt) = running_task(&data, &fake, host.clone()).await?;
+        host.survivor_host.store(
+            attempt.ptyhost_pid.ok_or("no host pid")?,
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        app.stop_task_now(&id).await?;
+        // The escalation's terminate, then the lost connection's.
+        wait_for(
+            "the second termination",
+            Duration::from_secs(20),
+            || async { host.terminations.load(std::sync::atomic::Ordering::SeqCst) >= 2 },
+        )
+        .await?;
+        assert!(
+            app.deps.store.live_attempt(&id).await?.is_some(),
+            "the run is not recorded as ended"
+        );
+        let refused = app.delete_task(&ctx, id.as_str()).await;
+        assert!(
+            matches!(refused, Err(yulius_app::error::AppError::Conflict(_))),
+            "{refused:?}"
+        );
+        assert!(
+            app.deps.store.task(&id).await?.is_some(),
+            "nothing is deleted"
+        );
+        // What remains of the run goes with the test.
+        if let Some(pid) = attempt.child_pid.and_then(|p| i32::try_from(p).ok()) {
+            let _ = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(-pid),
+                nix::sys::signal::Signal::SIGKILL,
+            );
+        }
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
 }
 
 /// SPEC-065 END-005 and END-003 (#290, #285): a run whose host never takes the shutdown request
@@ -1246,40 +1397,8 @@ fn a_close_whose_shutdown_blocks_still_ends_the_run_and_its_successor_sees_one_o
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
-        let host = Arc::new(StuckShutdownHost(PtySessionHost::new(exe)));
-        let (app, _) = start_on(
-            &data,
-            &fake,
-            FakeAgentOptions::default(),
-            0,
-            host,
-            Some(300),
-        )
-        .await?;
-        let (sandbox, user) = seed(&app, &data).await?;
-        let ctx = yulius_app::auth::AuthContext {
-            user: app.deps.store.user(&user).await?.ok_or("user")?,
-            csrf_token: None,
-            session_hash: None,
-        };
-        let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
-        wait_for("the session", Duration::from_secs(60), || async {
-            app.deps
-                .store
-                .live_attempt(&id)
-                .await
-                .is_ok_and(|a| a.is_some_and(|a| a.child_pid.is_some()))
-                // Output arrives once Yulius is attached to the run (it holds its writer).
-                && !app.runtime(&id).hub.screen_text().trim().is_empty()
-        })
-        .await?;
-        let attempt = app
-            .deps
-            .store
-            .live_attempt(&id)
-            .await?
-            .ok_or("no live run")?;
+        let (app, ctx, id, attempt) =
+            running_task(&data, &fake, Arc::new(StuckHost::new(false))).await?;
         let agent_pid = attempt.child_pid.ok_or("no agent pid")?;
         let before = task(&app, &id).await?;
 
@@ -1318,11 +1437,7 @@ fn a_close_whose_shutdown_blocks_still_ends_the_run_and_its_successor_sees_one_o
             app.deps.store.live_attempt(&id).await?.is_none(),
             "the run ended"
         );
-        assert!(
-            nix::sys::signal::kill(nix::unistd::Pid::from_raw(i32::try_from(agent_pid)?), None)
-                .is_err(),
-            "the agent process is gone"
-        );
+        assert!(process_gone(agent_pid), "the agent process is gone");
         let decided = chain().await.ok_or("the waiting task has no outcome yet")?;
         assert!(
             decided.starts_with(&format!("#{} ", before.number)),

@@ -136,11 +136,13 @@ test('deleting a Done task says so while it runs and sends one request', async (
   expect(await requests()).toBe(1);
 });
 
-test('a task being stopped says Stopping… on its Delete item', async ({ app, browser, screen }) => {
+test('a task being stopped says Stopping… on its Delete item and can be stopped again', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   await touchTask(browser, 12, { status: 'stopping', activity: null });
   await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
   const item = screen.getByRole('menuitem', /^Delete permanently/);
   await expect(item).toHaveAttribute('aria-disabled', 'true');
   await expect(item).toHaveText(/Stopping…/);
+  // A stop whose session could not be ended is retried from the same menu (SPEC-065).
+  await expect(screen.getByRole('menuitem', /^Stop/)).not.toHaveAttribute('aria-disabled', 'true');
 });

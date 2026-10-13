@@ -1562,27 +1562,37 @@ impl App {
         };
         match self.deps.session_host.inspect(Path::new(&attempt.run_dir)) {
             RunInspection::Exited(exit) => self.finalize_attempt(task_id, attempt_id, exit).await,
+            // The host or the agent may still run (an agent that outlived its killed host).
             RunInspection::Recorded {
-                host_alive: true, ..
-            } => self.terminate_then_mark_lost(task_id, &attempt).await,
+                host_alive,
+                child_alive,
+                ..
+            } if host_alive || child_alive => {
+                self.terminate_then_mark_lost(task_id, &attempt, StopReason::Lost)
+                    .await;
+            }
             _ => self.mark_lost(task_id, attempt_id, StopReason::Lost).await,
         }
     }
 
-    /// Ends a run that did not exit after its stop or close escalation, or whose host lives on
-    /// after the connection to it was lost: the host and agent are killed, and only once they are
-    /// proven gone is the run recorded as lost (AGENTS.md: a timeout is not proof a subprocess
-    /// died). When they cannot be killed the run stays live, which keeps the task from being
-    /// deleted; the failure is logged, said in the task's terminal and flags a running task for a
-    /// person (SPEC-065 END-001). A run whose reader is still attached is finalized by it once its
-    /// processes go; stopping again retries.
-    async fn terminate_then_mark_lost(self: &Arc<Self>, task_id: &TaskId, attempt: &AttemptRecord) {
+    /// Ends a run that did not exit after its stop or close escalation, or whose host or agent
+    /// lives on after the connection to it was lost or the server restarted: the host and agent
+    /// are killed, and only once they are proven gone is the run recorded as lost (AGENTS.md: a
+    /// timeout is not proof a subprocess died). When they cannot be killed the run stays live,
+    /// which keeps the task from being deleted; the failure is logged, said in the task's terminal
+    /// and flags a running task for a person (SPEC-065 END-001). Stopping the task again retries.
+    async fn terminate_then_mark_lost(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        attempt: &AttemptRecord,
+        reason: StopReason,
+    ) {
         let Err(err) = self
             .deps
             .session_host
             .terminate(Path::new(&attempt.run_dir))
         else {
-            self.mark_lost(task_id, &attempt.id, StopReason::Lost).await;
+            self.mark_lost(task_id, &attempt.id, reason).await;
             return;
         };
         tracing::warn!(task = %task_id, error = %err, "the run's host could not be terminated; the run stays live");
@@ -1592,7 +1602,7 @@ impl App {
         }
         runtime.hub.notice(format!(
             "Yulius could not end this session ({err}). It still counts as running, so the task \
-             cannot be deleted; it ends once its processes are gone, or when it is stopped again."
+             cannot be deleted. Stop the task again to retry."
         ));
         if let Ok(Some(task)) = self.deps.store.task(task_id).await
             && let Err(err) = self
@@ -1601,7 +1611,6 @@ impl App {
         {
             tracing::warn!(task = %task_id, error = %err, "could not flag the task");
         }
-        self.publish_task(task_id).await;
     }
 
     async fn mark_lost(
@@ -1619,11 +1628,21 @@ impl App {
             exit_reason: Some("lost".into()),
             ..AttemptUpdate::default()
         };
-        let _ = self
+        let first = self
             .deps
             .store
             .transition_attempt(attempt_id, AttemptState::Lost, &update)
-            .await;
+            .await
+            .unwrap_or(false);
+        if !first {
+            return; // another observer already recorded the outcome
+        }
+        if let Some(rt) = &runtime
+            && let Ok(mut intent) = rt.intent.lock()
+        {
+            // No exit will consume it: the next run must not inherit it.
+            *intent = None;
+        }
         if let Ok(Some(task)) = self.deps.store.task(task_id).await
             && let Ok(next) = task.status.apply(TaskEvent::Lost(reason))
         {
@@ -1988,7 +2007,8 @@ impl App {
                 && live.id == attempt
             {
                 tracing::warn!(task = %tid, "run did not exit after escalation; terminating host");
-                app.terminate_then_mark_lost(&tid, &live).await;
+                app.terminate_then_mark_lost(&tid, &live, StopReason::Lost)
+                    .await;
             }
         });
     }
@@ -2019,8 +2039,12 @@ impl App {
             self.advance_chains(task_id).await;
             return Ok(());
         }
-        // A task already stopping is stopped again: its escalation is armed anew (SPEC-065).
+        // A task already stopping is stopped again: its escalation is armed anew (SPEC-065). One
+        // whose run has ended is about to rest: nothing would consume a new intent.
         let next = if task.status == TaskStatus::Stopping {
+            if store.live_attempt(task_id).await?.is_none() {
+                return Ok(());
+            }
             TaskStatus::Stopping
         } else {
             task.status
@@ -2432,13 +2456,19 @@ impl App {
                     self.finalize_attempt(&attempt.task_id, &attempt.id, exit)
                         .await
                 }
-                RunInspection::Recorded { host_alive, .. } => {
-                    if host_alive {
-                        let _ = self
-                            .deps
-                            .session_host
-                            .terminate(Path::new(&attempt.run_dir));
-                    }
+                RunInspection::Recorded {
+                    host_alive,
+                    child_alive,
+                    ..
+                } if host_alive || child_alive => {
+                    self.terminate_then_mark_lost(
+                        &attempt.task_id,
+                        &attempt,
+                        StopReason::ServerLost,
+                    )
+                    .await;
+                }
+                RunInspection::Recorded { .. } => {
                     self.mark_lost(&attempt.task_id, &attempt.id, StopReason::ServerLost)
                         .await;
                 }

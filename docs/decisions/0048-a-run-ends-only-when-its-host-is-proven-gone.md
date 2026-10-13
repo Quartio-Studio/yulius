@@ -17,11 +17,15 @@ finalization still advanced the chains that the deletion was about to change.
 
 ## Decision
 
-- The run is recorded as lost only when `terminate` succeeds. When it fails the run stays live:
-  the failure is logged, said in the task's terminal, and a running task needs attention. The
-  run's reader, still attached, records the run's end once its processes go; stopping the task
-  again re-arms the escalation. A close for deletion answers 409 "the task's session could not
-  be ended" at once and deletes nothing.
+- The run is recorded as lost only when `terminate` succeeds: after a stop or close escalation,
+  when the connection to a run whose host or agent still lives is lost, and when a restarted
+  server finds such a run it cannot reattach. When `terminate` fails the run stays live: the
+  failure is logged, said in the task's terminal, and a running task needs attention. Stopping
+  the task again (also a `stopping` one, from its menu) re-arms the escalation; a run whose
+  host is still attached is also recorded when it exits by itself. A close for deletion
+  answers 409 "the task's session could not be ended" at once and deletes nothing. Only the
+  first observer of a run's end records it (`mark_lost` as `finalize_attempt`), and it clears
+  the end intent so the next run does not inherit it.
 - Each task counts the run endings being recorded (`finalize_attempt`, `mark_lost`) in a
   `tokio::sync::watch`: raised before the attempt is marked ended, lowered when its chains and
   queue work is done. A close for deletion succeeds only when the task rests, has no live
@@ -53,4 +57,6 @@ finalization still advanced the chains that the deletion was about to change.
 - A run whose processes cannot be killed keeps its session slot and blocks its task's deletion
   until they are gone; the task says why.
 - Deleting a Done task returns after its chained successors have their outcome, so they see one.
-- A stopping task can be stopped again through the API, which re-arms the escalation.
+- A stopping task can be stopped again, from its menu or the API, which re-arms the escalation.
+- An account or provider switch that times out still records the old run as lost without
+  checking the termination; that path is left for a follow-up (noted on #284).
