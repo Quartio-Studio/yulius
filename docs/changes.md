@@ -13,6 +13,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   choice. After a task that has ended, the task waits for the rule `#N done` instead of failing.
   The sentence and the list row name the choice, and a waiting task keeps the next runs skipped.
   Schema version 19.
+- Home's cards and the sandbox tabs count "working" and "queued" by the sidebar's rule (SPEC-076,
+  ADR-0061, task #62; #170). One domain rule (`AttentionFacts::group`) gives each task its sidebar
+  group: "queued" counts queued and chained tasks, "working" the rest of the Working group
+  (running, starting, continuing, paused, in review), so a card's working + queued is the
+  sidebar's Working count. A Done task or one being stopped counts in neither, and a task being
+  stopped no longer counts as needing you.
+
 - Resuming after a usage limit is safe in three more cases (SPEC-072, ADR-0058, task #57; #276,
   #277, #278):
   - Claude Code sometimes continues a turn by itself at the reset. Its first agent work or turn end
