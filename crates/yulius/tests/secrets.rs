@@ -415,6 +415,362 @@ async fn two_factor_is_set_up_once_and_unlocks_the_vault() -> TestResult {
     Ok(())
 }
 
+/// #295 (SPEC-061 AC2): seed B is set up in another tab while a code of pending seed A is being
+/// checked (forced between the check and the accept). The code is refused, B stays pending, and
+/// only a code of B confirms it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_code_confirms_only_the_seed_it_was_checked_against() -> TestResult {
+    let crypto = Arc::new(support::HookedCrypto::new()?);
+    let h = support::harness_with(support::HarnessOptions {
+        crypto: Some(crypto.clone()),
+        ..support::HarnessOptions::default()
+    })?;
+    let admin = setup_superadmin_creds(&h).await?;
+    let first = call(
+        &h.router,
+        Method::POST,
+        "/api/auth/two-factor",
+        None,
+        &admin,
+    )
+    .await?;
+    assert_eq!(first.status, StatusCode::CREATED, "{}", first.body);
+    let seed_a = first.body["secret"].as_str().ok_or("secret")?.to_owned();
+
+    let seed_b = Arc::new(std::sync::Mutex::new(None::<String>));
+    let (router, creds, out) = (h.router.clone(), admin.clone(), seed_b.clone());
+    *crypto.on_seed_open.lock().map_err(|_| "hook")? = Some(Box::new(move || {
+        let setup = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(call(
+                &router,
+                Method::POST,
+                "/api/auth/two-factor",
+                None,
+                &creds,
+            ))
+        });
+        if let Ok(setup) = setup
+            && setup.status == StatusCode::CREATED
+            && let Ok(mut out) = out.lock()
+        {
+            *out = setup.body["secret"].as_str().map(str::to_owned);
+        }
+    }));
+    let refused = unlock(&h, &admin, &code_at(&h, &seed_a, 0)?).await?;
+    let seed_b = seed_b
+        .lock()
+        .map_err(|_| "seed B")?
+        .clone()
+        .ok_or("seed B was not set up meanwhile")?;
+    assert_ne!(seed_a, seed_b);
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    assert!(
+        refused.body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("set up again")),
+        "{}",
+        refused.body
+    );
+    let status = call(&h.router, Method::GET, "/api/auth/reauth", None, &admin).await?;
+    assert_eq!(status.body["two_factor"], "pending", "{}", status.body);
+    assert_eq!(status.body["fresh"], false);
+    // Not a wrong code (it does not count toward the lockout), but audited as a failed unlock.
+    {
+        use yulius_app::ports::store::UserStore as _;
+        use yulius_app::ports::vault::VaultStore as _;
+        let me = h.store.superadmin().await?.ok_or("superadmin")?;
+        let record = h
+            .store
+            .vault_two_factor(me.id.as_str())
+            .await?
+            .ok_or("seed")?;
+        assert_eq!(record.failed_attempts, 0);
+    }
+    let activity = call(
+        &h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &admin,
+    )
+    .await?;
+    assert!(
+        activity
+            .body
+            .as_array()
+            .is_some_and(|a| a.iter().any(|e| e["action"] == "vault.unlock.failed")),
+        "{}",
+        activity.body
+    );
+
+    let confirmed = unlock(&h, &admin, &code_at(&h, &seed_b, 0)?).await?;
+    assert_eq!(confirmed.status, StatusCode::OK, "{}", confirmed.body);
+    assert_eq!(confirmed.body["two_factor"], "on");
+    Ok(())
+}
+
+/// The id of the admitted user `login`.
+async fn user_id(
+    h: &support::Harness,
+    superadmin: &Creds,
+    login: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let users = call(&h.router, Method::GET, "/api/admin/users", None, superadmin).await?;
+    Ok(users
+        .body
+        .as_array()
+        .ok_or("users")?
+        .iter()
+        .find(|u| u["github_login"] == login)
+        .and_then(|u| u["id"].as_str())
+        .ok_or("no such user")?
+        .to_owned())
+}
+
+async fn reset(
+    h: &support::Harness,
+    creds: &Creds,
+    user: &str,
+) -> Result<support::Resp, Box<dyn std::error::Error>> {
+    call(
+        &h.router,
+        Method::DELETE,
+        &format!("/api/users/{user}/two-factor"),
+        None,
+        creds,
+    )
+    .await
+}
+
+/// #291 (SPEC-061 AC3, AC4): the superadmin and instance administrators reset a member's lost
+/// two-factor after their own unlock; members, API tokens, locked vaults and self-resets are
+/// refused. The member then sets two-factor up again, and the old seed's codes are refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn administrators_reset_a_lost_two_factor() -> TestResult {
+    use yulius_app::ports::vault::VaultStore as _;
+    let crypto = Arc::new(support::HookedCrypto::new()?);
+    let h = support::harness_with(support::HarnessOptions {
+        crypto: Some(crypto.clone()),
+        ..support::HarnessOptions::default()
+    })?;
+    let admin = setup_superadmin_creds(&h).await?;
+    configure_github_app(&h).await?;
+    let anna = admit_and_sign_in(&h, &admin, "anna", 501, false).await?;
+    let olga = admit_and_sign_in(&h, &admin, "olga", 502, true).await?;
+    let bob = admit_and_sign_in(&h, &admin, "bob", 503, false).await?;
+    let ivan_token = support::user_with_token(&h, "u-ivan", "ivan", true).await?;
+    let anna_id = user_id(&h, &admin, "anna").await?;
+    let bob_id = user_id(&h, &admin, "bob").await?;
+    let old_seed = enroll(&h, &anna).await?;
+    let anna_status = |creds: Creds| {
+        let router = h.router.clone();
+        async move { call(&router, Method::GET, "/api/auth/reauth", None, &creds).await }
+    };
+
+    // Refusals change nothing (AC4).
+    let member = reset(&h, &bob, &anna_id).await?;
+    assert_eq!(member.status, StatusCode::FORBIDDEN, "{}", member.body);
+    let token = reset(&h, &ivan_token, &anna_id).await?;
+    assert_eq!(token.status, StatusCode::FORBIDDEN, "{}", token.body);
+    assert!(
+        token.body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("reset only from the web UI")),
+        "{}",
+        token.body
+    );
+    let token = reset(&h, &superadmin_bearer(&h).await?, &anna_id).await?;
+    assert_eq!(token.status, StatusCode::FORBIDDEN, "{}", token.body);
+    let locked = reset(&h, &olga, &anna_id).await?;
+    assert_eq!(locked.status, StatusCode::FORBIDDEN, "{}", locked.body);
+    assert_eq!(locked.body["error"]["code"], "reauth_required");
+    assert_eq!(locked.body["reauth"]["two_factor"], "missing");
+    // Your own two-factor is refused before any code is asked for.
+    let me = call(&h.router, Method::GET, "/api/me", None, &admin).await?;
+    let own = me.body["user"]["id"].as_str().ok_or("own id")?;
+    let own = reset(&h, &admin, own).await?;
+    assert_eq!(own.status, StatusCode::FORBIDDEN, "{}", own.body);
+    assert_eq!(own.body["error"]["code"], "forbidden", "{}", own.body);
+    enroll(&h, &admin).await?;
+    let unknown = reset(&h, &admin, "u-nobody").await?;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND, "{}", unknown.body);
+    let kept = anna_status(anna.clone()).await?;
+    assert_eq!(
+        (&kept.body["two_factor"], &kept.body["fresh"]),
+        (&json!("on"), &json!(true))
+    );
+
+    // The superadmin resets it: the seed and Anna's unlock are gone (AC3).
+    let done = reset(&h, &admin, &anna_id).await?;
+    assert_eq!(done.status, StatusCode::NO_CONTENT, "{}", done.body);
+    let after = anna_status(anna.clone()).await?;
+    assert_eq!(
+        (&after.body["two_factor"], &after.body["fresh"]),
+        (&json!("missing"), &json!(false))
+    );
+    let old = unlock(&h, &anna, &code_at(&h, &old_seed, 0)?).await?;
+    assert_eq!(old.status, StatusCode::UNPROCESSABLE_ENTITY, "{}", old.body);
+    // An unlock that passed its code just before the reset and stores the unlock just after it
+    // (review of SPEC-061) opens nothing: without a confirmed seed the vault stays locked.
+    let anna_session = h
+        .app
+        .deps
+        .crypto
+        .sha256_hex(anna.cookie.as_deref().ok_or("cookie")?.as_bytes());
+    h.store.vault_set_unlock(&anna_session, h.app.now()).await?;
+    let raced = anna_status(anna.clone()).await?;
+    assert_eq!(raced.body["fresh"], false, "{}", raced.body);
+    let secret = create_team_secret(&h, &admin).await?;
+    let reveal = call(
+        &h.router,
+        Method::POST,
+        &format!("/api/team-secrets/{secret}/reveal"),
+        None,
+        &anna,
+    )
+    .await?;
+    assert_eq!(
+        reveal.body["error"]["code"], "reauth_required",
+        "{}",
+        reveal.body
+    );
+    assert_hidden(&reveal.body, &[MAIL_PASSWORD]);
+    // Nor does it once a new pending seed is locked by ten wrong codes (confirmation review).
+    h.clock.0.fetch_add(61_000, Ordering::SeqCst);
+    let setup = call(&h.router, Method::POST, "/api/auth/two-factor", None, &anna).await?;
+    assert_eq!(setup.status, StatusCode::CREATED, "{}", setup.body);
+    let wrong = wrong_code(&h, setup.body["secret"].as_str().ok_or("secret")?)?;
+    for _ in 0..2 {
+        for _ in 0..5 {
+            let refused = unlock(&h, &anna, &wrong).await?;
+            assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+        }
+        h.clock.0.fetch_add(61_000, Ordering::SeqCst);
+    }
+    let locked_pending = anna_status(anna.clone()).await?;
+    assert_eq!(
+        (
+            &locked_pending.body["two_factor"],
+            &locked_pending.body["fresh"]
+        ),
+        (&json!("locked"), &json!(false)),
+        "{}",
+        locked_pending.body
+    );
+    // Nothing set up: nothing to reset, and nothing audited.
+    let none = reset(&h, &admin, &bob_id).await?;
+    assert_eq!(none.status, StatusCode::NO_CONTENT, "{}", none.body);
+
+    // Anna sets up a new key; a code of the old one is refused. An instance administrator,
+    // after their own unlock, resets it again.
+    let new_seed = enroll(&h, &anna).await?;
+    assert_ne!(new_seed, old_seed);
+    h.clock.0.fetch_add(31_000, Ordering::SeqCst);
+    let stale = unlock(&h, &anna, &code_at(&h, &old_seed, 0)?).await?;
+    assert_eq!(stale.status, StatusCode::FORBIDDEN, "{}", stale.body);
+    enroll(&h, &olga).await?;
+    let by_admin = reset(&h, &olga, &anna_id).await?;
+    assert_eq!(by_admin.status, StatusCode::NO_CONTENT, "{}", by_admin.body);
+    let after = anna_status(anna.clone()).await?;
+    assert_eq!(after.body["two_factor"], "missing");
+
+    // Both resets are in the trail every member sees, naming who reset whom, without seeds.
+    let activity = call(&h.router, Method::GET, "/api/secrets/activity", None, &bob).await?;
+    let resets: Vec<(&str, &str)> = activity
+        .body
+        .as_array()
+        .ok_or("activity")?
+        .iter()
+        .filter(|e| e["action"] == "vault.2fa.reset")
+        .filter_map(|e| Some((e["actor"].as_str()?, e["detail"].as_str()?)))
+        .collect();
+    assert_eq!(resets, vec![("olga", "anna"), ("superadmin", "anna")]);
+    assert_hidden(&activity.body, &[&old_seed, &new_seed]);
+
+    // A reset that lands while Anna's code is being checked: the code is refused, saying so.
+    h.clock.0.fetch_add(61_000, Ordering::SeqCst);
+    let setup = call(&h.router, Method::POST, "/api/auth/two-factor", None, &anna).await?;
+    assert_eq!(setup.status, StatusCode::CREATED, "{}", setup.body);
+    let pending_seed = setup.body["secret"].as_str().ok_or("secret")?.to_owned();
+    let (router, creds, target) = (h.router.clone(), olga.clone(), anna_id.clone());
+    *crypto.on_seed_open.lock().map_err(|_| "hook")? = Some(Box::new(move || {
+        let _ = tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(call(
+                &router,
+                Method::DELETE,
+                &format!("/api/users/{target}/two-factor"),
+                None,
+                &creds,
+            ))
+        });
+    }));
+    let refused = unlock(&h, &anna, &code_at(&h, &pending_seed, 0)?).await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    assert!(
+        refused.body["error"]["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("was reset")),
+        "{}",
+        refused.body
+    );
+    assert_eq!(
+        anna_status(anna.clone()).await?.body["two_factor"],
+        "missing"
+    );
+    Ok(())
+}
+
+/// #291 (SPEC-061 AC5): instance administrators read the people and their two-factor state, to
+/// reset it from the Users page; changing users stays the superadmin's.
+#[tokio::test]
+async fn instance_administrators_see_the_people_and_their_two_factor() -> TestResult {
+    let h = support::harness()?;
+    let admin = setup_superadmin_creds(&h).await?;
+    configure_github_app(&h).await?;
+    let anna = admit_and_sign_in(&h, &admin, "anna", 501, false).await?;
+    let olga = admit_and_sign_in(&h, &admin, "olga", 502, true).await?;
+    let bob = admit_and_sign_in(&h, &admin, "bob", 503, false).await?;
+    enroll(&h, &anna).await?;
+    let pending = call(&h.router, Method::POST, "/api/auth/two-factor", None, &bob).await?;
+    assert_eq!(pending.status, StatusCode::CREATED, "{}", pending.body);
+
+    let listed = call(&h.router, Method::GET, "/api/admin/users", None, &olga).await?;
+    assert_eq!(listed.status, StatusCode::OK, "{}", listed.body);
+    let states: Vec<(&str, &str)> = listed
+        .body
+        .as_array()
+        .ok_or("users")?
+        .iter()
+        .filter_map(|u| Some((u["github_login"].as_str()?, u["two_factor"].as_str()?)))
+        .collect();
+    for expected in [("anna", "on"), ("bob", "pending"), ("olga", "missing")] {
+        assert!(states.contains(&expected), "{expected:?} not in {states:?}");
+    }
+    assert_hidden(&listed.body, &["secret", "ciphertext"]);
+    let member = call(&h.router, Method::GET, "/api/admin/users", None, &bob).await?;
+    assert_eq!(member.status, StatusCode::FORBIDDEN);
+    let admit = call(
+        &h.router,
+        Method::POST,
+        "/api/admin/users",
+        Some(json!({"github_login": "eve"})),
+        &olga,
+    )
+    .await?;
+    assert_eq!(admit.status, StatusCode::FORBIDDEN);
+    let anna_id = user_id(&h, &admin, "anna").await?;
+    let disable = call(
+        &h.router,
+        Method::PATCH,
+        &format!("/api/admin/users/{anna_id}"),
+        Some(json!({"disabled": true})),
+        &olga,
+    )
+    .await?;
+    assert_eq!(disable.status, StatusCode::FORBIDDEN);
+    Ok(())
+}
+
 /// R6: ten wrong codes in a row lock two-factor (a stolen session cannot keep guessing) until
 /// the person confirms it is them again; the lock is audited.
 #[tokio::test]

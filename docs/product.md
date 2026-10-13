@@ -60,7 +60,8 @@ watching, steering and unblocking.
   every harness and checked for drift; onboarding codifies a project's conventions as primitives.
 - **Secrets vault**: secrets are a title, a value and notes. Team secrets are for people; agent
   secrets are used by agents, who never see them. Reading a value needs your own two-factor code
-  (set up once, mandatory). The people who manage an agent secret can read it too.
+  (set up once, mandatory); an administrator resets it for someone who lost their authenticator.
+  The people who manage an agent secret can read it too.
 - **Updates**: Yulius updates itself from `main` without losing running work.
 
 ## Principles
