@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- CLI device sign-in can no longer fill the disk (SPEC-063, ADR-0047, task #55, #169).
+  `POST /api/device/start` is limited per client like password sign-in (5 starts a minute); at
+  most 10 device sign-ins wait per client and 1000 per instance (past either: 429, nothing
+  evicted); expired and consumed grants are deleted on every start and every minute. Schema
+  version 16 (`device_grants.client_key`).
 - A session whose context is full recovers (SPEC-060, ADR-0046, task #51, #213). Claude Code's
   "Prompt is too long" ends the turn, so the task waits instead of staying `working`. Yulius then
   types `/compact` with a focus built from the task (goal, branch, pull request, steps left) and
