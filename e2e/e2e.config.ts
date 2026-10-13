@@ -32,4 +32,6 @@ export default {
   // Verified agent actions are recorded here and replayed without model calls; the directory is
   // committed. CI only reads it.
   cache: { dir: 'replays' },
+  // The runner retries once in CI by default; a retry would hide a slow or flaky test.
+  retries: 0,
 } satisfies E2EConfig;
