@@ -92,3 +92,26 @@ Review round 2 of SPEC-043 left these as #303:
 - The prompt is never front matter: a prompt is a message, not a document with properties; the
   editor gets a `frontmatter: false` option rather than a separate renderer.
 - See [ADR-0064](../../docs/decisions/0064-attachment-reads-have-their-own-bound.md).
+
+## Evidence
+
+- Red first: `task_prompt::twelve_images_are_served_together_while_every_upload_slot_is_taken`
+  failed (429 for image 0 with the 8 upload slots held) and
+  `task_prompt::an_attachment_is_streamed_in_bounded_chunks_with_its_length` failed (one frame of
+  1 MiB) before the fix; both pass after.
+- Red first: `task_prompt::tests::on_linux_a_file_whose_opened_path_cannot_be_read_is_refused`
+  fails with the old fallback (serve when `/proc/self/fd` is unreadable) and passes after.
+  `a_read_waits_for_a_slot_within_its_bound` and
+  `a_file_is_sent_in_chunks_and_gives_its_slot_back_when_left_unread` (waits on the semaphore,
+  no sleeps) pass.
+- Red first: e2e `original-prompt.e2e.ts` "a prompt starting with --- is text…" fails with the old
+  web assets (front matter shown as properties) and with the old mock alone (another user's
+  draft and `..` served, the task's terminal folder not); passes after.
+- `scripts/dev ci` (dev merged, up to date at 34815b5): exit 0; nextest 1433 run, 1433 passed,
+  16 skipped; check, fmt, clippy, doctests, deny, machete, doc green.
+- e2e full suite: 271 passed, 1 skipped, 1 failed: `archive.e2e.ts` "the keyboard stays on its
+  control when the sidebar list is rebuilt", which this change does not touch; alone it passed
+  4 of 5 runs. Already tracked by open #356 (flaky under load: archive.e2e.ts Stopped-toggle
+  focus).
+- Not covered: a real browser against a deployed instance; the `/proc` fallback off Linux (the
+  unit test checks the policy constant per platform).
