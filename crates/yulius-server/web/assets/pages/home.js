@@ -52,7 +52,7 @@ export function mountHomePage(ctx) {
           repo ? h('span', { class: 'home-card-repo', title: repo }, icon('github', { size: 12 }), h('span', { class: 'ellipsis' }, repo)) : null),
         h('div', { class: 'home-card-badges' },
           sandbox.access === 'read' ? badge('Read-only', '', 'GitHub gives you read access: you can follow tasks but not start them') : null,
-          preparing ? badge(sandbox.onboarding === 'preparing' ? 'Preparing' : 'Needs preparation', 'warn', 'The repository is being prepared for agents') : null)),
+          preparing ? badge(sandbox.onboarding === 'preparing' ? 'Preparing' : 'Needs onboarding', 'warn', sandbox.onboarding === 'preparing' ? 'The repository is being prepared for agents' : 'Start onboarding on the sandbox page') : null)),
       h('ul', { class: 'home-counts', 'aria-label': `Tasks in ${sandbox.name}` },
         count('bell', counts.needs_attention || 0, 'needs you', 'need you', 'attention'),
         count('pulse', counts.running || 0, 'working', 'working', 'running'),
