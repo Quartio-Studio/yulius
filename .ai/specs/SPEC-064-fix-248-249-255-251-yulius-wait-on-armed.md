@@ -1,11 +1,11 @@
 ---
 yulius-task: 6fbdd785-4734-4f95-8e46-55f4fe729507
-status: draft
+status: in-progress
 ---
 
 # SPEC-064: `yulius wait` reads an armed merge and its outcome together; the errored-CI retry is tested
 
-Status: draft
+Status: in progress
 Date: 2026-10-13
 Owner: Yulius task #53
 Scope authorization: GitHub issues #248, #249, #255 and #251, through task #53 (part of task #47,
@@ -76,10 +76,10 @@ retry of an errored Yulius CI run at an open pull request's head is covered by a
 
 ## Plan
 
-- [ ] Spec, steps and reproduction tests of #249 and #248 against current `dev`.
-- [ ] One-lock armed slot with superseding generations (fixes #255 and the #248 interleaving).
-- [ ] Integration test of the errored-CI retry (#251).
-- [ ] ADR, architecture and changes entry.
+- [x] Spec, steps and reproduction tests of #249 and #248 against current `dev`.
+- [x] One-lock armed slot with superseding generations (fixes #255 and the #248 interleaving).
+- [x] Integration test of the errored-CI retry (#251).
+- [x] ADR, architecture and changes entry.
 - [ ] Gates green and independent review of the head.
 - [ ] Merged into dev on green CI; issues closed.
 
@@ -103,6 +103,12 @@ retry of an errored Yulius CI run at an open pull request's head is covered by a
 - One lock over a reordered read (the issue's first option, `merge_armed && outcome.is_none()`):
   a merge armed while an older one is decided would read as unarmed as soon as the old outcome is
   written, so the reorder alone trades #255 for a #248 variant. ADR-0046.
+- #255's window had no `await` in it (the outcome was written, then the armed merges file saved,
+  then the counter lowered), so no integration test could stop a poll inside it deterministically.
+  The fix removes the window by construction (`ArmedSlot::finish` is one method under the lock),
+  and `agent_wait::tests::a_decision_ends_in_one_step` pins that invariant: armed with no outcome
+  until the decision ends, then unarmed with the outcome. The #248 interleaving, which the same
+  restructuring fixes, does have a deterministic failing-before test.
 - A superseded decision is discarded rather than reported: the agent armed a newer head and
   `delivery_merge`'s own answer already told it the older one no longer counts.
 

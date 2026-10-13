@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- `yulius wait` on armed merges (SPEC-064, ADR-0046, task #53; #248, #249, #255, #251). A merge
+  armed while Yulius still decides an earlier one supersedes it: the wait on the new head no
+  longer ends with the old head's "dropped", and the new merge stays armed and saved. The armed
+  merge, its decisions in progress and its outcome are read and changed under one lock, so a wait
+  never misses a decision. A wait with a merge armed and checks pending keeps waiting (#249 did
+  not reproduce on `dev`; a regression test now covers it). The automatic retry of an errored
+  Yulius CI run at a pull request's head is tested: once, never a third time, never when the pull
+  request conflicts.
 - Unique decision numbers and the onboarding CI proof (SPEC-058, task #49; #317, #272). The four
   decision records numbered 0034 now have their own numbers: the automations catalog keeps 0034, the
   Agent in the right panel is 0036, the personal two-factor vault 0042 and the task status from
