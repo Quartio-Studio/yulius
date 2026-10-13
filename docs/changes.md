@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- A stopped or closed run ends only when its processes are proven gone (SPEC-065, ADR-0048, task #54;
+  #284, #285, #290). When Yulius cannot terminate a run's host after the stop or close escalation,
+  the run stays live, the task's terminal says so and a running task needs attention; deleting it
+  answers 409 and removes nothing. Deleting a Done task now returns only after the run's end is
+  fully recorded, so a task chained after it gets one outcome. The wait re-checks every second even
+  on a busy instance, a stuck host can no longer cancel the escalation, and a task that turned
+  switching is refused at once. The web UI sends one delete per task, shows "Deleting #N…", and a
+  stopping task's Delete says "Stopping…".
 - CLI device sign-in can no longer fill the disk (SPEC-063, ADR-0047, task #55, #169).
   `POST /api/device/start` is limited per client like password sign-in (5 starts a minute); at
   most 10 device sign-ins wait per client and 1000 per instance (past either: 429, nothing

@@ -22,7 +22,8 @@ Deletion removes the worktree and run directories, so the server waits until the
 and the task rests before deleting; a run that already ended by itself is simply deleted. The
 close and the wait follow the task's update events (looking again every second) and are bounded
 together by the close escalation (interrupt, TERM, kill: 20 s, after which the host is terminated and the run
-marked lost) plus 5 s. If the run is still there then, the answer is 409 and nothing is deleted.
+marked lost, only once the host is proven gone: [ADR-0048](0048-a-run-ends-only-when-its-host-is-proven-gone.md))
+plus 5 s; the wait also lets the run's ending be fully recorded (ADR-0048). If the run is still there then, the answer is 409 and nothing is deleted.
 The UI's delete request waits 40 s. Any other live task still has to be stopped first. Its menu
 item now reads "Still running: stop the task before deleting it".
 
