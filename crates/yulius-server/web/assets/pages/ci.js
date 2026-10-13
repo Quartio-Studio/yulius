@@ -113,7 +113,7 @@ export function mountCiPage(ctx, sandbox, route) {
   function runCard(run) {
     const st = stateOf(run.state);
     const meta = [
-      h('span', { title: dateTime(run.queued_at) }, `${run.state === 'queued' ? 'Queued' : 'Started'} ${relLong(run.started_at || run.queued_at)}`),
+      h('span', { title: run.started_at ? `Queued ${dateTime(run.queued_at)} · started ${dateTime(run.started_at)}` : `Queued ${dateTime(run.queued_at)}` }, `${run.started_at ? 'Started' : 'Queued'} ${relLong(run.started_at || run.queued_at)}`),
       run.duration_ms !== null && run.duration_ms !== undefined ? ` · took ${duration(run.duration_ms)}` : null,
       run.requested_by && run.requested_by !== 'yulius' ? ` · by ${run.requested_by}` : null,
       run.status && run.status !== 'published' && run.status !== 'pending' ? h('span', { class: 'muted' }, ` · GitHub status ${run.status}`) : null,
@@ -201,9 +201,8 @@ export function mountCiPage(ctx, sandbox, route) {
       }
     };
     const render = (run) => {
-      const st = stateOf(run.state);
       setChildren(head, stateBadge(run.state), h('strong', null, run.label), h('code', { class: 'muted' }, shortSha(run.sha)),
-        h('span', { class: 'muted small' }, [run.duration_ms ? `took ${duration(run.duration_ms)}` : `${st.label.toLowerCase()} ${relLong(run.started_at || run.queued_at)}`, run.reason ? ` · ${run.reason}` : ''].join('')));
+        h('span', { class: 'muted small' }, [run.duration_ms ? `took ${duration(run.duration_ms)}` : `${run.started_at ? 'started' : 'queued'} ${relLong(run.started_at || run.queued_at)}`, run.reason ? ` · ${run.reason}` : ''].join('')));
       const jobs = run.jobs || [];
       setChildren(tabs, jobs.map((job, i) => {
         const tab = h('button', { type: 'button', class: ['ci-tab', i === selected && 'active'], role: 'tab', 'aria-selected': String(i === selected), onClick: () => { selected = i; render(run); } },

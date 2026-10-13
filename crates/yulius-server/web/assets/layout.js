@@ -2,7 +2,8 @@
 // left sidebar with navigation, the active task list and the user menu at its foot.
 
 import { h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip } from './dom.js';
-import { relShort, relLong, bytes, duration, dateTime, resetLabel } from './format.js';
+import { relLong, bytes, duration, dateTime, resetLabel } from './format.js';
+import { taskTime } from './tasktime.js';
 import { taskInfo, taskActions, activityLine, allows } from './status.js';
 import { href } from './router.js';
 import { openSandboxDialog, confirmRemoveSandbox, openTaskMenu, archiveTask, archiveAll } from './actions.js';
@@ -716,7 +717,8 @@ export function createSidebar(ctx) {
     // Repaint only a row whose content would change (PERF-02): the key holds all it shows.
     const active = Boolean(route && route.name === 'task' && route.number === task.number);
     row.pr = ctx.store.pullsOf(sandbox.id).get(task.id) || null;
-    const key = JSON.stringify([task, row.info, active, relShort(task.updated_at), sandbox.slug, sandbox.access, row.pr]);
+    row.time = taskTime(task, row.info);
+    const key = JSON.stringify([task, row.info, active, row.time.text, sandbox.slug, sandbox.access, row.pr]);
     if (row.key !== key) {
       row.key = key;
       paintRow(row, active);
@@ -734,14 +736,15 @@ export function createSidebar(ctx) {
     row.el.classList.toggle('active', active);
     row.el.dataset.group = info.group;
     row.el.dataset.tone = info.tone;
-    row.link.title = `#${task.number} ${task.title} — ${info.label}${info.detail ? `: ${info.detail}` : ''}${task.branch ? ` · ${task.branch}` : ''} · ${dateTime(task.updated_at)}`;
+    row.link.title = `#${task.number} ${task.title} — ${info.label}${info.detail ? `: ${info.detail}` : ''}${task.branch ? ` · ${task.branch}` : ''} · ${row.time.text}`;
     setChildren(row.mark, statusMark(info, 16));
     setChildren(row.chips, row.pr ? prChip(row.pr, { link: false }) : null);
     row.title.textContent = task.title || `Task #${task.number}`;
     // Colour stays on the state icon; the words (tooltip, screen readers) say what to do.
     row.sub.textContent = `, ${activityLine(task, info)}`;
-    row.age.textContent = relShort(task.updated_at);
-    row.age.title = `Last change ${dateTime(task.updated_at)}`;
+    // What the time measures depends on the group, and the words say it (SPEC-087 TIM-003).
+    row.age.textContent = row.time.text;
+    row.age.title = row.time.title;
     const label = `Archive task #${task.number}`;
     row.archive.hidden = !taskActions(task, sandbox.access, row.pr, ctx.store.state.me?.user?.login).archive;
     row.el.classList.toggle('can-archive', !row.archive.hidden);
@@ -860,9 +863,13 @@ export function createSidebar(ctx) {
     ctx.store.on('pulls', (sandboxId) => { if (sandbox && sandboxId === sandbox.id) repaint(); }),
     ctx.store.on('browser-action', (event) => { if (sandbox && event.sandbox_id === sandbox.id) repaint(); }),
   ];
-  // Refresh relative times twice a minute (single bounded timer).
+  // Refresh the times twice a minute (single bounded timer).
   const ageTimer = setInterval(() => {
-    for (const row of rows.values()) row.age.textContent = relShort(row.task.updated_at);
+    for (const row of rows.values()) {
+      row.time = taskTime(row.task, row.info);
+      row.age.textContent = row.time.text;
+      row.age.title = row.time.title;
+    }
   }, 30000);
 
   return {

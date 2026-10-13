@@ -14,7 +14,7 @@ use yulius_app::model::{MetricsRecord, TaskOrigin};
 use yulius_app::ports::store_ext::AnalyticsStore;
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, SandboxId, TaskId};
-use yulius_domain::task::TaskStatus;
+use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;
 
 use crate::{SqliteStore, bad_column, db, to_u32, to_u64};
@@ -35,6 +35,7 @@ fn task_row(row: &Row<'_>) -> rusqlite::Result<AnalyticsTask> {
     let id: String = row.get("id")?;
     let sandbox: String = row.get("sandbox_id")?;
     let status: String = row.get("status")?;
+    let activity: Option<String> = row.get("activity")?;
     let harness_text: String = row.get("harness")?;
     let origin: String = row.get("origin")?;
     Ok(AnalyticsTask {
@@ -45,6 +46,7 @@ fn task_row(row: &Row<'_>) -> rusqlite::Result<AnalyticsTask> {
         title: row.get("title")?,
         harness: harness(&harness_text)?,
         status: TaskStatus::parse(&status).ok_or_else(|| bad_column("status", &status))?,
+        activity: activity.as_deref().and_then(Activity::parse),
         origin: TaskOrigin::parse(&origin),
         created_at: Timestamp(row.get("created_at")?),
         closed_at: row.get::<_, Option<i64>>("closed_at")?.map(Timestamp),
@@ -129,8 +131,8 @@ fn read(conn: &Connection, query: &AnalyticsQuery) -> AppResult<AnalyticsData> {
     let mut tasks = collect(
         conn,
         &format!(
-            "SELECT t.id, t.sandbox_id, s.slug, t.number, t.title, t.harness, t.status, t.origin, \
-             t.created_at, t.closed_at FROM tasks t JOIN sandboxes s ON s.id = t.sandbox_id \
+            "SELECT t.id, t.sandbox_id, s.slug, t.number, t.title, t.harness, t.status, t.activity, \
+             t.origin, t.created_at, t.closed_at FROM tasks t JOIN sandboxes s ON s.id = t.sandbox_id \
              WHERE {filter} ORDER BY t.created_at DESC, t.id DESC LIMIT {}",
             u64::from(limit) + 1
         ),

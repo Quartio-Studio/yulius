@@ -190,6 +190,10 @@ function seed(params) {
       // Background shells the idle agent left running (TSK-014).
       background_shells: extra.shells ?? null,
       background_shells_since: extra.shells ? new Date(Date.now() - 12 * MIN).toISOString() : null,
+      // Since when it is in its state, and the start of its working stretch, which goes on through
+      // the turns its background work wakes (SPEC-087): a task's last change is often newer.
+      state_since: iso(extra.state ?? extra.updated ?? number * 7 * MIN),
+      working_since: extra.working === undefined ? null : iso(extra.working),
     };
   };
   const pr = (number, title, state, base, checks) => ({ number, url: `https://github.com/Quartio-Studio/${number > 400 ? 'product' : 'studio'}/pull/${number}`, title, state, base, head: `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`, checks });
@@ -198,15 +202,16 @@ function seed(params) {
     // request's checks still run (TSK-014, F 2026-10-10).
     t('sb_studio', 13, 'Improve the code', 'claude', 'running', 'done', { mode: 'goal', done: 7, current: false, updated: 6 * MIN, shells: 0, delivery: { stage: 'pr_open', environment: null, pr: pr(520, 'Improve the code', 'open', 'dev', 'pending') } }),
     // Goal achieved, but a background shell (a dev server) still runs: Working, with the shell said.
-    t('sb_studio', 14, 'Start the preview server', 'claude', 'running', 'done', { mode: 'goal', done: 7, current: false, updated: 2 * MIN, shells: 1 }),
-    t('sb_studio', 12, 'Checkout API', 'claude', 'running', 'working', { done: 2, updated: 20e3, prompt: `# Checkout API\n\nBuild the checkout endpoint:\n\n- Stripe payment intents\n- an idempotency key per order\n\n@${MOCK_ATTACHMENTS}/checkout-error.png\n@${MOCK_ATTACHMENTS}/notes.txt\n@${MOCK_ATTACHMENTS}/old-mockup.png` }),
+    t('sb_studio', 14, 'Start the preview server', 'claude', 'running', 'done', { mode: 'goal', done: 7, current: false, updated: 2 * MIN, shells: 1, working: 95 * MIN }),
+    // Working for two hours: its last turn began a moment ago, woken by its own background work.
+    t('sb_studio', 12, 'Checkout API', 'claude', 'running', 'working', { done: 2, updated: 20e3, working: 2 * HOUR + 14 * MIN, prompt: `# Checkout API\n\nBuild the checkout endpoint:\n\n- Stripe payment intents\n- an idempotency key per order\n\n@${MOCK_ATTACHMENTS}/checkout-error.png\n@${MOCK_ATTACHMENTS}/notes.txt\n@${MOCK_ATTACHMENTS}/old-mockup.png` }),
     // Finished its turn with a tested pull request (checks green) and a complete plan: "Done" (#35, #139).
     t('sb_studio', 11, '3D model viewer', 'claude', 'running', 'waiting', { done: 7, current: false, author: 'anna-q', owner: 'mkarp', delivery: { stage: 'pr_open', environment: null, pr: pr(221, '3D model viewer', 'open', 'dev', 'success') } }),
     t('sb_studio', 10, 'AWS login for deploy', 'claude', 'running', 'needs_attention', { done: 4 }),
-    t('sb_studio', 9, 'Move to the next account', 'claude', 'switching', null, { done: 3 }),
+    t('sb_studio', 9, 'Move to the next account', 'claude', 'switching', null, { done: 3, working: 3 * HOUR }),
     t('sb_studio', 8, 'Nightly feedback digest', 'claude', 'queued', null, { origin: 'automation', noSteps: true }),
     t('sb_studio', 7, 'Search indexing', 'claude', 'waiting_capacity', null, { done: 1 }),
-    t('sb_studio', 6, 'Fix flaky checkout test', 'claude', 'starting', null, { noSteps: true }),
+    t('sb_studio', 6, 'Fix flaky checkout test', 'claude', 'starting', null, { noSteps: true, working: MIN }),
     t('sb_studio', 5, 'Docs restructure', 'claude', 'closed', null, { done: 7, current: false, updated: 5 * HOUR, delivery: { stage: 'pr_open', environment: null, pr: pr(214, 'Docs restructure', 'open', 'quartio', 'success') } }),
     t('sb_studio', 4, 'Payment webhook', 'claude', 'stopped_cancelled', null, { done: 3, current: false, updated: 9 * HOUR, delivery: { stage: 'pr_open', environment: null, pr: pr(209, 'Payment webhook', 'open', 'quartio', 'failure') } }),
     t('sb_studio', 3, 'Image pipeline', 'claude', 'stopped_crashed', null, { done: 2, current: false, updated: DAY }),
@@ -215,13 +220,13 @@ function seed(params) {
     t('sb_product', 1, 'Prepare repository for Yulius', 'claude', 'closed', null, { origin: 'onboarding', done: 7, current: false, updated: 2 * DAY }),
     t('sb_product', 2, 'Pricing page', 'claude', 'closed', null, { done: 7, current: false, updated: 3 * HOUR, delivery: { stage: 'merged_integration', environment: null, pr: pr(512, 'Pricing page', 'merged', 'quartio', 'none') } }),
     t('sb_product', 3, 'Search filters', 'claude', 'closed', null, { done: 7, current: false, updated: 70 * MIN, author: 'anna-q', delivery: { stage: 'pr_open', environment: null, pr: pr(515, 'Search filters', 'open', 'quartio', 'success') } }),
-    t('sb_product', 4, 'Invoice PDF export', 'claude', 'running', 'working', { done: 3, updated: 4 * MIN }),
+    t('sb_product', 4, 'Invoice PDF export', 'claude', 'running', 'working', { done: 3, updated: 4 * MIN, working: 50 * MIN }),
     t('sb_product', 5, 'Onboarding emails', 'claude', 'closed', null, { done: 7, current: false, updated: 2 * DAY, delivery: { stage: 'production_done', environment: null, pr: pr(498, 'Onboarding emails', 'merged', 'quartio', 'none') } }),
     t('sb_product', 6, 'Team invites', 'claude', 'closed', null, { done: 7, current: false, updated: 26 * HOUR, author: 'anna-q', delivery: { stage: 'merged_integration', environment: null, pr: pr(505, 'Team invites', 'merged', 'quartio', 'none') } }),
     // Waits for #4 to be Done (TSK-012).
     t('sb_product', 7, 'Invoice emails', 'claude', 'chained', null, { noSteps: true, updated: 3 * MIN }),
     t('sb_three', 2, 'Write README', 'claude', 'closed', null, { done: 7, current: false }),
-    t('sb_three', 1, 'Explore data model', 'claude', 'running', 'working', { done: 1, author: 'anna-q' }),
+    t('sb_three', 1, 'Explore data model', 'claude', 'running', 'working', { done: 1, author: 'anna-q', working: 7 * MIN }),
   ];
   {
     const invoices = db.tasks.find((x) => x.id === 'tsk_product_4');
@@ -309,6 +314,8 @@ function summary(task) {
     id: task.id, sandbox_id: task.sandbox_id, number: task.number, title: task.title, harness: task.harness,
     status: task.status, activity: task.status === 'running' || task.status === 'waiting_capacity' ? task.activity : null,
     branch: task.branch, origin: task.origin, created_by: task.created_by, created_at: task.created_at, updated_at: task.updated_at,
+    // Since when it is in its state and working (SPEC-087).
+    state_since: task.state_since || task.updated_at, working_since: task.working_since ?? null,
     // The owner, whose GitHub token the task uses, and a waiting request for control (SPEC-070).
     owner: { ...ownerOf(task) }, control_request: task.controlRequest ? { by: { ...task.controlRequest.by }, at: task.controlRequest.at } : null,
     steps: stepsSummary(task), archived: task.archived, account_label: task.account_label,
@@ -510,9 +517,26 @@ function resync(db) {
   emit(db, { type: 'resync' });
 }
 
+/**
+ * The start of a task's working stretch after a change, as the server keeps it (SPEC-087 TIM-002):
+ * it goes on while the task works, is on its way or is idle with background work that wakes it,
+ * and ends when it waits for a person, is queued or has ended.
+ */
+function workingSince(task) {
+  const idle = task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done');
+  const working = ['starting', 'switching', 'waiting_capacity'].includes(task.status)
+    || (task.status === 'running' && (task.activity === 'working' || !task.activity))
+    || (idle && task.background_shells > 0);
+  if (working) return task.working_since || task.updated_at;
+  return idle && task.background_shells == null ? task.working_since ?? null : null;
+}
+
 /** Task change: `task.updated` only; sandbox counters are not pushed (clients refetch). */
 function touch(db, task, changes = {}) {
+  const [status, activity] = [task.status, task.activity];
   Object.assign(task, changes, { updated_at: new Date().toISOString() });
+  if (task.status !== status || task.activity !== activity) task.state_since = task.updated_at;
+  task.working_since = workingSince(task);
   recount(db);
   emit(db, { type: 'task.updated', task: summary(task) });
   const session = db.sessions.get(task.id);
@@ -2237,12 +2261,12 @@ route('GET', '/api/analytics/summary', ({ db, query }) => {
     tasks: {
       total,
       closed: Math.round(total * 0.62),
-      by_status: { closed: Math.round(total * 0.62), stopped_cancelled: Math.round(total * 0.12), running: 3, failed_spawn_error: 1, stopped_crashed: 2 },
+      by_status: { closed: Math.round(total * 0.62), stopped_cancelled: Math.round(total * 0.12), running: 3, done: 2, failed_spawn_error: 1, stopped_crashed: 2 },
       by_harness: { claude: total },
       by_origin: { ui: Math.round(total * 0.8), automation: Math.round(total * 0.15), import: Math.round(total * 0.05) },
     },
     tasks_per_day: perDay,
-    duration_ms: { median: 47 * MIN, p90: 3.2 * HOUR, total_wall: total * 58 * MIN, total_active: total * 31 * MIN },
+    duration_ms: { median: 47 * MIN, p90: 3.2 * HOUR, total_wall: total * 58 * MIN, total_active: total * 31 * MIN, median_active: 26 * MIN, p90_active: 1.4 * HOUR },
     tokens: tokenTotals(runs, total, n(41e6), n(5.2e6), n(310e6), null, unknown),
     tokens_by_model: [
       { model: 'claude-opus-4', ...tokenTotals(Math.round(runs * 0.6), Math.round(total * 0.6), n(26e6), n(3.1e6), n(200e6), null, 0) },
