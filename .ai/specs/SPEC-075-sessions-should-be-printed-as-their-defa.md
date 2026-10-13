@@ -68,7 +68,7 @@ read-only: a locked prompt box, nothing to type into.
 - [x] Review rounds 1 and 2 in fresh sessions, findings fixed test-first
 - [x] Review round 3 in a fresh session approves the final head
 - [x] Every gate green, docs and the changes log updated
-- [ ] The reviewer confirms the exact head after the evidence
+- [x] The reviewer confirms the exact head after the evidence
 
 ## Acceptance criteria
 
