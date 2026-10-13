@@ -453,6 +453,127 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
     Ok(())
 }
 
+/// SPEC-052 AC-QMS-3: a message queued while the task waited reaches the agent with its request
+/// when it starts: in the request file and the goal of a goal task, in the first message of a
+/// prompt task.
+#[test]
+fn a_message_queued_before_the_start_reaches_the_agent() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            session_start: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let ctx = yulius_app::auth::AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        for mode in [TaskMode::Goal, TaskMode::Prompt] {
+            let record = app
+                .create_task_internal(NewTask {
+                    sandbox: sandbox.clone(),
+                    created_by: user.clone(),
+                    prompt: "Make the header red".into(),
+                    harness: Harness::ClaudeCode,
+                    title: Some("Header".into()),
+                    workflow_id: None,
+                    steps: Vec::new(),
+                    model: None,
+                    effort: None,
+                    origin: TaskOrigin::Ui,
+                    automation_run: None,
+                    start: false,
+                    mode,
+                })
+                .await?;
+            let id = record.id;
+            // Waiting for a session slot, never started.
+            assert!(
+                app.deps
+                    .store
+                    .transition_task(&id, None, TaskStatus::Queued, None, app.now())
+                    .await?
+            );
+            app.queue_task_message(
+                &ctx,
+                id.as_str(),
+                &yulius_contracts::api::tasks::QueueMessage {
+                    text: "Blue, not red.".into(),
+                },
+            )
+            .await?;
+            app.start_run(
+                &id,
+                yulius_app::supervisor::RunStart::Fresh { prompt: None },
+                None,
+            )
+            .await?;
+            match mode {
+                // A goal task's request file carries the message, and a short request is
+                // quoted in the goal itself, the message with it.
+                TaskMode::Goal => {
+                    wait_for("the goal", Duration::from_secs(60), || {
+                        screen_contains(&app, &id, "GOAL SET")
+                    })
+                    .await?;
+                    let file = data
+                        .join("sandboxes")
+                        .join(sandbox.as_str())
+                        .join("home/.yulius/tasks")
+                        .join(format!("{}.md", record.number));
+                    let request = std::fs::read_to_string(&file)?;
+                    let added = "\n\n**Added by admin before the task started (";
+                    assert!(
+                        request.contains(&format!("## Request\n\nMake the header red{added}")),
+                        "{request}"
+                    );
+                    assert!(
+                        request.contains(" UTC):**\n\nBlue, not red.\n"),
+                        "{request}"
+                    );
+                    let screen = app.runtime(&id).hub.screen_text();
+                    let goal = screen.find("/goal ").ok_or_else(|| screen.clone())?;
+                    assert!(screen[goal..].contains("Blue, not red."), "{screen}");
+                }
+                TaskMode::Prompt => {
+                    wait_for("the first launch", Duration::from_secs(60), || async {
+                        first_launch(&app, &id).await.is_ok()
+                    })
+                    .await?;
+                    let launch = first_launch(&app, &id).await?;
+                    assert!(launch.contains("Make the header red"), "{launch}");
+                    assert!(launch.contains("Blue, not red."), "{launch}");
+                }
+            }
+            // Started: a later message is refused, and the request stays as the agent got it.
+            let late = app
+                .queue_task_message(
+                    &ctx,
+                    id.as_str(),
+                    &yulius_contracts::api::tasks::QueueMessage {
+                        text: "Green.".into(),
+                    },
+                )
+                .await;
+            assert!(
+                matches!(late, Err(yulius_app::error::AppError::Conflict(_))),
+                "{late:?}"
+            );
+            stop(&app, &id).await?;
+        }
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-025 ATT-003: a goal task with attached files opens with a turn on them (its first message);
 /// the goal is typed once that turn ended (its Stop hook), not into the middle of it, and once.
 #[test]
