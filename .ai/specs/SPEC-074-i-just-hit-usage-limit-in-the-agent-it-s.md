@@ -99,11 +99,12 @@ sequenceDiagram
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] A Cockpit watches its conversation and records a usage limit on its own subscription
-- [ ] A Cockpit cut by a usage limit continues its turn on a subscription with capacity
-- [ ] The panel follows its session to the new subscription without a stopped banner
-- [ ] The Agent panel is named Superagent across the UI, tests and docs
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] A Cockpit watches its conversation and records a usage limit on its own subscription
+- [x] A Cockpit cut by a usage limit continues its turn on a subscription with capacity
+- [x] The panel follows its session to the new subscription without a stopped banner
+- [x] The Agent panel is named Superagent across the UI, tests and docs
+- [x] Independent review in a fresh session, findings fixed test-first
+- [ ] Review round 2 approves the fixed head, with a reproduced flake fixed
 - [ ] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria

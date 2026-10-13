@@ -1552,3 +1552,63 @@ async fn a_quick_second_move_keeps_resuming_the_conversation() -> TestResult {
     f.h.app.end_all_shells().await;
     Ok(())
 }
+
+/// Review round 2: several new limits read at once count as one, the newest: its reset is what
+/// the subscription is recorded with, and none of them counts again later.
+#[tokio::test]
+async fn limits_read_together_count_once_as_the_newest() -> TestResult {
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let project = project_of(&screen)?;
+    std::fs::create_dir_all(&project)?;
+    let mut text = limited_conversation(1_791_400_000);
+    text.push_str(&prompt_record("u2", Some("new-limit"), 7));
+    text.push_str(&limit_record("newer-limit", "u2", 8, 1_791_450_000));
+    std::fs::write(project.join("conv-1.jsonl"), text)?;
+    read_message(&mut socket, "notice").await?;
+    let usage = usage_of(&f.h, "acc-1").await?;
+    assert_eq!(usage["limit_resets_at"], 1_791_450_000_000_i64, "{usage}");
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// SUP-002: a limit recorded before the Cockpit started is history even while its reset is ahead;
+/// only the person's next limit moves it.
+#[tokio::test]
+async fn a_limit_from_before_the_start_does_not_move_the_cockpit() -> TestResult {
+    let f = fixture_with(false, None).await?;
+    insert_account(&f.h, "acc-a", "token-a", 5.0).await?;
+    insert_account(&f.h, "acc-b", TOKEN, 60.0).await?;
+    // Yesterday's weekly limit, still in force, in the conversation the Cockpit resumes.
+    let config = f.data.join("users/u-alice/home/.claude");
+    let repo = std::fs::canonicalize(f.data.join("sandboxes/s1/repo"))?;
+    let project = yulius_harness::paths::claude_project_dir(&config, &repo);
+    std::fs::create_dir_all(&project)?;
+    std::fs::write(
+        project.join("conv-1.jsonl"),
+        [prompt_record("u0", None, -86_400), limit_record("old-limit", "u0", -86_399, 1_791_500_000)].concat(),
+    )?;
+    let served = serve(f.h.router.clone()).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(printed(&screen, "token")?, "token-a");
+
+    // The next prompt is limited: that one moves it, from acc-a.
+    let mut text = std::fs::read_to_string(project.join("conv-1.jsonl"))?;
+    text.push_str(&prompt_record("u1", Some("old-limit"), 5));
+    text.push_str(&limit_record("new-limit", "u1", 6, 1_791_400_000));
+    std::fs::write(project.join("conv-1.jsonl"), text)?;
+    let exit = read_message(&mut socket, "exit").await?;
+    assert_eq!(exit["status"], "switched", "{exit}");
+    other_cockpit(&f, &id).await?;
+    let usage = usage_of(&f.h, "acc-a").await?;
+    assert_eq!(usage["limit_resets_at"], 1_791_400_000_000_i64, "{usage}");
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
