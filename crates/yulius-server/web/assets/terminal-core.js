@@ -76,15 +76,6 @@ const WHEEL_MAX_NOTCHES = 10;
  *                              files in the terminal's folder become links (termlinks.js)
  * Call start() after the element is in the document; destroy() when done.
  */
-/** Whether a deferred focus may take the focus: no text field outside `root` is being typed in. */
-function focusIsFree(root) {
-  const active = document.activeElement;
-  if (!active || root.contains(active)) return true;
-  const typing = active.isContentEditable || active.tagName === 'TEXTAREA'
-    || (active.tagName === 'INPUT' && !['button', 'checkbox', 'radio', 'submit', 'reset', 'range', 'color', 'file'].includes(active.type));
-  return !typing;
-}
-
 export function createTerminalView({ transport, path, onLink, readOnlyLabel, onState, onExit, onNotice, exitActions, exitMessage, emptyMessage, onReady, onConnection, onFatal, fontSize, fileLinks = null, followServerSize = false }) {
   const banner = h('div', { class: 'term-banner', hidden: true, role: 'status' });
   const noticeEl = h('div', { class: 'term-notice', hidden: true, role: 'status', 'aria-live': 'polite' });
@@ -170,6 +161,13 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   let gotState = false;
   let drawn = false;
   let focusWanted = false;
+  // Where the keyboard was when focus was asked for: a deferred focus lands only if it is still
+  // there (or nowhere, or already here), as the Agent panel does (agent.js `stayed`).
+  let focusFrom = null;
+  const focusStayed = () => {
+    const now = document.activeElement;
+    return now === focusFrom || !now || now === document.body || el.contains(now);
+  };
   let revealTimer = 0;
   let emptyShown = false;
   // What this viewer last told the server about itself (null: nothing yet on this connection).
@@ -261,9 +259,9 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     el.removeAttribute('aria-busy');
     renderEmpty();
     render();
-    // Focus asked for before the terminal showed lands now, unless the person is typing in a
-    // field elsewhere meanwhile (a box beside the terminal keeps the keys typed into it).
-    if (focusWanted && focusIsFree(el)) term.focus();
+    // Focus asked for before the terminal showed lands now, unless the keyboard went somewhere
+    // else meanwhile: a box beside the terminal, or another terminal asked for later.
+    if (focusWanted && focusStayed()) term.focus();
     if (onReady) onReady();
   }
 
@@ -768,9 +766,13 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     get canWrite() {
       return state.can_write;
     },
-    /** Focus the terminal now, or as soon as it is shown. */
-    focus() {
+    /**
+     * Focus the terminal now, or as soon as it is shown if the keyboard is still where it was
+     * when asked (`from`, by default where it is now).
+     */
+    focus(from = document.activeElement) {
       focusWanted = true;
+      focusFrom = from;
       if (opened && ready) term.focus();
     },
     get ready() {

@@ -3038,6 +3038,9 @@ class ShellSession {
     let msg;
     try { msg = JSON.parse(data); } catch { return; }
     if (msg.type === 'hello') {
+      // A test can hold a shell's first screen too (`window.__yuliusHoldShell = promise`).
+      const hold = window.__yuliusHoldShell;
+      if (hold && !this.released) { hold.then(() => { this.released = true; this.receive(ws, data); }); return; }
       this.viewers.add(ws);
       if (msg.cols && msg.rows) { this.cols = msg.cols; this.rows = msg.rows; }
       ws.push(JSON.stringify({ type: 'state', attempt_seq: null, harness: null, cols: this.cols, rows: this.rows, can_write: true, controller: true, status: 'running' }));

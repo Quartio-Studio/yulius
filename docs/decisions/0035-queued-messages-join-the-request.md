@@ -42,3 +42,7 @@ while the task waits, and each addition names who added it and when. A message c
 back: a person who changes their mind queues another one, and later lines correct earlier ones.
 A task that started takes no queued message; its session is the way in. The mode, workflow and
 title chosen at creation stay: a message corrects the work, not how Yulius runs the task.
+A line of a queued message that is only `@/path` becomes an attached file, as in the request
+typed at creation. "See the original prompt" (SPEC-043) can then serve that file to readers, but
+only from the task's attachment folders. A person who can queue a message has write access, and
+can already read the sandbox's files through a shell, so this widens no one's reach.
