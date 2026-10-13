@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- Cockpit and terminal starts survive a dropped request (SPEC-077, ADR-0053, task #64; #250). The
+  part of a start from the spawn to the registration runs as a task the request awaits, so a
+  client that goes away mid-start leaves one live Cockpit or terminal (or nothing on an error),
+  never a second Cockpit, an unusable terminal or an orphan run directory. Idle Cockpit start
+  locks are dropped. New tests pin that a signal right after a resume keeps the conversation and
+  that one user's blocked start delays no other user or sandbox.
 - Only real typing counts as typing; a typed first message is never lost (SPEC-068, ADR-0052,
   task #61, #252, #266). Focus and mouse reports and terminal answers no longer record typing or
   take control of the terminal size. A goal task whose terminal a person typed into before its
