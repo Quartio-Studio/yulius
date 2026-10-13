@@ -687,6 +687,7 @@ impl Fixture {
                 origin: TaskOrigin::Ui,
                 automation_run: None,
                 created_by: UserId::parse(creator)?,
+                owner: UserId::parse(creator)?,
                 created_at: Timestamp(1),
                 updated_at: Timestamp(1),
                 closed_at: None,

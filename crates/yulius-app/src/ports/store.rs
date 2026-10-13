@@ -11,9 +11,9 @@ use yulius_domain::time::Timestamp;
 
 use crate::error::AppResult;
 use crate::model::{
-    AccountRecord, AccountStatus, ApiTokenRecord, AttemptRecord, CachedAccess, DeviceGrantBounds,
-    DeviceGrantInsert, DeviceGrantRecord, FeedbackRecord, GitHubTokenRecord, InboxEntry,
-    InstanceRecord, MessageRecord, MetricsRecord, ProviderSessionRecord, SandboxRecord,
+    AccountRecord, AccountStatus, ApiTokenRecord, AttemptRecord, CachedAccess, ControlRequest,
+    DeviceGrantBounds, DeviceGrantInsert, DeviceGrantRecord, FeedbackRecord, GitHubTokenRecord,
+    InboxEntry, InstanceRecord, MessageRecord, MetricsRecord, ProviderSessionRecord, SandboxRecord,
     ScopeClaimRecord, Sealed, StepRecord, SwitchDecisionRecord, TaskRecord, UserRecord,
     WebSessionRecord,
 };
@@ -280,6 +280,29 @@ pub trait TaskStore: Send + Sync {
         activity: Option<Activity>,
         at: Timestamp,
     ) -> AppResult<()>;
+    /// The request for control of `task` that waits for its owner (SPEC-070), if any.
+    async fn control_request(&self, task: &TaskId) -> AppResult<Option<ControlRequest>>;
+    /// Records `by`'s request for control of `task` unless another person's request waits (one
+    /// at a time); a request of `by` that already waits stays as it is. Returns whether `by`'s
+    /// request waits now.
+    async fn request_control(&self, task: &TaskId, by: &UserId, at: Timestamp) -> AppResult<bool>;
+    /// Drops `by`'s waiting request for control of `task`; false when none of theirs waits.
+    async fn drop_control_request(
+        &self,
+        task: &TaskId,
+        by: &UserId,
+        at: Timestamp,
+    ) -> AppResult<bool>;
+    /// Passes control of `task` from `from` to `to`, whose request waits, and drops the request,
+    /// in one statement: false (and nothing changes) unless `from` still owns the task and `to`'s
+    /// request still waits.
+    async fn pass_control(
+        &self,
+        task: &TaskId,
+        from: &UserId,
+        to: &UserId,
+        at: Timestamp,
+    ) -> AppResult<bool>;
     /// Appends `addition` to the prompt of a task that has never started (SPEC-052 QMS-002): it is
     /// `queued`, `chained` or `waiting_capacity` with no attempt and no provider session, and the
     /// prompt stays within `max_bytes`. One statement, so a start's compare-and-set to `starting`

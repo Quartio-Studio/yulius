@@ -138,6 +138,7 @@ async fn fixture_with_workflow(
             origin: TaskOrigin::Ui,
             automation_run: None,
             created_by: user.id.clone(),
+            owner: user.id.clone(),
             created_at: now,
             updated_at: now,
             closed_at: None,

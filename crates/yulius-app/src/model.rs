@@ -284,6 +284,15 @@ impl TaskMode {
     }
 }
 
+/// A person's request for control of a task, waiting for its owner (SPEC-070).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlRequest {
+    /// Who asks.
+    pub by: UserId,
+    /// When they asked.
+    pub at: Timestamp,
+}
+
 /// A task.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TaskRecord {
@@ -319,8 +328,11 @@ pub struct TaskRecord {
     pub origin: TaskOrigin,
     /// Automation run key (`<automation>@<ms>`).
     pub automation_run: Option<String>,
-    /// Creator.
+    /// Who asked for the task (the request's author; stays when control passes).
     pub created_by: UserId,
+    /// Who owns the task (SPEC-070): it acts on GitHub with their token, and only they change
+    /// it. The creator until a hand-over.
+    pub owner: UserId,
     /// Created.
     pub created_at: Timestamp,
     /// Updated.

@@ -163,6 +163,7 @@ impl App {
             origin: req.origin,
             automation_run: req.automation_run.clone(),
             created_by: req.created_by.clone(),
+            owner: req.created_by.clone(),
             created_at: now,
             updated_at: now,
             closed_at: (!req.start).then_some(now),

@@ -42,8 +42,10 @@ pub struct TaskSummary {
     pub branch: Option<String>,
     /// `ui`, `automation`, `import`, `onboarding` or `agent`.
     pub origin: String,
-    /// Creator.
+    /// Creator: who asked for the task.
     pub created_by: UserRef,
+    /// Owner (SPEC-070): the task acts on GitHub as them, and only they change it.
+    pub owner: UserRef,
     /// Creation time.
     pub created_at: String,
     /// Last change.

@@ -131,6 +131,7 @@ async fn insert_task(
             origin: TaskOrigin::Ui,
             automation_run: None,
             created_by: creator.clone(),
+            owner: creator.clone(),
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
             closed_at: None,

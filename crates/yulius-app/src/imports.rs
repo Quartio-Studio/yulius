@@ -1096,8 +1096,8 @@ impl App {
             ],
         )
         .await?;
-        let creator = self.deps.store.user(&task.created_by).await?;
-        let (name, email) = crate::projects::commit_identity(creator.as_ref());
+        let owner = self.deps.store.user(&task.owner).await?;
+        let (name, email) = crate::projects::commit_identity(owner.as_ref());
         git.set_identity(worktree, &name, &email).await?;
         self.deps
             .store

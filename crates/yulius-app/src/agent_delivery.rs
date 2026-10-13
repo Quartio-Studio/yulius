@@ -12,7 +12,7 @@
 //! must verify (`verify = "manual"`, or no command) is never confirmed by an agent. Every agent
 //! action is also audited as `task:<number>`.
 //!
-//! On GitHub an agent acts with its task creator's own token, so merges, promotions, issues and
+//! On GitHub an agent acts with its task owner's own token, so merges, promotions, issues and
 //! labels are theirs; when they have no usable GitHub token (no linked account, an expired
 //! sign-in), the App acts and the task's terminal says so once (F 2026-10-11).
 
@@ -87,18 +87,18 @@ fn same_commit(given: &str, head: &str) -> bool {
 }
 
 impl App {
-    /// The task creator's authority, under which an agent delivers.
+    /// The task owner's authority, under which an agent delivers (SPEC-070).
     async fn agent_authority(&self, ctx: &AgentContext) -> AppResult<AuthContext> {
         let user = self
             .deps
             .store
-            .user(&ctx.task.created_by)
+            .user(&ctx.task.owner)
             .await?
             .filter(|u| u.disabled_at.is_none())
             .ok_or_else(|| {
                 AppError::Forbidden(
-                    "the person who created this task is no longer active; nobody can deliver \
-                     for it"
+                    "the person who owns this task is no longer active; nobody can deliver for \
+                     it until someone takes control of it in Yulius"
                         .into(),
                 )
             })?;
@@ -313,7 +313,7 @@ impl App {
 
 impl App {
     /// `issue_create`: opens a GitHub issue that meets the Definition of Ready (DLV-008), and
-    /// creates its missing labels, as the task's creator, else as the App (F 2026-10-11).
+    /// creates its missing labels, as the task's owner, else as the App (F 2026-10-11).
     ///
     /// # Errors
     /// `Invalid` input or an issue that is not ready; GitHub failures.
@@ -345,7 +345,7 @@ impl App {
             .sandbox(&ctx.task.sandbox_id)
             .await?
             .ok_or(AppError::NotFound)?;
-        let token = match self.creator_github_token(&ctx.task).await {
+        let token = match self.owner_github_token(&ctx.task).await {
             Some(token) => token,
             None => self.repository_installation_token(&sandbox).await?,
         };

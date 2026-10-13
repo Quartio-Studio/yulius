@@ -120,6 +120,9 @@ impl App {
             created_by: UserRef {
                 login: self.login_of(&task.created_by).await,
             },
+            owner: UserRef {
+                login: self.login_of(&task.owner).await,
+            },
             created_at: rfc3339(task.created_at),
             updated_at: rfc3339(task.updated_at),
             steps: progress(&steps),

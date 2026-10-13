@@ -1328,6 +1328,7 @@ pub async fn seed_task_with_prompt(
         origin: yulius_app::model::TaskOrigin::Ui,
         automation_run: None,
         created_by: UserId::parse(created_by)?,
+        owner: UserId::parse(created_by)?,
         created_at: now,
         updated_at: now,
         closed_at: None,
