@@ -9,8 +9,8 @@ use std::sync::atomic::Ordering;
 use axum::http::{Method, StatusCode};
 use serde_json::{Value, json};
 use support::{
-    Creds, Harness, TestResult, add_sandbox, call, harness_configured, perms, seed_task,
-    user_with_token,
+    Creds, Harness, TestResult, add_sandbox, call, harness_configured, mcp_tool, perms,
+    seed_live_attempt, seed_task, tool_text, user_with_token,
 };
 use yulius_app::automations::run_key;
 use yulius_app::model::TaskRecord;
@@ -334,6 +334,83 @@ async fn each_run_starts_its_task_with_the_start_choice() -> TestResult {
                 .unwrap_or("")
                 .starts_with(&orphan)),
         "no task for the failed run"
+    );
+    Ok(())
+}
+
+/// AC-AUT-17: agents set the start choice with `automation_create` and `automation_update`; in an
+/// update any of the three replaces the choice; invalid choices change nothing.
+#[tokio::test]
+async fn agents_set_the_start_choice_with_the_automation_tools() -> TestResult {
+    let (h, alice) = world().await?;
+    seed_live_attempt(&h, "t-one", "tok-agent").await?;
+    let created = mcp_tool(
+        &h,
+        "tok-agent",
+        "automation_create",
+        json!({"name": "Harden", "cron": "0 3 * * *", "prompt": "Harden the app", "supertask": true}),
+    )
+    .await?;
+    assert_eq!(created["isError"], json!(false), "{created}");
+    let view = tool_text(&created)["automation"].clone();
+    assert_eq!(view["supertask"], json!(true), "{view}");
+    let id = view["id"].as_str().ok_or("id")?.to_owned();
+
+    let update = |args: Value| {
+        let mut args = args;
+        args["automation_id"] = json!(id);
+        mcp_tool(&h, "tok-agent", "automation_update", args)
+    };
+    let r = update(json!({"after_task": 1})).await?;
+    assert_eq!(r["isError"], json!(false), "{r}");
+    assert_eq!(
+        choice(&stored(&h, &alice, &id).await?),
+        (json!(false), json!("t-one"), json!(1), Value::Null)
+    );
+    let r = update(json!({"start_rule": "#1 done"})).await?;
+    assert_eq!(r["isError"], json!(false), "{r}");
+    assert_eq!(
+        choice(&stored(&h, &alice, &id).await?),
+        (json!(false), Value::Null, Value::Null, json!("#1 done"))
+    );
+    // A change of something else keeps the choice.
+    let r = update(json!({"name": "Harden more"})).await?;
+    assert_eq!(r["isError"], json!(false), "{r}");
+    assert_eq!(
+        stored(&h, &alice, &id).await?["start_rule"],
+        json!("#1 done")
+    );
+
+    for args in [
+        json!({"supertask": true, "start_rule": "#1 done"}),
+        json!({"after_task": 1, "start_rule": "#1 done"}),
+        json!({"after_task": 99}),
+        json!({"after_task": "one"}),
+        json!({"supertask": "yes"}),
+        json!({"start_rule": "#7 done"}),
+    ] {
+        let r = update(args.clone()).await?;
+        assert_eq!(r["isError"], json!(true), "{args}: {r}");
+    }
+    assert_eq!(
+        choice(&stored(&h, &alice, &id).await?),
+        (json!(false), Value::Null, Value::Null, json!("#1 done"))
+    );
+    let r = mcp_tool(
+        &h,
+        "tok-agent",
+        "automation_create",
+        json!({"name": "Bad", "cron": "0 3 * * *", "prompt": "x", "after_task": 99}),
+    )
+    .await?;
+    assert_eq!(r["isError"], json!(true), "{r}");
+
+    // `supertask: false` alone: start now.
+    let r = update(json!({"supertask": false})).await?;
+    assert_eq!(r["isError"], json!(false), "{r}");
+    assert_eq!(
+        choice(&stored(&h, &alice, &id).await?),
+        (json!(false), Value::Null, Value::Null, Value::Null)
     );
     Ok(())
 }

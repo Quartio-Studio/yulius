@@ -1273,6 +1273,57 @@ impl App {
             })
     }
 
+    /// The start choice of an `automation_create`/`automation_update` call (SPEC-078 AUT-017):
+    /// `after_task` (a task number), `start_rule` and `supertask`, as `task_create` takes them;
+    /// `None` when the call gives none of them.
+    async fn agent_start(
+        &self,
+        caller: &ProjectCaller,
+        args: &Value,
+    ) -> AppResult<Option<AutomationStart>> {
+        let given = |key: &str| args.get(key).filter(|v| !v.is_null());
+        let (after, rule, supertask) =
+            (given("after_task"), given("start_rule"), given("supertask"));
+        if after.is_none() && rule.is_none() && supertask.is_none() {
+            return Ok(None);
+        }
+        let supertask = match supertask {
+            None => false,
+            Some(flag) => flag
+                .as_bool()
+                .ok_or_else(|| AppError::Invalid("`supertask` must be true or false".into()))?,
+        };
+        let rule = match rule {
+            None => None,
+            Some(text) => Some(
+                text.as_str()
+                    .ok_or_else(|| AppError::Invalid("`start_rule` must be a string".into()))?,
+            ),
+        };
+        let after = match after {
+            None => None,
+            Some(number) => {
+                let number = number
+                    .as_u64()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .ok_or_else(|| {
+                        AppError::Invalid("`after_task` must be a task number".into())
+                    })?;
+                let task = self
+                    .deps
+                    .store
+                    .task_by_number(&caller.sandbox, number)
+                    .await?
+                    .ok_or_else(|| {
+                        AppError::Invalid(format!("task #{number} does not exist in this project"))
+                    })?;
+                Some(task.id.as_str().to_owned())
+            }
+        };
+        let input = start_input(supertask, after.as_deref(), rule)?;
+        Ok(Some(self.resolve_start(&caller.sandbox, input).await?))
+    }
+
     /// `automation_create` agent tool (AUT-002): records `created_via = agent` and the caller
     /// (the agent's task or the Cockpit) in the audit log; tasks are attributed to the person the
     /// caller acts for (SPEC-037 MGT-007).
@@ -1307,13 +1358,14 @@ impl App {
         };
         let enabled = args.get("enabled").and_then(Value::as_bool).unwrap_or(true);
         let workflow = self.agent_workflow(caller, args).await?;
+        let start = self.agent_start(caller, args).await?.unwrap_or_default();
         let record = self
             .insert_automation(NewAutomation {
                 sandbox: caller.sandbox.clone(),
                 fields,
                 workflow_id: workflow,
                 enabled,
-                start: AutomationStart::Now,
+                start,
                 created_by: caller.user.clone(),
                 created_via: CreatedVia::Agent,
                 actor: caller.actor.clone(),
@@ -1357,7 +1409,8 @@ impl App {
         Ok(json!({"automations": out, "ready_made": ready_made}))
     }
 
-    /// `automation_update` agent tool: enable/disable, schedule, offset, prompt or name.
+    /// `automation_update` agent tool: enable/disable, schedule, offset, prompt, name or the start
+    /// choice (any of `after_task`, `start_rule`, `supertask` replaces it).
     ///
     /// # Errors
     /// `NotFound` outside the agent's sandbox, validation errors.
@@ -1386,6 +1439,9 @@ impl App {
         }
         if let Some(enabled) = args.get("enabled").and_then(Value::as_bool) {
             next.enabled = enabled;
+        }
+        if let Some(start) = self.agent_start(caller, args).await? {
+            next.start = start;
         }
         self.save_automation(&current, &next, &caller.actor, caller.detail.clone())
             .await?;
