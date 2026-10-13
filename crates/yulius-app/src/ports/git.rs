@@ -241,6 +241,11 @@ pub trait GitPort: Send + Sync {
         let _ = (repo, ancestor, descendant);
         unsupported("comparing commits")
     }
+    /// The best common ancestor of two revisions, if any.
+    async fn merge_base(&self, repo: &Path, a: &str, b: &str) -> AppResult<Option<String>> {
+        let _ = (repo, a, b);
+        unsupported("finding a merge base")
+    }
     /// Whether a remote-tracking branch contains `sha`.
     async fn on_remote(&self, repo: &Path, sha: &str) -> AppResult<bool> {
         let _ = (repo, sha);
