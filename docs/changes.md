@@ -6,6 +6,19 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- Five flaky tests wait on what they check (SPEC-067, task #56; #243, #320, #322, #294, #269).
+  Each was reproduced next to CPU-bound processes, and none got a sleep or a retry. Two were
+  product bugs:
+  - A task's header strip now follows its pull request read. A task whose pull request is tested
+    reads "Done · PR #N" even when that read lands after the view opened. Before, it kept "Your
+    turn" until an unrelated event redrew it.
+  - A SessionStart hook answered before Yulius watched the new run was forgotten. The task's goal
+    then waited 45 s before it was typed. The flag is now reset before the agent is spawned.
+
+  The slash-menu, Auto, stored-draft and terminal-link tests now wait for the composer's focus,
+  hold the creation, store the draft before the page opens, and wait until xterm knows the link
+  and the Editor has loaded. The dropped-goal test sends Claude Code's SessionStart hook: its goal
+  starts after 16 s instead of 60 s.
 - The Cockpit and task agents manage the whole task and automation lifecycle (SPEC-066,
   ADR-0049, task #58, #275, #293). New MCP tools `task_stop`, `task_archive`, `task_delete`,
   `automation_delete`, `automation_run_now` and `automation_template_enable` do what the UI

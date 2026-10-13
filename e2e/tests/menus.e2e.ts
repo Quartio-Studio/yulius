@@ -266,6 +266,9 @@ test('an anchor taller than the window still gets a usable menu (unit, in the pa
 
 test('the Markdown slash menu filters too', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
+  // The page's composer takes the keyboard once it is mounted; the editor goes in after that, or
+  // the composer would take it from the slash menu (#322).
+  await expect(screen.getByRole('textbox', 'Task prompt')).toBeFocused();
   await browser.evaluate(async () => {
     const url = '/assets/mdeditor.js';
     const { createMarkdownEditor } = await import(url);
