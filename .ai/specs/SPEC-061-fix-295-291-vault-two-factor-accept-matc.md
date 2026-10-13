@@ -10,7 +10,7 @@ Date: 2026-10-13
 Scope authorization: task #52 (part of task #47, "fix all open actionable GitHub issues"): fix
 GitHub issues #295 and #291 following their acceptance criteria. Extends
 [SPEC-040](SPEC-040-it-should-be-only-value-title-notes-2fa.md) and
-[ADR-0034](../../docs/decisions/0034-personal-two-factor-guards-the-vault.md).
+[ADR-0042](../../docs/decisions/0042-personal-two-factor-guards-the-vault.md).
 
 ## Goal
 

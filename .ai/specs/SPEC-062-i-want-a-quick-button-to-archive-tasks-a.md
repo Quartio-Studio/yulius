@@ -80,7 +80,7 @@ Done group, instead of opening each task's menu and picking Archive.
   new bulk endpoint: the server keeps checking each task on its own (a Done task is closed, a
   live one refused), Done is decided by the same `taskInfo` rule the person sees (it needs the
   pull request's checks, which the client already holds), and a partial failure is reported per
-  task. See [ADR-0040](../../docs/decisions/0040-archive-all-runs-the-per-task-archive.md).
+  task. See [ADR-0043](../../docs/decisions/0043-archive-all-runs-the-per-task-archive.md).
 - No confirmation for "Archive all": archiving is reversible (UI-006 keeps it one click), and
   the toast's Undo restores the whole batch. Delete stays in the menu with its confirmation.
 - The quick button is shown for every archivable row (Done and Stopped), not only Done: the

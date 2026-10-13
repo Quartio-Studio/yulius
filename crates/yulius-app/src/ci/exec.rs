@@ -6,8 +6,10 @@
 //! the configured shell text is never spliced into Yulius's script. The log is read while the
 //! job runs (complete from the first byte, unlike a terminal attached after the start) and its
 //! tail stored. The environment has no secret: no task token, provider credential or GitHub
-//! token. `HOME` and `YULIUS_CI_CACHE` are persistent per sandbox, and each job keeps its own
-//! persistent checkout, so caches (dependency downloads, build outputs) survive between runs.
+//! token. `HOME` and `YULIUS_CI_CACHE` are persistent per sandbox and shared by its lanes (up to
+//! [`super::CiSettings::lanes`] runs at once, so a job's installs there must tolerate a concurrent
+//! run), and each job keeps a persistent checkout per lane ([`checkout_name`]), so caches
+//! (dependency downloads, build outputs) survive between runs.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

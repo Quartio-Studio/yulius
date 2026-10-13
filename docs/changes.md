@@ -6,6 +6,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- Unique decision numbers and the onboarding CI proof (SPEC-058, task #49; #317, #272). The four
+  decision records numbered 0034 now have their own numbers: the automations catalog keeps 0034, the
+  Agent in the right panel is 0036, the personal two-factor vault 0042 and the task status from
+  Claude Code's records 0044 (after #333 took 0041); the archive-all record (#332), a later second
+  0040, is 0043. `scripts/check_repository.py` fails on two records with one number, a title whose
+  number differs from the file name, or a record missing from `docs/decisions/README.md` (0016 was).
+  The onboarding prompt and infra-bootstrap step 2 add `YULIUS_CI_MATRIX` to the proof of matrix
+  jobs and say how to clean up after an interrupted proof: the proof prints its directory, the agent
+  removes its own by that path and other tasks' `~/.ci-proof.*` only when over six hours old, then
+  runs `git worktree prune`. They also say that checkouts are per CI lane while by default up to two
+  runs share the CI home and cache, and that system packages are installed by onboarding, never by a
+  CI job.
 - CI waits for disk instead of erroring (SPEC-059, ADR-0045, task #50; #240, #256, #258, #245). A
   CI run in a sandbox over its disk quota stays queued, with a `pending` status. It says who holds
   the space, and starts by itself once Yulius has pruned the caches of tasks that do not work, or
@@ -31,7 +43,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   - the task view ignores an older detail read (#316);
   - the queued messages card keeps unsent text and a refusal when the task starts (#324);
   - leaving the composer revokes every object URL it made (#259).
-- Quick archive (SPEC-062, ADR-0040, task #65). A sidebar task row that can be archived shows an
+- Quick archive (SPEC-062, ADR-0043, task #65). A sidebar task row that can be archived shows an
   Archive button beside its `⋮` on hover or focus, and the Done group's head has **Archive all**:
   one click archives every Done task, with one Undo for the whole batch. When some fail, the
   others stay archived and one toast says how many failed and why. Phones keep the `⋮` menu as
@@ -77,7 +89,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - Armed merges survive a server restart (a deploy no longer drops them) (SPEC-050 DLV-205).
 - Secrets are a title, a value and notes, and reading one needs your own two-factor code
-  (SPEC-040, ADR-0034, task #39). The first reveal sets two-factor up: an authenticator key and
+  (SPEC-040, ADR-0042, task #39). The first reveal sets two-factor up: an authenticator key and
   link, confirmed by a first code. After that, a code unlocks the vault in that browser for 10
   minutes. A sign-in or password alone no longer reveals anything. Older team secrets keep every
   field: the password becomes the value, and the address, user name and seed move into the
@@ -86,7 +98,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Ten wrong codes in a row lock codes until the person confirms it is them again. Rolling back
   past this change needs care: the previous release reads secrets saved in the new form as
   having no password, and an edit there would drop the value.
-- The Cockpit is now the **Agent**, on the right (SPEC-035, ADR-0034; task #33): a top-bar Agent
+- The Cockpit is now the **Agent**, on the right (SPEC-035, ADR-0036; task #33): a top-bar Agent
   button and the first tool of the right rail open the user's own Claude Code session in the tool
   panel beside the page, under a notice that it is for quick work (setting up automations, quick
   questions) and that anything more complex, such as writing code, belongs in a task (with a New
@@ -166,7 +178,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   CI (tests), Secrets and Dashboard, then "More", which expands Sessions, Workflows, Skills,
   Automations and MCP in place. Its state is remembered per browser; arriving at one of those
   pages shows it open for that page.
-- A task's status follows what its agent is doing (SPEC-032, ADR-0034; task #30): a task whose
+- A task's status follows what its agent is doing (SPEC-032, ADR-0044; task #30): a task whose
   agent ended its turn but still waits for a background agent (a reviewer) is Working with "1
   background task still running", not Done; a goal check that says "not met", or any stop the
   session goes on from, makes the task Working again instead of leaving "Your turn" (or Done);

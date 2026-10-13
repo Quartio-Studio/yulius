@@ -1,4 +1,4 @@
-# 0034. A task's status follows Claude Code's own records
+# 0044. A task's status follows Claude Code's own records
 
 ## Status
 
