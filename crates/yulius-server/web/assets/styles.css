@@ -2129,7 +2129,7 @@ button.task-group-head:hover { color: var(--text); }
 .ss-entry { position: relative; display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 2px 1ch; border-radius: var(--radius-sm); content-visibility: auto; contain-intrinsic-size: auto 48px; }
 .ss-entry.ss-sidechain { margin-left: 2ch; padding-left: 2ch; border-left: 1px solid var(--session-border); border-radius: 0; }
 .ss-entry.ss-target { box-shadow: inset 0 0 0 1px var(--session-dim); }
-.ss-when { position: absolute; top: 2px; right: 1ch; padding: 2px 1ch 0 8px; }
+.ss-when { position: absolute; top: 2px; right: 0; padding: 2px 1ch 0 8px; }
 .ss-block { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .ss-line { display: flex; gap: 1ch; min-width: 0; }
 .ss-line-body { flex: 1; min-width: 0; }
@@ -2143,7 +2143,7 @@ button.task-group-head:hover { color: var(--text); }
 .ss-code { margin: 0; padding: 4px 0 4px 1ch; border-left: 1px solid var(--session-border); color: var(--session-fg); font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 480px; overflow: auto; }
 .ss-text .ss-code { margin: 4px 0; }
 .ss-input { margin-left: 3ch; color: var(--session-dim); }
-.ss-fold > summary { display: flex; flex-direction: column; gap: 2px; padding: 0; border-radius: var(--radius-sm); cursor: pointer; list-style: none; }
+.ss-fold > summary { display: flex; flex-direction: column; gap: 2px; margin: 0 -1ch; padding: 0 1ch; border-radius: var(--radius-sm); cursor: pointer; list-style: none; }
 .ss-fold > summary::-webkit-details-marker { display: none; }
 .ss-fold > summary:hover .ss-call, .ss-thinking > summary:hover .ss-line-body { text-decoration: underline; text-decoration-color: var(--session-dim); text-underline-offset: 3px; }
 .ss-fold > summary:focus-visible { outline: none; box-shadow: var(--focus-inset); }
@@ -2157,7 +2157,8 @@ button.task-group-head:hover { color: var(--text); }
 .ss-out-err, .ss-out-err .ss-mark { color: var(--session-err); }
 .ss-result { max-height: 480px; overflow: auto; }
 .ss-tool[open] .ss-preview-folded { display: none; }
-.ss-diff { margin-left: 4ch; overflow: hidden; }
+.ss-diff { margin-left: 4ch; }
+.ss-tui :is(.ss-code, .ss-result, .ss-diff-hunk):focus-visible { outline: none; box-shadow: var(--focus-inset); }
 .ss-diff-hunk { margin: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 480px; overflow: auto; }
 .ss-diff-hunk > span { display: block; padding: 0 1ch; }
 .ss-ctx { color: var(--session-dim); }

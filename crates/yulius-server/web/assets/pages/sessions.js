@@ -174,9 +174,12 @@ function richText(text, className = 'ss-text') {
     if (index % 2 === 0) return part ? h('span', null, part) : null;
     const newline = part.indexOf('\n');
     const code = newline >= 0 && /^[\w+-]*$/.test(part.slice(0, newline)) ? part.slice(newline + 1) : part;
-    return h('pre', { class: 'ss-code' }, h('code', null, code.replace(/\n$/, '')));
+    return h('pre', { class: 'ss-code', ...SCROLLS }, h('code', null, code.replace(/\n$/, '')));
   }));
 }
+
+// Long code, results and diffs scroll inside their box (max-height); a keyboard reaches them too.
+const SCROLLS = { tabindex: '0' };
 
 const linesOf = (text) => String(text || '').replace(/\n+$/, '').split('\n');
 
@@ -206,7 +209,7 @@ function diffView(diff) {
   return h('div', { class: 'ss-diff', role: 'group', 'aria-label': `Changes to ${diff.path}` },
     diff.hunks.map((hunk) => {
       const { head, removed, added, tail } = hunkLines(hunk);
-      return h('pre', { class: 'ss-diff-hunk' },
+      return h('pre', { class: 'ss-diff-hunk', ...SCROLLS },
         head.map((line) => h('span', { class: 'ss-ctx' }, `  ${line}\n`)),
         removed.map((line) => h('span', { class: 'ss-del' }, `- ${line}\n`)),
         added.map((line) => h('span', { class: 'ss-add' }, `+ ${line}\n`)),
@@ -294,7 +297,7 @@ function metaOf(item) {
   return parsedMeta.get(item);
 }
 
-const outLines = (lines, className) => tuiLine('⎿', h('span', { class: 'ss-out-text' }, lines.join('\n')), { kind: 'out', className: ['ss-out', className] });
+const outLines = (lines, className, attrs = null) => h('span', { class: ['ss-line', 'ss-out', ...[className].flat(Infinity)], ...attrs }, mark('⎿', 'out'), h('span', { class: 'ss-line-body' }, h('span', { class: 'ss-out-text' }, lines.join('\n'))));
 
 function toolCall(item, result) {
   const failed = Boolean(result && result.is_error);
@@ -309,8 +312,8 @@ function toolCall(item, result) {
         item.summary ? ['(', h('span', { class: 'ss-tool-summary' }, item.summary), ')'] : null,
         failed ? h('span', { class: 'ss-tool-flag' }, ' error') : null), { kind: failed ? 'err' : result ? 'ok' : 'call' }),
       preview.length ? outLines(preview, ['ss-preview', !diff && 'ss-preview-folded', failed && 'ss-out-err']) : null),
-    item.diff ? diffView(item.diff) : h('pre', { class: 'ss-code ss-input' }, h('code', null, item.input)),
-    result ? outLines(linesOf(result.text || '(No content)'), ['ss-result', failed && 'ss-out-err']) : null,
+    item.diff ? diffView(item.diff) : h('pre', { class: 'ss-code ss-input', ...SCROLLS }, h('code', null, item.input)),
+    result ? outLines(linesOf(result.text || '(No content)'), ['ss-result', failed && 'ss-out-err'], SCROLLS) : null,
     result && result.truncated ? h('p', { class: 'ss-dim xs' }, 'Cut here: the result is longer.') : null);
 }
 
@@ -329,7 +332,7 @@ function block(item, results, role) {
     case 'tool_result':
       return results.has(item.tool_use_id) && results.get(item.tool_use_id).shown ? null : h('details', { class: ['ss-fold', 'ss-tool', item.is_error && 'ss-tool-error'] },
         h('summary', null, outLines(callPreview({ name: '' }, item), ['ss-preview', 'ss-preview-folded', item.is_error && 'ss-out-err'])),
-        outLines(linesOf(item.text || '(No content)'), ['ss-result', item.is_error && 'ss-out-err']));
+        outLines(linesOf(item.text || '(No content)'), ['ss-result', item.is_error && 'ss-out-err'], SCROLLS));
     case 'image':
       return tuiLine('⎿', h('span', { class: 'ss-dim' }, '[Image] (not kept)'), { kind: 'out' });
     case 'meta': {

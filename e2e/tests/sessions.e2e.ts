@@ -320,6 +320,19 @@ test('a folded call shows its keyboard focus inside the entry, and the search ta
   expect(ring).toEqual({ focused: true, inset: true, outside: false, targetInset: true });
 });
 
+// Review round 4: a long diff scrolls and takes the keyboard; its ring is drawn inside too.
+test('a long diff that scrolls shows its keyboard focus', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/sessions/ses_task_4'));
+  await expect(browser.locator('.ss-tui details.ss-tool > summary').filter({ hasText: 'Write(src/webhooks/fixtures.ts)' })).toContainText('Wrote 60 lines');
+  await browser.locator('.ss-tui .ss-diff[aria-label="Changes to src/webhooks/fixtures.ts"] .ss-diff-hunk').focus();
+  const ring = await browser.evaluate(() => {
+    const hunk = document.activeElement as HTMLElement;
+    const style = getComputedStyle(hunk);
+    return { scrolls: hunk.scrollHeight > hunk.clientHeight, hunk: hunk.matches('.ss-diff-hunk:focus-visible'), inset: style.boxShadow.includes('inset'), clipped: getComputedStyle(hunk.closest('.ss-diff')!).overflow === 'hidden' };
+  });
+  expect(ring).toEqual({ scrolls: true, hunk: true, inset: true, clipped: false });
+});
+
 test('a search match opens the transcript at its line', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/sessions?q=fulfilling'));
   await screen.getByRole('list', 'Sessions').getByRole('link', /Add Stripe checkout/).click();
