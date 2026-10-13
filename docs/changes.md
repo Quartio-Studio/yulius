@@ -10,6 +10,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   into `system/`, `agents/` and `ci/`, and CI jobs run with four times the agents' CPU weight. CI
   gets up to 80 % of the sandbox while agents build, and agents keep at least 20 %. The e2e suite in CI is
   back to the default budgets and no retries, so a timeout there is a real failure.
+- "See the original prompt" in the task menu (SPEC-043, ADR-0033, task #42) shows the prompt a
+  task started with: the text formatted as written, with Copy text, and the files attached to it
+  (an image as a thumbnail that opens full size, another file to download, a file removed since
+  named). `GET /api/tasks/{tid}/prompt` returns it; `GET /api/tasks/{tid}/prompt/attachments/{n}`
+  serves a file only from the task's own attachment folders, never through a link or from a path a
+  prompt names elsewhere.
 
 ## 2026-10-12
 
