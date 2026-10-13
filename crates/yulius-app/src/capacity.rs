@@ -664,7 +664,8 @@ impl App {
         let now = self.now();
         let threshold = rotation::THRESHOLD;
         let records = store.accounts().await?;
-        let live = store.live_attempts().await?;
+        // A subscription is held by working tasks only (SPEC-057 SUB-001).
+        let live = self.working_attempts().await?;
         let views = self.account_views().await?;
         let mut accounts = Vec::with_capacity(records.len());
         let mut members = Vec::new();

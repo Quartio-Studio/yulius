@@ -11,6 +11,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   one click archives every Done task, with one Undo for the whole batch. When some fail, the
   others stay archived and one toast says how many failed and why. Phones keep the `⋮` menu as
   their only row action. No API change: each task goes through `POST /api/tasks/{tid}/archive`.
+- Done tasks no longer hold their subscription (SPEC-057, ADR-0040, task #48). A subscription
+  card counts only tasks still working on it, so one whose tasks are all Done (goal achieved, or
+  plan complete and merged: the session limit's rule) says "No tasks right now" and can be removed. Removing it closes those Done tasks' idle sessions first, as archiving
+  does. The pool's load and the Status panel count the same way as the session limit (SES-101).
 - CI jobs get the CPU first (SPEC-053, ADR-0039, task #45, #283). A sandbox's cgroup is split
   into `system/`, `agents/` and `ci/`, and CI jobs run with four times the agents' CPU weight. CI
   gets up to 80 % of the sandbox while agents build, and agents keep at least 20 %. The e2e suite in CI is

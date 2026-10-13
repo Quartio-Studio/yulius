@@ -46,3 +46,4 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0039](0039-ci-jobs-get-the-cpu-first.md): CI jobs get the CPU first through a weighted cgroup
 - [0038](0038-onboarding-starts-in-the-browser.md): Onboarding starts in the browser, never from the CLI
 - [0040](0040-archive-all-runs-the-per-task-archive.md): "Archive all" runs the per-task archive; no bulk endpoint
+- [0040](0040-done-tasks-release-their-subscription.md): Done tasks release their subscription
