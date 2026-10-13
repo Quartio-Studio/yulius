@@ -56,6 +56,17 @@ const WHEEL_NOTCH_PX = 40;
 const WHEEL_MAX_NOTCHES = 10;
 
 /**
+ * Whether the person is typing in a text field outside `root` that is not a terminal's own input
+ * (xterm's hidden textarea), so a terminal shown late leaves the keyboard there (SPEC-052).
+ */
+function typingElsewhere(root) {
+  const active = document.activeElement;
+  if (!active || root.contains(active) || active.closest('.xterm')) return false;
+  if (active.isContentEditable || active.tagName === 'TEXTAREA') return true;
+  return active.tagName === 'INPUT' && !['button', 'checkbox', 'radio', 'submit', 'reset', 'range', 'color', 'file', 'image'].includes(active.type);
+}
+
+/**
  * Create a terminal view. Options:
  *   transport, path            WebSocket transport and path (e.g. /api/tasks/{tid}/terminal)
  *   onLink(uri, event)         link activation (web links and OSC 8 hyperlinks)
@@ -161,13 +172,6 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   let gotState = false;
   let drawn = false;
   let focusWanted = false;
-  // Where the keyboard was when focus was asked for: a deferred focus lands only if it is still
-  // there (or nowhere, or already here), as the Agent panel does (agent.js `stayed`).
-  let focusFrom = null;
-  const focusStayed = () => {
-    const now = document.activeElement;
-    return now === focusFrom || !now || now === document.body || el.contains(now);
-  };
   let revealTimer = 0;
   let emptyShown = false;
   // What this viewer last told the server about itself (null: nothing yet on this connection).
@@ -259,9 +263,10 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     el.removeAttribute('aria-busy');
     renderEmpty();
     render();
-    // Focus asked for before the terminal showed lands now, unless the keyboard went somewhere
-    // else meanwhile: a box beside the terminal, or another terminal asked for later.
-    if (focusWanted && focusStayed()) term.focus();
+    // Focus asked for before the terminal showed lands now, unless the person is typing in a
+    // text field meanwhile (the queued messages box beside a waiting task's terminal). Buttons,
+    // tabs and other terminals do not hold it back: the terminal asked for last still wins.
+    if (focusWanted && !typingElsewhere(el)) term.focus();
     if (onReady) onReady();
   }
 
@@ -766,13 +771,9 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     get canWrite() {
       return state.can_write;
     },
-    /**
-     * Focus the terminal now, or as soon as it is shown if the keyboard is still where it was
-     * when asked (`from`, by default where it is now).
-     */
-    focus(from = document.activeElement) {
+    /** Focus the terminal now, or as soon as it is shown. */
+    focus() {
       focusWanted = true;
-      focusFrom = from;
       if (opened && ready) term.focus();
     },
     get ready() {

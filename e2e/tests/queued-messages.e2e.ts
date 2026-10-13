@@ -105,7 +105,7 @@ test('the terminal showing late does not take the keys typed into the queue box'
   await expect(box).toBeFocused();
 });
 
-test('a Shell opened while the task terminal loads keeps the keyboard, whichever shows first', async ({ app, browser, screen }) => {
+test('a Shell opened while the task terminal loads gets the keyboard when it shows after it', async ({ app, browser, screen }) => {
   type Holds = { __yuliusHoldTerminal?: Promise<void>; __yuliusHoldShell?: Promise<void>; __releaseTerminal?: () => void; __releaseShell?: () => void };
   await browser.addInitScript(() => {
     const w = window as unknown as Holds;
@@ -116,7 +116,8 @@ test('a Shell opened while the task terminal loads keeps the keyboard, whichever
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('button', 'Shell').click();
 
-  // The task terminal shows first, then the Shell asked for afterwards: the Shell gets the keys.
+  // The task terminal shows first (the keyboard is on the Shell button: it takes it), then the
+  // Shell asked for afterwards shows: the terminal asked for last gets the keys.
   await browser.evaluate(() => (window as unknown as Holds).__releaseTerminal?.());
   await expect.poll(() => browser.evaluate(() => document.querySelector('.taskview .term-pending') === null)).toBe(true);
   await browser.evaluate(() => (window as unknown as Holds).__releaseShell?.());

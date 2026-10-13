@@ -2809,7 +2809,8 @@ class TermSession {
     try { msg = JSON.parse(data); } catch { return; }
     if (msg.type === 'hello') {
       // A test can hold a task terminal's first screen (`window.__yuliusHoldTerminal = promise`,
-      // set by an init script) to act in the view before the terminal shows.
+      // set by an init script) to act in the view before the terminal shows; once released, this
+      // session stays open for good (`released` is per session).
       const hold = window.__yuliusHoldTerminal;
       if (hold && !this.released) { hold.then(() => { this.released = true; this.receive(ws, data); }); return; }
       this.viewers.add(ws);
@@ -3038,7 +3039,8 @@ class ShellSession {
     let msg;
     try { msg = JSON.parse(data); } catch { return; }
     if (msg.type === 'hello') {
-      // A test can hold a shell's first screen too (`window.__yuliusHoldShell = promise`).
+      // A test can hold a shell's first screen too (`window.__yuliusHoldShell = promise`); once
+      // released, this session stays open for good (`released` is per session).
       const hold = window.__yuliusHoldShell;
       if (hold && !this.released) { hold.then(() => { this.released = true; this.receive(ws, data); }); return; }
       this.viewers.add(ws);
