@@ -2405,9 +2405,11 @@ function sessionDocs(db) {
   ];
   const flaky = [
     entry(0, 'user', [text('Why is the e2e login test flaky on CI?')], { at: iso(5 * DAY) }),
-    entry(1, 'assistant', [call('g1', 'Grep', 'waitForTimeout in e2e', { pattern: 'waitForTimeout', path: 'e2e' })]),
-    entry(2, 'user', [result('g1', 'e2e/login.spec.ts:14:  await page.waitForTimeout(500);')]),
-    entry(3, 'assistant', [text('The test sleeps 500 ms instead of waiting for the session cookie; on a slow runner the redirect is not done yet. Waiting for the dashboard heading fixes it.')]),
+    entry(1, 'assistant', [call('b1', 'Bash', 'npx playwright test login', { command: 'npx playwright test login' })]),
+    entry(2, 'user', [result('b1', 'Error: Timed out 5000ms waiting for expect(locator).toBeVisible()\n  at e2e/login.spec.ts:15', true)]),
+    entry(3, 'assistant', [call('g1', 'Grep', 'waitForTimeout in e2e', { pattern: 'waitForTimeout', path: 'e2e' })]),
+    entry(4, 'user', [result('g1', 'e2e/login.spec.ts:14:  await page.waitForTimeout(500);\ne2e/signup.spec.ts:9:  await page.waitForTimeout(300);\ne2e/cart.spec.ts:21:  await page.waitForTimeout(250);\ne2e/admin.spec.ts:7:  await page.waitForTimeout(500);\ne2e/search.spec.ts:30:  await page.waitForTimeout(100);')]),
+    entry(5, 'assistant', [text('The test sleeps 500 ms instead of waiting for the session cookie; on a slow runner the redirect is not done yet. Waiting for the dashboard heading fixes it.')]),
   ];
   const webhook = [
     entry(0, 'user', [text('Payment webhook: verify Stripe signatures and retry fulfilment with backoff.')], { at: iso(9 * HOUR) }),

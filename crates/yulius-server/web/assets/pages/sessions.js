@@ -162,6 +162,11 @@ export function mountSessionsPage(ctx, sandbox) {
 
 // ------------------------------------------------------------------ the read-only transcript
 
+// A session is printed as Claude Code's TUI printed it (SPEC-075): `>` prompts, `⏺` messages and
+// tool calls, `⎿` results folded to their first lines, in the terminal's typeface.
+const TOOL_LABEL = { Edit: 'Update', MultiEdit: 'Update' }; // as the TUI names them
+const FOLD_LINES = 3;
+
 /** Text with ``` fences as code blocks (never parsed as HTML). */
 function richText(text, className = 'ss-text') {
   const parts = String(text || '').split(/```/);
@@ -173,35 +178,99 @@ function richText(text, className = 'ss-text') {
   }));
 }
 
-function diffView(diff) {
-  return h('div', { class: 'ss-diff', role: 'group', 'aria-label': `Changes to ${diff.path}` },
-    h('div', { class: 'ss-diff-path' }, icon('file', { size: 12 }), diff.path),
-    diff.hunks.map((hunk) => h('pre', { class: 'ss-diff-hunk' },
-      hunk.old ? hunk.old.split('\n').map((line) => h('span', { class: 'ss-del' }, `- ${line}\n`)) : null,
-      hunk.new.split('\n').map((line) => h('span', { class: 'ss-add' }, `+ ${line}\n`)))));
+const linesOf = (text) => String(text || '').replace(/\n+$/, '').split('\n');
+
+/** The TUI's gutter mark (`>`, `⏺`, `⎿`, `✻`), decoration only. */
+const mark = (glyph, kind) => h('span', { class: ['ss-mark', kind && `ss-mark-${kind}`], 'aria-hidden': 'true' }, glyph);
+
+/** A line of the TUI: its mark in the gutter, then the content (spans, so it may sit in a summary). */
+const tuiLine = (glyph, content, { kind, className } = {}) => h('span', { class: ['ss-line', className] }, mark(glyph, kind), h('span', { class: 'ss-line-body' }, content));
+
+/** A hunk as context, removed and added lines: the lines both sides share at the start and the end are context. */
+function hunkLines(hunk) {
+  const before = hunk.old ? linesOf(hunk.old) : [];
+  const after = linesOf(hunk.new);
+  let head = 0;
+  while (head < before.length && head < after.length && before[head] === after[head]) head += 1;
+  let tail = 0;
+  while (tail < before.length - head && tail < after.length - head && before[before.length - 1 - tail] === after[after.length - 1 - tail]) tail += 1;
+  return {
+    head: after.slice(0, head),
+    removed: before.slice(head, before.length - tail),
+    added: after.slice(head, after.length - tail),
+    tail: after.slice(after.length - tail),
+  };
 }
 
-function block(item, results) {
+function diffView(diff) {
+  return h('div', { class: 'ss-diff', role: 'group', 'aria-label': `Changes to ${diff.path}` },
+    diff.hunks.map((hunk) => {
+      const { head, removed, added, tail } = hunkLines(hunk);
+      return h('pre', { class: 'ss-diff-hunk' },
+        head.map((line) => h('span', { class: 'ss-ctx' }, `  ${line}\n`)),
+        removed.map((line) => h('span', { class: 'ss-del' }, `- ${line}\n`)),
+        added.map((line) => h('span', { class: 'ss-add' }, `+ ${line}\n`)),
+        tail.map((line) => h('span', { class: 'ss-ctx' }, `  ${line}\n`)));
+    }));
+}
+
+/** What the TUI prints under a folded call's `⎿`: a summary of the edit or read, else the first lines of the result. */
+export function callPreview(call, result) {
+  if (call.diff) {
+    let added = 0;
+    let removed = 0;
+    for (const hunk of call.diff.hunks) {
+      const lines = hunkLines(hunk);
+      added += lines.added.length;
+      removed += lines.removed.length;
+    }
+    return [`Updated ${call.diff.path} with ${plural(added, 'addition')} and ${plural(removed, 'removal')}`];
+  }
+  if (!result) return [];
+  if (!result.text) return ['(No content)'];
+  const lines = linesOf(result.text);
+  if (call.name === 'Read' && !result.is_error) return [`Read ${plural(lines.length, 'line')}`];
+  return lines.length > FOLD_LINES ? [...lines.slice(0, FOLD_LINES), `… +${plural(lines.length - FOLD_LINES, 'line')}`] : lines;
+}
+
+const outLines = (lines, className) => tuiLine('⎿', h('span', { class: 'ss-out-text' }, lines.join('\n')), { kind: 'out', className: ['ss-out', className] });
+
+function toolCall(item, result) {
+  const failed = Boolean(result && result.is_error);
+  const preview = callPreview(item, result);
+  return h('details', { class: ['ss-fold', 'ss-tool', failed && 'ss-tool-error'], open: Boolean(item.diff) },
+    h('summary', null,
+      tuiLine('⏺', h('span', { class: 'ss-call' },
+        h('span', { class: 'ss-tool-name' }, TOOL_LABEL[item.name] || item.name),
+        item.summary ? ['(', h('span', { class: 'ss-tool-summary' }, item.summary), ')'] : null,
+        failed ? h('span', { class: 'ss-tool-flag' }, ' error') : null), { kind: failed ? 'err' : result ? 'ok' : 'call' }),
+      preview.length ? outLines(preview, ['ss-preview', !item.diff && 'ss-preview-folded', failed && 'ss-out-err']) : null),
+    item.diff ? diffView(item.diff) : h('pre', { class: 'ss-code ss-input' }, h('code', null, item.input)),
+    result && !item.diff ? outLines(linesOf(result.text || '(No content)'), ['ss-result', failed && 'ss-out-err']) : null,
+    result && item.diff ? outLines(linesOf(result.text || '(No content)'), 'ss-result') : null,
+    result && result.truncated ? h('p', { class: 'ss-dim xs' }, 'Cut here: the result is longer.') : null);
+}
+
+function block(item, results, role) {
   switch (item.type) {
     case 'text':
-      return h('div', { class: 'ss-block' }, richText(item.text), item.truncated ? h('p', { class: 'muted xs' }, 'Cut here: the message is longer.') : null);
+      return h('div', { class: 'ss-block' },
+        role === 'user' ? tuiLine('>', richText(item.text), { kind: 'prompt', className: 'ss-prompt' })
+          : role === 'summary' ? tuiLine('※', richText(item.text), { kind: 'dim' })
+            : tuiLine('⏺', richText(item.text), { kind: 'say' }),
+        item.truncated ? h('p', { class: 'ss-dim xs' }, 'Cut here: the message is longer.') : null);
     case 'thinking':
-      return h('details', { class: 'ss-fold ss-thinking' }, h('summary', null, 'Thinking'), richText(item.text, 'ss-text muted'));
-    case 'tool_call': {
-      const result = results.get(item.id);
-      return h('details', { class: ['ss-fold', 'ss-tool', result && result.is_error && 'ss-tool-error'], open: Boolean(item.diff) },
-        h('summary', null, h('span', { class: 'ss-tool-name' }, item.name), h('span', { class: 'ss-tool-summary' }, item.summary || ''), result && result.is_error ? badge('error', 'danger') : null),
-        item.diff ? diffView(item.diff) : h('pre', { class: 'ss-code' }, h('code', null, item.input)),
-        result ? h('div', { class: 'ss-result' }, h('div', { class: 'ss-result-label' }, result.is_error ? 'Error' : 'Result'), h('pre', { class: 'ss-code' }, h('code', null, result.text || '(empty)')), result.truncated ? h('p', { class: 'muted xs' }, 'Cut here: the result is longer.') : null) : null);
-    }
+      return h('details', { class: 'ss-fold ss-thinking' }, h('summary', null, tuiLine('✻', 'Thinking…', { kind: 'think' })), richText(item.text, 'ss-text ss-dim'));
+    case 'tool_call':
+      return toolCall(item, results.get(item.id));
     case 'tool_result':
       return results.has(item.tool_use_id) && results.get(item.tool_use_id).shown ? null : h('details', { class: ['ss-fold', 'ss-tool', item.is_error && 'ss-tool-error'] },
-        h('summary', null, h('span', { class: 'ss-tool-name' }, item.is_error ? 'Error' : 'Result')),
-        h('pre', { class: 'ss-code' }, h('code', null, item.text || '(empty)')));
+        h('summary', null, outLines(callPreview({ name: '' }, item), ['ss-preview', 'ss-preview-folded', item.is_error && 'ss-out-err'])),
+        outLines(linesOf(item.text || '(No content)'), ['ss-result', item.is_error && 'ss-out-err']));
     case 'image':
-      return h('div', { class: 'ss-block muted small' }, icon('file', { size: 12 }), ' Image (not kept)');
+      return tuiLine('⎿', h('span', { class: 'ss-dim' }, '[Image] (not kept)'), { kind: 'out' });
     case 'meta':
-      return h('div', { class: 'ss-meta muted xs' }, item.text);
+      return h('div', { class: 'ss-meta ss-dim xs' }, item.text);
     default:
       return null;
   }
@@ -283,14 +352,13 @@ export function mountSessionView(ctx, sandbox, id, route) {
 
   function entry(item) {
     const role = item.role === 'user' && item.blocks.every((b) => b.type === 'tool_result' || b.type === 'meta') ? 'tool' : item.role;
-    const shown = item.blocks.map((b) => block(b, results)).filter(Boolean);
+    const shown = item.blocks.map((b) => block(b, results, role)).filter(Boolean);
     if (!shown.length) return null;
     const label = role === 'user' ? 'Prompt' : role === 'assistant' ? 'Claude' : ROLE_LABEL[role] || role;
     return h('li', { class: ['ss-entry', `ss-${role}`, item.sidechain && 'ss-sidechain', item.line === target && 'ss-target'], id: `line-${item.line}`, dataset: { line: String(item.line) } },
-      role === 'tool' ? null : h('div', { class: 'ss-entry-head' },
-        h('span', { class: 'ss-who' }, label, item.sidechain ? h('span', { class: 'muted' }, ' · subagent') : null),
-        item.at ? h('span', { class: 'muted xs', title: dateTime(item.at) }, relLong(item.at)) : null),
-      shown);
+      h('span', { class: 'sr-only' }, item.sidechain ? `${label} (subagent)` : label),
+      shown,
+      role === 'user' && item.at ? h('span', { class: 'ss-when ss-dim xs', title: dateTime(item.at) }, relLong(item.at)) : null);
   }
 
   function append(entries) {
@@ -303,7 +371,7 @@ export function mountSessionView(ctx, sandbox, id, route) {
   function renderMore() {
     setChildren(more, next !== null && next !== undefined
       ? h('button', { type: 'button', class: 'btn', disabled: loading, onClick: () => load(next) }, loading ? 'Loading…' : 'Load more')
-      : (entriesEl.children.length ? h('p', { class: 'muted small' }, 'End of the session.') : null));
+      : (entriesEl.children.length ? h('p', { class: 'ss-dim small' }, 'End of the session.') : null));
     setChildren(earlier, from > 0 && target !== null
       ? h('a', { class: 'btn btn-sm', href: href(sessionPath(sandbox, id)), dataset: { route: sessionPath(sandbox, id) } }, 'Show from the start')
       : null);
@@ -320,7 +388,7 @@ export function mountSessionView(ctx, sandbox, id, route) {
       session = page.session;
       next = page.next;
       renderHead();
-      if (first) setChildren(body, earlier, entriesEl, more);
+      if (first) setChildren(body, earlier, h('div', { class: 'ss-tui' }, entriesEl, more));
       append(page.entries || []);
       if (first && !entriesEl.children.length && next === null) setChildren(body, emptyState({ iconName: 'chat', title: 'Nothing to show', text: 'This transcript has no messages yet, or it is no longer on the server.' }));
       if (first && target !== null) {

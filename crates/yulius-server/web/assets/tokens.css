@@ -231,6 +231,16 @@
   --warn-soft-solid: color-mix(in srgb, var(--warn) 14%, var(--surface-2));
   --info-soft-solid: color-mix(in srgb, var(--info) 14%, var(--surface-2));
   --violet-border: color-mix(in srgb, var(--violet) 45%, transparent);
+  /* A session's transcript (SPEC-075): the terminal's palette. */
+  --session-bg: var(--term-bg);
+  --session-fg: var(--term-fg);
+  --session-dim: var(--ansi-bright-black);
+  --session-border: var(--border);
+  --session-prompt-bg: var(--surface-3);
+  --session-ok: var(--ansi-green);
+  --session-err: var(--ansi-red);
+  --session-add-bg: color-mix(in srgb, var(--ansi-green) 22%, var(--term-bg));
+  --session-del-bg: color-mix(in srgb, var(--ansi-red) 22%, var(--term-bg));
 
   /* Elevation: L0 canvas, L1 cards (border only), L2 menus/popovers/toasts, L3 modals/drawer. */
   --shadow-sm: 0 2px 8px var(--shadow-soft-color);
