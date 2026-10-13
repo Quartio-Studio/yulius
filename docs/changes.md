@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- A CI run that could not run (disk, a timeout, the host) reads "CI could not run (not the code)"
+  instead of "checks failing · Needs you"; an armed merge stays armed and the agent is told to run
+  the checks again (SPEC-050 STA-101).
 - Yulius's merge gate enforces the branch policy (SPEC-069, ADR 0051, task #59; #223). Before
   Yulius merges a task's pull request (`delivery_merge`, an armed merge, the Git page) or a
   promotion pull request, it checks the title, head and base against `yulius.toml`
