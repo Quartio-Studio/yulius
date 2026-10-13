@@ -52,6 +52,9 @@ pub struct FakeAgentOptions {
     pub goal_continue_dies: bool,
     /// Delay the goal turn by this many milliseconds (`--goal-delay-ms`).
     pub goal_delay_ms: Option<u64>,
+    /// The idle session compacts itself this many milliseconds after the goal turn, like Claude
+    /// Code before its prompt cache expires (`--idle-compact-ms`).
+    pub idle_compact_ms: Option<u64>,
     /// Lose the first typed lines like a TUI that drops a submit (`--drop-lines`).
     pub drop_lines: Option<u32>,
     /// Handle Ctrl+C and SIGTERM like Claude Code (`--interrupts`).
@@ -189,6 +192,9 @@ impl HarnessPort for FakeAgentHarness {
         }
         if let Some(ms) = self.options.goal_delay_ms {
             argv.extend(["--goal-delay-ms".into(), ms.to_string()]);
+        }
+        if let Some(ms) = self.options.idle_compact_ms {
+            argv.extend(["--idle-compact-ms".into(), ms.to_string()]);
         }
         if let Some(n) = self.options.drop_lines {
             argv.extend(["--drop-lines".into(), n.to_string()]);

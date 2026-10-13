@@ -22,6 +22,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
     CPUs idled); `YULIUS_SANDBOX_CPUS` still sets one.
   - This repository maps the budget to Cargo, nextest and libtest, drops the fixed 4 test threads
     and the CI job's one thread per CPU, and runs e2e with half its budget as workers.
+- A task's status tells the truth: Working is work, Needs you is a person's move (SPEC-085,
+  ADR-0068; F 2026-10-13 "marked as running even if was done", "needs you was too often"). A
+  replay of two days of transcripts found "Needs you" false for 43 of its 50 task-hours:
+  - An agent waiting in `yulius wait` for its checks or armed merge reads "Waiting for checks or
+    merge" under Working, not Your turn (173 periods, 37 tasks). The process probe counts such a
+    shell apart; disk upkeep, DLV-203 and Done still leave it out (DSK-102).
+  - Failing checks need you only once the agent stopped: while its background agent or shell
+    runs, or it waits for Yulius, the task reads "Working · PR #N checks failing" (task #63).
+  - Records Claude Code writes for itself start no turn: an idle compaction's summary made Done
+    task #60 read Working until it was stopped; so did command echoes and their output.
 - Yulius's tools answer in a few readable lines, and sessions fill the page (SPEC-086, ADR-0069):
   - A tool's result was its whole record as pretty JSON, which filled the agent's terminal (task
     #66's steps list) and its context: 6.08 MB in the transcripts of 2026-10-12/13, most of it

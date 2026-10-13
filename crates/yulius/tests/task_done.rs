@@ -26,7 +26,9 @@ use yulius_app::model::{
     AccountRecord, AccountStatus, SandboxRecord, TaskMode, TaskOrigin, TaskRecord, UserRecord,
 };
 use yulius_app::ports::harness::HarnessPort;
-use yulius_app::ports::session::{AttachedRun, LaunchPlan, RunInspection, SessionHost, SpawnedRun};
+use yulius_app::ports::session::{
+    AttachedRun, BackgroundProbe, LaunchPlan, RunInspection, SessionHost, SpawnedRun,
+};
 use yulius_app::ports::store::TaskStore;
 use yulius_contracts::events::UiEvent;
 use yulius_domain::harness::{Harness, Provider};
@@ -439,6 +441,198 @@ fn an_achieved_goal_with_no_shell_left_makes_the_task_done() -> TestResult {
             Some(Activity::Waiting),
             "a late read of the prompt does not reopen the finished turn"
         );
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-085 STT-001 (task #60 on 2026-10-13: Done, then Working for 19 minutes until it was
+/// stopped): Claude Code compacts an idle session before its prompt cache expires. The records
+/// it writes (the summary the session continues from, the files it reads again, its SessionStart
+/// hook and notice) are no prompt: the Done task stays Done and never reads Working.
+#[test]
+fn an_idle_compaction_leaves_a_done_task_done() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            idle_compact_ms: Some(6_000),
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Fix the status").await?;
+        wait_for("Done", Duration::from_secs(90), || async {
+            shown(&app, &id).await.ok() == Some((Some("done".into()), Some(0)))
+        })
+        .await?;
+        if screen_contains(&app, &id, "COMPACTED WHILE IDLE").await {
+            return Err("the compaction came before Done: the test proves nothing".into());
+        }
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let mut events = app.events.subscribe();
+        let collector = tokio::spawn({
+            let (seen, id) = (Arc::clone(&seen), id.as_str().to_owned());
+            async move {
+                loop {
+                    match events.recv().await {
+                        Ok(envelope) => {
+                            if let UiEvent::TaskUpdated { task } = envelope.event
+                                && task.id == id
+                            {
+                                let mut seen = seen.lock().unwrap_or_else(|e| e.into_inner());
+                                seen.push(task.activity.unwrap_or_default());
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            }
+        });
+        wait_for("the idle compaction", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "COMPACTED WHILE IDLE")
+        })
+        .await?;
+        // Its records were written before it said so: two more watcher rounds read them.
+        let runtime = app.runtime(&id);
+        let rounds = runtime.transcript_rounds();
+        wait_for("the compaction read", Duration::from_secs(20), || async {
+            runtime.transcript_rounds() >= rounds + 2
+        })
+        .await?;
+        assert_eq!(activity(&app, &id).await, Some(Activity::Done));
+        collector.abort();
+        let seen = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(
+            seen.iter().all(|a| a == "done"),
+            "the compaction never made the task Working: {seen:?}"
+        );
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// The real session host whose probe also finds `waits` shells that only run `yulius wait`
+/// (what `yulius_ptyhost::shells::count_background` tells apart on a real process tree).
+struct WaitingHost {
+    inner: PtySessionHost,
+    waits: Arc<std::sync::atomic::AtomicU32>,
+}
+
+#[async_trait::async_trait]
+impl SessionHost for WaitingHost {
+    async fn spawn(
+        &self,
+        run_dir: &Path,
+        attempt_id: &str,
+        task_id: &str,
+        plan: &LaunchPlan,
+        token: &[u8; 32],
+        size: (u16, u16),
+    ) -> AppResult<SpawnedRun> {
+        self.inner
+            .spawn(run_dir, attempt_id, task_id, plan, token, size)
+            .await
+    }
+
+    async fn attach(&self, run_dir: &Path, token: &[u8; 32]) -> AppResult<AttachedRun> {
+        self.inner.attach(run_dir, token).await
+    }
+
+    fn inspect(&self, run_dir: &Path) -> RunInspection {
+        self.inner.inspect(run_dir)
+    }
+
+    fn terminate(&self, run_dir: &Path) -> AppResult<()> {
+        self.inner.terminate(run_dir)
+    }
+
+    fn background_shells(&self, child_pid: u32) -> Option<u32> {
+        self.inner.background_shells(child_pid)
+    }
+
+    fn background_probe(&self, child_pid: u32) -> Option<BackgroundProbe> {
+        self.inner
+            .background_probe(child_pid)
+            .map(|found| BackgroundProbe {
+                waits: self.waits.load(std::sync::atomic::Ordering::SeqCst),
+                ..found
+            })
+    }
+}
+
+/// SPEC-085 STT-002 ("needs you was too often": 173 idle periods of 37 tasks read Your turn while
+/// their agent waited in `yulius wait` for its checks or merge): the probe's waiting shells reach
+/// the task's view and the sandbox's counts. The waiting task is not counted as needing a person
+/// and is still no background work; once the wait ended, Your turn needs the person again.
+#[test]
+fn an_agent_waiting_for_yulius_does_not_need_a_person() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            goal_verdict: Some("failed"),
+            ..FakeAgentOptions::default()
+        };
+        let waits = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
+        let host = Arc::new(WaitingHost {
+            inner: PtySessionHost::new(exe),
+            waits: Arc::clone(&waits),
+        });
+        let (app, _) = start_on(&data, &fake, agent, 0, Some(host), None, false, None).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let ctx = yulius_app::auth::AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        let needs_you = || async {
+            app.list_sandboxes(&ctx)
+                .await
+                .ok()
+                .and_then(|sandboxes| sandboxes.into_iter().find(|s| s.id == sandbox.as_str()))
+                .map(|s| s.counts.needs_attention)
+        };
+        let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
+        let view = || async {
+            let summary = app.task_summary(&task(&app, &id).await?).await?;
+            Ok::<_, BoxError>((
+                summary.activity,
+                summary.background_shells,
+                summary.yulius_wait,
+            ))
+        };
+        wait_for("Your turn", Duration::from_secs(90), || async {
+            view().await.ok() == Some((Some("waiting".into()), Some(0), false))
+        })
+        .await?;
+        assert_eq!(needs_you().await, Some(1), "Your turn needs the person");
+
+        // The agent waits for its checks: the next probe finds it.
+        waits.store(1, std::sync::atomic::Ordering::SeqCst);
+        wait_for("the wait in the view", Duration::from_secs(20), || async {
+            view().await.ok() == Some((Some("waiting".into()), Some(0), true))
+        })
+        .await?;
+        assert_eq!(needs_you().await, Some(0), "nobody has to act");
+
+        // The wait returned and the agent stopped: Your turn again.
+        waits.store(0, std::sync::atomic::Ordering::SeqCst);
+        wait_for("the wait over", Duration::from_secs(20), || async {
+            view().await.ok() == Some((Some("waiting".into()), Some(0), false))
+        })
+        .await?;
+        assert_eq!(needs_you().await, Some(1));
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
