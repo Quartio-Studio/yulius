@@ -1038,6 +1038,7 @@ impl App {
                 automation_run: Some(key.to_owned()),
                 start: true,
                 mode: crate::model::TaskMode::Prompt,
+                supertask: false,
             })
             .await?;
         Ok(task.id)
