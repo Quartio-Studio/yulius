@@ -1,11 +1,11 @@
 ---
 yulius-task: 9aa5e52a-abd3-4351-9483-68ca197f1484
-status: in-progress
+status: done
 ---
 
 # SPEC-060: a session whose context is full is compacted or restarted, not left working
 
-Status: in-progress
+Status: done
 Date: 2026-10-13
 Scope authorization: task #51, part of task #47 ("fix all open actionable GitHub issues"): fix
 GitHub issue #213, "A session whose context is full stays 'working' for hours and never recovers".
@@ -78,7 +78,7 @@ retries without bound: the last stage is a person.
 - [x] A full session is compacted with a focus line and the next prompt reaches the agent
 - [x] A failed compaction continues the task in a fresh session with a handoff summary
 - [x] A second failure flags the task with the reason, also after a restart
-- [ ] Independent review, docs, ADR and every gate green
+- [x] Independent review, docs, ADR and every gate green
 
 ## Acceptance criteria
 
@@ -122,3 +122,39 @@ retries without bound: the last stage is a person.
   them.
 - **The reason is said, not stored.** As for a goal that was never taken, the terminal notice and
   the audit entry carry the reason. No new column is added for a flag a person clears by acting.
+
+## Evidence
+
+- Record shapes read from the installed Claude Code 2.1.292: its API-error helper writes
+  `error: "invalid_request"` with the `PROMPT_TOO_LONG` text "Prompt is too long" and
+  `errorDetails`; a compaction writes `system`/`compact_boundary`. The production transcript of
+  task #8 (session `593b396e`, lines 5861–5881) shows the three refusals and the person's `/compact`.
+- Red first: the harness tests did not compile before the new `Observed` variants. With the
+  supervisor's dispatch of the new observations removed, all four first integration tests failed
+  (`timed out waiting for the task not working`, `…the compaction`, `…the fresh session`,
+  `…needs attention`). With the replay hook removed, the restart test failed (`timed out waiting
+  for the compaction after the restart`).
+- Review round 1 (fresh session, om-code-review): request changes, 3 major and 5 minor. Each was
+  fixed test-first. `a_continued_session_is_compacted_after_an_unfinished_compaction` fails with
+  the M1 fix removed. `a_fresh_session_that_cannot_start_needs_a_person` failed before the M2 fix.
+  `a_refused_prompt_does_not_leave_the_task_working` now fails with `idle_after_full_context`
+  removed. The harness tests for m5 failed first.
+- CTX-008, found while making the continued-session test pass: a plain stop and continue had its
+  continued run killed by SIGKILL about 20 s later (`exited code=None signal=Some(9)`, then
+  `lost`), from the stop's escalation. The old attempt's transcript watcher also kept running
+  after a quick continue: the new run's lines were observed under the old attempt id. Both are
+  fixed. The fake harness now resumes the same session id, as `claude --resume` does.
+- Review round 2: approve. Its required docs fix (two other features' ADR numbers in
+  `docs/changes.md`) and its cheap minors and nits are applied: no typing after a person typed
+  since the refusal; a paused fresh session is said; stop's store error; a deleted task's runtime;
+  quiet give-ups while stopping; a log on a session change mid-recovery.
+- `cargo test -p yulius --test main context_full::`: 7 passed, four runs in a row.
+  `scripts/dev ci` on the merged head before the round-2 fixes: 1280 of 1281 passed. The one
+  failure was a notice race in a new test (the notice arrives after the echo), fixed by waiting
+  for notices. The final gate run is recorded in the pull request.
+- Not tested here: a real Claude Code session (the fake agent stands in), the exact transcript
+  shape of a failed manual `/compact` in the real CLI (the 10-minute bound covers an unknown
+  shape), and whether a real `/compact` keeps the session id (believed yes; a log says so if not).
+  `close_task_now` has the same escalation shape as the old stop; it is left as it was, because
+  only a done task is closed.
+

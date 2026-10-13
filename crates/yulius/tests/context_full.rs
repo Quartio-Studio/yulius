@@ -33,6 +33,22 @@ fn notices(frames: &mut Receiver<HubFrame>, said: &mut Vec<String>) {
     }
 }
 
+/// Collects notices until, for each group of `words`, one notice holds all of them (they may be
+/// said a moment after what the test waited for), or 10 s passed.
+async fn heard(frames: &mut Receiver<HubFrame>, said: &mut Vec<String>, words: &[&[&str]]) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        notices(frames, said);
+        let all = words
+            .iter()
+            .all(|group| said.iter().any(|n| group.iter().all(|w| n.contains(w))));
+        if all || tokio::time::Instant::now() >= deadline {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 /// The audit details of the task's recovery, oldest first.
 fn audited(data: &Path, id: &TaskId) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let db = rusqlite::Connection::open(data.join("yulius.db"))?;
@@ -124,7 +140,12 @@ fn a_full_context_is_compacted_once_and_the_next_prompt_reaches_the_agent() -> T
             "compacted once"
         );
         let mut said = Vec::new();
-        notices(&mut frames, &mut said);
+        heard(
+            &mut frames,
+            &mut said,
+            &[&["context is full"], &["compacted the conversation"]],
+        )
+        .await;
         assert!(
             said.iter().any(|n| n.contains("context is full")),
             "the terminal says it: {said:?}"
@@ -289,7 +310,12 @@ fn a_fresh_session_that_cannot_start_needs_a_person() -> TestResult {
         .await?;
         assert_eq!(app.deps.store.attempts(&id).await?.len(), 1, "no fresh run");
         let mut said = Vec::new();
-        notices(&mut frames, &mut said);
+        heard(
+            &mut frames,
+            &mut said,
+            &[&["needs you", "fresh session could not start"]],
+        )
+        .await;
         assert!(
             said.iter()
                 .any(|n| n.contains("needs you") && n.contains("fresh session could not start")),
@@ -344,7 +370,15 @@ fn a_failed_compaction_continues_the_task_in_a_fresh_session() -> TestResult {
         })
         .await?;
         let mut said = Vec::new();
-        notices(&mut frames, &mut said);
+        heard(
+            &mut frames,
+            &mut said,
+            &[
+                &["the compaction failed", "fresh session"],
+                &["continues in a fresh session"],
+            ],
+        )
+        .await;
         assert!(
             said.iter()
                 .any(|n| n.contains("the compaction failed") && n.contains("fresh session")),
@@ -402,7 +436,7 @@ fn a_full_fresh_session_needs_a_person() -> TestResult {
             "compacted, restarted once, then a person"
         );
         let mut said = Vec::new();
-        notices(&mut frames, &mut said);
+        heard(&mut frames, &mut said, &[&["needs you", "still full"]]).await;
         assert!(
             said.iter()
                 .any(|n| n.contains("needs you") && n.contains("still full")),

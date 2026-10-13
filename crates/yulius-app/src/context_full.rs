@@ -25,9 +25,6 @@ const TYPE_WAIT: Duration = Duration::from_secs(30);
 /// Output quiet this long means the TUI waits for input.
 const TYPE_QUIET: Duration = Duration::from_millis(800);
 
-/// A person who typed this recently owns the prompt box: Yulius waits (within [`TYPE_WAIT`]).
-const PERSON_TYPING_MS: i64 = 5_000;
-
 /// The audit action of every step of a recovery.
 const AUDIT_ACTION: &str = "task.context_full";
 
@@ -161,11 +158,13 @@ impl App {
             .notice("✓ Yulius compacted the conversation; the task goes on.");
         self.audit_context(task_id, "compacted").await;
         let line = self.task_focus(&task).await.after_compaction();
+        let asked_ms = self.now().0;
         let app = Arc::clone(self);
         let task_id = task_id.clone();
         tokio::spawn(async move {
             let compacted = |e: &ContextEpisode| *e == ContextEpisode::Compacted;
-            app.type_line(&task_id, &attempt, &line, compacted).await;
+            app.type_line(&task_id, &attempt, &line, asked_ms, compacted)
+                .await;
         });
     }
 
@@ -256,7 +255,7 @@ impl App {
         tokio::spawn(async move {
             let asked_now = move |e: &ContextEpisode| matches!(e, ContextEpisode::Compacting { since: s, .. } if *s == since);
             if !app
-                .type_line(&task_id, &attempt.id, &command, asked_now)
+                .type_line(&task_id, &attempt.id, &command, since, asked_now)
                 .await
             {
                 // Not typed (the run ended, a person kept typing): the next refusal starts over.
@@ -306,17 +305,32 @@ impl App {
             app.audit_context(&task.id, &format!("{why}: fresh session"))
                 .await;
             let handoff = app.task_focus(&task).await.handoff();
-            if let Err(err) = app.restart_fresh(&task.id, account, &handoff).await {
-                tracing::warn!(task = %task.id, error = %err, "no fresh session after a full context");
-                // The full session stays (a refused switch) or the task stopped: either way only
-                // a person can go on.
-                if let Ok(mut episode) = app.runtime(&task.id).context.lock() {
-                    *episode = ContextEpisode::GaveUp;
+            let why = match app.restart_fresh(&task.id, account, &handoff).await {
+                Err(err) => {
+                    tracing::warn!(task = %task.id, error = %err, "no fresh session after a full context");
+                    format!("a fresh session could not start: {}", err.public_message())
                 }
-                let why = format!("a fresh session could not start: {}", err.public_message());
-                if let Ok(Some(task)) = app.deps.store.task(&task.id).await {
-                    app.give_up_on_full_context(&task, &why, true).await;
+                // No subscription had capacity: the task paused, and its resume would bring the
+                // full session back, not the handoff.
+                Ok(()) if app.task_status(&task.id).await == Some(TaskStatus::WaitingCapacity) => {
+                    "no subscription has capacity for a fresh session; when one does, stop the \
+                     task and start a new one from its request"
+                        .to_owned()
                 }
+                Ok(()) => return,
+            };
+            // The full session stays (a refused switch), the task paused or it stopped: only a
+            // person can go on. A task a person is stopping needs no word of it.
+            if let Ok(mut episode) = app.runtime(&task.id).context.lock() {
+                *episode = ContextEpisode::GaveUp;
+            }
+            if let Ok(Some(task)) = app.deps.store.task(&task.id).await
+                && matches!(
+                    task.status,
+                    TaskStatus::Running | TaskStatus::WaitingCapacity
+                )
+            {
+                app.give_up_on_full_context(&task, &why, true).await;
             }
         });
     }
@@ -372,6 +386,13 @@ impl App {
         }
     }
 
+    async fn task_status(&self, task_id: &TaskId) -> Option<TaskStatus> {
+        match self.deps.store.task(task_id).await {
+            Ok(Some(task)) => Some(task.status),
+            _ => None,
+        }
+    }
+
     /// Whether the task's episode is one `wanted` accepts.
     fn context_is(&self, task_id: &TaskId, wanted: impl Fn(&ContextEpisode) -> bool) -> bool {
         self.runtime(task_id)
@@ -392,7 +413,14 @@ impl App {
     /// The session changed inside the TUI (`/clear`, `/resume`): a person took the session in
     /// hand, so its recovery is over (CTX-006).
     pub(crate) fn context_session_changed(&self, task_id: &TaskId) {
-        self.context_reset_if(task_id, |_| true);
+        self.context_reset_if(task_id, |episode| {
+            // A CLI whose `/compact` changed the session would end recoveries here: said, so it
+            // shows.
+            if *episode != ContextEpisode::Clear {
+                tracing::info!(task = %task_id, ?episode, "the session changed during a full-context recovery");
+            }
+            true
+        });
     }
 
     /// A replay after a restart ended in a refusal (CTX-007): recovery starts, unless the task
@@ -412,12 +440,14 @@ impl App {
 
     /// Types one line into the attempt's TUI once it waits for input, then a separate Enter,
     /// while the episode is one `wanted` accepts; `false` when it was not typed (the attempt is
-    /// no longer live, the episode moved on, a person kept typing, the input failed).
+    /// no longer live, the episode moved on, a person typed since `asked_ms` and owns the prompt
+    /// box, the terminal never went quiet, the input failed).
     async fn type_line(
         &self,
         task_id: &TaskId,
         attempt: &AttemptId,
         line: &str,
+        asked_ms: i64,
         wanted: impl Fn(&ContextEpisode) -> bool,
     ) -> bool {
         let runtime = self.runtime(task_id);
@@ -435,13 +465,15 @@ impl App {
                 last = seq;
                 quiet_since = tokio::time::Instant::now();
             }
-            let typed = runtime.typed_at_ms.load(Ordering::SeqCst);
-            let person_typing = typed > 0 && self.now().0.saturating_sub(typed) < PERSON_TYPING_MS;
-            ready = quiet_since.elapsed() >= TYPE_QUIET && !person_typing;
+            // A person who typed since: the prompt box (and any draft in it) is theirs.
+            if runtime.typed_at_ms.load(Ordering::SeqCst) > asked_ms {
+                tracing::info!(task = %task_id, "a person types; Yulius does not type into the session");
+                return false;
+            }
+            ready = quiet_since.elapsed() >= TYPE_QUIET;
         }
-        // A person who kept typing owns the prompt box: nothing is typed into their draft.
         if !ready {
-            tracing::info!(task = %task_id, "a person types; Yulius does not type into the session");
+            tracing::warn!(task = %task_id, "the terminal never went quiet; nothing typed for a full session");
             return false;
         }
         if !self.context_is(task_id, &wanted) || !self.attempt_live(task_id, attempt).await {

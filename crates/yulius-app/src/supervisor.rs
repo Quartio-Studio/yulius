@@ -1923,7 +1923,12 @@ impl App {
         self.end_pause(task_id, "cancelled").await;
         self.publish_task(task_id).await;
         let total = STOP_INTERRUPT_GRACE_MS + STOP_TERM_GRACE_MS + STOP_KILL_WAIT_MS;
-        let stopped = store.live_attempt(task_id).await?.map(|a| a.id);
+        let stopped = store
+            .live_attempt(task_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|a| a.id);
         if let Some(run) = runtime.run.lock().await.as_mut() {
             let _ = run
                 .writer
@@ -2472,13 +2477,12 @@ impl App {
         let mut catching_up = false;
         let mut facts = TranscriptFacts::default();
         let mut probed_at = Timestamp(0);
+        // `existing_runtime`: a deleted task's runtime is not brought back.
         let current = || {
             alive.load(Ordering::SeqCst)
-                && self
-                    .runtime(&task_id)
-                    .watcher_generation
-                    .load(Ordering::SeqCst)
-                    == generation
+                && self.existing_runtime(&task_id).is_some_and(|runtime| {
+                    runtime.watcher_generation.load(Ordering::SeqCst) == generation
+                })
         };
         while current() {
             tokio::time::sleep(Duration::from_millis(WATCH_INTERVAL_MS)).await;
