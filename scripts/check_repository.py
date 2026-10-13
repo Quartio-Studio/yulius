@@ -154,6 +154,37 @@ def link_errors(path, root):
     return errors
 
 
+def decision_errors(directory):
+    """Each decision record has its own number, also in its title and index line, so "ADR-NNNN"
+    names one record.
+
+    Parallel tasks pick the next free number on their own; the second to merge fails here after
+    merging dev and renumbers (#317)."""
+    errors = []
+    taken = {}
+    readme = directory / "README.md"
+    if not readme.is_file():
+        return [f"{directory}: missing README.md index of the decision records"]
+    index = readme.read_text()
+    for path in sorted(directory.glob("*.md")):
+        if path.name == "README.md":
+            continue
+        match = re.fullmatch(r"(\d{4})-[a-z0-9]+(?:-[a-z0-9]+)*\.md", path.name)
+        if not match:
+            errors.append(f"{path}: name decision records NNNN-<slug>.md")
+            continue
+        number = match[1]
+        if number in taken:
+            errors.append(f"{path}: shares decision number {number} with {taken[number].name}; the record merged later takes the next free number")
+        else:
+            taken[number] = path
+        if not path.read_text().startswith(f"# {number}. "):
+            errors.append(f"{path}: title must start with \"# {number}. \"")
+        if f"- [{number}]({path.name})" not in index:
+            errors.append(f"{path}: list it in {directory.name}/README.md as \"- [{number}]({path.name}): <title>\"")
+    return errors
+
+
 SPACING_SCALE = {0, 2, 4, 6, 8, 12, 16, 20, 24, 32, 40, 48}
 WEIGHTS = {"400", "500", "600", "inherit", "normal"}
 TOKENS = "crates/yulius-server/web/assets/tokens.css"
@@ -587,6 +618,7 @@ def check():
     for path in skills:
         errors.extend(skill_errors(path))
     errors.extend(skill_deployment_errors(ROOT / ".apm/skills", [ROOT / ".agents/skills", ROOT / ".claude/skills"]))
+    errors.extend(decision_errors(ROOT / "docs/decisions"))
     errors.extend(ui_errors())
     channel = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
     cargo = ["rustup", "run", channel, "cargo"]
@@ -599,7 +631,7 @@ def check():
     errors.extend(integration_test_errors(packages))
     if errors:
         raise ValueError("\n".join(errors))
-    print(f"Repository contracts passed: {len(packages)} crates, {len(skills)} skills, local Markdown links, UI design tokens, one product test binary")
+    print(f"Repository contracts passed: {len(packages)} crates, {len(skills)} skills, local Markdown links, unique decision numbers, UI design tokens, one product test binary")
 
 
 if __name__ == "__main__":

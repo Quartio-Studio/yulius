@@ -603,11 +603,14 @@ involved.
 - Install the toolchains the projects need system-wide, for example rustup's toolchains under
   `/opt`, Node and Python.
 - Each sandbox keeps `<data>/sandboxes/<id>/ci/`:
-  - `jobs/<job>`: one persistent checkout per job; ignored build outputs such as `target/` and
-    `node_modules/` are its cache;
+  - `jobs/<job>` (and `jobs/<job>@<lane>` past the first lane): one persistent checkout per job
+    and lane; ignored build outputs such as `target/` and `node_modules/` are its cache;
   - `home`: `HOME` for jobs, with `~/.cargo`, `~/.npm` and `~/.cache`;
   - `cache`: `YULIUS_CI_CACHE`.
-- Budget the disk: a Rust workspace's `target/` per job.
+
+  `home` and `cache` are shared by the sandbox's lanes, so a job's installs there must tolerate a
+  concurrent run.
+- Budget the disk: a Rust workspace's `target/` per job and lane.
 - Removing `ci/` (with no run active) resets a sandbox's caches. The next run rebuilds them.
 - Size `YULIUS_CI_MAX_JOBS` to the cores left after the agents. Each job gets
   `YULIUS_CI_JOB_TIMEOUT_MIN`.
