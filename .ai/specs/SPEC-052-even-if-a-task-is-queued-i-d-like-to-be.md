@@ -167,8 +167,18 @@ request, so the agent gets it as part of its request when the task starts.
   - After the fixes, on 5531f1d: the full e2e suite has **203 passed, 1 skipped** (38 files), and
     `scripts/dev check` passes. Since the merged head's `scripts/dev ci`, only the web UI, the
     e2e tests and the docs changed.
-  - The merge and the fixes after round 3 go to a fresh review of their own: a merged head needs
-    the review of its exact head.
+- `dev` was merged again at f59d6f6, cleanly. It brought the Agent panel in place of the
+  Cockpit and task status from Claude Code's own records; no ADR number collides with 0035.
+  - On that head, `scripts/dev ci`: **1257 passed, 1 failed, 16 skipped**. The failure,
+    `cockpit::a_resume_that_fails_at_once_starts_fresh_the_next_time` (20.8 s), passes 3 of 3
+    alone.
+  - Full e2e: **217 passed, 2 failed, 1 skipped**. The failures are `new-task` "Auto is the
+    default…" and `terminal` "file paths … open the editor"; both files pass 2 of 2 alone.
+  - None of the three touches this change, and the terminal one also failed before the focus
+    fix. They are filed as #320; the umbrella issues are #282 and #283. Yulius CI on the exact
+    head is the gate the merge waits for.
+- The merges and the fixes after round 3 go to a fresh review of their own: a merged head needs
+  the review of its exact head.
 - Not covered here: a real Claude Code session (the fake agent stands in, as in SPEC-011 and
   SPEC-030). Read access hiding the card is checked by the server (403) and the shared `allows()`
   test, not by an e2e case.
