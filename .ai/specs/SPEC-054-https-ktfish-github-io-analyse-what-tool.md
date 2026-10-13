@@ -83,7 +83,7 @@ a check up in a project's gate, and Yulius's own repository uses one.
 - `cargo-shear` replaces `cargo-machete` in Yulius's gate: it also checks workspace
   dependencies and caught one machete missed. See
   [ADR-0034](../../docs/decisions/0034-dead-code-tools.md).
-- vulture and skylos are not added to Yulius's own gate: its seven Python scripts are clean, and
+- vulture and skylos are not added to Yulius's own gate: its eight Python scripts are clean, and
   the gate installs no Python packages today; the skill runs them on demand (`uvx`/`pipx run`).
 
 ## Evidence
@@ -108,5 +108,6 @@ a check up in a project's gate, and Yulius's own repository uses one.
   section flags, section placement, knip `ignoreDependencies`, wording); all fixed. Round 2:
   APPROVE at 6483068.
 - Not covered: a real onboarding run of an imported project with the new prompt, and the
-  per-language commands for languages other than Python and Rust, which were checked against
-  their documentation by the reviewer rather than run here.
+  per-language commands for languages other than Python and Rust, which were reviewed from
+  the independent reviewer's knowledge (vulture, skylos and cargo-shear flags confirmed by
+  running them) rather than run here.
