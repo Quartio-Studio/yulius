@@ -27,6 +27,8 @@ const STEP_LABEL = { done: 'Done', in_progress: 'In progress', pending: 'To do',
 const STRIP_KEY = 'yulius.stepsOpen';
 // Waiting states in which a task that never started takes queued messages (SPEC-052).
 const WAITING = new Set(['queued', 'chained', 'waiting_capacity']);
+// States only a task with a run is in.
+const RAN = new Set(['running', 'switching', 'stopping']);
 
 // Phone quick-input keys (SPEC-001 §6.4).
 const QUICK_KEYS = [
@@ -372,8 +374,11 @@ export function mountTaskView(ctx, sandbox, task) {
       const previousStatus = current.status;
       const previousUpdate = current.updated_at;
       current = { ...current, ...next };
-      // A message someone else queued changes the request: read it again.
-      if (!queueSlot.hidden && current.updated_at !== previousUpdate) loadDetail();
+      // Whether the task started is the detail's: a status with a run means it has, and any status
+      // change reads the detail again (a start that found no capacity has not). A message someone
+      // else queued changes the request: read it again too.
+      if (detail && RAN.has(current.status)) detail = { ...detail, started: true };
+      if (current.status !== previousStatus || (!queueSlot.hidden && current.updated_at !== previousUpdate)) loadDetail();
       renderStrip();
       if (current.status !== previousStatus) terminal.refreshEmpty();
       if (current.status !== previousStatus) loadDelivery(); // a finished task may now be ready for a pull request

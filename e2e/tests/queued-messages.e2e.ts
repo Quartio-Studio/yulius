@@ -64,3 +64,24 @@ test('a running task has no queued messages card', async ({ app, screen }) => {
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/#12/);
   await expect(screen.getByRole('region', 'Queued messages')).toBeHidden();
 });
+
+test('once the task has started, a pause for capacity brings no card back', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/8'));
+  const card = screen.getByRole('region', 'Queued messages');
+  await expect(card).toBeVisible();
+
+  // It starts — while `starting` the server has no run recorded yet, so the detail read then
+  // still says it has not started — then a turn boundary pauses it for capacity, session alive.
+  type Mocked = { __yuliusMock: { touchTask: (sid: string, n: number, c: object) => void; detailReads?: Record<string, number> } };
+  const touch = (changes: object) => browser.evaluate((c) => (window as unknown as Mocked).__yuliusMock.touchTask('sb_studio', 8, c), changes);
+  const reads = () => browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.detailReads?.tsk_studio_8 ?? 0);
+  const before = await reads();
+  await touch({ status: 'starting', started: false });
+  await expect(card).toBeHidden();
+  // The view's read of the detail while `starting` has landed (it said: not started).
+  await expect.poll(reads).toBeGreaterThan(before);
+  await touch({ status: 'running', started: true });
+  await touch({ status: 'waiting_capacity' });
+  await expect(screen.getByRole('status').filter({ hasText: 'Paused' }).first()).toBeVisible();
+  await expect(card).toBeHidden();
+});

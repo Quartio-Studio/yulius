@@ -857,7 +857,12 @@ route('POST', `/api/tasks/${ID}/held-prompts/${ID}`, ({ db, p, body }) => {
   recount(db);
   return { task: summary(task), created: created ? summary(created) : null, note: notes[action] };
 });
-route('GET', `/api/tasks/${ID}`, ({ db, p }) => detail(db, taskOf(db, p[0])));
+// Reads of a task's detail, per task, so a test can wait for a view's read to land.
+route('GET', `/api/tasks/${ID}`, ({ db, p }) => {
+  db.detailReads = db.detailReads || {};
+  db.detailReads[p[0]] = (db.detailReads[p[0]] || 0) + 1;
+  return detail(db, taskOf(db, p[0]));
+});
 route('POST', `/api/tasks/${ID}/stop`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
