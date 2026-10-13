@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- Only real typing counts as typing; a typed first message is never lost (SPEC-068, ADR-0050,
+  task #61, #252, #266). Focus and mouse reports and terminal answers no longer record typing or
+  take control of the terminal size. A goal task whose terminal a person typed into before its
+  goal leaves the draft alone and needs attention, instead of appending `/goal` to it. A first
+  message with images that a server restart cut flags its task with a notice; one held for
+  capacity and resumed on another account is typed again there, images included.
 - The Cockpit and task agents manage the whole task and automation lifecycle (SPEC-066,
   ADR-0049, task #58, #275, #293). New MCP tools `task_stop`, `task_archive`, `task_delete`,
   `automation_delete`, `automation_run_now` and `automation_template_enable` do what the UI
