@@ -203,20 +203,19 @@ impl Fixture {
         call(&self.h.router, Method::POST, path, body, &self.alice).await
     }
 
-    /// Dispatches until no run is queued or running (the background loops do not run here).
+    /// Dispatches until no run is queued or running and every finished run's status is published
+    /// (the background loops do not run here).
     async fn settle(&self) -> BoxResult<()> {
         let deadline = tokio::time::Instant::now() + WAIT;
         loop {
             self.h.app.ci_dispatch().await;
             let overview = self.get("/api/sandboxes/s1/ci").await?;
-            let active = overview["runs"]
-                .as_array()
-                .ok_or("runs")?
-                .iter()
-                .any(|r| r["state"] == "queued" || r["state"] == "running");
-            // A run's state turns terminal before its commit status is published: wait for the
-            // statuses too, or an assertion on a status reads `pending` on a loaded host.
-            if !active && !self.has_pending_status() {
+            // A finished run publishes its commit status after recording its end: settled means
+            // no run is active and none waits for its status ("pending").
+            let active = overview["runs"].as_array().ok_or("runs")?.iter().any(|r| {
+                r["state"] == "queued" || r["state"] == "running" || r["status"] == "pending"
+            });
+            if !active {
                 return Ok(());
             }
             if tokio::time::Instant::now() > deadline {
@@ -224,16 +223,6 @@ impl Fixture {
             }
             tokio::time::sleep(Duration::from_millis(150)).await;
         }
-    }
-
-    /// Whether the latest status of some commit is still `pending`.
-    fn has_pending_status(&self) -> bool {
-        let mut latest: std::collections::HashMap<String, String> =
-            std::collections::HashMap::new();
-        for (sha, status) in self.h.github.statuses() {
-            latest.insert(sha, status.state);
-        }
-        latest.values().any(|state| state == "pending")
     }
 
     /// Waits until a run of `reference` is running.
