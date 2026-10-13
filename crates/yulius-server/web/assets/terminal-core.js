@@ -57,13 +57,26 @@ const WHEEL_MAX_NOTCHES = 10;
 
 /**
  * Whether the person is typing in a text field outside `root` that is not a terminal's own input
- * (xterm's hidden textarea), so a terminal shown late leaves the keyboard there (SPEC-052).
+ * (xterm's hidden textarea), so a terminal shown late leaves the keyboard there (SPEC-052). Monaco
+ * on Chromium types through an EditContext on a plain div (SPEC-056 WUI-101).
  */
 function typingElsewhere(root) {
   const active = document.activeElement;
   if (!active || root.contains(active) || active.closest('.xterm')) return false;
-  if (active.isContentEditable || active.tagName === 'TEXTAREA') return true;
+  if (active.isContentEditable || active.tagName === 'TEXTAREA' || active.editContext || active.closest('.monaco-editor')) return true;
   return active.tagName === 'INPUT' && !['button', 'checkbox', 'radio', 'submit', 'reset', 'range', 'color', 'file', 'image'].includes(active.type);
+}
+
+/**
+ * Order of the focus requests of every terminal on the page: a request that waits for its
+ * terminal to show lands only if no later one was made (SPEC-056 WUI-102).
+ */
+let focusRequests = 0;
+
+/** Whether the keyboard is on nothing in particular (the page itself). */
+function keyboardOnPage() {
+  const active = document.activeElement;
+  return !active || active === document.body || active === document.documentElement;
 }
 
 /**
@@ -171,7 +184,8 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   let ready = false;
   let gotState = false;
   let drawn = false;
-  let focusWanted = false;
+  // The order of this terminal's pending focus request (0: none).
+  let focusWanted = 0;
   let revealTimer = 0;
   let emptyShown = false;
   // What this viewer last told the server about itself (null: nothing yet on this connection).
@@ -264,9 +278,10 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     renderEmpty();
     render();
     // Focus asked for before the terminal showed lands now, unless the person is typing in a
-    // text field meanwhile (the queued messages box beside a waiting task's terminal). Buttons,
-    // tabs and other terminals do not hold it back: the terminal asked for last still wins.
-    if (focusWanted && !typingElsewhere(el)) term.focus();
+    // text field meanwhile (the queued messages box beside a waiting task's terminal), or another
+    // terminal was asked for since (a Shell opened meanwhile): the terminal asked for last wins.
+    // Buttons and tabs do not hold it back.
+    if (focusWanted && (focusWanted === focusRequests || keyboardOnPage()) && !typingElsewhere(el)) term.focus();
     if (onReady) onReady();
   }
 
@@ -773,7 +788,8 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     },
     /** Focus the terminal now, or as soon as it is shown. */
     focus() {
-      focusWanted = true;
+      focusRequests += 1;
+      focusWanted = focusRequests;
       if (opened && ready) term.focus();
     },
     get ready() {
