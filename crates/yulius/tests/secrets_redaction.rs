@@ -395,6 +395,7 @@ fn the_terminal_and_the_run_environment_hold_no_value() -> TestResult {
                 automation_run: None,
                 start: true,
                 mode: yulius_app::model::TaskMode::Prompt,
+                supertask: false,
             })
             .await?;
         wait_for(&app, &task.id, "FAKE-AGENT READY").await?;

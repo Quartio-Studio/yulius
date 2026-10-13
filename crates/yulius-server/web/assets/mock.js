@@ -314,10 +314,29 @@ function summary(task) {
     ...(task.mode ? { mode: task.mode } : {}),
     // How Auto chose the mode and workflow (TSK-015).
     auto: task.auto ? { ...task.auto } : null,
+    // A supertask, and what a queued task waits for because of one (SPEC-071).
+    supertask: Boolean(task.supertask),
+    held_by: task.status === 'queued' ? [...(task.heldBy || [])] : [],
     // Background shells an idle agent left running (TSK-014).
     background_shells: task.status === 'running' ? task.background_shells ?? null : null,
     background_shells_since: task.status === 'running' && task.background_shells ? task.background_shells_since ?? null : null,
   };
+}
+
+/**
+ * What a new queued task waits for because of a supertask (SPEC-071), by the server's rule: any
+ * task waits for the project's pending supertasks (a supertask only for earlier ones), and a
+ * supertask also for the project's working tasks. Done tasks hold nothing.
+ */
+function mockHeldBy(db, task) {
+  const done = (t) => t.status === 'running' && t.activity === 'done';
+  const pending = (t) => t.supertask && ['queued', 'starting', 'running', 'switching', 'waiting_capacity'].includes(t.status) && !done(t);
+  const working = (t) => ['starting', 'running', 'switching', 'stopping'].includes(t.status) && !done(t);
+  return db.tasks
+    .filter((t) => t.sandbox_id === task.sandbox_id && t.id !== task.id && !t.archived)
+    .filter((t) => (pending(t) && (!task.supertask || t.number < task.number)) || (task.supertask && working(t)))
+    .map((t) => t.number)
+    .sort((a, b) => a - b);
 }
 
 /** Links `task` to run after `before` (TSK-012); both summaries show the chain. */
@@ -741,6 +760,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   const preparation = preparing ? db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding') : null;
   // A start rule (SPEC-017): the mock checks the shape the server checks, and anchors the chain
   // on the first task the rule names.
+  if (body.supertask && (body.after_task_id || (body.start_rule && body.start_rule.trim()))) fail(422, 'invalid', 'a supertask starts after the running tasks: it cannot also run after a task or a rule');
   let rule = null;
   if (body.start_rule && body.start_rule.trim()) {
     if (body.after_task_id) fail(422, 'invalid', 'give a task to run after or a start rule, not both');
@@ -760,6 +780,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
     stepsList: wf ? wf.steps.map((title2, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title: title2, status: 'pending', note: '', updated_by: 'workflow', updated_at: new Date().toISOString() })) : [],
     model: body.model || 'claude-opus-4', effort: body.effort || 'default', prompt: body.prompt,
     delivery: null, mode: choice ? choice.mode : body.mode || 'goal', auto: choice ? choice.auto : null,
+    supertask: body.supertask === true,
   };
   db.tasks.push(task);
   recount(db);
@@ -768,6 +789,9 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
     emit(db, { type: 'task.updated', task: summary(before) });
     return json(201, summary(task));
   }
+  // A supertask holds the project's starts, and waits for its working tasks (SPEC-071).
+  task.heldBy = mockHeldBy(db, task);
+  if (task.heldBy.length) return json(201, summary(task));
   later(() => touch(db, task, { status: 'starting' }), 700);
   later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1800);
   return json(201, summary(task));
