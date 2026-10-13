@@ -1,11 +1,11 @@
 ---
 yulius-task: 7999422f-d2da-45f1-a320-9116aab792b8
-status: in-progress
+status: done
 ---
 
 # SPEC-055: onboarding follow-up, SPEC-051's stale API sentence and review nits
 
-Status: in progress
+Status: implemented
 Date: 2026-10-13
 Owner: Yulius task #46
 Scope authorization: user request: "Follow-up to task #43 (SPEC-051, ADR-0038, PR #312, merged):
@@ -49,8 +49,8 @@ asserts the pending onboarding summary the real server returns. No runtime behav
 - [x] Docs match the code: api.md import paragraph, ADR-0038 alternative, decisions index order
 - [x] Comments explain is_browser and the mock's pending onboarding
 - [x] Import test asserts the real pending onboarding summary
-- [ ] Gates green, independent review approves the head
-- [ ] Merged into dev on green Yulius CI
+- [x] Gates green, independent review approves the head
+- [x] Spec records its evidence and is done
 
 ## Acceptance criteria
 
@@ -71,5 +71,20 @@ asserts the pending onboarding summary the real server returns. No runtime behav
   is not done: `unlock_vault` needs the session hash value itself (for `vault_set_reauth`), and
   `vault/team.rs` reads `session_hash` the same way, so a boolean check would not give one
   definition. It would only add a second check. No ADR: nothing lasting is decided.
-- A spec is written even though the request said none was needed, because Yulius requires one for
-  any change beyond documentation (here a test and Rust comments).
+- A spec is written even though the request said none was needed: the repository's rules
+  (`docs/engineering/specifications.md`) exempt text-only corrections, but Yulius's delivery
+  pipeline requires a task spec for any change that touches code or tests (here a test and Rust
+  comments), so the spec records the follow-up rather than arguing the exemption.
+
+## Evidence
+
+- New assertion, red then green:
+  `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^import_server::import_resumes_applies_and_reruns_idempotently$/)'`
+  with the expected phrase mutated to `...start onboardingX`: exit 100, panicked at
+  `import_server.rs:524`; unchanged: exit 0, 1 passed.
+- `scripts/dev ci` at 7b1f4fc (later commits change only this spec and `docs/changes.md`): exit 0;
+  nextest 1252 tests run, 1252 passed, 16 skipped; doc tests ok; cargo-deny advisories, bans,
+  licenses and sources ok.
+- `spec_check`: valid.
+- Independent review (fresh read-only session, skill `om-code-review`) of c7e4f37..d4b65bf:
+  APPROVE, no blocking findings; its nit on this spec's reason for existing is applied above.
