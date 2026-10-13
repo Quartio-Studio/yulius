@@ -528,8 +528,10 @@ export function mountComposer(ctx, sandbox) {
   const urls = new Map();
   const tabUrls = new Map();
   const tray = h('ul', { class: 'composer-attachments', 'aria-label': 'Attached files', hidden: true });
+  /** The items this view made an object URL for: a thumbnail or a file opened in a tab. */
+  const withUrls = () => [...new Set([...urls.keys(), ...tabUrls.keys()])];
   function renderTray() {
-    forgetUrls([...new Set([...urls.keys(), ...tabUrls.keys()])].filter((item) => !draft.attached.includes(item)));
+    forgetUrls(withUrls().filter((item) => !draft.attached.includes(item)));
     for (const item of draft.attached) if (!urls.has(item) && item.file && /^image\//.test(item.type)) urls.set(item, URL.createObjectURL(item.file));
     tray.hidden = !draft.attached.length;
     setChildren(tray, draft.attached.map((item) => {
@@ -924,6 +926,6 @@ export function mountComposer(ctx, sandbox) {
       if (!prompt.disabled && !isPhone()) prompt.focus();
       if (!stopSmoke) stopSmoke = brandSmoke(niche); // the brand's smoke, when its niche shows (brandfx.js)
     },
-    destroy() { forgetUrls([...urls.keys()]); remember({ now: true }); destroyers.forEach((off) => off()); if (stopSmoke) stopSmoke(); clearTimeout(showTimer); clearSplit(); if (preview) preview.destroy(); },
+    destroy() { forgetUrls(withUrls()); remember({ now: true }); destroyers.forEach((off) => off()); if (stopSmoke) stopSmoke(); clearTimeout(showTimer); clearSplit(); if (preview) preview.destroy(); },
   };
 }
