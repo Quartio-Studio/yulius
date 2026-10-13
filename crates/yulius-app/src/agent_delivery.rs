@@ -219,10 +219,7 @@ impl App {
         }
         let view = self.merge_task_pr_for_task(&auth, &task_id).await?;
         // Merged now: nothing is left armed for this task.
-        if let Ok(mut armed) = self.runtime(&ctx.task.id).armed_merge.lock() {
-            *armed = None;
-        }
-        self.save_armed(&ctx.task.id, None);
+        self.clear_armed(&ctx.task);
         self.agent_audit(
             ctx,
             "delivery.agent.merge",
