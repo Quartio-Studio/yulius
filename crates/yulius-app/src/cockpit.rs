@@ -17,26 +17,40 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use serde_json::json;
 
-use yulius_domain::harness::Provider;
+use yulius_domain::harness::{Harness, Provider};
 use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::permission::Action;
 use yulius_domain::time::Timestamp;
+use yulius_domain::usage::ModelFamily;
 
 use crate::auth::AuthContext;
 use crate::context::App;
 use crate::coordination::ProjectCaller;
 use crate::error::{AppError, AppResult};
-use crate::model::SandboxRecord;
-use crate::ports::harness::CockpitLaunch;
+use crate::model::{AccountRecord, SandboxRecord, UserRecord};
+use crate::ports::harness::{CockpitLaunch, Observation, TranscriptWatch};
 use crate::shells::{COCKPIT_TOKEN_PREFIX, ShellInfo, ShellKind, ShellRuntime};
 
 /// The Cockpit's display name.
 pub const COCKPIT_NAME: &str = "Cockpit";
 /// A resumed Cockpit that fails within this time could not resume its conversation.
 const QUICK_EXIT_MS: i64 = 10_000;
+/// How often a running Cockpit's conversation is read for usage limits (SPEC-074 SUP-002).
+const WATCH_INTERVAL: Duration = Duration::from_secs(1);
+/// What a Cockpit's viewers are told when a usage limit cut its turn and no other subscription
+/// has capacity (SPEC-074 SUP-005).
+pub const NO_CAPACITY_NOTICE: &str = "Usage limit reached. No other subscription has capacity right now, so Claude Code continues when the limit resets.";
+
+/// The model family the Cockpit runs: the default model, Opus 5.5, so its weekly Opus cap binds
+/// (SPEC-023).
+fn cockpit_family() -> ModelFamily {
+    ModelFamily::of(Some(yulius_domain::harness::DEFAULT_CLAUDE_MODEL))
+}
 
 impl App {
     /// Configures the Cockpit's program instead of `claude` (tests); the first call wins.
@@ -136,56 +150,72 @@ impl App {
         if let Some(running) = self.running_cockpit(&ctx.user.id, &record.id) {
             return Ok(running.info());
         }
-        let starts = {
-            let mut starts = self
-                .shells
-                .cockpit_start
-                .lock()
-                .map_err(AppError::internal)?;
-            Arc::clone(
-                starts
-                    .entry((ctx.user.id.clone(), record.id.clone()))
-                    .or_default(),
-            )
-        };
+        let starts = self.cockpit_start_lock(&ctx.user.id, &record.id)?;
         let _starting = starts.lock().await;
         if let Some(running) = self.running_cockpit(&ctx.user.id, &record.id) {
             return Ok(running.info());
         }
-        let repo = self.sandbox_repo(&record.id);
-        if !repo.is_dir() {
+        if !self.sandbox_repo(&record.id).is_dir() {
             return Err(AppError::Conflict(
                 "the sandbox repository is not cloned yet".into(),
             ));
         }
         // The Cockpit runs the default model, Opus 5.5: its weekly Opus cap binds (SPEC-023).
         let account = self
-            .pool_account(
-                Provider::Anthropic,
-                yulius_domain::usage::ModelFamily::of(Some(
-                    yulius_domain::harness::DEFAULT_CLAUDE_MODEL,
-                )),
-            )
+            .pool_account(Provider::Anthropic, cockpit_family())
             .await?;
-        let credential = self.open_credential(&account)?;
+        self.start_cockpit(&ctx.user, &record, &account, false)
+            .await
+    }
+
+    /// The lock that serialises the Cockpit starts of `user` in `sandbox` (CKP-001).
+    fn cockpit_start_lock(
+        &self,
+        user: &UserId,
+        sandbox: &SandboxId,
+    ) -> AppResult<Arc<tokio::sync::Mutex<()>>> {
+        let mut starts = self
+            .shells
+            .cockpit_start
+            .lock()
+            .map_err(AppError::internal)?;
+        Ok(Arc::clone(
+            starts.entry((user.clone(), sandbox.clone())).or_default(),
+        ))
+    }
+
+    /// Starts `user`'s Cockpit in `record` on `account`, resuming the newest conversation; with
+    /// `continue_interrupted`, it redoes the turn a usage limit cut (SPEC-074 SUP-004). The caller
+    /// holds the start lock.
+    async fn start_cockpit(
+        self: &Arc<Self>,
+        user: &UserRecord,
+        record: &SandboxRecord,
+        account: &AccountRecord,
+        continue_interrupted: bool,
+    ) -> AppResult<ShellInfo> {
+        let repo = self.sandbox_repo(&record.id);
+        let credential = self.open_credential(account)?;
         let id = self.new_shell_id();
         let runtime = self.new_shell_runtime(
             &id,
             ShellKind::Cockpit,
             &record.id,
-            &ctx.user.id,
+            &user.id,
             None,
             &repo,
             COCKPIT_NAME.to_owned(),
         );
+        let _ = runtime.account.set(account.id.clone());
         match self
-            .launch_cockpit(ctx, &record, &runtime, credential)
+            .launch_cockpit(user, record, &runtime, credential, continue_interrupted)
             .await
         {
             Ok(reader) => match self.register_shell(&runtime) {
                 Ok(()) => {
                     self.start_pump(&runtime, reader);
-                    tracing::info!(shell = %id, sandbox = %record.slug, user = %ctx.user.id, account = %account.id, "cockpit started");
+                    self.start_cockpit_watch(&runtime);
+                    tracing::info!(shell = %id, sandbox = %record.slug, user = %user.id, account = %account.id, continue_interrupted, "cockpit started");
                     Ok(runtime.info())
                 }
                 Err(err) => {
@@ -200,15 +230,157 @@ impl App {
         }
     }
 
+    /// Watches a running Cockpit's conversations for usage limits until it ends (SPEC-074
+    /// SUP-002): every [`WATCH_INTERVAL`], the newest conversation in its folder, read from its
+    /// start; a limit recorded before the Cockpit was created is history.
+    pub(crate) fn start_cockpit_watch(self: &Arc<Self>, runtime: &Arc<ShellRuntime>) {
+        let app = Arc::clone(self);
+        let runtime = Arc::clone(runtime);
+        tokio::spawn(async move { app.watch_cockpit(runtime).await });
+    }
+
+    async fn watch_cockpit(self: Arc<Self>, runtime: Arc<ShellRuntime>) {
+        let home = self
+            .users_dir()
+            .join(runtime.creator().as_str())
+            .join("home");
+        let info = runtime.info();
+        let folder = PathBuf::from(&info.folder);
+        let started = info.created_at;
+        let mut ended = runtime.ended_signal();
+        let mut watched: Option<(PathBuf, Box<dyn TranscriptWatch>)> = None;
+        // Whether the watched conversation's history has been read: a limit without a readable
+        // time counts only after it.
+        let mut history_read = false;
+        let mut interval = tokio::time::interval(WATCH_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {}
+                _ = ended.wait_for(|ended| *ended) => return,
+            }
+            if !runtime.is_live() {
+                return;
+            }
+            let newest = match self
+                .deps
+                .harness
+                .newest_claude_session(&home, &folder, Timestamp(0))
+            {
+                Ok(newest) => newest.map(|(_, path)| path),
+                Err(err) => {
+                    tracing::debug!(error = %err, shell = %runtime.id(), "cockpit conversations unreadable");
+                    None
+                }
+            };
+            if let Some(path) = newest
+                && watched.as_ref().is_none_or(|(current, _)| *current != path)
+            {
+                match self.deps.harness.watch(Harness::ClaudeCode, &path, true) {
+                    Ok(watch) => {
+                        watched = Some((path, watch));
+                        history_read = false;
+                    }
+                    Err(err) => {
+                        tracing::debug!(error = %err, shell = %runtime.id(), "cockpit conversation not watchable");
+                    }
+                }
+            }
+            let Some((_, watch)) = watched.as_mut() else {
+                continue;
+            };
+            let observations = match watch.poll() {
+                Ok(observations) => observations,
+                Err(err) => {
+                    tracing::debug!(error = %err, shell = %runtime.id(), "cockpit conversation poll failed");
+                    continue;
+                }
+            };
+            let limit = observations.into_iter().find_map(|o| match o {
+                Observation::LimitReached {
+                    resets_at,
+                    window_minutes,
+                    at,
+                    ..
+                } if at.map_or(history_read, |at| at.0 >= started.0) => {
+                    Some((resets_at, window_minutes))
+                }
+                _ => None,
+            });
+            history_read = history_read || watch.caught_up();
+            if let Some((resets_at, window_minutes)) = limit
+                && self
+                    .cockpit_limit_reached(&runtime, resets_at, window_minutes)
+                    .await
+            {
+                return;
+            }
+        }
+    }
+
+    /// A usage limit cut the Cockpit's turn (SPEC-074): records it on its subscription
+    /// (SUP-003), then starts it again on one with capacity, continuing the turn (SUP-004), or
+    /// tells its viewers there is none (SUP-005). Returns whether this Cockpit has ended.
+    async fn cockpit_limit_reached(
+        self: &Arc<Self>,
+        runtime: &Arc<ShellRuntime>,
+        resets_at: Option<Timestamp>,
+        window_minutes: Option<u32>,
+    ) -> bool {
+        let current = runtime.account.get().cloned();
+        tracing::info!(shell = %runtime.id(), account = ?current, "usage limit reached in the cockpit");
+        if let Some(account) = &current {
+            self.record_limit(account, resets_at, window_minutes).await;
+        }
+        let Ok(starts) = self.cockpit_start_lock(runtime.creator(), runtime.sandbox()) else {
+            return false;
+        };
+        let _starting = starts.lock().await;
+        if !runtime.is_live() {
+            return true;
+        }
+        // Its owner, still allowed to work here, as at any start.
+        let owner = match self.deps.store.user(runtime.creator()).await {
+            Ok(Some(user)) if user.disabled_at.is_none() => user,
+            _ => return false,
+        };
+        let Ok((record, _)) = self.require(&owner, runtime.sandbox(), Action::Work).await else {
+            return false;
+        };
+        let account = match self
+            .pool_account(Provider::Anthropic, cockpit_family())
+            .await
+        {
+            Ok(account) if Some(&account.id) != current.as_ref() => account,
+            _ => {
+                runtime.notice(NO_CAPACITY_NOTICE);
+                return false;
+            }
+        };
+        runtime.switching.store(true, Ordering::SeqCst);
+        self.end_shells(std::slice::from_ref(runtime)).await;
+        match self.start_cockpit(&owner, &record, &account, true).await {
+            Ok(started) => {
+                tracing::info!(from = %runtime.id(), to = %started.id, account = %account.id, "cockpit moved to another subscription after a usage limit");
+            }
+            // The panel starts it again when it asks for its Cockpit.
+            Err(err) => {
+                tracing::warn!(error = %err, shell = %runtime.id(), "the cockpit could not start on another subscription");
+            }
+        }
+        true
+    }
+
     async fn launch_cockpit(
         &self,
-        ctx: &AuthContext,
+        user: &UserRecord,
         record: &SandboxRecord,
         runtime: &ShellRuntime,
         credential: crate::model::Secret,
+        continue_interrupted: bool,
     ) -> AppResult<Box<dyn crate::ports::session::RunReader>> {
         let (join, lease) = self.isolation_join(record).await?.unzip();
-        let space = self.user_space(&ctx.user, record, join)?;
+        let space = self.user_space(user, record, join)?;
         let folder = PathBuf::from(runtime.info().folder);
         // The newest conversation of this user here: after `/clear`, the cleared one's successor;
         // none when it could not be resumed last time.
@@ -219,7 +391,7 @@ impl App {
         ) {
             Ok(found) => found.map(|(id, _)| id),
             Err(err) => {
-                tracing::warn!(error = %err, user = %ctx.user.id, "cockpit conversations unreadable; starting a fresh one");
+                tracing::warn!(error = %err, user = %user.id, "cockpit conversations unreadable; starting a fresh one");
                 None
             }
         };
@@ -228,17 +400,14 @@ impl App {
             .cockpit_unresumable
             .lock()
             .ok()
-            .and_then(|failed| {
-                failed
-                    .get(&(ctx.user.id.clone(), record.id.clone()))
-                    .cloned()
-            });
+            .and_then(|failed| failed.get(&(user.id.clone(), record.id.clone())).cloned());
         let resume = newest.filter(|id| Some(id) != unresumable.as_ref());
         let mut plan = self.deps.harness.plan_cockpit(&CockpitLaunch {
             cwd: folder,
             config_dir: space.home.join(".claude"),
             config_dir_host: space.home_host.join(".claude"),
             resume: resume.clone(),
+            continue_interrupted: continue_interrupted && resume.is_some(),
             credential,
             yulius: Some((
                 self.config.internal_url.clone(),

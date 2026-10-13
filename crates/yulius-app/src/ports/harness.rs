@@ -95,6 +95,9 @@ pub struct CockpitLaunch {
     pub config_dir_host: PathBuf,
     /// Conversation to resume.
     pub resume: Option<String>,
+    /// The resumed conversation continues the turn a usage limit cut (SPEC-074 SUP-004): its
+    /// transcript steps back over the limit and Claude Code redoes the turn by itself.
+    pub continue_interrupted: bool,
     /// Provider credential (the Claude OAuth token).
     pub credential: Secret,
     /// The Yulius MCP server it manages the project with (SPEC-037): the internal listener's
@@ -159,6 +162,8 @@ pub enum Observation {
         message: String,
         /// The limited window in minutes (300 session, 10080 weekly), if known.
         window_minutes: Option<u32>,
+        /// When the CLI recorded it, if known (tells a new limit from history, SPEC-074).
+        at: Option<Timestamp>,
     },
 }
 

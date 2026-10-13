@@ -31,7 +31,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
-use yulius_domain::ids::{SandboxId, TaskId, UserId};
+use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::permission::Action;
 use yulius_domain::time::Timestamp;
 
@@ -46,6 +46,9 @@ use crate::ports::session::{LaunchPlan, RunEvent, RunExit, RunInspection, RunRea
 
 /// Prefix of a Cockpit's Yulius MCP bearer (SPEC-037).
 pub const COCKPIT_TOKEN_PREFIX: &str = "ck_";
+/// The exit status a Cockpit's viewers get when it ended to start again on another subscription
+/// (SPEC-074 SUP-004): the panel follows it to the new one.
+pub const SWITCHED_STATUS: &str = "switched";
 /// What a Cockpit's bearer is derived for, hashed with its host token.
 const COCKPIT_TOKEN_LABEL: &[u8] = b"yulius-cockpit-mcp\0";
 
@@ -120,6 +123,12 @@ pub struct ShellRuntime {
     pub(crate) kind: ShellKind,
     /// The conversation a Cockpit was started to resume, and when its process was spawned.
     pub(crate) resumed: OnceLock<(String, Timestamp)>,
+    /// The pool subscription a Cockpit runs on (SPEC-074 SUP-001); unknown for records written
+    /// before it was kept.
+    pub(crate) account: OnceLock<AccountId>,
+    /// A Cockpit ended to start again on another subscription (SPEC-074 SUP-004): its viewers
+    /// are told `switched`, and its quick end says nothing about its conversation.
+    pub(crate) switching: AtomicBool,
     sandbox: SandboxId,
     creator: UserId,
     task: Option<TaskId>,
@@ -177,6 +186,9 @@ struct ShellFile {
     /// Terminal or Cockpit (absent in records written before the Cockpit: a terminal).
     #[serde(default)]
     kind: ShellKind,
+    /// A Cockpit's pool subscription (absent in older records and for terminals).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    account: Option<String>,
     /// Sealed host token, lowercase hex.
     token: String,
 }
@@ -219,6 +231,16 @@ impl ShellRuntime {
         let mut data = COCKPIT_TOKEN_LABEL.to_vec();
         data.extend_from_slice(&self.token);
         format!("{COCKPIT_TOKEN_PREFIX}{}", crypto.sha256_hex(&data))
+    }
+
+    /// Tells the shell's viewers something (a short line beside the terminal).
+    pub(crate) fn notice(&self, text: &str) {
+        self.hub.notice(text);
+    }
+
+    /// Becomes `true` when the shell has ended.
+    pub(crate) fn ended_signal(&self) -> watch::Receiver<bool> {
+        self.ended_tx.subscribe()
     }
 
     /// Listed and attachable: not ended and not being closed.
@@ -666,6 +688,7 @@ impl App {
             created_at: runtime.created_at.0,
             seq: runtime.seq,
             kind: runtime.kind,
+            account: runtime.account.get().map(|a| a.as_str().to_owned()),
             token: hex_token(&sealed.0),
         };
         write_shell_file(&runtime.run_dir, &file).map_err(AppError::internal)
@@ -693,6 +716,8 @@ impl App {
             id: id.to_owned(),
             kind,
             resumed: OnceLock::new(),
+            account: OnceLock::new(),
+            switching: AtomicBool::new(false),
             sandbox: sandbox.clone(),
             creator: creator.clone(),
             task,
@@ -849,12 +874,16 @@ impl App {
         // Before the shell reads as ended: a Cockpit opened again right after a failed resume
         // must see it, not resume the same conversation (it did on the fast VM, F 2026-10-13).
         // Recording twice is harmless.
-        self.note_cockpit_exit(runtime, exit.and_then(|e| e.code));
+        let switching = runtime.switching.load(Ordering::SeqCst);
+        if !switching {
+            self.note_cockpit_exit(runtime, exit.and_then(|e| e.code));
+        }
         if runtime.ended.swap(true, Ordering::SeqCst) {
             return;
         }
         *runtime.writer.lock().await = None;
-        runtime.hub.exit("closed", exit.and_then(|e| e.code));
+        let status = if switching { SWITCHED_STATUS } else { "closed" };
+        runtime.hub.exit(status, exit.and_then(|e| e.code));
         runtime.ended_tx.send_replace(true);
         if let Ok(mut map) = self.shells.shells.lock() {
             map.remove(&runtime.id);
@@ -886,7 +915,7 @@ impl App {
     }
 
     /// Ends shells: every shell is asked first, then all are awaited against one deadline.
-    async fn end_shells(&self, shells: &[Arc<ShellRuntime>]) {
+    pub(crate) async fn end_shells(&self, shells: &[Arc<ShellRuntime>]) {
         for shell in shells {
             Self::request_shell_exit(shell).await;
         }
@@ -1118,10 +1147,20 @@ impl App {
             .transpose()
             .map_err(|_| AppError::NotFound)?;
         let folder = self.shell_folder(&sandbox, task.as_ref()).await;
+        let account = OnceLock::new();
+        if let Some(id) = file
+            .account
+            .as_deref()
+            .and_then(|a| AccountId::parse(a).ok())
+        {
+            let _ = account.set(id);
+        }
         let runtime = Arc::new(ShellRuntime {
             id: file.id.clone(),
             kind: file.kind,
             resumed: OnceLock::new(),
+            account,
+            switching: AtomicBool::new(false),
             sandbox,
             creator: UserId::parse(&file.creator).map_err(|_| AppError::NotFound)?,
             task,
@@ -1147,6 +1186,9 @@ impl App {
             map.insert(runtime.id.clone(), Arc::clone(&runtime));
         }
         self.start_pump(&runtime, reader);
+        if runtime.kind == ShellKind::Cockpit {
+            self.start_cockpit_watch(&runtime);
+        }
         tracing::info!(shell = %runtime.id, sandbox = %runtime.sandbox, "adopted a running sandbox shell");
         Ok(())
     }

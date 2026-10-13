@@ -58,6 +58,7 @@ done\n\
 echo \"cockpit-args:[${args# }]\"\n\
 echo \"bearer:${YULIUS_COCKPIT_TOKEN:-none}\"\n\
 echo \"token:${CLAUDE_CODE_OAUTH_TOKEN:-none}\"\n\
+echo \"interrupted:${CLAUDE_CODE_RESUME_INTERRUPTED_TURN:-none}\"\n\
 echo \"config:$CLAUDE_CONFIG_DIR\"\n\
 echo \"cwd:$(pwd)\"\n\
 echo \"ready\"\n\
@@ -1056,5 +1057,295 @@ async fn a_disabled_owners_cockpit_manages_nothing() -> TestResult {
     let refused = mcp(&f, &token, "tools/list", json!({})).await?;
     assert_eq!(refused["error"]["code"], -32001, "{refused}");
     f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+// SPEC-074: a usage limit in the Cockpit moves it to a subscription with capacity, as a task's.
+
+/// The test clock's start (2026-10-07T00:00:00Z) plus `secs`, as Claude Code writes `timestamp`.
+fn at(secs: i64) -> String {
+    let base = 1_791_331_200_i64;
+    let time = base + secs;
+    let (days, rest) = (time.div_euclid(86_400), time.rem_euclid(86_400));
+    // 2026-10-07 is day 20_733 after the epoch; the records stay within a few days of it.
+    let day = 7 + (days - 20_733);
+    format!(
+        "2026-10-{day:02}T{:02}:{:02}:{:02}.000Z",
+        rest / 3_600,
+        rest % 3_600 / 60,
+        rest % 60
+    )
+}
+
+fn transcript_record(
+    kind: &str,
+    uuid: &str,
+    parent: Option<&str>,
+    secs: i64,
+    extra: &Value,
+) -> String {
+    let mut record = json!({"type": kind, "uuid": uuid, "parentUuid": parent, "isSidechain": false,
+        "sessionId": "conv-1", "timestamp": at(secs)});
+    if let (Some(map), Some(more)) = (record.as_object_mut(), extra.as_object()) {
+        map.extend(more.clone());
+    }
+    format!("{record}\n")
+}
+
+fn prompt_record(uuid: &str, parent: Option<&str>, secs: i64) -> String {
+    transcript_record(
+        "user",
+        uuid,
+        parent,
+        secs,
+        &json!({"message": {"role": "user", "content": "why?"}, "origin": {"kind": "human"}}),
+    )
+}
+
+fn answer_record(uuid: &str, parent: &str, secs: i64) -> String {
+    transcript_record(
+        "assistant",
+        uuid,
+        Some(parent),
+        secs,
+        &json!({"message": {"id": format!("msg_{uuid}"), "role": "assistant", "model": "claude-opus-5-5",
+            "stop_reason": "end_turn", "content": [{"type": "text", "text": "because"}]}}),
+    )
+}
+
+/// Claude Code 2.1.292's usage-limit error record, resetting at `resets` (epoch seconds).
+fn limit_record(uuid: &str, parent: &str, secs: i64, resets: i64) -> String {
+    transcript_record(
+        "assistant",
+        uuid,
+        Some(parent),
+        secs,
+        &json!({"isApiErrorMessage": true, "error": "rate_limit", "apiError": "usage_limit_reached",
+            "apiErrorStatus": 429, "apiErrorParams": {"rate_limit_info": {"status": "rejected",
+                "resetsAt": resets, "rateLimitType": "seven_day"}},
+            "message": {"id": format!("msg_{uuid}"), "role": "assistant", "model": "<synthetic>",
+                "content": [{"type": "text", "text": "You've hit your weekly limit · resets 4am"}]}}),
+    )
+}
+
+async fn insert_account(h: &Harness, id: &str, token: &str, used: f64) -> TestResult {
+    let now = h.clock.0.load(Ordering::SeqCst);
+    let window =
+        json!({"used_percent": used, "window_minutes": 10080, "resets_at": now + 80 * 3_600_000});
+    h.store
+        .insert_account(&AccountRecord {
+            id: AccountId::parse(id)?,
+            provider: Provider::Anthropic,
+            label: id.into(),
+            credential: Some(h.app.deps.crypto.seal(token.as_bytes())?),
+            status: AccountStatus::Ok,
+            usage_json: Some(json!({"secondary": window}).to_string()),
+            last_error: None,
+            created_at: Timestamp(1),
+            updated_at: Timestamp(1),
+        })
+        .await?;
+    Ok(())
+}
+
+/// The stored usage of `account`.
+async fn usage_of(h: &Harness, account: &str) -> Result<Value, Box<dyn std::error::Error>> {
+    let record = h
+        .store
+        .account(&AccountId::parse(account)?)
+        .await?
+        .ok_or("account")?;
+    Ok(serde_json::from_str(
+        record.usage_json.as_deref().unwrap_or("{}"),
+    )?)
+}
+
+/// Reads the socket until a JSON message of `kind` arrives.
+async fn read_message(
+    socket: &mut Socket,
+    kind: &str,
+) -> Result<Value, Box<dyn std::error::Error>> {
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        let message = tokio::time::timeout_at(deadline, socket.next())
+            .await
+            .map_err(|_| format!("timed out waiting for a {kind} message"))?
+            .ok_or("socket closed")??;
+        if let Message::Text(text) = message {
+            let value: Value = serde_json::from_str(&text)?;
+            if value["type"] == kind {
+                return Ok(value);
+            }
+        }
+    }
+}
+
+/// The live Cockpit other than `old`, once there is one.
+async fn other_cockpit(f: &Fixture, old: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let mut found = None;
+    wait_for("the Cockpit on another subscription", || {
+        found =
+            f.h.app
+                .sandbox_shells(&sid())
+                .into_iter()
+                .find(|s| s.id() != old)
+                .map(|s| s.id().to_owned());
+        found.is_some()
+    })
+    .await?;
+    found.ok_or_else(|| "no other Cockpit".into())
+}
+
+/// The conversation of the Cockpit whose screen is `screen`: its project directory.
+fn project_of(screen: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let config = PathBuf::from(printed(screen, "config")?);
+    let cwd = printed(screen, "cwd")?;
+    Ok(yulius_harness::paths::claude_project_dir(
+        &config,
+        Path::new(&cwd),
+    ))
+}
+
+/// A conversation that hit the weekly limit a day before the Cockpit started and went on, then
+/// hits it again now (resetting at `resets`).
+fn limited_conversation(resets: i64) -> String {
+    [
+        prompt_record("u0", None, -86_400),
+        limit_record("old-limit", "u0", -86_399, 1_791_000_000),
+        answer_record("a0", "old-limit", -86_000),
+        prompt_record("u1", Some("a0"), 5),
+        limit_record("new-limit", "u1", 6, resets),
+    ]
+    .concat()
+}
+
+#[tokio::test]
+async fn a_usage_limit_moves_the_cockpit_to_a_subscription_with_capacity() -> TestResult {
+    let f = fixture_with(false, None).await?;
+    // acc-a has the most room, so the Cockpit starts there.
+    insert_account(&f.h, "acc-a", "token-a", 5.0).await?;
+    insert_account(&f.h, "acc-b", TOKEN, 60.0).await?;
+    let served = serve(f.h.router.clone()).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(printed(&screen, "token")?, "token-a");
+    // SUP-001: the shell record keeps its subscription (and still no token).
+    let record = std::fs::read_to_string(f.data.join("shells").join(&id).join("shell.json"))?;
+    assert!(record.contains("\"account\":\"acc-a\""), "{record}");
+
+    // The person asks; acc-a's weekly window is full (SUP-002). The limit of a day ago, before
+    // this process started, is history.
+    let project = project_of(&screen)?;
+    std::fs::create_dir_all(&project)?;
+    let transcript = project.join("conv-1.jsonl");
+    std::fs::write(&transcript, limited_conversation(1_791_400_000))?;
+
+    // SUP-004: the viewer is told the session moved, and a Cockpit on acc-b continues the turn.
+    let exit = read_message(&mut socket, "exit").await?;
+    assert_eq!(exit["status"], "switched", "{exit}");
+    let again = other_cockpit(&f, &id).await?;
+    let mut socket = attach(served.addr, &again, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(
+        printed(&screen, "cockpit-args")?,
+        "[--resume conv-1 --model claude-opus-5-5 --effort high]",
+        "the same conversation, nothing typed"
+    );
+    assert_eq!(printed(&screen, "interrupted")?, "1");
+    assert_eq!(printed(&screen, "token")?, TOKEN);
+    assert_eq!(cockpit_id(&f, &f.alice).await?, again, "the panel finds it");
+    // Stepped back over the new limit only (SPEC-034 LIM-001).
+    let stepped = std::fs::read_to_string(&transcript)?;
+    assert!(!stepped.contains("new-limit"), "{stepped}");
+    assert!(
+        stepped.contains("old-limit") && stepped.contains("\"u1\""),
+        "{stepped}"
+    );
+    // SUP-003: acc-a is recorded as limited until the new limit's reset, not the old one's.
+    let usage = usage_of(&f.h, "acc-a").await?;
+    assert_eq!(usage["limit_reached"], true, "{usage}");
+    assert_eq!(usage["limit_resets_at"], 1_791_400_000_000_i64, "{usage}");
+    let record = std::fs::read_to_string(f.data.join("shells").join(&again).join("shell.json"))?;
+    assert!(record.contains("\"account\":\"acc-b\""), "{record}");
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn without_capacity_a_limit_leaves_the_cockpit_where_it_is_and_says_why() -> TestResult {
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let project = project_of(&screen)?;
+    std::fs::create_dir_all(&project)?;
+    std::fs::write(
+        project.join("conv-1.jsonl"),
+        limited_conversation(1_791_400_000),
+    )?;
+
+    // SUP-005: no other subscription; the Cockpit stays, and its viewers learn why.
+    let notice = read_message(&mut socket, "notice").await?;
+    assert!(
+        notice["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("No other subscription has capacity")),
+        "{notice}"
+    );
+    let usage = usage_of(&f.h, "acc-1").await?;
+    assert_eq!(usage["limit_reached"], true, "{usage}");
+    assert_eq!(cockpit_id(&f, &f.alice).await?, id, "the same session");
+    socket
+        .send(Message::text(
+            json!({"type": "input", "data": "echo still-$((2+2))\r"}).to_string(),
+        ))
+        .await?;
+    read_until(&mut socket, &mut screen, "still-4").await?;
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_adopted_cockpit_keeps_its_subscription_and_moves_past_a_limit() -> TestResult {
+    let f = fixture_with(false, None).await?;
+    insert_account(&f.h, "acc-a", "token-a", 5.0).await?;
+    insert_account(&f.h, "acc-b", TOKEN, 60.0).await?;
+    let served = serve(f.h.router.clone()).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let project = project_of(&screen)?;
+    drop(socket);
+    f.h.app.stop_workspace_services().await;
+
+    // A server restart (SUP-001): the Cockpit is adopted on acc-a and watched again.
+    let g = fixture_with(false, Some(f.data.clone())).await?;
+    insert_account(&g.h, "acc-a", "token-a", 5.0).await?;
+    insert_account(&g.h, "acc-b", TOKEN, 60.0).await?;
+    assert_eq!(g.h.app.adopt_shells().await, (1, 0));
+    std::fs::create_dir_all(&project)?;
+    std::fs::write(
+        project.join("conv-1.jsonl"),
+        limited_conversation(1_791_400_000),
+    )?;
+    let again = other_cockpit(&g, &id).await?;
+    let usage = usage_of(&g.h, "acc-a").await?;
+    assert_eq!(
+        usage["limit_reached"], true,
+        "the adopted Cockpit's own subscription: {usage}"
+    );
+    let served = serve(g.h.router.clone()).await?;
+    let mut socket = attach(served.addr, &again, &g.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(printed(&screen, "token")?, TOKEN);
+    assert_eq!(printed(&screen, "interrupted")?, "1");
+    g.h.app.end_all_shells().await;
     Ok(())
 }
