@@ -74,6 +74,43 @@ test('an idle agent with a background shell running is Working, not your turn', 
   await expect(browser.locator('.attention-bar')).toHaveText(/waiting for your reply/);
 });
 
+// SPEC-085 STT-002 (F 2026-10-13: "needs you was too often"): an agent that waits in `yulius wait`
+// for its checks or its armed merge goes on by itself when Yulius has news.
+test('an agent waiting for Yulius is Working, not your turn', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+
+  // The turn ended while the agent waits for its checks (its plan's merge step is still open).
+  await touchStudioTask(browser, 12, { activity: 'waiting', yulius_wait: true });
+  await expect(browser.locator('.strip-status')).toHaveText(/Waiting for checks or merge/);
+  await expect(screen.getByRole('region', 'Working').getByRole('link', /Checkout API/)).toBeVisible();
+  await expect(screen.getByRole('region', 'Needs you').getByRole('link', /Checkout API/)).toBeHidden();
+  await expect(browser.locator('.attention-bar')).toBeHidden();
+
+  // The wait returned and the agent stopped: now the next move is the user's.
+  await touchStudioTask(browser, 12, { yulius_wait: false });
+  await expect(browser.locator('.strip-status')).toHaveText(/Your turn/);
+  await expect(screen.getByRole('region', 'Needs you').getByRole('link', /Checkout API/)).toBeVisible();
+});
+
+// SPEC-085 STT-003 (task #63 on 2026-10-13: "Needs you" with failing checks while its agent had
+// fixed them and waited for its review agent).
+test('failing checks wait for the agent’s own work before they need you', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/4'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#4 Payment webhook');
+
+  // Its pull request's checks fail while a background agent of its idle session still runs.
+  await touchStudioTask(browser, 4, { status: 'running', activity: 'waiting', background_shells: 1 });
+  await expect(browser.locator('.strip-status')).toHaveText(/Working · PR #209 checks failing/);
+  await expect(screen.getByRole('region', 'Working').getByRole('link', /Payment webhook/)).toBeVisible();
+  await expect(screen.getByRole('region', 'Needs you').getByRole('link', /Payment webhook/)).toBeHidden();
+
+  // Nothing runs any more and the agent stopped: the failing checks are the user's.
+  await touchStudioTask(browser, 4, { background_shells: 0 });
+  await expect(browser.locator('.strip-status')).toHaveText(/PR #209 · checks failing/);
+  await expect(screen.getByRole('region', 'Needs you').getByRole('link', /Payment webhook/)).toBeVisible();
+});
+
 test('a finished task whose pull request is tested can be archived and is closed', async ({ app, browser, screen }) => {
   // #11 finished its turn with a complete plan and green checks: Done (#35), although it idles.
   await app.open(mock('/s/studio/t/11'));
