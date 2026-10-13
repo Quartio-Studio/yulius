@@ -275,6 +275,7 @@ pub(crate) async fn new_task(
             automation_run: None,
             start: true,
             mode: yulius_app::model::TaskMode::Prompt,
+            supertask: false,
         })
         .await?;
     Ok(record.id)

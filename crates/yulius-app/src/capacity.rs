@@ -544,10 +544,20 @@ impl App {
 
     async fn would_resume(&self, pause: &PauseRecord) -> bool {
         match self.deps.store.task(&pause.task_id).await {
-            Ok(Some(task)) if task.status == TaskStatus::WaitingCapacity => matches!(
-                self.paused_decision(&task).await,
-                Ok((Decision::Stay | Decision::Switch { .. }, _, _))
-            ),
+            // A task a supertask holds does not resume (SPEC-071), unless its process lives on
+            // (the hold never touches a live run): no stagger before a held one.
+            Ok(Some(task)) if task.status == TaskStatus::WaitingCapacity => {
+                match self.paused_decision(&task).await {
+                    Ok((Decision::Stay | Decision::Switch { .. }, _, has_process)) => {
+                        has_process
+                            || !self
+                                .supertask_holders(&task)
+                                .await
+                                .is_ok_and(|holders| !holders.is_empty())
+                    }
+                    _ => false,
+                }
+            }
             _ => false,
         }
     }
@@ -617,6 +627,12 @@ impl App {
                         tracing::warn!(error = %err, task = %task.id, "resume on another subscription failed");
                     }
                 } else {
+                    // A supertask holds the project's starts (SPEC-071): the pause stays, with
+                    // its kind and continuation, until the queue wakes this loop again.
+                    if self.held_by_supertask(&task).await.unwrap_or(false) {
+                        self.supertask_holds.capacity_held();
+                        return Resume::Waiting(None);
+                    }
                     self.end_pause(&task.id, "started").await;
                     let start = match store.provider_sessions(&task.id).await {
                         _ if pause.kind == PauseKind::Prompt
