@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- A session opened from Sessions reads as Claude Code's TUI printed it (SPEC-075, ADR-0051, task #71).
+  Prompts and slash commands show as `>` lines and messages and tool calls as `⏺`, with each result
+  under `⎿` folded to its first lines ("Read 2 lines", "… +2 lines"). Edits show as `Update(path)`
+  with their lines. The raw `<command-name>` and `<local-command-stdout>` tags are gone, and
+  reminders are hidden. The transcript is faded in both themes: fainter and less saturated than a
+  live terminal (`--session-*`), yet still WCAG AA. It ends with a locked prompt box, and a
+  pixel-art spider web hangs in its corner.
 - A stopped or closed run ends only when its processes are proven gone (SPEC-065, ADR-0050, task #54;
   #284, #285, #290). When Yulius cannot terminate a run's host after the stop or close escalation,
   the run stays live, the task's terminal says so and a running task needs attention; deleting it
