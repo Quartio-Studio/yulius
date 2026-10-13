@@ -940,8 +940,7 @@ route('DELETE', `/api/tasks/${ID}`, ({ db, p }) => {
   return json(204);
 });
 route('POST', `/api/tasks/${ID}/archive`, async ({ db, p }) => {
-  // Tests count the requests and can hold the answers (`__yuliusMock.holdArchive = promise`).
-  db.archiveRequests = (db.archiveRequests || 0) + 1;
+  // Tests can hold the answers (`__yuliusMock.holdArchive = promise`).
   if (db.holdArchive) await db.holdArchive;
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
@@ -2529,6 +2528,8 @@ async function handleFetch(db, url, init = {}) {
   }
   if (!PUBLIC.includes(u.pathname) && !db.signedIn) return json(401, { error: { code: 'unauthenticated', message: 'Sign in first.' } });
   if (db.failPath && method === 'GET' && u.pathname === db.failPath) return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
+  // Tests count archive requests (`__yuliusMock.archiveRequests`), also those failed on purpose.
+  if (method === 'POST' && /^\/api\/tasks\/[^/]+\/archive$/.test(u.pathname)) db.archiveRequests = (db.archiveRequests || 0) + 1;
   if (db.failPostPath && method === 'POST' && u.pathname === db.failPostPath) return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
   const headers = init.headers || {};
   if (method !== 'GET' && !PUBLIC.includes(u.pathname) && headers['X-Yulius-CSRF'] !== db.me.csrf_token) {

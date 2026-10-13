@@ -828,13 +828,17 @@ export function createSidebar(ctx) {
     const next = `${sandbox.access}|${GROUPS.map((g) => `${g.id}:${g.id === 'ended' && !endedOpen ? 'closed' : ''}:${grouped.get(g.id).map((r) => r.task.id).join(',')}`).join('|')}`;
     if (next === shape) return;
     shape = next;
-    // "Archive all" is rebuilt as its rows leave: the keyboard stays on it (SPEC-062).
-    const onArchiveAll = Boolean(document.activeElement && document.activeElement.classList.contains('task-group-action'));
+    // The keyboard stays in the list across a rebuild (SPEC-062): on "Archive all" while its rows
+    // leave, on the same row if it is still listed, else on the first task left.
+    const focused = list.contains(document.activeElement) ? document.activeElement : null;
+    const onArchiveAll = Boolean(focused && focused.classList.contains('task-group-action'));
     setChildren(list, GROUPS.filter((g) => grouped.get(g.id).length).map((g) => h('section', { class: ['task-group', `group-${g.id}`], 'aria-label': g.name },
       groupHead(g, grouped.get(g.id)),
       g.id === 'ended' && !endedOpen ? null : h('div', { role: 'list' }, grouped.get(g.id).map((r) => r.el)))));
-    const again = onArchiveAll ? list.querySelector('.task-group-action') : null;
-    if (again) again.focus({ preventScroll: true });
+    if (focused && !list.contains(document.activeElement)) {
+      const target = (onArchiveAll && list.querySelector('.task-group-action')) || (list.contains(focused) ? focused : null) || list.querySelector('a.task-link, button.task-group-head');
+      if (target) target.focus({ preventScroll: true });
+    }
   }
 
   const repaint = coalesce(() => renderTasks(), { minInterval: 150 });

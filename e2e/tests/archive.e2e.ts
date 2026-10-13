@@ -44,10 +44,13 @@ test('a row’s quick Archive button archives its task, with Undo', async ({ app
   await expect(quick).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
 
-  await quick.click();
+  await quick.focus();
+  await browser.keyboard.press('Enter');
   await expect(screen.getByText('Task #13 archived.')).toBeVisible();
   await expect(done.getByRole('link', /Improve the code/)).toBeHidden();
   expect(await archived(browser, 13)).toBe(true);
+  // Its row left with the keyboard on it: the keyboard stays in the task list.
+  await expect.poll(() => browser.evaluate(() => Boolean(document.activeElement?.closest('.task-list')))).toBe(true);
   // The open task was archived: its page is left for the sandbox's.
   await expect(screen.getByRole('heading', { level: 1, name: '#13 Improve the code' })).toBeHidden();
 
@@ -83,12 +86,16 @@ test('Archive all archives every Done task in one click, with one Undo', async (
   await expect(screen.getByRole('region', 'Stopped').getByRole('button', 'Archive all')).toHaveCount(0);
   expect(await axeViolations(browser)).toEqual([]);
 
-  await done.getByRole('button', 'Archive all').click();
+  // From the keyboard: once the group is gone, the keyboard stays in the task list.
+  await done.getByRole('button', 'Archive all').focus();
+  await browser.keyboard.press('Enter');
   await expect(screen.getByText('Archived 2 Done tasks.')).toBeVisible();
   await expect(done).toBeHidden();
+  await expect.poll(() => browser.evaluate(() => Boolean(document.activeElement?.closest('.task-list')))).toBe(true);
   expect([await archived(browser, 13), await archived(browser, 11)]).toEqual([true, true]);
 
   await screen.getByRole('button', 'Undo').click();
+  await expect(screen.getByText('Restored 2 tasks.')).toBeVisible();
   await expect.poll(async () => [await archived(browser, 13), await archived(browser, 11)]).toEqual([false, false]);
 });
 
@@ -116,12 +123,12 @@ test('Archive all stays focused and disabled while it runs; a row cannot archive
   await browser.keyboard.press('Enter');
   await expect(all).toHaveAttribute('aria-disabled', 'true');
   await expect(all).toBeFocused();
-  await expect.poll(() => archiveRequests(browser)).toBe(1);
+  await expect.poll(() => archiveRequests(browser)).toBe(2);
   // A second click and a row's quick Archive send nothing more while the batch runs.
   await browser.keyboard.press('Enter');
   await browser.locator('.task-row:has-text("Improve the code")').hover();
   await screen.getByRole('button', 'Archive task #13').click();
-  expect(await archiveRequests(browser)).toBe(1);
+  expect(await archiveRequests(browser)).toBe(2);
 
   // Back on Archive all, the keyboard stays there while rows leave and the batch ends.
   await all.focus();
@@ -131,7 +138,7 @@ test('Archive all stays focused and disabled while it runs; a row cannot archive
   // The button is back for the one that failed, with the keyboard still on it.
   await expect(all).not.toHaveAttribute('aria-disabled', 'true');
   await expect(all).toBeFocused();
-  expect(await archiveRequests(browser)).toBe(1);
+  expect(await archiveRequests(browser)).toBe(2);
 });
 
 test('read access shows neither the quick Archive nor Archive all', async ({ app, browser, screen }) => {
@@ -143,5 +150,8 @@ test('read access shows neither the quick Archive nor Archive all', async ({ app
   await row.hover();
   await expect(row.getByRole('button', 'Task actions')).toBeVisible();
   await expect(browser.locator('.task-row:has-text("Explore data model") .task-quick-archive')).toBeHidden();
+  // Its other task is Done: the group is there, without Archive all.
+  await browser.evaluate(() => (window as unknown as WithMock).__yuliusMock.touchTask('sb_three', 1, { status: 'running', activity: 'done' }));
+  await expect(screen.getByRole('region', 'Done').getByRole('link', /Explore data model/)).toBeVisible();
   await expect(screen.getByRole('button', 'Archive all')).toHaveCount(0);
 });
