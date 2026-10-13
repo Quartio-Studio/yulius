@@ -26,7 +26,7 @@ preset = "standard"
 # macOS has no Yulius runner: run `scripts/dev ci` on a Mac before promotion.
 [[ci.jobs]]
 name = "quality"
-command = "python3 scripts/bootstrap.py --install-rustup && scripts/dev ci"
+command = "python3 scripts/bootstrap.py --install-rustup && NEXTEST_TEST_THREADS=num-cpus scripts/dev ci"
 
 # The browser's system libraries are installed once in the sandbox (onboarding); installing them
 # on every run (`--with-deps`, apt) raced the other CI lane and agents for the dpkg lock and
