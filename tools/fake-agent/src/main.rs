@@ -10,7 +10,8 @@
 //!            [--session-id ID] [--transcript PATH [--transcript-kind claude]]
 //!            [--limit-after N] [--report-env NAME]... [--tui]
 //!            [--hooks YULIUS_EXE] [--goal-background SECONDS] [--goal-agent SECONDS]
-//!            [--goal-monitor SECONDS [--goal-monitor-ends]] [--goal-continue-ms MS
+//!            [--goal-monitor SECONDS [--goal-monitor-ends]] [--goal-verdict met|failed|none]
+//!            [--goal-continue-ms MS
 //!            [--goal-continue-verdict] [--goal-continue-dies]] [--goal-delay-ms MS] [--drop-lines N]
 //!            [--interrupts] [--rate-limits-file PATH] [--session-start] [--opening-turn-ms MS]
 //!            [--echo-turn-ms MS] [--context-full-after N] [--compact-fails] [--compact-hangs]
@@ -58,7 +59,8 @@
 //! that wakes the session after N seconds and prints `AGENT DONE`. With `--goal-monitor N` it
 //! starts a Monitor stream (`{"taskId":"monitor-1","timeoutMs":N000}`) that never reports; with
 //! `--goal-monitor-ends` too, the stream ends after N/2 seconds and wakes the session
-//! (`MONITOR DONE`).
+//! (`MONITOR DONE`). `--goal-verdict failed` records the goal as failed instead of achieved, and
+//! `--goal-verdict none` records no verdict (the turn closes without one).
 //!
 //! `--hooks YULIUS_EXE` runs Claude Code's hooks as configured by Yulius:
 //! `YULIUS_EXE hook claude UserPromptSubmit` before and `… Stop` after each turn, with the hook
@@ -145,6 +147,14 @@ enum Mode {
     Sleep,
 }
 
+/// The goal evaluator's last verdict in a goal turn (`--goal-verdict`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GoalVerdict {
+    Met,
+    Failed,
+    None,
+}
+
 #[derive(Debug)]
 struct Options {
     mode: Mode,
@@ -162,6 +172,7 @@ struct Options {
     goal_agent: Option<u64>,
     goal_monitor: Option<u64>,
     goal_monitor_ends: bool,
+    goal_verdict: GoalVerdict,
     goal_continue_ms: Option<u64>,
     goal_continue_verdict: bool,
     goal_continue_dies: bool,
@@ -204,6 +215,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         goal_agent: None,
         goal_monitor: None,
         goal_monitor_ends: false,
+        goal_verdict: GoalVerdict::Met,
         goal_continue_ms: None,
         goal_continue_verdict: false,
         goal_continue_dies: false,
@@ -272,6 +284,14 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                 options.goal_monitor = Some(seconds.min(MAX_SLEEP_SECONDS));
             }
             "--goal-monitor-ends" => options.goal_monitor_ends = true,
+            "--goal-verdict" => {
+                options.goal_verdict = match args.next().as_deref() {
+                    Some("met") => GoalVerdict::Met,
+                    Some("failed") => GoalVerdict::Failed,
+                    Some("none") => GoalVerdict::None,
+                    _ => return Err("--goal-verdict must be met, failed or none".into()),
+                }
+            }
             "--goal-continue-ms" => {
                 let ms: u64 = parse_number(&flag, args.next())?;
                 options.goal_continue_ms = Some(ms.min(MAX_GOAL_DELAY_MS));
@@ -645,11 +665,11 @@ impl Transcript {
     }
 
     /// A tool result that started background work, with Claude Code 2.1.292's `toolUseResult`.
-    fn tool_result(&mut self, result: Value) -> io::Result<()> {
+    fn tool_result(&mut self, text: &str, result: Value) -> io::Result<()> {
         let uuid = format!("fake-{}-{}-result", self.session_id, self.turns);
         let mut user = self.claude_envelope("user", &uuid, &rfc3339(now_ms()));
         user["message"] = json!({"role": "user", "content": [{"type": "tool_result",
-            "tool_use_id": format!("toolu_fake_{}", self.turns), "content": "started"}]});
+            "tool_use_id": format!("toolu_fake_{}", self.turns), "content": text}]});
         user["toolUseResult"] = result;
         self.last_uuid = Some(uuid);
         self.append(&[user])
@@ -1161,12 +1181,18 @@ fn goal_turn(
         t.turn(line, &answer)?;
         // Background work the turn started, recorded before its Stop hook.
         if options.goal_agent.is_some() {
-            t.tool_result(json!({"isAsync": true, "status": "async_launched",
-                "agentId": "agent-1", "description": "Review"}))?;
+            t.tool_result(
+                "Async agent launched successfully.",
+                json!({"isAsync": true, "status": "async_launched",
+                "agentId": "agent-1", "description": "Review"}),
+            )?;
         }
         if let Some(seconds) = options.goal_monitor {
-            t.tool_result(json!({"taskId": "monitor-1", "timeoutMs": seconds * 1000,
-                "persistent": false}))?;
+            t.tool_result(
+                &format!("Monitor started (task monitor-1, expires in {seconds}s unless the source ends first)"),
+                json!({"taskId": "monitor-1", "timeoutMs": seconds * 1000,
+                "persistent": false}),
+            )?;
         }
     }
     if let (Some(seconds), true) = (options.goal_monitor, options.goal_monitor_ends) {
@@ -1219,12 +1245,21 @@ fn goal_turn(
     if let Some(transcript) = transcript
         && let Ok(mut t) = transcript.lock()
     {
-        t.goal_status(
-            json!({"type": "goal_status", "met": true, "condition": condition,
-            "reason": "Done and verified.", "iterations": 1, "durationMs": 51_000,
-            "tokens": 7_100}),
-        )?;
+        match options.goal_verdict {
+            GoalVerdict::Met => t.goal_status(
+                json!({"type": "goal_status", "met": true, "condition": condition,
+                "reason": "Done and verified.", "iterations": 1, "durationMs": 51_000,
+                "tokens": 7_100}),
+            )?,
+            GoalVerdict::Failed => t
+                .goal_status(json!({"type": "goal_status", "met": false, "failed": true,
+                "condition": condition, "reason": "It cannot be done."}))?,
+            GoalVerdict::None => {}
+        }
         t.close_turn(51_000, u32::from(options.goal_agent.is_some()))?;
+    }
+    if options.goal_verdict != GoalVerdict::Met {
+        return say("GOAL UNMET");
     }
     if let Some(seconds) = options.goal_agent {
         wake_after(

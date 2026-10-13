@@ -29,9 +29,14 @@ Decision 0044 derives a task's activity from Claude Code's own records. It left 
    (`{status: "async_launched", agentId}`). It also observes the `<task-notification>` that ends
    either one, as a prompt or a queued command. The runtime keeps the live ones in a bounded map.
    - A Monitor counts as background work until it ends or its `timeoutMs` passes.
-   - An agent counts until the turn's own record, whose count then takes over.
+   - In an idle task's count, an agent counts until the turn's own record, whose count then takes
+     over.
+   - A switch waits for every agent launch whose end was not notified yet, whatever turn launched
+     it. A lost notification holds switches back for at most an hour.
+   - Launches are ordered by when Yulius read them, the same clock as the turn record's.
 2. **The Stop hook reads before it switches.** When the pool decides a switch at a Stop, the hook
-   first waits (bounded) for the watcher to read the lines written before it. Background work,
+   first waits for the watcher to read the lines written before it: two of its rounds begin,
+   bounded by 5 s. Background work,
    launches included, defers the switch to a later Stop.
 3. **The hook never waits for the verdict.** While a goal is open, the clean Stop records its time
    in one slot and returns, and the task stays Working. Whoever comes first takes the slot (one

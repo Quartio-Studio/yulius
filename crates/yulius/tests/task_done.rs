@@ -1318,7 +1318,7 @@ fn a_switch_waits_for_a_background_agent_launched_in_the_turn() -> TestResult {
 }
 
 /// SPEC-079 BGW-005 (#264): Yulius's Stop hook runs before the goal evaluator. While the goal is
-/// open the turn waits for the verdict: a goal "not met" twice sends the agent on, and the task
+/// open the turn waits for the verdict: the verdict "not met" sends the agent on, and the task
 /// never reads Your turn or Done in between; the verdict "met" makes it Done.
 #[test]
 fn a_goal_not_met_never_reads_idle_between_turns() -> TestResult {
@@ -1378,6 +1378,48 @@ fn a_goal_not_met_never_reads_idle_between_turns() -> TestResult {
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
+}
+
+/// SPEC-079 BGW-005 (#264): the goal turn's Stop waits for the verdict. "failed" makes the task
+/// wait for its person; no verdict at all settles it at the turn's record as before. Neither ever
+/// reads Done.
+fn an_unmet_goal_leaves_the_task_waiting(verdict: &'static str) -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            goal_verdict: Some(verdict),
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Ship it").await?;
+        wait_for("the goal turn's end", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "GOAL UNMET")
+        })
+        .await?;
+        // Well within the verdict's 20 s bound: the verdict or the record settled it.
+        wait_for("Your turn", Duration::from_secs(10), || async {
+            activity(&app, &id).await == Some(Activity::Waiting)
+        })
+        .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+#[test]
+fn a_failed_goal_leaves_the_task_waiting() -> TestResult {
+    an_unmet_goal_leaves_the_task_waiting("failed")
+}
+
+#[test]
+fn a_turn_closed_without_a_verdict_settles_as_before() -> TestResult {
+    an_unmet_goal_leaves_the_task_waiting("none")
 }
 
 /// STA-004, STA-005 (SPEC-032, task #24 between 15:55:22 and 15:55:30): Yulius's Stop hook ends

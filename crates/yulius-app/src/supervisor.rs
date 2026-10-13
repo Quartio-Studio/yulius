@@ -156,7 +156,7 @@ pub struct TaskRuntime {
     pub(crate) goal_open: AtomicBool,
     /// The clean Stop (ms) whose turn waits for the goal verdict before it reads idle (0 = none).
     /// Whoever takes it settles that turn (SPEC-079 BGW-005).
-    pub(crate) verdict_stop_ms: AtomicI64,
+    pub(crate) verdict_stop_ms: crate::finish::VerdictSlot,
     /// Polls of the transcript watcher so far: the Stop hook waits for one more before it decides
     /// a switch, so the lines written before the Stop are read (SPEC-079 BGW-004).
     pub(crate) watch_polls: AtomicU64,
@@ -245,7 +245,7 @@ impl TaskRuntime {
             resumed_turn: AtomicBool::new(false),
             launches: Mutex::new(std::collections::BTreeMap::new()),
             goal_open: AtomicBool::new(false),
-            verdict_stop_ms: AtomicI64::new(0),
+            verdict_stop_ms: crate::finish::VerdictSlot::default(),
             watch_polls: AtomicU64::new(0),
             replay_transcript: AtomicBool::new(false),
             session_end: Mutex::new(None),
@@ -2935,7 +2935,7 @@ impl App {
             launches.clear();
         }
         runtime.goal_open.store(false, Ordering::SeqCst);
-        runtime.verdict_stop_ms.store(0, Ordering::SeqCst);
+        runtime.verdict_stop_ms.clear();
         if let Ok(mut end) = runtime.session_end.lock() {
             *end = None;
         }
@@ -2995,6 +2995,11 @@ impl App {
             if !current() {
                 break;
             }
+            // A round begins: once the next one begins, every line written before this one was
+            // read and applied (a Stop hook deciding a switch waits for that, BGW-004).
+            self.runtime(&task_id)
+                .watch_polls
+                .fetch_add(1, Ordering::SeqCst);
             let now = self.now();
             // Claude session-id drift (/clear, /resume inside the TUI): adopt into the lineage.
             if attempt.harness == Harness::ClaudeCode && now.millis_since(last_drift_check) > 5_000
@@ -3093,8 +3098,6 @@ impl App {
                     self.on_observation(&task_id, &attempt, observation).await;
                 }
             }
-            // This poll's lines are applied: a Stop hook waiting for them may decide (BGW-004).
-            runtime.watch_polls.fetch_add(1, Ordering::SeqCst);
             // Live metrics (#31): the dashboard counts a run while it goes, saved after each turn
             // and at most every 30 s while something changes.
             let now = self.now();
@@ -3153,7 +3156,7 @@ impl App {
                 runtime.notice_attention_ms.store(0, Ordering::SeqCst);
                 runtime.resumed_turn.store(false, Ordering::SeqCst);
                 // A new turn: the one that waited for its verdict goes on (BGW-005).
-                runtime.verdict_stop_ms.store(0, Ordering::SeqCst);
+                runtime.verdict_stop_ms.clear();
                 runtime.start_turn(self.now());
                 let _ = self
                     .deps
@@ -3206,7 +3209,10 @@ impl App {
                 agent,
                 expires_in_ms,
                 at,
-            } => self.background_started(task_id, id, agent, expires_in_ms, at),
+            } => {
+                self.background_started(task_id, id, agent, expires_in_ms, at)
+                    .await;
+            }
             Observation::BackgroundEnded { id } => self.background_ended(task_id, &id).await,
             Observation::Session { .. } => {}
         }

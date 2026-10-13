@@ -90,6 +90,9 @@ const LOCAL_COMMAND_STDERR: &str = "<local-command-stderr>";
 const MONITOR_MAX_MS: u64 = 60 * 60 * 1000;
 const MONITOR_DEFAULT_MS: u64 = 5 * 60 * 1000;
 
+/// How the tool result of a Monitor start begins ("Monitor started (task b1, expires in 15m …").
+const MONITOR_STARTED: &str = "Monitor started (task ";
+
 /// The longest task id taken from a notification or a tool result.
 const MAX_TASK_ID: usize = 128;
 
@@ -189,7 +192,7 @@ fn observe_user(record: &Map<String, Value>) -> Vec<Observed> {
         return Vec::new();
     }
     if !is_prompt(message) {
-        return background_started(record).into_iter().collect();
+        return background_started(record, message).into_iter().collect();
     }
     if compact_failed(message) {
         return vec![Observed::CompactFailed];
@@ -215,15 +218,18 @@ fn observe_user(record: &Map<String, Value>) -> Vec<Observed> {
 }
 
 /// A tool result that started background work the session is woken by (SPEC-079 BGW-002): a
-/// Monitor stream (`toolUseResult` `{taskId, timeoutMs}`) or a background agent
-/// (`{status: "async_launched", agentId}`).
-fn background_started(record: &Map<String, Value>) -> Option<Observed> {
+/// Monitor stream (its text "Monitor started (task …", `toolUseResult` `{taskId, timeoutMs}`) or
+/// a background agent (`{status: "async_launched", agentId}`).
+fn background_started(
+    record: &Map<String, Value>,
+    message: &Map<String, Value>,
+) -> Option<Observed> {
     let result = obj_of(record, "toolUseResult")?;
     let task_id =
         |key| owned_str(result, key).filter(|id| !id.is_empty() && id.len() <= MAX_TASK_ID);
     let (id, agent, expires_in_ms) = if str_of(result, "status") == Some("async_launched") {
         (task_id("agentId")?, true, None)
-    } else if result.contains_key("timeoutMs") {
+    } else if tool_result_text(message).contains(MONITOR_STARTED) {
         let ms = u64_of(result, "timeoutMs").unwrap_or(MONITOR_DEFAULT_MS);
         (task_id("taskId")?, false, Some(ms.min(MONITOR_MAX_MS)))
     } else {
@@ -235,6 +241,32 @@ fn background_started(record: &Map<String, Value>) -> Option<Observed> {
         expires_in_ms,
         at: str_of(record, "timestamp").and_then(parse_rfc3339),
     })
+}
+
+/// The text of a user line's tool results (string content or their text blocks).
+fn tool_result_text(message: &Map<String, Value>) -> String {
+    let Some(Value::Array(blocks)) = message.get("content") else {
+        return String::new();
+    };
+    let mut out = String::new();
+    for block in blocks
+        .iter()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+    {
+        match block.get("content") {
+            Some(Value::String(text)) => out.push_str(text),
+            Some(Value::Array(parts)) => {
+                for text in parts
+                    .iter()
+                    .filter_map(|p| p.get("text").and_then(Value::as_str))
+                {
+                    out.push_str(text);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// The background work the `<task-notification>` blocks of `text` say ended: those with a
@@ -758,6 +790,21 @@ mod tests {
                 at
             }]
         );
+        // No `timeoutMs`: Claude Code's default of 5 minutes.
+        assert_eq!(
+            result(r#"{"taskId":"b3"}"#, false),
+            vec![Observed::BackgroundStarted {
+                id: "b3".into(),
+                agent: false,
+                expires_in_ms: Some(MONITOR_DEFAULT_MS),
+                at
+            }]
+        );
+        // Another tool's result of the same shape is no Monitor.
+        let other = observe_line(
+            r#"{"type":"user","isSidechain":false,"message":{"role":"user","content":[{"tool_use_id":"t","type":"tool_result","content":"Scheduled."}]},"toolUseResult":{"taskId":"b4","timeoutMs":1000}}"#,
+        );
+        assert!(other.is_empty());
         // A foreground agent's result, a plain tool result and a sub-agent's launch are none.
         assert!(result(r#"{"status":"completed","agentId":"a1"}"#, false).is_empty());
         assert!(result(r#"{"stdout":"","stderr":""}"#, false).is_empty());

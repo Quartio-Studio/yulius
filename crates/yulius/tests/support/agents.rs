@@ -38,6 +38,9 @@ pub struct FakeAgentOptions {
     pub goal_monitor: Option<u64>,
     /// See `goal_monitor` (`--goal-monitor-ends`).
     pub goal_monitor_ends: bool,
+    /// The goal evaluator's last verdict: `met` (default), `failed` or `none`
+    /// (`--goal-verdict`).
+    pub goal_verdict: Option<&'static str>,
     /// After the goal turn's stop the agent works on for this many milliseconds with no new prompt
     /// (`--goal-continue-ms`): with `goal_continue_verdict` the goal evaluator says "not met"
     /// (`--goal-continue-verdict`), otherwise another Stop hook continued the turn.
@@ -168,6 +171,9 @@ impl HarnessPort for FakeAgentHarness {
         }
         if self.options.goal_monitor_ends {
             argv.push("--goal-monitor-ends".into());
+        }
+        if let Some(verdict) = self.options.goal_verdict {
+            argv.extend(["--goal-verdict".into(), verdict.into()]);
         }
         if let Some(ms) = self.options.goal_continue_ms {
             argv.extend(["--goal-continue-ms".into(), ms.to_string()]);
