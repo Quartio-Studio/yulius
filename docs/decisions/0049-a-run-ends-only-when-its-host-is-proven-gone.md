@@ -1,4 +1,4 @@
-# 0048. A stopped or closed run ends only when its host is proven gone
+# 0049. A stopped or closed run ends only when its host is proven gone
 
 ## Status
 
