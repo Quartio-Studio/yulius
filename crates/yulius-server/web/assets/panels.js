@@ -1,4 +1,4 @@
-// Right rail (Browser, Editor, Shell) and its resizable panel; each tool keeps the width
+// Right rail (Agent, Browser, Editor, Shell, Notes) and its resizable panel; each tool keeps the width
 // its user gave it (UI-044). The whole rail is hidden by default (F 2026-10-07) and shown with the
 // top-bar Tools toggle, remembered per browser; opening a panel from a link shows it.
 // Sandbox-scoped panels stay alive while hidden so the browser stream, editor and shell sessions
@@ -10,6 +10,8 @@ import { createTerminalView } from './terminal.js';
 import { attachTerminalDrop, shellAttachments } from './filedrop.js';
 import { createBrowserPanel } from './browser.js';
 import { createEditorView } from './editorview.js';
+import { createAgentView } from './agent.js';
+import { createNotesView } from './notes.js';
 import { allows } from './status.js';
 import { readJson, writeJson } from './store.js';
 import { createSplitter, layoutPrefs } from './splitter.js';
@@ -24,9 +26,13 @@ const MAX_KEY = 'yulius.panelMaximized';
 /** Default panel width per kind (share of the work area); the editor needs room. */
 const DEFAULT_FRACTION = { editor: 0.62 };
 const KINDS = [
+  // The user's own Claude Code session for quick work (SPEC-035): first, the tool used most.
+  ['agent', 'spark', 'Agent'],
   ['browser', 'globe', 'Browser'],
   ['editor', 'code', 'Editor'],
   ['shell', 'terminal', 'Shell'],
+  // Auto-saved notepads for this sandbox and the team (SPEC-041).
+  ['notes', 'note', 'Notes'],
 ];
 
 /** Create the rail + panel. setContext(sandbox, task) on navigation; open(kind, opts). */
@@ -36,7 +42,7 @@ export function createPanelHost(ctx) {
   const rail = h('nav', { class: 'rail', 'aria-label': 'Tools' });
   for (const [kind, iconName, label] of KINDS) {
     // Named, not icon-only, so a newcomer sees what each tool is (phones show icons only).
-    const button = h('button', { type: 'button', class: 'btn-icon rail-btn', 'aria-label': label, title: label, 'aria-pressed': 'false', onClick: () => toggle(kind) }, icon(iconName, { size: 20 }), h('span', { class: 'rail-label' }, label));
+    const button = h('button', { type: 'button', class: 'btn-icon rail-btn', 'aria-label': label, title: label, 'aria-pressed': 'false', onClick: () => railClick(kind) }, icon(iconName, { size: 20 }), h('span', { class: 'rail-label' }, label));
     const dot = h('span', { class: 'rail-dot', hidden: true });
     button.append(dot);
     buttons.set(kind, button);
@@ -67,9 +73,13 @@ export function createPanelHost(ctx) {
     body);
   let maximized = false;
   let railVisible = Boolean(readJson(RAIL_KEY, false));
+  // The rail shown only for a panel opened without it (the top-bar Agent button): it goes again
+  // when that panel closes, and the remembered choice stays (SPEC-035 review).
+  let railForPanel = false;
 
   /** Shows or hides the whole rail (and closes the panel when hiding). */
   function setRailVisible(visible, { persist = true } = {}) {
+    if (persist) railForPanel = false;
     railVisible = visible;
     rail.hidden = !visible;
     const app = rail.closest('.app');
@@ -147,9 +157,11 @@ export function createPanelHost(ctx) {
 
   function createView(k) {
     if (!sandbox) return simpleView(h('div', { class: 'panel-msg' }, 'Open a sandbox first.'));
+    if (k === 'agent') return createAgentView(ctx, sandbox);
     if (k === 'browser') return createBrowserPanel(ctx, sandbox);
     if (k === 'editor') return createEditorView(ctx, sandbox, () => task);
     if (k === 'shell') return createShellView(ctx, sandbox, () => task);
+    if (k === 'notes') return createNotesView(ctx, sandbox);
     return simpleView(h('div'));
   }
 
@@ -167,7 +179,10 @@ export function createPanelHost(ctx) {
     const label = KINDS.find(([name]) => name === k)[2];
     title.textContent = label;
     setChildren(headExtra, view.headExtra ? view.headExtra() : null);
-    if (!railVisible) setRailVisible(true);
+    if (!railVisible) {
+      railForPanel = opts.persistRail === false;
+      setRailVisible(true, { persist: !railForPanel });
+    }
     if (panel.hidden) {
       panel.hidden = false;
       // The panel's minimum comes out of the sidebar first, then the tool opens at its width.
@@ -196,11 +211,22 @@ export function createPanelHost(ctx) {
     }
     for (const view of views.values()) if (view.hide) view.hide();
     ctx.onPanelChange && ctx.onPanelChange(null);
+    if (railForPanel) {
+      railForPanel = false;
+      setRailVisible(false, { persist: false });
+    }
   }
 
-  function toggle(k) {
+  /** A tool opened from the rail itself makes the shown rail the person's Tools choice. */
+  function railClick(k) {
+    const opening = kind !== k || panel.hidden;
+    if (railForPanel && opening) setRailVisible(true);
+    toggle(k);
+  }
+
+  function toggle(k, opts) {
     if (kind === k && !panel.hidden) close();
-    else show(k);
+    else show(k, opts);
   }
 
   function destroyWhere(predicate) {
@@ -220,10 +246,11 @@ export function createPanelHost(ctx) {
     buttons.get('browser').title = requests && requests.size ? 'Browser — an agent needs your action' : 'Browser';
     buttons.get('browser').setAttribute('aria-label', requests && requests.size ? 'Browser, an agent needs your action' : 'Browser');
     const write = sandbox && allows(sandbox.access, 'write');
-    for (const k of ['browser', 'editor', 'shell']) {
+    for (const [k] of KINDS) {
       const button = buttons.get(k);
       button.disabled = !sandbox;
-      button.classList.toggle('readonly', Boolean(sandbox) && !write);
+      // Readers still edit the team's notes.
+      button.classList.toggle('readonly', Boolean(sandbox) && !write && k !== 'notes');
     }
   }
 
@@ -252,7 +279,8 @@ export function createPanelHost(ctx) {
         for (const [key, view] of views) if (key.startsWith('editor:') && view.taskChanged) view.taskChanged();
       }
       if (!sandbox && !panel.hidden) close();
-      else if (!panel.hidden && kind && (sandboxChanged || taskChanged)) show(kind);
+      // Shown again for the new context, not opened by the person: the keyboard stays with the page.
+      else if (!panel.hidden && kind && (sandboxChanged || taskChanged)) show(kind, { context: true });
       updateBadges();
     },
     open: show,

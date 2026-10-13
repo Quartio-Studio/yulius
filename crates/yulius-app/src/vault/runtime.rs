@@ -467,7 +467,7 @@ impl App {
                 "HTTP APIs: call the bound host normally (for example curl https://<host>/...). Yulius' proxy adds the credential to requests for that host only; you never send or see it.",
                 "Code and CLIs that need a key: use the environment variable NAME (it holds the placeholder yulius-secret-NAME) or the placeholder itself in a header or query; the proxy replaces it for the bound hosts only. Secrets added after this session started have no variable yet: write the placeholder.",
                 "Several secrets on one host and one header: choose with the request header X-Yulius-Secret: NAME.",
-                "Website sign-in in the project browser: browser_fill_secret types the user name, the value or the current two-factor code into a field of a page on a bound host.",
+                "Website sign-in in the project browser: browser_fill_secret types the value into a field of a page on a bound host; a login's user name is in the description (older secrets may also store a user name or a two-factor seed: field username or totp).",
                 "You never receive values: anything that would show one (command output, files, tool results, web pages) shows [secret:NAME] instead. Do not try to print, copy or move secret values."
             ],
         }))

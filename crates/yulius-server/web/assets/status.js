@@ -51,17 +51,20 @@ export function isLive(status) {
   return LIVE_STATUSES.has(status);
 }
 
-/** Background shells the agent left running while idle (TSK-014), 0 when none or not known. */
+/**
+ * Background work the agent left running while idle (TSK-014): shells, and the background agents
+ * Claude Code waits for (SPEC-032); 0 when none or not known. The field keeps its API name.
+ */
 export function backgroundShells(task) {
   return Number.isInteger(task.background_shells) && task.background_shells > 0 ? task.background_shells : 0;
 }
 
-/** "1 background shell still running" (TSK-014). */
+/** "1 background task still running" (TSK-014). */
 export function shellsLine(count, since) {
   // How long they have run (complaint 1: a wait that never ends shows its age).
   const minutes = since ? Math.floor((Date.now() - Date.parse(since)) / 60000) : NaN;
   const age = minutes >= 1 ? ` · ${minutes < 120 ? `${minutes} min` : `${Math.floor(minutes / 60)} h`}` : '';
-  return `${count} background shell${count === 1 ? '' : 's'} still running${age}`;
+  return `${count} background task${count === 1 ? '' : 's'} still running${age}`;
 }
 
 /** A finished task that still has background shells reads as Working, with them said (TSK-014). */

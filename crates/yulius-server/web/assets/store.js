@@ -205,6 +205,7 @@ export function createStore(api) {
       case 'automation.run': emit('automation-run', event); break;
       case 'account.updated': emit('account', event.account); break;
       case 'update.updated': emit('update', event); break;
+      case 'note.updated': emit('note', event); break;
       case 'resync': emit('resync'); break;
       default: break;
     }

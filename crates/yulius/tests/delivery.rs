@@ -2707,6 +2707,20 @@ impl ArmedTask {
         })
     }
 
+    /// `yulius wait` at `head`: the state now.
+    async fn wait_at(&self, head: &str) -> BoxResult<Value> {
+        let r = call(
+            &self.internal,
+            Method::POST,
+            "/internal/agent/wait",
+            Some(json!({"head": head, "since": Value::Null, "timeout_secs": 3})),
+            &self.agent,
+        )
+        .await?;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+        Ok(r.body)
+    }
+
     /// `yulius wait` at the reviewed head: the state now (`since` null) or its next change.
     async fn wait(&self, since: Value) -> BoxResult<Value> {
         let r = call(
@@ -2948,6 +2962,72 @@ async fn an_armed_merge_is_kept_current_and_merged_on_green() -> TestResult {
     f.h.github.set_checks(&head, ChecksState::Success);
     f.h.app.merge_armed(&sandbox).await;
     assert_ne!(f.delivery("t1").await?["stage"], "pr_open");
+    Ok(())
+}
+
+/// DLV-205: an armed merge survives a restart. It is saved when armed and put back for a running
+/// task at startup (a deploy dropped them all, and agents waited for merges that no longer
+/// existed).
+#[tokio::test]
+async fn an_armed_merge_survives_a_restart() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let f = &t.f;
+    let task = TaskId::parse("t1")?;
+    f.h.store
+        .transition_task(
+            &task,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+    t.arm().await?;
+    let file =
+        f.h.app
+            .config
+            .data_dir
+            .join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+    let saved = std::fs::read_to_string(&file)?;
+    assert!(
+        saved.contains("\"t1\"") && saved.contains(&t.head),
+        "{saved}"
+    );
+
+    // A new server process reads it back (simulated: the saved entry, restored).
+    f.h.app.restore_armed_merges().await;
+    assert_eq!(t.wait(Value::Null).await?["merge_armed"], true);
+
+    // Decided (merged): the entry goes.
+    f.h.github.set_checks(&t.head, ChecksState::Success);
+    f.h.app.merge_armed(&SandboxId::parse("s1")?).await;
+    assert_ne!(f.delivery("t1").await?["stage"], "pr_open");
+    assert!(!std::fs::read_to_string(&file)?.contains("\"t1\""));
+    Ok(())
+}
+
+/// DLV-204: when the end of a turn delivers nothing because a step is still open, `yulius wait`
+/// says so instead of waiting for a push that never comes (#34 waited 42 minutes).
+#[tokio::test]
+async fn an_undelivered_head_says_what_blocks_it() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let f = &t.f;
+    set_steps(f, "t1", &["done", "in_progress"]).await?;
+    commit_file(&t.wt, "follow-up.txt", "more", "Follow-up")?;
+    let head = git(&t.wt, &["rev-parse", "HEAD"])?;
+    f.h.app.auto_open_pr(&TaskId::parse("t1")?).await;
+    assert_ne!(f.origin_sha("feat/1-landing")?, head, "not pushed");
+    let state = t.wait_at(&head).await?;
+    let note = state["push_problem"].as_str().unwrap_or_default();
+    assert!(
+        note.starts_with("Yulius has not delivered") && note.contains("is in_progress"),
+        "{state}"
+    );
+    // Resolved: delivered, and the note is gone.
+    set_steps(f, "t1", &["done", "done"]).await?;
+    f.h.app.auto_open_pr(&TaskId::parse("t1")?).await;
+    assert_eq!(f.origin_sha("feat/1-landing")?, head, "pushed");
+    assert_eq!(t.wait_at(&head).await?["push_problem"], Value::Null);
     Ok(())
 }
 

@@ -68,14 +68,17 @@ export const enc = (value) => encodeURIComponent(String(value));
  * (session expired), unless the call passes {allow401: true}. A `signal` cancels the request
  * (a view that goes away aborts its reads); it then rejects with code `aborted`. A `Blob` or
  * `File` body is sent as it is (an upload, EDT-006); with `onProgress(sent, total)` the transport
- * reports its progress, and `timeoutMs` then counts from the last progress.
+ * reports its progress, and `timeoutMs` then counts from the last progress. With `as: 'blob'` a
+ * successful answer is returned as a `Blob` (a file), not parsed.
  */
 export function createApi(transport, { onUnauthenticated } = {}) {
   let csrf = null;
 
-  async function request(method, path, body, { allow401 = false, timeoutMs = REQUEST_TIMEOUT_MS, signal = null, onProgress = null } = {}) {
+  async function request(method, path, body, { allow401 = false, timeoutMs = REQUEST_TIMEOUT_MS, signal = null, onProgress = null, keepalive = false, as = null } = {}) {
     const headers = { Accept: 'application/json' };
     const init = { method, headers, credentials: 'same-origin', cache: 'no-store' };
+    // Outlives the page (a save as it hides); browsers bound such bodies to 64 KiB in all.
+    if (keepalive) init.keepalive = true;
     if (method !== 'GET') {
       if (csrf) headers['X-Yulius-CSRF'] = csrf;
       if (body instanceof Blob) {
@@ -101,9 +104,11 @@ export function createApi(transport, { onUnauthenticated } = {}) {
     init.signal = controller.signal;
     let response;
     let text = '';
+    let blob = null;
     try {
       response = await (progress && transport.upload ? transport.upload(path, init, progress) : transport.fetch(path, init));
-      text = response.status === 204 ? '' : await response.text();
+      if (as === 'blob' && response.ok) blob = await response.blob();
+      else text = response.status === 204 ? '' : await response.text();
     } catch (error) {
       if (signal && signal.aborted) throw new ApiError(0, 'aborted', 'Cancelled.');
       if (error && error.name === 'AbortError') throw new ApiError(0, 'timeout', 'The server did not answer in time.');
@@ -112,6 +117,7 @@ export function createApi(transport, { onUnauthenticated } = {}) {
       clearTimeout(timer);
       if (signal) signal.removeEventListener('abort', cancel);
     }
+    if (blob) return blob;
     let data = null;
     if (text) {
       try { data = JSON.parse(text); } catch { data = text; }

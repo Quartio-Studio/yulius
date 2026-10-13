@@ -43,9 +43,10 @@ test('the tools rail keeps its items inside it, with one open tool', async ({ ap
   const rail = screen.getByRole('navigation', 'Tools');
   await expect(rail).toBeVisible();
 
-  // SPEC-028 (MSR-005): the tools are Browser, Editor and Shell; there are no Messages.
+  // SPEC-028 (MSR-005): there are no Messages; SPEC-035 (AGT-001): the Agent comes first; then
+  // Browser, Editor, Shell and Notes (SPEC-041).
   expect(await browser.evaluate(() => [...document.querySelectorAll('nav.rail button')].map((b) => b.getAttribute('aria-label'))))
-    .toEqual(['Browser', 'Editor', 'Shell']);
+    .toEqual(['Agent', 'Browser', 'Editor', 'Shell', 'Notes']);
   await rail.getByRole('button', 'Editor').click();
   await expect(rail.getByRole('button', 'Editor')).toHaveAttribute('aria-pressed', 'true');
   expect(await railLayout(browser)).toEqual({ outside: [], pressed: ['Editor'], railInWindow: true, pageScrollsSideways: false });

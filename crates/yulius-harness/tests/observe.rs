@@ -176,7 +176,7 @@ fn claude_malformed_and_unknown_lines() {
 }
 
 /// TSK-014: Claude Code 2.1.292 records the goal's state as `goal_status` attachments and closes a
-/// turn with `stop_hook_summary` and `turn_duration`; the `/goal` command is a user prompt with its
+/// turn with `turn_duration` (`stop_hook_summary` is not an end: a blocked stop writes it too); the `/goal` command is a user prompt with its
 /// time; recaps, task notifications and sidechain goals are not observations.
 #[test]
 fn claude_goal_mode_records() {
@@ -186,7 +186,9 @@ fn claude_goal_mode_records() {
         .filter(|o| {
             !matches!(
                 o,
-                Observed::SessionMeta { .. } | Observed::AssistantMessage { .. }
+                Observed::SessionMeta { .. }
+                    | Observed::AssistantMessage { .. }
+                    | Observed::AgentWork { .. }
             )
         })
         .collect();
@@ -202,8 +204,9 @@ fn claude_goal_mode_records() {
             &goal(GoalOutcome::NotMet),
             &Observed::TurnComplete { duration_ms: None },
             &goal(GoalOutcome::Met),
-            &Observed::TurnEnded,
-            &Observed::TurnEnded,
+            &Observed::TurnEnded {
+                background_agents: None
+            },
             &goal(GoalOutcome::Failed),
             &goal(GoalOutcome::Cleared),
         ]

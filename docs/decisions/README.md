@@ -33,4 +33,11 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0027](0027-step-back-past-a-usage-limit.md): A usage limit steps the transcript back; Claude Code continues the cut turn
 - [0028](0028-one-integration-test-binary.md): The product's integration tests are one test binary
 - [0029](0029-cockpit-manages-through-mcp.md): The Cockpit and task agents manage the project through the Yulius MCP server
+- [0030](0030-menus-filter-when-long.md): Menus are compact and filter themselves when long
 - [0031](0031-deleting-a-done-task-closes-it.md): Deleting a Done task closes its session first
+- [0032](0032-shared-notes-with-revisions.md): Shared notes are stored on the server and saved by revision
+- [0033](0033-original-prompt-on-demand.md): A task's original prompt is read on demand; its files only from its own attachment folders
+- [0034](0034-task-status-follows-claude-codes-own-records.md): A task's status follows Claude Code's own records
+- [0034](0034-personal-two-factor-guards-the-vault.md): A personal two-factor code guards the vault; a secret is a title, a value and notes
+- [0034](0034-agent-in-the-right-panel.md): The Cockpit is shown as the Agent, a tool in the right panel
+- [0034](0034-ready-made-automations-catalog.md): Ready-made automations ship as a catalog, enabled in one click and matched by name

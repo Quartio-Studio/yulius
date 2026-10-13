@@ -61,8 +61,9 @@ pub struct TaskSummary {
     /// resets and the task resumes, RFC 3339 (ROT-010). Null otherwise or when unknown.
     #[serde(default)]
     pub resumes_at: Option<String>,
-    /// While the agent is idle (`waiting` or `done`): background shells it left running, as last
-    /// probed (TSK-014). Null when not known or not idle.
+    /// While the agent is idle (`waiting` or `done`): background work it left running: shells, as
+    /// last probed (TSK-014), and the background agents Claude Code still waited for at its last
+    /// turn end (SPEC-032), whichever is more. Null when not known or not idle.
     #[serde(default)]
     pub background_shells: Option<u32>,
     /// Since when those shells have been running, RFC 3339 (complaint 1: a wait that never
@@ -306,6 +307,27 @@ pub struct TaskDetail {
     pub delivery: Delivery,
     /// Switch history.
     pub switches: Vec<SwitchView>,
+}
+
+/// `GET /api/tasks/{tid}/prompt`: the prompt a task started with (SPEC-043).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskPrompt {
+    /// The text, without its attachment lines (as the session got it).
+    pub text: String,
+    /// The attached files, in order; `GET /api/tasks/{tid}/prompt/attachments/{n}` serves one.
+    pub attachments: Vec<PromptAttachment>,
+}
+
+/// A file attached to a task's prompt (SPEC-043).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromptAttachment {
+    /// File name.
+    pub name: String,
+    /// Whether Claude Code takes it as an image (it was pasted as one).
+    pub image: bool,
+    /// Whether it can be served: a regular file in the sandbox's attachments folder (drafts are
+    /// removed after a week; a path mentioned by hand is never served).
+    pub available: bool,
 }
 
 /// `POST /api/tasks/{tid}/feedback`.

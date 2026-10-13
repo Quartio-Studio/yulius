@@ -70,10 +70,21 @@ pub enum Observed {
         /// What was recorded.
         outcome: GoalOutcome,
     },
-    /// Claude Code closed a turn after its Stop hooks (`stop_hook_summary` / `turn_duration`
-    /// system records). Not authoritative while Yulius runs (the Stop hook is); used to reduce a
-    /// replayed transcript to its final state.
-    TurnEnded,
+    /// Claude Code closed a turn (the `turn_duration` system record; `stop_hook_summary` is also
+    /// written when a Stop hook blocks and the turn goes on, so it is not this). Not
+    /// authoritative while Yulius runs (the Stop hook is); used to reduce a replayed transcript
+    /// to its final state and to learn what the agent still waits for.
+    TurnEnded {
+        /// Background agents Claude Code still waits for (`pendingBackgroundAgentCount`); the
+        /// session wakes by itself when they finish. `None` when the CLI does not say.
+        background_agents: Option<u32>,
+    },
+    /// The agent works: an assistant line that is not the end of a turn (a tool call, partial
+    /// output). After a recorded turn end it shows the turn goes on (a Stop hook continued it).
+    AgentWork {
+        /// When it was recorded, if parseable.
+        at: Option<Timestamp>,
+    },
     /// The line is not a JSON object or lacks a required field.
     Malformed,
 }

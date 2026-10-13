@@ -11,7 +11,7 @@ use yulius_app::model::Secret;
 use yulius_app::vault::Revealed;
 use yulius_contracts::api::secrets::{
     AgentSecretInput, AgentSecretPatch, AgentSecretView, ReauthPassword, ReauthStatus,
-    RevealRequest, TeamSecretInput, TeamSecretPatch, TeamSecretView, VaultActivity,
+    RevealRequest, TeamSecretInput, TeamSecretPatch, TeamSecretView, UnlockRequest, VaultActivity,
 };
 use yulius_contracts::scrub::{FingerprintSet, RedactionReport};
 
@@ -28,8 +28,9 @@ pub fn public() -> Router<AppState> {
             patch(team_update).delete(team_delete),
         )
         .route("/api/team-secrets/{id}/reveal", post(team_reveal))
-        .route("/api/team-secrets/{id}/totp", post(team_totp))
         .route("/api/auth/reauth", get(reauth_status).post(reauth))
+        .route("/api/auth/two-factor", post(two_factor_setup))
+        .route("/api/auth/unlock", post(unlock))
         .route("/api/secrets/activity", get(activity))
         .route(
             "/api/sandboxes/{sid}/agent-secrets",
@@ -39,6 +40,7 @@ pub fn public() -> Router<AppState> {
             "/api/agent-secrets/{id}",
             patch(agent_update).delete(agent_delete),
         )
+        .route("/api/agent-secrets/{id}/reveal", post(agent_reveal))
 }
 
 /// Internal (loopback, task token) routes of the vault.
@@ -56,15 +58,25 @@ fn no_store(mut response: Response) -> Response {
     response
 }
 
-/// `403 reauth_required` with the ways to confirm.
+/// `403 reauth_required` with what is missing: a two-factor code (or setting it up), or, to set
+/// it up, a recent sign-in or confirmation.
 fn reauth_required(status: ReauthStatus) -> Response {
+    let message = if status.two_factor == "locked" {
+        "Too many wrong codes: confirm it is you (password or GitHub sign-in), then enter a code."
+    } else if status.two_factor == "on" {
+        "Enter your two-factor code to unlock the secrets for 10 minutes."
+    } else if status.identity_fresh {
+        "Set up two-factor to reveal secrets."
+    } else {
+        "Confirm it is you (password or GitHub sign-in) to set up two-factor."
+    };
     no_store(
         (
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({
                 "error": {
                     "code": "reauth_required",
-                    "message": "Confirm it is you to reveal secrets (password or GitHub sign-in in the last 10 minutes)."
+                    "message": message
                 },
                 "reauth": status,
             })),
@@ -126,14 +138,6 @@ async fn team_reveal(
     Ok(revealed(app.reveal_team_secret(&ctx, &id, &request).await?))
 }
 
-async fn team_totp(
-    State(app): State<AppState>,
-    Auth(ctx): Auth,
-    Path(id): Path<String>,
-) -> Result<Response, ApiError> {
-    Ok(revealed(app.team_secret_totp(&ctx, &id).await?))
-}
-
 async fn reauth_status(
     State(app): State<AppState>,
     Auth(ctx): Auth,
@@ -150,6 +154,24 @@ async fn reauth(
         app.reauth_with_password(&ctx, &Secret(body.password))
             .await?,
     ))
+}
+
+async fn two_factor_setup(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+) -> Result<Response, ApiError> {
+    Ok(match app.setup_two_factor(&ctx).await? {
+        Revealed::Values(setup) => no_store((StatusCode::CREATED, Json(setup)).into_response()),
+        Revealed::ReauthRequired(status) => reauth_required(status),
+    })
+}
+
+async fn unlock(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Json(body): Json<UnlockRequest>,
+) -> ApiResult<Json<ReauthStatus>> {
+    Ok(Json(app.unlock_vault(&ctx, &body.code).await?))
 }
 
 #[derive(Deserialize)]
@@ -204,6 +226,18 @@ async fn agent_delete(
 ) -> ApiResult<StatusCode> {
     app.delete_agent_secret(&ctx, &id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn agent_reveal(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(id): Path<String>,
+    body: Option<Json<RevealRequest>>,
+) -> Result<Response, ApiError> {
+    let request = body.map(|Json(b)| b).unwrap_or_default();
+    Ok(revealed(
+        app.reveal_agent_secret(&ctx, &id, &request).await?,
+    ))
 }
 
 fn bearer(headers: &HeaderMap) -> Option<&str> {

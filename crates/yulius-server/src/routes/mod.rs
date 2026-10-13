@@ -14,6 +14,7 @@ mod imports;
 mod internal;
 mod mcp;
 mod mcp_servers;
+mod notes;
 mod previews;
 mod projects;
 mod sandboxes;
@@ -97,6 +98,11 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/tasks/{tid}/switch", post(tasks::switch))
         .route("/api/archived-tasks", get(tasks::archived))
         .route("/api/tasks/{tid}", get(tasks::detail).delete(tasks::delete))
+        .route("/api/tasks/{tid}/prompt", get(tasks::prompt))
+        .route(
+            "/api/tasks/{tid}/prompt/attachments/{n}",
+            get(tasks::prompt_attachment),
+        )
         .route("/api/tasks/{tid}/archive", post(tasks::archive))
         .route("/api/tasks/{tid}/restore", post(tasks::restore))
         .route("/api/tasks/{tid}/feedback", post(tasks::feedback))
@@ -117,6 +123,14 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route(
             "/api/automations/{id}",
             put(automations::update).delete(automations::delete),
+        )
+        .route(
+            "/api/sandboxes/{sid}/automation-templates",
+            get(automations::templates),
+        )
+        .route(
+            "/api/sandboxes/{sid}/automation-templates/{id}/enable",
+            post(automations::enable_template),
         )
         .route("/api/automations/{id}/run", post(automations::run_now))
         .route("/api/automations/{id}/runs", get(automations::runs))
@@ -262,6 +276,19 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
                 .layer(DefaultBodyLimit::max(6 << 20)),
         )
         .route("/api/shells/{id}/terminal", get(shells::terminal))
+        // Auto-saved notes (SPEC-041): 256 KiB of text, JSON-escaped.
+        .route(
+            "/api/notes",
+            get(notes::team)
+                .put(notes::save_team)
+                .layer(DefaultBodyLimit::max(2 << 20)),
+        )
+        .route(
+            "/api/sandboxes/{sid}/notes",
+            get(notes::sandbox)
+                .put(notes::save_sandbox)
+                .layer(DefaultBodyLimit::max(2 << 20)),
+        )
         // Dropped files (EDT-006, UI-048): raw streamed bodies, bounded by the upload limit.
         .route("/api/sandboxes/{sid}/files/upload", put(uploads::file))
         .route(

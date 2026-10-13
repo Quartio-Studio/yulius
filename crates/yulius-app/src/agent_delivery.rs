@@ -222,6 +222,7 @@ impl App {
         if let Ok(mut armed) = self.runtime(&ctx.task.id).armed_merge.lock() {
             *armed = None;
         }
+        self.save_armed(&ctx.task.id, None);
         self.agent_audit(
             ctx,
             "delivery.agent.merge",

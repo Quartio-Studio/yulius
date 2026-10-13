@@ -24,6 +24,8 @@ impl App {
             if let Err(err) = app.reconcile().await {
                 tracing::error!(error = %err, "session reconciliation failed");
             }
+            // Merges armed before the restart stay armed (DLV-205).
+            app.restore_armed_merges().await;
             app.drain_queue().await;
             // Paused tasks (also those paused before a restart) resume from here.
             app.start_capacity_loop();

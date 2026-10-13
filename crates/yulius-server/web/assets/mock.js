@@ -19,6 +19,12 @@ const MIN = 60e3;
 const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
 const ORIGIN = window.location.origin;
+// Where the mock's composer attachments live, as an upload reports them (SPEC-043).
+const MOCK_ATTACHMENTS = '/srv/yulius/sandboxes/sb_studio/attachments/drafts/usr_mkarp';
+// A file gone since (drafts are removed after a week).
+const MOCK_GONE = new Set([`${MOCK_ATTACHMENTS}/old-mockup.png`]);
+// A 1×1 PNG served for every attached image.
+const MOCK_PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==';
 
 const enc = new TextEncoder();
 const iso = (msAgo) => new Date(Date.now() - msAgo).toISOString();
@@ -168,6 +174,8 @@ function seed(params) {
       stepsList: extra.noSteps ? [] : makeSteps(id, done, current),
       model: 'claude-opus-4',
       effort: 'high',
+      // The prompt it started with: the text, then an `@path` line per attached file (SPEC-043).
+      prompt: extra.prompt ?? title,
       delivery: extra.delivery || null, // {stage, environment, pr} once delivery started
       // Paused for subscription capacity: when the earliest window resets (ROT-010).
       resumes_at: status === 'waiting_capacity' ? new Date(Date.now() + 38 * MIN).toISOString() : null,
@@ -184,7 +192,7 @@ function seed(params) {
     t('sb_studio', 13, 'Improve the code', 'claude', 'running', 'done', { mode: 'goal', done: 7, current: false, updated: 6 * MIN, shells: 0, delivery: { stage: 'pr_open', environment: null, pr: pr(520, 'Improve the code', 'open', 'dev', 'pending') } }),
     // Goal achieved, but a background shell (a dev server) still runs: Working, with the shell said.
     t('sb_studio', 14, 'Start the preview server', 'claude', 'running', 'done', { mode: 'goal', done: 7, current: false, updated: 2 * MIN, shells: 1 }),
-    t('sb_studio', 12, 'Checkout API', 'claude', 'running', 'working', { done: 2, updated: 20e3 }),
+    t('sb_studio', 12, 'Checkout API', 'claude', 'running', 'working', { done: 2, updated: 20e3, prompt: `# Checkout API\n\nBuild the checkout endpoint:\n\n- Stripe payment intents\n- an idempotency key per order\n\n@${MOCK_ATTACHMENTS}/checkout-error.png\n@${MOCK_ATTACHMENTS}/notes.txt\n@${MOCK_ATTACHMENTS}/old-mockup.png` }),
     // Finished its turn with a tested pull request (checks green) and a complete plan: "Done" (#35, #139).
     t('sb_studio', 11, '3D model viewer', 'claude', 'running', 'waiting', { done: 7, current: false, author: 'anna-q', delivery: { stage: 'pr_open', environment: null, pr: pr(221, '3D model viewer', 'open', 'dev', 'success') } }),
     t('sb_studio', 10, 'AWS login for deploy', 'claude', 'running', 'needs_attention', { done: 4 }),
@@ -268,6 +276,10 @@ function seed(params) {
   }
   // `tasks=0`: sandboxes without any task yet (the composer then offers no start rule, SPEC-022).
   if (params.get('tasks') === '0') db.tasks = [];
+  // `tasks=many`: 30 more queued tasks in studio, a long "Run after" menu (SPEC-038).
+  if (params.get('tasks') === 'many') {
+    for (let number = 15; number < 45; number += 1) db.tasks.push(t('sb_studio', number, `Queued idea ${number}`, 'claude', 'queued', null, { noSteps: true }));
+  }
   recount(db);
   return db;
 }
@@ -836,6 +848,25 @@ route('POST', `/api/tasks/${ID}/held-prompts/${ID}`, ({ db, p, body }) => {
   return { task: summary(task), created: created ? summary(created) : null, note: notes[action] };
 });
 route('GET', `/api/tasks/${ID}`, ({ db, p }) => detail(db, taskOf(db, p[0])));
+// The prompt a task started with (SPEC-043): `@path` lines are its attached files, served only
+// from the attachments folder.
+function promptParts(task) {
+  const lines = String(task.prompt ?? task.title).split('\n');
+  const paths = lines.map((line) => line.trim().match(/^@'?(\/[^']+)'?$/)).filter(Boolean).map((m) => m[1]);
+  const text = lines.filter((line) => !/^@'?\//.test(line.trim())).join('\n').trim();
+  return { text, paths };
+}
+const promptFileServed = (path) => path.startsWith(`${MOCK_ATTACHMENTS}/`) && !MOCK_GONE.has(path);
+route('GET', `/api/tasks/${ID}/prompt`, ({ db, p }) => {
+  const { text, paths } = promptParts(taskOf(db, p[0]));
+  return { text, attachments: paths.map((path) => ({ name: path.split('/').pop(), image: /\.(png|jpe?g|gif|webp)$/i.test(path), available: promptFileServed(path) })) };
+});
+route('GET', `/api/tasks/${ID}/prompt/attachments/${ID}`, ({ db, p }) => {
+  const path = promptParts(taskOf(db, p[0])).paths[Number(p[1])];
+  if (!path || !promptFileServed(path)) fail(404, 'not_found', 'not found');
+  if (/\.png$/i.test(path)) return new Response(Uint8Array.from(atob(MOCK_PNG), (c) => c.charCodeAt(0)), { status: 200, headers: { 'Content-Type': 'image/png' } });
+  return new Response('Mock notes attached to the prompt.\n', { status: 200, headers: { 'Content-Type': 'application/octet-stream' } });
+});
 route('POST', `/api/tasks/${ID}/stop`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
@@ -1546,6 +1577,32 @@ route('PUT', `/api/workflows/${ID}`, ({ db, p, body }) => {
 });
 route('DELETE', `/api/workflows/${ID}`, ({ db, p }) => { mutableWorkflow(db, p[0]); db.workflows = db.workflows.filter((w) => w.id !== p[0]); return json(204); });
 
+// Ready-made automations (SPEC-042): the catalog, matched to a sandbox's automations by name.
+const AUTOMATION_TEMPLATES = [
+  { id: 'docs-up-to-date', name: 'Keep the docs up to date', description: 'Every night, the documentation is brought in line with what changed in the code during the last day.', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Bring this project’s documentation in line with the code, for the changes made since the last run of this automation.', workflow_id: 'wf-docs' },
+  { id: 'open-issues', name: 'Work through open issues', description: 'Every night, the core team’s open GitHub issues are verified in parallel and the actionable ones get a Fix task each.', cron: '0 3 * * *', utc_offset_minutes: 120, prompt: 'Work through this repository’s open GitHub issues written by the core team or their agents.', workflow_id: null },
+];
+const sameName = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
+route('GET', `/api/sandboxes/${ID}/automation-templates`, ({ db, p }) => AUTOMATION_TEMPLATES.map((t) => {
+  const own = db.automations.find((a) => a.sandbox === p[0] && sameName(a.name, t.name));
+  return { ...t, automation_id: own ? own.id : null };
+}));
+route('POST', `/api/sandboxes/${ID}/automation-templates/${ID}/enable`, ({ db, p }) => {
+  need(sandboxOf(db, p[0]), 'write');
+  const t = AUTOMATION_TEMPLATES.find((x) => x.id === p[1]);
+  if (!t) fail(404, 'not_found', 'not found');
+  let a = db.automations.find((x) => x.sandbox === p[0] && sameName(x.name, t.name));
+  const created = !a;
+  if (created) {
+    db.nextId += 1;
+    const { id: _id, description: _d, ...fields } = t;
+    a = { id: `aut_${db.nextId}`, sandbox: p[0], ...fields, harness: 'claude', created_via: 'ui', last_run: null };
+    db.automations.push(a);
+  }
+  Object.assign(a, { enabled: true, next_run_at: isoIn(5 * HOUR) });
+  const { sandbox: _s, ...out } = a;
+  return json(created ? 201 : 200, out);
+});
 route('GET', `/api/sandboxes/${ID}/automations`, ({ db, p }) => db.automations.filter((a) => a.sandbox === p[0]).map(({ sandbox: _s, ...a }) => a));
 route('POST', `/api/sandboxes/${ID}/automations`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
@@ -1582,20 +1639,25 @@ route('GET', `/api/automations/${ID}/runs`, ({ db, p }) => {
   return [0, 1, 2, 3, 4].map((i) => ({ scheduled_for: iso((i + 1) * DAY - 10 * HOUR), state: i === 2 ? 'skipped_previous_active' : i === 4 ? 'failed' : 'task_created', task_id: i === 2 || i === 4 ? null : 'tsk_studio_8', error: i === 4 ? 'the task could not be created: capacity reached' : null }));
 });
 
-// ------------------------------------------------------------------ secrets vault (VLT-001..009)
-// Synthetic values only. Reveals need a confirmation within 10 minutes (mock password below);
-// agent secret values are write-only and never returned.
+// ------------------------------------------------------------------ secrets vault (VLT-001..009, SPEC-040)
+// Synthetic values only. Reveals need a two-factor code within 10 minutes (the mock accepts the
+// code below); setting two-factor up needs a sign-in or confirmation within 10 minutes (the mock
+// session signed in when the page loaded; mock password below).
 
 const REAUTH_MS = 10 * MIN;
 const MOCK_SUPERADMIN_PASSWORD = 'correct horse battery';
+const MOCK_TWO_FACTOR_CODE = '123456';
+const MOCK_TWO_FACTOR_SEED = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
 
 function vaultOf(db) {
   if (!db.vault) {
     db.vault = {
-      reauthAt: 0,
-      team: [{ id: 'ts_gmail', title: 'Shared Gmail', url: 'https://mail.google.com', username: 'team@example.test', password: 'mock-not-a-real-password', notes: 'Recovery codes: mock', totp: 'JBSWY3DPEHPK3PXPJBSWY3DP', created_by: 'mkarp', updated_by: 'mkarp', updated_at: iso(3 * DAY), value_updated_at: iso(3 * DAY) }],
-      agent: [{ id: 'as_stripe', sandbox: 'sb_studio', scope: 'sandbox', name: 'STRIPE_KEY', description: 'Stripe test-mode key for the checkout', hosts: ['api.stripe.com'], injection: 'bearer', header_name: null, username: null, value: 'mock-agent-value-1', totp: null, created_by: 'mkarp', updated_at: iso(DAY), value_updated_at: iso(DAY), last_used_at: iso(2 * HOUR) }],
-      activity: [{ at: iso(HOUR), actor: 'mkarp', action: 'vault.team.reveal', secret_id: 'ts_gmail', detail: 'Shared Gmail (password)' }],
+      reauthAt: Date.now(),
+      unlockAt: 0,
+      twoFactor: 'missing',
+      team: [{ id: 'ts_gmail', title: 'Shared Gmail', value: 'mock-not-a-real-password', notes: 'User name: team@example.test\nRecovery codes: mock', created_by: 'mkarp', updated_by: 'mkarp', updated_at: iso(3 * DAY), value_updated_at: iso(3 * DAY) }],
+      agent: [{ id: 'as_stripe', sandbox: 'sb_studio', scope: 'sandbox', name: 'STRIPE_KEY', description: 'Stripe test-mode key for the checkout', hosts: ['api.stripe.com'], injection: 'bearer', header_name: null, username: null, value: 'mock-agent-value-1', created_by: 'mkarp', updated_at: iso(DAY), value_updated_at: iso(DAY), last_used_at: iso(2 * HOUR) }],
+      activity: [{ at: iso(HOUR), actor: 'mkarp', action: 'vault.team.reveal', secret_id: 'ts_gmail', detail: 'Shared Gmail (value)' }],
     };
   }
   return db.vault;
@@ -1604,27 +1666,33 @@ function vaultOf(db) {
 const INJECTION_TEXT = { bearer: 'Authorization: Bearer <value>', basic: 'Authorization: Basic <username:value>', none: 'no header (placeholders and browser filling only)' };
 
 function teamView(s) {
-  return { id: s.id, title: s.title, url: s.url || null, username: s.username || null, has_password: Boolean(s.password), has_notes: Boolean(s.notes), has_totp: Boolean(s.totp), created_by: s.created_by, updated_by: s.updated_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, rotate_due: false };
+  return { id: s.id, title: s.title, has_value: Boolean(s.value), has_notes: Boolean(s.notes), created_by: s.created_by, updated_by: s.updated_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, rotate_due: false };
 }
 
 function agentView(db, s, sandbox) {
   const manage = s.scope === 'instance' ? Boolean(db.me.user.is_instance_admin || db.me.user.is_superadmin) : RANK[sandbox.access] >= RANK.write;
-  return { id: s.id, name: s.name, description: s.description, scope: s.scope, hosts: s.hosts, injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: Boolean(s.totp), created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, can_manage: manage };
+  return { id: s.id, name: s.name, description: s.description, scope: s.scope, hosts: s.hosts, injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, can_manage: manage };
 }
 
 function reauthStatus(db) {
   const vault = vaultOf(db);
-  const fresh = Date.now() - vault.reauthAt < REAUTH_MS;
+  const fresh = Date.now() - vault.unlockAt < REAUTH_MS;
   const methods = [];
   if (db.me.user.is_superadmin) methods.push('password');
   if (db.me.user.github_linked) methods.push('github');
-  return { fresh, fresh_until: fresh ? new Date(vault.reauthAt + REAUTH_MS).toISOString() : null, methods };
+  return { fresh, fresh_until: fresh ? new Date(vault.unlockAt + REAUTH_MS).toISOString() : null, two_factor: vault.twoFactor, identity_fresh: Date.now() - vault.reauthAt < REAUTH_MS, methods };
 }
 
 function needFresh(db) {
   const status = reauthStatus(db);
   if (status.fresh) return null;
-  return json(403, { error: { code: 'reauth_required', message: 'Confirm it is you to reveal secrets (password or GitHub sign-in in the last 10 minutes).' }, reauth: status });
+  return json(403, { error: { code: 'reauth_required', message: 'Enter your two-factor code to unlock the secrets for 10 minutes.' }, reauth: status });
+}
+
+/** The fields asked of a reveal (`value`, `notes`) that are stored. */
+function revealed(body, value, notes) {
+  const fields = body.fields || ['value', 'notes'];
+  return { value: fields.includes('value') ? value || null : null, notes: fields.includes('notes') ? notes || null : null };
 }
 
 function audit(db, action, id, detail) {
@@ -1645,14 +1713,15 @@ function validateAgent(body, creating) {
 route('GET', '/api/team-secrets', ({ db }) => vaultOf(db).team.map(teamView));
 route('POST', '/api/team-secrets', ({ db, body }) => {
   if (!String(body.title || '').trim()) fail(422, 'invalid', 'a title is required');
-  const secret = { id: `ts_${db.nextId++}`, title: body.title.trim(), url: body.url || null, username: body.username || null, password: body.password || null, notes: body.notes || null, totp: body.totp || null, created_by: db.me.user.login, updated_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString() };
+  for (const key of Object.keys(body)) if (!['title', 'value', 'notes'].includes(key)) fail(422, 'invalid', `unknown field ${key}`);
+  const secret = { id: `ts_${db.nextId++}`, title: body.title.trim(), value: body.value || null, notes: body.notes || null, created_by: db.me.user.login, updated_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString() };
   vaultOf(db).team.push(secret);
   audit(db, 'vault.team.create', secret.id, secret.title);
   return json(201, teamView(secret));
 });
 route('PATCH', `/api/team-secrets/${ID}`, ({ db, p, body }) => {
   const secret = teamSecret(db, p[0]);
-  for (const key of ['title', 'url', 'username', 'password', 'notes', 'totp']) if (body[key] !== undefined) secret[key] = body[key] || (key === 'title' ? secret.title : null);
+  for (const key of ['title', 'value', 'notes']) if (body[key] !== undefined) secret[key] = body[key] || (key === 'title' ? secret.title : null);
   secret.updated_at = new Date().toISOString();
   audit(db, 'vault.team.update', secret.id, secret.title);
   return teamView(secret);
@@ -1667,17 +1736,8 @@ route('POST', `/api/team-secrets/${ID}/reveal`, ({ db, p, body }) => {
   const secret = teamSecret(db, p[0]);
   const refused = needFresh(db);
   if (refused) return refused;
-  const fields = body.fields || ['password', 'notes', 'totp'];
   audit(db, body.purpose === 'copy' ? 'vault.team.copy' : 'vault.team.reveal', secret.id, secret.title);
-  return { password: fields.includes('password') ? secret.password : null, notes: fields.includes('notes') ? secret.notes : null, totp: fields.includes('totp') ? secret.totp : null };
-});
-route('POST', `/api/team-secrets/${ID}/totp`, ({ db, p }) => {
-  const secret = teamSecret(db, p[0]);
-  const refused = needFresh(db);
-  if (refused) return refused;
-  if (!secret.totp) fail(422, 'invalid', 'this secret has no TOTP seed');
-  audit(db, 'vault.team.totp', secret.id, secret.title);
-  return { code: String(100000 + (Math.floor(Date.now() / 30000) % 900000)), period: 30, remaining: 30 - (Math.floor(Date.now() / 1000) % 30) };
+  return revealed(body, secret.value, secret.notes);
 });
 route('GET', '/api/auth/reauth', ({ db }) => reauthStatus(db));
 route('POST', '/api/auth/reauth', ({ db, body }) => {
@@ -1685,6 +1745,24 @@ route('POST', '/api/auth/reauth', ({ db, body }) => {
   if (body.password !== MOCK_SUPERADMIN_PASSWORD) { audit(db, 'vault.reauth.failed', null, 'password'); fail(403, 'forbidden', `wrong password (mock: ${MOCK_SUPERADMIN_PASSWORD})`); }
   vaultOf(db).reauthAt = Date.now();
   audit(db, 'vault.reauth', null, 'password');
+  return reauthStatus(db);
+});
+route('POST', '/api/auth/two-factor', ({ db }) => {
+  const vault = vaultOf(db);
+  if (vault.twoFactor === 'on') fail(409, 'conflict', 'two-factor is already set up');
+  const status = reauthStatus(db);
+  if (!status.identity_fresh) return json(403, { error: { code: 'reauth_required', message: 'Confirm it is you (password or GitHub sign-in) to set up two-factor.' }, reauth: status });
+  vault.twoFactor = 'pending';
+  audit(db, 'vault.2fa.setup', null, 'authenticator');
+  return json(201, { secret: MOCK_TWO_FACTOR_SEED, uri: `otpauth://totp/Yulius:${encodeURIComponent(db.me.user.login)}?secret=${MOCK_TWO_FACTOR_SEED}&issuer=Yulius&algorithm=SHA1&digits=6&period=30` });
+});
+route('POST', '/api/auth/unlock', ({ db, body }) => {
+  const vault = vaultOf(db);
+  if (vault.twoFactor === 'missing') fail(422, 'invalid', 'set up two-factor first');
+  if (body.code !== MOCK_TWO_FACTOR_CODE) { audit(db, 'vault.unlock.failed', null, 'two-factor code'); fail(403, 'forbidden', `wrong code (mock: ${MOCK_TWO_FACTOR_CODE})`); }
+  audit(db, vault.twoFactor === 'pending' ? 'vault.2fa.confirm' : 'vault.unlock', null, 'two-factor code');
+  vault.twoFactor = 'on';
+  vault.unlockAt = Date.now();
   return reauthStatus(db);
 });
 route('GET', '/api/secrets/activity', ({ db }) => vaultOf(db).activity.slice(0, 100));
@@ -1699,7 +1777,7 @@ route('POST', `/api/sandboxes/${ID}/agent-secrets`, ({ db, p, body }) => {
   if (scope === 'sandbox') need(sandbox, 'write');
   validateAgent(body, true);
   if (vaultOf(db).agent.some((s) => s.name === body.name && (s.scope === 'instance' || s.sandbox === sandbox.id))) fail(409, 'conflict', `an agent secret named ${body.name} already applies here`);
-  const secret = { id: `as_${db.nextId++}`, sandbox: scope === 'sandbox' ? sandbox.id : null, scope, name: body.name, description: body.description || '', hosts: body.hosts, injection: body.injection || 'bearer', header_name: body.header_name || null, username: body.username || null, value: body.value, totp: body.totp || null, created_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString(), last_used_at: null };
+  const secret = { id: `as_${db.nextId++}`, sandbox: scope === 'sandbox' ? sandbox.id : null, scope, name: body.name, description: body.description || '', hosts: body.hosts, injection: body.injection || 'bearer', header_name: body.header_name || null, username: body.username || null, value: body.value, created_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString(), last_used_at: null };
   vaultOf(db).agent.push(secret);
   audit(db, 'vault.agent.create', secret.id, `${secret.name} → ${secret.hosts.join(', ')}`);
   return json(201, agentView(db, secret, sandbox));
@@ -1709,10 +1787,20 @@ route('PATCH', `/api/agent-secrets/${ID}`, ({ db, p, body }) => {
   const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
   if (secret.scope === 'sandbox') need(sandbox, 'write');
   validateAgent(body, false);
-  for (const key of ['name', 'description', 'hosts', 'injection', 'header_name', 'username', 'value', 'totp']) if (body[key] !== undefined) secret[key] = body[key];
+  if (body.username && (body.injection || secret.injection) !== 'basic') fail(422, 'invalid', 'a user name is only for Basic credentials: put a login\'s user name in the notes');
+  for (const key of ['name', 'description', 'hosts', 'injection', 'header_name', 'username', 'value']) if (body[key] !== undefined) secret[key] = body[key];
   secret.updated_at = new Date().toISOString();
   audit(db, 'vault.agent.update', secret.id, secret.name);
   return agentView(db, secret, sandbox);
+});
+route('POST', `/api/agent-secrets/${ID}/reveal`, ({ db, p, body }) => {
+  const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
+  const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
+  if (!agentView(db, secret, sandbox).can_manage) fail(403, 'forbidden', 'only people who manage this secret read it');
+  const refused = needFresh(db);
+  if (refused) return refused;
+  audit(db, body.purpose === 'copy' ? 'vault.agent.copy' : 'vault.agent.reveal', secret.id, secret.name);
+  return revealed(body, secret.value, [secret.username && `User name: ${secret.username}`, secret.description].filter(Boolean).join('\n\n'));
 });
 route('DELETE', `/api/agent-secrets/${ID}`, ({ db, p }) => {
   const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
@@ -1783,11 +1871,14 @@ route('POST', `/api/sandboxes/${ID}/shells`, ({ db, p, body }) => {
 });
 // The user's Cockpit (SPEC-021): one plain Claude Code session per sandbox, started on demand,
 // never listed, renamed or closed as a terminal. `&cockpit=fail` makes it fail to start;
-// `&cockpit=gone` answers the first call with a Cockpit whose process is already gone (a reboot).
-route('POST', `/api/sandboxes/${ID}/cockpit`, ({ db, p }) => {
+// `&cockpit=gone` answers the first call with a Cockpit whose process is already gone (a reboot);
+// a test can hold the answer (`__yuliusMock.holdCockpit = promise`) to act while it starts;
+// `__yuliusMock.rebootCockpits()` ends running ones abruptly.
+route('POST', `/api/sandboxes/${ID}/cockpit`, async ({ db, p }) => {
   need(sandboxOf(db, p[0]), 'write');
   const scenario = new URLSearchParams(location.search).get('cockpit');
   if (scenario === 'fail') fail(429, 'capacity', 'no subscription has capacity right now');
+  if (db.holdCockpit) await db.holdCockpit;
   if (scenario === 'gone' && !db.cockpitGone) {
     db.cockpitGone = true;
     return { id: `ck_${p[0]}_gone`, name: 'Cockpit', task_id: null, folder: `/srv/yulius/sandboxes/studio/repo`, created_at: new Date().toISOString() };
@@ -1818,6 +1909,74 @@ route('DELETE', `/api/sandboxes/${ID}/shells/${ID}`, ({ db, p }) => {
   if (shell.session) shell.session.end(null);
   db.shells.delete(shell.id);
   return json(204);
+});
+
+// ---- Notes (SPEC-041): one notepad per sandbox and one for the team; a save names the revision it
+// started from and a stale one is refused (409). Kept in sessionStorage so a reload finds them, as
+// it would on the server. Tests edit as a teammate (`editNote`), fail saves (`failNoteSaves`) and
+// loads (`failNoteLoads`), lose a stored save's answer (`loseNoteResponse`) and see which requests
+// were sent to outlive the page (`keepaliveRequests`).
+
+const NOTES_KEY = 'yulius.mock.notes';
+
+function notesOf(db) {
+  if (!db.notes) {
+    let saved = null;
+    try { saved = JSON.parse(sessionStorage.getItem(NOTES_KEY) || 'null'); } catch { /* none */ }
+    db.notes = saved && typeof saved === 'object' ? saved : {};
+  }
+  return db.notes;
+}
+
+function noteView(db, scope) {
+  const note = notesOf(db)[scope];
+  return {
+    scope: scope === 'team' ? 'team' : 'sandbox',
+    body: note ? note.body : '',
+    revision: note ? note.revision : 0,
+    updated_at: note ? note.updated_at : null,
+    updated_by: note ? note.updated_by : null,
+  };
+}
+
+/** Stores `body` as the next revision of `scope` and announces it unless `announce` is false. */
+function putNote(db, scope, body, by, { announce = true } = {}) {
+  const notes = notesOf(db);
+  const revision = (notes[scope] ? notes[scope].revision : 0) + 1;
+  notes[scope] = { body, revision, updated_by: by, updated_at: new Date().toISOString() };
+  try { sessionStorage.setItem(NOTES_KEY, JSON.stringify(notes)); } catch { /* memory only */ }
+  if (announce) {
+    const sandboxId = scope.startsWith('sandbox:') ? scope.slice('sandbox:'.length) : null;
+    emit(db, { type: 'note.updated', scope: sandboxId ? 'sandbox' : 'team', sandbox_id: sandboxId, revision, updated_by: by });
+  }
+  return noteView(db, scope);
+}
+
+function saveNote(db, scope, body) {
+  if (db.failNoteSaves) fail(503, 'unavailable', 'The mock server is unavailable on purpose');
+  if (typeof body.body !== 'string' || !Number.isInteger(body.revision)) fail(422, 'invalid', 'body and revision are required');
+  if (new TextEncoder().encode(body.body).length > 256 * 1024) fail(422, 'invalid', 'notes hold at most 256 KiB');
+  if (noteView(db, scope).revision !== body.revision) fail(409, 'conflict', 'someone else changed these notes; load them again');
+  // Like the server: the GitHub login, else the display name.
+  const note = putNote(db, scope, body.body, db.me.user.github_linked ? db.me.user.login : db.me.user.display_name);
+  // Stored, but the answer does not arrive (a timeout or a dropped connection).
+  if (db.loseNoteResponse) fail(503, 'unavailable', 'The answer was lost on purpose');
+  return note;
+}
+
+function loadNote(db, scope) {
+  db.noteLoads = (db.noteLoads || 0) + 1;
+  if (db.failNoteLoads) fail(503, 'unavailable', 'The mock server is unavailable on purpose');
+  return noteView(db, scope);
+}
+
+route('GET', '/api/notes', ({ db }) => loadNote(db, 'team'));
+route('PUT', '/api/notes', ({ db, body }) => saveNote(db, 'team', body));
+route('GET', `/api/sandboxes/${ID}/notes`, ({ db, p }) => loadNote(db, `sandbox:${sandboxOf(db, p[0]).id}`));
+route('PUT', `/api/sandboxes/${ID}/notes`, ({ db, p, body }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  need(sandbox, 'write');
+  return saveNote(db, `sandbox:${sandbox.id}`, body);
 });
 
 // ---- Administration
@@ -3318,10 +3477,26 @@ export function createMockTransport(params) {
     for (const session of db.sessions.values()) for (const ws of [...(session.viewers || [])]) ws.serverClose(1006, '');
   };
   db.goOnline = () => { db.offline = false; };
+  // The machine rebooted: every Cockpit's process is gone, its viewers lose the connection.
+  db.rebootCockpits = () => {
+    for (const shell of [...db.shells.values()]) {
+      if (!shell.cockpit) continue;
+      db.shells.delete(shell.id);
+      for (const ws of [...((shell.session && shell.session.viewers) || [])]) ws.serverClose(1006, '');
+    }
+  };
+  // A teammate's save of a notepad (`team` or `sandbox:<sid>`); `announce: false` holds back its
+  // event, as if it were still on its way (SPEC-041).
+  db.editNote = (scope, body, by = 'alice', options) => putNote(db, scope, body, by, options);
+  db.keepaliveRequests = [];
+  // `noteloads=fail`: the notes cannot be loaded from the start (a server still restarting).
+  db.failNoteLoads = params.get('noteloads') === 'fail';
+  notesOf(db);
   return {
     kind: 'mock',
     // Like window.fetch, an aborted signal (a timeout, a view that went away) rejects the request.
     fetch: (url, init = {}) => {
+      if (init.keepalive) db.keepaliveRequests.push(url);
       const work = handleFetch(db, url, init);
       const { signal } = init;
       if (!signal) return work;

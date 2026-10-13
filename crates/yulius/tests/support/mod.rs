@@ -480,6 +480,7 @@ pub struct Resp {
     pub body: serde_json::Value,
     pub set_cookie: Option<String>,
     pub location: Option<String>,
+    pub cache_control: Option<String>,
 }
 
 /// Session credentials.
@@ -525,6 +526,11 @@ pub async fn call(
         .get(header::LOCATION)
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
+    let cache_control = resp
+        .headers()
+        .get(header::CACHE_CONTROL)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
     let bytes = resp.into_body().collect().await?.to_bytes();
     let body = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
     Ok(Resp {
@@ -532,6 +538,7 @@ pub async fn call(
         body,
         set_cookie,
         location,
+        cache_control,
     })
 }
 
@@ -566,6 +573,7 @@ pub async fn send(
         body: serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
         set_cookie: None,
         location: None,
+        cache_control: None,
     })
 }
 
@@ -1201,6 +1209,19 @@ pub async fn seed_task(
     status: yulius_domain::task::TaskStatus,
     worktree: Option<&std::path::Path>,
 ) -> Result<yulius_app::model::TaskRecord, Box<dyn std::error::Error>> {
+    seed_task_with_prompt(h, id, sandbox, created_by, status, worktree, "do things").await
+}
+
+/// [`seed_task`] with the task's initial prompt.
+pub async fn seed_task_with_prompt(
+    h: &Harness,
+    id: &str,
+    sandbox: &str,
+    created_by: &str,
+    status: yulius_domain::task::TaskStatus,
+    worktree: Option<&std::path::Path>,
+    prompt: &str,
+) -> Result<yulius_app::model::TaskRecord, Box<dyn std::error::Error>> {
     use yulius_app::ports::store::TaskStore;
     use yulius_domain::ids::{SandboxId, TaskId, UserId};
     let now = h.app.now();
@@ -1209,7 +1230,7 @@ pub async fn seed_task(
         sandbox_id: SandboxId::parse(sandbox)?,
         number: 0,
         title: format!("task {id}"),
-        prompt: "do things".into(),
+        prompt: prompt.into(),
         harness: yulius_domain::harness::Harness::ClaudeCode,
         model: None,
         effort: None,

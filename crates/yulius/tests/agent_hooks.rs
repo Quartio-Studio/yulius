@@ -572,6 +572,66 @@ async fn the_idle_reminder_keeps_a_finished_task_waiting() -> TestResult {
     Ok(())
 }
 
+/// STA-002 (SPEC-032, task #23 shown "Needs you" while healthy): Claude Code 2.1.292 sends notices
+/// that ask nobody to act (a background agent finished, a push notification, a quota resume);
+/// they leave a working task working. Only the notices that ask a person do flag it.
+#[tokio::test]
+async fn informational_notices_leave_a_working_task_alone() -> TestResult {
+    let f = fixture().await?;
+    let store = &f.h.app.deps.store;
+    store
+        .set_activity(&f.task, Some(Activity::Working), Timestamp(10))
+        .await?;
+    for kind in [
+        "agent_completed",
+        "push_notification",
+        "quota_auto_resume_fired",
+        "quota_auto_resume_stale",
+        "quota_auto_resume_disabled",
+        "computer_use_enter",
+        "computer_use_exit",
+        "model_refusal_fallback",
+        "auth_storage_failure",
+        "a_type_added_by_a_later_release",
+    ] {
+        let body = hook(
+            &f,
+            "Notification",
+            json!({"message": "Agent \"Review\" finished", "notification_type": kind}),
+        )
+        .await?;
+        assert!(body.is_null());
+        assert_eq!(
+            activity(&f).await?,
+            Some(Activity::Working),
+            "{kind} needs nobody"
+        );
+    }
+    for kind in [
+        "permission_prompt",
+        "worker_permission_prompt",
+        "elicitation_dialog",
+        "elicitation_url_dialog",
+        "agent_needs_input",
+    ] {
+        store
+            .set_activity(&f.task, Some(Activity::Working), Timestamp(11))
+            .await?;
+        hook(
+            &f,
+            "Notification",
+            json!({"message": "Claude needs you", "notification_type": kind}),
+        )
+        .await?;
+        assert_eq!(
+            activity(&f).await?,
+            Some(Activity::NeedsAttention),
+            "{kind} asks a person"
+        );
+    }
+    Ok(())
+}
+
 /// Stores the GitHub App with installation 7 (the fake's installation token is `inst`).
 async fn install_app(f: &Fixture) -> TestResult {
     let store = &f.h.app.deps.store;

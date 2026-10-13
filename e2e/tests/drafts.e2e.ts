@@ -1,6 +1,6 @@
 import { test, type Browser, type Screen } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { failOnPageErrors, mock } from './support.ts';
+import { failOnPageErrors, mock, mockReady } from './support.ts';
 
 failOnPageErrors();
 
@@ -87,7 +87,7 @@ test('the mode, workflow and "Run after" come back with the draft', async ({ app
   await screen.getByRole('button', /^Workflow:/).click();
   await screen.getByRole('menuitemradio', /^Fix \(default\)/).click();
   await screen.getByRole('button', /Run after: Start now/).click();
-  await screen.getByRole('menuitemradio', /^After #12 Checkout API/).click();
+  await screen.getByRole('menuitemradio', /^#12 Checkout API/).click();
 
   await leaveAndReturn(browser, screen);
 
@@ -117,7 +117,7 @@ test('the draft survives a reload and is cleared once the task starts', async ({
   await screen.getByRole('button', /^Mode:/).click();
   await screen.getByRole('menuitemradio', /^Goal/).click();
   await screen.getByRole('button', /Run after: Start now/).click();
-  await screen.getByRole('menuitemradio', /^After #12 Checkout API/).click();
+  await screen.getByRole('menuitemradio', /^#12 Checkout API/).click();
   // The image's small thumbnail is made a moment after the drop; the draft is stored once the
   // page goes away, whatever the debounce.
   await expect.poll(() => storedThumbs(browser)).toBe(1);
@@ -170,6 +170,7 @@ test('signing out removes the stored drafts', async ({ app, browser, screen }) =
 
 test('an upload that ends after leaving and coming back shows in the composer', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
+  await mockReady(browser);
   await browser.evaluate(() => {
     const w = window as unknown as Holding;
     w.__yuliusMock.holdUpload = new Promise<void>((resolve) => { w.__release = resolve; });
@@ -187,6 +188,7 @@ test('an upload that ends after leaving and coming back shows in the composer', 
 
 test('a task still starting is not started again from a returned composer', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
+  await mockReady(browser);
   const before = await browser.evaluate(() => (window as unknown as Holding).__yuliusMock.tasks.length);
   await browser.evaluate(() => {
     const w = window as unknown as Holding;

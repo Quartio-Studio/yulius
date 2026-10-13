@@ -64,8 +64,10 @@ const ICONS = {
   globe: [['circle', { cx: 12, cy: 12, r: 9 }], ['ellipse', { cx: 12, cy: 12, rx: 4, ry: 9 }], ['path', { d: 'M3 12h18' }]],
   code: [['path', { d: 'M8 6l-6 6 6 6M16 6l6 6-6 6' }]],
   terminal: [['rect', { x: 2.5, y: 4, width: 19, height: 16, rx: 2 }], ['path', { d: 'M6.5 9l3.5 3-3.5 3M12 15.5h5' }]],
-  // The Cockpit (SPEC-021): a dial and its needle.
-  gauge: [['path', { d: 'M3.5 17a8.5 8.5 0 1 1 17 0' }], ['path', { d: 'M12 17l4.5-5.5' }], ['circle', { cx: 12, cy: 17, r: 1.2 }]],
+  // The Agent (SPEC-035): a four-point spark and a small one beside it.
+  spark: [['path', { d: 'M10 3.5l1.9 5.1 5.1 1.9-5.1 1.9L10 17.5l-1.9-5.1L3 10.5l5.1-1.9z' }], ['path', { d: 'M18 15v5M15.5 17.5h5' }]],
+  info: [['circle', { cx: 12, cy: 12, r: 9 }], ['path', { d: 'M12 11v5.5' }], ['circle', { cx: 12, cy: 7.8, r: 1.1, fill: 'currentColor' }]],
+  note: [['rect', { x: 4.5, y: 3, width: 15, height: 18, rx: 2 }], ['path', { d: 'M8 8h8M8 12h8M8 16h5' }]],
   mail: [['rect', { x: 3, y: 5, width: 18, height: 14, rx: 2 }], ['path', { d: 'M3.5 6.5l8.5 6.5 8.5-6.5' }]],
   menu: [['path', { d: 'M4 6h16M4 12h16M4 18h16' }]],
   more: [['circle', { cx: 12, cy: 5, r: 1.3, fill: 'currentColor' }], ['circle', { cx: 12, cy: 12, r: 1.3, fill: 'currentColor' }], ['circle', { cx: 12, cy: 19, r: 1.3, fill: 'currentColor' }]],
@@ -475,26 +477,55 @@ export function closeMenu() {
   }
 }
 
+/** A menu with this many items to choose from gets a filter box (SPEC-038 MNU-003). */
+export const MENU_FILTER_MIN = 8;
+
+/**
+ * Whether a menu item holds every word of `query` in what it shows: its label, its second line (a
+ * description, or a disabled item's reason) and its hint. Not a tooltip: "Starts by itself when
+ * #N is done" on every "Run after" row would match them all.
+ */
+export function menuMatches(item, query) {
+  const words = String(query || '').toLowerCase().split(/\s+/).filter(Boolean);
+  const second = item.description || (item.disabled && item.title ? item.title : null);
+  const text = [item.label, second, item.hint].filter(Boolean).join(' ').toLowerCase();
+  return words.every((word) => text.includes(word));
+}
+
+let menuIds = 0;
+
 /**
  * Show a menu at an anchor element or {x, y} point.
  * items: [{label, onSelect, disabled, danger, hint, description, checked, icon, header, separator, href}]
  * `description` adds a second line; `checked` (true/false) makes the item a choice with a check mark;
  * `keepOpen` keeps the menu open after selecting (multi-select filters), flipping the check in place.
+ * A menu of MENU_FILTER_MIN items or more opens with a filter box above them.
  */
 export function openMenu(anchor, items, { align = 'start' } = {}) {
   closeMenu();
   const button = anchor instanceof HTMLElement && anchor.hasAttribute('aria-haspopup') ? anchor : null;
   if (button) button.setAttribute('aria-expanded', 'true');
-  const menu = h('div', { class: 'menu', role: 'menu' });
+  // The panel floats and holds the list of items, which scrolls when the window is too short. The
+  // filter is the list's sibling: a role="menu" may own only menu items.
+  menuIds += 1;
+  const list = h('div', { class: 'menu-list', role: 'menu', id: `menu-list-${menuIds}` });
+  const choices = items.filter((item) => item && !item.separator && !item.header);
+  const filter = choices.length >= MENU_FILTER_MIN
+    ? h('input', { type: 'search', class: 'input menu-filter', placeholder: 'Filter', 'aria-label': 'Filter', 'aria-controls': list.id, autocomplete: 'off', spellcheck: 'false' })
+    : null;
+  const empty = filter ? h('div', { class: 'menu-empty', role: 'status' }) : null;
+  const menu = h('div', { class: 'menu' }, filter, list, empty);
+  const rows = [];
+  const dividers = [];
   for (const item of items) {
     if (!item) continue;
-    if (item.separator) { menu.append(h('div', { class: 'menu-sep', role: 'separator' })); continue; }
-    if (item.header) { menu.append(h('div', { class: 'menu-header' }, item.header)); continue; }
+    if (item.separator) { dividers.push(list.appendChild(h('div', { class: 'menu-sep', role: 'separator' }))); continue; }
+    if (item.header) { dividers.push(list.appendChild(h('div', { class: 'menu-header' }, item.header))); continue; }
     const choice = typeof item.checked === 'boolean';
     // A disabled item says why on its second line, not only in a mouse tooltip.
     const description = item.description || (item.disabled && item.title ? item.title : null);
     const label = description
-      ? h('span', { class: 'menu-text' }, h('span', { class: 'menu-label' }, item.label), h('span', { class: 'menu-desc' }, description))
+      ? h('span', { class: 'menu-text' }, h('span', { class: 'menu-label' }, item.label), h('span', { class: 'menu-desc', title: description }, description))
       : h('span', { class: 'menu-label' }, item.label);
     const check = choice ? h('span', { class: 'menu-check' }, item.checked ? icon('check', { size: 14 }) : null) : null;
     const select = () => {
@@ -512,39 +543,116 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
       }
       if (item.onSelect) item.onSelect();
     };
-    const el = h('button', { type: 'button', role: choice ? (item.keepOpen ? 'menuitemcheckbox' : 'menuitemradio') : 'menuitem', 'aria-checked': choice ? String(item.checked) : null, class: ['menu-item', item.danger && 'danger', description && 'rich'], 'aria-disabled': item.disabled ? 'true' : null, title: item.title || null, onClick: select },
+    const el = h('button', { type: 'button', role: choice ? (item.keepOpen ? 'menuitemcheckbox' : 'menuitemradio') : 'menuitem', 'aria-checked': choice ? String(item.checked) : null, class: ['menu-item', item.danger && 'danger', description && 'rich'], 'aria-disabled': item.disabled ? 'true' : null, title: (!item.disabled && item.title) || null, onClick: select },
       check,
       item.icon ? h('span', { class: 'menu-icon' }, icon(item.icon, { size: 15 })) : null,
       label, item.hint ? h('span', { class: 'menu-hint' }, item.hint) : null);
-    menu.append(el);
+    list.append(el);
+    rows.push({ item, el });
   }
+  /** Shows the items matching the filter; headers and separators only while it is empty. */
+  const applyFilter = () => {
+    const query = filter.value.trim();
+    let shown = 0;
+    for (const { item, el } of rows) {
+      el.hidden = !menuMatches(item, query);
+      if (!el.hidden) shown += 1;
+    }
+    for (const divider of dividers) divider.hidden = query !== '';
+    empty.textContent = shown ? '' : 'No matches';
+    list.scrollTop = 0;
+  };
+  if (filter) filter.addEventListener('input', applyFilter);
   document.body.append(menu);
-  const rect = anchor instanceof Element ? anchor.getBoundingClientRect() : { left: anchor.x, right: anchor.x, top: anchor.y, bottom: anchor.y };
-  const mw = menu.offsetWidth;
-  const mh = menu.offsetHeight;
-  let left = align === 'end' ? rect.right - mw : rect.left;
-  let top = rect.bottom + 4;
-  if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
-  if (left < 8) left = 8;
-  if (top + mh > window.innerHeight - 8) top = Math.max(8, rect.top - mh - 4);
-  menu.style.left = `${left}px`;
-  menu.style.top = `${top}px`;
+  /**
+   * Below the anchor, or above it when it fits only there or has more room; never past a window
+   * edge, the items scroll instead (SPEC-038 MNU-001). Run again when the window gets shorter.
+   */
+  const place = () => {
+    menu.classList.remove('menu-from-top');
+    menu.style.top = '';
+    menu.style.bottom = '';
+    menu.style.maxHeight = '';
+    const rect = anchor instanceof Element ? anchor.getBoundingClientRect() : { left: anchor.x, right: anchor.x, top: anchor.y, bottom: anchor.y };
+    // An anchor partly outside the window (scrolled away as the window got shorter) counts from
+    // the window's edge, so the menu stays inside.
+    const anchorTop = Math.min(Math.max(rect.top, 12), window.innerHeight - 4);
+    const anchorBottom = Math.min(Math.max(rect.bottom, 4), window.innerHeight - 12);
+    const below = window.innerHeight - 8 - (anchorBottom + 4);
+    const above = anchorTop - 4 - 8;
+    // Measured with every item shown: a filtered menu placed again must still fit once cleared.
+    const filtered = Boolean(filter && filter.value.trim());
+    if (filtered) {
+      for (const { el } of rows) el.hidden = false;
+      for (const divider of dividers) divider.hidden = false;
+      empty.textContent = '';
+    }
+    const mh = menu.offsetHeight;
+    if (filtered) applyFilter();
+    const up = mh > below && above > below;
+    const room = up ? above : below;
+    if (room < Math.min(mh, 120)) {
+      // No usable room on either side (an anchor taller than the window): over it, from the top.
+      menu.classList.add('menu-from-top');
+    } else {
+      if (mh > room) menu.style.maxHeight = `${room}px`;
+      // A menu above its anchor is held by its bottom edge, so a filtered, shorter menu stays next
+      // to the anchor.
+      if (up) menu.style.bottom = `${window.innerHeight - (anchorTop - 4)}px`;
+      else menu.style.top = `${anchorBottom + 4}px`;
+    }
+    // A filtered menu keeps its width, measured once its items may scroll (with their scrollbar),
+    // and the left edge follows the final width.
+    if (filter && !menu.style.width) menu.style.width = `${menu.offsetWidth}px`;
+    const mw = menu.offsetWidth;
+    let left = align === 'end' ? rect.right - mw : rect.left;
+    if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
+    menu.style.left = `${Math.max(8, left)}px`;
+  };
+  place();
   const onDoc = (event) => { if (!menu.contains(event.target)) closeMenu(); };
   const onKey = (event) => {
+    // Keys that compose text in an input method (Enter that commits it, arrows that pick a
+    // candidate) belong to the filter.
+    if (event.isComposing || event.keyCode === 229) return;
     // Focus goes back to the button before the menu closes (a button shown only while its menu is
     // open would hide first and could not take focus).
+    // Escape first clears a filter with text (SPEC-038 MNU-005).
+    if (event.key === 'Escape' && filter && filter.value) { event.preventDefault(); event.stopPropagation(); filter.value = ''; applyFilter(); filter.focus(); return; }
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (anchor instanceof HTMLElement) anchor.focus(); closeMenu(); return; }
     // APG menu: arrows wrap, Home/End jump, a letter moves to the next item starting with it,
     // Tab leaves (closing the menu). Disabled items stay focusable so their reason can be read.
-    const buttons = [...menu.querySelectorAll('.menu-item')];
+    const buttons = [...list.querySelectorAll('.menu-item:not([hidden])')];
     const index = buttons.indexOf(document.activeElement);
+    const typed = event.key.length === 1 && /\S/.test(event.key) && !event.metaKey && !event.ctrlKey && !event.altKey;
+    if (filter && document.activeElement === filter) {
+      // In the filter: ↓ goes to the first shown item, ↑ to the last, Enter picks the first one
+      // that can be picked; other keys edit the text.
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        buttons.find((el) => el.getAttribute('aria-disabled') !== 'true')?.click();
+        return;
+      }
+      if (event.key === 'Tab') { event.preventDefault(); if (anchor instanceof HTMLElement) anchor.focus(); closeMenu(); return; }
+      const to = event.key === 'ArrowDown' ? buttons[0] : event.key === 'ArrowUp' ? buttons[buttons.length - 1] : null;
+      if (to) { event.preventDefault(); to.focus(); }
+      return;
+    }
+    if (filter && ((event.key === 'ArrowUp' && index === 0) || typed || event.key === 'Backspace')) {
+      // ↑ on the first item goes back to the filter; a letter or Backspace typed on an item edits it.
+      event.preventDefault();
+      filter.focus();
+      if (typed) { filter.value += event.key; applyFilter(); }
+      if (event.key === 'Backspace' && filter.value) { filter.value = filter.value.slice(0, -1); applyFilter(); }
+      return;
+    }
     let next = -1;
     if (event.key === 'ArrowDown') next = (index + 1) % buttons.length;
     else if (event.key === 'ArrowUp') next = (index - 1 + buttons.length) % buttons.length;
     else if (event.key === 'Home') next = 0;
     else if (event.key === 'End') next = buttons.length - 1;
     else if (event.key === 'Tab') { event.preventDefault(); if (anchor instanceof HTMLElement) anchor.focus(); closeMenu(); return; }
-    else if (event.key.length === 1 && /\S/.test(event.key) && !event.metaKey && !event.ctrlKey && !event.altKey) {
+    else if (typed) {
       const letter = event.key.toLowerCase();
       for (let step = 1; step <= buttons.length; step += 1) {
         const candidate = buttons[(index + step) % buttons.length];
@@ -553,22 +661,27 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
     }
     if (next >= 0 && buttons[next]) { event.preventDefault(); buttons[next].focus(); }
   };
-  const onResize = () => closeMenu();
+  // A window that only gets shorter is a phone's keyboard opening for the filter: keep the menu.
+  const openWidth = window.innerWidth;
+  const onResize = () => { if (window.innerWidth !== openWidth) closeMenu(); else place(); };
+  const onBlur = () => closeMenu();
   setTimeout(() => document.addEventListener('pointerdown', onDoc, true), 0);
   document.addEventListener('keydown', onKey, true);
   window.addEventListener('resize', onResize);
-  window.addEventListener('blur', onResize);
+  window.addEventListener('blur', onBlur);
   openMenuEl = {
     cleanup() {
       document.removeEventListener('pointerdown', onDoc, true);
       document.removeEventListener('keydown', onKey, true);
       window.removeEventListener('resize', onResize);
-      window.removeEventListener('blur', onResize);
+      window.removeEventListener('blur', onBlur);
       menu.remove();
       if (button) button.setAttribute('aria-expanded', 'false');
     },
   };
-  const first = menu.querySelector('.menu-item:not([aria-disabled="true"])') || menu.querySelector('.menu-item');
+  // On a touch screen the filter waits for a tap: focusing it would open the keyboard over the menu.
+  const coarse = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
+  const first = (!coarse && filter) || menu.querySelector('.menu-item:not([aria-disabled="true"])') || menu.querySelector('.menu-item');
   if (first) first.focus({ preventScroll: true });
   return menu;
 }

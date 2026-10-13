@@ -181,10 +181,19 @@ p { margin: 0; }
 /* ---------------------------------------------------------------- menus, modals, toasts */
 
 .menu {
-  position: fixed; z-index: var(--z-menu); min-width: 180px; max-width: 320px; padding: 4px;
+  position: fixed; z-index: var(--z-menu); display: flex; flex-direction: column;
+  min-width: 180px; max-width: 320px; max-height: calc(100vh - 16px); padding: 4px;
   background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
   box-shadow: var(--shadow);
 }
+/* The items scroll inside the panel when the window is too short for them (SPEC-038). */
+.menu-list { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+/* No usable room beside an anchor taller than the window: the menu covers it from the top. */
+.menu-from-top { top: 8px; }
+.menu-filter { flex: none; margin-bottom: 4px; }
+.menu-empty { padding: 4px 12px 6px; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+/* Rendered while empty, so screen readers announce "No matches" when it is written. */
+.menu-empty:empty { padding: 0; }
 .menu-item {
   display: flex; align-items: center; gap: 12px; width: 100%; height: var(--control-md); padding: 0 12px;
   border: 0; border-radius: var(--radius-sm); background: transparent; text-align: left; cursor: pointer;
@@ -196,9 +205,11 @@ p { margin: 0; }
 .menu-item.danger { color: var(--danger-fg); }
 .menu-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .menu-hint { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); }
-.menu-item.rich { height: auto; min-height: var(--control-md); padding: 6px 12px; align-items: flex-start; }
-.menu-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
-.menu-desc { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); white-space: normal; }
+.menu-item.rich { height: auto; min-height: var(--control-md); padding: 4px 12px; align-items: flex-start; }
+.menu-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+/* One line; the whole description is the item's tooltip, and shows on the focused item. */
+.menu-desc { overflow: hidden; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); text-overflow: ellipsis; white-space: nowrap; }
+.menu-item:focus-visible .menu-desc { white-space: normal; }
 .menu-check { display: inline-flex; width: 14px; flex: none; color: var(--accent); }
 .menu-icon { display: inline-flex; width: 16px; flex: none; color: var(--muted); }
 .menu-item:hover .menu-icon, .menu-item:focus-visible .menu-icon { color: var(--text-2); }
@@ -249,7 +260,7 @@ p { margin: 0; }
 }
 .app.no-sandbox { grid-template-columns: var(--sidebar-w) minmax(0, 1fr) 0 0; }
 /* The home screen (UI-045) has no sandbox, so no tools: the rail, its panel and its toggle go. */
-.app.no-sandbox .rail, .app.no-sandbox .panel, .app.no-sandbox .tools-toggle { display: none; }
+.app.no-sandbox .rail, .app.no-sandbox .panel, .app.no-sandbox .tools-toggle, .app.no-sandbox .agent-toggle { display: none; }
 /* The sidebar stays while a tool panel is open (developers keep their tasks in view): the panel
    takes its width from the centre (panels.js applyWidth). */
 
@@ -436,6 +447,8 @@ button.task-group-head:hover { color: var(--text); }
 .app.panel-max .panel { width: auto !important; }
 .app.panel-max .panel-resize { display: none; }
 .tools-toggle.active { background: var(--accent-soft); color: var(--text); }
+.btn-agent { height: var(--control-md); padding: 0 12px; gap: 6px; font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.agent-toggle.active { background: var(--accent-soft); border-color: var(--accent-border); color: var(--text); }
 /* The rail's items stay inside it (F 2026-10-09): each pill is the rail's width less 6 px on either
    side of the edge line, its label gives way (ellipsis) before the count leaves the pill, and the
    4 px between pills leaves room for the focus ring. Hover is a quiet fill; the open tool (one at a
@@ -472,6 +485,14 @@ button.task-group-head:hover { color: var(--text); }
 .panel-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .panel-view[hidden] { display: none; }
 .panel-msg { padding: 24px 16px; color: var(--muted); text-align: center; }
+/* The Agent (SPEC-035): its quick-work notice, then the user's plain Claude Code session filling
+   the panel like a terminal. */
+.agent { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.agent-note { flex: none; align-items: flex-start; margin: 8px; overflow-wrap: anywhere; }
+.agent-note .icon { margin-top: 2px; }
+.agent-note a { color: inherit; font-weight: 600; text-decoration: underline; }
+.agent-term { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--term-bg); }
+.agent-msg { flex: 1; padding: 24px 16px; background: var(--surface); }
 body.resizing { cursor: col-resize; user-select: none; }
 /* While a splitter is dragged, frames and canvases under the pointer never take its moves. */
 body.resizing iframe, body.resizing canvas { pointer-events: none; }
@@ -975,15 +996,6 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 /* ---------------------------------------------------------------- task view */
 
 .taskview { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-/* The Cockpit (SPEC-021): one header line, then the user's plain Claude Code session filling the
-   centre like a task's terminal. */
-.cockpit { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-.cockpit-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; padding: 8px 16px; border-bottom: 1px solid var(--border); min-width: 0; }
-.cockpit-title { display: inline-flex; align-items: center; gap: 8px; margin: 0; font-family: var(--font-display); font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 600; }
-.cockpit-title .nav-slot { align-self: center; }
-.cockpit-sub { min-width: 0; overflow-wrap: anywhere; }
-.cockpit-term { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.cockpit-msg { padding: 24px 16px; }
 /* The terminal and what floats over it: the attention bar never resizes the terminal (each resize
    makes the agent's TUI redraw, F 2026-10-09). */
 .taskview-term { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -1256,6 +1268,17 @@ span.composer-attachment-open { cursor: default; }
 .composer-attachment-open:focus-visible { outline: 2px solid var(--accent-border-strong); outline-offset: -2px; }
 .composer-attachment img { width: 100%; height: 100%; object-fit: cover; }
 .attachment-modal .modal-body { display: flex; justify-content: center; }
+/* The prompt a task started with (SPEC-043): the text as written, then its attached files. */
+.prompt-text { max-height: 60vh; overflow: auto; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2, var(--surface)); }
+.prompt-text .md-blocks { min-height: 0; padding-bottom: 0; cursor: auto; }
+.prompt-files { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.prompt-file { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--text-2); }
+.prompt-file.image { flex-direction: column; align-items: stretch; width: 96px; }
+.prompt-file-name { overflow: hidden; font-size: var(--fs-sm); text-overflow: ellipsis; white-space: nowrap; }
+.prompt-file.image .prompt-file-name { font-size: var(--fs-xs); }
+.prompt-thumb { width: 96px; height: 72px; padding: 0; overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-2, var(--surface)); cursor: zoom-in; }
+.prompt-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.prompt-file.gone { opacity: 0.8; }
 .attachment-preview { display: block; max-width: 100%; max-height: 75vh; object-fit: contain; }
 .composer-attachment-name { position: absolute; inset: auto 0 0; padding: 0 4px; overflow: hidden; background: var(--surface-2); color: var(--text); font-size: var(--fs-xs); text-overflow: ellipsis; white-space: nowrap; }
 .composer-attachment-remove { position: absolute; top: 2px; right: 2px; }
@@ -1853,7 +1876,8 @@ a.dl-task:hover { text-decoration: underline; }
   .tabrow-tabs, .tab-add { display: none; }
   /* The sandbox list gives way to the tools rail when it shows in this row (it never overlaps it). */
   .tab-select { display: flex; align-self: center; flex: 1; min-width: 0; max-width: 200px; height: var(--control-xl); gap: 4px; padding: 0 4px 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .btn-status .status-text, .chip-warn .chip-text { display: none; }
+  .btn-status .status-text, .chip-warn .chip-text, .agent-toggle-text { display: none; }
+  .btn-agent { width: var(--control-lg); height: var(--control-lg); padding: 0; justify-content: center; }
   .rail { flex-direction: row; align-items: center; gap: 0; padding: 0 2px; border-left: 0; border-bottom: 1px solid var(--border); background: var(--bg); }
   .rail-btn { width: var(--control-lg); height: var(--control-lg); justify-content: center; padding: 0; }
   .rail-btn.active::before { top: auto; bottom: 2px; left: 8px; right: 8px; width: auto; height: 3px; }
@@ -1933,6 +1957,22 @@ a.dl-task:hover { text-decoration: underline; }
 .term-views { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--term-bg); }
 .term-views > [hidden] { display: none; }
 .term-slot { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* Notes (SPEC-041): a notepad per sandbox and one for the team, saved while typing. */
+.notes-tabs .term-tab { padding: 0 12px; border-top: 0; border-bottom: 0; border-left: 0; background: none; font: inherit; }
+.notes-tabs .term-tab.active { background: var(--term-bg); }
+.notes-panes { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--term-bg); }
+.notes-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.notes-pane[hidden] { display: none; }
+.notes-text { flex: 1; min-height: 0; width: 100%; resize: none; padding: 12px 16px; border: 0; background: transparent; color: var(--text); font: inherit; font-size: var(--fs); line-height: var(--lh); }
+.notes-text:focus-visible { outline: none; box-shadow: inset 2px 0 0 var(--accent); }
+.notes-text[readonly] { color: var(--text-2); }
+.notes-meta { flex: none; margin: 0; padding: 4px 16px; min-height: calc(var(--lh-sm) + 8px); border-top: 1px solid var(--border); color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.notes-readonly { flex: none; margin: 0; padding: 6px 16px; border-bottom: 1px solid var(--border); background: var(--surface-2); color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.notes-banner { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--warn-border); background: var(--warn-soft); color: var(--warn-fg-strong); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.notes-banner[hidden] { display: none; }
+.notes-banner p { margin: 0; }
+.notes-status { color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); white-space: nowrap; }
+.notes-status[data-tone="warn"] { color: var(--warn-fg); }
 .ed-stage { position: relative; flex: 1; min-height: 0; }
 .ed-host { position: absolute; inset: 0; }
 .ed-host[hidden] { display: none; }

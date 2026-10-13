@@ -655,6 +655,153 @@ async fn automation_crud_validates_schedule_and_permissions() -> TestResult {
     Ok(())
 }
 
+async fn enable_template(w: &World, who: &Creds, id: &str) -> Result<support::Resp, Error> {
+    call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/s1/automation-templates/{id}/enable"),
+        None,
+        who,
+    )
+    .await
+}
+
+/// AC-AUT-7 (SPEC-042): two Enables pressed at the same moment (two people, two tabs) still
+/// give one automation; a person without access to the project does not see the templates.
+#[tokio::test]
+async fn simultaneous_enables_never_duplicate_an_automation() -> TestResult {
+    let w = world().await?;
+    let (a, b) = tokio::join!(
+        enable_template(&w, &w.alice, "open-issues"),
+        enable_template(&w, &w.root, "open-issues")
+    );
+    let mut statuses = [a?.status, b?.status];
+    statuses.sort();
+    assert_eq!(statuses, [StatusCode::OK, StatusCode::CREATED]);
+    let all = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/automations",
+        None,
+        &w.bob,
+    )
+    .await?;
+    assert_eq!(names(&all.body), ["Work through open issues"]);
+
+    let carol = user_with_token(&w.h, "u-carol", "carol", false).await?;
+    let hidden = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/automation-templates",
+        None,
+        &carol,
+    )
+    .await?;
+    assert_eq!(hidden.status, StatusCode::NOT_FOUND);
+    let refused = enable_template(&w, &carol, "docs-up-to-date").await?;
+    assert_eq!(refused.status, StatusCode::NOT_FOUND);
+    Ok(())
+}
+
+/// AC-AUT-7 (SPEC-042): the ready-made automations are listed in every project, enabled with one
+/// call (created, then re-enabled without a duplicate), recognised by name, and need write access.
+#[tokio::test]
+async fn ready_made_automations_are_enabled_in_one_call() -> TestResult {
+    let w = world().await?;
+    let list = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/automation-templates",
+        None,
+        &w.bob,
+    )
+    .await?;
+    assert_eq!(list.status, StatusCode::OK, "{}", list.body);
+    let ids: Vec<&str> = list
+        .body
+        .as_array()
+        .ok_or("array")?
+        .iter()
+        .filter_map(|t| t["id"].as_str())
+        .collect();
+    assert_eq!(ids, ["docs-up-to-date", "open-issues"]);
+    let docs = &list.body[0];
+    assert_eq!(docs["name"], "Keep the docs up to date");
+    assert_eq!(docs["cron"], "0 3 * * *");
+    assert_eq!(docs["utc_offset_minutes"], 120);
+    assert_eq!(docs["workflow_id"], "wf-docs");
+    assert_eq!(docs["automation_id"], Value::Null);
+
+    let denied = enable_template(&w, &w.bob, "docs-up-to-date").await?;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN);
+    let unknown = enable_template(&w, &w.alice, "nope").await?;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND);
+
+    let created = enable_template(&w, &w.alice, "docs-up-to-date").await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let id = created.body["id"].as_str().ok_or("id")?.to_owned();
+    assert_eq!(created.body["name"], "Keep the docs up to date");
+    assert_eq!(created.body["enabled"], true);
+    assert_eq!(created.body["created_via"], "ui");
+    assert_eq!(created.body["workflow_id"], "wf-docs");
+    assert_eq!(created.body["prompt"], docs["prompt"]);
+    assert_eq!(
+        created.body["next_run_at"], "2026-10-07T01:00:00Z",
+        "03:00 at UTC+2"
+    );
+
+    // Paused, then enabled again from the template: the same automation, no duplicate.
+    let mut paused = created.body.clone();
+    paused["enabled"] = json!(false);
+    let r = call(
+        &w.h.router,
+        Method::PUT,
+        &format!("/api/automations/{id}"),
+        Some(paused),
+        &w.alice,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let again = enable_template(&w, &w.root, "docs-up-to-date").await?;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.body);
+    assert_eq!(again.body["id"], id.as_str());
+    assert_eq!(again.body["enabled"], true);
+
+    // An automation created by hand (or by an agent) with the same name counts as added.
+    create_automation(&w, json!({"name": "work through OPEN issues", "cron": "0 4 * * *", "prompt": "mine", "enabled": false})).await?;
+    let list = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/automation-templates",
+        None,
+        &w.bob,
+    )
+    .await?;
+    assert_eq!(list.body[0]["automation_id"], id.as_str());
+    let own = list.body[1]["automation_id"]
+        .as_str()
+        .ok_or("matched by name")?
+        .to_owned();
+    let all = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/automations",
+        None,
+        &w.bob,
+    )
+    .await?;
+    assert_eq!(all.body.as_array().map(Vec::len), Some(2));
+    let enabled = enable_template(&w, &w.alice, "open-issues").await?;
+    assert_eq!(enabled.status, StatusCode::OK);
+    assert_eq!(enabled.body["id"], own.as_str());
+    assert_eq!(
+        enabled.body["prompt"], "mine",
+        "an existing automation keeps its own content"
+    );
+    assert_eq!(enabled.body["enabled"], true);
+    Ok(())
+}
+
 /// AC-AUT-1: a cron automation creates exactly one task at its scheduled time.
 #[tokio::test]
 async fn due_run_creates_exactly_one_task() -> TestResult {
