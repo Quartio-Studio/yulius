@@ -437,8 +437,8 @@ impl App {
     /// IMP-002): requires `admin` or `maintain` on GitHub (the superadmin: a repository the App
     /// installation can access, ACC-012); clones it, chooses the profile, validates the
     /// documentation format and creates the onboarding task when it fails. With
-    /// `start_preparation` that task starts at once; `yulius onboard` starts it once its upload
-    /// has landed.
+    /// `start_preparation` that task starts at once; through `yulius onboard` it waits for a
+    /// person to click Start onboarding on the sandbox page (SPEC-051).
     ///
     /// # Errors
     /// See [`App::create_sandbox`].

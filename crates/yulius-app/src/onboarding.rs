@@ -3,9 +3,10 @@
 //!
 //! `not_needed | pending → preparing → ready | skipped`. An imported repository whose
 //! documentation fails [`validate_project`] gets a meta-task whose prompt asks the agent to adapt
-//! the repository to the Yulius format without breaking its conventions. The task starts by
-//! itself (no approval step, F 2026-10-10): at once when the repository is added in the UI, when
-//! the upload has landed when it comes through `yulius onboard`. Until the task has finished and
+//! the repository to the Yulius format without breaking its conventions. The task starts at once
+//! when the repository is added in the UI; one that came through `yulius onboard` waits until a
+//! person clicks Start onboarding on the sandbox page in the browser (SPEC-051, ADR-0038: the
+//! CLI only uploads, and a CLI token cannot start it). Until the task has finished and
 //! the project validates (`ready`), or an admin skips it, no other task starts in the sandbox: a
 //! new task — created, chained or run by an automation — waits after the preparation task and
 //! starts by itself once the sandbox is ready ([`App::onboarding_wait`], U-08); continuing a
@@ -695,11 +696,13 @@ impl App {
                 "Ready: an admin skipped the preparation.".into(),
                 Vec::new(),
             ),
+            // A person starts onboarding in the browser, never the CLI (SPEC-051 OBD-003).
             Some(OnboardingState::Pending) => (
-                format!("Not ready yet: {label} has not started."),
+                format!("Not ready yet: {label} waits for someone to start onboarding."),
                 vec![
                     format!(
-                        "{label} starts when the upload finishes, or when someone starts it on the sandbox page"
+                        "someone clicks Start onboarding on the sandbox page: {}/s/{}",
+                        self.config.public_url, sandbox.slug
                     ),
                     "the repository passes the Yulius format check".to_owned(),
                 ],

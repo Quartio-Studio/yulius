@@ -429,14 +429,22 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
     );
     assert_eq!(result.body["sessions_imported"], 2);
     assert_eq!(result.body["sessions_skipped_existing"], 0);
+    // OBD-001: the upload never starts onboarding; a person starts it in the browser.
     assert_eq!(
-        result.body["onboarding"], "preparing",
-        "the preparation task starts by itself once the upload landed (U-08)"
+        result.body["onboarding"], "pending",
+        "the CLI uploads; onboarding waits for Start onboarding on the sandbox page"
+    );
+    let stored = w.h.store.sandbox(&sandbox.id).await?.ok_or("sandbox")?;
+    assert_eq!(stored.onboarding_state, "pending");
+    let prep = stored.onboarding_task_id.clone().ok_or("onboarding task")?;
+    assert!(
+        w.h.store.attempts(&prep).await?.is_empty(),
+        "the onboarding task has not run"
     );
     assert_eq!(result.body["onboarding_status"]["ready"], false);
+    let pending = result.body["onboarding_status"]["pending"].to_string();
     assert!(
-        text(&result.body["onboarding_status"]["summary"])
-            .contains("waits for a Claude subscription"),
+        pending.contains("Start onboarding") && pending.contains("https://yulius.test/s/shop"),
         "{:?}",
         result.body["onboarding_status"]
     );

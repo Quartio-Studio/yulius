@@ -881,11 +881,8 @@ impl App {
                 StoreOutcome::Unchanged | StoreOutcome::Taken => unchanged += 1,
             }
         }
-        // The preparation task starts once the import landed, so it can read what was imported
-        // (sessions, branches, the snapshot) — no approval step (U-08).
-        if let Err(err) = self.start_onboarding(&sid, &login).await {
-            tracing::warn!(sandbox = %sid, error = %err, "the preparation task did not start");
-        }
+        // The upload never starts onboarding: a person starts it on the sandbox page in the
+        // browser (SPEC-051 OBD-001, ADR-0038).
         let onboarding = self.refresh_onboarding(&sid).await?;
         let record = store.sandbox(&sid).await?.ok_or(AppError::NotFound)?;
         let status = self.onboarding_status(&record).await?;
