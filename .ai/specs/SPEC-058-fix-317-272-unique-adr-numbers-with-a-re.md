@@ -51,9 +51,10 @@ onboarding rather than by a job (#272).
 - ONB-101: `ENVIRONMENT_SETUP` and infra-bootstrap step 2 say to add `YULIUS_CI_MATRIX=<value>` to
   the proof once per matrix value.
 - ONB-102: both say to run the proof with a long timeout or in the background, and how to recover
-  from an interrupted one: remove the `~/.ci-proof.*` left by proofs started over six hours ago
+  from an interrupted one: the proof prints its directory (`echo "proof $d"`), the agent removes
+  its own by that path, removes other tasks' `~/.ci-proof.*` only when started over six hours ago
   (`find "$HOME" -maxdepth 1 -name '.ci-proof.*' -mmin +360 ...`; the agent home is shared with
-  other tasks' running proofs) and run `git worktree prune`.
+  their running proofs), and runs `git worktree prune`.
 - ONB-103: both say a job's checkout is per lane while by default up to two runs at once share the
   CI `HOME` and cache, so a job's installs there must tolerate a concurrent run.
   `docs/operations.md` says the same of `ci/jobs/<job>@<lane>`, `home` and `cache`.
@@ -118,6 +119,13 @@ onboarding rather than by a job (#272).
 - **Parallel branches** that add a decision 0040 or cite "ADR-0034" for the two-factor vault must
   renumber or retarget after merging `dev`; the check catches the file and link, the pull request
   says so for the prose.
+- **Review round 2** (REQUEST CHANGES at 2172770): with only the six-hour `find`, the agent's own
+  killed proof stayed behind, which is the case #272 asks to recover from. The proof now prints
+  its directory and the recovery removes it by that path first; the six-hour `find` is kept for
+  other tasks' leftovers. Also the changelog's lane wording and long lines. Fixed test-first.
+- **The plan ends before the merge:** `delivery_merge` refuses while a step is open, so merging and
+  closing #317 and #272 are the delivery after the plan, reported in the task summary. The review
+  item is ticked for the head the final review round approves; `delivery_merge` refuses any other.
 
 ## Evidence
 
@@ -135,6 +143,11 @@ onboarding rather than by a job (#272).
   bans, licenses and sources ok.
 - `git grep 0034` in docs, specs and code: only the automations catalog record, its references
   and historical notes.
-- Independent review (fresh read-only session, skill `om-code-review`) of 81bf3aa..205fe9c:
-  APPROVE with three minors and four nits, handled above; the final head is reviewed again before
-  the merge.
+- Independent review (fresh read-only sessions, skill `om-code-review`): round 1 of
+  81bf3aa..205fe9c APPROVE with three minors and four nits; round 2 of 2172770 REQUEST CHANGES (one
+  major, the own-proof recovery); both handled above. A third round reviews the final head.
+- The rendered prompt's commands, run in a scratch repository with a scratch `HOME`: the proof
+  killed by `timeout 3` printed `proof <dir>` and left the directory and a worktree entry; the
+  own-path recovery plus `git worktree prune` removed both (exit 0); the six-hour `find` removed a
+  7-hour-old read-only proof and kept a fresh one.
+- Prompt test red for round 2: `missing "echo \"proof $d\";"` before the change; green after.

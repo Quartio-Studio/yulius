@@ -70,24 +70,27 @@ repository's test, lint and build commands until they work and record them in yu
 [commands]; run every \
 `[[ci.jobs]]` command exactly as written, from the repository root, until it passes. Yulius CI \
 gives the sandbox's jobs their own HOME and cache ($YULIUS_CI_CACHE), separate from yours: they \
-start empty and persist across runs, as does each job's checkout per CI lane with its ignored files \
-(build outputs, dependency directories); by default up to two runs at once share that HOME and \
-cache, so a job's installs there must tolerate a concurrent run; and the job's PATH lacks that \
-home's ~/.cargo/bin and ~/.local/bin. So a job must install what it needs itself (as `scripts/bootstrap.py \
---install-rustup` does) and never depend on anything an earlier run, your home or this worktree \
-left behind: such a job passes on the cache and fails on a fresh sandbox or after a cache prune. \
-Prove it: run each job command normally, then commit and run it once more from the root of a clean \
-checkout with a fresh home and CI's environment, which prints the job's exit status and removes \
-everything it made (`d=\"$(mktemp -d \"$HOME/.ci-proof.XXXXXX\")\"; mkdir \"$d/home\" \
+start empty and persist across runs, as does each job's checkout per CI lane with its ignored \
+files (build outputs, dependency directories); by default up to two runs at once share that HOME \
+and cache, so a job's installs there must tolerate a concurrent run; and the job's PATH lacks that \
+home's ~/.cargo/bin and ~/.local/bin. So a job must install what it needs itself (as \
+`scripts/bootstrap.py --install-rustup` does) and never depend on anything an earlier run, your \
+home or this worktree left behind: such a job passes on the cache and fails on a fresh sandbox or \
+after a cache prune. Prove it: run each job command normally, then commit and run it once more \
+from the root of a clean checkout with a fresh home and CI's environment, which prints its \
+directory and the job's exit status and removes everything it made \
+(`d=\"$(mktemp -d \"$HOME/.ci-proof.XXXXXX\")\"; echo \"proof $d\"; mkdir \"$d/home\" \
 \"$d/cache\"; git worktree add --detach \"$d/repo\" HEAD && (cd \"$d/repo\" && env -i \
 HOME=\"$d/home\" YULIUS_CI_CACHE=\"$d/cache\" PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 \
-TERM=dumb NO_COLOR=1 CI=true GIT_TERMINAL_PROMPT=0 YULIUS_CI=1 sh -c '<command>' </dev/null); s=$?; \
-git worktree remove --force \"$d/repo\"; chmod -R u+w \"$d\"; rm -rf \"$d\"; echo \"exit $s\"`, \
-quoting the command as needed; for a matrix job add `YULIUS_CI_MATRIX=<value>` after `env -i`, \
-once per matrix value). Run the proof with a long timeout or in the background: if it is killed, \
-its cleanup never runs, so remove what proofs started over six hours ago left (your home is shared \
-with other tasks' running proofs: `find \"$HOME\" -maxdepth 1 -name '.ci-proof.*' -mmin +360 \
--exec chmod -R u+w {} \\; -exec rm -rf {} \\;`) and run `git worktree prune`. A monorepo's jobs \
+TERM=dumb NO_COLOR=1 CI=true GIT_TERMINAL_PROMPT=0 YULIUS_CI=1 sh -c '<command>' </dev/null); \
+s=$?; git worktree remove --force \"$d/repo\"; chmod -R u+w \"$d\"; rm -rf \"$d\"; echo \"exit \
+$s\"`, quoting the command as needed; for a matrix job add `YULIUS_CI_MATRIX=<value>` after \
+`env -i`, once per matrix value). Run the proof with a long timeout or in the background: if it \
+is killed, its cleanup never runs, so remove what it left at the path it printed \
+(`d=<path>; git worktree remove --force \"$d/repo\"; chmod -R u+w \"$d\"; rm -rf \"$d\"`). Your \
+home is shared with other tasks' running proofs, so remove theirs only when they started over six \
+hours ago (`find \"$HOME\" -maxdepth 1 -name '.ci-proof.*' -mmin +360 -exec chmod -R u+w {} \\; \
+-exec rm -rf {} \\;`), then run `git worktree prune`. A monorepo's jobs \
 may run only its affected project's checks. End with a summary of what works and how it was \
 verified; a check that still cannot run is a problem to report there, never a reason to skip it \
 silently.";
@@ -1044,7 +1047,11 @@ mod tests {
                 "once per matrix value",
                 // #272: a killed proof never cleans up after itself.
                 "long timeout or in the background",
-                // Only stale leftovers: the home is shared with other tasks' running proofs.
+                // Its own leftovers by the path it printed; others' only when stale, since the
+                // home is shared with other tasks' running proofs.
+                "echo \"proof $d\";",
+                "at the path it printed",
+                "d=<path>; git worktree remove --force \"$d/repo\"",
                 "find \"$HOME\" -maxdepth 1 -name '.ci-proof.*' -mmin +360",
                 "git worktree prune",
                 // #272 (#238): checkouts are per lane, the CI home and cache are shared.
@@ -1076,6 +1083,9 @@ mod tests {
             "YULIUS_CI_MATRIX=<value>",
             "once per matrix value",
             "long timeout or in the background",
+            "echo \"proof $d\";",
+            "at the path it printed",
+            "d=<path>; git worktree remove --force \"$d/repo\"",
             "find \"$HOME\" -maxdepth 1 -name '.ci-proof.*' -mmin +360",
             "git worktree prune",
             "checkout per CI lane",

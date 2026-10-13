@@ -11,10 +11,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   the Agent in the right panel is 0036, the personal two-factor vault 0040 and the task status
   from Claude Code's records 0041. `scripts/check_repository.py` fails on two records with one
   number or a title whose number differs from the file name. The onboarding prompt and
-  infra-bootstrap step 2 add `YULIUS_CI_MATRIX` to the proof of matrix jobs, say how to clean up
-  after an interrupted proof (stale `~/.ci-proof.*` only, `git worktree prune`), that checkouts are per CI
-  lane while two runs share the CI home and cache, and that system packages are installed by
-  onboarding, never by a CI job.
+  infra-bootstrap step 2 add `YULIUS_CI_MATRIX` to the proof of matrix jobs and say how to clean
+  up after an interrupted proof: the proof prints its directory, the agent removes its own by that
+  path and other tasks' `~/.ci-proof.*` only when over six hours old, then runs `git worktree
+  prune`. They also say that checkouts are per CI lane while by default up to two runs share the
+  CI home and cache, and that system packages are installed by onboarding, never by a CI job.
 - CI jobs get the CPU first (SPEC-053, ADR-0039, task #45, #283). A sandbox's cgroup is split
   into `system/`, `agents/` and `ci/`, and CI jobs run with four times the agents' CPU weight. CI
   gets up to 80 % of the sandbox while agents build, and agents keep at least 20 %. The e2e suite in CI is
