@@ -277,6 +277,7 @@ async fn skill_catalog_sources_toggles_and_run_set() -> TestResult {
     assert_eq!(
         names,
         [
+            "dead-code-cleanup",
             "delivery-pipeline",
             "git-hygiene",
             "infra-bootstrap",

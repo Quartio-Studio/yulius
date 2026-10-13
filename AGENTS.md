@@ -35,6 +35,7 @@ above; the rules in this file stay authoritative. Yulius CI is the only CI: it r
 | Rust implementation | [Rust rules](docs/engineering/rust.md), [boundaries](docs/engineering/architecture.md), `.agents/skills/yulius-rust-slice/SKILL.md` |
 | Agent adapter / process / streaming | [Runtime contracts](docs/engineering/runtime-contracts.md), `.agents/skills/yulius-runner/SKILL.md` |
 | Tests, tooling, CI | [Development](docs/engineering/development.md), `.agents/skills/yulius-verify/SKILL.md` |
+| Cleanup, dead code, unused dependencies | [Dead code](docs/engineering/development.md#dead-code), bundled skill `dead-code-cleanup` |
 | Review | [Engineering workflow](docs/engineering/workflow.md), `.agents/skills/yulius-review/SKILL.md` |
 | Skills, personas, instructions, hooks | [Agent primitives](docs/engineering/primitives.md), `.agents/skills/yulius-primitives/SKILL.md` |
 

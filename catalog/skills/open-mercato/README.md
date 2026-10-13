@@ -50,4 +50,5 @@ at startup (existing copies are overwritten, so local edits there do not survive
 Each skill can be enabled or disabled per sandbox on the Skills page (default: enabled); enabled
 skills are installed into every Claude Code session of the sandbox. They work together with the
 other bundled skills: `test-driven-development` and `verification-before-completion` (adapted
-from obra/superpowers) and Yulius's own `delivery-pipeline`, `infra-bootstrap` and `git-hygiene`.
+from obra/superpowers) and Yulius's own `delivery-pipeline`, `infra-bootstrap`, `git-hygiene` and
+`dead-code-cleanup`.

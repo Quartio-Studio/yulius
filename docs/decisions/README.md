@@ -42,3 +42,4 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0034](0034-personal-two-factor-guards-the-vault.md): A personal two-factor code guards the vault; a secret is a title, a value and notes
 - [0034](0034-agent-in-the-right-panel.md): The Cockpit is shown as the Agent, a tool in the right panel
 - [0034](0034-ready-made-automations-catalog.md): Ready-made automations ship as a catalog, enabled in one click and matched by name
+- [0037](0037-dead-code-tools.md): Dead code is cleaned with each language's established tool; Yulius's gate uses cargo-shear
