@@ -396,6 +396,8 @@ impl App {
                 task.status.as_str()
             )));
         }
+        // Continuing a pending sandbox's onboarding task starts onboarding: browser only.
+        self.ensure_onboarding_continue_allowed(ctx, &task).await?;
         // Continuing is starting a task: refused while the sandbox is being prepared (U-08).
         self.ensure_tasks_may_start(&task.sandbox_id, task.origin)
             .await?;

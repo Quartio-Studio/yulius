@@ -13,6 +13,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   started (… UTC)", so the request file, the goal, the first message, the scope check and
   `task_get` all carry it. Once the task has started, its session is the way in (409). API:
   `POST /api/tasks/{tid}/queued-messages`; `TaskDetail` gains `request` and `started`.
+- `yulius onboard` only uploads (SPEC-051, ADR-0038, task #43): the repository, branches, snapshot
+  and sessions land, and the onboarding task that adapts the repository to the Yulius standards
+  waits until someone clicks **Start onboarding** on the sandbox page. The CLI says so with the
+  page's URL; the start endpoint refuses CLI tokens (403). Adding a repository in the web UI still
+  starts onboarding at once.
 - Dead-code tools (SPEC-054, ADR-0037, task #38): a bundled skill, `dead-code-cleanup`, is how
   agents clean up: the established tool per language (vulture and skylos for Python, from the ML
   in PL workshop; cargo-shear, knip, deadcode and others), a web search when the stack is not

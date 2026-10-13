@@ -16,13 +16,13 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 use yulius_app::context::{App, AppConfig, Deps};
 use yulius_app::error::{AppError, AppResult};
-use yulius_app::model::{GitHubTokenRecord, Secret, UserRecord};
+use yulius_app::model::{GitHubTokenRecord, Secret, UserRecord, WebSessionRecord};
 use yulius_app::ports::git::{CommitInfo, DiffStat, GitPort};
 use yulius_app::ports::github::{
     ChecksReport, GhIssue, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig, GitHubPort,
     NewIssue, NewPull, RepoAccess, RulesetRequest,
 };
-use yulius_app::ports::store::{InstanceStore, UserStore};
+use yulius_app::ports::store::{InstanceStore, SessionStore, UserStore};
 use yulius_domain::ids::UserId;
 use yulius_domain::permission::GitHubPermissions;
 use yulius_domain::time::Timestamp;
@@ -706,6 +706,29 @@ impl World {
                 ..Creds::default()
             },
         ))
+    }
+
+    /// Browser credentials (a cookie session with its CSRF token) for `user`, as the web UI has.
+    pub async fn browser(&self, user: &UserRecord) -> Result<Creds, BoxError> {
+        let cookie = format!("browser-{}", user.id.as_str());
+        let csrf = format!("csrf-{}", user.id.as_str());
+        let now = self.h.app.now();
+        self.h
+            .store
+            .insert_web_session(&WebSessionRecord {
+                id_hash: self.h.app.deps.crypto.sha256_hex(cookie.as_bytes()),
+                user_id: user.id.clone(),
+                csrf_token: csrf.clone(),
+                created_at: now,
+                expires_at: now.plus_millis(86_400_000),
+                revoked_at: None,
+            })
+            .await?;
+        Ok(Creds {
+            cookie: Some(cookie),
+            csrf: Some(csrf),
+            bearer: None,
+        })
     }
 
     /// Grants GitHub permissions on `OWNER/name` (or a full `owner/name`).

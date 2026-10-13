@@ -700,21 +700,21 @@ export function mountComposer(ctx, sandbox) {
         h('span', { class: 'banner-text' }, h('strong', null, recovery.locked ? 'Password recovery is disabled. ' : 'No recovery code yet. '), 'Without a recovery code a forgotten superadmin password cannot be reset.'),
         h('a', { class: 'btn btn-sm', href: href('/admin/users'), dataset: { route: '/admin/users' } }, 'Generate one')));
     }
-    // Onboarding (docs/api.md "Sandboxes"): `pending` waits for a person to approve the
-    // resting preparation task (write), `preparing` runs it; admins may skip either. New tasks
-    // are not refused meanwhile: they wait after the preparation task (U-08).
+    // Onboarding (docs/api.md "Sandboxes"): `pending` waits for a person to click Start
+    // onboarding (write; the CLI never starts it, SPEC-051), `preparing` runs it; admins may skip
+    // either. New tasks are not refused meanwhile: they wait after the onboarding task (U-08).
     const preparing = sb.onboarding === 'pending' || sb.onboarding === 'preparing';
     if (preparing) {
       const prep = (ctx.store.tasksOf(sb.id) || []).find((t) => t.origin === 'onboarding');
       const pending = sb.onboarding === 'pending';
       items.push(h('div', { class: 'banner banner-info' }, icon('refresh'),
         h('span', { class: 'banner-text' },
-          h('strong', null, pending ? 'This sandbox needs preparation. ' : 'Preparing this sandbox. '),
+          h('strong', null, pending ? 'This sandbox needs onboarding. ' : 'Preparing this sandbox. '),
           pending
-            ? `The repository does not follow the ${BRAND.name} documentation format yet. Start the preparation task to adapt it. New tasks wait for it and start by themselves once it lands.`
+            ? `Onboarding sets up the sandbox and adapts the repository to the ${BRAND.name} standards; it starts only when someone starts it here. New tasks wait for it and start by themselves once it lands.`
             : `A preparation task adapts the imported repository to the ${BRAND.name} format. New tasks wait for it and start by themselves once it lands.`,
           prep ? [' ', h('a', { href: href(`/s/${encodeURIComponent(sb.slug)}/t/${prep.number}`), dataset: { route: `/s/${encodeURIComponent(sb.slug)}/t/${prep.number}` } }, `Open #${prep.number}`)] : null),
-        pending && allows(sb.access, 'write') ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: approveOnboarding }, 'Start preparation') : null,
+        pending && allows(sb.access, 'write') ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: approveOnboarding }, 'Start onboarding') : null,
         allows(sb.access, 'admin') ? h('button', { type: 'button', class: 'btn btn-sm', onClick: skipOnboarding }, 'Skip for now') : null));
     }
     if (!write) items.push(h('div', { class: 'banner' }, icon('lock'), h('span', { class: 'banner-text' }, 'Read-only (GitHub: read). You can watch tasks but not start them.')));
@@ -729,9 +729,9 @@ export function mountComposer(ctx, sandbox) {
       const updated = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/onboarding/approve`);
       if (updated && updated.id) ctx.store.upsertSandbox(updated);
       await ctx.store.loadTasks(sandbox.id).catch(() => null);
-      toast('Preparation started.', { kind: 'ok' });
+      toast('Onboarding started.', { kind: 'ok' });
     } catch (error) {
-      errorToast(error, 'Couldn’t start preparation');
+      errorToast(error, 'Couldn’t start onboarding');
     }
   }
 
