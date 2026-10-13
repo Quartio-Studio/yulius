@@ -1232,7 +1232,8 @@ impl App {
     /// message with attached images (SPEC-030), Claude Code's SessionStart hook, the turn on a
     /// first message ended and quiet output ([`Self::wait_input_ready`]). The submit is confirmed
     /// by what Claude Code records about the goal and retried with growing waits; a goal never
-    /// taken flags the task.
+    /// taken flags the task. A person who typed into the session meanwhile keeps their draft: no
+    /// goal is typed and the task is flagged (SPEC-068).
     fn spawn_goal(
         self: &Arc<Self>,
         task_id: &TaskId,
@@ -1247,6 +1248,8 @@ impl App {
             let runtime = app.runtime(&task_id);
             let live = || app.attempt_live(&task_id, &attempt_id);
             let started = tokio::time::Instant::now();
+            // Typing from now on is a person's draft in this session (SPEC-068).
+            let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
             if let Some(opening) = opening {
                 if !app
                     .wait_input_ready(&task_id, &attempt_id, started, false)
@@ -1265,7 +1268,17 @@ impl App {
             // The opening turn is over, or given up on: a later Stop is the goal's own.
             runtime.opening_turn.store(false, Ordering::SeqCst);
             runtime.goal_submitted.store(false, Ordering::SeqCst);
-            let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
+            // A person typed before the goal: `/goal` would be appended to their draft and sent
+            // with it. The draft is theirs; the task waits for them instead (#252).
+            if runtime.typed_at_ms.load(Ordering::SeqCst) != typed_before {
+                app.goal_not_taken(
+                    &task_id,
+                    "Someone typed in the terminal before Yulius set the task's goal, so their \
+                     draft was left alone",
+                )
+                .await;
+                return;
+            }
             for (attempt, wait) in GOAL_SUBMIT_WAITS.iter().enumerate() {
                 // A person typing meanwhile owns the prompt box: nothing is cleared or retyped.
                 if runtime.typed_at_ms.load(Ordering::SeqCst) != typed_before {
