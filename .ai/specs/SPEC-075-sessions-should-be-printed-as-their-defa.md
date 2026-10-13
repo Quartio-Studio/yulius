@@ -104,7 +104,7 @@ read-only: a locked prompt box, nothing to type into.
 - The TUI look is HTML in the terminal's typeface and palette, not xterm replaying ANSI: the
   transcript keeps its semantics (a list, folded details, links to lines, search targets), axe
   can check it, and nothing in the page can take keys. Replaying `claude --resume` in a terminal
-  would start a process able to write and spend a subscription. See ADR-0052.
+  would start a process able to write and spend a subscription. See ADR-0053.
 - The fade is a palette of its own (`--session-*`), not a CSS `filter`: a filter changes what
   people see but not what axe measures, and it would blur the text's rendering. Text stays at or
   above 4.5:1 (AA); "lower contrast" means lower than the live terminal's ~15:1, not below AA.

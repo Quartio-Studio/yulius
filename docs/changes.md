@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
-- A session opened from Sessions reads as Claude Code's TUI printed it (SPEC-075, ADR-0052, task #71).
+- A session opened from Sessions reads as Claude Code's TUI printed it (SPEC-075, ADR-0053, task #71).
   Prompts and slash commands show as `>` lines and messages and tool calls as `⏺`, with each result
   under `⎿` folded to its first lines ("Read 2 lines", "… +2 lines"). Edits show as `Update(path)`
   with their lines. The raw `<command-name>` and `<local-command-stdout>` tags are gone, and
