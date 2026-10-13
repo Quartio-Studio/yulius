@@ -213,6 +213,8 @@ pub struct GhPull {
     /// Behind its base where the repository requires an up-to-date branch: GitHub refuses the
     /// merge ("required status checks are expected") until the base is merged in.
     pub behind: bool,
+    /// The head is in another repository (a fork) or its repository is gone (SPEC-069).
+    pub from_fork: bool,
 }
 
 /// A pull request to open.
