@@ -6,6 +6,17 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- Yulius's merge gate enforces the branch policy (SPEC-069, ADR 0050, task #59; #223). Before
+  Yulius merges a task's pull request (`delivery_merge`, an armed merge, the Git page) or a
+  promotion pull request, it checks the title, head and base against `yulius.toml`
+  `[branch_policy]` at `dev`. The standard preset is the default: typed branches, conventional
+  one-line titles of at most 100 characters, and `dev` → `main` titled
+  `release: promote dev to main[ - label]`; `preset = "none"` turns it off. A violation is
+  refused with the rule in words, and `delivery_merge` refuses before it arms. Yulius's own
+  titles comply: task titles take an allowed type and are clipped to 100 characters, promotion
+  pull requests are titled `release: promote dev to main`, and a fork's pull request is never
+  taken for the promotion. `scripts/check_git_policy.py` is removed.
+
 - Five flaky tests wait on what they check (SPEC-067, task #56; #243, #320, #322, #294, #269).
   Each was reproduced next to CPU-bound processes, and none got a sleep or a retry. Two were
   product bugs:
