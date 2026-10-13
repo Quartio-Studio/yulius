@@ -501,11 +501,7 @@ impl App {
 
     /// Claude Code ended a turn and said how many background agents it still waits for: a change
     /// settles the idle task's background work at once (STA-001).
-    pub(crate) async fn background_agents_observed(
-        self: &Arc<Self>,
-        task_id: &TaskId,
-        agents: u32,
-    ) {
+    pub async fn background_agents_observed(self: &Arc<Self>, task_id: &TaskId, agents: u32) {
         let previous = self
             .runtime(task_id)
             .background_agents
@@ -518,26 +514,30 @@ impl App {
     /// Whether the task's agent has background work running right now: a fresh probe of its
     /// shells, or background agents its last turn end said it waits for.
     pub(crate) async fn shells_running_now(&self, task_id: &TaskId) -> bool {
+        self.background_work_now(task_id).await == Some(true)
+    }
+
+    /// Whether anything of the task's agent runs in the background right now: background agents
+    /// its last turn end said it waits for, or shells a fresh probe finds (`yulius wait` alone
+    /// does not count, DSK-102). `None` when the probe gives no answer; a task without a live
+    /// agent process has none.
+    pub(crate) async fn background_work_now(&self, task_id: &TaskId) -> Option<bool> {
         if self
-            .runtime(task_id)
-            .background_agents
-            .load(Ordering::SeqCst)
-            > 0
+            .existing_runtime(task_id)
+            .is_some_and(|runtime| runtime.background_agents.load(Ordering::SeqCst) > 0)
         {
-            return true;
+            return Some(true);
         }
-        let Ok(Some(attempt)) = self.deps.store.live_attempt(task_id).await else {
-            return false;
-        };
-        let Some(pid) = attempt.child_pid else {
-            return false;
+        let attempt = self.deps.store.live_attempt(task_id).await.ok()?;
+        let Some(pid) = attempt.and_then(|attempt| attempt.child_pid) else {
+            return Some(false);
         };
         let host = Arc::clone(&self.deps.session_host);
         let probe = tokio::task::spawn_blocking(move || host.background_shells(pid));
-        matches!(
-            tokio::time::timeout(SHELL_PROBE_TIMEOUT, probe).await,
-            Ok(Ok(Some(n))) if n > 0
-        )
+        match tokio::time::timeout(SHELL_PROBE_TIMEOUT, probe).await {
+            Ok(Ok(Some(n))) => Some(n > 0),
+            _ => None,
+        }
     }
 
     /// Since when the idle task's background shells have been running, when they are.

@@ -577,7 +577,10 @@ pub fn commit_status(state: RunState, summary: RunSummary<'_>) -> CommitStatus {
     let (state, description) = match state {
         RunState::Queued => (
             CommitState::Pending,
-            format!("Queued on Yulius ({})", jobs_word(summary.jobs)),
+            match summary.reason {
+                Some(reason) => format!("Queued on Yulius ({}): {reason}", jobs_word(summary.jobs)),
+                None => format!("Queued on Yulius ({})", jobs_word(summary.jobs)),
+            },
         ),
         RunState::Running => (
             CommitState::Pending,
@@ -1050,6 +1053,20 @@ mod tests {
         );
         assert_eq!(running.state, CommitState::Pending);
         assert_eq!(running.description, "Running on Yulius: 0 of 1 job passed");
+        // SPEC-059 CI-301: a run waiting for disk stays pending and says why.
+        let waiting = commit_status(
+            RunState::Queued,
+            RunSummary {
+                jobs: 2,
+                reason: Some("waiting for disk space"),
+                ..RunSummary::default()
+            },
+        );
+        assert_eq!(waiting.state, CommitState::Pending);
+        assert_eq!(
+            waiting.description,
+            "Queued on Yulius (2 jobs): waiting for disk space"
+        );
         assert_eq!(format_duration(3_900_000), "1 h 5 min");
     }
 

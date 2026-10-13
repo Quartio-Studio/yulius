@@ -261,10 +261,10 @@ function seed(params) {
   ];
   // AdminUser (the superadmin is not listed).
   db.users = [
-    { id: 'usr_1', github_login: 'mkarp', display_name: 'Michal Karp', is_instance_admin: true, disabled: false, github_linked: true },
-    { id: 'usr_2', github_login: 'anna-q', display_name: 'Anna', is_instance_admin: false, disabled: false, github_linked: true },
-    { id: 'usr_3', github_login: 'new-hire', display_name: 'new-hire', is_instance_admin: false, disabled: false, github_linked: false },
-    { id: 'usr_4', github_login: 'old-contractor', display_name: 'old-contractor', is_instance_admin: false, disabled: true, github_linked: true },
+    { id: 'usr_1', github_login: 'mkarp', display_name: 'Michal Karp', is_instance_admin: true, disabled: false, github_linked: true, two_factor: 'on' },
+    { id: 'usr_2', github_login: 'anna-q', display_name: 'Anna', is_instance_admin: false, disabled: false, github_linked: true, two_factor: 'on' },
+    { id: 'usr_3', github_login: 'new-hire', display_name: 'new-hire', is_instance_admin: false, disabled: false, github_linked: false, two_factor: 'missing' },
+    { id: 'usr_4', github_login: 'old-contractor', display_name: 'old-contractor', is_instance_admin: false, disabled: true, github_linked: true, two_factor: 'pending' },
   ];
   db.runs = []; // EnvironmentRun records, newest last
   db.ci = seedCi();
@@ -2022,13 +2022,26 @@ route('PUT', `/api/sandboxes/${ID}/notes`, ({ db, p, body }) => {
 
 const adminOnly = (db) => { if (!db.me.user.is_instance_admin && !db.me.user.is_superadmin) fail(403, 'forbidden', 'instance administrators only'); };
 const superOnly = (db) => { if (!db.me.user.is_superadmin) fail(403, 'forbidden', 'superadmin only'); };
-route('GET', '/api/admin/users', ({ db }) => { superOnly(db); return db.users; });
+// Instance administrators read the people and their two-factor (SPEC-061); changing them is the superadmin's.
+route('GET', '/api/admin/users', ({ db }) => { adminOnly(db); return db.users; });
+// SPEC-061: an administrator resets another person's two-factor after their own code.
+route('DELETE', `/api/users/${ID}/two-factor`, ({ db, p }) => {
+  adminOnly(db);
+  const locked = needFresh(db);
+  if (locked) return locked;
+  const user = db.users.find((u) => u.id === p[0]);
+  if (!user) fail(404, 'not_found', 'not found');
+  if (user.id === db.me.user.id) fail(403, 'forbidden', 'another administrator resets your own two-factor');
+  if (user.two_factor !== 'missing') audit(db, 'vault.2fa.reset', null, user.github_login);
+  user.two_factor = 'missing';
+  return json(204);
+});
 route('POST', '/api/admin/users', ({ db, body }) => {
   superOnly(db);
   if (!/^[A-Za-z0-9-]{1,39}$/.test(body.github_login || '')) fail(422, 'invalid', 'not a valid GitHub login');
   if (db.users.some((u) => u.github_login.toLowerCase() === String(body.github_login).toLowerCase())) fail(409, 'conflict', 'Already admitted.');
   db.nextId += 1;
-  const user = { id: `usr_${db.nextId}`, github_login: body.github_login, display_name: body.display_name || body.github_login, is_instance_admin: Boolean(body.is_instance_admin), disabled: false, github_linked: false };
+  const user = { id: `usr_${db.nextId}`, github_login: body.github_login, display_name: body.display_name || body.github_login, is_instance_admin: Boolean(body.is_instance_admin), disabled: false, github_linked: false, two_factor: 'missing' };
   db.users.push(user);
   return json(201, user);
 });

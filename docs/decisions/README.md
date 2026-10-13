@@ -48,3 +48,5 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0041](0041-compact-then-restart-a-full-session.md): A full session is compacted, then restarted fresh, then handed to a person
 - [0040](0040-archive-all-runs-the-per-task-archive.md): "Archive all" runs the per-task archive; no bulk endpoint
 - [0040](0040-done-tasks-release-their-subscription.md): Done tasks release their subscription
+- [0045](0045-ci-waits-for-disk-under-the-shared-quota.md): CI waits for disk under the sandbox's shared quota
+- [0041](0041-administrators-reset-a-lost-two-factor.md): Administrators reset a lost two-factor; a code confirms only the seed it was checked against

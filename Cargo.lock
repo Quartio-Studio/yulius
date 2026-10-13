@@ -3200,6 +3200,7 @@ dependencies = [
  "yulius-sandbox",
  "yulius-server",
  "yulius-store",
+ "zeroize",
 ]
 
 [[package]]

@@ -322,18 +322,21 @@ impl VaultStore for SqliteStore {
     async fn vault_accept_two_factor(
         &self,
         user_id: &str,
+        ciphertext: &[u8],
         counter: u64,
         at: Timestamp,
     ) -> AppResult<bool> {
         let user = user_id.to_owned();
+        let seed = ciphertext.to_vec();
         let counter = to_i64(counter);
         self.call(move |c| {
             let n = c
                 .execute(
                     "UPDATE vault_two_factor SET last_counter = ?2, \
                      confirmed_at = COALESCE(confirmed_at, ?3), failed_attempts = 0, failed_at = NULL \
-                     WHERE user_id = ?1 AND (last_counter IS NULL OR last_counter < ?2)",
-                    params![user, counter, at.0],
+                     WHERE user_id = ?1 AND ciphertext = ?4 \
+                     AND (last_counter IS NULL OR last_counter < ?2)",
+                    params![user, counter, at.0, seed],
                 )
                 .map_err(db)?;
             Ok(n == 1)
@@ -353,6 +356,25 @@ impl VaultStore for SqliteStore {
             .optional()
             .map(|n| n.map_or(0, to_u32))
             .map_err(db)
+        })
+        .await
+    }
+
+    async fn vault_reset_two_factor(&self, user_id: &str) -> AppResult<bool> {
+        let user = user_id.to_owned();
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            tx.execute(
+                "DELETE FROM vault_unlock WHERE session_hash IN \
+                 (SELECT id_hash FROM web_sessions WHERE user_id = ?1)",
+                [&user],
+            )
+            .map_err(db)?;
+            let removed = tx
+                .execute("DELETE FROM vault_two_factor WHERE user_id = ?1", [&user])
+                .map_err(db)?;
+            tx.commit().map_err(db)?;
+            Ok(removed == 1)
         })
         .await
     }
@@ -665,7 +687,7 @@ mod tests {
         assert!(store.vault_put_two_factor(&seed(2)).await?);
         assert!(
             store
-                .vault_accept_two_factor("u1", 10, Timestamp(9))
+                .vault_accept_two_factor("u1", &[2], 10, Timestamp(9))
                 .await?
         );
         let got = store.vault_two_factor("u1").await?.ok_or("missing")?;
@@ -677,17 +699,17 @@ mod tests {
         // A used or older step is refused; a later one moves on without re-confirming.
         assert!(
             !store
-                .vault_accept_two_factor("u1", 10, Timestamp(10))
+                .vault_accept_two_factor("u1", &[2], 10, Timestamp(10))
                 .await?
         );
         assert!(
             !store
-                .vault_accept_two_factor("u1", 9, Timestamp(10))
+                .vault_accept_two_factor("u1", &[2], 9, Timestamp(10))
                 .await?
         );
         assert!(
             store
-                .vault_accept_two_factor("u1", 11, Timestamp(11))
+                .vault_accept_two_factor("u1", &[2], 11, Timestamp(11))
                 .await?
         );
         let got = store.vault_two_factor("u1").await?.ok_or("missing")?;
@@ -708,7 +730,7 @@ mod tests {
         );
         assert!(
             !store
-                .vault_accept_two_factor("nobody", 1, Timestamp(1))
+                .vault_accept_two_factor("nobody", &[2], 1, Timestamp(1))
                 .await?
         );
         // Wrong codes count up; an accepted code or a clear resets them.
@@ -721,7 +743,7 @@ mod tests {
         );
         assert!(
             store
-                .vault_accept_two_factor("u1", 12, Timestamp(22))
+                .vault_accept_two_factor("u1", &[2], 12, Timestamp(22))
                 .await?
         );
         assert_eq!(
@@ -741,6 +763,90 @@ mod tests {
                 .vault_two_factor_failed("nobody", Timestamp(1))
                 .await?,
             0
+        );
+        Ok(())
+    }
+
+    /// #291: a reset removes the person's seed and the unlocks of their sessions, nobody else's.
+    #[tokio::test]
+    async fn a_reset_removes_the_seed_and_the_persons_unlocks()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let store = store_with_sandboxes().await?;
+        store
+            .call(|c| {
+                c.execute_batch(
+                    "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u2', 'V', 0, 0, 1);
+                     INSERT INTO web_sessions (id_hash, user_id, csrf_token, created_at, expires_at) VALUES ('h1a', 'u1', 'c', 1, 99), ('h1b', 'u1', 'c', 1, 99), ('h2', 'u2', 'c', 1, 99);",
+                )
+                .map_err(db)
+            })
+            .await?;
+        for user in ["u1", "u2"] {
+            assert!(
+                store
+                    .vault_put_two_factor(&TwoFactorRecord {
+                        user_id: user.into(),
+                        envelope: Envelope {
+                            kek_id: 1,
+                            wrapped_key: vec![1],
+                            ciphertext: vec![1],
+                        },
+                        created_at: Timestamp(1),
+                        confirmed_at: None,
+                        last_counter: None,
+                        failed_attempts: 0,
+                        failed_at: None,
+                    })
+                    .await?
+            );
+        }
+        for session in ["h1a", "h1b", "h2"] {
+            store.vault_set_unlock(session, Timestamp(5)).await?;
+        }
+        assert!(store.vault_reset_two_factor("u1").await?);
+        assert_eq!(store.vault_two_factor("u1").await?, None);
+        assert_eq!(store.vault_unlock("h1a").await?, None);
+        assert_eq!(store.vault_unlock("h1b").await?, None);
+        assert!(store.vault_two_factor("u2").await?.is_some());
+        assert_eq!(store.vault_unlock("h2").await?, Some(Timestamp(5)));
+        assert!(!store.vault_reset_two_factor("u1").await?);
+        Ok(())
+    }
+
+    /// #295: a code checked against pending seed A never confirms seed B, set up meanwhile.
+    #[tokio::test]
+    async fn accepting_a_replaced_seed_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+        let store = store_with_sandboxes().await?;
+        let seed = |n: u8| TwoFactorRecord {
+            user_id: "u1".into(),
+            envelope: Envelope {
+                kek_id: 1,
+                wrapped_key: vec![n],
+                ciphertext: vec![n],
+            },
+            created_at: Timestamp(5),
+            confirmed_at: None,
+            last_counter: None,
+            failed_attempts: 0,
+            failed_at: None,
+        };
+        assert!(store.vault_put_two_factor(&seed(1)).await?);
+        assert!(store.vault_put_two_factor(&seed(2)).await?);
+        assert!(
+            !store
+                .vault_accept_two_factor("u1", &[1], 10, Timestamp(9))
+                .await?,
+            "a code of seed 1 confirmed seed 2"
+        );
+        let got = store.vault_two_factor("u1").await?.ok_or("missing")?;
+        assert_eq!(
+            (got.envelope.ciphertext, got.confirmed_at, got.last_counter),
+            (vec![2], None, None)
+        );
+        assert!(
+            store
+                .vault_accept_two_factor("u1", &[2], 10, Timestamp(9))
+                .await?
         );
         Ok(())
     }

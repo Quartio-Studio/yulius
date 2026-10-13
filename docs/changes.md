@@ -12,6 +12,21 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   wakes the compacted session. If the compaction fails, the task continues in a fresh session
   opened with a handoff. If the fresh session is full too, the task needs attention and says why.
   Each step shows in the task's terminal and the audit log (`task.context_full`).
+- CI waits for disk instead of erroring (SPEC-059, ADR-0045, task #50; #240, #256, #258, #245). A
+  CI run in a sandbox over its disk quota stays queued, with a `pending` status. It says who holds
+  the space, and starts by itself once Yulius has pruned the caches of tasks that do not work, or
+  other tasks have freed space. An armed merge keeps waiting for it. Quota refusals of sessions
+  name the largest consumers too. Upkeep now probes a task's background shells again before it
+  prunes. A running background build or subagent, or a probe that cannot answer, keeps the
+  task's caches.
+- Two-factor fixes (SPEC-061, ADR-0041, task #52, #291, #295). A lost authenticator no longer
+  locks someone out of the secrets for good: an instance administrator or the superadmin resets
+  their two-factor from the Users page (a confirmation, then their own code), and the person sets
+  it up again on their next reveal. The reset is in the secrets activity (`vault.2fa.reset`).
+  Instance administrators now see the Users page (read-only, with each person's two-factor). A
+  code now confirms only the seed it was checked against, so a new key set up in another tab
+  while a code is checked is not confirmed by it. API: `DELETE /api/users/{id}/two-factor`;
+  `AdminUser` gains `two_factor`.
 - Open GitHub issues triaged, and the web UI keeps the person's keyboard, scroll and text (SPEC-056,
   task #47). Issues already fixed on `dev` were closed with the change that fixed them, and the
   other actionable ones went to chained tasks #49–#64. In the web UI:
