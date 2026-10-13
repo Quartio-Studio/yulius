@@ -869,10 +869,11 @@ route('POST', `/api/tasks/${ID}/held-prompts/${ID}`, ({ db, p, body }) => {
 });
 // Reads of a task's detail, per task, so a test can wait for a view's read to land. A test can
 // hold the next read (`__yuliusMock.holdDetail = promise`): it answers what the task was when
-// asked, once released (`heldDetailAnswered`).
+// asked, once released (`heldDetailAnswered`); `failNextDetail` fails the next one.
 route('GET', `/api/tasks/${ID}`, async ({ db, p }) => {
   db.detailReads = db.detailReads || {};
   db.detailReads[p[0]] = (db.detailReads[p[0]] || 0) + 1;
+  if (db.failNextDetail) { db.failNextDetail = false; fail(500, 'internal', 'the mock failed this read'); }
   const hold = db.holdDetail;
   if (!hold) return detail(db, taskOf(db, p[0]));
   db.holdDetail = null;
