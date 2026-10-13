@@ -49,9 +49,9 @@ patch (#286) can go.
 | CPU-201 | With cgroup delegation and the `cpu` controller, a sandbox's group `<sandbox>` gets three leaves. `system` holds the holder and `slirp4netns`. `agents` holds agent runs, shells, browsers and the Cockpit. `ci` holds CI jobs. `cpu.weight` is 100 for `system` and `agents` and 400 for `ci`. Under full contention, with the nearly idle `system` leaf left out, CI gets up to 80 % of the sandbox's CPU and agents keep at least 20 %. Idle CPU goes to whoever wants it. `cpu.max`, `memory.max` and `pids.max` stay on `<sandbox>`, so the leaves share them. | `cgroup::tests::a_sandbox_group_splits_into_weighted_leaves` |
 | CPU-202 | Processes already in `<sandbox>` from before this change move to `agents` before the `cpu` controller is enabled for the leaves: holders and runs started before an update keep running. If enabling fails (a process raced in), the run still joins its leaf, without weights, and the next preparation tries again. | `cgroup::tests::processes_in_the_sandbox_group_move_to_agents_first`, `cgroup::tests::a_split_that_cannot_be_enabled_still_gives_leaves` |
 | CPU-203 | A CI job's process (`/bin/sh` and everything it starts) joins the sandbox's `ci` leaf. Every other run joins `agents`. The holder joins `system`, and so does a `slirp4netns` that the server reattaches after it died (before, it stayed in the server's group, outside the sandbox's limits). | `ci::exec::tests::a_ci_job_joins_the_ci_group_instead_of_the_agents_group`; opt-in `isolation::isolation_limits` (real delegated cgroup: weights, the shell in `agents`, the holder in `system`) |
-| CPU-205 | A server that stops gracefully takes the CPU back from every sandbox's leaves (`-cpu`). The processes stay in their leaves, and the next server's first preparation splits the sandbox again. A preparation that races the stop still gets its leaf but does not split again. An older binary started next, for example by the update helper's rollback, joins the sandbox group itself. The kernel would refuse that (EBUSY) while the group passes `cpu` down. After a crash, the same `-cpu` write is a documented manual step. | `cgroup::tests::a_stopping_server_undoes_the_split_and_the_next_one_redoes_it`; `docs/operations.md` |
+| CPU-205 | A server that stops gracefully takes the CPU back from every sandbox's leaves (`-cpu`). The processes stay in their leaves, and the next server's first preparation splits the sandbox again. A preparation that races the stop still gets its leaf. One lock covers both the stop flag and the split, so a split happens either before the undo or not at all. An older binary started next, for example by the update helper's rollback, joins the sandbox group itself. The kernel would refuse that (EBUSY) while the group passes `cpu` down. After a crash, the same `-cpu` write is a documented manual step. | `cgroup::tests::a_stopping_server_undoes_the_split_and_the_next_one_redoes_it`; `docs/operations.md` |
 | CPU-204 | Without delegation, or without the `cpu` controller, nothing changes: runs join the sandbox's group, or none at all, as before. CPU-101 (agent commands under `nice 5`) stays in either case. | `cgroup::tests::without_the_cpu_controller_there_is_no_split` |
-| E2E-201 | In CI, `e2e/e2e.config.ts` uses the runner's default budgets and no retries (`retries: 0` explicitly: the runner retries once in CI by default), the same as everywhere else. This pull request's own CI is the measurement: it runs on the VM under the agents' load, on the deployed binary, which has CPU-101 but not yet the split. The overrides go only if 5 consecutive runs there pass in at most 12 minutes, with the load average recorded at each run's start and end. A run on an idle machine does not count. Otherwise they stay until the split is deployed. | `e2e/e2e.config.ts`; Evidence |
+| E2E-201 | In CI, `e2e/e2e.config.ts` uses the runner's default budgets and no retries (`retries: 0` explicitly: the runner retries once in CI by default), the same as everywhere else. This pull request's own CI is the measurement: it runs on the VM under the agents' load, on the deployed binary, which has CPU-101 but not yet the split. The overrides go if 5 consecutive runs there pass without a retry under several agents building, with the load average recorded during each run; a run on an idle machine does not count. Budgets and retries only change a run that times out or fails; they do not make it faster. So the 12-minute speed bar of AC-2 is measured after the split is deployed (#321) and does not decide the overrides. | `e2e/e2e.config.ts`; Evidence |
 
 ## Acceptance criteria
 
@@ -61,7 +61,9 @@ patch (#286) can go.
 - AC-2: under several agents building, `e2e` passes in at most 12 minutes in 5 consecutive runs
   without retries. Measured on this pull request's Yulius CI runs on the VM (see Evidence). They run
   on the deployed binary, so they show the budgets can go even before the split is deployed. The
-  split only adds priority on top.
+  split only adds priority on top. **Status: partially met.** 5 of 5 passed without retries; 4 of
+  5 came in within 12 minutes (the longest took 12m28s). The 12-minute bar is measured again after
+  the split is deployed (#321).
 - AC-3: the CI-only budgets and retries are gone from `e2e/e2e.config.ts`.
 
 ## Plan
@@ -175,22 +177,22 @@ All on the VM, in the `yulius` sandbox (12 CPUs), on 2026-10-13.
 | `0b03e0df` (2ffad78) | 697.0 s (11m37s) | 682.5 s | 197 passed | 0 | 15–41 (31–38) |
 | `d51bf9aa` (2ffad78) | 747.9 s (12m28s) | 728.5 s | 197 passed | 0 | 22–61 (35–48) |
 
-- **Result:** 5 consecutive passes, no retry, no failure, under load at or above the #283 incident (about 50).
+- **Result:** 5 consecutive passes, no retry, no failure. 1-minute load peaked at 41–65, two of the runs above the #283 incident's ~50.
 - **Against the 12-minute bar (AC-2):** 4 of the 5 runs met it; the run with the heaviest load took 12m28s. The rest is the split's job, and it is measured after the next update (#321).
 - **Comparison, same hours and same load:** other pull requests' e2e jobs on `dev`'s config (90 s and 15 s budgets, 2 retries) took 767–818 s. So the removed budgets bought no speed, only retries.
 
 **Runs that do not count:**
 - `ec4caede` (8d37f56): 428.7 s at a load average of 9–32 (low). The runner's CI default of one retry was still in effect at that head.
 - `64ad4fb7` (8d37f56): 704.6 s. One test, "the Markdown slash menu filters too", failed its first attempt and passed on that default retry. Hence `retries: 0` explicitly from 2ffad78 on. Flake: #322.
-- `f6824726` (2ffad78): `quality` failed on the known `terminal_ws::two_viewers_share_the_terminal_and_only_writers_type` race (#307, fixed by TRM-101 in PR #309). Fail-fast stopped e2e, which had passed every file it reached. The coordinator reran it, as `7bab15a8`.
+- `f6824726` (2ffad78): `quality` failed on the known `terminal_ws::two_viewers_share_the_terminal_and_only_writers_type` race (#307, fixed by TRM-101 in PR #319). Fail-fast stopped e2e, which had passed every file it reached. The coordinator reran it, as `7bab15a8`.
 
 **Decision on E2E-201.** The CI-only budgets and retries stay removed.
-- Five consecutive runs at incident load passed with the default budgets and no retry, even before the split is live.
+- Five consecutive runs under several agents building (load peaks 41–65) passed with the default budgets and no retry, even before the split is live.
+- The 12m28s run does not change that. No test hit a budget, and the budgets do not shorten a run: `dev`'s config took 767–818 s in the same hours. Speed is the split's job, verified in #321.
 - A red e2e now means a failure, as #283 asks.
 
 **Unit and integration tests.**
-- `cargo nextest run -p yulius-sandbox`: 34 passed, including the four `cgroup::tests` above,
-  which were red before the split.
+- `cargo nextest run -p yulius-sandbox` at 24ef7dd: 34 passed, including the four `cgroup::tests` above, which were red before the split. After the review fixes and the dev merges: 36 passed.
 - `cargo nextest run -p yulius-app ci::exec`: 3 passed. The new join test failed to compile before
   `ci_join` existed.
 - `isolation::*` compiles but skips here: it needs `YULIUS_ISOLATION_TEST=1` and a delegated
@@ -212,4 +214,12 @@ All on the VM, in the `yulius` sandbox (12 CPUs), on 2026-10-13.
 - Round 2 approved. Three minors were fixed after it: no split again while the server stops, a
   real check that the shell is in `agents/`, and the load average recorded with every
   measurement.
+- Round 3 (at b79f9c4, after the measurements) asked for changes, all of which were fixed:
+  - state AC-2 as partially met and E2E-201 as the rule actually applied;
+  - word the load precisely;
+  - fix the PR number of TRM-101;
+  - close the stop race with one lock;
+  - keep the stray cleanup in the isolation test;
+  - call the ADR's speed figure expected, pending #321.
+  A focused confirmation review of that delta then approved the head.
 

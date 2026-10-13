@@ -14,8 +14,7 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 /// Where cgroup v2 is mounted.
 pub const CGROUP_ROOT: &str = "/sys/fs/cgroup";
@@ -90,9 +89,9 @@ pub struct Delegation {
     pub unit: PathBuf,
     /// Controllers enabled for sandboxes.
     pub controllers: Vec<String>,
-    /// Set by [`Delegation::unsplit_all`]: a preparation racing the server's stop does not split
-    /// again (shared by clones).
-    stopping: Arc<AtomicBool>,
+    /// Set by [`Delegation::unsplit_all`], which holds it while it undoes the split: a split is
+    /// either done before the undo or not at all once the server stops (shared by clones).
+    stopping: Arc<Mutex<bool>>,
 }
 
 impl PartialEq for Delegation {
@@ -207,7 +206,7 @@ pub fn prepare(unit: &Path) -> io::Result<Delegation> {
     Ok(Delegation {
         unit: unit.to_path_buf(),
         controllers,
-        stopping: Arc::new(AtomicBool::new(false)),
+        stopping: Arc::new(Mutex::new(false)),
     })
 }
 
@@ -273,12 +272,14 @@ impl Delegation {
         }
         // Joining a leaf works without the weights too; the next preparation tries again.
         // A failure that persists (a process that cannot be moved) logs at every preparation.
-        if self.stopping.load(Ordering::SeqCst) {
+        let stopping = self.stopping.lock().unwrap_or_else(PoisonError::into_inner);
+        if *stopping {
             return Ok(groups);
         }
         if let Err(error) = split_cpu(&dir, &groups) {
             tracing::warn!(sandbox, %error, "CI jobs run without CPU priority for now");
         }
+        drop(stopping);
         Ok(groups)
     }
 
@@ -287,7 +288,8 @@ impl Delegation {
     /// itself, which the kernel refuses while the group passes a controller down. Processes stay
     /// in their leaves; the next preparation splits again.
     pub fn unsplit_all(&self) {
-        self.stopping.store(true, Ordering::SeqCst);
+        let mut stopping = self.stopping.lock().unwrap_or_else(PoisonError::into_inner);
+        *stopping = true;
         let Ok(entries) = std::fs::read_dir(self.unit.join(SANDBOXES)) else {
             return;
         };

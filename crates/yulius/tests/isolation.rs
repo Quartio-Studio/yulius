@@ -801,7 +801,11 @@ async fn isolation_limits() -> TestResult {
         eprintln!("memory.max 256 MiB: {} oom_kill={kills}", out.trim());
         Ok::<_, Box<dyn std::error::Error>>(())
     };
-    guarded(&iso, body).await
+    let result = guarded(&iso, body).await;
+    // Already ended unless an earlier assertion failed.
+    let _ = stray.kill();
+    let _ = stray.wait();
+    result
 }
 
 /// A sandbox over its disk quota starts no new runs; the message names the figures.

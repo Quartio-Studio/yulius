@@ -41,8 +41,8 @@ from before the split move to `agents` first, as cgroup v2 requires.
 
 ## Consequences
 
-CI's speed no longer depends on what the agents run. A CI run is at most about 25 % slower than on
-an idle sandbox. Agents slow down only while CI is busy, and never below a fifth of the sandbox.
+CI's speed is expected to no longer depend on what the agents run: a CI run at most about 25 %
+slower than on an idle sandbox. This is verified on the VM once the split is deployed (#321). Agents slow down only while CI is busy, and never below a fifth of the sandbox.
 Without delegation or the `cpu` controller nothing changes, and `nice 5` remains the only priority.
 A binary from before the split cannot join a split sandbox group. The server therefore undoes the
 split when it stops gracefully, and an operator undoes it by hand after a crash before rolling

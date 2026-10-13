@@ -2,7 +2,7 @@
 // static file server and the tests open it in mock mode (`?mock=1`), so no `yulius serve`,
 // account or model is needed. Agent steps (`agent.act`, `agent.assert`) need a model: they use
 // Anthropic when ANTHROPIC_API_KEY is set and are skipped otherwise. CI uses the same budgets and
-// no retries: its jobs get the CPU before the agents' builds (SPEC-053), so a timeout is a failure.
+// no retries, so a timeout is a failure: they held under agents' builds (SPEC-053 Evidence).
 import type { E2EConfig } from 'e2e';
 import { anthropic } from '@ai-sdk/anthropic';
 import { web } from '@e2e-dev/web';
