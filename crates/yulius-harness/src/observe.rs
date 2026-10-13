@@ -91,6 +91,25 @@ pub enum Observed {
         /// When it was recorded, if parseable.
         at: Option<Timestamp>,
     },
+    /// The session started background work it is woken by (SPEC-079 BGW-002): a Monitor stream
+    /// (its tool result's `toolUseResult` is `{taskId, timeoutMs, …}`) or a background agent
+    /// (`{status: "async_launched", agentId, …}`).
+    BackgroundStarted {
+        /// Claude Code's task id, which the `<task-notification>` that ends it names.
+        id: String,
+        /// A background agent; otherwise a Monitor stream.
+        agent: bool,
+        /// How long a Monitor lives at most (`timeoutMs`, capped); `None` for an agent.
+        expires_in_ms: Option<u64>,
+        /// When it was recorded, if parseable.
+        at: Option<Timestamp>,
+    },
+    /// A `<task-notification>` said the background work `id` ended: it carries a `<status>`, or
+    /// it is a Monitor's expiry event.
+    BackgroundEnded {
+        /// Claude Code's task id.
+        id: String,
+    },
     /// The API rejected the session's prompt as too long: its context is full, and every later
     /// prompt gets the same answer until it is compacted (#213). No Stop hook ends such a turn.
     ContextFull,

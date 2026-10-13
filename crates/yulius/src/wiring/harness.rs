@@ -317,6 +317,20 @@ impl TranscriptWatch for Watch {
                         out.push(Observation::TurnEnded { background_agents });
                     }
                     Observed::AgentWork { at } => out.push(Observation::AgentWork { at }),
+                    Observed::BackgroundStarted {
+                        id,
+                        agent,
+                        expires_in_ms,
+                        at,
+                    } => out.push(Observation::BackgroundStarted {
+                        id,
+                        agent,
+                        expires_in_ms,
+                        at,
+                    }),
+                    Observed::BackgroundEnded { id } => {
+                        out.push(Observation::BackgroundEnded { id });
+                    }
                     Observed::ContextFull => out.push(Observation::ContextFull),
                     Observed::Compacted => out.push(Observation::Compacted),
                     Observed::CompactFailed => out.push(Observation::CompactFailed),

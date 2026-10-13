@@ -151,6 +151,23 @@ pub enum Observation {
         /// When it was recorded, if known.
         at: Option<Timestamp>,
     },
+    /// The session started background work it is woken by: a Monitor stream or a background
+    /// agent (SPEC-079 BGW-002).
+    BackgroundStarted {
+        /// Claude Code's task id.
+        id: String,
+        /// A background agent; otherwise a Monitor stream.
+        agent: bool,
+        /// How long a Monitor lives at most; `None` for an agent.
+        expires_in_ms: Option<u64>,
+        /// When it was recorded, if known.
+        at: Option<Timestamp>,
+    },
+    /// A task notification said the background work `id` ended.
+    BackgroundEnded {
+        /// Claude Code's task id.
+        id: String,
+    },
     /// The API rejected the prompt as too long: the session's context is full (#213).
     ContextFull,
     /// Claude Code compacted the conversation.
