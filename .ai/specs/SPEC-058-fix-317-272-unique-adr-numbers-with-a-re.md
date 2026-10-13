@@ -1,11 +1,11 @@
 ---
 yulius-task: 8c9bb5a5-cd5a-4d26-b87c-f8b5a081afb2
-status: in-progress
+status: done
 ---
 
 # SPEC-058: unique decision numbers with a repository check; onboarding CI-proof wording
 
-Status: in progress
+Status: implemented
 Date: 2026-10-13
 Owner: Yulius task #49 (part of task #47)
 Scope authorization: user request: "Fix GitHub issues #317 and #272 of Quartio-Studio/yulius,
@@ -64,12 +64,12 @@ onboarding rather than by a job (#272).
 
 ## Plan
 
-- [ ] Decision records have unique numbers and every reference follows them
-- [ ] The repository check refuses duplicate decision numbers
-- [ ] The onboarding prompt covers matrix values, interrupted proofs, shared CI home and system packages
-- [ ] The infra-bootstrap skill, the CI module doc and SPEC-020 match the prompt
-- [ ] Gates green and an independent review approves the head
-- [ ] Merged into dev on green CI and both issues closed
+- [x] Decision records have unique numbers and every reference follows them
+- [x] The repository check refuses duplicate decision numbers
+- [x] The onboarding prompt covers matrix values, interrupted proofs, shared CI home and system packages
+- [x] The infra-bootstrap skill, the CI module doc and SPEC-020 match the prompt
+- [x] Gates green and an independent review approves the head
+- [x] Spec records its evidence and the pull request names both issues
 
 ## Acceptance criteria
 
@@ -107,3 +107,34 @@ onboarding rather than by a job (#272).
   title. No ADR: the check is a repository contract, documented in the decisions README.
 - **#272 wording only:** no CI behavior changes; the prompt grows by under 1 KB, far below
   `MAX_PROMPT_BYTES`.
+- **Review findings** (round 1, APPROVE at 205fe9c with minors): the leftover cleanup could remove
+  another task's running proof in the shared agent home, so it removes only proofs started over
+  six hours ago (checked on a fake home: a 7-hour-old read-only proof is removed, a fresh one
+  kept); `docs/operations.md` described one checkout per job; "two runs" is the default lane count
+  (`YULIUS_CI_LANES`); the duplicate message named the first record in file order as the one to
+  renumber. All fixed, test-first where tested. Not changed: the manual `git worktree prune` can in
+  theory race a Yulius `worktree add` outside Yulius's in-process lock; the window is tiny, the
+  issue asks for the prune, and Yulius prunes before its own checkouts anyway.
+- **Parallel branches** that add a decision 0040 or cite "ADR-0034" for the two-factor vault must
+  renumber or retarget after merging `dev`; the check catches the file and link, the pull request
+  says so for the prose.
+
+## Evidence
+
+- Repository check, red then green: with the test and before `decision_errors` existed,
+  `python3 -m unittest test_check_repository` failed (ImportError); with the check and the old tree
+  it failed listing the three extra 0034 records; after the renumbering, 31 tests OK and
+  `python3 scripts/check_repository.py` printed "... unique decision numbers ...".
+- Prompt test, red then green: `cargo nextest run -p yulius-app -E
+  'test(prompts_describe_the_persistent_ci_home)'` failed with `missing "YULIUS_CI_MATRIX=<value>"`
+  before the prompt change, with `infra-bootstrap misses ...` before the skill change, and with
+  `missing "find \"$HOME\" -maxdepth 1 -name '.ci-proof.*' -mmin +360"` before the review fix;
+  passed after each.
+- `scripts/dev ci` at 13f6f8c (later commits change only this spec): exit 0; nextest 1266 run,
+  1266 passed, 16 skipped; repository contracts and 38 Python tests OK; cargo-deny advisories,
+  bans, licenses and sources ok.
+- `git grep 0034` in docs, specs and code: only the automations catalog record, its references
+  and historical notes.
+- Independent review (fresh read-only session, skill `om-code-review`) of 81bf3aa..205fe9c:
+  APPROVE with three minors and four nits, handled above; the final head is reviewed again before
+  the merge.
