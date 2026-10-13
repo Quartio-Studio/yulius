@@ -8,6 +8,7 @@ import { relLong, dateTime, describeCron, utcOffset } from '../format.js';
 import { allows } from '../status.js';
 import { href, navigate } from '../router.js';
 import { pageFrame, loader, dataTable, createButton } from './common.js';
+import { startPhrase } from './automationedit.js';
 
 // AutomationRun.state (docs/api.md "Skills, workflows, automations, MCP").
 const RUN_TONE = { scheduled: 'warn', task_created: 'ok', skipped_previous_active: '', skipped_disabled: '', failed: 'danger' };
@@ -76,7 +77,7 @@ export function mountAutomationsPage(ctx, sandbox) {
       iconName: 'zap',
       title: a.name,
       badges: [a.created_via === 'agent' ? iconBadge('tools', 'Created by an agent', 'violet', 'An agent created this automation') : null],
-      description: [`${describeCron(a.cron)} · ${utcOffset(a.utc_offset_minutes)} `, h('code', { class: 'muted' }, a.cron)],
+      description: [`${describeCron(a.cron)} · ${utcOffset(a.utc_offset_minutes)}${startPhrase(a) ? ` · ${startPhrase(a)}` : ''} `, h('code', { class: 'muted' }, a.cron)],
       extra: h('div', { class: 'item-meta' },
         a.enabled && a.next_run_at ? h('span', { title: dateTime(a.next_run_at) }, `Next run ${relLong(a.next_run_at)}`) : h('span', null, a.enabled ? 'Not scheduled' : 'Paused'),
         a.last_run ? [' · last ', h('span', { title: dateTime(a.last_run.scheduled_for) }, relLong(a.last_run.scheduled_for)), ': ', runBadge(a.last_run.state), ' ', taskLink(a.last_run.task_id)] : ' · never ran'),
@@ -103,7 +104,8 @@ export function mountAutomationsPage(ctx, sandbox) {
   }
 
   function editable(a) {
-    return { name: a.name, cron: a.cron, utc_offset_minutes: a.utc_offset_minutes, prompt: a.prompt, workflow_id: a.workflow_id || null, enabled: a.enabled };
+    // A PUT replaces every field: the start choice goes along (SPEC-078).
+    return { name: a.name, cron: a.cron, utc_offset_minutes: a.utc_offset_minutes, prompt: a.prompt, workflow_id: a.workflow_id || null, enabled: a.enabled, supertask: Boolean(a.supertask), after_task_id: a.after_task_id || null, start_rule: a.start_rule || null };
   }
 
   /** One run now, also when disabled; the response is the AutomationRun. */

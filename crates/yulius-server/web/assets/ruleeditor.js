@@ -26,6 +26,23 @@ export function ruleText(rule) {
   return rule.conditions.map((c) => `#${c.number} ${c.state}`).join(join);
 }
 
+/**
+ * The editor's `{ join, conditions }` for a stored rule text, the inverse of ruleText; null for a
+ * text the editor cannot show (grouped with parentheses or mixing and/or, as agents may write).
+ */
+export function ruleFromText(text) {
+  const parts = String(text || '').trim().split(/\s+(and|or)\s+/);
+  const joins = new Set();
+  const conditions = [];
+  for (const [i, part] of parts.entries()) {
+    if (i % 2) { joins.add(part); continue; }
+    const match = part.match(/^#(\d+) (done|merged|ended)$/);
+    if (!match) return null;
+    conditions.push({ number: Number(match[1]), state: match[2] });
+  }
+  return joins.size > 1 ? null : { join: joins.has('or') ? 'or' : 'and', conditions };
+}
+
 /** The tasks a condition can name: not archived, newest first. */
 export function ruleChoices(tasks) {
   return (tasks || [])

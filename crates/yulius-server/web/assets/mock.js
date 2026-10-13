@@ -1672,12 +1672,22 @@ route('POST', `/api/sandboxes/${ID}/automation-templates/${ID}/enable`, ({ db, p
   const { sandbox: _s, ...out } = a;
   return json(created ? 201 : 200, out);
 });
+/** The start choice of an automation body, checked like the server (SPEC-078 AUT-014). */
+function automationStart(db, sandbox, body) {
+  const after = body.after_task_id || null;
+  const rule = (body.start_rule || '').trim() || null;
+  if (body.supertask && (after || rule)) fail(422, 'invalid', 'a supertask starts after the running tasks: it cannot also run after a task or a rule');
+  if (after && rule) fail(422, 'invalid', 'give a task to run after or a start rule, not both');
+  const task = after ? db.tasks.find((t) => t.id === after && t.sandbox_id === sandbox) : null;
+  if (after && !task) fail(422, 'invalid', 'the task to run after does not exist');
+  return { supertask: Boolean(body.supertask), after_task_id: after, after_task_number: task ? task.number : null, start_rule: rule };
+}
 route('GET', `/api/sandboxes/${ID}/automations`, ({ db, p }) => db.automations.filter((a) => a.sandbox === p[0]).map(({ sandbox: _s, ...a }) => a));
 route('POST', `/api/sandboxes/${ID}/automations`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
   if (Math.abs(Number(body.utc_offset_minutes) || 0) > 1080) fail(422, 'invalid', 'utc_offset_minutes must be within ±1080');
   db.nextId += 1;
-  const a = { id: `aut_${db.nextId}`, sandbox: p[0], ...body, created_via: 'ui', next_run_at: body.enabled ? isoIn(5 * HOUR) : null, last_run: null };
+  const a = { id: `aut_${db.nextId}`, sandbox: p[0], ...body, ...automationStart(db, p[0], body), created_via: 'ui', next_run_at: body.enabled ? isoIn(5 * HOUR) : null, last_run: null };
   db.automations.push(a);
   const { sandbox: _s, ...out } = a;
   return json(201, out);
@@ -1685,7 +1695,7 @@ route('POST', `/api/sandboxes/${ID}/automations`, ({ db, p, body }) => {
 route('PUT', `/api/automations/${ID}`, ({ db, p, body }) => {
   const a = db.automations.find((x) => x.id === p[0]);
   if (!a) fail(404, 'not_found', 'not found');
-  Object.assign(a, body, { next_run_at: body.enabled ? isoIn(5 * HOUR) : null });
+  Object.assign(a, body, automationStart(db, a.sandbox, body), { next_run_at: body.enabled ? isoIn(5 * HOUR) : null });
   const { sandbox: _s, ...out } = a;
   return out;
 });
