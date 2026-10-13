@@ -61,7 +61,7 @@ file, and the limit-resume paths SPEC-034 left untested have tests (#278).
 - [x] The transcript step back runs off the async runtime and the index resets only after a rewrite (#278)
 - [x] The untested limit-resume paths have tests (#278)
 - [x] Review round 1 findings fixed test-first (replayed limit, answer-only continuation)
-- [x] Docs, ADR and changes written (SPEC-002, SPEC-034, ADR-0054, architecture)
+- [x] Docs, ADR and changes written (SPEC-002, SPEC-034, ADR-0058, architecture)
 - [x] Independent review approves the head (three rounds)
 - [x] Every gate green on the final head
 
@@ -105,7 +105,7 @@ file, and the limit-resume paths SPEC-034 left untested have tests (#278).
 
 ## Decisions
 
-- **The CLI's continuation wins** (ADR-0054): agent work after the pause started is proof the CLI
+- **The CLI's continuation wins** (ADR-0058): agent work after the pause started is proof the CLI
   went on by itself, so the `limit` pause ends like a held turn the CLI gave up. Rejected: making a
   limit resume interrupt instead of terminate while a turn runs (it would still restart a session
   that is working, and an interrupt can cancel a tool call too). Residual race: the resume loop
@@ -117,7 +117,7 @@ file, and the limit-resume paths SPEC-034 left untested have tests (#278).
   Known limit: a resumed attempt reattached after a restart is read from the end of its transcript,
   so a continuation Claude Code wrote while Yulius was down is not seen, and the resume loop may end
   that run (as before this change). A first-run attempt is replayed from its start and is covered.
-- **A refused limit switch is remembered in the run's runtime, not as a pause** (ADR-0054): a
+- **A refused limit switch is remembered in the run's runtime, not as a pause** (ADR-0058): a
   `limit` pause would show the task waiting for capacity it has, and the resume loop would retry a
   switch that preflight refuses every round. The marker follows the transcript: a limit sets it, a
   prompt, agent work or a turn's end clears it, a new run clears it. Known limit: a restart
@@ -164,6 +164,6 @@ file, and the limit-resume paths SPEC-034 left untested have tests (#278).
   pauses; the task then waits for its person instead of resuming at the reset. Noted on #276.
 - Not tested here: a real Claude Code session through Yulius (the fake agent stands in); a resumed
   attempt reattached after a restart does not see a continuation written while Yulius was down
-  (recorded as a known limit in Decisions and ADR-0054); a limit that cuts a turn mid-way while
+  (recorded as a known limit in Decisions and ADR-0058); a limit that cuts a turn mid-way while
   Yulius is down (the fake agent writes its limit after a completed turn; the `at_limit` gate in
   `on_observation` covers it by reading).

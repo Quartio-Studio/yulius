@@ -1,4 +1,4 @@
-# 0054. The CLI's own continuation ends a limit pause; a refused limit switch is remembered per run
+# 0058. The CLI's own continuation ends a limit pause; a refused limit switch is remembered per run
 
 ## Status
 

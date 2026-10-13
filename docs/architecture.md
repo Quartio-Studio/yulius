@@ -103,7 +103,7 @@ the reset, its first agent work or turn end after the pause ends the pause, and 
 that run alone; after a restart, a limit that such a turn followed is not acted on again. A person's
 switch of a task left at its limit by a refused automatic switch also resumes past the limit
 ([SPEC-072](../.ai/specs/SPEC-072-fix-276-277-278-usage-limit-resume-respe.md),
-[decision 0054](decisions/0054-the-clis-own-continuation-ends-a-limit-pause.md)).
+[decision 0058](decisions/0058-the-clis-own-continuation-ends-a-limit-pause.md)).
 
 ```mermaid
 sequenceDiagram
