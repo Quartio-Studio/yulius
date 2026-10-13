@@ -469,6 +469,7 @@ fn a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment() -> Te
         cwd: PathBuf::from("/data/sandboxes/s1/repo"),
         config_dir: PathBuf::from("/home/alice/.claude"),
         resume: None,
+        continue_interrupted: false,
         credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
         yulius: None,
     };
@@ -517,6 +518,37 @@ fn a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment() -> Te
         ]
     );
     assert_eq!(resumed.session_id.as_deref(), Some(SESSION));
+    assert!(
+        !resumed
+            .env
+            .iter()
+            .any(|(k, _)| k == "CLAUDE_CODE_RESUME_INTERRUPTED_TURN")
+    );
+
+    // SPEC-074 SUP-004: moved to another subscription after a usage limit, the Cockpit resumes
+    // its conversation and redoes the cut turn by itself (SPEC-034 LIM-002): the flag, no prompt.
+    let continued = plan_cockpit(&CockpitRequest {
+        resume: Some(SESSION.into()),
+        continue_interrupted: true,
+        ..request.clone()
+    })?;
+    assert_eq!(continued.argv, resumed.argv);
+    assert!(
+        continued
+            .env
+            .contains(&("CLAUDE_CODE_RESUME_INTERRUPTED_TURN".into(), "1".into()))
+    );
+    // Without a conversation there is no turn to continue.
+    let fresh = plan_cockpit(&CockpitRequest {
+        continue_interrupted: true,
+        ..request.clone()
+    })?;
+    assert!(
+        !fresh
+            .env
+            .iter()
+            .any(|(k, _)| k == "CLAUDE_CODE_RESUME_INTERRUPTED_TURN")
+    );
 
     for bad in ["--help", "a b", ""] {
         assert_eq!(
@@ -543,6 +575,7 @@ fn a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment() -
         cwd: PathBuf::from("/data/sandboxes/s1/repo"),
         config_dir: PathBuf::from("/home/alice/.claude"),
         resume: Some(SESSION.into()),
+        continue_interrupted: false,
         credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
         yulius: Some(CockpitYulius {
             url: "http://127.0.0.1:8081/".into(),

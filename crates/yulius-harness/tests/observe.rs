@@ -114,6 +114,8 @@ fn claude_limit_with_epoch_reset() {
             resets_at: Some(Timestamp(1_791_380_000_000)),
             message: "Claude AI usage limit reached".into(),
             window_minutes: None,
+            // When the record was written (SPEC-074 SUP-002).
+            at: Some(Timestamp(1_791_360_001_000)),
         }]
     );
     // The synthetic error message is not counted as usage.
@@ -149,6 +151,7 @@ fn claude_limit_without_parseable_time_and_model_text_is_not_a_limit() {
             resets_at: None,
             message: "5-hour limit reached ∙ resets 3pm".into(),
             window_minutes: Some(300),
+            at: Some(Timestamp(1_791_360_003_000)),
         }]
     );
 }

@@ -703,6 +703,7 @@ mod tests {
             resets_at: None,
             message: "limit".into(),
             window_minutes: None,
+            at: None,
         }]);
         // A limit changes no turn fact; it is only pending (SPEC-072 LRS-001).
         assert_eq!(

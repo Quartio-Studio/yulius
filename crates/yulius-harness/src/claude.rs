@@ -232,8 +232,9 @@ fn observe_assistant(record: &Map<String, Value>) -> Vec<Observed> {
         bool_of(record, "isApiErrorMessage") || record.get("error").is_some_and(|e| !e.is_null());
     if is_error {
         let text = message_text(message);
+        let at = str_of(record, "timestamp").and_then(parse_rfc3339);
         if let Some(limit) = structured_limit(record, &text) {
-            return vec![limit];
+            return vec![recorded_at(limit, at)];
         }
         if prompt_too_long(record, &text) {
             // A sub-agent's full context is its own; the session goes on.
@@ -243,7 +244,10 @@ fn observe_assistant(record: &Map<String, Value>) -> Vec<Observed> {
                 vec![Observed::ContextFull]
             };
         }
-        return limit_signal(&text).into_iter().collect();
+        return limit_signal(&text)
+            .map(|limit| recorded_at(limit, at))
+            .into_iter()
+            .collect();
     }
     let model = owned_str(message, "model").filter(|m| m != SYNTHETIC_MODEL);
     let mut out = Vec::new();
@@ -296,6 +300,24 @@ fn message_text(message: &Map<String, Value>) -> String {
     }
 }
 
+/// A limit observation with the time its record was written.
+fn recorded_at(limit: Observed, when: Option<yulius_domain::time::Timestamp>) -> Observed {
+    match limit {
+        Observed::LimitReached {
+            resets_at,
+            message,
+            window_minutes,
+            ..
+        } => Observed::LimitReached {
+            resets_at,
+            message,
+            window_minutes,
+            at: when,
+        },
+        other => other,
+    }
+}
+
 /// Recognizes the usage-limit error record of Claude Code 2.1.x by its structure, whatever its
 /// wording ("You've hit your session limit · resets 10:20am"): `apiError: "usage_limit_reached"`
 /// or a `rejected` rate-limit status, with `resetsAt` (epoch seconds) in
@@ -325,6 +347,7 @@ fn structured_limit(record: &Map<String, Value>, text: &str) -> Option<Observed>
         resets_at,
         message: shorten(message, LIMIT_MESSAGE_BYTES),
         window_minutes,
+        at: None,
     })
 }
 
@@ -351,6 +374,7 @@ fn limit_signal(text: &str) -> Option<Observed> {
         resets_at,
         message: shorten(human.trim(), LIMIT_MESSAGE_BYTES),
         window_minutes: window_of_text(&lower),
+        at: None,
     })
 }
 
@@ -461,6 +485,7 @@ mod tests {
                 resets_at: Some(Timestamp(1_760_000_000_000)),
                 message: "Claude AI usage limit reached".into(),
                 window_minutes: None,
+                at: None,
             })
         );
         assert_eq!(
@@ -469,6 +494,7 @@ mod tests {
                 resets_at: None,
                 message: "5-hour limit reached ∙ resets 3pm".into(),
                 window_minutes: Some(300),
+                at: None,
             })
         );
         assert_eq!(limit_signal("API Error: 500 internal server error"), None);
@@ -478,6 +504,7 @@ mod tests {
                 resets_at: None,
                 message: "You've hit your session limit · resets 10:20am (Europe/Berlin)".into(),
                 window_minutes: Some(300),
+                at: None,
             })
         );
         assert_eq!(
@@ -486,6 +513,7 @@ mod tests {
                 resets_at: None,
                 message: "You've hit your weekly limit · resets Oct 12".into(),
                 window_minutes: Some(10080),
+                at: None,
             })
         );
     }
@@ -671,6 +699,7 @@ mod tests {
                 resets_at: Some(Timestamp(1_760_000_000_000)),
                 message: "Limit hit, see you soon".into(),
                 window_minutes: Some(300),
+                at: None,
             }]
         );
         // Only `quotaLimits` (older 2.1 builds) still carries the reset time.
@@ -681,6 +710,7 @@ mod tests {
                 resets_at: Some(Timestamp(1_760_000_000_000)),
                 message: "usage limit reached".into(),
                 window_minutes: None,
+                at: None,
             }]
         );
         // A transient rate limit that was retried is not a usage limit.
