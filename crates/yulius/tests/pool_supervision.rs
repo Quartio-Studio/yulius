@@ -1480,3 +1480,89 @@ fn a_restart_does_not_replay_a_limit_the_cli_continued_past() -> TestResult {
     second.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// SPEC-072 LRS-001 (review round 2): Yulius is down while the task waits at its limit, and
+/// Claude Code continues the turn by itself meanwhile. The reattached run's replay ends the
+/// `limit` pause, so capacity returning starts no second run and nothing ends the continued turn.
+#[test]
+fn a_continuation_while_yulius_is_down_ends_the_limit_pause_at_restart() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let probe = Arc::new(ScriptedUsage::default());
+    let agent = FakeAgentOptions {
+        transcript: true,
+        limit_after: Some(1),
+        limit_continues_ms: Some(5_000),
+        ..FakeAgentOptions::default()
+    };
+    let first = runtime()?;
+    let (user, id, transcript) = first.block_on(async {
+        let app = build_with(&data, &fake, probe.clone(), agent.clone())?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = new_task(&app, &sandbox, &user, "Limit").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("FAKE-AGENT READY") }
+        })
+        .await?;
+        app.send_input(&id, b"hello\r").await?;
+        wait_for("the pause at the limit", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::WaitingCapacity)
+        })
+        .await?;
+        let session = app.deps.store.attempts(&id).await?[0]
+            .provider_session_id
+            .clone()
+            .ok_or("session")?;
+        let transcript = app.deps.harness.claude_transcript(
+            &data.join("sandboxes").join(sandbox.as_str()).join("home"),
+            Path::new(&task(&app, &id).await?.worktree_path.ok_or("worktree")?),
+            &session,
+        );
+        Ok::<_, Box<dyn std::error::Error>>((user, id, transcript))
+    })?;
+    // Yulius stops before the continuation; the detached run goes on.
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let second = runtime()?;
+    second.block_on(async {
+        wait_for(
+            "the continuation while Yulius is down",
+            Duration::from_secs(30),
+            || {
+                let transcript = transcript.clone();
+                async move {
+                    std::fs::read_to_string(&transcript)
+                        .is_ok_and(|t| t.contains("msg_fake_continue_end"))
+                }
+            },
+        )
+        .await?;
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        app.reconcile().await?;
+        wait_for(
+            "the pause to end at the replay",
+            Duration::from_secs(30),
+            || async {
+                app.deps
+                    .store
+                    .open_pause(&id)
+                    .await
+                    .is_ok_and(|p| p.is_none())
+            },
+        )
+        .await?;
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Running);
+        probe.set("a-first", usage(0.0, 5 * HOUR, 30.0, 100));
+        refresh(&app, &user, "a-first").await?;
+        let _ = app.resume_round().await;
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert_eq!(attempts.len(), 1, "no second run: {attempts:?}");
+        assert_eq!(attempts[0].state, yulius_domain::task::AttemptState::Live);
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    second.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}

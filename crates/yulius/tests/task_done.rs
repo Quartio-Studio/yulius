@@ -858,6 +858,76 @@ fn the_goal_is_typed_after_the_turn_continued_past_a_limit() -> TestResult {
     Ok(())
 }
 
+/// SPEC-072 LRS-001 (review round 2), with hooks like the real CLI: Claude Code continues the turn
+/// a limit cut by itself with only its answer; its Stop hook may arrive while the `limit` pause is
+/// open (and be held), but the answer ends the pause, the Stop is answered and the task runs on
+/// its first run.
+#[test]
+fn a_continuation_with_hooks_ends_the_limit_pause_and_its_stop_is_answered() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            session_start: true,
+            limit_after: Some(1),
+            limit_continues_ms: Some(5_000),
+            limit_continues_answer_only: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = app
+            .create_task_internal(NewTask {
+                sandbox: sandbox.clone(),
+                created_by: user.clone(),
+                prompt: "Make the header blue".into(),
+                harness: Harness::ClaudeCode,
+                title: Some("Blue header".into()),
+                workflow_id: None,
+                steps: Vec::new(),
+                model: None,
+                effort: None,
+                origin: TaskOrigin::Ui,
+                automation_run: None,
+                start: true,
+                mode: TaskMode::Prompt,
+            })
+            .await?
+            .id;
+        wait_for("the run", Duration::from_secs(60), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        app.send_input(&id, b"hello\r").await?;
+        wait_for(
+            "the pause at the limit",
+            Duration::from_secs(30),
+            || async {
+                matches!(
+                    app.deps.store.open_pause(&id).await,
+                    Ok(Some(pause)) if pause.kind == yulius_app::model::PauseKind::Limit
+                )
+            },
+        )
+        .await?;
+        wait_for(
+            "the continued turn's Stop answered",
+            Duration::from_secs(60),
+            || screen_contains(&app, &id, "CONTINUED STOP ANSWERED"),
+        )
+        .await?;
+        assert!(app.deps.store.open_pause(&id).await?.is_none(), "no pause");
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Running);
+        assert_eq!(app.deps.store.attempts(&id).await?.len(), 1);
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-030 PIMG-002: a prompt-mode task with an attached image starts with no command-line
 /// prompt; its first message is typed into the TUI with the image pasted (`[Image #1]`, as
 /// Claude Code attaches a pasted image) and the other files mentioned.

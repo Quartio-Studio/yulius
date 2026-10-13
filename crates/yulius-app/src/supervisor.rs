@@ -2800,6 +2800,9 @@ impl App {
                         && facts.limit_pending
                     {
                         self.on_observation(&task_id, &attempt, limit).await;
+                    } else if !facts.limit_pending {
+                        // Claude Code continued past its limit while Yulius was down.
+                        self.cut_turn_continued(&task_id, facts.last_turn_at).await;
                     }
                     self.apply_transcript_facts(&task_id, facts).await;
                     // A session left full while Yulius was down is recovered now (CTX-007).
@@ -2907,7 +2910,10 @@ impl App {
                 // A continuation that is only the answer ending the turn has no agent work.
                 self.cut_turn_continued(task_id, at).await;
                 runtime.end_turn(self.now());
-                runtime.at_limit.store(false, Ordering::SeqCst);
+                // A sub-agent's turn end (no time) leaves the session at its limit.
+                if at.is_some() {
+                    runtime.at_limit.store(false, Ordering::SeqCst);
+                }
                 // With hooks the Stop hook is the boundary that switches or pauses; the
                 // transcript decides only for a run without them.
                 if !runtime.hooks_seen.load(Ordering::SeqCst) {
@@ -2927,8 +2933,9 @@ impl App {
             }
             Observation::AgentWork { at } => {
                 self.context_replied(task_id, &attempt.id);
-                // A usage limit ends the turn, so a `limit` pause is open only between turns.
-                if !runtime.turn_in_progress() {
+                // A usage limit ends the turn, so a `limit` pause is open only between turns (or
+                // after a limit replayed at a restart, which may find a turn open).
+                if runtime.at_limit.load(Ordering::SeqCst) || !runtime.turn_in_progress() {
                     self.cut_turn_continued(task_id, at).await;
                 }
                 runtime.at_limit.store(false, Ordering::SeqCst);

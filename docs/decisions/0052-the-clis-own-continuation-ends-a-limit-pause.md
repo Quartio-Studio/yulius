@@ -27,7 +27,8 @@ remained:
    started: a prompt, an interrupt, agent work, or the session's own turn end. The task runs
    again. Before the resume loop ends a paused run, it checks that the pause is still open, and its
    switch requires the task to still wait for capacity. After a restart, a limit read again from
-   the transcript is acted on only if no prompt, agent work or turn end follows it.
+   the transcript is acted on only if no prompt, agent work or session turn end follows it, and a
+   `limit` pause older than the last such record ends as `overtaken`.
 2. The run's runtime remembers that its last turn ended at a usage limit (`at_limit`). A prompt,
    agent work or a turn's end clears it, and so does a new run. A person's switch resumes past the
    limit when the task is at a `limit` pause or `at_limit`.
@@ -54,6 +55,9 @@ remained:
   record of the continuation is harmless: no tool has started, and the continued resume redoes the
   request. The harmful window is a tool call already started but not yet read: one transcript poll
   (about a second).
+- A resumed attempt reattached after a restart is read from the end of its transcript. A
+  continuation Claude Code wrote while Yulius was down is not seen, and the resume loop may end
+  that run, as before. A first-run attempt is replayed from its start, so this case is covered.
 - `at_limit` lives in memory. A restart sets it again only for a first-run attempt, whose
   transcript is replayed from the start, and only if the replayed limit is still pending. After a
   restart of a resumed attempt, a person's switch of a task left at its limit sends the

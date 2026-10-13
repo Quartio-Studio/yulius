@@ -39,7 +39,8 @@
 //! like Claude Code's "continuing automatically" at the reset (#276): MS later it appends a hidden
 //! `isMeta` prompt and an assistant `tool_use` record and prints `CONTINUED`, and MS after that it
 //! appends the answer ending the turn and prints `DONE continued`; with
-//! `--limit-continues-answer-only` the continuation is only that answer (no tool call).
+//! `--limit-continues-answer-only` the continuation is only that answer (no tool call). With
+//! `--hooks` the continued turn then runs its Stop hook and prints `CONTINUED STOP ANSWERED`.
 //! `--report-env NAME` prints `ENV NAME=set len=<n>` or `ENV NAME=unset` (never
 //! the value).
 //!
@@ -1351,6 +1352,7 @@ fn echo_message(
                 ms,
                 options.limit_continues_answer_only,
                 Arc::clone(transcript),
+                hooks.cloned(),
             );
         }
     } else if let Some(hooks) = hooks {
@@ -1361,7 +1363,12 @@ fn echo_message(
 
 /// Claude Code continuing the turn a usage limit cut by itself, `ms` after the limit
 /// (`--limit-continues-ms`).
-fn continue_after_limit(ms: u64, answer_only: bool, transcript: Arc<Mutex<Transcript>>) {
+fn continue_after_limit(
+    ms: u64,
+    answer_only: bool,
+    transcript: Arc<Mutex<Transcript>>,
+    hooks: Option<Hooks>,
+) {
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(ms));
         if let Ok(mut t) = transcript.lock() {
@@ -1373,6 +1380,11 @@ fn continue_after_limit(ms: u64, answer_only: bool, transcript: Arc<Mutex<Transc
             let _ = t.continued_answer();
         }
         let _ = say("DONE continued");
+        if let Some(hooks) = hooks
+            && hooks.stop().is_ok()
+        {
+            let _ = say("CONTINUED STOP ANSWERED");
+        }
     });
 }
 

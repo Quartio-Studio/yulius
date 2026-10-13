@@ -54,11 +54,21 @@ pub struct TranscriptFacts {
     /// The last turn ended at a usage limit: no prompt, agent work or turn's end came after the
     /// limit record (SPEC-072 LRS-001). A limit Claude Code continued past is history.
     pub limit_pending: bool,
+    /// When the session's last prompt, interrupt, agent work or own turn end was recorded: a
+    /// `limit` pause older than that was overtaken while Yulius was down (SPEC-072 LRS-001).
+    pub last_turn_at: Option<yulius_domain::time::Timestamp>,
 }
 
 impl TranscriptFacts {
     /// Folds one observation, in transcript order.
     pub fn fold(&mut self, observation: &Observation) {
+        if let Observation::UserTurn { at: Some(at) }
+        | Observation::TurnInterrupted { at: Some(at) }
+        | Observation::AgentWork { at: Some(at) }
+        | Observation::TurnComplete { at: Some(at) } = observation
+        {
+            self.last_turn_at = Some(self.last_turn_at.map_or(*at, |last| last.max(*at)));
+        }
         match observation {
             Observation::UserTurn { .. } => {
                 self.turn_open = Some(true);
@@ -70,10 +80,11 @@ impl TranscriptFacts {
                 self.turn_open = Some(false);
                 self.background_agents = background_agents.unwrap_or(0);
             }
-            Observation::TurnComplete { .. } => {
+            Observation::TurnComplete { at } => {
                 self.turn_open = Some(false);
                 self.context_full = false;
-                self.limit_pending = false;
+                // A sub-agent's turn end (no time) says nothing about the session's limit.
+                self.limit_pending &= at.is_none();
             }
             Observation::TurnInterrupted { .. } => self.turn_open = Some(false),
             // The API rejected the prompt: the turn is over, without a Stop hook (#213).
@@ -667,6 +678,7 @@ mod tests {
                 background_agents: 0,
                 context_full: false,
                 limit_pending: false,
+                last_turn_at: Some(Timestamp(1)),
             }
         );
         // Typed again after the goal: a new open turn, the goal no longer counts.
@@ -801,13 +813,23 @@ mod tests {
         };
         assert!(reduce(&[PROMPT, limit.clone()]).limit_pending);
         assert!(reduce(&[PROMPT, limit.clone(), Observation::Compacted]).limit_pending);
-        for after in [PROMPT, WORK, Observation::TurnComplete { at: None }] {
+        let ended = Observation::TurnComplete {
+            at: Some(Timestamp(3)),
+        };
+        for after in [PROMPT, WORK, ended.clone()] {
             assert!(
                 !reduce(&[PROMPT, limit.clone(), after.clone()]).limit_pending,
                 "{after:?}"
             );
         }
         assert!(!reduce(&[PROMPT, WORK]).limit_pending);
+        // A sub-agent's turn end (no time) is not the session's.
+        let sidechain = Observation::TurnComplete { at: None };
+        assert!(reduce(&[PROMPT, limit.clone(), sidechain]).limit_pending);
+        // The last turn's time, for a pause overtaken while Yulius was down.
+        let continued = reduce(&[PROMPT, limit, WORK, ended]);
+        assert_eq!(continued.last_turn_at, Some(Timestamp(3)));
+        assert_eq!(reduce(&[WORK, PROMPT]).last_turn_at, Some(Timestamp(2)));
     }
 
     /// CTX-007: a replay that ends in a full context (no reply or compaction after it) leaves the
