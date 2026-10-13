@@ -46,17 +46,6 @@ one file's tests with `cargo nextest run -p yulius -E 'binary_id(yulius::main) &
 `pool_supervision::`).
 Use the full gate after implementation stabilizes.
 
-## Dead code
-
-Cleanup requests follow the bundled skill `dead-code-cleanup`
-([catalog](../../catalog/skills/yulius/dead-code-cleanup/SKILL.md),
-[ADR-0034](../decisions/0034-dead-code-tools.md)). In this repository the gate already fails on
-Rust's `dead_code` and `unused_*` warnings (`scripts/dev lint`), on unused dependencies
-(`scripts/dev deps`, cargo-shear) and on unused web UI imports (`scripts/dev check`). On demand,
-check the Python scripts with `uvx vulture scripts/ --min-confidence 80` and
-`uvx skylos scripts/ --no-upload`, and search for `pub` items no other crate uses (the compiler
-does not report them).
-
 The web UI has end-to-end tests in [`e2e/`](../../e2e/README.md): flows, accessibility (axe-core)
 and page errors, run in a browser against the UI's mock mode. They need Node 24.8+ (test-only;
 the UI has no Node at runtime) and are not part of `scripts/dev ci`. Run them after UI changes:
@@ -70,6 +59,17 @@ applicable and automatically runs doctests when library targets are added.
 If a network failure prevents that, report it as unverified rather than suppressing
 advisories. The JUnit report is under `target/nextest/ci/junit.xml`. Rustdoc output
 is under `target/doc`. Build artifacts and local tools are ignored by Git.
+
+## Dead code
+
+Cleanup requests follow the bundled skill `dead-code-cleanup`
+([catalog](../../catalog/skills/yulius/dead-code-cleanup/SKILL.md),
+[ADR-0034](../decisions/0034-dead-code-tools.md)). In this repository the gate already fails on
+Rust's `dead_code` and `unused_*` warnings (`scripts/dev lint`), on unused dependencies
+(`scripts/dev deps`, cargo-shear) and on unused web UI imports (`scripts/dev check`). On demand,
+check the Python scripts with `uvx vulture scripts/ --min-confidence 80` and
+`uvx skylos scripts/ --no-upload`, and search for items a library crate exports that no other crate
+uses (the compiler does not report them). Without `uvx`, use `pipx run` or a virtual environment.
 
 ## Add a crate
 
