@@ -209,11 +209,14 @@ impl Fixture {
         loop {
             self.h.app.ci_dispatch().await;
             let overview = self.get("/api/sandboxes/s1/ci").await?;
-            let active = overview["runs"]
-                .as_array()
-                .ok_or("runs")?
-                .iter()
-                .any(|r| r["state"] == "queued" || r["state"] == "running");
+            // A run's final commit status is published just after its end is recorded: settled
+            // means ended and published (the fast VM read "pending" in between, F 2026-10-13).
+            let active = overview["runs"].as_array().ok_or("runs")?.iter().any(|r| {
+                r["state"] == "queued"
+                    || r["state"] == "running"
+                    || (["passed", "failed", "error"].contains(&r["state"].as_str().unwrap_or(""))
+                        && r["status"] == "pending")
+            });
             if !active {
                 return Ok(());
             }
