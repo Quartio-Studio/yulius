@@ -52,7 +52,7 @@ retry of an errored Yulius CI run at an open pull request's head is covered by a
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | WAI-001 | With a merge armed and its checks pending, `yulius wait` keeps waiting: the wait state reads armed with no outcome, the server's wait returns it unchanged at its timeout, and `settled` returns nothing until the checks end, the merge is decided or the stage moves (#249). | `delivery::a_wait_on_an_armed_merge_with_pending_checks_keeps_waiting` |
-| WAI-002 | A merge armed while an earlier one is being decided supersedes it: the earlier decision neither puts its merge back, nor records its outcome, nor rewrites the saved armed merges. A wait on the new merge ends only with the new merge's outcome (#248). | `delivery::a_merge_armed_while_an_earlier_one_is_decided_supersedes_it`, `agent_wait::tests` |
+| WAI-002 | A merge armed while an earlier one is being decided supersedes it: the earlier decision neither puts its merge back, nor records its outcome, nor rewrites the saved armed merges. A wait on the new merge ends only with the new merge's outcome (#248). A restore after a restart never revives a merge armed and decided in the new process. | `delivery::a_merge_armed_while_an_earlier_one_is_decided_supersedes_it`, `delivery::a_restore_never_brings_back_a_merge_decided_since`, `agent_wait::tests` |
 | WAI-003 | The armed merge, the count of decisions in progress and the last outcome are one value under one lock. A decision ends (outcome or merge kept, counter lowered) in one step, and the wait state reads all three in one step, so an outcome is never visible while that merge still reads as armed (#255). | `agent_wait::tests::a_decision_ends_in_one_step` |
 | WAI-004 | `reconcile_deliveries` queues an errored Yulius CI run at an open pull request's head again exactly once; with two errored runs at that head it queues no third; a pull request that conflicts with its base (`mergeable: false`) is not retried (#251). | `delivery::an_errored_run_at_an_open_pull_request_is_retried_once` |
 
@@ -68,7 +68,11 @@ retry of an errored Yulius CI run at an open pull request's head is covered by a
     (same generation), either the kept merge back in the slot or the outcome recorded; returns
     whether the saved merges must be rewritten;
   - `clear()` (merged at once by `delivery_merge`): no merge, a new generation;
-  - `forget_outcome()`, and `view() -> (armed, outcome)` for the wait.
+  - `view() -> (armed, outcome)` for the wait; `App::forget_merge_outcome` clears the outcome
+    under the same lock.
+- `restore_armed_merges` (DLV-205) puts a saved merge back only while the slot's generation is
+  0: nothing was armed or cleared in this process, so a merge armed and decided since the file was
+  read is never revived.
 - `merge_armed_task` returns a `Verdict` (`Keep(ArmedMerge)` or `Decided(text)`) instead of
   writing the outcome itself; `merge_armed` applies it with `finish` under the lock and saves the
   armed merges file while still holding it, so the file follows the order of the slot's changes.
@@ -85,8 +89,9 @@ retry of an errored Yulius CI run at an open pull request's head is covered by a
 
 ## Acceptance criteria
 
-- The four requirement tests pass; the #248 interleaving and #255 tests fail on the code before
-  the fix (recorded under Evidence).
+- The four requirement tests pass; the #248 interleaving test fails on the code before the fix
+  (recorded under Evidence). #255 is fixed by construction and pinned by a unit test of
+  `ArmedSlot` (see Decisions).
 - `scripts/dev ci` is green.
 - #248, #249, #255 and #251 are closed after the merge into `dev`, each with what changed.
 

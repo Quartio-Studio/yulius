@@ -215,9 +215,9 @@ impl App {
     }
 
     /// Records `task`'s armed merge, or that it has none any more, in [`ARMED_MERGES_FILE`]
-    /// (written whole, then renamed into place), called with the task's [`ArmedSlot`] locked so
-    /// the file follows the slot's order of changes. Failures are logged: the merge stays armed in
-    /// memory.
+    /// (written whole, then renamed into place). Called with the task's [`ArmedSlot`] locked, so
+    /// the file follows the slot's order of changes; only the startup restore forgets a task that
+    /// is not running without it. Failures are logged: the merge stays armed in memory.
     fn save_armed(&self, task: &TaskId, armed: Option<&ArmedMerge>) {
         let _guard = ARMED_FILE_LOCK
             .lock()
@@ -268,7 +268,9 @@ impl App {
             }
             let runtime = self.runtime(&task_id);
             let mut slot = lock_slot(&runtime);
-            if slot.merge.is_none() && slot.deciding == 0 {
+            // Only when nothing was armed or cleared in this process yet: what was armed or
+            // decided since this file was read is newer than it.
+            if slot.generation == 0 && slot.merge.is_none() && slot.deciding == 0 {
                 slot.merge = Some(ArmedMerge {
                     head: entry.head,
                     summary: entry.summary,
@@ -323,7 +325,7 @@ impl App {
             return Verdict::Decided(format!(
                 "The merge you armed was dropped: you armed {} with `delivery_merge`, but the \
                  branch is now at {}. Get the independent review of the new head and call \
-                     `delivery_merge` again.",
+                 `delivery_merge` again.",
                 short(&armed.head),
                 head.as_deref().map_or("an unknown commit", short)
             ));
@@ -377,7 +379,7 @@ impl App {
             return Verdict::Decided(format!(
                 "The merge you armed was dropped: the checks of pull request #{} failed at \
                  {}. Read why with `ci_status`, fix it test-first, get the review of the new \
-                     head and call `delivery_merge` again.",
+                 head and call `delivery_merge` again.",
                 pr.number,
                 short(&armed.head)
             ));
@@ -415,16 +417,16 @@ impl App {
                 Verdict::Decided(format!(
                     "Yulius merged pull request #{number} into `{base}` at {}: its checks \
                      passed. Finish what the delivery profile still asks for this stage \
-                         (`delivery_status`; deploy and verify an integration environment with \
-                         `delivery_deploy`), then end with your summary. Do not promote unless \
-                         the task asks for it.",
+                     (`delivery_status`; deploy and verify an integration environment with \
+                     `delivery_deploy`), then end with your summary. Do not promote unless \
+                     the task asks for it.",
                     short(&armed.head)
                 ))
             }
             Err(err) => Verdict::Decided(format!(
                 "The merge you armed was refused: the checks of pull request #{number} \
                  passed at {}, but {}. Fix that (`delivery_status` says what is missing) \
-                         and call `delivery_merge` again.",
+                 and call `delivery_merge` again.",
                 short(&armed.head),
                 err.public_message()
             )),

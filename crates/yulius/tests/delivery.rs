@@ -3014,7 +3014,7 @@ async fn an_errored_run_at_an_open_pull_request_is_retried_once() -> TestResult 
     assert_eq!(runs().await?.len(), 2, "not while the retry is queued");
 
     // The retry errors too: two errored runs at the head wait for the agent.
-    if retry.state.is_active() {
+    assert!(
         f.h.store
             .transition_ci_run(
                 &retry.id,
@@ -3022,8 +3022,9 @@ async fn an_errored_run_at_an_open_pull_request_is_retried_once() -> TestResult 
                 RunState::Error,
                 &yulius_app::ci::CiRunUpdate::default(),
             )
-            .await?;
-    }
+            .await?,
+        "the retry was queued, not run: {retry:?}"
+    );
     f.h.app.reconcile_deliveries().await;
     f.h.app.reconcile_deliveries().await;
     let last = runs().await?;
@@ -3177,6 +3178,44 @@ async fn an_armed_merge_survives_a_restart() -> TestResult {
     f.h.app.merge_armed(&SandboxId::parse("s1")?).await;
     assert_ne!(f.delivery("t1").await?["stage"], "pr_open");
     assert!(!std::fs::read_to_string(&file)?.contains("\"t1\""));
+    Ok(())
+}
+
+/// DLV-205 with SPEC-064 WAI-002: a restore that read the saved merges before a merge was armed
+/// and decided in this process does not bring that merge back (it would be decided again, as
+/// "dropped", over the real outcome).
+#[tokio::test]
+async fn a_restore_never_brings_back_a_merge_decided_since() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let f = &t.f;
+    let task = TaskId::parse("t1")?;
+    f.h.store
+        .transition_task(
+            &task,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+    t.arm().await?;
+    let file =
+        f.h.app
+            .config
+            .data_dir
+            .join(yulius_app::agent_wait::ARMED_MERGES_FILE);
+    let saved = std::fs::read_to_string(&file)?;
+    // Decided in this process: the branch moved on.
+    commit_file(&t.wt, "landing.txt", "v2", "Landing v2")?;
+    f.h.app.merge_armed(&SandboxId::parse("s1")?).await;
+    let decided = t.outcome().await?;
+    assert!(decided.contains("dropped"), "{decided}");
+    // The restore read the file before that decision.
+    std::fs::write(&file, &saved)?;
+    f.h.app.restore_armed_merges().await;
+    let state = t.wait(Value::Null).await?;
+    assert_eq!(state["merge_armed"], false, "{state}");
+    assert_eq!(state["merge_outcome"], decided.as_str(), "{state}");
     Ok(())
 }
 

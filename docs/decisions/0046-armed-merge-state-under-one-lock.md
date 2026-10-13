@@ -46,3 +46,9 @@ followed:
 - `merge_armed_task` returns a verdict instead of writing the outcome; the slot applies it.
 - The wait can no longer miss a decision or report another head's decision while a newer merge is
   armed. A decision that was superseded leaves no trace beyond its audit entry (merges only).
+- In the rare case where the superseded decision did merge the pull request, the newer merge stays
+  armed; the wait on it ends on the stage change ("Delivery moved: pr_open -> merged_integration"),
+  and the merge is forgotten when the task ends, like any armed merge of a task that is not
+  running.
+- A restore after a restart puts back a saved merge only while nothing was armed or cleared in
+  the new process, so it never revives a merge armed and decided since the file was read.
