@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- A session opened from Sessions reads as Claude Code's TUI printed it (SPEC-075, ADR-0059, task #71).
+  Prompts and slash commands show as `>` lines and messages and tool calls as `⏺`, with each result
+  under `⎿` folded to its first lines ("Read 2 lines", "… +2 lines"). Edits show as `Update(path)`
+  with their lines. The raw `<command-name>` and `<local-command-stdout>` tags are gone, and
+  reminders are hidden. The transcript is faded in both themes: fainter and less saturated than a
+  live terminal (`--session-*`), yet still WCAG AA. It ends with a locked prompt box, and a
+  pixel-art spider web hangs in its corner.
 - The Agent panel is now called the **Superagent**, and a usage limit no longer stops it (SPEC-074,
   ADR-0055, task #69). The Superagent chose a subscription once, when it started, and kept it, so
   it could hit a weekly limit while tasks went on elsewhere. It now watches its conversation. A
