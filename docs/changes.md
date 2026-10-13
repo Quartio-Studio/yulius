@@ -12,6 +12,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   questions) and that anything more complex, such as writing code, belongs in a task (with a New
   task link). It is no longer in the left sidebar; `/s/<slug>/agent` and the old
   `/s/<slug>/cockpit` open the panel. The API and server keep the `cockpit` names.
+- The onboarding prompt tells the truth about Yulius CI (SPEC-020 ONB-001, task #34): the jobs'
+  home and `$YULIUS_CI_CACHE` are their own, start empty and persist across runs (they were
+  described as "an empty home"), so a job installs what it needs and never relies on an earlier
+  run; the agent proves it by running each job normally and in a clean checkout with a fresh
+  `HOME` and CI's environment. The `infra-bootstrap` skill says the same in its CI step. CI itself
+  is unchanged.
 - Menus are compact and filter themselves (SPEC-038, ADR-0030; task #36). Every drop-down stays
   inside the window and scrolls its items. Descriptions take one line, with the full text as a
   tooltip. A menu of 8 or more items opens with a focused Filter box: typed words narrow it,
