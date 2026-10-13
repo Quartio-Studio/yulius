@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -80,6 +80,9 @@ pub struct TaskRuntime {
     intent: Mutex<Option<EndIntent>>,
     usage: Arc<Mutex<UsageSnapshot>>,
     watcher_alive: Arc<AtomicBool>,
+    /// The latest transcript watcher started: an older one ends even when the next run starts
+    /// before it saw its own run end (it would read the new run's lines as its own).
+    watcher_generation: AtomicU64,
     /// Last keyboard input from a viewer (ms).
     pub last_input_ms: AtomicI64,
     /// Proactive switch requested at the next turn boundary.
@@ -158,6 +161,9 @@ pub struct TaskRuntime {
     /// When a switch of this task was last refused before it started (ms, 0 = never): an
     /// automatic switch waits [`SWITCH_COOLDOWN_MS`] before it tries again.
     pub(crate) switch_refused_ms: AtomicI64,
+    /// The recovery of a session whose context is full (SPEC-060); outlives a run, so a fresh
+    /// session counts as its second stage.
+    pub(crate) context: Mutex<crate::context_full::ContextEpisode>,
 }
 
 /// After a switch was refused before it started, automatic switches of the task wait this long
@@ -177,6 +183,7 @@ impl TaskRuntime {
             intent: Mutex::new(None),
             usage: Arc::new(Mutex::new(UsageSnapshot::default())),
             watcher_alive: Arc::new(AtomicBool::new(false)),
+            watcher_generation: AtomicU64::new(0),
             last_input_ms: AtomicI64::new(0),
             proactive_switch: AtomicBool::new(false),
             hooks_seen: AtomicBool::new(false),
@@ -207,6 +214,7 @@ impl TaskRuntime {
             nudged: Mutex::new(std::collections::BTreeSet::new()),
             acting_as_app_said: AtomicBool::new(false),
             switch_refused_ms: AtomicI64::new(0),
+            context: Mutex::new(crate::context_full::ContextEpisode::default()),
         }
     }
 
@@ -1168,7 +1176,7 @@ impl App {
         }
     }
 
-    async fn attempt_live(&self, task_id: &TaskId, attempt_id: &AttemptId) -> bool {
+    pub(crate) async fn attempt_live(&self, task_id: &TaskId, attempt_id: &AttemptId) -> bool {
         matches!(
             self.deps.store.live_attempt(task_id).await,
             Ok(Some(a)) if a.id == *attempt_id
@@ -1915,6 +1923,14 @@ impl App {
         self.end_pause(task_id, "cancelled").await;
         self.publish_task(task_id).await;
         let total = STOP_INTERRUPT_GRACE_MS + STOP_TERM_GRACE_MS + STOP_KILL_WAIT_MS;
+        // The run this stop ends; without it (a store error) nothing is escalated.
+        let stopped = match store.live_attempt(task_id).await {
+            Ok(attempt) => attempt.map(|a| a.id),
+            Err(err) => {
+                tracing::warn!(task = %task_id, error = %err, "the stopped run is unknown; no escalation");
+                None
+            }
+        };
         if let Some(run) = runtime.run.lock().await.as_mut() {
             let _ = run
                 .writer
@@ -1928,7 +1944,10 @@ impl App {
                 u64::try_from(total).unwrap_or(20_000),
             ))
             .await;
-            if let Ok(Some(attempt)) = app.deps.store.live_attempt(&tid).await {
+            // Only the run this stop ended: a task continued meanwhile has a new one.
+            if let Ok(Some(attempt)) = app.deps.store.live_attempt(&tid).await
+                && stopped.as_ref() == Some(&attempt.id)
+            {
                 tracing::warn!(task = %tid, "run did not exit after escalation; terminating host");
                 let _ = app.deps.session_host.terminate(Path::new(&attempt.run_dir));
                 app.mark_lost(&tid, &attempt.id, StopReason::Lost).await;
@@ -1964,6 +1983,24 @@ impl App {
         reason: &str,
     ) -> AppResult<()> {
         self.switch_with(task_id, account, reason, RunStart::AfterLimit)
+            .await
+    }
+
+    /// Continues a task whose session ran out of context in a fresh session on `account`, opened
+    /// with `handoff` (SPEC-060 CTX-004).
+    ///
+    /// # Errors
+    /// `Conflict` when the task is not running.
+    pub(crate) async fn restart_fresh(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        account: Option<AccountId>,
+        handoff: &str,
+    ) -> AppResult<()> {
+        let start = RunStart::Fresh {
+            prompt: Some(handoff.to_owned()),
+        };
+        self.switch_with(task_id, account, "context_full", start)
             .await
     }
 
@@ -2021,7 +2058,10 @@ impl App {
         // The policy may pick the same subscription (a limit that reset): no "another" then.
         let elsewhere = account.is_some()
             && attempt.as_ref().map(|a| a.account_id.as_ref()) != Some(account.as_ref());
-        runtime.hub.notice(if elsewhere {
+        let fresh = matches!(start, RunStart::Fresh { .. });
+        runtime.hub.notice(if fresh {
+            "↻ Yulius starts a fresh session for this task…"
+        } else if elsewhere {
             "↻ Yulius continues this session on another Claude subscription…"
         } else {
             "↻ Yulius continues this session…"
@@ -2078,9 +2118,11 @@ impl App {
                 } else {
                     store.set_switch_outcome(&decision_id, "completed").await?;
                     runtime.switch_refused_ms.store(0, Ordering::SeqCst);
-                    runtime
-                        .hub
-                        .notice("↻ The session continues where it left off.");
+                    runtime.hub.notice(if fresh {
+                        "↻ The task continues in a fresh session."
+                    } else {
+                        "↻ The session continues where it left off."
+                    });
                 }
                 Ok(())
             }
@@ -2170,9 +2212,18 @@ impl App {
         if repeat {
             return;
         }
-        self.runtime(&task.id).hub.notice(format!(
-            "↻ Switching subscriptions was not possible, so this session stays as it is: {message}"
-        ));
+        self.runtime(&task.id)
+            .hub
+            .notice(if reason == "context_full" {
+                format!(
+                    "↻ A fresh session could not start, so this session stays as it is: {message}"
+                )
+            } else {
+                format!(
+                    "↻ Switching subscriptions was not possible, so this session stays as it is: \
+                 {message}"
+                )
+            });
         let record = SwitchDecisionRecord {
             id: self.deps.crypto.new_id(),
             task_id: task.id.clone(),
@@ -2391,7 +2442,8 @@ impl App {
         let tid = task_id.clone();
         let attempt = attempt.clone();
         let alive = runtime.watcher_alive.clone();
-        tokio::spawn(async move { app.watch_loop(tid, attempt, alive).await });
+        let generation = runtime.watcher_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        tokio::spawn(async move { app.watch_loop(tid, attempt, alive, generation).await });
     }
 
     async fn watch_loop(
@@ -2399,6 +2451,7 @@ impl App {
         task_id: TaskId,
         attempt: AttemptRecord,
         alive: Arc<AtomicBool>,
+        generation: u64,
     ) {
         let Ok(Some(task)) = self.deps.store.task(&task_id).await else {
             return;
@@ -2426,9 +2479,16 @@ impl App {
         let mut catching_up = false;
         let mut facts = TranscriptFacts::default();
         let mut probed_at = Timestamp(0);
-        while alive.load(Ordering::SeqCst) {
+        // `existing_runtime`: a deleted task's runtime is not brought back.
+        let current = || {
+            alive.load(Ordering::SeqCst)
+                && self.existing_runtime(&task_id).is_some_and(|runtime| {
+                    runtime.watcher_generation.load(Ordering::SeqCst) == generation
+                })
+        };
+        while current() {
             tokio::time::sleep(Duration::from_millis(WATCH_INTERVAL_MS)).await;
-            if !alive.load(Ordering::SeqCst) {
+            if !current() {
                 break;
             }
             let now = self.now();
@@ -2446,6 +2506,10 @@ impl App {
                     let _ = self
                         .record_lineage(&task, Harness::ClaudeCode, &id, "native")
                         .await;
+                    // `/clear` or `/resume` in the TUI: a person took the session in hand.
+                    if session_id.is_some() {
+                        self.context_session_changed(&task_id);
+                    }
                     session_id = Some(id);
                     watch = None;
                 }
@@ -2504,6 +2568,10 @@ impl App {
                 if w.caught_up() {
                     catching_up = false;
                     self.apply_transcript_facts(&task_id, facts).await;
+                    // A session left full while Yulius was down is recovered now (CTX-007).
+                    if facts.context_full {
+                        self.context_full_replayed(&task_id, &attempt).await;
+                    }
                 }
             } else {
                 for observation in observations {
@@ -2599,6 +2667,7 @@ impl App {
                 self.publish_task(task_id).await;
             }
             Observation::TurnComplete => {
+                self.context_replied(task_id, &attempt.id);
                 runtime.end_turn(self.now());
                 // With hooks the Stop hook is the boundary that switches or pauses; the
                 // transcript decides only for a run without them.
@@ -2617,7 +2686,13 @@ impl App {
                     .await;
                 self.turn_record_seen(task_id).await;
             }
-            Observation::AgentWork { at } => self.agent_worked(task_id, at).await,
+            Observation::AgentWork { at } => {
+                self.context_replied(task_id, &attempt.id);
+                self.agent_worked(task_id, at).await;
+            }
+            Observation::ContextFull => self.context_full_observed(task_id, attempt).await,
+            Observation::Compacted => self.compacted_observed(task_id).await,
+            Observation::CompactFailed => self.compact_failed_observed(task_id, attempt).await,
             Observation::Session { .. } => {}
         }
     }
