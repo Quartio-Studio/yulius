@@ -1,11 +1,11 @@
 ---
 yulius-task: 17980e20-fdf3-44d3-836c-18b6525738b7
-status: in-progress
+status: done
 ---
 
 # SPEC-071: supertasks run alone in their project
 
-Status: draft
+Status: implemented
 Date: 2026-10-13
 Owner: Yulius task #67
 Scope authorization: user request (task #67), with a screenshot of the new-task composer's
@@ -60,8 +60,8 @@ pending or running, no other task of the project starts, so the code it changes 
 - [x] A task is created and stored as a supertask through the API and the task_create tool
 - [x] A pending supertask holds its project's starts and waits for the running tasks
 - [x] The composer offers Supertask and waiting tasks say what they wait for
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -126,3 +126,32 @@ pending or running, no other task of the project starts, so the code it changes 
 - **Labels from the server.** `held_by` is computed where the rule lives and republished when it
   changes during a queue pass, so the client never re-derives the rule.
 - Recorded as ADR-0054.
+
+## Evidence
+
+- `scripts/dev ci` on the head merged with `dev` (d807792): exit 0. Repository contracts, fmt,
+  clippy, deny, shear, nextest **1352 tests passed** (16 skipped), doctests.
+- New tests, each red before its change:
+  - `crates/yulius/tests/supertask.rs`: 8 tests. Creation and 422s with the MCP tool; the hold
+    rule (new, continued and Start-now tasks, another project, Done); supertasks by number; a
+    stopped, deleted or failed supertask releases its project without a tick; a new supertask
+    relabels the queue at the session limit; a running task is not started twice; a held
+    capacity resume keeps its Limit pause and continuation, and the queue wakes the resume
+    loop.
+  - `crates/yulius/tests/supervision.rs`, real ptyhost and fake agent:
+    `a_supertask_runs_alone_after_the_running_task` (AC-SUP-2) and
+    `a_queued_supertask_takes_the_next_slot_first` (AC-SUP-5; red with the ordering disabled).
+  - `crates/yulius-app/src/supertask.rs` unit tests: the hold rule, start order, holds and the
+    single-flight protocol.
+  - `e2e/tests/supertask.e2e.ts`: 2 tests (AC-SUP-6), green.
+- Full e2e suite (`npx e2e run`, load average about 78): 237 passed, 11 failed, all first-load
+  timeouts in files this change does not touch. The six files rerun alone: 92/93, then
+  `terminal.e2e.ts` 11/11. Filed as #354 (first-load waits time out under host load).
+- Independent review in fresh sessions:
+  - round 1: REQUEST CHANGES, fixed in c6fbdf8;
+  - round 2: REQUEST CHANGES (missing tests), fixed in fb7f7ce;
+  - round 3: APPROVE, its two minors fixed in c7074b3.
+- `spec_check` valid; `python3 scripts/check_repository.py` passed.
+- Not testable here: real Claude sessions. The scenarios use the fake agent; the supertask rule
+  does not depend on the agent.
+
