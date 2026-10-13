@@ -27,6 +27,7 @@ use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::{AccountRecord, AccountStatus};
 use yulius_app::ports::harness::{
     CockpitLaunch, HarnessLaunch, HarnessPlan, HarnessPort, OutputMasker, TranscriptWatch,
+    WatchFrom,
 };
 use yulius_app::ports::session::{LaunchPlan, SessionHost};
 use yulius_app::ports::store::AccountStore;
@@ -906,9 +907,9 @@ impl HarnessPort for RecordingHarness {
         &self,
         harness: yulius_domain::harness::Harness,
         path: &Path,
-        from_start: bool,
+        from: WatchFrom,
     ) -> AppResult<Box<dyn TranscriptWatch>> {
-        self.inner.watch(harness, path, from_start)
+        self.inner.watch(harness, path, from)
     }
     fn login_argv(&self, harness: yulius_domain::harness::Harness) -> Vec<String> {
         self.inner.login_argv(harness)

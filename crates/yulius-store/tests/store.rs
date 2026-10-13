@@ -180,6 +180,89 @@ async fn task_numbers_and_status_cas() -> R {
     Ok(())
 }
 
+/// SPEC-087 TIM-001, TIM-002: a task's state time moves only when its status or activity
+/// changes, not when the same value is set again (every prompt sets Working) nor when anything
+/// else changes. Its working stretch starts when it starts working and goes on through idle
+/// turns; a person needed, a queue or an end closes it.
+#[tokio::test]
+async fn the_state_time_moves_only_when_the_state_changes() -> R {
+    use yulius_app::model::TaskTimes;
+    use yulius_app::ports::store::TaskFieldUpdate;
+    use yulius_domain::task::Activity;
+    let store = SqliteStore::open_in_memory()?;
+    let (sid, uid) = seed(&store).await?;
+    let t = store.insert_task(&task("t1", &sid, &uid)?).await?;
+    let times = |at: i64, working: Option<i64>| {
+        Some(TaskTimes {
+            state_at: Timestamp(at),
+            working_since: working.map(Timestamp),
+        })
+    };
+    let running = |activity, at| {
+        store.transition_task(
+            &t.id,
+            None,
+            TaskStatus::Running,
+            Some(activity),
+            Timestamp(at),
+        )
+    };
+    assert_eq!(store.task_times(&t.id).await?, times(10, Some(10)));
+    running(Activity::Working, 20).await?;
+    store
+        .set_activity(&t.id, Some(Activity::Working), Timestamp(30))
+        .await?;
+    running(Activity::Working, 35).await?;
+    store
+        .update_task(
+            &t.id,
+            &TaskFieldUpdate {
+                title: Some("renamed".into()),
+                ..TaskFieldUpdate::default()
+            },
+            Timestamp(40),
+        )
+        .await?;
+    assert_eq!(store.task_times(&t.id).await?, times(20, Some(10)));
+    assert_eq!(
+        store.task(&t.id).await?.ok_or("task")?.updated_at,
+        Timestamp(40),
+        "the last change of anything moves on"
+    );
+    // An idle turn keeps the stretch (the app ends it once no background work is left).
+    store
+        .set_activity(&t.id, Some(Activity::Waiting), Timestamp(50))
+        .await?;
+    store
+        .set_activity(&t.id, Some(Activity::Working), Timestamp(55))
+        .await?;
+    assert_eq!(store.task_times(&t.id).await?, times(55, Some(10)));
+    // A person needed ends it; the next work starts another.
+    store
+        .set_activity(&t.id, Some(Activity::NeedsAttention), Timestamp(60))
+        .await?;
+    assert_eq!(store.task_times(&t.id).await?, times(60, None));
+    running(Activity::Working, 70).await?;
+    assert_eq!(store.task_times(&t.id).await?, times(70, Some(70)));
+    store.set_working_since(&t.id, None).await?;
+    store
+        .transition_task(&t.id, None, TaskStatus::Switching, None, Timestamp(75))
+        .await?;
+    assert_eq!(store.task_times(&t.id).await?, times(75, Some(75)));
+    store
+        .transition_task(
+            &t.id,
+            None,
+            TaskStatus::Stopped(yulius_domain::task::StopReason::Cancelled),
+            None,
+            Timestamp(80),
+        )
+        .await?;
+    assert_eq!(store.task_times(&t.id).await?, times(80, None));
+    assert_eq!(store.task_times(&TaskId::parse("missing")?).await?, None);
+    Ok(())
+}
+
 /// SPEC-070: one person at a time asks for control, and control passes only from the owner the
 /// decision saw to the person whose request still waits.
 #[tokio::test]

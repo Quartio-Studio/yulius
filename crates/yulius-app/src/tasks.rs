@@ -35,6 +35,23 @@ pub fn title_from_prompt(prompt: &str) -> String {
     title
 }
 
+/// What an idle task's background work says about its working stretch (SPEC-087 TIM-002): the
+/// task reads Working while background work it left will wake it, so the stretch goes on
+/// (`Some(true)`); with none left it waits for a person or is done, so the stretch ends
+/// (`Some(false)`). Not known yet (its turn just ended, or Yulius restarted) decides nothing
+/// (`None`), and neither does a task that is not idle: its status and activity do (the store).
+#[must_use]
+pub fn idle_stretch(
+    status: TaskStatus,
+    activity: Option<Activity>,
+    background: Option<u32>,
+) -> Option<bool> {
+    if status != TaskStatus::Running || !activity.is_some_and(Activity::is_idle) {
+        return None;
+    }
+    background.map(|count| count > 0)
+}
+
 /// Sums known metrics; a field stays unknown only when every run left it unknown.
 #[must_use]
 pub fn sum_metrics(records: &[MetricsRecord]) -> Metrics {
@@ -107,6 +124,7 @@ impl App {
             None => None,
         };
         let (after, next) = self.chain_links(task).await;
+        let times = store.task_times(&task.id).await?;
         Ok(TaskSummary {
             id: task.id.to_string(),
             sandbox_id: task.sandbox_id.to_string(),
@@ -134,6 +152,8 @@ impl App {
             },
             created_at: rfc3339(task.created_at),
             updated_at: rfc3339(task.updated_at),
+            state_since: times.map(|t| rfc3339(t.state_at)),
+            working_since: times.and_then(|t| t.working_since).map(rfc3339),
             steps: progress(&steps),
             archived: task.archived_at.is_some(),
             account_label,
@@ -164,12 +184,34 @@ impl App {
         let Ok(Some(task)) = self.deps.store.task(task_id).await else {
             return;
         };
+        self.follow_working_stretch(&task).await;
         if let Ok(summary) = self.task_summary(&task).await {
             self.events.publish(
                 Some(task.sandbox_id.clone()),
                 false,
                 yulius_contracts::events::UiEvent::TaskUpdated { task: summary },
             );
+        }
+    }
+
+    /// Ends an idle task's working stretch once no background work is left, or keeps it while
+    /// some is (SPEC-087 TIM-002). Every change of what the task shows is published, so this
+    /// follows what people see.
+    async fn follow_working_stretch(&self, task: &TaskRecord) {
+        let background = self.background_shells_of(&task.id);
+        let Some(working) = idle_stretch(task.status, task.activity, background) else {
+            return;
+        };
+        let Ok(Some(times)) = self.deps.store.task_times(&task.id).await else {
+            return;
+        };
+        let next = match (working, times.working_since) {
+            (false, Some(_)) => None,
+            (true, None) => Some(self.now()),
+            _ => return,
+        };
+        if let Err(err) = self.deps.store.set_working_since(&task.id, next).await {
+            tracing::warn!(task = %task.id, error = %err, "could not record the working stretch");
         }
     }
 
@@ -550,5 +592,34 @@ mod tests {
         assert_eq!(sum.input_tokens, Some(20));
         assert_eq!(sum.output_tokens, None);
         assert_eq!(sum.models, vec!["m".to_owned()]);
+    }
+
+    /// SPEC-087 TIM-002: background work left by an idle task keeps its working stretch (the task
+    /// reads Working); none left ends it; not known yet changes nothing; a task that is not idle
+    /// is decided by its status and activity alone.
+    #[test]
+    fn background_work_decides_an_idle_task_s_working_stretch() {
+        let running = TaskStatus::Running;
+        assert_eq!(
+            idle_stretch(running, Some(Activity::Waiting), Some(1)),
+            Some(true)
+        );
+        assert_eq!(
+            idle_stretch(running, Some(Activity::Done), Some(0)),
+            Some(false)
+        );
+        assert_eq!(idle_stretch(running, Some(Activity::Waiting), None), None);
+        assert_eq!(
+            idle_stretch(running, Some(Activity::Working), Some(0)),
+            None
+        );
+        assert_eq!(
+            idle_stretch(running, Some(Activity::NeedsAttention), Some(0)),
+            None
+        );
+        assert_eq!(
+            idle_stretch(TaskStatus::Queued, Some(Activity::Waiting), Some(0)),
+            None
+        );
     }
 }

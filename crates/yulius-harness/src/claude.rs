@@ -17,6 +17,7 @@
 
 use serde_json::{Map, Value};
 use yulius_domain::task::GoalOutcome;
+use yulius_domain::time::Timestamp;
 use yulius_domain::usage::TokenUsage;
 
 use crate::json::{bool_of, obj_of, owned_str, parse_object, shorten, str_of, u64_of};
@@ -112,6 +113,16 @@ pub fn observe_line(line: &str) -> Vec<Observed> {
     }
 }
 
+/// When a transcript line was recorded (its top-level `timestamp`), if it says. Records Claude
+/// Code writes about the session itself (`last-prompt`, `mode`, …) carry no time.
+#[must_use]
+pub fn record_time(line: &str) -> Option<Timestamp> {
+    parse_object(line)
+        .as_ref()
+        .and_then(|record| str_of(record, "timestamp"))
+        .and_then(parse_rfc3339)
+}
+
 /// The session goal's state from a `goal_status` attachment (see the module docs).
 fn observe_attachment(record: &Map<String, Value>) -> Vec<Observed> {
     let Some(attachment) = obj_of(record, "attachment") else {
@@ -154,6 +165,8 @@ fn observe_system(record: &Map<String, Value>) -> Vec<Observed> {
         Some("turn_duration") => vec![Observed::TurnEnded {
             background_agents: u64_of(record, "pendingBackgroundAgentCount")
                 .and_then(|n| u32::try_from(n).ok()),
+            at: str_of(record, "timestamp").and_then(parse_rfc3339),
+            duration_ms: u64_of(record, "durationMs"),
         }],
         Some("compact_boundary") => vec![Observed::Compacted],
         _ if str_of(record, "content").is_some_and(|c| c.contains(COMPACT_ERROR_TEXT)) => {
@@ -404,7 +417,7 @@ fn message_text(message: &Map<String, Value>) -> String {
 }
 
 /// A limit observation with the time its record was written.
-fn recorded_at(limit: Observed, when: Option<yulius_domain::time::Timestamp>) -> Observed {
+fn recorded_at(limit: Observed, when: Option<Timestamp>) -> Observed {
     match limit {
         Observed::LimitReached {
             resets_at,
@@ -661,9 +674,13 @@ mod tests {
             .is_empty()
         );
         assert_eq!(
-            observe_line(r#"{"type":"system","subtype":"turn_duration","durationMs":5}"#),
+            observe_line(
+                r#"{"type":"system","subtype":"turn_duration","durationMs":5,"timestamp":"2026-10-10T05:38:01.385Z"}"#
+            ),
             vec![Observed::TurnEnded {
-                background_agents: None
+                background_agents: None,
+                at: Some(Timestamp(1_791_610_681_385)),
+                duration_ms: Some(5),
             }]
         );
         assert!(observe_line(r#"{"type":"system","subtype":"away_summary"}"#).is_empty());
@@ -693,26 +710,34 @@ mod tests {
         assert_eq!(
             end(r#","pendingBackgroundAgentCount":1"#),
             vec![Observed::TurnEnded {
-                background_agents: Some(1)
+                background_agents: Some(1),
+                at: None,
+                duration_ms: Some(94_387),
             }]
         );
         assert_eq!(
             end(r#","pendingBackgroundAgentCount":0"#),
             vec![Observed::TurnEnded {
-                background_agents: Some(0)
+                background_agents: Some(0),
+                at: None,
+                duration_ms: Some(94_387),
             }]
         );
         assert_eq!(
             end(""),
             vec![Observed::TurnEnded {
-                background_agents: None
+                background_agents: None,
+                at: None,
+                duration_ms: Some(94_387),
             }],
             "an older CLI does not say"
         );
         assert_eq!(
             end(r#","pendingBackgroundAgentCount":"x""#),
             vec![Observed::TurnEnded {
-                background_agents: None
+                background_agents: None,
+                at: None,
+                duration_ms: Some(94_387),
             }]
         );
         assert!(

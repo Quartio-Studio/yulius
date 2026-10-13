@@ -60,6 +60,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0017_supertask.sql"),
     include_str!("migrations/0018_task_owner.sql"),
     include_str!("migrations/0019_automation_start.sql"),
+    include_str!("migrations/0020_task_state_times.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -342,6 +343,64 @@ mod tests {
             .ok_or("task")?;
         assert_eq!(task.owner.as_str(), "u1");
         assert_eq!(store.control_request(&task.id).await?, None);
+        Ok(())
+    }
+
+    /// A version-19 database's tasks migrate to version 20 (SPEC-087 TIM-001, TIM-002): each is
+    /// in its state since its last change, and a live task that does not wait for a person works
+    /// since its first run started.
+    #[tokio::test]
+    async fn version_nineteen_tasks_get_their_state_times() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use yulius_app::model::TaskTimes;
+        use yulius_app::ports::store::TaskStore as _;
+        use yulius_domain::ids::TaskId;
+        use yulius_domain::time::Timestamp;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v19.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &MIGRATIONS[..19] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 19)?;
+            conn.execute_batch(
+                "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 0, 0, 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                 INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, activity, origin, created_by, created_at, updated_at) VALUES
+                   ('working', 's1', 1, 'T', 'p', 'claude', 'running', 'working', 'ui', 'u1', 1, 500),
+                   ('asks', 's1', 2, 'T', 'p', 'claude', 'running', 'needs_attention', 'ui', 'u1', 2, 600),
+                   ('ended', 's1', 3, 'T', 'p', 'claude', 'closed', NULL, 'ui', 'u1', 3, 700),
+                   ('unrun', 's1', 4, 'T', 'p', 'claude', 'starting', NULL, 'ui', 'u1', 4, 800);
+                 INSERT INTO attempts (id, task_id, seq, harness, launch_kind, state, run_dir, token_hash, host_token, started_at) VALUES
+                   ('a1', 'working', 1, 'claude', 'new', 'exited', '/r/a1', 'h1', x'00', 100),
+                   ('a2', 'working', 2, 'claude', 'resume', 'running', '/r/a2', 'h2', x'00', 300);",
+            )?;
+        }
+        let store = SqliteStore::open(&path)?;
+        let times = |state: i64, working: Option<i64>| {
+            Some(TaskTimes {
+                state_at: Timestamp(state),
+                working_since: working.map(Timestamp),
+            })
+        };
+        assert_eq!(
+            store.task_times(&TaskId::parse("working")?).await?,
+            times(500, Some(100))
+        );
+        assert_eq!(
+            store.task_times(&TaskId::parse("asks")?).await?,
+            times(600, None)
+        );
+        assert_eq!(
+            store.task_times(&TaskId::parse("ended")?).await?,
+            times(700, None)
+        );
+        assert_eq!(
+            store.task_times(&TaskId::parse("unrun")?).await?,
+            times(800, Some(4)),
+            "no run yet: since it was created"
+        );
         Ok(())
     }
 

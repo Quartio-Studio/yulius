@@ -464,10 +464,12 @@ async fn summary_sums_known_usage_counts_unknown_runs_and_hides_invisible_sandbo
     let b = by(&s["tokens_by_account"], "account_label", "Claude B")?;
     assert!(b["output"].is_null());
 
-    // Durations from attempts: t1 = 30 + 10 min, t2 = 20 min.
+    // Durations from attempts: t1 = 30 + 10 min, t2 = 20 min; active time from metrics: only
+    // t1's first run reported it (SPEC-087 MET-005).
     assert_eq!(
         s["duration_ms"],
-        json!({"median": 1_800_000, "p90": 2_400_000, "total_wall": 3_600_000, "total_active": 600_000})
+        json!({"median": 1_800_000, "p90": 2_400_000, "total_wall": 3_600_000, "total_active": 600_000,
+            "median_active": 600_000, "p90_active": 600_000})
     );
     assert_eq!(s["switches"], json!({"total": 2}));
     assert_eq!(s["feedback"], json!({"correct": 1, "incorrect": 1}));

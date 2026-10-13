@@ -51,8 +51,17 @@ pub struct TaskSummary {
     pub control_request: Option<ControlRequestView>,
     /// Creation time.
     pub created_at: String,
-    /// Last change.
+    /// Last change of anything (title, owner, archive, status …).
     pub updated_at: String,
+    /// Since when the task is in its current state: the last change of its status or activity
+    /// (SPEC-087 TIM-001). Absent from an older server.
+    #[serde(default)]
+    pub state_since: Option<String>,
+    /// The start of its current working stretch, in which it has not waited for a person: kept
+    /// through its idle turns while background work wakes it, and through subscription switches
+    /// (TIM-002). Null while it waits for a person, is queued or has ended.
+    #[serde(default)]
+    pub working_since: Option<String>,
     /// Step progress.
     pub steps: StepProgress,
     /// Archived flag.

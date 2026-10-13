@@ -1457,7 +1457,7 @@ summary { cursor: pointer; }
 .tl { container-type: inline-size; }
 .tl-row, .tl-columns {
   display: grid; align-items: center; gap: 20px; padding: 0 16px 0 0;
-  grid-template-columns: minmax(0, 2fr) minmax(0, 1.6fr) minmax(0, 1.1fr) 96px 104px 28px 48px 48px 64px;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1.6fr) minmax(0, 1.1fr) 96px 104px 28px 48px 112px 64px;
 }
 .tl-row { position: relative; border-top: 1px solid var(--border); }
 .tl-row:first-child { border-top: 0; }
@@ -1484,11 +1484,11 @@ summary { cursor: pointer; }
 .tl-diff { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .tl-started { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
 @container (max-width: 1060px) {
-  .tl-row, .tl-columns { grid-template-columns: minmax(0, 2fr) minmax(0, 1.6fr) 96px 104px 28px 48px 64px; }
+  .tl-row, .tl-columns { grid-template-columns: minmax(0, 2fr) minmax(0, 1.6fr) 96px 104px 28px 112px 64px; }
   .tl-branch, .tl-started, .tl-columns > :nth-child(3), .tl-columns > :nth-child(7) { display: none; }
 }
 @container (max-width: 760px) {
-  .tl-row, .tl-columns { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) 104px 48px 64px; }
+  .tl-row, .tl-columns { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) 104px 112px 64px; }
   .tl-diff, .tl-avatar, .tl-columns > :nth-child(4), .tl-columns > :nth-child(6) { display: none; }
 }
 /* A narrow list (a phone, or a tool panel open beside it): the title takes the line, the status in
@@ -1512,7 +1512,7 @@ summary { cursor: pointer; }
 .tone-danger { color: var(--danger); }
 .tone-warn { color: var(--warn); }
 .tl-avatar.avatar { width: 20px; height: 20px; font-size: var(--fs-xs); }
-.tl-time { color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); text-align: right; font-variant-numeric: tabular-nums; }
+.tl-time { color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .tl-row.group-needs .tl-time { color: var(--warn-fg); }
 .tl-actions { display: flex; justify-content: flex-end; gap: 4px; visibility: hidden; }
 .tl-row:hover .tl-actions, .tl-row:focus-within .tl-actions, .tl-actions:has([aria-expanded="true"]) { visibility: visible; }
