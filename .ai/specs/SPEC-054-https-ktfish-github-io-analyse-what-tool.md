@@ -1,11 +1,11 @@
 ---
 yulius-task: 25304c92-ee5c-4317-beae-4f7bbd008b71
-status: in-progress
+status: done
 ---
 
 # SPEC-054: Dead-code tools in onboarding, in the bundled skills and in this repository
 
-Status: in progress
+Status: implemented
 Date: 2026-10-13
 Owner: Yulius task #38
 Scope authorization: user request (F 2026-10-13, task #38): "https://ktfish.github.io/ Analyse
@@ -52,8 +52,8 @@ a check up in a project's gate, and Yulius's own repository uses one.
 - [x] Bundled dead-code-cleanup skill with per-language tools, shipped in the yulius pack
 - [x] Onboarding, infra-bootstrap and chore workflow route cleanup to the skill
 - [x] This repo: cargo-shear in the deps gate, unused toml dependency removed, AGENTS.md routes cleanup
-- [ ] Every gate green, independent review, changes log updated
-- [ ] Merged into dev on green CI
+- [x] Every gate green, independent review, changes log updated
+- [x] Merged into dev on green CI
 
 ## Acceptance criteria
 
@@ -85,3 +85,28 @@ a check up in a project's gate, and Yulius's own repository uses one.
   [ADR-0034](../../docs/decisions/0034-dead-code-tools.md).
 - vulture and skylos are not added to Yulius's own gate: its seven Python scripts are clean, and
   the gate installs no Python packages today; the skill runs them on demand (`uvx`/`pipx run`).
+
+## Evidence
+
+- Source analysis: the site's 27 pages were fetched; only "Further resources" names dead-code
+  tools ("skylos, vulture and other"); the instrumentation-audit page lists dead code as an
+  anti-pattern. Both tools were installed (vulture 2.16, skylos 4.48.0) and run on `scripts/`:
+  nothing at 80 % confidence, and skylos reports no candidates.
+- Red first: `skills_mcp::skill_catalog_sources_toggles_and_run_set` failed (run set without
+  `dead-code-cleanup`) before the pack listed the skill and passes after;
+  `onboarding::tests::prompt_names_problems_profile_and_rules` failed at the new
+  `dead-code-cleanup` assertion before the prompt named it and passes after.
+- Gate: with `cargo shear --locked --deny-warnings` in `scripts/dev deps`, the gate failed on
+  `unused workspace dependency toml` and passes after its removal; an `hex.workspace = true`
+  injected into `yulius-contracts` (reverted) made cargo-shear fail with `unused dependency hex`.
+- `scripts/dev ci` on 801456e: exit 0; nextest 1223 passed, 16 skipped; checker tests 37 OK;
+  repository contracts, fmt, clippy, doctests, cargo-deny, cargo-shear and rustdoc green. The
+  later review fixes (6483068) change Markdown only; `skills`, `onboarding`, `workflow` and
+  `skills_mcp` tests and `check_repository.py` pass on it.
+- Review round 1 (fresh read-only session): APPROVE at 801456e with 4 minors and 6 nits on the
+  tool table and the development guide (`tsc --noEmit`, .NET `EnforceCodeStyleInBuild`, C/C++
+  section flags, section placement, knip `ignoreDependencies`, wording); all fixed. Round 2:
+  APPROVE at 6483068.
+- Not covered: a real onboarding run of an imported project with the new prompt, and the
+  per-language commands for languages other than Python and Rust, which were checked against
+  their documentation by the reviewer rather than run here.
