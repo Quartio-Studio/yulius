@@ -162,7 +162,10 @@ def decision_errors(directory):
     merging dev and renumbers (#317)."""
     errors = []
     taken = {}
-    index = (directory / "README.md").read_text()
+    readme = directory / "README.md"
+    if not readme.is_file():
+        return [f"{directory}: missing README.md index of the decision records"]
+    index = readme.read_text()
     for path in sorted(directory.glob("*.md")):
         if path.name == "README.md":
             continue

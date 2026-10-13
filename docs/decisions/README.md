@@ -5,7 +5,8 @@ Architecture decision records, numbered `NNNN-<slug>.md`. They summarise the ADR
 detailed source (ADR-NN numbers there are cited in each record). New decisions get the next
 free number here, also in their title; a substantial one also gets an analysis section in the
 relevant spec. The repository check refuses two records with one number (#317): when a parallel
-task merged the same number first, take the next free one after merging `dev`.
+task merged the same number first, take the next free one after merging `dev`. It also refuses a
+title whose number differs from the file name, and a record this index does not list.
 
 - [0001](0001-single-rust-binary.md): One Rust binary with an embedded static web UI
 - [0002](0002-detached-ptyhost-per-run.md): A detached ptyhost process owns every agent run

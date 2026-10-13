@@ -103,11 +103,6 @@ class RepositoryContracts(unittest.TestCase):
             (decisions / "0006-first.md").write_text("# 0006. First\n")
             (decisions / "0007-second.md").write_text("# 0007. Second\n")
             self.assertEqual(decision_errors(decisions), [])
-            # A record the index does not list is reported.
-            (decisions / "README.md").write_text(index.replace("- [0007](0007-second.md): Second\n", ""))
-            errors = decision_errors(decisions)
-            self.assertEqual(len(errors), 1)
-            self.assertIn("0007-second.md", errors[0])
             (decisions / "README.md").write_text(index + "- [0007](0007-parallel.md): Parallel\n- [0008](0008-parallel.md): Parallel\n")
             (decisions / "0007-parallel.md").write_text("# 0007. Parallel\n")
             errors = decision_errors(decisions)
@@ -123,6 +118,19 @@ class RepositoryContracts(unittest.TestCase):
             (decisions / "notes.md").write_text("# Notes\n")
             self.assertEqual(len(decision_errors(decisions)), 1)
         self.assertEqual(decision_errors(ROOT / "docs/decisions"), [])
+
+    def test_every_decision_record_is_indexed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            decisions = Path(tmp)
+            (decisions / "0006-first.md").write_text("# 0006. First\n")
+            (decisions / "0007-second.md").write_text("# 0007. Second\n")
+            self.assertEqual(decision_errors(decisions), [f"{decisions}: missing README.md index of the decision records"])
+            (decisions / "README.md").write_text("# Decision records\n\n- [0006](0006-first.md): First\n")
+            errors = decision_errors(decisions)
+            self.assertEqual(len(errors), 1)
+            self.assertIn("0007-second.md", errors[0])
+            (decisions / "README.md").write_text("- [0006](0006-first.md): First\n- [0007](0007-second.md): Second\n")
+            self.assertEqual(decision_errors(decisions), [])
 
 
 

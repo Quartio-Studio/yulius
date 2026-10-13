@@ -9,8 +9,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - Unique decision numbers and the onboarding CI proof (SPEC-058, task #49; #317, #272). The four
   decision records numbered 0034 now have their own numbers: the automations catalog keeps 0034,
   the Agent in the right panel is 0036, the personal two-factor vault 0042 and the task status
-  from Claude Code's records 0041. `scripts/check_repository.py` fails on two records with one
-  number or a title whose number differs from the file name. The onboarding prompt and
+  from Claude Code's records 0041; the archive-all record (#332), a later second 0040, is 0043.
+  `scripts/check_repository.py` fails on two records with one number, a title whose number differs
+  from the file name, or a record missing from `docs/decisions/README.md` (0016 was). The onboarding prompt and
   infra-bootstrap step 2 add `YULIUS_CI_MATRIX` to the proof of matrix jobs and say how to clean
   up after an interrupted proof: the proof prints its directory, the agent removes its own by that
   path and other tasks' `~/.ci-proof.*` only when over six hours old, then runs `git worktree
