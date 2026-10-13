@@ -1,5 +1,8 @@
 //! Setup, sessions, GitHub sign-in, CLI device approval and API tokens (SPEC-001 ACC-001..005).
 
+use std::collections::HashMap;
+use std::sync::Mutex;
+
 use yulius_contracts::api::auth::{DevicePoll, DeviceStart, InstanceInfo, Me, MeUser};
 use yulius_domain::ids::UserId;
 use yulius_domain::time::Timestamp;
@@ -18,8 +21,11 @@ pub const LOGIN_ATTEMPTS_PER_MINUTE: usize = 5;
 /// Clients the sign-in limiter tracks at once. Clients without an attempt in the last minute are
 /// forgotten first; when that many still have one, a client not yet tracked waits a minute.
 pub const MAX_LOGIN_CLIENTS: usize = 4096;
-/// The window of [`LOGIN_ATTEMPTS_PER_MINUTE`].
+/// The window of [`LOGIN_ATTEMPTS_PER_MINUTE`] and [`DEVICE_STARTS_PER_MINUTE`].
 const LOGIN_WINDOW_MS: i64 = 60_000;
+/// CLI device sign-in starts allowed per client key per minute (#169, ADR-0042); the limiter
+/// tracks at most [`MAX_LOGIN_CLIENTS`] keys, like sign-in's.
+pub const DEVICE_STARTS_PER_MINUTE: usize = 5;
 const DEVICE_TTL_MS: i64 = 10 * 60 * 1000;
 const OAUTH_STATE_TTL_MS: i64 = 10 * 60 * 1000;
 const USER_CODE_ALPHABET: &[u8] = b"BCDFGHJKLMNPQRSTVWXZ23456789";
@@ -95,6 +101,40 @@ impl GitHubSignInError {
             Self::Failed(_) => "failed",
         }
     }
+}
+
+/// Counts an attempt of `client_key` in `attempts`, a sliding one-minute window per client key
+/// holding at most [`MAX_LOGIN_CLIENTS`] keys: keys without an attempt in the last minute are
+/// forgotten first, and while that many still have one a key not yet tracked waits.
+///
+/// # Errors
+/// `Capacity` with `refusal` past `per_minute` attempts or a full table.
+fn count_client_attempt(
+    attempts: &Mutex<HashMap<String, Vec<i64>>>,
+    client_key: &str,
+    now: Timestamp,
+    per_minute: usize,
+    refusal: &str,
+) -> AppResult<()> {
+    let mut attempts = attempts
+        .lock()
+        .map_err(|_| AppError::Internal("rate limiter poisoned".into()))?;
+    if !attempts.contains_key(client_key) && attempts.len() >= MAX_LOGIN_CLIENTS {
+        attempts.retain(|_, times| {
+            times.retain(|t| now.0 - *t < LOGIN_WINDOW_MS);
+            !times.is_empty()
+        });
+        if attempts.len() >= MAX_LOGIN_CLIENTS {
+            return Err(AppError::Capacity(refusal.into()));
+        }
+    }
+    let entry = attempts.entry(client_key.to_owned()).or_default();
+    entry.retain(|t| now.0 - *t < LOGIN_WINDOW_MS);
+    if entry.len() >= per_minute {
+        return Err(AppError::Capacity(refusal.into()));
+    }
+    entry.push(now.0);
+    Ok(())
 }
 
 pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -221,31 +261,13 @@ impl App {
         client_key: &str,
     ) -> AppResult<NewSession> {
         let now = self.now();
-        {
-            let mut attempts = self
-                .login_attempts
-                .lock()
-                .map_err(|_| AppError::Internal("rate limiter poisoned".into()))?;
-            if !attempts.contains_key(client_key) && attempts.len() >= MAX_LOGIN_CLIENTS {
-                attempts.retain(|_, times| {
-                    times.retain(|t| now.0 - *t < LOGIN_WINDOW_MS);
-                    !times.is_empty()
-                });
-                if attempts.len() >= MAX_LOGIN_CLIENTS {
-                    return Err(AppError::Capacity(
-                        "too many sign-in attempts; wait a minute".into(),
-                    ));
-                }
-            }
-            let entry = attempts.entry(client_key.to_owned()).or_default();
-            entry.retain(|t| now.0 - *t < LOGIN_WINDOW_MS);
-            if entry.len() >= LOGIN_ATTEMPTS_PER_MINUTE {
-                return Err(AppError::Capacity(
-                    "too many sign-in attempts; wait a minute".into(),
-                ));
-            }
-            entry.push(now.0);
-        }
+        count_client_attempt(
+            &self.login_attempts,
+            client_key,
+            now,
+            LOGIN_ATTEMPTS_PER_MINUTE,
+            "too many sign-in attempts; wait a minute",
+        )?;
         let admin = self
             .deps
             .store
@@ -525,12 +547,20 @@ impl App {
         Ok((self.new_session(&user).await?, next))
     }
 
-    /// Starts CLI device approval.
+    /// Starts CLI device approval for the client `client_key` (chosen by the interface like
+    /// [`App::password_login`]'s), limited per client (#169, ADR-0042).
     ///
     /// # Errors
-    /// Store failures.
-    pub async fn device_start(&self) -> AppResult<DeviceStart> {
+    /// `Capacity` when rate limited; store failures.
+    pub async fn device_start(&self, client_key: &str) -> AppResult<DeviceStart> {
         let now = self.now();
+        count_client_attempt(
+            &self.device_starts,
+            client_key,
+            now,
+            DEVICE_STARTS_PER_MINUTE,
+            "too many device sign-ins; wait a minute",
+        )?;
         let device_code = hex_token(&self.deps.crypto.random_bytes());
         let raw = self.deps.crypto.random_bytes();
         let letters: String = raw

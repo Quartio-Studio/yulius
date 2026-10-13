@@ -189,8 +189,12 @@ pub async fn me(State(app): State<AppState>, Auth(ctx): Auth) -> ApiResult<Json<
     Ok(Json(app.me(&ctx.user, ctx.csrf_token.clone()).await?))
 }
 
-pub async fn device_start(State(app): State<AppState>) -> ApiResult<Json<DeviceStart>> {
-    Ok(Json(app.device_start().await?))
+/// CLI device sign-in start, limited per client like password sign-in (#169).
+pub async fn device_start(
+    State(app): State<AppState>,
+    client: ClientAddress,
+) -> ApiResult<Json<DeviceStart>> {
+    Ok(Json(app.device_start(&client.limit_key()).await?))
 }
 
 pub async fn device_poll(
