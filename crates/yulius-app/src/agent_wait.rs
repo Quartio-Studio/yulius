@@ -396,6 +396,19 @@ impl App {
             None => None,
         };
         if head.as_deref() != Some(armed.head.as_str()) {
+            // The agent's own clean merges of the integration branch keep the review, so the
+            // armed merge follows its head (SPEC-083 REV-001; 12 merges were dropped this way on
+            // 2026-10-12/13). Its checks then decide at that head.
+            if let (Some(worktree), Some(now)) = (task.worktree_path.as_deref(), head.as_deref())
+                && self
+                    .review_covers(task, std::path::Path::new(worktree), &armed.head, now)
+                    .await
+            {
+                return Verdict::Keep(ArmedMerge {
+                    head: now.to_owned(),
+                    ..armed
+                });
+            }
             return Verdict::Decided(format!(
                 "The merge you armed was dropped: you armed {} with `delivery_merge`, but the \
                  branch is now at {}. Get the independent review of the new head and call \

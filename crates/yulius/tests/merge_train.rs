@@ -422,6 +422,28 @@ impl Fixture {
         }
     }
 
+    /// Commits `file` on `dev` of the origin, as another merged pull request would.
+    fn advance_dev(&self, file: &str) -> TestResult {
+        let other = tempfile::tempdir()?;
+        let clone = other.path().join("c");
+        git(
+            other.path(),
+            &[
+                "clone",
+                "-q",
+                "--branch",
+                "dev",
+                self.origin.to_str().ok_or("path")?,
+                clone.to_str().ok_or("path")?,
+            ],
+        )?;
+        std::fs::write(clone.join(file), "other\n")?;
+        git(&clone, &["add", "-A"])?;
+        git(&clone, &["commit", "-q", "-m", file])?;
+        git(&clone, &["push", "-q", "origin", "HEAD:dev"])?;
+        Ok(())
+    }
+
     /// Records a passed run of pull request `n` at `head` with its `yulius/ci` status published,
     /// as if it had run (no run ends, so no pass starts by itself).
     async fn record_passed(&self, app: &App, n: u32, head: &str) -> TestResult {
@@ -856,23 +878,7 @@ async fn a_busy_agent_behind_its_base_waits_instead_of_being_refused() -> TestRe
     let head = git(&worktree, &["rev-parse", "HEAD"])?;
     f.record_passed(&app, 1, &head).await?;
     // Another pull request merged meanwhile; Yulius's CI round fetched it.
-    let other = tempfile::tempdir()?;
-    let clone = other.path().join("c");
-    git(
-        other.path(),
-        &[
-            "clone",
-            "-q",
-            "--branch",
-            "dev",
-            f.origin.to_str().ok_or("path")?,
-            clone.to_str().ok_or("path")?,
-        ],
-    )?;
-    std::fs::write(clone.join("other.txt"), "other\n")?;
-    git(&clone, &["add", "-A"])?;
-    git(&clone, &["commit", "-q", "-m", "other"])?;
-    git(&clone, &["push", "-q", "origin", "HEAD:dev"])?;
+    f.advance_dev("other.txt")?;
     app.ci_sync_sandbox(&app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?)
         .await?;
     let task = TaskId::parse("t1")?;
@@ -907,6 +913,35 @@ async fn a_busy_agent_behind_its_base_waits_instead_of_being_refused() -> TestRe
         "brought up to date once idle"
     );
     assert_eq!(f.wait(1, &worktree).await?["merge_armed"], true);
+    Ok(())
+}
+
+/// TRN-012: an agent that merges the integration branch into its armed branch itself, cleanly,
+/// keeps its armed merge: Git's own clean merges keep the review (SPEC-083 REV-001), so the
+/// merge follows the new head instead of being dropped as "the branch moved on".
+#[tokio::test]
+async fn an_armed_merge_follows_the_agents_own_clean_merge_of_dev() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    f.arm(1, &worktree).await?;
+    let armed = git(&worktree, &["rev-parse", "HEAD"])?;
+    f.advance_dev("other.txt")?;
+    git(&worktree, &["fetch", "-q", "origin"])?;
+    git(&worktree, &["merge", "-q", "--no-edit", "origin/dev"])?;
+    let merged = git(&worktree, &["rev-parse", "HEAD"])?;
+    assert_ne!(merged, armed);
+
+    app.merge_armed(&f.sandbox).await;
+    let state = f.wait(1, &worktree).await?;
+    assert_eq!(state["merge_armed"], true, "kept: {state}");
+    assert_eq!(state["merge_outcome"], Value::Null, "{state}");
+    let saved = std::fs::read_to_string(
+        app.config
+            .data_dir
+            .join(yulius_app::agent_wait::ARMED_MERGES_FILE),
+    )?;
+    assert!(saved.contains(&merged), "follows the new head: {saved}");
     Ok(())
 }
 

@@ -203,6 +203,26 @@ pub trait GitPort: Send + Sync {
         let _ = (repo, scratch, owned_root, base, heads, landing);
         unsupported("merge trains")
     }
+    /// Whether `head` is `reviewed` plus only Git's own merges of commits `integration` (a
+    /// remote-tracking ref) contains, at most `limit` of them: no conflict resolved by hand, no
+    /// other change (SPEC-083 REV-001).
+    async fn only_clean_merges_since(
+        &self,
+        worktree: &Path,
+        reviewed: &str,
+        head: &str,
+        integration: &str,
+        limit: usize,
+    ) -> AppResult<bool> {
+        let _ = (worktree, reviewed, head, integration, limit);
+        unsupported("comparing a head with its review")
+    }
+    /// Keeps Yulius's block of merge attributes in `repo`'s `info/attributes`, read by all its
+    /// worktrees, at exactly `lines` (SPEC-083 MRG-001). Returns whether the file changed.
+    async fn set_merge_attributes(&self, repo: &Path, lines: &[String]) -> AppResult<bool> {
+        let _ = (repo, lines);
+        unsupported("setting merge attributes")
+    }
     /// Pushes `local_branch` to `remote_branch` on origin using `token`.
     async fn push(
         &self,

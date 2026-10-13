@@ -2,11 +2,11 @@
 
 Architecture decision records, numbered `NNNN-<slug>.md`. They summarise the ADR table in
 [SPEC-002](../../.ai/specs/SPEC-002-yulius-architecture.md) section 2, which stays the
-detailed source (ADR-NN numbers there are cited in each record). New decisions get the next
-free number here, also in their title; a substantial one also gets an analysis section in the
-relevant spec. The repository check refuses two records with one number (#317): when a parallel
-task merged the same number first, take the next free one after merging `dev`. It also refuses a
-title whose number differs from the file name, and a record this index does not list.
+detailed source (ADR-NN numbers there are cited in each record). A new decision takes its
+number from Yulius's `record_number` tool (`dir` `docs/decisions`), which no parallel task gets
+too (ADR-0066), and uses it in its title; a substantial one also gets an analysis section in the
+relevant spec. The repository check refuses two records with one number (#317), a title whose
+number differs from the file name, and a record this index does not list.
 
 - [0001](0001-single-rust-binary.md): One Rust binary with an embedded static web UI
 - [0002](0002-detached-ptyhost-per-run.md): A detached ptyhost process owns every agent run
@@ -71,5 +71,6 @@ title whose number differs from the file name, and a record this index does not 
 - [0063](0063-background-work-and-goal-verdict-from-the-transcript.md): Background launches and the goal verdict come from the transcript; the hook does not wait
 - [0064](0064-attachment-reads-have-their-own-bound.md): A prompt's attached files are read under their own bound, streamed, and confirmed on Linux
 - [0067](0067-armed-pull-requests-merge-in-trains.md): Armed pull requests merge in trains: one run on their combined result decides them all
+- [0066](0066-parallel-tasks-stop-colliding-at-merge.md): Yulius gives out record numbers, merges the shared logs by union, and keeps reviews across clean integration merges
 - [0068](0068-needs-you-means-a-person-has-to-act.md): "Needs you" means a person has to act; the agent's own work and waits come first
 - [0069](0069-mcp-tools-answer-with-short-text.md): Yulius's MCP tools answer with short text; the record only when a client asks

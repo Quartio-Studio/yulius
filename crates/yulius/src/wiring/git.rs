@@ -445,6 +445,28 @@ impl GitPort for GitAdapter {
         })
     }
 
+    async fn only_clean_merges_since(
+        &self,
+        worktree: &Path,
+        reviewed: &str,
+        head: &str,
+        integration: &str,
+        limit: usize,
+    ) -> AppResult<bool> {
+        let (git, worktree) = (self.git(), worktree.to_path_buf());
+        let (reviewed, head, integration) =
+            (reviewed.to_owned(), head.to_owned(), integration.to_owned());
+        blocking(move || {
+            git.only_clean_merges_since(&worktree, &reviewed, &head, &integration, limit)
+        })
+        .await
+    }
+
+    async fn set_merge_attributes(&self, repo: &Path, lines: &[String]) -> AppResult<bool> {
+        let (git, repo, lines) = (self.git(), repo.to_path_buf(), lines.to_vec());
+        blocking(move || git.set_managed_attributes(&repo, &lines)).await
+    }
+
     async fn import_bundle(
         &self,
         repo: &Path,

@@ -855,3 +855,80 @@ async fn a_prompt_grows_only_while_the_task_has_not_started_and_within_the_bound
     assert_eq!(store.task(&t.id).await?.ok_or("task")?.prompt, "p+ł");
     Ok(())
 }
+
+/// SPEC-083 NUM-002: a record number is reserved once per sandbox, directory and prefix; the
+/// reservations survive a reopen, oldest first, and go with their task when it is deleted.
+#[tokio::test]
+async fn record_numbers_are_reserved_once_and_go_with_their_task() -> R {
+    use yulius_app::model::RecordReservation;
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("y.db");
+    let reserve = |task: &str,
+                   prefix: &str,
+                   number: u64,
+                   at: i64|
+     -> Result<RecordReservation, Box<dyn std::error::Error>> {
+        Ok(RecordReservation {
+            sandbox_id: SandboxId::parse("s1")?,
+            dir: "docs/decisions".into(),
+            prefix: prefix.into(),
+            number,
+            task_id: TaskId::parse(task)?,
+            reserved_at: Timestamp(at),
+        })
+    };
+    {
+        let store = SqliteStore::open(&path)?;
+        let (sid, uid) = seed(&store).await?;
+        store.insert_task(&task("t1", &sid, &uid)?).await?;
+        store.insert_task(&task("t2", &sid, &uid)?).await?;
+        assert!(
+            store
+                .reserve_record_number(&reserve("t1", "", 66, 5)?)
+                .await?
+        );
+        assert!(
+            !store
+                .reserve_record_number(&reserve("t2", "", 66, 6)?)
+                .await?,
+            "a number is given out once"
+        );
+        assert!(
+            store
+                .reserve_record_number(&reserve("t2", "", 67, 6)?)
+                .await?
+        );
+        assert!(
+            store
+                .reserve_record_number(&reserve("t2", "ADR-", 66, 7)?)
+                .await?,
+            "another prefix is another series"
+        );
+    }
+    let store = SqliteStore::open(&path)?;
+    let sid = SandboxId::parse("s1")?;
+    let held: Vec<(String, String, u64)> = store
+        .record_reservations(&sid, "docs/decisions")
+        .await?
+        .into_iter()
+        .map(|r| (r.task_id.as_str().to_owned(), r.prefix, r.number))
+        .collect();
+    assert_eq!(
+        held,
+        vec![
+            ("t1".into(), String::new(), 66),
+            ("t2".into(), String::new(), 67),
+            ("t2".into(), "ADR-".into(), 66),
+        ]
+    );
+    assert!(store.record_reservations(&sid, "docs").await?.is_empty());
+    assert!(store.delete_task(&TaskId::parse("t2")?).await?);
+    assert_eq!(
+        store
+            .record_reservations(&sid, "docs/decisions")
+            .await?
+            .len(),
+        1
+    );
+    Ok(())
+}
