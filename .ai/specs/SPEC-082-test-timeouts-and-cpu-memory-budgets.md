@@ -225,7 +225,12 @@ supervision test ran in 63 s.
 On the VM, this pull request's first Yulius CI run (f136336, on the deployed binary, one test
 thread per CPU): nextest `Summary [76.190s] 1440 tests run: 1440 passed, 16 skipped`, no test over
 30 s. The 52 runs before took 121–193 s with 10–17 tests over 30 s each. That run failed later
-in `cargo doc` on a link to a crate-private item, fixed in the next commit.
+in `cargo doc` on a link to a crate-private item, fixed in the next commit. The next run
+(bfe0f64): `quality` passed, nextest 1450 passed in 88.1 s with one test over 30 s
+(`a_switch_waits_for_a_background_agent_launched_in_the_turn`, a 10 s background agent and a
+switch); `e2e` failed on `archive.e2e.ts` "the keyboard stays on its control when the sidebar
+list is rebuilt", the known flaky test of #356, still with one worker (the deployed binary sets
+no budget yet).
 
 **TST-002: the queued-message test.**
 - Red: the previous test with one `app.drain_queue_now()` after its manual move to `queued` fails
