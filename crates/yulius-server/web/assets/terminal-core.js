@@ -30,6 +30,7 @@ import { WebLinksAddon } from './vendor/xterm/addon-web-links.mjs';
 import { TerminalSocket, isEndedStatus, CLOSE_REVOKED } from './termsocket.js';
 import { createMouseFilter } from './mousefilter.js';
 import { clipboardKeyAction } from './termkeys.js';
+import { isTyping } from './typing.js';
 import { createFileChecker, createFileLinkProvider, relativeCwd, trackOscFileLinks } from './termlinks.js';
 import { h, icon, setChildren, openMenu } from './dom.js';
 import { terminalColors, onThemeChange, token, isPhone, px } from './theme.js';
@@ -605,6 +606,9 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
         return false;
       }
     }
+    // Focus and mouse reports and xterm's answers to queries are not typing: the server neither
+    // counts them nor moves control for them, so this view does not take the size (SPEC-068).
+    if (!isTyping(data)) return true;
     used();
     // The server makes the viewer who types the controller; mirror it until the next state frame.
     if (!state.controller && !followServerSize) takeSize();
