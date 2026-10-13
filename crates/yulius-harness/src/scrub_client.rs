@@ -147,10 +147,11 @@ fn shell(env: &dyn Fn(&str) -> Option<String>) -> String {
 
 /// `nice`, which runs agent commands at a lower CPU priority than the agents and the sandbox's
 /// CI jobs: eight tasks building at once starved the CI gate every task waits for (load 50 on 12
-/// CPUs, F 2026-10-12). It execs the command, so the status is the command's.
+/// CPUs, F 2026-10-12; at 5 levels, full CI builds still took past 30 minutes next to eight agent
+/// builds, F 2026-10-13). It execs the command, so the status is the command's.
 const NICE: &str = "/usr/bin/nice";
 /// How much lower (relative to the agent).
-const NICENESS: &str = "5";
+const NICENESS: &str = "10";
 
 fn command(args: &[String], env: &dyn Fn(&str) -> Option<String>) -> Option<Command> {
     let (program, rest): (String, Vec<&str>) = match args {
