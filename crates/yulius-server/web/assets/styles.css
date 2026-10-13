@@ -260,7 +260,7 @@ p { margin: 0; }
 }
 .app.no-sandbox { grid-template-columns: var(--sidebar-w) minmax(0, 1fr) 0 0; }
 /* The home screen (UI-045) has no sandbox, so no tools: the rail, its panel and its toggle go. */
-.app.no-sandbox .rail, .app.no-sandbox .panel, .app.no-sandbox .tools-toggle { display: none; }
+.app.no-sandbox .rail, .app.no-sandbox .panel, .app.no-sandbox .tools-toggle, .app.no-sandbox .agent-toggle { display: none; }
 /* The sidebar stays while a tool panel is open (developers keep their tasks in view): the panel
    takes its width from the centre (panels.js applyWidth). */
 
@@ -447,6 +447,8 @@ button.task-group-head:hover { color: var(--text); }
 .app.panel-max .panel { width: auto !important; }
 .app.panel-max .panel-resize { display: none; }
 .tools-toggle.active { background: var(--accent-soft); color: var(--text); }
+.btn-agent { height: var(--control-md); padding: 0 12px; gap: 6px; font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.agent-toggle.active { background: var(--accent-soft); border-color: var(--accent-border); color: var(--text); }
 /* The rail's items stay inside it (F 2026-10-09): each pill is the rail's width less 6 px on either
    side of the edge line, its label gives way (ellipsis) before the count leaves the pill, and the
    4 px between pills leaves room for the focus ring. Hover is a quiet fill; the open tool (one at a
@@ -483,6 +485,14 @@ button.task-group-head:hover { color: var(--text); }
 .panel-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .panel-view[hidden] { display: none; }
 .panel-msg { padding: 24px 16px; color: var(--muted); text-align: center; }
+/* The Agent (SPEC-035): its quick-work notice, then the user's plain Claude Code session filling
+   the panel like a terminal. */
+.agent { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.agent-note { flex: none; align-items: flex-start; margin: 8px; overflow-wrap: anywhere; }
+.agent-note .icon { margin-top: 2px; }
+.agent-note a { color: inherit; font-weight: 600; text-decoration: underline; }
+.agent-term { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--term-bg); }
+.agent-msg { flex: 1; padding: 24px 16px; background: var(--surface); }
 body.resizing { cursor: col-resize; user-select: none; }
 /* While a splitter is dragged, frames and canvases under the pointer never take its moves. */
 body.resizing iframe, body.resizing canvas { pointer-events: none; }
@@ -986,15 +996,6 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 /* ---------------------------------------------------------------- task view */
 
 .taskview { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-/* The Cockpit (SPEC-021): one header line, then the user's plain Claude Code session filling the
-   centre like a task's terminal. */
-.cockpit { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-.cockpit-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; padding: 8px 16px; border-bottom: 1px solid var(--border); min-width: 0; }
-.cockpit-title { display: inline-flex; align-items: center; gap: 8px; margin: 0; font-family: var(--font-display); font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 600; }
-.cockpit-title .nav-slot { align-self: center; }
-.cockpit-sub { min-width: 0; overflow-wrap: anywhere; }
-.cockpit-term { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.cockpit-msg { padding: 24px 16px; }
 /* The terminal and what floats over it: the attention bar never resizes the terminal (each resize
    makes the agent's TUI redraw, F 2026-10-09). */
 .taskview-term { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -1875,7 +1876,8 @@ a.dl-task:hover { text-decoration: underline; }
   .tabrow-tabs, .tab-add { display: none; }
   /* The sandbox list gives way to the tools rail when it shows in this row (it never overlaps it). */
   .tab-select { display: flex; align-self: center; flex: 1; min-width: 0; max-width: 200px; height: var(--control-xl); gap: 4px; padding: 0 4px 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .btn-status .status-text, .chip-warn .chip-text { display: none; }
+  .btn-status .status-text, .chip-warn .chip-text, .agent-toggle-text { display: none; }
+  .btn-agent { width: var(--control-lg); height: var(--control-lg); padding: 0; justify-content: center; }
   .rail { flex-direction: row; align-items: center; gap: 0; padding: 0 2px; border-left: 0; border-bottom: 1px solid var(--border); background: var(--bg); }
   .rail-btn { width: var(--control-lg); height: var(--control-lg); justify-content: center; padding: 0; }
   .rail-btn.active::before { top: auto; bottom: 2px; left: 8px; right: 8px; width: auto; height: 3px; }
