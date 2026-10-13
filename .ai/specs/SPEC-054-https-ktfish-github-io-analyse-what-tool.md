@@ -51,7 +51,7 @@ a check up in a project's gate, and Yulius's own repository uses one.
 - [x] Spec SPEC-054 and ADR for dead-code tooling
 - [x] Bundled dead-code-cleanup skill with per-language tools, shipped in the yulius pack
 - [x] Onboarding, infra-bootstrap and chore workflow route cleanup to the skill
-- [ ] This repo: cargo-shear in the deps gate, unused toml dependency removed, AGENTS.md routes cleanup
+- [x] This repo: cargo-shear in the deps gate, unused toml dependency removed, AGENTS.md routes cleanup
 - [ ] Every gate green, independent review, changes log updated
 - [ ] Merged into dev on green CI
 

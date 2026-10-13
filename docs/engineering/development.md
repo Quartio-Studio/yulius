@@ -35,7 +35,7 @@ Python's standard-library `tomllib` means Python 3.10 and older are unsupported.
 | `scripts/dev fmt` | Rust formatting mutation |
 | `scripts/dev lint` | Formatting verification and Clippy with warnings denied |
 | `scripts/dev test` | nextest workspace tests with zero retries; doctests for eligible library targets |
-| `scripts/dev deps` | cargo-deny advisories/licenses/bans/sources and cargo-machete |
+| `scripts/dev deps` | cargo-deny advisories/licenses/bans/sources and cargo-shear (unused crate and workspace dependencies) |
 | `scripts/dev ci` | doctor, check, lint, test, deps, then rustdoc with warnings denied |
 
 Use `scripts/dev check`, `scripts/dev lint` or `scripts/dev test` during iteration.
@@ -45,6 +45,17 @@ one file's tests with `cargo nextest run -p yulius -E 'binary_id(yulius::main) &
 (`cargo test -p yulius --test main <file>::` filters by substring: `supervision::` also runs
 `pool_supervision::`).
 Use the full gate after implementation stabilizes.
+
+## Dead code
+
+Cleanup requests follow the bundled skill `dead-code-cleanup`
+([catalog](../../catalog/skills/yulius/dead-code-cleanup/SKILL.md),
+[ADR-0034](../decisions/0034-dead-code-tools.md)). In this repository the gate already fails on
+Rust's `dead_code` and `unused_*` warnings (`scripts/dev lint`), on unused dependencies
+(`scripts/dev deps`, cargo-shear) and on unused web UI imports (`scripts/dev check`). On demand,
+check the Python scripts with `uvx vulture scripts/ --min-confidence 80` and
+`uvx skylos scripts/ --no-upload`, and search for `pub` items no other crate uses (the compiler
+does not report them).
 
 The web UI has end-to-end tests in [`e2e/`](../../e2e/README.md): flows, accessibility (axe-core)
 and page errors, run in a browser against the UI's mock mode. They need Node 24.8+ (test-only;
