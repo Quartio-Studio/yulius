@@ -273,3 +273,26 @@ test('a card kept after a start is a plain queue box again when the task waits b
   await expect(card).not.toContainText('type into its session instead');
   await expect(box).toHaveValue('Send them in Polish too.');
 });
+
+test('an older answer applied after a failed newer read keeps the newer status (#316)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/product/t/7'));
+  await expect(screen.getByRole('region', 'Queued messages')).toBeVisible();
+  const reads = () => browser.evaluate(() => (window as unknown as Touching).__yuliusMock.detailReads?.tsk_product_7 ?? 0);
+  await browser.evaluate(() => {
+    const w = window as unknown as Touching;
+    w.__yuliusMock.holdDetail = new Promise<void>((resolve) => { w.__releaseDetail = resolve; });
+  });
+  let before = await reads();
+  await touchProduct7(browser, { status: 'starting', started: false });
+  await expect.poll(reads).toBeGreaterThan(before);
+  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { failNextDetail: boolean } }).__yuliusMock.failNextDetail = true; });
+  before = await reads();
+  await touchProduct7(browser, { status: 'running', started: true });
+  await expect.poll(reads).toBeGreaterThan(before);
+  const strip = screen.getByRole('status').filter({ hasText: /Working|Running|Starting/ }).first();
+  await expect(strip).not.toContainText('Starting');
+  await browser.evaluate(() => (window as unknown as Touching).__releaseDetail?.());
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __yuliusMock: { heldDetailAnswered?: boolean } }).__yuliusMock.heldDetailAnswered === true)).toBe(true);
+  await browser.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0))));
+  await expect(strip).not.toContainText('Starting');
+});
