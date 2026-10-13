@@ -3,9 +3,9 @@
 
 import { h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip } from './dom.js';
 import { relShort, relLong, bytes, duration, dateTime, resetLabel } from './format.js';
-import { taskInfo, activityLine, allows } from './status.js';
+import { taskInfo, taskActions, activityLine, allows } from './status.js';
 import { href } from './router.js';
-import { openSandboxDialog, confirmRemoveSandbox, openTaskMenu } from './actions.js';
+import { openSandboxDialog, confirmRemoveSandbox, openTaskMenu, archiveTask, archiveAll } from './actions.js';
 import { createNotificationCenter } from './notifications.js';
 import { BRAND } from './brand.js';
 import { readJson, writeJson } from './store.js';
@@ -680,6 +680,7 @@ export function createSidebar(ctx) {
   const ENDED_OPEN_KEY = 'yulius.sidebarStoppedOpen';
   let endedOpen = readJson(ENDED_OPEN_KEY, true) !== false;
   let shape = '';
+  let archivingAll = false; // "Archive all" runs: its button stays disabled until it ends
 
   const rowInfo = (task) => taskInfo(task, ctx.store.state.actionRequests, ctx.store.pullsOf(task.sandbox_id).get(task.id));
 
@@ -699,13 +700,15 @@ export function createSidebar(ctx) {
         event.stopPropagation();
         openTaskMenu(ctx, kebab, row.task);
       }, { class: 'task-kebab', 'aria-haspopup': 'menu' });
-      const el = h('div', { class: 'task-row', role: 'listitem' }, link, kebab);
+      // One click archives a task that can be (SPEC-062 QAR-001), as the menu's Archive does.
+      const archive = iconButton('archive', 'Archive task', () => archiveTask(ctx, row.task), { class: 'task-quick-archive' });
+      const el = h('div', { class: 'task-row', role: 'listitem' }, link, archive, kebab);
       el.addEventListener('contextmenu', (event) => {
         event.preventDefault();
         openTaskMenu(ctx, { x: event.clientX, y: event.clientY }, row.task);
       });
       link.addEventListener('click', () => document.body.classList.remove('drawer-open'));
-      row = { el, link, mark, chips, title, age, sub, task };
+      row = { el, link, mark, chips, title, age, sub, archive, task };
       rows.set(task.id, row);
     }
     row.task = task;
@@ -713,7 +716,7 @@ export function createSidebar(ctx) {
     // Repaint only a row whose content would change (PERF-02): the key holds all it shows.
     const active = Boolean(route && route.name === 'task' && route.number === task.number);
     row.pr = ctx.store.pullsOf(sandbox.id).get(task.id) || null;
-    const key = JSON.stringify([task, row.info, active, relShort(task.updated_at), sandbox.slug, row.pr]);
+    const key = JSON.stringify([task, row.info, active, relShort(task.updated_at), sandbox.slug, sandbox.access, row.pr]);
     if (row.key !== key) {
       row.key = key;
       paintRow(row, active);
@@ -739,10 +742,41 @@ export function createSidebar(ctx) {
     row.sub.textContent = `, ${activityLine(task, info)}`;
     row.age.textContent = relShort(task.updated_at);
     row.age.title = `Last change ${dateTime(task.updated_at)}`;
+    const label = `Archive task #${task.number}`;
+    row.archive.hidden = !taskActions(task, sandbox.access, row.pr).archive;
+    row.el.classList.toggle('can-archive', !row.archive.hidden);
+    row.archive.setAttribute('aria-label', label);
+    row.archive.title = label;
   }
 
-  function groupHead(group, size) {
+  const archivable = (groupRows) => groupRows.filter((row) => taskActions(row.task, sandbox.access, row.pr).archive).map((row) => row.task);
+
+  /**
+   * Done's "Archive all" (SPEC-062 QAR-002): every archivable Done task, one click, one Undo. While
+   * it runs it stays focusable but inert (aria-disabled), so the keyboard stays on it.
+   */
+  function archiveAllButton(groupRows) {
+    if (!archivable(groupRows).length) return null;
+    const button = h('button', { type: 'button', class: 'btn btn-sm btn-ghost task-group-action', 'aria-disabled': archivingAll ? 'true' : null, title: 'Archive every Done task', onClick: async () => {
+      const tasks = archivable(groupRows);
+      if (archivingAll || !tasks.length) return;
+      archivingAll = true;
+      button.setAttribute('aria-disabled', 'true');
+      try {
+        await archiveAll(ctx, tasks, 'Done task');
+      } finally {
+        archivingAll = false;
+        shape = '';
+        renderTasks();
+      }
+    } }, icon('archive', { size: 14 }), 'Archive all');
+    return button;
+  }
+
+  function groupHead(group, groupRows) {
+    const size = groupRows.length;
     const label = [h('span', { class: 'nav-slot' }, icon(group.icon, { size: 16 })), h('span', { class: 'task-group-name' }, group.name), h('span', { class: 'task-group-count' }, String(size))];
+    if (group.id === 'done') return h('div', { class: ['task-group-head', `group-${group.id}`] }, label, archiveAllButton(groupRows));
     if (group.id !== 'ended') return h('div', { class: ['task-group-head', `group-${group.id}`] }, label);
     return h('button', { type: 'button', class: ['task-group-head', 'group-ended'], 'aria-expanded': String(endedOpen), onClick: () => {
       endedOpen = !endedOpen;
@@ -750,6 +784,14 @@ export function createSidebar(ctx) {
       shape = '';
       renderTasks();
     } }, label, icon(endedOpen ? 'down' : 'right', { size: 12 }));
+  }
+
+  /** A selector for the rebuilt copy of a group's head or "Archive all" (null for a row). */
+  function sameControl(el) {
+    const kind = ['task-group-action', 'task-group-head'].find((name) => el.classList.contains(name));
+    const group = kind && el.closest('.task-group');
+    const id = group && GROUPS.find((g) => group.classList.contains(`group-${g.id}`));
+    return id ? `.task-group.group-${id.id} .${kind}` : null;
   }
 
   function renderTasks() {
@@ -791,12 +833,24 @@ export function createSidebar(ctx) {
     }
     for (const id of [...rows.keys()]) if (!seen.has(id)) rows.delete(id);
     // Rebuild only when the grouping or order changed, so focus is not lost on every update.
-    const next = GROUPS.map((g) => `${g.id}:${g.id === 'ended' && !endedOpen ? 'closed' : ''}:${grouped.get(g.id).map((r) => r.task.id).join(',')}`).join('|');
+    const next = `${sandbox.access}|${GROUPS.map((g) => `${g.id}:${g.id === 'ended' && !endedOpen ? 'closed' : ''}:${grouped.get(g.id).map((r) => r.task.id).join(',')}`).join('|')}`;
     if (next === shape) return;
     shape = next;
+    // The keyboard stays in the list across a rebuild (SPEC-062): on the same control (a group's
+    // head or "Archive all", rebuilt here), on the same row if it is still listed, else on the
+    // row next to the one that left, else on the first task.
+    const focused = list.contains(document.activeElement) ? document.activeElement : null;
+    const control = focused ? sameControl(focused) : null;
+    const row = focused && focused.closest('.task-row');
+    const neighbours = row ? [row.nextElementSibling, row.previousElementSibling].map((el) => el && el.querySelector('.task-link')) : [];
     setChildren(list, GROUPS.filter((g) => grouped.get(g.id).length).map((g) => h('section', { class: ['task-group', `group-${g.id}`], 'aria-label': g.name },
-      groupHead(g, grouped.get(g.id).length),
+      groupHead(g, grouped.get(g.id)),
       g.id === 'ended' && !endedOpen ? null : h('div', { role: 'list' }, grouped.get(g.id).map((r) => r.el)))));
+    if (focused && document.activeElement !== focused) {
+      const target = [control && list.querySelector(control), focused, ...neighbours].find((el) => el && list.contains(el))
+        || list.querySelector('a.task-link, button.task-group-head');
+      if (target) target.focus({ preventScroll: true });
+    }
   }
 
   const repaint = coalesce(() => renderTasks(), { minInterval: 150 });

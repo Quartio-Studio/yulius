@@ -259,7 +259,8 @@ pub fn account_usage(account: &AccountRecord) -> AccountUsage {
         .unwrap_or_default()
 }
 
-/// Live attempts that use `account`.
+/// Attempts in `live` that use `account`. The counts people see pass working attempts, so a Done
+/// task does not count on its subscription (SPEC-057).
 #[must_use]
 pub fn in_use_count(account: &AccountId, live: &[AttemptRecord]) -> u32 {
     u32::try_from(
@@ -440,7 +441,7 @@ impl App {
     async fn publish_account_id(&self, id: &AccountId) {
         let store = &self.deps.store;
         if let (Ok(Some(account)), Ok(live)) =
-            (store.account(id).await, store.live_attempts().await)
+            (store.account(id).await, self.working_attempts().await)
         {
             self.publish_account(account_view(&account, &live));
         }
@@ -462,7 +463,7 @@ impl App {
     pub async fn list_accounts(self: &Arc<Self>, ctx: &AuthContext) -> AppResult<Vec<AccountView>> {
         self.require_instance_admin(ctx)?;
         let store = &self.deps.store;
-        let live = store.live_attempts().await?;
+        let live = self.working_attempts().await?;
         let now = self.now();
         // Opening the list reads usage again in the background (within each subscription's
         // back-off); the cards update as the readings arrive.
@@ -527,7 +528,7 @@ impl App {
             return Err(AppError::Upstream(failure.message));
         }
         let updated = store.account(&id).await?.ok_or(AppError::NotFound)?;
-        let mut view = account_view(&updated, &store.live_attempts().await?);
+        let mut view = account_view(&updated, &self.working_attempts().await?);
         let now = self.now();
         view.tokens_24h = Some(totals_view(
             store
@@ -743,24 +744,57 @@ impl App {
             .account(&account.id)
             .await?
             .ok_or(AppError::NotFound)?;
-        let view = account_view(&updated, &store.live_attempts().await?);
+        let view = account_view(&updated, &self.working_attempts().await?);
         self.publish_account(view.clone());
         Ok(view)
     }
 
-    /// Deletes an account and its sealed credential; refused while a live task uses it.
+    /// Deletes an account and its sealed credential; refused while a task that is not Done uses
+    /// it. Done tasks' idle sessions on it are closed first, as archiving does (SPEC-057 SUB-003).
     /// A running login of the account is cancelled.
     ///
     /// # Errors
-    /// `NotFound`, `Conflict` while in use, `Forbidden`.
-    pub async fn delete_account(&self, ctx: &AuthContext, id: &str) -> AppResult<()> {
+    /// `NotFound`, `Conflict` while in use or while a Done session is still closing, `Forbidden`.
+    pub async fn delete_account(self: &Arc<Self>, ctx: &AuthContext, id: &str) -> AppResult<()> {
         self.require_instance_admin(ctx)?;
         let account = self.load_account(id).await?;
         let store = &self.deps.store;
-        let in_use = in_use_count(&account.id, &store.live_attempts().await?);
+        let in_use = in_use_count(&account.id, &self.working_attempts().await?);
         if in_use > 0 {
             return Err(AppError::Conflict(format!(
                 "{} is used by {in_use} running task(s); stop or switch them first",
+                account.label
+            )));
+        }
+        let done: Vec<_> = store
+            .live_attempts()
+            .await?
+            .into_iter()
+            .filter(|a| a.account_id.as_ref() == Some(&account.id))
+            .map(|a| a.task_id)
+            .collect();
+        // Closed together, so removal takes one close escalation, not one per task.
+        let mut closes = tokio::task::JoinSet::new();
+        for task in done {
+            let app = Arc::clone(self);
+            closes.spawn(async move {
+                // Looked at again just before closing: a task typed into since is not closed.
+                match app.deps.store.task(&task).await? {
+                    Some(record) if app.task_is_done_locally(&record).await => {
+                        app.close_task_and_wait(&task).await
+                    }
+                    _ => Ok(()),
+                }
+            });
+        }
+        for closed in closes.join_all().await {
+            closed?;
+        }
+        // A Done task typed into meanwhile is working again and keeps the subscription.
+        let still = in_use_count(&account.id, &store.live_attempts().await?);
+        if still > 0 {
+            return Err(AppError::Conflict(format!(
+                "{} is used by {still} running task(s); stop or switch them first",
                 account.label
             )));
         }
@@ -803,7 +837,7 @@ impl App {
             )
             .await?;
         Ok(AccountLoginStarted {
-            account: account_view(&account, &store.live_attempts().await?),
+            account: account_view(&account, &self.working_attempts().await?),
             login_id: session.id.clone(),
         })
     }

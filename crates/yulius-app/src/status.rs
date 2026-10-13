@@ -51,6 +51,8 @@ impl App {
         let store = &self.deps.store;
         let snapshot = self.system_snapshot().await?;
         let live = store.live_attempts().await?;
+        // A subscription is held by working tasks only (SPEC-057 SUB-001).
+        let working = self.working_attempts().await?;
         let mut live_by_sandbox: HashMap<String, u32> = HashMap::new();
         for attempt in &live {
             if let Some(task) = store.task(&attempt.task_id).await? {
@@ -82,7 +84,7 @@ impl App {
                 usage: usage_view(&account_usage(a)),
                 id: admin.then(|| a.id.to_string()),
                 last_error: if admin { a.last_error.clone() } else { None },
-                in_use_by: admin.then(|| in_use_count(&a.id, &live)),
+                in_use_by: admin.then(|| in_use_count(&a.id, &working)),
             })
             .collect();
         let queued = store.tasks_with_status(&[TaskStatus::Queued]).await?.len();
@@ -90,7 +92,7 @@ impl App {
             vm: vm_view(&snapshot),
             sessions: SessionCounts {
                 // What the limit counts: Done tasks' idle sessions do not (SES-101).
-                live: self.sessions_in_use().await?,
+                live: u32::try_from(working.len()).unwrap_or(u32::MAX),
                 limit: self.config.max_live_sessions,
                 queued: u32::try_from(queued).unwrap_or(u32::MAX),
             },

@@ -486,10 +486,10 @@ impl App {
         self.sandbox_dir(sandbox).join("home")
     }
 
-    /// Account views for the rotation policy.
+    /// Account views for the rotation policy; Done tasks' idle sessions are no load (SPEC-057).
     pub(crate) async fn account_views(&self) -> AppResult<Vec<AccountView>> {
         let accounts = self.deps.store.accounts().await?;
-        let live = self.deps.store.live_attempts().await?;
+        let live = self.working_attempts().await?;
         Ok(accounts
             .iter()
             .filter(|a| a.credential.is_some())
@@ -502,12 +502,7 @@ impl App {
                     .as_deref()
                     .map(usage_json::from_json)
                     .unwrap_or_default(),
-                in_use: u32::try_from(
-                    live.iter()
-                        .filter(|r| r.account_id.as_ref() == Some(&a.id))
-                        .count(),
-                )
-                .unwrap_or(u32::MAX),
+                in_use: crate::accounts::in_use_count(&a.id, &live),
             })
             .collect())
     }
@@ -1722,18 +1717,27 @@ impl App {
     /// # Errors
     /// Store failures.
     pub(crate) async fn sessions_in_use(&self) -> AppResult<u32> {
+        Ok(u32::try_from(self.working_attempts().await?.len()).unwrap_or(u32::MAX))
+    }
+
+    /// Live attempts except those of Done tasks: what holds a session slot (SES-101) and a
+    /// subscription (SPEC-057 SUB-001, SUB-002). A Done task typed into again counts again.
+    ///
+    /// # Errors
+    /// Store failures.
+    pub(crate) async fn working_attempts(&self) -> AppResult<Vec<AttemptRecord>> {
         let store = &self.deps.store;
-        let mut in_use = 0u32;
+        let mut working = Vec::new();
         for attempt in store.live_attempts().await? {
             let done = match store.task(&attempt.task_id).await? {
                 Some(task) => self.task_is_done_locally(&task).await,
                 None => false,
             };
             if !done {
-                in_use = in_use.saturating_add(1);
+                working.push(attempt);
             }
         }
-        Ok(in_use)
+        Ok(working)
     }
 
     /// Starts queued tasks while capacity allows (FIFO); none while an update pauses tasks.

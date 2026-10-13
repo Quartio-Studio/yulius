@@ -223,3 +223,26 @@ test('a file attached on the new-task prompt that is not an image opens in a new
   expect(opened[0][1]).toBe('_blank');
   await expect(browser.locator('dialog.modal')).toHaveCount(0);
 });
+
+// #259: the URL made for a file opened in a tab goes with the composer, like the thumbnails'.
+test('leaving the new-task composer revokes the URL of a file opened in a tab', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await expect(screen.getByRole('textbox', 'Task prompt')).toBeVisible();
+  await installDrop(browser);
+  await browser.evaluate(() => {
+    const w = window as unknown as { __opened: string[]; __revoked: string[] };
+    w.__opened = [];
+    w.__revoked = [];
+    window.open = (url?: string | URL) => { w.__opened.push(String(url)); return null; };
+    const revoke = URL.revokeObjectURL.bind(URL);
+    URL.revokeObjectURL = (url: string) => { w.__revoked.push(url); revoke(url); };
+  });
+  await browser.evaluate(() => (window as unknown as Mocked).__e2eDrop!('.composer-box', [['notes.txt', 'hello', 'text/plain']], ['drop']));
+  await screen.getByRole('button', 'Open notes.txt').click();
+  const [opened] = await browser.evaluate(() => (window as unknown as { __opened: string[] }).__opened);
+  expect(opened).toMatch(/^blob:/);
+
+  await screen.getByRole('link', /Checkout API/).first().click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/#12/);
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __revoked: string[] }).__revoked)).toContain(opened);
+});

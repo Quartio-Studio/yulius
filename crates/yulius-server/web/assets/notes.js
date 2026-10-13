@@ -145,11 +145,13 @@ export function createNotesView(ctx, sandbox) {
   return {
     el,
     headExtra: () => [status],
-    show() {
+    show(opts = {}) {
       shown = true;
       current.load();
       renderStatus();
-      setTimeout(() => { if (shown) current.focus(); }, 0);
+      // Shown again because the page changed (panels.js `{ context: true }`): the keyboard stays
+      // with the page; opened by the person, the notepad takes it (SPEC-056 WUI-103).
+      if (!opts.context) setTimeout(() => { if (shown) current.focus(); }, 0);
     },
     hide() {
       shown = false;
