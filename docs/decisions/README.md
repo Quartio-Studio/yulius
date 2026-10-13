@@ -60,4 +60,4 @@ title whose number differs from the file name, and a record this index does not 
 - [0049](0049-management-tools-cover-the-task-and-automation-lifecycle.md): Management tools cover the task and automation lifecycle, never the caller's own task
 - [0052](0052-only-keystrokes-count-as-typing.md): Only keystrokes count as typing; a typed first message stays pending until submitted
 - [0051](0051-the-merge-gate-enforces-the-branch-policy.md): Yulius's merge gate enforces the branch policy
-- [0052](0052-the-clis-own-continuation-ends-a-limit-pause.md): The CLI's own continuation ends a limit pause; a refused limit switch is remembered per run
+- [0053](0053-the-clis-own-continuation-ends-a-limit-pause.md): The CLI's own continuation ends a limit pause; a refused limit switch is remembered per run
