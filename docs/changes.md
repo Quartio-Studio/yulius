@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
-- Yulius's merge gate enforces the branch policy (SPEC-069, ADR 0050, task #59; #223). Before
+- Yulius's merge gate enforces the branch policy (SPEC-069, ADR 0051, task #59; #223). Before
   Yulius merges a task's pull request (`delivery_merge`, an armed merge, the Git page) or a
   promotion pull request, it checks the title, head and base against `yulius.toml`
   `[branch_policy]` at `dev`. The standard preset is the default: typed branches, conventional

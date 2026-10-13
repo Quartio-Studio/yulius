@@ -98,7 +98,7 @@ The branch policy defines names, PR titles and valid base/head combinations. Yul
 gate checks it before every merge it makes (task PRs, armed merges, the Git page, promotion
 PRs) and refuses a violation with the rule in words; fix the title (`gh pr edit`) or the branch
 and merge again. It is configured in `yulius.toml` `[branch_policy]` (`preset = "standard"` or
-`"none"`, optional `types`), read from `dev` (SPEC-069, ADR 0050).
+`"none"`, optional `types`), read from `dev` (SPEC-069, ADR 0051).
 Intermediate commit wording is a convention, not an additional blocking check.
 
 ## Keep history tidy with squash, not stash

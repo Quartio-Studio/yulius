@@ -69,7 +69,7 @@ rules are the standard preset and the default.
 
 ## Plan
 
-- [x] Spec SPEC-069 and ADR 0050 for the branch policy gate
+- [x] Spec SPEC-069 and ADR 0051 for the branch policy gate
 - [x] Branch policy rules in the domain with unit tests
 - [x] [branch_policy] table in yulius.toml parsed and validated
 - [x] Merge gate refuses violating task pull requests (delivery_merge, armed, Git page)
@@ -99,7 +99,7 @@ rules are the standard preset and the default.
 
 ## Decisions
 
-- Recorded in [ADR 0050](../../docs/decisions/0050-the-merge-gate-enforces-the-branch-policy.md):
+- Recorded in [ADR 0051](../../docs/decisions/0051-the-merge-gate-enforces-the-branch-policy.md):
   the rules live in Rust and are checked at merge time from the integration branch's
   `yulius.toml`; the standard preset is on by default; the Python script is removed.
 - A new `[branch_policy]` table, not keys in `[delivery]`: `[delivery]` keys are strict, so an

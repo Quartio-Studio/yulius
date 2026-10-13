@@ -1,4 +1,4 @@
-//! The branch policy Yulius's merge gate enforces (SPEC-069, ADR 0050): which pull requests may
+//! The branch policy Yulius's merge gate enforces (SPEC-069, ADR 0051): which pull requests may
 //! merge, by their title, head and base.
 //!
 //! Into the integration branch: a typed short-lived head (`feat/42-task-cancellation`) and a
