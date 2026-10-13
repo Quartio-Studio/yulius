@@ -11,7 +11,9 @@
 //! shell is the same shell). Hooks, the status line and MCP servers run without the wrapper and
 //! are never counted. A shell that only runs `yulius wait` is not counted either: the agent
 //! waits for Yulius (checks, a merge, a message) and builds nothing (SPEC-050 DSK-102), so its
-//! task reads as waiting and its caches may go under disk pressure. The probe reads the process table once: on Linux it walks
+//! caches may go under disk pressure. Such shells are counted apart ([`ShellCount::waits`]): the
+//! agent goes on by itself when Yulius has news, so its task is not the person's turn (SPEC-085
+//! STT-002). The probe reads the process table once: on Linux it walks
 //! `/proc/<pid>/task/<tid>/children` from the agent (falling back to a scan of `/proc`), elsewhere
 //! it runs `ps` with a timeout. Every read is bounded ([`MAX_PROCESSES`], [`MAX_DEPTH`],
 //! [`MAX_CMDLINE_BYTES`], [`PS_TIMEOUT`]); `None` means the table could not be read.
@@ -69,11 +71,27 @@ pub fn is_yulius_wait(command_line: &[u8]) -> bool {
     name == b"yulius" && args.next() == Some(b"wait".as_slice())
 }
 
+/// What one probe found below an agent.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ShellCount {
+    /// Background shells that run something ([`count_shells`]).
+    pub shells: u32,
+    /// Background shells whose only processes are `yulius wait` (DSK-102): the agent waits for
+    /// Yulius and is woken when the wait ends.
+    pub waits: u32,
+}
+
 /// Counts the background shells below `root` in `table` (the root itself never counts): wrapper
 /// shells with no wrapper shell above them, at most [`MAX_PROCESSES`] processes and
 /// [`MAX_DEPTH`] levels deep. A shell whose only processes are `yulius wait` does not count.
 #[must_use]
 pub fn count_shells(table: &[ProcessEntry], root: u32) -> u32 {
+    count_background(table, root).shells
+}
+
+/// [`count_shells`], with the shells that only run `yulius wait` counted apart.
+#[must_use]
+pub fn count_background(table: &[ProcessEntry], root: u32) -> ShellCount {
     let mut children: HashMap<u32, Vec<&ProcessEntry>> = HashMap::new();
     for entry in table {
         if entry.pid != entry.ppid {
@@ -111,22 +129,32 @@ pub fn count_shells(table: &[ProcessEntry], root: u32) -> u32 {
             queue.push_back((child.pid, shell, depth + 1));
         }
     }
-    let counted = shells
+    let waits = shells
         .values()
-        .filter(|(waits, other)| !(*waits && !*other))
+        .filter(|(waits, other)| *waits && !*other)
         .count();
-    u32::try_from(counted).unwrap_or(u32::MAX)
+    let count = |n: usize| u32::try_from(n).unwrap_or(u32::MAX);
+    ShellCount {
+        shells: count(shells.len().saturating_sub(waits)),
+        waits: count(waits),
+    }
 }
 
 /// Background shells left under the agent process `root`; `None` when the process table cannot
 /// be read (the process is gone, `/proc` is hidden, `ps` failed or timed out).
 #[must_use]
 pub fn background_shells(root: u32) -> Option<u32> {
+    background_probe(root).map(|count| count.shells)
+}
+
+/// [`background_shells`], with the shells that only run `yulius wait` counted apart.
+#[must_use]
+pub fn background_probe(root: u32) -> Option<ShellCount> {
     if root <= 1 {
         return None;
     }
     let table = imp::table_under(root)?;
-    Some(count_shells(&table, root))
+    Some(count_background(&table, root))
 }
 
 #[cfg(target_os = "linux")]
@@ -370,6 +398,21 @@ mod tests {
         ];
         assert_eq!(count_shells(&table, 10), 2);
         assert_eq!(count_shells(&table[..3], 10), 0);
+        // SPEC-085 STT-002: the waiting shell is counted apart.
+        assert_eq!(
+            count_background(&table, 10),
+            ShellCount {
+                shells: 2,
+                waits: 1
+            }
+        );
+        assert_eq!(
+            count_background(&table[..3], 10),
+            ShellCount {
+                shells: 0,
+                waits: 1
+            }
+        );
     }
 
     #[test]

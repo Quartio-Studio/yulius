@@ -16,6 +16,7 @@
 //!            [--interrupts] [--rate-limits-file PATH] [--session-start] [--opening-turn-ms MS]
 //!            [--echo-turn-ms MS] [--context-full-after N] [--compact-fails] [--compact-hangs]
 //!            [--prompt TEXT] [--limit-continues-ms MS [--limit-continues-answer-only]]
+//!            [--idle-compact-ms MS]
 //! ```
 //!
 //! Modes:
@@ -60,7 +61,12 @@
 //! starts a Monitor stream (`{"taskId":"monitor-1","timeoutMs":N000}`) that never reports; with
 //! `--goal-monitor-ends` too, the stream ends after N/2 seconds and wakes the session
 //! (`MONITOR DONE`). `--goal-verdict failed` records the goal as failed instead of achieved, and
-//! `--goal-verdict none` records no verdict (the turn closes without one).
+//! `--goal-verdict none` records no verdict (the turn closes without one). With
+//! `--idle-compact-ms MS` the idle session compacts itself MS after the goal turn, like Claude
+//! Code 2.1.292 "before the prompt cache expired": the `compact_boundary` record, the summary
+//! user record it continues from (`isCompactSummary`), the files it reads again, its
+//! `SessionStart` hook (`source: compact`) and its notice, then it prints `COMPACTED WHILE IDLE`.
+//! No turn runs.
 //!
 //! `--hooks YULIUS_EXE` runs Claude Code's hooks as configured by Yulius:
 //! `YULIUS_EXE hook claude UserPromptSubmit` before and `… Stop` after each turn, with the hook
@@ -189,6 +195,7 @@ struct Options {
     prompt: Option<String>,
     limit_continues_ms: Option<u64>,
     limit_continues_answer_only: bool,
+    idle_compact_ms: Option<u64>,
 }
 
 fn parse_number<T: std::str::FromStr>(flag: &str, value: Option<String>) -> Result<T, String> {
@@ -232,6 +239,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         prompt: None,
         limit_continues_ms: None,
         limit_continues_answer_only: false,
+        idle_compact_ms: None,
     };
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -297,6 +305,10 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                 options.goal_continue_ms = Some(ms.min(MAX_GOAL_DELAY_MS));
             }
             "--goal-continue-verdict" => options.goal_continue_verdict = true,
+            "--idle-compact-ms" => {
+                let ms: u64 = parse_number(&flag, args.next())?;
+                options.idle_compact_ms = Some(ms.min(MAX_GOAL_DELAY_MS));
+            }
             "--goal-continue-dies" => options.goal_continue_dies = true,
             "--goal-delay-ms" => {
                 let ms: u64 = parse_number(&flag, args.next())?;
@@ -738,6 +750,63 @@ impl Transcript {
         self.append(&[record])
     }
 
+    /// The records of Claude Code 2.1.292's compaction of an idle session ("Compacted while idle,
+    /// before the prompt cache expired"), in its order: the boundary, the summary the session
+    /// continues from, the files it reads again and the `SessionStart:compact` hook's record.
+    /// The notice ([`Self::idle_compaction_notice`]) follows the hook.
+    fn idle_compaction(&mut self) -> io::Result<()> {
+        let at = rfc3339(now_ms());
+        let n = self.turns;
+        let mut boundary = self.claude_envelope(
+            "system",
+            &format!("fake-{}-{n}-idle-compact", self.session_id),
+            &at,
+        );
+        boundary["parentUuid"] = Value::Null;
+        boundary["logicalParentUuid"] = json!(self.last_uuid);
+        boundary["subtype"] = json!("compact_boundary");
+        boundary["content"] = json!("Conversation compacted");
+        boundary["isMeta"] = json!(false);
+        boundary["level"] = json!("info");
+        boundary["compactMetadata"] = json!({"trigger": "auto", "preTokens": 400_160, "durationMs": 47_527, "postTokens": 8_602});
+        let summary_uuid = format!("fake-{}-{n}-summary", self.session_id);
+        let mut summary = self.claude_envelope("user", &summary_uuid, &at);
+        summary["parentUuid"] = boundary["uuid"].clone();
+        summary["promptId"] = json!(format!("fake-{}-{n}-summary-prompt", self.session_id));
+        summary["message"] = json!({"role": "user", "content": "This session is being continued \
+            from a previous conversation that ran out of context. The summary below covers the \
+            earlier portion of the conversation."});
+        summary["isVisibleInTranscriptOnly"] = json!(true);
+        summary["isCompactSummary"] = json!(true);
+        summary["turnPosition"] = json!({"promptIndex": 1, "turnIndex": n});
+        let mut file = self.claude_envelope("attachment", &format!("{summary_uuid}-file"), &at);
+        file["parentUuid"] = json!(summary_uuid);
+        file["attachment"] = json!({"type": "file", "filename": "/tmp/fake/tasks/b1.output",
+            "content": {"type": "text", "file": {"filePath": "/tmp/fake/tasks/b1.output",
+            "content": "done", "numLines": 1, "startLine": 1, "totalLines": 1}}});
+        let mut reference =
+            self.claude_envelope("attachment", &format!("{summary_uuid}-reference"), &at);
+        reference["attachment"] = json!({"type": "compact_file_reference",
+            "filename": format!("{}/src/lib.rs", self.cwd), "displayPath": "src/lib.rs"});
+        let mut hook = self.claude_envelope("attachment", &format!("{summary_uuid}-hook"), &at);
+        hook["attachment"] = json!({"type": "hook_success", "hookName": "SessionStart:compact",
+            "hookEvent": "SessionStart", "content": "", "exitCode": 0});
+        self.last_uuid = Some(format!("{summary_uuid}-hook"));
+        self.append(&[boundary, summary, file, reference, hook])
+    }
+
+    /// The notice that ends an idle compaction.
+    fn idle_compaction_notice(&mut self) -> io::Result<()> {
+        let uuid = format!("fake-{}-{}-idle-notice", self.session_id, self.turns);
+        let mut notice = self.claude_envelope("system", &uuid, &rfc3339(now_ms()));
+        notice["subtype"] = json!("informational");
+        notice["content"] = json!("Compacted while idle, before the prompt cache expired");
+        notice["isMeta"] = json!(false);
+        notice["level"] = json!("notice");
+        self.last_uuid = Some(uuid);
+        self.append(&[notice])
+    }
+
     /// The error output of a `/compact` that failed.
     fn compact_failed(&mut self) -> io::Result<()> {
         let uuid = format!("fake-{}-{}-compact-failed", self.session_id, self.turns);
@@ -831,11 +900,16 @@ impl Hooks {
 
     /// `SessionStart` (`source: startup`), as Claude Code runs it before its prompt box reads.
     fn session_start(&self) {
+        self.session_start_from("startup");
+    }
+
+    /// `SessionStart` with `source` (`startup`, or `compact` after a compaction).
+    fn session_start_from(&self, source: &str) {
         run_hook(
             &self.exe,
             "SessionStart",
             &json!({"session_id": self.session_id, "hook_event_name": "SessionStart",
-                "source": "startup"}),
+                "source": source}),
         );
     }
 
@@ -1262,7 +1336,31 @@ fn goal_turn(
             hooks.cloned(),
         );
     }
+    if let Some(ms) = options.idle_compact_ms {
+        compact_when_idle(ms, transcript.cloned(), hooks.cloned());
+    }
     say("✓ Goal achieved")
+}
+
+/// The idle session compacts itself after `ms`, like Claude Code 2.1.292 before its prompt cache
+/// expires: no prompt, no turn, no Stop hook (`--idle-compact-ms`).
+fn compact_when_idle(ms: u64, transcript: Option<Arc<Mutex<Transcript>>>, hooks: Option<Hooks>) {
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(ms));
+        let write = |f: &dyn Fn(&mut Transcript) -> io::Result<()>| {
+            if let Some(transcript) = &transcript
+                && let Ok(mut t) = transcript.lock()
+            {
+                let _ = f(&mut t);
+            }
+        };
+        write(&|t| t.idle_compaction());
+        if let Some(hooks) = &hooks {
+            hooks.session_start_from("compact");
+        }
+        write(&|t| t.idle_compaction_notice());
+        let _ = say("COMPACTED WHILE IDLE");
+    });
 }
 
 fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {

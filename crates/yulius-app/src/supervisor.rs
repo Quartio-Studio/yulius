@@ -133,6 +133,9 @@ pub struct TaskRuntime {
     pub(crate) last_stop_ms: AtomicI64,
     /// Background shells the agent left running, as last probed (-1 = not known).
     pub(crate) background_shells: AtomicI64,
+    /// Background shells of the idle agent that only run `yulius wait`, as last probed (-1 = not
+    /// known): it waits for Yulius and goes on by itself (SPEC-085 STT-002).
+    pub(crate) background_waits: AtomicI64,
     /// Since when (ms) the idle agent's background shells have been running (0 = none).
     pub(crate) shells_since_ms: AtomicI64,
     /// Background agents Claude Code still waited for when the last turn ended (its
@@ -238,6 +241,7 @@ impl TaskRuntime {
             push_problem: Mutex::new(None),
             last_stop_ms: AtomicI64::new(0),
             background_shells: AtomicI64::new(-1),
+            background_waits: AtomicI64::new(-1),
             shells_since_ms: AtomicI64::new(0),
             background_agents: AtomicU32::new(0),
             notice_attention_ms: AtomicI64::new(0),
@@ -272,6 +276,12 @@ impl TaskRuntime {
     /// Whether the run's transcript is being watched (a turn record can still arrive).
     pub(crate) fn is_watching(&self) -> bool {
         self.watcher_alive.load(Ordering::SeqCst)
+    }
+
+    /// How many rounds the transcript watcher has begun: once two more began, the lines written
+    /// before were read and applied (what tests and the Stop hook wait on, SPEC-079 BGW-004).
+    pub fn transcript_rounds(&self) -> u64 {
+        self.watch_polls.load(Ordering::SeqCst)
     }
 
     /// Whether a turn is known to be in progress (one started and none ended since).
@@ -2928,6 +2938,7 @@ impl App {
         runtime.goal_achieved.store(false, Ordering::SeqCst);
         runtime.goal_submitted.store(false, Ordering::SeqCst);
         runtime.background_shells.store(-1, Ordering::SeqCst);
+        runtime.background_waits.store(-1, Ordering::SeqCst);
         runtime.background_agents.store(0, Ordering::SeqCst);
         runtime.notice_attention_ms.store(0, Ordering::SeqCst);
         runtime.turn_record_ms.store(0, Ordering::SeqCst);

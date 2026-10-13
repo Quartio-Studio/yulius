@@ -72,6 +72,24 @@ function stillWorking(count, since) {
   return { glyph: '●', icon: 'st-working', tone: 'working', label: 'Working', group: 'working', shells: count, shellsSince: since, detail: shellsLine(count, since) };
 }
 
+/** What an idle agent waiting in `yulius wait` is doing, in words (SPEC-085 STT-002). */
+export const WAITS_LINE = 'Waits for its checks or merge; goes on by itself';
+
+/**
+ * An idle agent that waits in `yulius wait` for its checks, its delivery or an armed merge goes on
+ * by itself when Yulius has news: it is not the person's turn (SPEC-085 STT-002). Its tone is
+ * Working's, so nobody is notified of it.
+ */
+const WAITING_ON_YULIUS = { glyph: '⧗', icon: 'branch', tone: 'working', label: 'Waiting for checks or merge', group: 'working', waits: true, detail: WAITS_LINE };
+
+/**
+ * Whether the idle agent goes on by itself (SPEC-085 STT-003): its background work wakes it, or
+ * Yulius does when its `yulius wait` returns.
+ */
+export function goesOn(task) {
+  return backgroundShells(task) > 0 || task.yulius_wait === true;
+}
+
 const DONE = { glyph: '✓', icon: 'check', tone: 'done', label: 'Done', group: 'done' };
 
 /** Whether the task's plan has steps not done or skipped yet (STP-001, STP-005). */
@@ -92,7 +110,8 @@ export function statusInfo(task) {
   if (status === 'running') {
     // needs_attention: blocked mid-turn (a permission prompt, a browser request, failing gates);
     // waiting: the agent finished its turn and the next move is the user's — unless its
-    // background shells still run (it wakes by itself when they report, TSK-014);
+    // background shells still run (it wakes by itself when they report, TSK-014) or it waits in
+    // `yulius wait` (Yulius wakes it, SPEC-085);
     // done: the goal is achieved and the turn ended — Done once no background shell is left.
     if (activity === 'needs_attention') return { glyph: '!', icon: 'st-attention', tone: 'attention', label: 'Needs your action', group: 'needs' };
     if (activity === 'done') {
@@ -101,9 +120,10 @@ export function statusInfo(task) {
     }
     if (activity === 'waiting') {
       // Background shells keep the agent going: it wakes by itself when they report, so the next
-      // move is not the user's yet.
+      // move is not the user's yet. Nor while it waits for Yulius (`yulius wait`, SPEC-085).
       const shells = backgroundShells(task);
       if (shells) return stillWorking(shells, task.background_shells_since);
+      if (task.yulius_wait === true) return { ...WAITING_ON_YULIUS };
       return { glyph: '○', icon: 'st-input', tone: 'waiting', label: 'Your turn', group: 'needs' };
     }
     if (activity === 'working') return { glyph: '●', icon: 'st-working', tone: 'working', label: 'Working', group: 'working' };
@@ -182,6 +202,7 @@ export function activityLine(task, info = statusInfo(task)) {
   if (info.request) return info.request.reason || 'Do something in the sandbox browser';
   if (info.held) return 'A prompt was held · choose what to do';
   if (info.shells) return shellsLine(info.shells, info.shellsSince);
+  if (info.waits) return WAITS_LINE;
   if (info.pr) return info.label;
   const steps = task.steps || {};
   if (task.status === 'running') {
@@ -221,8 +242,10 @@ export function supertaskLine(task) {
  * The one rule for Done (SPEC-001 TSK-014): the last turn ended cleanly, nothing needs the user,
  * no background shell is left, and the work is evidently complete — Claude Code recorded the goal
  * as achieved (activity `done`), or the plan is complete and the pull request is tested. Failing
- * checks need the user; a background shell keeps it Working; checks still running (without an
- * achieved goal) are In review. The group `needs` is what Home and the tabs count.
+ * checks need the user once the agent stopped; a background shell, or the agent waiting in
+ * `yulius wait`, keeps it Working (SPEC-085); checks still running (without an achieved goal) are
+ * In review. The group `needs` is what Home and the tabs count: "Needs you" means a person has to
+ * act.
  */
 export function taskInfo(task, actionRequests, pr) {
   const info = statusInfo(task);
@@ -242,7 +265,16 @@ export function taskInfo(task, actionRequests, pr) {
   // (`AttentionFacts` in yulius-domain).
   const finished = task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done');
   if (pr && finished && (pr.state === 'open' || pr.state === 'merged')) {
-    if (pr.state === 'open' && pr.checks === 'failure') return { ...info, icon: 'branch', tone: 'attention', label: `PR #${pr.number} · checks failing`, group: 'needs', pr };
+    if (pr.state === 'open' && pr.checks === 'failure') {
+      // Failing checks are the person's only once the agent stopped. While its background work
+      // runs or it waits for Yulius, it goes on by itself and sees them (SPEC-085 STT-003).
+      if (goesOn(task)) {
+        const shells = backgroundShells(task);
+        const going = shells ? stillWorking(shells, task.background_shells_since) : { ...WAITING_ON_YULIUS };
+        return { ...info, ...going, label: `${going.label} · PR #${pr.number} checks failing`, pr };
+      }
+      return { ...info, icon: 'branch', tone: 'attention', label: `PR #${pr.number} · checks failing`, group: 'needs', pr };
+    }
     // CI could not run (disk, a timeout, the host): not the code, and nothing for a person yet; the
     // agent is told to run it again (S5).
     if (pr.state === 'open' && pr.checks === 'error') return { ...info, icon: 'branch', tone: 'waiting', label: `In review · PR #${pr.number} · CI could not run (not the code)`, group: 'working', pr };
