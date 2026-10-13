@@ -875,12 +875,18 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
         names,
         [
             "automation_create",
+            "automation_delete",
+            "automation_run_now",
+            "automation_template_enable",
             "automation_update",
             "automations_list",
             "session_read",
             "sessions_search",
+            "task_archive",
             "task_create",
+            "task_delete",
             "task_get",
+            "task_stop",
             "tasks_list",
             "workflows_list",
         ]
@@ -935,6 +941,47 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
         .find(|e| e.action == "automation.created")
         .ok_or("audit entry")?;
     assert_eq!(entry.actor, "cockpit:alice");
+
+    // Runs it now, then deletes it, and archives and deletes the task (which ended: no
+    // repository here): each audited with the Cockpit (SPEC-066 MGT-010, MGT-011).
+    let (ran, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "automation_run_now",
+        json!({"automation_id": id}),
+    )
+    .await?;
+    assert!(!is_error, "{ran}");
+    let (deleted, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "automation_delete",
+        json!({"automation_id": id}),
+    )
+    .await?;
+    assert!(!is_error, "{deleted}");
+    assert!(f.h.store.automation(id).await?.is_none());
+    let (archived, is_error) =
+        cockpit_tool(&f, &token, "task_archive", json!({"number": task.number})).await?;
+    assert!(!is_error, "{archived}");
+    let (deleted, is_error) =
+        cockpit_tool(&f, &token, "task_delete", json!({"number": task.number})).await?;
+    assert!(!is_error, "{deleted}");
+    assert!(f.h.store.task(&task.id).await?.is_none());
+    for (target, action) in [
+        (id, "automation.run_now"),
+        (id, "automation.deleted"),
+        (task.id.as_str(), "task.archived"),
+        (task.id.as_str(), "task.deleted"),
+    ] {
+        let audit = f.h.store.automation_audit(target, 10).await?;
+        assert!(
+            audit
+                .iter()
+                .any(|e| e.action == action && e.actor == "cockpit:alice"),
+            "{action}: {audit:?}"
+        );
+    }
 
     // Unknown tokens, and the token of a Cockpit that ended, are refused (MGT-005).
     let unknown = mcp(&f, "ck_0000", "tools/list", json!({})).await?;
