@@ -112,6 +112,11 @@ pending or running, no other task of the project starts, so the code it changes 
   flight; a queued start is re-checked under the launch lock; a second start of a running task is
   a no-op (it raced and told the terminal "Could not start"); a held capacity resume keeps its
   pause instead of losing its continuation; `stopping` counts as pending; 422, not 400.
+- **Review round 2** (REQUEST CHANGES: missing tests): tests for the held capacity resume and for
+  a deleted or failed supertask; a drain request is recorded before the runner is claimed (no
+  lost request); held paused tasks cost the resume loop no stagger; `drain_queue_now` awaits one
+  pass so "stays queued" assertions can fail. The capacity-path race is a known limitation
+  (ADR-0054).
 - **Labels from the server.** `held_by` is computed where the rule lives and republished when it
   changes during a queue pass, so the client never re-derives the rule.
 - Recorded as ADR-0054.

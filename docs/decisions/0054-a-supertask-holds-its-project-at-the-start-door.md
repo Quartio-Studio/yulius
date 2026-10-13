@@ -59,6 +59,11 @@ resumed by the capacity loop after a pause before they started. All of them end 
   attempts. That is cheap next to a launch. A project without supertasks stops after one read.
 - A person typing into a Done task while a supertask runs makes it work again. That session was
   already running and is not held.
+- Known limitation: the resume loop checks the hold before it ends a capacity pause. A
+  supertask created in the moment between that check and the start makes the start queue the
+  task (`queued`), and that one start loses its pause's kind and continuation (it resumes the
+  session plainly). The window is one store round trip; closing it would need the hold and the
+  pause in one transaction.
 - A task's agent can create a supertask with `task_create` and so block its project. This is an
   accepted risk: the tool is told to do it only when the person asks, the hourly cap of tool-made
   tasks applies, the task is audited with the caller, and anyone with write access can stop it.
