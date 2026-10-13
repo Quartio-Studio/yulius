@@ -56,7 +56,9 @@ watching, steering and unblocking.
   `yulius wait`, `ci_status` and `delivery_status`.
 - **Agent primitives as code**: Yulius's own skills are APM packages with a lockfile, deployed to
   every harness and checked for drift; onboarding codifies a project's conventions as primitives.
-- **Secrets vault**: team secrets people reveal; agent secrets agents use but never see.
+- **Secrets vault**: secrets are a title, a value and notes. Team secrets are for people; agent
+  secrets are used by agents, who never see them. Reading a value needs your own two-factor code
+  (set up once, mandatory). The people who manage an agent secret can read it too.
 - **Updates**: Yulius updates itself from `main` without losing running work.
 
 ## Principles

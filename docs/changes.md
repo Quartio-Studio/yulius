@@ -20,6 +20,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-12
 
+- Secrets are a title, a value and notes, and reading one needs your own two-factor code
+  (SPEC-040, ADR-0034, task #39). The first reveal sets two-factor up: an authenticator key and
+  link, confirmed by a first code. After that, a code unlocks the vault in that browser for 10
+  minutes. A sign-in or password alone no longer reveals anything. Older team secrets keep every
+  field: the password becomes the value, and the address, user name and seed move into the
+  notes. Agent secrets lose the per-secret seed and take a user name only for Basic credentials.
+  The people who manage an agent secret can now read it after a code. Agents still never see it.
+  Ten wrong codes in a row lock codes until the person confirms it is them again. Rolling back
+  past this change needs care: the previous release reads secrets saved in the new form as
+  having no password, and an edit there would drop the value.
 - The Cockpit is now the **Agent**, on the right (SPEC-035, ADR-0034; task #33): a top-bar Agent
   button and the first tool of the right rail open the user's own Claude Code session in the tool
   panel beside the page, under a notice that it is for quick work (setting up automations, quick
