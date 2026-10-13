@@ -4,9 +4,11 @@
 //! server in `<unit>/server` and hands `<unit>` to the service user. The server then:
 //! - moves processes left in `<unit>` from before delegation (runs, browsers) to `<unit>/legacy`;
 //! - enables the `cpu`, `memory` and `pids` controllers for `<unit>` and `<unit>/sandboxes`;
-//! - gives each sandbox `<unit>/sandboxes/<sandbox>` with its limits.
+//! - gives each sandbox `<unit>/sandboxes/<sandbox>` with its limits, split by CPU weight into
+//!   `system/` (the holder), `agents/` (runs) and `ci/` (CI jobs) when `cpu` is available
+//!   (SPEC-053).
 //!
-//! The holder, `slirp4netns` and every run of a sandbox join that group before they start
+//! The holder, `slirp4netns` and every run of a sandbox join their leaf before they start
 //! anything ([`join`]). Without delegation (the parent of the server's cgroup is not ours),
 //! nothing changes and sandboxes run without limits.
 
@@ -23,6 +25,9 @@ const MAX_MOVED: usize = 4096;
 const LEGACY_LEAF: &str = "legacy";
 /// The parent of sandbox groups.
 const SANDBOXES: &str = "sandboxes";
+/// A sandbox's leaves and their `cpu.weight` (SPEC-053 CPU-201): CI gets four times the agents'
+/// share, so 80 % of the sandbox under full contention while the holder idles.
+const LEAVES: [(&str, u32); 3] = [("system", 100), ("agents", 100), ("ci", 400)];
 
 /// Limits of one sandbox; `None` leaves a limit unset (`max`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -150,13 +155,10 @@ fn enable(dir: &Path, controllers: &[String]) -> io::Result<()> {
     write(&dir.join("cgroup.subtree_control"), &line)
 }
 
-/// Prepares the delegated `unit`: processes in its root move to `legacy/`, controllers are
-/// enabled for it and for `sandboxes/`.
-///
-/// # Errors
-/// A cgroup file cannot be written.
-pub fn prepare(unit: &Path) -> io::Result<Delegation> {
-    let stray: Vec<String> = std::fs::read_to_string(unit.join("cgroup.procs"))?
+/// Moves the processes of the group `from` (at most [`MAX_MOVED`]) to `to`, created when there
+/// is any.
+fn move_processes(from: &Path, to: &Path) -> io::Result<()> {
+    let stray: Vec<String> = std::fs::read_to_string(from.join("cgroup.procs"))?
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
@@ -164,13 +166,22 @@ pub fn prepare(unit: &Path) -> io::Result<Delegation> {
         .map(str::to_owned)
         .collect();
     if !stray.is_empty() {
-        let legacy = unit.join(LEGACY_LEAF);
-        std::fs::create_dir_all(&legacy)?;
+        std::fs::create_dir_all(to)?;
         for pid in &stray {
             // A process that exited meanwhile is not an error.
-            let _ = write(&legacy.join("cgroup.procs"), pid);
+            let _ = write(&to.join("cgroup.procs"), pid);
         }
     }
+    Ok(())
+}
+
+/// Prepares the delegated `unit`: processes in its root move to `legacy/`, controllers are
+/// enabled for it and for `sandboxes/`.
+///
+/// # Errors
+/// A cgroup file cannot be written.
+pub fn prepare(unit: &Path) -> io::Result<Delegation> {
+    move_processes(unit, &unit.join(LEGACY_LEAF))?;
     let controllers = controllers_of(unit);
     enable(unit, &controllers)?;
     let sandboxes = unit.join(SANDBOXES);
@@ -182,12 +193,51 @@ pub fn prepare(unit: &Path) -> io::Result<Delegation> {
     })
 }
 
+/// The groups a sandbox's processes join (SPEC-053 CPU-201). Without the `cpu` controller all
+/// three are the sandbox's own group.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SandboxGroups {
+    /// The holder and `slirp4netns`.
+    pub system: PathBuf,
+    /// Agent runs, shells, browsers and the Cockpit.
+    pub agents: PathBuf,
+    /// CI jobs.
+    pub ci: PathBuf,
+}
+
+impl SandboxGroups {
+    fn single(dir: &Path) -> Self {
+        Self {
+            system: dir.to_path_buf(),
+            agents: dir.to_path_buf(),
+            ci: dir.to_path_buf(),
+        }
+    }
+
+    fn leaves(dir: &Path) -> Self {
+        let [system, agents, ci] = LEAVES.map(|(leaf, _)| dir.join(leaf));
+        Self { system, agents, ci }
+    }
+}
+
+/// Hands the CPU of the sandbox group `dir` to its leaves by weight. cgroup v2 keeps processes
+/// out of a group that passes controllers down, so those still in `dir` (a holder and runs from
+/// before the split) move to `agents` first.
+fn split_cpu(dir: &Path, groups: &SandboxGroups) -> io::Result<()> {
+    move_processes(dir, &groups.agents)?;
+    write(&dir.join("cgroup.subtree_control"), "+cpu")?;
+    for (leaf, weight) in LEAVES {
+        write(&dir.join(leaf).join("cpu.weight"), &weight.to_string())?;
+    }
+    Ok(())
+}
+
 impl Delegation {
-    /// The group of `sandbox` (created when missing) with `limits` applied.
+    /// The groups of `sandbox` (created when missing) with `limits` applied.
     ///
     /// # Errors
     /// The group cannot be created or a limit cannot be written.
-    pub fn sandbox_group(&self, sandbox: &str, limits: &Limits) -> io::Result<PathBuf> {
+    pub fn sandbox_group(&self, sandbox: &str, limits: &Limits) -> io::Result<SandboxGroups> {
         let dir = self.unit.join(SANDBOXES).join(sandbox);
         std::fs::create_dir_all(&dir)?;
         for (file, value) in limits.files() {
@@ -196,7 +246,18 @@ impl Delegation {
                 write(&dir.join(file), &value)?;
             }
         }
-        Ok(dir)
+        if !self.controllers.iter().any(|c| c == "cpu") {
+            return Ok(SandboxGroups::single(&dir));
+        }
+        let groups = SandboxGroups::leaves(&dir);
+        for leaf in [&groups.system, &groups.agents, &groups.ci] {
+            std::fs::create_dir_all(leaf)?;
+        }
+        // Joining a leaf works without the weights too; the next preparation tries again.
+        if let Err(error) = split_cpu(&dir, &groups) {
+            tracing::warn!(sandbox, %error, "CI jobs run without CPU priority for now");
+        }
+        Ok(groups)
     }
 }
 
@@ -292,14 +353,19 @@ mod tests {
             std::fs::read_to_string(unit.join("cgroup.subtree_control"))?,
             "+cpu +memory +pids"
         );
-        let group = delegation.sandbox_group(
-            "s1",
-            &Limits {
-                memory_max: Some(1 << 30),
-                cpus: Some(2),
-                pids_max: Some(64),
-            },
-        )?;
+        let group = delegation
+            .sandbox_group(
+                "s1",
+                &Limits {
+                    memory_max: Some(1 << 30),
+                    cpus: Some(2),
+                    pids_max: Some(64),
+                },
+            )?
+            .ci
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or("a leaf has a parent")?;
         assert_eq!(
             std::fs::read_to_string(group.join("memory.max"))?,
             "1073741824"
@@ -310,6 +376,100 @@ mod tests {
         );
         assert_eq!(std::fs::read_to_string(group.join("pids.max"))?, "64");
         assert!(join(&group).is_err(), "only under /sys/fs/cgroup");
+        Ok(())
+    }
+
+    /// A delegated unit whose `sandboxes/<sandbox>` group offers `controllers`.
+    fn fake_sandbox(
+        controllers: &str,
+    ) -> Result<(tempfile::TempDir, Delegation, PathBuf), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let unit = root.path().join("u");
+        std::fs::create_dir_all(&unit)?;
+        std::fs::write(unit.join("cgroup.procs"), "")?;
+        std::fs::write(unit.join("cgroup.controllers"), controllers)?;
+        let delegation = prepare(&unit)?;
+        let dir = unit.join(SANDBOXES).join("s1");
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join("cgroup.procs"), "")?;
+        Ok((root, delegation, dir))
+    }
+
+    #[test]
+    fn a_sandbox_group_splits_into_weighted_leaves() -> Result<(), Box<dyn std::error::Error>> {
+        let (_root, delegation, dir) = fake_sandbox("cpu memory pids\n")?;
+        let groups = delegation.sandbox_group("s1", &Limits::default())?;
+        assert_eq!(
+            groups,
+            SandboxGroups {
+                system: dir.join("system"),
+                agents: dir.join("agents"),
+                ci: dir.join("ci"),
+            }
+        );
+        // Only the CPU goes down to the leaves; the limits stay on the sandbox.
+        assert_eq!(
+            std::fs::read_to_string(dir.join("cgroup.subtree_control"))?,
+            "+cpu"
+        );
+        assert_eq!(std::fs::read_to_string(dir.join("cpu.max"))?, "max 100000");
+        for (leaf, weight) in [("system", "100"), ("agents", "100"), ("ci", "400")] {
+            assert_eq!(
+                std::fs::read_to_string(dir.join(leaf).join("cpu.weight"))?,
+                weight,
+                "{leaf}"
+            );
+        }
+        // Preparing again (every run does) changes nothing.
+        assert_eq!(delegation.sandbox_group("s1", &Limits::default())?, groups);
+        Ok(())
+    }
+
+    #[test]
+    fn processes_in_the_sandbox_group_move_to_agents_first()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_root, delegation, dir) = fake_sandbox("cpu memory pids\n")?;
+        // A holder and a run from before the split.
+        std::fs::write(dir.join("cgroup.procs"), "11\n12\n")?;
+        let groups = delegation.sandbox_group("s1", &Limits::default())?;
+        // A fake file keeps the last write; the kernel moves each process on its write.
+        assert_eq!(
+            std::fs::read_to_string(groups.agents.join("cgroup.procs"))?,
+            "12"
+        );
+        assert!(!groups.system.join("cgroup.procs").exists());
+        assert!(!groups.ci.join("cgroup.procs").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn a_split_that_cannot_be_enabled_still_gives_leaves() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (_root, delegation, dir) = fake_sandbox("cpu memory pids\n")?;
+        // The kernel refuses `+cpu` while a process is in the group (EBUSY); a directory in the
+        // file's place refuses every write the same way.
+        std::fs::create_dir_all(dir.join("cgroup.subtree_control"))?;
+        let groups = delegation.sandbox_group("s1", &Limits::default())?;
+        assert_eq!(groups.ci, dir.join("ci"));
+        assert!(groups.ci.is_dir() && groups.agents.is_dir() && groups.system.is_dir());
+        assert!(!groups.ci.join("cpu.weight").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn without_the_cpu_controller_there_is_no_split() -> Result<(), Box<dyn std::error::Error>> {
+        let (_root, delegation, dir) = fake_sandbox("memory pids\n")?;
+        let groups = delegation.sandbox_group("s1", &Limits::default())?;
+        assert_eq!(
+            groups,
+            SandboxGroups {
+                system: dir.clone(),
+                agents: dir.clone(),
+                ci: dir.clone(),
+            }
+        );
+        assert!(!dir.join("ci").exists());
+        assert!(!dir.join("cgroup.subtree_control").exists());
         Ok(())
     }
 }

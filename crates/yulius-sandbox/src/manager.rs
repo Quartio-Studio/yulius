@@ -31,7 +31,7 @@ use yulius_contracts::ptyhost::SandboxJoin;
 use yulius_contracts::sandbox::{HOLDER_RECORD_VERSION, HolderRecord, HolderSpec, IdMap};
 
 use crate::base::{BaseInfo, Bases};
-use crate::cgroup::{Delegation, Limits};
+use crate::cgroup::{Delegation, Limits, SandboxGroups};
 use crate::holder::{StatePaths, alive, read_json, write_json};
 use crate::usage::Usage;
 
@@ -115,6 +115,8 @@ pub struct SandboxRequest {
 pub struct Joined {
     /// The ptyhost contract.
     pub join: SandboxJoin,
+    /// The cgroup CI jobs join instead of `join.cgroup` (SPEC-053 CPU-203).
+    pub ci_cgroup: Option<PathBuf>,
     /// Host path of the sandbox system's `/etc/passwd` (upper layer, else base).
     pub system_passwd: Option<PathBuf>,
     /// Host path of its `/etc/group`.
@@ -322,7 +324,7 @@ impl Manager {
         };
         state.leases += 1;
         state.last_used = Some(Instant::now());
-        let cgroup = self.cgroup_of(&request.id);
+        let groups = self.cgroup_of(&request.id);
         let system_file = |name: &str| {
             [
                 self.sysroot(&request.id).join("upper/etc").join(name),
@@ -332,6 +334,7 @@ impl Manager {
             .find(|p| p.is_file())
         };
         Ok(Some(Joined {
+            ci_cgroup: groups.as_ref().map(|g| g.ci.clone()),
             system_passwd: system_file("passwd"),
             system_group: system_file("group"),
             join: SandboxJoin {
@@ -339,7 +342,7 @@ impl Manager {
                 user_ns: record.user_ns,
                 net_ns: record.net_ns,
                 mnt_ns: record.mnt_ns,
-                cgroup: cgroup.map(|p| p.to_string_lossy().into_owned()),
+                cgroup: groups.map(|g| g.agents.to_string_lossy().into_owned()),
                 system_root: record.system_root.clone(),
                 hostname: request.hostname.clone(),
                 exec_shim: Some(self.config.exe.to_string_lossy().into_owned()),
@@ -356,10 +359,10 @@ impl Manager {
         state.last_used = Some(Instant::now());
     }
 
-    fn cgroup_of(&self, sandbox: &str) -> Option<PathBuf> {
+    fn cgroup_of(&self, sandbox: &str) -> Option<SandboxGroups> {
         let delegation = self.config.delegation.as_ref()?;
         match delegation.sandbox_group(sandbox, &self.config.limits) {
-            Ok(path) => Some(path),
+            Ok(groups) => Some(groups),
             Err(error) => {
                 tracing::warn!(sandbox, %error, "cannot apply the sandbox's limits");
                 None
@@ -408,7 +411,7 @@ impl Manager {
             gid: self.config.gid,
             cgroup: self
                 .cgroup_of(&request.id)
-                .map(|p| p.to_string_lossy().into_owned()),
+                .map(|g| g.system.to_string_lossy().into_owned()),
             port_first: request.port_first,
             port_last: request.port_last,
             forwards: self.config.forwards.keys().copied().collect(),

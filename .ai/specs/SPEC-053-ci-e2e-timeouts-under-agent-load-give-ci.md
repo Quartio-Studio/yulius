@@ -64,7 +64,7 @@ patch (#286) can go.
 ## Plan
 
 - [x] Spec and ADR: CI CPU priority by cgroup weight
-- [ ] Sandbox cgroup split: system, agents and CI leaves with weights
+- [x] Sandbox cgroup split: system, agents and CI leaves with weights
 - [ ] CI jobs run in the sandbox's CI leaf
 - [ ] e2e without CI-only budgets and retries, measured under agent load
 - [ ] Docs, changes log and every gate green
