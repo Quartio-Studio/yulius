@@ -330,11 +330,11 @@ impl App {
                 head.as_deref().map_or("an unknown commit", short)
             ));
         }
-        let user = match self.deps.store.user(&task.created_by).await {
+        let user = match self.deps.store.user(&task.owner).await {
             Ok(Some(user)) if user.disabled_at.is_none() => user,
             _ => {
                 return Verdict::Decided(
-                    "The merge you armed was dropped: the task's creator can no longer act. \
+                    "The merge you armed was dropped: the task's owner can no longer act. \
                      Open an issue (`issue_create`) and end with your summary."
                         .to_owned(),
                 );

@@ -58,6 +58,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0015_vault_two_factor.sql"),
     include_str!("migrations/0016_device_grant_client.sql"),
     include_str!("migrations/0017_supertask.sql"),
+    include_str!("migrations/0018_task_owner.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -310,6 +311,36 @@ mod tests {
         assert_eq!(pauses[0].task_id.as_str(), "t1");
         assert_eq!(pauses[0].kind, yulius_app::model::PauseKind::Start);
         assert_eq!(pauses[0].started_at.0, 5);
+        Ok(())
+    }
+
+    /// A version-16 database migrates through supertasks (17) to task owners (18, SPEC-070): each
+    /// task is its creator's, and nobody has asked for control.
+    #[tokio::test]
+    async fn version_sixteen_databases_give_each_task_its_creator_as_owner()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_app::ports::store::TaskStore as _;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v16.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &MIGRATIONS[..16] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 16)?;
+            conn.execute_batch(
+                "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 0, 0, 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                 INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, created_by, created_at, updated_at) VALUES ('t1', 's1', 1, 'T', 'p', 'claude', 'queued', 'ui', 'u1', 1, 5);",
+            )?;
+        }
+        let store = SqliteStore::open(&path)?;
+        let task = store
+            .task(&yulius_domain::ids::TaskId::parse("t1")?)
+            .await?
+            .ok_or("task")?;
+        assert_eq!(task.owner.as_str(), "u1");
+        assert_eq!(store.control_request(&task.id).await?, None);
         Ok(())
     }
 

@@ -131,6 +131,7 @@ async fn insert_task(
             origin: TaskOrigin::Ui,
             automation_run: None,
             created_by: creator.clone(),
+            owner: creator.clone(),
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
             closed_at: None,
@@ -463,7 +464,7 @@ async fn people_list_search_and_read_sessions_by_sandbox_access() -> TestResult 
 async fn no_task_starts_before_onboarding_is_ready_and_the_plan_says_why() -> TestResult {
     let w = World::new("org").await?;
     let (alice_user, alice) = w.user("alice", false).await?;
-    let (_, carol) = w.user("carol", false).await?;
+    let (carol_user, carol) = w.user("carol", false).await?;
     w.remote(OWNER, "shop", &[("README.md", "# Shop\n")], &[])?;
     w.grant("alice", "shop", "admin");
     w.grant("alice", "fresh", "maintain");
@@ -482,7 +483,7 @@ async fn no_task_starts_before_onboarding_is_ready_and_the_plan_says_why() -> Te
         &sid,
         "t-earlier",
         "Earlier work",
-        &alice_user.id,
+        &carol_user.id,
         TaskStatus::Closed,
     )
     .await?;

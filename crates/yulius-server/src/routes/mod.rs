@@ -110,6 +110,14 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/tasks/{tid}/archive", post(tasks::archive))
         .route("/api/tasks/{tid}/restore", post(tasks::restore))
         .route("/api/tasks/{tid}/feedback", post(tasks::feedback))
+        .route(
+            "/api/tasks/{tid}/control-request",
+            post(tasks::request_control).delete(tasks::drop_control_request),
+        )
+        .route(
+            "/api/tasks/{tid}/control-request/accept",
+            post(tasks::accept_control),
+        )
         .route("/api/tasks/{tid}/terminal", get(terminal::terminal))
         .route("/api/events", get(events::events))
         .route(
