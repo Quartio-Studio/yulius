@@ -230,15 +230,16 @@ test('a split into several tasks clears the draft too', async ({ app, browser, s
 });
 
 test('a stored draft drops attachments the server no longer keeps and unsafe thumbnails', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
-  await browser.evaluate(() => {
+  // Stored before the page opens: an open composer stores its own draft shortly after it mounts and
+  // when the page goes, which would replace one written under it (#269).
+  await browser.addInitScript(() => {
     const day = 24 * 3600 * 1000;
     const file = (name: string, at: number, thumb?: string) => ({ path: `/var/lib/yulius/sandboxes/sb_studio/attachments/drafts/usr_1/${name}`, name, type: 'image/png', at, thumb });
     localStorage.setItem('yulius.draft.usr_1.sb_studio', JSON.stringify({
       text: 'From last week', mode: 'nonsense', attached: [file('old.png', Date.now() - 8 * day), file('fresh.png', Date.now() - day, 'javascript:alert(1)')],
     }));
   });
-  await browser.reload();
+  await app.open(mock('/s/studio'));
   await expect(screen.getByRole('textbox', 'Task prompt')).toHaveValue('From last week');
   await expect(attachmentNames(browser)).toHaveText(['fresh.png']);
   await expect(browser.locator('.composer-attachment img')).toHaveCount(0);
