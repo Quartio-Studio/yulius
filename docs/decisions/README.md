@@ -44,6 +44,6 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0035](0035-queued-messages-join-the-request.md): Messages queued into a waiting task join its request
 - [0037](0037-dead-code-tools.md): Dead code is cleaned with each language's established tool; Yulius's gate uses cargo-shear
 - [0039](0039-ci-jobs-get-the-cpu-first.md): CI jobs get the CPU first through a weighted cgroup
-- [0040](0040-administrators-reset-a-lost-two-factor.md): Administrators reset a lost two-factor; a code confirms only the seed it was checked against
 - [0038](0038-onboarding-starts-in-the-browser.md): Onboarding starts in the browser, never from the CLI
 - [0040](0040-done-tasks-release-their-subscription.md): Done tasks release their subscription
+- [0041](0041-administrators-reset-a-lost-two-factor.md): Administrators reset a lost two-factor; a code confirms only the seed it was checked against

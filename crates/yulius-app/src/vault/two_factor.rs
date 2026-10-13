@@ -126,7 +126,7 @@ impl App {
 
     /// `DELETE /api/users/{id}/two-factor`: an instance administrator or the superadmin, with
     /// their own vault unlock, removes another person's two-factor seed and vault unlocks (a lost
-    /// authenticator; ADR-0040). The person sets two-factor up again on their next reveal.
+    /// authenticator; ADR-0041). The person sets two-factor up again on their next reveal.
     /// Audited as `vault.2fa.reset` when a seed was removed.
     ///
     /// # Errors

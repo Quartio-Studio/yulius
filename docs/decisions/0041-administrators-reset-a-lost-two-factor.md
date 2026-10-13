@@ -1,4 +1,4 @@
-# 0040. Administrators reset a lost two-factor; a code confirms only the seed it was checked against
+# 0041. Administrators reset a lost two-factor; a code confirms only the seed it was checked against
 
 ## Status
 

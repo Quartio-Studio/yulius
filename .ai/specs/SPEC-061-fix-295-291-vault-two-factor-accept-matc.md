@@ -123,7 +123,7 @@ GitHub issues #295 and #291 following their acceptance criteria. Extends
   reset yet: they are not in the user list (a follow-up, see the review round below).
 - The reset is idempotent (204 when nothing was set up), so a double click or two administrators
   at once give no error; only a real removal is audited.
-- Instance administrators read the user list (ADR-0040): the issue asks for them to reset from
+- Instance administrators read the user list (ADR-0041): the issue asks for them to reset from
   the people page, and the list holds only logins, names and flags they already act on. Changing
   users stays superadmin-only.
 - Review round 1 (approved `1539300`, minor findings fixed test-first): an unlock counts only
@@ -131,7 +131,7 @@ GitHub issues #295 and #291 following their acceptance criteria. Extends
   reset checks the browser session and the caller's own id before asking for a code, with its
   own messages; a code whose seed was reset meanwhile says so. The superadmin is not in the user list, so
   their lost authenticator cannot be reset yet (an instance administrator never sees their id):
-  recorded in ADR-0040 and the API reference as a follow-up, since #291 is about members. The user list reads each person's two-factor with one query each (an instance has
+  recorded in ADR-0041 and the API reference as a follow-up, since #291 is about members. The user list reads each person's two-factor with one query each (an instance has
   tens of people), kept simple on purpose.
 - One pull request for both issues: Yulius delivers one pull request per task, and both touch
   the same two-factor row and tests.
