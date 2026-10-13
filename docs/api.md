@@ -261,8 +261,9 @@ default) to 3, so 9 of 10 equal steps is 90 and a plan whose one big step is ope
 `activity` is `done` when Claude Code recorded the task's goal as achieved and the turn ended
 cleanly (TSK-014); the session stays open, and any new prompt makes it `working` again.
 `background_shells` is set while the agent is idle (`waiting` or `done`): the Bash-tool shells it
-left running (Claude Code's "· 1 shell"), probed every 5 s; null when not known. The UI shows a
-`done` task as Done only when no shell is running ("Working · 1 background shell still running"
+left running (Claude Code's "· 1 shell", probed every 5 s) and the background agents its last turn
+end said it waits for (`turn_duration.pendingBackgroundAgentCount`, SPEC-032); null when not known.
+The UI shows a `done` task as Done only when no such background work is running ("Working · 1 background task still running"
 otherwise), and applies the same shell condition to Done by a tested pull request.
 
 ```json

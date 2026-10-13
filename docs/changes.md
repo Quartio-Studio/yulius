@@ -110,6 +110,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   CI (tests), Secrets and Dashboard, then "More", which expands Sessions, Workflows, Skills,
   Automations and MCP in place. Its state is remembered per browser; arriving at one of those
   pages shows it open for that page.
+- A task's status follows what its agent is doing (SPEC-032, ADR-0034; task #30): a task whose
+  agent ended its turn but still waits for a background agent (a reviewer) is Working with "1
+  background task still running", not Done; a goal check that says "not met", or any stop the
+  session goes on from, makes the task Working again instead of leaving "Your turn" (or Done);
+  informational Claude Code notices (a background agent finished, push, quota resume, …) no longer
+  flag "Needs your action", and the agent's next work takes a real flag back once answered; a
+  restart no longer demotes a working task whose turn a Stop hook continued. Monitor streams are
+  still not counted.
 - A usage limit no longer types "Continue." into a task (SPEC-034, decision 0027, task #32): the
   session moves to another subscription (or waits for the reset) and resumes as if the limit never
   happened. The transcript steps back over the limit errors and notices, and Claude Code redoes
