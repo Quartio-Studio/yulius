@@ -28,6 +28,7 @@
 //! Restart: runs recorded as running lose their executor; their hosts are terminated and they
 //! go back to the queue (a run is repeatable).
 
+mod disk_wait;
 mod exec;
 pub mod hygiene;
 mod tools;
@@ -226,6 +227,8 @@ pub struct CiState {
     wake: Notify,
     started: AtomicBool,
     last_prune: Mutex<i64>,
+    /// Sandboxes whose runs wait for disk (SPEC-059 CI-301).
+    disk_waits: Mutex<HashMap<String, disk_wait::DiskWait>>,
 }
 
 fn short(sha: &str) -> &str {
@@ -1020,6 +1023,10 @@ impl App {
         };
         let lanes = self.config.ci.lanes.max(1);
         for run in active.into_iter().filter(|r| r.state == RunState::Queued) {
+            // Over the disk quota a run waits in the queue instead of erroring (CI-301).
+            if !self.ci_disk_room(&run.sandbox_id).await {
+                continue;
+            }
             let sandbox = run.sandbox_id.as_str().to_owned();
             let (tx, rx) = watch::channel(None);
             let lane = {

@@ -8,6 +8,7 @@ use crate::support;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::time::Duration;
 
 use axum::http::{Method, StatusCode};
@@ -18,9 +19,12 @@ use support::{
 };
 use yulius::wiring::git::GitAdapter;
 use yulius::wiring::session::PtySessionHost;
+use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::SandboxRecord;
 use yulius_app::ports::github::GhPull;
+use yulius_app::ports::isolation::{DiskUsage, SandboxIsolation, SandboxJoin, SandboxRef};
 use yulius_domain::ci::{GateResult, RunState};
+use yulius_domain::ids::SandboxId;
 
 type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
 type TestResult = BoxResult<()>;
@@ -639,5 +643,127 @@ async fn a_merge_with_a_tested_tree_reuses_its_result() -> TestResult {
     let output = detail["jobs"][0]["output"].as_str().unwrap_or_default();
     assert!(output.contains("not run again"), "{output}");
     assert_eq!(f.last_status(&merged).ok_or("status")?.0, "success");
+    Ok(())
+}
+
+/// A sandbox's disk as the test sets it: starts are refused over the quota, and `refusals` more
+/// times whatever the reading says (usage crossing the quota between the check and a job).
+struct Disk {
+    used: AtomicU64,
+    refusals: AtomicU32,
+}
+
+const GB: u64 = 1_000_000_000;
+
+impl Disk {
+    fn new(used_gb: u64, refusals: u32) -> Arc<Self> {
+        Arc::new(Self {
+            used: AtomicU64::new(used_gb * GB),
+            refusals: AtomicU32::new(refusals),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl SandboxIsolation for Disk {
+    async fn prepare(&self, _: &SandboxRef) -> AppResult<Option<SandboxJoin>> {
+        let refuse = self
+            .refusals
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok();
+        if refuse || self.used.load(Ordering::SeqCst) > 100 * GB {
+            return Err(AppError::Conflict(
+                "this sandbox uses too much of its disk quota".into(),
+            ));
+        }
+        Ok(None)
+    }
+    async fn disk(&self, _: &SandboxRef) -> Option<DiskUsage> {
+        Some(DiskUsage {
+            used: self.used.load(Ordering::SeqCst),
+            limit: 100 * GB,
+        })
+    }
+    async fn measure_disk(&self, r: &SandboxRef) -> Option<DiskUsage> {
+        self.disk(r).await
+    }
+    async fn largest(&self, _: &SandboxRef) -> Vec<(String, u64)> {
+        vec![("worktrees/elsewhere".into(), 35 * GB)]
+    }
+    fn release(&self, _: &SandboxId) {}
+}
+
+impl Fixture {
+    /// Dispatches until every run is queued with a reason containing `words`.
+    async fn all_waiting(&self, words: &str) -> BoxResult<Value> {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        loop {
+            self.h.app.ci_dispatch().await;
+            let overview = self.get("/api/sandboxes/s1/ci").await?;
+            let runs = overview["runs"].as_array().ok_or("runs")?;
+            if !runs.is_empty()
+                && runs.iter().all(|r| {
+                    r["state"] == "queued"
+                        && r["reason"].as_str().is_some_and(|w| w.contains(words))
+                })
+            {
+                return Ok(overview);
+            }
+            assert!(
+                runs.iter().all(|r| r["state"] != "error"),
+                "a run ended in error: {overview}"
+            );
+            if tokio::time::Instant::now() > deadline {
+                return Err(format!("the runs do not wait for disk: {overview}").into());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// Every run passed and none ended otherwise (no error, no rerun).
+    async fn all_passed(&self, runs: usize) -> BoxResult<()> {
+        let overview = self.get("/api/sandboxes/s1/ci").await?;
+        let list = overview["runs"].as_array().ok_or("runs")?;
+        assert_eq!(list.len(), runs, "{overview}");
+        assert!(list.iter().all(|r| r["state"] == "passed"), "{overview}");
+        Ok(())
+    }
+}
+
+/// SPEC-059 CI-301, CI-302, CI-304 (#240, #256, #258): over the disk quota a run is not started
+/// and never ends in error. It stays queued, says it waits for disk and who holds the space, and
+/// its commit status stays pending (an armed merge keeps waiting). Once usage is under the quota
+/// it starts by itself at the next check and passes, without anyone running it again.
+#[tokio::test]
+async fn a_run_over_the_disk_quota_waits_and_starts_when_space_frees() -> TestResult {
+    let f = fixture().await?;
+    let disk = Disk::new(126, 0);
+    assert!(f.h.app.set_isolation(disk.clone()));
+    let pr_sha = git(&f.origin, &["rev-parse", "feat/one"])?;
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+
+    let overview = f.all_waiting("waiting for disk space").await?;
+    let reason = overview["runs"][0]["reason"].as_str().unwrap_or_default();
+    assert!(
+        reason.contains("126.0 GB of its 100.0 GB")
+            && reason.contains("largest: worktree elsewhere 35.0 GB"),
+        "{reason}"
+    );
+    let (state, description, _) = f.last_status(&pr_sha).ok_or("no status published")?;
+    assert_eq!(state, "pending", "{description}");
+    assert!(
+        description.contains("waiting for disk space"),
+        "{description}"
+    );
+
+    // Space frees (upkeep, or other tasks). Before the recheck is due nothing starts.
+    disk.used.store(80 * GB, Ordering::SeqCst);
+    f.h.app.ci_dispatch().await;
+    f.all_waiting("waiting for disk space").await?;
+    f.h.clock.0.fetch_add(61_000, Ordering::SeqCst);
+    f.settle().await?;
+    f.all_passed(2).await?;
+    let (state, description, _) = f.last_status(&pr_sha).ok_or("no status published")?;
+    assert_eq!(state, "success", "{description}");
     Ok(())
 }

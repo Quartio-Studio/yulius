@@ -234,8 +234,10 @@ impl CiStore for SqliteStore {
     ) -> AppResult<bool> {
         let (id, from, update) = (id.to_owned(), states(from), update.clone());
         self.call(move |c| {
+            // A reason before a run starts is a queue note (waiting for disk): it goes.
             let sql = format!(
-                "UPDATE ci_runs SET state = ?1, reason = COALESCE(?2, reason), \
+                "UPDATE ci_runs SET state = ?1, \
+                 reason = CASE WHEN ?1 = 'running' THEN ?2 ELSE COALESCE(?2, reason) END, \
                  started_at = COALESCE(?3, started_at), ended_at = COALESCE(?4, ended_at) \
                  WHERE id = ?5 AND state IN ({})",
                 placeholders(6, from.len())
