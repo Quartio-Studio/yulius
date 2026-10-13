@@ -6,7 +6,7 @@ const listeners = new Set();
 let hashMode = false;
 let lastKey = null;
 
-const SANDBOX_PAGES = new Set(['cockpit', 'tasks', 'sessions', 'git', 'ci', 'workflows', 'skills', 'automations', 'mcp', 'secrets', 'dashboard']);
+const SANDBOX_PAGES = new Set(['tasks', 'sessions', 'git', 'ci', 'workflows', 'skills', 'automations', 'mcp', 'secrets', 'dashboard']);
 const ADMIN_PAGES = new Set(['users', 'accounts', 'github', 'instance']);
 
 /** Start listening to navigation. */
@@ -102,6 +102,8 @@ export function matchRoute(path, query = new URLSearchParams()) {
     if (parts.length === 4 && third === 'sessions') return { ...base, name: 'session', slug: second, page: 'sessions', session: fourth };
     if (parts.length === 5 && third === 'git' && fourth === 't' && /^\d+$/.test(parts[4])) return { ...base, name: 'gitTask', slug: second, page: 'git', number: Number(parts[4]) };
     if (parts.length === 3 && third === 'browser') return { ...base, name: 'composer', slug: second, browserTab: query.get('tab') || '' };
+    // The Agent (SPEC-035 AGT-006) is a right panel; the Cockpit's old page address opens it too.
+    if (parts.length === 3 && (third === 'agent' || third === 'cockpit')) return { ...base, name: 'composer', slug: second, panel: 'agent' };
     if (parts.length === 3 && SANDBOX_PAGES.has(third)) return { ...base, name: 'page', slug: second, page: third };
   }
   return { ...base, name: 'notfound' };
