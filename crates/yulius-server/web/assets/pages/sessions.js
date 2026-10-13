@@ -184,7 +184,7 @@ const linesOf = (text) => String(text || '').replace(/\n+$/, '').split('\n');
 const mark = (glyph, kind) => h('span', { class: ['ss-mark', kind && `ss-mark-${kind}`], 'aria-hidden': 'true' }, glyph);
 
 /** A line of the TUI: its mark in the gutter, then the content (spans, so it may sit in a summary). */
-const tuiLine = (glyph, content, { kind, className } = {}) => h('span', { class: ['ss-line', className] }, mark(glyph, kind), h('span', { class: 'ss-line-body' }, content));
+const tuiLine = (glyph, content, { kind, className } = {}) => h('span', { class: ['ss-line', ...[className].flat(Infinity)] }, mark(glyph, kind), h('span', { class: 'ss-line-body' }, content));
 
 /** A hunk as context, removed and added lines: the lines both sides share at the start and the end are context. */
 function hunkLines(hunk) {
@@ -233,6 +233,47 @@ export function callPreview(call, result) {
   return lines.length > FOLD_LINES ? [...lines.slice(0, FOLD_LINES), `… +${plural(lines.length - FOLD_LINES, 'line')}`] : lines;
 }
 
+// Claude Code's wrappers (crates/yulius-app/src/transcripts.rs META_PREFIXES). A wrapper the server
+// cut short has no closing tag: it runs to the end of the text.
+const WRAPPER = /<(command-name|command-message|command-args|local-command-stdout|local-command-stderr|bash-input|bash-stdout|bash-stderr|system-reminder|user-prompt-submit-hook)>([\s\S]*?)(?:<\/\1>|$)/g;
+const HIDDEN_TAGS = new Set(['system-reminder', 'user-prompt-submit-hook', 'command-message']);
+const OUT_TAGS = { 'local-command-stdout': 'out', 'bash-stdout': 'out', 'local-command-stderr': 'err', 'bash-stderr': 'err' };
+
+/**
+ * A recorded meta text as the TUI prints it: `{ kind, text }` lines where kind is `command`
+ * (`/name args`), `shell` (a `!` command), `out` or `err` (output under ⎿) or `note` (other text,
+ * shown faint). Reminders, hook context and the caveat line are not printed: `[]`.
+ */
+export function metaLines(text) {
+  const raw = String(text || '');
+  const found = [];
+  let command = null;
+  let rest = '';
+  let last = 0;
+  for (const match of raw.matchAll(WRAPPER)) {
+    rest += raw.slice(last, match.index);
+    last = match.index + match[0].length;
+    const [, tag, inner] = match;
+    const value = inner.trim();
+    if (tag === 'command-name' || tag === 'command-args') {
+      if (!command) found.push(command = { kind: 'command', name: '', args: '' });
+      command[tag === 'command-name' ? 'name' : 'args'] = value;
+    } else if (tag === 'bash-input') {
+      if (value) found.push({ kind: 'shell', text: value });
+    } else if (OUT_TAGS[tag]) {
+      if (value) found.push({ kind: OUT_TAGS[tag], text: value });
+    } else if (!HIDDEN_TAGS.has(tag)) {
+      found.push({ kind: 'note', text: value });
+    }
+  }
+  rest = (rest + raw.slice(last)).trim();
+  if (/^\[Request interrupted/.test(rest)) found.push({ kind: 'err', text: 'Interrupted by user' });
+  else if (rest && !rest.startsWith('Caveat: The messages below were generated')) found.push({ kind: 'note', text: rest });
+  return found.map((line) => (line.kind === 'command'
+    ? { kind: 'command', text: [line.name, line.args].filter(Boolean).join(' ') }
+    : line)).filter((line) => line.text);
+}
+
 const outLines = (lines, className) => tuiLine('⎿', h('span', { class: 'ss-out-text' }, lines.join('\n')), { kind: 'out', className: ['ss-out', className] });
 
 function toolCall(item, result) {
@@ -269,8 +310,15 @@ function block(item, results, role) {
         outLines(linesOf(item.text || '(No content)'), ['ss-result', item.is_error && 'ss-out-err']));
     case 'image':
       return tuiLine('⎿', h('span', { class: 'ss-dim' }, '[Image] (not kept)'), { kind: 'out' });
-    case 'meta':
-      return h('div', { class: 'ss-meta ss-dim xs' }, item.text);
+    case 'meta': {
+      const lines = metaLines(item.text).map((line) => {
+        if (line.kind === 'command') return tuiLine('>', line.text, { kind: 'prompt', className: 'ss-prompt' });
+        if (line.kind === 'shell') return tuiLine('!', line.text, { kind: 'shell', className: 'ss-prompt' });
+        if (line.kind === 'out' || line.kind === 'err') return outLines(linesOf(line.text), line.kind === 'err' && 'ss-out-err');
+        return h('div', { class: 'ss-meta ss-dim' }, line.text);
+      });
+      return lines.length ? h('div', { class: 'ss-block' }, lines) : null;
+    }
     default:
       return null;
   }
@@ -354,7 +402,8 @@ export function mountSessionView(ctx, sandbox, id, route) {
     const role = item.role === 'user' && item.blocks.every((b) => b.type === 'tool_result' || b.type === 'meta') ? 'tool' : item.role;
     const shown = item.blocks.map((b) => block(b, results, role)).filter(Boolean);
     if (!shown.length) return null;
-    const label = role === 'user' ? 'Prompt' : role === 'assistant' ? 'Claude' : ROLE_LABEL[role] || role;
+    const typed = item.blocks.some((b) => b.type === 'meta' && metaLines(b.text).some((line) => line.kind === 'command' || line.kind === 'shell'));
+    const label = role === 'user' || typed ? 'Prompt' : role === 'assistant' ? 'Claude' : ROLE_LABEL[role] || role;
     return h('li', { class: ['ss-entry', `ss-${role}`, item.sidechain && 'ss-sidechain', item.line === target && 'ss-target'], id: `line-${item.line}`, dataset: { line: String(item.line) } },
       h('span', { class: 'sr-only' }, item.sidechain ? `${label} (subagent)` : label),
       shown,

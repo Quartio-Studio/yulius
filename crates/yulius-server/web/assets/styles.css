@@ -2124,7 +2124,7 @@ button.task-group-head:hover { color: var(--text); }
 .ss-line { display: flex; gap: 1ch; min-width: 0; }
 .ss-line-body { flex: 1; min-width: 0; }
 .ss-mark { flex: none; width: 1ch; color: var(--session-fg); user-select: none; }
-.ss-mark-prompt, .ss-mark-dim, .ss-mark-out, .ss-mark-think, .ss-mark-call { color: var(--session-dim); }
+.ss-mark-prompt, .ss-mark-shell, .ss-mark-dim, .ss-mark-out, .ss-mark-think, .ss-mark-call { color: var(--session-dim); }
 .ss-mark-ok { color: var(--session-ok); }
 .ss-mark-err { color: var(--session-err); }
 .ss-prompt { padding: 2px 1ch; margin: 0 -1ch; border-radius: var(--radius-sm); background: var(--session-prompt-bg); }
