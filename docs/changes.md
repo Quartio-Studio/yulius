@@ -6,6 +6,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- Armed pull requests merge in trains (SPEC-084, ADR-0067). When two or more armed pull requests
+  wait and none can merge at once, Yulius builds their combined result in its clone, in arm
+  order. It merges as Yulius and GitHub will, merge drivers included, and runs CI once on it.
+  When that run passes, Yulius merges them one after another. Each is brought up to date with
+  exactly the predicted tree and gets the train's verdict, so a strict ruleset accepts every merge
+  without another run.
+  - A pull request that conflicts with the ones before it is left out, told so, and waits for
+    them.
+  - A red run, or anything unexpected, sends every member back to the one-by-one flow.
+  - A train survives restarts (`merge-trains.json`).
+  - On 2026-10-12/13, 42% of the armed merges waited at least one extra run after their last arm
+    (7.4 hours in all), and runs at updated heads took 44% of the CI time.
 - The original prompt's thumbnails always load (SPEC-080, ADR-0064, task #63; #303). Reading a
   prompt's attached file no longer takes an upload slot: reads have their own bound of 16 and wait
   up to 30 s for a slot, so a prompt with many images, or one opened while uploads run, shows every

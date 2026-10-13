@@ -229,6 +229,9 @@ pub struct CiState {
     last_prune: Mutex<i64>,
     /// Sandboxes whose runs wait for disk (SPEC-059 CI-301).
     disk_waits: Mutex<HashMap<String, disk_wait::DiskWait>>,
+    /// One pass deciding a sandbox's armed merges (and its merge train) at a time (SPEC-084
+    /// TRN-010): passes started by runs that end together wait for each other.
+    pub(crate) armed_passes: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 fn short(sha: &str) -> &str {
@@ -238,7 +241,11 @@ fn short(sha: &str) -> &str {
 /// Whether a pull request is tested with its own jobs (`own`) instead of the integration branch's:
 /// only when it changed them itself, against what it branched off (`at_base`, unknown: assumed
 /// changed), and they differ from the integration branch's.
-fn own_jobs_apply<J: PartialEq>(own: &[J], at_base: Option<&[J]>, integration: &[J]) -> bool {
+pub(crate) fn own_jobs_apply<J: PartialEq>(
+    own: &[J],
+    at_base: Option<&[J]>,
+    integration: &[J],
+) -> bool {
     own != integration && at_base.is_none_or(|base| own != base)
 }
 
@@ -303,7 +310,7 @@ pub fn run_view(run: &CiRunRecord, jobs: &[CiJobRecord], with_output: bool) -> C
         label: run.reference.label(),
         pr_number: match run.reference {
             CiRef::PullRequest(n) => Some(n),
-            CiRef::Branch(_) => None,
+            CiRef::Branch(_) | CiRef::Train(_) => None,
         },
         sha: run.sha.clone(),
         state: run.state.as_str().to_owned(),
@@ -384,7 +391,7 @@ impl App {
 
     /// The CI jobs `yulius.toml` defines at `rev`: `Ok(empty)` without a file or CI, `Err`
     /// with the problem when the file is invalid.
-    async fn ci_jobs_at(&self, repo: &Path, rev: &str) -> Result<Vec<Job>, String> {
+    pub(crate) async fn ci_jobs_at(&self, repo: &Path, rev: &str) -> Result<Vec<Job>, String> {
         let text = match self.deps.git.show_file(repo, rev, "yulius.toml").await {
             Ok(Some(text)) => text,
             Ok(None) => return Ok(Vec::new()),
@@ -496,7 +503,7 @@ impl App {
     }
 
     /// [`App::ci_queue`] with its place in the queue (`queued_at`).
-    async fn ci_queue_placed(
+    pub(crate) async fn ci_queue_placed(
         &self,
         sandbox: &SandboxRecord,
         reference: CiRef,
@@ -657,8 +664,10 @@ impl App {
             }
         }
         let runs = self.deps.store.ci_runs(&sandbox.id, PLAN_RUNS).await?;
+        // A merge train's run is the train's own (SPEC-084): it starts and cancels it.
         let facts: Vec<RunFacts> = runs
             .iter()
+            .filter(|run| !matches!(run.reference, CiRef::Train(_)))
             .map(|run| RunFacts {
                 id: run.id.clone(),
                 reference: run.reference.clone(),
@@ -731,10 +740,13 @@ impl App {
             return Ok(false);
         };
         let mut source = None;
-        for run in runs
-            .iter()
-            .filter(|r| r.state == RunState::Passed && r.sha != target.sha)
-        {
+        // A merge train's verdict for a pull request it merged before the last one covers a tree
+        // no run tested (SPEC-084 TRN-005): never a source.
+        for run in runs.iter().filter(|r| {
+            r.state == RunState::Passed
+                && r.sha != target.sha
+                && r.requested_by != crate::merge_train::TRAIN_VERDICT_BY
+        }) {
             if self.deps.git.tree_of(&repo, &run.sha).await?.as_deref() == Some(tree.as_str()) {
                 source = Some(run);
                 break;
@@ -886,6 +898,13 @@ impl App {
         let Some(sandbox) = store.sandbox(&run.sandbox_id).await? else {
             return Ok(());
         };
+        // A merge train's commit exists only in Yulius's clone (SPEC-084): nothing to publish on
+        // (the note counts as an attempt, so the retry loop lets it be).
+        if matches!(run.reference, CiRef::Train(_)) {
+            return store
+                .record_ci_status(run_id, None, Some(crate::merge_train::TRAIN_STATUS_NOTE))
+                .await;
+        }
         let jobs = store.ci_jobs(run_id, false).await?;
         let failed = jobs.iter().find(|j| j.state == RunState::Failed);
         let summary = RunSummary {
@@ -1218,6 +1237,12 @@ impl App {
         by: &str,
     ) -> AppResult<CiRunRecord> {
         let run = self.ci_run_of(sandbox, run_id).await?;
+        if matches!(run.reference, CiRef::Train(_)) {
+            return Err(AppError::Conflict(
+                "a merge train is not run again: Yulius builds a new one from the armed merges"
+                    .into(),
+            ));
+        }
         let others = self
             .deps
             .store

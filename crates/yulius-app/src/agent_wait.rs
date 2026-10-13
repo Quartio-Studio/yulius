@@ -30,12 +30,14 @@ pub const ARMED_MERGES_FILE: &str = "armed-merges.json";
 /// Serializes changes to [`ARMED_MERGES_FILE`].
 static ARMED_FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// One armed merge as saved: task id, head, review summary.
+/// One armed merge as saved: task id, head, review summary, when it was armed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct SavedArmed {
     task: String,
     head: String,
     summary: String,
+    #[serde(default)]
+    armed_at: i64,
 }
 
 /// A merge armed by `delivery_merge` while the checks of the reviewed head still ran.
@@ -45,6 +47,9 @@ pub(crate) struct ArmedMerge {
     pub head: String,
     /// The review summary given with it.
     pub summary: String,
+    /// When the agent armed it (ms): merge trains take armed merges in this order (SPEC-084).
+    /// Kept when Yulius moves the head (DLV-203); 0 for merges saved before it was recorded.
+    pub armed_at: i64,
 }
 
 /// A task's armed merge, Yulius's decisions of it in progress and how the last one ended: one
@@ -65,14 +70,14 @@ pub(crate) struct ArmedSlot {
 
 /// A decision in progress: the merge taken out of the slot, and the generation it was armed in.
 #[derive(Debug)]
-struct Deciding {
-    merge: ArmedMerge,
+pub(crate) struct Deciding {
+    pub(crate) merge: ArmedMerge,
     generation: u64,
 }
 
 /// How Yulius decided an armed merge.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Verdict {
+pub(crate) enum Verdict {
     /// Still waiting, for this merge (the same, or moved to a new head by DLV-203).
     Keep(ArmedMerge),
     /// Merged, refused or dropped: one line for the agent.
@@ -137,6 +142,17 @@ impl ArmedSlot {
     }
 }
 
+/// An armed merge as a merge train sees it (SPEC-084).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ArmedNow {
+    /// Nothing is armed.
+    None,
+    /// Armed, and nobody is deciding it.
+    Armed(ArmedMerge),
+    /// Being decided right now (by the end of a CI run or the delivery loop).
+    Deciding,
+}
+
 /// What keeping an armed merge current did (DLV-203).
 enum Current {
     /// The branch contains the integration branch, or it is not Yulius's to touch now.
@@ -180,6 +196,10 @@ pub struct WaitState {
     /// Why Yulius could not push this head, with what to do (DLV-201).
     #[serde(default)]
     pub push_problem: Option<String>,
+    /// The merge train this task's armed merge is in, or why it was left out (SPEC-084 TRN-007).
+    /// Informative: a change shows in the wait's progress but does not end it.
+    #[serde(default)]
+    pub merge_train: Option<String>,
 }
 
 impl WaitState {
@@ -199,6 +219,7 @@ impl App {
         let merge = ArmedMerge {
             head: head.to_owned(),
             summary: summary.to_owned(),
+            armed_at: self.now().0,
         };
         let runtime = self.runtime(&task.id);
         let mut slot = lock_slot(&runtime);
@@ -230,6 +251,7 @@ impl App {
                 task: task.as_str().to_owned(),
                 head: armed.head.clone(),
                 summary: armed.summary.clone(),
+                armed_at: armed.armed_at,
             });
         }
         let written = serde_json::to_vec(&saved)
@@ -274,6 +296,7 @@ impl App {
                 slot.merge = Some(ArmedMerge {
                     head: entry.head,
                     summary: entry.summary,
+                    armed_at: entry.armed_at,
                 });
                 tracing::info!(task = %task_id, "armed merge restored after a restart");
             }
@@ -285,10 +308,61 @@ impl App {
         lock_slot(&self.runtime(&task.id)).outcome = None;
     }
 
+    /// `task`'s armed merge as a merge train sees it (SPEC-084).
+    pub(crate) fn armed_now(&self, task: &TaskId) -> ArmedNow {
+        let runtime = self.runtime(task);
+        let slot = lock_slot(&runtime);
+        match (&slot.merge, slot.deciding) {
+            (_, 1..) => ArmedNow::Deciding,
+            (Some(merge), 0) => ArmedNow::Armed(merge.clone()),
+            (None, 0) => ArmedNow::None,
+        }
+    }
+
+    /// Takes `task`'s armed merge out to decide it (a merge train's step); `None` when nothing
+    /// is armed or it is being decided. End it with [`App::finish_armed`].
+    pub(crate) fn take_armed(&self, task: &TaskId) -> Option<Deciding> {
+        lock_slot(&self.runtime(task)).take()
+    }
+
+    /// Saves `merge` (its head just pushed by Yulius) as `task`'s armed merge while a decision of
+    /// [`App::take_armed`] is still going, unless a newer arm superseded it: a restart before the
+    /// decision ends then finds the head Yulius pushed (SPEC-084 TRN-008).
+    pub(crate) fn save_armed_during(&self, task: &TaskId, deciding: &Deciding, merge: &ArmedMerge) {
+        let runtime = self.runtime(task);
+        let slot = lock_slot(&runtime);
+        if slot.generation == deciding.generation {
+            self.save_armed(task, Some(merge));
+        }
+    }
+
+    /// Ends a decision of [`App::take_armed`] in one step, as [`App::merge_armed`] does.
+    pub(crate) fn finish_armed(&self, task: &TaskId, deciding: &Deciding, verdict: Verdict) {
+        let runtime = self.runtime(task);
+        let mut slot = lock_slot(&runtime);
+        if slot.finish(deciding, verdict) {
+            self.save_armed(task, slot.merge.as_ref());
+        }
+    }
+
     /// Performs the armed merges of a sandbox whose checks passed (after every CI run and from
     /// the delivery loop). An armed merge is dropped when the branch moved on, the checks failed
-    /// or the merge was refused; `yulius wait` says which.
+    /// or the merge was refused; `yulius wait` says which. A merge train goes first (SPEC-084):
+    /// it forms, or merges the pull requests it tested together.
     pub async fn merge_armed(self: &Arc<Self>, sandbox: &SandboxId) {
+        // One pass per sandbox at a time (SPEC-084 TRN-010): a pass that read a branch as up to
+        // date while another merged into its base had its merge refused as behind, and the
+        // armed merge was dropped.
+        let pass = {
+            let mut passes = self
+                .ci
+                .armed_passes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Arc::clone(passes.entry(sandbox.as_str().to_owned()).or_default())
+        };
+        let _pass = pass.lock().await;
+        self.run_merge_train(sandbox).await;
         let Ok(tasks) = self.deps.store.tasks(sandbox, false).await else {
             return;
         };
@@ -359,14 +433,27 @@ impl App {
                     .to_owned(),
             );
         };
+        // SPEC-084 TRN-004: a merge train that holds this pull request brings it up to date and
+        // merges it itself; until then it is neither brought up to date here nor merged behind.
+        let current = match self.train_hold(task) {
+            crate::merge_train::Hold::Free => self.keep_armed_current(task, &sandbox).await,
+            crate::merge_train::Hold::Held => return Verdict::Keep(armed),
+            crate::merge_train::Hold::Testing => {
+                if self.train_member_behind(task, &sandbox).await {
+                    return Verdict::Keep(armed);
+                }
+                Current::Unchanged
+            }
+        };
         // DLV-203: a branch behind its base is brought up to date first, so the run that decides
         // is on what would be merged and GitHub's up-to-date rule never refuses it.
-        match self.keep_armed_current(task, &sandbox).await {
+        match current {
             Current::Unchanged => {}
             Current::Moved(head) => {
                 return Verdict::Keep(ArmedMerge {
                     head,
                     summary: armed.summary,
+                    armed_at: armed.armed_at,
                 });
             }
             Current::Conflict(text) => {
@@ -557,6 +644,11 @@ impl App {
             merge_outcome_head: outcome.as_ref().map(|o| o.head.clone()),
             merge_outcome: outcome.map(|o| o.text),
             push_problem,
+            merge_train: if merge_armed {
+                self.train_note(task)
+            } else {
+                None
+            },
         })
     }
 
@@ -614,6 +706,7 @@ mod tests {
         ArmedMerge {
             head: head.to_owned(),
             summary: "approve".to_owned(),
+            armed_at: 0,
         }
     }
 

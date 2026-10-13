@@ -186,6 +186,23 @@ pub trait GitPort: Send + Sync {
         let _ = (worktree, integration, token);
         unsupported("merging the integration branch")
     }
+    /// Builds a merge train (SPEC-084 TRN-002) in the scratch worktree `scratch` inside
+    /// `owned_root`: from `base`, each of `heads` in order is brought up to date as
+    /// [`GitPort::merge_integration`] would (merge drivers apply) and lands as `landing` makes
+    /// it land; a head that conflicts is left out. Nothing is pushed. Adapters without it
+    /// refuse, and Yulius merges one by one.
+    async fn build_train(
+        &self,
+        repo: &Path,
+        scratch: &Path,
+        owned_root: &Path,
+        base: &str,
+        heads: &[String],
+        landing: TrainLanding,
+    ) -> AppResult<TrainBuild> {
+        let _ = (repo, scratch, owned_root, base, heads, landing);
+        unsupported("merge trains")
+    }
     /// Pushes `local_branch` to `remote_branch` on origin using `token`.
     async fn push(
         &self,
@@ -273,6 +290,40 @@ pub trait GitPort: Send + Sync {
         bundle: &Path,
         prefix: &str,
     ) -> AppResult<Vec<String>>;
+}
+
+/// How a pull request lands on the integration branch (the profile's merge method).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrainLanding {
+    /// A squash: one commit with the head's tree on top of the integration branch.
+    Squash,
+    /// A merge commit of the integration branch and the head.
+    MergeCommit,
+}
+
+/// One pull request of a built merge train.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrainStep {
+    /// It merged cleanly: the integration branch's tree once it has landed.
+    Clean {
+        /// That tree.
+        tree: String,
+    },
+    /// Bringing it up to date conflicts in these paths: it is left out.
+    Conflict(Vec<String>),
+}
+
+/// What [`GitPort::build_train`] built.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrainBuild {
+    /// The integration branch commit it starts from.
+    pub base: String,
+    /// Its tree.
+    pub base_tree: String,
+    /// One step per head, in order.
+    pub steps: Vec<TrainStep>,
+    /// The integration branch once every clean head landed: the commit CI tests.
+    pub head: String,
 }
 
 /// What [`GitPort::merge_integration`] did.
