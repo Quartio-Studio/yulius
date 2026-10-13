@@ -669,7 +669,7 @@ impl SandboxIsolation for Disk {
     async fn prepare(&self, _: &SandboxRef) -> AppResult<Option<SandboxJoin>> {
         let refuse = self
             .refusals
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
             .is_ok();
         if refuse || self.used.load(Ordering::SeqCst) > 100 * GB {
             return Err(AppError::Conflict(
@@ -765,5 +765,20 @@ async fn a_run_over_the_disk_quota_waits_and_starts_when_space_frees() -> TestRe
     f.all_passed(2).await?;
     let (state, description, _) = f.last_status(&pr_sha).ok_or("no status published")?;
     assert_eq!(state, "success", "{description}");
+    Ok(())
+}
+
+/// SPEC-059 CI-303: usage crosses the quota between the dispatcher's check and a job's start, and
+/// the job is refused. Its run goes back to the queue instead of ending in error, and passes when
+/// it runs again.
+#[tokio::test]
+async fn a_job_refused_for_disk_puts_its_run_back_in_the_queue() -> TestResult {
+    let f = fixture().await?;
+    let disk = Disk::new(50, 1);
+    assert!(f.h.app.set_isolation(disk.clone()));
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    f.settle().await?;
+    assert_eq!(disk.refusals.load(Ordering::SeqCst), 0, "a job was refused");
+    f.all_passed(2).await?;
     Ok(())
 }

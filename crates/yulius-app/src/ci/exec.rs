@@ -23,6 +23,7 @@ use super::{
 };
 use crate::context::App;
 use crate::delivery::runner::OutputRing;
+use crate::error::AppError;
 use crate::model::SandboxRecord;
 use crate::ports::isolation::SandboxJoin;
 use crate::ports::session::{Containment, LaunchPlan, RunEvent, RunExit, RunInspection, RunSignal};
@@ -108,7 +109,13 @@ enum Ended {
     TimedOut,
     OutputLimit,
     Lost,
+    /// The sandbox refused the start over its disk quota (SPEC-059 CI-303).
+    NoDisk(String),
 }
+
+/// What a job refused over the disk quota leaves in its output when its run is queued again.
+const NO_DISK_REQUEUE: &str =
+    "[yulius] queued again: the sandbox was over its disk quota when this run started\n";
 
 /// The directory of a job's persistent checkout: the definition's name, plus the matrix value's
 /// position for matrix jobs (siblings run in parallel and need their own), plus the lane past
@@ -178,6 +185,7 @@ impl App {
             Some(sandbox) => self.ci_prepare(sandbox, run).await,
             None => Err("the sandbox was removed".to_owned()),
         };
+        let mut no_disk = false;
         match (sandbox, prepared) {
             (Some(sandbox), Ok(())) => {
                 let sandbox = Arc::new(sandbox);
@@ -207,7 +215,7 @@ impl App {
                     let job_cancel = siblings.clone();
                     let stop_siblings = Arc::clone(&siblings_tx);
                     handles.push(tokio::spawn(async move {
-                        Arc::clone(&app)
+                        let no_disk = Arc::clone(&app)
                             .ci_job(&sandbox, &run, &job, &checkout, job_cancel)
                             .await;
                         let failed =
@@ -223,10 +231,11 @@ impl App {
                             let _ = stop_siblings
                                 .send(Some(format!("stopped early: job {} failed", job.name)));
                         }
+                        no_disk
                     }));
                 }
                 for handle in handles {
-                    let _ = handle.await;
+                    no_disk |= handle.await.unwrap_or(false);
                 }
             }
             (_, prepared) => {
@@ -261,6 +270,21 @@ impl App {
             // reported: a job killed while it was starting can end as an error (a slow host
             // loses that race), and the run must not then read as broken.
             state = RunState::Cancelled;
+        }
+        // A job the sandbox refused over its quota (usage crossed it after the dispatcher's
+        // check) and nothing failed: the run waits for disk in the queue (CI-303).
+        if no_disk && state == RunState::Error {
+            match store.requeue_ci_run(&run.id, NO_DISK_REQUEUE).await {
+                Ok(true) => {
+                    tracing::info!(run = %run.id, "CI run queued again: the sandbox is over its disk quota");
+                    self.ci_publish(&run.id).await;
+                    return;
+                }
+                Ok(false) => {}
+                Err(err) => {
+                    tracing::warn!(run = %run.id, error = %err, "requeueing a CI run failed");
+                }
+            }
         }
         let reason = match state {
             RunState::Cancelled => cancel
@@ -310,7 +334,8 @@ impl App {
         }
     }
 
-    /// Runs one job: waits for a slot (or cancellation), runs it and records the end.
+    /// Runs one job: waits for a slot (or cancellation), runs it and records the end; `true`
+    /// when the sandbox refused it over the disk quota.
     async fn ci_job(
         self: Arc<Self>,
         sandbox: &SandboxRecord,
@@ -318,7 +343,7 @@ impl App {
         job: &CiJobRecord,
         checkout: &str,
         mut cancel: watch::Receiver<Option<String>>,
-    ) {
+    ) -> bool {
         let store = &self.deps.store;
         let slots = self.ci_slots();
         let permit = tokio::select! {
@@ -336,11 +361,11 @@ impl App {
                         },
                     )
                     .await;
-                return;
+                return false;
             }
         };
         let Some(_permit) = permit else {
-            return;
+            return false;
         };
         let started = CiJobUpdate {
             started_at: Some(self.now()),
@@ -352,12 +377,13 @@ impl App {
                 .await,
             Ok(true)
         ) {
-            return;
+            return false;
         }
         let mut ring = OutputRing::new(OUTPUT_BYTES);
         let ended = self
             .ci_job_process(sandbox, run, job, checkout, &mut ring, &mut cancel)
             .await;
+        let no_disk = matches!(ended, Ok(Ended::NoDisk(_)));
         let (state, exit_code, reason) = match ended {
             Ok(Ended::Exit(exit)) if exit.spawn_failed => (
                 RunState::Error,
@@ -390,7 +416,7 @@ impl App {
                 None,
                 Some("the job's process host was lost".to_owned()),
             ),
-            Err(reason) => (RunState::Error, None, Some(reason)),
+            Ok(Ended::NoDisk(reason)) | Err(reason) => (RunState::Error, None, Some(reason)),
         };
         if let Some(reason) = &reason {
             ring.push_str(&format!("\n[yulius] {reason}\n"));
@@ -408,6 +434,7 @@ impl App {
         {
             tracing::warn!(job = %job.id, error = %err, "recording a CI job's end failed");
         }
+        no_disk
     }
 
     fn ci_job_env(
@@ -502,12 +529,13 @@ impl App {
         let log = logs.join(format!("{}.log", job.id));
         let _ = std::fs::remove_file(&log);
         std::fs::File::create(&log).map_err(|e| format!("creating the job log failed: {e}"))?;
-        // Held until the job ends: the sandbox's holder is not stopped as idle meanwhile.
-        let (join, _lease) = self
-            .isolation_join(sandbox)
-            .await
-            .map_err(|e| e.public_message())?
-            .unzip();
+        // Held until the job ends: the sandbox's holder is not stopped as idle meanwhile. A
+        // refusal (`Conflict`) is the disk quota: the run waits for disk instead (CI-303).
+        let (join, _lease) = match self.isolation_join(sandbox).await {
+            Ok(joined) => joined.unzip(),
+            Err(AppError::Conflict(reason)) => return Ok(Ended::NoDisk(reason)),
+            Err(err) => return Err(err.public_message()),
+        };
         let plan = LaunchPlan {
             argv: vec![
                 "/bin/sh".into(),

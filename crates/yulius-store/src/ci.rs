@@ -318,8 +318,8 @@ impl CiStore for SqliteStore {
         .await
     }
 
-    async fn requeue_ci_run(&self, id: &str) -> AppResult<bool> {
-        let id = id.to_owned();
+    async fn requeue_ci_run(&self, id: &str, note: &str) -> AppResult<bool> {
+        let (id, note) = (id.to_owned(), note.to_owned());
         self.call(move |c| {
             let tx = c.transaction().map_err(db)?;
             let changed = tx
@@ -332,10 +332,8 @@ impl CiStore for SqliteStore {
             if changed == 1 {
                 tx.execute(
                     "UPDATE ci_jobs SET state = 'queued', started_at = NULL, ended_at = NULL, \
-                     reason = NULL, exit_code = NULL, \
-                     output = '[yulius] queued again after a restart of Yulius\n' \
-                     WHERE run_id = ?1",
-                    [&id],
+                     reason = NULL, exit_code = NULL, output = ?2 WHERE run_id = ?1",
+                    [&id, &note],
                 )
                 .map_err(db)?;
             }
@@ -515,7 +513,11 @@ mod tests {
             ["r1", "r2"]
         );
         // A restart puts the running run and its jobs back.
-        assert!(store.requeue_ci_run("r1").await?);
+        assert!(
+            store
+                .requeue_ci_run("r1", "[yulius] queued again after a restart of Yulius\n")
+                .await?
+        );
         let again = store.ci_run("r1").await?.ok_or("r1")?;
         assert_eq!(again.state, RunState::Queued);
         assert_eq!(again.started_at, None);
