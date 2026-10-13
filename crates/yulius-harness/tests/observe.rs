@@ -85,7 +85,15 @@ fn claude_session_turns_meta_and_ignored_records() {
     }
     let completes = all
         .iter()
-        .filter(|o| matches!(o, Observed::TurnComplete { duration_ms: None }))
+        .filter(|o| {
+            matches!(
+                o,
+                Observed::TurnComplete {
+                    duration_ms: None,
+                    ..
+                }
+            )
+        })
         .count();
     assert_eq!(completes, 3, "end_turn of msg_02, sidechain and msg_03");
 }
@@ -203,9 +211,15 @@ fn claude_goal_mode_records() {
             &Observed::UserTurn {
                 at: Some(Timestamp(1_791_610_681_385))
             },
-            &Observed::TurnComplete { duration_ms: None },
+            &Observed::TurnComplete {
+                duration_ms: None,
+                at: Some(Timestamp(1_791_610_700_000))
+            },
             &goal(GoalOutcome::NotMet),
-            &Observed::TurnComplete { duration_ms: None },
+            &Observed::TurnComplete {
+                duration_ms: None,
+                at: Some(Timestamp(1_791_610_729_402))
+            },
             &goal(GoalOutcome::Met),
             &Observed::TurnEnded {
                 background_agents: None

@@ -259,7 +259,12 @@ fn observe_assistant(record: &Map<String, Value>) -> Vec<Observed> {
         });
     }
     if str_of(message, "stop_reason") == Some("end_turn") {
-        out.push(Observed::TurnComplete { duration_ms: None });
+        out.push(Observed::TurnComplete {
+            duration_ms: None,
+            at: (!bool_of(record, "isSidechain"))
+                .then(|| str_of(record, "timestamp").and_then(parse_rfc3339))
+                .flatten(),
+        });
     } else if !bool_of(record, "isSidechain")
         && owned_str(message, "model").as_deref() != Some(SYNTHETIC_MODEL)
     {
@@ -634,7 +639,8 @@ mod tests {
         );
         assert!(
             assistant(r#""end_turn""#, false)
-                .contains(&Observed::TurnComplete { duration_ms: None })
+                .iter()
+                .any(|o| matches!(o, Observed::TurnComplete { at: Some(_), .. }))
         );
         // A sub-agent's lines are not the session's turn.
         assert!(!work(assistant(r#""tool_use""#, true)));

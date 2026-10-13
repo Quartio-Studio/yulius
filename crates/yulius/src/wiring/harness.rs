@@ -132,23 +132,6 @@ impl HarnessPort for HarnessAdapter {
                 AppError::Upstream(format!("cannot prepare the Claude Code config: {e}"))
             })?;
         }
-        // The turn a usage limit cut goes on as if the limit never happened (SPEC-034): its
-        // error and notices leave the transcript before Claude Code reads it. A failed step back
-        // still resumes; Claude Code skips the error row itself while it is recent.
-        if let SessionMode::Resume {
-            session_id,
-            continue_interrupted: true,
-            ..
-        } = &l.mode
-        {
-            let transcript = self.claude_transcript(&l.sandbox_home, &l.worktree, session_id);
-            match yulius_harness::step_back::step_back_file(&transcript) {
-                Ok(changed) => {
-                    tracing::info!(changed, "transcript stepped back over a usage limit")
-                }
-                Err(err) => tracing::warn!(error = %err, "could not step the transcript back"),
-            }
-        }
         let mut secret_env = plan.secret_env;
         secret_env.extend(extra_secrets);
         Ok(HarnessPlan {
@@ -220,6 +203,16 @@ impl HarnessPort for HarnessAdapter {
 
     fn claude_transcript(&self, sandbox_home: &Path, worktree: &Path, session_id: &str) -> PathBuf {
         paths::claude_transcript_path(&sandbox_home.join(".claude"), worktree, session_id)
+    }
+
+    fn step_back_transcript(
+        &self,
+        sandbox_home: &Path,
+        worktree: &Path,
+        session_id: &str,
+    ) -> AppResult<bool> {
+        let transcript = self.claude_transcript(sandbox_home, worktree, session_id);
+        yulius_harness::step_back::step_back_file(&transcript).map_err(io)
     }
 
     fn newest_claude_session(
@@ -316,7 +309,9 @@ impl TranscriptWatch for Watch {
                     Observed::TurnInterrupted { at } => {
                         out.push(Observation::TurnInterrupted { at });
                     }
-                    Observed::TurnComplete { .. } => out.push(Observation::TurnComplete),
+                    Observed::TurnComplete { at, .. } => {
+                        out.push(Observation::TurnComplete { at });
+                    }
                     Observed::Goal { outcome } => out.push(Observation::Goal(outcome)),
                     Observed::TurnEnded { background_agents } => {
                         out.push(Observation::TurnEnded { background_agents });

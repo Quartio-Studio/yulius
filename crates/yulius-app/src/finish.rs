@@ -51,24 +51,40 @@ pub struct TranscriptFacts {
     /// The last word on the session's context is that it is full (CTX-007): no reply or
     /// compaction came after the API rejected a prompt as too long.
     pub context_full: bool,
+    /// The last turn ended at a usage limit: no prompt, agent work or turn's end came after the
+    /// limit record (SPEC-072 LRS-001). A limit Claude Code continued past is history.
+    pub limit_pending: bool,
+    /// When the session's last prompt, interrupt, agent work or own turn end was recorded: a
+    /// `limit` pause older than that was overtaken while Yulius was down (SPEC-072 LRS-001).
+    pub last_turn_at: Option<yulius_domain::time::Timestamp>,
 }
 
 impl TranscriptFacts {
     /// Folds one observation, in transcript order.
     pub fn fold(&mut self, observation: &Observation) {
+        if let Observation::UserTurn { at: Some(at) }
+        | Observation::TurnInterrupted { at: Some(at) }
+        | Observation::AgentWork { at: Some(at) }
+        | Observation::TurnComplete { at: Some(at) } = observation
+        {
+            self.last_turn_at = Some(self.last_turn_at.map_or(*at, |last| last.max(*at)));
+        }
         match observation {
             Observation::UserTurn { .. } => {
                 self.turn_open = Some(true);
                 self.goal_achieved = Some(false);
                 self.background_agents = 0;
+                self.limit_pending = false;
             }
             Observation::TurnEnded { background_agents } => {
                 self.turn_open = Some(false);
                 self.background_agents = background_agents.unwrap_or(0);
             }
-            Observation::TurnComplete => {
+            Observation::TurnComplete { at } => {
                 self.turn_open = Some(false);
                 self.context_full = false;
+                // A sub-agent's turn end (no time) says nothing about the session's limit.
+                self.limit_pending &= at.is_none();
             }
             Observation::TurnInterrupted { .. } => self.turn_open = Some(false),
             // The API rejected the prompt: the turn is over, without a Stop hook (#213).
@@ -92,14 +108,14 @@ impl TranscriptFacts {
             Observation::Goal(GoalOutcome::Set | GoalOutcome::Cleared) => {
                 self.goal_achieved = Some(false);
             }
-            Observation::Session { .. }
-            | Observation::LimitReached { .. }
-            | Observation::CompactFailed => {}
+            Observation::LimitReached { .. } => self.limit_pending = true,
+            Observation::Session { .. } | Observation::CompactFailed => {}
             // An assistant line that is not a turn's end after a recorded end: a Stop hook
             // continued the turn (STA-005).
             Observation::AgentWork { .. } => {
                 self.turn_open = Some(true);
                 self.context_full = false;
+                self.limit_pending = false;
             }
         }
     }
@@ -214,9 +230,9 @@ impl App {
         self.probe_idle_shells(task_id).await;
     }
 
-    /// A transcript line written after a turn or prompt of `task_id` was held for capacity (at
-    /// `at`) shows the agent is not held any more: the hold ends and the task runs again with
-    /// `activity`.
+    /// A transcript line written after a turn or prompt of `task_id` was held for capacity, or
+    /// after a usage limit cut its turn (at `at`), shows the agent is not held any more: the
+    /// hold ends and the task runs again with `activity`.
     pub(crate) async fn hold_overtaken(
         &self,
         task_id: &TaskId,
@@ -227,13 +243,30 @@ impl App {
         let Ok(Some(pause)) = self.deps.store.open_pause(task_id).await else {
             return;
         };
-        if matches!(
+        let held = matches!(
             pause.kind,
             crate::model::PauseKind::Turn | crate::model::PauseKind::Prompt
-        ) && pause.account_id.is_some()
+        ) && pause.account_id.is_some();
+        if (held || pause.kind == crate::model::PauseKind::Limit) && at > pause.started_at {
+            self.hold_ended(task_id, "overtaken", activity).await;
+        }
+    }
+
+    /// Agent work written after a usage limit cut the turn of `task_id` (at `at`) shows Claude
+    /// Code continued that turn by itself at the reset (SPEC-072 LRS-001, #276): the `limit`
+    /// pause ends and the task runs, so the resume loop never ends the turn it continued.
+    pub(crate) async fn cut_turn_continued(
+        &self,
+        task_id: &TaskId,
+        at: Option<yulius_domain::time::Timestamp>,
+    ) {
+        let Some(at) = at else { return };
+        if let Ok(Some(pause)) = self.deps.store.open_pause(task_id).await
+            && pause.kind == crate::model::PauseKind::Limit
             && at > pause.started_at
         {
-            self.hold_ended(task_id, "overtaken", activity).await;
+            self.hold_ended(task_id, "overtaken", Activity::Working)
+                .await;
         }
     }
 
@@ -585,7 +618,11 @@ mod tests {
         let pending = Observation::TurnEnded {
             background_agents: Some(2),
         };
-        let waiting = reduce(&[PROMPT, Observation::TurnComplete, pending.clone()]);
+        let waiting = reduce(&[
+            PROMPT,
+            Observation::TurnComplete { at: None },
+            pending.clone(),
+        ]);
         assert_eq!(waiting.turn_open, Some(false));
         assert_eq!(waiting.background_agents, 2);
         // The wake-up is a user line: a new turn, nothing pending until it ends.
@@ -599,14 +636,14 @@ mod tests {
     /// assistant work after the turn's last end line reopens it, however the replay ends.
     #[test]
     fn work_after_a_stop_the_hook_continued_keeps_the_turn_open() {
-        let blocked = reduce(&[PROMPT, Observation::TurnComplete, WORK]);
+        let blocked = reduce(&[PROMPT, Observation::TurnComplete { at: None }, WORK]);
         assert_eq!(blocked.turn_open, Some(true));
         // The agent finishes the continued turn: closed again by its own end.
         let closed = reduce(&[
             PROMPT,
-            Observation::TurnComplete,
+            Observation::TurnComplete { at: None },
             WORK,
-            Observation::TurnComplete,
+            Observation::TurnComplete { at: None },
             ENDED,
         ]);
         assert_eq!(closed.turn_open, Some(false));
@@ -629,7 +666,7 @@ mod tests {
         let finished = reduce(&[
             Observation::Goal(GoalOutcome::Set),
             PROMPT,
-            Observation::TurnComplete,
+            Observation::TurnComplete { at: None },
             Observation::Goal(GoalOutcome::Met),
             ENDED,
         ]);
@@ -640,6 +677,8 @@ mod tests {
                 goal_achieved: Some(true),
                 background_agents: 0,
                 context_full: false,
+                limit_pending: false,
+                last_turn_at: Some(Timestamp(1)),
             }
         );
         // Typed again after the goal: a new open turn, the goal no longer counts.
@@ -649,7 +688,7 @@ mod tests {
         // Not met yet: the agent continues.
         let continuing = reduce(&[
             PROMPT,
-            Observation::TurnComplete,
+            Observation::TurnComplete { at: None },
             Observation::Goal(GoalOutcome::NotMet),
         ]);
         assert_eq!(continuing.turn_open, Some(true));
@@ -658,7 +697,7 @@ mod tests {
         assert_eq!(failed.turn_open, Some(false));
         assert_eq!(failed.goal_achieved, Some(false));
         // A prompt-mode session never says anything about a goal.
-        let plain = reduce(&[PROMPT, Observation::TurnComplete]);
+        let plain = reduce(&[PROMPT, Observation::TurnComplete { at: None }]);
         assert_eq!(plain.goal_achieved, Some(false));
         let limit = reduce(&[Observation::LimitReached {
             resets_at: None,
@@ -666,7 +705,14 @@ mod tests {
             window_minutes: None,
             at: None,
         }]);
-        assert_eq!(limit, TranscriptFacts::default());
+        // A limit changes no turn fact; it is only pending (SPEC-072 LRS-001).
+        assert_eq!(
+            limit,
+            TranscriptFacts {
+                limit_pending: true,
+                ..TranscriptFacts::default()
+            }
+        );
     }
 
     /// STA-003, STA-005: assistant work reopens an idle task only when it is newer than the last
@@ -757,6 +803,37 @@ mod tests {
         assert!(!is_typed_prompt(None));
     }
 
+    /// SPEC-072 LRS-001: a replay whose last word is a usage limit leaves it pending; a prompt,
+    /// agent work or a turn's end after it (Claude Code continued by itself) makes it history.
+    #[test]
+    fn a_replayed_limit_is_pending_until_a_turn_follows_it() {
+        let limit = Observation::LimitReached {
+            resets_at: None,
+            message: "limit".into(),
+            window_minutes: None,
+            at: None,
+        };
+        assert!(reduce(&[PROMPT, limit.clone()]).limit_pending);
+        assert!(reduce(&[PROMPT, limit.clone(), Observation::Compacted]).limit_pending);
+        let ended = Observation::TurnComplete {
+            at: Some(Timestamp(3)),
+        };
+        for after in [PROMPT, WORK, ended.clone()] {
+            assert!(
+                !reduce(&[PROMPT, limit.clone(), after.clone()]).limit_pending,
+                "{after:?}"
+            );
+        }
+        assert!(!reduce(&[PROMPT, WORK]).limit_pending);
+        // A sub-agent's turn end (no time) is not the session's.
+        let sidechain = Observation::TurnComplete { at: None };
+        assert!(reduce(&[PROMPT, limit.clone(), sidechain]).limit_pending);
+        // The last turn's time, for a pause overtaken while Yulius was down.
+        let continued = reduce(&[PROMPT, limit, WORK, ended]);
+        assert_eq!(continued.last_turn_at, Some(Timestamp(3)));
+        assert_eq!(reduce(&[WORK, PROMPT]).last_turn_at, Some(Timestamp(2)));
+    }
+
     /// CTX-007: a replay that ends in a full context (no reply or compaction after it) leaves the
     /// recovery pending and the turn closed; a later reply or compaction settles it.
     #[test]
@@ -771,10 +848,14 @@ mod tests {
         assert_eq!(full.turn_open, Some(false));
         let failed = reduce(&[PROMPT, Observation::ContextFull, Observation::CompactFailed]);
         assert!(failed.context_full);
-        for after in [Observation::Compacted, Observation::TurnComplete, WORK] {
+        for after in [
+            Observation::Compacted,
+            Observation::TurnComplete { at: None },
+            WORK,
+        ] {
             let settled = reduce(&[PROMPT, Observation::ContextFull, after.clone()]);
             assert!(!settled.context_full, "{after:?}");
         }
-        assert!(!reduce(&[PROMPT, Observation::TurnComplete]).context_full);
+        assert!(!reduce(&[PROMPT, Observation::TurnComplete { at: None }]).context_full);
     }
 }

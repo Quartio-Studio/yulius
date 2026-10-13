@@ -2,6 +2,7 @@
 //! (SPEC-001 TSK-001..008, HRN-002, ROT-007).
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use yulius_contracts::api::tasks::{ContinueTask, CreateTask, TaskSummary};
 use yulius_domain::auto_choice::AUTO;
@@ -459,11 +460,12 @@ impl App {
     ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::Work).await?;
         let account = parse_account(req)?;
-        // A turn a usage limit cut goes on past the limit, with nothing typed (SPEC-034).
+        // A turn a usage limit cut goes on past the limit, with nothing typed (SPEC-034): at a
+        // `limit` pause, or left at the limit by a refused automatic switch (SPEC-072 LRS-002).
         let at_limit = matches!(
             self.deps.store.open_pause(&task.id).await?,
             Some(pause) if pause.kind == crate::model::PauseKind::Limit
-        );
+        ) || self.runtime(&task.id).at_limit.load(Ordering::SeqCst);
         if at_limit {
             self.switch_after_limit(&task.id, account, "manual").await?;
         } else if self.held_opening(&task.id).await {
