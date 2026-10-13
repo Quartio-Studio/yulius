@@ -49,10 +49,10 @@ request, so the agent gets it as part of its request when the task starts.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] A task that has not started takes queued messages into its request through the API
-- [ ] The agent gets the queued messages when the task starts
-- [ ] The task view of a waiting task shows its request and a box to queue a message
-- [ ] Specs, ADR, API and product docs describe queued messages
+- [x] A task that has not started takes queued messages into its request through the API
+- [x] The agent gets the queued messages when the task starts
+- [x] The task view of a waiting task shows its request and a box to queue a message
+- [x] Specs, ADR, API and product docs describe queued messages
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 

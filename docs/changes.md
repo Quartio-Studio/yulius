@@ -4,6 +4,16 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-13
+
+- Queue messages into a task that has not started (SPEC-052, ADR-0033, task #44). A task waiting
+  for a session slot, after another task or a rule, or paused before its first start shows a
+  "Queued messages" card: the request as the agent will get it, and a box to queue a correction
+  (Queue, ⌘/Ctrl+Enter). Each message is added to the request under "Added by … before the task
+  started (… UTC)", so the request file, the goal, the first message, the scope check and
+  `task_get` all carry it. Once the task has started, its session is the way in (409). API:
+  `POST /api/tasks/{tid}/queued-messages`; `TaskDetail` gains `request` and `started`.
+
 ## 2026-10-12
 
 - The onboarding prompt tells the truth about Yulius CI (SPEC-020 ONB-001, task #34): the jobs'
