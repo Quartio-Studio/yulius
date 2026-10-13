@@ -172,7 +172,7 @@ flowchart LR
 
 Ready-made automations are a read-only catalog like the default workflows
 ([SPEC-042](../.ai/specs/SPEC-042-create-2-default-automations-that-can-be.md),
-[decision 0033](decisions/0033-ready-made-automations-catalog.md)): `catalog/automations/*.md`,
+[decision 0034](decisions/0034-ready-made-automations-catalog.md)): `catalog/automations/*.md`,
 embedded at build time. Enable copies one into an ordinary automation; a project's automation of
 the same name counts as the template's.
 
