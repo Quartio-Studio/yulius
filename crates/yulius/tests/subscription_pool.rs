@@ -82,6 +82,16 @@ async fn running_task(
     mode: TaskMode,
     account: &AccountId,
 ) -> Result<TaskId, Box<dyn std::error::Error>> {
+    running_task_in(h, mode, account, "/nonexistent/run").await
+}
+
+/// [`running_task`] whose run directory is `run_dir`.
+async fn running_task_in(
+    h: &Harness,
+    mode: TaskMode,
+    account: &AccountId,
+    run_dir: &str,
+) -> Result<TaskId, Box<dyn std::error::Error>> {
     let created = now(h);
     let task = h
         .store
@@ -123,7 +133,7 @@ async fn running_task(
             provider_session_id: Some("session-1".into()),
             launch_kind: LaunchKind::New,
             state: AttemptState::Live,
-            run_dir: "/nonexistent/run".into(),
+            run_dir: run_dir.into(),
             token_hash: h.app.deps.crypto.sha256_hex(TOKEN.as_bytes()),
             host_token: h.app.deps.crypto.seal(&[1u8; 32])?,
             ptyhost_pid: None,
@@ -322,6 +332,24 @@ async fn a_held_opening_turn_stays_the_opening_turn_until_its_stop_is_answered()
         body.is_null() || body == json!({}),
         "the opening turn is not gated: {body}"
     );
+    Ok(())
+}
+
+/// SPEC-068 OPN-001: any Stop means the session took a prompt, so a first message still marked
+/// pending (its submit hook failed open) is pending no more: a later prompt held for capacity is
+/// not mistaken for it, and a restart does not flag the task.
+#[tokio::test]
+async fn a_stop_ends_a_pending_first_message() -> TestResult {
+    let h = harness()?;
+    seed(&h).await?;
+    let only = add_account(&h, "acc-only", None).await?;
+    let run = tempfile::tempdir()?;
+    let marker = run.path().join("opening-pending");
+    std::fs::write(&marker, b"")?;
+    running_task_in(&h, TaskMode::Prompt, &only, &run.path().to_string_lossy()).await?;
+    let (code, _, _) = hook(&h.internal, "Stop", json!({})).await?;
+    assert_eq!(code, 200);
+    assert!(!marker.exists(), "the first message is no longer pending");
     Ok(())
 }
 
