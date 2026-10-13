@@ -70,8 +70,8 @@ patch (#286) can go.
 - [x] Sandbox cgroup split: system, agents and CI leaves with weights
 - [x] CI jobs run in the sandbox's CI leaf
 - [x] e2e without CI-only budgets and retries, measured under agent load
-- [ ] Docs, changes log and every gate green
-- [ ] Independent review findings resolved
+- [x] Docs, changes log and every gate green
+- [x] Independent review findings resolved
 
 ## Design
 
@@ -166,4 +166,21 @@ All on the VM, in the `yulius` sandbox (12 CPUs), on 2026-10-13.
   `ci_join` existed.
 - `isolation::*` compiles but skips here: it needs `YULIUS_ISOLATION_TEST=1` and a delegated
   cgroup, which a task sandbox has neither of.
+
+**Gate.** `scripts/dev ci` at e47f7ef passed in this sandbox:
+- the repository checks and script tests;
+- `cargo check`, `fmt --check` and `clippy -D warnings`;
+- `nextest --profile ci`: 1230 passed, 16 skipped;
+- the doctests, `cargo deny` (advisories, bans, licenses and sources ok), `machete` and `cargo doc`.
+
+**Review.** Two rounds in fresh read-only sessions.
+- Round 1 asked for changes:
+  - undo the split before a rollback;
+  - be honest about what a fake cgroup tree can show;
+  - justify the removal of the e2e budgets with real CI runs;
+  - keep a reattached `slirp4netns` in the sandbox.
+  All of these were fixed.
+- Round 2 approved. Three minors were fixed after it: no split again while the server stops, a
+  real check that the shell is in `agents/`, and the load average recorded with every
+  measurement.
 
