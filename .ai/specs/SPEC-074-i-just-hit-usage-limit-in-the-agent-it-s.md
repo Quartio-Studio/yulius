@@ -176,7 +176,8 @@ sequenceDiagram
 - `cargo test -p yulius --test main cockpit::`: 21 passed. `cargo test -p yulius-harness`: green.
   `supervision::`, `shells::` and `subscription_pool::` tests: 40 passed, 1 ignored.
 - `scripts/dev ci` at `85a74ef` (before review round 2): 1331 tests run, 1331 passed, 16
-  skipped. The final head's run is in the pull request.
+  skipped. At `baae79b` (after the merge of `dev`, the round-3 fixes and clippy's `next_back`):
+  1345 tests run, 1345 passed, 16 skipped, gate exit 0.
 - E2E: `agent-panel.e2e.ts` and `rail.e2e.ts` green (27 tests). The full suite under a load
   average of 55–87 had timeouts in unrelated files, and every failed file passed on a rerun with
   fewer workers (82 tests, then `notes.e2e.ts` alone, 19 tests).
