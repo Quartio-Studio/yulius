@@ -222,9 +222,19 @@ limited to the agent's sandbox.
 | POST | `/api/tasks/{tid}/switch` | write | `{"account_id?"}` → `TaskSummary`; operator override: moves a running task to another Claude subscription with a native resume. Tasks are subscription-agnostic (F 2026-10-10): the web UI offers no account choice; the pool switches by itself |
 | POST | `/api/tasks/{tid}/archive` · `/restore` | write | → `TaskSummary` |
 | DELETE | `/api/tasks/{tid}` | write | → 204; deletes a resting task permanently with its records, run directories, local worktree and branch (TSK-009); a Done running task (TSK-014) is closed first and deleted once its run has ended; the close and its wait take at most ~25 s (SPEC-039); 409 while any other task runs (at once, also for a task that turned switching meanwhile), if a Done task's session is still closing then, or if its session could not be ended (its processes survived termination; SPEC-065) |
+| POST | `/api/tasks/{tid}/control-request` | write | → `TaskSummary`; asks the task's owner for control (SPEC-070, ADR-0060): it would act on GitHub as you. One request waits per task: 409 for the owner and while another person's request waits (naming them); asking again changes nothing. With the owner disabled, deleted or without write access, control passes at once (`owner` is you), whatever request waits; a waiting asker who can no longer work gives way (their request dropped, `task.control_dropped`). Audited `task.control_requested` |
+| DELETE | `/api/tasks/{tid}/control-request` | read (asker) · write (owner) | → `TaskSummary`; the asker withdraws (`task.control_withdrawn`) or the owner declines (`task.control_declined`); 409 when no request waits, 403 for anyone else |
+| POST | `/api/tasks/{tid}/control-request/accept` | write (owner) | → `TaskSummary` with the asker as `owner`; the task acts on GitHub as them from its next call, its worktree commits as them, its terminal says so, audited `task.control_passed`; 409 when no request waits, or when the asker can no longer work in the project (the request is dropped) |
 | POST | `/api/tasks/{tid}/feedback` | read | `{"verdict":"correct|incorrect","comment"}` → 204 |
 | GET | `/api/archived-tasks` | read | → `[TaskSummary]` across visible sandboxes |
-| WS | `/api/tasks/{tid}/terminal` | read (input: write) | terminal protocol below |
+| WS | `/api/tasks/{tid}/terminal` | read (input: write, owner) | terminal protocol below |
+
+Every task route marked write also needs the task's owner (SPEC-070): anyone else gets 403 "Task
+#N is @owner's: it acts on GitHub as them. Ask them for control." — also an administrator or the
+superadmin, and the Cockpit's and task agents' `task_stop`, `task_archive` and `task_delete` for
+their person. The terminal opens read-only (`can_write: false`) for anyone but the owner. The
+file API's writes and uploads with `root=task:<id>` and `POST /api/sandboxes/{sid}/shells` with
+a `task_id` need the owner too; reading a worktree does not.
 
 ```json
 TaskSummary = {
@@ -232,7 +242,9 @@ TaskSummary = {
   "harness": "claude", "status": "running|…(see domain wire names)",
   "activity": "working|waiting|needs_attention|done|null",
   "branch": "feat/checkout-api", "origin": "ui|automation|import|onboarding|agent",
-  "created_by": {"login": "…"}, "created_at": "…", "updated_at": "…",
+  "created_by": {"login": "…"}, "owner": {"login": "…"},
+  "control_request": {"by": {"login": "…"}, "at": "…"}|null,
+  "created_at": "…", "updated_at": "…",
   "steps": {"done": 3, "total": 7, "current": "Implement API|null", "percent": 42},
   "archived": false, "account_label": "Claude #2|null",
   "mode": "goal|prompt",
@@ -842,7 +854,8 @@ resolves to nothing, the run gets the server without that variable or token.
     ends when its process exits (the server sends `exit` and closes), when it is closed, or after
     24 h without viewers; it keeps running across a server restart. Shells never change tasks.
 - Cockpit (SPEC-021, ADR-0020): every user's own plain Claude Code session per sandbox, a shell
-  of kind `cockpit`; the web UI calls it the Agent and shows it in the right panel (SPEC-035).
+  of kind `cockpit`; the web UI calls it the Superagent (SPEC-074, formerly the Agent) and shows
+  it in the right panel (SPEC-035).
   - `POST /api/sandboxes/{sid}/cockpit` (write) → 200 `Shell` (`name` "Cockpit"): the caller's
     running Cockpit, or a new one started (concurrent calls start one) as `claude [--resume
     <newest conversation>] --model claude-opus-5-5 --effort high` (SPEC-023) in the sandbox
@@ -858,6 +871,11 @@ resolves to nothing, the run gets the server without that variable or token.
     `automation_template_enable`, `workflows_list`, `sessions_search` and `session_read`, acting
     for its owner (SPEC-066); Claude Code asks the person before every tool that is not read-only.
     A conversation it could not resume (an error exit within 10 s) is skipped next time.
+    A usage limit Claude Code records in its conversation after it started is recorded on its
+    subscription, and the Cockpit starts again on one with capacity, resuming the conversation
+    stepped back over the limit with `CLAUDE_CODE_RESUME_INTERRUPTED_TURN=1` (SPEC-074). The old
+    one's viewers get `{"type":"exit","status":"switched"}`, and the next call returns the new
+    one. Without capacity it stays, and its viewers get a `notice`.
     409 before the repository is cloned or without a Claude
     subscription, 429 while none has capacity. There is no delete: it is never in `GET …/shells`,
     `PATCH`/`DELETE …/shells/{id}` answer 404 for it, and it does not count against the 8

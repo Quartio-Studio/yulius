@@ -6,13 +6,35 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
-- An automation starts its tasks like New task (SPEC-078, ADR-0055, task #70; SPEC-001 AUT-013).
+- An automation starts its tasks like New task (SPEC-078, ADR-0062, task #70; SPEC-001 AUT-013).
   The builder's **Start** row, the API (`supertask`, `after_task_id`, `start_rule`) and the tools
   `automation_create` / `automation_update` pick one of four choices: Start now (queued, the
   default), Supertask, After a task, or When a rule is true. Each run creates its task with that
   choice. After a task that has ended, the task waits for the rule `#N done` instead of failing.
   The sentence and the list row name the choice, and a waiting task keeps the next runs skipped.
-  Schema version 18.
+  Schema version 19.
+- A task is owned by one person, whose GitHub credentials it uses (SPEC-070, ADR-0060, task #66).
+  Every task has an owner, its creator until a hand-over. The task's Git, `gh`, pull requests,
+  merges, commit identity and agent authority are the owner's. Only the owner changes the task:
+  anyone else, administrators included, gets 403 naming the owner, watches the terminal
+  read-only and cannot write into the task's worktree or open a shell there. They can ask for control (Request control in the task). The owner hands it over or
+  declines, and the asker may withdraw. From the hand-over on, the task acts on GitHub as the new
+  owner, and its terminal says so. An owner who is disabled, deleted or without write access
+  passes control at once. Schema version 18 (`tasks.owner_id`, the waiting request).
+- A session opened from Sessions reads as Claude Code's TUI printed it (SPEC-075, ADR-0059, task #71).
+  Prompts and slash commands show as `>` lines and messages and tool calls as `⏺`, with each result
+  under `⎿` folded to its first lines ("Read 2 lines", "… +2 lines"). Edits show as `Update(path)`
+  with their lines. The raw `<command-name>` and `<local-command-stdout>` tags are gone, and
+  reminders are hidden. The transcript is faded in both themes: fainter and less saturated than a
+  live terminal (`--session-*`), yet still WCAG AA. It ends with a locked prompt box, and a
+  pixel-art spider web hangs in its corner.
+- The Agent panel is now called the **Superagent**, and a usage limit no longer stops it (SPEC-074,
+  ADR-0055, task #69). The Superagent chose a subscription once, when it started, and kept it, so
+  it could hit a weekly limit while tasks went on elsewhere. It now watches its conversation. A
+  limit recorded after it started is recorded on its subscription, and the Superagent starts again
+  on one with capacity. It continues the cut turn there, stepped back over the limit as a task's
+  turn is, and the panel follows it without a "stopped" banner. Without capacity, it stays and
+  says why. `/s/<slug>/superagent` opens it, as `/agent` and `/cockpit` still do.
 - Supertasks (SPEC-071, ADR-0054, task #67; SPEC-001 TSK-018). Choose **Supertask** in the
   composer's start menu (API `supertask: true`, `task_create`) for broad work such as security
   hardening. The task waits for its project's running tasks, then runs alone. While it waits or
@@ -56,7 +78,6 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   titles comply: task titles take an allowed type and are clipped to 100 characters, promotion
   pull requests are titled `release: promote dev to main`, and a fork's pull request is never
   taken for the promotion. `scripts/check_git_policy.py` is removed.
-
 - A stopped or closed run ends only when its processes are proven gone (SPEC-065, ADR-0050, task #54;
   #284, #285, #290). When Yulius cannot terminate a run's host after the stop or close escalation,
   the run stays live, the task's terminal says so and a running task needs attention; deleting it

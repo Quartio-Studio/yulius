@@ -5,12 +5,12 @@ import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, skeleton, openMenu, statusMark, singleFlight, keepFocus } from './dom.js';
 import { openRuleEditor, ruleChoices, ruleText } from './ruleeditor.js';
 import { createTerminalView } from './terminal.js';
-import { taskInfo, isLive, allows, taskActions, endedMessage, statusInfo, pausedLine, resetAround, shellsLine, heldBy, supertaskLine } from './status.js';
+import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, statusInfo, pausedLine, resetAround, shellsLine, heldBy, supertaskLine } from './status.js';
 import { heldPromptCard, splitCard, looksSeveral, chainCandidates, intakeStatus, SPLIT_MIN_WORDS } from './intake.js';
 import { attachMarkdownInput } from './mdinput.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
-import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask } from './actions.js';
+import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask, requestControl, dropControlRequest, handOverTask } from './actions.js';
 import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments, openAttachment } from './filedrop.js';
 import { relLong, dateTime } from './format.js';
 import { readJson, writeJson } from './store.js';
@@ -72,6 +72,9 @@ export function mountTaskView(ctx, sandbox, task) {
   let detail = null;
   let stripOpen = Boolean(readJson(STRIP_KEY, false));
   const destroyers = [];
+  // Only the task's owner changes it (SPEC-070): `owner()` names another owner, else null.
+  const me = () => ctx.store.state.me?.user?.login;
+  const owner = () => otherOwner(current, me());
 
   // ---- step strip
   const stripLabel = h('span', { class: 'step-label' });
@@ -105,7 +108,11 @@ export function mountTaskView(ctx, sandbox, task) {
     transport: ctx.transport,
     path: `/api/tasks/${enc(task.id)}/terminal`,
     onLink: (uri, event) => ctx.openLink(uri, event),
-    readOnlyLabel: () => readOnlyText(ctx.store.sandboxById(sandbox.id) || sandbox),
+    // Without write access to the sandbox that is the reason; with it, the task's owner (SPEC-070).
+    readOnlyLabel: () => {
+      const box = ctx.store.sandboxById(sandbox.id) || sandbox;
+      return owner() && allows(box.access, 'write') ? `Read-only: @${owner()} owns this task` : readOnlyText(box);
+    },
     exitMessage: (exit) => endedMessage(exit.status || current.status),
     emptyMessage: () => emptyTerminalMessage(current),
     exitActions: (exit) => {
@@ -116,7 +123,7 @@ export function mountTaskView(ctx, sandbox, task) {
       if (message.accounts) actions.push({ label: 'Check subscriptions', run: () => (ctx.isInstanceAdmin() ? ctx.navigate('/admin/accounts') : ctx.openStatus && ctx.openStatus()) });
       // The exit can arrive before the task's new status: write access is enough, but an archived
       // task is restored first, as in its menu (taskActions).
-      if (allows(sandbox.access, 'write') && !current.archived) {
+      if (allows(sandbox.access, 'write') && !owner() && !current.archived) {
         actions.push({ label: message.retry ? 'Try again' : 'Continue', run: () => continueTask(ctx, current) });
       }
       return actions;
@@ -158,7 +165,26 @@ export function mountTaskView(ctx, sandbox, task) {
     const pr = ctx.store.pullsOf(current.sandbox_id).get(current.id);
     const info = taskInfo(current, ctx.store.state.actionRequests, pr);
     let content = null;
-    const can = taskActions(current, (ctx.store.sandboxById(sandbox.id) || sandbox).access, pr);
+    const access = (ctx.store.sandboxById(sandbox.id) || sandbox).access;
+    const can = taskActions(current, access, pr, me());
+    const request = current.control_request;
+    // Control of the task (SPEC-070), on its own row above what else the task needs.
+    let control = null;
+    if (owner() && allows(access, 'write')) {
+      // Someone else's task: it acts on GitHub as them; its owner may hand it over. Asking again
+      // takes control at once once the owner can no longer act.
+      const mine = request && request.by.login === me();
+      control = [icon('lock', { size: 16 }), h('span', { class: 'attention-text' },
+        mine ? [h('strong', null, `You asked @${owner()} for control. `), 'Until they hand it over, the task acts on GitHub as them.']
+          : [h('strong', null, `@${owner()} owns this task: `), 'it acts on GitHub as them.', request ? ` @${request.by.login} asked for control.` : '']),
+      mine ? h('button', { type: 'button', class: 'btn btn-sm', title: `Takes control at once when @${owner()} can no longer act`, onClick: () => requestControl(ctx, current) }, 'Ask again') : null,
+      mine ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => dropControlRequest(ctx, current) }, 'Withdraw')
+        : request ? null : h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => requestControl(ctx, current) }, 'Request control')];
+    } else if (!owner() && request && allows(access, 'write')) {
+      control = [icon('st-attention', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, `@${request.by.login} asks to take control of this task: `), 'it will act on GitHub as them.'),
+        h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => handOverTask(ctx, current) }, 'Hand over'),
+        h('button', { type: 'button', class: 'btn btn-sm', onClick: () => dropControlRequest(ctx, current) }, 'Decline')];
+    }
     if (current.status === 'chained') {
       // Waiting in a chain (TSK-012): the way out is always here.
       const after = current.after;
@@ -182,14 +208,17 @@ export function mountTaskView(ctx, sandbox, task) {
         h('button', { type: 'button', class: 'btn btn-sm', onClick: () => ctx.openBrowserTab && ctx.openBrowserTab(sandbox, info.request.tab_id) }, 'Open browser tab')];
     } else if (current.status === 'running' && current.activity === 'needs_attention') {
       content = [icon('st-attention', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'The agent needs your attention. '), 'Its question is in the terminal below.'),
-        h('button', { type: 'button', class: 'btn btn-sm', onClick: reply }, 'Reply')];
+        owner() ? null : h('button', { type: 'button', class: 'btn btn-sm', onClick: reply }, 'Reply')];
     } else if (current.status === 'running' && current.activity === 'waiting' && info.group === 'needs') {
       content = [icon('st-input', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'The agent is waiting for your reply. '), 'Type it in the terminal below.'),
-        h('button', { type: 'button', class: 'btn btn-sm', onClick: reply }, 'Reply')];
+        owner() ? null : h('button', { type: 'button', class: 'btn btn-sm', onClick: reply }, 'Reply')];
     }
-    attention.hidden = !content;
-    attention.classList.toggle('waiting', !info.request && current.activity === 'waiting' && info.group === 'needs');
-    setChildren(attention, content);
+    attention.hidden = !content && !control;
+    attention.classList.toggle('waiting', !control && !info.request && current.activity === 'waiting' && info.group === 'needs');
+    attention.classList.toggle('stacked', Boolean(control && content));
+    setChildren(attention, control && content
+      ? [h('div', { class: 'attention-row' }, control), h('div', { class: 'attention-row' }, content)]
+      : control || content);
   }
   // A browser request changes the bar and the state in the strip ("Needs you in the browser").
   destroyers.push(ctx.store.on('browser-action', (event) => { if (event.sandbox_id === sandbox.id) renderStrip(); }));
@@ -258,7 +287,7 @@ export function mountTaskView(ctx, sandbox, task) {
   function queueOpen() {
     const access = (ctx.store.sandboxById(sandbox.id) || sandbox).access;
     return Boolean(detail && detail.id === current.id && detail.started === false
-      && WAITING.has(current.status) && !current.archived && allows(access, 'write'));
+      && WAITING.has(current.status) && !current.archived && allows(access, 'write') && !owner());
   }
   function renderQueue() {
     const waiting = queueOpen();
@@ -287,6 +316,7 @@ export function mountTaskView(ctx, sandbox, task) {
 
   function renderStrip() {
     renderAttention();
+    quickbar.hidden = Boolean(owner());
     renderHeld();
     renderQueue();
     const steps = current.steps || { done: 0, total: 0, current: null };
@@ -416,6 +446,7 @@ export function mountTaskView(ctx, sandbox, task) {
       const wasLive = isLive(current.status);
       const previousStatus = current.status;
       const previousUpdate = current.updated_at;
+      const previousOwner = owner();
       current = { ...current, ...next };
       // Whether the task started is the detail's: a status with a run means it has, and any status
       // change reads the detail again (a start that found no capacity has not). A message someone
@@ -428,6 +459,8 @@ export function mountTaskView(ctx, sandbox, task) {
       else renderDelivery();
       // A continued task gets a new attempt: reconnect if the socket had ended.
       if (!wasLive && isLive(current.status) && terminal.socket.status !== 'open') terminal.reconnect();
+      // Control passed (SPEC-070): the terminal asks again whether this viewer may type.
+      else if (owner() !== previousOwner) terminal.reconnect();
       // The user left the agent session (e.g. /exit): back to the task list (HRN-002).
       if (wasLive && current.status === 'closed' && ctx.onTaskClosed) ctx.onTaskClosed(current);
     },
@@ -443,7 +476,7 @@ export function mountTaskView(ctx, sandbox, task) {
 }
 
 function pickSummary(detail) {
-  const keys = ['status', 'activity', 'title', 'steps', 'account_label', 'harness', 'branch', 'updated_at', 'archived', 'mode', 'after', 'next', 'held_prompt', 'auto'];
+  const keys = ['status', 'activity', 'title', 'steps', 'account_label', 'harness', 'branch', 'updated_at', 'archived', 'mode', 'after', 'next', 'held_prompt', 'auto', 'owner', 'control_request'];
   const out = {};
   for (const key of keys) if (key in detail) out[key] = detail[key];
   return out;

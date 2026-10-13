@@ -258,6 +258,7 @@ mod tests {
                     origin: TaskOrigin::Ui,
                     automation_run: None,
                     created_by: UserId::parse("u")?,
+                    owner: UserId::parse("u")?,
                     created_at: Timestamp(created),
                     updated_at: Timestamp(created),
                     closed_at: None,

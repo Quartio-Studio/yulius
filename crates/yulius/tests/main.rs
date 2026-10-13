@@ -60,6 +60,7 @@ mod supertask;
 mod supervision;
 mod task_delete;
 mod task_done;
+mod task_ownership;
 mod task_prompt;
 mod terminal_ws;
 mod trusted_proxy;

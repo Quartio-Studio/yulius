@@ -41,13 +41,13 @@ the automation and applies to every task it creates.
   `chained` with a reason and a person decides (Start now or Cancel).
 - Agents manage automations with `automation_create` / `automation_update` (SPEC-066), and tasks
   with `task_create`, which takes `after_task` (a number), `start_rule` and `supertask`.
-- Automations are stored in the `automations` table (schema version 17 today).
+- Automations are stored in the `automations` table (schema version 18 today).
 
 ## Requirements
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| AUT-013 | An automation has a **start choice** for the tasks it creates, the same four as New task: start now (the default), supertask, after a task, or a start rule. The API's `Automation` carries it as `supertask` (default false), `after_task_id` (a task id) and `start_rule` (rule text, stored canonically), with the read-only `after_task_number`; existing automations and clients that send none of them keep "start now". It is stored with the automation (schema version 18). | int `automation_start.rs` |
+| AUT-013 | An automation has a **start choice** for the tasks it creates, the same four as New task: start now (the default), supertask, after a task, or a start rule. The API's `Automation` carries it as `supertask` (default false), `after_task_id` (a task id) and `start_rule` (rule text, stored canonically), with the read-only `after_task_number`; existing automations and clients that send none of them keep "start now". It is stored with the automation (schema version 19). | int `automation_start.rs` |
 | AUT-014 | Create and update refuse (422) an invalid start choice and store nothing: a supertask with an after-task or a rule; an after-task together with a rule; an after-task that is not a task of the automation's project; a rule that does not parse or names a task number the project does not have. An update that sends the stored choice back unchanged keeps it unchecked (its task may have been deleted since). | int `automation_start.rs` |
 | AUT-015 | Every run of the automation (scheduled, catch-up after a restart, Run now) creates its task with the start choice: start now → `queued`; supertask → a supertask (SPEC-071); rule → `chained` until the rule is true (at once when it already is); after a task → `chained` after it while it has not ended, and once it has ended, `chained` on the rule `#N done`, so a run after a predecessor that was Done (TSK-014; a closed task: plan complete and pull request merged, or open and green) starts at once and one after a predecessor that ended without being Done waits for a person, as a rule that can no longer be true does. A predecessor that no longer exists, or a full chain bound, makes the run `failed` with the reason. | int `automation_start.rs` |
 | AUT-016 | The previous-active rule is unchanged: a created task waiting `chained` or `queued` is active, so the next scheduled runs are skipped until it ends; waiting tasks never pile up. | int `automation_start.rs` |
@@ -137,7 +137,7 @@ the automation and applies to every task it creates.
     - The rule chip says why it cannot open.
     - The mock checks and canonicalises rules and counts a chained task as active.
     - The `after_task` argument parsing is shared with `task_create`.
-  - Accepted and recorded in ADR-0055: a rule's number reused after the newest task is
+  - Accepted and recorded in ADR-0062: a rule's number reused after the newest task is
     deleted, and a predecessor ending mid-run failing that one run.
   - An old client's PUT without the fields clears the choice, as for `workflow_id`.
-- Recorded as ADR-0055.
+- Recorded as ADR-0062.

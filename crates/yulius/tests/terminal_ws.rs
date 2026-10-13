@@ -96,8 +96,9 @@ async fn read_until(
     Ok(())
 }
 
-/// A harness with the fake agent, a cloned fixture repository, an account, and three users of
-/// sandbox `s1`: alice and carol (write) and bob (read).
+/// A harness with the fake agent, a cloned fixture repository, an account, and two users of
+/// sandbox `s1`: alice (write) and bob (read). `second` is alice on another device ("carol" in
+/// the tests' labels): only a task's owner types into it (SPEC-070), from any of her windows.
 struct Fixture {
     h: support::Harness,
     writer: support::Creds,
@@ -123,11 +124,26 @@ async fn fixture(options: FakeAgentOptions) -> Result<Fixture, Box<dyn std::erro
     })?;
     let writer = seed_github_user(&h, "u-w", "alice").await?;
     let reader = seed_github_user(&h, "u-r", "bob").await?;
-    let second = seed_github_user(&h, "u-c", "carol").await?;
     let sandbox = seed_sandbox(&h, "s1", "fixture", "u-w").await?;
     h.github.set_perm("alice", "acme/fixture", perms("write"));
     h.github.set_perm("bob", "acme/fixture", perms("read"));
-    h.github.set_perm("carol", "acme/fixture", perms("write"));
+    let alice = h
+        .app
+        .deps
+        .store
+        .user(&yulius_domain::ids::UserId::parse("u-w")?)
+        .await?
+        .ok_or("alice")?;
+    let second = support::Creds {
+        bearer: Some(
+            h.app
+                .issue_api_token(&alice, "second device")
+                .await?
+                .expose()
+                .to_owned(),
+        ),
+        ..support::Creds::default()
+    };
     h.app
         .deps
         .store

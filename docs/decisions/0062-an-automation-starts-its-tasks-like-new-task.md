@@ -1,4 +1,4 @@
-# 0055. An automation starts its tasks like New task
+# 0062. An automation starts its tasks like New task
 
 ## Status
 
@@ -17,7 +17,7 @@ chain's predecessor ends once, and New task's chain refuses a predecessor that h
 - An automation stores **one start choice** for every task it creates: start now (the default),
   supertask, after a task, or a start rule. In the app it is the enum `AutomationStart`, in the
   store three nullable columns with defaults (`supertask`, `after_task_id`, `start_rule`, schema
-  version 18), and on the wire the same three fields as `CreateTask`, plus the read-only
+  version 19), and on the wire the same three fields as `CreateTask`, plus the read-only
   `after_task_number`. Old rows and clients read as start now.
 - Create and update check it like New task (one choice at most; the task and the rule's task
   numbers belong to the project) and answer 422 otherwise. Each run checks it again, because

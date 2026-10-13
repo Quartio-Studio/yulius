@@ -34,12 +34,12 @@ impl AgentContext {
     }
 
     /// The task's agent as a caller of the project-management tools: it acts for the task's
-    /// creator (SPEC-037 MGT-002).
+    /// owner (SPEC-037 MGT-002, SPEC-070).
     #[must_use]
     pub fn caller(&self) -> ProjectCaller {
         ProjectCaller {
             sandbox: self.task.sandbox_id.clone(),
-            user: self.task.created_by.clone(),
+            user: self.task.owner.clone(),
             task: Some(self.task.clone()),
             actor: self.actor(),
             detail: json!({"task_id": self.task.id.as_str(), "task_number": self.task.number}),
