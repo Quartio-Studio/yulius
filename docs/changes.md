@@ -14,6 +14,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   declines, and the asker may withdraw. From the hand-over on, the task acts on GitHub as the new
   owner, and its terminal says so. An owner who is disabled, deleted or without write access
   passes control at once. Schema version 17 (`tasks.owner_id`, the waiting request).
+- A CI run that could not run (disk, a timeout, the host) reads "CI could not run (not the code)"
+  instead of "checks failing · Needs you"; an armed merge stays armed and the agent is told to run
+  the checks again (SPEC-050 STA-101).
 - Local test runs use 4 test threads (CI keeps one per CPU): several agents running the suite
   at once in one sandbox starved their tests into timeouts.
 - Only real typing counts as typing; a typed first message is never lost (SPEC-068, ADR-0052,

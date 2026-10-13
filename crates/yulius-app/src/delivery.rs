@@ -478,6 +478,20 @@ fn pr_wire_state(pull: &GhPull) -> &'static str {
     }
 }
 
+/// The checks word of a pull request head from Yulius CI's run there, when the project has Yulius
+/// CI: an errored run is `error` (the run could not happen: disk, a timeout, the host), not a
+/// failure of the code (S5, F 2026-10-13: infrastructure errors read "checks failing · Needs you").
+fn ci_checks_word(gate: yulius_domain::ci::GateResult) -> Option<&'static str> {
+    use yulius_domain::ci::{GateResult, RunState};
+    match gate {
+        GateResult::NotConfigured => None,
+        GateResult::Run(None | Some(RunState::Queued | RunState::Running)) => Some("pending"),
+        GateResult::Run(Some(RunState::Passed)) => Some("success"),
+        GateResult::Run(Some(RunState::Error)) => Some("error"),
+        GateResult::Run(Some(RunState::Failed | RunState::Cancelled)) => Some("failure"),
+    }
+}
+
 fn pull_view(pull: &GhPull, checks: &str) -> PullView {
     PullView {
         number: pull.number,
@@ -840,6 +854,8 @@ struct Observed {
     checks: ChecksState,
     /// Check sources the App may not read for the pull request head.
     checks_unreadable: Vec<gh::ChecksSource>,
+    /// Yulius CI's run at the head could not run (errored): the checks read `error`.
+    checks_errored: bool,
     worktree_head: Option<String>,
     dirty: bool,
     notes: Vec<String>,
@@ -1229,6 +1245,7 @@ impl App {
         let mut pr_known = false;
         let mut checks = ChecksState::None;
         let mut checks_unreadable = Vec::new();
+        let mut checks_errored = false;
         if let Some(token) = token {
             let github = &self.deps.github;
             let (owner, repo) = (&sandbox.repo_owner, &sandbox.repo_name);
@@ -1276,6 +1293,7 @@ impl App {
                 } else {
                     // Yulius CI is the project's only CI: its run at this head alone decides
                     // (DLV-006); checks GitHub reports from elsewhere do not count.
+                    checks_errored = ci_checks_word(gate) == Some("error");
                     checks = yulius_domain::ci::gate_checks(ChecksState::None, gate);
                 }
             }
@@ -1288,6 +1306,7 @@ impl App {
             pr,
             checks,
             checks_unreadable,
+            checks_errored,
             worktree_head,
             dirty,
             notes,
@@ -1358,10 +1377,12 @@ impl App {
             notes.push(format!("Git: {DIRTY_WORKTREE}."));
         }
         notes.extend(observed.notes.iter().cloned());
-        let checks = if observed.pr.as_ref().is_some_and(is_open) {
-            observed.checks.as_str()
-        } else {
+        let checks = if !observed.pr.as_ref().is_some_and(is_open) {
             "none"
+        } else if observed.checks_errored {
+            "error"
+        } else {
+            observed.checks.as_str()
         };
         Delivery {
             stage: stage.wire_name().to_owned(),
@@ -1526,6 +1547,13 @@ impl App {
             }
             let mut checks_failed = false;
             for pull in &open_pulls {
+                // With Yulius CI its run at the head decides, as in the merge gate (S5).
+                if let Some(word) =
+                    ci_checks_word(self.ci_gate_result(&sandbox, &pull.head_sha).await)
+                {
+                    checks_by_pr.push((pull.number, word));
+                    continue;
+                }
                 let state = match self
                     .deps
                     .github
@@ -3828,6 +3856,26 @@ mod tests {
     }
 
     use super::*;
+
+    /// S5: an errored Yulius CI run reads `error`, not a failure of the code.
+    #[test]
+    fn an_errored_ci_run_is_not_a_failure() {
+        use yulius_domain::ci::{GateResult, RunState};
+        assert_eq!(ci_checks_word(GateResult::NotConfigured), None);
+        assert_eq!(
+            ci_checks_word(GateResult::Run(Some(RunState::Error))),
+            Some("error")
+        );
+        assert_eq!(
+            ci_checks_word(GateResult::Run(Some(RunState::Failed))),
+            Some("failure")
+        );
+        assert_eq!(ci_checks_word(GateResult::Run(None)), Some("pending"));
+        assert_eq!(
+            ci_checks_word(GateResult::Run(Some(RunState::Passed))),
+            Some("success")
+        );
+    }
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
