@@ -67,11 +67,11 @@ CLI device approval: `POST /api/device/start` → `{"device_code","user_code","v
 | GET | `/api/sandboxes` | read | → `[Sandbox]` (only visible ones) |
 | GET | `/api/github/repositories` | — | → `[{"owner","name","private","access","already_sandbox"}]` (the superadmin: every owner repository the App installation can access, `admin`; others need a GitHub identity, else 403) |
 | GET | `/api/templates` | — | → `[{"id","name","description"}]` |
-| POST | `/api/sandboxes` | admin on repo (superadmin: a repository the App can access) / owner | `{"mode":"import","repo":"owner/name"}` or `{"mode":"create","name","template","description"}` → 201 `Sandbox` |
+| POST | `/api/sandboxes` | admin on repo (superadmin: a repository the App can access) / owner | `{"mode":"import","repo":"owner/name"}` or `{"mode":"create","name","template","description"}` → 201 `Sandbox` (an import from the browser starts onboarding at once; with a bearer token it stays `pending`, SPEC-051) |
 | GET | `/api/sandboxes/{sid}` | read | → `Sandbox` |
 | PATCH | `/api/sandboxes/{sid}` | admin | `{"profile": Profile}` → `Sandbox` |
 | POST | `/api/sandboxes/{sid}/onboarding/skip` | admin | → `Sandbox` (`pending`/`preparing` → `skipped`) |
-| POST | `/api/sandboxes/{sid}/onboarding/approve` | write | → `Sandbox`; starts the preparation task now (`pending` → `preparing`; it normally starts by itself; a missing one is created); idempotent while `preparing`; 409 when nothing awaits preparation or the task cannot start |
+| POST | `/api/sandboxes/{sid}/onboarding/approve` | write, browser session | Start onboarding → `Sandbox`; starts the onboarding task (`pending` → `preparing`; a missing one is created); idempotent while `preparing`; 403 for a bearer token (the CLI only uploads, SPEC-051); 409 when nothing awaits preparation or the task cannot start |
 | DELETE | `/api/sandboxes/{sid}` | admin | → 204; stops live/queued tasks; GitHub repository, clone and task records kept |
 
 `GET /api/github/repositories` lists the App installation's repositories of the instance owner
@@ -80,7 +80,8 @@ repository of the instance owner (`invalid` otherwise) and `admin` or `maintain`
 clones the repository, picks the profile (`yulius.toml` `[delivery]`, else `product`/`studio` for
 `Quartio-Studio/product`/`studio`, else `standard`) and validates the documentation format: a
 failing project gets a preparation task (`origin: "onboarding"`) that starts at once (`onboarding:
-"preparing"`; through `yulius onboard` it starts once the upload is applied). While
+"preparing"`; through `yulius onboard` the sandbox stays `pending` until someone clicks Start
+onboarding on the sandbox page, SPEC-051). While
 `pending`/`preparing` no other task starts, but none is refused: creating or chaining a task (also an
 automation run or a held prompt's Start in parallel / Run after) returns it `chained` after the
 preparation task, and it starts by itself once the sandbox is `ready` or `skipped`
@@ -154,8 +155,8 @@ it holds the caller's earlier copy, `taken` = another person uploaded a session 
 branches become `import/<login>/<branch>`; the snapshot is committed on
 `import/<login>/snapshot-<YYYY-MM-DD>[-n]` created from the client's `HEAD`; each session is
 stored as a read-only session document of the sandbox attributed to the caller (a changed one
-replaces the caller's copy); then the sandbox's preparation task starts when it waits. Only Claude
-Code sessions are imported.
+replaces the caller's copy). It never starts onboarding: a `pending` sandbox waits for Start
+onboarding in the browser (SPEC-051). Only Claude Code sessions are imported.
 
 `PATCH /api/sandboxes/{sid}` validates the profile (branch names, distinct branches, environment
 names, single-line commands ≤ 2000 bytes, `verify: command` needs a command, ≤ 8 environments) and
@@ -210,11 +211,12 @@ limited to the agent's sandbox.
 | POST | `/api/sandboxes/{sid}/intake/proposal` | write | `{"prompt"}` → `{"tasks":[{"title","prompt","after_previous":bool}]}`: Claude's smallest split, 2–4 tasks grouped by area carrying their items word for word; `[]` means keep one task. 409 when proposals are not configured or no account is connected, 429 while 2 proposals run, 502 when Claude fails or its proposal is unusable (more than 4 tasks, one per item, an item missing) |
 | POST | `/api/tasks/{tid}/start-now` | write | → `TaskSummary`; a `chained` task starts now whatever its predecessor does (409 otherwise). Cancel it with `/stop` |
 | POST | `/api/tasks/{tid}/held-prompts/{hid}` | write | `{"action":"parallel|after|send|skip_after|revert|dismiss","skip_step_ids?":[…],"confirm?":bool}` → `{"task":TaskSummary,"created":TaskSummary|null,"note"}`; one decision per held prompt (409 for a second). `send` needs a running task; `skip_after` marks the given open steps `skipped`; `revert` needs `"confirm":true` (422 otherwise) — see "Task intake" below |
+| POST | `/api/tasks/{tid}/queued-messages` | write | `{"text"}` → `{"request"}`; adds the message to the request of a task that has never started (`queued`, `chained` or `waiting_capacity`, no run, no provider session) under "**Added by {login} before the task started ({UTC time}):**", so the agent gets it when the task starts (SPEC-052 / SPEC-001 TSK-017, ADR-0035). 409 once the task has started (type into its session instead), or, rarely, when it changed between the check and the update (try again); 422 for an empty message or a request past 64 KiB; publishes `task.updated` |
 | GET | `/api/tasks/{tid}` | read | → `TaskDetail` |
 | GET | `/api/tasks/{tid}/prompt` | read | → `{"text","attachments":[{"name","image":bool,"available":bool}]}`: the prompt the task started with, without its `@path` attachment lines, and its attached files in order (SPEC-043). `available` is false for a file that is gone (composer drafts are removed after a week) or not in the task's own attachment folders (a path mentioned by hand, another task's or user's file); at most 500 are checked |
 | GET | `/api/tasks/{tid}/prompt/attachments/{n}` | read | → the bytes of attachment `n` (from 0) of that list, only when the prompt names it directly in one of the task's own attachment folders (its creator's composer drafts, `attachments/drafts/<user>/`, or the task's terminal attachments, `attachments/tasks/<task>/`), reached without a link, a regular file within the upload limit (404 otherwise, also out of range or not a number; 429 while the uploads' bound of 8 transfers is reached). An image (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`) is served with its image type, any other file as `application/octet-stream` with `Content-Disposition: attachment`; the content security policy includes `sandbox` (ADR-0033) |
 | POST | `/api/tasks/{tid}/stop` | write | → `TaskSummary` |
-| POST | `/api/tasks/{tid}/continue` | write | `{"account_id?"}` → `TaskSummary`; resumes the latest session natively, on the best Claude subscription (the pool's choice; `account_id` is an operator override the web UI never sends) |
+| POST | `/api/tasks/{tid}/continue` | write | `{"account_id?"}` → `TaskSummary`; resumes the latest session natively, on the best Claude subscription (the pool's choice; `account_id` is an operator override the web UI never sends); 403 for a bearer token on a `pending` sandbox's onboarding task (Start onboarding is a browser action, SPEC-051) |
 | POST | `/api/tasks/{tid}/switch` | write | `{"account_id?"}` → `TaskSummary`; operator override: moves a running task to another Claude subscription with a native resume. Tasks are subscription-agnostic (F 2026-10-10): the web UI offers no account choice; the pool switches by itself |
 | POST | `/api/tasks/{tid}/archive` · `/restore` | write | → `TaskSummary` |
 | DELETE | `/api/tasks/{tid}` | write | → 204; deletes a resting task permanently with its records, run directories, local worktree and branch (TSK-009); a Done running task (TSK-014) is closed first and deleted once its run has ended; the close and its wait take at most ~25 s (SPEC-039); 409 while any other task runs, or if a Done task's session is still closing then |
@@ -271,7 +273,8 @@ TaskDetail = TaskSummary + {
   "worktree": "…", "attempts": [{"seq","harness","account_label","account_id (proposed)","launch_kind","state",
                                   "started_at","ended_at","exit_code","exit_reason"}],
   "steps_list": [Step], "metrics": Metrics, "feedback": [{"login","verdict","comment","at"}],
-  "delivery": Delivery, "switches": [{"at","reason","from","to"}]
+  "delivery": Delivery, "switches": [{"at","reason","from","to"}],
+  "request": "the whole request, queued messages included", "started": false
 }
 Step = {"id","ordinal","title","status":"pending|in_progress|done|skipped|blocked","note","updated_by","updated_at","effort":1}
 Metrics = {"wall_ms","active_ms|null","input_tokens|null","output_tokens|null","cache_read_tokens|null","cache_write_tokens|null","models":["…"],"switches":0,"turns|null"}

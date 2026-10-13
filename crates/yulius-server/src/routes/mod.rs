@@ -83,6 +83,10 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/tasks/{tid}/stop", post(tasks::stop))
         .route("/api/tasks/{tid}/start-now", post(tasks::start_now))
         .route(
+            "/api/tasks/{tid}/queued-messages",
+            post(tasks::queue_message),
+        )
+        .route(
             "/api/tasks/{tid}/held-prompts/{hid}",
             post(tasks::held_prompt),
         )

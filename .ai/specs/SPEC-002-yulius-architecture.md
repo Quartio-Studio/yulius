@@ -1416,7 +1416,7 @@ Hence the shared, ownership-shifted **base** under a kernel overlay with a per-s
      - **Into the sandbox:** the internal listener's port (MCP, hooks, Git credentials, the secrets proxy of ADR-20; `YULIUS_URL` unchanged), plus operator-configured `YULIUS_SANDBOX_FORWARD` ports.
      - **Out to the host's loopback:** the sandbox's dev-server ports (PRJ-010), bound on the host only while something listens on them inside (the holder polls `/proc/net/tcp*` every second). Connections reach servers bound to `127.0.0.1` or `::1` inside, so previews, the welcome page's port list and the sandbox browser keep working.
 5. **Limits.**
-   - **cgroups.** With `Delegate=yes` and `DelegateSubgroup=server` on the unit, the server keeps its own processes in `server/`, moves processes left from before delegation to `legacy/`, and gives each sandbox `sandboxes/<sid>/` with `memory.max`, `cpu.max` and `pids.max`. The holder, `slirp4netns` and every run of the sandbox are in it. Defaults: half the RAM, all CPUs but two, 8192 tasks.
+   - **cgroups.** With `Delegate=yes` and `DelegateSubgroup=server` on the unit, the server keeps its own processes in `server/`, moves processes left from before delegation to `legacy/`, and gives each sandbox `sandboxes/<sid>/` with `memory.max`, `cpu.max` and `pids.max`. The holder, `slirp4netns` and every run of the sandbox are in it. Defaults: half the RAM, all CPUs but two, 8192 tasks. With the `cpu` controller, the group is split by CPU weight ([SPEC-053](SPEC-053-ci-e2e-timeouts-under-agent-load-give-ci.md), [ADR-0039](../../docs/decisions/0039-ci-jobs-get-the-cpu-first.md)): `system/` (holder, `slirp4netns`, weight 100), `agents/` (runs, shells, browsers, weight 100) and `ci/` (CI jobs, weight 400). The limits stay on the sandbox.
    - **Disk.** ext4 project quotas need the filesystem unmounted, so disk is a **soft quota**: the sandbox directory plus its upper layer, measured in the background (bounded walk). Over `YULIUS_SANDBOX_DISK_GB` (default 100), new runs are refused with the figures (after a fresh measurement when the reading is older than a minute, and after Yulius pruned the build caches of tasks that do not work, SPEC-008); live runs continue.
 6. **Seccomp** (x86-64; other architectures: none, logged).
    - **Refused with `EPERM`:** kernel modules, kexec, `bpf`, `perf_event_open`, `userfaultfd`, keyrings, `io_uring_*`, `open_by_handle_at`, mount APIs, `pivot_root`, swap, reboot, `syslog`, `acct`, `quotactl`, `iopl`/`ioperm`, x32 calls.
@@ -1682,7 +1682,8 @@ than one interval.
 (job, file, offset, sha256). Job creation adds the sandbox when needed; `applying` creates local
 import branches and the snapshot worktree, then stores each session as a session document
 (§6.10): new, replaced (same uploader, other digest), unchanged (same digest) or kept as another
-person's; finally it starts the preparation task of a `pending` sandbox (§6.6). Reapplying is
+person's. It never starts onboarding: a `pending` sandbox waits for Start onboarding in the browser
+(§6.6, SPEC-051). Reapplying is
 idempotent (same digests). Before the job, `POST /api/onboard/plan` tells the CLI the sandbox,
 its onboarding status and which fingerprints (`sha256` of the redacted transcript) the server
 already holds, so unchanged sessions are never offered. Sessions arrive redacted (IMP-008,
@@ -1691,10 +1692,12 @@ already holds, so unchanged sessions are never offered. Sessions arrive redacted
 ### 6.6 Sandbox onboarding
 
 `not_needed | pending → preparing (task id) → ready | skipped(by admin)`. Every import starts `pending` with an onboarding task: the full preparation prompt when the docs fail the format check, the environment-only prompt (`ENVIRONMENT_TITLE`) when they pass; `not_needed` is left for repositories created from a template (F 2026-10-11). Owner: the server. Exit
-triggers: `pending → preparing` when the preparation task starts — by itself, at once for a
-repository added in the UI and when the import is applied for `yulius onboard` (also
-`POST …/onboarding/approve`, kept for a pending sandbox whose start failed; a missing preparation
-task is created then); `preparing → ready` when the task has finished — it rests after running, or its turn ended
+triggers: `pending → preparing` when the preparation task starts — at once for a repository
+added in the UI; for `yulius onboard` only when a person clicks Start onboarding on the sandbox
+page (`POST …/onboarding/approve`, which accepts only a browser session: a bearer token gets 403,
+SPEC-051, ADR-0038; it also serves a UI-added sandbox whose start failed; a missing preparation
+task is created then; continuing a `pending` sandbox's onboarding task and importing through
+`POST /api/sandboxes` start it only from a browser session too); `preparing → ready` when the task has finished — it rests after running, or its turn ended
 with every step of its plan resolved — and the project validates in its worktree or the clone
 (re-evaluated on reads, turn ends, task closes and the gate);
 `→ skipped` by an admin. Failure: a start failure leaves `pending` (shown with what is pending);

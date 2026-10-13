@@ -271,6 +271,17 @@ pub trait TaskStore: Send + Sync {
         activity: Option<Activity>,
         at: Timestamp,
     ) -> AppResult<()>;
+    /// Appends `addition` to the prompt of a task that has never started (SPEC-052 QMS-002): it is
+    /// `queued`, `chained` or `waiting_capacity` with no attempt and no provider session, and the
+    /// prompt stays within `max_bytes`. One statement, so a start's compare-and-set to `starting`
+    /// either follows it (and reads the addition) or makes it fail. Returns whether it appended.
+    async fn append_unstarted_prompt(
+        &self,
+        id: &TaskId,
+        addition: &str,
+        max_bytes: usize,
+        at: Timestamp,
+    ) -> AppResult<bool>;
     /// Updates fields.
     async fn update_task(
         &self,

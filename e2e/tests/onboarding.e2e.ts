@@ -36,3 +36,26 @@ test('a task started while the sandbox is being prepared waits for it, then star
   await browser.evaluate(() => { location.hash = '#/s/website/t/2'; });
   await expect(screen.getByText('Queued after #1')).toHaveCount(0);
 });
+
+// SPEC-051 (task #43): `yulius onboard` only uploads; adapting the repository to the Yulius
+// standards waits for a person to click Start onboarding on the sandbox page. The mock's import
+// leaves the sandbox `pending`, standing in for a repository added with `yulius onboard`.
+test('a pending sandbox waits for Start onboarding in the browser', async ({ app, browser, screen }) => {
+  await app.open(mock('/'));
+  await screen.getByRole('button', 'Import repository').click();
+  const dialog = screen.getByRole('dialog', 'Add sandbox');
+  await screen.getByRole('radio', /Quartio-Studio\/website/).check();
+  await dialog.getByRole('button', 'Import').click();
+  await expect(dialog).toBeHidden();
+  await browser.evaluate(() => { location.hash = '#/'; });
+  await expect(screen.getByText('Needs onboarding').first()).toBeVisible();
+
+  await browser.evaluate(() => { location.hash = '#/s/website'; });
+  const banner = browser.locator('.banner-info');
+  await expect(banner).toContainText('This sandbox needs onboarding.');
+  await expect(banner).toContainText('Yulius standards');
+  expect(await axeViolations(browser)).toEqual([]);
+  await banner.getByRole('button', 'Start onboarding').click();
+  await expect(banner).toContainText('Preparing this sandbox.');
+  await expect(banner.getByRole('button', 'Start onboarding')).toHaveCount(0);
+});

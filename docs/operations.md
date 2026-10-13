@@ -401,7 +401,9 @@ shells and CI jobs join it. A sandbox gets:
   sandboxes are unreachable; the internal listener and the sandbox's dev-server ports are relayed;
 - a writable **system layer** over a shared, Yulius-owned copy of the host system (the *base*), so
   `sudo apt-get install …` works and persists for that sandbox only;
-- limits (CPU, memory, tasks) through the unit's delegated cgroup, and a soft disk quota;
+- limits (CPU, memory, tasks) through the unit's delegated cgroup, and a soft disk quota. Inside
+  a sandbox, CI jobs get four times the agents' CPU weight (`ci/` 400 against `agents/` 100), so
+  CI gets up to 80 % of the sandbox's CPU while agents build ([ADR-0039](decisions/0039-ci-jobs-get-the-cpu-first.md));
 - a seccomp filter: no nested user namespaces, `io_uring`, `bpf`, keyrings, module or mount calls.
 
 **Install once** (as root):
@@ -653,9 +655,11 @@ Each teammate runs it for their own sessions; sessions are attributed to whoever
 They are stored read-only under `<data>/sandboxes/<sid>/sessions/` (at most 128 MiB per
 transcript, 10 000 sessions and 8 GiB per sandbox), listed on the sandbox's Sessions page, and
 searched by agents (`sessions_search`, `session_read`). The uploader or an admin deletes one on
-its page; deletions are audited (`session.deleted`). A new sandbox's preparation task starts by
-itself once the upload is applied, and no other task starts there until onboarding is ready (or an
-admin skips it); `yulius onboard --status` and the sandbox page say what is pending.
+its page; deletions are audited (`session.deleted`). The command only uploads: a new sandbox's
+onboarding task (adapting the repository to the Yulius standards) waits until someone clicks
+**Start onboarding** on the sandbox page in the browser, which the CLI cannot do (SPEC-051,
+ADR-0038). New tasks wait until onboarding is ready (or an admin skips it); `yulius onboard
+--status` and the sandbox page say what is pending.
 
 ### Dropped files
 
@@ -820,6 +824,17 @@ should set the commit it is built from: `YULIUS_BUILD_COMMIT=$(git rev-parse HEA
 
 ### Notes for specific upgrades
 
+- Upgrading to CI jobs with CPU priority (SPEC-053, #283, 2026-10-13): no migration and no
+  configuration. The next time a sandbox is prepared, its cgroup gets `system/`, `agents/` and
+  `ci/`. Processes still in the sandbox's group (a holder and runs from before the update) move
+  to `agents/`, and the `cpu` controller then passes down to the leaves. Check it with
+  `cat /sys/fs/cgroup/system.slice/yulius.service/sandboxes/<sandbox>/ci/cpu.weight` (400).
+  A holder that was already running keeps its `slirp4netns` in `agents/` until the holder stops
+  when idle. **Rolling back to an older binary:** a server that stops gracefully undoes the split
+  (`-cpu`), so the older binary can join the sandbox groups again. After a crash or a forced stop,
+  undo it by hand before starting the older binary. Otherwise its holders and runs fail with
+  "Device or resource busy":
+  `for f in /sys/fs/cgroup/system.slice/yulius.service/sandboxes/*/cgroup.subtree_control; do echo -cpu > "$f"; done`.
 - Upgrading to tasks acting as their creator on GitHub (GIT-003, #188, 2026-10-11): no migration
   and no configuration. The agents' Git switches to the creator's token at its next credential
   request; a run gets `gh` logged in as the creator when it is started or continued (`gh` itself

@@ -468,7 +468,9 @@ async fn no_task_starts_before_onboarding_is_ready_and_the_plan_says_why() -> Te
     w.grant("alice", "fresh", "maintain");
     w.remote(OWNER, "fresh", &[("README.md", "# Fresh\n")], &[])?;
     w.grant("carol", "shop", "push");
-    let shop = import(&w, &alice, "Quartio-Studio/shop").await?;
+    // Added in the browser, so onboarding starts at once (SPEC-051).
+    let alice_browser = w.browser(&alice_user).await?;
+    let shop = import(&w, &alice_browser, "Quartio-Studio/shop").await?;
     assert_eq!(shop["onboarding"], "preparing");
     let sid = SandboxId::parse(text(&shop["id"]))?;
 

@@ -18,7 +18,9 @@ watching, steering and unblocking.
 
 - **Projects and sandboxes**: import a GitHub repository (or onboard it from a local machine's
   Claude sessions with `yulius onboard`); each gets a contained sandbox with its own system
-  layer, home, shells per user, browser and editor.
+  layer, home, shells per user, browser and editor. The CLI only uploads: the onboarding task that
+  adapts the repository to the Yulius standards starts when someone clicks Start onboarding on the
+  sandbox page.
 - **Agent** (formerly the Cockpit): every user's own plain Claude Code session per sandbox, in the
   right tool panel beside any page (top-bar Agent button, first in the tools rail), for quick work
   such as setting up automations or asking a quick question; anything more complex, such as
@@ -32,6 +34,8 @@ watching, steering and unblocking.
   outlive server restarts. Task intake splits mixed requests, holds scope changes and chains
   dependent tasks, also by a logical rule such as "#12 done and #13 done", which the composer
   builds from picked conditions (a task, its state, all or any).
+  A task that waits and has not started yet takes queued messages: each is added to its request,
+  so the agent gets the correction when the task starts.
   A half-written task (its prompt, attached files and choices) waits in the composer while
   people look elsewhere, also across a reload, until it starts.
 - **Subscription pool**: Claude accounts are used as one self-managing pool; tasks are

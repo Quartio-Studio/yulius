@@ -29,4 +29,4 @@ The skills are **adapted, not byte-for-byte copies**:
 Yulius embeds these files in its binary and extracts them to `<data_dir>/skills/superpowers/` at
 startup; they are enabled per sandbox on the Skills page (default: enabled). They work with the
 adapted Open Mercato skills (`om-fix`, `om-code-review`, `om-check-and-commit`, ...) and Yulius's
-own `delivery-pipeline`, `infra-bootstrap` and `git-hygiene`.
+own `delivery-pipeline`, `infra-bootstrap`, `git-hygiene` and `dead-code-cleanup`.

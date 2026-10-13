@@ -469,7 +469,7 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     // An update in progress keeps every task paused from the first hook call (ADR-18).
     app.restore_update_hold().await;
     app.load_jev_key().await;
-    let _isolation =
+    let isolation =
         crate::wiring::sandbox::install(&app, &args.isolation, args.internal_bind.port()).await?;
     app.cleanup_stale_logins().await;
     match app.reconcile_environment_runs().await {
@@ -532,6 +532,10 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     // Browsers do not outlive the server; shells and agent sessions keep running detached.
     drop(workspace_reaper);
     app.stop_workspace_services().await;
+    // An older binary started next (a rollback) could not join a split sandbox group (SPEC-053).
+    if let Some(manager) = &isolation {
+        manager.unsplit_cpu();
+    }
     a.map_err(|e| e.to_string())?;
     b.map_err(|e| e.to_string())?;
     scheduler.abort();

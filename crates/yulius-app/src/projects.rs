@@ -414,7 +414,9 @@ impl App {
                     .trim()
                     .split_once('/')
                     .ok_or_else(|| AppError::Invalid("repo must be owner/name".into()))?;
-                self.import_repository(&ctx.user, owner.trim(), name.trim(), true)
+                // Adding it in the browser is the explicit action that starts onboarding; a token
+                // import (the CLI, a script) waits for Start onboarding (SPEC-051).
+                self.import_repository(&ctx.user, owner.trim(), name.trim(), ctx.is_browser())
                     .await?
             }
             CreateSandbox::Create {
@@ -437,8 +439,8 @@ impl App {
     /// IMP-002): requires `admin` or `maintain` on GitHub (the superadmin: a repository the App
     /// installation can access, ACC-012); clones it, chooses the profile, validates the
     /// documentation format and creates the onboarding task when it fails. With
-    /// `start_preparation` that task starts at once; `yulius onboard` starts it once its upload
-    /// has landed.
+    /// `start_preparation` that task starts at once; through `yulius onboard` it waits for a
+    /// person to click Start onboarding on the sandbox page (SPEC-051).
     ///
     /// # Errors
     /// See [`App::create_sandbox`].

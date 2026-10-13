@@ -15,11 +15,6 @@ fn run(program: &str, args: &[&str]) -> io::Result<()> {
     println!("+ {program} {}", args.join(" "));
     let mut command = Command::new(program);
     command.args(args);
-    if args.first() == Some(&"machete") {
-        // cargo-machete distinguishes Cargo subcommands from `cargo run` by this
-        // variable. Do not leak xtask's package context into the nested command.
-        command.env_remove("CARGO_PKG_NAME");
-    }
     let status = command.status()?;
     if status.success() {
         Ok(())
@@ -95,7 +90,7 @@ fn execute(task: &str) -> io::Result<()> {
         }
         "deps" => {
             run(&cargo, &["deny", "--locked", "check"])?;
-            run(&cargo, &["machete"])
+            run(&cargo, &["shear", "--locked", "--deny-warnings"])
         }
         "ci" => {
             for gate in ["doctor", "check", "lint", "test", "deps"] {

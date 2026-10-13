@@ -76,3 +76,39 @@ test('each sandbox has its own terminals', async ({ app, screen }) => {
   await expect(tabs.getByRole('tab', 'Terminal 1')).toBeVisible();
   await expect(tabs.getByRole('tab', 'Terminal 2')).toBeVisible();
 });
+
+/** Two terminals the server already has (as after a reload): only the shown one is attached. */
+async function seedTwoShells(browser: Browser): Promise<void> {
+  await browser.evaluate(() => {
+    const db = (window as unknown as { __yuliusMock: { shells: Map<string, object> } }).__yuliusMock;
+    for (const [n, name] of [[1, 'Terminal 1'], [2, 'Terminal 2']] as const) {
+      const id = `sh_sb_studio_seed${n}`;
+      db.shells.set(id, { id, sandbox_id: 'sb_studio', name, task_id: null, created_at: new Date().toISOString(), session: null, folder: '/srv/yulius/sandboxes/studio/repo' });
+    }
+  });
+}
+
+const shownInput = (browser: Browser) => browser.locator('.term-views .term-slot:not([hidden]) .xterm-helper-textarea');
+
+test('a Shell tab whose terminal has not opened yet takes the keyboard when chosen', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await seedTwoShells(browser);
+  await openShellPanel(screen);
+  const tabs = screen.getByRole('tablist', 'Terminals');
+  // The panel shows the last terminal; the first has not opened.
+  await expect(tabs.getByRole('tab', 'Terminal 2')).toHaveAttribute('aria-selected', 'true');
+  await tabs.getByRole('tab', 'Terminal 1').click();
+  await expect(tabs.getByRole('tab', 'Terminal 1')).toHaveAttribute('aria-selected', 'true');
+  await expect(shownInput(browser)).toBeFocused();
+});
+
+test('closing the shown Shell tab puts the keyboard in the neighbour that had not opened yet', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await seedTwoShells(browser);
+  await openShellPanel(screen);
+  const tabs = screen.getByRole('tablist', 'Terminals');
+  await expect(tabs.getByRole('tab', 'Terminal 2')).toHaveAttribute('aria-selected', 'true');
+  await browser.locator('.term-tab.active .term-tab-close').click(); // the × of Terminal 2
+  await expect(tabs.getByRole('tab', 'Terminal 1')).toHaveAttribute('aria-selected', 'true');
+  await expect(shownInput(browser)).toBeFocused();
+});

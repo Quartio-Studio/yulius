@@ -47,6 +47,21 @@ depends on domain and contracts. `scripts/check_repository.py` enforces this.
 | composition | `yulius` (configuration, wiring, subcommands) |
 | tooling | `tools/` (fake agent, xtask) |
 
+## CPU
+
+A sandbox's processes share its cgroup limits, but not equally. CI jobs run in its `ci/` leaf
+with four times the CPU weight of the agents' `agents/` leaf. Under full load CI gets up to 80 % of
+the sandbox and the agents at least 20 %, and idle CPU goes to whoever wants it. Agent Bash commands also run
+5 nice levels below the agents themselves ([SPEC-053](../.ai/specs/SPEC-053-ci-e2e-timeouts-under-agent-load-give-ci.md),
+[decision 0039](decisions/0039-ci-jobs-get-the-cpu-first.md)).
+
+```mermaid
+flowchart TD
+  SBX["sandboxes/sandbox: cpu.max, memory.max, pids.max"] --> SYS["system/ weight 100: holder, slirp4netns"]
+  SBX --> AGS["agents/ weight 100: agent runs, shells, browsers"]
+  SBX --> CIG["ci/ weight 400: CI jobs"]
+```
+
 ## Disk
 
 A sandbox has a soft disk quota. The application prunes build caches of tasks that do not
@@ -114,7 +129,11 @@ the request file in the sandbox home keeps the whole request
 [SPEC-025](../.ai/specs/SPEC-025-uploaded-attachements-should-be-clickabl.md),
 [SPEC-030](../.ai/specs/SPEC-030-i-asked-previous-task-to-attach-images-a.md),
 [decisions 0022](decisions/0022-native-task-attachments.md) and
-[0026](decisions/0026-attached-images-are-pasted.md)).
+[0026](decisions/0026-attached-images-are-pasted.md)). The request is read when the task first
+starts, after its compare-and-set to `starting`. Until then, a message a person queues into the
+waiting task is appended to the stored request by one conditional update, so the start either
+reads it or refuses it ([SPEC-052](../.ai/specs/SPEC-052-even-if-a-task-is-queued-i-d-like-to-be.md),
+[decision 0035](decisions/0035-queued-messages-join-the-request.md)).
 
 ```mermaid
 sequenceDiagram
