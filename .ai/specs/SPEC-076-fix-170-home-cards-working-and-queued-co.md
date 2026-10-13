@@ -89,7 +89,7 @@ with one rule, the one `taskInfo` applies in the web UI.
 - Keep the wire names and change what `running` counts, rather than renaming it `working`: the
   only readers are the web UI and the mock in this repository, the name stays readable as "the
   running part of the work", and a rename would break any script reading the field for no user
-  gain. Recorded in ADR-0052.
+  gain. Recorded in ADR-0053.
 - The rule lives in the domain next to `needs_you` (one `TaskGroup` from `AttentionFacts`) rather
   than as a second function in the app: the sidebar's rule is one decision tree, and keeping it in
   one place is the point of #170. `AttentionFacts` keeps its name: it is the facts of a task's

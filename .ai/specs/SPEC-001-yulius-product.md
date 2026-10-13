@@ -948,7 +948,7 @@ observed. Live provider compatibility and deployment are reported separately fro
 
 - 2026-10-13 (task #62, #170): a sandbox's "working" and "queued" counts on Home and the tabs split
   the sidebar's Working group by its rule, as "needs you" already did; a task being stopped no
-  longer counts as needing you (UI-045, UI-050, AC-UI-45 changed; SPEC-076, ADR-0052).
+  longer counts as needing you (UI-045, UI-050, AC-UI-45 changed; SPEC-076, ADR-0053).
 - 2026-10-13 (task #55, #169): CLI device sign-in start is limited per client, its live grants
   bounded per client and instance, expired and consumed grants purged (ACC-013, AC-ACC-9 changed;
   SPEC-063, ADR-0047).
