@@ -47,3 +47,4 @@ task merged the same number first, take the next free one after merging `dev`.
 - [0039](0039-ci-jobs-get-the-cpu-first.md): CI jobs get the CPU first through a weighted cgroup
 - [0040](0040-personal-two-factor-guards-the-vault.md): A personal two-factor code guards the vault; a secret is a title, a value and notes
 - [0041](0041-task-status-follows-claude-codes-own-records.md): A task's status follows Claude Code's own records
+- [0040](0040-done-tasks-release-their-subscription.md): Done tasks release their subscription
