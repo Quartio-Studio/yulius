@@ -664,6 +664,7 @@ mod tests {
             resets_at: None,
             message: "limit".into(),
             window_minutes: None,
+            at: None,
         }]);
         assert_eq!(limit, TranscriptFacts::default());
     }

@@ -102,8 +102,9 @@ export function matchRoute(path, query = new URLSearchParams()) {
     if (parts.length === 4 && third === 'sessions') return { ...base, name: 'session', slug: second, page: 'sessions', session: fourth };
     if (parts.length === 5 && third === 'git' && fourth === 't' && /^\d+$/.test(parts[4])) return { ...base, name: 'gitTask', slug: second, page: 'git', number: Number(parts[4]) };
     if (parts.length === 3 && third === 'browser') return { ...base, name: 'composer', slug: second, browserTab: query.get('tab') || '' };
-    // The Agent (SPEC-035 AGT-006) is a right panel; the Cockpit's old page address opens it too.
-    if (parts.length === 3 && (third === 'agent' || third === 'cockpit')) return { ...base, name: 'composer', slug: second, panel: 'agent' };
+    // The Superagent (SPEC-035 AGT-006, SPEC-074 SUP-007) is a right panel; its earlier addresses
+    // (the Agent's, the Cockpit's) open it too.
+    if (parts.length === 3 && ['superagent', 'agent', 'cockpit'].includes(third)) return { ...base, name: 'composer', slug: second, panel: 'agent' };
     if (parts.length === 3 && SANDBOX_PAGES.has(third)) return { ...base, name: 'page', slug: second, page: third };
   }
   return { ...base, name: 'notfound' };

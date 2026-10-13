@@ -320,7 +320,7 @@ fn put_gh_first(launch: &mut LaunchPlan, host_dir: PathBuf) {
 }
 
 impl App {
-    fn users_dir(&self) -> PathBuf {
+    pub(crate) fn users_dir(&self) -> PathBuf {
         self.config.data_dir.join("users")
     }
 

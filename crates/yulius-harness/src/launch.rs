@@ -598,6 +598,9 @@ pub struct CockpitRequest {
     pub config_dir: PathBuf,
     /// Conversation to resume.
     pub resume: Option<String>,
+    /// The resumed conversation continues the turn a usage limit cut (SPEC-074 SUP-004,
+    /// SPEC-034 LIM-002): the caller has stepped its transcript back.
+    pub continue_interrupted: bool,
     /// Provider credential of the pool subscription.
     pub credential: Credential,
     /// The Yulius MCP server the Cockpit manages the project with (SPEC-037); `None` for none.
@@ -678,19 +681,26 @@ pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError>
         "--effort".into(),
         DEFAULT_CLAUDE_EFFORT.into(),
     ]);
+    let mut env = vec![
+        (
+            "CLAUDE_CONFIG_DIR".into(),
+            utf8(&request.config_dir, "config_dir")?.to_owned(),
+        ),
+        (
+            DISABLE_AUTOUPDATER_ENV.0.into(),
+            DISABLE_AUTOUPDATER_ENV.1.into(),
+        ),
+    ];
+    if request.continue_interrupted && request.resume.is_some() {
+        env.push((
+            RESUME_INTERRUPTED_TURN_ENV.0.into(),
+            RESUME_INTERRUPTED_TURN_ENV.1.into(),
+        ));
+    }
     Ok(LaunchPlan {
         argv,
         cwd: request.cwd.clone(),
-        env: vec![
-            (
-                "CLAUDE_CONFIG_DIR".into(),
-                utf8(&request.config_dir, "config_dir")?.to_owned(),
-            ),
-            (
-                DISABLE_AUTOUPDATER_ENV.0.into(),
-                DISABLE_AUTOUPDATER_ENV.1.into(),
-            ),
-        ],
+        env,
         secret_env,
         files: Vec::new(),
         session_id: request.resume.clone(),
