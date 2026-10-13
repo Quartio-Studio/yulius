@@ -11,6 +11,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   waits until someone clicks **Start onboarding** on the sandbox page. The CLI says so with the
   page's URL; the start endpoint refuses CLI tokens (403). Adding a repository in the web UI still
   starts onboarding at once.
+- "See the original prompt" in the task menu (SPEC-043, ADR-0033, task #42) shows the prompt a
+  task started with: the text formatted as written, with Copy text, and the files attached to it
+  (an image as a thumbnail that opens full size, another file to download, a file removed since
+  named). `GET /api/tasks/{tid}/prompt` returns it; `GET /api/tasks/{tid}/prompt/attachments/{n}`
+  serves a file only from the task's own attachment folders, never through a link or from a path a
+  prompt names elsewhere.
 
 ## 2026-10-12
 
