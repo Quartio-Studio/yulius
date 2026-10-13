@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- A session whose context is full recovers (SPEC-060, ADR-0040, task #51, #213). Claude Code's
+  "Prompt is too long" ends the turn, so the task waits instead of staying `working`. Yulius then
+  types `/compact` with a focus built from the task (goal, branch, pull request, steps left) and
+  wakes the compacted session. If the compaction fails, the task continues in a fresh session
+  opened with a handoff. If the fresh session is full too, the task needs attention and says why.
+  Each step shows in the task's terminal and the audit log (`task.context_full`).
 - CI jobs get the CPU first (SPEC-053, ADR-0039, task #45, #283). A sandbox's cgroup is split
   into `system/`, `agents/` and `ci/`, and CI jobs run with four times the agents' CPU weight. CI
   gets up to 80 % of the sandbox while agents build, and agents keep at least 20 %. The e2e suite in CI is

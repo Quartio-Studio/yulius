@@ -1204,7 +1204,13 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
                 state.turns += 1;
                 work_turn(options, &line, transcript.as_ref(), hooks.as_ref(), keys)?;
             }
-            _ => echo_message(options, &line, transcript.as_ref(), hooks.as_ref(), &mut state)?,
+            _ => echo_message(
+                options,
+                &line,
+                transcript.as_ref(),
+                hooks.as_ref(),
+                &mut state,
+            )?,
         }
     }
     Ok(0)
@@ -1262,7 +1268,10 @@ fn echo_message(
     {
         t.turn(line, &answer)?;
     }
-    if options.limit_after.is_some_and(|limit| state.turns >= limit) {
+    if options
+        .limit_after
+        .is_some_and(|limit| state.turns >= limit)
+    {
         state.limited = true;
         say("LIMIT REACHED")?;
         if let Some(transcript) = transcript

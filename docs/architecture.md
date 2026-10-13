@@ -95,6 +95,31 @@ sequenceDiagram
     N->>T: the lost turn, redone
 ```
 
+## Full context
+
+A session whose context is full gets "Prompt is too long" for every prompt, and no Stop hook ends
+the turn ([SPEC-060](../.ai/specs/SPEC-060-fix-213-a-session-whose-context-is-full.md),
+[decision 0040](decisions/0040-compact-then-restart-a-full-session.md), #213). The harness
+observes the refusal (`ContextFull`), the compaction boundary (`Compacted`) and a failed compaction
+(`CompactFailed`). The supervisor ends the turn so the task waits instead of working, and keeps
+one recovery episode per task in its runtime. The episode outlives a run and ends at the agent's
+next successful reply. Each stage is said in the task's terminal and audited as
+`task.context_full`. A replay after a restart that ends in a refusal starts the same recovery.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Clear
+    Clear --> Compacting: ContextFull / type "/compact <focus>"
+    Compacting --> Compacted: Compacted / type the wake-up line
+    Compacting --> Restarted: CompactFailed or 10 min / fresh session + handoff
+    Compacted --> Restarted: ContextFull / fresh session + handoff
+    Restarted --> GaveUp: ContextFull in the fresh session / needs attention + reason
+    Compacting --> Clear: a successful reply
+    Compacted --> Clear: a successful reply
+    Restarted --> Clear: a successful reply
+    GaveUp --> Clear: a successful reply
+```
+
 ## Agent feedback
 
 Yulius has no messages for now ([SPEC-028](../.ai/specs/SPEC-028-delete-message-mechanism-for-now-until-w.md),
