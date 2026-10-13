@@ -44,7 +44,8 @@ watching, steering and unblocking.
   subscription-agnostic, switches and pauses are invisible to agents.
 - **Delivery discipline**: spec when it matters, effort-weighted steps, independent review,
   merge on green into `dev`, promotion to `main`, deploy and verify, cleanup. Profiles live in
-  `yulius.toml`.
+  `yulius.toml`, with the branch policy (typed branches, conventional titles, `dev` → `main`
+  promotions) that Yulius checks before every merge.
 - **Yulius CI**: the projects' only CI; it runs on the VM, no GitHub Actions.
 - **Browser panel**: the sandbox's real Chrome streamed as video so people can pass captchas
   and sign-ins for the agent.

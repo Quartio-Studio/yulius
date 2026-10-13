@@ -223,6 +223,8 @@ pub struct PullRequest {
     /// GitHub's `mergeable_state` is `behind`: the base moved on and the repository requires the
     /// branch to be up to date before it merges (single reads only).
     pub behind: bool,
+    /// The head is in another repository than the base (a fork), or its repository is gone.
+    pub cross_repository: bool,
     /// Merge commit after merging.
     pub merge_commit_sha: Option<String>,
 }
