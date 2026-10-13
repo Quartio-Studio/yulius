@@ -197,6 +197,15 @@ pub async fn start_now(
     Ok(Json(app.start_chained_now(&ctx, &tid).await?))
 }
 
+pub async fn queue_message(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(tid): Path<String>,
+    Json(req): Json<yulius_contracts::api::tasks::QueueMessage>,
+) -> ApiResult<Json<yulius_contracts::api::tasks::QueuedMessage>> {
+    Ok(Json(app.queue_task_message(&ctx, &tid, &req).await?))
+}
+
 pub async fn held_prompt(
     State(app): State<AppState>,
     Auth(ctx): Auth,

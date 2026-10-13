@@ -9,6 +9,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - Onboarding follow-up (SPEC-055, SPEC-051, task #46): `docs/api.md` no longer says an import starts the
   preparation task (a `pending` sandbox waits for Start onboarding), ADR-0038's wording and the
   decisions index order are corrected, and the import test asserts the pending onboarding summary.
+- Queue messages into a task that has not started (SPEC-052, ADR-0035, task #44). A task waiting
+  for a session slot, after another task or a rule, or paused before its first start shows a
+  "Queued messages" card: the request as the agent will get it, and a box to queue a correction
+  (Queue, ⌘/Ctrl+Enter). Each message is added to the request under "Added by … before the task
+  started (… UTC)", so the request file, the goal, the first message, the scope check and
+  `task_get` all carry it. Once the task has started, its session is the way in (409). API:
+  `POST /api/tasks/{tid}/queued-messages`; `TaskDetail` gains `request` and `started`.
 - `yulius onboard` only uploads (SPEC-051, ADR-0038, task #43): the repository, branches, snapshot
   and sessions land, and the onboarding task that adapts the repository to the Yulius standards
   waits until someone clicks **Start onboarding** on the sandbox page. The CLI says so with the
