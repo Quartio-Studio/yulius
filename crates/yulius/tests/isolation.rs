@@ -705,9 +705,19 @@ async fn isolation_limits() -> TestResult {
     };
     let (forward, _hello) = hello_server().await?;
     let iso = fixture(limits, Some(delegation.clone()), forward).await?;
+    // SPEC-053 CPU-202: a process left in the sandbox group by an older server.
+    let group = delegation.unit.join("sandboxes/s1");
+    std::fs::create_dir_all(&group)?;
+    let mut stray = std::process::Command::new("sleep").arg("300").spawn()?;
+    std::fs::write(group.join("cgroup.procs"), stray.id().to_string())?;
     let body = async {
         let mut sh = shell(&iso, "s1").await?;
-        let group = delegation.unit.join("sandboxes/s1");
+        let stray_group = std::fs::read_to_string(format!("/proc/{}/cgroup", stray.id()))?;
+        assert_eq!(
+            stray_group.trim().rsplit('/').next(),
+            Some("agents"),
+            "a stray moves to agents/: {stray_group}"
+        );
         assert_eq!(
             std::fs::read_to_string(group.join("pids.max"))?.trim(),
             "64"
@@ -788,7 +798,10 @@ async fn isolation_limits() -> TestResult {
         eprintln!("memory.max 256 MiB: {} oom_kill={kills}", out.trim());
         Ok::<_, Box<dyn std::error::Error>>(())
     };
-    guarded(&iso, body).await
+    let result = guarded(&iso, body).await;
+    let _ = stray.kill();
+    let _ = stray.wait();
+    result
 }
 
 /// A sandbox over its disk quota starts no new runs; the message names the figures.

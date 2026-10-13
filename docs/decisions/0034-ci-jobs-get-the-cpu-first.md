@@ -23,8 +23,8 @@ A sandbox's cgroup is split into three leaves:
 - `ci`: CI jobs, `cpu.weight` 400.
 
 Only the `cpu` controller goes down to the leaves. `cpu.max`, `memory.max` and `pids.max` stay on
-the sandbox, so the leaves share them. Under full contention CI gets 80 % of the sandbox's CPU and
-the agents 20 %. When CI is idle, the agents get everything. Processes found in the sandbox group
+the sandbox, so the leaves share them. Under full contention CI gets up to 80 % of the sandbox's CPU and
+the agents at least 20 %. When CI is idle, the agents get everything. Processes found in the sandbox group
 from before the split move to `agents` first, as cgroup v2 requires.
 
 ## Alternatives
@@ -44,5 +44,7 @@ from before the split move to `agents` first, as cgroup v2 requires.
 CI's speed no longer depends on what the agents run. A CI run is at most about 25 % slower than on
 an idle sandbox. Agents slow down only while CI is busy, and never below a fifth of the sandbox.
 Without delegation or the `cpu` controller nothing changes, and `nice 5` remains the only priority.
-Sandboxes still share the host equally with each other, so one sandbox's agents can still slow
+A binary from before the split cannot join a split sandbox group. The server therefore undoes the
+split when it stops gracefully, and an operator undoes it by hand after a crash before rolling
+back. Sandboxes still share the host equally with each other, so one sandbox's agents can still slow
 another sandbox's CI.

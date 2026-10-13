@@ -254,10 +254,31 @@ impl Delegation {
             std::fs::create_dir_all(leaf)?;
         }
         // Joining a leaf works without the weights too; the next preparation tries again.
+        // A failure that persists (a process that cannot be moved) logs at every preparation.
         if let Err(error) = split_cpu(&dir, &groups) {
             tracing::warn!(sandbox, %error, "CI jobs run without CPU priority for now");
         }
         Ok(groups)
+    }
+
+    /// Takes the CPU back from every sandbox's leaves (`-cpu`) when the server stops (SPEC-053
+    /// CPU-205). An older binary started after this one (a rollback) joins the sandbox group
+    /// itself, which the kernel refuses while the group passes a controller down. Processes stay
+    /// in their leaves; the next preparation splits again.
+    pub fn unsplit_all(&self) {
+        let Ok(entries) = std::fs::read_dir(self.unit.join(SANDBOXES)) else {
+            return;
+        };
+        for entry in entries.flatten().take(MAX_MOVED) {
+            let control = entry.path().join("cgroup.subtree_control");
+            let split = std::fs::read_to_string(&control).is_ok_and(|text| {
+                text.split_whitespace()
+                    .any(|c| c.trim_start_matches('+') == "cpu")
+            });
+            if split && let Err(error) = write(&control, "-cpu") {
+                tracing::warn!(group = %entry.path().display(), %error, "cannot undo the CPU split");
+            }
+        }
     }
 }
 
@@ -266,13 +287,25 @@ impl Delegation {
 /// # Errors
 /// `dir` is not a cgroup directory under [`CGROUP_ROOT`], or the move is refused.
 pub fn join(dir: &Path) -> io::Result<()> {
+    write_procs(dir, "0")
+}
+
+/// Moves the process `pid` into the cgroup directory `dir`.
+///
+/// # Errors
+/// As [`join`].
+pub fn move_pid(dir: &Path, pid: u32) -> io::Result<()> {
+    write_procs(dir, &pid.to_string())
+}
+
+fn write_procs(dir: &Path, pid: &str) -> io::Result<()> {
     if !dir.starts_with(CGROUP_ROOT) || dir.components().any(|c| c.as_os_str() == "..") {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "not a cgroup directory",
         ));
     }
-    write(&dir.join("cgroup.procs"), "0")
+    write(&dir.join("cgroup.procs"), pid)
 }
 
 /// Total memory in bytes from the text of `/proc/meminfo`.
@@ -454,6 +487,35 @@ mod tests {
         assert!(groups.ci.is_dir() && groups.agents.is_dir() && groups.system.is_dir());
         assert!(!groups.ci.join("cpu.weight").exists());
         Ok(())
+    }
+
+    #[test]
+    fn a_stopping_server_undoes_the_split_and_the_next_one_redoes_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (_root, delegation, dir) = fake_sandbox("cpu memory pids\n")?;
+        delegation.sandbox_group("s1", &Limits::default())?;
+        // A sandbox that was never split is left alone.
+        let other = dir.with_file_name("s2");
+        std::fs::create_dir_all(&other)?;
+        delegation.unsplit_all();
+        // An older binary joins the sandbox group itself, which `+cpu` would refuse (EBUSY).
+        assert_eq!(
+            std::fs::read_to_string(dir.join("cgroup.subtree_control"))?,
+            "-cpu"
+        );
+        assert!(!other.join("cgroup.subtree_control").exists());
+        delegation.sandbox_group("s1", &Limits::default())?;
+        assert_eq!(
+            std::fs::read_to_string(dir.join("cgroup.subtree_control"))?,
+            "+cpu"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_process_moves_only_into_a_cgroup_directory() {
+        assert!(move_pid(Path::new("/tmp/x"), 1).is_err());
+        assert!(move_pid(Path::new("/sys/fs/cgroup/../etc"), 1).is_err());
     }
 
     #[test]

@@ -46,11 +46,12 @@ patch (#286) can go.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| CPU-201 | With cgroup delegation and the `cpu` controller, a sandbox's group `<sandbox>` gets three leaves. `system` holds the holder and `slirp4netns`. `agents` holds agent runs, shells, browsers and the Cockpit. `ci` holds CI jobs. `cpu.weight` is 100 for `system` and `agents` and 400 for `ci`. Under full contention, with the nearly idle `system` leaf left out, CI gets 80 % of the sandbox's CPU and agents get 20 %. Idle CPU goes to whoever wants it. `cpu.max`, `memory.max` and `pids.max` stay on `<sandbox>`, so the leaves share them. | `cgroup::tests::a_sandbox_group_splits_into_weighted_leaves` |
+| CPU-201 | With cgroup delegation and the `cpu` controller, a sandbox's group `<sandbox>` gets three leaves. `system` holds the holder and `slirp4netns`. `agents` holds agent runs, shells, browsers and the Cockpit. `ci` holds CI jobs. `cpu.weight` is 100 for `system` and `agents` and 400 for `ci`. Under full contention, with the nearly idle `system` leaf left out, CI gets up to 80 % of the sandbox's CPU and agents keep at least 20 %. Idle CPU goes to whoever wants it. `cpu.max`, `memory.max` and `pids.max` stay on `<sandbox>`, so the leaves share them. | `cgroup::tests::a_sandbox_group_splits_into_weighted_leaves` |
 | CPU-202 | Processes already in `<sandbox>` from before this change move to `agents` before the `cpu` controller is enabled for the leaves: holders and runs started before an update keep running. If enabling fails (a process raced in), the run still joins its leaf, without weights, and the next preparation tries again. | `cgroup::tests::processes_in_the_sandbox_group_move_to_agents_first`, `cgroup::tests::a_split_that_cannot_be_enabled_still_gives_leaves` |
-| CPU-203 | A CI job's process (`/bin/sh` and everything it starts) joins the sandbox's `ci` leaf. Every other run joins `agents`. The holder joins `system`. | `ci::exec::tests::a_ci_job_joins_the_ci_group_instead_of_the_agents_group`; opt-in `isolation::isolation_limits` (real delegated cgroup: weights, the shell in `agents`, the holder in `system`) |
+| CPU-203 | A CI job's process (`/bin/sh` and everything it starts) joins the sandbox's `ci` leaf. Every other run joins `agents`. The holder joins `system`, and so does a `slirp4netns` that the server reattaches after it died (before, it stayed in the server's group, outside the sandbox's limits). | `ci::exec::tests::a_ci_job_joins_the_ci_group_instead_of_the_agents_group`; opt-in `isolation::isolation_limits` (real delegated cgroup: weights, the shell in `agents`, the holder in `system`) |
+| CPU-205 | A server that stops gracefully takes the CPU back from every sandbox's leaves (`-cpu`). The processes stay in their leaves, and the next preparation splits the sandbox again. An older binary started next, for example by the update helper's rollback, joins the sandbox group itself. The kernel would refuse that (EBUSY) while the group passes `cpu` down. After a crash, the same `-cpu` write is a documented manual step. | `cgroup::tests::a_stopping_server_undoes_the_split_and_the_next_one_redoes_it`; `docs/operations.md` |
 | CPU-204 | Without delegation, or without the `cpu` controller, nothing changes: runs join the sandbox's group, or none at all, as before. CPU-101 (agent commands under `nice 5`) stays in either case. | `cgroup::tests::without_the_cpu_controller_there_is_no_split` |
-| E2E-201 | In CI, `e2e/e2e.config.ts` uses the runner's default budgets and no retries, the same as everywhere else. | `e2e/e2e.config.ts`; Evidence |
+| E2E-201 | In CI, `e2e/e2e.config.ts` uses the runner's default budgets and no retries, the same as everywhere else. This pull request's own CI is the measurement: it runs on the VM under the agents' load, on the deployed binary, which has CPU-101 but not yet the split. The overrides go only if 5 consecutive runs there pass in at most 12 minutes. Otherwise they stay until the split is deployed. | `e2e/e2e.config.ts`; Evidence |
 
 ## Acceptance criteria
 
@@ -58,7 +59,9 @@ patch (#286) can go.
   `cpu.weight` files read 100, 100 and 400. A CI job's `/proc/<pid>/cgroup` ends in
   `/<sandbox>/ci`, and an agent run's ends in `/<sandbox>/agents`.
 - AC-2: under several agents building, `e2e` passes in at most 12 minutes in 5 consecutive runs
-  without retries (see Evidence for what was measured and where).
+  without retries. Measured on this pull request's Yulius CI runs on the VM (see Evidence). They run
+  on the deployed binary, so they show the budgets can go even before the split is deployed. The
+  split only adds priority on top.
 - AC-3: the CI-only budgets and retries are gone from `e2e/e2e.config.ts`.
 
 ## Plan
@@ -106,12 +109,16 @@ than about 25 % slower than on an idle sandbox, whatever the agents run, and the
 ## Test plan
 
 - Unit tests in `yulius-sandbox` (`cgroup.rs`) on a fake cgroup tree in a temporary directory. They
-  check the files the split writes, the order (procs moved before `subtree_control`), the fallback
-  when enabling fails, and no split without `cpu`.
+  check the files the split writes, strays moved to `agents`, the fallback when enabling fails, no
+  split without `cpu`, and the undo on shutdown. A fake tree cannot refuse a write with EBUSY. The
+  order (procs moved before `subtree_control`) is therefore shown by the code and by the opt-in
+  test below.
 - A unit test of the CI job's join (`ci::exec`): the CI group replaces the agents group, and
   without delegation nothing changes.
 - The opt-in `isolation_limits` test on a real delegated cgroup (`systemd-run -p Delegate=yes`)
-  checks `subtree_control`, the three weights, a shell in `agents` and the holder in `system`.
+  checks `subtree_control`, the three weights, a shell in `agents` and the holder in `system`. It
+  also checks that a process placed in the sandbox group before the first preparation, as an
+  older server leaves it, moves to `agents`.
 - The e2e suite on this branch's config (no CI overrides), run in the `yulius` sandbox on the VM
   while agents build: 5 consecutive runs, durations recorded under Evidence.
 
@@ -132,6 +139,9 @@ than about 25 % slower than on an idle sandbox, whatever the agents run, and the
 - **Strays go to `agents`.** Processes found in `<sandbox>` after an update cannot be told apart
   cheaply. `agents` is the conservative choice: an old holder's `slirp4netns` shares the agents'
   weight until the holder restarts after its idle stop.
+- **A split that keeps failing is only logged.** That needs a process that cannot be moved out of
+  the sandbox group, which is rare. The warning repeats at every preparation, so it is visible in
+  the server log. A status in `yulius doctor` is not worth a new contract for now.
 - **Other sandboxes are out of scope.** Sandboxes still have equal weight under `sandboxes/`. #283
   is about one sandbox's agents against its own CI.
 
@@ -146,7 +156,8 @@ All on the VM, in the `yulius` sandbox (12 CPUs), on 2026-10-13.
 - Load average: 25.5 at the start, 19.1 at the end.
 - `CI=true npx e2e run --reporter list`: 34 files passed (1 skipped), 195 tests passed, in 546.6 s
   (9 min 7 s). No test was retried.
-- This is the worst case for CI. Before SPEC-050, CI ran at the same priority as these builds.
+- What it shows: the default budgets are enough at agent priority under that load. It is one run,
+  and not the 5 that AC-2 asks for. Those are this pull request's CI runs, below.
 
 **Unit and integration tests.**
 - `cargo nextest run -p yulius-sandbox`: 34 passed, including the four `cgroup::tests` above,

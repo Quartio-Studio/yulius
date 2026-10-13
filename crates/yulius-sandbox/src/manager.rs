@@ -562,9 +562,15 @@ impl Manager {
                         let program = program.to_string_lossy().into_owned();
                         let paths = StatePaths::new(self.state_dir(&sandbox));
                         let mut updated = record.clone();
+                        let system = self.cgroup_of(&sandbox).map(|groups| groups.system);
                         let restarted = tokio::task::spawn_blocking(move || {
-                            crate::holder::restart_egress(&program, &paths, &mut updated)
-                                .map(|()| updated)
+                            crate::holder::restart_egress(
+                                &program,
+                                &paths,
+                                &mut updated,
+                                system.as_deref(),
+                            )
+                            .map(|()| updated)
                         })
                         .await;
                         match restarted {
@@ -759,6 +765,13 @@ impl Manager {
             drop(build);
             manager.building.store(false, Ordering::SeqCst);
         });
+    }
+
+    /// Undoes the sandboxes' CPU split when the server stops ([`Delegation::unsplit_all`]).
+    pub fn unsplit_cpu(&self) {
+        if let Some(delegation) = &self.config.delegation {
+            delegation.unsplit_all();
+        }
     }
 
     /// Stops every holder (tests and shutdown of a test server).
