@@ -6,6 +6,21 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- Parallel tasks stop colliding at merge (SPEC-083, ADR-0066). With 8 to 12 agents, numbered
+  records, the shared logs and reviews of dev merges failed or delayed most merges (81 decision
+  records renamed in 36 of 74 sessions; 33 of 57 merges spent a review round on dev merges or
+  renumbering):
+  - `record_number` gives each task the next free number of a directory's numbered files (ADRs,
+    migrations, any `NNNN-…` or `PREFIX-NNN-…`), past the integration branch, every live task's
+    checkout and every number given out before, and reserves it (schema version 20). Spec
+    numbers come from the same reservations. The briefing points agents to it.
+  - The changes log and the decision index merge by Git's union driver in every repository:
+    Yulius keeps them in its block of the clone's `info/attributes` at every task start, so an
+    onboarded repository needs no `.gitattributes`.
+  - `delivery_merge` accepts the review of an earlier head when the branch moved past it only
+    through Git's own merges of the integration branch; anything else still needs a new review.
+  - Pull requests whose merge is not armed are not updated by Yulius: GitHub's conflict state
+    blocks nothing, and each push would cost a CI run.
 - The original prompt's thumbnails always load (SPEC-080, ADR-0064, task #63; #303). Reading a
   prompt's attached file no longer takes an upload slot: reads have their own bound of 16 and wait
   up to 30 s for a slot, so a prompt with many images, or one opened while uploads run, shows every
