@@ -1,11 +1,11 @@
 ---
 yulius-task: 4903d493-783f-4f20-8128-f7b46d451379
-status: in-progress
+status: done
 ---
 
 # SPEC-057: Done tasks no longer hold their subscription
 
-Status: in progress
+Status: implemented
 Date: 2026-10-13
 Owner: Yulius task #48
 Scope authorization: user request: "Tasks marked as done are still attached to subscribtion. Fix."
@@ -42,16 +42,16 @@ sessions were not there, and the subscription can be removed.
 | --- | --- | --- |
 | SUB-001 | A subscription's `in_use_by` (Accounts page and API, account events, Status panel, capacity view) counts the live attempts of tasks that are not Done, by the session limit's rule (`task_is_done_locally`, SES-101). A Done task typed into again is Working and counts again. | `supervision::a_done_task_lets_its_subscription_go` |
 | SUB-002 | The pool's per-subscription load (`AccountView::in_use` used by `rotation::score`) counts the same tasks, so idle Done sessions do not push new work away from a subscription. | covered by the shared helper of SUB-001 |
-| SUB-003 | Removing a subscription is refused (409) while a task that is not Done uses it, as before. When only Done tasks use it, their sessions are closed first (`closed`, as archiving does, TSK-014) and the subscription is then deleted; a Done task whose session does not end in time keeps the subscription (409). | `supervision::a_done_task_lets_its_subscription_go` |
+| SUB-003 | Removing a subscription is refused (409) while a task that is not Done uses it, as before, and then closes nothing. When only Done tasks use it, their sessions are closed first, together (`closed`, as archiving does, TSK-014), and the subscription is then deleted; a Done task whose session does not end in time keeps the subscription (409). | `supervision::a_done_task_lets_its_subscription_go`, `supervision::removing_a_subscription_spares_working_tasks_and_closes_every_done_one` |
 
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
-- [ ] Subscription cards and rotation count only working tasks
-- [ ] Removing a subscription closes its Done tasks' sessions
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Docs, gates and delivery into dev
+- [x] Write the fix spec and the regression test that fails
+- [x] Subscription cards and rotation count only working tasks
+- [x] Removing a subscription closes its Done tasks' sessions
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Docs, gates and delivery into dev
 
 ## Acceptance criteria
 
@@ -89,3 +89,17 @@ sessions were not there, and the subscription can be removed.
   and the close can still be interrupted. Same window as TSK-009/TSK-014's archive and delete.
 - **Not detaching Done sessions automatically.** TSK-014 keeps a Done session attached for
   follow-ups; closing every Done task would change that contract and lose the idle session.
+
+## Evidence
+
+- Regression test first (commit d865456): `cargo test -p yulius --test main -- --exact
+  supervision::a_done_task_lets_its_subscription_go` failed on the unfixed code with
+  `left: (1, Some(1), Some(1)) right: (0, Some(0), Some(0))`, then passed with the fix (36a764e).
+- Review round 1 (fresh read-only session, `om-code-review`): approved 8d11cef with minor findings.
+  Removal now closes Done sessions together, a test covers a working task blocking removal without
+  closing its Done neighbour, and the docs and the Remove dialog say what Done means here
+  (ae150ce). Round 2 approved ae150ce; the reviewer ran both SPEC-057 tests 5 times, all green.
+- `python3 scripts/bootstrap.py && scripts/dev ci` at ae150ce: exit 0, nextest `1268 tests run:
+  1268 passed (11 slow), 16 skipped`, with format, lint, docs and dependency gates green.
+- Not run locally: the browser e2e suite (`e2e/`). The only web change is the Remove dialog's
+  sentence, which no e2e test asserts; Yulius CI runs the suite on the pull request.
