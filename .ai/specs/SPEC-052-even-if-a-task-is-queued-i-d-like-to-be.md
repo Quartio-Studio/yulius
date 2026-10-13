@@ -1,11 +1,11 @@
 ---
 yulius-task: b36dec15-4a5b-4969-be67-b6a23d2721dd
-status: in-progress
+status: done
 ---
 
 # SPEC-052: queue messages into a task that has not started
 
-Status: in progress
+Status: done
 Date: 2026-10-13
 Owner: Yulius task #44
 Scope authorization: user request (task #44, MrFishPL): "Even if a task is queued i'd like to be
@@ -53,8 +53,8 @@ request, so the agent gets it as part of its request when the task starts.
 - [x] The agent gets the queued messages when the task starts
 - [x] The task view of a waiting task shows its request and a box to queue a message
 - [x] Specs, ADR, API and product docs describe queued messages
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -107,3 +107,37 @@ request, so the agent gets it as part of its request when the task starts.
   is the way in. The size answer (422) is only for a task that can still take a message.
 - **Same limit as creation (64 KiB for the whole request).** One bound for the request, whatever
   path built it.
+
+## Evidence
+
+- `scripts/dev ci` exit 0 on b9dbcb2 (the head before this section; this section only adds text):
+  doctor, repository check, script tests, `cargo check`, `cargo fmt --check`, clippy
+  `-D warnings`, `cargo nextest run --profile ci` **1225 passed, 16 skipped**, doctests,
+  `cargo deny`, `cargo machete`, `cargo doc`.
+- e2e (full suite, `npx e2e run`): **199 passed, 1 skipped** (36 files).
+- Tests that fail without the change:
+  - `queued_messages.rs::a_task_that_has_started_refuses_a_message`: red with the SQL's
+    attempt/session guards removed and `starting`/`running` allowed.
+  - `store.rs::a_prompt_grows_only_while_the_task_has_not_started_and_within_the_bound`: red
+    without the byte-length clause.
+  - `queued_messages.rs::a_started_task_with_a_long_request_says_it_has_started`: red (422) before
+    the started check moved ahead of the size check.
+  - e2e `queued-messages.e2e.ts`: the first two tests were red (no card) before the UI. `once the
+    task has started, a pause for capacity brings no card back` was red before the detail was
+    read again on a status change.
+  - `task_done.rs::a_message_queued_before_the_start_reaches_the_agent` (fake agent shaped like
+    Claude Code): the goal task's request file and `/goal`, and the prompt task's first message,
+    carry the message. It needs no change of its own beyond the API: the start already reads
+    the request.
+- Seen in the browser (mock, 1280×800): the card at the bottom of the terminal, with the request
+  and the box.
+- Independent review (fresh read-only session, `om-code-review`):
+  - Round 1, on 0baf4bf: REQUEST CHANGES. One major: the card could come back over a live
+    session paused for capacity. Minors: the untested SQL bound, 422 instead of 409 for a started
+    task, the changes log and the plan, and mode/title unchanged by a message. Two nits.
+  - All were fixed test-first in 0ad35e2 and 380793f, and the docs in the commits after.
+  - Round 2 reviews the head that carries this section.
+- Not covered here: a real Claude Code session (the fake agent stands in, as in SPEC-011 and
+  SPEC-030). Read access hiding the card is checked by the server (403) and the shared `allows()`
+  test, not by an e2e case.
+
