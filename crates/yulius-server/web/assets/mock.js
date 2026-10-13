@@ -333,6 +333,8 @@ function summary(task) {
     // Background shells an idle agent left running (TSK-014).
     background_shells: task.status === 'running' ? task.background_shells ?? null : null,
     background_shells_since: task.status === 'running' && task.background_shells ? task.background_shells_since ?? null : null,
+    // The idle agent waits in `yulius wait` (SPEC-085 STT-002).
+    yulius_wait: task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done') && task.yulius_wait === true,
   };
 }
 

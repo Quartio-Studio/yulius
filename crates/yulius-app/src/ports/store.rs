@@ -13,9 +13,9 @@ use crate::error::AppResult;
 use crate::model::{
     AccountRecord, AccountStatus, ApiTokenRecord, AttemptRecord, CachedAccess, ControlRequest,
     DeviceGrantBounds, DeviceGrantInsert, DeviceGrantRecord, FeedbackRecord, GitHubTokenRecord,
-    InboxEntry, InstanceRecord, MessageRecord, MetricsRecord, ProviderSessionRecord, SandboxRecord,
-    ScopeClaimRecord, Sealed, StepRecord, SwitchDecisionRecord, TaskRecord, TaskTimes, UserRecord,
-    WebSessionRecord,
+    InboxEntry, InstanceRecord, MessageRecord, MetricsRecord, ProviderSessionRecord,
+    RecordReservation, SandboxRecord, ScopeClaimRecord, Sealed, StepRecord, SwitchDecisionRecord,
+    TaskRecord, TaskTimes, UserRecord, WebSessionRecord,
 };
 
 /// Instance singleton and setup.
@@ -445,7 +445,7 @@ pub trait AccountStore: Send + Sync {
     -> AppResult<Vec<crate::model::AccountTokens>>;
 }
 
-/// Steps, messages and scope claims.
+/// Steps, messages, scope claims and record numbers.
 #[async_trait]
 pub trait CoordinationStore: Send + Sync {
     /// Replaces the step list of a task (records events for status changes).
@@ -499,6 +499,15 @@ pub trait CoordinationStore: Send + Sync {
         pattern: Option<&str>,
         at: Timestamp,
     ) -> AppResult<u32>;
+    /// Reserves a record number (SPEC-083); `false` when that number of that directory and
+    /// prefix is already reserved.
+    async fn reserve_record_number(&self, reservation: &RecordReservation) -> AppResult<bool>;
+    /// The record numbers reserved in a sandbox's directory `dir`, oldest first.
+    async fn record_reservations(
+        &self,
+        sandbox: &SandboxId,
+        dir: &str,
+    ) -> AppResult<Vec<RecordReservation>>;
 }
 
 /// Append-only audit log.

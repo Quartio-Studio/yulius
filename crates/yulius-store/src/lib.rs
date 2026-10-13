@@ -60,7 +60,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0017_supertask.sql"),
     include_str!("migrations/0018_task_owner.sql"),
     include_str!("migrations/0019_automation_start.sql"),
-    include_str!("migrations/0020_task_state_times.sql"),
+    include_str!("migrations/0020_record_numbers.sql"),
+    include_str!("migrations/0021_task_state_times.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -346,7 +347,7 @@ mod tests {
         Ok(())
     }
 
-    /// A version-19 database's tasks migrate to version 20 (SPEC-087 TIM-001, TIM-002): each is
+    /// A version-19 database's tasks migrate to version 21 (SPEC-087 TIM-001, TIM-002): each is
     /// in its state since its last change, and a live task that does not wait for a person works
     /// since its first run started.
     #[tokio::test]

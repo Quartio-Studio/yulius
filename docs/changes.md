@@ -13,7 +13,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
     (since it last started working without needing anyone), "waiting 12m", "queued 2h", "paused
     5m", "in review 3m", "done 3h ago", "stopped 2d ago". The sidebar, the Tasks page ("Created",
     "For") and a task's overview ("Created", "Now", "Agent work … sessions open") use one rule. The
-    server keeps the times: `state_since` and `working_since` (schema version 20).
+    server keeps the times: `state_since` and `working_since` (schema version 21).
   - A run's tokens, turns and active time come from its own transcript lines, so a restart no longer
     zeroes them and a resumed run no longer loses its first lines or, after a restart, everything:
     41 of 109 runs stored no active time, 17 no tokens. Active time is the union of the turns'
@@ -22,6 +22,31 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   - The dashboard shows "Agent work per task" (median of the tasks' active time) and "Agent working
     time" beside "sessions open, idle included", instead of the median time sessions stayed open; a
     running task whose goal is achieved counts as done in the outcomes; its days are said to be UTC.
+- Parallel tasks stop colliding at merge (SPEC-083, ADR-0066). With 8 to 12 agents, numbered
+  records, the shared logs and reviews of dev merges failed or delayed most merges (81 decision
+  records renamed in 36 of 74 sessions; 33 of 57 merges spent a review round on dev merges or
+  renumbering):
+  - `record_number` gives each task the next free number of a directory's numbered files (ADRs,
+    migrations, any `NNNN-…` or `PREFIX-NNN-…`), past the integration branch, every live task's
+    checkout and every number given out before, and reserves it (schema version 20). Spec
+    numbers come from the same reservations. The briefing points agents to it.
+  - The changes log and the decision index merge by Git's union driver in every repository:
+    Yulius keeps them in its block of the clone's `info/attributes` at every task start, so an
+    onboarded repository needs no `.gitattributes`.
+  - `delivery_merge` accepts the review of an earlier head when the branch moved past it only
+    through Git's own merges of the integration branch; anything else still needs a new review.
+  - Pull requests whose merge is not armed are not updated by Yulius: GitHub's conflict state
+    blocks nothing, and each push would cost a CI run.
+- A task's status tells the truth: Working is work, Needs you is a person's move (SPEC-085,
+  ADR-0068; F 2026-10-13 "marked as running even if was done", "needs you was too often"). A
+  replay of two days of transcripts found "Needs you" false for 43 of its 50 task-hours:
+  - An agent waiting in `yulius wait` for its checks or armed merge reads "Waiting for checks or
+    merge" under Working, not Your turn (173 periods, 37 tasks). The process probe counts such a
+    shell apart; disk upkeep, DLV-203 and Done still leave it out (DSK-102).
+  - Failing checks need you only once the agent stopped: while its background agent or shell
+    runs, or it waits for Yulius, the task reads "Working · PR #N checks failing" (task #63).
+  - Records Claude Code writes for itself start no turn: an idle compaction's summary made Done
+    task #60 read Working until it was stopped; so did command echoes and their output.
 - Yulius's tools answer in a few readable lines, and sessions fill the page (SPEC-086, ADR-0069):
   - A tool's result was its whole record as pretty JSON, which filled the agent's terminal (task
     #66's steps list) and its context: 6.08 MB in the transcripts of 2026-10-12/13, most of it

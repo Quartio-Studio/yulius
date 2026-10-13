@@ -176,6 +176,9 @@ impl App {
             background_shells_since: self
                 .background_shells_since(&task.id)
                 .map(|ms| rfc3339(yulius_domain::time::Timestamp(ms))),
+            yulius_wait: task.status == TaskStatus::Running
+                && task.activity.is_some_and(Activity::is_idle)
+                && self.agent_waits_on_yulius(&task.id),
         })
     }
 

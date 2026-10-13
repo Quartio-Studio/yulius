@@ -1,4 +1,4 @@
--- Yulius schema version 20 (SPEC-087): since when a task is in its current state, as a person
+-- Yulius schema version 21 (SPEC-087): since when a task is in its current state, as a person
 -- reads it. `state_at` is the last change of its status or activity (a change of anything else,
 -- or setting the same value again, leaves it); `updated_at` stays the last change of anything.
 -- `working_since` is the start of its current working stretch: the task has not waited for a

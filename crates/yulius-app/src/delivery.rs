@@ -706,7 +706,11 @@ fn safe_relative(path: &str) -> bool {
 /// Reads a repository file below `root`, refusing paths that escape it (also through
 /// symlinks) and files larger than `max` bytes. Errors are user-facing and never contain
 /// server paths.
-async fn read_repo_file(root: &Path, relative: &str, max: u64) -> Result<String, String> {
+pub(crate) async fn read_repo_file(
+    root: &Path,
+    relative: &str,
+    max: u64,
+) -> Result<String, String> {
     if !safe_relative(relative) {
         return Err(format!(
             "`{}` is not a safe repository-relative path",
@@ -1051,48 +1055,29 @@ impl App {
 
     /// Gives a task that has no spec path yet the next free `SPEC-NNN-<slug>.md` of its specs
     /// directory, when the repository numbers its specs that way: parallel tasks each took the
-    /// same number (nine `SPEC-010`s on 2026-10-12). The number is free in the worktree's specs
-    /// and among the paths given to the sandbox's other tasks; allocation is serialized.
-    pub(crate) async fn allocate_spec_path(&self, task: &TaskRecord, worktree: &Path) {
-        static ALLOCATING: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    /// same number (nine `SPEC-010`s on 2026-10-12). The number is given out like any numbered
+    /// record's (SPEC-083 NUM-004): past the specs on the integration branch, in every live
+    /// task's checkout and every number given out before.
+    pub async fn allocate_spec_path(&self, task: &TaskRecord, worktree: &Path) {
         if task.spec_path.is_some() {
             return;
         }
-        let _guard = ALLOCATING
-            .get_or_init(|| tokio::sync::Mutex::new(()))
-            .lock()
-            .await;
         let (dir, found) = self.dlv_discover_spec(task, worktree).await;
         if found.is_some() || !safe_relative(&dir) {
             return;
         }
-        let number_of = |name: &str| -> Option<u32> {
-            let rest = name.rsplit('/').next()?.strip_prefix("SPEC-")?;
-            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-            (!digits.is_empty() && rest[digits.len()..].starts_with('-'))
-                .then(|| digits.parse().ok())
-                .flatten()
-        };
-        let mut numbers: Vec<u32> = Vec::new();
-        if let Ok(mut entries) = tokio::fs::read_dir(worktree.join(&dir)).await {
-            while let Ok(Some(entry)) = entries.next_entry().await {
-                if let Some(n) = number_of(&entry.file_name().to_string_lossy()) {
-                    numbers.push(n);
-                }
-            }
-        }
         // Only a repository that numbers its specs this way gets a number.
-        if numbers.is_empty() {
-            return;
-        }
-        if let Ok(tasks) = self.deps.store.tasks(&task.sandbox_id, false).await {
-            numbers.extend(
-                tasks
-                    .iter()
-                    .filter_map(|t| t.spec_path.as_deref().and_then(number_of)),
-            );
-        }
-        let next = numbers.iter().max().copied().unwrap_or(0) + 1;
+        let given = match self
+            .reserve_record_number(task, &dir, Some("SPEC-"), false)
+            .await
+        {
+            Ok(Some(given)) => given,
+            Ok(None) => return,
+            Err(err) => {
+                tracing::warn!(task = %task.id, error = %err, "allocating the spec number failed");
+                return;
+            }
+        };
         let slug = task
             .branch
             .as_deref()
@@ -1100,7 +1085,7 @@ impl App {
             .and_then(|rest| rest.split_once('-').map(|(_, slug)| slug))
             .filter(|slug| !slug.is_empty())
             .unwrap_or("task");
-        let path = format!("{dir}/SPEC-{next:03}-{slug}.md");
+        let path = format!("{dir}/{}-{slug}.md", given.formatted());
         let update = TaskFieldUpdate {
             spec_path: Some(path),
             ..TaskFieldUpdate::default()
