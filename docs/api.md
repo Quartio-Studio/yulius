@@ -634,6 +634,19 @@ recorded as `skipped_previous_active`. The ready-made automations are one file e
 the same name (case-insensitive), which counts as the template's: a template is never linked or
 run by itself.
 
+Task agents and Cockpits manage the same things through the Yulius MCP tools (SPEC-002 §7.4,
+SPEC-037, SPEC-066), acting for the task's creator or the Cockpit's owner, who must still have
+write access; every changing call is audited with the caller (`task:<n>` or `cockpit:<login>`):
+
+| Tool | Same as | Notes |
+| --- | --- | --- |
+| `task_create` | New task | origin `agent`; at most 20 per project and rolling hour |
+| `task_stop`, `task_archive` (`archived`: false restores), `task_delete` | `POST /api/tasks/{tid}/stop`, `…/archive` (`…/restore`), `DELETE /api/tasks/{tid}` | by `task_id` or `number`; never the caller's own task; audited `task.stopped`, `task.archived`/`task.unarchived`, `task.deleted` |
+| `automation_create`, `automation_update` | `POST …/automations`, `PUT /api/automations/{id}` | `created_via: agent` |
+| `automation_delete`, `automation_run_now` | `DELETE /api/automations/{id}`, `POST /api/automations/{id}/run` | audited `automation.deleted`, `automation.run_now` |
+| `automations_list` | `GET …/automations` and `GET …/automation-templates` | `{"automations":[Automation],"ready_made":[AutomationTemplate without "prompt"]}` |
+| `automation_template_enable` | `POST …/automation-templates/{id}/enable` | `{"template":"docs-up-to-date"}` → `{"automation","created":bool,"note"}`; `created_via: agent`; an unknown id is an error naming the known ones |
+
 MCP secrets are write-only: responses only list key names. On update, an omitted `env`/`headers`
 keeps the stored values; a given map replaces all values of that map (`{}` clears it). Names are
 1–64 letters, digits, `-` or `_`, unique per scope ignoring case and `-`/`_`; `yulius` is reserved
@@ -832,8 +845,10 @@ resolves to nothing, the run gets the server without that variable or token.
     `<internal URL>/mcp` with `Authorization: Bearer ${YULIUS_COCKPIT_TOKEN}` (the `ck_…` bearer
     in the secret environment, valid while that Cockpit is live and its owner may work), and
     `--allowedTools` for the read-only tools. It is served `tasks_list`, `task_get`,
-    `task_create`, `automation_create`, `automations_list`, `automation_update`,
-    `workflows_list`, `sessions_search` and `session_read`, acting for its owner.
+    `task_create`, `task_stop`, `task_archive`, `task_delete`, `automation_create`,
+    `automations_list`, `automation_update`, `automation_delete`, `automation_run_now`,
+    `automation_template_enable`, `workflows_list`, `sessions_search` and `session_read`, acting
+    for its owner (SPEC-066); Claude Code asks the person before every tool that is not read-only.
     A conversation it could not resume (an error exit within 10 s) is skipped next time.
     409 before the repository is cloned or without a Claude
     subscription, 429 while none has capacity. There is no delete: it is never in `GET …/shells`,

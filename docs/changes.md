@@ -19,6 +19,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   hold the creation, store the draft before the page opens, and wait until xterm knows the link
   and the Editor has loaded. The dropped-goal test sends Claude Code's SessionStart hook and takes
   16 s instead of 61 s.
+- The Cockpit and task agents manage the whole task and automation lifecycle (SPEC-066,
+  ADR-0049, task #58, #275, #293). New MCP tools `task_stop`, `task_archive`, `task_delete`,
+  `automation_delete`, `automation_run_now` and `automation_template_enable` do what the UI
+  does, for the person the caller acts for, audited with the caller (`task:<n>` /
+  `cockpit:<login>`); a task never stops, archives or deletes itself. `automations_list` lists
+  the ready-made automations (`ready_made`). The Cockpit is served them all and asks the person
+  before each. Workflow create and edit stay UI-only.
 - `yulius wait` on armed merges (SPEC-064, ADR-0048, task #53; #248, #249, #255, #251). A merge
   armed while Yulius still decides an earlier one supersedes it: the wait on the new head no
   longer ends with the old head's "dropped", and the new merge stays armed and saved. The armed
