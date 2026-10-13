@@ -67,11 +67,11 @@ CLI device approval: `POST /api/device/start` → `{"device_code","user_code","v
 | GET | `/api/sandboxes` | read | → `[Sandbox]` (only visible ones) |
 | GET | `/api/github/repositories` | — | → `[{"owner","name","private","access","already_sandbox"}]` (the superadmin: every owner repository the App installation can access, `admin`; others need a GitHub identity, else 403) |
 | GET | `/api/templates` | — | → `[{"id","name","description"}]` |
-| POST | `/api/sandboxes` | admin on repo (superadmin: a repository the App can access) / owner | `{"mode":"import","repo":"owner/name"}` or `{"mode":"create","name","template","description"}` → 201 `Sandbox` |
+| POST | `/api/sandboxes` | admin on repo (superadmin: a repository the App can access) / owner | `{"mode":"import","repo":"owner/name"}` or `{"mode":"create","name","template","description"}` → 201 `Sandbox` (an import from the browser starts onboarding at once; with a bearer token it stays `pending`, SPEC-051) |
 | GET | `/api/sandboxes/{sid}` | read | → `Sandbox` |
 | PATCH | `/api/sandboxes/{sid}` | admin | `{"profile": Profile}` → `Sandbox` |
 | POST | `/api/sandboxes/{sid}/onboarding/skip` | admin | → `Sandbox` (`pending`/`preparing` → `skipped`) |
-| POST | `/api/sandboxes/{sid}/onboarding/approve` | write | → `Sandbox`; starts the preparation task now (`pending` → `preparing`; it normally starts by itself; a missing one is created); idempotent while `preparing`; 409 when nothing awaits preparation or the task cannot start |
+| POST | `/api/sandboxes/{sid}/onboarding/approve` | write, browser session | Start onboarding → `Sandbox`; starts the onboarding task (`pending` → `preparing`; a missing one is created); idempotent while `preparing`; 403 for a bearer token (the CLI only uploads, SPEC-051); 409 when nothing awaits preparation or the task cannot start |
 | DELETE | `/api/sandboxes/{sid}` | admin | → 204; stops live/queued tasks; GitHub repository, clone and task records kept |
 
 `GET /api/github/repositories` lists the App installation's repositories of the instance owner
@@ -80,7 +80,8 @@ repository of the instance owner (`invalid` otherwise) and `admin` or `maintain`
 clones the repository, picks the profile (`yulius.toml` `[delivery]`, else `product`/`studio` for
 `Quartio-Studio/product`/`studio`, else `standard`) and validates the documentation format: a
 failing project gets a preparation task (`origin: "onboarding"`) that starts at once (`onboarding:
-"preparing"`; through `yulius onboard` it starts once the upload is applied). While
+"preparing"`; through `yulius onboard` the sandbox stays `pending` until someone clicks Start
+onboarding on the sandbox page, SPEC-051). While
 `pending`/`preparing` no other task starts, but none is refused: creating or chaining a task (also an
 automation run or a held prompt's Start in parallel / Run after) returns it `chained` after the
 preparation task, and it starts by itself once the sandbox is `ready` or `skipped`
@@ -214,7 +215,7 @@ limited to the agent's sandbox.
 | GET | `/api/tasks/{tid}/prompt` | read | → `{"text","attachments":[{"name","image":bool,"available":bool}]}`: the prompt the task started with, without its `@path` attachment lines, and its attached files in order (SPEC-043). `available` is false for a file that is gone (composer drafts are removed after a week) or not in the task's own attachment folders (a path mentioned by hand, another task's or user's file); at most 500 are checked |
 | GET | `/api/tasks/{tid}/prompt/attachments/{n}` | read | → the bytes of attachment `n` (from 0) of that list, only when the prompt names it directly in one of the task's own attachment folders (its creator's composer drafts, `attachments/drafts/<user>/`, or the task's terminal attachments, `attachments/tasks/<task>/`), reached without a link, a regular file within the upload limit (404 otherwise, also out of range or not a number; 429 while the uploads' bound of 8 transfers is reached). An image (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`) is served with its image type, any other file as `application/octet-stream` with `Content-Disposition: attachment`; the content security policy includes `sandbox` (ADR-0033) |
 | POST | `/api/tasks/{tid}/stop` | write | → `TaskSummary` |
-| POST | `/api/tasks/{tid}/continue` | write | `{"account_id?"}` → `TaskSummary`; resumes the latest session natively, on the best Claude subscription (the pool's choice; `account_id` is an operator override the web UI never sends) |
+| POST | `/api/tasks/{tid}/continue` | write | `{"account_id?"}` → `TaskSummary`; resumes the latest session natively, on the best Claude subscription (the pool's choice; `account_id` is an operator override the web UI never sends); 403 for a bearer token on a `pending` sandbox's onboarding task (Start onboarding is a browser action, SPEC-051) |
 | POST | `/api/tasks/{tid}/switch` | write | `{"account_id?"}` → `TaskSummary`; operator override: moves a running task to another Claude subscription with a native resume. Tasks are subscription-agnostic (F 2026-10-10): the web UI offers no account choice; the pool switches by itself |
 | POST | `/api/tasks/{tid}/archive` · `/restore` | write | → `TaskSummary` |
 | DELETE | `/api/tasks/{tid}` | write | → 204; deletes a resting task permanently with its records, run directories, local worktree and branch (TSK-009); a Done running task (TSK-014) is closed first and deleted once its run has ended; the close and its wait take at most ~25 s (SPEC-039); 409 while any other task runs, or if a Done task's session is still closing then |

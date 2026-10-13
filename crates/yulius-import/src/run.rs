@@ -10,7 +10,8 @@
 //! 4. **Upload**: one confirmation, a resumable checksummed upload with a progress bar, applied
 //!    on the server.
 //! 5. **Summary**: what landed, links to the sandbox and its Sessions page, and the onboarding
-//!    state; new tasks wait for onboarding and start by themselves once it is ready.
+//!    state; new tasks wait for onboarding and start by themselves once it is ready. The CLI
+//!    never starts onboarding: a person clicks Start onboarding on the sandbox page (SPEC-051).
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -727,7 +728,8 @@ fn show_onboarding(ui: &mut dyn Ui, status: &OnboardingStatus) -> io::Result<()>
         "not_needed" | "ready" => "● ready",
         "skipped" => "● ready (preparation skipped)",
         "preparing" => "● preparing",
-        "pending" => "● waiting to start",
+        // The CLI never starts onboarding; a person does on the sandbox page (SPEC-051).
+        "pending" => "● waiting for Start onboarding in the browser",
         other => other,
     };
     ui.fact("Onboarding", state, tone)?;
