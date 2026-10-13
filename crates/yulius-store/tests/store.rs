@@ -84,6 +84,7 @@ fn task(
         origin: TaskOrigin::Ui,
         automation_run: None,
         created_by: by.clone(),
+        owner: by.clone(),
         created_at: Timestamp(10),
         updated_at: Timestamp(10),
         closed_at: None,
@@ -176,6 +177,88 @@ async fn task_numbers_and_status_cas() -> R {
     let closed = store.task(&a.id).await?.ok_or("task")?;
     assert_eq!(closed.status, TaskStatus::Closed);
     assert_eq!(closed.closed_at, Some(Timestamp(40)));
+    Ok(())
+}
+
+/// SPEC-070: one person at a time asks for control, and control passes only from the owner the
+/// decision saw to the person whose request still waits.
+#[tokio::test]
+async fn control_passes_only_on_the_request_the_owner_saw() -> R {
+    let dir = tempfile::tempdir()?;
+    let store = SqliteStore::open(&dir.path().join("y.db"))?;
+    let (sid, alice) = seed(&store).await?;
+    for (id, login) in [("u2", "bob"), ("u3", "carol")] {
+        store.insert_user(&user(id, Some(login), false)?).await?;
+    }
+    let (bob, carol) = (UserId::parse("u2")?, UserId::parse("u3")?);
+    let t = store.insert_task(&task("t1", &sid, &alice)?).await?;
+    assert_eq!(store.control_request(&t.id).await?, None);
+    // Nobody asked: nothing passes.
+    assert!(
+        !store
+            .pass_control(&t.id, &alice, &bob, Timestamp(20))
+            .await?
+    );
+
+    assert!(store.request_control(&t.id, &bob, Timestamp(20)).await?);
+    // Asking again keeps the first request; another person waits for none.
+    assert!(store.request_control(&t.id, &bob, Timestamp(25)).await?);
+    assert!(!store.request_control(&t.id, &carol, Timestamp(25)).await?);
+    let waiting = store.control_request(&t.id).await?.ok_or("request")?;
+    assert_eq!(
+        (waiting.by.clone(), waiting.at),
+        (bob.clone(), Timestamp(20))
+    );
+    // Only the requester's request is dropped by their id.
+    assert!(
+        !store
+            .drop_control_request(&t.id, &carol, Timestamp(26))
+            .await?
+    );
+    assert!(
+        store
+            .drop_control_request(&t.id, &bob, Timestamp(26))
+            .await?
+    );
+    assert_eq!(store.control_request(&t.id).await?, None);
+
+    assert!(store.request_control(&t.id, &carol, Timestamp(30)).await?);
+    // A stale decision (another requester, another owner) changes nothing.
+    assert!(
+        !store
+            .pass_control(&t.id, &alice, &bob, Timestamp(31))
+            .await?
+    );
+    assert!(
+        !store
+            .pass_control(&t.id, &bob, &carol, Timestamp(31))
+            .await?
+    );
+    assert!(
+        store
+            .pass_control(&t.id, &alice, &carol, Timestamp(32))
+            .await?
+    );
+    let passed = store.task(&t.id).await?.ok_or("task")?;
+    assert_eq!(passed.owner, carol);
+    assert_eq!(passed.created_by, alice);
+    assert_eq!(passed.updated_at, Timestamp(32));
+    assert_eq!(store.control_request(&t.id).await?, None);
+
+    // Past an absent owner, control passes whatever request waits, only from the owner seen.
+    assert!(store.request_control(&t.id, &bob, Timestamp(40)).await?);
+    assert!(
+        !store
+            .take_control(&t.id, &alice, &alice, Timestamp(41))
+            .await?
+    );
+    assert!(
+        store
+            .take_control(&t.id, &carol, &alice, Timestamp(42))
+            .await?
+    );
+    assert_eq!(store.task(&t.id).await?.ok_or("task")?.owner, alice);
+    assert_eq!(store.control_request(&t.id).await?, None);
     Ok(())
 }
 

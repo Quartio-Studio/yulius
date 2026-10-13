@@ -103,6 +103,33 @@ pub async fn archive(
     Ok(Json(app.archive_task(&ctx, &tid, true).await?))
 }
 
+/// `POST /api/tasks/{tid}/control-request` (SPEC-070): ask the owner for control.
+pub async fn request_control(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(tid): Path<String>,
+) -> ApiResult<Json<TaskSummary>> {
+    Ok(Json(app.request_task_control(&ctx, &tid).await?))
+}
+
+/// `DELETE /api/tasks/{tid}/control-request`: the asker withdraws, or the owner declines.
+pub async fn drop_control_request(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(tid): Path<String>,
+) -> ApiResult<Json<TaskSummary>> {
+    Ok(Json(app.drop_task_control_request(&ctx, &tid).await?))
+}
+
+/// `POST /api/tasks/{tid}/control-request/accept`: the owner hands the task over.
+pub async fn accept_control(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(tid): Path<String>,
+) -> ApiResult<Json<TaskSummary>> {
+    Ok(Json(app.accept_task_control(&ctx, &tid).await?))
+}
+
 pub async fn delete(
     State(app): State<AppState>,
     Auth(ctx): Auth,

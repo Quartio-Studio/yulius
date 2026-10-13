@@ -42,8 +42,13 @@ pub struct TaskSummary {
     pub branch: Option<String>,
     /// `ui`, `automation`, `import`, `onboarding` or `agent`.
     pub origin: String,
-    /// Creator.
+    /// Creator: who asked for the task.
     pub created_by: UserRef,
+    /// Owner (SPEC-070): the task acts on GitHub as them, and only they change it.
+    pub owner: UserRef,
+    /// A person's request for control that waits for the owner's answer (SPEC-070), or null.
+    #[serde(default)]
+    pub control_request: Option<ControlRequestView>,
     /// Creation time.
     pub created_at: String,
     /// Last change.
@@ -105,6 +110,15 @@ pub struct AutoChoice {
     pub workflow: Option<String>,
     /// The task's workflow when it was created; null without one.
     pub workflow_name: Option<String>,
+}
+
+/// A request for control of a task (SPEC-070).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ControlRequestView {
+    /// Who asks.
+    pub by: UserRef,
+    /// When, RFC 3339.
+    pub at: String,
 }
 
 /// One end of a chain (SPEC-001 TSK-012).

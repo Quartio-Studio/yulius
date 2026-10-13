@@ -2121,7 +2121,7 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
   request, listing and importing installation repositories, a repository-scoped token for Git in
   the superadmin's shells); merging and releasing act as a person and are refused for the
   superadmin with `403` and a message, never `401`, which the UI treats as a signed-out session.
-  A task the superadmin created has no creator token, so it acts as the App (GIT-003).
+  A task the superadmin owns has no owner token, so it acts as the App (GIT-003).
 - Internal listener binds 127.0.0.1 only; accepts task tokens only; tokens are per attempt, random
   256-bit, stored hashed, revoked when the attempt ends.
 - Secrets (provider credentials, GitHub App key, MCP env/headers) are encrypted at rest with the
@@ -2135,16 +2135,16 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
   rejects pushes to the profile's integration/production branches; scaffolded repositories get
   GitHub rulesets (DSC-007).
 - Who acts on GitHub (GIT-003, F 2026-10-11): a person's own request uses their token (ACC-012
-  for the superadmin). **What a task does uses its creator's user-to-server token**
-  (`App::creator_github_token`, refreshed as needed): the agent's Git credential (`POST
+  for the superadmin). **What a task does uses its owner's user-to-server token** (the creator
+  until a hand-over, SPEC-070; `App::owner_github_token`, refreshed as needed): the agent's Git credential (`POST
   /internal/git-credential` with the run's task token; still only `github.com` and, when Git sends
   a path, only the sandbox's repository), the agent's `gh` (the SPEC-004 shim, bound read-only at
   `/yulius/bin` first on the run's `PATH`, asking the same route through `yulius gh-token`; a
   `GH_TOKEN` already set wins, a failure leaves `gh` logged out, nothing is written to disk),
   Yulius's push and pull request for a ready task and later pushes to it, and the agent tools
   `delivery_merge`, `delivery_promote` (and the automatic promotion after `delivery_deploy`) and
-  `issue_create` with the labels it creates. Commits in a task worktree carry the creator's name
-  and `{id}+{login}@users.noreply.github.com`. **Fallback:** a creator with no linked account,
+  `issue_create` with the labels it creates. Commits in a task worktree carry the owner's name
+  and `{id}+{login}@users.noreply.github.com`. **Fallback:** an owner with no linked account,
   a disabled or deleted account, or a token that cannot be refreshed gives the App's token —
   restricted to the sandbox's repository for the agent's Git, `gh` and issues, the installation
   token for Yulius's pushes, pull requests, merges and promotions — and the task's terminal says
@@ -2154,8 +2154,8 @@ edited `wf-quick-task` stays as a custom workflow. Each retirement is audited (`
   the Done rule, the Git page without a viewer, the sandbox clone's fetch), the update check
   (ADR-18), and repository creation and import (a person's action, with the installation where
   the owner is an organization). **Remaining risk:** the agent can read the token it is given, as
-  it could read the repository token before; the creator's token (8 h) reaches every repository
-  of the installation the creator may write, not only the sandbox's, until it expires, and
+  it could read the repository token before; the owner's token (8 h) reaches every repository
+  of the installation the owner may write, not only the sandbox's, until it expires, and
   printed into the agent's output it lands in the transcript readers of the sandbox see. The
   refresh token never leaves the server.
 - Repository documents the server reads for agents (briefing, `project_context`, the Stop gate,
@@ -2486,10 +2486,14 @@ cargo-deny, machete, rustdoc) is the evidence until it runs.
 | Sandbox isolation (ADR-22, #142, 2026-10-11) | On the production VM (Ubuntu 24.04, kernel 6.8, bwrap 0.9.0) as `yulius` with its subordinate range, `crates/yulius/tests/isolation.rs` with the real server, ptyhost, `bwrap`, `newuidmap`, `slirp4netns` and a real base: **3/3 passed**. Base built in 217 s (74 s warm), 5.5 GB; first shell (holder start) 174–384 ms; `sudo apt-get install cowsay` from a user's shell in 9–12 s, `whoami` = the login; a second shell, an agent session (root, `IS_SANDBOX=1`, its own `apt-get install sl` and `useradd --system`) and a shell after an idle stop see the packages; the other sandbox and the host do not. Forwarded host port open; another host loopback port, the slirp gateway and a host abstract socket closed; `/tmp/.X11-unix` absent; `master.key`, `jev.key`, the other sandbox, another user's home, `runtime/`, `system/`, `sysroots/` absent; `unshare(CLONE_NEWUSER)`, `mount` and `unshare -U` refused; IPv4 and IPv6-only dev servers inside answer on the host's `127.0.0.1:<port>`, the other sandbox cannot reach them; an attachment read by path. Limits (transient unit with `Delegate=yes`, `DelegateSubgroup=server`): `pids.max` 64 → forks refused after 48 with `EAGAIN`; `memory.max` 256 MiB → the 512 MiB allocation OOM-killed (exit 137, `oom_kill 1`), the run sees `0::/`. Over the disk quota: 409 with the figures. The seccomp filter by itself (`yulius sandbox-exec -- bwrap …`): `unshare(CLONE_NEWUSER)` and `io_uring_setup` allowed without it, `EPERM` with it; `bpf`, `keyctl`, `perf_event_open` `EPERM`; `fork` works. `yulius serve` in a delegated unit: limits on (25 GB, 10 CPUs), base adopted. Unit tests: seccomp program per call, relays (in, out, refused, forbidden, following ports), `/proc/net/tcp`, cgroup files, subordinate ids, the base copy (data directory and `/var` outside the allow-list never copied, links, hard links), generated files, fingerprint, owners, identity merge, the joined `bwrap` argv, contract validation. |
 | Onboarding and sessions (IMP-007..010, SES-001..005, 2026-10-10) | Unit: `yulius-domain::redact` (provider tokens, near misses, assignments, URLs, headers, JWTs, keys, dotenv files and pasted blocks, determinism and idempotence, Unicode); `yulius-import::redact` (JSONL stays valid, same bytes twice, dotenv tool results, named keys, images left out, budget); `yulius-app::transcripts` (entries, diffs, paging with dotenv tracking, index batches at byte offsets, agent rendering, long lines); store `session_docs` (uniqueness, CAS on the index position, FTS search per sandbox, cascade on task deletion). CLI against the fake server (`tests/import/end_to_end.rs`): four steps, all/recent/pick, redaction listed and applied, only new or changed sessions, resume, dry run, status, refusal. Server (`tests/import_server.rs`, `tests/sessions.rs`): sessions stored as attributed documents, replaced or kept, continued natively by another member; list, search, read, delete by access level; MCP search and read scoped and bounded; the gate on create, chain and continue; the plan. UI: `e2e/tests/sessions.e2e.ts` (mock; runs in CI), checked locally with headless Chrome (layout at 1440, 768 and 390 px). |
 | A task acts as its creator on GitHub (GIT-003, AC-GIT-3; #188, 2026-10-11) | `agent_hooks.rs::the_agents_git_acts_as_the_task_creator` (the creator's token with and without a repository path; the App's repository token for an expired sign-in and for an unlinked creator, each said once in the task's terminal) and `git_credentials_are_scoped_to_the_project_repository`; `delivery.rs`: `a_ready_task_opens_its_pull_request_by_itself` (push and pull request with the creator's token, follow-up push too), `agents_merge_only_through_gated_tools` (`merge_pull`, the promotion's `fast_forward` and `create_issue` by the creator), `a_task_without_a_github_creator_delivers_as_the_app` (push, pull request and an agent merge as the App, one notice); the delivery fakes record the token of every push and GitHub write, and `yulius-github`'s fake records a `FakeActor` per request (`client.rs::the_fake_records_which_credential_made_each_request`); `supervision.rs` (real Git: the worktree's `user.email` is `4242+admin@users.noreply.github.com`, the agent's `gh` shim written); unit: `projects::commit_identity_is_the_address_github_links_to_the_account`, `identity::agent_runs_get_the_gh_shim_first_on_path`. The new agent and delivery tests fail on the previous code (installation token). Not run: a real GitHub App (the user-to-server token pushing and merging on github.com) and a real `gh` in an agent run. |
+| A task is owned by one person; control passes on request (GIT-004, AC-GIT-4; SPEC-070, 2026-10-13) | `task_ownership.rs` (owner's token and summary, every task write refused to a non-owner, read-only terminal, agent tools, request/decline/withdraw/hand-over with token, identity, notice and audit, absent owner, requester without write access); store `control_passes_only_on_the_request_the_owner_saw`, migration `version_sixteen_databases_give_each_task_its_creator_as_owner`; e2e `ownership.e2e.ts` |
 | Not exercised | Real GitHub App/OAuth, deployment (out of scope). Linux results: see the container runs below. `yulius onboard` against a deployed instance with real `~/.claude` stores. |
 
 ## 15. Changelog
 
+- 2026-10-13 (task #66, SPEC-070, ADR-0060): §5 `tasks.owner_id`, `control_requested_by` and
+  `control_requested_at` (migration 0018); §8 a task acts on GitHub as its owner, only the owner
+  changes it (`App::load_task`), and control passes on request.
 - 2026-10-13 (task #55, #169; SPEC-063, ADR-0047): §5 `device_grants.client_key` (migration 0016)
   and its purge; §9 device sign-in start limit and grant bounds.
 - 2026-10-12 (task #26, "delete message mechanism for now until we make the infra very good";

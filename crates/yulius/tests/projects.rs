@@ -70,6 +70,7 @@ async fn task_record(
             origin: TaskOrigin::Ui,
             automation_run: None,
             created_by: yulius_domain::ids::UserId::parse("u-alice")?,
+            owner: yulius_domain::ids::UserId::parse("u-alice")?,
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
             closed_at: None,
