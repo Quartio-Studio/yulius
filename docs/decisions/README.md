@@ -43,4 +43,5 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0034](0034-ready-made-automations-catalog.md): Ready-made automations ship as a catalog, enabled in one click and matched by name
 - [0035](0035-queued-messages-join-the-request.md): Messages queued into a waiting task join its request
 - [0037](0037-dead-code-tools.md): Dead code is cleaned with each language's established tool; Yulius's gate uses cargo-shear
+- [0039](0039-ci-jobs-get-the-cpu-first.md): CI jobs get the CPU first through a weighted cgroup
 - [0038](0038-onboarding-starts-in-the-browser.md): Onboarding starts in the browser, never from the CLI

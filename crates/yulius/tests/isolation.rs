@@ -705,9 +705,22 @@ async fn isolation_limits() -> TestResult {
     };
     let (forward, _hello) = hello_server().await?;
     let iso = fixture(limits, Some(delegation.clone()), forward).await?;
+    // SPEC-053 CPU-202: a process left in the sandbox group by an older server.
+    let group = delegation.unit.join("sandboxes/s1");
+    std::fs::create_dir_all(&group)?;
+    let mut stray = std::process::Command::new("sleep").arg("300").spawn()?;
+    std::fs::write(group.join("cgroup.procs"), stray.id().to_string())?;
     let body = async {
         let mut sh = shell(&iso, "s1").await?;
-        let group = delegation.unit.join("sandboxes/s1");
+        let stray_group = std::fs::read_to_string(format!("/proc/{}/cgroup", stray.id()))?;
+        assert_eq!(
+            stray_group.trim().rsplit('/').next(),
+            Some("agents"),
+            "a stray moves to agents/: {stray_group}"
+        );
+        // Gone before `agents/` is checked for the shell below.
+        stray.kill()?;
+        stray.wait()?;
         assert_eq!(
             std::fs::read_to_string(group.join("pids.max"))?.trim(),
             "64"
@@ -720,6 +733,29 @@ async fn isolation_limits() -> TestResult {
             std::fs::read_to_string(group.join("cpu.max"))?.trim(),
             "100000 100000"
         );
+        // SPEC-053: the CPU goes to the leaves by weight, and the shell runs in `agents`.
+        if delegation.controllers.iter().any(|c| c == "cpu") {
+            assert!(std::fs::read_to_string(group.join("cgroup.subtree_control"))?.contains("cpu"));
+            for (leaf, weight) in [("system", "100"), ("agents", "100"), ("ci", "400")] {
+                assert_eq!(
+                    std::fs::read_to_string(group.join(leaf).join("cpu.weight"))?.trim(),
+                    weight,
+                    "{leaf}"
+                );
+            }
+            assert!(
+                !std::fs::read_to_string(group.join("agents/cgroup.procs"))?
+                    .trim()
+                    .is_empty(),
+                "the shell runs in agents/"
+            );
+            assert!(
+                !std::fs::read_to_string(group.join("system/cgroup.procs"))?
+                    .trim()
+                    .is_empty(),
+                "the holder runs in system/"
+            );
+        }
         // Children block on a pipe until the parent stops forking (EAGAIN at pids.max).
         let forker = "import os\nr, w = os.pipe()\nn = 0\ntry:\n    while n < 500:\n        if os.fork() == 0:\n            os.close(w); os.read(r, 1); os._exit(0)\n        n += 1\nexcept OSError as e:\n    print('fork-refused-after', n, e.errno)\nos.close(w)\nfor _ in range(n):\n    os.wait()\n";
         std::fs::write(iso.data.join("sandboxes/s1/forker.py"), forker)?;
@@ -765,7 +801,11 @@ async fn isolation_limits() -> TestResult {
         eprintln!("memory.max 256 MiB: {} oom_kill={kills}", out.trim());
         Ok::<_, Box<dyn std::error::Error>>(())
     };
-    guarded(&iso, body).await
+    let result = guarded(&iso, body).await;
+    // Already ended unless an earlier assertion failed.
+    let _ = stray.kill();
+    let _ = stray.wait();
+    result
 }
 
 /// A sandbox over its disk quota starts no new runs; the message names the figures.

@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- CI jobs get the CPU first (SPEC-053, ADR-0039, task #45, #283). A sandbox's cgroup is split
+  into `system/`, `agents/` and `ci/`, and CI jobs run with four times the agents' CPU weight. CI
+  gets up to 80 % of the sandbox while agents build, and agents keep at least 20 %. The e2e suite in CI is
+  back to the default budgets and no retries, so a timeout there is a real failure. The split is checked on the VM after the next update (#321).
 - Onboarding follow-up (SPEC-055, SPEC-051, task #46): `docs/api.md` no longer says an import starts the
   preparation task (a `pending` sandbox waits for Start onboarding), ADR-0038's wording and the
   decisions index order are corrected, and the import test asserts the pending onboarding summary.

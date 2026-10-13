@@ -24,6 +24,7 @@ use super::{
 use crate::context::App;
 use crate::delivery::runner::OutputRing;
 use crate::model::SandboxRecord;
+use crate::ports::isolation::SandboxJoin;
 use crate::ports::session::{Containment, LaunchPlan, RunEvent, RunExit, RunInspection, RunSignal};
 
 /// The fixed wrapper: output to the log, stdin closed, then the configured command.
@@ -88,6 +89,15 @@ impl AnsiStripper {
             }
             self.last_cr = false;
         }
+    }
+}
+
+/// A CI job joins the sandbox's CI group, weighted above the agents' (SPEC-053 CPU-203), so its
+/// speed does not depend on what the agents build.
+fn ci_join(join: SandboxJoin) -> SandboxJoin {
+    SandboxJoin {
+        cgroup: join.ci_cgroup.clone().or(join.cgroup),
+        ..join
     }
 }
 
@@ -441,7 +451,7 @@ impl App {
         &self,
         sandbox: &SandboxRecord,
         home: &Path,
-        join: Option<crate::ports::isolation::SandboxJoin>,
+        join: Option<SandboxJoin>,
     ) -> Containment {
         if !self.config.contained {
             return Containment::None;
@@ -459,7 +469,7 @@ impl App {
                 .collect(),
             binds: Vec::new(),
             identity: None,
-            join: join.map(Box::new),
+            join: join.map(|join| Box::new(ci_join(join))),
         }
     }
 
@@ -713,6 +723,35 @@ mod tests {
         assert_eq!(strip(&[b"\x1b]8;;http://x\x1b\\link"]), "link");
         assert_eq!(strip(&[b"one\r\ntwo\rthree\n"]), "one\ntwo\nthree\n");
         assert_eq!(strip(&[b"bell\x07\x08!"]), "bell!");
+    }
+
+    #[test]
+    fn a_ci_job_joins_the_ci_group_instead_of_the_agents_group() {
+        let join = SandboxJoin {
+            holder_pid: 7,
+            user_ns: 1,
+            net_ns: 2,
+            mnt_ns: 3,
+            cgroup: Some("/sys/fs/cgroup/u/sandboxes/s1/agents".into()),
+            ci_cgroup: Some("/sys/fs/cgroup/u/sandboxes/s1/ci".into()),
+            system_root: "/root".into(),
+            hostname: "app".into(),
+            exec_shim: None,
+            extra_readonly: Vec::new(),
+            private_dirs: Vec::new(),
+            system_passwd: None,
+            system_group: None,
+        };
+        let ci = ci_join(join.clone());
+        assert_eq!(ci.cgroup, join.ci_cgroup);
+        assert_eq!(ci.holder_pid, 7, "the rest of the join is kept");
+        // Without delegation there is no group at all, as before.
+        let bare = SandboxJoin {
+            cgroup: None,
+            ci_cgroup: None,
+            ..join
+        };
+        assert_eq!(ci_join(bare.clone()), bare);
     }
 
     #[test]

@@ -1,18 +1,14 @@
 // End-to-end tests of the web UI (#86). The runner serves crates/yulius-server/web with Python's
 // static file server and the tests open it in mock mode (`?mock=1`), so no `yulius serve`,
 // account or model is needed. Agent steps (`agent.act`, `agent.assert`) need a model: they use
-// Anthropic when ANTHROPIC_API_KEY is set and are skipped otherwise.
+// Anthropic when ANTHROPIC_API_KEY is set and are skipped otherwise. CI uses the same budgets and
+// no retries, so a timeout is a failure: they held under agents' builds (SPEC-053 Evidence).
 import type { E2EConfig } from 'e2e';
 import { anthropic } from '@ai-sdk/anthropic';
 import { web } from '@e2e-dev/web';
 import { fileURLToPath } from 'node:url';
 
 const ui = fileURLToPath(new URL('../crates/yulius-server/web', import.meta.url));
-
-// Yulius CI shares the machine with the agents' builds; under that load a page took longer than
-// the default 30 s to render and correct pull requests failed (the same tests passed locally in
-// seconds). CI gets longer budgets and a second retry until CI jobs get CPU priority (#283).
-const ci = !['', '0', 'false'].includes(process.env.CI ?? '');
 
 export default {
   tests: 'tests/**/*.e2e.ts',
@@ -36,5 +32,6 @@ export default {
   // Verified agent actions are recorded here and replayed without model calls; the directory is
   // committed. CI only reads it.
   cache: { dir: 'replays' },
-  ...(ci ? { actionTimeout: 90_000, assertionTimeout: 15_000, timeout: 360_000, retries: 2 } : {}),
+  // The runner retries once in CI by default; a retry would hide a slow or flaky test.
+  retries: 0,
 } satisfies E2EConfig;

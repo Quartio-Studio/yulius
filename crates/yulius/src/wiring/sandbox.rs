@@ -272,6 +272,7 @@ impl SandboxIsolation for NamespaceIsolation {
                     net_ns: join.net_ns,
                     mnt_ns: join.mnt_ns,
                     cgroup: join.cgroup.map(PathBuf::from),
+                    ci_cgroup: joined.ci_cgroup,
                     system_root: PathBuf::from(join.system_root),
                     hostname: join.hostname,
                     exec_shim: join.exec_shim.map(PathBuf::from),

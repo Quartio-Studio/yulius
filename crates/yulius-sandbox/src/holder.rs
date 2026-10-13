@@ -527,7 +527,8 @@ pub fn egress_alive(record: &HolderRecord) -> bool {
     })
 }
 
-/// Reattaches `slirp4netns` to a live holder whose egress process died; returns its pid.
+/// Reattaches `slirp4netns` to a live holder whose egress process died, in `cgroup` (the
+/// sandbox's `system` group) when there is one.
 ///
 /// # Errors
 /// It cannot be started.
@@ -535,6 +536,7 @@ pub fn restart_egress(
     program: &str,
     state: &StatePaths,
     record: &mut HolderRecord,
+    cgroup: Option<&Path>,
 ) -> Result<(), String> {
     let log = std::fs::OpenOptions::new()
         .create(true)
@@ -543,6 +545,12 @@ pub fn restart_egress(
         .open(state.log())
         .map_err(|e| e.to_string())?;
     let pid = start_slirp(program, record.inner_pid, &log).map_err(|e| e.to_string())?;
+    // Started by the server, it would otherwise stay in the server's group, outside the limits.
+    if let Some(cgroup) = cgroup
+        && let Err(error) = crate::cgroup::move_pid(cgroup, pid)
+    {
+        tracing::warn!(cgroup = %cgroup.display(), %error, "egress runs outside the sandbox's group");
+    }
     record.slirp_pid = Some(pid);
     write_json(&state.record(), record).map_err(|e| e.to_string())
 }
