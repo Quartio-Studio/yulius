@@ -149,13 +149,18 @@ with `yulius wait` in a background shell, which Claude Code wakes it from, and r
 `ci_status` and `delivery_status`. The armed merge's outcome is kept in memory for the wait,
 with the armed merge and its decisions in progress under one lock: a merge armed again while an
 earlier one is decided supersedes it ([decision 0048](decisions/0048-armed-merge-state-under-one-lock.md)).
+Before Yulius merges or arms a merge, its merge gate checks the pull request's title, head and
+base against the branch policy of `yulius.toml` `[branch_policy]` at the integration branch;
+a violation is refused with the rule in words, also for promotion pull requests
+([SPEC-069](../.ai/specs/SPEC-069-fix-223-yulius-s-merge-gate-enforces-the.md),
+[decision 0051](decisions/0051-the-merge-gate-enforces-the-branch-policy.md)).
 
 ```mermaid
 sequenceDiagram
     participant A as Agent (Claude Code)
     participant W as yulius wait (background shell)
     participant Y as Yulius (internal API)
-    A->>Y: delivery_merge (checks still running: armed)
+    A->>Y: delivery_merge (branch policy checked; checks still running: armed)
     A->>W: start, end the turn
     W->>Y: POST /internal/agent/wait (long poll)
     Y-->>W: checks ended / stage moved / armed merge decided (merged, refused, dropped)
@@ -220,7 +225,7 @@ the page, under a notice that it is for quick work only
 
 A Cockpit remembers its pool subscription (in `shell.json`) and watches its newest conversation
 while it runs ([SPEC-074](../.ai/specs/SPEC-074-i-just-hit-usage-limit-in-the-agent-it-s.md),
-[decision 0051](decisions/0051-cockpit-moves-past-a-usage-limit.md)). A usage limit recorded after
+[decision 0052](decisions/0052-cockpit-moves-past-a-usage-limit.md)). A usage limit recorded after
 it started is recorded on that subscription as a task's is. The Cockpit then starts again, under
 its start lock, on a subscription with capacity. It resumes the conversation stepped back over the
 limit with Claude Code's interrupted-turn flag, as a task does after a limit (SPEC-034). The old

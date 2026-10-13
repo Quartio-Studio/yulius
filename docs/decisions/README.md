@@ -58,4 +58,5 @@ title whose number differs from the file name, and a record this index does not 
 - [0044](0044-task-status-follows-claude-codes-own-records.md): A task's status follows Claude Code's own records
 - [0048](0048-armed-merge-state-under-one-lock.md): An armed merge, its decisions and its outcome are one value under one lock
 - [0049](0049-management-tools-cover-the-task-and-automation-lifecycle.md): Management tools cover the task and automation lifecycle, never the caller's own task
-- [0051](0051-cockpit-moves-past-a-usage-limit.md): The Cockpit moves past a usage limit like a task, and is called the Superagent
+- [0051](0051-the-merge-gate-enforces-the-branch-policy.md): Yulius's merge gate enforces the branch policy
+- [0052](0052-cockpit-moves-past-a-usage-limit.md): The Cockpit moves past a usage limit like a task, and is called the Superagent

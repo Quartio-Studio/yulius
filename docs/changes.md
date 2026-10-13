@@ -7,13 +7,22 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-10-13
 
 - The Agent panel is now called the **Superagent**, and a usage limit no longer stops it (SPEC-074,
-  ADR-0051, task #69). The Superagent chose a subscription once, when it started, and kept it, so
+  ADR-0052, task #69). The Superagent chose a subscription once, when it started, and kept it, so
   it could hit a weekly limit while tasks went on elsewhere. It now watches its conversation. A
   limit recorded after it started is recorded on its subscription, and the Superagent starts again
   on one with capacity. It continues the cut turn there, stepped back over the limit as a task's
   turn is, and the panel follows it without a "stopped" banner. Without capacity, it stays and
   says why. `/s/<slug>/superagent` opens it, as `/agent` and `/cockpit` still do.
-
+- Yulius's merge gate enforces the branch policy (SPEC-069, ADR 0051, task #59; #223). Before
+  Yulius merges a task's pull request (`delivery_merge`, an armed merge, the Git page) or a
+  promotion pull request, it checks the title, head and base against `yulius.toml`
+  `[branch_policy]` at `dev`. The standard preset is the default: typed branches, conventional
+  one-line titles of at most 100 characters, and `dev` → `main` titled
+  `release: promote dev to main[ - label]`; `preset = "none"` turns it off. A violation is
+  refused with the rule in words, and `delivery_merge` refuses before it arms. Yulius's own
+  titles comply: task titles take an allowed type and are clipped to 100 characters, promotion
+  pull requests are titled `release: promote dev to main`, and a fork's pull request is never
+  taken for the promotion. `scripts/check_git_policy.py` is removed.
 - A stopped or closed run ends only when its processes are proven gone (SPEC-065, ADR-0050, task #54;
   #284, #285, #290). When Yulius cannot terminate a run's host after the stop or close escalation,
   the run stays live, the task's terminal says so and a running task needs attention; deleting it

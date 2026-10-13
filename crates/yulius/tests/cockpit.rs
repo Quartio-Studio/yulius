@@ -209,7 +209,8 @@ fn printed(screen: &str, key: &str) -> Result<String, Box<dyn std::error::Error>
         + key.len()
         + 1;
     let rest = screen.get(start..).unwrap_or_default();
-    // The line ends at its end or at the terminal's next control sequence (a redraw under load).
+    // The value ends at the line's end or at the terminal's own control output that can follow
+    // it on the same line (`\x1b>`, cursor moves: CI on the VM read them as part of the value).
     let line = rest.lines().next().unwrap_or_default();
     Ok(line
         .split('\u{1b}')
