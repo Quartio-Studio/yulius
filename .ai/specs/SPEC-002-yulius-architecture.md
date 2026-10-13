@@ -1665,7 +1665,8 @@ than one interval.
 (job, file, offset, sha256). Job creation adds the sandbox when needed; `applying` creates local
 import branches and the snapshot worktree, then stores each session as a session document
 (§6.10): new, replaced (same uploader, other digest), unchanged (same digest) or kept as another
-person's; finally it starts the preparation task of a `pending` sandbox (§6.6). Reapplying is
+person's. It never starts onboarding: a `pending` sandbox waits for Start onboarding in the browser
+(§6.6, SPEC-051). Reapplying is
 idempotent (same digests). Before the job, `POST /api/onboard/plan` tells the CLI the sandbox,
 its onboarding status and which fingerprints (`sha256` of the redacted transcript) the server
 already holds, so unchanged sessions are never offered. Sessions arrive redacted (IMP-008,
@@ -1674,9 +1675,10 @@ already holds, so unchanged sessions are never offered. Sessions arrive redacted
 ### 6.6 Sandbox onboarding
 
 `not_needed | pending → preparing (task id) → ready | skipped(by admin)`. Every import starts `pending` with an onboarding task: the full preparation prompt when the docs fail the format check, the environment-only prompt (`ENVIRONMENT_TITLE`) when they pass; `not_needed` is left for repositories created from a template (F 2026-10-11). Owner: the server. Exit
-triggers: `pending → preparing` when the preparation task starts — by itself, at once for a
-repository added in the UI and when the import is applied for `yulius onboard` (also
-`POST …/onboarding/approve`, kept for a pending sandbox whose start failed; a missing preparation
+triggers: `pending → preparing` when the preparation task starts — at once for a repository
+added in the UI; for `yulius onboard` only when a person clicks Start onboarding on the sandbox
+page (`POST …/onboarding/approve`, which accepts only a browser session: a bearer token gets 403,
+SPEC-051, ADR-0038; it also serves a UI-added sandbox whose start failed; a missing preparation
 task is created then); `preparing → ready` when the task has finished — it rests after running, or its turn ended
 with every step of its plan resolved — and the project validates in its worktree or the clone
 (re-evaluated on reads, turn ends, task closes and the gate);

@@ -653,9 +653,11 @@ Each teammate runs it for their own sessions; sessions are attributed to whoever
 They are stored read-only under `<data>/sandboxes/<sid>/sessions/` (at most 128 MiB per
 transcript, 10 000 sessions and 8 GiB per sandbox), listed on the sandbox's Sessions page, and
 searched by agents (`sessions_search`, `session_read`). The uploader or an admin deletes one on
-its page; deletions are audited (`session.deleted`). A new sandbox's preparation task starts by
-itself once the upload is applied, and no other task starts there until onboarding is ready (or an
-admin skips it); `yulius onboard --status` and the sandbox page say what is pending.
+its page; deletions are audited (`session.deleted`). The command only uploads: a new sandbox's
+onboarding task (adapting the repository to the Yulius standards) waits until someone clicks
+**Start onboarding** on the sandbox page in the browser, which the CLI cannot do (SPEC-051,
+ADR-0038). New tasks wait until onboarding is ready (or an admin skips it); `yulius onboard
+--status` and the sandbox page say what is pending.
 
 ### Dropped files
 

@@ -4,6 +4,14 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-13
+
+- `yulius onboard` only uploads (SPEC-051, ADR-0038, task #43): the repository, branches, snapshot
+  and sessions land, and the onboarding task that adapts the repository to the Yulius standards
+  waits until someone clicks **Start onboarding** on the sandbox page. The CLI says so with the
+  page's URL; the start endpoint refuses CLI tokens (403). Adding a repository in the web UI still
+  starts onboarding at once.
+
 ## 2026-10-12
 
 - Notes in the tools rail (SPEC-041, ADR-0032, task #40): a notepad for this sandbox and one for

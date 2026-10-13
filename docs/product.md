@@ -18,7 +18,9 @@ watching, steering and unblocking.
 
 - **Projects and sandboxes**: import a GitHub repository (or onboard it from a local machine's
   Claude sessions with `yulius onboard`); each gets a contained sandbox with its own system
-  layer, home, shells per user, browser and editor.
+  layer, home, shells per user, browser and editor. The CLI only uploads: the onboarding task that
+  adapts the repository to the Yulius standards starts when someone clicks Start onboarding on the
+  sandbox page.
 - **Cockpit**: every user's own plain Claude Code session per sandbox, first in the sidebar, for
   quick questions and work that should not become a task; `/clear` starts over, it cannot be
   deleted and comes back with its conversation. It manages the project for its owner: asked to

@@ -71,7 +71,7 @@ CLI device approval: `POST /api/device/start` → `{"device_code","user_code","v
 | GET | `/api/sandboxes/{sid}` | read | → `Sandbox` |
 | PATCH | `/api/sandboxes/{sid}` | admin | `{"profile": Profile}` → `Sandbox` |
 | POST | `/api/sandboxes/{sid}/onboarding/skip` | admin | → `Sandbox` (`pending`/`preparing` → `skipped`) |
-| POST | `/api/sandboxes/{sid}/onboarding/approve` | write | → `Sandbox`; starts the preparation task now (`pending` → `preparing`; it normally starts by itself; a missing one is created); idempotent while `preparing`; 409 when nothing awaits preparation or the task cannot start |
+| POST | `/api/sandboxes/{sid}/onboarding/approve` | write, browser session | Start onboarding → `Sandbox`; starts the onboarding task (`pending` → `preparing`; a missing one is created); idempotent while `preparing`; 403 for a bearer token (the CLI only uploads, SPEC-051); 409 when nothing awaits preparation or the task cannot start |
 | DELETE | `/api/sandboxes/{sid}` | admin | → 204; stops live/queued tasks; GitHub repository, clone and task records kept |
 
 `GET /api/github/repositories` lists the App installation's repositories of the instance owner
@@ -80,7 +80,8 @@ repository of the instance owner (`invalid` otherwise) and `admin` or `maintain`
 clones the repository, picks the profile (`yulius.toml` `[delivery]`, else `product`/`studio` for
 `Quartio-Studio/product`/`studio`, else `standard`) and validates the documentation format: a
 failing project gets a preparation task (`origin: "onboarding"`) that starts at once (`onboarding:
-"preparing"`; through `yulius onboard` it starts once the upload is applied). While
+"preparing"`; through `yulius onboard` the sandbox stays `pending` until someone clicks Start
+onboarding on the sandbox page, SPEC-051). While
 `pending`/`preparing` no other task starts, but none is refused: creating or chaining a task (also an
 automation run or a held prompt's Start in parallel / Run after) returns it `chained` after the
 preparation task, and it starts by itself once the sandbox is `ready` or `skipped`
