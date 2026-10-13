@@ -146,7 +146,9 @@ Yulius has no messages for now ([SPEC-028](../.ai/specs/SPEC-028-delete-message-
 [decision 0023](decisions/0023-no-messages-until-delivery-is-reliable.md)): nothing is stored for
 an agent, injected by a hook or typed into its session. An agent pulls what it needs: it waits
 with `yulius wait` in a background shell, which Claude Code wakes it from, and reads
-`ci_status` and `delivery_status`. The armed merge's outcome is kept in memory for the wait.
+`ci_status` and `delivery_status`. The armed merge's outcome is kept in memory for the wait,
+with the armed merge and its decisions in progress under one lock: a merge armed again while an
+earlier one is decided supersedes it ([decision 0048](decisions/0048-armed-merge-state-under-one-lock.md)).
 
 ```mermaid
 sequenceDiagram
