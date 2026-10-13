@@ -26,7 +26,6 @@ use yulius_app::hub::HubFrame;
 use yulius_app::lifecycle::NewTask;
 use yulius_app::model::{LaunchKind, PauseKind, TaskMode, TaskOrigin};
 use yulius_app::ports::store::TaskStore;
-use yulius_app::ports::store_ext::UpdateStore;
 use yulius_app::updates::UpdateRunRecord;
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
