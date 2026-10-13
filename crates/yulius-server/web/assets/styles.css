@@ -2119,19 +2119,25 @@ button.task-group-head:hover { color: var(--text); }
 .ss-snippet mark { padding: 0 2px; border-radius: var(--radius-sm); background: var(--warn-soft); color: var(--text); }
 .ss-command { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--term-bg); }
 .ss-command code { flex: 1; min-width: 0; color: var(--term-fg); font-family: var(--font-mono); font-size: var(--fs-sm); line-height: var(--lh-sm); overflow-wrap: anywhere; }
-.ss-inner { max-width: 960px; }
+/* A session fills the content area edge to edge, as Claude Code's terminal fills its window
+   (SPEC-086): no maximum width, no side margin; the header and what stands in for the transcript
+   keep the page's padding, the transcript well spans the width and reaches the page's bottom. */
+.page-inner.ss-inner { max-width: none; min-height: 100%; padding: 0; gap: 0; }
+.ss-inner > .gt-head { margin: 0; padding: 24px 32px 16px; }
+.ss-inner > .ss-body { flex: 1; gap: 0; }
+.ss-inner > .ss-body > :not(.ss-tui) { margin: 0 32px 16px; }
 .ss-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .ss-notice { display: inline-flex; align-items: center; gap: 4px; margin: 0; }
 .ss-body { display: flex; flex-direction: column; gap: 16px; }
 /* A session printed as Claude Code's TUI printed it (SPEC-075), in its own faded palette (--session-*). */
-.ss-tui { position: relative; display: flow-root; padding: 16px 12px; border: 1px solid var(--session-border); border-radius: var(--radius-lg); background: var(--session-bg); color: var(--session-fg); font-family: var(--font-mono); font-size: var(--fs-term); line-height: var(--lh); }
+.ss-tui { position: relative; display: flow-root; flex: 1; padding: 16px 32px 24px; border-top: 1px solid var(--session-border); border-radius: 0; background: var(--session-bg); color: var(--session-fg); font-family: var(--font-mono); font-size: var(--fs-term); line-height: var(--lh); }
 .ss-tui ::selection { background: var(--term-selection); }
 .ss-dim { color: var(--session-dim); }
 /* Block flow, so the lines beside the corner's web (a float) make room for it. */
 .ss-entries { margin: 0; padding: 0; list-style: none; }
 .ss-entry + .ss-entry { margin-top: 12px; }
 .ss-tui > .ss-more, .ss-tui > .ss-locked { margin-top: 16px; }
-.ss-web { float: right; width: 84px; height: 102px; margin: -16px -12px 8px 16px; pointer-events: none; } /* 3 px pixels */
+.ss-web { float: right; width: 84px; height: 102px; margin: -16px -32px 8px 16px; pointer-events: none; } /* 3 px pixels, in the well's corner */
 .ss-web-thread { fill: var(--session-web); }
 .ss-web-spider { fill: var(--session-dim); }
 .ss-locked { display: flex; align-items: center; gap: 1ch; padding: 6px 1ch; border: 1px solid var(--session-border); border-radius: var(--radius); color: var(--session-dim); cursor: not-allowed; }
@@ -2182,7 +2188,9 @@ button.task-group-head:hover { color: var(--text); }
 .ss-tui .ss-more { justify-content: flex-start; font-family: var(--font); }
 @container page (max-width: 640px) {
   .ss-row-link { padding: 12px; }
-  .ss-tui { padding: 12px; font-size: var(--fs-sm); line-height: var(--lh-sm); }
+  .ss-inner > .gt-head { padding: 12px; }
+  .ss-inner > .ss-body > :not(.ss-tui) { margin: 0 12px 12px; }
+  .ss-tui { padding: 12px 12px 24px; font-size: var(--fs-sm); line-height: var(--lh-sm); }
   .ss-web { width: 56px; height: 68px; margin: -12px -12px 8px 12px; } /* 2 px pixels */
   .ss-has-when .ss-prompt { padding-right: 1ch; }
   .ss-when { position: static; align-self: flex-end; padding: 0; }

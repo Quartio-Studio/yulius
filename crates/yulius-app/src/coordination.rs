@@ -331,7 +331,10 @@ impl App {
             )
             .await?;
         self.publish_steps(&ctx.task).await;
-        self.tool_steps_get(ctx).await
+        let mut record = self.tool_steps_get(ctx).await?;
+        // Which step changed, so the answer can say it (SPEC-086 TOL-002).
+        record["updated"] = json!({"ordinal": step.ordinal, "title": step.title, "status": status});
+        Ok(record)
     }
 
     /// `steps_get`: the task's steps, the effort-weighted progress and the current nudges.
