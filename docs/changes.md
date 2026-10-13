@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- Two-factor fixes (SPEC-061, ADR-0040, task #52, #291, #295). A lost authenticator no longer
+  locks someone out of the secrets for good: an instance administrator or the superadmin resets
+  their two-factor from the Users page (a confirmation, then their own code), and the person sets
+  it up again on their next reveal. The reset is in the secrets activity (`vault.2fa.reset`).
+  Instance administrators now see the Users page (read-only, with each person's two-factor). A
+  code now confirms only the seed it was checked against, so a new key set up in another tab
+  while a code is checked is not confirmed by it. API: `DELETE /api/users/{id}/two-factor`;
+  `AdminUser` gains `two_factor`.
 - CI jobs get the CPU first (SPEC-053, ADR-0039, task #45, #283). A sandbox's cgroup is split
   into `system/`, `agents/` and `ci/`, and CI jobs run with four times the agents' CPU weight. CI
   gets up to 80 % of the sandbox while agents build, and agents keep at least 20 %. The e2e suite in CI is

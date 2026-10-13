@@ -854,7 +854,8 @@ resolves to nothing, the run gets the server without that variable or token.
 
 | Method | Path | Who | Notes |
 | --- | --- | --- | --- |
-| GET/POST | `/api/admin/users` | superadmin | GET → `[AdminUser]` (the superadmin is not listed); POST `{"github_login","display_name?","is_instance_admin?"}` → 201 `AdminUser` |
+| GET | `/api/admin/users` | instance admin | → `[AdminUser]` = `{id, github_login, display_name, is_instance_admin, disabled, github_linked, two_factor}` (`two_factor`: `missing`, `pending` or `on`; the superadmin is not listed) |
+| POST | `/api/admin/users` | superadmin | POST `{"github_login","display_name?","is_instance_admin?"}` → 201 `AdminUser` |
 | PATCH | `/api/admin/users/{id}` | superadmin | `{"disabled?","is_instance_admin?"}` → `AdminUser` |
 | GET | `/api/admin/accounts` | instance admin | `[Account]` |
 | POST | `/api/admin/accounts` | instance admin | `{"provider":"anthropic","label"}` → 201 `{"account":Account,"login_id"}` (status `pending_login`) then use the login terminal; nothing is created when the login cannot start |
@@ -1041,7 +1042,8 @@ SPEC-001 VLT-001..009, SPEC-002 ADR-20. Values are never logged; responses that 
 | GET | `/api/auth/reauth` | → `{fresh, fresh_until, two_factor, identity_fresh, methods}`: `fresh` = unlocked; `two_factor` is `missing`, `pending`, `on` or `locked` (10 wrong codes in a row, until identity is confirmed again); `identity_fresh` = signed in or confirmed in the last 10 minutes; `methods` ⊆ `["password", "github"]` (identity confirmation) |
 | POST | `/api/auth/reauth` | `{password}` (the superadmin) confirms identity → the status; 403 for a wrong password (audited; the session stays signed in) or an account without a password, 429 after 5 attempts a minute |
 | POST | `/api/auth/two-factor` | → 201 `{secret, uri}`: a new base32 seed and its `otpauth://totp/…` link (replaces a pending one). Needs `identity_fresh` (else 403 `reauth_required`); 409 once confirmed; 429 after 5 a minute. Audited (`vault.2fa.setup`) |
-| POST | `/api/auth/unlock` | `{code}` → the status: unlocks this browser session for 10 minutes; the first code confirms the setup (`vault.2fa.confirm`, later `vault.unlock`). 403 for a wrong or reused code (`vault.unlock.failed`; the 10th wrong code in a row locks codes, `vault.2fa.locked`, until `POST /api/auth/reauth` or a new GitHub sign-in) and while locked, 422 without two-factor, 429 after 5 attempts a minute |
+| POST | `/api/auth/unlock` | `{code}` → the status: unlocks this browser session for 10 minutes; the first code confirms the setup (`vault.2fa.confirm`, later `vault.unlock`). 403 for a wrong or reused code (`vault.unlock.failed`; the 10th wrong code in a row locks codes, `vault.2fa.locked`, until `POST /api/auth/reauth` or a new GitHub sign-in) and while locked, 422 without two-factor, 429 after 5 attempts a minute. A code checked against a seed replaced meanwhile by a new setup is refused (403, not counted as wrong; SPEC-061) |
+| DELETE | `/api/users/{id}/two-factor` | Instance administrators and the superadmin, for a lost authenticator (SPEC-061, ADR-0040) → 204: removes that person's seed and the unlocks of their browser sessions, audited `vault.2fa.reset` (detail: their login) when a seed was removed; 204 also when none was set up. Needs the caller's own unlock (else 403 `reauth_required`); 403 for members, bearer tokens and the caller's own id, 404 for an unknown user. The person sets two-factor up again on their next reveal |
 | GET | `/api/secrets/activity?limit=100` | → `[{at, actor, action, secret_id, detail}]`, newest first (≤ 500); an agent secret's entries only for members who can view its sandbox |
 
 A reveal needs the vault **unlocked** in this browser session. Otherwise it answers `403`
