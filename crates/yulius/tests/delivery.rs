@@ -2734,6 +2734,51 @@ async fn working_and_queued_counts_split_the_sidebar_working_group() -> TestResu
     f.req(Method::GET, "/api/sandboxes/s1/git", None, &f.rita)
         .await?;
     assert_eq!(counts().await?, (1, 4, 2));
+
+    // Yulius CI could not run at the head (SPEC-050 STA-101): In review, Working, even with a
+    // step open again, where its own state would be Your turn.
+    use yulius_app::ci::CiRunRecord;
+    use yulius_app::ports::store_ext::CiStore;
+    use yulius_domain::ci::{CiRef, GateSource, RunState};
+    let sandbox = SandboxId::parse("s1")?;
+    let record = f.h.store.sandbox(&sandbox).await?.ok_or("s1")?;
+    let mut profile: Value = serde_json::from_str(&record.profile_json)?;
+    profile["gate"] = json!("true");
+    f.h.store
+        .set_profile(&sandbox, &profile.to_string())
+        .await?;
+    f.h.store
+        .insert_ci_run(
+            &CiRunRecord {
+                id: "run-1".to_owned(),
+                sandbox_id: sandbox.clone(),
+                reference: CiRef::PullRequest(1),
+                sha: head.clone(),
+                source: GateSource::Profile,
+                state: RunState::Error,
+                reason: Some("the job could not start".to_owned()),
+                requested_by: "yulius".to_owned(),
+                status_for: None,
+                status_note: None,
+                status_attempts: 0,
+                queued_at: Timestamp(10),
+                started_at: Some(Timestamp(10)),
+                ended_at: Some(Timestamp(11)),
+            },
+            &[],
+        )
+        .await?;
+    set_steps(&f, "t1", &["done", "pending"]).await?;
+    let page = f
+        .req(Method::GET, "/api/sandboxes/s1/git", None, &f.rita)
+        .await?;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body.to_string().contains("\"checks\":\"error\""),
+        "the overview reads the errored run: {}",
+        page.body
+    );
+    assert_eq!(counts().await?, (1, 5, 2));
     Ok(())
 }
 

@@ -121,3 +121,11 @@ with one rule, the one `taskInfo` applies in the web UI.
   rather than the cards' working count, and the e2e test pins product's split (0 working,
   1 queued: its chained task); its nit, a tautological domain test, is replaced by
   `a_task_being_stopped_needs_nobody`. `needs_you()` stays as the domain's named "Needs you" query.
+- Review round 3 (head `10ff303`, after two `dev` merges): request changes. `dev`'s #352 made
+  `taskInfo` read an open pull request whose Yulius CI run could not run (`checks: error`) as
+  Working ("In review · CI could not run"), before the plan and an achieved goal; the server read
+  it as in review, so a reopened plan counted as needing you and an achieved goal as Done. Fixed
+  test-first: `PullSignal::Errored` (`from_wire("open", "error")`) keeps the task Working in
+  `group()`; unit cases, and `delivery::working_and_queued_counts_split_the_sidebar_working_group`
+  with an errored Yulius CI run and a reopened step read `(2, 4, 2)` without the fix and
+  `(1, 5, 2)` with it. ADR 0052 became 0053 when `dev` took 0052 first.

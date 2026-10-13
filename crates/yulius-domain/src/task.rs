@@ -330,6 +330,9 @@ pub enum PullSignal {
     InReview,
     /// Open with failing checks.
     Failing,
+    /// Open while Yulius CI could not run its checks (disk, a timeout, the host): not the code
+    /// (SPEC-050 STA-101).
+    Errored,
     /// Merged.
     Merged,
 }
@@ -343,6 +346,7 @@ impl PullSignal {
             ("merged", _) => Some(Self::Merged),
             ("open", "success" | "none") => Some(Self::Tested),
             ("open", "failure") => Some(Self::Failing),
+            ("open", "error") => Some(Self::Errored),
             ("open", _) => Some(Self::InReview),
             _ => None,
         }
@@ -394,7 +398,7 @@ impl AttentionFacts {
     ///
     /// A task being stopped or ended is Ended, whatever else holds. A held prompt or a pending
     /// browser request needs you. After a finished turn the pull request speaks: failing checks
-    /// need you; with the plan complete, background shells keep it Working, an achieved goal or a
+    /// need you, a CI run that could not run keeps it Working (In review); with the plan complete, background shells keep it Working, an achieved goal or a
     /// tested or merged pull request makes it Done, and checks still running keep it Working (In
     /// review). Otherwise the task's own state: a permission prompt or "Your turn" needs you
     /// (unless the agent's background shells still run: it wakes by itself), an achieved goal is
@@ -414,6 +418,10 @@ impl AttentionFacts {
         if finished && let Some(pull) = self.pull {
             if pull == PullSignal::Failing {
                 return G::NeedsYou;
+            }
+            // CI could not run: In review, nothing for a person yet (the agent runs it again).
+            if pull == PullSignal::Errored {
+                return G::Working;
             }
             if !self.plan_open {
                 return if self.background_shells {
@@ -898,6 +906,11 @@ mod tests {
             ..with(A::Waiting, P::Tested, false)
         };
         assert_eq!(shells.group(), G::Working);
+        // Yulius CI could not run (not the code): In review, before the plan or an achieved goal
+        // speaks (#352); nothing for a person yet.
+        assert_eq!(with(A::Waiting, P::Errored, true).group(), G::Working);
+        assert_eq!(with(A::Done, P::Errored, false).group(), G::Working);
+        assert_eq!(with(A::Waiting, P::Errored, false).group(), G::Working);
         // While the agent works, the pull request does not count.
         assert_eq!(with(A::Working, P::Failing, false).group(), G::Working);
     }
@@ -940,6 +953,10 @@ mod tests {
         assert_eq!(
             PullSignal::from_wire("open", "unknown"),
             Some(PullSignal::InReview)
+        );
+        assert_eq!(
+            PullSignal::from_wire("open", "error"),
+            Some(PullSignal::Errored)
         );
         assert_eq!(PullSignal::from_wire("closed", "none"), None);
     }

@@ -115,7 +115,8 @@ The counts are three of the web UI sidebar's groups, by its rule (SPEC-001 UI-05
 `AttentionFacts::group` in the domain); `counts.running` + `counts.queued` is the sidebar's Working
 group. `counts.queued` counts queued tasks and chains waiting for another task; `counts.running`
 counts the rest of the Working group: running tasks that do not wait for a person (working, kept
-going by the agent's background shells, or a finished turn whose pull request's checks still run),
+going by the agent's background shells, or a finished turn whose pull request's checks still run
+or whose Yulius CI run could not run),
 starting, switching and paused (`waiting_capacity`) ones. Done tasks, tasks being stopped and ended
 ones count nowhere; the status page's `live_sessions` counts live processes.
 `counts.needs_attention` counts the tasks that need a person by the web UI sidebar's "Needs you"
