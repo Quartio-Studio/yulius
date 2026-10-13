@@ -976,7 +976,10 @@ route('GET', '/api/archived-tasks', ({ db }) => db.tasks.filter((t) => t.archive
 // ---- Git and delivery
 
 route('GET', '/api/delivery/presets', () => [clone(PRESETS.standard), clone(PRESETS.product), clone(PRESETS.studio)]);
-route('GET', `/api/sandboxes/${ID}/git`, ({ db, p }) => {
+route('GET', `/api/sandboxes/${ID}/git`, async ({ db, p }) => {
+  // A test can hold these reads, the page's first included (`window.__yuliusHoldGit = promise`,
+  // set by an init script), to show a view drawn before its pull requests are known.
+  if (window.__yuliusHoldGit) await window.__yuliusHoldGit;
   const sandbox = sandboxOf(db, p[0]);
   const tasks = db.tasks.filter((t) => t.sandbox_id === sandbox.id && !t.archived && t.branch);
   const pull = pullOf;
@@ -3501,7 +3504,11 @@ function openSocket(db, path) {
   return ws;
 }
 
-/** Ambient activity so live updates are visible: one bounded timer for the whole mock. */
+/**
+ * Ambient activity so live updates are visible: one bounded timer for the whole mock. The browser
+ * request about 5 s after the start is awaited by task-done.e2e.ts ("…its pull request is read
+ * late"): keep its delay well under 15 s and its reason, or change that test with it.
+ */
 function startAmbient(db) {
   if (db.ambient) return;
   db.ambient = true;

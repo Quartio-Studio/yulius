@@ -187,6 +187,8 @@ export function mountTaskView(ctx, sandbox, task) {
   }
   // A browser request changes the bar and the state in the strip ("Needs you in the browser").
   destroyers.push(ctx.store.on('browser-action', (event) => { if (event.sandbox_id === sandbox.id) renderStrip(); }));
+  // So does its pull request ("Done · PR #…"), read on its own and often after this view (#294).
+  destroyers.push(ctx.store.on('pulls', (sandboxId) => { if (sandboxId === sandbox.id) renderStrip(); }));
 
   // The view's heading for screen readers and the page title (the strip shows it visually).
   const heading = h('h1', { class: 'sr-only' }, `#${task.number} ${task.title || ''}`);
