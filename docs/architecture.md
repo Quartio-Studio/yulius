@@ -237,7 +237,10 @@ Every user has one plain Claude Code session per sandbox, shown as the **Agent**
 [decision 0020](decisions/0020-cockpit-as-a-plain-shell-session.md)); the code and the API still
 call it the Cockpit. It is a sandbox shell of kind `cockpit` that runs `claude` instead of the
 login shell: no hooks, settings or briefing, a pool subscription's token, and the newest
-conversation resumed whenever it starts again. The web UI shows it in the right tool panel beside
+conversation resumed whenever it starts again. Its start, like a terminal's, runs detached from
+the request, so a client that goes away mid-start never leaves a second or half-started session
+([SPEC-077](../.ai/specs/SPEC-077-fix-250-cockpit-and-shell-starts-survive.md),
+[decision 0053](decisions/0053-shell-starts-run-detached-from-the-request.md)). The web UI shows it in the right tool panel beside
 the page, under a notice that it is for quick work only
 ([SPEC-035](../.ai/specs/SPEC-035-move-cockpit-to-the-right-and-change-coc.md),
 [decision 0036](decisions/0036-agent-in-the-right-panel.md)).
