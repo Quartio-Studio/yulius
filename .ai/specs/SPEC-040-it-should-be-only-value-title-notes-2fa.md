@@ -128,7 +128,7 @@ them), and people can now read an agent secret's value too, behind the same two-
 
 ## Decisions
 
-- Two-factor is **per person, guarding the whole vault** (ADR-0030). "Per wallet" is read as
+- Two-factor is **per person, guarding the whole vault** (ADR-0033). "Per wallet" is read as
   "on the wallet, not on each secret". A single seed shared by the team would make the audit
   trail meaningless (anyone who once saw it passes as anyone holding a session) and could never be
   revoked for one person. Each person enrolls their own authenticator, so one unlock opens both
@@ -195,7 +195,7 @@ them), and people can now read an agent secret's value too, behind the same two-
   guessing codes; editing older notes could drop folded fields; minor items), all fixed
   test-first; round 2 approved `8017484` with minor items, fixed test-first (the locked message,
   older agent secrets' user name and seed readable); round 3 found no code defect and asked for
-  the rebase over #281 (ADR-0030) and minor fixes (stored notes read-only until loaded, agent tool
+  the rebase over #281 (the decision renumbered past dev's; it is ADR-0033 since #287 took 0030) and minor fixes (stored notes read-only until loaded, agent tool
   texts, SPEC-002 statements), made test-first; a confirmation review approves the final head.
 - Not tested here: a real authenticator app scanning the `otpauth://` link (the link format is
   unit-tested to parse back to the same seed); the deployed instance.
