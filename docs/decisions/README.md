@@ -63,6 +63,7 @@ title whose number differs from the file name, and a record this index does not 
 - [0051](0051-the-merge-gate-enforces-the-branch-policy.md): Yulius's merge gate enforces the branch policy
 - [0060](0060-a-task-is-owned-by-one-person.md): A task is owned by one person, whose GitHub credentials it uses; control passes on request
 - [0053](0053-shell-starts-run-detached-from-the-request.md): Shell and Cockpit starts run detached from their request
+- [0061](0061-sandbox-counts-are-the-sidebar-groups.md): A sandbox's counts are the sidebar's groups, decided by one domain rule
 - [0058](0058-the-clis-own-continuation-ends-a-limit-pause.md): The CLI's own continuation ends a limit pause; a refused limit switch is remembered per run
 - [0059](0059-a-session-is-printed-as-the-tui-in-html.md): A session is printed as Claude Code's TUI in HTML, faded by its own palette
 - [0055](0055-cockpit-moves-past-a-usage-limit.md): The Cockpit moves past a usage limit like a task, and is called the Superagent

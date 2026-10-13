@@ -14,7 +14,7 @@
 // jev=config (a Jev key file is configured), fail=<path> (GETs of that path answer 500),
 // failpost=<path> (POSTs of that path answer 500).
 
-import { taskInfo } from './status.js';
+import { counter, taskInfo } from './status.js';
 
 const MIN = 60e3;
 const HOUR = 60 * MIN;
@@ -479,18 +479,20 @@ function pullOf(task) {
 }
 
 /**
- * The sandbox counters. "Needs you" is the sidebar's rule (status.js taskInfo, the server's
- * `AttentionFacts`), so a card, a tab and the sidebar never disagree (#147).
+ * The sandbox counters: the sidebar's groups by its rule (status.js taskInfo and counter, the
+ * server's `AttentionFacts::group`), so a card, a tab and the sidebar never disagree (#147, #170).
  */
 function recount(db) {
   for (const sandbox of db.sandboxes) {
-    const tasks = db.tasks.filter((t) => t.sandbox_id === sandbox.id && !t.archived);
-    sandbox.counts = {
-      // A live process, as the server counts it (TaskStatus::is_live).
-      running: tasks.filter((t) => ['starting', 'running', 'switching', 'stopping'].includes(t.status)).length,
-      needs_attention: tasks.filter((t) => taskInfo(summary(t), null, pullOf(t)).group === 'needs').length,
-      queued: tasks.filter((t) => t.status === 'queued').length,
-    };
+    const counts = { running: 0, needs_attention: 0, queued: 0 };
+    for (const t of db.tasks.filter((task) => task.sandbox_id === sandbox.id && !task.archived)) {
+      const task = summary(t);
+      const kind = counter(task, taskInfo(task, null, pullOf(t)));
+      if (kind === 'needs') counts.needs_attention += 1;
+      else if (kind === 'working') counts.running += 1;
+      else if (kind === 'queued') counts.queued += 1;
+    }
+    sandbox.counts = counts;
   }
 }
 
@@ -2258,7 +2260,8 @@ route('GET', '/api/status', ({ db }) => {
     // Disk total unknown on purpose: unknown metrics are null, never zero.
     vm: { cpu_percent: 22 + Math.sin(wobble) * 9, cpu_count: 8, memory_used_bytes: 9.4 * 2 ** 30, memory_total_bytes: 16 * 2 ** 30, disk_used_bytes: 141 * 2 ** 30, disk_total_bytes: null, load: [1.21, 0.97, 0.74], load_1m: 1.21, uptime_s: 9 * 86400 + 3600 * 4 },
     sessions: { live: db.tasks.filter((t) => t.status === 'running').length, limit: 8, queued: db.tasks.filter((t) => t.status === 'queued').length },
-    sandboxes: db.sandboxes.map((s) => ({ id: s.id, slug: s.slug, name: s.name, live_sessions: s.counts.running })),
+    // Tasks with a live process (TaskStatus::is_live), not the cards' "working" count (#170).
+    sandboxes: db.sandboxes.map((s) => ({ id: s.id, slug: s.slug, name: s.name, live_sessions: db.tasks.filter((t) => t.sandbox_id === s.id && !t.archived && ['starting', 'running', 'switching', 'stopping'].includes(t.status)).length })),
     accounts: db.accounts.map((a) => (admin
       ? { label: a.label, provider: a.provider, status: a.status, usage: a.usage, id: a.id, last_error: a.last_error, in_use_by: a.in_use_by }
       : { label: a.label, provider: a.provider, status: a.status, usage: a.usage })),

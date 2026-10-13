@@ -111,7 +111,14 @@ Profile = {"preset": "standard|product|studio|custom", "integration_branch": "de
            "gate": "scripts/ci.sh|null"}
 ```
 
-`counts.running` counts tasks with a live process and `counts.queued` queued tasks.
+The counts are three of the web UI sidebar's groups, by its rule (SPEC-001 UI-050,
+`AttentionFacts::group` in the domain); `counts.running` + `counts.queued` is the sidebar's Working
+group. `counts.queued` counts queued tasks and chains waiting for another task; `counts.running`
+counts the rest of the Working group: running tasks that do not wait for a person (working, kept
+going by the agent's background shells, or a finished turn whose pull request's checks still run
+or whose Yulius CI run could not run),
+starting, switching and paused (`waiting_capacity`) ones. Done tasks, tasks being stopped and ended
+ones count nowhere; the status page's `live_sessions` counts live processes.
 `counts.needs_attention` counts the tasks that need a person by the web UI sidebar's "Needs you"
 rule (SPEC-001 UI-050, `AttentionFacts` in the domain): a permission prompt (`needs_attention`),
 a finished turn waiting for input (`waiting`), a pending held prompt, a pending request to act in
@@ -121,7 +128,8 @@ pull request of a finished turn whose plan is complete counts as Done or In revi
 a person. The pull request facts are those the sandbox's Git overview
 (`GET /api/sandboxes/{sid}/git`) last read; until it is read after a start, only a merge already
 recorded counts (the UI reads it with the sidebar and reloads the counters after each read). An
-ended task never counts; a paused or queued one only for a held prompt or a browser request.
+ended task or one being stopped never counts; a paused or queued one only for a held prompt or a
+browser request.
 
 ## Import (`yulius onboard` / `yulius import`)
 
