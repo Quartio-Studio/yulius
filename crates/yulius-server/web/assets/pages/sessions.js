@@ -174,12 +174,19 @@ function richText(text, className = 'ss-text') {
     if (index % 2 === 0) return part ? h('span', null, part) : null;
     const newline = part.indexOf('\n');
     const code = newline >= 0 && /^[\w+-]*$/.test(part.slice(0, newline)) ? part.slice(newline + 1) : part;
-    return h('pre', { class: 'ss-code', ...SCROLLS }, h('code', null, code.replace(/\n$/, '')));
+    return h('pre', { class: 'ss-code', ...scroller(code, 'Code') }, h('code', null, code.replace(/\n$/, '')));
   }));
 }
 
-// Long code, results and diffs scroll inside their box (max-height); a keyboard reaches them too.
-const SCROLLS = { tabindex: '0' };
+/**
+ * Long code, results and diffs scroll inside their box (480 px, about 20 lines): those are named
+ * regions a keyboard reaches, as the Git page's diffs. Short ones are no tab stops.
+ */
+function scroller(text, label) {
+  const lines = String(text || '').split('\n');
+  const rows = lines.reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / 80)), 0);
+  return rows > 16 ? { tabindex: '0', role: 'region', 'aria-label': label } : null;
+}
 
 const linesOf = (text) => String(text || '').replace(/\n+$/, '').split('\n');
 
@@ -209,7 +216,7 @@ function diffView(diff) {
   return h('div', { class: 'ss-diff', role: 'group', 'aria-label': `Changes to ${diff.path}` },
     diff.hunks.map((hunk) => {
       const { head, removed, added, tail } = hunkLines(hunk);
-      return h('pre', { class: 'ss-diff-hunk', ...SCROLLS },
+      return h('pre', { class: 'ss-diff-hunk', ...scroller([...head, ...removed, ...added, ...tail].join('\n'), `Changed lines of ${diff.path}`) },
         head.map((line) => h('span', { class: 'ss-ctx' }, `  ${line}\n`)),
         removed.map((line) => h('span', { class: 'ss-del' }, `- ${line}\n`)),
         added.map((line) => h('span', { class: 'ss-add' }, `+ ${line}\n`)),
@@ -312,8 +319,8 @@ function toolCall(item, result) {
         item.summary ? ['(', h('span', { class: 'ss-tool-summary' }, item.summary), ')'] : null,
         failed ? h('span', { class: 'ss-tool-flag' }, ' error') : null), { kind: failed ? 'err' : result ? 'ok' : 'call' }),
       preview.length ? outLines(preview, ['ss-preview', !diff && 'ss-preview-folded', failed && 'ss-out-err']) : null),
-    item.diff ? diffView(item.diff) : h('pre', { class: 'ss-code ss-input', ...SCROLLS }, h('code', null, item.input)),
-    result ? outLines(linesOf(result.text || '(No content)'), ['ss-result', failed && 'ss-out-err'], SCROLLS) : null,
+    item.diff ? diffView(item.diff) : h('pre', { class: 'ss-code ss-input', ...scroller(item.input, `Input of ${item.name}`) }, h('code', null, item.input)),
+    result ? outLines(linesOf(result.text || '(No content)'), ['ss-result', failed && 'ss-out-err'], scroller(result.text, `Result of ${item.name}`)) : null,
     result && result.truncated ? h('p', { class: 'ss-dim xs' }, 'Cut here: the result is longer.') : null);
 }
 
@@ -332,7 +339,7 @@ function block(item, results, role) {
     case 'tool_result':
       return results.has(item.tool_use_id) && results.get(item.tool_use_id).shown ? null : h('details', { class: ['ss-fold', 'ss-tool', item.is_error && 'ss-tool-error'] },
         h('summary', null, outLines(callPreview({ name: '' }, item), ['ss-preview', 'ss-preview-folded', item.is_error && 'ss-out-err'])),
-        outLines(linesOf(item.text || '(No content)'), ['ss-result', item.is_error && 'ss-out-err'], SCROLLS));
+        outLines(linesOf(item.text || '(No content)'), ['ss-result', item.is_error && 'ss-out-err'], scroller(item.text, 'Result')));
     case 'image':
       return tuiLine('⎿', h('span', { class: 'ss-dim' }, '[Image] (not kept)'), { kind: 'out' });
     case 'meta': {

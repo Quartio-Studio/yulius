@@ -331,6 +331,9 @@ test('a long diff that scrolls shows its keyboard focus', async ({ app, browser 
     return { scrolls: hunk.scrollHeight > hunk.clientHeight, hunk: hunk.matches('.ss-diff-hunk:focus-visible'), inset: style.boxShadow.includes('inset'), clipped: getComputedStyle(hunk.closest('.ss-diff')!).overflow === 'hidden' };
   });
   expect(ring).toEqual({ scrolls: true, hunk: true, inset: true, clipped: false });
+  // A scroller is a named region (as the Git page's diffs); short blocks are no tab stops (review round 5).
+  await expect(browser.locator('.ss-tui .ss-diff-hunk[role="region"][aria-label="Changed lines of src/webhooks/fixtures.ts"]')).toHaveCount(1);
+  await expect(browser.locator('.ss-tui [tabindex="0"]')).toHaveCount(1);
 });
 
 test('a search match opens the transcript at its line', async ({ app, browser, screen }) => {
