@@ -25,6 +25,10 @@ import { draftFor, saveDraft, clearDraft, attachToDraft, onDraftChange } from '.
 const STEP_MARK = { done: '✓', in_progress: '▸', pending: '·', skipped: '–', blocked: '✕' };
 const STEP_LABEL = { done: 'Done', in_progress: 'In progress', pending: 'To do', blocked: 'Blocked', skipped: 'Skipped' };
 const STRIP_KEY = 'yulius.stepsOpen';
+// Waiting states in which a task that never started takes queued messages (SPEC-052).
+const WAITING = new Set(['queued', 'chained', 'waiting_capacity']);
+// States only a task with a run is in.
+const RAN = new Set(['running', 'switching', 'stopping']);
 
 // Phone quick-input keys (SPEC-001 §6.4).
 const QUICK_KEYS = [
@@ -198,11 +202,62 @@ export function mountTaskView(ctx, sandbox, task) {
     held.hidden = !prompt;
     setChildren(held, prompt ? heldPromptCard(ctx, sandbox, current, prompt, detail) : null);
   }
-  const el = h('div', { class: 'taskview' }, heading, strip, h('div', { class: 'taskview-term' }, terminal.el, attention, held), quickbar);
+
+  // ---- queued messages (SPEC-052): a task that waits and never started takes messages into its
+  // request, so a person can correct it before the agent sees it. The card sits at the bottom of
+  // the empty terminal, where a message is typed; the request shows as the agent will get it.
+  const queueSlot = h('div', { class: 'queue-slot', hidden: true });
+  const requestEl = h('div', { class: 'queue-request', role: 'region', 'aria-label': 'Request', tabindex: 0 });
+  const queueBox = h('textarea', { class: 'input queue-input', rows: 2, placeholder: 'Queue a message for the agent…', 'aria-label': 'Message for the agent', 'aria-keyshortcuts': SUBMIT_ARIA, maxlength: 65536 });
+  const queueButton = h('button', { type: 'button', class: 'btn btn-primary', title: `Queue (${SUBMIT_KEYS})`, onClick: () => queueMessage() }, 'Queue');
+  const queueError = h('div', { class: 'field-error', role: 'alert' });
+  setChildren(queueSlot, h('section', { class: 'queue-card', role: 'region', 'aria-label': 'Queued messages' },
+    h('div', { class: 'queue-head' }, icon('send', { size: 16 }), h('strong', null, 'Queued messages'),
+      h('span', { class: 'muted' }, 'The agent gets them with the request when the task starts.')),
+    requestEl,
+    h('div', { class: 'queue-compose' }, queueBox, queueButton),
+    queueError));
+  attachMarkdownInput(queueBox, { onSubmit: () => queueMessage() });
+  let queueing = false;
+  async function queueMessage() {
+    const text = queueBox.value;
+    if (queueing || !text.trim()) return;
+    queueing = true;
+    queueButton.disabled = true;
+    queueError.textContent = '';
+    try {
+      const out = await ctx.api.post(`/api/tasks/${enc(current.id)}/queued-messages`, { text });
+      if (!alive) return;
+      queueBox.value = '';
+      if (detail) detail = { ...detail, request: out.request };
+      renderQueue();
+    } catch (error) {
+      // The text stays in the box; the reason shows in place (UI-050).
+      if (alive) queueError.textContent = error.message || 'Couldn’t queue the message.';
+    } finally {
+      queueing = false;
+      queueButton.disabled = false;
+    }
+  }
+  function renderQueue() {
+    const access = (ctx.store.sandboxById(sandbox.id) || sandbox).access;
+    const show = Boolean(detail && detail.id === current.id && detail.started === false
+      && WAITING.has(current.status) && !current.archived && allows(access, 'write'));
+    queueSlot.hidden = !show;
+    if (!show) return;
+    const text = detail.request || '';
+    if (requestEl.textContent !== text) {
+      requestEl.textContent = text;
+      requestEl.scrollTop = requestEl.scrollHeight; // the latest message in view
+    }
+  }
+
+  const el = h('div', { class: 'taskview' }, heading, strip, h('div', { class: 'taskview-term' }, terminal.el, attention, held, queueSlot), quickbar);
 
   function renderStrip() {
     renderAttention();
     renderHeld();
+    renderQueue();
     const steps = current.steps || { done: 0, total: 0, current: null };
     // The session's state as the sidebar says it (pull request, browser request, usage limit).
     const info = taskInfo(current, ctx.store.state.actionRequests, ctx.store.pullsOf(current.sandbox_id).get(current.id));
@@ -317,7 +372,13 @@ export function mountTaskView(ctx, sandbox, task) {
     update(next) {
       const wasLive = isLive(current.status);
       const previousStatus = current.status;
+      const previousUpdate = current.updated_at;
       current = { ...current, ...next };
+      // Whether the task started is the detail's: a status with a run means it has, and any status
+      // change reads the detail again (a start that found no capacity has not). A message someone
+      // else queued changes the request: read it again too.
+      if (detail && RAN.has(current.status)) detail = { ...detail, started: true };
+      if (current.status !== previousStatus || (!queueSlot.hidden && current.updated_at !== previousUpdate)) loadDetail();
       renderStrip();
       if (current.status !== previousStatus) terminal.refreshEmpty();
       if (current.status !== previousStatus) loadDelivery(); // a finished task may now be ready for a pull request

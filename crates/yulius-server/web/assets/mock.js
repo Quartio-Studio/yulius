@@ -419,9 +419,15 @@ function advanceEnvironment(db, sandbox, envName) {
   }
 }
 
+/** Waiting states in which a task that never started takes queued messages (SPEC-052). */
+const WAITING = new Set(['queued', 'chained', 'waiting_capacity']);
+
+/** Whether a task ever had a run: in the mock, every task past waiting in a queue or a chain. */
+const hasStarted = (task) => task.started ?? !['queued', 'chained'].includes(task.status);
+
 function detail(db, task) {
   const live = LIVE.has(task.status);
-  const ran = task.origin !== 'onboarding' || task.stepsList.some((s) => s.status === 'done');
+  const ran = hasStarted(task) && (task.origin !== 'onboarding' || task.stepsList.some((s) => s.status === 'done'));
   return {
     ...summary(task),
     spec_path: task.stepsList.length && task.branch ? `docs/specs/2026-10-07-${task.branch.replace('feat/', '')}.md` : null,
@@ -435,6 +441,8 @@ function detail(db, task) {
     feedback: [],
     delivery: delivery(db, task),
     switches: task.number === 9 ? [{ at: iso(2 * MIN), reason: 'account exhausted', from: 'Claude Code (Claude #2)', to: 'Claude Code (Claude #4)' }] : [],
+    request: task.prompt ?? task.title,
+    started: hasStarted(task),
   };
 }
 
@@ -823,6 +831,16 @@ route('POST', `/api/tasks/${ID}/start-now`, ({ db, p }) => {
   later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1800);
   return summary(task);
 });
+route('POST', `/api/tasks/${ID}/queued-messages`, ({ db, p, body }) => {
+  const task = taskOf(db, p[0]);
+  needTaskWrite(db, task);
+  const text = String(body.text || '').trim();
+  if (!text) fail(422, 'invalid', 'the message is empty');
+  if (hasStarted(task) || !WAITING.has(task.status)) fail(409, 'conflict', 'The task has started: type into its session instead');
+  const at = `${new Date().toISOString().slice(0, 16).replace('T', ' ')} UTC`;
+  touch(db, task, { prompt: `${task.prompt ?? task.title}\n\n**Added by ${db.me.user.login} before the task started (${at}):**\n\n${text}` });
+  return { request: task.prompt };
+});
 route('POST', `/api/tasks/${ID}/held-prompts/${ID}`, ({ db, p, body }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
@@ -847,7 +865,12 @@ route('POST', `/api/tasks/${ID}/held-prompts/${ID}`, ({ db, p, body }) => {
   recount(db);
   return { task: summary(task), created: created ? summary(created) : null, note: notes[action] };
 });
-route('GET', `/api/tasks/${ID}`, ({ db, p }) => detail(db, taskOf(db, p[0])));
+// Reads of a task's detail, per task, so a test can wait for a view's read to land.
+route('GET', `/api/tasks/${ID}`, ({ db, p }) => {
+  db.detailReads = db.detailReads || {};
+  db.detailReads[p[0]] = (db.detailReads[p[0]] || 0) + 1;
+  return detail(db, taskOf(db, p[0]));
+});
 // The prompt a task started with (SPEC-043): `@path` lines are its attached files, served only
 // from the attachments folder.
 function promptParts(task) {
@@ -2785,6 +2808,11 @@ class TermSession {
     let msg;
     try { msg = JSON.parse(data); } catch { return; }
     if (msg.type === 'hello') {
+      // A test can hold a task terminal's first screen (`window.__yuliusHoldTerminal = promise`,
+      // set by an init script) to act in the view before the terminal shows; once released, this
+      // session stays open for good (`released` is per session).
+      const hold = window.__yuliusHoldTerminal;
+      if (hold && !this.released) { hold.then(() => { this.released = true; this.receive(ws, data); }); return; }
       this.viewers.add(ws);
       if (this.canWrite() && msg.cols && msg.rows) this.viewerSize = [msg.cols, msg.rows];
       if (this.canWrite() && !this.otherController && msg.cols && msg.rows) { this.cols = Math.max(20, Math.min(400, msg.cols)); this.rows = Math.max(8, Math.min(200, msg.rows)); }
@@ -3011,6 +3039,10 @@ class ShellSession {
     let msg;
     try { msg = JSON.parse(data); } catch { return; }
     if (msg.type === 'hello') {
+      // A test can hold a shell's first screen too (`window.__yuliusHoldShell = promise`); once
+      // released, this session stays open for good (`released` is per session).
+      const hold = window.__yuliusHoldShell;
+      if (hold && !this.released) { hold.then(() => { this.released = true; this.receive(ws, data); }); return; }
       this.viewers.add(ws);
       if (msg.cols && msg.rows) { this.cols = msg.cols; this.rows = msg.rows; }
       ws.push(JSON.stringify({ type: 'state', attempt_seq: null, harness: null, cols: this.cols, rows: this.rows, can_write: true, controller: true, status: 'running' }));
