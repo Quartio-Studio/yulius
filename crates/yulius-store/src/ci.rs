@@ -391,12 +391,20 @@ impl CiStore for SqliteStore {
         self.call(move |c| {
             let changed = c
                 .execute(
+                    // The newest verdict of every reference (a branch, a pull request) is kept,
+                    // however many runs came since: without it the planner tests that head again
+                    // and its commit status goes back to pending (F 2026-10-13, main re-queued).
                     "DELETE FROM ci_runs WHERE state NOT IN ('queued', 'running') AND (\
                        queued_at < ?1 OR id IN (\
                          SELECT id FROM (\
                            SELECT id, ROW_NUMBER() OVER (\
                              PARTITION BY sandbox_id ORDER BY queued_at DESC, rowid DESC) AS n \
-                           FROM ci_runs) WHERE n > ?2))",
+                           FROM ci_runs) WHERE n > ?2)) \
+                     AND id NOT IN (\
+                       SELECT id FROM (\
+                         SELECT id, ROW_NUMBER() OVER (\
+                           PARTITION BY sandbox_id, reference ORDER BY queued_at DESC, rowid DESC) AS v \
+                         FROM ci_runs WHERE state IN ('passed', 'failed', 'error')) WHERE v = 1)",
                     params![before.0, i64::from(keep)],
                 )
                 .map_err(db)?;
@@ -516,6 +524,41 @@ mod tests {
                 .iter()
                 .all(|j| j.state == RunState::Queued && j.output.contains("restart"))
         );
+        Ok(())
+    }
+
+    /// The newest verdict of a reference survives pruning, however old (F 2026-10-13: without it
+    /// the planner tested the main head again and its status went back to pending).
+    #[tokio::test]
+    async fn retention_keeps_each_references_newest_verdict() -> TestResult {
+        let store = SqliteStore::open_in_memory()?;
+        let start = CiRunUpdate {
+            started_at: Some(Timestamp(1)),
+            ..CiRunUpdate::default()
+        };
+        let main = |id: &str, at: i64| -> Result<CiRunRecord, Box<dyn std::error::Error>> {
+            Ok(CiRunRecord {
+                reference: CiRef::Branch("main".into()),
+                ..run(id, id, at)?
+            })
+        };
+        for (id, at) in [("m0", 1), ("m1", 2)] {
+            store.insert_ci_run(&main(id, at)?, &[]).await?;
+            store
+                .transition_ci_run(id, &[RunState::Queued], RunState::Running, &start)
+                .await?;
+            store
+                .transition_ci_run(id, &[RunState::Running], RunState::Passed, &start)
+                .await?;
+        }
+        for i in 0..3 {
+            let id = format!("p{i}");
+            store.insert_ci_run(&run(&id, &id, 10 + i)?, &[]).await?;
+        }
+        // Keep the newest 2 and everything since 100: only main's older run goes.
+        assert_eq!(store.prune_ci_runs(2, Timestamp(100)).await?, 1);
+        assert!(store.ci_run("m1").await?.is_some(), "main's verdict stays");
+        assert!(store.ci_run("m0").await?.is_none());
         Ok(())
     }
 
