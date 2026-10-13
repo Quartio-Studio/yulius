@@ -16,6 +16,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
     them.
   - A red run, or anything unexpected, sends every member back to the one-by-one flow.
   - A train survives restarts (`merge-trains.json`).
+  - Passes deciding armed merges take turns. Two runs ending together used to merge one pull
+    request while the other pass merged a branch it had read as up to date. GitHub refused that
+    merge as behind, and the armed merge was dropped.
   - On 2026-10-12/13, 42% of the armed merges waited at least one extra run after their last arm
     (7.4 hours in all), and runs at updated heads took 44% of the CI time.
 - Yulius's tools answer in a few readable lines, and sessions fill the page (SPEC-086, ADR-0069):

@@ -46,6 +46,19 @@ pub struct TrainBuild {
     pub head: String,
 }
 
+/// What a train is built from.
+#[derive(Debug, Clone, Copy)]
+pub struct TrainInput<'a> {
+    /// The integration branch (a revision).
+    pub base: &'a str,
+    /// The pull request heads, in merge order.
+    pub heads: &'a [String],
+    /// How each lands on the integration branch.
+    pub landing: TrainLanding,
+    /// Who makes the train's commits.
+    pub author: &'a Author,
+}
+
 impl Git {
     /// Builds a merge train in the scratch worktree `scratch` (inside `owned_root`; created on
     /// first use as a detached worktree of `repo`, reused afterwards like a CI checkout).
@@ -66,11 +79,14 @@ impl Git {
         repo: &Path,
         scratch: &Path,
         owned_root: &Path,
-        base: &str,
-        heads: &[String],
-        landing: TrainLanding,
-        author: &Author,
+        input: &TrainInput<'_>,
     ) -> Result<TrainBuild, GitError> {
+        let TrainInput {
+            base,
+            heads,
+            landing,
+            author,
+        } = *input;
         author.validate()?;
         validate_revision(base)?;
         let base = self.rev_parse(repo, base)?;

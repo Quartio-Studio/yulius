@@ -346,23 +346,14 @@ impl Fixture {
     async fn arm(&self, n: u32, worktree: &Path) -> TestResult {
         self.h.clock.0.fetch_add(1000, Ordering::SeqCst);
         let head = git(worktree, &["rev-parse", "HEAD"])?;
-        let r = call(
-            &self.h.internal,
-            Method::POST,
-            "/mcp",
-            Some(
-                json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
-                "name": "delivery_merge",
-                "arguments": {"reviewed_head": head, "review_summary": "approve"}}}),
-            ),
-            &Self::agent(&format!("t{n}")),
+        let result = support::mcp_tool(
+            &self.h,
+            &format!("tok-t{n}"),
+            "delivery_merge",
+            json!({"reviewed_head": head, "review_summary": "approve"}),
         )
         .await?;
-        let text = r.body["result"].to_string();
-        assert!(
-            text.contains("\\\"armed\\\": true") || text.contains("\\\"armed\\\":true"),
-            "{text}"
-        );
+        assert_eq!(support::tool_text(&result)["armed"], true, "{result}");
         Ok(())
     }
 
@@ -429,6 +420,44 @@ impl Fixture {
             }
             tokio::time::sleep(Duration::from_millis(150)).await;
         }
+    }
+
+    /// Records a passed run of pull request `n` at `head` with its `yulius/ci` status published,
+    /// as if it had run (no run ends, so no pass starts by itself).
+    async fn record_passed(&self, app: &App, n: u32, head: &str) -> TestResult {
+        let now = app.now();
+        app.deps
+            .store
+            .insert_ci_run(
+                &CiRunRecord {
+                    id: format!("run-{n}-{}", &head[..7]),
+                    sandbox_id: self.sandbox.clone(),
+                    reference: CiRef::PullRequest(u64::from(n)),
+                    sha: head.to_owned(),
+                    source: yulius_domain::ci::GateSource::ProjectConfig,
+                    state: RunState::Passed,
+                    reason: None,
+                    requested_by: "yulius".into(),
+                    status_for: Some(RunState::Passed),
+                    status_note: None,
+                    status_attempts: 1,
+                    queued_at: now,
+                    started_at: Some(now),
+                    ended_at: Some(now),
+                },
+                &[],
+            )
+            .await?;
+        self.h.github.statuses.lock().map_err(|_| "lock")?.push((
+            head.to_owned(),
+            yulius_app::ports::github::NewCommitStatus {
+                state: "success".into(),
+                context: yulius_domain::ci::STATUS_CONTEXT.into(),
+                description: "Passed".into(),
+                target_url: None,
+            },
+        ));
+        Ok(())
     }
 
     async fn merged(&self, app: &App, n: u32) -> BoxResult<bool> {
@@ -783,38 +812,7 @@ async fn passes_at_the_same_time_take_turns() -> TestResult {
         .collect::<Result<_, _>>()?;
     // Both heads' runs passed and were published (recorded here: no run ends to start a pass).
     for (n, head) in (1..).zip(&heads) {
-        let now = app.now();
-        app.deps
-            .store
-            .insert_ci_run(
-                &CiRunRecord {
-                    id: format!("run-{n}"),
-                    sandbox_id: f.sandbox.clone(),
-                    reference: CiRef::PullRequest(n),
-                    sha: head.clone(),
-                    source: yulius_domain::ci::GateSource::ProjectConfig,
-                    state: RunState::Passed,
-                    reason: None,
-                    requested_by: "yulius".into(),
-                    status_for: Some(RunState::Passed),
-                    status_note: None,
-                    status_attempts: 1,
-                    queued_at: now,
-                    started_at: Some(now),
-                    ended_at: Some(now),
-                },
-                &[],
-            )
-            .await?;
-        f.h.github.statuses.lock().map_err(|_| "lock")?.push((
-            head.clone(),
-            yulius_app::ports::github::NewCommitStatus {
-                state: "success".into(),
-                context: yulius_domain::ci::STATUS_CONTEXT.into(),
-                description: "Passed".into(),
-                target_url: None,
-            },
-        ));
+        f.record_passed(&app, n, head).await?;
     }
     tokio::join!(app.merge_armed(&f.sandbox), app.merge_armed(&f.sandbox));
     assert_eq!(f.merges().len(), 1, "{:?}", f.merges());
@@ -834,6 +832,72 @@ async fn passes_at_the_same_time_take_turns() -> TestResult {
         f.train_runs(&app).await?.is_empty(),
         "both could merge alone"
     );
+    Ok(())
+}
+
+/// TRN-011: an armed pull request whose agent is busy while its base moved on is not brought up
+/// to date (DLV-203 waits for an idle agent); it now waits too, instead of being merged, refused
+/// by the ruleset as behind and dropped. Once the agent is idle it is brought up to date.
+#[tokio::test]
+async fn a_busy_agent_behind_its_base_waits_instead_of_being_refused() -> TestResult {
+    let f = fixture().await?;
+    let app = f.h.app.clone();
+    let worktree = f.task(1, &[("a.txt", "x\n")]).await?;
+    f.arm(1, &worktree).await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?;
+    f.record_passed(&app, 1, &head).await?;
+    // Another pull request merged meanwhile; Yulius's CI round fetched it.
+    let other = tempfile::tempdir()?;
+    let clone = other.path().join("c");
+    git(
+        other.path(),
+        &[
+            "clone",
+            "-q",
+            "--branch",
+            "dev",
+            f.origin.to_str().ok_or("path")?,
+            clone.to_str().ok_or("path")?,
+        ],
+    )?;
+    std::fs::write(clone.join("other.txt"), "other\n")?;
+    git(&clone, &["add", "-A"])?;
+    git(&clone, &["commit", "-q", "-m", "other"])?;
+    git(&clone, &["push", "-q", "origin", "HEAD:dev"])?;
+    app.ci_sync_sandbox(&app.deps.store.sandbox(&f.sandbox).await?.ok_or("s1")?)
+        .await?;
+    let task = TaskId::parse("t1")?;
+    f.h.store
+        .transition_task(
+            &task,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Working),
+            app.now(),
+        )
+        .await?;
+
+    app.merge_armed(&f.sandbox).await;
+    let state = f.wait(1, &worktree).await?;
+    assert_eq!(state["merge_armed"], true, "waits: {state}");
+    assert!(f.merges().is_empty(), "{:?}", f.merges());
+
+    f.h.store
+        .transition_task(
+            &task,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Waiting),
+            app.now(),
+        )
+        .await?;
+    app.merge_armed(&f.sandbox).await;
+    assert_ne!(
+        git(&f.origin, &["rev-parse", "feat/1-train"])?,
+        head,
+        "brought up to date once idle"
+    );
+    assert_eq!(f.wait(1, &worktree).await?["merge_armed"], true);
     Ok(())
 }
 

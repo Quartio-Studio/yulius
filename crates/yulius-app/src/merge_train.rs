@@ -11,8 +11,9 @@
 //! tree the integration branch has once every member merged. A head that conflicts is left out.
 //! Yulius CI runs once on that commit (reference `train/<numbers>`, never published on GitHub).
 //!
-//! While it runs, the members after the first are held: not brought up to date (that would only
-//! start runs the train makes useless) and not merged while behind. When it passes, the train
+//! While it runs, the members after the first (and any left out) are held: not brought up to
+//! date (that would only start runs the train makes useless), not merged on their own; the
+//! first stays in the one-by-one flow. When it passes, the train
 //! merges them in order: it brings each up to date as DLV-203 does, checks that the result has
 //! exactly the tree the train predicted, records the train's verdict at that head (published as
 //! `yulius/ci`, so GitHub's own rules are met without a new run), waits until GitHub shows the
@@ -139,10 +140,9 @@ struct LeftOut {
 pub(crate) enum Hold {
     /// Not in a train, or first in one under test: the one-by-one flow as before.
     Free,
-    /// In a train under test, not first: not brought up to date, not merged while behind.
-    Testing,
-    /// In a train that passed (the train merges it), or left out of one: the ones armed before
-    /// it go first, and it waits until the train is over.
+    /// In a train, after the first while it is tested, or any once it passed: the train brings
+    /// it up to date and merges it. Or left out of one: the ones armed before it go first, and
+    /// it waits until the train is over.
     Held,
 }
 
@@ -172,9 +172,8 @@ fn hold_of(train: Option<&Train>, task: &str) -> Hold {
     }
     match train.members.iter().position(|m| m.task == task) {
         None => Hold::Free,
-        Some(_) if train.merging => Hold::Held,
-        Some(0) => Hold::Free,
-        Some(_) => Hold::Testing,
+        Some(0) if !train.merging => Hold::Free,
+        Some(_) => Hold::Held,
     }
 }
 
@@ -299,29 +298,6 @@ impl App {
     pub(crate) fn train_note(&self, task: &TaskRecord) -> Option<String> {
         let state = self.read_trains(&task.sandbox_id);
         note_of(state.train.as_ref()?, task.id.as_str())
-    }
-
-    /// Whether a held task's branch lacks the integration branch (or that cannot be read).
-    pub(crate) async fn train_member_behind(
-        &self,
-        task: &TaskRecord,
-        sandbox: &SandboxRecord,
-    ) -> bool {
-        let Some(worktree) = task.worktree_path.as_deref() else {
-            return true;
-        };
-        let integration = delivery_profile(sandbox).integration_branch;
-        !matches!(
-            self.deps
-                .git
-                .is_ancestor(
-                    Path::new(worktree),
-                    &format!("origin/{integration}"),
-                    "HEAD"
-                )
-                .await,
-            Ok(true)
-        )
     }
 
     /// Forms `sandbox`'s merge train or advances it: the start of every [`App::merge_armed`]
@@ -1198,7 +1174,7 @@ mod tests {
         let mut train = train();
         assert_eq!(hold_of(None, "a"), Hold::Free);
         assert_eq!(hold_of(Some(&train), "a"), Hold::Free);
-        assert_eq!(hold_of(Some(&train), "b"), Hold::Testing);
+        assert_eq!(hold_of(Some(&train), "b"), Hold::Held);
         assert_eq!(
             hold_of(Some(&train), "d"),
             Hold::Held,

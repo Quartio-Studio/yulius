@@ -48,7 +48,11 @@ post-merge run already reuses a result by tree.
    by one until their agents arm again. Anything unexpected also dissolves it, and every member
    goes back to the one-by-one flow, which decides it with today's messages. The train only adds
    verdicts and a hold.
-6. **Not for every project.** Projects without Yulius CI, with rebase merges, or that promote
+6. **One pass at a time.** Passes deciding a sandbox's armed merges, the train first, take turns
+   (a per-sandbox async lock). Every CI run that ends starts one. Two at once let one merge into
+   the base while the other merged a branch it had read as up to date. GitHub refused that merge
+   as behind, and the armed merge was dropped.
+7. **Not for every project.** Projects without Yulius CI, with rebase merges, or that promote
    automatically after each merge have no trains: the last would ship the untested states in
    between.
 

@@ -421,10 +421,12 @@ impl GitPort for GitAdapter {
                 &repo,
                 &scratch,
                 &root,
-                &base,
-                &heads,
-                landing,
-                &Author::new("Yulius merge train", "merge-train@yulius.invalid"),
+                &yulius_git::TrainInput {
+                    base: &base,
+                    heads: &heads,
+                    landing,
+                    author: &Author::new("Yulius merge train", "merge-train@yulius.invalid"),
+                },
             )
         })
         .await?;

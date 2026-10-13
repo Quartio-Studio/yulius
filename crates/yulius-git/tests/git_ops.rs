@@ -7,7 +7,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use yulius_git::{
-    Author, BundleSpec, DiffStat, Git, GitError, ImportRef, MergeInto, RemovalRefusal,
+    Author, BundleSpec, DiffStat, Git, GitError, ImportRef, MergeInto, RemovalRefusal, TrainInput,
     TrainLanding, TrainStep, WorktreeRemoval, validate_branch_name,
 };
 
@@ -1002,10 +1002,12 @@ fn a_merge_train_predicts_the_trees_of_merging_one_by_one() -> TestResult {
         &repo,
         &scratch,
         &owned,
-        "dev",
-        &heads,
-        TrainLanding::Squash,
-        &author(),
+        &TrainInput {
+            base: "dev",
+            heads: &heads,
+            landing: TrainLanding::Squash,
+            author: &author(),
+        },
     )?;
     assert_eq!(build.base, fx.git.rev_parse(&repo, "dev")?);
     let [
@@ -1053,10 +1055,12 @@ fn a_merge_train_predicts_the_trees_of_merging_one_by_one() -> TestResult {
         &repo,
         &scratch,
         &owned,
-        &build.base,
-        &heads[..2],
-        TrainLanding::MergeCommit,
-        &author(),
+        &TrainInput {
+            base: &build.base,
+            heads: &heads[..2],
+            landing: TrainLanding::MergeCommit,
+            author: &author(),
+        },
     )?;
     let parents = fx.raw(&repo, &["show", "--no-patch", "--format=%P", &again.head])?;
     assert_eq!(parents.split_whitespace().count(), 2, "{parents}");

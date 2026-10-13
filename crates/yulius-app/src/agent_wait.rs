@@ -434,20 +434,13 @@ impl App {
             );
         };
         // SPEC-084 TRN-004: a merge train that holds this pull request brings it up to date and
-        // merges it itself; until then it is neither brought up to date here nor merged behind.
-        let current = match self.train_hold(task) {
-            crate::merge_train::Hold::Free => self.keep_armed_current(task, &sandbox).await,
-            crate::merge_train::Hold::Held => return Verdict::Keep(armed),
-            crate::merge_train::Hold::Testing => {
-                if self.train_member_behind(task, &sandbox).await {
-                    return Verdict::Keep(armed);
-                }
-                Current::Unchanged
-            }
-        };
+        // merges it itself.
+        if self.train_hold(task) == crate::merge_train::Hold::Held {
+            return Verdict::Keep(armed);
+        }
         // DLV-203: a branch behind its base is brought up to date first, so the run that decides
         // is on what would be merged and GitHub's up-to-date rule never refuses it.
-        match current {
+        match self.keep_armed_current(task, &sandbox).await {
             Current::Unchanged => {}
             Current::Moved(head) => {
                 return Verdict::Keep(ArmedMerge {
@@ -472,6 +465,11 @@ impl App {
             ));
         }
         if !green {
+            return Verdict::Keep(armed);
+        }
+        // Still behind its base (its agent was busy, so it was not brought up to date): it waits
+        // instead of being refused as behind and dropped (SPEC-084 TRN-011).
+        if self.behind_integration(task, &sandbox).await {
             return Verdict::Keep(armed);
         }
         let number = pr.number;
@@ -597,6 +595,30 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Whether `task`'s branch lacks the integration branch as Yulius's clone last fetched it
+    /// (every CI round fetches it); `false` when that cannot be told.
+    async fn behind_integration(
+        &self,
+        task: &TaskRecord,
+        sandbox: &crate::model::SandboxRecord,
+    ) -> bool {
+        let Some(worktree) = task.worktree_path.as_deref() else {
+            return false;
+        };
+        let integration = crate::delivery::delivery_profile(sandbox).integration_branch;
+        matches!(
+            self.deps
+                .git
+                .is_ancestor(
+                    std::path::Path::new(worktree),
+                    &format!("origin/{integration}"),
+                    "HEAD"
+                )
+                .await,
+            Ok(false)
+        )
     }
 
     /// The state `yulius wait` compares (local records only).
