@@ -58,10 +58,10 @@ the automation and applies to every task it creates.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] An automation stores a start choice through the API, validated like New task
-- [ ] Each run creates its task with the automation's start choice
-- [ ] Agents set the start choice with the automation tools
-- [ ] The automation builder offers Start now, Supertask, After a task and a rule
+- [x] An automation stores a start choice through the API, validated like New task
+- [x] Each run creates its task with the automation's start choice
+- [x] Agents set the start choice with the automation tools
+- [x] The automation builder offers Start now, Supertask, After a task and a rule
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 

@@ -4,11 +4,10 @@
 
 import { enc } from '../api.js';
 import { h, badge, iconBadge, itemCard, iconButton, openModal, toast, confirmDialog, errorToast, toggle, setChildren, placeholder, emptyState } from '../dom.js';
-import { relLong, dateTime, describeCron, utcOffset } from '../format.js';
+import { relLong, dateTime, describeCron, utcOffset, startPhrase } from '../format.js';
 import { allows } from '../status.js';
 import { href, navigate } from '../router.js';
 import { pageFrame, loader, dataTable, createButton } from './common.js';
-import { startPhrase } from './automationedit.js';
 
 // AutomationRun.state (docs/api.md "Skills, workflows, automations, MCP").
 const RUN_TONE = { scheduled: 'warn', task_created: 'ok', skipped_previous_active: '', skipped_disabled: '', failed: 'danger' };

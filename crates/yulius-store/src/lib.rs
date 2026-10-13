@@ -314,6 +314,34 @@ mod tests {
         Ok(())
     }
 
+    /// A version-17 database's automations migrate to version 18 (SPEC-078) as "start now":
+    /// none of the start choice's columns is set.
+    #[tokio::test]
+    async fn version_seventeen_automations_start_their_tasks_now()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_app::automations::AutomationStart;
+        use yulius_app::ports::store_ext::AutomationStore as _;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v17.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &MIGRATIONS[..17] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 17)?;
+            conn.execute_batch(
+                "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 1, 1, 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                 INSERT INTO automations (id, sandbox_id, name, cron, utc_offset_minutes, prompt, workflow_id, harness, enabled, created_by, created_via, created_at, last_scheduled) VALUES ('au1', 's1', 'Docs', '0 3 * * *', 120, 'p', NULL, 'claude', 1, 'u1', 'ui', 1, NULL);",
+            )?;
+        }
+        let store = SqliteStore::open(&path)?;
+        let automation = store.automation("au1").await?.ok_or("automation")?;
+        assert_eq!(automation.start, AutomationStart::Now);
+        assert_eq!(automation.name, "Docs");
+        Ok(())
+    }
+
     /// A version-5 database (the subscription pool) migrates to updates and the Jev key (ADR-18,
     /// ADM-002): the instance row keeps its values and has no saved key; at most one update run is
     /// open at a time, and a state moves only from the expected one.

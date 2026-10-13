@@ -12,7 +12,7 @@ import { href, navigate } from '../router.js';
 import { allows } from '../status.js';
 import { chainCandidates } from '../intake.js';
 import { openRuleEditor, ruleChoices, ruleFromText, ruleText } from '../ruleeditor.js';
-import { describeCron, cronValid, utcOffset, dateTime, relLong } from '../format.js';
+import { describeCron, cronValid, utcOffset, dateTime, relLong, startPhrase } from '../format.js';
 import { dataTable, notFound } from './common.js';
 
 const RECIPES = [
@@ -30,17 +30,6 @@ const TIMES = ['07:00', '08:00', '09:00', '12:00', '17:00', '20:00'];
 const MINUTES = [0, 15, 30, 45];
 const RUN_TONE = { scheduled: 'warn', task_created: 'ok', skipped_previous_active: '', skipped_disabled: '', failed: 'danger' };
 const RUN_LABEL = { scheduled: 'scheduled', task_created: 'task created', skipped_previous_active: 'skipped: previous task still active', skipped_disabled: 'skipped: disabled', failed: 'failed' };
-
-/**
- * How an automation's tasks start, in a few words for its sentence and list row (SPEC-078):
- * "supertask", "after #12", "when #12 done", or '' for start now.
- */
-export function startPhrase(a) {
-  if (a.supertask) return 'supertask';
-  if (a.after_task_id) return a.after_task_number ? `after #${a.after_task_number}` : 'after a task';
-  if (a.start_rule) return `when ${a.start_rule}`;
-  return '';
-}
 
 /** A cron expression as the builder's schedule, or null when it has another shape. */
 export function readSchedule(expr) {

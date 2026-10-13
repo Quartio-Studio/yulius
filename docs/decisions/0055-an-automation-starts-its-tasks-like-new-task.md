@@ -55,10 +55,14 @@ chain's predecessor ends once, and New task's chain refuses a predecessor that h
 - A PUT replaces the start choice like every other editable field, so clients send it back. The
   Automations page's switch does.
 - A rule written by an agent that the editor cannot show (parentheses, mixed and/or) is kept as
-  it is. Opening it in the builder starts the rule editor empty, and saving replaces it.
+  it is. Opening it in the builder starts the rule editor from one condition on the newest task, and
+  using that rule replaces it.
 - Known limits:
   - A rule names tasks by number. Deleting the newest task frees its number, and a stored rule
     then names the next task created with it. New task's creation-time guard does not apply,
     because the run's task is newer.
   - A predecessor that ends between a run's read and the chain's own check fails that one run
     with "#N has ended". The next run takes the rule path.
+  - Creating a chained task checks the sandbox's waiting rules at once, as New task does. The
+    scheduler handles automations one after the other, so a run after a rule or a task can delay
+    later automations of the same tick by that check (seconds at most).
