@@ -80,17 +80,17 @@ covered:
 | WUI-102 | A focus request records its order across all terminals of the page. A request made before the terminal showed lands only if no later request was made, or if the keyboard is on nothing (the page body). The terminal asked for last keeps the keyboard (#323). | `queued-messages.e2e.ts` |
 | WUI-103 | Notes shown again because the page or task changed (`{ context: true }`) does not take the keyboard. Opened by the person, it focuses its notepad (#310). | `notes.e2e.ts` |
 | WUI-104 | Placing a menu again keeps its list's scroll position. Only editing the filter scrolls the list back to its top (#288). | `menus.e2e.ts` |
-| WUI-105 | The task view applies only the response to its latest detail read; older ones are ignored (#316). | `queued-messages.e2e.ts` |
-| WUI-106 | A queued messages card that holds unsent text or a refusal stays when the task starts. It says the task started, keeps the text selectable, disables Queue, and can be dismissed (#324, SPEC-052 QMS-006). | `queued-messages.e2e.ts` |
-| WUI-107 | Leaving the composer revokes every object URL it created: thumbnails and files opened in a tab (#259). | `drafts.e2e.ts` |
+| WUI-105 | The task view never applies a detail answer older than one it already applied (#316). If the newest read fails, an older answer still counts. | `queued-messages.e2e.ts` |
+| WUI-106 | A queued messages card that holds unsent text or a refusal stays when the task starts (`starting` or running). It says the task started, keeps the text selectable, disables Queue, and can be dismissed (#324, SPEC-052 QMS-006). A task that ends or is archived instead takes the card away. A task that waits again before it ran gets the plain box back, without the old refusal. | `queued-messages.e2e.ts` |
+| WUI-107 | Leaving the composer revokes every object URL it created: thumbnails and files opened in a tab (#259). | `filedrop.e2e.ts` |
 
 ## Plan
 
 - [x] Open issues triaged: fixed ones closed, the rest handed to chained tasks
-- [ ] A terminal that shows late leaves the keyboard with the Editor and a later terminal (#325, #323)
-- [ ] Notes and filtered menus keep the person's place (#310, #288)
-- [ ] The task view applies only its latest detail and keeps an interrupted queued message (#316, #324)
-- [ ] Leaving the composer revokes every object URL it made (#259)
+- [x] A terminal that shows late leaves the keyboard with the Editor and a later terminal (#325, #323)
+- [x] Notes and filtered menus keep the person's place (#310, #288)
+- [x] The task view applies only its latest detail and keeps an interrupted queued message (#316, #324)
+- [x] Leaving the composer revokes every object URL it made (#259)
 - [ ] Independent review approves the head, findings fixed test-first
 - [ ] Gates green, spec evidence and changes log written, issues closed
 
@@ -129,4 +129,12 @@ covered:
 - **#323 uses a page-wide request order, not the element that asked.** Remembering the element
   that asked for the keyboard broke the Shell panel, which rebuilds its tab strip after asking
   (SPEC-052 review). A counter shared by every terminal of the page does not depend on the DOM.
+- **Two narrow focus gaps from the review stay as they are**; #323's acceptance criteria are met
+  without them.
+  - The lazy terminal wrapper (`terminal.js`) passes a focus asked for before the terminal core
+    loaded only when the core arrives, in the order the views were created. This matters only on
+    the first load of the core, which is preloaded after sign-in.
+  - A click straight into another terminal is not a focus request, so a task terminal asked for
+    earlier can still take the keyboard from it when it shows. This was the behaviour before too.
+  - Closing either gap means changing focus rules shared by every terminal, beyond this fix.
 - No ADR: nothing lasting about the architecture is decided.
