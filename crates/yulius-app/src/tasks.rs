@@ -123,6 +123,15 @@ impl App {
             owner: UserRef {
                 login: self.login_of(&task.owner).await,
             },
+            control_request: match store.control_request(&task.id).await? {
+                Some(request) => Some(yulius_contracts::api::tasks::ControlRequestView {
+                    by: UserRef {
+                        login: self.login_of(&request.by).await,
+                    },
+                    at: rfc3339(request.at),
+                }),
+                None => None,
+            },
             created_at: rfc3339(task.created_at),
             updated_at: rfc3339(task.updated_at),
             steps: progress(&steps),

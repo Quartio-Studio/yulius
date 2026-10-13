@@ -53,6 +53,7 @@ pub mod shells;
 pub mod skills;
 pub mod status;
 pub mod supervisor;
+pub mod task_control;
 pub mod task_prompt;
 pub mod tasks;
 pub mod terminal;

@@ -6,7 +6,8 @@ use axum::http::Method;
 use serde_json::json;
 use yulius_app::auth::AuthContext;
 use yulius_app::model::TaskRecord;
-use yulius_app::ports::store::{TaskStore as _, UserStore as _};
+use yulius_app::ports::store::{PermissionStore as _, TaskStore as _, UserStore as _};
+use yulius_app::ports::store_ext::AutomationStore as _;
 use yulius_domain::ids::{TaskId, UserId};
 use yulius_domain::task::TaskStatus;
 
@@ -217,5 +218,233 @@ async fn an_agent_changes_only_its_persons_tasks() -> TestResult {
     }
     let task = f.h.store.task(&f.task.id).await?.ok_or("task")?;
     assert_eq!(task, f.task, "nothing changed");
+    Ok(())
+}
+
+async fn control(
+    f: &Fixture,
+    method: Method,
+    rest: &str,
+    who: &Creds,
+) -> Result<crate::support::Resp, Box<dyn std::error::Error>> {
+    call(
+        &f.h.router,
+        method,
+        &format!("/api/tasks/{}/control-request{rest}", id_of(f)),
+        None,
+        who,
+    )
+    .await
+}
+
+/// How many audit entries of task `t1` record `action`.
+async fn audited(h: &Harness, action: &str) -> Result<usize, Box<dyn std::error::Error>> {
+    Ok(h.store
+        .automation_audit("t1", 50)
+        .await?
+        .iter()
+        .filter(|e| e.action == action)
+        .count())
+}
+
+/// Notices the task's terminal showed since `watch` subscribed.
+fn notices(watch: &mut tokio::sync::broadcast::Receiver<yulius_app::hub::HubFrame>) -> Vec<String> {
+    let mut seen = Vec::new();
+    while let Ok(frame) = watch.try_recv() {
+        if let yulius_app::hub::HubFrame::Notice(text) = frame {
+            seen.push(text);
+        }
+    }
+    seen
+}
+
+/// R4, R6, AC2, AC4: Bob asks, a second person waits for none, Alice declines; Bob asks again
+/// and Alice hands over: Bob owns the task, its Git acts as Bob, and Alice now only watches.
+#[tokio::test]
+async fn the_owner_hands_control_over_on_request() -> TestResult {
+    let f = fixture().await?;
+    let carol = seed_github_user(&f.h, "u-c", "carol").await?;
+    f.h.github.set_perm("carol", "acme/repo", perms("write"));
+    let mut watch = f.h.app.runtime(&f.task.id).hub.watch();
+
+    // The owner has nobody to ask; nothing to accept yet.
+    assert_eq!(control(&f, Method::POST, "", &f.alice).await?.status, 409);
+    assert_eq!(
+        control(&f, Method::POST, "/accept", &f.alice).await?.status,
+        409
+    );
+
+    let asked = control(&f, Method::POST, "", &f.bob).await?;
+    assert_eq!(asked.status, 200, "{}", asked.body);
+    assert_eq!(asked.body["control_request"]["by"]["login"], "bob");
+    assert_eq!(asked.body["owner"]["login"], "alice");
+    // Asking again is harmless; Carol waits for nobody, and is told who asked.
+    assert_eq!(control(&f, Method::POST, "", &f.bob).await?.status, 200);
+    let second = control(&f, Method::POST, "", &carol).await?;
+    assert_eq!(second.status, 409, "{}", second.body);
+    assert!(second.body.to_string().contains("@bob"), "{}", second.body);
+    // Only the owner hands over; neither Bob nor Carol can drop or accept another's request.
+    assert_eq!(
+        control(&f, Method::POST, "/accept", &f.bob).await?.status,
+        403
+    );
+    assert_eq!(control(&f, Method::DELETE, "", &carol).await?.status, 403);
+
+    let declined = control(&f, Method::DELETE, "", &f.alice).await?;
+    assert_eq!(declined.status, 200, "{}", declined.body);
+    assert_eq!(declined.body["control_request"], serde_json::Value::Null);
+    assert_eq!(audited(&f.h, "task.control_declined").await?, 1);
+
+    assert_eq!(control(&f, Method::POST, "", &f.bob).await?.status, 200);
+    let passed = control(&f, Method::POST, "/accept", &f.alice).await?;
+    assert_eq!(passed.status, 200, "{}", passed.body);
+    assert_eq!(passed.body["owner"]["login"], "bob");
+    assert_eq!(passed.body["created_by"]["login"], "alice");
+    assert_eq!(passed.body["control_request"], serde_json::Value::Null);
+    assert_eq!(git_credential(&f.h, "tt").await?, "token-bob");
+    assert_eq!(audited(&f.h, "task.control_requested").await?, 2);
+    assert_eq!(audited(&f.h, "task.control_passed").await?, 1);
+    let said = notices(&mut watch);
+    assert!(
+        said.iter()
+            .any(|n| n.contains("from @alice to @bob") && n.contains("acts on GitHub as @bob")),
+        "{said:?}"
+    );
+
+    // Alice is now refused like anyone else; Bob writes.
+    let stop = format!("/api/tasks/{}/stop", id_of(&f));
+    let refused = call(&f.h.router, Method::POST, &stop, None, &f.alice).await?;
+    assert_eq!(refused.status, 403, "{}", refused.body);
+    assert!(
+        refused.body.to_string().contains("@bob"),
+        "{}",
+        refused.body
+    );
+    let (alice, bob) = (auth(&f.h, "u-a").await?, auth(&f.h, "u-b").await?);
+    assert!(!f.h.app.can_work(&alice, &f.task.id).await);
+    assert!(f.h.app.can_work(&bob, &f.task.id).await);
+    let stopped = call(&f.h.router, Method::POST, &stop, None, &f.bob).await?;
+    assert_eq!(stopped.status, 200, "{}", stopped.body);
+    Ok(())
+}
+
+/// R4: the person who asked may withdraw; a request then waits no more.
+#[tokio::test]
+async fn the_requester_withdraws() -> TestResult {
+    let f = fixture().await?;
+    assert_eq!(control(&f, Method::DELETE, "", &f.bob).await?.status, 409);
+    assert_eq!(control(&f, Method::POST, "", &f.bob).await?.status, 200);
+    let withdrawn = control(&f, Method::DELETE, "", &f.bob).await?;
+    assert_eq!(withdrawn.status, 200, "{}", withdrawn.body);
+    assert_eq!(withdrawn.body["control_request"], serde_json::Value::Null);
+    assert_eq!(audited(&f.h, "task.control_withdrawn").await?, 1);
+    assert_eq!(
+        control(&f, Method::POST, "/accept", &f.alice).await?.status,
+        409
+    );
+    Ok(())
+}
+
+/// R5, AC5: with the owner gone, a request passes control at once.
+#[tokio::test]
+async fn an_absent_owners_task_passes_at_once() -> TestResult {
+    let f = fixture().await?;
+    f.h.store
+        .update_user_flags(&UserId::parse("u-a")?, Some(Some(f.h.app.now())), None)
+        .await?;
+    let taken = control(&f, Method::POST, "", &f.bob).await?;
+    assert_eq!(taken.status, 200, "{}", taken.body);
+    assert_eq!(taken.body["owner"]["login"], "bob");
+    assert_eq!(git_credential(&f.h, "tt").await?, "token-bob");
+
+    // An owner who lost write access to the project counts as absent too.
+    let g = fixture().await?;
+    g.h.github.set_perm("alice", "acme/repo", perms("read"));
+    g.h.store
+        .put_access(
+            &UserId::parse("u-a")?,
+            &g.task.sandbox_id,
+            yulius_domain::permission::AccessLevel::Read,
+            g.h.app.now(),
+        )
+        .await?;
+    let taken = control(&g, Method::POST, "", &g.bob).await?;
+    assert_eq!(taken.status, 200, "{}", taken.body);
+    assert_eq!(taken.body["owner"]["login"], "bob");
+    Ok(())
+}
+
+/// R4, AC6: a hand-over to someone who can no longer work in the project is refused and drops
+/// their request; a person who may only read cannot ask.
+#[tokio::test]
+async fn control_passes_only_to_someone_who_may_work() -> TestResult {
+    let f = fixture().await?;
+    let dave = seed_github_user(&f.h, "u-d", "dave").await?;
+    f.h.github.set_perm("dave", "acme/repo", perms("read"));
+    assert_eq!(control(&f, Method::POST, "", &dave).await?.status, 403);
+
+    assert_eq!(control(&f, Method::POST, "", &f.bob).await?.status, 200);
+    f.h.github.set_perm("bob", "acme/repo", perms("read"));
+    f.h.store
+        .put_access(
+            &UserId::parse("u-b")?,
+            &f.task.sandbox_id,
+            yulius_domain::permission::AccessLevel::Read,
+            f.h.app.now(),
+        )
+        .await?;
+    let refused = control(&f, Method::POST, "/accept", &f.alice).await?;
+    assert_eq!(refused.status, 409, "{}", refused.body);
+    assert!(
+        refused.body.to_string().contains("@bob"),
+        "{}",
+        refused.body
+    );
+    let task = f.h.store.task(&f.task.id).await?.ok_or("task")?;
+    assert_eq!(task.owner.as_str(), "u-a");
+    assert_eq!(f.h.store.control_request(&f.task.id).await?, None);
+    Ok(())
+}
+
+/// R6, AC2: after a hand-over, the task's worktree commits as the new owner.
+#[tokio::test]
+async fn a_hand_over_moves_the_commit_identity() -> TestResult {
+    let h = crate::support::harness_with(crate::support::HarnessOptions {
+        git: Some(std::sync::Arc::new(yulius::wiring::git::GitAdapter::new(
+            "git",
+        ))),
+        ..crate::support::HarnessOptions::default()
+    })?;
+    let alice = seed_github_user(&h, "u-a", "alice").await?;
+    let bob = seed_github_user(&h, "u-b", "bob").await?;
+    seed_sandbox(&h, "s1", "repo", "u-a").await?;
+    h.github.set_perm("alice", "acme/repo", perms("write"));
+    h.github.set_perm("bob", "acme/repo", perms("write"));
+    let worktree = tempfile::tempdir()?;
+    crate::support::repos::git(worktree.path(), &["init", "-q"])?;
+    seed_task(
+        &h,
+        "t1",
+        "s1",
+        "u-a",
+        TaskStatus::Closed,
+        Some(worktree.path()),
+    )
+    .await?;
+    for (rest, who) in [("", &bob), ("/accept", &alice)] {
+        let r = call(
+            &h.router,
+            Method::POST,
+            &format!("/api/tasks/t1/control-request{rest}"),
+            None,
+            who,
+        )
+        .await?;
+        assert_eq!(r.status, 200, "{rest}: {}", r.body);
+    }
+    let config =
+        |key: &str| crate::support::repos::git(worktree.path(), &["config", "--worktree", key]);
+    assert_eq!(config("user.name")?.trim(), "BOB");
+    assert_eq!(config("user.email")?.trim(), "bob@users.noreply.github.com");
     Ok(())
 }

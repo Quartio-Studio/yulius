@@ -618,7 +618,11 @@ impl App {
 
     /// Commits in `task`'s worktree are its owner's (SPEC-070): their name and the no-reply address GitHub
     /// links to their account (F 2026-10-11, [`crate::projects::identity`]).
-    async fn set_task_identity(&self, worktree: &Path, task: &TaskRecord) -> AppResult<()> {
+    pub(crate) async fn set_task_identity(
+        &self,
+        worktree: &Path,
+        task: &TaskRecord,
+    ) -> AppResult<()> {
         let owner = self.deps.store.user(&task.owner).await?;
         let (name, email) = crate::projects::commit_identity(owner.as_ref());
         self.deps.git.set_identity(worktree, &name, &email).await
