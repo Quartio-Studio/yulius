@@ -66,9 +66,18 @@ impl App {
                         .await
                         .is_ok_and(|report| report.freed > 0 || report.worktrees > 0);
                 if !freed {
-                    return Err(AppError::Conflict(reason));
+                    return Err(AppError::Conflict(
+                        self.naming_consumers(sandbox, reason).await,
+                    ));
                 }
-                isolation.prepare(&request).await?
+                match isolation.prepare(&request).await {
+                    Err(AppError::Conflict(reason)) => {
+                        return Err(AppError::Conflict(
+                            self.naming_consumers(sandbox, reason).await,
+                        ));
+                    }
+                    other => other?,
+                }
             }
             other => other?,
         };
@@ -81,6 +90,19 @@ impl App {
                 },
             )
         }))
+    }
+}
+
+impl App {
+    /// A quota refusal with the sandbox's largest consumers, so people see whose space it is
+    /// (SPEC-059 DSK-202).
+    async fn naming_consumers(&self, sandbox: &SandboxRecord, reason: String) -> String {
+        let consumers = self.disk_consumers(sandbox).await;
+        if consumers.is_empty() {
+            reason
+        } else {
+            format!("{reason} (largest: {consumers})")
+        }
     }
 }
 

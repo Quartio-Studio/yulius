@@ -28,6 +28,7 @@
 //! Restart: runs recorded as running lose their executor; their hosts are terminated and they
 //! go back to the queue (a run is repeatable).
 
+mod disk_wait;
 mod exec;
 pub mod hygiene;
 mod tools;
@@ -226,6 +227,8 @@ pub struct CiState {
     wake: Notify,
     started: AtomicBool,
     last_prune: Mutex<i64>,
+    /// Sandboxes whose runs wait for disk (SPEC-059 CI-301).
+    disk_waits: Mutex<HashMap<String, disk_wait::DiskWait>>,
 }
 
 fn short(sha: &str) -> &str {
@@ -249,12 +252,17 @@ fn busy_in(busy: &HashSet<String>, sandbox: &str) -> bool {
     })
 }
 
-/// A free lane of `sandbox` (and marks it), unless the sandbox is claimed or every lane runs.
-fn take_lane(busy: &mut HashSet<String>, sandbox: &str, lanes: u32) -> Option<u32> {
+/// A free lane of `sandbox`, unless the sandbox is claimed or every lane runs.
+fn free_lane(busy: &HashSet<String>, sandbox: &str, lanes: u32) -> Option<u32> {
     if busy.contains(sandbox) {
         return None;
     }
-    let lane = (0..lanes.max(1)).find(|lane| !busy.contains(&format!("{sandbox}/{lane}")))?;
+    (0..lanes.max(1)).find(|lane| !busy.contains(&format!("{sandbox}/{lane}")))
+}
+
+/// [`free_lane`], and marks it.
+fn take_lane(busy: &mut HashSet<String>, sandbox: &str, lanes: u32) -> Option<u32> {
+    let lane = free_lane(busy, sandbox, lanes)?;
     busy.insert(format!("{sandbox}/{lane}"));
     Some(lane)
 }
@@ -1020,6 +1028,16 @@ impl App {
         };
         let lanes = self.config.ci.lanes.max(1);
         for run in active.into_iter().filter(|r| r.state == RunState::Queued) {
+            // Over the disk quota a run waits in the queue instead of erroring (CI-301); asked
+            // only when a lane is free.
+            let lane_free = self
+                .ci
+                .busy
+                .lock()
+                .is_ok_and(|busy| free_lane(&busy, run.sandbox_id.as_str(), lanes).is_some());
+            if !lane_free || !self.ci_disk_room(&run.sandbox_id).await {
+                continue;
+            }
             let sandbox = run.sandbox_id.as_str().to_owned();
             let (tx, rx) = watch::channel(None);
             let lane = {
@@ -1063,7 +1081,12 @@ impl App {
                     }
                 }
             }
-            match self.deps.store.requeue_ci_run(&run.id).await {
+            match self
+                .deps
+                .store
+                .requeue_ci_run(&run.id, "[yulius] queued again after a restart of Yulius\n")
+                .await
+            {
                 Ok(true) => tracing::info!(run = %run.id, "CI run queued again after a restart"),
                 Ok(false) => {}
                 Err(err) => {
