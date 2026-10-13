@@ -64,6 +64,7 @@ const ICONS = {
   globe: [['circle', { cx: 12, cy: 12, r: 9 }], ['ellipse', { cx: 12, cy: 12, rx: 4, ry: 9 }], ['path', { d: 'M3 12h18' }]],
   code: [['path', { d: 'M8 6l-6 6 6 6M16 6l6 6-6 6' }]],
   terminal: [['rect', { x: 2.5, y: 4, width: 19, height: 16, rx: 2 }], ['path', { d: 'M6.5 9l3.5 3-3.5 3M12 15.5h5' }]],
+  note: [['rect', { x: 4.5, y: 3, width: 15, height: 18, rx: 2 }], ['path', { d: 'M8 8h8M8 12h8M8 16h5' }]],
   // The Cockpit (SPEC-021): a dial and its needle.
   gauge: [['path', { d: 'M3.5 17a8.5 8.5 0 1 1 17 0' }], ['path', { d: 'M12 17l4.5-5.5' }], ['circle', { cx: 12, cy: 17, r: 1.2 }]],
   mail: [['rect', { x: 3, y: 5, width: 18, height: 14, rx: 2 }], ['path', { d: 'M3.5 6.5l8.5 6.5 8.5-6.5' }]],
