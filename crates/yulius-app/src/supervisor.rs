@@ -448,6 +448,9 @@ pub fn branch_for(number: u32, title: &str) -> String {
     let slug = slug.trim_end_matches('-');
     if slug.is_empty() {
         format!("feat/{number}-task")
+    } else if !slug.bytes().any(|b| b.is_ascii_lowercase()) {
+        // The branch policy wants a word after the number (SPEC-069).
+        format!("feat/{number}-task-{slug}")
     } else {
         format!("feat/{number}-{slug}")
     }
@@ -3119,5 +3122,18 @@ mod tests {
         assert_eq!(branch_for(4, "  ***  "), "feat/4-task");
         assert!(branch_for(5, &"x".repeat(200)).len() <= 50);
         assert_eq!(branch_for(6, "Ünïcödé ąę"), "feat/6-n-c-d");
+        // SPEC-069 BPL-006: the branch policy wants a letter after the number.
+        assert_eq!(branch_for(7, "2026 / 42"), "feat/7-task-2026-42");
+        let policy = yulius_domain::branch_policy::BranchPolicy::standard();
+        for title in [
+            "Make me an online store!",
+            "  ***  ",
+            "2026",
+            &"x".repeat(200),
+            "Ünïcödé ąę",
+        ] {
+            let branch = branch_for(9, title);
+            assert_eq!(policy.branch_type(&branch), Some("feat"), "{branch}");
+        }
     }
 }

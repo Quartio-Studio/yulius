@@ -44,6 +44,7 @@ use yulius_contracts::api::git::{
 use yulius_contracts::api::sandboxes::{
     Environment as EnvironmentView, Profile, Sandbox, UpdateSandbox,
 };
+use yulius_domain::branch_policy::{self, BranchPolicy, PullFacts};
 use yulius_domain::delivery::{
     self as dlv, ChecksState, DeliveryAction, DeliveryError, DeliveryFacts, DeliveryProfile,
     DeliveryStage, Environment, EnvironmentEvidence, Initiator, MergeMethod, NextAction, PrState,
@@ -489,6 +490,15 @@ fn pull_view(pull: &GhPull, checks: &str) -> PullView {
     }
 }
 
+fn pull_facts(pull: &GhPull) -> PullFacts<'_> {
+    PullFacts {
+        title: &pull.title,
+        head: &pull.head,
+        base: &pull.base,
+        from_fork: pull.from_fork,
+    }
+}
+
 fn is_open(pull: &GhPull) -> bool {
     !pull.merged && pull.state == "open"
 }
@@ -590,13 +600,32 @@ fn conventional_prefix(subject: &str) -> Option<&str> {
 /// conventional title itself — with the type and scope of the branch's oldest conventional
 /// commit, so repositories that require conventional titles accept it ("Prepare this
 /// repository for Yulius" → "docs: prepare this repository for Yulius", F 2026-10-11).
-/// `subjects` are the branch's commit subjects, newest first.
-fn default_pr_title(task_title: &str, subjects: &[String]) -> String {
+/// `subjects` are the branch's commit subjects, newest first. Under an enforced branch `policy`
+/// only its types count, and without such a commit the branch's own type prefixes the title
+/// (SPEC-069 BPL-006); the caller clips it to the policy's length.
+fn default_pr_title(
+    task_title: &str,
+    subjects: &[String],
+    branch: &str,
+    policy: &BranchPolicy,
+) -> String {
     let title = task_title.trim();
-    if conventional_prefix(title).is_some() {
+    let head = |subject: &str| -> Option<String> {
+        if policy.is_enforced() {
+            policy.conventional_head(subject.trim()).map(str::to_owned)
+        } else {
+            conventional_prefix(subject).map(str::to_owned)
+        }
+    };
+    if head(title).is_some() {
         return title.to_owned();
     }
-    let Some(prefix) = subjects.iter().rev().find_map(|s| conventional_prefix(s)) else {
+    let Some(prefix) = subjects
+        .iter()
+        .rev()
+        .find_map(|s| head(s))
+        .or_else(|| policy.branch_type(branch).map(str::to_owned))
+    else {
         return title.to_owned();
     };
     // "Prepare …" reads "prepare …" after the prefix; an acronym ("API …") keeps its case.
@@ -610,6 +639,14 @@ fn default_pr_title(task_title: &str, subjects: &[String]) -> String {
         }
         Some(c) => format!("{prefix}: {c}{rest}"),
         None => title.to_owned(),
+    }
+}
+
+/// `text` when it has at most `max` characters, else its first `max - 1` and "…".
+fn clip_title(text: &str, max: usize) -> String {
+    match text.char_indices().nth(max) {
+        Some(_) => clip_chars(text, max.saturating_sub(1)),
+        None => text.to_owned(),
     }
 }
 
@@ -1845,6 +1882,7 @@ impl App {
             .git
             .push(Path::new(&worktree), &branch, &branch, token)
             .await?;
+        let (policy, _) = self.dlv_branch_policy(sandbox, profile).await;
         let title = match title.map(str::trim).filter(|t| !t.is_empty()) {
             Some(title) => title.to_owned(),
             None => {
@@ -1856,10 +1894,15 @@ impl App {
                     .await
                     .map(|commits| commits.into_iter().map(|c| c.subject).collect())
                     .unwrap_or_default();
-                default_pr_title(&task.title, &subjects)
+                default_pr_title(&task.title, &subjects, &branch, &policy)
             }
         }
         .replace(['\n', '\r'], " ");
+        let max_title = if policy.is_enforced() {
+            branch_policy::MAX_TITLE_CHARS
+        } else {
+            MAX_PR_TITLE_CHARS
+        };
         let pull = self
             .deps
             .github
@@ -1870,7 +1913,7 @@ impl App {
                 &NewPull {
                     head: branch.clone(),
                     base: profile.integration_branch.clone(),
-                    title: clip_chars(&title, MAX_PR_TITLE_CHARS),
+                    title: clip_title(&title, max_title),
                     body: pull_request_body(
                         &format!(
                             "Delivered with Yulius task #{}: {}/s/{}/t/{}",
@@ -2439,6 +2482,66 @@ impl App {
         self.dlv_merge(ctx, task, &token).await
     }
 
+    /// The branch policy of `yulius.toml` at the tip of the integration branch in the sandbox
+    /// clone, so a pull request cannot relax the rules it is checked against (SPEC-069 BPL-003):
+    /// the standard preset without the file, and when it cannot be read or is invalid — then with
+    /// the problem, for the refusal to say why.
+    pub(crate) async fn dlv_branch_policy(
+        &self,
+        sandbox: &SandboxRecord,
+        profile: &DeliveryProfile,
+    ) -> (BranchPolicy, Option<String>) {
+        let repo = self.sandbox_repo(&sandbox.id);
+        let rev = format!("origin/{}", profile.integration_branch);
+        let problem = match self.deps.git.show_file(&repo, &rev, "yulius.toml").await {
+            Ok(None) => return (BranchPolicy::standard(), None),
+            Ok(Some(text)) => match spec_format::parse_yulius_toml_branch_policy(&text) {
+                Ok(policy) => return (policy, None),
+                Err(err) => err.to_string(),
+            },
+            Err(err) => format!(
+                "yulius.toml at `{rev}` can't be read: {}",
+                err.public_message()
+            ),
+        };
+        tracing::warn!(
+            sandbox = %sandbox.slug,
+            problem = %problem,
+            "the branch policy can't be read; the standard preset applies"
+        );
+        (BranchPolicy::standard(), Some(problem))
+    }
+
+    /// Refuses pull request `number` when the project's branch policy does not accept it, with
+    /// the rule in words and how to fix it (SPEC-069 BPL-004).
+    pub(crate) async fn dlv_check_policy(
+        &self,
+        sandbox: &SandboxRecord,
+        profile: &DeliveryProfile,
+        number: u64,
+        pull: &PullFacts<'_>,
+    ) -> AppResult<()> {
+        let (policy, problem) = self.dlv_branch_policy(sandbox, profile).await;
+        policy
+            .check(pull, &profile.integration_branch, &profile.production_branch)
+            .map_err(|violation| {
+                let fix = if violation.is_title() {
+                    format!(
+                        "edit the title on GitHub (`gh pr edit {number} --title \"…\"`), then merge again"
+                    )
+                } else {
+                    "deliver the work from a branch and into a base the policy accepts".to_owned()
+                };
+                // A policy that can't be read is the standard one (fail closed); say so.
+                let fallback = problem.map_or_else(String::new, |problem| {
+                    format!(" (the standard rules apply because the project's policy can't be used: {problem})")
+                });
+                AppError::Conflict(format!(
+                    "the branch policy refuses pull request #{number}: {violation}{fallback}. To fix it, {fix}"
+                ))
+            })
+    }
+
     /// Merges `task`'s pull request with `token` (see [`App::merge_task_pr`]).
     async fn dlv_merge(
         &self,
@@ -2463,6 +2566,8 @@ impl App {
             .pr
             .clone()
             .ok_or_else(|| AppError::Conflict("the pull request cannot be read".into()))?;
+        self.dlv_check_policy(&sandbox, &profile, pull.number, &pull_facts(&pull))
+            .await?;
         // GitHub's own refusal ("required status checks are expected") reads like a missing
         // permission; say what it means and what to do (F 2026-10-11).
         if pull.behind {
@@ -2743,7 +2848,9 @@ impl App {
                     .await?
                     .into_iter()
                     .find(|p| {
+                        // A fork's `dev` is never this repository's promotion (SPEC-069).
                         is_open(p)
+                            && !p.from_fork
                             && p.head == profile.integration_branch
                             && p.base == profile.production_branch
                     });
@@ -2768,8 +2875,9 @@ impl App {
                                 &NewPull {
                                     head: profile.integration_branch.clone(),
                                     base: profile.production_branch.clone(),
+                                    // The branch policy's release title (SPEC-069 BPL-005).
                                     title: format!(
-                                        "Promote {} to {}",
+                                        "release: promote {} to {}",
                                         profile.integration_branch, profile.production_branch
                                     ),
                                     body: clip_bytes(&body, MAX_PR_BODY_BYTES).to_owned(),
@@ -2800,6 +2908,8 @@ impl App {
                         ));
                     }
                     Some(pull) => {
+                        self.dlv_check_policy(sandbox, profile, pull.number, &pull_facts(&pull))
+                            .await?;
                         if profile.require_checks {
                             let report = github.checks(token, owner, name, &pull.head_sha).await?;
                             match domain_checks(report.state) {
@@ -3688,28 +3798,30 @@ mod tests {
     #[test]
     fn pull_requests_get_a_conventional_title_from_the_branch() {
         let subjects = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        // Without a branch policy, any conventional-looking prefix counts.
+        let none = BranchPolicy::none();
+        let title =
+            |task: &str, list: &[&str]| default_pr_title(task, &subjects(list), "topic", &none);
         assert_eq!(
-            default_pr_title(
+            title(
                 "Prepare this repository for Yulius",
-                &subjects(&["docs: fix links", "docs: prepare the repository for Yulius"])
+                &["docs: fix links", "docs: prepare the repository for Yulius"]
             ),
             "docs: prepare this repository for Yulius"
         );
         assert_eq!(
-            default_pr_title(
-                "API rate limits",
-                &subjects(&["fix(api)!: limit per token"])
-            ),
+            title("API rate limits", &["fix(api)!: limit per token"]),
             "fix(api)!: API rate limits"
         );
         assert_eq!(
-            default_pr_title("feat(ui): dark mode", &subjects(&["wip"])),
+            title("feat(ui): dark mode", &["wip"]),
             "feat(ui): dark mode"
         );
         assert_eq!(
-            default_pr_title("Add search", &subjects(&["wip", "Merge branch 'dev'"])),
+            title("Add search", &["wip", "Merge branch 'dev'"]),
             "Add search"
         );
+        assert_eq!(title("Tidy", &["wip: x"]), "wip: tidy");
         assert_eq!(conventional_prefix("Note: not a type"), None);
         assert_eq!(conventional_prefix("feat(: broken"), None);
         assert_eq!(conventional_prefix("chore: "), None);
@@ -3718,6 +3830,76 @@ mod tests {
     use super::*;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// SPEC-069 BPL-006: the titles Yulius generates for task pull requests pass the policy.
+    #[test]
+    fn generated_titles_pass_the_policy() {
+        let policy = BranchPolicy::standard();
+        let subjects = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        let generated = |task: &str, list: &[&str], branch: &str| {
+            clip_title(
+                &default_pr_title(task, &subjects(list), branch, &policy),
+                branch_policy::MAX_TITLE_CHARS,
+            )
+        };
+        let long = format!(
+            "Fix #223: Yulius's merge gate enforces the branch policy {}",
+            "and more ".repeat(12)
+        );
+        for (task, list, branch, expected) in [
+            (
+                "Checkout API",
+                &["Add feature", "Spec"][..],
+                "feat/1-checkout-api",
+                Some("feat: checkout API"),
+            ),
+            (
+                "Tidy",
+                &["wip: x", "docs(readme): tidy"][..],
+                "feat/2-tidy",
+                Some("docs(readme): tidy"),
+            ),
+            (
+                "Fix #223: the gate",
+                &["Merge branch 'dev'"][..],
+                "feat/3-fix",
+                Some("feat: fix #223: the gate"),
+            ),
+            (
+                "fix(ci): retry",
+                &[][..],
+                "feat/4-retry",
+                Some("fix(ci): retry"),
+            ),
+            (
+                long.as_str(),
+                &["fix(delivery): gate"][..],
+                "feat/59-fix-223",
+                None,
+            ),
+        ] {
+            let title = generated(task, list, branch);
+            if let Some(expected) = expected {
+                assert_eq!(title, expected);
+            }
+            assert_eq!(
+                policy.check(
+                    &PullFacts {
+                        title: &title,
+                        head: branch,
+                        base: "dev",
+                        from_fork: false
+                    },
+                    "dev",
+                    "main"
+                ),
+                Ok(()),
+                "{title}"
+            );
+        }
+        assert_eq!(clip_title("abcdef", 6), "abcdef");
+        assert_eq!(clip_title("abcdefg", 6), "abcde…");
+    }
 
     #[test]
     fn presets_round_trip_through_the_contract() -> TestResult {

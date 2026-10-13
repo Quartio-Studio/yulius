@@ -123,6 +123,15 @@ pub(crate) struct WireRef {
     #[serde(rename = "ref")]
     name: String,
     sha: String,
+    /// `null` when the head's repository (a fork) was deleted.
+    #[serde(default)]
+    repo: Option<WireRefRepo>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireRefRepo {
+    #[serde(default)]
+    id: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -159,6 +168,12 @@ impl From<WirePull> for PullRequest {
         } else {
             PullState::Closed
         };
+        let cross_repository = match (&pull.head.repo, &pull.base.repo) {
+            (Some(head), Some(base)) => head.id != base.id,
+            // Fixtures without repositories describe this repository's branches.
+            (None, None) => false,
+            _ => true,
+        };
         Self {
             number: pull.number,
             url: pull.html_url,
@@ -171,6 +186,7 @@ impl From<WirePull> for PullRequest {
             draft: pull.draft.unwrap_or(false),
             mergeable: pull.mergeable,
             behind: pull.mergeable_state.as_deref() == Some("behind"),
+            cross_repository,
             merge_commit_sha: if merged { pull.merge_commit_sha } else { None },
         }
     }
@@ -317,6 +333,24 @@ mod tests {
         };
         assert!(pull("behind")?.behind);
         assert!(!pull("clean")?.behind);
+        Ok(())
+    }
+
+    /// SPEC-069: a head in another repository (a fork, or a deleted one) is marked.
+    #[test]
+    fn a_head_from_another_repository_is_marked() -> Result<(), serde_json::Error> {
+        let pull = |head_repo: serde_json::Value| {
+            serde_json::from_value::<WirePull>(serde_json::json!({
+                "number": 7,
+                "state": "open",
+                "head": {"ref": "dev", "sha": "h", "repo": head_repo},
+                "base": {"ref": "main", "sha": "b", "repo": {"id": 1}},
+            }))
+            .map(PullRequest::from)
+        };
+        assert!(!pull(serde_json::json!({"id": 1}))?.cross_repository);
+        assert!(pull(serde_json::json!({"id": 2}))?.cross_repository);
+        assert!(pull(serde_json::Value::Null)?.cross_repository);
         Ok(())
     }
 
