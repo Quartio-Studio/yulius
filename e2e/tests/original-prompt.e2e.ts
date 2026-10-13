@@ -1,6 +1,6 @@
-import { test } from '@e2e-dev/web';
+import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, mock, mockReady } from './support.ts';
 
 failOnPageErrors();
 
@@ -48,4 +48,41 @@ test('the sidebar menu opens it too, and a failed load says why', async ({ app, 
   await screen.getByRole('menuitem', 'See the original prompt').click();
   const dialog = screen.getByRole('dialog', 'Original prompt · #12');
   await expect(dialog).toHaveText(/The mock server failed on purpose/);
+});
+
+/** Changes a mock task as the server would announce it. */
+const touchTask = (browser: Browser, number: number, changes: Record<string, unknown>) =>
+  browser.evaluate(([n, c]) => (window as unknown as WithMock).__yuliusMock.touchTask('sb_studio', n, c), [number, changes] as const);
+type WithMock = { __yuliusMock: { touchTask: (sandbox: string, number: number, changes: unknown) => void } };
+
+// #303: a prompt is shown as written, and only the task's own attachment folders are served.
+test('a prompt starting with --- is text, and files outside the task’s folders are not served', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await mockReady(browser);
+  const attachments = '/srv/yulius/sandboxes/sb_studio/attachments';
+  await touchTask(browser, 12, {
+    prompt: [
+      '---', 'title: not properties', '---', 'Body of the prompt', '',
+      `@${attachments}/drafts/usr_mkarp/own.png`,
+      `@${attachments}/tasks/tsk_studio_12/dropped.png`,
+      `@${attachments}/drafts/usr_other/theirs.png`,
+      `@${attachments}/drafts/usr_mkarp/../usr_other/climb.png`,
+      `@${attachments}/tasks/tsk_studio_3/other-task.png`,
+    ].join('\n'),
+  });
+
+  await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
+  await screen.getByRole('menuitem', 'See the original prompt').click();
+  const dialog = screen.getByRole('dialog', 'Original prompt · #12');
+  await expect(dialog).toHaveText(/title: not properties\s*Body of the prompt/);
+  // Not frontmatter: no property named title.
+  await expect(dialog.getByRole('textbox', 'title')).toBeHidden();
+
+  const files = dialog.getByRole('list', 'Attached files');
+  await expect(files.getByRole('img', 'own.png')).toBeVisible();
+  await expect(files.getByRole('img', 'dropped.png')).toBeVisible();
+  for (const name of ['theirs.png', 'climb.png', 'other-task.png']) {
+    await expect(files.getByRole('listitem').filter({ hasText: name })).toHaveText(/No longer on the server/);
+  }
 });

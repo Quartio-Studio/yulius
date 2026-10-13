@@ -749,7 +749,7 @@ export function mountComposer(ctx, sandbox) {
     if (on && !prompt.value.trim()) { toast('Nothing to preview yet.', { kind: 'info' }); return; }
     if (preview) { preview.destroy(); preview = null; }
     if (on) {
-      preview = createMarkdownEditor({ markdown: prompt.value, readOnly: true });
+      preview = createMarkdownEditor({ markdown: prompt.value, readOnly: true, frontmatter: false });
       setChildren(previewEl, preview.el);
       previewEl.style.minHeight = `${prompt.offsetHeight}px`;
     } else {

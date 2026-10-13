@@ -87,11 +87,14 @@ function inlineMarkdown(node) {
 const FENCE = /^(\s*)(`{3,}|~{3,})\s*([\w+#.-]*)\s*$/;
 const HR = /^\s{0,3}([-*_])(\s*\1){2,}\s*$/;
 
-/** Markdown as { frontmatter, blocks }; what is not modelled becomes a raw block. */
-export function parseMarkdown(markdown) {
+/**
+ * Markdown as { frontmatter, blocks }; what is not modelled becomes a raw block. With
+ * `frontmatter: false` a leading `---` block is text, not frontmatter (a prompt, SPEC-080).
+ */
+export function parseMarkdown(markdown, { frontmatter: withFrontmatter = true } = {}) {
   let text = String(markdown || '').replace(/\r\n?/g, '\n');
   let frontmatter = null;
-  const fm = text.match(/^---\n([\s\S]*?)\n---[ \t]*(\n|$)/);
+  const fm = withFrontmatter && text.match(/^---\n([\s\S]*?)\n---[ \t]*(\n|$)/);
   if (fm) { frontmatter = fm[1]; text = text.slice(fm[0].length); }
   const lines = text.split('\n');
   const blocks = [];
@@ -210,10 +213,11 @@ const collapsedIn = (el) => { const s = window.getSelection(); return s.rangeCou
 // ------------------------------------------------------------------ the editor
 
 /**
- * createMarkdownEditor({ markdown, readOnly, onChange }) → { el, getMarkdown(), setMarkdown(md),
- * focus(), setSource(on) }. `onChange` runs after every edit.
+ * createMarkdownEditor({ markdown, readOnly, frontmatter, onChange }) → { el, getMarkdown(),
+ * setMarkdown(md), focus(), setSource(on) }. `onChange` runs after every edit; `frontmatter: false`
+ * shows a leading `---` block as text (a prompt is a message, not a document with properties).
  */
-export function createMarkdownEditor({ markdown = '', readOnly = false, onChange = () => {} } = {}) {
+export function createMarkdownEditor({ markdown = '', readOnly = false, frontmatter: withFrontmatter = true, onChange = () => {} } = {}) {
   let properties = null; // [{key, value, quote}] or null
   let rawFrontmatter = null; // frontmatter too rich for properties, edited as text
   let hasFrontmatter = false;
@@ -312,7 +316,7 @@ export function createMarkdownEditor({ markdown = '', readOnly = false, onChange
 
   // ---- reading and writing Markdown
   function setMarkdown(markdown) {
-    const parsed = parseMarkdown(markdown);
+    const parsed = parseMarkdown(markdown, { frontmatter: withFrontmatter });
     hasFrontmatter = parsed.frontmatter !== null;
     properties = hasFrontmatter ? parseProperties(parsed.frontmatter) : null;
     rawFrontmatter = hasFrontmatter && !properties ? parsed.frontmatter : null;
