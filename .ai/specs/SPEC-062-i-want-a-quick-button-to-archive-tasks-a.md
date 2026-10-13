@@ -1,11 +1,11 @@
 ---
 yulius-task: 9e8d2778-3e0c-4956-81cf-8e8b7cf2bc1a
-status: in-progress
+status: done
 ---
 
 # SPEC-062: quick Archive on a sidebar row and "Archive all" for Done
 
-Status: in progress
+Status: implemented
 Date: 2026-10-13
 Owner: Yulius task #65
 Scope authorization: user request (task #65): "i want a quick button to archive tasks and
@@ -45,11 +45,11 @@ Done group, instead of opening each task's menu and picking Archive.
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] A sidebar row's quick Archive button archives that task with Undo
-- [ ] "Archive all" on the Done group archives every Done task with one Undo
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Read the product context and related work, then write and validate the spec
+- [x] A sidebar row's quick Archive button archives that task with Undo
+- [x] "Archive all" on the Done group archives every Done task with one Undo
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -88,6 +88,37 @@ Done group, instead of opening each task's menu and picking Archive.
 - On phones the quick Archive button is left out: the row already gives a 48 px target to `⋮`,
   and a second one would leave too little of the title; Archive stays one tap away in the menu.
 
+- A rebuilt sidebar list keeps the keyboard where it was (review rounds 1 to 3): on the same
+  control (a group's head or "Archive all"), on the same row if it is still listed, on the row
+  next to one that left, else on the first task. Before this, a rebuild dropped focus to the page.
+
 ## Evidence
 
-(filled when done)
+- Red first, `e2e/tests/archive.e2e.ts` (mock mode):
+  - "a row’s quick Archive button…" failed with no "Archive task #13" button before the slice.
+  - The phone test failed with the button visible at 390 px without the phone rule.
+  - The Archive all tests failed with no "Archive all" button.
+  - "stays focused and disabled…" failed (no `aria-disabled`; then 2 requests instead of 1
+    without the in-flight guard).
+  - The focus checks failed with focus on `<body>`.
+  - "the keyboard stays on its control…" failed on the Stopped toggle.
+  - All pass after.
+- Independent review in fresh sessions (`om-code-review`), three rounds:
+  - Round 1 (7940142): REQUEST_CHANGES on minors only, all fixed test-first: focus lost while
+    Archive all runs, a double POST from a row during a batch, a 24 px phone target, test gaps,
+    the plural, shadowed names and the title under the buttons.
+  - Round 2 (22bcad0): APPROVE with minors, all fixed test-first: the focus fallback when the
+    group goes away, archive requests counted before `failpost`, and read access with a Done group.
+  - Round 3 (c1416fb): REQUEST_CHANGES. Major: Enter on the Stopped toggle moved focus to the
+    first task, and a second Enter opened it. Fixed test-first. Re-review APPROVE at 4b331f7.
+    Its two nits are filed as #331.
+- `scripts/dev ci` at 4b331f7 (origin/dev merged): exit 0. nextest ran 1266 tests: 1266 passed,
+  16 skipped. Check, fmt, clippy, doctests, deny, machete and doc are green.
+- e2e full suite at 4b331f7: 230 passed, 1 skipped (the live-model test).
+  `archive.e2e.ts` alone: 12 consecutive runs green.
+  - One earlier run (before c1416fb) failed two toast assertions once. It did not reproduce in
+    12 runs, and a plain Chromium run showed both toasts. No cause was found; it is recorded here.
+- Not covered: a real server and browser with real Claude sessions (the e2e suite runs the mock
+  backend). The archive endpoint itself is unchanged and covered by `task_done.rs`.
+- Observed, unchanged: Undo after archiving a Done task restores it as `closed` (TSK-014 closes
+  its session), so it reappears under Tasks rather than in the sidebar's active list.
