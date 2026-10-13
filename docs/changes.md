@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
-- "See the original prompt" in the task menu (SPEC-043, ADR-0032, task #42) shows the prompt a
+- "See the original prompt" in the task menu (SPEC-043, ADR-0033, task #42) shows the prompt a
   task started with: the text formatted as written, with Copy text, and the files attached to it
   (an image as a thumbnail that opens full size, another file to download, a file removed since
   named). `GET /api/tasks/{tid}/prompt` returns it; `GET /api/tasks/{tid}/prompt/attachments/{n}`

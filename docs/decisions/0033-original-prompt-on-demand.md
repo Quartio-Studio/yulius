@@ -1,4 +1,4 @@
-# 0032. A task's original prompt is read on demand; its files only from its own attachment folders
+# 0033. A task's original prompt is read on demand; its files only from its own attachment folders
 
 ## Status
 

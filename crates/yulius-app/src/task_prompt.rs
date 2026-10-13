@@ -1,4 +1,4 @@
-//! A task's original prompt (SPEC-043, ADR-0032): the text it started with and the files attached
+//! A task's original prompt (SPEC-043, ADR-0033): the text it started with and the files attached
 //! to it, read on demand by whoever may see the task.
 //!
 //! The prompt is stored as the composer sent it: the text, then one `@path` line per attached

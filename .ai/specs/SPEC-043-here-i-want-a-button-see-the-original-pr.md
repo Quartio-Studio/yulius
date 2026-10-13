@@ -89,7 +89,7 @@ condition, so today the text cannot be read again in the UI.
   prompt can mention any path on the host, and a contained process can plant links in the
   sandbox directory (review round 1: resolving the `attachments` folder followed such a link).
   Read access suffices: the files were given to the agent, whose terminal readers already see.
-  See [ADR-0032](../../docs/decisions/0032-original-prompt-on-demand.md).
+  See [ADR-0033](../../docs/decisions/0033-original-prompt-on-demand.md).
 - A file that is gone (drafts are removed after a week) is shown by name, not hidden: the person
   sees what was attached.
 
