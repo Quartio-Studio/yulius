@@ -318,6 +318,26 @@ impl App {
     /// `NotFound`/`Forbidden` without access; `Conflict` while the task runs or starts, or
     /// while a finished task's session is still closing.
     pub async fn delete_task(self: &Arc<Self>, ctx: &AuthContext, id: &str) -> AppResult<()> {
+        let actor = ctx
+            .user
+            .github_login
+            .clone()
+            .unwrap_or_else(|| "superadmin".into());
+        self.delete_task_as(ctx, id, &actor, None).await
+    }
+
+    /// [`App::delete_task`] audited as `actor`; a management tool passes its caller and the
+    /// caller's audit detail (SPEC-066 MGT-010).
+    ///
+    /// # Errors
+    /// As [`App::delete_task`].
+    pub(crate) async fn delete_task_as(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        id: &str,
+        actor: &str,
+        caller_detail: Option<&serde_json::Value>,
+    ) -> AppResult<()> {
         let mut task = self.load_task(ctx, id, Action::Work).await?;
         if task.status == TaskStatus::Running && self.task_is_done(&task).await {
             self.close_task_and_wait(&task.id).await?;
@@ -381,20 +401,24 @@ impl App {
         );
         self.remove_task_attachments(&task.sandbox_id, &task.id);
         self.forget_runtime(&task.id);
-        let actor = ctx
-            .user
-            .github_login
-            .clone()
-            .unwrap_or_else(|| "superadmin".into());
+        let named = format!("#{} {}", task.number, task.title);
+        let detail = match caller_detail {
+            Some(caller) => {
+                let mut detail = caller.clone();
+                detail["task"] = serde_json::json!(named);
+                detail.to_string()
+            }
+            None => named,
+        };
         let _ = self
             .deps
             .store
             .audit(
                 self.now(),
-                &actor,
+                actor,
                 "task.deleted",
                 Some(task.id.as_str()),
-                Some(&format!("#{} {}", task.number, task.title)),
+                Some(&detail),
             )
             .await;
         self.events.publish(
