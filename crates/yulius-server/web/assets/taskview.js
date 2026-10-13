@@ -550,8 +550,9 @@ export function mountComposer(ctx, sandbox) {
     const candidates = chainCandidates(ctx, sandbox);
     openMenu(anchor, [
       { label: 'Start now', icon: 'up', description: 'The task starts as soon as a session slot is free', checked: !afterTaskId && !startRule, onSelect: () => { afterTaskId = ''; startRule = null; renderChips(); prompt.focus(); } },
-      candidates.length ? { separator: true } : null,
-      ...candidates.slice(0, 20).map((t) => ({ label: `After #${t.number} ${t.title}`, icon: 'branch', description: `Starts by itself when #${t.number} is done · ${statusInfo(t).label}`, checked: t.id === afterTaskId, onSelect: () => { afterTaskId = t.id; startRule = null; renderChips(); prompt.focus(); } })),
+      // One line per task under one heading, every live one: the menu's filter finds it (SPEC-038).
+      ...(candidates.length ? [{ separator: true }, { header: 'After a task is done' }] : []),
+      ...candidates.map((t) => ({ label: `#${t.number} ${t.title}`, hint: statusInfo(t).label, title: `Starts by itself when #${t.number} is done`, checked: t.id === afterTaskId, onSelect: () => { afterTaskId = t.id; startRule = null; renderChips(); prompt.focus(); } })),
       // A rule names tasks of this sandbox, so a sandbox without any offers none (SPEC-022).
       ...(ruleChoices(ctx.store.tasksOf(sandbox.id)).length ? [
         { separator: true },

@@ -60,15 +60,29 @@ each toolchain and system package the repository needs (its bootstrap script or 
 files such as rust-toolchain.toml, .nvmrc / package.json engines, .python-version / \
 pyproject.toml, go.mod, Gemfile), with `sudo apt-get install` for system packages and the official \
 installers for toolchains (for example rustup into your home: `curl https://sh.rustup.rs -sSf | sh \
--s -- -y`). ~/.cargo/bin and ~/.local/bin are on PATH for every run; your home persists and is \
-shared by every task's worktree, so install tools there once (never per worktree). Install what the \
-tests need too (browsers for end-to-end tests, test fixtures, services). Then run the repository's \
-test, lint and build commands until they work and record them in yulius.toml [commands]; run every \
-`[[ci.jobs]]` command exactly as written, from the repository root, until it passes: Yulius CI runs \
-it with an empty home, so a job installs what it needs itself (as `scripts/bootstrap.py \
---install-rustup` does). A monorepo's jobs may run only its affected project's checks. End with a \
-summary of what works and how it was verified; a check that still cannot run is a problem to report \
-there, never a reason to skip it silently.";
+-s -- -y`). ~/.cargo/bin and ~/.local/bin are on PATH for every run of yours; your home persists \
+and is shared by every task's worktree, so install tools there once (never per worktree). Install \
+what the tests need too (browsers for end-to-end tests, test fixtures, services). Then run the \
+repository's test, lint and build commands until they work and record them in yulius.toml \
+[commands]; run every \
+`[[ci.jobs]]` command exactly as written, from the repository root, until it passes. Yulius CI \
+gives the sandbox's jobs their own HOME and cache ($YULIUS_CI_CACHE), separate from yours: they \
+start empty and persist across runs, as does each job's checkout with its ignored files (build \
+outputs, dependency directories), and the job's PATH lacks that home's ~/.cargo/bin and \
+~/.local/bin. So a job must install what it needs itself (as `scripts/bootstrap.py \
+--install-rustup` does) and never depend on anything an earlier run, your home or this worktree \
+left behind: such a job passes on the cache and fails on a fresh sandbox or after a cache prune. \
+Prove it: run each job command normally, then commit and run it once more from the root of a clean \
+checkout with a fresh home and CI's environment, which prints the job's exit status and removes \
+everything it made (`d=\"$(mktemp -d \"$HOME/.ci-proof.XXXXXX\")\"; mkdir \"$d/home\" \
+\"$d/cache\"; git worktree add --detach \"$d/repo\" HEAD && (cd \"$d/repo\" && env -i \
+HOME=\"$d/home\" YULIUS_CI_CACHE=\"$d/cache\" PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 \
+TERM=dumb NO_COLOR=1 CI=true GIT_TERMINAL_PROMPT=0 YULIUS_CI=1 sh -c '<command>' </dev/null); s=$?; \
+git worktree remove --force \"$d/repo\"; chmod -R u+w \"$d\"; rm -rf \"$d\"; echo \"exit $s\"`, \
+quoting the command as needed). A monorepo's jobs \
+may run only its affected project's checks. End with a summary of what works and how it was \
+verified; a check that still cannot run is a problem to report there, never a reason to skip it \
+silently.";
 
 /// Title of the onboarding task of a repository that already follows the Yulius format.
 pub const ENVIRONMENT_TITLE: &str = "Set up this sandbox's environment";
@@ -984,6 +998,41 @@ mod tests {
         assert!(prompt.contains("infra-bootstrap"));
         assert!(prompt.contains("--no-verify"));
         assert!(prompt.len() < crate::lifecycle::MAX_PROMPT_BYTES);
+        Ok(())
+    }
+
+    /// ONB-001: both onboarding prompts describe the CI home as `ci/exec.rs` sets it up — its
+    /// own, starting empty, persistent across runs — and ask for the fresh-home proof.
+    #[test]
+    fn prompts_describe_the_persistent_ci_home_and_the_fresh_home_proof() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let (report, _) = validate_checkout(dir.path());
+        let profile =
+            crate::projects::profile_view(&yulius_domain::delivery::DeliveryProfile::product());
+        for prompt in [
+            onboarding_prompt("Quartio-Studio/product", &profile, &report),
+            environment_prompt("Quartio-Studio/product", &profile),
+        ] {
+            assert!(!prompt.contains("empty home"), "the CI home persists");
+            for wording in [
+                "separate from yours",
+                "start empty and persist across runs",
+                "$YULIUS_CI_CACHE",
+                "ignored files",
+                "install what it needs itself",
+                "never depend on anything an earlier run",
+                "PATH lacks that home's ~/.cargo/bin",
+                "run each job command normally",
+                "git worktree add --detach",
+                "env -i HOME=\"$d/home\" YULIUS_CI_CACHE=\"$d/cache\"",
+                // The proof reports the job's status, not the cleanup's, and leaves nothing.
+                "</dev/null); s=$?;",
+                "rm -rf \"$d\"; echo \"exit $s\"",
+            ] {
+                assert!(prompt.contains(wording), "missing {wording:?}");
+            }
+            assert!(prompt.len() < crate::lifecycle::MAX_PROMPT_BYTES);
+        }
         Ok(())
     }
 }
