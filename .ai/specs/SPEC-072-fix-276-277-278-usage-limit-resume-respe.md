@@ -62,7 +62,7 @@ file, and the limit-resume paths SPEC-034 left untested have tests (#278).
 - [x] The untested limit-resume paths have tests (#278)
 - [x] Review round 1 findings fixed test-first (replayed limit, answer-only continuation)
 - [x] Docs, ADR and changes written (SPEC-002, SPEC-034, ADR-0053, architecture)
-- [x] Review round 2 approves the head
+- [x] Independent review approves the head (three rounds)
 - [x] Every gate green on the final head
 
 ## Acceptance criteria
@@ -156,7 +156,12 @@ file, and the limit-resume paths SPEC-034 left untested have tests (#278).
 - Independent review in fresh sessions (om-code-review): round 1 requested changes (a replayed
   limit after a restart, an answer-only continuation, minors); round 2 requested changes (a pause
   open across a restart, the turn gate after a replayed limit, sub-agent turn ends, hooks mode); all
-  fixed test-first. The final round reviews the head with this evidence.
+  fixed test-first. Round 3 approved `3462007` with no blocker or major; its minors (the hooks
+  test's wait for the status, preconditions in the two restart tests, this Plan's wording) are
+  fixed, and the reviewer confirmed the delta.
+- Known follow-up (round 3, minor, not fixed here): a local slash command typed at a `limit`
+  pause (`/usage`) is a prompt line and ends the pause like any prompt, as for `turn` and `prompt`
+  pauses; the task then waits for its person instead of resuming at the reset. Noted on #276.
 - Not tested here: a real Claude Code session through Yulius (the fake agent stands in); a resumed
   attempt reattached after a restart does not see a continuation written while Yulius was down
   (recorded as a known limit in Decisions and ADR-0053); a limit that cuts a turn mid-way while

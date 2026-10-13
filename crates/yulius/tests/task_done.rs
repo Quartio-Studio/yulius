@@ -928,8 +928,14 @@ fn a_continuation_with_hooks_ends_the_limit_pause_and_its_stop_is_answered() -> 
             || screen_contains(&app, &id, "CONTINUED STOP ANSWERED"),
         )
         .await?;
+        // The pause closes, then the task runs: wait for both.
+        wait_for("the task to run", Duration::from_secs(30), || async {
+            task(&app, &id)
+                .await
+                .is_ok_and(|t| t.status == TaskStatus::Running)
+        })
+        .await?;
         assert!(app.deps.store.open_pause(&id).await?.is_none(), "no pause");
-        assert_eq!(task(&app, &id).await?.status, TaskStatus::Running);
         assert_eq!(app.deps.store.attempts(&id).await?.len(), 1);
         stop(&app, &id).await
     })?;

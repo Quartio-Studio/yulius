@@ -1438,6 +1438,11 @@ fn a_restart_does_not_replay_a_limit_the_cli_continued_past() -> TestResult {
             has_status(&app, &id, TaskStatus::Running)
         })
         .await?;
+        // Working until the replay settles it: the wait after the restart proves the replay ran.
+        assert_eq!(
+            task(&app, &id).await?.activity,
+            Some(yulius_domain::task::Activity::Working)
+        );
         let account = AccountId::parse("a-first")?;
         let usage = app.deps.store.account(&account).await?.ok_or("account")?;
         Ok::<_, Box<dyn std::error::Error>>((id, usage.usage_json))
@@ -1540,6 +1545,11 @@ fn a_continuation_while_yulius_is_down_ends_the_limit_pause_at_restart() -> Test
         )
         .await?;
         let app = build_with(&data, &fake, probe.clone(), agent)?;
+        // The first server never saw the continuation: only the replay can end the pause.
+        assert!(
+            app.deps.store.open_pause(&id).await?.is_some(),
+            "still paused"
+        );
         app.reconcile().await?;
         wait_for(
             "the pause to end at the replay",
