@@ -222,6 +222,11 @@ this branch (`task_done::` and the supervision test, 6 threads, one run):
 Together about 980 s before and 250 s after. The whole `task_done::` file (28 tests) and the
 supervision test ran in 63 s.
 
+On the VM, this pull request's first Yulius CI run (f136336, on the deployed binary, one test
+thread per CPU): nextest `Summary [76.190s] 1440 tests run: 1440 passed, 16 skipped`, no test over
+30 s. The 52 runs before took 121–193 s with 10–17 tests over 30 s each. That run failed later
+in `cargo doc` on a link to a crate-private item, fixed in the next commit.
+
 **TST-002: the queued-message test.**
 - Red: the previous test with one `app.drain_queue_now()` after its manual move to `queued` fails
   at once with `Conflict("The task has started: type into its session instead")`.
