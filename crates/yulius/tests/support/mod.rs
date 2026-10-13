@@ -1376,7 +1376,8 @@ pub async fn seed_live_attempt(
     Ok(())
 }
 
-/// Calls an MCP tool with a task token; returns the `tools/call` result object.
+/// Calls an MCP tool with a task token; returns the `tools/call` result object, with the tool's
+/// record as `structuredContent` (SPEC-086 TOL-005): what an agent reads is its text.
 pub async fn mcp_tool(
     h: &Harness,
     token: &str,
@@ -1389,7 +1390,7 @@ pub async fn mcp_tool(
         "/mcp",
         Some(
             serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": {"name": name, "arguments": args}}),
+            "params": {"name": name, "arguments": args, "_meta": {"yulius/structured": true}}}),
         ),
         &Creds {
             bearer: Some(token.into()),
@@ -1403,8 +1404,15 @@ pub async fn mcp_tool(
     Ok(r.body["result"].clone())
 }
 
-/// The first text item of a tool result parsed as JSON (or as a string when it is not JSON).
+/// A tool result's record (`structuredContent`), or its text when it has none (an error).
 pub fn tool_text(result: &serde_json::Value) -> serde_json::Value {
-    let text = result["content"][0]["text"].as_str().unwrap_or_default();
-    serde_json::from_str(text).unwrap_or_else(|_| serde_json::Value::String(text.to_owned()))
+    if let Some(record) = result.get("structuredContent") {
+        return record.clone();
+    }
+    serde_json::Value::String(
+        result["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+    )
 }

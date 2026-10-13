@@ -1012,7 +1012,7 @@ async fn mcp(
     Ok(resp.body)
 }
 
-/// A tool's result text parsed as JSON, and whether it is an error.
+/// A tool's record (or an error's text), and whether it is an error.
 async fn cockpit_tool(
     f: &Fixture,
     token: &str,
@@ -1023,16 +1023,18 @@ async fn cockpit_tool(
         f,
         token,
         "tools/call",
-        json!({"name": name, "arguments": args}),
+        json!({"name": name, "arguments": args, "_meta": {"yulius/structured": true}}),
     )
     .await?;
     let text = body["result"]["content"][0]["text"]
         .as_str()
         .ok_or_else(|| format!("no result: {body}"))?;
-    Ok((
-        serde_json::from_str(text).unwrap_or_else(|_| Value::String(text.to_owned())),
-        body["result"]["isError"].as_bool().unwrap_or(true),
-    ))
+    // The tool's record (asked for with `_meta`), or the text of an error.
+    let record = body["result"]
+        .get("structuredContent")
+        .cloned()
+        .unwrap_or_else(|| Value::String(text.to_owned()));
+    Ok((record, body["result"]["isError"].as_bool().unwrap_or(true)))
 }
 
 /// AC-MGT-2, MGT-005..007: a Cockpit's own token reaches the management tools, which act for
