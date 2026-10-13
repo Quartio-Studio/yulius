@@ -58,4 +58,4 @@ title whose number differs from the file name, and a record this index does not 
 - [0044](0044-task-status-follows-claude-codes-own-records.md): A task's status follows Claude Code's own records
 - [0048](0048-armed-merge-state-under-one-lock.md): An armed merge, its decisions and its outcome are one value under one lock
 - [0049](0049-management-tools-cover-the-task-and-automation-lifecycle.md): Management tools cover the task and automation lifecycle, never the caller's own task
-- [0050](0050-only-keystrokes-count-as-typing.md): Only keystrokes count as typing; a typed first message stays pending until submitted
+- [0051](0051-only-keystrokes-count-as-typing.md): Only keystrokes count as typing; a typed first message stays pending until submitted

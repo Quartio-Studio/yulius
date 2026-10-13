@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
-- Only real typing counts as typing; a typed first message is never lost (SPEC-068, ADR-0050,
+- Only real typing counts as typing; a typed first message is never lost (SPEC-068, ADR-0051,
   task #61, #252, #266). Focus and mouse reports and terminal answers no longer record typing or
   take control of the terminal size. A goal task whose terminal a person typed into before its
   goal leaves the draft alone and needs attention, instead of appending `/goal` to it. A first

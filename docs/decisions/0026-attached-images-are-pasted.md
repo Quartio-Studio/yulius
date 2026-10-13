@@ -5,7 +5,7 @@
 Accepted. Specified in
 [SPEC-030](../../.ai/specs/SPEC-030-i-asked-previous-task-to-attach-images-a.md); supersedes
 [0022](0022-native-task-attachments.md) for images. Other files are still `@path` mentions.
-Amended by [0050](0050-only-keystrokes-count-as-typing.md) (SPEC-068, #266): a restart during the
+Amended by [0051](0051-only-keystrokes-count-as-typing.md) (SPEC-068, #266): a restart during the
 typing flags the task, and a held first message keeps its images.
 
 ## Context
@@ -55,10 +55,10 @@ Stop hook, as before. Tasks without images keep the CLI prompt.
   first message stays pending (`opening-pending` in the run directory) until the session's
   `UserPromptSubmit`. A server restart during the few seconds of typing leaves it pending: the
   new server flags the task NeedsAttention with a notice, and a person finishes the message
-  (ADR-0050).
+  (ADR-0051).
 - A first message held for capacity and resumed on another account starts a fresh session there
   that types the task's opening again, images included; the hook's text (`[Image #1] …`) would
-  carry no image (ADR-0050).
+  carry no image (ADR-0051).
 - A request starting with `/` and an attached image is no longer run as a slash command: the text
   follows the pasted image.
 - The mock-API driver in SPEC-030 checks the behaviour again after a Claude Code upgrade.
