@@ -398,12 +398,13 @@ impl AttentionFacts {
     ///
     /// A task being stopped or ended is Ended, whatever else holds. A held prompt or a pending
     /// browser request needs you. After a finished turn the pull request speaks: failing checks
-    /// need you, a CI run that could not run keeps it Working (In review); with the plan complete, background shells keep it Working, an achieved goal or a
-    /// tested or merged pull request makes it Done, and checks still running keep it Working (In
-    /// review). Otherwise the task's own state: a permission prompt or "Your turn" needs you
-    /// (unless the agent's background shells still run: it wakes by itself), an achieved goal is
-    /// Done, a queued task or a chain is Queued (a chain whose predecessor ended otherwise needs
-    /// you), and the rest is Working.
+    /// need you, a CI run that could not run keeps it Working (In review); with the plan
+    /// complete, background shells keep it Working, an achieved goal or a tested or merged pull
+    /// request makes it Done, and checks still running keep it Working (In review). Otherwise
+    /// the task's own state: a permission prompt or "Your turn" needs you (unless the agent's
+    /// background shells still run: it wakes by itself), an achieved goal is Done, a queued task
+    /// or a chain is Queued (a chain whose predecessor ended otherwise needs you), and the rest is
+    /// Working.
     #[must_use]
     pub fn group(&self) -> TaskGroup {
         use TaskGroup as G;

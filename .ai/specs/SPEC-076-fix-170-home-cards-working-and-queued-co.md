@@ -128,4 +128,5 @@ with one rule, the one `taskInfo` applies in the web UI.
   test-first: `PullSignal::Errored` (`from_wire("open", "error")`) keeps the task Working in
   `group()`; unit cases, and `delivery::working_and_queued_counts_split_the_sidebar_working_group`
   with an errored Yulius CI run and a reopened step read `(2, 4, 2)` without the fix and
-  `(1, 5, 2)` with it. ADR 0052 became 0053 when `dev` took 0052 first, then 0055 when `dev` took 0053 and open pull requests claimed 0054.
+  `(1, 5, 2)` with it. ADR 0052 became 0053 when `dev` took 0052 first, then 0055 when `dev` took
+  0053 and open pull requests claimed 0054.
