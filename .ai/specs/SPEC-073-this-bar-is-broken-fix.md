@@ -46,10 +46,16 @@ text is unbounded. The chips are short and already hidden below 560 px.
 - STR-1: The state takes at most 40% of the strip. Beyond that it truncates with an ellipsis, and
   its full text stays in the pill's tooltip, which `title` already sets. A state that fits keeps
   its words whole: the step name, then the title, give way first.
+- STR-4: While the step count shows (a strip over 420 px), the label never gets less than 8 rem,
+  room for the chevron, "Step NN/NN" and a little of the title. Below that, the state pill gives
+  its words up first, down to its icon. Where the count hides (420 px and phones), the floor
+  goes too.
 - STR-2: Nothing in the strip's label paints outside its button. If the label is ever too long
   for its room, it is clipped inside the toggle and never drawn over the bar.
 - STR-3: On mock task #14, no strip parts overlap and "Step N/M" ends inside its button at 1440,
-  1024 and 768 px, and none overlap beside an open tool panel. On task #12 at 768 px, the short
+  1024 and 768 px, and beside an open tool panel. Beside the Shell panel, tasks #13 ("Done · PR
+  #520" plus its chip), #14 and #7 keep the count inside at windows from 1300 to 1440 px. That
+  sweep reaches the 421 to 500 px strip band. On task #12 at 768 px, the short
   state ("Working") stays whole.
 
 ## Plan
@@ -58,6 +64,8 @@ text is unbounded. The chips are short and already hidden below 560 px.
 - [x] Regression test: a long task state no longer pushes the step count under the bar
 - [x] Fix: the state text gives way and the strip label never paints past its button
 - [x] Review, gates and delivery to dev
+- [x] The label keeps room for its step count beside a tool panel (421-560 px strips)
+- [x] Final review round, gates and merge into dev
 
 ## Acceptance criteria
 
@@ -93,6 +101,21 @@ text is unbounded. The chips are short and already hidden below 560 px.
     hidden, so it would need another breakpoint.
   - Lower container-query breakpoints are guesses that the next long label breaks again.
   This is a local CSS rule, so it gets no ADR.
+- **The label has a floor of 8 rem while the count shows (review round 2).** The cap alone left a
+  band where a short state still squeezed the label: a 421 to 560 px strip beside a tool panel,
+  where the bar, the state and the pull-request chip leave less room than the count needs.
+  Round 2 measured "Ste" on task #13 at a 459 px strip, the reported screenshot's case.
+  With the floor:
+  - The toggle (`flex: 1`, basis 0) keeps at least 8 rem.
+  - The state pill, which can shrink (`min-width: 0`), gives its words up first, down to its icon.
+  - The arithmetic holds at the narrowest strip that still shows the count, 421 px: 60 px bar,
+    34 px icon-only pill, about 55 px PR chip, 28 px menu, 40 px gaps, 12 px padding and 128 px
+    floor, 357 px in all.
+  - The 420 px container query and the phone media query set `min-width: 0` again, because the
+    count is hidden there.
+  Alternatives from the review:
+  - A narrower cap in the band leaves #13 untouched, since its room goes to the PR chip.
+  - Hiding the PR chip or the reset text loses information that has room elsewhere.
 - **The toggle clips (`overflow: hidden`) as a backstop.** The step count stays `flex: none` so it
   reads whole. If it ever still runs out of room, the toggle clips it instead of letting it paint
   over the bar.
@@ -119,3 +142,10 @@ text is unbounded. The chips are short and already hidden below 560 px.
 - Independent review (a fresh session, `om-code-review`). Round 1 asked for changes: the
   proportional shrink truncated short states, and the overlap check was blind to a clipped
   count. Both are fixed in this change, each with a test.
+- Review round 2 asked for changes at 8c6ad93: the count was still clipped in a 421 to 490 px
+  strip beside a panel. The new narrow-band test failed at 8c6ad93 (`last: expected false to be
+  true` on `countInside`). With the floor (465d1e0), `responsive.e2e.ts` and `phone.e2e.ts` pass
+  21 of 21.
+- A playwright sweep covered mock tasks #1 to #14, windows from 390 to 1440 px in 10 px steps,
+  with and without the Shell panel. It reported `NO PROBLEMS`: the count never ends outside its
+  button, the strip's last part never passes its edge, and nothing scrolls sideways.
