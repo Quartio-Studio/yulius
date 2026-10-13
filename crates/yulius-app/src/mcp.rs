@@ -404,14 +404,17 @@ impl App {
                 self.tool_task_change(&project, &args, TaskChange::Stop)
                     .await
             }
-            "task_archive" => {
-                let archived = args
-                    .get("archived")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(true);
-                self.tool_task_change(&project, &args, TaskChange::Archive(archived))
-                    .await
-            }
+            "task_archive" => match args.get("archived") {
+                None | Some(Value::Null) => {
+                    self.tool_task_change(&project, &args, TaskChange::Archive(true))
+                        .await
+                }
+                Some(Value::Bool(archived)) => {
+                    self.tool_task_change(&project, &args, TaskChange::Archive(*archived))
+                        .await
+                }
+                Some(_) => Err(AppError::Invalid("`archived` must be true or false".into())),
+            },
             "task_delete" => {
                 self.tool_task_change(&project, &args, TaskChange::Delete)
                     .await

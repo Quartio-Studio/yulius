@@ -149,4 +149,15 @@ flowchart LR
   below what `short_parts_donate_budget_to_long_ones` guarantees. Task agents get the tools from
   `tools/list` (with their descriptions), and stopping or deleting other tasks is not something
   every session should be nudged towards. Lowering the test's floor instead would hide the cost.
+- **`automation_run_now` is outside the hourly bound of tool-created tasks** (MGT-003 exempts
+  automation tasks). Its runs are bounded by the automation's previous-active rule (one active
+  task per automation) and the 100 automations per project, as Run now in the UI is.
+- Review round 1 (fresh session, fe74645) requested changes for test gaps, all fixed test-first:
+  another project's automation refused by `automation_delete`/`automation_run_now`; lost access
+  refusing `automation_template_enable` (a mutation dropping its `manage_authority` fails the
+  test); a non-boolean `archived` now refused (failed before: a string archived the task); the
+  Cockpit test also enables a ready-made automation and checks the caller's detail in every
+  audit. A failed audit write after a stop or archive is logged instead of failing the call
+  (as for a deletion); a task reference with neither argument names both. The duplicated
+  template mapping in `automations_list` stays: it drops the prompt and the API type keeps it.
 - Recorded as ADR-0049.

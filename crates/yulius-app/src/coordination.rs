@@ -183,7 +183,11 @@ impl App {
                 .await?
                 .ok_or(AppError::NotFound);
         }
-        let id = TaskId::parse(str_arg(args, "task_id")?).map_err(|_| AppError::NotFound)?;
+        let id = args
+            .get("task_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| AppError::Invalid("name the task by `task_id` or `number`".into()))?;
+        let id = TaskId::parse(id).map_err(|_| AppError::NotFound)?;
         self.deps
             .store
             .task(&id)

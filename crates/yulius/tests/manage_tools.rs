@@ -400,6 +400,10 @@ async fn an_agent_whose_creator_lost_access_stops_and_deletes_nothing() -> TestR
         ("task_delete", json!({"task_id": "t-side"})),
         ("automation_delete", json!({"automation_id": automation})),
         ("automation_run_now", json!({"automation_id": automation})),
+        (
+            "automation_template_enable",
+            json!({"template": "open-issues"}),
+        ),
     ] {
         let refused = mcp_tool(&h, "tok-agent", tool, args).await?;
         assert_eq!(refused["isError"], true, "{tool}: {refused}");
@@ -416,6 +420,11 @@ async fn an_agent_whose_creator_lost_access_stops_and_deletes_nothing() -> TestR
     assert_eq!(side.status, TaskStatus::Queued);
     assert!(h.store.automation(&automation).await?.is_some());
     assert!(h.store.runs(&automation, 10).await?.is_empty(), "no run");
+    assert_eq!(
+        h.store.automations(&SandboxId::parse("s1")?).await?.len(),
+        1,
+        "no ready-made automation enabled"
+    );
     Ok(())
 }
 
@@ -491,6 +500,69 @@ async fn an_agent_runs_an_automation_now_and_deletes_it() -> TestResult {
         tool_text(&missing).to_string().contains("not found"),
         "{missing}"
     );
+    Ok(())
+}
+
+/// MGT-011: an automation of another project is not found, even when the creator may work there
+/// too; it is neither run nor deleted.
+#[tokio::test]
+async fn automation_tools_stay_in_the_callers_project() -> TestResult {
+    let h = world().await?;
+    add_sandbox(&h, "s2", "other", 20010).await?;
+    h.github
+        .set_perm("alice", "Quartio-Studio/other", perms("write"));
+    seed_task(&h, "t-other", "s2", "u-alice", TaskStatus::Running, None).await?;
+    seed_live_attempt(&h, "t-other", "tok-other").await?;
+    let created = mcp_tool(
+        &h,
+        "tok-other",
+        "automation_create",
+        json!({"name": "Theirs", "cron": "0 4 * * *", "prompt": "Check things"}),
+    )
+    .await?;
+    assert_eq!(created["isError"], false, "{created}");
+    let theirs = tool_text(&created)["automation"]["id"]
+        .as_str()
+        .ok_or("id")?
+        .to_owned();
+    for tool in ["automation_run_now", "automation_delete"] {
+        let refused = mcp_tool(&h, "tok-agent", tool, json!({"automation_id": theirs})).await?;
+        assert_eq!(refused["isError"], true, "{tool}: {refused}");
+        assert!(
+            tool_text(&refused).to_string().contains("not found"),
+            "{tool}: {refused}"
+        );
+    }
+    assert!(h.store.automation(&theirs).await?.is_some());
+    assert!(h.store.runs(&theirs, 10).await?.is_empty(), "no run");
+    Ok(())
+}
+
+/// `task_archive`'s `archived` must be a boolean: a string "false" restores nothing by accident.
+#[tokio::test]
+async fn task_archive_refuses_a_non_boolean_archived() -> TestResult {
+    let h = world().await?;
+    seed_task(&h, "t-side", "s1", "u-alice", TaskStatus::Queued, None).await?;
+    let stopped = mcp_tool(&h, "tok-agent", "task_stop", json!({"task_id": "t-side"})).await?;
+    assert_eq!(stopped["isError"], false, "{stopped}");
+    let refused = mcp_tool(
+        &h,
+        "tok-agent",
+        "task_archive",
+        json!({"task_id": "t-side", "archived": "false"}),
+    )
+    .await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert!(
+        tool_text(&refused).to_string().contains("archived"),
+        "{refused}"
+    );
+    let side = h
+        .store
+        .task(&TaskId::parse("t-side")?)
+        .await?
+        .ok_or("side")?;
+    assert!(side.archived_at.is_none());
     Ok(())
 }
 

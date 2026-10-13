@@ -44,4 +44,6 @@ UI-only (#275, #293), so "manage our whole system" from the Cockpit stopped half
 A person can manage a project's tasks and automations end to end from the Cockpit, approving each
 changing call. Task agents (which run with the approval bypass) can stop or delete other tasks of
 their creator's project: the same power the creator has in the UI, audited with the agent. Stop
-and archive are audited for tool calls only; the UI does not audit them.
+and archive are audited for tool calls only; the UI does not audit them. `automation_run_now` is
+not counted in the hourly bound of tool-created tasks: like Run now in the UI it is bounded by one
+active task per automation.

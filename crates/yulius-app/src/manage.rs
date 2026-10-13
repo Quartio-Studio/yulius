@@ -265,7 +265,10 @@ impl App {
                 }
             }
         };
-        self.deps
+        // The change happened: a failed audit write is logged, not reported as a failed call
+        // (which would invite a retry), as for a deletion.
+        if let Err(err) = self
+            .deps
             .store
             .audit(
                 self.now(),
@@ -274,7 +277,11 @@ impl App {
                 Some(id),
                 Some(&tool_detail(caller, &named)),
             )
-            .await?;
+            .await
+        {
+            tracing::warn!(task = %task.id, error = %err, action, "tool audit failed");
+        }
+        tracing::info!(task = %task.id, actor = %caller.actor, action, "task changed by a tool");
         let task = self
             .deps
             .store

@@ -641,11 +641,11 @@ write access; every changing call is audited with the caller (`task:<n>` or `coc
 | Tool | Same as | Notes |
 | --- | --- | --- |
 | `task_create` | New task | origin `agent`; at most 20 per project and rolling hour |
-| `task_stop`, `task_archive` (`archived`: false restores), `task_delete` | `POST /api/tasks/{tid}/stop`, `…/archive`, `DELETE /api/tasks/{tid}` | by `task_id` or `number`; never the caller's own task; audited `task.stopped`, `task.archived`/`task.unarchived`, `task.deleted` |
+| `task_stop`, `task_archive` (`archived`: false restores), `task_delete` | `POST /api/tasks/{tid}/stop`, `…/archive` (`…/restore`), `DELETE /api/tasks/{tid}` | by `task_id` or `number`; never the caller's own task; audited `task.stopped`, `task.archived`/`task.unarchived`, `task.deleted` |
 | `automation_create`, `automation_update` | `POST …/automations`, `PUT /api/automations/{id}` | `created_via: agent` |
 | `automation_delete`, `automation_run_now` | `DELETE /api/automations/{id}`, `POST /api/automations/{id}/run` | audited `automation.deleted`, `automation.run_now` |
 | `automations_list` | `GET …/automations` and `GET …/automation-templates` | `{"automations":[Automation],"ready_made":[AutomationTemplate without "prompt"]}` |
-| `automation_template_enable` | `POST …/automation-templates/{id}/enable` | `{"template":"docs-up-to-date"}` → `{"automation","created":bool}`; `created_via: agent`; an unknown id is an error naming the known ones |
+| `automation_template_enable` | `POST …/automation-templates/{id}/enable` | `{"template":"docs-up-to-date"}` → `{"automation","created":bool,"note"}`; `created_via: agent`; an unknown id is an error naming the known ones |
 
 MCP secrets are write-only: responses only list key names. On update, an omitted `env`/`headers`
 keeps the stored values; a given map replaces all values of that map (`{}` clears it). Names are

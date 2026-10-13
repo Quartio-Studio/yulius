@@ -968,18 +968,43 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
         cockpit_tool(&f, &token, "task_delete", json!({"number": task.number})).await?;
     assert!(!is_error, "{deleted}");
     assert!(f.h.store.task(&task.id).await?.is_none());
+    // A ready-made automation, enabled for alice.
+    let (ready, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "automation_template_enable",
+        json!({"template": "open-issues"}),
+    )
+    .await?;
+    assert!(!is_error, "{ready}");
+    let ready = ready["automation"]["id"].as_str().ok_or("id")?;
+    assert_eq!(
+        f.h.store
+            .automation(ready)
+            .await?
+            .ok_or("ready-made")?
+            .created_by,
+        alice
+    );
     for (target, action) in [
         (id, "automation.run_now"),
         (id, "automation.deleted"),
         (task.id.as_str(), "task.archived"),
         (task.id.as_str(), "task.deleted"),
+        (ready, "automation.created"),
     ] {
         let audit = f.h.store.automation_audit(target, 10).await?;
+        let entry = audit
+            .iter()
+            .find(|e| e.action == action && e.actor == "cockpit:alice")
+            .ok_or_else(|| format!("{action}: {audit:?}"))?;
+        // The caller's audit detail names the Cockpit (MGT-010).
         assert!(
-            audit
-                .iter()
-                .any(|e| e.action == action && e.actor == "cockpit:alice"),
-            "{action}: {audit:?}"
+            entry
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains("\"via\":\"cockpit\"")),
+            "{action}: {entry:?}"
         );
     }
 
