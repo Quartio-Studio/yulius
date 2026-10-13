@@ -135,6 +135,10 @@ read-only: a locked prompt box, nothing to type into.
   keyboard could not reach (`scrollable-region-focusable`). Long code, results and diffs now take
   the keyboard (`tabindex="0"`) with an inset ring. Nits: the folded call's ring sits in the
   entry's side padding, and the time sits at the prompt's edge.
+- Review round 5 (fresh session, confirming the head): REQUEST_CHANGES at f4967d5. `dev` had
+  added its own ADR-0052 meanwhile, so this ADR is 0053 after merging `dev` again. Also, every code
+  block was a tab stop: now only content that can scroll (more than about 16 rows) is a focusable
+  region named like the Git page's diffs ("Result of Bash", "Changed lines of path").
 - The spider web is drawn by code from a small grid of square pixels in an inline SVG, so it
   needs no image file and takes the palette's colours in both themes.
 
@@ -153,13 +157,16 @@ read-only: a locked prompt box, nothing to type into.
     the edit without a result was open; the focus ring was outset; the scroller was clipped.
 - Independent review in fresh sessions (`om-code-review`): round 1 at fd4e19a REQUEST_CHANGES,
   round 2 at 0a61906 APPROVE with minors, round 3 at 187881a REQUEST_CHANGES (focus ring),
-  round 4 at 203554a APPROVE with a minor. Every finding was fixed test-first or filed (see
-  Decisions).
+  round 4 at 203554a APPROVE with a minor, round 5 at f4967d5 REQUEST_CHANGES (ADR number taken
+  on dev, tab stops). Every finding was fixed test-first or filed (see Decisions).
 - Follow-ups filed: #347 (fold non-wrapper meta notes), #350 (cut diffs counted short), #349 and
   #356 (e2e tests flaky under load, in files this change does not touch).
-- `scripts/dev ci` at 1007d3d (origin/dev merged): exit 0. nextest ran 1336 tests: 1336 passed,
-  16 skipped. Check, fmt, clippy, doctests, deny, shear and doc are green. The repository check
+- `scripts/dev ci` at 7c94887 (origin/dev 3959c1d merged): exit 0. nextest ran 1346 tests: 1346
+  passed, 16 skipped. At 1007d3d: 1336 passed, 16 skipped. Check, fmt, clippy, doctests, deny, shear and doc are green. The repository check
   includes the new `--session-*` contrast pairs.
+- e2e at 7c94887: `sessions`, `quality`, `phone`, `responsive`, `navigation` and `consistency`
+  pass 61 of 61. `sessions.e2e.ts` alone passed 12 of 12 on two runs in a row; one earlier run
+  timed out on its first assertion at load average about 30.
 - e2e at 1007d3d:
   - `sessions.e2e.ts`: 12 of 12 pass, axe clean in both themes.
   - Full suite: 252 passed, 3 failed, 1 skipped. The failures were `archive.e2e.ts` (2) and
