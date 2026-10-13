@@ -1,21 +1,25 @@
-//! Managing agent secrets (VLT-004, VLT-009): sandbox secrets by members with write access,
-//! instance-wide ones by instance administrators; members who can view a sandbox list names and
-//! bindings; values are write-only for everyone.
+//! Managing agent secrets (VLT-004, VLT-009, SPEC-040): sandbox secrets by members with write
+//! access, instance-wide ones by instance administrators; members who can view a sandbox list
+//! names and bindings; the people who manage a secret read its value back after a two-factor
+//! unlock. Agents never do.
 
-use yulius_contracts::api::secrets::{AgentSecretInput, AgentSecretPatch, AgentSecretView};
+use yulius_contracts::api::secrets::{
+    AgentSecretInput, AgentSecretPatch, AgentSecretView, RevealRequest, SecretReveal,
+};
 use yulius_domain::ids::SandboxId;
 use yulius_domain::permission::{AccessLevel, Action};
 use yulius_domain::vault::hosts::parse_hosts;
-use yulius_domain::vault::totp::parse_otp;
 use yulius_domain::vault::{
     Injection, ROTATE_AFTER_MS, SecretName, check_agent_value, placeholder,
 };
 
-use super::{AgentPayload, field, invalid};
+use super::team::{pick, reveal_request, shown};
+use super::{AgentPayload, Revealed, field, invalid};
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::ports::vault::{VaultSecretRecord, VaultSection};
+use zeroize::Zeroizing;
 
 /// Longest description.
 const MAX_DESCRIPTION: usize = 1000;
@@ -44,12 +48,21 @@ fn username(text: Option<&str>) -> AppResult<Option<String>> {
     Ok(value)
 }
 
-fn totp(text: Option<&str>) -> AppResult<Option<String>> {
-    let value = field(text, "TOTP seed", true)?;
-    if let Some(seed) = &value {
-        parse_otp(seed).map_err(invalid)?;
+/// Checks how a user name fits the injection: Basic needs one, and a new one is taken only for
+/// Basic (older secrets keep theirs for website logins).
+fn check_username(injection: &Injection, username: Option<&str>, set: bool) -> AppResult<()> {
+    if *injection == Injection::Basic && username.is_none() {
+        return Err(AppError::Invalid(
+            "Basic credentials need a user name".into(),
+        ));
     }
-    Ok(value)
+    if set && username.is_some() && *injection != Injection::Basic {
+        return Err(AppError::Invalid(
+            "a user name is only for Basic credentials: put a login's user name in the notes"
+                .into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Validated metadata of an agent secret.
@@ -183,13 +196,9 @@ impl App {
         let payload = AgentPayload {
             username: username(input.username.as_deref())?,
             value: input.value.clone(),
-            totp: totp(input.totp.as_deref())?,
+            totp: None,
         };
-        if meta.injection == Injection::Basic && payload.username.is_none() {
-            return Err(AppError::Invalid(
-                "Basic credentials need a user name".into(),
-            ));
-        }
+        check_username(&meta.injection, payload.username.as_deref(), true)?;
         if self.deps.store.vault_agent(Some(&sid)).await?.len() >= MAX_AGENT_SECRETS {
             return Err(AppError::Capacity(format!(
                 "at most {MAX_AGENT_SECRETS} agent secrets apply to one sandbox"
@@ -302,15 +311,11 @@ impl App {
             record.value_updated_at = now;
             changed.push("value");
         }
-        if patch.totp.is_some() {
-            payload.totp = totp(patch.totp.as_deref())?;
-            changed.push("totp");
-        }
-        if meta.injection == Injection::Basic && payload.username.is_none() {
-            return Err(AppError::Invalid(
-                "Basic credentials need a user name".into(),
-            ));
-        }
+        check_username(
+            &meta.injection,
+            payload.username.as_deref(),
+            patch.username.is_some(),
+        )?;
         record.name = meta.name;
         record.hosts = meta.hosts;
         record.injection = meta.injection.kind().into();
@@ -355,5 +360,68 @@ impl App {
             &record.name,
         )
         .await
+    }
+
+    /// `POST /api/agent-secrets/{id}/reveal`: the value and the notes (its description) for a
+    /// person who manages the secret, after a two-factor unlock; audited as
+    /// `vault.agent.reveal` or `vault.agent.copy`.
+    ///
+    /// # Errors
+    /// `NotFound` for invisible secrets, `Forbidden` for people who cannot manage it and for API
+    /// tokens, `Invalid` requests, store failures.
+    pub async fn reveal_agent_secret(
+        &self,
+        ctx: &AuthContext,
+        id: &str,
+        request: &RevealRequest,
+    ) -> AppResult<Revealed<SecretReveal>> {
+        let (purpose, wanted) = reveal_request(request)?;
+        let record = self.agent_record(ctx, id).await?;
+        self.require_manage_agent(ctx, record.sandbox_id.as_ref())
+            .await?;
+        if let Some(status) = self.fresh_or_status(ctx).await? {
+            return Ok(Revealed::ReauthRequired(status));
+        }
+        let payload: AgentPayload = self.open_payload(&record)?;
+        // Basic credentials are the user name and the value; older secrets also kept a website
+        // login's user name and a TOTP seed: they lead the notes so their managers can read them.
+        let user_line = payload
+            .username
+            .as_ref()
+            .map(|u| Zeroizing::new(format!("User name: {u}")));
+        let seed_line = payload
+            .totp
+            .as_ref()
+            .map(|t| Zeroizing::new(format!("Two-factor seed: {t}")));
+        let head = Zeroizing::new(
+            [user_line.as_deref(), seed_line.as_deref()]
+                .into_iter()
+                .flatten()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        let notes = Zeroizing::new(
+            [head.as_str(), record.description.as_str()]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        );
+        let notes = Zeroizing::new((!notes.is_empty()).then(|| notes.to_string()));
+        let value = Zeroizing::new(Some(payload.value.clone()));
+        let revealed = pick(&wanted, &value, &notes);
+        self.vault_audit(
+            &Self::vault_actor(ctx),
+            if purpose == "copy" {
+                "vault.agent.copy"
+            } else {
+                "vault.agent.reveal"
+            },
+            Some(id),
+            &format!("{} ({})", record.name, shown(&revealed)),
+        )
+        .await?;
+        Ok(Revealed::Values(revealed))
     }
 }
