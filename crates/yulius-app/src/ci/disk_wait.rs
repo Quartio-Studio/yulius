@@ -1,4 +1,4 @@
-//! A CI run waits for disk instead of erroring (SPEC-059 CI-301..CI-304, ADR-0040).
+//! A CI run waits for disk instead of erroring (SPEC-059 CI-301..CI-304, ADR-0045).
 //!
 //! A sandbox over its soft quota refuses new starts, CI jobs included. A queued run of such a
 //! sandbox is therefore not started: the dispatcher asks [`App::ci_disk_room`] first. Over the

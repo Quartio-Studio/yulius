@@ -73,7 +73,7 @@ fresh probe finds no background shell and no background subagent. An unanswered 
 
 Over the quota, a CI run waits in the queue instead of erroring
 ([SPEC-059](../.ai/specs/SPEC-059-fix-240-256-258-245-ci-waits-for-disk-in.md),
-[decision 0040](decisions/0040-ci-waits-for-disk-under-the-shared-quota.md)). The dispatcher
+[decision 0045](decisions/0045-ci-waits-for-disk-under-the-shared-quota.md)). The dispatcher
 starts a check off its loop, at most once a minute per sandbox: upkeep under pressure, then a fresh
 measurement. The run's reason and its `pending` commit status name the largest consumers, and the
 run starts at the first dispatch under the quota. A job refused after its run started puts the

@@ -160,7 +160,7 @@ flowchart LR
 ## Decisions
 
 - **CI waits under the shared quota; no separate CI budget, no shared target directory.**
-  Recorded in [ADR-0040](../../docs/decisions/0040-ci-waits-for-disk-under-the-shared-quota.md).
+  Recorded in [ADR-0045](../../docs/decisions/0045-ci-waits-for-disk-under-the-shared-quota.md).
 - **Unknown counts as working.** Keeping a cache we are unsure about costs disk until the next
   round. Deleting it under a running build costs the agent its build and minutes of work (#10
   lost 70 minutes, #25 its gate). A probe that never answers would also block long-idle pruning

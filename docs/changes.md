@@ -6,7 +6,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
-- CI waits for disk instead of erroring (SPEC-059, ADR-0040, task #50; #240, #256, #258, #245). A
+- CI waits for disk instead of erroring (SPEC-059, ADR-0045, task #50; #240, #256, #258, #245). A
   CI run in a sandbox over its disk quota stays queued, with a `pending` status. It says who holds
   the space, and starts by itself once Yulius has pruned the caches of tasks that do not work, or
   other tasks have freed space. An armed merge keeps waiting for it. Quota refusals of sessions
