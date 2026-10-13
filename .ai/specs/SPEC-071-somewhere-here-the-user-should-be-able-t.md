@@ -59,7 +59,7 @@ pending or running, no other task of the project starts, so the code it changes 
 - [x] Read the product context and related work, then write and validate the spec
 - [x] A task is created and stored as a supertask through the API and the task_create tool
 - [x] A pending supertask holds its project's starts and waits for the running tasks
-- [ ] The composer offers Supertask and waiting tasks say what they wait for
+- [x] The composer offers Supertask and waiting tasks say what they wait for
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
