@@ -60,7 +60,8 @@ watching, steering and unblocking.
 - **Automations**: tasks on a schedule. Two ready-made ones, off until a person enables them in one
   click on the Automations page: "Keep the docs up to date" and "Work through open issues" (the
   core team's issues verified in parallel, a Fix task for each actionable one, no new issues),
-  nightly at 03:00 CEST.
+  nightly at 03:00 CEST. An automation's tasks start like New task's: now, as a supertask, after
+  another task or when a rule is true.
 - **Notes**: in the tools rail, a notepad per sandbox and one for the whole team, shared and saved
   while people type; a teammate's edit shows up live, and two edits at once end in a choice.
 - **Editor, terminals, Git view, automations, workflow catalog** in one web UI, whose menus fit

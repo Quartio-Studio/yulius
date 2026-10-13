@@ -53,6 +53,63 @@ test('Home cards, the sandbox tabs and the sidebar count “needs you” the sam
   }
 });
 
+/** A sandbox card's count labelled `label` ("working", "queued") on Home. */
+const cardCountOf = (browser: Browser, name: string, label: string) =>
+  browser.evaluate(([n, l]: [string, string]) => {
+    const card = [...document.querySelectorAll('.home-card')].find((c) => c.querySelector('.home-card-name')?.textContent === n);
+    const item = card && [...card.querySelectorAll('.home-count')].find((c) => c.querySelector('span:last-child')?.textContent === l);
+    return item ? Number(item.querySelector('strong')?.textContent) : null;
+  }, [name, label] as [string, string]);
+
+/** A sandbox tab's "working" number (its accessible text says it), 0 without one. */
+const tabWorking = (browser: Browser, name: string) =>
+  browser.evaluate((n: string) => {
+    const tab = [...document.querySelectorAll('.tabrow-tabs .tab')].find((t) => t.querySelector('.tab-name')?.textContent === n);
+    if (!tab) return null;
+    const match = (tab.querySelector('.sr-only')?.textContent || '').match(/(\d+) working/);
+    return match ? Number(match[1]) : 0;
+  }, name);
+
+/** The sidebar's "Working" count (0 without the group), once its tasks are listed. */
+const sidebarWorking = (browser: Browser) =>
+  browser.evaluate(() => {
+    if (!document.querySelector('.task-list .task-group, .task-list .placeholder:not(.placeholder-loading)')) return null;
+    return Number(document.querySelector('.task-group.group-working .task-group-count')?.textContent || 0);
+  });
+
+test('a card’s working and queued counts split the sidebar’s Working group', async ({ app, browser, screen }) => {
+  await app.open(mock('/'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+  // product's chained task is queued, and its working one waits for you (a held prompt), so it is
+  // not working; sandbox-3's one task works. The live-process count said product 1 working, 0 queued.
+  await expect.poll(() => cardCountOf(browser, 'product', 'working')).toBe(0);
+  await expect.poll(() => cardCountOf(browser, 'product', 'queued')).toBe(1);
+  await expect.poll(() => cardCountOf(browser, 'sandbox-3', 'working')).toBe(1);
+  await expect.poll(() => cardCountOf(browser, 'sandbox-3', 'queued')).toBe(0);
+  // The card's working + queued, then the sidebar's Working count, read in the same page (hash
+  // navigation keeps the mock's tasks, which move on by themselves meanwhile).
+  const split = async (name: string) => {
+    await browser.evaluate(() => { window.location.hash = '#/'; });
+    await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+    const [working, queued] = [await cardCountOf(browser, name, 'working'), await cardCountOf(browser, name, 'queued')];
+    await browser.evaluate((n: string) => { window.location.hash = `#/s/${n}/tasks`; }, name);
+    await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Tasks');
+    await expect.poll(() => sidebarWorking(browser)).not.toBeNull();
+    return working === null || queued === null ? null : working + queued === await sidebarWorking(browser);
+  };
+  // studio has queued, starting, switching, paused, still-working (background shells), Done and
+  // Your-turn tasks: the live-process count said 8 there for a sidebar Working of 6.
+  for (const name of ['studio', 'product', 'sandbox-3']) {
+    await expect.poll(() => split(name), { timeout: 30000 }).toBe(true);
+  }
+  // The tabs say the card's working number.
+  await browser.evaluate(() => { window.location.hash = '#/'; });
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+  for (const name of ['studio', 'product', 'sandbox-3']) {
+    await expect.poll(() => agree(() => cardCountOf(browser, name, 'working'), () => tabWorking(browser, name))).toBe(true);
+  }
+});
+
 test('queued, starting, paused and chained tasks each have their own icon', async ({ app, browser, screen }) => {
   await app.open(mock('/design'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Design system');

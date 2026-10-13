@@ -13,6 +13,7 @@ mod accounts;
 mod agent_hooks;
 mod analytics;
 mod auto_choice;
+mod automation_start;
 mod automations;
 mod browser;
 mod cli;

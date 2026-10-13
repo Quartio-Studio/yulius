@@ -111,7 +111,14 @@ Profile = {"preset": "standard|product|studio|custom", "integration_branch": "de
            "gate": "scripts/ci.sh|null"}
 ```
 
-`counts.running` counts tasks with a live process and `counts.queued` queued tasks.
+The counts are three of the web UI sidebar's groups, by its rule (SPEC-001 UI-050,
+`AttentionFacts::group` in the domain); `counts.running` + `counts.queued` is the sidebar's Working
+group. `counts.queued` counts queued tasks and chains waiting for another task; `counts.running`
+counts the rest of the Working group: running tasks that do not wait for a person (working, kept
+going by the agent's background shells, or a finished turn whose pull request's checks still run
+or whose Yulius CI run could not run),
+starting, switching and paused (`waiting_capacity`) ones. Done tasks, tasks being stopped and ended
+ones count nowhere; the status page's `live_sessions` counts live processes.
 `counts.needs_attention` counts the tasks that need a person by the web UI sidebar's "Needs you"
 rule (SPEC-001 UI-050, `AttentionFacts` in the domain): a permission prompt (`needs_attention`),
 a finished turn waiting for input (`waiting`), a pending held prompt, a pending request to act in
@@ -121,7 +128,8 @@ pull request of a finished turn whose plan is complete counts as Done or In revi
 a person. The pull request facts are those the sandbox's Git overview
 (`GET /api/sandboxes/{sid}/git`) last read; until it is read after a start, only a merge already
 recorded counts (the UI reads it with the sidebar and reloads the counters after each read). An
-ended task never counts; a paused or queued one only for a held prompt or a browser request.
+ended task or one being stopped never counts; a paused or queued one only for a held prompt or a
+browser request.
 
 ## Import (`yulius onboard` / `yulius import`)
 
@@ -617,7 +625,8 @@ Workflow = {"id","name","description","steps":["Write the spec","Implement","Tes
             "instructions":"…","gates":{"require_spec":true,"require_tests":true},"scope":"instance|sandbox",
             "builtin":false,"when_to_use":""}
 Automation = {"id","name","cron":"0 9 * * *","utc_offset_minutes":120,"prompt","workflow_id|null",
-              "harness":"claude","enabled":true,"created_via":"ui|agent",
+              "harness":"claude","enabled":true,"supertask":false,"after_task_id":"…|null",
+              "after_task_number":12|null,"start_rule":"#12 done|null","created_via":"ui|agent",
               "next_run_at":"…|null","last_run":AutomationRun|null}
 AutomationTemplate = {"id":"docs-up-to-date","name","description","cron","utc_offset_minutes","prompt",
                       "workflow_id|null","automation_id|null"}
@@ -640,8 +649,15 @@ default; automations using `wf-quick-task` continue without a workflow); an edit
 kept as the instance workflow "Feature (custom)". The file format is SPEC-002 §7.10 "Workflow
 catalog format". Automation `cron` is a five-field
 expression (`yulius-domain::cron`), `utc_offset_minutes` is within ±1080, and at most 100
-automations exist per sandbox. A run whose automation's previous task is still active is
-recorded as `skipped_previous_active`. The ready-made automations are one file each in
+automations exist per sandbox. A run whose automation's previous task is still active (also
+waiting `chained` or `queued`) is recorded as `skipped_previous_active`. `supertask`,
+`after_task_id` and `start_rule` say how each created task starts, as in `CreateTask` (SPEC-078):
+none of them, it starts now (queued); at most one is given (else 422), the task to run after is a
+task of the sandbox and the rule names only its task numbers (422 otherwise; the rule is stored
+canonically). A PUT replaces them like the other fields; the stored choice sent back unchanged is
+kept without that check (its task may have been deleted since). A run after a task that has ended waits
+for the rule `#N done` instead; a run whose task to run after was deleted is `failed`.
+`after_task_number` is read-only. The ready-made automations are one file each in
 `catalog/automations/` of the running release; `automation_id` is the sandbox's automation with
 the same name (case-insensitive), which counts as the template's: a template is never linked or
 run by itself.

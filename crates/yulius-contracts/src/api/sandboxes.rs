@@ -40,15 +40,17 @@ pub struct RepoRef {
     pub url: String,
 }
 
-/// Live counters for a sandbox.
+/// Live counters for a sandbox: three of the web UI sidebar's groups, by its rule (SPEC-001
+/// UI-050; `yulius_domain::task::AttentionFacts::group`). `running` plus `queued` is the sidebar's
+/// Working group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SandboxCounts {
-    /// Tasks with a live process.
+    /// Working tasks: running (working, kept going by background shells or in review), starting,
+    /// continuing on another subscription or paused for capacity.
     pub running: u32,
-    /// Tasks needing a person, by the web UI sidebar's "Needs you" rule (SPEC-001 UI-050;
-    /// `yulius_domain::task::AttentionFacts`).
+    /// Tasks needing a person (the "Needs you" group).
     pub needs_attention: u32,
-    /// Tasks waiting for capacity.
+    /// Tasks in line for a slot or chained after another task.
     pub queued: u32,
 }
 

@@ -14,7 +14,7 @@
 // jev=config (a Jev key file is configured), fail=<path> (GETs of that path answer 500),
 // failpost=<path> (POSTs of that path answer 500).
 
-import { taskInfo } from './status.js';
+import { counter, taskInfo } from './status.js';
 
 const MIN = 60e3;
 const HOUR = 60 * MIN;
@@ -254,8 +254,8 @@ function seed(params) {
     { name: 'test-driven-development', description: 'Write the test first, watch it fail for the right reason, then the minimal code.', source: 'superpowers', path: 'skills/superpowers/test-driven-development/SKILL.md', enabled: false },
   ];
   db.automations = [
-    { id: 'aut_1', sandbox: 'sb_studio', name: 'Daily customer feedback', cron: '0 9 * * *', utc_offset_minutes: 120, prompt: 'Create a task implementing yesterday’s customer feedback from the Quartio MCP.', workflow_id: 'wf-feature', harness: 'claude', enabled: true, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: { scheduled_for: iso(10 * HOUR), state: 'task_created', task_id: 'tsk_studio_8' } },
-    { id: 'aut_2', sandbox: 'sb_studio', name: 'Weekly dependency audit', cron: '0 7 * * 1', utc_offset_minutes: 0, prompt: 'Audit dependencies for advisories and open a PR with safe upgrades.', workflow_id: null, harness: 'claude', enabled: false, created_via: 'ui', next_run_at: null, last_run: null },
+    { id: 'aut_1', sandbox: 'sb_studio', name: 'Daily customer feedback', cron: '0 9 * * *', utc_offset_minutes: 120, prompt: 'Create a task implementing yesterday’s customer feedback from the Quartio MCP.', workflow_id: 'wf-feature', harness: 'claude', enabled: true, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: { scheduled_for: iso(10 * HOUR), state: 'task_created', task_id: 'tsk_studio_8' } },
+    { id: 'aut_2', sandbox: 'sb_studio', name: 'Weekly dependency audit', cron: '0 7 * * 1', utc_offset_minutes: 0, prompt: 'Audit dependencies for advisories and open a PR with safe upgrades.', workflow_id: null, harness: 'claude', enabled: false, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'ui', next_run_at: null, last_run: null },
   ];
   db.mcp = [
     { id: 'mcp_quartio', sandbox: null, scope: 'instance', name: 'quartio', transport: 'http', command: null, args: [], url: 'https://mcp.quartio.ai/mcp', env_keys: [], header_keys: ['Authorization'], enabled: true },
@@ -479,18 +479,20 @@ function pullOf(task) {
 }
 
 /**
- * The sandbox counters. "Needs you" is the sidebar's rule (status.js taskInfo, the server's
- * `AttentionFacts`), so a card, a tab and the sidebar never disagree (#147).
+ * The sandbox counters: the sidebar's groups by its rule (status.js taskInfo and counter, the
+ * server's `AttentionFacts::group`), so a card, a tab and the sidebar never disagree (#147, #170).
  */
 function recount(db) {
   for (const sandbox of db.sandboxes) {
-    const tasks = db.tasks.filter((t) => t.sandbox_id === sandbox.id && !t.archived);
-    sandbox.counts = {
-      // A live process, as the server counts it (TaskStatus::is_live).
-      running: tasks.filter((t) => ['starting', 'running', 'switching', 'stopping'].includes(t.status)).length,
-      needs_attention: tasks.filter((t) => taskInfo(summary(t), null, pullOf(t)).group === 'needs').length,
-      queued: tasks.filter((t) => t.status === 'queued').length,
-    };
+    const counts = { running: 0, needs_attention: 0, queued: 0 };
+    for (const t of db.tasks.filter((task) => task.sandbox_id === sandbox.id && !task.archived)) {
+      const task = summary(t);
+      const kind = counter(task, taskInfo(task, null, pullOf(t)));
+      if (kind === 'needs') counts.needs_attention += 1;
+      else if (kind === 'working') counts.running += 1;
+      else if (kind === 'queued') counts.queued += 1;
+    }
+    sandbox.counts = counts;
   }
 }
 
@@ -1709,12 +1711,32 @@ route('POST', `/api/sandboxes/${ID}/automation-templates/${ID}/enable`, ({ db, p
   const { sandbox: _s, ...out } = a;
   return json(created ? 201 : 200, out);
 });
+/** The start choice of an automation body, checked like the server (SPEC-078 AUT-014). */
+function automationStart(db, sandbox, body) {
+  const after = body.after_task_id || null;
+  const rule = (body.start_rule || '').trim() || null;
+  if (body.supertask && (after || rule)) fail(422, 'invalid', 'a supertask starts after the running tasks: it cannot also run after a task or a rule');
+  if (after && rule) fail(422, 'invalid', 'give a task to run after or a start rule, not both');
+  const task = after ? db.tasks.find((t) => t.id === after && t.sandbox_id === sandbox) : null;
+  if (after && !task) fail(422, 'invalid', 'the task to run after does not exist');
+  // The server parses the full rule language; the mock knows the editor's sentences.
+  let canonical = null;
+  if (rule) {
+    const words = rule.toLowerCase().replace(/\s+/g, ' ');
+    if (!/^#\d+ (done|merged|ended)( (and|or) #\d+ (done|merged|ended))*$/.test(words)) fail(422, 'invalid', `the rule cannot be read: ${rule}`);
+    for (const [, n] of words.matchAll(/#(\d+)/g)) {
+      if (!db.tasks.some((t) => t.sandbox_id === sandbox && t.number === Number(n))) fail(422, 'invalid', `the rule names #${n}, which does not exist in this project`);
+    }
+    canonical = words;
+  }
+  return { supertask: Boolean(body.supertask), after_task_id: after, after_task_number: task ? task.number : null, start_rule: canonical };
+}
 route('GET', `/api/sandboxes/${ID}/automations`, ({ db, p }) => db.automations.filter((a) => a.sandbox === p[0]).map(({ sandbox: _s, ...a }) => a));
 route('POST', `/api/sandboxes/${ID}/automations`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
   if (Math.abs(Number(body.utc_offset_minutes) || 0) > 1080) fail(422, 'invalid', 'utc_offset_minutes must be within ±1080');
   db.nextId += 1;
-  const a = { id: `aut_${db.nextId}`, sandbox: p[0], ...body, created_via: 'ui', next_run_at: body.enabled ? isoIn(5 * HOUR) : null, last_run: null };
+  const a = { id: `aut_${db.nextId}`, sandbox: p[0], ...body, ...automationStart(db, p[0], body), created_via: 'ui', next_run_at: body.enabled ? isoIn(5 * HOUR) : null, last_run: null };
   db.automations.push(a);
   const { sandbox: _s, ...out } = a;
   return json(201, out);
@@ -1722,7 +1744,10 @@ route('POST', `/api/sandboxes/${ID}/automations`, ({ db, p, body }) => {
 route('PUT', `/api/automations/${ID}`, ({ db, p, body }) => {
   const a = db.automations.find((x) => x.id === p[0]);
   if (!a) fail(404, 'not_found', 'not found');
-  Object.assign(a, body, { next_run_at: body.enabled ? isoIn(5 * HOUR) : null });
+  // The stored choice sent back unchanged is kept unchecked, as the server does (SPEC-078).
+  const same = Boolean(body.supertask) === Boolean(a.supertask) && (body.after_task_id || null) === (a.after_task_id || null) && (body.start_rule || null) === (a.start_rule || null);
+  const start = same ? { supertask: Boolean(a.supertask), after_task_id: a.after_task_id || null, after_task_number: a.after_task_number ?? null, start_rule: a.start_rule || null } : automationStart(db, a.sandbox, body);
+  Object.assign(a, body, start, { next_run_at: body.enabled ? isoIn(5 * HOUR) : null });
   const { sandbox: _s, ...out } = a;
   return out;
 });
@@ -1732,7 +1757,7 @@ route('POST', `/api/automations/${ID}/run`, ({ db, p }) => {
   const a = db.automations.find((x) => x.id === p[0]);
   if (!a) fail(404, 'not_found', 'not found');
   const previous = a.last_run && a.last_run.task_id ? db.tasks.find((t) => t.id === a.last_run.task_id) : null;
-  const run = previous && LIVE.has(previous.status)
+  const run = previous && (LIVE.has(previous.status) || previous.status === 'chained')
     ? { scheduled_for: new Date().toISOString(), state: 'skipped_previous_active', task_id: null, error: null }
     : { scheduled_for: new Date().toISOString(), state: 'task_created', task_id: 'tsk_studio_8', error: null };
   a.last_run = run;
@@ -2258,7 +2283,8 @@ route('GET', '/api/status', ({ db }) => {
     // Disk total unknown on purpose: unknown metrics are null, never zero.
     vm: { cpu_percent: 22 + Math.sin(wobble) * 9, cpu_count: 8, memory_used_bytes: 9.4 * 2 ** 30, memory_total_bytes: 16 * 2 ** 30, disk_used_bytes: 141 * 2 ** 30, disk_total_bytes: null, load: [1.21, 0.97, 0.74], load_1m: 1.21, uptime_s: 9 * 86400 + 3600 * 4 },
     sessions: { live: db.tasks.filter((t) => t.status === 'running').length, limit: 8, queued: db.tasks.filter((t) => t.status === 'queued').length },
-    sandboxes: db.sandboxes.map((s) => ({ id: s.id, slug: s.slug, name: s.name, live_sessions: s.counts.running })),
+    // Tasks with a live process (TaskStatus::is_live), not the cards' "working" count (#170).
+    sandboxes: db.sandboxes.map((s) => ({ id: s.id, slug: s.slug, name: s.name, live_sessions: db.tasks.filter((t) => t.sandbox_id === s.id && !t.archived && ['starting', 'running', 'switching', 'stopping'].includes(t.status)).length })),
     accounts: db.accounts.map((a) => (admin
       ? { label: a.label, provider: a.provider, status: a.status, usage: a.usage, id: a.id, last_error: a.last_error, in_use_by: a.in_use_by }
       : { label: a.label, provider: a.provider, status: a.status, usage: a.usage })),

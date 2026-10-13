@@ -1559,7 +1559,7 @@ Schema version 1 (tables; columns abbreviated):
 | `message_receipts` | message_id, task_id, delivered_at, read_at |
 | `scope_claims` | id, task_id, pattern, note, created_at, released_at |
 | `workflows` | id, sandbox_id (null = instance), name, description, steps (json), instructions, gates (json) |
-| `automations` | id, sandbox_id, name, cron, timezone, prompt, workflow_id, harness, enabled, created_by, created_via (ui/agent) |
+| `automations` | id, sandbox_id, name, cron, timezone, prompt, workflow_id, harness, enabled, created_by, created_via (ui/agent), supertask, after_task_id, start_rule (SPEC-078, schema version 19) |
 | `automation_runs` | automation_id, scheduled_for (unique pair), state, task_id, error |
 | `skills` | id, scope (instance/sandbox/repo), name, source, enabled, digest |
 | `mcp_servers` | id, scope, sandbox_id, name, transport, command/url, args (json), env (enc json), headers (enc json), enabled |

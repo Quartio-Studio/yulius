@@ -59,6 +59,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0016_device_grant_client.sql"),
     include_str!("migrations/0017_supertask.sql"),
     include_str!("migrations/0018_task_owner.sql"),
+    include_str!("migrations/0019_automation_start.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -341,6 +342,34 @@ mod tests {
             .ok_or("task")?;
         assert_eq!(task.owner.as_str(), "u1");
         assert_eq!(store.control_request(&task.id).await?, None);
+        Ok(())
+    }
+
+    /// A version-18 database's automations migrate to version 19 (SPEC-078) as "start now":
+    /// none of the start choice's columns is set.
+    #[tokio::test]
+    async fn version_eighteen_automations_start_their_tasks_now()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_app::automations::AutomationStart;
+        use yulius_app::ports::store_ext::AutomationStore as _;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v18.db");
+        {
+            let conn = rusqlite::Connection::open(&path)?;
+            for sql in &MIGRATIONS[..18] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 18)?;
+            conn.execute_batch(
+                "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 1, 1, 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                 INSERT INTO automations (id, sandbox_id, name, cron, utc_offset_minutes, prompt, workflow_id, harness, enabled, created_by, created_via, created_at, last_scheduled) VALUES ('au1', 's1', 'Docs', '0 3 * * *', 120, 'p', NULL, 'claude', 1, 'u1', 'ui', 1, NULL);",
+            )?;
+        }
+        let store = SqliteStore::open(&path)?;
+        let automation = store.automation("au1").await?.ok_or("automation")?;
+        assert_eq!(automation.start, AutomationStart::Now);
+        assert_eq!(automation.name, "Docs");
         Ok(())
     }
 

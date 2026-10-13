@@ -39,6 +39,21 @@ pub struct Automation {
     /// Enabled.
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Created tasks are supertasks (SPEC-078, SPEC-071). Not together with `after_task_id` or
+    /// `start_rule`; none of the three: created tasks start now (queued).
+    #[serde(default)]
+    pub supertask: bool,
+    /// Created tasks run after this task of the project (SPEC-078, TSK-012); once it has ended,
+    /// they wait for the rule `#N done`. Not together with `start_rule`.
+    #[serde(default)]
+    pub after_task_id: Option<String>,
+    /// Number of `after_task_id` (read-only).
+    #[serde(default)]
+    pub after_task_number: Option<u32>,
+    /// Created tasks start when this rule over the project's tasks is true (SPEC-078, SPEC-017),
+    /// stored canonically, e.g. `#12 done and #13 merged`.
+    #[serde(default)]
+    pub start_rule: Option<String>,
     /// `ui` or `agent` (read-only).
     #[serde(default)]
     pub created_via: String,
