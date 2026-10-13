@@ -352,17 +352,21 @@ fn a_goal_the_tui_dropped_is_submitted_again() -> TestResult {
         let agent = FakeAgentOptions {
             transcript: true,
             hooks: true,
+            // Like Claude Code: the goal is typed once the TUI is ready, not after the hookless
+            // fallback (#243). The dropped submit costs the first two submit waits (13 s).
+            session_start: true,
             drop_lines: Some(1),
             ..FakeAgentOptions::default()
         };
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
-        wait_for("the goal to start", Duration::from_secs(90), || {
+        wait_for("the goal to start", Duration::from_secs(60), || {
             screen_contains(&app, &id, "GOAL SET")
         })
         .await?;
-        wait_for("Done", Duration::from_secs(30), || async {
+        // About a second after the goal turn, also at a load average of 60 (SPEC-067).
+        wait_for("Done", Duration::from_secs(45), || async {
             activity(&app, &id).await == Some(Activity::Done)
         })
         .await?;
