@@ -215,6 +215,9 @@ export function taskInfo(task, actionRequests, pr) {
   const finished = task.status === 'running' && (task.activity === 'waiting' || task.activity === 'done');
   if (pr && finished && (pr.state === 'open' || pr.state === 'merged')) {
     if (pr.state === 'open' && pr.checks === 'failure') return { ...info, icon: 'branch', tone: 'attention', label: `PR #${pr.number} · checks failing`, group: 'needs', pr };
+    // CI could not run (disk, a timeout, the host): not the code, and nothing for a person yet; the
+    // agent is told to run it again (S5).
+    if (pr.state === 'open' && pr.checks === 'error') return { ...info, icon: 'branch', tone: 'waiting', label: `In review · PR #${pr.number} · CI could not run (not the code)`, group: 'working', pr };
     if (planOpen(task)) return info;
     const shells = backgroundShells(task);
     if (shells) return { ...info, ...stillWorking(shells, task.background_shells_since), pr };
