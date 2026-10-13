@@ -11,7 +11,7 @@
 //!            [--limit-after N] [--report-env NAME]... [--tui]
 //!            [--hooks YULIUS_EXE] [--goal-background SECONDS] [--goal-delay-ms MS] [--drop-lines N]
 //!            [--interrupts] [--rate-limits-file PATH] [--session-start] [--opening-turn-ms MS]
-//!            [--echo-turn-ms MS]
+//!            [--echo-turn-ms MS] [--context-full-after N] [--compact-fails] [--prompt TEXT]
 //! ```
 //!
 //! Modes:
@@ -75,6 +75,16 @@
 //!
 //! `--echo-turn-ms MS` makes each echoed message a turn that takes MS (≤ 60 s) before its `ECHO:`
 //! answer and Stop hook, silent meanwhile (a turn on a typed first message, SPEC-030).
+//!
+//! `--context-full-after N` fills the session's context after N echoed messages (0: from the
+//! first), like Claude Code 2.1.292 when the API refuses a prompt as too long (#213): each later
+//! message prints `PROMPT IS TOO LONG` and appends its user line and the API-error record
+//! (`error: "invalid_request"`, text `Prompt is too long`), with no Stop hook. `/compact <focus>`
+//! prints `COMPACTED: <focus>`, appends a `compact_boundary` record and empties the context for
+//! good; with `--compact-fails` it prints `COMPACTION FAILED`, appends the command's error output
+//! ("Error during compaction") and the context stays full. `--prompt TEXT` is a first message
+//! given on the command line (Claude Code's prompt argument), answered like a typed one before
+//! input is read.
 //!
 //! Bracketed pastes (`ESC [200~ … ESC [201~`) are read like Claude Code 2.1.292 reads them: a
 //! pasted path ending in `.png`, `.jpg`, `.jpeg`, `.gif` or `.webp` becomes `[Image #N] ` (N
@@ -143,6 +153,9 @@ struct Options {
     drop_lines: u32,
     interrupts: bool,
     rate_limits_file: Option<PathBuf>,
+    context_full_after: Option<u64>,
+    compact_fails: bool,
+    prompt: Option<String>,
 }
 
 fn parse_number<T: std::str::FromStr>(flag: &str, value: Option<String>) -> Result<T, String> {
@@ -177,6 +190,9 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         drop_lines: 0,
         interrupts: false,
         rate_limits_file: None,
+        context_full_after: None,
+        compact_fails: false,
+        prompt: None,
     };
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -249,6 +265,11 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                 options.rate_limits_file =
                     Some(args.next().ok_or("--rate-limits-file needs a path")?.into());
             }
+            "--context-full-after" => {
+                options.context_full_after = Some(parse_number(&flag, args.next())?);
+            }
+            "--compact-fails" => options.compact_fails = true,
+            "--prompt" => options.prompt = Some(args.next().ok_or("--prompt needs a text")?),
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
@@ -592,6 +613,62 @@ impl Transcript {
         });
         self.last_uuid = Some(assistant_uuid);
         self.append(&[queued, assistant])
+    }
+
+    /// A message the API refused as too long: its user line and Claude Code 2.1.292's API-error
+    /// record (no Stop hook follows).
+    fn prompt_too_long(&mut self, prompt: &str) -> io::Result<()> {
+        self.turns += 1;
+        let n = self.turns;
+        let timestamp = rfc3339(now_ms());
+        let user_uuid = format!("fake-{}-{n}-u", self.session_id);
+        let mut user = self.claude_envelope("user", &user_uuid, &timestamp);
+        user["message"] = json!({"role": "user", "content": prompt});
+        self.last_uuid = Some(user_uuid);
+        let uuid = format!("fake-{}-{n}-too-long", self.session_id);
+        let mut record = self.claude_envelope("assistant", &uuid, &timestamp);
+        record["isApiErrorMessage"] = json!(true);
+        record["error"] = json!("invalid_request");
+        record["errorDetails"] = json!("prompt is too long: 213000 tokens > 200000 maximum");
+        record["message"] = json!({
+            "id": format!("msg_fake_too_long_{n}"),
+            "type": "message",
+            "role": "assistant",
+            "model": "<synthetic>",
+            "content": [{"type": "text", "text": "Prompt is too long"}],
+            "stop_reason": "stop_sequence",
+            "usage": {"input_tokens": 0, "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0, "output_tokens": 0}
+        });
+        self.last_uuid = Some(uuid);
+        self.append(&[user, record])
+    }
+
+    /// The boundary Claude Code writes when `/compact` succeeds.
+    fn compacted(&mut self) -> io::Result<()> {
+        let uuid = format!("fake-{}-{}-compact", self.session_id, self.turns);
+        let mut record = self.claude_envelope("system", &uuid, &rfc3339(now_ms()));
+        record["subtype"] = json!("compact_boundary");
+        record["content"] = json!("Conversation compacted");
+        record["isMeta"] = json!(false);
+        record["level"] = json!("info");
+        record["compactMetadata"] = json!({"trigger": "manual", "preTokens": 213_000});
+        self.last_uuid = Some(uuid);
+        self.append(&[record])
+    }
+
+    /// The error output of a `/compact` that failed.
+    fn compact_failed(&mut self) -> io::Result<()> {
+        let uuid = format!("fake-{}-{}-compact-failed", self.session_id, self.turns);
+        let mut record = self.claude_envelope("system", &uuid, &rfc3339(now_ms()));
+        record["subtype"] = json!("local_command");
+        record["content"] = json!(
+            "<local-command-stderr>Error: Error during compaction: Conversation too long. Press \
+             esc twice to go up a few messages and try again.</local-command-stderr>"
+        );
+        record["level"] = json!("info");
+        self.last_uuid = Some(uuid);
+        self.append(&[record])
     }
 
     fn limit(&mut self) -> io::Result<()> {
@@ -1026,19 +1103,27 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
     let keys = Keys::start(options, hooks.clone())?;
     let keys = keys.as_ref();
     status_line(options, hooks.as_ref())?;
-    let mut turns = 0u64;
-    let mut limited = false;
+    let mut state = EchoState::default();
     if let (true, Some(hooks)) = (options.session_start, &hooks) {
         hooks.session_start();
     }
     if let Some(ms) = options.opening_turn_ms {
-        turns += 1;
+        state.turns += 1;
         work_turn(
             options,
             &format!("/work {ms} opening"),
             transcript.as_ref(),
             hooks.as_ref(),
             keys,
+        )?;
+    }
+    if let Some(prompt) = &options.prompt {
+        echo_message(
+            options,
+            prompt,
+            transcript.as_ref(),
+            hooks.as_ref(),
+            &mut state,
         )?;
     }
     let stdin = io::stdin();
@@ -1107,45 +1192,110 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
                     let _ = say(&text);
                 });
             }
-            _ if limited => say("LIMIT REACHED")?,
+            _ if line.starts_with("/compact") => {
+                compact(options, &line, transcript.as_ref(), &mut state)?;
+            }
+            _ if state.limited => say("LIMIT REACHED")?,
             _ if line.starts_with("/goal ") && (transcript.is_some() || hooks.is_some()) => {
-                turns += 1;
+                state.turns += 1;
                 goal_turn(options, &line, transcript.as_ref(), hooks.as_ref())?;
             }
             _ if line.starts_with("/work ") => {
-                turns += 1;
+                state.turns += 1;
                 work_turn(options, &line, transcript.as_ref(), hooks.as_ref(), keys)?;
             }
-            _ => {
-                if let Some(reason) = hooks.as_ref().and_then(|h| h.prompt(&line)) {
-                    say(&format!("PROMPT BLOCKED: {reason}"))?;
-                    continue;
-                }
-                std::thread::sleep(Duration::from_millis(options.echo_turn_ms));
-                let answer = format!("ECHO: {line}");
-                say(&answer)?;
-                turns += 1;
-                if let Some(transcript) = &transcript
-                    && let Ok(mut t) = transcript.lock()
-                {
-                    t.turn(&line, &answer)?;
-                }
-                if options.limit_after.is_some_and(|limit| turns >= limit) {
-                    limited = true;
-                    say("LIMIT REACHED")?;
-                    if let Some(transcript) = &transcript
-                        && let Ok(mut t) = transcript.lock()
-                    {
-                        t.limit()?;
-                    }
-                } else if let Some(hooks) = &hooks {
-                    hooks.stop()?;
-                }
-                status_line(options, hooks.as_ref())?;
-            }
+            _ => echo_message(options, &line, transcript.as_ref(), hooks.as_ref(), &mut state)?,
         }
     }
     Ok(0)
+}
+
+/// What the echo loop keeps between messages.
+#[derive(Debug, Default)]
+struct EchoState {
+    /// Turns run (echoed messages, goal and work turns).
+    turns: u64,
+    /// A usage limit stopped the agent (`--limit-after`).
+    limited: bool,
+    /// Messages answered with an echo (`--context-full-after` counts them).
+    echoed: u64,
+    /// A `/compact` emptied the context: it never fills again.
+    compacted: bool,
+}
+
+impl EchoState {
+    /// Whether the context is full (`--context-full-after`) before the next message.
+    fn context_full(&self, options: &Options) -> bool {
+        !self.compacted && options.context_full_after.is_some_and(|n| self.echoed >= n)
+    }
+}
+
+/// Answers one message with `ECHO: <line>` and its turn, or `PROMPT IS TOO LONG` while the
+/// context is full.
+fn echo_message(
+    options: &Options,
+    line: &str,
+    transcript: Option<&Arc<Mutex<Transcript>>>,
+    hooks: Option<&Hooks>,
+    state: &mut EchoState,
+) -> io::Result<()> {
+    if let Some(reason) = hooks.and_then(|h| h.prompt(line)) {
+        return say(&format!("PROMPT BLOCKED: {reason}"));
+    }
+    if state.context_full(options) {
+        // The API refused the prompt: no turn ran, so no Stop hook runs.
+        say("PROMPT IS TOO LONG")?;
+        if let Some(transcript) = transcript
+            && let Ok(mut t) = transcript.lock()
+        {
+            t.prompt_too_long(line)?;
+        }
+        return status_line(options, hooks);
+    }
+    std::thread::sleep(Duration::from_millis(options.echo_turn_ms));
+    let answer = format!("ECHO: {line}");
+    say(&answer)?;
+    state.turns += 1;
+    state.echoed += 1;
+    if let Some(transcript) = transcript
+        && let Ok(mut t) = transcript.lock()
+    {
+        t.turn(line, &answer)?;
+    }
+    if options.limit_after.is_some_and(|limit| state.turns >= limit) {
+        state.limited = true;
+        say("LIMIT REACHED")?;
+        if let Some(transcript) = transcript
+            && let Ok(mut t) = transcript.lock()
+        {
+            t.limit()?;
+        }
+    } else if let Some(hooks) = hooks {
+        hooks.stop()?;
+    }
+    status_line(options, hooks)
+}
+
+/// `/compact <focus>`: empties the context for good, or fails with `--compact-fails`.
+fn compact(
+    options: &Options,
+    line: &str,
+    transcript: Option<&Arc<Mutex<Transcript>>>,
+    state: &mut EchoState,
+) -> io::Result<()> {
+    let Some(transcript) = transcript else {
+        return say("COMPACTED: (no transcript)");
+    };
+    let Ok(mut t) = transcript.lock() else {
+        return Ok(());
+    };
+    if options.compact_fails {
+        say("COMPACTION FAILED")?;
+        return t.compact_failed();
+    }
+    state.compacted = true;
+    say(&format!("COMPACTED: {}", line["/compact".len()..].trim()))?;
+    t.compacted()
 }
 
 /// Runs the status line command when `--rate-limits-file` is given (with `--hooks`).

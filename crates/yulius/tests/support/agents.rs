@@ -55,6 +55,12 @@ pub struct FakeAgentOptions {
     /// Also report these environment variables at start (`--report-env`: set and length, never
     /// the value).
     pub report_env: Vec<String>,
+    /// The context is full after this many echoed messages (`--context-full-after`).
+    pub context_full_after: Option<u32>,
+    /// `/compact` fails (`--compact-fails`).
+    pub compact_fails: bool,
+    /// The agent answers a launch's first message like a typed one (`--prompt`).
+    pub answers_first_message: bool,
 }
 
 /// See the module docs.
@@ -170,6 +176,22 @@ impl HarnessPort for FakeAgentHarness {
         }
         for name in &self.options.report_env {
             argv.extend(["--report-env".into(), name.clone()]);
+        }
+        if let Some(n) = self.options.context_full_after {
+            argv.extend(["--context-full-after".into(), n.to_string()]);
+        }
+        if self.options.compact_fails {
+            argv.push("--compact-fails".into());
+        }
+        if let (
+            true,
+            yulius_app::ports::harness::SessionMode::New {
+                prompt: Some(prompt),
+                ..
+            },
+        ) = (self.options.answers_first_message, &launch.mode)
+        {
+            argv.extend(["--prompt".into(), prompt.clone()]);
         }
         plan.plan.argv = argv;
         Ok(plan)
