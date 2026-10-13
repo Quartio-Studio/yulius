@@ -279,11 +279,21 @@ export function allows(access, minimum) {
 }
 
 /**
- * Actions available for a task given sandbox access (UI-013, §6.3). `pr` is the task's pull
- * request (store.pullsOf()), so a task the sidebar shows as Done can be archived or deleted.
+ * Who owns `task` when it is not `me` (the viewer's login), else null: only a task's owner changes
+ * it, as it acts on GitHub with their token (SPEC-070).
  */
-export function taskActions(task, access, pr) {
-  const write = allows(access, 'write');
+export function otherOwner(task, me) {
+  const owner = task && task.owner && task.owner.login;
+  return owner && me && owner !== me ? owner : null;
+}
+
+/**
+ * Actions available for a task given sandbox access (UI-013, §6.3) and the viewer's login `me`:
+ * write actions are the owner's (SPEC-070). `pr` is the task's pull request (store.pullsOf()), so
+ * a task the sidebar shows as Done can be archived or deleted.
+ */
+export function taskActions(task, access, pr, me) {
+  const write = allows(access, 'write') && !otherOwner(task, me);
   const live = isLive(task.status);
   const chained = task.status === 'chained';
   const ended = !live && !chained;

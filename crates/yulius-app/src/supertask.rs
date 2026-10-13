@@ -265,6 +265,7 @@ mod tests {
             origin: crate::model::TaskOrigin::Ui,
             automation_run: None,
             created_by: UserId::parse("u1").unwrap_or_else(|_| unreachable!()),
+            owner: UserId::parse("u1").unwrap_or_else(|_| unreachable!()),
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
             closed_at: None,

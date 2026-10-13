@@ -206,7 +206,7 @@ pub(crate) fn identity(user: &UserRecord) -> (String, String) {
     }
 }
 
-/// [`identity`] of an optional user (a task's creator, the acting person): Yulius's own
+/// [`identity`] of an optional user (a task's owner, the acting person): Yulius's own
 /// identity without one.
 pub(crate) fn commit_identity(user: Option<&UserRecord>) -> (String, String) {
     user.map_or_else(yulius_identity, identity)

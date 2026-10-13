@@ -82,15 +82,17 @@ pub(crate) fn inside(root: &Path, path: &Path) -> bool {
 
 impl App {
     /// The worktree of `task` when it belongs to `sandbox` and lies inside the sandbox
-    /// directory (shared by the editor and sandbox shells).
+    /// directory (shared by the editor and sandbox shells). With a `writer`, they must own the
+    /// task (SPEC-070).
     ///
     /// # Errors
-    /// `NotFound` for unknown tasks or tasks of other sandboxes, `Conflict` when the task has
-    /// no worktree on disk.
+    /// `NotFound` for unknown tasks or tasks of other sandboxes, `Forbidden` for a writer who
+    /// does not own the task, `Conflict` when the task has no worktree on disk.
     pub(crate) async fn sandbox_worktree(
         &self,
         sandbox: &SandboxRecord,
         task: &str,
+        writer: Option<&AuthContext>,
     ) -> AppResult<PathBuf> {
         let task_id = TaskId::parse(task).map_err(|_| AppError::NotFound)?;
         let task = self
@@ -100,6 +102,11 @@ impl App {
             .await?
             .filter(|t| t.sandbox_id == sandbox.id)
             .ok_or(AppError::NotFound)?;
+        // Changing a task's worktree is its owner's: its agent commits and pushes what is there
+        // as them (SPEC-070).
+        if let Some(ctx) = writer {
+            self.require_owner(ctx, &task).await?;
+        }
         let no_worktree = || AppError::Conflict("the task has no worktree yet".into());
         let path = task.worktree_path.ok_or_else(no_worktree)?;
         let worktree = std::fs::canonicalize(&path).map_err(|_| no_worktree())?;
@@ -113,13 +120,15 @@ impl App {
         Ok(worktree)
     }
 
-    /// Resolves `root` and `path` for a write user of `sandbox`.
+    /// Resolves `root` and `path` for a write user of `sandbox`; to `write` into a task's
+    /// worktree they must own the task (SPEC-070).
     pub(crate) async fn file_target(
         &self,
         ctx: &AuthContext,
         sandbox: &str,
         root: Option<&str>,
         path: &str,
+        write: bool,
     ) -> AppResult<Target> {
         let sandbox_id = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
         let (record, _) = self.require(&ctx.user, &sandbox_id, Action::Work).await?;
@@ -137,7 +146,8 @@ impl App {
                 let task = other
                     .strip_prefix("task:")
                     .ok_or_else(|| AppError::Invalid("root is sandbox or task:<id>".into()))?;
-                self.sandbox_worktree(&record, task).await?
+                self.sandbox_worktree(&record, task, write.then_some(ctx))
+                    .await?
             }
         };
         let root = std::fs::canonicalize(&folder).map_err(|e| io_error(&e))?;
@@ -182,7 +192,7 @@ impl App {
         root: Option<&str>,
         path: &str,
     ) -> AppResult<DirListing> {
-        let target = self.file_target(ctx, sandbox, root, path).await?;
+        let target = self.file_target(ctx, sandbox, root, path, false).await?;
         let dir = Self::existing(&target)?;
         let mut entries = Vec::new();
         let mut truncated = false;
@@ -246,7 +256,7 @@ impl App {
         root: Option<&str>,
         path: &str,
     ) -> AppResult<FileContent> {
-        let target = self.file_target(ctx, sandbox, root, path).await?;
+        let target = self.file_target(ctx, sandbox, root, path, false).await?;
         let file = Self::existing(&target)?;
         let meta = std::fs::metadata(&file).map_err(|e| io_error(&e))?;
         if meta.is_dir() {
@@ -303,7 +313,7 @@ impl App {
             )));
         }
         let target = self
-            .file_target(ctx, sandbox, req.root.as_deref(), &req.path)
+            .file_target(ctx, sandbox, req.root.as_deref(), &req.path, true)
             .await?;
         let parent = target
             .path
@@ -404,7 +414,7 @@ impl App {
             return Err(AppError::Invalid("kind is file or dir".into()));
         }
         let target = self
-            .file_target(ctx, sandbox, req.root.as_deref(), &req.path)
+            .file_target(ctx, sandbox, req.root.as_deref(), &req.path, true)
             .await?;
         if target.relative.is_empty() {
             return Err(AppError::Invalid("a directory name is required".into()));
@@ -450,7 +460,7 @@ impl App {
         root: Option<&str>,
         path: &str,
     ) -> AppResult<()> {
-        let target = self.file_target(ctx, sandbox, root, path).await?;
+        let target = self.file_target(ctx, sandbox, root, path, true).await?;
         if target.relative.is_empty() {
             return Err(AppError::Invalid(
                 "the folder itself cannot be deleted".into(),

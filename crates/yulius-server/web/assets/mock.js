@@ -170,6 +170,8 @@ function seed(params) {
       id, sandbox_id: sandbox, number, title, harness, status, activity,
       branch: extra.branch === null ? null : `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`,
       origin: extra.origin || 'ui', created_by: { login: extra.author || 'mkarp' },
+      // A task someone handed over has an owner other than its author (SPEC-070).
+      ...(extra.owner ? { owner: { login: extra.owner } } : {}),
       // Created before its last change (an old task's sessions never last a negative time).
       created_at: iso(Math.max(extra.age || number * 3 * HOUR, (extra.updated ?? number * 7 * MIN) + HOUR)), updated_at: iso(extra.updated ?? number * 7 * MIN),
       archived: Boolean(extra.archived),
@@ -197,7 +199,7 @@ function seed(params) {
     t('sb_studio', 14, 'Start the preview server', 'claude', 'running', 'done', { mode: 'goal', done: 7, current: false, updated: 2 * MIN, shells: 1 }),
     t('sb_studio', 12, 'Checkout API', 'claude', 'running', 'working', { done: 2, updated: 20e3, prompt: `# Checkout API\n\nBuild the checkout endpoint:\n\n- Stripe payment intents\n- an idempotency key per order\n\n@${MOCK_ATTACHMENTS}/checkout-error.png\n@${MOCK_ATTACHMENTS}/notes.txt\n@${MOCK_ATTACHMENTS}/old-mockup.png` }),
     // Finished its turn with a tested pull request (checks green) and a complete plan: "Done" (#35, #139).
-    t('sb_studio', 11, '3D model viewer', 'claude', 'running', 'waiting', { done: 7, current: false, author: 'anna-q', delivery: { stage: 'pr_open', environment: null, pr: pr(221, '3D model viewer', 'open', 'dev', 'success') } }),
+    t('sb_studio', 11, '3D model viewer', 'claude', 'running', 'waiting', { done: 7, current: false, author: 'anna-q', owner: 'mkarp', delivery: { stage: 'pr_open', environment: null, pr: pr(221, '3D model viewer', 'open', 'dev', 'success') } }),
     t('sb_studio', 10, 'AWS login for deploy', 'claude', 'running', 'needs_attention', { done: 4 }),
     t('sb_studio', 9, 'Move to the next account', 'claude', 'switching', null, { done: 3 }),
     t('sb_studio', 8, 'Nightly feedback digest', 'claude', 'queued', null, { origin: 'automation', noSteps: true }),
@@ -305,6 +307,8 @@ function summary(task) {
     id: task.id, sandbox_id: task.sandbox_id, number: task.number, title: task.title, harness: task.harness,
     status: task.status, activity: task.status === 'running' || task.status === 'waiting_capacity' ? task.activity : null,
     branch: task.branch, origin: task.origin, created_by: task.created_by, created_at: task.created_at, updated_at: task.updated_at,
+    // The owner, whose GitHub token the task uses, and a waiting request for control (SPEC-070).
+    owner: { ...ownerOf(task) }, control_request: task.controlRequest ? { by: { ...task.controlRequest.by }, at: task.controlRequest.at } : null,
     steps: stepsSummary(task), archived: task.archived, account_label: task.account_label,
     resumes_at: task.status === 'waiting_capacity' ? task.resumes_at || null : null,
     // Chained tasks (TSK-012) and a held prompt (TSK-013).
@@ -528,8 +532,16 @@ function need(sandbox, level) {
   if ((RANK[sandbox.access] || 0) < RANK[level]) fail(403, 'forbidden', `Requires ${level} permission on ${sandbox.repo.owner}/${sandbox.repo.name} (you have ${sandbox.access}).`);
 }
 
+/** Who owns `task` (SPEC-070): its creator until a hand-over. */
+function ownerOf(task) {
+  return task.owner || task.created_by;
+}
+
+/** Changing a task needs write access and its ownership, like the server's `load_task`. */
 function needTaskWrite(db, task) {
   need(sandboxOf(db, task.sandbox_id), 'write');
+  const owner = ownerOf(task).login;
+  if (owner !== db.me.user.login) fail(403, 'forbidden', `Task #${task.number} is @${owner}'s: it acts on GitHub as them. Ask them for control.`);
 }
 
 function hashString(s) {
@@ -987,6 +999,31 @@ route('POST', `/api/tasks/${ID}/archive`, async ({ db, p }) => {
   const finished = task.status === 'running' && taskInfo(summary(task), null, pullOf(task)).group === 'done';
   if (LIVE.has(task.status) && !finished) fail(409, 'conflict', 'Stop the task before archiving it.');
   touch(db, task, finished ? { archived: true, status: 'closed', activity: null } : { archived: true });
+  return summary(task);
+});
+// Control of a task (SPEC-070): ask its owner, withdraw or decline, hand over.
+route('POST', `/api/tasks/${ID}/control-request`, ({ db, p }) => {
+  const task = taskOf(db, p[0]);
+  need(sandboxOf(db, task.sandbox_id), 'write');
+  const me = db.me.user.login;
+  if (ownerOf(task).login === me) fail(409, 'conflict', 'you already own this task');
+  const asked = task.controlRequest && task.controlRequest.by.login;
+  if (asked && asked !== me) fail(409, 'conflict', `@${asked} already asked for control of this task; ask again once @${ownerOf(task).login} has answered`);
+  if (!asked) touch(db, task, { controlRequest: { by: { login: me }, at: new Date().toISOString() } });
+  return summary(task);
+});
+route('DELETE', `/api/tasks/${ID}/control-request`, ({ db, p }) => {
+  const task = taskOf(db, p[0]);
+  if (!task.controlRequest) fail(409, 'conflict', 'nobody asks for control of this task');
+  if (task.controlRequest.by.login !== db.me.user.login) needTaskWrite(db, task);
+  touch(db, task, { controlRequest: null });
+  return summary(task);
+});
+route('POST', `/api/tasks/${ID}/control-request/accept`, ({ db, p }) => {
+  const task = taskOf(db, p[0]);
+  needTaskWrite(db, task);
+  if (!task.controlRequest) fail(409, 'conflict', 'nobody asks for control of this task');
+  touch(db, task, { owner: { ...task.controlRequest.by }, controlRequest: null });
   return summary(task);
 });
 route('POST', `/api/tasks/${ID}/restore`, ({ db, p }) => {
@@ -2877,7 +2914,8 @@ class TermSession {
   }
 
   canWrite() {
-    return (RANK[this.sandbox().access] || 0) >= RANK.write && LIVE.has(this.task.status);
+    return (RANK[this.sandbox().access] || 0) >= RANK.write && LIVE.has(this.task.status)
+      && ownerOf(this.task).login === this.db.me.user.login;
   }
 
   // Like the server: a viewer with write access controls the size unless another one does.

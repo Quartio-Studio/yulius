@@ -7,12 +7,20 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-10-13
 
 - Home's cards and the sandbox tabs count "working" and "queued" by the sidebar's rule (SPEC-076,
-  ADR-0060, task #62; #170). One domain rule (`AttentionFacts::group`) gives each task its sidebar
+  ADR-0061, task #62; #170). One domain rule (`AttentionFacts::group`) gives each task its sidebar
   group: "queued" counts queued and chained tasks, "working" the rest of the Working group
   (running, starting, continuing, paused, in review), so a card's working + queued is the
   sidebar's Working count. A Done task or one being stopped counts in neither, and a task being
   stopped no longer counts as needing you.
 
+- A task is owned by one person, whose GitHub credentials it uses (SPEC-070, ADR-0060, task #66).
+  Every task has an owner, its creator until a hand-over. The task's Git, `gh`, pull requests,
+  merges, commit identity and agent authority are the owner's. Only the owner changes the task:
+  anyone else, administrators included, gets 403 naming the owner, watches the terminal
+  read-only and cannot write into the task's worktree or open a shell there. They can ask for control (Request control in the task). The owner hands it over or
+  declines, and the asker may withdraw. From the hand-over on, the task acts on GitHub as the new
+  owner, and its terminal says so. An owner who is disabled, deleted or without write access
+  passes control at once. Schema version 18 (`tasks.owner_id`, the waiting request).
 - A session opened from Sessions reads as Claude Code's TUI printed it (SPEC-075, ADR-0059, task #71).
   Prompts and slash commands show as `>` lines and messages and tool calls as `⏺`, with each result
   under `⎿` folded to its first lines ("Read 2 lines", "… +2 lines"). Edits show as `Update(path)`

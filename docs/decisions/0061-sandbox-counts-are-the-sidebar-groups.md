@@ -1,4 +1,4 @@
-# 0060. A sandbox's counts are the sidebar's groups, decided by one domain rule
+# 0061. A sandbox's counts are the sidebar's groups, decided by one domain rule
 
 ## Status
 

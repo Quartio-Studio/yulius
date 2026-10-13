@@ -1227,6 +1227,7 @@ async fn seed_agent(
             origin: TaskOrigin::Ui,
             automation_run: None,
             created_by: UserId::parse("u-alice")?,
+            owner: UserId::parse("u-alice")?,
             created_at: Timestamp(BASE),
             updated_at: Timestamp(BASE),
             closed_at: None,

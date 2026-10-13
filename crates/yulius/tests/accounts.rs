@@ -827,6 +827,7 @@ async fn insert_live_attempt(h: &support::Harness, account: &AccountId) -> TestR
             origin: TaskOrigin::Ui,
             automation_run: None,
             created_by: UserId::parse("u")?,
+            owner: UserId::parse("u")?,
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
             closed_at: None,
