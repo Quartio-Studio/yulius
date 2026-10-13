@@ -606,6 +606,155 @@ fn a_background_shell_keeps_the_task_working_until_it_ends() -> TestResult {
     Ok(())
 }
 
+/// STA-001 (SPEC-032, tasks #24 and #25): the goal turn ends with a background agent still
+/// working (Claude Code's `turn_duration` says one is pending): the task is not Done, it is
+/// Working with that background work said, until the agent finishes and wakes the session.
+#[test]
+fn a_pending_background_agent_keeps_the_task_working_until_it_finishes() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            goal_agent: Some(20),
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Review the merge").await?;
+        wait_for("the achieved goal", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "Goal achieved")
+        })
+        .await?;
+        wait_for("one pending agent", Duration::from_secs(40), || async {
+            shown(&app, &id)
+                .await
+                .ok()
+                .is_some_and(|(_, shells)| shells == Some(1))
+        })
+        .await?;
+        assert!(
+            !screen_contains(&app, &id, "AGENT DONE").await,
+            "the agent still works"
+        );
+        // The agent ends and wakes the session; the turn after it says nothing is pending.
+        wait_for("the agent's end", Duration::from_secs(45), || {
+            screen_contains(&app, &id, "AGENT DONE")
+        })
+        .await?;
+        // Nothing pending and not Working: the fake's wake-up turn settles at once, so the goal
+        // still counts; a real session's later wake-up turn reads "Your turn" (the prompt-like
+        // line resets the goal), which this check does not pin.
+        wait_for("nothing pending, idle", Duration::from_secs(60), || async {
+            shown(&app, &id)
+                .await
+                .ok()
+                .is_some_and(|(activity, shells)| {
+                    shells == Some(0) && matches!(activity.as_deref(), Some("done" | "waiting"))
+                })
+        })
+        .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// STA-004, STA-005 (SPEC-032, task #24 between 15:55:22 and 15:55:30): Yulius's Stop hook ends
+/// the goal turn (the task is idle), then Claude Code sends the agent on: the evaluator's "not
+/// met" verdict, or another Stop hook that continues the turn. The task is Working while the
+/// agent goes on, and Done once its goal is achieved. One test per way, each within the
+/// integration suite's time limit.
+fn a_session_goes_on_from_its_stop(verdict: bool, marker: &str) -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            goal_continue_ms: Some(10_000),
+            goal_continue_verdict: verdict,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
+        wait_for(marker, Duration::from_secs(90), || {
+            screen_contains(&app, &id, marker)
+        })
+        .await?;
+        // Well before the agent's next record (the verdict case: 10 s), the task works.
+        wait_for(
+            "Working while the session goes on",
+            Duration::from_secs(7),
+            || async { activity(&app, &id).await == Some(Activity::Working) },
+        )
+        .await?;
+        wait_for("Done", Duration::from_secs(60), || async {
+            activity(&app, &id).await == Some(Activity::Done)
+        })
+        .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+#[test]
+fn a_goal_not_met_does_not_leave_the_task_waiting() -> TestResult {
+    a_session_goes_on_from_its_stop(true, "GOAL NOT MET")
+}
+
+#[test]
+fn a_stop_a_hook_continued_does_not_leave_the_task_waiting() -> TestResult {
+    a_session_goes_on_from_its_stop(false, "STOP CONTINUED")
+}
+
+/// STA-004 (review of SPEC-032): the goal verdict "not met" sends the agent on, then an API error
+/// ends that turn and Claude Code runs no Stop hook. The task does not stay Working for good: the
+/// record that closes the turn makes it wait for the person again.
+#[test]
+fn a_continued_turn_that_dies_without_a_stop_leaves_the_task_waiting() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            goal_continue_ms: Some(6_000),
+            goal_continue_verdict: true,
+            goal_continue_dies: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
+        wait_for("the verdict", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "GOAL NOT MET")
+        })
+        .await?;
+        wait_for("Working", Duration::from_secs(4), || async {
+            activity(&app, &id).await == Some(Activity::Working)
+        })
+        .await?;
+        wait_for("the turn's death", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "CONTINUATION DIED")
+        })
+        .await?;
+        wait_for("Your turn again", Duration::from_secs(10), || async {
+            activity(&app, &id).await == Some(Activity::Waiting)
+        })
+        .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// TSK-014 recovery: a restart replays the transcripts of reattached runs. A Done task stays Done
 /// (a replayed prompt used to put it back to Working), and a goal achieved while Yulius was down
 /// (its Stop hook unanswered) makes that task Done.

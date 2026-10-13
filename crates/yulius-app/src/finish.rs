@@ -10,9 +10,12 @@
 //! Background shells the agent left running (Claude Code's "· 1 shell") are probed from the
 //! process table while the task is idle — at the clean Stop, when the goal is achieved and every
 //! [`SHELL_PROBE_MS`] — and reported with the task; the UI shows a done task with a shell still
-//! running as Working ("1 background shell still running"). A probe that cannot read the process
+//! running as Working ("1 background task still running"). A probe that cannot read the process
 //! table, or takes longer than [`SHELL_PROBE_TIMEOUT`], reports nothing: the task is not held
-//! back by it (Claude Code wakes the agent when a shell ends anyway).
+//! back by it (Claude Code wakes the agent when a shell ends anyway). Background agents are no
+//! process of that tree: Claude Code says how many it still waits for in the record that closes
+//! the turn (`pendingBackgroundAgentCount`, SPEC-032), and the larger of the two counts is the
+//! idle task's background work.
 //!
 //! After a restart the transcript of a reattached run is read again from its start; it is reduced
 //! to its final state ([`TranscriptFacts`]) and applied once, so a replayed prompt cannot put a
@@ -42,6 +45,9 @@ pub struct TranscriptFacts {
     pub turn_open: Option<bool>,
     /// Whether the session's goal stands achieved; `None` when nothing said either way.
     pub goal_achieved: Option<bool>,
+    /// Background agents Claude Code still waited for when the last turn ended (0 after a new
+    /// prompt or when it did not say).
+    pub background_agents: u32,
 }
 
 impl TranscriptFacts {
@@ -51,10 +57,15 @@ impl TranscriptFacts {
             Observation::UserTurn { .. } => {
                 self.turn_open = Some(true);
                 self.goal_achieved = Some(false);
+                self.background_agents = 0;
             }
-            Observation::TurnComplete
-            | Observation::TurnEnded
-            | Observation::TurnInterrupted { .. } => self.turn_open = Some(false),
+            Observation::TurnEnded { background_agents } => {
+                self.turn_open = Some(false);
+                self.background_agents = background_agents.unwrap_or(0);
+            }
+            Observation::TurnComplete | Observation::TurnInterrupted { .. } => {
+                self.turn_open = Some(false);
+            }
             Observation::Goal(GoalOutcome::Met) => {
                 self.goal_achieved = Some(true);
                 self.turn_open = Some(false);
@@ -71,8 +82,65 @@ impl TranscriptFacts {
                 self.goal_achieved = Some(false);
             }
             Observation::Session { .. } | Observation::LimitReached { .. } => {}
+            // An assistant line that is not a turn's end after a recorded end: a Stop hook
+            // continued the turn (STA-005).
+            Observation::AgentWork { .. } => self.turn_open = Some(true),
         }
     }
+}
+
+/// The idle task's background work: the shell probe's count (`-1` = not known) and the background
+/// agents Claude Code counted. An unknown probe stays unknown without agents.
+#[must_use]
+pub(crate) fn combine_background(probe: i64, agents: u32) -> i64 {
+    if agents > 0 {
+        probe.max(i64::from(agents))
+    } else {
+        probe
+    }
+}
+
+/// Whether the record that closes the turn of a clean Stop (`stop_ms`, 0 = none) is still
+/// expected: not seen since (`record_ms`) and the Stop is younger than [`TURN_RECORD_WAIT`].
+#[must_use]
+pub(crate) fn turn_record_pending(stop_ms: i64, record_ms: i64, now_ms: i64) -> bool {
+    stop_ms > 0
+        && record_ms < stop_ms
+        && now_ms.saturating_sub(stop_ms) < TURN_RECORD_WAIT.as_millis() as i64
+}
+
+/// How long a decision at a clean Stop waits for the record that closes the turn, which says how
+/// many background agents are pending (it is written after the Stop hooks, about a poll later).
+const TURN_RECORD_WAIT: Duration = Duration::from_secs(3);
+
+/// What assistant work seen in the transcript (`at`) does to a running task's activity
+/// (STA-003, STA-005): after the last clean stop (`last_stop_ms`) it shows the session goes on, so
+/// an idle task is Working again (a Stop hook continued the turn, a wake-up started one); and
+/// after the notice that flagged it (`notice_ms`, 0 = none) it shows the person's answer arrived.
+/// Work without a time is not trusted: a line read late must not reopen a finished turn.
+#[must_use]
+pub fn activity_on_work(
+    current: Option<Activity>,
+    at: Option<yulius_domain::time::Timestamp>,
+    last_stop_ms: i64,
+    notice_ms: i64,
+) -> Option<Activity> {
+    let after = |ms: i64| at.is_some_and(|at| at.0 > ms);
+    match current {
+        Some(Activity::Waiting | Activity::Done) if after(last_stop_ms) => Some(Activity::Working),
+        Some(Activity::NeedsAttention) if notice_ms > 0 && after(notice_ms) => {
+            Some(Activity::Working)
+        }
+        _ => None,
+    }
+}
+
+/// What a goal verdict of "not met" does (STA-004): the session carries on, so an idle task is
+/// Working again. Claude Code's evaluator is a Stop hook that runs after Yulius's own, which has
+/// already made the task idle.
+#[must_use]
+pub fn activity_on_goal_not_met(current: Option<Activity>) -> Option<Activity> {
+    matches!(current, Some(Activity::Waiting | Activity::Done)).then_some(Activity::Working)
 }
 
 /// Whether a `UserPromptSubmit` prompt is one a person (or Yulius) typed, not a wake-up Claude
@@ -89,6 +157,7 @@ impl App {
     pub(crate) fn activity_after_clean_turn(&self, task_id: &TaskId) -> Activity {
         let runtime = self.runtime(task_id);
         runtime.last_stop_ms.store(self.now().0, Ordering::SeqCst);
+        runtime.resumed_turn.store(false, Ordering::SeqCst);
         Activity::after_clean_turn(runtime.goal_achieved.load(Ordering::SeqCst))
     }
 
@@ -159,8 +228,57 @@ impl App {
             .store(false, Ordering::SeqCst);
     }
 
+    /// The agent produced work (an assistant line that is not a turn's end, at `at`): when the
+    /// task does not say so, it is working (STA-003, STA-005, [`activity_on_work`]). Cheap while a
+    /// turn is known to be in progress and no notice flags the task.
+    pub(crate) async fn agent_worked(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        at: Option<yulius_domain::time::Timestamp>,
+    ) {
+        let runtime = self.runtime(task_id);
+        let notice_ms = runtime.notice_attention_ms.load(Ordering::SeqCst);
+        if notice_ms == 0 && runtime.turn_in_progress() {
+            return;
+        }
+        let Ok(Some(task)) = self.deps.store.task(task_id).await else {
+            return;
+        };
+        if task.status != TaskStatus::Running {
+            return;
+        }
+        let last_stop_ms = runtime.last_stop_ms.load(Ordering::SeqCst);
+        match activity_on_work(task.activity, at, last_stop_ms, notice_ms) {
+            Some(next) => self.resume_working(&task, next).await,
+            // Working already: the next lines need no look at the store.
+            None if task.activity == Some(Activity::Working) => runtime.start_turn(self.now()),
+            None => {}
+        }
+    }
+
+    /// The session goes on although the task read idle or flagged: it is `next` (Working).
+    async fn resume_working(self: &Arc<Self>, task: &crate::model::TaskRecord, next: Activity) {
+        tracing::info!(task = %task.id, was = ?task.activity, "the agent works on: the task is working");
+        let runtime = self.runtime(&task.id);
+        runtime.background_agents.store(0, Ordering::SeqCst);
+        runtime.resumed_turn.store(true, Ordering::SeqCst);
+        runtime.start_turn(self.now());
+        if let Err(err) = self.set_task_activity(task, next).await {
+            tracing::warn!(task = %task.id, error = %err, "could not update the task's activity");
+        }
+    }
+
     /// Claude Code recorded the session goal's state.
     pub(crate) async fn goal_observed(self: &Arc<Self>, task_id: &TaskId, outcome: GoalOutcome) {
+        if outcome == GoalOutcome::NotMet
+            && let Ok(Some(task)) = self.deps.store.task(task_id).await
+            && task.status == TaskStatus::Running
+            && let Some(next) = activity_on_goal_not_met(task.activity)
+        {
+            // The evaluator sent the agent back to work after Yulius's own Stop hook ended the
+            // turn (STA-004).
+            self.resume_working(&task, next).await;
+        }
         let achieved = outcome == GoalOutcome::Met;
         self.runtime(task_id)
             .goal_submitted
@@ -184,6 +302,9 @@ impl App {
         if let Some(achieved) = facts.goal_achieved {
             runtime.goal_achieved.store(achieved, Ordering::SeqCst);
         }
+        runtime
+            .background_agents
+            .store(facts.background_agents, Ordering::SeqCst);
         let Ok(Some(task)) = self.deps.store.task(task_id).await else {
             return;
         };
@@ -242,11 +363,59 @@ impl App {
         }
         self.probe_idle_shells(task_id).await;
         if next == Some(Activity::Done) {
-            // Tasks chained after this one start once it is Done (TSK-012).
-            self.advance_chains(task_id).await;
-            // A Done task no longer counts against the session limit (SES-101): a queued task
-            // can start now.
-            self.drain_queue().await;
+            // Tasks chained after this one start once it is Done (TSK-012), and a Done task no
+            // longer counts against the session limit (SES-101): a queued task can start now.
+            // Not from this loop, which must go on reading the record that says what is still
+            // pending.
+            let (app, task_id) = (Arc::clone(self), task_id.clone());
+            tokio::spawn(async move {
+                app.advance_chains(&task_id).await;
+                app.drain_queue().await;
+            });
+        }
+    }
+
+    /// Waits (bounded) until the record that closes the turn of the last clean Stop was seen:
+    /// before it the task's background agents are not known, and a task with one pending is not
+    /// done. No wait without a recent Stop (a replay, a hookless run), for a run that is not
+    /// watched, or once the record came.
+    pub(crate) async fn await_turn_record(&self, task_id: &TaskId) {
+        let runtime = self.runtime(task_id);
+        // No record can arrive for a run that ended or is not watched: nothing to wait for.
+        if !runtime.is_watching() {
+            return;
+        }
+        let pending = || {
+            turn_record_pending(
+                runtime.last_stop_ms.load(Ordering::SeqCst),
+                runtime.turn_record_ms.load(Ordering::SeqCst),
+                self.now().0,
+            )
+        };
+        while pending() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// The record that closes a turn was seen (its background agents are applied already). A
+    /// turn the verdict or later work had resumed and that ends with no Stop hook (an error ended
+    /// it) leaves the task idle again, not Working for good.
+    pub(crate) async fn turn_record_seen(self: &Arc<Self>, task_id: &TaskId) {
+        let runtime = self.runtime(task_id);
+        runtime.turn_record_ms.store(self.now().0, Ordering::SeqCst);
+        if !runtime.resumed_turn.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        let Ok(Some(task)) = self.deps.store.task(task_id).await else {
+            return;
+        };
+        if task.status == TaskStatus::Running && task.activity == Some(Activity::Working) {
+            runtime.end_turn(self.now());
+            let next = Activity::after_clean_turn(runtime.goal_achieved.load(Ordering::SeqCst));
+            if let Err(err) = self.set_task_activity(&task, next).await {
+                tracing::warn!(task = %task_id, error = %err, "could not settle the task");
+            }
+            self.probe_idle_shells(task_id).await;
         }
     }
 
@@ -284,6 +453,14 @@ impl App {
             }
             None => -1,
         };
+        // Background agents are no process of the session's shell tree: Claude Code counts them
+        // in its turn record (STA-001). The count is the larger of the two views of the same
+        // background work (a background Bash command is in both).
+        let count = if idle {
+            combine_background(count, runtime.background_agents.load(Ordering::SeqCst))
+        } else {
+            count
+        };
         let previous = runtime.background_shells.swap(count, Ordering::SeqCst);
         // How long the idle agent's shells have been running, which the UI shows (SHL-002).
         let now = self.now().0;
@@ -298,14 +475,41 @@ impl App {
             }
             self.publish_task(task_id).await;
             if previous > 0 && count == 0 {
-                // The last shell ended: a done task is Done now, and its chain may start.
-                self.advance_chains(task_id).await;
+                // The last shell ended: a done task is Done now, and its chain may start (not
+                // from the watcher's loop: the chain waits for the turn record).
+                let (app, task_id) = (Arc::clone(self), task_id.clone());
+                tokio::spawn(async move { app.advance_chains(&task_id).await });
             }
         }
     }
 
-    /// Whether the task's agent has background shells running right now (a fresh probe).
+    /// Claude Code ended a turn and said how many background agents it still waits for: a change
+    /// settles the idle task's background work at once (STA-001).
+    pub(crate) async fn background_agents_observed(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        agents: u32,
+    ) {
+        let previous = self
+            .runtime(task_id)
+            .background_agents
+            .swap(agents, Ordering::SeqCst);
+        if previous != agents {
+            self.probe_idle_shells(task_id).await;
+        }
+    }
+
+    /// Whether the task's agent has background work running right now: a fresh probe of its
+    /// shells, or background agents its last turn end said it waits for.
     pub(crate) async fn shells_running_now(&self, task_id: &TaskId) -> bool {
+        if self
+            .runtime(task_id)
+            .background_agents
+            .load(Ordering::SeqCst)
+            > 0
+        {
+            return true;
+        }
         let Ok(Some(attempt)) = self.deps.store.live_attempt(task_id).await else {
             return false;
         };
@@ -351,6 +555,56 @@ mod tests {
         at: Some(Timestamp(1)),
     };
 
+    const ENDED: Observation = Observation::TurnEnded {
+        background_agents: None,
+    };
+    const WORK: Observation = Observation::AgentWork {
+        at: Some(Timestamp(2)),
+    };
+
+    /// STA-001: a replayed turn end that says background agents are pending keeps them, until the
+    /// next prompt.
+    #[test]
+    fn a_replay_keeps_the_background_agents_of_the_last_turn_end() {
+        let pending = Observation::TurnEnded {
+            background_agents: Some(2),
+        };
+        let waiting = reduce(&[PROMPT, Observation::TurnComplete, pending.clone()]);
+        assert_eq!(waiting.turn_open, Some(false));
+        assert_eq!(waiting.background_agents, 2);
+        // The wake-up is a user line: a new turn, nothing pending until it ends.
+        let woken = reduce(&[PROMPT, pending.clone(), PROMPT]);
+        assert_eq!((woken.turn_open, woken.background_agents), (Some(true), 0));
+        let done = reduce(&[PROMPT, pending, PROMPT, ENDED]);
+        assert_eq!((done.turn_open, done.background_agents), (Some(false), 0));
+    }
+
+    /// STA-005: a stop the hook continued (a goal not met, a notice) is no end of the turn:
+    /// assistant work after the turn's last end line reopens it, however the replay ends.
+    #[test]
+    fn work_after_a_stop_the_hook_continued_keeps_the_turn_open() {
+        let blocked = reduce(&[PROMPT, Observation::TurnComplete, WORK]);
+        assert_eq!(blocked.turn_open, Some(true));
+        // The agent finishes the continued turn: closed again by its own end.
+        let closed = reduce(&[
+            PROMPT,
+            Observation::TurnComplete,
+            WORK,
+            Observation::TurnComplete,
+            ENDED,
+        ]);
+        assert_eq!(closed.turn_open, Some(false));
+        // The person interrupted afterwards.
+        let stopped = reduce(&[
+            PROMPT,
+            WORK,
+            Observation::TurnInterrupted {
+                at: Some(Timestamp(3)),
+            },
+        ]);
+        assert_eq!(stopped.turn_open, Some(false));
+    }
+
     /// TSK-014: a replay is reduced to its final state, in transcript order.
     #[test]
     fn a_replayed_transcript_reduces_to_its_final_state() {
@@ -361,21 +615,18 @@ mod tests {
             PROMPT,
             Observation::TurnComplete,
             Observation::Goal(GoalOutcome::Met),
-            Observation::TurnEnded,
+            ENDED,
         ]);
         assert_eq!(
             finished,
             TranscriptFacts {
                 turn_open: Some(false),
-                goal_achieved: Some(true)
+                goal_achieved: Some(true),
+                background_agents: 0,
             }
         );
         // Typed again after the goal: a new open turn, the goal no longer counts.
-        let again = reduce(&[
-            Observation::Goal(GoalOutcome::Met),
-            Observation::TurnEnded,
-            PROMPT,
-        ]);
+        let again = reduce(&[Observation::Goal(GoalOutcome::Met), ENDED, PROMPT]);
         assert_eq!(again.turn_open, Some(true));
         assert_eq!(again.goal_achieved, Some(false));
         // Not met yet: the agent continues.
@@ -398,6 +649,83 @@ mod tests {
             window_minutes: None,
         }]);
         assert_eq!(limit, TranscriptFacts::default());
+    }
+
+    /// STA-003, STA-005: assistant work reopens an idle task only when it is newer than the last
+    /// stop, and takes back a notice's flag only when it is newer than the notice.
+    #[test]
+    fn work_after_the_stop_or_the_notice_makes_the_task_working() {
+        use Activity as A;
+        let at = |ms| Some(Timestamp(ms));
+        // Idle tasks: a stop at 100 ms.
+        for idle in [A::Waiting, A::Done] {
+            assert_eq!(
+                activity_on_work(Some(idle), at(101), 100, 0),
+                Some(A::Working)
+            );
+            assert_eq!(
+                activity_on_work(Some(idle), at(100), 100, 0),
+                None,
+                "same instant: old turn"
+            );
+            assert_eq!(
+                activity_on_work(Some(idle), at(40), 100, 0),
+                None,
+                "read late"
+            );
+            assert_eq!(
+                activity_on_work(Some(idle), None, 100, 0),
+                None,
+                "no time, no trust"
+            );
+        }
+        // Flagged by a notice at 50 ms: the answer arrived.
+        assert_eq!(
+            activity_on_work(Some(A::NeedsAttention), at(60), 0, 50),
+            Some(A::Working)
+        );
+        assert_eq!(
+            activity_on_work(Some(A::NeedsAttention), at(50), 0, 50),
+            None
+        );
+        // Flagged by anything else (no notice recorded): not the work's to take back.
+        assert_eq!(
+            activity_on_work(Some(A::NeedsAttention), at(60), 0, 0),
+            None
+        );
+        // Already working, or not known: nothing to change.
+        assert_eq!(activity_on_work(Some(A::Working), at(60), 0, 0), None);
+        assert_eq!(activity_on_work(None, at(60), 0, 0), None);
+    }
+
+    /// STA-004: a goal "not met" makes an idle task Working; it leaves the others alone.
+    #[test]
+    fn a_goal_not_met_makes_an_idle_task_working() {
+        use Activity as A;
+        assert_eq!(activity_on_goal_not_met(Some(A::Waiting)), Some(A::Working));
+        assert_eq!(activity_on_goal_not_met(Some(A::Done)), Some(A::Working));
+        assert_eq!(activity_on_goal_not_met(Some(A::Working)), None);
+        assert_eq!(activity_on_goal_not_met(Some(A::NeedsAttention)), None);
+        assert_eq!(activity_on_goal_not_met(None), None);
+    }
+
+    /// STA-001 (review of SPEC-032): the idle count of background work keeps an unknown probe
+    /// unknown unless agents are pending, and the chain waits only for a record still expected.
+    #[test]
+    fn background_work_and_the_turn_record_wait() {
+        assert_eq!(combine_background(-1, 0), -1, "unknown stays unknown");
+        assert_eq!(combine_background(0, 0), 0);
+        assert_eq!(combine_background(-1, 2), 2);
+        assert_eq!(combine_background(1, 2), 2);
+        assert_eq!(combine_background(3, 2), 3);
+        // A Stop at 1000 ms: the record is expected until it came or 3 s passed.
+        assert!(turn_record_pending(1_000, 0, 1_200));
+        assert!(!turn_record_pending(1_000, 1_100, 1_200), "the record came");
+        assert!(!turn_record_pending(1_000, 0, 4_001), "gave up waiting");
+        assert!(
+            !turn_record_pending(0, 0, 10),
+            "no Stop of this run (replay, hookless)"
+        );
     }
 
     #[test]

@@ -213,6 +213,23 @@ flowchart LR
   SO["Sign-out"] -->|"forget"| LS
 ```
 
+## Task status
+
+A running task's activity is derived from Claude Code's own records, not guessed from the last
+event ([ADR-0034](decisions/0034-task-status-follows-claude-codes-own-records.md)):
+
+```mermaid
+flowchart LR
+    prompt["prompt / wake-up\n(hook, user line)"] --> working
+    stop["clean Stop hook"] --> idle["waiting / done"]
+    turn["turn_duration:\npending background agents"] --> bg["+ background work\n(shown Working)"]
+    idle --> bg
+    verdict["goal verdict: not met"] --> working
+    work["assistant work after the stop"] --> working
+    notice["notice that asks a person"] --> attention["needs_attention"]
+    attention -.->|"agent works on"| working
+```
+
 ## Notes
 
 The tools rail's Notes hold a notepad per sandbox and one for the team, shared and saved while
