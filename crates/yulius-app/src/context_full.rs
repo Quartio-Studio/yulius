@@ -232,7 +232,8 @@ impl App {
             "⚠ The session's context is full (\"Prompt is too long\"). Yulius compacts the \
              conversation to keep the task going…",
         );
-        self.audit_context(&task.id, "context full: compacting").await;
+        self.audit_context(&task.id, "context full: compacting")
+            .await;
         let command = self.task_focus(task).await.compact_command();
         let since = match self.runtime(&task.id).context.lock().map(|e| e.clone()) {
             Ok(ContextEpisode::Compacting { since, .. }) => since,

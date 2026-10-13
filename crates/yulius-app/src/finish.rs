@@ -760,7 +760,12 @@ mod tests {
     /// recovery pending and the turn closed; a later reply or compaction settles it.
     #[test]
     fn a_replay_ending_in_a_full_context_leaves_its_recovery_pending() {
-        let full = reduce(&[PROMPT, Observation::ContextFull, PROMPT, Observation::ContextFull]);
+        let full = reduce(&[
+            PROMPT,
+            Observation::ContextFull,
+            PROMPT,
+            Observation::ContextFull,
+        ]);
         assert!(full.context_full);
         assert_eq!(full.turn_open, Some(false));
         let failed = reduce(&[PROMPT, Observation::ContextFull, Observation::CompactFailed]);

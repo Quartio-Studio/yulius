@@ -174,7 +174,9 @@ mod tests {
     fn long_goals_and_plans_are_bounded() {
         let long = TaskFocus {
             goal: "word ".repeat(1_000),
-            steps_left: (1..=20).map(|n| format!("step {n} {}", "x".repeat(300))).collect(),
+            steps_left: (1..=20)
+                .map(|n| format!("step {n} {}", "x".repeat(300)))
+                .collect(),
             ..focus()
         };
         let command = long.compact_command();

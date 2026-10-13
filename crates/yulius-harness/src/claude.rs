@@ -159,10 +159,14 @@ fn prompt_too_long(record: &Map<String, Value>, text: &str) -> bool {
     let named = |key: &str| {
         str_of(record, key).is_some_and(|value| {
             let lower = value.to_lowercase();
-            PROMPT_TOO_LONG_MARKS.iter().any(|mark| lower.contains(mark))
+            PROMPT_TOO_LONG_MARKS
+                .iter()
+                .any(|mark| lower.contains(mark))
         })
     };
-    text.trim_start().starts_with(PROMPT_TOO_LONG_TEXT) || named("errorDetails") || named("apiError")
+    text.trim_start().starts_with(PROMPT_TOO_LONG_TEXT)
+        || named("errorDetails")
+        || named("apiError")
 }
 
 fn observe_user(record: &Map<String, Value>) -> Vec<Observed> {
@@ -719,7 +723,11 @@ mod tests {
         // A person's prompt about compaction is a prompt.
         let prompt = json_line("why did the Error during compaction happen?");
         let observed = observe_line(&prompt);
-        assert!(observed.iter().any(|o| matches!(o, Observed::UserTurn { .. })));
+        assert!(
+            observed
+                .iter()
+                .any(|o| matches!(o, Observed::UserTurn { .. }))
+        );
         assert!(!observed.contains(&Observed::CompactFailed));
     }
 }
