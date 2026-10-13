@@ -16,6 +16,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 ## 2026-10-12
 
 - Armed merges survive a server restart (a deploy no longer drops them) (SPEC-050 DLV-205).
+- The Cockpit is now the **Agent**, on the right (SPEC-035, ADR-0034; task #33): a top-bar Agent
+  button and the first tool of the right rail open the user's own Claude Code session in the tool
+  panel beside the page, under a notice that it is for quick work (setting up automations, quick
+  questions) and that anything more complex, such as writing code, belongs in a task (with a New
+  task link). It is no longer in the left sidebar; `/s/<slug>/agent` and the old
+  `/s/<slug>/cockpit` open the panel. The API and server keep the `cockpit` names.
 - A sandbox's default memory limit is the host's memory but a reserve (an eighth, at least 4 GiB),
   not half: at half, ten sessions and two CI lanes thrashed the page cache while the host had 20 GB
   free, and CI jobs timed out (SPEC-050 MEM-101).

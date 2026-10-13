@@ -17,8 +17,8 @@ test('a task opens from the sidebar', async ({ app, browser, screen }) => {
 // Task #27 (SPEC-029): "Too much elements here. Only Cockpit, Tasks, Git, CI (and CD in the
 // future), Secrets and Dashboard should be here. Other should be to be expanded".
 // Then: "in CI in brackets put 'tests'": the link says what CI is; the page keeps its title.
+// Task #33 (SPEC-035) moved the Cockpit to the right, as the Agent: it is not in this list.
 const PRIMARY: [string, string, string?][] = [
-  ['Cockpit', 'cockpit'],
   ['Tasks', 'tasks'],
   ['Git', 'git'],
   ['CI (tests)', 'ci', 'CI'],
@@ -33,7 +33,7 @@ const MORE = [
   ['MCP', 'mcp'],
 ];
 
-test('the sandbox navigation shows six pages and expands the rest under More', async ({ app, browser, screen }) => {
+test('the sandbox navigation shows its daily pages and expands the rest under More', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   const nav = screen.getByRole('navigation', 'Sandbox');
   const more = nav.getByRole('button', 'More');
