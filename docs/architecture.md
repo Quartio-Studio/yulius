@@ -205,9 +205,10 @@ sequenceDiagram
     S->>C: types /goal <condition>
 ```
 
-## Agent (the Cockpit)
+## Superagent (the Cockpit)
 
-Every user has one plain Claude Code session per sandbox, shown as the **Agent**
+Every user has one plain Claude Code session per sandbox, shown as the **Superagent**
+([SPEC-074](../.ai/specs/SPEC-074-i-just-hit-usage-limit-in-the-agent-it-s.md), formerly the Agent)
 ([SPEC-021](../.ai/specs/SPEC-021-in-this-bar-we-need-to-add-cockpit-at-th.md),
 [decision 0020](decisions/0020-cockpit-as-a-plain-shell-session.md)); the code and the API still
 call it the Cockpit. It is a sandbox shell of kind `cockpit` that runs `claude` instead of the
@@ -216,6 +217,15 @@ conversation resumed whenever it starts again. The web UI shows it in the right 
 the page, under a notice that it is for quick work only
 ([SPEC-035](../.ai/specs/SPEC-035-move-cockpit-to-the-right-and-change-coc.md),
 [decision 0036](decisions/0036-agent-in-the-right-panel.md)).
+
+A Cockpit remembers its pool subscription (in `shell.json`) and watches its newest conversation
+while it runs ([SPEC-074](../.ai/specs/SPEC-074-i-just-hit-usage-limit-in-the-agent-it-s.md),
+[decision 0051](decisions/0051-cockpit-moves-past-a-usage-limit.md)). A usage limit recorded after
+it started is recorded on that subscription as a task's is. The Cockpit then starts again, under
+its start lock, on a subscription with capacity. It resumes the conversation stepped back over the
+limit with Claude Code's interrupted-turn flag, as a task does after a limit (SPEC-034). The old
+process ends with the exit status `switched`, and the panel follows it to the new one. Without
+capacity, it stays and its viewers get a notice.
 
 It manages the project through the Yulius MCP server
 ([SPEC-037](../.ai/specs/SPEC-037-i-got-something-like-this-tasks-and-cock.md),
@@ -231,8 +241,9 @@ the audit actor, never on the caller's own task
 
 ```mermaid
 flowchart LR
-  UI["Right panel: Agent"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
+  UI["Right panel: Superagent"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
   APP -->|"pool_account"| POOL[("Subscriptions")]
+  W["Cockpit watch: newest conversation"] -->|"usage limit after the start: record_limit, start again (switched)"| APP
   APP -->|"plan_cockpit"| HP["Harness: claude [--resume id] --mcp-config yulius"]
   APP --> SH["Shell runtime (user space, repository)"]
   UI -->|"WS /api/shells/id/terminal"| SH
