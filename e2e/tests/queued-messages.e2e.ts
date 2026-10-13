@@ -124,3 +124,24 @@ test('a Shell opened while the task terminal loads gets the keyboard when it sho
   const shellInput = browser.locator('.term-views .term-slot:not([hidden]) .xterm-helper-textarea');
   await expect(shellInput).toBeFocused();
 });
+
+test('a Shell that took the keyboard keeps it when the task terminal asked earlier shows after it', async ({ app, browser, screen }) => {
+  type Holds = { __yuliusHoldTerminal?: Promise<void>; __yuliusHoldShell?: Promise<void>; __releaseTerminal?: () => void; __releaseShell?: () => void };
+  await browser.addInitScript(() => {
+    const w = window as unknown as Holds;
+    w.__yuliusHoldTerminal = new Promise<void>((resolve) => { w.__releaseTerminal = resolve; });
+    w.__yuliusHoldShell = new Promise<void>((resolve) => { w.__releaseShell = resolve; });
+  });
+  await app.open(mock('/s/studio/t/12'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Shell').click();
+
+  // The Shell, asked for after the task terminal, shows first and takes the keys (#323).
+  await browser.evaluate(() => (window as unknown as Holds).__releaseShell?.());
+  const shellInput = browser.locator('.term-views .term-slot:not([hidden]) .xterm-helper-textarea');
+  await expect(shellInput).toBeFocused();
+  // The task terminal's older request does not take them back when it shows.
+  await browser.evaluate(() => (window as unknown as Holds).__releaseTerminal?.());
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.taskview .term-pending') === null)).toBe(true);
+  await expect(shellInput).toBeFocused();
+});
