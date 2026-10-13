@@ -914,7 +914,7 @@ impl App {
                         ..
                     }
                 ));
-        // The plan steps this session's transcript back over a usage limit (SPEC-034).
+        // This session's transcript steps back over a usage limit before the run (SPEC-034).
         let stepped_back = match &mode {
             SessionMode::Resume {
                 session_id,
@@ -940,7 +940,8 @@ impl App {
             credential,
         })?;
         if let Some(session_id) = &stepped_back {
-            self.reindex_session(&task.sandbox_id, session_id).await;
+            self.step_back_transcript(&task.sandbox_id, &home, &worktree, session_id)
+                .await;
         }
         let mut launch = plan.plan;
         let task_token = hex_token(&self.deps.crypto.random_bytes());
@@ -1211,6 +1212,39 @@ impl App {
             if ready || started.elapsed() >= limit {
                 return true;
             }
+        }
+    }
+
+    /// Steps a session's transcript back over a usage limit on a blocking thread (SPEC-072
+    /// LRS-003; the file I/O is bounded by the transcript's size) and indexes it again only when
+    /// it was rewritten. A failure is logged and the resume goes on: Claude Code skips the error
+    /// row itself while it is recent (SPEC-034 LIM-002).
+    async fn step_back_transcript(
+        &self,
+        sandbox: &SandboxId,
+        home: &Path,
+        worktree: &Path,
+        session_id: &str,
+    ) {
+        let harness = Arc::clone(&self.deps.harness);
+        let (home, worktree, session) = (
+            home.to_path_buf(),
+            worktree.to_path_buf(),
+            session_id.to_owned(),
+        );
+        let stepped = tokio::task::spawn_blocking(move || {
+            harness.step_back_transcript(&home, &worktree, &session)
+        })
+        .await;
+        match stepped {
+            Ok(Ok(changed)) => {
+                tracing::info!(changed, "transcript stepped back over a usage limit");
+                if changed {
+                    self.reindex_session(sandbox, session_id).await;
+                }
+            }
+            Ok(Err(err)) => tracing::warn!(error = %err, "could not step the transcript back"),
+            Err(err) => tracing::warn!(error = %err, "the transcript step back did not finish"),
         }
     }
 

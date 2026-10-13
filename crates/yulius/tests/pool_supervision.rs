@@ -1192,3 +1192,117 @@ fn a_manual_switch_after_a_refused_limit_switch_resumes_past_the_limit() -> Test
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }
+
+/// A search document of `task`'s session `session` whose index has read `bytes`: what
+/// `sessions_search` leaves behind (SPEC-034: a rewritten transcript is indexed again).
+async fn indexed_doc(
+    app: &App,
+    sandbox: &SandboxId,
+    task: &TaskId,
+    session: &str,
+    bytes: u64,
+) -> Result<String, Box<dyn std::error::Error>> {
+    use yulius_app::ports::session_docs::{SessionDocRecord, SessionKind};
+    let id = format!("doc-{session}");
+    app.deps
+        .store
+        .insert_session_doc(&SessionDocRecord {
+            id: id.clone(),
+            sandbox_id: sandbox.clone(),
+            kind: SessionKind::Task,
+            task_id: Some(task.clone()),
+            harness: Harness::ClaudeCode,
+            session_id: session.to_owned(),
+            title: "Limit".into(),
+            author_id: None,
+            git_branch: None,
+            cwd_relative: None,
+            base: None,
+            transcript_path: String::new(),
+            sha256: None,
+            bytes,
+            redactions: 0,
+            started_at: None,
+            ended_at: None,
+            continued_task_id: None,
+            indexed_bytes: bytes,
+            indexed_lines: 1,
+            index_full: false,
+            created_at: now(),
+            updated_at: now(),
+        })
+        .await?;
+    Ok(id)
+}
+
+/// How far the index of document `doc` has read.
+async fn indexed_bytes(app: &App, doc: &str) -> Result<u64, Box<dyn std::error::Error>> {
+    Ok(app
+        .deps
+        .store
+        .session_doc(doc)
+        .await?
+        .ok_or("document")?
+        .indexed_bytes)
+}
+
+/// SPEC-072 LRS-003 (#278): a resume past a limit whose transcript has nothing to step back
+/// (no limit record left) leaves the transcript and its search index alone.
+#[test]
+fn a_resume_past_a_limit_keeps_the_index_of_a_transcript_it_did_not_rewrite() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            limit_after: Some(1),
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = new_task(&app, &sandbox, &user, "Limit").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("FAKE-AGENT READY") }
+        })
+        .await?;
+        app.send_input(&id, b"hello\r").await?;
+        wait_for("the pause at the limit", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::WaitingCapacity)
+        })
+        .await?;
+        let first = app.deps.store.attempts(&id).await?[0].clone();
+        let session = first.provider_session_id.clone().ok_or("session")?;
+        let transcript = app.deps.harness.claude_transcript(
+            &data.join("sandboxes").join(sandbox.as_str()).join("home"),
+            Path::new(&task(&app, &id).await?.worktree_path.ok_or("worktree")?),
+            &session,
+        );
+        // The limit record is gone already, as after an earlier step back.
+        let text = std::fs::read_to_string(&transcript)?;
+        let kept: String = text
+            .lines()
+            .filter(|l| !l.contains("usage_limit_reached"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_ne!(kept, text, "the fake agent wrote its limit record");
+        std::fs::write(&transcript, &kept)?;
+        let doc = indexed_doc(&app, &sandbox, &id, &session, 40).await?;
+
+        probe.set("a-first", usage(0.0, 5 * HOUR, 30.0, 100));
+        refresh(&app, &user, "a-first").await?;
+        let _ = app.resume_round().await;
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert_eq!(attempts.len(), 2, "{attempts:?}");
+        assert!(limit_resume_problems(Path::new(&attempts[1].run_dir), &data).is_empty());
+        assert_eq!(std::fs::read_to_string(&transcript)?.len(), kept.len());
+        assert_eq!(indexed_bytes(&app, &doc).await?, 40, "the index is kept");
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
