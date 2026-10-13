@@ -112,6 +112,7 @@ async fn new_task(
             automation_run: None,
             start: true,
             mode,
+            supertask: false,
         })
         .await?
         .id)

@@ -47,7 +47,7 @@ async fn start(
     agent: FakeAgentOptions,
     port: u16,
 ) -> Result<(Arc<App>, u16), BoxError> {
-    start_on(data, fake, agent, port, None, None, false).await
+    start_on(data, fake, agent, port, None, None, false, None).await
 }
 
 /// A session host that connects to a run only once the agent's SessionStart hook was answered, so
@@ -101,11 +101,12 @@ async fn start_with(
     port: u16,
     attach_late: bool,
 ) -> Result<(Arc<App>, u16), BoxError> {
-    start_on(data, fake, agent, port, None, None, attach_late).await
+    start_on(data, fake, agent, port, None, None, attach_late, None).await
 }
 
 /// [`start`] on `host` (default: the real one, attached late with `attach_late`), with the stop
-/// and close escalation shortened to `escalation_ms`.
+/// and close escalation shortened to `escalation_ms` and at most `sessions` live sessions.
+#[allow(clippy::too_many_arguments)]
 async fn start_on(
     data: &Path,
     fake: &Path,
@@ -114,6 +115,7 @@ async fn start_on(
     host: Option<Arc<dyn SessionHost>>,
     escalation_ms: Option<u64>,
     attach_late: bool,
+    sessions: Option<u32>,
 ) -> Result<(Arc<App>, u16), BoxError> {
     let socket = tokio::net::TcpSocket::new_v4()?;
     socket.set_reuseaddr(true)?;
@@ -127,6 +129,9 @@ async fn start_on(
     config.contained = false;
     if let Some(ms) = escalation_ms {
         config.stop_escalation_ms = ms;
+    }
+    if let Some(sessions) = sessions {
+        config.max_live_sessions = sessions;
     }
     let deps = Deps {
         store: Arc::new(SqliteStore::open(&data.join("yulius.db"))?),
@@ -290,6 +295,7 @@ async fn goal_task(
             automation_run: None,
             start: true,
             mode: TaskMode::Goal,
+            supertask: false,
         })
         .await?;
     Ok(record.id)
@@ -537,6 +543,7 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
                 automation_run: None,
                 start: true,
                 mode: TaskMode::Goal,
+                supertask: false,
             })
             .await?;
         let id = record.id;
@@ -622,6 +629,7 @@ fn a_message_queued_before_the_start_reaches_the_agent() -> TestResult {
                     automation_run: None,
                     start: false,
                     mode,
+                    supertask: false,
                 })
                 .await?;
             let id = record.id;
@@ -640,12 +648,21 @@ fn a_message_queued_before_the_start_reaches_the_agent() -> TestResult {
                 },
             )
             .await?;
-            app.start_run(
-                &id,
-                yulius_app::supervisor::RunStart::Fresh { prompt: None },
-                None,
-            )
-            .await?;
+            // The previous task's stop frees a session slot, so the queue may start this one first;
+            // then this start finds it running, which is the same outcome.
+            let started = app
+                .start_run(
+                    &id,
+                    yulius_app::supervisor::RunStart::Fresh { prompt: None },
+                    None,
+                )
+                .await;
+            match started {
+                Ok(()) => {}
+                Err(yulius_app::error::AppError::Conflict(_))
+                    if task(&app, &id).await?.status.is_live() => {}
+                Err(err) => return Err(err.into()),
+            }
             match mode {
                 // A goal task's request file carries the message, and a short request is
                 // quoted in the goal itself, the message with it.
@@ -739,6 +756,7 @@ fn the_goal_is_typed_after_the_turn_on_the_attached_files() -> TestResult {
                 automation_run: None,
                 start: true,
                 mode: TaskMode::Goal,
+                supertask: false,
             })
             .await?
             .id;
@@ -754,6 +772,182 @@ fn the_goal_is_typed_after_the_turn_on_the_attached_files() -> TestResult {
             "the goal was typed during the opening turn:\n{screen}"
         );
         assert_eq!(screen.matches("GOAL SET").count(), 1, "{screen}");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-034 LIM-003, SPEC-072 LRS-004 (#278): a goal session whose turn a usage limit cut moves to
+/// another subscription by a continued resume; Claude Code redoes the cut turn first, and the goal
+/// is typed again after that turn's Stop, not during it, and once.
+#[test]
+fn the_goal_is_typed_after_the_turn_continued_past_a_limit() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            session_start: true,
+            // The goal turn is the first, the next message hits the limit.
+            limit_after: Some(2),
+            // The continued turn: silent for longer than the quiet time after which a goal is
+            // otherwise typed.
+            opening_turn_ms: Some(6_000),
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        app.deps
+            .store
+            .insert_account(&AccountRecord {
+                id: AccountId::parse("b-claude")?,
+                provider: Provider::Anthropic,
+                label: "Claude second".into(),
+                credential: Some(app.deps.crypto.seal(b"sk-ant-oat01-second-credential")?),
+                status: AccountStatus::Ok,
+                usage_json: None,
+                last_error: None,
+                created_at: Timestamp(1),
+                updated_at: Timestamp(1),
+            })
+            .await?;
+        let id = app
+            .create_task_internal(NewTask {
+                sandbox: sandbox.clone(),
+                created_by: user.clone(),
+                prompt: "Make the header blue".into(),
+                harness: Harness::ClaudeCode,
+                title: Some("Blue header".into()),
+                workflow_id: None,
+                steps: Vec::new(),
+                model: None,
+                effort: None,
+                origin: TaskOrigin::Ui,
+                automation_run: None,
+                start: true,
+                mode: TaskMode::Goal,
+                supertask: false,
+            })
+            .await?
+            .id;
+        wait_for("the goal to start", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "GOAL SET")
+        })
+        .await?;
+        app.send_input(&id, b"hello\r").await?;
+        wait_for("the continued run", Duration::from_secs(90), || async {
+            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+            attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
+        })
+        .await?;
+        let launch = std::fs::read_to_string(
+            Path::new(&app.deps.store.attempts(&id).await?[1].run_dir).join("fake-launch.txt"),
+        )?;
+        assert!(launch.contains("continue_interrupted: true"), "{launch}");
+        // The new run's screen only: its continued turn, then the goal.
+        wait_for(
+            "the goal after the continued turn",
+            Duration::from_secs(90),
+            || {
+                let app = app.clone();
+                let id = id.clone();
+                async move {
+                    let screen = app.runtime(&id).hub.screen_text();
+                    screen
+                        .find("DONE opening")
+                        .is_some_and(|done| screen[done..].contains("GOAL SET"))
+                }
+            },
+        )
+        .await?;
+        let screen = app.runtime(&id).hub.screen_text();
+        let done = screen.find("DONE opening").ok_or_else(|| screen.clone())?;
+        let typed = screen.find("/goal ").ok_or_else(|| screen.clone())?;
+        assert!(
+            done < typed,
+            "the goal was typed during the continued turn:\n{screen}"
+        );
+        assert_eq!(screen.matches("GOAL SET").count(), 1, "{screen}");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-072 LRS-001 (review round 2), with hooks like the real CLI: Claude Code continues the turn
+/// a limit cut by itself with only its answer; its Stop hook may arrive while the `limit` pause is
+/// open (and be held), but the answer ends the pause, the Stop is answered and the task runs on
+/// its first run.
+#[test]
+fn a_continuation_with_hooks_ends_the_limit_pause_and_its_stop_is_answered() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            session_start: true,
+            limit_after: Some(1),
+            limit_continues_ms: Some(5_000),
+            limit_continues_answer_only: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = app
+            .create_task_internal(NewTask {
+                sandbox: sandbox.clone(),
+                created_by: user.clone(),
+                prompt: "Make the header blue".into(),
+                harness: Harness::ClaudeCode,
+                title: Some("Blue header".into()),
+                workflow_id: None,
+                steps: Vec::new(),
+                model: None,
+                effort: None,
+                origin: TaskOrigin::Ui,
+                automation_run: None,
+                start: true,
+                mode: TaskMode::Prompt,
+                supertask: false,
+            })
+            .await?
+            .id;
+        wait_for("the run", Duration::from_secs(60), || {
+            screen_contains(&app, &id, "FAKE-AGENT READY")
+        })
+        .await?;
+        app.send_input(&id, b"hello\r").await?;
+        wait_for(
+            "the pause at the limit",
+            Duration::from_secs(30),
+            || async {
+                matches!(
+                    app.deps.store.open_pause(&id).await,
+                    Ok(Some(pause)) if pause.kind == yulius_app::model::PauseKind::Limit
+                )
+            },
+        )
+        .await?;
+        wait_for(
+            "the continued turn's Stop answered",
+            Duration::from_secs(60),
+            || screen_contains(&app, &id, "CONTINUED STOP ANSWERED"),
+        )
+        .await?;
+        // The pause closes, then the task runs: wait for both.
+        wait_for("the task to run", Duration::from_secs(30), || async {
+            task(&app, &id)
+                .await
+                .is_ok_and(|t| t.status == TaskStatus::Running)
+        })
+        .await?;
+        assert!(app.deps.store.open_pause(&id).await?.is_none(), "no pause");
+        assert_eq!(app.deps.store.attempts(&id).await?.len(), 1);
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -792,6 +986,7 @@ fn an_attached_image_is_pasted_into_the_first_message() -> TestResult {
                 automation_run: None,
                 start: true,
                 mode: TaskMode::Prompt,
+                supertask: false,
             })
             .await?
             .id;
@@ -858,6 +1053,59 @@ fn a_background_shell_keeps_the_task_working_until_it_ends() -> TestResult {
     Ok(())
 }
 
+/// SPEC-079 BGW-001 (#305), SES-101: under a limit of one session, a Done task with a background
+/// shell still holds the slot; once the shell ends, the queued task starts at once (no tick runs
+/// in this test, so without the drain it would never start).
+#[test]
+fn a_done_task_whose_shell_ends_frees_its_slot_at_once() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            goal_background: Some(10),
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start_on(&data, &fake, agent, 0, None, None, false, Some(1)).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let first = goal_task(&app, &sandbox, &user, "Start the dev server").await?;
+        wait_for("Done with its shell", Duration::from_secs(90), || async {
+            shown(&app, &first)
+                .await
+                .ok()
+                .is_some_and(|(_, shells)| shells == Some(1))
+                && activity(&app, &first).await == Some(Activity::Done)
+        })
+        .await?;
+        let second = goal_task(&app, &sandbox, &user, "Second").await?;
+        assert_eq!(task(&app, &second).await?.status, TaskStatus::Queued);
+        assert!(
+            !screen_contains(&app, &first, "BACKGROUND DONE").await,
+            "the shell still runs"
+        );
+        wait_for("the shell's end", Duration::from_secs(30), || {
+            screen_contains(&app, &first, "BACKGROUND DONE")
+        })
+        .await?;
+        wait_for(
+            "the queued task to start",
+            Duration::from_secs(20),
+            || async {
+                task(&app, &second)
+                    .await
+                    .is_ok_and(|t| t.status == TaskStatus::Running)
+            },
+        )
+        .await?;
+        stop(&app, &second).await?;
+        stop(&app, &first).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// STA-001 (SPEC-032, tasks #24 and #25): the goal turn ends with a background agent still
 /// working (Claude Code's `turn_duration` says one is pending): the task is not Done, it is
 /// Working with that background work said, until the agent finishes and wakes the session.
@@ -912,6 +1160,301 @@ fn a_pending_background_agent_keeps_the_task_working_until_it_finishes() -> Test
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())
+}
+
+/// SPEC-079 BGW-003 (#265): the goal turn leaves a Monitor stream (no process: only the transcript
+/// says it runs). The task is Working with it counted until the stream ends (its notification wakes
+/// the session) or, when it never reports, until its expiry.
+fn a_monitor_counts_until_it_ends_or_expires(ends: bool) -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            goal_monitor: Some(16),
+            goal_monitor_ends: ends,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Watch CI").await?;
+        wait_for("the achieved goal", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "Goal achieved")
+        })
+        .await?;
+        wait_for("the monitor counted", Duration::from_secs(10), || async {
+            shown(&app, &id)
+                .await
+                .ok()
+                .is_some_and(|(_, shells)| shells == Some(1))
+        })
+        .await?;
+        if ends {
+            wait_for("the stream's end", Duration::from_secs(20), || {
+                screen_contains(&app, &id, "MONITOR DONE")
+            })
+            .await?;
+        }
+        // Ended: at once; expired: after its 16 s and the next probe (every 5 s).
+        wait_for("nothing running, idle", Duration::from_secs(30), || async {
+            shown(&app, &id)
+                .await
+                .ok()
+                .is_some_and(|(activity, shells)| {
+                    shells == Some(0) && matches!(activity.as_deref(), Some("done" | "waiting"))
+                })
+        })
+        .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+#[test]
+fn a_live_monitor_keeps_the_task_working_until_it_ends() -> TestResult {
+    a_monitor_counts_until_it_ends_or_expires(true)
+}
+
+#[test]
+fn a_monitor_that_never_reports_counts_until_it_expires() -> TestResult {
+    a_monitor_counts_until_it_ends_or_expires(false)
+}
+
+/// SPEC-079 BGW-004 (#271): the goal turn launches a background agent while the task's
+/// subscription is at its threshold. The Stop decides a proactive switch, which would end the
+/// agent: it waits while the agent is pending and is made at the Stop after the agent finished.
+#[test]
+fn a_switch_waits_for_a_background_agent_launched_in_the_turn() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            goal_agent: Some(10),
+            goal_delay_ms: Some(3_000),
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let store = &app.deps.store;
+        store
+            .insert_account(&AccountRecord {
+                id: AccountId::parse("a-claude-2")?,
+                provider: Provider::Anthropic,
+                label: "Claude spare".into(),
+                credential: Some(app.deps.crypto.seal(b"sk-ant-oat01-spare-credential")?),
+                status: AccountStatus::Ok,
+                usage_json: None,
+                last_error: None,
+                created_at: Timestamp(1),
+                updated_at: Timestamp(1),
+            })
+            .await?;
+        let id = goal_task(&app, &sandbox, &user, "Review the merge").await?;
+        wait_for("the goal", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "GOAL SET")
+        })
+        .await?;
+        let first = store.live_attempt(&id).await?.ok_or("attempt")?;
+        assert_eq!(
+            first.account_id.as_ref().map(AccountId::as_str),
+            Some("a-claude")
+        );
+        // The task's subscription reaches the switch threshold before the turn ends.
+        let near = yulius_domain::usage::AccountUsage {
+            primary: Some(yulius_domain::usage::UsageWindow {
+                used_percent: Some(99.0),
+                window_minutes: Some(300),
+                resets_at: Some(Timestamp(4_000_000_000_000)),
+            }),
+            ..yulius_domain::usage::AccountUsage::default()
+        };
+        let near = yulius_app::usage_json::to_json(&near);
+        store
+            .set_account_state(
+                &AccountId::parse("a-claude")?,
+                AccountStatus::Ok,
+                Some(&near),
+                None,
+                app.now(),
+            )
+            .await?;
+        let switched = || async { store.attempts(&id).await.unwrap_or_default().len() >= 2 };
+        wait_for("the goal turn's end", Duration::from_secs(90), || async {
+            screen_contains(&app, &id, "Goal achieved").await || switched().await
+        })
+        .await?;
+        assert!(
+            !switched().await,
+            "no switch while the agent launched in the turn is pending"
+        );
+        assert!(!screen_contains(&app, &id, "AGENT DONE").await);
+        wait_for("the agent's end", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "AGENT DONE")
+        })
+        .await?;
+        // The wake-up turn's Stop makes the switch.
+        wait_for("the switch", Duration::from_secs(60), || async {
+            store
+                .attempts(&id)
+                .await
+                .unwrap_or_default()
+                .last()
+                .is_some_and(|a| {
+                    a.account_id.as_ref().map(AccountId::as_str) == Some("a-claude-2")
+                        && !a.state.is_terminal()
+                })
+        })
+        .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-079 BGW-005 (#264): Yulius's Stop hook runs before the goal evaluator. While the goal is
+/// open the turn waits for the verdict: the verdict "not met" sends the agent on, and the task
+/// never reads Your turn or Done in between; the verdict "met" makes it Done.
+#[test]
+fn a_goal_not_met_never_reads_idle_between_turns() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            goal_delay_ms: Some(3_000),
+            goal_continue_ms: Some(4_000),
+            goal_continue_verdict: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
+        wait_for("the goal", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "GOAL SET")
+        })
+        .await?;
+        // The activities the UI is told, collected as they come: the store reads Done a moment
+        // before its update is published, so one drain at Done can miss it.
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let mut events = app.events.subscribe();
+        let collector = tokio::spawn({
+            let (seen, id) = (Arc::clone(&seen), id.as_str().to_owned());
+            async move {
+                loop {
+                    match events.recv().await {
+                        Ok(envelope) => {
+                            if let UiEvent::TaskUpdated { task } = envelope.event
+                                && task.id == id
+                            {
+                                let mut seen = seen.lock().unwrap_or_else(|e| e.into_inner());
+                                if seen.last() != task.activity.as_ref() {
+                                    seen.push(task.activity.unwrap_or_default());
+                                }
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            }
+        });
+        let seen_now = || seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        wait_for("the verdict", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "GOAL NOT MET")
+        })
+        .await?;
+        wait_for("Done", Duration::from_secs(60), || async {
+            activity(&app, &id).await == Some(Activity::Done)
+        })
+        .await?;
+        wait_for("the Done update", Duration::from_secs(10), || async {
+            seen_now().last().map(String::as_str) == Some("done")
+        })
+        .await?;
+        collector.abort();
+        let seen = seen_now();
+        let idle = seen
+            .iter()
+            .position(|a| a == "waiting" || a == "done")
+            .ok_or_else(|| format!("never idle: {seen:?}"))?;
+        assert_eq!(
+            &seen[idle..],
+            ["done".to_owned()],
+            "the only idle state is the final Done: {seen:?}"
+        );
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-079 BGW-005 (#264): the goal turn's Stop waits for the verdict. "failed" makes the task
+/// wait for its person before the turn's record (6 s later) comes; no verdict at all settles it at
+/// that record as before, well before the 20 s bound. Neither reads Done.
+fn an_unmet_goal_leaves_the_task_waiting(verdict: &'static str) -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            goal_verdict: Some(verdict),
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Ship it").await?;
+        let settled_by = if verdict == "failed" {
+            "GOAL FAILED"
+        } else {
+            "GOAL UNMET"
+        };
+        wait_for("the verdict or the record", Duration::from_secs(90), || {
+            screen_contains(&app, &id, settled_by)
+        })
+        .await?;
+        wait_for("Your turn", Duration::from_secs(4), || async {
+            activity(&app, &id).await == Some(Activity::Waiting)
+        })
+        .await?;
+        if verdict == "failed" {
+            assert!(
+                !screen_contains(&app, &id, "GOAL UNMET").await,
+                "the verdict settled it, not the record"
+            );
+        }
+        wait_for("the turn's record", Duration::from_secs(20), || {
+            screen_contains(&app, &id, "GOAL UNMET")
+        })
+        .await?;
+        assert_eq!(
+            activity(&app, &id).await,
+            Some(Activity::Waiting),
+            "never Done"
+        );
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+#[test]
+fn a_failed_goal_leaves_the_task_waiting() -> TestResult {
+    an_unmet_goal_leaves_the_task_waiting("failed")
+}
+
+#[test]
+fn a_turn_closed_without_a_verdict_settles_as_before() -> TestResult {
+    an_unmet_goal_leaves_the_task_waiting("none")
 }
 
 /// STA-004, STA-005 (SPEC-032, task #24 between 15:55:22 and 15:55:30): Yulius's Stop hook ends
@@ -1438,6 +1981,7 @@ async fn running_task(
         Some(host),
         Some(300),
         false,
+        None,
     )
     .await?;
     let (sandbox, user) = seed(&app, data).await?;

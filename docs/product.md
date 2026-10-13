@@ -21,16 +21,19 @@ watching, steering and unblocking.
   layer, home, shells per user, browser and editor. The CLI only uploads: the onboarding task that
   adapts the repository to the Yulius standards starts when someone clicks Start onboarding on the
   sandbox page.
-- **Agent** (formerly the Cockpit): every user's own plain Claude Code session per sandbox, in the
-  right tool panel beside any page (top-bar Agent button, first in the tools rail), for quick work
+- **Superagent** (formerly the Agent, and before that the Cockpit): every user's own plain Claude
+  Code session per sandbox, in the right tool panel beside any page (top-bar Superagent button,
+  first in the tools rail), for quick work
   such as setting up automations or asking a quick question; anything more complex, such as
   writing code, belongs in a task, and its panel says so. `/clear` starts over, it cannot be
   deleted and comes back with its conversation. It manages the project for its owner: asked to
   "create a task from that" or to do something "every day at 4am", it creates the task or the
   automation through Yulius's tools, and it stops, archives or deletes tasks, runs or deletes
   automations and enables the ready-made ones, asking the person before each change. Task agents
-  can do the same for their task's creator, except to their own task.
-- **Sidebar**: the sandbox pages used every day (Tasks, Git, CI (tests), Secrets, Dashboard; the Agent is on the right),
+  can do the same for their task's owner, except to their own task. When a usage limit cuts its
+  turn, it moves to a subscription with capacity and goes on with the turn, as a task does; the
+  panel follows it.
+- **Sidebar**: the sandbox pages used every day (Tasks, Git, CI (tests), Secrets, Dashboard; the Superagent is on the right),
   then "More" for Sessions, Workflows, Skills, Automations and MCP, then the active tasks.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions
   outlive server restarts. Task intake splits mixed requests, holds scope changes and chains
@@ -38,8 +41,13 @@ watching, steering and unblocking.
   builds from picked conditions (a task, its state, all or any).
   A task that waits and has not started yet takes queued messages: each is added to its request,
   so the agent gets the correction when the task starts.
+  A **supertask** (the composer's start menu, for broad work such as security hardening) waits
+  for the running tasks of its project, then runs alone: the project's other tasks wait for it,
+  also those queued or chained before it, and say so.
   A half-written task (its prompt, attached files and choices) waits in the composer while
   people look elsewhere, also across a reload, until it starts.
+  A task is its owner's: it acts on GitHub with their credentials, so only they change it. Others
+  see it read-only and can ask the owner for control; once handed over, it acts as the new owner.
 - **Subscription pool**: Claude accounts are used as one self-managing pool; tasks are
   subscription-agnostic, switches and pauses are invisible to agents.
 - **Delivery discipline**: spec when it matters, effort-weighted steps, independent review,
@@ -52,7 +60,8 @@ watching, steering and unblocking.
 - **Automations**: tasks on a schedule. Two ready-made ones, off until a person enables them in one
   click on the Automations page: "Keep the docs up to date" and "Work through open issues" (the
   core team's issues verified in parallel, a Fix task for each actionable one, no new issues),
-  nightly at 03:00 CEST.
+  nightly at 03:00 CEST. An automation's tasks start like New task's: now, as a supertask, after
+  another task or when a rule is true.
 - **Notes**: in the tools rail, a notepad per sandbox and one for the whole team, shared and saved
   while people type; a teammate's edit shows up live, and two edits at once end in a choice.
 - **Editor, terminals, Git view, automations, workflow catalog** in one web UI, whose menus fit

@@ -132,23 +132,6 @@ impl HarnessPort for HarnessAdapter {
                 AppError::Upstream(format!("cannot prepare the Claude Code config: {e}"))
             })?;
         }
-        // The turn a usage limit cut goes on as if the limit never happened (SPEC-034): its
-        // error and notices leave the transcript before Claude Code reads it. A failed step back
-        // still resumes; Claude Code skips the error row itself while it is recent.
-        if let SessionMode::Resume {
-            session_id,
-            continue_interrupted: true,
-            ..
-        } = &l.mode
-        {
-            let transcript = self.claude_transcript(&l.sandbox_home, &l.worktree, session_id);
-            match yulius_harness::step_back::step_back_file(&transcript) {
-                Ok(changed) => {
-                    tracing::info!(changed, "transcript stepped back over a usage limit")
-                }
-                Err(err) => tracing::warn!(error = %err, "could not step the transcript back"),
-            }
-        }
         let mut secret_env = plan.secret_env;
         secret_env.extend(extra_secrets);
         Ok(HarnessPlan {
@@ -177,6 +160,7 @@ impl HarnessPort for HarnessAdapter {
             cwd: l.cwd.clone(),
             config_dir: l.config_dir.clone(),
             resume: l.resume.clone(),
+            continue_interrupted: l.continue_interrupted,
             credential: Credential::ClaudeOauthToken(HSecret::new(
                 l.credential.expose().to_owned(),
             )),
@@ -191,6 +175,22 @@ impl HarnessPort for HarnessAdapter {
             .map_err(|e| {
                 AppError::Upstream(format!("cannot prepare the Claude Code config: {e}"))
             })?;
+        // Moved past a usage limit, the conversation steps back over it first (SPEC-074 SUP-004,
+        // as a task's does, SPEC-034); a failed step back still resumes.
+        if let (Some(session), true) = (&l.resume, l.continue_interrupted) {
+            let transcript = paths::claude_transcript_path(&l.config_dir_host, &l.cwd, session);
+            match yulius_harness::step_back::step_back_file(&transcript) {
+                Ok(changed) => {
+                    tracing::info!(
+                        changed,
+                        "cockpit transcript stepped back over a usage limit"
+                    )
+                }
+                Err(err) => {
+                    tracing::warn!(error = %err, "could not step the cockpit transcript back")
+                }
+            }
+        }
         Ok(LaunchPlan {
             argv: plan.argv,
             cwd: plan.cwd,
@@ -203,6 +203,16 @@ impl HarnessPort for HarnessAdapter {
 
     fn claude_transcript(&self, sandbox_home: &Path, worktree: &Path, session_id: &str) -> PathBuf {
         paths::claude_transcript_path(&sandbox_home.join(".claude"), worktree, session_id)
+    }
+
+    fn step_back_transcript(
+        &self,
+        sandbox_home: &Path,
+        worktree: &Path,
+        session_id: &str,
+    ) -> AppResult<bool> {
+        let transcript = self.claude_transcript(sandbox_home, worktree, session_id);
+        yulius_harness::step_back::step_back_file(&transcript).map_err(io)
     }
 
     fn newest_claude_session(
@@ -295,16 +305,34 @@ impl TranscriptWatch for Watch {
                     Observed::SessionMeta {
                         session_id, cwd, ..
                     } => out.push(Observation::Session { session_id, cwd }),
-                    Observed::UserTurn { at } => out.push(Observation::UserTurn { at }),
+                    Observed::UserTurn { at, wake } => {
+                        out.push(Observation::UserTurn { at, wake });
+                    }
                     Observed::TurnInterrupted { at } => {
                         out.push(Observation::TurnInterrupted { at });
                     }
-                    Observed::TurnComplete { .. } => out.push(Observation::TurnComplete),
+                    Observed::TurnComplete { at, .. } => {
+                        out.push(Observation::TurnComplete { at });
+                    }
                     Observed::Goal { outcome } => out.push(Observation::Goal(outcome)),
                     Observed::TurnEnded { background_agents } => {
                         out.push(Observation::TurnEnded { background_agents });
                     }
                     Observed::AgentWork { at } => out.push(Observation::AgentWork { at }),
+                    Observed::BackgroundStarted {
+                        id,
+                        agent,
+                        expires_in_ms,
+                        at,
+                    } => out.push(Observation::BackgroundStarted {
+                        id,
+                        agent,
+                        expires_in_ms,
+                        at,
+                    }),
+                    Observed::BackgroundEnded { id } => {
+                        out.push(Observation::BackgroundEnded { id });
+                    }
                     Observed::ContextFull => out.push(Observation::ContextFull),
                     Observed::Compacted => out.push(Observation::Compacted),
                     Observed::CompactFailed => out.push(Observation::CompactFailed),
@@ -312,10 +340,12 @@ impl TranscriptWatch for Watch {
                         resets_at,
                         message,
                         window_minutes,
+                        at,
                     } => out.push(Observation::LimitReached {
                         resets_at,
                         message,
                         window_minutes,
+                        at,
                     }),
                     Observed::AssistantMessage { .. } | Observed::Malformed => {}
                 }

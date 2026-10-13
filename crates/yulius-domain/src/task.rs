@@ -330,6 +330,9 @@ pub enum PullSignal {
     InReview,
     /// Open with failing checks.
     Failing,
+    /// Open while Yulius CI could not run its checks (disk, a timeout, the host): not the code
+    /// (SPEC-050 STA-101).
+    Errored,
     /// Merged.
     Merged,
 }
@@ -343,6 +346,7 @@ impl PullSignal {
             ("merged", _) => Some(Self::Merged),
             ("open", "success" | "none") => Some(Self::Tested),
             ("open", "failure") => Some(Self::Failing),
+            ("open", "error") => Some(Self::Errored),
             ("open", _) => Some(Self::InReview),
             _ => None,
         }
@@ -371,43 +375,89 @@ pub struct AttentionFacts {
     pub pull: Option<PullSignal>,
 }
 
+/// A task's group in the web UI's sidebar (SPEC-001 UI-050). Home's cards and the sandbox tabs
+/// count three of them: "needs you", and "working" plus "queued", which together are the
+/// sidebar's Working group (#170).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TaskGroup {
+    /// Waits for a person ("Needs you").
+    NeedsYou,
+    /// Running or on its way: working, kept going by background shells, in review, starting,
+    /// continuing on another subscription or paused for capacity.
+    Working,
+    /// The rest of the sidebar's Working group: in line for a slot, or chained after another task.
+    Queued,
+    /// Finished (TSK-014).
+    Done,
+    /// Stopping, closed, stopped or failed.
+    Ended,
+}
+
 impl AttentionFacts {
-    /// Whether the task waits for a person: the sidebar's "Needs you" group, counted the same way
-    /// on Home and the sandbox tabs (`taskInfo` in the web UI's `status.js` is the same rule).
+    /// The task's sidebar group: the one rule of `taskInfo` in the web UI's `status.js`.
     ///
-    /// An ended task needs nobody. A held prompt or a pending browser request does, whatever the
-    /// task's state. After a finished turn, failing checks do, and a tested, reviewed or merged
-    /// pull request answers for a task whose plan is complete (Done or In review). Otherwise: a
-    /// permission prompt (`needs_attention`), "Your turn" (`waiting`, unless the agent's
-    /// background shells still run: it wakes by itself), or a chain whose predecessor ended
-    /// otherwise.
+    /// A task being stopped or ended is Ended, whatever else holds. A held prompt or a pending
+    /// browser request needs you. After a finished turn the pull request speaks: failing checks
+    /// need you, a CI run that could not run keeps it Working (In review); with the plan
+    /// complete, background shells keep it Working, an achieved goal or a tested or merged pull
+    /// request makes it Done, and checks still running keep it Working (In review). Otherwise
+    /// the task's own state: a permission prompt or "Your turn" needs you (unless the agent's
+    /// background shells still run: it wakes by itself), an achieved goal is Done, a queued task
+    /// or a chain is Queued (a chain whose predecessor ended otherwise needs you), and the rest is
+    /// Working.
     #[must_use]
-    pub fn needs_you(&self) -> bool {
-        if self.status.is_resting() {
-            return false;
+    pub fn group(&self) -> TaskGroup {
+        use TaskGroup as G;
+        if self.status.is_resting() || self.status == TaskStatus::Stopping {
+            return G::Ended;
         }
         if self.held_prompt || self.browser_request {
-            return true;
+            return G::NeedsYou;
         }
         let finished =
             self.status == TaskStatus::Running && self.activity.is_some_and(Activity::is_idle);
         if finished && let Some(pull) = self.pull {
             if pull == PullSignal::Failing {
-                return true;
+                return G::NeedsYou;
+            }
+            // CI could not run: In review, nothing for a person yet (the agent runs it again).
+            if pull == PullSignal::Errored {
+                return G::Working;
             }
             if !self.plan_open {
-                return false;
+                return if self.background_shells {
+                    G::Working
+                } else if self.activity == Some(Activity::Done) || pull != PullSignal::InReview {
+                    G::Done
+                } else {
+                    G::Working
+                };
             }
         }
         match self.status {
             TaskStatus::Running => match self.activity {
-                Some(Activity::NeedsAttention) => true,
-                Some(Activity::Waiting) => !self.background_shells,
-                _ => false,
+                Some(Activity::Waiting | Activity::Done) if self.background_shells => G::Working,
+                Some(Activity::NeedsAttention | Activity::Waiting) => G::NeedsYou,
+                Some(Activity::Done) => G::Done,
+                Some(Activity::Working) | None => G::Working,
             },
-            TaskStatus::Chained => self.chain_blocked,
-            _ => false,
+            TaskStatus::Chained if self.chain_blocked => G::NeedsYou,
+            TaskStatus::Queued | TaskStatus::Chained => G::Queued,
+            TaskStatus::Starting | TaskStatus::Switching | TaskStatus::WaitingCapacity => {
+                G::Working
+            }
+            TaskStatus::Stopping
+            | TaskStatus::Closed
+            | TaskStatus::Stopped(_)
+            | TaskStatus::Failed(_) => G::Ended,
         }
+    }
+
+    /// Whether the task waits for a person: the sidebar's "Needs you" group, counted the same way
+    /// on Home and the sandbox tabs.
+    #[must_use]
+    pub fn needs_you(&self) -> bool {
+        self.group() == TaskGroup::NeedsYou
     }
 }
 
@@ -768,6 +818,117 @@ mod tests {
         assert!(with(A::NeedsAttention, P::Tested, false).needs_you());
     }
 
+    /// The sidebar's groups (`taskInfo`), which Home's cards and the sandbox tabs split into
+    /// "needs you", "working" and "queued" (#170).
+    #[test]
+    fn group_follows_the_sidebar_rule() {
+        use Activity as A;
+        use PullSignal as P;
+        use TaskGroup as G;
+        let running = |activity| facts(TaskStatus::Running, activity);
+        // The task's own state.
+        assert_eq!(running(Some(A::Working)).group(), G::Working);
+        assert_eq!(
+            running(None).group(),
+            G::Working,
+            "running, no activity yet"
+        );
+        assert_eq!(running(Some(A::NeedsAttention)).group(), G::NeedsYou);
+        assert_eq!(running(Some(A::Waiting)).group(), G::NeedsYou);
+        assert_eq!(running(Some(A::Done)).group(), G::Done);
+        // Background shells keep a finished turn going: Working, not Your turn or Done.
+        for activity in [A::Waiting, A::Done] {
+            let busy = AttentionFacts {
+                background_shells: true,
+                ..running(Some(activity))
+            };
+            assert_eq!(busy.group(), G::Working, "{activity:?}");
+        }
+        // On its way: Working; in line or after another task: Queued.
+        for status in [
+            TaskStatus::Starting,
+            TaskStatus::Switching,
+            TaskStatus::WaitingCapacity,
+        ] {
+            assert_eq!(facts(status, Some(A::NeedsAttention)).group(), G::Working);
+        }
+        assert_eq!(facts(TaskStatus::Queued, None).group(), G::Queued);
+        let chained = facts(TaskStatus::Chained, None);
+        assert_eq!(chained.group(), G::Queued);
+        let blocked = AttentionFacts {
+            chain_blocked: true,
+            ..chained
+        };
+        assert_eq!(blocked.group(), G::NeedsYou);
+        // A stop asked for, or an end: Ended, even with a held prompt or a browser request.
+        for status in [
+            TaskStatus::Stopping,
+            TaskStatus::Closed,
+            TaskStatus::Stopped(StopReason::Crashed),
+            TaskStatus::Failed(FailReason::SpawnError),
+        ] {
+            let held = AttentionFacts {
+                held_prompt: true,
+                browser_request: true,
+                ..facts(status, Some(A::Waiting))
+            };
+            assert_eq!(held.group(), G::Ended, "{status:?}");
+        }
+        // A held prompt or a browser request needs you, also while queued or paused.
+        for status in [TaskStatus::Queued, TaskStatus::WaitingCapacity] {
+            let held = AttentionFacts {
+                held_prompt: true,
+                ..facts(status, None)
+            };
+            assert_eq!(held.group(), G::NeedsYou, "{status:?}");
+        }
+        // After a finished turn the pull request speaks (#35, #139).
+        let with = |activity, pull, plan_open| AttentionFacts {
+            pull: Some(pull),
+            plan_open,
+            ..running(Some(activity))
+        };
+        assert_eq!(with(A::Waiting, P::Failing, false).group(), G::NeedsYou);
+        assert_eq!(with(A::Waiting, P::Tested, false).group(), G::Done);
+        assert_eq!(with(A::Waiting, P::Merged, false).group(), G::Done);
+        assert_eq!(
+            with(A::Waiting, P::InReview, false).group(),
+            G::Working,
+            "In review"
+        );
+        assert_eq!(
+            with(A::Done, P::InReview, false).group(),
+            G::Done,
+            "an achieved goal"
+        );
+        assert_eq!(with(A::Waiting, P::Tested, true).group(), G::NeedsYou);
+        let shells = AttentionFacts {
+            background_shells: true,
+            ..with(A::Waiting, P::Tested, false)
+        };
+        assert_eq!(shells.group(), G::Working);
+        // Yulius CI could not run (not the code): In review, before the plan or an achieved goal
+        // speaks (#352); nothing for a person yet.
+        assert_eq!(with(A::Waiting, P::Errored, true).group(), G::Working);
+        assert_eq!(with(A::Done, P::Errored, false).group(), G::Working);
+        assert_eq!(with(A::Waiting, P::Errored, false).group(), G::Working);
+        // While the agent works, the pull request does not count.
+        assert_eq!(with(A::Working, P::Failing, false).group(), G::Working);
+    }
+
+    /// A task being stopped is with the ended ones, as in the sidebar: a held prompt or a browser
+    /// request on it no longer needs you (#170).
+    #[test]
+    fn a_task_being_stopped_needs_nobody() {
+        let stopping = AttentionFacts {
+            held_prompt: true,
+            browser_request: true,
+            ..facts(TaskStatus::Stopping, Some(Activity::NeedsAttention))
+        };
+        assert!(!stopping.needs_you());
+        assert_eq!(stopping.group(), TaskGroup::Ended);
+    }
+
     #[test]
     fn pull_signals_from_wire_names() {
         assert_eq!(
@@ -793,6 +954,10 @@ mod tests {
         assert_eq!(
             PullSignal::from_wire("open", "unknown"),
             Some(PullSignal::InReview)
+        );
+        assert_eq!(
+            PullSignal::from_wire("open", "error"),
+            Some(PullSignal::Errored)
         );
         assert_eq!(PullSignal::from_wire("closed", "none"), None);
     }

@@ -542,12 +542,21 @@ impl App {
             .store(false, Ordering::SeqCst);
         let current = ctx.attempt.account_id.clone();
         let pool = self.rotation_input(task, current.clone()).await?;
-        // A switch restarts the session and kills its background shells: a build or gate the
-        // agent left running would be lost (tasks #3 and #5, F 2026-10-11/12).
-        let shells_busy = self.shells_running_now(&task.id).await;
-        let stays = match rotation::decide(&pool, Trigger::Proactive) {
+        let decision = rotation::decide(&pool, Trigger::Proactive);
+        // A switch restarts the session and ends its background shells, agents and monitors: a
+        // build, gate or review the agent left running would be lost (tasks #3 and #5, F
+        // 2026-10-11/12, #271). An agent launched in this turn is known only from the lines
+        // written before this Stop: they are read first (SPEC-079 BGW-004).
+        let busy =
+            if matches!(decision.0, Decision::Switch { .. }) && !self.switch_cooling(&task.id) {
+                self.await_transcript_read(&task.id).await;
+                self.shells_running_now(&task.id).await
+            } else {
+                false
+            };
+        let stays = match decision {
             (Decision::Stay, _) => true,
-            (Decision::Switch { .. }, _) if shells_busy => true,
+            (Decision::Switch { .. }, _) if busy => true,
             // A switch was refused moments ago (the new session could not start): the agent
             // keeps working on its current subscription instead of being held.
             (Decision::Switch { .. }, _) if self.switch_cooling(&task.id) => true,
@@ -594,20 +603,9 @@ impl App {
                 };
                 store.update_task(&task.id, &update, self.now()).await?;
             }
-            // Done when the goal is achieved, waiting otherwise (TSK-014).
-            let next = self.activity_after_clean_turn(&task.id);
-            self.set_task_activity(task, next).await?;
-            let app = Arc::clone(self);
-            let task_id = task.id.clone();
-            tokio::spawn(async move { app.probe_idle_shells(&task_id).await });
-            // A clean stop of a finished task opens its pull request (#35).
-            let app = Arc::clone(self);
-            let task_id = task.id.clone();
-            tokio::spawn(async move {
-                app.auto_open_pr(&task_id).await;
-                // Tasks chained after this one start once it is Done (TSK-012).
-                app.advance_chains(&task_id).await;
-            });
+            // Done when the goal is achieved, waiting otherwise (TSK-014), once the goal verdict
+            // came while a goal is open (SPEC-079 BGW-005).
+            self.clean_stop(task).await?;
             return Ok(HookReply::Output(HookOutput::default()));
         }
 
@@ -797,7 +795,7 @@ pub struct GitCredential {
 }
 
 impl App {
-    /// Issues the run's GitHub token (SPEC-002 §8, R-06): the task creator's own token, so the
+    /// Issues the run's GitHub token (SPEC-002 §8, R-06): the task owner's own token, so the
     /// agent's pushes are theirs on GitHub (F 2026-10-11); without a usable one, the App's
     /// installation token restricted to the run's repository, said once in the task's terminal.
     /// `gh` in the run asks the same way (`yulius gh-token`, SPEC-004). Requests for any other
@@ -835,7 +833,7 @@ impl App {
                 ));
             }
         }
-        let token = match self.creator_github_token(&ctx.task).await {
+        let token = match self.owner_github_token(&ctx.task).await {
             Some(token) => token,
             None => self.repository_installation_token(&sandbox).await?,
         };

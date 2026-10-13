@@ -85,6 +85,17 @@ const COMPACT_ERROR_TEXT: &str = "Error during compaction";
 /// The error output of a local command (`/compact`) in a transcript record.
 const LOCAL_COMMAND_STDERR: &str = "<local-command-stderr>";
 
+/// The longest a Monitor stream lives (Claude Code caps `timeoutMs` at 30 minutes; this bound
+/// leaves room), and how long one lives when its record does not say.
+const MONITOR_MAX_MS: u64 = 60 * 60 * 1000;
+const MONITOR_DEFAULT_MS: u64 = 5 * 60 * 1000;
+
+/// How the tool result of a Monitor start begins ("Monitor started (task b1, expires in 15m …").
+const MONITOR_STARTED: &str = "Monitor started (task ";
+
+/// The longest task id taken from a notification or a tool result.
+const MAX_TASK_ID: usize = 128;
+
 /// Normalizes one Claude Code transcript line.
 #[must_use]
 pub fn observe_line(line: &str) -> Vec<Observed> {
@@ -106,7 +117,14 @@ fn observe_attachment(record: &Map<String, Value>) -> Vec<Observed> {
     let Some(attachment) = obj_of(record, "attachment") else {
         return Vec::new();
     };
-    if bool_of(record, "isSidechain") || str_of(attachment, "type") != Some("goal_status") {
+    if bool_of(record, "isSidechain") {
+        return Vec::new();
+    }
+    // A notification delivered while the agent works (SPEC-079 BGW-002).
+    if str_of(attachment, "type") == Some("queued_command") {
+        return str_of(attachment, "prompt").map_or_else(Vec::new, background_ended);
+    }
+    if str_of(attachment, "type") != Some("goal_status") {
         return Vec::new();
     }
     let met = bool_of(attachment, "met");
@@ -170,30 +188,115 @@ fn observe_user(record: &Map<String, Value>) -> Vec<Observed> {
     let Some(message) = obj_of(record, "message") else {
         return vec![Observed::Malformed];
     };
-    if bool_of(record, "isSidechain") || bool_of(record, "isMeta") || !is_prompt(message) {
+    if bool_of(record, "isSidechain") || bool_of(record, "isMeta") {
         return Vec::new();
+    }
+    if !is_prompt(message) {
+        return background_started(record, message).into_iter().collect();
     }
     if compact_failed(message) {
         return vec![Observed::CompactFailed];
     }
     let at = str_of(record, "timestamp").and_then(parse_rfc3339);
+    let text = message_text(message);
     let turn = if is_interrupt(message) {
         Observed::TurnInterrupted { at }
     } else {
-        Observed::UserTurn { at }
+        Observed::UserTurn {
+            at,
+            wake: text.trim_start().starts_with("<task-notification>"),
+        }
     };
-    let Some(session_id) = owned_str(record, "sessionId") else {
-        return vec![turn];
-    };
-    vec![
-        Observed::SessionMeta {
+    // A wake-up prompt says which background work ended.
+    let mut out = background_ended(&text);
+    if let Some(session_id) = owned_str(record, "sessionId") {
+        out.push(Observed::SessionMeta {
             session_id,
             cwd: owned_str(record, "cwd"),
             model: None,
             version: owned_str(record, "version"),
-        },
-        turn,
-    ]
+        });
+    }
+    out.push(turn);
+    out
+}
+
+/// A tool result that started background work the session is woken by (SPEC-079 BGW-002): a
+/// Monitor stream (its text "Monitor started (task …", `toolUseResult` `{taskId, timeoutMs}`) or
+/// a background agent (`{status: "async_launched", agentId}`).
+fn background_started(
+    record: &Map<String, Value>,
+    message: &Map<String, Value>,
+) -> Option<Observed> {
+    let result = obj_of(record, "toolUseResult")?;
+    let task_id =
+        |key| owned_str(result, key).filter(|id| !id.is_empty() && id.len() <= MAX_TASK_ID);
+    let (id, agent, expires_in_ms) = if str_of(result, "status") == Some("async_launched") {
+        (task_id("agentId")?, true, None)
+    } else if tool_result_text(message).contains(MONITOR_STARTED) {
+        let ms = u64_of(result, "timeoutMs").unwrap_or(MONITOR_DEFAULT_MS);
+        (task_id("taskId")?, false, Some(ms.min(MONITOR_MAX_MS)))
+    } else {
+        return None;
+    };
+    Some(Observed::BackgroundStarted {
+        id,
+        agent,
+        expires_in_ms,
+        at: str_of(record, "timestamp").and_then(parse_rfc3339),
+    })
+}
+
+/// The text of a user line's tool results (string content or their text blocks).
+fn tool_result_text(message: &Map<String, Value>) -> String {
+    let Some(Value::Array(blocks)) = message.get("content") else {
+        return String::new();
+    };
+    let mut out = String::new();
+    for block in blocks
+        .iter()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+    {
+        match block.get("content") {
+            Some(Value::String(text)) => out.push_str(text),
+            Some(Value::Array(parts)) => {
+                for text in parts
+                    .iter()
+                    .filter_map(|p| p.get("text").and_then(Value::as_str))
+                {
+                    out.push_str(text);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The background work the `<task-notification>` blocks of `text` say ended: those with a
+/// `<status>` (completed, failed, stopped) and a Monitor's expiry event. A Monitor's other events
+/// leave it running.
+fn background_ended(text: &str) -> Vec<Observed> {
+    const OPEN: &str = "<task-notification>";
+    const CLOSE: &str = "</task-notification>";
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find(OPEN) {
+        let after = &rest[start + OPEN.len()..];
+        let (block, next) = after.split_once(CLOSE).unwrap_or((after, ""));
+        rest = next;
+        let id = block
+            .split_once("<task-id>")
+            .and_then(|(_, tail)| tail.split_once("</task-id>"))
+            .map(|(id, _)| id.trim())
+            .filter(|id| !id.is_empty() && id.len() <= MAX_TASK_ID);
+        if let Some(id) = id
+            && (block.contains("<status>") || block.contains("[Monitor expired"))
+        {
+            out.push(Observed::BackgroundEnded { id: id.to_owned() });
+        }
+    }
+    out
 }
 
 /// A user line that only says the person interrupted the turn ([`INTERRUPT_MARKERS`]).
@@ -232,8 +335,9 @@ fn observe_assistant(record: &Map<String, Value>) -> Vec<Observed> {
         bool_of(record, "isApiErrorMessage") || record.get("error").is_some_and(|e| !e.is_null());
     if is_error {
         let text = message_text(message);
+        let at = str_of(record, "timestamp").and_then(parse_rfc3339);
         if let Some(limit) = structured_limit(record, &text) {
-            return vec![limit];
+            return vec![recorded_at(limit, at)];
         }
         if prompt_too_long(record, &text) {
             // A sub-agent's full context is its own; the session goes on.
@@ -243,7 +347,10 @@ fn observe_assistant(record: &Map<String, Value>) -> Vec<Observed> {
                 vec![Observed::ContextFull]
             };
         }
-        return limit_signal(&text).into_iter().collect();
+        return limit_signal(&text)
+            .map(|limit| recorded_at(limit, at))
+            .into_iter()
+            .collect();
     }
     let model = owned_str(message, "model").filter(|m| m != SYNTHETIC_MODEL);
     let mut out = Vec::new();
@@ -255,7 +362,12 @@ fn observe_assistant(record: &Map<String, Value>) -> Vec<Observed> {
         });
     }
     if str_of(message, "stop_reason") == Some("end_turn") {
-        out.push(Observed::TurnComplete { duration_ms: None });
+        out.push(Observed::TurnComplete {
+            duration_ms: None,
+            at: (!bool_of(record, "isSidechain"))
+                .then(|| str_of(record, "timestamp").and_then(parse_rfc3339))
+                .flatten(),
+        });
     } else if !bool_of(record, "isSidechain")
         && owned_str(message, "model").as_deref() != Some(SYNTHETIC_MODEL)
     {
@@ -291,6 +403,24 @@ fn message_text(message: &Map<String, Value>) -> String {
     }
 }
 
+/// A limit observation with the time its record was written.
+fn recorded_at(limit: Observed, when: Option<yulius_domain::time::Timestamp>) -> Observed {
+    match limit {
+        Observed::LimitReached {
+            resets_at,
+            message,
+            window_minutes,
+            ..
+        } => Observed::LimitReached {
+            resets_at,
+            message,
+            window_minutes,
+            at: when,
+        },
+        other => other,
+    }
+}
+
 /// Recognizes the usage-limit error record of Claude Code 2.1.x by its structure, whatever its
 /// wording ("You've hit your session limit · resets 10:20am"): `apiError: "usage_limit_reached"`
 /// or a `rejected` rate-limit status, with `resetsAt` (epoch seconds) in
@@ -320,6 +450,7 @@ fn structured_limit(record: &Map<String, Value>, text: &str) -> Option<Observed>
         resets_at,
         message: shorten(message, LIMIT_MESSAGE_BYTES),
         window_minutes,
+        at: None,
     })
 }
 
@@ -346,6 +477,7 @@ fn limit_signal(text: &str) -> Option<Observed> {
         resets_at,
         message: shorten(human.trim(), LIMIT_MESSAGE_BYTES),
         window_minutes: window_of_text(&lower),
+        at: None,
     })
 }
 
@@ -456,6 +588,7 @@ mod tests {
                 resets_at: Some(Timestamp(1_760_000_000_000)),
                 message: "Claude AI usage limit reached".into(),
                 window_minutes: None,
+                at: None,
             })
         );
         assert_eq!(
@@ -464,6 +597,7 @@ mod tests {
                 resets_at: None,
                 message: "5-hour limit reached ∙ resets 3pm".into(),
                 window_minutes: Some(300),
+                at: None,
             })
         );
         assert_eq!(limit_signal("API Error: 500 internal server error"), None);
@@ -473,6 +607,7 @@ mod tests {
                 resets_at: None,
                 message: "You've hit your session limit · resets 10:20am (Europe/Berlin)".into(),
                 window_minutes: Some(300),
+                at: None,
             })
         );
         assert_eq!(
@@ -481,6 +616,7 @@ mod tests {
                 resets_at: None,
                 message: "You've hit your weekly limit · resets Oct 12".into(),
                 window_minutes: Some(10080),
+                at: None,
             })
         );
     }
@@ -536,7 +672,8 @@ mod tests {
                 r#"{"type":"user","timestamp":"2026-10-10T05:38:01.385Z","message":{"content":"go"}}"#
             ),
             vec![Observed::UserTurn {
-                at: Some(Timestamp(1_791_610_681_385))
+                at: Some(Timestamp(1_791_610_681_385)),
+                wake: false
             }]
         );
     }
@@ -606,10 +743,125 @@ mod tests {
         );
         assert!(
             assistant(r#""end_turn""#, false)
-                .contains(&Observed::TurnComplete { duration_ms: None })
+                .iter()
+                .any(|o| matches!(o, Observed::TurnComplete { at: Some(_), .. }))
         );
         // A sub-agent's lines are not the session's turn.
         assert!(!work(assistant(r#""tool_use""#, true)));
+    }
+
+    /// SPEC-079 BGW-002: a Monitor's start and a background agent's launch (their tool results'
+    /// `toolUseResult`), and the task notifications that end them, as prompt or queued command.
+    /// Shapes of the sandbox transcripts (Claude Code 2.1.292).
+    #[test]
+    fn background_launches_and_their_ends_are_observed() {
+        let at = Some(Timestamp(1_791_610_681_385));
+        let result = |tur: &str, sidechain: bool| {
+            observe_line(&format!(
+                r#"{{"type":"user","isSidechain":{sidechain},"timestamp":"2026-10-10T05:38:01.385Z","message":{{"role":"user","content":[{{"tool_use_id":"toolu_1","type":"tool_result","content":"Monitor started (task bppf4z917, expires in 15m unless the source ends first)"}}]}},"toolUseResult":{tur}}}"#
+            ))
+        };
+        assert_eq!(
+            result(
+                r#"{"taskId":"bppf4z917","timeoutMs":900000,"persistent":false}"#,
+                false
+            ),
+            vec![Observed::BackgroundStarted {
+                id: "bppf4z917".into(),
+                agent: false,
+                expires_in_ms: Some(900_000),
+                at
+            }]
+        );
+        assert_eq!(
+            result(r#"{"taskId":"b1","timeoutMs":99999999}"#, false),
+            vec![Observed::BackgroundStarted {
+                id: "b1".into(),
+                agent: false,
+                expires_in_ms: Some(MONITOR_MAX_MS),
+                at
+            }],
+            "capped"
+        );
+        assert_eq!(
+            result(
+                r#"{"isAsync":true,"status":"async_launched","agentId":"a4ed8aab8c9658147","description":"Review"}"#,
+                false
+            ),
+            vec![Observed::BackgroundStarted {
+                id: "a4ed8aab8c9658147".into(),
+                agent: true,
+                expires_in_ms: None,
+                at
+            }]
+        );
+        // No `timeoutMs`: Claude Code's default of 5 minutes.
+        assert_eq!(
+            result(r#"{"taskId":"b3"}"#, false),
+            vec![Observed::BackgroundStarted {
+                id: "b3".into(),
+                agent: false,
+                expires_in_ms: Some(MONITOR_DEFAULT_MS),
+                at
+            }]
+        );
+        // Another tool's result of the same shape is no Monitor.
+        let other = observe_line(
+            r#"{"type":"user","isSidechain":false,"message":{"role":"user","content":[{"tool_use_id":"t","type":"tool_result","content":"Scheduled."}]},"toolUseResult":{"taskId":"b4","timeoutMs":1000}}"#,
+        );
+        assert!(other.is_empty());
+        // A foreground agent's result, a plain tool result and a sub-agent's launch are none.
+        assert!(result(r#"{"status":"completed","agentId":"a1"}"#, false).is_empty());
+        assert!(result(r#"{"stdout":"","stderr":""}"#, false).is_empty());
+        assert!(result(r#"{"taskId":"b2","timeoutMs":1000}"#, true).is_empty());
+
+        let ended = |id: &str| Observed::BackgroundEnded { id: id.into() };
+        let notification =
+            |body: &str| format!("<task-notification>\n<task-id>{body}</task-notification>");
+        let end = notification(
+            "bppf4z917</task-id>\n<status>completed</status>\n<summary>Monitor \"cargo check\" stream ended</summary>\n",
+        );
+        let event = notification(
+            "bx</task-id>\n<summary>Monitor event: \"ci\"</summary>\n<event>step 1 ok</event>\n",
+        );
+        let expired = notification(
+            "b71u1sesi</task-id>\n<summary>Monitor event: \"wait\"</summary>\n<event>[Monitor expired after 10m with no events delivered.]</event>\n",
+        );
+        // A wake-up prompt: the end, then the prompt's turn.
+        let prompt = observe_line(
+            &serde_json::json!({"type": "user", "isSidechain": false,
+                "timestamp": "2026-10-10T05:38:01.385Z",
+                "message": {"role": "user", "content": format!("{end}\n{event}\n{expired}")}})
+            .to_string(),
+        );
+        assert_eq!(
+            prompt,
+            vec![
+                ended("bppf4z917"),
+                ended("b71u1sesi"),
+                Observed::UserTurn { at, wake: true }
+            ]
+        );
+        // Delivered while the agent works.
+        let queued = |prompt: &str, sidechain: bool| {
+            observe_line(
+                &serde_json::json!({"type": "attachment", "isSidechain": sidechain,
+                    "attachment": {"type": "queued_command", "commandMode": "task-notification",
+                    "prompt": prompt}})
+                .to_string(),
+            )
+        };
+        let stopped = notification("a1</task-id>\n<status>stopped</status>\n");
+        assert_eq!(queued(&stopped, false), vec![ended("a1")]);
+        assert!(queued(&event, false).is_empty());
+        assert!(queued(&stopped, true).is_empty());
+        assert!(
+            queued(
+                "<task-notification><task-id></task-id><status>completed</status>",
+                false
+            )
+            .is_empty()
+        );
     }
 
     /// Esc or Ctrl+C during a turn (Claude Code 2.1.292, shape seen on the deployed instance):
@@ -639,7 +891,7 @@ mod tests {
                 "why did you stop? [Request interrupted by user]"
             ))
             .last(),
-            Some(&Observed::UserTurn { at })
+            Some(&Observed::UserTurn { at, wake: false })
         );
     }
 
@@ -665,6 +917,7 @@ mod tests {
                 resets_at: Some(Timestamp(1_760_000_000_000)),
                 message: "Limit hit, see you soon".into(),
                 window_minutes: Some(300),
+                at: None,
             }]
         );
         // Only `quotaLimits` (older 2.1 builds) still carries the reset time.
@@ -675,6 +928,7 @@ mod tests {
                 resets_at: Some(Timestamp(1_760_000_000_000)),
                 message: "usage limit reached".into(),
                 window_minutes: None,
+                at: None,
             }]
         );
         // A transient rate limit that was retried is not a usage limit.

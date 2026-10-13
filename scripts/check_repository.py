@@ -273,6 +273,10 @@ CONTRAST_PAIRS = [
     ("--accent-fg-strong", "--accent-soft/--surface", 4.5), ("--agent-ink", "--agent", 4.5),
     *((mark, bg, 3.0) for mark in ("--accent", "--ok", "--warn", "--danger", "--violet") for bg in ("--bg", "--surface")),
     ("--border-control", "--bg", 3.0), ("--border-control", "--surface", 3.0), ("--border-control", "--surface-2", 3.0),
+    # A past session's faded terminal (SPEC-075): fainter than the live one, still AA.
+    *((fg, "--session-bg", 4.5) for fg in ("--session-fg", "--session-dim", "--session-ok", "--session-err")),
+    *(("--session-fg", bg, 4.5) for bg in ("--session-prompt-bg", "--session-add-bg", "--session-del-bg")),
+    ("--session-dim", "--session-prompt-bg", 4.5),
 ]
 
 

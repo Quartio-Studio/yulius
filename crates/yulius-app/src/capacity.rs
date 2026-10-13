@@ -544,10 +544,20 @@ impl App {
 
     async fn would_resume(&self, pause: &PauseRecord) -> bool {
         match self.deps.store.task(&pause.task_id).await {
-            Ok(Some(task)) if task.status == TaskStatus::WaitingCapacity => matches!(
-                self.paused_decision(&task).await,
-                Ok((Decision::Stay | Decision::Switch { .. }, _, _))
-            ),
+            // A task a supertask holds does not resume (SPEC-071), unless its process lives on
+            // (the hold never touches a live run): no stagger before a held one.
+            Ok(Some(task)) if task.status == TaskStatus::WaitingCapacity => {
+                match self.paused_decision(&task).await {
+                    Ok((Decision::Stay | Decision::Switch { .. }, _, has_process)) => {
+                        has_process
+                            || !self
+                                .supertask_holders(&task)
+                                .await
+                                .is_ok_and(|holders| !holders.is_empty())
+                    }
+                    _ => false,
+                }
+            }
             _ => false,
         }
     }
@@ -586,9 +596,15 @@ impl App {
                     _ => None,
                 };
                 if has_process {
+                    // The CLI may have continued a cut turn by itself while the policy was read
+                    // (#276): a run is ended only for a pause still open.
+                    if !self.pause_open(pause).await {
+                        return Resume::Gone;
+                    }
                     let switched = match pause.kind {
                         PauseKind::Limit => {
-                            self.switch_after_limit(&task.id, account, &reason).await
+                            self.resume_paused_after_limit(&task.id, account, &reason)
+                                .await
                         }
                         // The held prompt is the session's first message, typed with its
                         // images: a fresh session types it again, images included; the hook's
@@ -611,6 +627,12 @@ impl App {
                         tracing::warn!(error = %err, task = %task.id, "resume on another subscription failed");
                     }
                 } else {
+                    // A supertask holds the project's starts (SPEC-071): the pause stays, with
+                    // its kind and continuation, until the queue wakes this loop again.
+                    if self.held_by_supertask(&task).await.unwrap_or(false) {
+                        self.supertask_holds.capacity_held();
+                        return Resume::Waiting(None);
+                    }
                     self.end_pause(&task.id, "started").await;
                     let start = match store.provider_sessions(&task.id).await {
                         _ if pause.kind == PauseKind::Prompt
@@ -635,6 +657,14 @@ impl App {
                 Resume::Resumed
             }
         }
+    }
+
+    /// Whether `pause` is still the task's open pause.
+    async fn pause_open(&self, pause: &PauseRecord) -> bool {
+        matches!(
+            self.deps.store.open_pause(&pause.task_id).await,
+            Ok(Some(open)) if open.id == pause.id
+        )
     }
 
     /// Capacity is back on the account the paused process uses: the pause ends and the task

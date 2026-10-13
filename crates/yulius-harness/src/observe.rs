@@ -32,6 +32,9 @@ pub enum Observed {
     UserTurn {
         /// When the prompt was recorded (the record's `timestamp`), if parseable.
         at: Option<Timestamp>,
+        /// Claude Code woke the session itself (a `<task-notification>` prompt: background work
+        /// ended or reported), no person or Yulius typed it.
+        wake: bool,
     },
     /// The person stopped the agent's turn (Esc, or Ctrl+C while it works): Claude Code records
     /// a user line "[Request interrupted by user]" (or "… for tool use") and waits for input.
@@ -58,12 +61,18 @@ pub enum Observed {
         /// Length of the limited window in minutes — 300 for the five-hour session, 10080 for
         /// the weekly one — when the provider said which.
         window_minutes: Option<u32>,
+        /// When Claude Code recorded it (the record's `timestamp`), if parseable: tells a new
+        /// limit from one in a conversation's history (SPEC-074 SUP-002).
+        at: Option<Timestamp>,
     },
     /// The agent finished a turn. Claude emits this for each line of an `end_turn` message, so
     /// consumers treat it idempotently; the Stop hook remains the authoritative turn boundary.
     TurnComplete {
         /// Turn duration in milliseconds, if reported.
         duration_ms: Option<u64>,
+        /// When the session's own turn ended (the record's `timestamp`); `None` for a
+        /// sub-agent's turn or an unparseable time.
+        at: Option<Timestamp>,
     },
     /// Claude Code recorded the session goal's state (`goal_status` attachment, TSK-014).
     Goal {
@@ -84,6 +93,25 @@ pub enum Observed {
     AgentWork {
         /// When it was recorded, if parseable.
         at: Option<Timestamp>,
+    },
+    /// The session started background work it is woken by (SPEC-079 BGW-002): a Monitor stream
+    /// (its tool result's `toolUseResult` is `{taskId, timeoutMs, …}`) or a background agent
+    /// (`{status: "async_launched", agentId, …}`).
+    BackgroundStarted {
+        /// Claude Code's task id, which the `<task-notification>` that ends it names.
+        id: String,
+        /// A background agent; otherwise a Monitor stream.
+        agent: bool,
+        /// How long a Monitor lives at most (`timeoutMs`, capped); `None` for an agent.
+        expires_in_ms: Option<u64>,
+        /// When it was recorded, if parseable.
+        at: Option<Timestamp>,
+    },
+    /// A `<task-notification>` said the background work `id` ended: it carries a `<status>`, or
+    /// it is a Monitor's expiry event.
+    BackgroundEnded {
+        /// Claude Code's task id.
+        id: String,
     },
     /// The API rejected the session's prompt as too long: its context is full, and every later
     /// prompt gets the same answer until it is compacted (#213). No Stop hook ends such a turn.
@@ -294,16 +322,19 @@ mod tests {
             Observed::Malformed,
             Observed::TurnComplete {
                 duration_ms: Some(5),
+                at: None,
             },
             Observed::LimitReached {
                 resets_at: None,
                 message: "first".into(),
                 window_minutes: None,
+                at: None,
             },
             Observed::LimitReached {
                 resets_at: Some(Timestamp(5)),
                 message: "limit".into(),
                 window_minutes: Some(300),
+                at: None,
             },
         ]);
         assert_eq!(acc.malformed_lines(), 1);

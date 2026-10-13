@@ -2,6 +2,7 @@
 //! (SPEC-001 TSK-001..008, HRN-002, ROT-007).
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use yulius_contracts::api::tasks::{ContinueTask, CreateTask, TaskSummary};
 use yulius_domain::auto_choice::AUTO;
@@ -52,6 +53,8 @@ pub struct NewTask {
     pub start: bool,
     /// Goal or prompt mode (TSK-010).
     pub mode: TaskMode,
+    /// Runs alone in its project once the running work is finished (SPEC-071).
+    pub supertask: bool,
 }
 
 fn parse_harness(text: &str) -> AppResult<Harness> {
@@ -163,6 +166,7 @@ impl App {
             origin: req.origin,
             automation_run: req.automation_run.clone(),
             created_by: req.created_by.clone(),
+            owner: req.created_by.clone(),
             created_at: now,
             updated_at: now,
             closed_at: (!req.start).then_some(now),
@@ -171,6 +175,7 @@ impl App {
             gate_blocks: 0,
             wake_enabled: true,
             mode: req.mode,
+            supertask: req.supertask,
         };
         let task = store.insert_task(&record).await?;
         if let Some(before) = &after {
@@ -234,6 +239,11 @@ impl App {
                     tracing::warn!(error = %err, task = %id, "task failed to start");
                 }
             });
+            // The project's queued tasks now wait for the new supertask: their labels say so,
+            // also at the session limit (SPEC-071 SUP-006).
+            if req.supertask {
+                self.drain_queue().await;
+            }
         }
         store.task(&task.id).await?.ok_or(AppError::NotFound)
     }
@@ -299,6 +309,14 @@ impl App {
             None | Some("") => None,
             Some(text) => Some(Rule::parse(text).map_err(|e| AppError::Invalid(e.to_string()))?),
         };
+        // A supertask starts after the running work; waiting for a chain could wait for a task
+        // its own hold keeps from starting (SPEC-071, ADR-0054).
+        if req.supertask && (after.is_some() || rule.is_some()) {
+            return Err(AppError::Invalid(
+                "a supertask starts after the running tasks: it cannot also run after a task or a rule"
+                    .into(),
+            ));
+        }
         // Jev is asked only about a prompt the task accepts.
         let prompt = req.prompt.trim();
         if prompt.is_empty() || prompt.len() > MAX_PROMPT_BYTES {
@@ -327,6 +345,7 @@ impl App {
                     automation_run: None,
                     start: true,
                     mode: choice.mode,
+                    supertask: req.supertask,
                 },
                 after.as_ref(),
                 rule.as_ref(),
@@ -441,11 +460,12 @@ impl App {
     ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::Work).await?;
         let account = parse_account(req)?;
-        // A turn a usage limit cut goes on past the limit, with nothing typed (SPEC-034).
+        // A turn a usage limit cut goes on past the limit, with nothing typed (SPEC-034): at a
+        // `limit` pause, or left at the limit by a refused automatic switch (SPEC-072 LRS-002).
         let at_limit = matches!(
             self.deps.store.open_pause(&task.id).await?,
             Some(pause) if pause.kind == crate::model::PauseKind::Limit
-        );
+        ) || self.runtime(&task.id).at_limit.load(Ordering::SeqCst);
         if at_limit {
             self.switch_after_limit(&task.id, account, "manual").await?;
         } else if self.held_opening(&task.id).await {

@@ -53,6 +53,8 @@ title whose number differs from the file name, and a record this index does not 
 - [0041](0041-administrators-reset-a-lost-two-factor.md): Administrators reset a lost two-factor; a code confirms only the seed it was checked against
 - [0047](0047-device-sign-in-start-is-limited-and-bounded.md): Device sign-in start is limited per client, its grants bounded and purged
 - [0050](0050-a-run-ends-only-when-its-host-is-proven-gone.md): A stopped or closed run ends only when its host is proven gone
+- [0054](0054-a-supertask-holds-its-project-at-the-start-door.md): A supertask holds its project at the one door every run starts through
+- [0062](0062-an-automation-starts-its-tasks-like-new-task.md): An automation starts its tasks like New task; after an ended task, on the rule `#N done`
 - [0042](0042-personal-two-factor-guards-the-vault.md): A personal two-factor code guards the vault; a secret is a title, a value and notes
 - [0043](0043-archive-all-runs-the-per-task-archive.md): "Archive all" runs the per-task archive; no bulk endpoint
 - [0044](0044-task-status-follows-claude-codes-own-records.md): A task's status follows Claude Code's own records
@@ -60,3 +62,11 @@ title whose number differs from the file name, and a record this index does not 
 - [0049](0049-management-tools-cover-the-task-and-automation-lifecycle.md): Management tools cover the task and automation lifecycle, never the caller's own task
 - [0052](0052-only-keystrokes-count-as-typing.md): Only keystrokes count as typing; a typed first message stays pending until submitted
 - [0051](0051-the-merge-gate-enforces-the-branch-policy.md): Yulius's merge gate enforces the branch policy
+- [0060](0060-a-task-is-owned-by-one-person.md): A task is owned by one person, whose GitHub credentials it uses; control passes on request
+- [0053](0053-shell-starts-run-detached-from-the-request.md): Shell and Cockpit starts run detached from their request
+- [0061](0061-sandbox-counts-are-the-sidebar-groups.md): A sandbox's counts are the sidebar's groups, decided by one domain rule
+- [0058](0058-the-clis-own-continuation-ends-a-limit-pause.md): The CLI's own continuation ends a limit pause; a refused limit switch is remembered per run
+- [0059](0059-a-session-is-printed-as-the-tui-in-html.md): A session is printed as Claude Code's TUI in HTML, faded by its own palette
+- [0055](0055-cockpit-moves-past-a-usage-limit.md): The Cockpit moves past a usage limit like a task, and is called the Superagent
+- [0063](0063-background-work-and-goal-verdict-from-the-transcript.md): Background launches and the goal verdict come from the transcript; the hook does not wait
+- [0064](0064-attachment-reads-have-their-own-bound.md): A prompt's attached files are read under their own bound, streamed, and confirmed on Linux

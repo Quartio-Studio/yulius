@@ -599,6 +599,7 @@ impl App {
             automation_run: None,
             start: true,
             mode: d.task.mode,
+            supertask: false,
         };
         match self.create_task_with(req, after).await {
             Ok(created) => {
@@ -705,6 +706,7 @@ impl App {
                     automation_run: None,
                     start: true,
                     mode: d.task.mode,
+                    supertask: false,
                 };
                 let created = self.create_task_with(req, None).await?;
                 d.link(self, hold_state::REVERTED, &created.id).await;

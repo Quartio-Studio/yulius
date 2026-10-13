@@ -9,10 +9,13 @@
 //!            [--bytes N] [--code N] [--seconds N] [--ignore-term]
 //!            [--session-id ID] [--transcript PATH [--transcript-kind claude]]
 //!            [--limit-after N] [--report-env NAME]... [--tui]
-//!            [--hooks YULIUS_EXE] [--goal-background SECONDS] [--goal-delay-ms MS] [--drop-lines N]
+//!            [--hooks YULIUS_EXE] [--goal-background SECONDS] [--goal-agent SECONDS]
+//!            [--goal-monitor SECONDS [--goal-monitor-ends]] [--goal-verdict met|failed|none]
+//!            [--goal-continue-ms MS
+//!            [--goal-continue-verdict] [--goal-continue-dies]] [--goal-delay-ms MS] [--drop-lines N]
 //!            [--interrupts] [--rate-limits-file PATH] [--session-start] [--opening-turn-ms MS]
 //!            [--echo-turn-ms MS] [--context-full-after N] [--compact-fails] [--compact-hangs]
-//!            [--prompt TEXT]
+//!            [--prompt TEXT] [--limit-continues-ms MS [--limit-continues-answer-only]]
 //! ```
 //!
 //! Modes:
@@ -35,7 +38,13 @@
 //! (`--transcript-kind claude`, the only kind). `--limit-after N` prints
 //! `LIMIT REACHED` and appends a usage-limit record after N turns, shaped like Claude Code
 //! 2.1.292's (`apiError: "usage_limit_reached"`, `resetsAt` one hour ahead); later turns only repeat
-//! `LIMIT REACHED`. `--report-env NAME` prints `ENV NAME=set len=<n>` or `ENV NAME=unset` (never
+//! `LIMIT REACHED`. With `--limit-continues-ms MS` the agent then continues the cut turn by itself
+//! like Claude Code's "continuing automatically" at the reset (#276): MS later it appends a hidden
+//! `isMeta` prompt and an assistant `tool_use` record and prints `CONTINUED`, and MS after that it
+//! appends the answer ending the turn and prints `DONE continued`; with
+//! `--limit-continues-answer-only` the continuation is only that answer (no tool call). With
+//! `--hooks` the continued turn then runs its Stop hook and prints `CONTINUED STOP ANSWERED`.
+//! `--report-env NAME` prints `ENV NAME=set len=<n>` or `ENV NAME=unset` (never
 //! the value).
 //!
 //! Goal mode (TSK-010/TSK-014), like Claude Code 2.1.292: `/goal <condition>` prints `GOAL SET`,
@@ -44,8 +53,14 @@
 //! prints `✓ Goal achieved`. With `--goal-background N` the goal turn first starts a background
 //! shell shaped like Claude Code's Bash tool (`/bin/sh -c "sleep N && pwd -P >| /dev/null"`, a
 //! child of this process) and prints `BACKGROUND <pid>`; when it exits the agent is woken like
-//! Claude Code wakes it (a `queued_command` task notification and a short turn with its Stop
-//! hook) and prints `BACKGROUND DONE`.
+//! Claude Code wakes an idle session (a `<task-notification>` user prompt and a short turn with
+//! its Stop hook) and prints `BACKGROUND DONE`. With `--goal-agent N` the goal turn launches a background
+//! agent (its tool result `{"status":"async_launched","agentId":"agent-1"}` before the Stop hook)
+//! that wakes the session after N seconds and prints `AGENT DONE`. With `--goal-monitor N` it
+//! starts a Monitor stream (`{"taskId":"monitor-1","timeoutMs":N000}`) that never reports; with
+//! `--goal-monitor-ends` too, the stream ends after N/2 seconds and wakes the session
+//! (`MONITOR DONE`). `--goal-verdict failed` records the goal as failed instead of achieved, and
+//! `--goal-verdict none` records no verdict (the turn closes without one).
 //!
 //! `--hooks YULIUS_EXE` runs Claude Code's hooks as configured by Yulius:
 //! `YULIUS_EXE hook claude UserPromptSubmit` before and `… Stop` after each turn, with the hook
@@ -132,6 +147,14 @@ enum Mode {
     Sleep,
 }
 
+/// The goal evaluator's last verdict in a goal turn (`--goal-verdict`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GoalVerdict {
+    Met,
+    Failed,
+    None,
+}
+
 #[derive(Debug)]
 struct Options {
     mode: Mode,
@@ -147,6 +170,9 @@ struct Options {
     hooks: Option<PathBuf>,
     goal_background: Option<u64>,
     goal_agent: Option<u64>,
+    goal_monitor: Option<u64>,
+    goal_monitor_ends: bool,
+    goal_verdict: GoalVerdict,
     goal_continue_ms: Option<u64>,
     goal_continue_verdict: bool,
     goal_continue_dies: bool,
@@ -161,6 +187,8 @@ struct Options {
     compact_fails: bool,
     compact_hangs: bool,
     prompt: Option<String>,
+    limit_continues_ms: Option<u64>,
+    limit_continues_answer_only: bool,
 }
 
 fn parse_number<T: std::str::FromStr>(flag: &str, value: Option<String>) -> Result<T, String> {
@@ -185,6 +213,9 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         hooks: None,
         goal_background: None,
         goal_agent: None,
+        goal_monitor: None,
+        goal_monitor_ends: false,
+        goal_verdict: GoalVerdict::Met,
         goal_continue_ms: None,
         goal_continue_verdict: false,
         goal_continue_dies: false,
@@ -199,6 +230,8 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         compact_fails: false,
         compact_hangs: false,
         prompt: None,
+        limit_continues_ms: None,
+        limit_continues_answer_only: false,
     };
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -246,6 +279,19 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
                 let seconds: u64 = parse_number(&flag, args.next())?;
                 options.goal_agent = Some(seconds.min(MAX_SLEEP_SECONDS));
             }
+            "--goal-monitor" => {
+                let seconds: u64 = parse_number(&flag, args.next())?;
+                options.goal_monitor = Some(seconds.min(MAX_SLEEP_SECONDS));
+            }
+            "--goal-monitor-ends" => options.goal_monitor_ends = true,
+            "--goal-verdict" => {
+                options.goal_verdict = match args.next().as_deref() {
+                    Some("met") => GoalVerdict::Met,
+                    Some("failed") => GoalVerdict::Failed,
+                    Some("none") => GoalVerdict::None,
+                    _ => return Err("--goal-verdict must be met, failed or none".into()),
+                }
+            }
             "--goal-continue-ms" => {
                 let ms: u64 = parse_number(&flag, args.next())?;
                 options.goal_continue_ms = Some(ms.min(MAX_GOAL_DELAY_MS));
@@ -276,6 +322,11 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
             }
             "--compact-fails" => options.compact_fails = true,
             "--compact-hangs" => options.compact_hangs = true,
+            "--limit-continues-ms" => {
+                let ms: u64 = parse_number(&flag, args.next())?;
+                options.limit_continues_ms = Some(ms.min(MAX_WORK_MS));
+            }
+            "--limit-continues-answer-only" => options.limit_continues_answer_only = true,
             "--prompt" => options.prompt = Some(args.next().ok_or("--prompt needs a text")?),
             other => return Err(format!("unknown argument {other:?}")),
         }
@@ -534,6 +585,53 @@ impl Transcript {
         self.append(&[assistant])
     }
 
+    /// Claude Code continued the turn a usage limit cut by itself (`--limit-continues-ms`): its
+    /// hidden continuation prompt and, unless `answer_only`, the first answer, a tool call.
+    fn continued(&mut self, answer_only: bool) -> io::Result<()> {
+        let timestamp = rfc3339(now_ms());
+        let meta_uuid = format!("fake-{}-continue-u", self.session_id);
+        let mut meta = self.claude_envelope("user", &meta_uuid, &timestamp);
+        meta["isMeta"] = json!(true);
+        meta["message"] = json!({"role": "user", "content": "Continue from where you left off."});
+        self.last_uuid = Some(meta_uuid);
+        if answer_only {
+            return self.append(&[meta]);
+        }
+        let uuid = format!("fake-{}-continue-a", self.session_id);
+        let mut assistant = self.claude_envelope("assistant", &uuid, &timestamp);
+        assistant["message"] = json!({
+            "id": "msg_fake_continue_tool",
+            "type": "message",
+            "role": "assistant",
+            "model": "fake-model",
+            "content": [{"type": "tool_use", "id": "toolu_fake_continue", "name": "Bash",
+                "input": {"command": "true"}}],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 12, "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0, "output_tokens": 5}
+        });
+        self.last_uuid = Some(uuid);
+        self.append(&[meta, assistant])
+    }
+
+    /// The answer that ends the turn Claude Code continued by itself.
+    fn continued_answer(&mut self) -> io::Result<()> {
+        let uuid = format!("fake-{}-continue-end", self.session_id);
+        let mut assistant = self.claude_envelope("assistant", &uuid, &rfc3339(now_ms()));
+        assistant["message"] = json!({
+            "id": "msg_fake_continue_end",
+            "type": "message",
+            "role": "assistant",
+            "model": "fake-model",
+            "content": [{"type": "text", "text": "DONE continued"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 14, "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0, "output_tokens": 4}
+        });
+        self.last_uuid = Some(uuid);
+        self.append(&[assistant])
+    }
+
     /// The person interrupted the turn: Claude Code's user line, shaped like 2.1.292's.
     fn interrupted(&mut self) -> io::Result<()> {
         let uuid = format!("fake-{}-{}-interrupt", self.session_id, self.turns);
@@ -566,6 +664,17 @@ impl Transcript {
         self.append(&[assistant])
     }
 
+    /// A tool result that started background work, with Claude Code 2.1.292's `toolUseResult`.
+    fn tool_result(&mut self, text: &str, result: Value) -> io::Result<()> {
+        let uuid = format!("fake-{}-{}-result", self.session_id, self.turns);
+        let mut user = self.claude_envelope("user", &uuid, &rfc3339(now_ms()));
+        user["message"] = json!({"role": "user", "content": [{"type": "tool_result",
+            "tool_use_id": format!("toolu_fake_{}", self.turns), "content": text}]});
+        user["toolUseResult"] = result;
+        self.last_uuid = Some(uuid);
+        self.append(&[user])
+    }
+
     /// A `goal_status` attachment shaped like Claude Code 2.1.292's.
     fn goal_status(&mut self, goal: Value) -> io::Result<()> {
         let uuid = format!("fake-{}-goal-{}", self.session_id, self.turns);
@@ -591,35 +700,6 @@ impl Transcript {
         duration["pendingBackgroundAgentCount"] = json!(pending_agents);
         self.last_uuid = Some(duration_uuid);
         self.append(&[summary, duration])
-    }
-
-    /// A background shell ended: Claude Code queues a task notification and wakes the agent.
-    fn notification_turn(&mut self, pid: u32) -> io::Result<()> {
-        self.turns += 1;
-        let n = self.turns;
-        let timestamp = rfc3339(now_ms());
-        let queued_uuid = format!("fake-{}-{n}-q", self.session_id);
-        let mut queued = self.claude_envelope("attachment", &queued_uuid, &timestamp);
-        queued["attachment"] = json!({
-            "type": "queued_command",
-            "commandMode": "task-notification",
-            "prompt": format!("<task-notification>\n<task-id>bash-{pid}</task-id>\n<status>completed</status>\n</task-notification>"),
-            "origin": {"kind": "task-notification", "producer": "session-task"},
-        });
-        let assistant_uuid = format!("fake-{}-{n}-a", self.session_id);
-        let mut assistant = self.claude_envelope("assistant", &assistant_uuid, &timestamp);
-        assistant["message"] = json!({
-            "id": format!("msg_fake_{n}"),
-            "type": "message",
-            "role": "assistant",
-            "model": "fake-model",
-            "content": [{"type": "text", "text": "The background command finished."}],
-            "stop_reason": "end_turn",
-            "usage": {"input_tokens": 8, "cache_creation_input_tokens": 0,
-                "cache_read_input_tokens": 0, "output_tokens": 6}
-        });
-        self.last_uuid = Some(assistant_uuid);
-        self.append(&[queued, assistant])
     }
 
     /// The API's answer to a message too long for the context ([`Self::begin`] wrote its user
@@ -815,45 +895,67 @@ fn start_background(
     let pid = child.id();
     std::thread::spawn(move || {
         let _ = child.wait();
-        if let Some(transcript) = &transcript
-            && let Ok(mut transcript) = transcript.lock()
-        {
-            let _ = transcript.notification_turn(pid);
-        }
-        let _ = say("BACKGROUND DONE");
-        if let Some(hooks) = &hooks {
-            let _ = hooks.stop();
-        }
+        let prompt = format!(
+            "<task-notification>\n<task-id>bash-{pid}</task-id>\n<status>completed</status>\n</task-notification>"
+        );
+        wake(
+            &prompt,
+            "BACKGROUND DONE",
+            transcript.as_ref(),
+            hooks.as_ref(),
+        );
     });
     Ok(pid)
 }
 
-/// A background agent (Claude Code's `Agent` tool with `run_in_background`) that ends after
-/// `seconds`: the session is woken by a `<task-notification>` prompt, answers, runs its Stop hook
-/// and closes the turn with no agent pending.
-fn start_agent(seconds: u64, transcript: Option<Arc<Mutex<Transcript>>>, hooks: Option<Hooks>) {
+/// Background work (a background agent, a Monitor stream) that ends after `ms`: the session is
+/// woken by its `<task-notification>` prompt, answers, prints `done`, runs its Stop hook and closes
+/// the turn with no agent pending.
+fn wake_after(
+    ms: u64,
+    prompt: &'static str,
+    done: &'static str,
+    transcript: Option<Arc<Mutex<Transcript>>>,
+    hooks: Option<Hooks>,
+) {
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(seconds));
-        let prompt = "<task-notification>\n<task-id>agent-1</task-id>\n<status>completed</status>\n</task-notification>";
-        if let Some(hooks) = &hooks {
-            let _ = hooks.prompt(prompt);
-        }
-        let answer = "The background agent finished.";
-        if let Some(transcript) = &transcript
-            && let Ok(mut t) = transcript.lock()
-        {
-            let _ = t.turn(prompt, answer);
-        }
-        let _ = say("AGENT DONE");
-        if let Some(hooks) = &hooks {
-            let _ = hooks.stop();
-        }
-        if let Some(transcript) = &transcript
-            && let Ok(mut t) = transcript.lock()
-        {
-            let _ = t.close_turn(2_000, 0);
-        }
+        std::thread::sleep(Duration::from_millis(ms));
+        wake(prompt, done, transcript.as_ref(), hooks.as_ref());
     });
+}
+
+/// Claude Code wakes the idle session when background work ends: its `<task-notification>` is a
+/// user prompt (after `UserPromptSubmit`), the agent answers and prints `done`, the Stop hook runs
+/// and the turn closes with nothing pending.
+fn wake(
+    prompt: &str,
+    done: &str,
+    transcript: Option<&Arc<Mutex<Transcript>>>,
+    hooks: Option<&Hooks>,
+) {
+    if let Some(hooks) = hooks {
+        let _ = hooks.prompt(prompt);
+    }
+    let write = |f: &dyn Fn(&mut Transcript) -> io::Result<()>| {
+        if let Some(transcript) = transcript
+            && let Ok(mut t) = transcript.lock()
+        {
+            let _ = f(&mut t);
+        }
+    };
+    // The model takes a moment to answer, as a real one does: the prompt is read before the Stop.
+    write(&|t| t.begin(prompt));
+    std::thread::sleep(Duration::from_millis(1_500));
+    write(&|t| t.answer(prompt, "The background work finished."));
+    let _ = say(done);
+    if let Some(hooks) = hooks {
+        let _ = hooks.stop();
+    }
+    if let Some(transcript) = transcript
+        && let Ok(mut t) = transcript.lock()
+    {
+        let _ = t.close_turn(2_000, 0);
+    }
 }
 
 fn report_env(names: &[String]) -> io::Result<()> {
@@ -1065,6 +1167,30 @@ fn goal_turn(
         && let Ok(mut t) = transcript.lock()
     {
         t.turn(line, &answer)?;
+        // Background work the turn started, recorded before its Stop hook.
+        if options.goal_agent.is_some() {
+            t.tool_result(
+                "Async agent launched successfully.",
+                json!({"isAsync": true, "status": "async_launched",
+                "agentId": "agent-1", "description": "Review"}),
+            )?;
+        }
+        if let Some(seconds) = options.goal_monitor {
+            t.tool_result(
+                &format!("Monitor started (task monitor-1, expires in {seconds}s unless the source ends first)"),
+                json!({"taskId": "monitor-1", "timeoutMs": seconds * 1000,
+                "persistent": false}),
+            )?;
+        }
+    }
+    if let (Some(seconds), true) = (options.goal_monitor, options.goal_monitor_ends) {
+        wake_after(
+            seconds * 500,
+            "<task-notification>\n<task-id>monitor-1</task-id>\n<status>completed</status>\n<summary>Monitor \"ci\" stream ended</summary>\n</task-notification>",
+            "MONITOR DONE",
+            transcript.cloned(),
+            hooks.cloned(),
+        );
     }
     // Claude Code's goal evaluator is a Stop hook: its record follows the turn's Stop hooks.
     if let Some(hooks) = hooks {
@@ -1107,15 +1233,34 @@ fn goal_turn(
     if let Some(transcript) = transcript
         && let Ok(mut t) = transcript.lock()
     {
-        t.goal_status(
-            json!({"type": "goal_status", "met": true, "condition": condition,
-            "reason": "Done and verified.", "iterations": 1, "durationMs": 51_000,
-            "tokens": 7_100}),
-        )?;
+        match options.goal_verdict {
+            GoalVerdict::Met => t.goal_status(
+                json!({"type": "goal_status", "met": true, "condition": condition,
+                "reason": "Done and verified.", "iterations": 1, "durationMs": 51_000,
+                "tokens": 7_100}),
+            )?,
+            GoalVerdict::Failed => {
+                t.goal_status(json!({"type": "goal_status", "met": false, "failed": true,
+                    "condition": condition, "reason": "It cannot be done."}))?;
+                // The record that closes the turn comes late: the verdict alone settles it.
+                say("GOAL FAILED")?;
+                std::thread::sleep(Duration::from_secs(6));
+            }
+            GoalVerdict::None => {}
+        }
         t.close_turn(51_000, u32::from(options.goal_agent.is_some()))?;
     }
+    if options.goal_verdict != GoalVerdict::Met {
+        return say("GOAL UNMET");
+    }
     if let Some(seconds) = options.goal_agent {
-        start_agent(seconds, transcript.cloned(), hooks.cloned());
+        wake_after(
+            seconds * 1000,
+            "<task-notification>\n<task-id>agent-1</task-id>\n<status>completed</status>\n</task-notification>",
+            "AGENT DONE",
+            transcript.cloned(),
+            hooks.cloned(),
+        );
     }
     say("✓ Goal achieved")
 }
@@ -1317,10 +1462,45 @@ fn echo_message(
         {
             t.limit()?;
         }
+        if let (Some(ms), Some(transcript)) = (options.limit_continues_ms, transcript) {
+            continue_after_limit(
+                ms,
+                options.limit_continues_answer_only,
+                Arc::clone(transcript),
+                hooks.cloned(),
+            );
+        }
     } else if let Some(hooks) = hooks {
         hooks.stop()?;
     }
     status_line(options, hooks)
+}
+
+/// Claude Code continuing the turn a usage limit cut by itself, `ms` after the limit
+/// (`--limit-continues-ms`).
+fn continue_after_limit(
+    ms: u64,
+    answer_only: bool,
+    transcript: Arc<Mutex<Transcript>>,
+    hooks: Option<Hooks>,
+) {
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(ms));
+        if let Ok(mut t) = transcript.lock() {
+            let _ = t.continued(answer_only);
+        }
+        let _ = say("CONTINUED");
+        std::thread::sleep(Duration::from_millis(ms));
+        if let Ok(mut t) = transcript.lock() {
+            let _ = t.continued_answer();
+        }
+        let _ = say("DONE continued");
+        if let Some(hooks) = hooks
+            && hooks.stop().is_ok()
+        {
+            let _ = say("CONTINUED STOP ANSWERED");
+        }
+    });
 }
 
 /// `/compact <focus>`: empties the context for good, or fails with `--compact-fails`.

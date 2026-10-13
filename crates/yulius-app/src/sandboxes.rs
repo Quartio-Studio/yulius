@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use yulius_contracts::api::sandboxes::{Profile, RepoRef, Sandbox, SandboxCounts};
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::permission::{AccessLevel, Action};
-use yulius_domain::task::{AttentionFacts, PullSignal, TaskStatus};
+use yulius_domain::task::{AttentionFacts, PullSignal, TaskGroup, TaskStatus};
 
 use crate::auth::AuthContext;
 use crate::context::App;
@@ -57,14 +57,11 @@ impl App {
         let requested = self.browser_requests(&record.id).await;
         let mut counts = SandboxCounts::default();
         for task in &tasks {
-            if task.status.is_live() {
-                counts.running += 1;
-            }
-            if task.status == TaskStatus::Queued {
-                counts.queued += 1;
-            }
-            if self.needs_you(task, &requested).await? {
-                counts.needs_attention += 1;
+            match self.task_group(task, &requested).await? {
+                TaskGroup::NeedsYou => counts.needs_attention += 1,
+                TaskGroup::Working => counts.running += 1,
+                TaskGroup::Queued => counts.queued += 1,
+                TaskGroup::Done | TaskGroup::Ended => {}
             }
         }
         Ok(Sandbox {
@@ -90,19 +87,19 @@ impl App {
         })
     }
 
-    /// Whether a task waits for a person: the sidebar's "Needs you" rule (`AttentionFacts`), so
-    /// Home's cards and the sandbox tabs count what the sidebar lists (#147). Ended tasks are
-    /// answered without reading the store.
+    /// A task's sidebar group (`AttentionFacts::group`), so Home's cards and the sandbox tabs
+    /// count what the sidebar lists (#147, #170). Ended tasks are answered without reading the
+    /// store.
     ///
     /// # Errors
     /// Store failures.
-    pub(crate) async fn needs_you(
+    pub(crate) async fn task_group(
         &self,
         task: &TaskRecord,
         requested: &HashSet<String>,
-    ) -> AppResult<bool> {
-        if task.status.is_resting() {
-            return Ok(false);
+    ) -> AppResult<TaskGroup> {
+        if task.status.is_resting() || task.status == TaskStatus::Stopping {
+            return Ok(TaskGroup::Ended);
         }
         let store = &self.deps.store;
         let held_prompt = store.pending_hold(&task.id).await?.is_some();
@@ -144,7 +141,7 @@ impl App {
                     .is_some_and(|count| count > 0),
             pull,
         }
-        .needs_you())
+        .group())
     }
 
     /// Tasks with a pending request to act in the sandbox's browser (BRW-004), read from its

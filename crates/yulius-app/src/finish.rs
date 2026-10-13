@@ -15,20 +15,28 @@
 //! back by it (Claude Code wakes the agent when a shell ends anyway). Background agents are no
 //! process of that tree: Claude Code says how many it still waits for in the record that closes
 //! the turn (`pendingBackgroundAgentCount`, SPEC-032), and the larger of the two counts is the
-//! idle task's background work.
+//! idle task's background work. Monitor streams, and agents launched in a turn that has not
+//! closed yet, are read from the transcript's launches and the notifications that end them
+//! (SPEC-079): a Monitor counts until it ends or expires.
+//!
+//! While Claude Code's goal is open, its evaluator (a Stop hook after Yulius's own) gives a
+//! verdict after each clean Stop: the turn reads idle only once the verdict, the turn's record or
+//! [`GOAL_VERDICT_WAIT`] settles it (SPEC-079 BGW-005).
 //!
 //! After a restart the transcript of a reattached run is read again from its start; it is reduced
 //! to its final state ([`TranscriptFacts`]) and applied once, so a replayed prompt cannot put a
 //! finished task back to Working, and a goal achieved while Yulius was down is not lost.
 
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use yulius_domain::ids::TaskId;
 use yulius_domain::task::{Activity, GoalOutcome, TaskStatus};
 
 use crate::context::App;
+use crate::error::AppResult;
+use crate::model::TaskRecord;
 use crate::ports::harness::Observation;
 
 /// How often the background shells of an idle task are probed (ms).
@@ -51,24 +59,45 @@ pub struct TranscriptFacts {
     /// The last word on the session's context is that it is full (CTX-007): no reply or
     /// compaction came after the API rejected a prompt as too long.
     pub context_full: bool,
+    /// The last turn ended at a usage limit: no prompt, agent work or turn's end came after the
+    /// limit record (SPEC-072 LRS-001). A limit Claude Code continued past is history.
+    pub limit_pending: bool,
+    /// When the session's last prompt, interrupt, agent work or own turn end was recorded: a
+    /// `limit` pause older than that was overtaken while Yulius was down (SPEC-072 LRS-001).
+    pub last_turn_at: Option<yulius_domain::time::Timestamp>,
+    /// A goal is open: set or "not met", not achieved, failed or cleared since (SPEC-079 BGW-005).
+    pub goal_open: bool,
 }
 
 impl TranscriptFacts {
     /// Folds one observation, in transcript order.
     pub fn fold(&mut self, observation: &Observation) {
+        if let Observation::UserTurn { at: Some(at), .. }
+        | Observation::TurnInterrupted { at: Some(at) }
+        | Observation::AgentWork { at: Some(at) }
+        | Observation::TurnComplete { at: Some(at) } = observation
+        {
+            self.last_turn_at = Some(self.last_turn_at.map_or(*at, |last| last.max(*at)));
+        }
         match observation {
-            Observation::UserTurn { .. } => {
+            Observation::UserTurn { wake, .. } => {
                 self.turn_open = Some(true);
-                self.goal_achieved = Some(false);
+                // Claude Code's own wake-up keeps an achieved goal.
+                if !wake {
+                    self.goal_achieved = Some(false);
+                }
                 self.background_agents = 0;
+                self.limit_pending = false;
             }
             Observation::TurnEnded { background_agents } => {
                 self.turn_open = Some(false);
                 self.background_agents = background_agents.unwrap_or(0);
             }
-            Observation::TurnComplete => {
+            Observation::TurnComplete { at } => {
                 self.turn_open = Some(false);
                 self.context_full = false;
+                // A sub-agent's turn end (no time) says nothing about the session's limit.
+                self.limit_pending &= at.is_none();
             }
             Observation::TurnInterrupted { .. } => self.turn_open = Some(false),
             // The API rejected the prompt: the turn is over, without a Stop hook (#213).
@@ -77,33 +106,166 @@ impl TranscriptFacts {
                 self.context_full = true;
             }
             Observation::Compacted => self.context_full = false,
-            Observation::Goal(GoalOutcome::Met) => {
-                self.goal_achieved = Some(true);
-                self.turn_open = Some(false);
+            Observation::Goal(outcome) => {
+                self.goal_open = goal_stays_open(*outcome);
+                self.fold_goal(*outcome);
             }
-            Observation::Goal(GoalOutcome::Failed) => {
-                self.goal_achieved = Some(false);
-                self.turn_open = Some(false);
-            }
-            Observation::Goal(GoalOutcome::NotMet) => {
-                self.goal_achieved = Some(false);
-                self.turn_open = Some(true);
-            }
-            Observation::Goal(GoalOutcome::Set | GoalOutcome::Cleared) => {
-                self.goal_achieved = Some(false);
-            }
+            Observation::LimitReached { .. } => self.limit_pending = true,
             Observation::Session { .. }
-            | Observation::LimitReached { .. }
-            | Observation::CompactFailed => {}
+            | Observation::CompactFailed
+            | Observation::BackgroundStarted { .. }
+            | Observation::BackgroundEnded { .. } => {}
             // An assistant line that is not a turn's end after a recorded end: a Stop hook
             // continued the turn (STA-005).
             Observation::AgentWork { .. } => {
                 self.turn_open = Some(true);
                 self.context_full = false;
+                self.limit_pending = false;
             }
         }
     }
+
+    fn fold_goal(&mut self, outcome: GoalOutcome) {
+        match outcome {
+            GoalOutcome::Met => {
+                self.goal_achieved = Some(true);
+                self.turn_open = Some(false);
+            }
+            GoalOutcome::Failed => {
+                self.goal_achieved = Some(false);
+                self.turn_open = Some(false);
+            }
+            GoalOutcome::NotMet => {
+                self.goal_achieved = Some(false);
+                self.turn_open = Some(true);
+            }
+            GoalOutcome::Set | GoalOutcome::Cleared => self.goal_achieved = Some(false),
+        }
+    }
 }
+
+/// Whether the goal is open after Claude Code recorded `outcome`: set or not met yet, so a verdict
+/// follows each clean Stop (SPEC-079 BGW-005).
+#[must_use]
+pub(crate) fn goal_stays_open(outcome: GoalOutcome) -> bool {
+    matches!(outcome, GoalOutcome::Set | GoalOutcome::NotMet)
+}
+
+/// Background work the transcript says the session started (SPEC-079 BGW-002).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Launch {
+    /// A background agent; otherwise a Monitor stream.
+    pub agent: bool,
+    /// When Yulius read it (ms): the same clock as the turn record's, and the same order as the
+    /// transcript's lines.
+    pub seen_ms: i64,
+    /// When a Monitor expires (ms, from its record's time); `None` for an agent.
+    pub expires_ms: Option<i64>,
+}
+
+/// Most launches remembered per session: the oldest go first.
+const MAX_LAUNCHES: usize = 64;
+
+/// How long an agent launch with no notification of its end still counts for a switch: a lost
+/// notification holds switches back at most this long.
+const AGENT_LAUNCH_TTL_MS: i64 = 60 * 60 * 1000;
+
+/// The launches alive at `now_ms` (BGW-003, BGW-004).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct LiveLaunches {
+    /// Monitors not past their expiry.
+    pub monitors: u32,
+    /// Agents read after the last turn record (`record_ms`), whose count it did not say yet.
+    pub agents_this_turn: u32,
+    /// Agents with no notification of their end yet, younger than [`AGENT_LAUNCH_TTL_MS`]: a turn
+    /// a wake-up or a prompt started in between does not end them.
+    pub agents_pending: u32,
+}
+
+/// Counts `launches` at `now_ms` with the last turn record seen at `record_ms`.
+#[must_use]
+pub(crate) fn live_launches(
+    launches: &std::collections::BTreeMap<String, Launch>,
+    now_ms: i64,
+    record_ms: i64,
+) -> LiveLaunches {
+    let mut live = LiveLaunches::default();
+    for launch in launches.values() {
+        match launch.expires_ms {
+            Some(expires) if expires > now_ms => live.monitors += 1,
+            None if launch.agent => {
+                live.agents_this_turn += u32::from(launch.seen_ms > record_ms);
+                live.agents_pending +=
+                    u32::from(now_ms.saturating_sub(launch.seen_ms) < AGENT_LAUNCH_TTL_MS);
+            }
+            _ => {}
+        }
+    }
+    live
+}
+
+/// The clean Stop (ms) whose turn waits for its goal verdict (0 = none). Whoever takes it settles
+/// that turn: the verdict, agent work, a prompt, an interrupt, the turn record or the waiter's
+/// timeout (SPEC-079 BGW-005).
+#[derive(Debug, Default)]
+pub(crate) struct VerdictSlot(AtomicI64);
+
+impl VerdictSlot {
+    /// The turn of the Stop at `stop_ms` waits for its verdict (a newer Stop replaces an older).
+    pub fn open(&self, stop_ms: i64) {
+        self.0.store(stop_ms, Ordering::SeqCst);
+    }
+
+    /// No turn waits (a prompt or an interrupt started or ended one; a new session).
+    pub fn clear(&self) {
+        self.0.store(0, Ordering::SeqCst);
+    }
+
+    /// The Stop whose turn waits (0 = none).
+    pub fn pending(&self) -> i64 {
+        self.0.load(Ordering::SeqCst)
+    }
+
+    /// Takes the slot if the turn of the Stop at `stop_ms` still waits.
+    pub fn take(&self, stop_ms: i64) -> bool {
+        stop_ms != 0
+            && self
+                .0
+                .compare_exchange(stop_ms, 0, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+    }
+
+    /// Takes the slot whatever Stop waits.
+    pub fn take_any(&self) -> bool {
+        self.0.swap(0, Ordering::SeqCst) != 0
+    }
+}
+
+/// Remembers `launch` as `id`, forgetting expired Monitors and, beyond [`MAX_LAUNCHES`], the
+/// oldest launches.
+pub(crate) fn remember_launch(
+    launches: &mut std::collections::BTreeMap<String, Launch>,
+    id: String,
+    launch: Launch,
+    now_ms: i64,
+) {
+    launches.retain(|_, l| l.expires_ms.is_none_or(|expires| expires > now_ms));
+    launches.insert(id, launch);
+    while launches.len() > MAX_LAUNCHES {
+        let oldest = launches
+            .iter()
+            .min_by_key(|(_, l)| l.seen_ms)
+            .map(|(id, _)| id.clone());
+        match oldest {
+            Some(id) => launches.remove(&id),
+            None => break,
+        };
+    }
+}
+
+/// How long a clean Stop of a session with an open goal waits for the verdict before the turn
+/// reads idle anyway (SPEC-079 BGW-005).
+pub const GOAL_VERDICT_WAIT: Duration = Duration::from_secs(20);
 
 /// The idle task's background work: the shell probe's count (`-1` = not known) and the background
 /// agents Claude Code counted. An unknown probe stays unknown without agents.
@@ -128,6 +290,10 @@ pub(crate) fn turn_record_pending(stop_ms: i64, record_ms: i64, now_ms: i64) -> 
 /// How long a decision at a clean Stop waits for the record that closes the turn, which says how
 /// many background agents are pending (it is written after the Stop hooks, about a poll later).
 const TURN_RECORD_WAIT: Duration = Duration::from_secs(3);
+
+/// How long a Stop that decided a switch waits for the watcher to read the lines before it: two
+/// rounds of [`crate::supervisor::WATCH_INTERVAL_MS`] and their work.
+const TRANSCRIPT_READ_WAIT: Duration = Duration::from_secs(5);
 
 /// What assistant work seen in the transcript (`at`) does to a running task's activity
 /// (STA-003, STA-005): after the last clean stop (`last_stop_ms`) it shows the session goes on, so
@@ -169,12 +335,78 @@ pub fn is_typed_prompt(prompt: Option<&str>) -> bool {
 }
 
 impl App {
-    /// The activity a clean Stop gives the task (TSK-014), remembering when the turn ended.
-    pub(crate) fn activity_after_clean_turn(&self, task_id: &TaskId) -> Activity {
-        let runtime = self.runtime(task_id);
-        runtime.last_stop_ms.store(self.now().0, Ordering::SeqCst);
+    /// A clean Stop ended the turn (TSK-014): remembers when, and settles it now, or once the goal
+    /// verdict came while a goal is open (SPEC-079 BGW-005; Claude Code's evaluator is a Stop
+    /// hook that runs after this one, so the hook cannot wait for it).
+    pub(crate) async fn clean_stop(self: &Arc<Self>, task: &TaskRecord) -> AppResult<()> {
+        let runtime = self.runtime(&task.id);
+        let stop_ms = self.now().0;
+        runtime.last_stop_ms.store(stop_ms, Ordering::SeqCst);
         runtime.resumed_turn.store(false, Ordering::SeqCst);
-        Activity::after_clean_turn(runtime.goal_achieved.load(Ordering::SeqCst))
+        if runtime.goal_open.load(Ordering::SeqCst) && !runtime.goal_achieved.load(Ordering::SeqCst)
+        {
+            runtime.verdict_stop_ms.open(stop_ms);
+            let (app, task_id) = (Arc::clone(self), task.id.clone());
+            tokio::spawn(async move { app.await_goal_verdict(&task_id, stop_ms).await });
+            return Ok(());
+        }
+        runtime.verdict_stop_ms.clear();
+        self.settle_clean_turn(task).await
+    }
+
+    /// A clean turn's end: Done when the goal is achieved, waiting otherwise (TSK-014). Its
+    /// background work is probed, a finished task's pull request opens (#35), and once it is Done
+    /// its chains start (TSK-012) and the queue may use its slot (SES-101).
+    async fn settle_clean_turn(self: &Arc<Self>, task: &TaskRecord) -> AppResult<()> {
+        let achieved = self.runtime(&task.id).goal_achieved.load(Ordering::SeqCst);
+        let next = Activity::after_clean_turn(achieved);
+        self.set_task_activity(task, next).await?;
+        let (app, task_id) = (Arc::clone(self), task.id.clone());
+        tokio::spawn(async move {
+            // The background work first: chains and the queue read it.
+            app.probe_idle_shells(&task_id).await;
+            app.auto_open_pr(&task_id).await;
+            app.advance_chains(&task_id).await;
+            if next == Activity::Done {
+                app.drain_queue().await;
+            }
+        });
+        Ok(())
+    }
+
+    /// Waits (bounded by [`GOAL_VERDICT_WAIT`]) for something to settle the turn of the clean
+    /// Stop at `stop_ms`: the verdict, agent work, a prompt, an interrupt, the turn's record or a
+    /// newer Stop takes the slot. Nothing did: the turn settles as it did before (BGW-005).
+    async fn await_goal_verdict(self: &Arc<Self>, task_id: &TaskId, stop_ms: i64) {
+        let runtime = self.runtime(task_id);
+        let deadline = tokio::time::Instant::now() + GOAL_VERDICT_WAIT;
+        while runtime.verdict_stop_ms.pending() == stop_ms
+            && runtime.is_watching()
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        if runtime.verdict_stop_ms.take(stop_ms) {
+            tracing::info!(task = %task_id, "no goal verdict came: the turn settles");
+            self.settle_waited_turn(task_id).await;
+        }
+    }
+
+    /// Settles a turn that waited for its verdict as the Stop would have, unless it reads idle
+    /// already (a late replay or a person settled it).
+    async fn settle_waited_turn(self: &Arc<Self>, task_id: &TaskId) {
+        let Ok(Some(task)) = self.deps.store.task(task_id).await else {
+            return;
+        };
+        if !matches!(
+            task.activity,
+            Some(Activity::Working | Activity::NeedsAttention)
+        ) {
+            return;
+        }
+        if let Err(err) = self.settle_clean_turn(&task).await {
+            tracing::warn!(task = %task_id, error = %err, "could not settle the turn");
+        }
     }
 
     /// The person stopped the agent's turn (Esc, or Ctrl+C while it works; F 2026-10-10: "when I
@@ -200,6 +432,7 @@ impl App {
             return;
         }
         let now = self.now();
+        self.runtime(task_id).verdict_stop_ms.clear();
         // Its prompt, read late, does not reopen the stopped turn.
         self.runtime(task_id)
             .last_stop_ms
@@ -214,9 +447,9 @@ impl App {
         self.probe_idle_shells(task_id).await;
     }
 
-    /// A transcript line written after a turn or prompt of `task_id` was held for capacity (at
-    /// `at`) shows the agent is not held any more: the hold ends and the task runs again with
-    /// `activity`.
+    /// A transcript line written after a turn or prompt of `task_id` was held for capacity, or
+    /// after a usage limit cut its turn (at `at`), shows the agent is not held any more: the
+    /// hold ends and the task runs again with `activity`.
     pub(crate) async fn hold_overtaken(
         &self,
         task_id: &TaskId,
@@ -227,21 +460,39 @@ impl App {
         let Ok(Some(pause)) = self.deps.store.open_pause(task_id).await else {
             return;
         };
-        if matches!(
+        let held = matches!(
             pause.kind,
             crate::model::PauseKind::Turn | crate::model::PauseKind::Prompt
-        ) && pause.account_id.is_some()
-            && at > pause.started_at
-        {
+        ) && pause.account_id.is_some();
+        if (held || pause.kind == crate::model::PauseKind::Limit) && at > pause.started_at {
             self.hold_ended(task_id, "overtaken", activity).await;
         }
     }
 
-    /// A prompt was submitted: the achieved goal no longer counts.
+    /// Agent work written after a usage limit cut the turn of `task_id` (at `at`) shows Claude
+    /// Code continued that turn by itself at the reset (SPEC-072 LRS-001, #276): the `limit`
+    /// pause ends and the task runs, so the resume loop never ends the turn it continued.
+    pub(crate) async fn cut_turn_continued(
+        &self,
+        task_id: &TaskId,
+        at: Option<yulius_domain::time::Timestamp>,
+    ) {
+        let Some(at) = at else { return };
+        if let Ok(Some(pause)) = self.deps.store.open_pause(task_id).await
+            && pause.kind == crate::model::PauseKind::Limit
+            && at > pause.started_at
+        {
+            self.hold_ended(task_id, "overtaken", Activity::Working)
+                .await;
+        }
+    }
+
+    /// A prompt was submitted: the achieved goal no longer counts, and the turn that waited for a
+    /// verdict goes on.
     pub(crate) fn prompt_submitted(&self, task_id: &TaskId) {
-        self.runtime(task_id)
-            .goal_achieved
-            .store(false, Ordering::SeqCst);
+        let runtime = self.runtime(task_id);
+        runtime.goal_achieved.store(false, Ordering::SeqCst);
+        runtime.verdict_stop_ms.clear();
     }
 
     /// The agent produced work (an assistant line that is not a turn's end, at `at`): when the
@@ -253,6 +504,12 @@ impl App {
         at: Option<yulius_domain::time::Timestamp>,
     ) {
         let runtime = self.runtime(task_id);
+        // Work after a Stop whose verdict is awaited: the session went on (a Stop hook continued
+        // the turn), and the task, still Working, never read idle (BGW-005, STA-005).
+        let waiting = runtime.verdict_stop_ms.pending();
+        if at.is_some_and(|at| at.0 > waiting) && runtime.verdict_stop_ms.take(waiting) {
+            runtime.resumed_turn.store(true, Ordering::SeqCst);
+        }
         let notice_ms = runtime.notice_attention_ms.load(Ordering::SeqCst);
         if notice_ms == 0 && runtime.turn_in_progress() {
             return;
@@ -286,7 +543,19 @@ impl App {
 
     /// Claude Code recorded the session goal's state.
     pub(crate) async fn goal_observed(self: &Arc<Self>, task_id: &TaskId, outcome: GoalOutcome) {
-        if outcome == GoalOutcome::NotMet
+        let runtime = self.runtime(task_id);
+        runtime
+            .goal_open
+            .store(goal_stays_open(outcome), Ordering::SeqCst);
+        // The verdict on a clean Stop whose turn waited for it (BGW-005).
+        let waited = matches!(
+            outcome,
+            GoalOutcome::Met | GoalOutcome::NotMet | GoalOutcome::Failed
+        ) && runtime.verdict_stop_ms.take_any();
+        if waited && outcome == GoalOutcome::NotMet {
+            // The agent goes on, and the task never read idle.
+            runtime.resumed_turn.store(true, Ordering::SeqCst);
+        } else if outcome == GoalOutcome::NotMet
             && let Ok(Some(task)) = self.deps.store.task(task_id).await
             && task.status == TaskStatus::Running
             && let Some(next) = activity_on_goal_not_met(task.activity)
@@ -296,13 +565,14 @@ impl App {
             self.resume_working(&task, next).await;
         }
         let achieved = outcome == GoalOutcome::Met;
-        self.runtime(task_id)
-            .goal_submitted
-            .store(true, Ordering::SeqCst);
-        self.runtime(task_id)
-            .goal_achieved
-            .store(achieved, Ordering::SeqCst);
-        if achieved {
+        runtime.goal_submitted.store(true, Ordering::SeqCst);
+        runtime.goal_achieved.store(achieved, Ordering::SeqCst);
+        if waited && outcome != GoalOutcome::NotMet {
+            if achieved {
+                tracing::info!(task = %task_id, "the agent achieved the task's goal");
+            }
+            self.settle_waited_turn(task_id).await;
+        } else if achieved {
             tracing::info!(task = %task_id, "the agent achieved the task's goal");
             self.settle_idle(task_id, None).await;
         }
@@ -318,6 +588,7 @@ impl App {
         if let Some(achieved) = facts.goal_achieved {
             runtime.goal_achieved.store(achieved, Ordering::SeqCst);
         }
+        runtime.goal_open.store(facts.goal_open, Ordering::SeqCst);
         runtime
             .background_agents
             .store(facts.background_agents, Ordering::SeqCst);
@@ -419,6 +690,11 @@ impl App {
     pub(crate) async fn turn_record_seen(self: &Arc<Self>, task_id: &TaskId) {
         let runtime = self.runtime(task_id);
         runtime.turn_record_ms.store(self.now().0, Ordering::SeqCst);
+        // The turn closed with no verdict (the evaluator deferred or failed): it settles now.
+        if runtime.verdict_stop_ms.take_any() {
+            self.settle_waited_turn(task_id).await;
+            return;
+        }
         if !runtime.resumed_turn.swap(false, Ordering::SeqCst) {
             return;
         }
@@ -473,7 +749,14 @@ impl App {
         // in its turn record (STA-001). The count is the larger of the two views of the same
         // background work (a background Bash command is in both).
         let count = if idle {
-            combine_background(count, runtime.background_agents.load(Ordering::SeqCst))
+            let live = self.live_launches_of(task_id);
+            let agents = runtime.background_agents.load(Ordering::SeqCst);
+            combine_background(
+                count,
+                agents
+                    .max(live.agents_this_turn)
+                    .saturating_add(live.monitors),
+            )
         } else {
             count
         };
@@ -491,10 +774,14 @@ impl App {
             }
             self.publish_task(task_id).await;
             if previous > 0 && count == 0 {
-                // The last shell ended: a done task is Done now, and its chain may start (not
-                // from the watcher's loop: the chain waits for the turn record).
+                // The last shell ended: a done task is Done now, its chain may start and its slot
+                // is free (SES-101, #305). Not from the watcher's loop: the chain waits for the
+                // turn record.
                 let (app, task_id) = (Arc::clone(self), task_id.clone());
-                tokio::spawn(async move { app.advance_chains(&task_id).await });
+                tokio::spawn(async move {
+                    app.advance_chains(&task_id).await;
+                    app.drain_queue().await;
+                });
             }
         }
     }
@@ -508,6 +795,70 @@ impl App {
             .swap(agents, Ordering::SeqCst);
         if previous != agents {
             self.probe_idle_shells(task_id).await;
+        }
+    }
+
+    /// The transcript saw background work start (SPEC-079 BGW-002): a Monitor stream (until it
+    /// ends or expires) or a background agent.
+    pub(crate) async fn background_started(
+        self: &Arc<Self>,
+        task_id: &TaskId,
+        id: String,
+        agent: bool,
+        expires_in_ms: Option<u64>,
+        at: Option<yulius_domain::time::Timestamp>,
+    ) {
+        let now = self.now().0;
+        let at_ms = at.map_or(now, |at| at.0);
+        let launch = Launch {
+            agent,
+            seen_ms: now,
+            expires_ms: expires_in_ms
+                .map(|ms| at_ms.saturating_add(i64::try_from(ms).unwrap_or(i64::MAX))),
+        };
+        if let Ok(mut launches) = self.runtime(task_id).launches.lock() {
+            remember_launch(&mut launches, id, launch, now);
+        }
+        // Read after the turn settled (the same poll as its record): an idle task counts it now.
+        self.probe_idle_shells(task_id).await;
+    }
+
+    /// A task notification said the background work `id` ended: an idle task's count follows.
+    pub(crate) async fn background_ended(self: &Arc<Self>, task_id: &TaskId, id: &str) {
+        let removed = self
+            .runtime(task_id)
+            .launches
+            .lock()
+            .is_ok_and(|mut launches| launches.remove(id).is_some());
+        if removed {
+            self.probe_idle_shells(task_id).await;
+        }
+    }
+
+    /// The task's live launches ([`live_launches`]).
+    fn live_launches_of(&self, task_id: &TaskId) -> LiveLaunches {
+        let Some(runtime) = self.existing_runtime(task_id) else {
+            return LiveLaunches::default();
+        };
+        let record_ms = runtime.turn_record_ms.load(Ordering::SeqCst);
+        runtime.launches.lock().map_or_else(
+            |_| LiveLaunches::default(),
+            |launches| live_launches(&launches, self.now().0, record_ms),
+        )
+    }
+
+    /// Waits (bounded) until the transcript watcher read the lines written before now: two of its
+    /// rounds begin, so one began and ended after this call. Nothing to wait for when no watcher
+    /// runs (BGW-004).
+    pub(crate) async fn await_transcript_read(&self, task_id: &TaskId) {
+        let runtime = self.runtime(task_id);
+        let start = runtime.watch_polls.load(Ordering::SeqCst);
+        let deadline = tokio::time::Instant::now() + TRANSCRIPT_READ_WAIT;
+        while runtime.is_watching()
+            && runtime.watch_polls.load(Ordering::SeqCst) < start.saturating_add(2)
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
 
@@ -525,6 +876,10 @@ impl App {
         if self
             .existing_runtime(task_id)
             .is_some_and(|runtime| runtime.background_agents.load(Ordering::SeqCst) > 0)
+            || {
+                let live = self.live_launches_of(task_id);
+                live.monitors > 0 || live.agents_pending > 0
+            }
         {
             return Some(true);
         }
@@ -569,6 +924,7 @@ mod tests {
 
     const PROMPT: Observation = Observation::UserTurn {
         at: Some(Timestamp(1)),
+        wake: false,
     };
 
     const ENDED: Observation = Observation::TurnEnded {
@@ -585,7 +941,11 @@ mod tests {
         let pending = Observation::TurnEnded {
             background_agents: Some(2),
         };
-        let waiting = reduce(&[PROMPT, Observation::TurnComplete, pending.clone()]);
+        let waiting = reduce(&[
+            PROMPT,
+            Observation::TurnComplete { at: None },
+            pending.clone(),
+        ]);
         assert_eq!(waiting.turn_open, Some(false));
         assert_eq!(waiting.background_agents, 2);
         // The wake-up is a user line: a new turn, nothing pending until it ends.
@@ -599,14 +959,14 @@ mod tests {
     /// assistant work after the turn's last end line reopens it, however the replay ends.
     #[test]
     fn work_after_a_stop_the_hook_continued_keeps_the_turn_open() {
-        let blocked = reduce(&[PROMPT, Observation::TurnComplete, WORK]);
+        let blocked = reduce(&[PROMPT, Observation::TurnComplete { at: None }, WORK]);
         assert_eq!(blocked.turn_open, Some(true));
         // The agent finishes the continued turn: closed again by its own end.
         let closed = reduce(&[
             PROMPT,
-            Observation::TurnComplete,
+            Observation::TurnComplete { at: None },
             WORK,
-            Observation::TurnComplete,
+            Observation::TurnComplete { at: None },
             ENDED,
         ]);
         assert_eq!(closed.turn_open, Some(false));
@@ -629,7 +989,7 @@ mod tests {
         let finished = reduce(&[
             Observation::Goal(GoalOutcome::Set),
             PROMPT,
-            Observation::TurnComplete,
+            Observation::TurnComplete { at: None },
             Observation::Goal(GoalOutcome::Met),
             ENDED,
         ]);
@@ -640,6 +1000,9 @@ mod tests {
                 goal_achieved: Some(true),
                 background_agents: 0,
                 context_full: false,
+                limit_pending: false,
+                last_turn_at: Some(Timestamp(1)),
+                goal_open: false,
             }
         );
         // Typed again after the goal: a new open turn, the goal no longer counts.
@@ -649,7 +1012,7 @@ mod tests {
         // Not met yet: the agent continues.
         let continuing = reduce(&[
             PROMPT,
-            Observation::TurnComplete,
+            Observation::TurnComplete { at: None },
             Observation::Goal(GoalOutcome::NotMet),
         ]);
         assert_eq!(continuing.turn_open, Some(true));
@@ -658,14 +1021,22 @@ mod tests {
         assert_eq!(failed.turn_open, Some(false));
         assert_eq!(failed.goal_achieved, Some(false));
         // A prompt-mode session never says anything about a goal.
-        let plain = reduce(&[PROMPT, Observation::TurnComplete]);
+        let plain = reduce(&[PROMPT, Observation::TurnComplete { at: None }]);
         assert_eq!(plain.goal_achieved, Some(false));
         let limit = reduce(&[Observation::LimitReached {
             resets_at: None,
             message: "limit".into(),
             window_minutes: None,
+            at: None,
         }]);
-        assert_eq!(limit, TranscriptFacts::default());
+        // A limit changes no turn fact; it is only pending (SPEC-072 LRS-001).
+        assert_eq!(
+            limit,
+            TranscriptFacts {
+                limit_pending: true,
+                ..TranscriptFacts::default()
+            }
+        );
     }
 
     /// STA-003, STA-005: assistant work reopens an idle task only when it is newer than the last
@@ -745,6 +1116,115 @@ mod tests {
         );
     }
 
+    /// SPEC-079 BGW-003, BGW-004: Monitors count until they expire; agents launched after the last
+    /// turn record count until that record (its count takes over); old launches go first.
+    #[test]
+    fn live_launches_follow_expiry_and_the_turn_record() {
+        let mut launches = std::collections::BTreeMap::new();
+        let monitor = |seen_ms, expires_ms| Launch {
+            agent: false,
+            seen_ms,
+            expires_ms: Some(expires_ms),
+        };
+        let agent = |seen_ms| Launch {
+            agent: true,
+            seen_ms,
+            expires_ms: None,
+        };
+        let live = |monitors, agents_this_turn, agents_pending| LiveLaunches {
+            monitors,
+            agents_this_turn,
+            agents_pending,
+        };
+        remember_launch(&mut launches, "m1".into(), monitor(100, 1_000), 100);
+        remember_launch(&mut launches, "a1".into(), agent(200), 200);
+        assert_eq!(live_launches(&launches, 300, 150), live(1, 1, 1));
+        // The turn record counts it now; a later turn (a wake-up) still waits for it to end.
+        assert_eq!(live_launches(&launches, 300, 250), live(1, 0, 1));
+        assert_eq!(
+            live_launches(&launches, 1_000, 150),
+            live(0, 1, 1),
+            "expired"
+        );
+        assert_eq!(
+            live_launches(&launches, 200 + AGENT_LAUNCH_TTL_MS, 250),
+            live(0, 0, 0),
+            "a lost notification holds nothing for good"
+        );
+        // An expired Monitor is forgotten when another launch is remembered.
+        remember_launch(&mut launches, "m2".into(), monitor(1_100, 5_000), 1_100);
+        assert!(!launches.contains_key("m1"));
+        for n in 0..(MAX_LAUNCHES as i64 + 5) {
+            remember_launch(&mut launches, format!("x{n}"), agent(2_000 + n), 2_000);
+        }
+        assert_eq!(launches.len(), MAX_LAUNCHES);
+        assert!(!launches.contains_key("a1"), "the oldest went first");
+        assert!(launches.contains_key(&format!("x{}", MAX_LAUNCHES as i64 + 4)));
+    }
+
+    /// SPEC-079 BGW-005: one slot holds the Stop whose turn waits for its verdict; the first to
+    /// take it settles the turn, a newer Stop replaces it and a prompt clears it.
+    #[test]
+    fn the_first_to_take_the_verdict_slot_settles_the_turn() {
+        let slot = VerdictSlot::default();
+        assert!(!slot.take_any(), "nothing waits");
+        assert!(!slot.take(0));
+        slot.open(100);
+        // The verdict (or the turn record) takes it; the waiter's timeout then settles nothing.
+        assert!(slot.take_any());
+        assert!(!slot.take(100));
+        // The waiter of an older Stop does not take a newer Stop's turn.
+        slot.open(100);
+        slot.open(200);
+        assert!(!slot.take(100));
+        assert_eq!(slot.pending(), 200);
+        assert!(slot.take(200), "the newer Stop's waiter settles it");
+        // A prompt clears it: nothing settles the turn that went on.
+        slot.open(300);
+        slot.clear();
+        assert!(!slot.take(300) && !slot.take_any());
+    }
+
+    /// SPEC-079 BGW-001 (review): Claude Code's own wake-up (background work ended) keeps an
+    /// achieved goal, also in a replay; a typed prompt does not.
+    #[test]
+    fn a_wake_up_keeps_an_achieved_goal() {
+        let wake = Observation::UserTurn {
+            at: Some(Timestamp(5)),
+            wake: true,
+        };
+        let woken = reduce(&[Observation::Goal(GoalOutcome::Met), ENDED, wake]);
+        assert_eq!(
+            (woken.goal_achieved, woken.turn_open),
+            (Some(true), Some(true))
+        );
+        let typed = reduce(&[Observation::Goal(GoalOutcome::Met), ENDED, PROMPT]);
+        assert_eq!(typed.goal_achieved, Some(false));
+    }
+
+    /// SPEC-079 BGW-005: a goal is open from its set or "not met" record until it is achieved,
+    /// failed or cleared, also in a replay.
+    #[test]
+    fn a_goal_is_open_until_it_is_decided() {
+        use GoalOutcome as G;
+        let open = |outcomes: &[G]| {
+            reduce(
+                &outcomes
+                    .iter()
+                    .map(|o| Observation::Goal(*o))
+                    .collect::<Vec<_>>(),
+            )
+            .goal_open
+        };
+        assert!(open(&[G::Set]));
+        assert!(open(&[G::Set, G::NotMet]));
+        assert!(!open(&[G::Set, G::Met]));
+        assert!(!open(&[G::Set, G::Failed]));
+        assert!(!open(&[G::Set, G::Cleared]));
+        assert!(open(&[G::Met, G::Set]), "a new goal");
+        assert!(!open(&[]));
+    }
+
     #[test]
     fn typed_prompts_are_told_from_wakeups() {
         assert!(is_typed_prompt(Some("more tests please")));
@@ -754,6 +1234,37 @@ mod tests {
         )));
         assert!(!is_typed_prompt(Some("   ")));
         assert!(!is_typed_prompt(None));
+    }
+
+    /// SPEC-072 LRS-001: a replay whose last word is a usage limit leaves it pending; a prompt,
+    /// agent work or a turn's end after it (Claude Code continued by itself) makes it history.
+    #[test]
+    fn a_replayed_limit_is_pending_until_a_turn_follows_it() {
+        let limit = Observation::LimitReached {
+            resets_at: None,
+            message: "limit".into(),
+            window_minutes: None,
+            at: None,
+        };
+        assert!(reduce(&[PROMPT, limit.clone()]).limit_pending);
+        assert!(reduce(&[PROMPT, limit.clone(), Observation::Compacted]).limit_pending);
+        let ended = Observation::TurnComplete {
+            at: Some(Timestamp(3)),
+        };
+        for after in [PROMPT, WORK, ended.clone()] {
+            assert!(
+                !reduce(&[PROMPT, limit.clone(), after.clone()]).limit_pending,
+                "{after:?}"
+            );
+        }
+        assert!(!reduce(&[PROMPT, WORK]).limit_pending);
+        // A sub-agent's turn end (no time) is not the session's.
+        let sidechain = Observation::TurnComplete { at: None };
+        assert!(reduce(&[PROMPT, limit.clone(), sidechain]).limit_pending);
+        // The last turn's time, for a pause overtaken while Yulius was down.
+        let continued = reduce(&[PROMPT, limit, WORK, ended]);
+        assert_eq!(continued.last_turn_at, Some(Timestamp(3)));
+        assert_eq!(reduce(&[WORK, PROMPT]).last_turn_at, Some(Timestamp(2)));
     }
 
     /// CTX-007: a replay that ends in a full context (no reply or compaction after it) leaves the
@@ -770,10 +1281,14 @@ mod tests {
         assert_eq!(full.turn_open, Some(false));
         let failed = reduce(&[PROMPT, Observation::ContextFull, Observation::CompactFailed]);
         assert!(failed.context_full);
-        for after in [Observation::Compacted, Observation::TurnComplete, WORK] {
+        for after in [
+            Observation::Compacted,
+            Observation::TurnComplete { at: None },
+            WORK,
+        ] {
             let settled = reduce(&[PROMPT, Observation::ContextFull, after.clone()]);
             assert!(!settled.context_full, "{after:?}");
         }
-        assert!(!reduce(&[PROMPT, Observation::TurnComplete]).context_full);
+        assert!(!reduce(&[PROMPT, Observation::TurnComplete { at: None }]).context_full);
     }
 }

@@ -95,9 +95,15 @@ flowchart LR
 When a subscription's usage limit cuts a turn, the task goes on as if the limit never happened
 ([SPEC-034](../.ai/specs/SPEC-034-in-previous-tasks-we-have-hit-a-session.md),
 [decision 0027](decisions/0027-step-back-past-a-usage-limit.md)): on another subscription at
-once, or on its own after the reset. The harness adapter steps the transcript back over the
-limit, and Claude Code resumes the same session with `CLAUDE_CODE_RESUME_INTERRUPTED_TURN=1`, so
-it redoes the lost turn by itself. Nothing is typed.
+once, or on its own after the reset. The supervisor has the harness adapter step the transcript
+back over the limit on a blocking thread, and indexes the session again only if the file changed.
+Claude Code then resumes the same session with `CLAUDE_CODE_RESUME_INTERRUPTED_TURN=1`, so it
+redoes the lost turn by itself. Nothing is typed. If Claude Code continues the turn by itself at
+the reset, its first agent work or turn end after the pause ends the pause, and Yulius leaves
+that run alone; after a restart, a limit that such a turn followed is not acted on again. A person's
+switch of a task left at its limit by a refused automatic switch also resumes past the limit
+([SPEC-072](../.ai/specs/SPEC-072-fix-276-277-278-usage-limit-resume-respe.md),
+[decision 0058](decisions/0058-the-clis-own-continuation-ends-a-limit-pause.md)).
 
 ```mermaid
 sequenceDiagram
@@ -110,6 +116,7 @@ sequenceDiagram
     T->>S: LimitReached (transcript watcher)
     S->>C: SIGTERM (idle at the limit)
     S->>H: plan Resume { continue_interrupted }
+    S->>H: step_back_transcript (spawn_blocking)
     H->>T: step back: drop errors and notices, relink parentUuid
     H->>N: claude --resume id (flag set, no prompt)
     N->>T: the lost turn, redone
@@ -223,24 +230,61 @@ sequenceDiagram
     end
 ```
 
-## Agent (the Cockpit)
+### Supertasks
 
-Every user has one plain Claude Code session per sandbox, shown as the **Agent**
+Every run starts through `App::start_run`: a new task, the queue, a released chain or rule,
+Start now, Continue, and the capacity loop. Before the session limit, it applies the supertask
+hold (`yulius-app/src/supertask.rs`,
+[SPEC-071](../.ai/specs/SPEC-071-somewhere-here-the-user-should-be-able-t.md),
+[decision 0054](decisions/0054-a-supertask-holds-its-project-at-the-start-door.md)). A task
+without a live run waits `queued` while its project has a pending supertask (only an earlier one
+counts, for a supertask). A supertask also waits while the project has a working task. Live runs
+are never touched. The queue offers free slots to supertasks first, then FIFO, one start after
+the other. A held task's summary lists what it waits for (`held_by`).
+
+```mermaid
+flowchart LR
+    N[new / queued / released / continued / resumed task] --> G{start_run: held by a supertask?}
+    G -->|plain task, project has a pending supertask| Q[stays queued, held_by = supertasks]
+    G -->|supertask, project has working tasks or an earlier supertask| Q2[stays queued, held_by = those tasks]
+    G -->|not held| L{session slot free?}
+    L -->|no| Q3[queued]
+    L -->|yes| R[launch]
+    E[a run ends or is Done] --> D[drain_queue: supertasks first, then FIFO]
+    D --> G
+```
+
+## Superagent (the Cockpit)
+
+Every user has one plain Claude Code session per sandbox, shown as the **Superagent**
+([SPEC-074](../.ai/specs/SPEC-074-i-just-hit-usage-limit-in-the-agent-it-s.md), formerly the Agent)
 ([SPEC-021](../.ai/specs/SPEC-021-in-this-bar-we-need-to-add-cockpit-at-th.md),
 [decision 0020](decisions/0020-cockpit-as-a-plain-shell-session.md)); the code and the API still
 call it the Cockpit. It is a sandbox shell of kind `cockpit` that runs `claude` instead of the
 login shell: no hooks, settings or briefing, a pool subscription's token, and the newest
-conversation resumed whenever it starts again. The web UI shows it in the right tool panel beside
+conversation resumed whenever it starts again. Its start, like a terminal's, runs detached from
+the request, so a client that goes away mid-start never leaves a second or half-started session
+([SPEC-077](../.ai/specs/SPEC-077-fix-250-cockpit-and-shell-starts-survive.md),
+[decision 0053](decisions/0053-shell-starts-run-detached-from-the-request.md)). The web UI shows it in the right tool panel beside
 the page, under a notice that it is for quick work only
 ([SPEC-035](../.ai/specs/SPEC-035-move-cockpit-to-the-right-and-change-coc.md),
 [decision 0036](decisions/0036-agent-in-the-right-panel.md)).
+
+A Cockpit remembers its pool subscription (in `shell.json`) and watches its newest conversation
+while it runs ([SPEC-074](../.ai/specs/SPEC-074-i-just-hit-usage-limit-in-the-agent-it-s.md),
+[decision 0055](decisions/0055-cockpit-moves-past-a-usage-limit.md)). A usage limit recorded after
+it started is recorded on that subscription as a task's is. The Cockpit then starts again, under
+its start lock, on a subscription with capacity. It resumes the conversation stepped back over the
+limit with Claude Code's interrupted-turn flag, as a task does after a limit (SPEC-034). The old
+process ends with the exit status `switched`, and the panel follows it to the new one. Without
+capacity, it stays and its viewers get a notice.
 
 It manages the project through the Yulius MCP server
 ([SPEC-037](../.ai/specs/SPEC-037-i-got-something-like-this-tasks-and-cock.md),
 [decision 0029](decisions/0029-cockpit-manages-through-mcp.md)). Its bearer (`ck_…`) is derived
 from the shell's persisted host token, and it is served only the management tools: tasks,
 automations, workflows and sessions. Those tools act for a person (`ProjectCaller`): the Cockpit's
-owner, or a task's creator when a task's agent calls them. `task_create` takes the same path as
+owner, or a task's owner when a task's agent calls them. `task_create` takes the same path as
 New task; `task_stop`, `task_archive`, `task_delete`, `automation_delete`, `automation_run_now`
 and `automation_template_enable` call the UI's own functions with that person and the caller as
 the audit actor, never on the caller's own task
@@ -249,8 +293,9 @@ the audit actor, never on the caller's own task
 
 ```mermaid
 flowchart LR
-  UI["Right panel: Agent"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
+  UI["Right panel: Superagent"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
   APP -->|"pool_account"| POOL[("Subscriptions")]
+  W["Cockpit watch: newest conversation"] -->|"usage limit after the start: record_limit, start again (switched)"| APP
   APP -->|"plan_cockpit"| HP["Harness: claude [--resume id] --mcp-config yulius"]
   APP --> SH["Shell runtime (user space, repository)"]
   UI -->|"WS /api/shells/id/terminal"| SH
@@ -259,6 +304,28 @@ flowchart LR
   MCP -->|"task_create"| NT["App::create_task_as (as New task)"]
   MCP -->|"task_stop / task_archive / task_delete"| TU["The UI's stop, archive, delete (never the caller's own task)"]
   MCP -->|"automation_*, automation_template_enable"| AU["Automations and ready-made ones"]
+```
+
+## Task ownership
+
+A task acts on GitHub with one person's token, so it is that person's: its owner, the creator
+until a hand-over ([SPEC-070](../.ai/specs/SPEC-070-tasks-should-be-owned-by-a-specific-pers.md),
+[decision 0060](decisions/0060-a-task-is-owned-by-one-person.md)). `tasks.owner_id` decides the
+token (`App::owner_github_token`), the worktree's commit identity and the authority of the task's
+agent; `created_by` stays who asked. `App::load_task` refuses every task change to anyone but the
+owner, and the terminal opens read-only for others. Anyone else who may work in the project asks
+for control; the owner hands it over or declines, and an absent owner's task passes at once.
+
+```mermaid
+flowchart LR
+  B["Bob: Request control"] -->|"POST /control-request"| REQ[("tasks.control_requested_by")]
+  REQ -->|"owner absent"| PASS["pass_control"]
+  A["Alice (owner): Hand over"] -->|"POST /control-request/accept"| PASS
+  A -->|"DELETE: decline"| REQ
+  PASS --> OWN[("tasks.owner_id = Bob")]
+  OWN --> TOK["Git, gh, PRs, merges as Bob"]
+  OWN --> ID["worktree commit identity: Bob"]
+  OWN --> GATE["load_task: only Bob writes"]
 ```
 
 ## Ready-made automations
@@ -278,6 +345,25 @@ flowchart LR
   EN -->|"else"| INS["insert automation (enabled)"]
   INS --> SCH["Scheduler: one task per slot"]
   UPD --> SCH
+```
+
+## How an automation's tasks start
+
+An automation stores one start choice for every task it creates, the choices of New task's start
+chip ([SPEC-078](../.ai/specs/SPEC-078-we-d-like-to-be-able-to-set-the-automati.md),
+[decision 0062](decisions/0062-an-automation-starts-its-tasks-like-new-task.md)). A run creates
+its task through the same `create_task_ruled` as New task. A task to run after that has ended
+turns into the rule `#N done`, so a recurring automation keeps working once its predecessor is
+finished.
+
+```mermaid
+flowchart LR
+  RUN["Scheduler or Run now: one slot"] --> START{"automation.start"}
+  START -->|"Now"| Q["queued"]
+  START -->|"Supertask"| ST["queued supertask (SPEC-071)"]
+  START -->|"After #N, not ended"| CH["chained after #N"]
+  START -->|"After #N, ended"| RD["chained on rule #N done"]
+  START -->|"Rule"| RL["chained on the rule"]
 ```
 
 ## Web UI state
@@ -305,14 +391,24 @@ flowchart LR
 ## Task status
 
 A running task's activity is derived from Claude Code's own records, not guessed from the last
-event ([ADR-0044](decisions/0044-task-status-follows-claude-codes-own-records.md)):
+event ([ADR-0044](decisions/0044-task-status-follows-claude-codes-own-records.md)). Background work
+is counted from three sources:
+- background shells, from the process probe;
+- background agents, from the turn record;
+- Monitor streams and agents launched in the turn that ends, from the transcript.
+
+While a goal is open, a clean Stop reads idle only after the goal verdict (or the turn record, or
+20 s). A proactive switch waits for any of this background work
+([ADR-0063](decisions/0063-background-work-and-goal-verdict-from-the-transcript.md)):
 
 ```mermaid
 flowchart LR
     prompt["prompt / wake-up\n(hook, user line)"] --> working
     stop["clean Stop hook"] --> idle["waiting / done"]
     turn["turn_duration:\npending background agents"] --> bg["+ background work\n(shown Working)"]
+    launch["transcript: monitor started,\nagent launched (until it ends)"] --> bg
     idle --> bg
+    stop -.->|"goal open: until the verdict,\nthe turn record or 20 s"| working
     verdict["goal verdict: not met"] --> working
     work["assistant work after the stop"] --> working
     notice["notice that asks a person"] --> attention["needs_attention"]

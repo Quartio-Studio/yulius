@@ -2,14 +2,17 @@
 // automation starts a task on a schedule: a recipe fills the name, the prompt and a sensible time;
 // the schedule is clicked, not written — once a day on the chosen days (or every hour) at a time
 // picked from chips — and the page says in words when it runs next; cron stays under Advanced.
-// The workflow is a chip; Run now, the switch and the run history live on the same page. The API
-// is unchanged (Automation, docs/api.md).
+// The workflow is a chip, and so is how each task starts: the choices of New task's start chip
+// (SPEC-078). Run now, the switch and the run history live on the same page (Automation,
+// docs/api.md).
 
 import { enc } from '../api.js';
-import { h, icon, setChildren, placeholder, loadError, confirmDialog, toast, invalid, badge } from '../dom.js';
+import { h, icon, setChildren, placeholder, loadError, confirmDialog, toast, invalid, badge, openMenu } from '../dom.js';
 import { href, navigate } from '../router.js';
 import { allows } from '../status.js';
-import { describeCron, cronValid, utcOffset, dateTime, relLong } from '../format.js';
+import { chainCandidates } from '../intake.js';
+import { openRuleEditor, ruleChoices, ruleFromText, ruleText } from '../ruleeditor.js';
+import { describeCron, cronValid, utcOffset, dateTime, relLong, startPhrase } from '../format.js';
 import { dataTable, notFound } from './common.js';
 
 const RECIPES = [
@@ -106,7 +109,8 @@ export function mountAutomationEditor(ctx, sandbox, id) {
   let alive = true;
   let saved = '';
   let showZone = false;
-  const state = { name: '', prompt: '', workflow_id: null, enabled: true, cron: '0 9 * * 1-5', offset: -new Date().getTimezoneOffset(), custom: false };
+  // The start choice (SPEC-078): at most one of supertask, after_task_id and start_rule.
+  const state = { name: '', prompt: '', workflow_id: null, enabled: true, cron: '0 9 * * 1-5', offset: -new Date().getTimezoneOffset(), custom: false, supertask: false, after_task_id: null, after_task_number: null, start_rule: null };
   const live = h('div', { class: 'sr-only', role: 'status' });
 
   const nameInput = h('input', { class: 'wf-name', placeholder: 'Name the automation', 'aria-label': 'Automation name', maxlength: 100, onInput: (e) => { state.name = e.target.value; changed(); } });
@@ -129,7 +133,8 @@ export function mountAutomationEditor(ctx, sandbox, id) {
     if (!cronValid(state.cron)) return 'The schedule needs five fields.';
     const words = s ? (s.hourly ? `Every hour at :${String(s.minute).padStart(2, '0')}` : `${sayDays(s.days)} at ${s.time}`) : describeCron(state.cron);
     const next = s && state.enabled ? nextRun(s, state.offset) : null;
-    return `${words} (${utcOffset(state.offset)})${!state.enabled ? ' · paused' : next ? ` · next run ${relLong(next.toISOString())} (${dateTime(next.toISOString())})` : ''}`;
+    const start = startPhrase(state);
+    return `${words} (${utcOffset(state.offset)})${start ? ` · ${start}` : ''}${!state.enabled ? ' · paused' : next ? ` · next run ${relLong(next.toISOString())} (${dateTime(next.toISOString())})` : ''}`;
   }
   function changed() {
     save.disabled = !write || (!creating && !dirty());
@@ -201,17 +206,72 @@ export function mountAutomationEditor(ctx, sandbox, id) {
 
   // ---- what
   function whatSection() {
+    renderStart(true);
     const prompt = h('textarea', { class: 'textarea au-prompt', rows: 4, value: state.prompt, readOnly: !write, placeholder: 'What the task should do each time, e.g. “Implement yesterday’s customer feedback from the Quartio MCP.”', 'aria-label': 'What the task does', onInput: (e) => { state.prompt = e.target.value; changed(); } });
     const pick = (value, label) => chip(label, (state.workflow_id || null) === value, () => { state.workflow_id = value; render(); }, { role: 'radio', 'aria-checked': String((state.workflow_id || null) === value), 'aria-pressed': null });
     return section('The task', null, h('div', { class: 'stack-sm' }, prompt,
       h('div', { class: 'au-row' }, h('span', { class: 'wf-label' }, 'Workflow'),
-        h('div', { class: 'wf-chips', role: 'radiogroup', 'aria-label': 'Workflow' }, pick(null, 'None'), workflows.map((w) => pick(w.id, w.name))))));
+        h('div', { class: 'wf-chips', role: 'radiogroup', 'aria-label': 'Workflow' }, pick(null, 'None'), workflows.map((w) => pick(w.id, w.name)))),
+      startHost));
+  }
+
+  // ---- how each task starts (SPEC-078): New task's start choices
+  // Its own host: it follows the project's task list (loaded late on a deep link) without
+  // re-rendering the prompt being typed.
+  const startHost = h('div');
+  let startKey = '';
+  function setStart(next) {
+    Object.assign(state, { supertask: false, after_task_id: null, after_task_number: null, start_rule: null }, next);
+    renderStart(true);
+    changed();
+  }
+  function renderStart(force) {
+    const row = startRow();
+    if (!force && row.key === startKey) return;
+    startKey = row.key;
+    setChildren(startHost, row.el);
+  }
+  function startRow() {
+    const tasks = ctx.store.tasksOf(sandbox.id) || [];
+    const kind = state.supertask ? 'supertask' : state.after_task_id ? 'after' : state.start_rule ? 'rule' : 'now';
+    const radio = (on, label, onClick, extra = {}) => chip(label, on, onClick, { role: 'radio', 'aria-checked': String(on), 'aria-pressed': null, ...extra });
+    const afterTask = tasks.find((t) => t.id === state.after_task_id);
+    const number = afterTask ? afterTask.number : state.after_task_number;
+    const rule = state.start_rule || '';
+    const ruleLabel = rule.length > 28 ? `${rule.slice(0, 27)}…` : rule;
+    const canRule = ruleChoices(tasks).length > 0;
+    const help = {
+      now: 'Each task starts as soon as a session slot is free.',
+      supertask: 'Each task waits for this project’s running tasks, then runs alone: the project’s other tasks wait for it.',
+      after: `Each task starts when #${number || '?'} is done. Once #${number || '?'} has ended, each task starts at once if it was done, or else waits for you to start or cancel it.`,
+      rule: `Each task starts by itself when ${rule}.`,
+    }[kind];
+    const key = JSON.stringify([kind, number, rule, canRule, write]);
+    return { key, el: h('div', { class: 'au-row' }, h('span', { class: 'wf-label' }, 'Start'),
+      h('div', { class: 'wf-chips', role: 'radiogroup', 'aria-label': 'Start' },
+        radio(kind === 'now', 'Start now', () => setStart({})),
+        radio(kind === 'supertask', 'Supertask', () => setStart({ supertask: true })),
+        radio(kind === 'after', kind === 'after' ? `After #${number || '?'}` : 'After a task…', (event) => openAfterMenu(event.currentTarget)),
+        radio(kind === 'rule', kind === 'rule' ? `When ${ruleLabel}` : 'When a rule is true…', openRuleDialog, { title: rule || (canRule ? null : 'This project has no task a rule could name yet'), disabled: !write || (!canRule && kind !== 'rule') })),
+      h('span', { class: 'muted xs' }, help)) };
+  }
+  function openAfterMenu(anchor) {
+    const candidates = chainCandidates(ctx, sandbox);
+    if (!candidates.length) { toast('No task of this project is running or waiting to run after.', { kind: 'info' }); return; }
+    openMenu(anchor, [
+      { header: 'After a task is done' },
+      ...candidates.map((t) => ({ label: `#${t.number} ${t.title}`, checked: t.id === state.after_task_id, onSelect: () => setStart({ after_task_id: t.id, after_task_number: t.number }) })),
+    ]);
+  }
+  function openRuleDialog() {
+    if (!ruleChoices(ctx.store.tasksOf(sandbox.id)).length) { toast('This project has no task a rule could name yet.', { kind: 'info' }); return; }
+    openRuleEditor({ tasks: ctx.store.tasksOf(sandbox.id), value: ruleFromText(state.start_rule), onUse: (rule) => setStart({ start_rule: ruleText(rule) }) });
   }
 
   function runningSection() {
     const input = h('input', { type: 'checkbox', role: 'switch', class: 'switch-input', checked: state.enabled, disabled: !write, onChange: (e) => { state.enabled = e.target.checked; gate.classList.toggle('on', state.enabled); changed(); } });
     const gate = h('label', { class: ['wf-gate', state.enabled && 'on'] }, h('span', { class: 'wf-gate-icon' }, icon('zap', { size: 16 })),
-      h('span', { class: 'wf-gate-text' }, h('strong', null, 'Runs on schedule'), h('span', { class: 'muted small' }, 'Off pauses it; Run now still works. A run is skipped while the task from the previous run is still active.')),
+      h('span', { class: 'wf-gate-text' }, h('strong', null, 'Runs on schedule'), h('span', { class: 'muted small' }, 'Off pauses it; Run now still works. A run is skipped while the task from the previous run is still active or waiting to start.')),
       h('span', { class: 'switch' }, input, h('span', { class: 'switch-track', 'aria-hidden': 'true' })));
     return section('Running', null, gate);
   }
@@ -257,7 +317,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
     if (!state.name.trim()) { invalid(nameInput, 'Give the automation a name.'); return; }
     if (!state.prompt.trim()) { invalid(el.querySelector('.au-prompt'), 'Say what the task should do.'); return; }
     if (!cronValid(state.cron)) { const cron = el.querySelector('.au-cron'); cron?.closest('details')?.setAttribute('open', ''); if (cron) invalid(cron, 'A schedule has five fields, e.g. “0 9 * * 1-5”.'); return; }
-    const payload = { name: state.name.trim(), cron: state.cron, utc_offset_minutes: state.offset, prompt: state.prompt.trim(), workflow_id: state.workflow_id || null, enabled: state.enabled };
+    const payload = { name: state.name.trim(), cron: state.cron, utc_offset_minutes: state.offset, prompt: state.prompt.trim(), workflow_id: state.workflow_id || null, enabled: state.enabled, supertask: state.supertask, after_task_id: state.after_task_id, start_rule: state.start_rule };
     save.classList.add('busy');
     try {
       if (creating) await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/automations`, payload);
@@ -315,6 +375,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
     if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 's') { event.preventDefault(); doSave(); }
   });
   const offRuns = creating ? () => {} : ctx.store.on('automation-run', (event) => { if (!event || event.automation_id === id) loadRuns(); });
+  const offTasks = ctx.store.on('tasks', (sid) => { if (sid === sandbox.id && startHost.isConnected) renderStart(false); });
 
   async function load() {
     try {
@@ -327,7 +388,8 @@ export function mountAutomationEditor(ctx, sandbox, id) {
       if (!creating) {
         automation = (Array.isArray(list) ? list : []).find((a) => a.id === id);
         if (!automation) { saved = snapshot(); setChildren(el, notFound({ title: 'Automation not found', text: `There is no automation “${id}” in ${sandbox.name}. It may have been deleted.`, back: ['Automations', base] })); return; }
-        Object.assign(state, { name: automation.name, prompt: automation.prompt || '', workflow_id: automation.workflow_id || null, enabled: automation.enabled, cron: automation.cron, offset: automation.utc_offset_minutes, custom: !readSchedule(automation.cron) });
+        Object.assign(state, { name: automation.name, prompt: automation.prompt || '', workflow_id: automation.workflow_id || null, enabled: automation.enabled, cron: automation.cron, offset: automation.utc_offset_minutes, custom: !readSchedule(automation.cron),
+          supertask: Boolean(automation.supertask), after_task_id: automation.after_task_id || null, after_task_number: automation.after_task_number ?? null, start_rule: automation.start_rule || null });
         nameInput.value = automation.name;
         showZone = state.offset !== -new Date().getTimezoneOffset();
       }
@@ -341,6 +403,6 @@ export function mountAutomationEditor(ctx, sandbox, id) {
 
   return {
     el,
-    destroy() { alive = false; offRuns(); window.removeEventListener('beforeunload', onBeforeUnload); document.removeEventListener('click', onLink, true); },
+    destroy() { alive = false; offRuns(); offTasks(); window.removeEventListener('beforeunload', onBeforeUnload); document.removeEventListener('click', onLink, true); },
   };
 }

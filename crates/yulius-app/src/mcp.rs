@@ -92,7 +92,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "task_create".into(),
-            description: "Create and start a new task in this project (another Claude Code session with its own branch), e.g. when the user says \"create a task from that\" or a follow-up should run separately. It is created like New task in the UI, on behalf of the person you work for; write the prompt as a complete request (what, why, where, done when). With after_task it waits until that task is done; with start_rule until the rule is true. Tools create at most 20 tasks an hour per project.".into(),
+            description: "Create and start a new task in this project (another Claude Code session with its own branch), e.g. when the user says \"create a task from that\" or a follow-up should run separately. It is created like New task in the UI, on behalf of the person you work for; write the prompt as a complete request (what, why, where, done when). With after_task it waits until that task is done; with start_rule until the rule is true. A supertask (for broad work such as security hardening) waits for the project's running tasks, then runs alone: every other task of the project waits for it, so create one only when the person asks. Tools create at most 20 tasks an hour per project.".into(),
             input_schema: schema(json!({
                 "prompt": {"type": "string", "description": "The request for the new task"},
                 "title": {"type": "string", "description": "Short title (derived from the prompt when absent)"},
@@ -100,6 +100,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
                 "mode": {"type": "string", "enum": ["goal", "prompt", "auto"], "description": "goal (default): the task works until its definition of done holds; prompt: one plain prompt"},
                 "after_task": {"type": "integer", "description": "Task number to wait for (starts when it is done)"},
                 "start_rule": {"type": "string", "description": "Start when this rule over the project's tasks is true, e.g. \"#12 done and #13 done\" (not with after_task)"},
+                "supertask": {"type": "boolean", "description": "Run alone in the project: wait for the running tasks, and every other task waits for this one (not with after_task or start_rule)"},
                 "model": {"type": "string", "description": "Model override (default Opus)"},
                 "effort": {"type": "string", "description": "Effort override (default high)"}
             }), &["prompt"]),
@@ -220,7 +221,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "delivery_merge".into(),
-            description: "Merge this task's pull request on green (the one delivery pipeline: you deliver your own work, no person accepts it). Refused unless the checks passed on the exact head (Yulius CI), the spec is valid when the task needs one, every step is done, the head is current and an independent review in a fresh session approved exactly this head: pass that commit as reviewed_head (and a one-line review_summary). While the checks at that head still run, the call arms the merge instead: Yulius merges exactly that head as soon as they pass (start `yulius wait` with run_in_background and end your turn: it says how the merge ended; never poll). Acts with the authority of the task's creator and is audited.".into(),
+            description: "Merge this task's pull request on green (the one delivery pipeline: you deliver your own work, no person accepts it). Refused unless the checks passed on the exact head (Yulius CI), the spec is valid when the task needs one, every step is done, the head is current and an independent review in a fresh session approved exactly this head: pass that commit as reviewed_head (and a one-line review_summary). While the checks at that head still run, the call arms the merge instead: Yulius merges exactly that head as soon as they pass (start `yulius wait` with run_in_background and end your turn: it says how the merge ended; never poll). Acts with the authority of the task's owner and is audited.".into(),
             input_schema: schema(json!({
                 "reviewed_head": {"type": "string", "description": "The commit SHA the independent reviewer approved (must be the branch head)"},
                 "review_summary": {"type": "string", "description": "One line: the reviewer's verdict and what it checked"}
@@ -247,7 +248,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "automation_create".into(),
-            description: "Create a scheduled automation in this project: on a five-field cron schedule (minute hour day-of-month month day-of-week, evaluated at utc_offset_minutes from UTC) Yulius creates and starts a new task with the given prompt. Use it when the user asks for recurring work, e.g. \"every day at 9 implement yesterday's customer feedback\". The automation appears on the project's Automations page.".into(),
+            description: "Create a scheduled automation in this project: on a five-field cron schedule (minute hour day-of-month month day-of-week, evaluated at utc_offset_minutes from UTC) Yulius creates and starts a new task with the given prompt. Use it when the user asks for recurring work, e.g. \"every day at 9 implement yesterday's customer feedback\". Created tasks start like New task: now (the default), after_task, start_rule or as a supertask. The automation appears on the project's Automations page.".into(),
             input_schema: schema(json!({
                 "name": {"type": "string", "description": "Short name; also the title of created tasks"},
                 "cron": {"type": "string", "description": "Five-field cron expression, e.g. \"0 9 * * *\" (daily at 09:00) or \"0 9 * * MON-FRI\""},
@@ -255,7 +256,10 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
                 "prompt": {"type": "string", "description": "What each created task should do"},
                 "harness": {"type": "string", "enum": ["claude"], "description": "Agent for created tasks (Claude Code; the default)"},
                 "workflow": {"type": "string", "description": "Workflow id or name from workflows_list (optional)"},
-                "enabled": {"type": "boolean", "description": "Default true"}
+                "enabled": {"type": "boolean", "description": "Default true"},
+                "after_task": {"type": "integer", "description": "Created tasks wait until this task number is done (once it has ended: the rule \"#N done\")"},
+                "start_rule": {"type": "string", "description": "Created tasks start when this rule over the project's tasks is true, e.g. \"#12 done and #13 merged\" (not with after_task)"},
+                "supertask": {"type": "boolean", "description": "Created tasks run alone in the project as supertasks (not with after_task or start_rule); only when the person asks"}
             }), &["name", "cron", "prompt"]),
         },
         ToolDescriptor {
@@ -282,14 +286,17 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "automation_update".into(),
-            description: "Change an automation of this project: enable/disable it, or change its cron schedule, UTC offset, prompt or name.".into(),
+            description: "Change an automation of this project: enable/disable it, or change its cron schedule, UTC offset, prompt, name or how its tasks start (giving any of after_task, start_rule or supertask replaces the start choice; supertask false alone: start now).".into(),
             input_schema: schema(json!({
                 "automation_id": {"type": "string"},
                 "enabled": {"type": "boolean"},
                 "cron": {"type": "string"},
                 "utc_offset_minutes": {"type": "integer"},
                 "prompt": {"type": "string"},
-                "name": {"type": "string"}
+                "name": {"type": "string"},
+                "after_task": {"type": "integer", "description": "Created tasks wait until this task number is done"},
+                "start_rule": {"type": "string", "description": "Created tasks start when this rule is true, e.g. \"#12 done\""},
+                "supertask": {"type": "boolean", "description": "Created tasks run alone in the project"}
             }), &["automation_id"]),
         },
         ToolDescriptor {

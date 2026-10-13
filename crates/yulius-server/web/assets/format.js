@@ -156,3 +156,14 @@ export function describeCron(expr) {
 export function plural(n, word, many) {
   return `${n} ${n === 1 ? word : many || `${word}s`}`;
 }
+
+/**
+ * How an automation's tasks start, in a few words for its sentence and list row (SPEC-078):
+ * "supertask", "after #12", "when #12 done", or '' for start now.
+ */
+export function startPhrase(a) {
+  if (a.supertask) return 'supertask';
+  if (a.after_task_id) return a.after_task_number ? `after #${a.after_task_number}` : 'after a task';
+  if (a.start_rule) return `when ${a.start_rule}`;
+  return '';
+}

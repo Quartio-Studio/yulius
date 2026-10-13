@@ -4,24 +4,25 @@ import { axeViolations, failOnPageErrors, mock, mockReady } from './support.ts';
 
 failOnPageErrors();
 
-// The Agent (SPEC-035, formerly the Cockpit of SPEC-021): every user's own plain Claude Code session
-// per sandbox, in the right tool panel beside the page, for quick work that should not become a task.
+// The Superagent (SPEC-074 SUP-007; the Agent of SPEC-035, formerly the Cockpit of SPEC-021): every
+// user's own plain Claude Code session per sandbox, in the right tool panel beside the page, for
+// quick work that should not become a task.
 
 const agentTerminal = '.agent-term .xterm-rows';
 
-test('the Agent opens on the right beside the page, says what it is for and keeps its session', async ({ app, browser, screen }) => {
+test('the Superagent opens on the right beside the page, says what it is for and keeps its session', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
 
-  await screen.getByRole('button', 'Show Agent').click();
+  await screen.getByRole('button', 'Show Superagent').click();
   const panel = screen.getByRole('region', 'Tool panel');
   await expect(panel).toBeVisible();
-  // The task stays in the centre: the Agent is beside it, not instead of it.
+  // The task stays in the centre: the Superagent is beside it, not instead of it.
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
-  await expect(screen.getByRole('navigation', 'Tools').getByRole('button', 'Agent')).toHaveAttribute('aria-pressed', 'true');
+  await expect(screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent')).toHaveAttribute('aria-pressed', 'true');
 
   // The notice: quick work here, anything bigger (writing code) in a task.
-  const note = screen.getByRole('note', 'About the Agent');
+  const note = screen.getByRole('note', 'About the Superagent');
   await expect(note).toHaveText(/quick work.*automations.*quick question/i);
   await expect(note).toHaveText(/writing code.*task/i);
 
@@ -34,42 +35,44 @@ test('the Agent opens on the right beside the page, says what it is for and keep
   await expect(terminal).toHaveText(/Good question/);
   expect(await axeViolations(browser)).toEqual([]);
 
-  // Nothing calls it the Cockpit any more.
+  // Nothing calls it the Cockpit or the Agent any more (SPEC-074 SUP-007).
   expect(await browser.evaluate(() => document.body.innerText)).not.toMatch(/Cockpit/);
+  expect(await browser.evaluate(() => [...document.querySelectorAll('.agent, .agent-toggle, nav[aria-label="Tools"]')]
+    .map((el) => `${el.textContent} ${el.getAttribute('aria-label') ?? ''}`).join(' '))).not.toMatch(/\bAgent\b/);
 
   // Hidden and shown again, and after another page, it is the same session.
-  await screen.getByRole('button', 'Hide Agent').click();
+  await screen.getByRole('button', 'Hide Superagent').click();
   await expect(panel).toBeHidden();
   await screen.getByRole('navigation', 'Sandbox').getByRole('link', 'Tasks').click();
-  await screen.getByRole('button', 'Show Agent').click();
+  await screen.getByRole('button', 'Show Superagent').click();
   await expect(terminal).toHaveText(/Good question/);
 });
 
-test('the Agent notice opens a new task for bigger work', async ({ app, browser, screen }) => {
+test('the Superagent notice opens a new task for bigger work', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/tasks'));
-  await screen.getByRole('button', 'Show Agent').click();
-  await screen.getByRole('note', 'About the Agent').getByRole('link', 'New task').click();
+  await screen.getByRole('button', 'Show Superagent').click();
+  await screen.getByRole('note', 'About the Superagent').getByRole('link', 'New task').click();
   await expect(browser).toHaveURL(/#\/s\/studio$/);
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('New task');
 });
 
-test('the Agent is not in the left navigation', async ({ app, browser, screen }) => {
+test('the Superagent is not in the left navigation', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   await expect(screen.getByRole('navigation', 'Sandbox').getByRole('link', 'Tasks')).toBeVisible();
   const items = await browser.evaluate(() => [...document.querySelectorAll('nav.nav a')].map((a) => a.textContent));
   expect(items.filter((text) => /Cockpit|Agent/.test(text ?? ''))).toEqual([]);
 });
 
-for (const path of ['agent', 'cockpit']) {
-  test(`/s/<slug>/${path} opens the sandbox with the Agent`, async ({ app, browser, screen }) => {
+for (const path of ['superagent', 'agent', 'cockpit']) {
+  test(`/s/<slug>/${path} opens the sandbox with the Superagent`, async ({ app, browser, screen }) => {
     await app.open(mock(`/s/studio/${path}`));
     await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
     await expect(browser).toHaveURL(/#\/s\/studio$/);
-    await expect(screen.getByRole('button', 'Hide Agent')).toBeVisible();
+    await expect(screen.getByRole('button', 'Hide Superagent')).toBeVisible();
   });
 }
 
-test('a stopped Agent starts again with its conversation', async ({ app, browser, screen }) => {
+test('a stopped Superagent starts again with its conversation', async ({ app, browser, screen }) => {
   // Wide enough that the panel's terminal does not wrap the welcome line.
   await browser.setViewport({ width: 1920, height: 1000 });
   await app.open(mock('/s/studio/agent'));
@@ -78,95 +81,95 @@ test('a stopped Agent starts again with its conversation', async ({ app, browser
   await browser.locator('.agent-term .xterm-helper-textarea').focus();
   await browser.keyboard.type('/exit');
   await browser.keyboard.press('Enter');
-  await expect(screen.getByText('The Agent stopped. Its conversation is kept.')).toBeVisible();
+  await expect(screen.getByText('The Superagent stopped. Its conversation is kept.')).toBeVisible();
 
   await screen.getByRole('button', 'Start again').click();
   await expect(terminal).toHaveText(/resumed your last conversation/);
 });
 
-test('an Agent whose process is gone is started again by itself', async ({ app, browser }) => {
-  // The panel got an Agent that no longer runs (the machine rebooted): it does not stay stuck on it.
+test('a Superagent whose process is gone is started again by itself', async ({ app, browser }) => {
+  // The panel got a Superagent that no longer runs (the machine rebooted): it does not stay stuck on it.
   await app.open(mock('/s/studio/agent', '&cockpit=gone'));
   await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
 });
 
-test('an Agent that cannot start says why and offers to try again', async ({ app, screen }) => {
+test('a Superagent that cannot start says why and offers to try again', async ({ app, screen }) => {
   await app.open(mock('/s/studio/agent', '&cockpit=fail'));
-  await expect(screen.getByRole('alert')).toHaveText(/Couldn’t start the Agent: no subscription has capacity right now/);
+  await expect(screen.getByRole('alert')).toHaveText(/Couldn’t start the Superagent: no subscription has capacity right now/);
   await expect(screen.getByRole('button', 'Try again')).toBeVisible();
 });
 
-test('read access explains why the Agent is not available', async ({ app, browser, screen }) => {
+test('read access explains why the Superagent is not available', async ({ app, browser, screen }) => {
   await app.open(mock('/s/sandbox-3/agent'));
-  await expect(screen.getByText('The Agent needs write access to this sandbox.')).toBeVisible();
+  await expect(screen.getByText('The Superagent needs write access to this sandbox.')).toBeVisible();
   await expect(browser.locator(agentTerminal)).toBeHidden();
 });
 
-// Review round 1: New task from a task page hands the keyboard to the composer, not the Agent.
-test('New task from the Agent beside a task focuses the composer', async ({ app, browser, screen }) => {
+// Review round 1: New task from a task page hands the keyboard to the composer, not the Superagent.
+test('New task from the Superagent beside a task focuses the composer', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
-  await screen.getByRole('button', 'Show Agent').click();
+  await screen.getByRole('button', 'Show Superagent').click();
   await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
-  await screen.getByRole('note', 'About the Agent').getByRole('link', 'New task').click();
+  await screen.getByRole('note', 'About the Superagent').getByRole('link', 'New task').click();
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('New task');
-  // Typed text must become a task, never a message to the Agent.
+  // Typed text must become a task, never a message to the Superagent.
   await expect.poll(() => browser.evaluate(() => Boolean(document.activeElement?.closest('.agent-term')))).toBe(false);
   await expect(screen.getByRole('textbox', 'Task prompt')).toBeFocused();
 });
 
-test('on a phone, New task closes the Agent so the composer shows', async ({ app, browser, screen }) => {
+test('on a phone, New task closes the Superagent so the composer shows', async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 390, height: 844 });
   await app.open(mock('/s/studio/agent'));
   await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
-  await screen.getByRole('note', 'About the Agent').getByRole('link', 'New task').click();
+  await screen.getByRole('note', 'About the Superagent').getByRole('link', 'New task').click();
   await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('New task');
 });
 
-test('the Agent opens from the rail, keeps its session across tools and the top bar follows', async ({ app, browser, screen }) => {
+test('the Superagent opens from the rail, keeps its session across tools and the top bar follows', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/tasks'));
   await screen.getByRole('button', /^Show tools/).click();
   const rail = screen.getByRole('navigation', 'Tools');
-  await rail.getByRole('button', 'Agent').click();
-  await expect(screen.getByRole('button', 'Hide Agent')).toHaveAttribute('aria-pressed', 'true');
+  await rail.getByRole('button', 'Superagent').click();
+  await expect(screen.getByRole('button', 'Hide Superagent')).toHaveAttribute('aria-pressed', 'true');
   const terminal = browser.locator(agentTerminal);
   await expect(terminal).toHaveText(/Welcome to Claude Code/);
   await browser.keyboard.type('why?');
   await browser.keyboard.press('Enter');
   await expect(terminal).toHaveText(/Good question/);
 
-  // Another tool in the panel: the button is released; back to the Agent, the same session.
+  // Another tool in the panel: the button is released; back to the Superagent, the same session.
   await rail.getByRole('button', 'Shell').click();
-  await expect(screen.getByRole('button', 'Show Agent')).toHaveAttribute('aria-pressed', 'false');
-  await rail.getByRole('button', 'Agent').click();
+  await expect(screen.getByRole('button', 'Show Superagent')).toHaveAttribute('aria-pressed', 'false');
+  await rail.getByRole('button', 'Superagent').click();
   await expect(terminal).toHaveText(/Good question/);
 });
 
-test('the top-bar Agent button does not leave the tools rail on for good', async ({ app, browser, screen }) => {
+test('the top-bar Superagent button does not leave the tools rail on for good', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/tasks'));
   await expect(screen.getByRole('navigation', 'Tools')).toBeHidden();
-  await screen.getByRole('button', 'Show Agent').click();
+  await screen.getByRole('button', 'Show Superagent').click();
   await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
-  await screen.getByRole('button', 'Hide Agent').click();
+  await screen.getByRole('button', 'Hide Superagent').click();
   await expect(screen.getByRole('navigation', 'Tools')).toBeHidden();
   await browser.reload();
-  await expect(screen.getByRole('button', 'Show Agent')).toBeVisible();
+  await expect(screen.getByRole('button', 'Show Superagent')).toBeVisible();
   await expect(screen.getByRole('navigation', 'Tools')).toBeHidden();
 });
 
-test('switching sandbox with the Agent open shows that sandbox’s Agent', async ({ app, screen }) => {
+test('switching sandbox with the Superagent open shows that sandbox’s Superagent', async ({ app, screen }) => {
   await app.open(mock('/s/studio/agent'));
-  await expect(screen.getByRole('button', 'Hide Agent')).toBeVisible();
+  await expect(screen.getByRole('button', 'Hide Superagent')).toBeVisible();
   await screen.getByRole('navigation', 'Sandboxes').getByRole('link', /^sandbox-3\b/).click();
-  await expect(screen.getByText('The Agent needs write access to this sandbox.')).toBeVisible();
+  await expect(screen.getByText('The Superagent needs write access to this sandbox.')).toBeVisible();
   // Read users get no New task link they cannot use.
-  await expect(screen.getByRole('note', 'About the Agent').getByRole('link', 'New task')).toBeHidden();
+  await expect(screen.getByRole('note', 'About the Superagent').getByRole('link', 'New task')).toBeHidden();
 });
 
-// Review round 2: the new sandbox's Agent starts beside the page without taking the keyboard.
-test('switching to a sandbox whose Agent starts keeps the keyboard on the page', async ({ app, browser, screen }) => {
+// Review round 2: the new sandbox's Superagent starts beside the page without taking the keyboard.
+test('switching to a sandbox whose Superagent starts keeps the keyboard on the page', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
-  await screen.getByRole('button', 'Show Agent').click();
+  await screen.getByRole('button', 'Show Superagent').click();
   await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
   await screen.getByRole('navigation', 'Sandboxes').getByRole('link', /^product\b/).click();
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('New task');
@@ -174,11 +177,11 @@ test('switching to a sandbox whose Agent starts keeps the keyboard on the page',
   await expect(screen.getByRole('textbox', 'Task prompt')).toBeFocused();
 });
 
-// Review round 3: the rail shown for the top-bar Agent becomes the person's when they use it for
-// another tool, and goes again when the Agent is closed from the rail.
-test('a tool picked from the rail after the top-bar Agent keeps the rail', async ({ app, screen }) => {
+// Review round 3: the rail shown for the top-bar Superagent becomes the person's when they use it for
+// another tool, and goes again when the Superagent is closed from the rail.
+test('a tool picked from the rail after the top-bar Superagent keeps the rail', async ({ app, screen }) => {
   await app.open(mock('/s/studio/tasks'));
-  await screen.getByRole('button', 'Show Agent').click();
+  await screen.getByRole('button', 'Show Superagent').click();
   const rail = screen.getByRole('navigation', 'Tools');
   await rail.getByRole('button', 'Shell').click();
   await rail.getByRole('button', 'Shell').click();
@@ -186,25 +189,25 @@ test('a tool picked from the rail after the top-bar Agent keeps the rail', async
   await expect(rail).toBeVisible();
 });
 
-test('closing the top-bar Agent from the rail hides the rail again', async ({ app, screen }) => {
+test('closing the top-bar Superagent from the rail hides the rail again', async ({ app, screen }) => {
   await app.open(mock('/s/studio/tasks'));
-  await screen.getByRole('button', 'Show Agent').click();
-  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Agent').click();
+  await screen.getByRole('button', 'Show Superagent').click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent').click();
   await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
   await expect(screen.getByRole('navigation', 'Tools')).toBeHidden();
 });
 
-test('an Agent recovered right after opening it has the keyboard', async ({ app, browser, screen }) => {
+test('a Superagent recovered right after opening it has the keyboard', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/tasks', '&cockpit=gone'));
-  await screen.getByRole('button', 'Show Agent').click();
+  await screen.getByRole('button', 'Show Superagent').click();
   await expect(browser.locator(agentTerminal)).toHaveText(/Welcome to Claude Code/);
   await expect(browser.locator('.agent-term .xterm-helper-textarea')).toBeFocused();
 });
 
 // Review round 4: a slow start leaves the keyboard where the person put it in the meantime.
-type Holding = Window & { __yuliusMock: { holdCockpit?: Promise<void>; rebootCockpits(): void }; __release?: () => void };
+type Holding = Window & { __yuliusMock: { holdCockpit?: Promise<void>; rebootCockpits(): void; switchCockpits(failed?: boolean): void }; __release?: () => void };
 
-test('an Agent that starts slowly does not take the keyboard from the page', async ({ app, browser, screen }) => {
+test('a Superagent that starts slowly does not take the keyboard from the page', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
   // The mock backend loads after the page (a dynamic import): wait for it before holding its answer.
   await mockReady(browser);
@@ -212,8 +215,8 @@ test('an Agent that starts slowly does not take the keyboard from the page', asy
     const w = window as unknown as Holding;
     w.__yuliusMock.holdCockpit = new Promise<void>((resolve) => { w.__release = resolve; });
   });
-  await screen.getByRole('button', 'Show Agent').click();
-  await expect(screen.getByRole('status')).toHaveText('Starting your Agent…');
+  await screen.getByRole('button', 'Show Superagent').click();
+  await expect(screen.getByRole('status')).toHaveText('Starting your Superagent…');
   // While it starts, the person goes back to the page.
   await screen.getByRole('textbox', 'Task prompt').click();
   await browser.evaluate(() => (window as unknown as Holding).__release?.());
@@ -224,9 +227,9 @@ test('an Agent that starts slowly does not take the keyboard from the page', asy
 });
 
 // Review round 4: the wish to focus on opening does not outlive the opening.
-test('an Agent recovered long after it was opened leaves the keyboard on the page', async ({ app, browser, screen }) => {
+test('a Superagent recovered long after it was opened leaves the keyboard on the page', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
-  await screen.getByRole('button', 'Show Agent').click();
+  await screen.getByRole('button', 'Show Superagent').click();
   const terminal = browser.locator(agentTerminal);
   await expect(terminal).toHaveText(/Welcome to Claude Code/);
   await browser.keyboard.type('why?');
@@ -240,4 +243,40 @@ test('an Agent recovered long after it was opened leaves the keyboard on the pag
   await expect(terminal).toHaveText(/Welcome to Claude Code/);
   await expect(terminal).toBeVisible();
   await expect.poll(() => browser.evaluate(() => Boolean(document.activeElement?.closest('.agent-term')))).toBe(false);
+});
+
+// SPEC-074 SUP-006: a usage limit moved the session to another subscription; the panel follows it,
+// with no "stopped" banner or Start again, and the keyboard stays in it.
+test('a Superagent moved to another subscription after a usage limit goes on in the panel', async ({ app, browser, screen }) => {
+  // Wide enough that the panel's terminal does not wrap the welcome line.
+  await browser.setViewport({ width: 1920, height: 1000 });
+  await app.open(mock('/s/studio'));
+  await screen.getByRole('button', 'Show Superagent').click();
+  const terminal = browser.locator(agentTerminal);
+  await expect(terminal).toHaveText(/Welcome to Claude Code/);
+  await expect(browser.locator('.agent-term .xterm-helper-textarea')).toBeFocused();
+
+  await browser.evaluate(() => (window as unknown as Holding).__yuliusMock.switchCockpits());
+  await expect(terminal).toHaveText(/resumed your last conversation/);
+  await expect(screen.getByRole('button', 'Start again')).toBeHidden();
+  expect(await browser.evaluate(() => document.querySelector('.agent')?.textContent ?? '')).not.toMatch(/stopped/);
+  await expect(browser.locator('.agent-term .xterm-helper-textarea')).toBeFocused();
+  await browser.keyboard.type('why?');
+  await browser.keyboard.press('Enter');
+  await expect(terminal).toHaveText(/Good question/);
+});
+
+// Review round 1 (m1): the move failed and the Superagent cannot start right now; the panel says
+// why and offers to try again instead of staying on "Moving…".
+test('a Superagent whose move to another subscription failed says why and starts again', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1920, height: 1000 });
+  await app.open(mock('/s/studio'));
+  await screen.getByRole('button', 'Show Superagent').click();
+  const terminal = browser.locator(agentTerminal);
+  await expect(terminal).toHaveText(/Welcome to Claude Code/);
+
+  await browser.evaluate(() => (window as unknown as Holding).__yuliusMock.switchCockpits(true));
+  await expect(screen.getByRole('alert')).toHaveText(/Couldn’t start the Superagent: no subscription has capacity right now/);
+  await screen.getByRole('button', 'Try again').click();
+  await expect(terminal).toHaveText(/resumed your last conversation/);
 });

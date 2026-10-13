@@ -6,7 +6,7 @@
 
 import { enc } from './api.js';
 import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, badge, setChildren, icon, iconButton, placeholder } from './dom.js';
-import { taskActions, taskInfo, allows, isLive } from './status.js';
+import { taskActions, taskInfo, allows, isLive, otherOwner } from './status.js';
 import { relLong } from './format.js';
 import { BRAND } from './brand.js';
 import { createMarkdownEditor } from './mdeditor.js';
@@ -19,8 +19,10 @@ export function openTaskMenu(ctx, anchor, task) {
   const sandbox = ctx.store.sandboxById(task.sandbox_id);
   const access = sandbox ? sandbox.access : 'read';
   const pr = ctx.store.pullsOf(task.sandbox_id).get(task.id);
-  const can = taskActions(task, access, pr);
-  const why = allows(access, 'write') ? 'Not available in this state' : 'Requires write access';
+  const me = ctx.store.state.me?.user?.login;
+  const can = taskActions(task, access, pr, me);
+  const owner = otherOwner(task, me);
+  const why = owner ? `@${owner} owns this task` : allows(access, 'write') ? 'Not available in this state' : 'Requires write access';
   openMenu(anchor, [
     // The same rule as the row it opens from (pull request, held prompt, browser request).
     { header: `#${task.number} · ${taskInfo(task, ctx.store.state.actionRequests, pr).label}` },
@@ -32,9 +34,9 @@ export function openTaskMenu(ctx, anchor, task) {
     { label: 'Feedback…', disabled: !can.feedback, onSelect: () => openFeedbackDialog(ctx, task) },
     { separator: true },
     task.archived
-      ? { label: 'Restore', disabled: !can.restore, onSelect: () => restoreTask(ctx, task) }
-      : { label: 'Archive', disabled: !can.archive, title: can.archive ? null : (allows(access, 'write') ? 'Still running: stop the task before archiving it' : why), onSelect: () => archiveTask(ctx, task) },
-    { label: 'Delete permanently…', danger: true, disabled: !can.delete, title: can.delete ? null : (!allows(access, 'write') ? why : task.status === 'stopping' ? 'Stopping…' : 'Still running: stop the task before deleting it'), onSelect: () => deleteTask(ctx, task) },
+      ? { label: 'Restore', disabled: !can.restore, title: can.restore ? null : why, onSelect: () => restoreTask(ctx, task) }
+      : { label: 'Archive', disabled: !can.archive, title: can.archive ? null : (allows(access, 'write') && !owner ? 'Still running: stop the task before archiving it' : why), onSelect: () => archiveTask(ctx, task) },
+    { label: 'Delete permanently…', danger: true, disabled: !can.delete, title: can.delete ? null : (!allows(access, 'write') || owner ? why : task.status === 'stopping' ? 'Stopping…' : 'Still running: stop the task before deleting it'), onSelect: () => deleteTask(ctx, task) },
   ], { align: anchor instanceof Element ? 'end' : 'start' });
 }
 
@@ -88,6 +90,22 @@ export async function stopTask(ctx, task) {
 /** Resume a closed/stopped task on the same session lineage (TSK-007). */
 export function continueTask(ctx, task) {
   return taskPost(ctx, task, 'continue', () => ctx.api.post(`/api/tasks/${enc(task.id)}/continue`, {}), `Continuing #${task.number}…`);
+}
+
+/** Ask the task's owner for control: the task would act on GitHub as you (SPEC-070). */
+export function requestControl(ctx, task) {
+  return taskPost(ctx, task, 'ask for control of', () => ctx.api.post(`/api/tasks/${enc(task.id)}/control-request`), `Asked for control of #${task.number}`);
+}
+
+/** Withdraw your request for control, or, as the owner, decline someone's. */
+export function dropControlRequest(ctx, task) {
+  return taskPost(ctx, task, 'answer the request for', () => ctx.api.del(`/api/tasks/${enc(task.id)}/control-request`));
+}
+
+/** As the owner, hand the task to the person who asked: it acts on GitHub as them from now on. */
+export function handOverTask(ctx, task) {
+  const to = task.control_request && task.control_request.by.login;
+  return taskPost(ctx, task, 'hand over', () => ctx.api.post(`/api/tasks/${enc(task.id)}/control-request/accept`), to ? `#${task.number} is @${to}'s now` : null);
 }
 
 // The server closes a finished task's session before deleting it and may wait for the close's
@@ -468,7 +486,7 @@ export function openPromptDialog(ctx, task) {
     }
     text = prompt.text || '';
     const files = Array.isArray(prompt.attachments) ? prompt.attachments : [];
-    if (text) editor = createMarkdownEditor({ markdown: text, readOnly: true });
+    if (text) editor = createMarkdownEditor({ markdown: text, readOnly: true, frontmatter: false });
     setChildren(modal.body, h('div', { class: 'stack' },
       editor ? h('div', { class: 'prompt-text' }, editor.el) : h('p', { class: 'muted' }, 'No text: only files were attached.'),
       files.length ? h('ul', { class: 'prompt-files', 'aria-label': 'Attached files' }, files.map(fileItem)) : null));

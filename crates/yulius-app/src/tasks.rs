@@ -120,6 +120,18 @@ impl App {
             created_by: UserRef {
                 login: self.login_of(&task.created_by).await,
             },
+            owner: UserRef {
+                login: self.login_of(&task.owner).await,
+            },
+            control_request: match store.control_request(&task.id).await? {
+                Some(request) => Some(yulius_contracts::api::tasks::ControlRequestView {
+                    by: UserRef {
+                        login: self.login_of(&request.by).await,
+                    },
+                    at: rfc3339(request.at),
+                }),
+                None => None,
+            },
             created_at: rfc3339(task.created_at),
             updated_at: rfc3339(task.updated_at),
             steps: progress(&steps),
@@ -131,6 +143,12 @@ impl App {
             next,
             held_prompt: self.held_prompt_view(&task.id).await,
             auto: self.auto_choice_view(&task.id).await,
+            supertask: task.supertask,
+            held_by: if task.status == TaskStatus::Queued {
+                self.supertask_holders(task).await.unwrap_or_default()
+            } else {
+                Vec::new()
+            },
             background_shells: (task.status == TaskStatus::Running
                 && task.activity.is_some_and(Activity::is_idle))
             .then(|| self.background_shells_of(&task.id))
@@ -155,6 +173,12 @@ impl App {
         }
     }
 
+    /// The task `id` for `action` by `ctx`'s person: viewing needs access to its sandbox;
+    /// anything more changes the task, which only its owner may (SPEC-070 R3): it acts on GitHub
+    /// with their token.
+    ///
+    /// # Errors
+    /// `NotFound` without access, `Forbidden` with insufficient access or for a non-owner.
     pub(crate) async fn load_task(
         &self,
         ctx: &AuthContext,
@@ -164,7 +188,29 @@ impl App {
         let id = TaskId::parse(id).map_err(|_| AppError::NotFound)?;
         let task = self.deps.store.task(&id).await?.ok_or(AppError::NotFound)?;
         self.require(&ctx.user, &task.sandbox_id, action).await?;
+        if action != Action::View {
+            self.require_owner(ctx, &task).await?;
+        }
         Ok(task)
+    }
+
+    /// Refuses `ctx`'s person unless they own `task` (SPEC-070 R3).
+    ///
+    /// # Errors
+    /// `Forbidden`, naming the owner and the way to control.
+    pub(crate) async fn require_owner(
+        &self,
+        ctx: &AuthContext,
+        task: &TaskRecord,
+    ) -> AppResult<()> {
+        if task.owner == ctx.user.id {
+            return Ok(());
+        }
+        Err(AppError::Forbidden(format!(
+            "Task #{} is @{}'s: it acts on GitHub as them. Ask them for control.",
+            task.number,
+            self.login_of(&task.owner).await
+        )))
     }
 
     /// Tasks of a sandbox (archived or active).
@@ -384,8 +430,12 @@ impl App {
         if !self.deps.store.delete_task(&task.id).await? {
             return Err(AppError::NotFound);
         }
-        // A start rule naming the deleted task now sees it as ended (SPEC-017).
+        // A start rule naming the deleted task now sees it as ended (SPEC-017), and a deleted
+        // supertask no longer holds its project (SPEC-071).
         self.advance_rule_chains(&deleted_in).await;
+        if task.supertask {
+            self.drain_queue().await;
+        }
         let runs = self.config.data_dir.join("runs");
         for attempt in attempts {
             let dir = std::path::PathBuf::from(&attempt.run_dir);

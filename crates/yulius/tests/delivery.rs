@@ -695,6 +695,7 @@ impl Fixture {
                 origin: TaskOrigin::Ui,
                 automation_run: None,
                 created_by: UserId::parse(creator)?,
+                owner: UserId::parse(creator)?,
                 created_at: Timestamp(1),
                 updated_at: Timestamp(1),
                 closed_at: None,
@@ -703,6 +704,7 @@ impl Fixture {
                 gate_blocks: 0,
                 wake_enabled: true,
                 mode: yulius_app::model::TaskMode::Prompt,
+                supertask: false,
             })
             .await?;
         Ok(worktree)
@@ -2381,8 +2383,9 @@ async fn superadmin(h: &support::Harness) -> BoxResult<Creds> {
 async fn the_superadmin_delivers_through_the_app_and_is_told_what_needs_github() -> TestResult {
     let f = fixture(&DeliveryProfile::standard()).await?;
     let owner = superadmin(&f.h).await?;
+    // The superadmin's own task: only a task's owner delivers it (SPEC-070).
     let wt = f
-        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .add_task_by("t1", "Checkout API", "feat/1-checkout-api", "dev", "u-root")
         .await?;
     commit_file(&wt, "feature.txt", "hello", "Add feature")?;
     commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
@@ -2444,7 +2447,27 @@ async fn the_superadmin_delivers_through_the_app_and_is_told_what_needs_github()
     assert_eq!(page.status, StatusCode::OK, "{}", page.body);
     assert_eq!(page.body["tasks"][0]["pr"]["number"], 1);
 
-    // A GitHub user merges the App's pull request as before.
+    // Bob may not merge the superadmin's task; once it is handed to him (SPEC-070), he merges
+    // the App's pull request as before.
+    let refused = f
+        .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    let (task, root, bob) = (
+        TaskId::parse("t1")?,
+        UserId::parse("u-root")?,
+        UserId::parse("u-bob")?,
+    );
+    assert!(
+        f.h.store
+            .request_control(&task, &bob, f.h.app.now())
+            .await?
+    );
+    assert!(
+        f.h.store
+            .pass_control(&task, &root, &bob, f.h.app.now())
+            .await?
+    );
     let merged = f
         .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
         .await?;
@@ -2654,6 +2677,131 @@ async fn needs_you_counts_follow_the_sidebar_rule() -> TestResult {
     // Working again: the pull request no longer speaks for it.
     set("t1", TaskStatus::Running, Some(Activity::Working)).await?;
     assert_eq!(needs().await?, 3);
+    Ok(())
+}
+
+/// #170: a sandbox's counters split the sidebar's groups with its rule (`taskInfo`): "working"
+/// plus "queued" is the Working group, "queued" its queued and chained tasks, and "needs you" the
+/// Needs you group. A Done task, a task being stopped and an ended one count nowhere.
+#[tokio::test]
+async fn working_and_queued_counts_split_the_sidebar_working_group() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let set = async |id: &str, status: TaskStatus, activity: Option<Activity>| -> BoxResult<()> {
+        f.h.store
+            .transition_task(&TaskId::parse(id)?, None, status, activity, Timestamp(5))
+            .await?;
+        Ok(())
+    };
+    // (needs you, working, queued)
+    let counts = async || -> BoxResult<(u64, u64, u64)> {
+        let r = f.req(Method::GET, "/api/sandboxes", None, &f.bob).await?;
+        assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+        let sandbox = r
+            .body
+            .as_array()
+            .and_then(|list| list.iter().find(|s| s["id"] == "s1"))
+            .ok_or("s1")?;
+        let count = |name: &str| sandbox["counts"][name].as_u64().ok_or(format!("{sandbox}"));
+        Ok((
+            count("needs_attention")?,
+            count("running")?,
+            count("queued")?,
+        ))
+    };
+
+    // t1 finished its turn with an open pull request whose checks still run, its plan complete.
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    let opened = f
+        .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
+        .await?;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    set_steps(&f, "t1", &["done", "done"]).await?;
+    set("t1", TaskStatus::Running, Some(Activity::Waiting)).await?;
+    let tasks: [(&str, TaskStatus, Option<Activity>); 9] = [
+        // Queued: in line, or after another task.
+        ("t2", TaskStatus::Queued, None),
+        ("t3", TaskStatus::Chained, None),
+        // Working: on its way, paused for capacity, or working.
+        ("t4", TaskStatus::Starting, None),
+        ("t5", TaskStatus::WaitingCapacity, Some(Activity::Working)),
+        ("t6", TaskStatus::Running, Some(Activity::Working)),
+        ("t7", TaskStatus::Switching, None),
+        // Your turn needs you; an achieved goal is Done; a stop asked for is with the ended.
+        ("t8", TaskStatus::Running, Some(Activity::Waiting)),
+        ("t9", TaskStatus::Running, Some(Activity::Done)),
+        ("t10", TaskStatus::Stopping, Some(Activity::Working)),
+    ];
+    for (id, status, activity) in tasks {
+        f.add_task(id, id, &format!("feat/{id}"), "dev").await?;
+        set(id, status, activity).await?;
+    }
+
+    // Before any Git overview read, t1's pull request is not known: Your turn.
+    assert_eq!(counts().await?, (2, 4, 2));
+
+    // Checks running, read by the Git overview: t1 is In review, in the Working group.
+    f.h.github.set_checks(&head, ChecksState::Pending);
+    let page = f
+        .req(Method::GET, "/api/sandboxes/s1/git", None, &f.rita)
+        .await?;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert_eq!(counts().await?, (1, 5, 2));
+
+    // Green: Done, counted nowhere.
+    f.h.github.set_checks(&head, ChecksState::Success);
+    f.req(Method::GET, "/api/sandboxes/s1/git", None, &f.rita)
+        .await?;
+    assert_eq!(counts().await?, (1, 4, 2));
+
+    // Yulius CI could not run at the head (SPEC-050 STA-101): In review, Working, even with a
+    // step open again, where its own state would be Your turn.
+    use yulius_app::ci::CiRunRecord;
+    use yulius_app::ports::store_ext::CiStore;
+    use yulius_domain::ci::{CiRef, GateSource, RunState};
+    let sandbox = SandboxId::parse("s1")?;
+    let record = f.h.store.sandbox(&sandbox).await?.ok_or("s1")?;
+    let mut profile: Value = serde_json::from_str(&record.profile_json)?;
+    profile["gate"] = json!("true");
+    f.h.store
+        .set_profile(&sandbox, &profile.to_string())
+        .await?;
+    f.h.store
+        .insert_ci_run(
+            &CiRunRecord {
+                id: "run-1".to_owned(),
+                sandbox_id: sandbox.clone(),
+                reference: CiRef::PullRequest(1),
+                sha: head.clone(),
+                source: GateSource::Profile,
+                state: RunState::Error,
+                reason: Some("the job could not start".to_owned()),
+                requested_by: "yulius".to_owned(),
+                status_for: None,
+                status_note: None,
+                status_attempts: 0,
+                queued_at: Timestamp(10),
+                started_at: Some(Timestamp(10)),
+                ended_at: Some(Timestamp(11)),
+            },
+            &[],
+        )
+        .await?;
+    set_steps(&f, "t1", &["done", "pending"]).await?;
+    let page = f
+        .req(Method::GET, "/api/sandboxes/s1/git", None, &f.rita)
+        .await?;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.body);
+    assert!(
+        page.body.to_string().contains("\"checks\":\"error\""),
+        "the overview reads the errored run: {}",
+        page.body
+    );
+    assert_eq!(counts().await?, (1, 5, 2));
     Ok(())
 }
 

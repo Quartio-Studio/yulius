@@ -31,7 +31,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
-use yulius_domain::ids::{SandboxId, TaskId, UserId};
+use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
 use yulius_domain::permission::Action;
 use yulius_domain::time::Timestamp;
 
@@ -46,6 +46,9 @@ use crate::ports::session::{LaunchPlan, RunEvent, RunExit, RunInspection, RunRea
 
 /// Prefix of a Cockpit's Yulius MCP bearer (SPEC-037).
 pub const COCKPIT_TOKEN_PREFIX: &str = "ck_";
+/// The exit status a Cockpit's viewers get when it ended to start again on another subscription
+/// (SPEC-074 SUP-004): the panel follows it to the new one.
+pub const SWITCHED_STATUS: &str = "switched";
 /// What a Cockpit's bearer is derived for, hashed with its host token.
 const COCKPIT_TOKEN_LABEL: &[u8] = b"yulius-cockpit-mcp\0";
 
@@ -110,6 +113,9 @@ pub struct ShellState {
     /// The conversation each user's Cockpit could not resume (it exited at once), by sandbox:
     /// the next start begins a fresh one instead of failing the same way.
     pub(crate) cockpit_unresumable: Mutex<HashMap<(UserId, SandboxId), String>>,
+    /// The Cockpits a usage limit ended whose start on another subscription failed: the next
+    /// start still continues the cut turn (SPEC-074 SUP-004).
+    pub(crate) cockpit_continue: Mutex<std::collections::HashSet<(UserId, SandboxId)>>,
     /// The next creation number (tab order among shells created in the same millisecond).
     next_seq: AtomicU64,
 }
@@ -120,6 +126,15 @@ pub struct ShellRuntime {
     pub(crate) kind: ShellKind,
     /// The conversation a Cockpit was started to resume, and when its process was spawned.
     pub(crate) resumed: OnceLock<(String, Timestamp)>,
+    /// The pool subscription a Cockpit runs on (SPEC-074 SUP-001); unknown for records written
+    /// before it was kept.
+    pub(crate) account: OnceLock<AccountId>,
+    /// A Cockpit ended to start again on another subscription (SPEC-074 SUP-004): its viewers
+    /// are told `switched`, and its quick end says nothing about its conversation.
+    pub(crate) switching: AtomicBool,
+    /// When the last usage limit a Cockpit acted on was recorded (ms; 0 for none): limits up to
+    /// it are history, also after `/clear` and back or a server restart (SPEC-074 SUP-002).
+    pub(crate) limit_handled_ms: AtomicI64,
     sandbox: SandboxId,
     creator: UserId,
     task: Option<TaskId>,
@@ -142,6 +157,8 @@ pub struct ShellRuntime {
     idle_since_ms: AtomicI64,
     /// The task that forwards the host's output; aborted when the server lets go of the shell.
     pump: Mutex<Option<JoinHandle<()>>>,
+    /// A Cockpit's usage-limit watch (SPEC-074); aborted with the pump.
+    pub(crate) watch: Mutex<Option<JoinHandle<()>>>,
 }
 
 /// A shell as its owner sees it (`GET /api/sandboxes/{sid}/shells`).
@@ -177,6 +194,12 @@ struct ShellFile {
     /// Terminal or Cockpit (absent in records written before the Cockpit: a terminal).
     #[serde(default)]
     kind: ShellKind,
+    /// A Cockpit's pool subscription (absent in older records and for terminals).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    account: Option<String>,
+    /// When the last usage limit a Cockpit acted on was recorded (ms), if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    limit_handled_at: Option<i64>,
     /// Sealed host token, lowercase hex.
     token: String,
 }
@@ -219,6 +242,16 @@ impl ShellRuntime {
         let mut data = COCKPIT_TOKEN_LABEL.to_vec();
         data.extend_from_slice(&self.token);
         format!("{COCKPIT_TOKEN_PREFIX}{}", crypto.sha256_hex(&data))
+    }
+
+    /// Tells the shell's viewers something (a short line beside the terminal).
+    pub(crate) fn notice(&self, text: &str) {
+        self.hub.notice(text);
+    }
+
+    /// Becomes `true` when the shell has ended.
+    pub(crate) fn ended_signal(&self) -> watch::Receiver<bool> {
+        self.ended_tx.subscribe()
     }
 
     /// Listed and attachable: not ended and not being closed.
@@ -522,7 +555,7 @@ impl App {
         let name = name.map(clean_name).transpose()?;
         let (cwd, task_id) = match task {
             Some(task) => (
-                self.sandbox_worktree(&record, task).await?,
+                self.sandbox_worktree(&record, task, Some(ctx)).await?,
                 Some(TaskId::parse(task).map_err(|_| AppError::NotFound)?),
             ),
             None => {
@@ -571,15 +604,40 @@ impl App {
             map.insert(id.clone(), Arc::clone(&runtime));
             runtime
         };
-        let launched = match self.isolation_join(&record).await {
+        // Detached from the request: a client that goes away mid-start leaves the terminal live
+        // or discarded, never registered without a process (SPEC-077 DRS-002).
+        let app = Arc::clone(self);
+        let ctx = ctx.clone();
+        Self::run_detached(async move { app.start_shell(&ctx, &record, &runtime, &cwd).await })
+            .await
+    }
+
+    /// Runs `start` to its end even when the request awaiting it is dropped (its client went
+    /// away): the shell it starts ends registered or discarded, never half started (SPEC-077,
+    /// ADR-0053).
+    pub(crate) async fn run_detached<T: Send + 'static>(
+        start: impl Future<Output = AppResult<T>> + Send + 'static,
+    ) -> AppResult<T> {
+        tokio::spawn(start).await.map_err(AppError::internal)?
+    }
+
+    /// Launches a registered terminal and starts its pump, or discards it.
+    async fn start_shell(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        record: &SandboxRecord,
+        runtime: &Arc<ShellRuntime>,
+        cwd: &Path,
+    ) -> AppResult<ShellInfo> {
+        let launched = match self.isolation_join(record).await {
             Ok(joined) => {
                 let (join, lease) = joined.unzip();
-                match self.user_space(&ctx.user, &record, join) {
+                match self.user_space(&ctx.user, record, join) {
                     Ok(space) => {
-                        let launched = self.launch_shell(&record, &space, &runtime, &cwd).await;
+                        let launched = self.launch_shell(record, &space, runtime, cwd).await;
                         drop(lease);
                         match launched {
-                            Ok(reader) => self.save_shell(&runtime).map(|()| reader),
+                            Ok(reader) => self.save_shell(runtime).map(|()| reader),
                             Err(err) => Err(err),
                         }
                     }
@@ -590,12 +648,12 @@ impl App {
         };
         match launched {
             Ok(reader) => {
-                self.start_pump(&runtime, reader);
-                tracing::info!(shell = %id, sandbox = %record.slug, user = %ctx.user.id, "sandbox shell started");
+                self.start_pump(runtime, reader);
+                tracing::info!(shell = %runtime.id, sandbox = %record.slug, user = %ctx.user.id, "sandbox shell started");
                 Ok(runtime.info())
             }
             Err(err) => {
-                self.discard_shell(&runtime);
+                self.discard_shell(runtime);
                 Err(err)
             }
         }
@@ -666,6 +724,9 @@ impl App {
             created_at: runtime.created_at.0,
             seq: runtime.seq,
             kind: runtime.kind,
+            account: runtime.account.get().map(|a| a.as_str().to_owned()),
+            limit_handled_at: Some(runtime.limit_handled_ms.load(Ordering::SeqCst))
+                .filter(|ms| *ms > 0),
             token: hex_token(&sealed.0),
         };
         write_shell_file(&runtime.run_dir, &file).map_err(AppError::internal)
@@ -693,6 +754,9 @@ impl App {
             id: id.to_owned(),
             kind,
             resumed: OnceLock::new(),
+            account: OnceLock::new(),
+            switching: AtomicBool::new(false),
+            limit_handled_ms: AtomicI64::new(0),
             sandbox: sandbox.clone(),
             creator: creator.clone(),
             task,
@@ -709,6 +773,7 @@ impl App {
             ended_tx: watch::channel(false).0,
             idle_since_ms: AtomicI64::new(self.now().0),
             pump: Mutex::new(None),
+            watch: Mutex::new(None),
         })
     }
 
@@ -849,12 +914,16 @@ impl App {
         // Before the shell reads as ended: a Cockpit opened again right after a failed resume
         // must see it, not resume the same conversation (it did on the fast VM, F 2026-10-13).
         // Recording twice is harmless.
-        self.note_cockpit_exit(runtime, exit.and_then(|e| e.code));
+        let switching = runtime.switching.load(Ordering::SeqCst);
+        if !switching {
+            self.note_cockpit_exit(runtime, exit.and_then(|e| e.code));
+        }
         if runtime.ended.swap(true, Ordering::SeqCst) {
             return;
         }
         *runtime.writer.lock().await = None;
-        runtime.hub.exit("closed", exit.and_then(|e| e.code));
+        let status = if switching { SWITCHED_STATUS } else { "closed" };
+        runtime.hub.exit(status, exit.and_then(|e| e.code));
         runtime.ended_tx.send_replace(true);
         if let Ok(mut map) = self.shells.shells.lock() {
             map.remove(&runtime.id);
@@ -886,7 +955,7 @@ impl App {
     }
 
     /// Ends shells: every shell is asked first, then all are awaited against one deadline.
-    async fn end_shells(&self, shells: &[Arc<ShellRuntime>]) {
+    pub(crate) async fn end_shells(&self, shells: &[Arc<ShellRuntime>]) {
         for shell in shells {
             Self::request_shell_exit(shell).await;
         }
@@ -915,6 +984,11 @@ impl App {
             .ok_or(AppError::NotFound)?;
         self.require(&ctx.user, &runtime.sandbox, Action::Work)
             .await?;
+        if !self.owns_shell_task(ctx, &runtime).await {
+            return Err(AppError::Forbidden(
+                "the shell's task now belongs to someone else (SPEC-070)".into(),
+            ));
+        }
         if runtime.hub.viewer_count() >= MAX_SHELL_VIEWERS {
             return Err(AppError::Capacity("too many viewers on this shell".into()));
         }
@@ -939,6 +1013,21 @@ impl App {
                 .require(&ctx.user, &attach.runtime.sandbox, Action::Work)
                 .await
                 .is_ok()
+            && self.owns_shell_task(ctx, &attach.runtime).await
+    }
+
+    /// Whether a shell in a task's worktree is still its creator's to use: they must own the
+    /// task, whose agent commits and pushes there as its owner (SPEC-070). A shell in the
+    /// sandbox repository, or of a task that is gone, has no such condition.
+    async fn owns_shell_task(&self, ctx: &AuthContext, runtime: &ShellRuntime) -> bool {
+        let Some(task) = runtime.task.as_ref() else {
+            return true;
+        };
+        match self.deps.store.task(task).await {
+            Ok(Some(task)) => task.owner == ctx.user.id,
+            Ok(None) => true,
+            Err(_) => false,
+        }
     }
 
     /// Viewer keyboard input.
@@ -1118,10 +1207,21 @@ impl App {
             .transpose()
             .map_err(|_| AppError::NotFound)?;
         let folder = self.shell_folder(&sandbox, task.as_ref()).await;
+        let account = OnceLock::new();
+        if let Some(id) = file
+            .account
+            .as_deref()
+            .and_then(|a| AccountId::parse(a).ok())
+        {
+            let _ = account.set(id);
+        }
         let runtime = Arc::new(ShellRuntime {
             id: file.id.clone(),
             kind: file.kind,
             resumed: OnceLock::new(),
+            account,
+            switching: AtomicBool::new(false),
+            limit_handled_ms: AtomicI64::new(file.limit_handled_at.unwrap_or(0)),
             sandbox,
             creator: UserId::parse(&file.creator).map_err(|_| AppError::NotFound)?,
             task,
@@ -1138,6 +1238,7 @@ impl App {
             ended_tx: watch::channel(false).0,
             idle_since_ms: AtomicI64::new(self.now().0),
             pump: Mutex::new(None),
+            watch: Mutex::new(None),
         });
         let reader = self.attach_shell(&runtime).await?;
         self.shells
@@ -1147,6 +1248,9 @@ impl App {
             map.insert(runtime.id.clone(), Arc::clone(&runtime));
         }
         self.start_pump(&runtime, reader);
+        if runtime.kind == ShellKind::Cockpit {
+            self.start_cockpit_watch(&runtime);
+        }
         tracing::info!(shell = %runtime.id, sandbox = %runtime.sandbox, "adopted a running sandbox shell");
         Ok(())
     }
@@ -1190,10 +1294,12 @@ impl App {
             .map(|mut map| map.drain().map(|(_, shell)| shell).collect())
             .unwrap_or_default();
         for shell in &shells {
-            if let Ok(mut pump) = shell.pump.lock()
-                && let Some(task) = pump.take()
-            {
-                task.abort();
+            for handle in [&shell.pump, &shell.watch] {
+                if let Ok(mut handle) = handle.lock()
+                    && let Some(task) = handle.take()
+                {
+                    task.abort();
+                }
             }
             *shell.writer.lock().await = None;
         }

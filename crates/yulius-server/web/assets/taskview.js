@@ -5,12 +5,12 @@ import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, skeleton, openMenu, statusMark, singleFlight, keepFocus } from './dom.js';
 import { openRuleEditor, ruleChoices, ruleText } from './ruleeditor.js';
 import { createTerminalView } from './terminal.js';
-import { taskInfo, isLive, allows, taskActions, endedMessage, statusInfo, pausedLine, resetAround, shellsLine } from './status.js';
+import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, statusInfo, pausedLine, resetAround, shellsLine, heldBy, supertaskLine } from './status.js';
 import { heldPromptCard, splitCard, looksSeveral, chainCandidates, intakeStatus, SPLIT_MIN_WORDS } from './intake.js';
 import { attachMarkdownInput } from './mdinput.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
-import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask } from './actions.js';
+import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask, requestControl, dropControlRequest, handOverTask } from './actions.js';
 import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments, openAttachment } from './filedrop.js';
 import { relLong, dateTime } from './format.js';
 import { readJson, writeJson } from './store.js';
@@ -72,6 +72,9 @@ export function mountTaskView(ctx, sandbox, task) {
   let detail = null;
   let stripOpen = Boolean(readJson(STRIP_KEY, false));
   const destroyers = [];
+  // Only the task's owner changes it (SPEC-070): `owner()` names another owner, else null.
+  const me = () => ctx.store.state.me?.user?.login;
+  const owner = () => otherOwner(current, me());
 
   // ---- step strip
   const stripLabel = h('span', { class: 'step-label' });
@@ -105,7 +108,11 @@ export function mountTaskView(ctx, sandbox, task) {
     transport: ctx.transport,
     path: `/api/tasks/${enc(task.id)}/terminal`,
     onLink: (uri, event) => ctx.openLink(uri, event),
-    readOnlyLabel: () => readOnlyText(ctx.store.sandboxById(sandbox.id) || sandbox),
+    // Without write access to the sandbox that is the reason; with it, the task's owner (SPEC-070).
+    readOnlyLabel: () => {
+      const box = ctx.store.sandboxById(sandbox.id) || sandbox;
+      return owner() && allows(box.access, 'write') ? `Read-only: @${owner()} owns this task` : readOnlyText(box);
+    },
     exitMessage: (exit) => endedMessage(exit.status || current.status),
     emptyMessage: () => emptyTerminalMessage(current),
     exitActions: (exit) => {
@@ -116,7 +123,7 @@ export function mountTaskView(ctx, sandbox, task) {
       if (message.accounts) actions.push({ label: 'Check subscriptions', run: () => (ctx.isInstanceAdmin() ? ctx.navigate('/admin/accounts') : ctx.openStatus && ctx.openStatus()) });
       // The exit can arrive before the task's new status: write access is enough, but an archived
       // task is restored first, as in its menu (taskActions).
-      if (allows(sandbox.access, 'write') && !current.archived) {
+      if (allows(sandbox.access, 'write') && !owner() && !current.archived) {
         actions.push({ label: message.retry ? 'Try again' : 'Continue', run: () => continueTask(ctx, current) });
       }
       return actions;
@@ -158,7 +165,26 @@ export function mountTaskView(ctx, sandbox, task) {
     const pr = ctx.store.pullsOf(current.sandbox_id).get(current.id);
     const info = taskInfo(current, ctx.store.state.actionRequests, pr);
     let content = null;
-    const can = taskActions(current, (ctx.store.sandboxById(sandbox.id) || sandbox).access, pr);
+    const access = (ctx.store.sandboxById(sandbox.id) || sandbox).access;
+    const can = taskActions(current, access, pr, me());
+    const request = current.control_request;
+    // Control of the task (SPEC-070), on its own row above what else the task needs.
+    let control = null;
+    if (owner() && allows(access, 'write')) {
+      // Someone else's task: it acts on GitHub as them; its owner may hand it over. Asking again
+      // takes control at once once the owner can no longer act.
+      const mine = request && request.by.login === me();
+      control = [icon('lock', { size: 16 }), h('span', { class: 'attention-text' },
+        mine ? [h('strong', null, `You asked @${owner()} for control. `), 'Until they hand it over, the task acts on GitHub as them.']
+          : [h('strong', null, `@${owner()} owns this task: `), 'it acts on GitHub as them.', request ? ` @${request.by.login} asked for control.` : '']),
+      mine ? h('button', { type: 'button', class: 'btn btn-sm', title: `Takes control at once when @${owner()} can no longer act`, onClick: () => requestControl(ctx, current) }, 'Ask again') : null,
+      mine ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => dropControlRequest(ctx, current) }, 'Withdraw')
+        : request ? null : h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => requestControl(ctx, current) }, 'Request control')];
+    } else if (!owner() && request && allows(access, 'write')) {
+      control = [icon('st-attention', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, `@${request.by.login} asks to take control of this task: `), 'it will act on GitHub as them.'),
+        h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => handOverTask(ctx, current) }, 'Hand over'),
+        h('button', { type: 'button', class: 'btn btn-sm', onClick: () => dropControlRequest(ctx, current) }, 'Decline')];
+    }
     if (current.status === 'chained') {
       // Waiting in a chain (TSK-012): the way out is always here.
       const after = current.after;
@@ -169,6 +195,12 @@ export function mountTaskView(ctx, sandbox, task) {
       content = [icon(after && after.blocked ? 'st-attention' : 'clock', { size: 16 }), h('span', { class: 'attention-text' }, label),
         can.startNow ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => startNow(ctx, current) }, 'Start now') : null,
         can.stop ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => stopTask(ctx, current) }, 'Cancel') : null];
+    } else if (current.status === 'queued' && heldBy(current).length) {
+      // Held by a supertask (SPEC-071): it starts by itself; Cancel is the way out.
+      const held = heldBy(current);
+      content = [icon('clock', { size: 16 }), h('span', { class: 'attention-text' },
+        h('strong', null, current.supertask ? 'Supertask. ' : `Queued after supertask #${held[0]}. `), supertaskLine(current)),
+      can.stop ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => stopTask(ctx, current) }, 'Cancel') : null];
     } else if (info.held) {
       content = null; // the held-prompt card says it
     } else if (info.request) {
@@ -176,14 +208,17 @@ export function mountTaskView(ctx, sandbox, task) {
         h('button', { type: 'button', class: 'btn btn-sm', onClick: () => ctx.openBrowserTab && ctx.openBrowserTab(sandbox, info.request.tab_id) }, 'Open browser tab')];
     } else if (current.status === 'running' && current.activity === 'needs_attention') {
       content = [icon('st-attention', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'The agent needs your attention. '), 'Its question is in the terminal below.'),
-        h('button', { type: 'button', class: 'btn btn-sm', onClick: reply }, 'Reply')];
+        owner() ? null : h('button', { type: 'button', class: 'btn btn-sm', onClick: reply }, 'Reply')];
     } else if (current.status === 'running' && current.activity === 'waiting' && info.group === 'needs') {
       content = [icon('st-input', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'The agent is waiting for your reply. '), 'Type it in the terminal below.'),
-        h('button', { type: 'button', class: 'btn btn-sm', onClick: reply }, 'Reply')];
+        owner() ? null : h('button', { type: 'button', class: 'btn btn-sm', onClick: reply }, 'Reply')];
     }
-    attention.hidden = !content;
-    attention.classList.toggle('waiting', !info.request && current.activity === 'waiting' && info.group === 'needs');
-    setChildren(attention, content);
+    attention.hidden = !content && !control;
+    attention.classList.toggle('waiting', !control && !info.request && current.activity === 'waiting' && info.group === 'needs');
+    attention.classList.toggle('stacked', Boolean(control && content));
+    setChildren(attention, control && content
+      ? [h('div', { class: 'attention-row' }, control), h('div', { class: 'attention-row' }, content)]
+      : control || content);
   }
   // A browser request changes the bar and the state in the strip ("Needs you in the browser").
   destroyers.push(ctx.store.on('browser-action', (event) => { if (event.sandbox_id === sandbox.id) renderStrip(); }));
@@ -252,7 +287,7 @@ export function mountTaskView(ctx, sandbox, task) {
   function queueOpen() {
     const access = (ctx.store.sandboxById(sandbox.id) || sandbox).access;
     return Boolean(detail && detail.id === current.id && detail.started === false
-      && WAITING.has(current.status) && !current.archived && allows(access, 'write'));
+      && WAITING.has(current.status) && !current.archived && allows(access, 'write') && !owner());
   }
   function renderQueue() {
     const waiting = queueOpen();
@@ -281,6 +316,7 @@ export function mountTaskView(ctx, sandbox, task) {
 
   function renderStrip() {
     renderAttention();
+    quickbar.hidden = Boolean(owner());
     renderHeld();
     renderQueue();
     const steps = current.steps || { done: 0, total: 0, current: null };
@@ -323,7 +359,11 @@ export function mountTaskView(ctx, sandbox, task) {
     const next = (current.next || []).map((link) => chainLink(link, `Then #${link.number}`, `#${link.number} ${link.title || ''} runs after this task`));
     // How the task runs: "Auto → Goal · Feature" when Auto chose it (TSK-015), else Goal.
     const auto = autoChoiceLabel(current);
+    const supertask = current.supertask
+      ? h('span', { class: 'chip strip-extra supertask-chip', title: 'A supertask: it runs alone in its project, the other tasks wait for it' }, icon('shield', { size: 12 }), 'Supertask')
+      : null;
     setChildren(extrasEl,
+      supertask,
       auto ? h('span', { class: 'chip strip-extra auto-chip', title: auto.title }, icon('zap', { size: 12 }), auto.text)
         : current.mode === 'goal' ? h('span', { class: 'chip strip-extra', title: 'Runs as a goal (/goal): the agent keeps working until it is met' }, 'Goal') : null,
       after,
@@ -406,6 +446,7 @@ export function mountTaskView(ctx, sandbox, task) {
       const wasLive = isLive(current.status);
       const previousStatus = current.status;
       const previousUpdate = current.updated_at;
+      const previousOwner = owner();
       current = { ...current, ...next };
       // Whether the task started is the detail's: a status with a run means it has, and any status
       // change reads the detail again (a start that found no capacity has not). A message someone
@@ -418,6 +459,8 @@ export function mountTaskView(ctx, sandbox, task) {
       else renderDelivery();
       // A continued task gets a new attempt: reconnect if the socket had ended.
       if (!wasLive && isLive(current.status) && terminal.socket.status !== 'open') terminal.reconnect();
+      // Control passed (SPEC-070): the terminal asks again whether this viewer may type.
+      else if (owner() !== previousOwner) terminal.reconnect();
       // The user left the agent session (e.g. /exit): back to the task list (HRN-002).
       if (wasLive && current.status === 'closed' && ctx.onTaskClosed) ctx.onTaskClosed(current);
     },
@@ -433,7 +476,7 @@ export function mountTaskView(ctx, sandbox, task) {
 }
 
 function pickSummary(detail) {
-  const keys = ['status', 'activity', 'title', 'steps', 'account_label', 'harness', 'branch', 'updated_at', 'archived', 'mode', 'after', 'next', 'held_prompt', 'auto'];
+  const keys = ['status', 'activity', 'title', 'steps', 'account_label', 'harness', 'branch', 'updated_at', 'archived', 'mode', 'after', 'next', 'held_prompt', 'auto', 'owner', 'control_request'];
   const out = {};
   for (const key of keys) if (key in detail) out[key] = detail[key];
   return out;
@@ -461,6 +504,9 @@ export function autoChoiceLabel(task) {
     title: `Mode: ${mode}, ${why(auto.mode)}. Workflow: ${workflow}, ${why(auto.workflow)}.`,
   };
 }
+
+/** What a supertask is, in the start menu and on its chip (SPEC-071). */
+const SUPERTASK_HELP = 'Waits for this project’s running tasks, then runs alone: its other tasks wait for it. For broad work like security hardening';
 
 /**
  * New-task composer (J3, UI-021, F 2026-10-10): a rounded prompt box whose bottom edge holds the
@@ -490,6 +536,8 @@ export function mountComposer(ctx, sandbox) {
   // Or wait for a logical sentence over the sandbox's tasks (SPEC-017), like `#12 done and #13 done`,
   // picked as conditions in the rule editor (SPEC-022): `{ join, conditions }` or null.
   let startRule = draft.startRule;
+  // Or run as a supertask (SPEC-071): after the project's running tasks, then alone.
+  let supertask = Boolean(draft.supertask);
   let split = null; // the split card while it shows (TSK-011)
   let modelId = findModel(readJson(MODEL_PREF_KEY, null)) ? readJson(MODEL_PREF_KEY, null) : null;
   let effortId = findEffort(readJson(EFFORT_PREF_KEY, null)) ? readJson(EFFORT_PREF_KEY, null) : null;
@@ -607,8 +655,8 @@ export function mountComposer(ctx, sandbox) {
     if (afterTaskId && tasks && !after) afterTaskId = ''; // gone (a kept draft waits for the list)
     const rule = startRule ? ruleText(startRule) : '';
     const ruleLabel = rule.length > 28 ? `${rule.slice(0, 27)}…` : rule;
-    setChildren(afterChip, icon('branch', { size: 14 }), h('span', { class: 'sr-only' }, 'Run after: '), h('span', { class: 'chip-label' }, rule ? `When ${ruleLabel}` : after ? `After #${after.number}` : 'Start now'), icon('down', { size: 12 }));
-    afterChip.title = rule ? `Starts by itself when ${rule}` : after ? `Runs after #${after.number} ${after.title} is done` : 'Starts right away; or pick a task to run after, or give a rule';
+    setChildren(afterChip, icon(supertask ? 'shield' : 'branch', { size: 14 }), h('span', { class: 'sr-only' }, 'Run after: '), h('span', { class: 'chip-label' }, supertask ? 'Supertask' : rule ? `When ${ruleLabel}` : after ? `After #${after.number}` : 'Start now'), icon('down', { size: 12 }));
+    afterChip.title = supertask ? SUPERTASK_HELP : rule ? `Starts by itself when ${rule}` : after ? `Runs after #${after.number} ${after.title} is done` : 'Starts right away; or pick a task to run after, or give a rule';
     const found = findModel(modelId);
     setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
     modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Model: default, Opus 5.5';
@@ -618,8 +666,8 @@ export function mountComposer(ctx, sandbox) {
     const effort = findEffort(effortId);
     setChildren(effortChip, h('span', { class: 'sr-only' }, 'Effort: '), h('span', { class: 'chip-label' }, effort ? effort.name : 'Default effort'), icon('down', { size: 12 }));
     // Every choice shown here is the draft's (DRF-003).
-    if (draft.mode !== mode || draft.workflowId !== workflowId || draft.afterTaskId !== afterTaskId || draft.startRule !== startRule) {
-      Object.assign(draft, { mode, workflowId, afterTaskId, startRule });
+    if (draft.mode !== mode || draft.workflowId !== workflowId || draft.afterTaskId !== afterTaskId || draft.startRule !== startRule || draft.supertask !== supertask) {
+      Object.assign(draft, { mode, workflowId, afterTaskId, startRule, supertask });
       remember();
     }
   }
@@ -645,10 +693,11 @@ export function mountComposer(ctx, sandbox) {
   function openAfterMenu(anchor) {
     const candidates = chainCandidates(ctx, sandbox);
     openMenu(anchor, [
-      { label: 'Start now', icon: 'up', description: 'The task starts as soon as a session slot is free', checked: !afterTaskId && !startRule, onSelect: () => { afterTaskId = ''; startRule = null; renderChips(); prompt.focus(); } },
+      { label: 'Start now', icon: 'up', description: 'The task starts as soon as a session slot is free', checked: !afterTaskId && !startRule && !supertask, onSelect: () => { afterTaskId = ''; startRule = null; supertask = false; renderChips(); prompt.focus(); } },
+      { label: 'Supertask', icon: 'shield', description: SUPERTASK_HELP, checked: supertask, onSelect: () => { afterTaskId = ''; startRule = null; supertask = true; renderChips(); prompt.focus(); } },
       // One line per task under one heading, every live one: the menu's filter finds it (SPEC-038).
       ...(candidates.length ? [{ separator: true }, { header: 'After a task is done' }] : []),
-      ...candidates.map((t) => ({ label: `#${t.number} ${t.title}`, hint: statusInfo(t).label, title: `Starts by itself when #${t.number} is done`, checked: t.id === afterTaskId, onSelect: () => { afterTaskId = t.id; startRule = null; renderChips(); prompt.focus(); } })),
+      ...candidates.map((t) => ({ label: `#${t.number} ${t.title}`, hint: statusInfo(t).label, title: `Starts by itself when #${t.number} is done`, checked: t.id === afterTaskId, onSelect: () => { afterTaskId = t.id; startRule = null; supertask = false; renderChips(); prompt.focus(); } })),
       // A rule names tasks of this sandbox, so a sandbox without any offers none (SPEC-022).
       ...(ruleChoices(ctx.store.tasksOf(sandbox.id)).length ? [
         { separator: true },
@@ -665,6 +714,7 @@ export function mountComposer(ctx, sandbox) {
       onUse: (rule) => {
         startRule = rule;
         afterTaskId = '';
+        supertask = false;
         renderChips();
         prompt.focus();
       },
@@ -699,7 +749,7 @@ export function mountComposer(ctx, sandbox) {
     if (on && !prompt.value.trim()) { toast('Nothing to preview yet.', { kind: 'info' }); return; }
     if (preview) { preview.destroy(); preview = null; }
     if (on) {
-      preview = createMarkdownEditor({ markdown: prompt.value, readOnly: true });
+      preview = createMarkdownEditor({ markdown: prompt.value, readOnly: true, frontmatter: false });
       setChildren(previewEl, preview.el);
       previewEl.style.minHeight = `${prompt.offsetHeight}px`;
     } else {
@@ -812,6 +862,7 @@ export function mountComposer(ctx, sandbox) {
     workflowId = AUTO;
     afterTaskId = '';
     startRule = null;
+    supertask = false;
     clearDraft(userId, sandbox.id); // redraws the tray (onDraftChange)
     fit();
     ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`);
@@ -900,8 +951,9 @@ export function mountComposer(ctx, sandbox) {
     if (draft.starting) { toast('This task is already starting.', { kind: 'info' }); return; }
     try {
       // A request mixing separate workstreams gets the split card first; a chosen "Run after"
-      // already decided how the work is scheduled. The check never blocks for long (≤ 4 s).
-      if (!afterTaskId && !startRule && text.split(/\s+/).filter(Boolean).length >= SPLIT_MIN_WORDS) {
+      // already decided how the work is scheduled, and a supertask is one broad task by intent.
+      // The check never blocks for long (≤ 4 s).
+      if (!afterTaskId && !startRule && !supertask && text.split(/\s+/).filter(Boolean).length >= SPLIT_MIN_WORDS) {
         working('Reading your request…');
         if (await looksSeveral(ctx, sandbox, text)) {
           showSplit(text);
@@ -912,6 +964,7 @@ export function mountComposer(ctx, sandbox) {
       const body = bodyFor(text);
       if (afterTaskId) body.after_task_id = afterTaskId;
       if (startRule) body.start_rule = ruleText(startRule);
+      if (supertask) body.supertask = true;
       opened(await createTask(body));
     } catch (error) {
       errorToast(error, 'Couldn’t start the task');

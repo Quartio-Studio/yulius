@@ -95,6 +95,9 @@ pub struct CockpitLaunch {
     pub config_dir_host: PathBuf,
     /// Conversation to resume.
     pub resume: Option<String>,
+    /// The resumed conversation continues the turn a usage limit cut (SPEC-074 SUP-004): its
+    /// transcript steps back over the limit and Claude Code redoes the turn by itself.
+    pub continue_interrupted: bool,
     /// Provider credential (the Claude OAuth token).
     pub credential: Secret,
     /// The Yulius MCP server it manages the project with (SPEC-037): the internal listener's
@@ -125,6 +128,8 @@ pub enum Observation {
     UserTurn {
         /// When the prompt was recorded, if known.
         at: Option<Timestamp>,
+        /// Claude Code woke the session itself (a task notification), nobody typed it.
+        wake: bool,
     },
     /// The person interrupted the turn (Esc / Ctrl+C); the agent waits for input.
     TurnInterrupted {
@@ -132,7 +137,10 @@ pub enum Observation {
         at: Option<Timestamp>,
     },
     /// A turn completed.
-    TurnComplete,
+    TurnComplete {
+        /// When the session's own turn ended, if known (`None` for a sub-agent's turn).
+        at: Option<Timestamp>,
+    },
     /// Claude Code recorded the session goal's state (TSK-014).
     Goal(GoalOutcome),
     /// Claude Code closed a turn after its Stop hooks (only used to reduce a replay).
@@ -144,6 +152,23 @@ pub enum Observation {
     AgentWork {
         /// When it was recorded, if known.
         at: Option<Timestamp>,
+    },
+    /// The session started background work it is woken by: a Monitor stream or a background
+    /// agent (SPEC-079 BGW-002).
+    BackgroundStarted {
+        /// Claude Code's task id.
+        id: String,
+        /// A background agent; otherwise a Monitor stream.
+        agent: bool,
+        /// How long a Monitor lives at most; `None` for an agent.
+        expires_in_ms: Option<u64>,
+        /// When it was recorded, if known.
+        at: Option<Timestamp>,
+    },
+    /// A task notification said the background work `id` ended.
+    BackgroundEnded {
+        /// Claude Code's task id.
+        id: String,
     },
     /// The API rejected the prompt as too long: the session's context is full (#213).
     ContextFull,
@@ -159,6 +184,8 @@ pub enum Observation {
         message: String,
         /// The limited window in minutes (300 session, 10080 weekly), if known.
         window_minutes: Option<u32>,
+        /// When the CLI recorded it, if known (tells a new limit from history, SPEC-074).
+        at: Option<Timestamp>,
     },
 }
 
@@ -212,6 +239,18 @@ pub trait HarnessPort: Send + Sync {
     fn plan_cockpit(&self, launch: &CockpitLaunch) -> AppResult<LaunchPlan>;
     /// Path of a Claude session transcript.
     fn claude_transcript(&self, sandbox_home: &Path, worktree: &Path, session_id: &str) -> PathBuf;
+    /// Steps a Claude session's transcript back over a usage limit (SPEC-034 LIM-001); `true`
+    /// when it rewrote the file. Blocking file I/O bounded by the transcript's size: callers run
+    /// it off the async runtime (SPEC-072 LRS-003).
+    ///
+    /// # Errors
+    /// I/O failures reading or replacing the transcript.
+    fn step_back_transcript(
+        &self,
+        sandbox_home: &Path,
+        worktree: &Path,
+        session_id: &str,
+    ) -> AppResult<bool>;
     /// Newest Claude session for `worktree` modified after `since` (session-id drift, HRN-004).
     ///
     /// # Errors

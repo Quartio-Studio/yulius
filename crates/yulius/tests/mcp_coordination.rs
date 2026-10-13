@@ -48,6 +48,7 @@ async fn seed_run(
             origin: TaskOrigin::Ui,
             automation_run: None,
             created_by: UserId::parse("u1")?,
+            owner: UserId::parse("u1")?,
             created_at: Timestamp(1),
             updated_at: Timestamp(1),
             closed_at: None,
@@ -56,6 +57,7 @@ async fn seed_run(
             gate_blocks: 0,
             wake_enabled: true,
             mode: yulius_app::model::TaskMode::Prompt,
+            supertask: false,
         })
         .await?;
     h.store

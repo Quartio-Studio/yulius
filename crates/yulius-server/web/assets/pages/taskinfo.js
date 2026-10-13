@@ -96,6 +96,7 @@ export function mountTaskInfoView(ctx, sandbox, task) {
     const stepsCount = current.steps || { done: 0, total: 0 };
     const tokens = [m.input_tokens, m.output_tokens].every((v) => v === null || v === undefined) ? null : (m.input_tokens || 0) + (m.output_tokens || 0);
     const login = current.created_by && current.created_by.login;
+    const ownerLogin = (current.owner && current.owner.login) || login;
     const delivery = detail.delivery || null;
 
     const facts = h('div', { class: 'stat-grid ti-facts' },
@@ -110,6 +111,8 @@ export function mountTaskInfoView(ctx, sandbox, task) {
 
     const rows = [
       ['Author', login ? h('span', { class: 'ti-person' }, h('span', { class: 'avatar ti-avatar', 'aria-hidden': 'true' }, initials(login)), login) : '—'],
+      // Who the task acts on GitHub as, and the only person who changes it (SPEC-070).
+      ['Owner', ownerLogin ? h('span', { class: 'ti-person' }, h('span', { class: 'avatar ti-avatar', 'aria-hidden': 'true' }, initials(ownerLogin)), ownerLogin) : '—'],
       ['Origin', ORIGINS[current.origin] || current.origin || '—'],
       ['Mode', current.mode === 'prompt' ? 'Prompt' : 'Goal (works until it is met)'],
       ['Subscription', current.account_label || '—'],

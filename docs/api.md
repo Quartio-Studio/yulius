@@ -111,7 +111,14 @@ Profile = {"preset": "standard|product|studio|custom", "integration_branch": "de
            "gate": "scripts/ci.sh|null"}
 ```
 
-`counts.running` counts tasks with a live process and `counts.queued` queued tasks.
+The counts are three of the web UI sidebar's groups, by its rule (SPEC-001 UI-050,
+`AttentionFacts::group` in the domain); `counts.running` + `counts.queued` is the sidebar's Working
+group. `counts.queued` counts queued tasks and chains waiting for another task; `counts.running`
+counts the rest of the Working group: running tasks that do not wait for a person (working, kept
+going by the agent's background shells, or a finished turn whose pull request's checks still run
+or whose Yulius CI run could not run),
+starting, switching and paused (`waiting_capacity`) ones. Done tasks, tasks being stopped and ended
+ones count nowhere; the status page's `live_sessions` counts live processes.
 `counts.needs_attention` counts the tasks that need a person by the web UI sidebar's "Needs you"
 rule (SPEC-001 UI-050, `AttentionFacts` in the domain): a permission prompt (`needs_attention`),
 a finished turn waiting for input (`waiting`), a pending held prompt, a pending request to act in
@@ -121,7 +128,8 @@ pull request of a finished turn whose plan is complete counts as Done or In revi
 a person. The pull request facts are those the sandbox's Git overview
 (`GET /api/sandboxes/{sid}/git`) last read; until it is read after a start, only a merge already
 recorded counts (the UI reads it with the sidebar and reloads the counters after each read). An
-ended task never counts; a paused or queued one only for a held prompt or a browser request.
+ended task or one being stopped never counts; a paused or queued one only for a held prompt or a
+browser request.
 
 ## Import (`yulius onboard` / `yulius import`)
 
@@ -208,7 +216,7 @@ limited to the agent's sandbox.
 | Method | Path | Level | Body → Response |
 | --- | --- | --- | --- |
 | GET | `/api/sandboxes/{sid}/tasks?archived=false` | read | → `[TaskSummary]` |
-| POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness?":"claude","mode?":"goal|prompt|auto","workflow_id?":"<id>|auto","model?","effort?","title?","after_task_id?","start_rule?"}` → 201 `TaskSummary`; Yulius runs Claude Code only (another `harness` is 422); `mode` defaults to `goal` (TSK-010); without `model` the task runs `claude-opus-5-5` and without `effort` at `high` (none for Haiku; SPEC-023); `auto` lets Jev choose the mode and/or the workflow before the task is created (TSK-015, ≤ 2.5 s; see "Task intake"); an unknown workflow or mode is 422 before Jev is asked; with `after_task_id` (a task of the sandbox that has not ended; 422 otherwise, 429 beyond 32 waiting) the task waits as `chained` until that task is Done (TSK-012); with `start_rule` (a logical sentence such as `#12 done and (#13 done or #14 ended)` over tasks of the sandbox; 422 for a malformed rule, an unknown task or together with `after_task_id`) it waits until the rule is true and needs a person when it can no longer be (TSK-016, SPEC-017); the rule shows as `after.rule` |
+| POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness?":"claude","mode?":"goal|prompt|auto","workflow_id?":"<id>|auto","model?","effort?","title?","after_task_id?","start_rule?","supertask?":false}` → 201 `TaskSummary`; Yulius runs Claude Code only (another `harness` is 422); `mode` defaults to `goal` (TSK-010); without `model` the task runs `claude-opus-5-5` and without `effort` at `high` (none for Haiku; SPEC-023); `auto` lets Jev choose the mode and/or the workflow before the task is created (TSK-015, ≤ 2.5 s; see "Task intake"); an unknown workflow or mode is 422 before Jev is asked; with `after_task_id` (a task of the sandbox that has not ended; 422 otherwise, 429 beyond 32 waiting) the task waits as `chained` until that task is Done (TSK-012); with `start_rule` (a logical sentence such as `#12 done and (#13 done or #14 ended)` over tasks of the sandbox; 422 for a malformed rule, an unknown task or together with `after_task_id`) it waits until the rule is true and needs a person when it can no longer be (TSK-016, SPEC-017); the rule shows as `after.rule`; with `"supertask": true` the task waits `queued` for the project's working tasks, then runs alone while the project's other tasks wait for it (TSK-018, SPEC-071; 422 together with `after_task_id` or `start_rule`). A queued task's `held_by` lists the task numbers a supertask rule makes it wait for (`[]` otherwise), and `supertask` says whether it is one |
 | POST | `/api/sandboxes/{sid}/intake/check` | write | `{"prompt"}` → `{"verdict":"one|several","checked":bool}`: whether a new task mixes separate workstreams (TSK-011). `checked` is false — and the verdict `one` — for prompts under 40 words, without a Jev key and when Jev fails or takes over 2.5 s |
 | POST | `/api/sandboxes/{sid}/intake/proposal` | write | `{"prompt"}` → `{"tasks":[{"title","prompt","after_previous":bool}]}`: Claude's smallest split, 2–4 tasks grouped by area carrying their items word for word; `[]` means keep one task. 409 when proposals are not configured or no account is connected, 429 while 2 proposals run, 502 when Claude fails or its proposal is unusable (more than 4 tasks, one per item, an item missing) |
 | POST | `/api/tasks/{tid}/start-now` | write | → `TaskSummary`; a `chained` task starts now whatever its predecessor does (409 otherwise). Cancel it with `/stop` |
@@ -216,15 +224,25 @@ limited to the agent's sandbox.
 | POST | `/api/tasks/{tid}/queued-messages` | write | `{"text"}` → `{"request"}`; adds the message to the request of a task that has never started (`queued`, `chained` or `waiting_capacity`, no run, no provider session) under "**Added by {login} before the task started ({UTC time}):**", so the agent gets it when the task starts (SPEC-052 / SPEC-001 TSK-017, ADR-0035). 409 once the task has started (type into its session instead), or, rarely, when it changed between the check and the update (try again); 422 for an empty message or a request past 64 KiB; publishes `task.updated` |
 | GET | `/api/tasks/{tid}` | read | → `TaskDetail` |
 | GET | `/api/tasks/{tid}/prompt` | read | → `{"text","attachments":[{"name","image":bool,"available":bool}]}`: the prompt the task started with, without its `@path` attachment lines, and its attached files in order (SPEC-043). `available` is false for a file that is gone (composer drafts are removed after a week) or not in the task's own attachment folders (a path mentioned by hand, another task's or user's file); at most 500 are checked |
-| GET | `/api/tasks/{tid}/prompt/attachments/{n}` | read | → the bytes of attachment `n` (from 0) of that list, only when the prompt names it directly in one of the task's own attachment folders (its creator's composer drafts, `attachments/drafts/<user>/`, or the task's terminal attachments, `attachments/tasks/<task>/`), reached without a link, a regular file within the upload limit (404 otherwise, also out of range or not a number; 429 while the uploads' bound of 8 transfers is reached). An image (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`) is served with its image type, any other file as `application/octet-stream` with `Content-Disposition: attachment`; the content security policy includes `sandbox` (ADR-0033) |
+| GET | `/api/tasks/{tid}/prompt/attachments/{n}` | read | → the bytes of attachment `n` (from 0) of that list, only when the prompt names it directly in one of the task's own attachment folders (its creator's composer drafts, `attachments/drafts/<user>/`, or the task's terminal attachments, `attachments/tasks/<task>/`), reached without a link, a regular file within the upload limit and, on Linux, opened at its real path as `/proc/self/fd` says (404 otherwise, also out of range or not a number; 429 when none of the 16 read slots frees within 30 s; uploads have their own bound). The body is streamed in chunks of at most 64 KiB with its `Content-Length`, holding its read slot; left unread for 60 s it gives the slot back and closes the file, and the response breaks off at the client's next read (SPEC-080, ADR-0064). An image (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`) is served with its image type, any other file as `application/octet-stream` with `Content-Disposition: attachment`; the content security policy includes `sandbox` (ADR-0033) |
 | POST | `/api/tasks/{tid}/stop` | write | → `TaskSummary`; a `stopping` task is stopped again: its escalation is armed anew (a run whose processes could not be ended is retried, SPEC-065) |
 | POST | `/api/tasks/{tid}/continue` | write | `{"account_id?"}` → `TaskSummary`; resumes the latest session natively, on the best Claude subscription (the pool's choice; `account_id` is an operator override the web UI never sends); 403 for a bearer token on a `pending` sandbox's onboarding task (Start onboarding is a browser action, SPEC-051) |
 | POST | `/api/tasks/{tid}/switch` | write | `{"account_id?"}` → `TaskSummary`; operator override: moves a running task to another Claude subscription with a native resume. Tasks are subscription-agnostic (F 2026-10-10): the web UI offers no account choice; the pool switches by itself |
 | POST | `/api/tasks/{tid}/archive` · `/restore` | write | → `TaskSummary` |
 | DELETE | `/api/tasks/{tid}` | write | → 204; deletes a resting task permanently with its records, run directories, local worktree and branch (TSK-009); a Done running task (TSK-014) is closed first and deleted once its run has ended; the close and its wait take at most ~25 s (SPEC-039); 409 while any other task runs (at once, also for a task that turned switching meanwhile), if a Done task's session is still closing then, or if its session could not be ended (its processes survived termination; SPEC-065) |
+| POST | `/api/tasks/{tid}/control-request` | write | → `TaskSummary`; asks the task's owner for control (SPEC-070, ADR-0060): it would act on GitHub as you. One request waits per task: 409 for the owner and while another person's request waits (naming them); asking again changes nothing. With the owner disabled, deleted or without write access, control passes at once (`owner` is you), whatever request waits; a waiting asker who can no longer work gives way (their request dropped, `task.control_dropped`). Audited `task.control_requested` |
+| DELETE | `/api/tasks/{tid}/control-request` | read (asker) · write (owner) | → `TaskSummary`; the asker withdraws (`task.control_withdrawn`) or the owner declines (`task.control_declined`); 409 when no request waits, 403 for anyone else |
+| POST | `/api/tasks/{tid}/control-request/accept` | write (owner) | → `TaskSummary` with the asker as `owner`; the task acts on GitHub as them from its next call, its worktree commits as them, its terminal says so, audited `task.control_passed`; 409 when no request waits, or when the asker can no longer work in the project (the request is dropped) |
 | POST | `/api/tasks/{tid}/feedback` | read | `{"verdict":"correct|incorrect","comment"}` → 204 |
 | GET | `/api/archived-tasks` | read | → `[TaskSummary]` across visible sandboxes |
-| WS | `/api/tasks/{tid}/terminal` | read (input: write) | terminal protocol below |
+| WS | `/api/tasks/{tid}/terminal` | read (input: write, owner) | terminal protocol below |
+
+Every task route marked write also needs the task's owner (SPEC-070): anyone else gets 403 "Task
+#N is @owner's: it acts on GitHub as them. Ask them for control." — also an administrator or the
+superadmin, and the Cockpit's and task agents' `task_stop`, `task_archive` and `task_delete` for
+their person. The terminal opens read-only (`can_write: false`) for anyone but the owner. The
+file API's writes and uploads with `root=task:<id>` and `POST /api/sandboxes/{sid}/shells` with
+a `task_id` need the owner too; reading a worktree does not.
 
 ```json
 TaskSummary = {
@@ -232,7 +250,9 @@ TaskSummary = {
   "harness": "claude", "status": "running|…(see domain wire names)",
   "activity": "working|waiting|needs_attention|done|null",
   "branch": "feat/checkout-api", "origin": "ui|automation|import|onboarding|agent",
-  "created_by": {"login": "…"}, "created_at": "…", "updated_at": "…",
+  "created_by": {"login": "…"}, "owner": {"login": "…"},
+  "control_request": {"by": {"login": "…"}, "at": "…"}|null,
+  "created_at": "…", "updated_at": "…",
   "steps": {"done": 3, "total": 7, "current": "Implement API|null", "percent": 42},
   "archived": false, "account_label": "Claude #2|null",
   "mode": "goal|prompt",
@@ -605,7 +625,8 @@ Workflow = {"id","name","description","steps":["Write the spec","Implement","Tes
             "instructions":"…","gates":{"require_spec":true,"require_tests":true},"scope":"instance|sandbox",
             "builtin":false,"when_to_use":""}
 Automation = {"id","name","cron":"0 9 * * *","utc_offset_minutes":120,"prompt","workflow_id|null",
-              "harness":"claude","enabled":true,"created_via":"ui|agent",
+              "harness":"claude","enabled":true,"supertask":false,"after_task_id":"…|null",
+              "after_task_number":12|null,"start_rule":"#12 done|null","created_via":"ui|agent",
               "next_run_at":"…|null","last_run":AutomationRun|null}
 AutomationTemplate = {"id":"docs-up-to-date","name","description","cron","utc_offset_minutes","prompt",
                       "workflow_id|null","automation_id|null"}
@@ -628,8 +649,15 @@ default; automations using `wf-quick-task` continue without a workflow); an edit
 kept as the instance workflow "Feature (custom)". The file format is SPEC-002 §7.10 "Workflow
 catalog format". Automation `cron` is a five-field
 expression (`yulius-domain::cron`), `utc_offset_minutes` is within ±1080, and at most 100
-automations exist per sandbox. A run whose automation's previous task is still active is
-recorded as `skipped_previous_active`. The ready-made automations are one file each in
+automations exist per sandbox. A run whose automation's previous task is still active (also
+waiting `chained` or `queued`) is recorded as `skipped_previous_active`. `supertask`,
+`after_task_id` and `start_rule` say how each created task starts, as in `CreateTask` (SPEC-078):
+none of them, it starts now (queued); at most one is given (else 422), the task to run after is a
+task of the sandbox and the rule names only its task numbers (422 otherwise; the rule is stored
+canonically). A PUT replaces them like the other fields; the stored choice sent back unchanged is
+kept without that check (its task may have been deleted since). A run after a task that has ended waits
+for the rule `#N done` instead; a run whose task to run after was deleted is `failed`.
+`after_task_number` is read-only. The ready-made automations are one file each in
 `catalog/automations/` of the running release; `automation_id` is the sandbox's automation with
 the same name (case-insensitive), which counts as the template's: a template is never linked or
 run by itself.
@@ -834,7 +862,8 @@ resolves to nothing, the run gets the server without that variable or token.
     ends when its process exits (the server sends `exit` and closes), when it is closed, or after
     24 h without viewers; it keeps running across a server restart. Shells never change tasks.
 - Cockpit (SPEC-021, ADR-0020): every user's own plain Claude Code session per sandbox, a shell
-  of kind `cockpit`; the web UI calls it the Agent and shows it in the right panel (SPEC-035).
+  of kind `cockpit`; the web UI calls it the Superagent (SPEC-074, formerly the Agent) and shows
+  it in the right panel (SPEC-035).
   - `POST /api/sandboxes/{sid}/cockpit` (write) → 200 `Shell` (`name` "Cockpit"): the caller's
     running Cockpit, or a new one started (concurrent calls start one) as `claude [--resume
     <newest conversation>] --model claude-opus-5-5 --effort high` (SPEC-023) in the sandbox
@@ -850,6 +879,11 @@ resolves to nothing, the run gets the server without that variable or token.
     `automation_template_enable`, `workflows_list`, `sessions_search` and `session_read`, acting
     for its owner (SPEC-066); Claude Code asks the person before every tool that is not read-only.
     A conversation it could not resume (an error exit within 10 s) is skipped next time.
+    A usage limit Claude Code records in its conversation after it started is recorded on its
+    subscription, and the Cockpit starts again on one with capacity, resuming the conversation
+    stepped back over the limit with `CLAUDE_CODE_RESUME_INTERRUPTED_TURN=1` (SPEC-074). The old
+    one's viewers get `{"type":"exit","status":"switched"}`, and the next call returns the new
+    one. Without capacity it stays, and its viewers get a `notice`.
     409 before the repository is cloned or without a Claude
     subscription, 429 while none has capacity. There is no delete: it is never in `GET …/shells`,
     `PATCH`/`DELETE …/shells/{id}` answer 404 for it, and it does not count against the 8

@@ -101,6 +101,29 @@ impl App {
         Ok(user)
     }
 
+    /// The project's task an `after_task` argument names by its number (`task_create`,
+    /// `automation_create`, `automation_update`).
+    ///
+    /// # Errors
+    /// `Invalid` for a value that is not a task number or names no task of the project.
+    pub(crate) async fn after_task_arg(
+        &self,
+        caller: &ProjectCaller,
+        number: &Value,
+    ) -> AppResult<TaskRecord> {
+        let number = number
+            .as_u64()
+            .and_then(|n| u32::try_from(n).ok())
+            .ok_or_else(|| AppError::Invalid("`after_task` must be a task number".into()))?;
+        self.deps
+            .store
+            .task_by_number(&caller.sandbox, number)
+            .await?
+            .ok_or_else(|| {
+                AppError::Invalid(format!("task #{number} does not exist in this project"))
+            })
+    }
+
     /// `task_create` tool (SPEC-037 MGT-001..003): creates and starts a task in the caller's
     /// project for the person it acts for.
     ///
@@ -118,23 +141,13 @@ impl App {
             .ok_or_else(|| AppError::Invalid("missing string argument `prompt`".into()))?;
         let after_task_id = match args.get("after_task") {
             None | Some(Value::Null) => None,
-            Some(number) => {
-                let number = number
-                    .as_u64()
-                    .and_then(|n| u32::try_from(n).ok())
-                    .ok_or_else(|| {
-                        AppError::Invalid("`after_task` must be a task number".into())
-                    })?;
-                let task = self
-                    .deps
-                    .store
-                    .task_by_number(&caller.sandbox, number)
+            Some(number) => Some(
+                self.after_task_arg(caller, number)
                     .await?
-                    .ok_or_else(|| {
-                        AppError::Invalid(format!("task #{number} does not exist in this project"))
-                    })?;
-                Some(task.id.as_str().to_owned())
-            }
+                    .id
+                    .as_str()
+                    .to_owned(),
+            ),
         };
         let workflow_id = match opt_str(args, "workflow")? {
             Some(auto) if auto == AUTO => Some(auto),
@@ -151,6 +164,15 @@ impl App {
             mode: opt_str(args, "mode")?,
             after_task_id,
             start_rule: opt_str(args, "start_rule")?,
+            supertask: match args.get("supertask") {
+                None | Some(Value::Null) => false,
+                Some(Value::Bool(flag)) => *flag,
+                Some(_) => {
+                    return Err(AppError::Invalid(
+                        "`supertask` must be true or false".into(),
+                    ));
+                }
+            },
         };
         let user = self.manage_authority(caller).await?;
         let now = self.now().0;

@@ -275,6 +275,7 @@ pub(crate) async fn new_task(
             automation_run: None,
             start: true,
             mode: yulius_app::model::TaskMode::Prompt,
+            supertask: false,
         })
         .await?;
     Ok(record.id)
@@ -1021,5 +1022,559 @@ fn a_manual_switch_at_a_limit_resumes_past_the_limit() -> TestResult {
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-072 LRS-001 (#276): Claude Code continues the turn a limit cut by itself at the reset
+/// ("continuing automatically") before the resume loop acts: the `limit` pause ends as
+/// overtaken and the task runs; capacity returning later starts no second run, so nothing
+/// terminates the turn the CLI continued.
+#[test]
+fn a_turn_the_cli_continues_by_itself_ends_the_limit_pause() -> TestResult {
+    the_cli_continuation_ends_the_limit_pause(false)
+}
+
+/// SPEC-072 LRS-001 (review): a continuation that is only the answer ending the turn (no tool
+/// call, so no agent work) ends the `limit` pause too.
+#[test]
+fn a_continuation_that_only_answers_ends_the_limit_pause() -> TestResult {
+    the_cli_continuation_ends_the_limit_pause(true)
+}
+
+fn the_cli_continuation_ends_the_limit_pause(answer_only: bool) -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        // Long enough for the pause to exist before the continuation, also under load.
+        let agent = FakeAgentOptions {
+            transcript: true,
+            limit_after: Some(1),
+            limit_continues_ms: Some(5_000),
+            limit_continues_answer_only: answer_only,
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let since = now();
+        let id = new_task(&app, &sandbox, &user, "Limit").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("FAKE-AGENT READY") }
+        })
+        .await?;
+        app.send_input(&id, b"hello\r").await?;
+        wait_for(
+            "the pause at the limit",
+            Duration::from_secs(30),
+            || async {
+                matches!(
+                    app.deps.store.open_pause(&id).await,
+                    Ok(Some(pause)) if pause.kind == PauseKind::Limit
+                )
+            },
+        )
+        .await?;
+        wait_for(
+            "the CLI's own continuation",
+            Duration::from_secs(30),
+            || {
+                let app = app.clone();
+                let id = id.clone();
+                async move { screen(&app, &id).contains("CONTINUED") }
+            },
+        )
+        .await?;
+        wait_for("the pause to end", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::Running)
+        })
+        .await?;
+        assert!(app.deps.store.open_pause(&id).await?.is_none());
+        let pauses = app.deps.store.pauses_since(since).await?;
+        assert!(
+            pauses
+                .iter()
+                .any(|p| p.kind == PauseKind::Limit && p.outcome.as_deref() == Some("overtaken")),
+            "{pauses:?}"
+        );
+
+        probe.set("a-first", usage(0.0, 5 * HOUR, 30.0, 100));
+        refresh(&app, &user, "a-first").await?;
+        let _ = app.resume_round().await;
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert_eq!(attempts.len(), 1, "no second run: {attempts:?}");
+        assert_eq!(attempts[0].state, yulius_domain::task::AttemptState::Live);
+        wait_for("the continued turn's end", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("DONE continued") }
+        })
+        .await?;
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-072 LRS-002 (#277): the switch after a usage limit is refused before it ends the session
+/// (the other subscription's credential cannot be opened), so the task stays at its limit with no
+/// pause; a person's switch once the subscription works again still resumes past the limit: no
+/// prompt, the interrupted turn continued, the transcript stepped back.
+#[test]
+fn a_manual_switch_after_a_refused_limit_switch_resumes_past_the_limit() -> TestResult {
+    use yulius_app::ports::Crypto;
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            limit_after: Some(1),
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+        probe.set("a-first", usage(10.0, 4 * HOUR, 20.0, 100));
+        refresh(&app, &user, "a-first").await?;
+        probe.set("b-second", usage(40.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "b-second").await?;
+        let b = AccountId::parse("b-second")?;
+        let foreign = MasterKeyCrypto::from_key(&[9u8; 32])?.seal(b"b-second")?;
+        app.deps
+            .store
+            .set_account_credential(&b, &foreign, AccountStatus::Ok, now())
+            .await?;
+        let id = new_task(&app, &sandbox, &user, "Limit").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("FAKE-AGENT READY") }
+        })
+        .await?;
+        assert_eq!(
+            app.deps.store.attempts(&id).await?[0]
+                .account_id
+                .as_ref()
+                .map(AccountId::as_str),
+            Some("a-first")
+        );
+        app.send_input(&id, b"hello\r").await?;
+        wait_for("the refused switch", Duration::from_secs(30), || async {
+            app.deps
+                .store
+                .switches(&id)
+                .await
+                .is_ok_and(|s| s.iter().any(|s| s.outcome == "refused"))
+        })
+        .await?;
+        assert!(app.deps.store.open_pause(&id).await?.is_none(), "no pause");
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Running);
+
+        let sealed = app.deps.crypto.seal(b"b-second")?;
+        app.deps
+            .store
+            .set_account_credential(&b, &sealed, AccountStatus::Ok, now())
+            .await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        app.switch_task(
+            &ctx,
+            id.as_str(),
+            &yulius_contracts::api::tasks::ContinueTask {
+                account_id: Some("b-second".into()),
+            },
+        )
+        .await?;
+        wait_for("the resumed run", Duration::from_secs(60), || async {
+            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+            attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
+        })
+        .await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        let problems = limit_resume_problems(Path::new(&attempts[1].run_dir), &data);
+        assert!(problems.is_empty(), "{problems:?}");
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// A search document of `task`'s session `session` whose index has read `bytes`: what
+/// `sessions_search` leaves behind (SPEC-034: a rewritten transcript is indexed again).
+async fn indexed_doc(
+    app: &App,
+    sandbox: &SandboxId,
+    task: &TaskId,
+    session: &str,
+    bytes: u64,
+) -> Result<String, Box<dyn std::error::Error>> {
+    use yulius_app::ports::session_docs::{SessionDocRecord, SessionKind};
+    let id = format!("doc-{session}");
+    app.deps
+        .store
+        .insert_session_doc(&SessionDocRecord {
+            id: id.clone(),
+            sandbox_id: sandbox.clone(),
+            kind: SessionKind::Task,
+            task_id: Some(task.clone()),
+            harness: Harness::ClaudeCode,
+            session_id: session.to_owned(),
+            title: "Limit".into(),
+            author_id: None,
+            git_branch: None,
+            cwd_relative: None,
+            base: None,
+            transcript_path: String::new(),
+            sha256: None,
+            bytes,
+            redactions: 0,
+            started_at: None,
+            ended_at: None,
+            continued_task_id: None,
+            indexed_bytes: bytes,
+            indexed_lines: 1,
+            index_full: false,
+            created_at: now(),
+            updated_at: now(),
+        })
+        .await?;
+    Ok(id)
+}
+
+/// How far the index of document `doc` has read.
+async fn indexed_bytes(app: &App, doc: &str) -> Result<u64, Box<dyn std::error::Error>> {
+    Ok(app
+        .deps
+        .store
+        .session_doc(doc)
+        .await?
+        .ok_or("document")?
+        .indexed_bytes)
+}
+
+/// SPEC-072 LRS-003 (#278): a resume past a limit whose transcript has nothing to step back
+/// (no limit record left) leaves the transcript and its search index alone.
+#[test]
+fn a_resume_past_a_limit_keeps_the_index_of_a_transcript_it_did_not_rewrite() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            limit_after: Some(1),
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = new_task(&app, &sandbox, &user, "Limit").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("FAKE-AGENT READY") }
+        })
+        .await?;
+        app.send_input(&id, b"hello\r").await?;
+        wait_for("the pause at the limit", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::WaitingCapacity)
+        })
+        .await?;
+        let first = app.deps.store.attempts(&id).await?[0].clone();
+        let session = first.provider_session_id.clone().ok_or("session")?;
+        let transcript = app.deps.harness.claude_transcript(
+            &data.join("sandboxes").join(sandbox.as_str()).join("home"),
+            Path::new(&task(&app, &id).await?.worktree_path.ok_or("worktree")?),
+            &session,
+        );
+        // The limit record is gone already, as after an earlier step back.
+        let text = std::fs::read_to_string(&transcript)?;
+        let kept: String = text
+            .lines()
+            .filter(|l| !l.contains("usage_limit_reached"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_ne!(kept, text, "the fake agent wrote its limit record");
+        std::fs::write(&transcript, &kept)?;
+        let doc = indexed_doc(&app, &sandbox, &id, &session, 40).await?;
+
+        probe.set("a-first", usage(0.0, 5 * HOUR, 30.0, 100));
+        refresh(&app, &user, "a-first").await?;
+        let _ = app.resume_round().await;
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert_eq!(attempts.len(), 2, "{attempts:?}");
+        assert!(limit_resume_problems(Path::new(&attempts[1].run_dir), &data).is_empty());
+        assert_eq!(std::fs::read_to_string(&transcript)?.len(), kept.len());
+        assert_eq!(indexed_bytes(&app, &doc).await?, 40, "the index is kept");
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-034 LIM-003, SPEC-072 LRS-004 (#278): a person's switch of a task at its limit when no
+/// subscription has capacity ends the session and finds nothing to launch on, so the task waits in
+/// a `limit` pause without a process; when capacity returns, that pause resumes past the limit (a
+/// continued resume without a prompt), and the transcript it rewrote is indexed again.
+#[test]
+fn a_limit_pause_without_a_process_resumes_past_the_limit() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            transcript: true,
+            limit_after: Some(1),
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first", "b-second"]).await?;
+        probe.set("b-second", usage(99.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "b-second").await?;
+        let id = new_task(&app, &sandbox, &user, "Limit").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("FAKE-AGENT READY") }
+        })
+        .await?;
+        app.send_input(&id, b"hello\r").await?;
+        wait_for("the pause at the limit", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::WaitingCapacity)
+        })
+        .await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        app.switch_task(
+            &ctx,
+            id.as_str(),
+            &yulius_contracts::api::tasks::ContinueTask { account_id: None },
+        )
+        .await?;
+        let pause = app.deps.store.open_pause(&id).await?.ok_or("pause")?;
+        assert_eq!(pause.kind, PauseKind::Limit, "{pause:?}");
+        assert_eq!(pause.account_id, None, "no process: {pause:?}");
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::WaitingCapacity);
+        assert!(app.deps.store.live_attempt(&id).await?.is_none());
+        assert_eq!(app.deps.store.attempts(&id).await?.len(), 1);
+        let session = app.deps.store.attempts(&id).await?[0]
+            .provider_session_id
+            .clone()
+            .ok_or("session")?;
+        let doc = indexed_doc(&app, &sandbox, &id, &session, 40).await?;
+
+        probe.set("b-second", usage(10.0, 4 * HOUR, 30.0, 100));
+        refresh(&app, &user, "b-second").await?;
+        let _ = app.resume_round().await;
+        wait_for("the resumed run", Duration::from_secs(60), || async {
+            let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+            attempts.len() == 2 && attempts[1].state == yulius_domain::task::AttemptState::Live
+        })
+        .await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert_eq!(
+            attempts[1].account_id.as_ref().map(AccountId::as_str),
+            Some("b-second")
+        );
+        let problems = limit_resume_problems(Path::new(&attempts[1].run_dir), &data);
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(indexed_bytes(&app, &doc).await?, 0, "indexed again");
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-072 LRS-001 (review): after a Yulius restart the reattached run's transcript is read again
+/// from its start. A usage limit that Claude Code's own continuation already overtook is history:
+/// it does not mark the subscription limited again, pause the task or switch it.
+#[test]
+fn a_restart_does_not_replay_a_limit_the_cli_continued_past() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let probe = Arc::new(ScriptedUsage::default());
+    let agent = FakeAgentOptions {
+        transcript: true,
+        limit_after: Some(1),
+        limit_continues_ms: Some(5_000),
+        ..FakeAgentOptions::default()
+    };
+    let first = runtime()?;
+    let (id, usage_before) = first.block_on(async {
+        let app = build_with(&data, &fake, probe.clone(), agent.clone())?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = new_task(&app, &sandbox, &user, "Limit").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("FAKE-AGENT READY") }
+        })
+        .await?;
+        app.send_input(&id, b"hello\r").await?;
+        wait_for("the pause at the limit", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::WaitingCapacity)
+        })
+        .await?;
+        wait_for("the continued turn's end", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("DONE continued") }
+        })
+        .await?;
+        wait_for("the pause to end", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::Running)
+        })
+        .await?;
+        // Working until the replay settles it: the wait after the restart proves the replay ran.
+        assert_eq!(
+            task(&app, &id).await?.activity,
+            Some(yulius_domain::task::Activity::Working)
+        );
+        let account = AccountId::parse("a-first")?;
+        let usage = app.deps.store.account(&account).await?.ok_or("account")?;
+        Ok::<_, Box<dyn std::error::Error>>((id, usage.usage_json))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let second = runtime()?;
+    second.block_on(async {
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        app.reconcile().await?;
+        // The replay is applied once caught up: the continued turn ended, so the task waits.
+        wait_for(
+            "the replay's final state",
+            Duration::from_secs(30),
+            || async {
+                task(&app, &id).await.is_ok_and(|t| {
+                    t.status != TaskStatus::Running
+                        || t.activity == Some(yulius_domain::task::Activity::Waiting)
+                })
+            },
+        )
+        .await?;
+        let account = AccountId::parse("a-first")?;
+        assert_eq!(
+            app.deps
+                .store
+                .account(&account)
+                .await?
+                .ok_or("account")?
+                .usage_json,
+            usage_before,
+            "the old limit is not recorded again"
+        );
+        assert_eq!(task(&app, &id).await?.status, TaskStatus::Running);
+        assert!(app.deps.store.open_pause(&id).await?.is_none(), "no pause");
+        assert_eq!(app.deps.store.attempts(&id).await?.len(), 1);
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    second.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-072 LRS-001 (review round 2): Yulius is down while the task waits at its limit, and
+/// Claude Code continues the turn by itself meanwhile. The reattached run's replay ends the
+/// `limit` pause, so capacity returning starts no second run and nothing ends the continued turn.
+#[test]
+fn a_continuation_while_yulius_is_down_ends_the_limit_pause_at_restart() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let probe = Arc::new(ScriptedUsage::default());
+    let agent = FakeAgentOptions {
+        transcript: true,
+        limit_after: Some(1),
+        limit_continues_ms: Some(5_000),
+        ..FakeAgentOptions::default()
+    };
+    let first = runtime()?;
+    let (user, id, transcript) = first.block_on(async {
+        let app = build_with(&data, &fake, probe.clone(), agent.clone())?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = new_task(&app, &sandbox, &user, "Limit").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("FAKE-AGENT READY") }
+        })
+        .await?;
+        app.send_input(&id, b"hello\r").await?;
+        wait_for("the pause at the limit", Duration::from_secs(30), || {
+            has_status(&app, &id, TaskStatus::WaitingCapacity)
+        })
+        .await?;
+        let session = app.deps.store.attempts(&id).await?[0]
+            .provider_session_id
+            .clone()
+            .ok_or("session")?;
+        let transcript = app.deps.harness.claude_transcript(
+            &data.join("sandboxes").join(sandbox.as_str()).join("home"),
+            Path::new(&task(&app, &id).await?.worktree_path.ok_or("worktree")?),
+            &session,
+        );
+        Ok::<_, Box<dyn std::error::Error>>((user, id, transcript))
+    })?;
+    // Yulius stops before the continuation; the detached run goes on.
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let second = runtime()?;
+    second.block_on(async {
+        wait_for(
+            "the continuation while Yulius is down",
+            Duration::from_secs(30),
+            || {
+                let transcript = transcript.clone();
+                async move {
+                    std::fs::read_to_string(&transcript)
+                        .is_ok_and(|t| t.contains("msg_fake_continue_end"))
+                }
+            },
+        )
+        .await?;
+        let app = build_with(&data, &fake, probe.clone(), agent)?;
+        // The first server never saw the continuation: only the replay can end the pause.
+        assert!(
+            app.deps.store.open_pause(&id).await?.is_some(),
+            "still paused"
+        );
+        app.reconcile().await?;
+        wait_for(
+            "the pause to end at the replay",
+            Duration::from_secs(30),
+            // The pause closes, then the task runs: wait for both.
+            || async {
+                app.deps
+                    .store
+                    .open_pause(&id)
+                    .await
+                    .is_ok_and(|p| p.is_none())
+                    && has_status(&app, &id, TaskStatus::Running).await
+            },
+        )
+        .await?;
+        probe.set("a-first", usage(0.0, 5 * HOUR, 30.0, 100));
+        refresh(&app, &user, "a-first").await?;
+        let _ = app.resume_round().await;
+        let attempts = app.deps.store.attempts(&id).await?;
+        assert_eq!(attempts.len(), 1, "no second run: {attempts:?}");
+        assert_eq!(attempts[0].state, yulius_domain::task::AttemptState::Live);
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    second.shutdown_timeout(Duration::from_secs(5));
     Ok(())
 }

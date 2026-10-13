@@ -60,6 +60,7 @@ async fn task(h: &support::Harness, t: TaskSpec<'_>) -> TestResult {
             origin: TaskOrigin::Ui,
             automation_run: None,
             created_by: UserId::parse("u")?,
+            owner: UserId::parse("u")?,
             created_at: Timestamp(t.created),
             updated_at: Timestamp(t.created),
             closed_at: t.closed.map(Timestamp),
@@ -68,6 +69,7 @@ async fn task(h: &support::Harness, t: TaskSpec<'_>) -> TestResult {
             gate_blocks: 0,
             wake_enabled: true,
             mode: yulius_app::model::TaskMode::Prompt,
+            supertask: false,
         })
         .await?;
     Ok(())

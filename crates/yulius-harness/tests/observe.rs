@@ -85,7 +85,15 @@ fn claude_session_turns_meta_and_ignored_records() {
     }
     let completes = all
         .iter()
-        .filter(|o| matches!(o, Observed::TurnComplete { duration_ms: None }))
+        .filter(|o| {
+            matches!(
+                o,
+                Observed::TurnComplete {
+                    duration_ms: None,
+                    ..
+                }
+            )
+        })
         .count();
     assert_eq!(completes, 3, "end_turn of msg_02, sidechain and msg_03");
 }
@@ -106,6 +114,8 @@ fn claude_limit_with_epoch_reset() {
             resets_at: Some(Timestamp(1_791_380_000_000)),
             message: "Claude AI usage limit reached".into(),
             window_minutes: None,
+            // When the record was written (SPEC-074 SUP-002).
+            at: Some(Timestamp(1_791_360_001_000)),
         }]
     );
     // The synthetic error message is not counted as usage.
@@ -141,6 +151,7 @@ fn claude_limit_without_parseable_time_and_model_text_is_not_a_limit() {
             resets_at: None,
             message: "5-hour limit reached ∙ resets 3pm".into(),
             window_minutes: Some(300),
+            at: Some(Timestamp(1_791_360_003_000)),
         }]
     );
 }
@@ -177,7 +188,8 @@ fn claude_malformed_and_unknown_lines() {
 
 /// TSK-014: Claude Code 2.1.292 records the goal's state as `goal_status` attachments and closes a
 /// turn with `turn_duration` (`stop_hook_summary` is not an end: a blocked stop writes it too); the `/goal` command is a user prompt with its
-/// time; recaps, task notifications and sidechain goals are not observations.
+/// time; a task notification ends its background work (SPEC-079); recaps and sidechain goals are
+/// not observations.
 #[test]
 fn claude_goal_mode_records() {
     let per_line = observe_all(CLAUDE_GOAL, claude::observe_line);
@@ -198,15 +210,23 @@ fn claude_goal_mode_records() {
         vec![
             &goal(GoalOutcome::Set),
             &Observed::UserTurn {
-                at: Some(Timestamp(1_791_610_681_385))
+                at: Some(Timestamp(1_791_610_681_385)),
+                wake: false
             },
-            &Observed::TurnComplete { duration_ms: None },
+            &Observed::TurnComplete {
+                duration_ms: None,
+                at: Some(Timestamp(1_791_610_700_000))
+            },
             &goal(GoalOutcome::NotMet),
-            &Observed::TurnComplete { duration_ms: None },
+            &Observed::TurnComplete {
+                duration_ms: None,
+                at: Some(Timestamp(1_791_610_729_402))
+            },
             &goal(GoalOutcome::Met),
             &Observed::TurnEnded {
                 background_agents: None
             },
+            &Observed::BackgroundEnded { id: "b1".into() },
             &goal(GoalOutcome::Failed),
             &goal(GoalOutcome::Cleared),
         ]

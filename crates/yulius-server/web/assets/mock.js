@@ -14,14 +14,16 @@
 // jev=config (a Jev key file is configured), fail=<path> (GETs of that path answer 500),
 // failpost=<path> (POSTs of that path answer 500).
 
-import { taskInfo } from './status.js';
+import { counter, taskInfo } from './status.js';
 
 const MIN = 60e3;
 const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
 const ORIGIN = window.location.origin;
-// Where the mock's composer attachments live, as an upload reports them (SPEC-043).
-const MOCK_ATTACHMENTS = '/srv/yulius/sandboxes/sb_studio/attachments/drafts/usr_mkarp';
+// Where the mock's sandboxes live, and its composer attachments as an upload reports them
+// (SPEC-043).
+const MOCK_SANDBOXES = '/srv/yulius/sandboxes';
+const MOCK_ATTACHMENTS = `${MOCK_SANDBOXES}/sb_studio/attachments/drafts/usr_mkarp`;
 // A file gone since (drafts are removed after a week).
 const MOCK_GONE = new Set([`${MOCK_ATTACHMENTS}/old-mockup.png`]);
 // A 1×1 PNG served for every attached image.
@@ -170,6 +172,8 @@ function seed(params) {
       id, sandbox_id: sandbox, number, title, harness, status, activity,
       branch: extra.branch === null ? null : `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`,
       origin: extra.origin || 'ui', created_by: { login: extra.author || 'mkarp' },
+      // A task someone handed over has an owner other than its author (SPEC-070).
+      ...(extra.owner ? { owner: { login: extra.owner } } : {}),
       // Created before its last change (an old task's sessions never last a negative time).
       created_at: iso(Math.max(extra.age || number * 3 * HOUR, (extra.updated ?? number * 7 * MIN) + HOUR)), updated_at: iso(extra.updated ?? number * 7 * MIN),
       archived: Boolean(extra.archived),
@@ -197,7 +201,7 @@ function seed(params) {
     t('sb_studio', 14, 'Start the preview server', 'claude', 'running', 'done', { mode: 'goal', done: 7, current: false, updated: 2 * MIN, shells: 1 }),
     t('sb_studio', 12, 'Checkout API', 'claude', 'running', 'working', { done: 2, updated: 20e3, prompt: `# Checkout API\n\nBuild the checkout endpoint:\n\n- Stripe payment intents\n- an idempotency key per order\n\n@${MOCK_ATTACHMENTS}/checkout-error.png\n@${MOCK_ATTACHMENTS}/notes.txt\n@${MOCK_ATTACHMENTS}/old-mockup.png` }),
     // Finished its turn with a tested pull request (checks green) and a complete plan: "Done" (#35, #139).
-    t('sb_studio', 11, '3D model viewer', 'claude', 'running', 'waiting', { done: 7, current: false, author: 'anna-q', delivery: { stage: 'pr_open', environment: null, pr: pr(221, '3D model viewer', 'open', 'dev', 'success') } }),
+    t('sb_studio', 11, '3D model viewer', 'claude', 'running', 'waiting', { done: 7, current: false, author: 'anna-q', owner: 'mkarp', delivery: { stage: 'pr_open', environment: null, pr: pr(221, '3D model viewer', 'open', 'dev', 'success') } }),
     t('sb_studio', 10, 'AWS login for deploy', 'claude', 'running', 'needs_attention', { done: 4 }),
     t('sb_studio', 9, 'Move to the next account', 'claude', 'switching', null, { done: 3 }),
     t('sb_studio', 8, 'Nightly feedback digest', 'claude', 'queued', null, { origin: 'automation', noSteps: true }),
@@ -252,8 +256,8 @@ function seed(params) {
     { name: 'test-driven-development', description: 'Write the test first, watch it fail for the right reason, then the minimal code.', source: 'superpowers', path: 'skills/superpowers/test-driven-development/SKILL.md', enabled: false },
   ];
   db.automations = [
-    { id: 'aut_1', sandbox: 'sb_studio', name: 'Daily customer feedback', cron: '0 9 * * *', utc_offset_minutes: 120, prompt: 'Create a task implementing yesterday’s customer feedback from the Quartio MCP.', workflow_id: 'wf-feature', harness: 'claude', enabled: true, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: { scheduled_for: iso(10 * HOUR), state: 'task_created', task_id: 'tsk_studio_8' } },
-    { id: 'aut_2', sandbox: 'sb_studio', name: 'Weekly dependency audit', cron: '0 7 * * 1', utc_offset_minutes: 0, prompt: 'Audit dependencies for advisories and open a PR with safe upgrades.', workflow_id: null, harness: 'claude', enabled: false, created_via: 'ui', next_run_at: null, last_run: null },
+    { id: 'aut_1', sandbox: 'sb_studio', name: 'Daily customer feedback', cron: '0 9 * * *', utc_offset_minutes: 120, prompt: 'Create a task implementing yesterday’s customer feedback from the Quartio MCP.', workflow_id: 'wf-feature', harness: 'claude', enabled: true, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'agent', next_run_at: isoIn(14 * HOUR), last_run: { scheduled_for: iso(10 * HOUR), state: 'task_created', task_id: 'tsk_studio_8' } },
+    { id: 'aut_2', sandbox: 'sb_studio', name: 'Weekly dependency audit', cron: '0 7 * * 1', utc_offset_minutes: 0, prompt: 'Audit dependencies for advisories and open a PR with safe upgrades.', workflow_id: null, harness: 'claude', enabled: false, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, created_via: 'ui', next_run_at: null, last_run: null },
   ];
   db.mcp = [
     { id: 'mcp_quartio', sandbox: null, scope: 'instance', name: 'quartio', transport: 'http', command: null, args: [], url: 'https://mcp.quartio.ai/mcp', env_keys: [], header_keys: ['Authorization'], enabled: true },
@@ -305,6 +309,8 @@ function summary(task) {
     id: task.id, sandbox_id: task.sandbox_id, number: task.number, title: task.title, harness: task.harness,
     status: task.status, activity: task.status === 'running' || task.status === 'waiting_capacity' ? task.activity : null,
     branch: task.branch, origin: task.origin, created_by: task.created_by, created_at: task.created_at, updated_at: task.updated_at,
+    // The owner, whose GitHub token the task uses, and a waiting request for control (SPEC-070).
+    owner: { ...ownerOf(task) }, control_request: task.controlRequest ? { by: { ...task.controlRequest.by }, at: task.controlRequest.at } : null,
     steps: stepsSummary(task), archived: task.archived, account_label: task.account_label,
     resumes_at: task.status === 'waiting_capacity' ? task.resumes_at || null : null,
     // Chained tasks (TSK-012) and a held prompt (TSK-013).
@@ -314,10 +320,29 @@ function summary(task) {
     ...(task.mode ? { mode: task.mode } : {}),
     // How Auto chose the mode and workflow (TSK-015).
     auto: task.auto ? { ...task.auto } : null,
+    // A supertask, and what a queued task waits for because of one (SPEC-071).
+    supertask: Boolean(task.supertask),
+    held_by: task.status === 'queued' ? [...(task.heldBy || [])] : [],
     // Background shells an idle agent left running (TSK-014).
     background_shells: task.status === 'running' ? task.background_shells ?? null : null,
     background_shells_since: task.status === 'running' && task.background_shells ? task.background_shells_since ?? null : null,
   };
+}
+
+/**
+ * What a new queued task waits for because of a supertask (SPEC-071), by the server's rule: any
+ * task waits for the project's pending supertasks (a supertask only for earlier ones), and a
+ * supertask also for the project's working tasks. Done tasks hold nothing.
+ */
+function mockHeldBy(db, task) {
+  const done = (t) => t.status === 'running' && t.activity === 'done';
+  const pending = (t) => t.supertask && ['queued', 'starting', 'running', 'switching', 'waiting_capacity'].includes(t.status) && !done(t);
+  const working = (t) => ['starting', 'running', 'switching', 'stopping'].includes(t.status) && !done(t);
+  return db.tasks
+    .filter((t) => t.sandbox_id === task.sandbox_id && t.id !== task.id && !t.archived)
+    .filter((t) => (pending(t) && (!task.supertask || t.number < task.number)) || (task.supertask && working(t)))
+    .map((t) => t.number)
+    .sort((a, b) => a - b);
 }
 
 /** Links `task` to run after `before` (TSK-012); both summaries show the chain. */
@@ -456,18 +481,20 @@ function pullOf(task) {
 }
 
 /**
- * The sandbox counters. "Needs you" is the sidebar's rule (status.js taskInfo, the server's
- * `AttentionFacts`), so a card, a tab and the sidebar never disagree (#147).
+ * The sandbox counters: the sidebar's groups by its rule (status.js taskInfo and counter, the
+ * server's `AttentionFacts::group`), so a card, a tab and the sidebar never disagree (#147, #170).
  */
 function recount(db) {
   for (const sandbox of db.sandboxes) {
-    const tasks = db.tasks.filter((t) => t.sandbox_id === sandbox.id && !t.archived);
-    sandbox.counts = {
-      // A live process, as the server counts it (TaskStatus::is_live).
-      running: tasks.filter((t) => ['starting', 'running', 'switching', 'stopping'].includes(t.status)).length,
-      needs_attention: tasks.filter((t) => taskInfo(summary(t), null, pullOf(t)).group === 'needs').length,
-      queued: tasks.filter((t) => t.status === 'queued').length,
-    };
+    const counts = { running: 0, needs_attention: 0, queued: 0 };
+    for (const t of db.tasks.filter((task) => task.sandbox_id === sandbox.id && !task.archived)) {
+      const task = summary(t);
+      const kind = counter(task, taskInfo(task, null, pullOf(t)));
+      if (kind === 'needs') counts.needs_attention += 1;
+      else if (kind === 'working') counts.running += 1;
+      else if (kind === 'queued') counts.queued += 1;
+    }
+    sandbox.counts = counts;
   }
 }
 
@@ -507,8 +534,16 @@ function need(sandbox, level) {
   if ((RANK[sandbox.access] || 0) < RANK[level]) fail(403, 'forbidden', `Requires ${level} permission on ${sandbox.repo.owner}/${sandbox.repo.name} (you have ${sandbox.access}).`);
 }
 
+/** Who owns `task` (SPEC-070): its creator until a hand-over. */
+function ownerOf(task) {
+  return task.owner || task.created_by;
+}
+
+/** Changing a task needs write access and its ownership, like the server's `load_task`. */
 function needTaskWrite(db, task) {
   need(sandboxOf(db, task.sandbox_id), 'write');
+  const owner = ownerOf(task).login;
+  if (owner !== db.me.user.login) fail(403, 'forbidden', `Task #${task.number} is @${owner}'s: it acts on GitHub as them. Ask them for control.`);
 }
 
 function hashString(s) {
@@ -739,6 +774,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   const preparation = preparing ? db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding') : null;
   // A start rule (SPEC-017): the mock checks the shape the server checks, and anchors the chain
   // on the first task the rule names.
+  if (body.supertask && (body.after_task_id || (body.start_rule && body.start_rule.trim()))) fail(422, 'invalid', 'a supertask starts after the running tasks: it cannot also run after a task or a rule');
   let rule = null;
   if (body.start_rule && body.start_rule.trim()) {
     if (body.after_task_id) fail(422, 'invalid', 'give a task to run after or a start rule, not both');
@@ -758,6 +794,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
     stepsList: wf ? wf.steps.map((title2, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title: title2, status: 'pending', note: '', updated_by: 'workflow', updated_at: new Date().toISOString() })) : [],
     model: body.model || 'claude-opus-4', effort: body.effort || 'default', prompt: body.prompt,
     delivery: null, mode: choice ? choice.mode : body.mode || 'goal', auto: choice ? choice.auto : null,
+    supertask: body.supertask === true,
   };
   db.tasks.push(task);
   recount(db);
@@ -766,6 +803,9 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
     emit(db, { type: 'task.updated', task: summary(before) });
     return json(201, summary(task));
   }
+  // A supertask holds the project's starts, and waits for its working tasks (SPEC-071).
+  task.heldBy = mockHeldBy(db, task);
+  if (task.heldBy.length) return json(201, summary(task));
   later(() => touch(db, task, { status: 'starting' }), 700);
   later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1800);
   return json(201, summary(task));
@@ -886,21 +926,29 @@ route('GET', `/api/tasks/${ID}`, async ({ db, p }) => {
   return answer;
 });
 // The prompt a task started with (SPEC-043): `@path` lines are its attached files, served only
-// from the attachments folder.
+// from the task's own attachment folders, named directly (SPEC-080).
 function promptParts(task) {
   const lines = String(task.prompt ?? task.title).split('\n');
   const paths = lines.map((line) => line.trim().match(/^@'?(\/[^']+)'?$/)).filter(Boolean).map((m) => m[1]);
   const text = lines.filter((line) => !/^@'?\//.test(line.trim())).join('\n').trim();
   return { text, paths };
 }
-const promptFileServed = (path) => path.startsWith(`${MOCK_ATTACHMENTS}/`) && !MOCK_GONE.has(path);
+function promptFileServed(task, path) {
+  const base = `${MOCK_SANDBOXES}/${task.sandbox_id}/attachments`;
+  const owned = [`${base}/drafts/usr_${task.created_by.login}`, `${base}/tasks/${task.id}`];
+  const slash = path.lastIndexOf('/');
+  const plain = path.split('/').slice(1).every((part) => part && part !== '.' && part !== '..');
+  return plain && owned.includes(path.slice(0, slash)) && !MOCK_GONE.has(path);
+}
 route('GET', `/api/tasks/${ID}/prompt`, ({ db, p }) => {
-  const { text, paths } = promptParts(taskOf(db, p[0]));
-  return { text, attachments: paths.map((path) => ({ name: path.split('/').pop(), image: /\.(png|jpe?g|gif|webp)$/i.test(path), available: promptFileServed(path) })) };
+  const task = taskOf(db, p[0]);
+  const { text, paths } = promptParts(task);
+  return { text, attachments: paths.map((path) => ({ name: path.split('/').pop(), image: /\.(png|jpe?g|gif|webp)$/i.test(path), available: promptFileServed(task, path) })) };
 });
 route('GET', `/api/tasks/${ID}/prompt/attachments/${ID}`, ({ db, p }) => {
-  const path = promptParts(taskOf(db, p[0])).paths[Number(p[1])];
-  if (!path || !promptFileServed(path)) fail(404, 'not_found', 'not found');
+  const task = taskOf(db, p[0]);
+  const path = promptParts(task).paths[Number(p[1])];
+  if (!path || !promptFileServed(task, path)) fail(404, 'not_found', 'not found');
   if (/\.png$/i.test(path)) return new Response(Uint8Array.from(atob(MOCK_PNG), (c) => c.charCodeAt(0)), { status: 200, headers: { 'Content-Type': 'image/png' } });
   return new Response('Mock notes attached to the prompt.\n', { status: 200, headers: { 'Content-Type': 'application/octet-stream' } });
 });
@@ -961,6 +1009,31 @@ route('POST', `/api/tasks/${ID}/archive`, async ({ db, p }) => {
   const finished = task.status === 'running' && taskInfo(summary(task), null, pullOf(task)).group === 'done';
   if (LIVE.has(task.status) && !finished) fail(409, 'conflict', 'Stop the task before archiving it.');
   touch(db, task, finished ? { archived: true, status: 'closed', activity: null } : { archived: true });
+  return summary(task);
+});
+// Control of a task (SPEC-070): ask its owner, withdraw or decline, hand over.
+route('POST', `/api/tasks/${ID}/control-request`, ({ db, p }) => {
+  const task = taskOf(db, p[0]);
+  need(sandboxOf(db, task.sandbox_id), 'write');
+  const me = db.me.user.login;
+  if (ownerOf(task).login === me) fail(409, 'conflict', 'you already own this task');
+  const asked = task.controlRequest && task.controlRequest.by.login;
+  if (asked && asked !== me) fail(409, 'conflict', `@${asked} already asked for control of this task; ask again once @${ownerOf(task).login} has answered`);
+  if (!asked) touch(db, task, { controlRequest: { by: { login: me }, at: new Date().toISOString() } });
+  return summary(task);
+});
+route('DELETE', `/api/tasks/${ID}/control-request`, ({ db, p }) => {
+  const task = taskOf(db, p[0]);
+  if (!task.controlRequest) fail(409, 'conflict', 'nobody asks for control of this task');
+  if (task.controlRequest.by.login !== db.me.user.login) needTaskWrite(db, task);
+  touch(db, task, { controlRequest: null });
+  return summary(task);
+});
+route('POST', `/api/tasks/${ID}/control-request/accept`, ({ db, p }) => {
+  const task = taskOf(db, p[0]);
+  needTaskWrite(db, task);
+  if (!task.controlRequest) fail(409, 'conflict', 'nobody asks for control of this task');
+  touch(db, task, { owner: { ...task.controlRequest.by }, controlRequest: null });
   return summary(task);
 });
 route('POST', `/api/tasks/${ID}/restore`, ({ db, p }) => {
@@ -1648,12 +1721,32 @@ route('POST', `/api/sandboxes/${ID}/automation-templates/${ID}/enable`, ({ db, p
   const { sandbox: _s, ...out } = a;
   return json(created ? 201 : 200, out);
 });
+/** The start choice of an automation body, checked like the server (SPEC-078 AUT-014). */
+function automationStart(db, sandbox, body) {
+  const after = body.after_task_id || null;
+  const rule = (body.start_rule || '').trim() || null;
+  if (body.supertask && (after || rule)) fail(422, 'invalid', 'a supertask starts after the running tasks: it cannot also run after a task or a rule');
+  if (after && rule) fail(422, 'invalid', 'give a task to run after or a start rule, not both');
+  const task = after ? db.tasks.find((t) => t.id === after && t.sandbox_id === sandbox) : null;
+  if (after && !task) fail(422, 'invalid', 'the task to run after does not exist');
+  // The server parses the full rule language; the mock knows the editor's sentences.
+  let canonical = null;
+  if (rule) {
+    const words = rule.toLowerCase().replace(/\s+/g, ' ');
+    if (!/^#\d+ (done|merged|ended)( (and|or) #\d+ (done|merged|ended))*$/.test(words)) fail(422, 'invalid', `the rule cannot be read: ${rule}`);
+    for (const [, n] of words.matchAll(/#(\d+)/g)) {
+      if (!db.tasks.some((t) => t.sandbox_id === sandbox && t.number === Number(n))) fail(422, 'invalid', `the rule names #${n}, which does not exist in this project`);
+    }
+    canonical = words;
+  }
+  return { supertask: Boolean(body.supertask), after_task_id: after, after_task_number: task ? task.number : null, start_rule: canonical };
+}
 route('GET', `/api/sandboxes/${ID}/automations`, ({ db, p }) => db.automations.filter((a) => a.sandbox === p[0]).map(({ sandbox: _s, ...a }) => a));
 route('POST', `/api/sandboxes/${ID}/automations`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
   if (Math.abs(Number(body.utc_offset_minutes) || 0) > 1080) fail(422, 'invalid', 'utc_offset_minutes must be within ±1080');
   db.nextId += 1;
-  const a = { id: `aut_${db.nextId}`, sandbox: p[0], ...body, created_via: 'ui', next_run_at: body.enabled ? isoIn(5 * HOUR) : null, last_run: null };
+  const a = { id: `aut_${db.nextId}`, sandbox: p[0], ...body, ...automationStart(db, p[0], body), created_via: 'ui', next_run_at: body.enabled ? isoIn(5 * HOUR) : null, last_run: null };
   db.automations.push(a);
   const { sandbox: _s, ...out } = a;
   return json(201, out);
@@ -1661,7 +1754,10 @@ route('POST', `/api/sandboxes/${ID}/automations`, ({ db, p, body }) => {
 route('PUT', `/api/automations/${ID}`, ({ db, p, body }) => {
   const a = db.automations.find((x) => x.id === p[0]);
   if (!a) fail(404, 'not_found', 'not found');
-  Object.assign(a, body, { next_run_at: body.enabled ? isoIn(5 * HOUR) : null });
+  // The stored choice sent back unchanged is kept unchecked, as the server does (SPEC-078).
+  const same = Boolean(body.supertask) === Boolean(a.supertask) && (body.after_task_id || null) === (a.after_task_id || null) && (body.start_rule || null) === (a.start_rule || null);
+  const start = same ? { supertask: Boolean(a.supertask), after_task_id: a.after_task_id || null, after_task_number: a.after_task_number ?? null, start_rule: a.start_rule || null } : automationStart(db, a.sandbox, body);
+  Object.assign(a, body, start, { next_run_at: body.enabled ? isoIn(5 * HOUR) : null });
   const { sandbox: _s, ...out } = a;
   return out;
 });
@@ -1671,7 +1767,7 @@ route('POST', `/api/automations/${ID}/run`, ({ db, p }) => {
   const a = db.automations.find((x) => x.id === p[0]);
   if (!a) fail(404, 'not_found', 'not found');
   const previous = a.last_run && a.last_run.task_id ? db.tasks.find((t) => t.id === a.last_run.task_id) : null;
-  const run = previous && LIVE.has(previous.status)
+  const run = previous && (LIVE.has(previous.status) || previous.status === 'chained')
     ? { scheduled_for: new Date().toISOString(), state: 'skipped_previous_active', task_id: null, error: null }
     : { scheduled_for: new Date().toISOString(), state: 'task_created', task_id: 'tsk_studio_8', error: null };
   a.last_run = run;
@@ -1918,11 +2014,13 @@ route('POST', `/api/sandboxes/${ID}/shells`, ({ db, p, body }) => {
 // never listed, renamed or closed as a terminal. `&cockpit=fail` makes it fail to start;
 // `&cockpit=gone` answers the first call with a Cockpit whose process is already gone (a reboot);
 // a test can hold the answer (`__yuliusMock.holdCockpit = promise`) to act while it starts;
-// `__yuliusMock.rebootCockpits()` ends running ones abruptly.
+// `__yuliusMock.rebootCockpits()` ends running ones abruptly; `switchCockpits()` moves them to
+// another subscription (SPEC-074).
 route('POST', `/api/sandboxes/${ID}/cockpit`, async ({ db, p }) => {
   need(sandboxOf(db, p[0]), 'write');
   const scenario = new URLSearchParams(location.search).get('cockpit');
   if (scenario === 'fail') fail(429, 'capacity', 'no subscription has capacity right now');
+  if (db.cockpitFailsOnce) { db.cockpitFailsOnce = false; fail(429, 'capacity', 'no subscription has capacity right now'); }
   if (db.holdCockpit) await db.holdCockpit;
   if (scenario === 'gone' && !db.cockpitGone) {
     db.cockpitGone = true;
@@ -2195,7 +2293,8 @@ route('GET', '/api/status', ({ db }) => {
     // Disk total unknown on purpose: unknown metrics are null, never zero.
     vm: { cpu_percent: 22 + Math.sin(wobble) * 9, cpu_count: 8, memory_used_bytes: 9.4 * 2 ** 30, memory_total_bytes: 16 * 2 ** 30, disk_used_bytes: 141 * 2 ** 30, disk_total_bytes: null, load: [1.21, 0.97, 0.74], load_1m: 1.21, uptime_s: 9 * 86400 + 3600 * 4 },
     sessions: { live: db.tasks.filter((t) => t.status === 'running').length, limit: 8, queued: db.tasks.filter((t) => t.status === 'queued').length },
-    sandboxes: db.sandboxes.map((s) => ({ id: s.id, slug: s.slug, name: s.name, live_sessions: s.counts.running })),
+    // Tasks with a live process (TaskStatus::is_live), not the cards' "working" count (#170).
+    sandboxes: db.sandboxes.map((s) => ({ id: s.id, slug: s.slug, name: s.name, live_sessions: db.tasks.filter((t) => t.sandbox_id === s.id && !t.archived && ['starting', 'running', 'switching', 'stopping'].includes(t.status)).length })),
     accounts: db.accounts.map((a) => (admin
       ? { label: a.label, provider: a.provider, status: a.status, usage: a.usage, id: a.id, last_error: a.last_error, in_use_by: a.in_use_by }
       : { label: a.label, provider: a.provider, status: a.status, usage: a.usage })),
@@ -2405,13 +2504,34 @@ function sessionDocs(db) {
   ];
   const flaky = [
     entry(0, 'user', [text('Why is the e2e login test flaky on CI?')], { at: iso(5 * DAY) }),
-    entry(1, 'assistant', [call('g1', 'Grep', 'waitForTimeout in e2e', { pattern: 'waitForTimeout', path: 'e2e' })]),
-    entry(2, 'user', [result('g1', 'e2e/login.spec.ts:14:  await page.waitForTimeout(500);')]),
-    entry(3, 'assistant', [text('The test sleeps 500 ms instead of waiting for the session cookie; on a slow runner the redirect is not done yet. Waiting for the dashboard heading fixes it.')]),
+    entry(1, 'assistant', [call('b1', 'Bash', 'npx playwright test login', { command: 'npx playwright test login' })]),
+    entry(2, 'user', [result('b1', 'Error: Timed out 5000ms waiting for expect(locator).toBeVisible()\n  at e2e/login.spec.ts:15', true)]),
+    entry(3, 'assistant', [call('g1', 'Grep', 'waitForTimeout in e2e', { pattern: 'waitForTimeout', path: 'e2e' })], { sidechain: true }),
+    entry(4, 'user', [result('g1', 'e2e/login.spec.ts:14:  await page.waitForTimeout(500);\ne2e/signup.spec.ts:9:  await page.waitForTimeout(300);\ne2e/cart.spec.ts:21:  await page.waitForTimeout(250);\ne2e/admin.spec.ts:7:  await page.waitForTimeout(500);\ne2e/search.spec.ts:30:  await page.waitForTimeout(100);')]),
+    entry(5, 'assistant', [call('e1', 'Edit', 'e2e/login.spec.ts', { file_path: 'e2e/login.spec.ts' }, { path: 'e2e/login.spec.ts', hunks: [{ old: '  await page.waitForTimeout(5000);', new: '  await expect(page.getByRole(\'heading\')).toBeVisible();' }] })]),
+    entry(6, 'user', [result('e1', '<tool_use_error>String to replace not found in file.\nString:   await page.waitForTimeout(5000);</tool_use_error>', true)]),
+    entry(7, 'assistant', [call('e2', 'Edit', 'e2e/cart.spec.ts', { file_path: 'e2e/cart.spec.ts' }, { path: 'e2e/cart.spec.ts', hunks: [{ old: '  await page.waitForTimeout(250);', new: '' }] })]),
+    entry(8, 'user', [result('e2', 'The file e2e/cart.spec.ts has been updated.')]),
+    entry(9, 'assistant', [call('w1', 'Write', 'e2e/wait.ts', { file_path: 'e2e/wait.ts' }, { path: 'e2e/wait.ts', hunks: [{ old: '', new: 'export async function signedIn(page) {\n  await page.waitForURL(/dashboard/);\n}' }] })]),
+    entry(10, 'user', [result('w1', 'File created successfully at: e2e/wait.ts')]),
+    entry(11, 'assistant', [text('The test sleeps 500 ms instead of waiting for the session cookie; on a slow runner the redirect is not done yet. Waiting for the dashboard heading fixes it.')]),
   ];
+  // Claude Code's wrappers as recorded (a slash command, its output, a `!` command, reminders).
+  const meta = (t) => ({ type: 'meta', text: t });
   const webhook = [
-    entry(0, 'user', [text('Payment webhook: verify Stripe signatures and retry fulfilment with backoff.')], { at: iso(9 * HOUR) }),
-    entry(1, 'assistant', [text('I’ll verify the signature with the webhook secret and queue fulfilment with three retries and exponential backoff.')]),
+    entry(0, 'user', [meta('Caveat: The messages below were generated by the user while running local commands. DO NOT respond to these messages or otherwise consider them in your response unless the user explicitly asks you to.')]),
+    entry(1, 'user', [meta('<command-name>/goal</command-name>\n            <command-message>goal</command-message>\n            <command-args>Payment webhook ships on green CI</command-args>')], { at: iso(9 * HOUR + 2 * MIN) }),
+    entry(2, 'user', [meta('<local-command-stdout>Goal set: Payment webhook ships on green CI</local-command-stdout>')]),
+    entry(3, 'user', [meta('<system-reminder>\nThe date is 2026-10-13.\n</system-reminder>')]),
+    entry(4, 'user', [text('Payment webhook: verify Stripe signatures and retry fulfilment with backoff.')], { at: iso(9 * HOUR) }),
+    entry(5, 'assistant', [text('I’ll verify the signature with the webhook secret and queue fulfilment with three retries and exponential backoff.')]),
+    entry(6, 'user', [meta('[Request interrupted by user]')]),
+    entry(7, 'user', [meta('<bash-input>ls src/webhooks</bash-input>')]),
+    entry(8, 'user', [meta('<bash-stdout>stripe.ts\nretry.ts</bash-stdout><bash-stderr></bash-stderr>')]),
+    entry(9, 'system', [meta('<local-command-stderr>Error: Error during compaction: Conversation too long.</local-command-stderr>')]),
+    entry(10, 'user', [meta('A session-scoped Stop hook is now active with condition: "Payment webhook ships on green CI".')]),
+    entry(11, 'assistant', [call('w9', 'Write', 'src/webhooks/fixtures.ts', { file_path: 'src/webhooks/fixtures.ts' }, { path: 'src/webhooks/fixtures.ts', hunks: [{ old: '', new: Array.from({ length: 60 }, (_, i) => `export const event${i} = { id: 'evt_${i}', type: 'checkout.session.completed' };`).join('\n') }] })]),
+    entry(12, 'user', [result('w9', 'File created successfully at: src/webhooks/fixtures.ts')]),
   ];
   const task = (id, number) => db.tasks.find((t) => t.id === id && t.number === number);
   const docs = [];
@@ -2827,7 +2947,8 @@ class TermSession {
   }
 
   canWrite() {
-    return (RANK[this.sandbox().access] || 0) >= RANK.write && LIVE.has(this.task.status);
+    return (RANK[this.sandbox().access] || 0) >= RANK.write && LIVE.has(this.task.status)
+      && ownerOf(this.task).login === this.db.me.user.login;
   }
 
   // Like the server: a viewer with write access controls the size unless another one does.
@@ -3122,9 +3243,9 @@ class ShellSession {
   }
 
   /** The shell process ended: the server sends `exit` and closes every viewer's socket. */
-  end(code) {
+  end(code, status = 'closed') {
     for (const ws of [...this.viewers]) {
-      ws.push(JSON.stringify({ type: 'exit', status: 'closed', code }));
+      ws.push(JSON.stringify({ type: 'exit', status, code }));
       setTimeout(() => ws.serverClose(1000, 'shell ended'), 50);
     }
     this.viewers.clear();
@@ -3557,6 +3678,21 @@ export function createMockTransport(params) {
       if (!shell.cockpit) continue;
       db.shells.delete(shell.id);
       for (const ws of [...((shell.session && shell.session.viewers) || [])]) ws.serverClose(1006, '');
+    }
+  };
+  // A usage limit moved every Cockpit to another subscription (SPEC-074): each ends as `switched`
+  // and a new one, resuming its conversation, is already running in its place.
+  // `switchCockpits(true)`: the start on the other subscription failed, and the next start fails
+  // once for lack of capacity.
+  db.switchCockpits = (failed = false) => {
+    for (const shell of [...db.shells.values()]) {
+      if (!shell.cockpit) continue;
+      db.nextId += 1;
+      const next = { ...shell, id: `ck_${shell.sandbox_id}_${db.nextId}`, session: null, resumed: true };
+      if (shell.session) shell.session.end(null, 'switched');
+      db.shells.delete(shell.id);
+      if (failed) db.cockpitFailsOnce = true;
+      else db.shells.set(next.id, next);
     }
   };
   // A teammate's save of a notepad (`team` or `sandbox:<sid>`); `announce: false` holds back its
