@@ -37,7 +37,7 @@ away.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| NAV-001 | The sandbox navigation shows, in this order, Cockpit, Tasks, Git, "CI (tests)" (the CI page, whose title stays "CI"), Secrets and Dashboard as links, then a "More" button. The Cockpit has since moved to the right panel as the Agent (SPEC-035, ADR-0030). | `navigation.e2e.ts` |
+| NAV-001 | The sandbox navigation shows, in this order, Cockpit, Tasks, Git, "CI (tests)" (the CI page, whose title stays "CI"), Secrets and Dashboard as links, then a "More" button. The Cockpit has since moved to the right panel as the Agent (SPEC-035, ADR-0033). | `navigation.e2e.ts` |
 | NAV-002 | "More" is a disclosure button (`aria-expanded`, `aria-controls`): collapsed by default it hides Sessions, Workflows, Skills, Automations and MCP; pressed it shows them below it, in that order, and pressed again hides them. | `navigation.e2e.ts` |
 | NAV-003 | The choice is remembered in this browser (`yulius.sidebarMoreOpen`) and survives a reload. | `navigation.e2e.ts` |
 | NAV-004 | Arriving at one of the More pages (a deep link, a reload, a move inside the app) shows the group expanded with that page marked current, for as long as that page is in view, without changing the remembered choice; closed there, it stays closed until another More page is opened, and More is marked as holding the current page (highlighted, `aria-current="true"`). When the group hides on leaving that page while focus is in it, focus moves to More. | `navigation.e2e.ts` |

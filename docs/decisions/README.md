@@ -33,7 +33,7 @@ number here; a substantial one also gets an analysis section in the relevant spe
 - [0027](0027-step-back-past-a-usage-limit.md): A usage limit steps the transcript back; Claude Code continues the cut turn
 - [0028](0028-one-integration-test-binary.md): The product's integration tests are one test binary
 - [0029](0029-cockpit-manages-through-mcp.md): The Cockpit and task agents manage the project through the Yulius MCP server
-- [0030](0030-agent-in-the-right-panel.md): The Cockpit is shown as the Agent, a tool in the right panel
 - [0030](0030-menus-filter-when-long.md): Menus are compact and filter themselves when long
 - [0031](0031-deleting-a-done-task-closes-it.md): Deleting a Done task closes its session first
 - [0032](0032-shared-notes-with-revisions.md): Shared notes are stored on the server and saved by revision
+- [0033](0033-agent-in-the-right-panel.md): The Cockpit is shown as the Agent, a tool in the right panel
