@@ -110,6 +110,23 @@ test('a task with a tool panel open keeps its step strip and the panel head apar
   await expect.poll(() => layoutProblems(browser)).toEqual({ overlaps: [], sideways: false });
 });
 
+// Task #68 (SPEC-073, #341): a long state ("Working · 1 background task still running · …") kept
+// its width and left the strip's label too little room, so "Step 7/7" ran under the progress bar.
+test('a task with a long state keeps its step count clear of the progress bar', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/14'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#14 Start the preview server');
+  await expect(browser.locator('.taskview .strip-status')).toHaveText(/background task still running/);
+  for (const width of [1440, 1024, 768]) {
+    await browser.setViewport({ width, height: 900 });
+    await expect.poll(() => layoutProblems(browser)).toEqual({ overlaps: [], sideways: false });
+  }
+  await browser.setViewport({ width: 1440, height: 900 });
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', /^Shell/).click();
+  await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
+  await expect.poll(() => layoutProblems(browser)).toEqual({ overlaps: [], sideways: false });
+});
+
 // SPEC-001 UI-047 (F 2026-10-10): "here is some space at the right".
 test('every top-level page is centred, with no empty band on the right', async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 1920, height: 1000 });
