@@ -145,9 +145,9 @@ creating the organisation's repositories. Until then the playground is the one w
   Concurrent creations by one person can pass the limit of 10 by the few that run at once; a
   template playground is a few KB and an upload holds an upload slot, so the bound still holds
   within the slots, and a per-person lock is not worth its state. A removed playground keeps its
-  files and counts until a purge exists (#413).
+  files and counts until a purge exists (#420).
 - **Follow-ups (issues):** #409 CLI onboarding into a playground, #410 moving a playground to
-  GitHub, #411 Yulius CI on a playground's heads, #412 teammates without GitHub, #413 purging a
+  GitHub, #411 Yulius CI on a playground's heads, #412 teammates without GitHub, #420 purging a
   removed playground's files. Earlier list: `yulius onboard --playground` for a CLI checkout; moving a playground to
   a GitHub repository once GitHub is connected; Yulius CI on a playground's heads; teammates in a
   playground without GitHub.
