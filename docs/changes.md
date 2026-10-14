@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- Agents scan every change with Vidoc before delivery (SPEC-128, ADR-0104, task #109).
+  `scripts/dev security` runs the Vidoc CLI pinned in `tools/vidoc` on the current branch. Vidoc
+  scans the files that the branch changed since `dev`, and the command fails when the branch has
+  an open critical or high finding, printing each one. The key is the agent secret
+  `VIDOC_API_KEY`: the egress proxy adds it for `api.vidoc.dev`, so agents never see it. The
+  command refuses to run, with exit 2, on a tree with uncommitted files (the CLI scans the working
+  tree, not the commits) and without a usable key. The verification skill and AGENTS.md make the
+  scan part of every change's checks. Yulius CI does not run it yet, because CI jobs hold no secret
+  (#466).
 - Loading fields take the shape of what loads (SPEC-120, ADR-0097, task #106). The Git page loaded
   as three grey bars under its header, and every list, table and editor did the same. Now each
   loading state is drawn with its page's own layout. The Git page shows its two status cards,
