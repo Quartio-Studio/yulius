@@ -58,16 +58,59 @@ fn key_of(line: &str) -> Option<&str> {
     (!key.is_empty() && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')).then_some(key)
 }
 
+/// The quote a value opens and leaves open on its line (`"` or `'`), if any.
+fn opens(value: &str) -> Option<char> {
+    let value = value.trim_start();
+    let quote = value.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+    still_open(&value[1..], quote).then_some(quote)
+}
+
+/// Whether `rest` leaves a value quoted with `quote` open (`\"` does not close a double quote).
+fn still_open(rest: &str, quote: char) -> bool {
+    let mut escaped = false;
+    for c in rest.chars() {
+        if c == quote && !escaped {
+            return false;
+        }
+        escaped = quote == '"' && c == '\\' && !escaped;
+    }
+    true
+}
+
 /// `text` with each `(name, line)` set: the first line for a name is replaced in place (keeping
-/// `export`), later ones are dropped, missing names are appended. Every other line is kept.
-#[must_use]
-pub fn upsert(text: &str, entries: &[(String, String)]) -> String {
+/// `export`), later ones are dropped, missing names are appended. Every other line is kept,
+/// including the lines of another name's multi-line quoted value.
+///
+/// # Errors
+/// [`VaultError::Value`] when a name to set already holds a multi-line quoted value: replacing
+/// its first line would leave the others as stray lines.
+pub fn upsert(text: &str, entries: &[(String, String)]) -> Result<String, VaultError> {
     let eol = line_end(text);
     let mut seen = vec![false; entries.len()];
     let mut out = String::with_capacity(text.len() + entries.len() * 64);
+    let mut open: Option<char> = None;
     for raw in text.lines() {
-        let found = key_of(raw).and_then(|k| entries.iter().position(|(n, _)| n == k));
+        if let Some(quote) = open {
+            if !still_open(raw, quote) {
+                open = None;
+            }
+            out.push_str(raw);
+            out.push_str(eol);
+            continue;
+        }
+        let key = key_of(raw);
+        let value = raw.split_once('=').map_or("", |(_, v)| v);
+        let found = key.and_then(|k| entries.iter().position(|(n, _)| n == k));
+        if key.is_some() {
+            open = opens(value);
+        }
         match found {
+            Some(i) if open.is_some() => {
+                return Err(VaultError::Value(format!(
+                    "{} already holds a value over several lines: remove it from the file first",
+                    entries[i].0
+                )));
+            }
             Some(i) if seen[i] => {}
             Some(i) => {
                 seen[i] = true;
@@ -89,7 +132,7 @@ pub fn upsert(text: &str, entries: &[(String, String)]) -> String {
             out.push_str(eol);
         }
     }
-    out
+    Ok(out)
 }
 
 /// `text` of a `.env.example` with `NAME=` appended for each of `names` it does not mention (a
@@ -151,16 +194,36 @@ mod tests {
         let out = upsert(
             text,
             &[entry("API_KEY", "new-value-123")?, entry("NEW", "n-v-456")?],
-        );
+        )?;
         assert_eq!(
             out,
             "# local settings\nOTHER=1\nexport API_KEY=new-value-123\n\nMORE='x'\nNEW=n-v-456\n"
         );
-        assert_eq!(upsert("", &[entry("A", "abcdefgh")?]), "A=abcdefgh\n");
+        assert_eq!(upsert("", &[entry("A", "abcdefgh")?])?, "A=abcdefgh\n");
         assert_eq!(
-            upsert("# API_KEY=commented\n", &[entry("API_KEY", "abcdefgh")?]),
+            upsert("# API_KEY=commented\n", &[entry("API_KEY", "abcdefgh")?])?,
             "# API_KEY=commented\nAPI_KEY=abcdefgh\n",
             "a comment is not the key's line"
+        );
+        Ok(())
+    }
+
+    /// Review of SPEC-129, round 2: a multi-line quoted value already there for a copied name
+    /// is not cut in half (its other lines would become stray assignments); it is refused.
+    #[test]
+    fn a_multi_line_value_being_replaced_is_refused() -> Result<(), VaultError> {
+        let pem = "KEY=\"-----BEGIN KEY-----\nabc\nOTHER=x\n-----END KEY-----\"\nB=1\n";
+        assert!(upsert(pem, &[entry("KEY", "new-value-1")?]).is_err());
+        assert!(upsert("KEY='open\nB=1\n", &[entry("KEY", "new-value-1")?]).is_err());
+        assert_eq!(
+            upsert(pem, &[entry("B", "b-value-12")?])?,
+            pem.replace("B=1", "B=b-value-12"),
+            "another name's multi-line value is kept as it is"
+        );
+        assert_eq!(
+            upsert("KEY=\"a \\\" b\"\n", &[entry("KEY", "new-value-1")?])?,
+            "KEY=new-value-1\n",
+            "an escaped quote does not close the value"
         );
         Ok(())
     }
@@ -172,7 +235,7 @@ mod tests {
             upsert(
                 "A=1\r\nKEY=old\r\n",
                 &[entry("KEY", "new-value-1")?, entry("B", "b-value-12")?]
-            ),
+            )?,
             "A=1\r\nKEY=new-value-1\r\nB=b-value-12\r\n"
         );
         let names = vec!["KEY".to_owned()];

@@ -88,11 +88,18 @@ fn real_path(fd: &OwnedFd) -> AppResult<PathBuf> {
         std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd()))
             .map_err(|e| crate::files::io_error(&e))
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
     {
-        nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_GETPATH)
-            .map(PathBuf::from)
-            .map_err(os_error)
+        let mut path = PathBuf::new();
+        nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_GETPATH(&mut path)).map_err(os_error)?;
+        Ok(path)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "ios")))]
+    {
+        let _ = fd;
+        Err(AppError::Forbidden(
+            "copying into .env files needs Linux or macOS".into(),
+        ))
     }
 }
 
@@ -160,7 +167,10 @@ fn read_in(folder: &Folder, name: &str) -> AppResult<Option<Zeroizing<String>>> 
             MAX_ENV_BYTES / 1024
         )));
     }
-    let mut text = Zeroizing::new(String::new());
+    // Reserved up front, so reading never leaves a reallocated copy of the old keys behind.
+    let mut text = Zeroizing::new(String::with_capacity(
+        usize::try_from(meta.len()).unwrap_or(0) + 1,
+    ));
     file.take(MAX_ENV_BYTES)
         .read_to_string(&mut text)
         .map_err(|_| AppError::Invalid(format!("{shown} is not UTF-8 text")))?;
@@ -368,6 +378,11 @@ impl App {
             let line = dotenv::line(&record.name, &payload.value).map_err(invalid)?;
             entries.push((record.name.clone(), line));
         }
+        let text = Zeroizing::new(
+            dotenv::upsert(existing.as_ref().map_or("", |t| t.as_str()), &entries)
+                .map_err(invalid)?,
+        );
+        drop(entries);
 
         // Only then: a secret no person allowed yet is asked for, and nothing is written.
         let waiting: Vec<&VaultSecretRecord> = records
@@ -398,11 +413,7 @@ impl App {
             }));
         }
 
-        let text = Zeroizing::new(dotenv::upsert(
-            existing.as_ref().map_or("", |t| t.as_str()),
-            &entries,
-        ));
-        drop(entries);
+        drop(existing);
         let how = self.writing(&worktree, &folder, file_name).await;
         write_in(&folder, file_name, &text, 0o600, &how)?;
         drop(text);
@@ -528,8 +539,15 @@ impl App {
             .await
             .unwrap_or(false);
         if !added.is_empty() {
+            // The template keeps the mode it was committed with; a new one is 0644.
+            let mode = nix::sys::stat::fstatat(
+                &folder.fd,
+                EXAMPLE,
+                nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW,
+            )
+            .map_or(0o644, |st| u32::from(st.st_mode) & 0o777);
             let how = self.writing(worktree, folder, EXAMPLE).await;
-            if let Err(err) = write_in(folder, EXAMPLE, &text, 0o644, &how) {
+            if let Err(err) = write_in(folder, EXAMPLE, &text, mode, &how) {
                 return (
                     Vec::new(),
                     Some(format!("{relative} was not changed: {err}")),

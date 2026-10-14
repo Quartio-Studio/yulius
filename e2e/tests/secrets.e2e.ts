@@ -156,7 +156,7 @@ test('a person allows an agent to copy a secret into .env, then revokes it', asy
   await expect(card.getByText(/asks to copy/)).toBeHidden();
   await expect(card.getByText('Agents in this sandbox may copy its value into git-ignored .env files')).toBeVisible();
   await screen.getByRole('button', 'Stop agents copying STRIPE_KEY into .env files').click();
-  await expect(card.getByText(/Agents may copy its value/)).toBeHidden();
+  await expect(card.getByText(/may copy its value/)).toBeHidden();
   // A secret nobody asked about says nothing about .env.
   await expect(browser.locator('.item-card:has-text("VIDOC_API_KEY")').getByText(/\.env/)).toBeHidden();
 });

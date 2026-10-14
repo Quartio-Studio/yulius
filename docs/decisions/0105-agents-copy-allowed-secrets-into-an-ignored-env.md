@@ -49,8 +49,9 @@ exactly that: any code in the worktree can read it and send it anywhere.
   line is kept, and so are Windows line endings. Values are written bare, in single quotes, or in
   double quotes. A value that common readers (Node `dotenv`, `python-dotenv`, Docker Compose, `sh`)
   would read differently is refused: one with `\` or `${` (unescaped or expanded even in single
-  quotes), or with `'` and `"`, `$` or a backtick. The file is written whole with mode 0600, and each copy is audited once per run, secret
-  and file (`vault.agent.env`).
+  quotes), or with `'` and `"`, `$` or a backtick. So is a name that already holds a value over
+  several lines. The dotenv file is written with mode 0600; `.env.example` keeps its mode (0644
+  when new). Each copy is audited once per run, secret and file (`vault.agent.env`).
 
 ## Alternatives
 
