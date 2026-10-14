@@ -475,6 +475,9 @@ impl App {
             .ok()
             .and_then(|failed| failed.get(&(user.id.clone(), record.id.clone())).cloned());
         let resume = newest.filter(|id| Some(id) != unresumable.as_ref());
+        // Yulius attaches the repository's `.mcp.json` servers; Claude Code rejects them here
+        // instead of asking the person (SPEC-095 PMC-001, PMC-004).
+        let project_mcp_servers = self.import_project_mcp(record).await;
         let mut plan = self.deps.harness.plan_cockpit(&CockpitLaunch {
             cwd: folder.clone(),
             config_dir: space.home.join(".claude"),
@@ -486,6 +489,7 @@ impl App {
                 self.config.internal_url.clone(),
                 crate::model::Secret(runtime.cockpit_token(self.deps.crypto.as_ref())),
             )),
+            project_mcp_servers,
         })?;
         if let Some(id) = resume {
             let _ = runtime.resumed.set((id, self.now()));

@@ -717,6 +717,9 @@ function createApp(root, transport) {
     const path = sandbox ? `/s/${encodeURIComponent(sandbox.slug)}` : '/';
     if (currentLocation().path !== path) navigate(path);
     setTimeout(() => {
+      // A sandbox that awaits onboarding shows no prompt: its action takes the keyboard (SPEC-096).
+      const gated = document.querySelector('.onboarding-gate:not([hidden]) .btn');
+      if (gated) { gated.focus(); return; }
       const prompt = document.querySelector('.composer-prompt');
       if (prompt && !prompt.disabled) prompt.focus();
     }, 0);

@@ -16,6 +16,41 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   request or Yulius CI), and their briefing and definition of done say so. It is its maker's and
   the superadmin's. Connecting GitHub is optional: the sign-in toast is gone, a notification says
   playgrounds work without it, and Import and Create follow once it is connected.
+- A repository's `.mcp.json` no longer stops the Superagent on Claude Code's "N new MCP servers
+  found in this project" dialog (SPEC-095, ADR-0078, #391). Before each task run and Superagent
+  start, Yulius adds the file's servers that the sandbox lacks to its MCP servers, so every task
+  gets them. Since agents can write the file, a `${VAR}` value becomes the placeholder of the agent
+  secret VAR, which the egress proxy replaces on the secret's bound hosts; the file never gets a
+  clear value. The Superagent starts rejecting the file's servers through `--settings`, including
+  ones a person had approved there (#395 will give it Yulius's servers). A server already
+  configured is left as it is, so one turned off stays off. An MCP server's values now reach a run
+  in `YULIUS_MCP_<SERVER>_<VAR>` variables. Before, one named like an agent secret, such as
+  `APIFY_TOKEN`, clashed with that secret's placeholder, and every run of the sandbox failed to
+  start.
+- Onboarding is mandatory (SPEC-096, ADR-0076, task #81): while a sandbox awaits or runs its
+  onboarding, its new-task page shows no task input. A centred message says what onboarding will
+  do (its task's own plan, which differs for a repository already in the Yulius format), with
+  Start onboarding, or Follow onboarding while it runs (waiting for capacity and a stopped task
+  are said too). The task box shows by itself once the sandbox is ready. The page no longer offers Skip;
+  the admin API keeps it as a recovery path. Tasks created through the API still wait after
+  onboarding.
+- The terminal's mouse is the program's when it asks for it, as in a native terminal (SPEC-098,
+  ADR-0079, task #83). The "Mouse: select text · send to app" chip is gone. In Claude Code's
+  full-screen view, clicks, drags, the wheel and right-clicks reach Claude Code, and Shift-drag
+  (Option-drag on macOS) selects text; the same key brings the Copy and Paste menu. A read-only
+  viewer, who cannot send anything, keeps the mouse for selection. A press beside another viewer's
+  grid reaches no program.
+- A task waiting for its checks or merge shows a still, muted branch (SPEC-100, ADR-0080, task #85,
+  #393). The "Waiting for checks or merge" state took Working's tone so that it notified nobody,
+  and that tone turned its git-branch icon green and spun it like the Working ring. It now takes
+  the muted tone of Queued, Chained and Paused; it stays under Working and still notifies nobody.
+- Loading shows shimmering fields everywhere, never a spinner with "Loading…" (SPEC-092, ADR-0073,
+  task #77). `placeholder(text, 'loading')` is the skeleton, so the Git page, dialogs, Sessions,
+  the editor pages and every `loader()` list draw bars where the content will appear, with what
+  loads said to screen readers. The task lists, the status popover, Instance, the Jev key card,
+  the Superagent's start, the editor tree, home cards, notepads, the browser panel's cover and
+  usage not read yet do the same. Spinners stay for actions under way, connections and working
+  tasks. The mock's `hold=<path>` and `hold=frames` keep a view loading for tests.
 - Menus show an option's whole description (SPEC-094, ADR-0075, task #79). A description wraps
   onto as many lines as it needs instead of ending in an ellipsis, in every `openMenu` menu; menus
   keep their width (at most 320 px and the window less 16 px), so a short description stays one

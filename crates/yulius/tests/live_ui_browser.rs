@@ -13,8 +13,9 @@
 //!   hostile page on the preview origin cannot use the Yulius session (API and WebSocket refused);
 //!   the sandbox Chrome refuses to open Yulius.
 //! - Yulius refuses to render framed.
-//! - The terminal (F 2026-10-07): its text is HTML and a double-click selects a word even after
-//!   the program switched on mouse tracking; links to the VM are told apart from others.
+//! - The terminal (F 2026-10-07): its text is HTML and, for a read-only viewer (the filter's
+//!   default, ADR-0079), a double-click selects a word even after the program switched on mouse
+//!   tracking; links to the VM are told apart from others.
 //!
 //! ```sh
 //! YULIUS_LIVE_CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
@@ -711,8 +712,8 @@ async fn the_ui_refuses_to_render_framed() -> TestResult {
     result
 }
 
-/// The terminal as the UI builds it: the real xterm and mouse filter, fed output that turns on
-/// mouse tracking (as Claude Code does).
+/// The terminal as the UI builds it for a read-only viewer: the real xterm and mouse filter, fed
+/// output that turns on mouse tracking (as Claude Code does).
 const TERMINAL_FIXTURE: &str = r"(async () => {
   const { Terminal } = await import('/assets/vendor/xterm/xterm.mjs');
   const { createMouseFilter } = await import('/assets/mousefilter.js');

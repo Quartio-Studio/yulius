@@ -152,7 +152,6 @@ p { margin: 0; }
 
 .placeholder { padding: 32px 16px; text-align: center; color: var(--muted); }
 .placeholder-error { color: var(--danger); }
-.placeholder-loading::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 8px; border-radius: 50%; border: 2px solid var(--muted); border-right-color: transparent; animation: spin var(--duration-spin) linear infinite; vertical-align: -1px; }
 
 .banner { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: var(--radius); border: 1px solid var(--border-strong); background: var(--surface-2); }
 .banner-warn { border-color: var(--warn-border); background: var(--warn-soft); color: var(--warn-fg-strong); }
@@ -589,6 +588,8 @@ body.resizing iframe, body.resizing canvas { pointer-events: none; }
 .usage-row { display: grid; grid-template-columns: minmax(132px, 1fr) minmax(64px, 1.3fr) 72px; align-items: center; gap: 12px; }
 .usage-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--text); }
 .usage-reset { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); }
+/* :nth-child(n) outweighs the skeleton's own line widths, defined below. */
+.usage-reset .skeleton-line:nth-child(n) { width: 6em; height: 8px; margin-top: 4px; }
 .usage-pct { color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .usage-pct.tone-ok { color: var(--ok-fg); }
 .usage-pct.tone-warn { color: var(--warn-fg); }
@@ -1045,7 +1046,7 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 .held-text { margin: 0; }
 .held-steps { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
 .held-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.taskview-term:has(.held-slot:not([hidden])) .term-notice, .taskview-term:has(.held-slot:not([hidden])) .term-mouse-toggle { top: 64px; }
+.taskview-term:has(.held-slot:not([hidden])) .term-notice { top: 64px; }
 /* The chain on both tasks (TSK-012). */
 .chain-chip { border: 1px solid var(--border); color: var(--text-2); text-decoration: none; }
 a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
@@ -1105,6 +1106,9 @@ a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
 /* Calm loading (F 2026-10-10): shimmering bars where content will appear (dom.js skeleton), the
    composer's working line, and a sheen along the prompt box while intake decides. */
 .skeleton { display: flex; flex-direction: column; gap: 8px; padding: 4px 0; }
+/* In place of a page's, a panel's or a dialog's content (SPEC-092): room around it, and bars no
+   longer than a line of text. */
+.skeleton-block { gap: 12px; width: 100%; max-width: 640px; padding: 16px; }
 .skeleton-line {
   display: block; height: 12px; border-radius: var(--radius-full);
   background: var(--surface-3) linear-gradient(90deg, transparent, var(--overlay-active), transparent) no-repeat; background-size: 50% 100%;
@@ -1277,6 +1281,15 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
 .composer-repo-link span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-branch { display: inline-flex; flex: none; align-items: center; gap: 6px; height: var(--control-lg); padding: 0 12px; border: 1px solid var(--border-strong); border-radius: var(--radius); color: var(--text-2); font-family: var(--font-mono); font-size: var(--fs-md); line-height: var(--lh-md); }
 @media (max-width: 767px) { .composer-top { position: static; align-self: stretch; flex-wrap: wrap; margin-bottom: 16px; } }
+/* Onboarding comes first (SPEC-096): only its message and button, centred in the page. */
+/* Symmetric, clear of the top bar (16px from the top, one large control high). */
+.composer.gated { padding: calc(var(--control-lg) + 32px) 16px; }
+.onboarding-gate { width: min(560px, 100%); margin-block: auto; display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; }
+.onboarding-gate-title { margin: 0; color: var(--text); font-family: var(--font-display); font-size: var(--fs-xl); line-height: var(--lh-xl); font-weight: 500; text-wrap: balance; }
+.onboarding-gate p { margin: 0; color: var(--text-2); }
+.onboarding-gate-steps { display: flex; flex-direction: column; gap: 6px; margin: 0; padding-left: 20px; color: var(--text-2); text-align: left; }
+.onboarding-gate .btn { margin-top: 8px; }
+@media (max-width: 767px) { .composer.gated { padding: 16px; } }
 /* The prompt box (UI-021): a rounded chat box with the task's choices along its bottom edge. */
 .composer-box {
   display: flex; flex-direction: column; border: 1px solid var(--border-control); border-radius: var(--radius-xl);
@@ -1838,6 +1851,7 @@ a.dl-task:hover { text-decoration: underline; }
 .bp-copied { position: absolute; z-index: var(--z-float); right: 10px; bottom: 10px; padding: 4px 12px; border-radius: var(--radius-full); background: var(--surface-2); color: var(--text); font-size: var(--fs-sm); line-height: var(--lh-sm); pointer-events: none; }
 .bp-copied[hidden] { display: none; }
 .bp-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); background: var(--surface); text-align: center; padding: 16px; }
+.bp-overlay:has(> .skeleton) { align-items: flex-start; justify-content: flex-start; padding: 0; }
 /* Shown instead of the app when it is framed (BRW-008). */
 .framed-notice { max-width: 560px; margin: 0 auto; padding: 48px 24px; color: var(--text); }
 .framed-notice h1 { font: 600 var(--fs-lg)/var(--lh-lg) var(--font); }
@@ -1888,6 +1902,7 @@ a.dl-task:hover { text-decoration: underline; }
 .home-count-attention .icon, .home-count-attention strong { color: var(--warn-fg); }
 .home-count-running .icon { color: var(--ok); }
 .home-activity { color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.home-activity .skeleton-line { width: 10em; max-width: 100%; height: 10px; }
 .home-card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; }
 
 /* ---------------------------------------------------------------- phone (< 768 px, §6.4) */
@@ -1959,10 +1974,6 @@ a.dl-task:hover { text-decoration: underline; }
   .table .hide-phone { display: none; }
 }
 
-/* Terminal mouse hand-over (shown only when the program asked for the mouse). */
-.term-mouse-toggle { background: var(--surface-2); box-shadow: var(--shadow-sm); font-size: var(--fs-xs); line-height: var(--lh-xs); opacity: 0; transition: opacity var(--duration-fast) var(--ease); }
-.term:hover .term-mouse-toggle, .term-mouse-toggle:focus-visible { opacity: 1; }
-
 /* Harness change waiting for approval (ROT-012). */
 
 /* Built-in editor (EDT-001): explorer, tabs, Monaco. */
@@ -1976,6 +1987,10 @@ a.dl-task:hover { text-decoration: underline; }
 .ed-tree { flex: 1; min-height: 0; overflow: auto; padding: 4px 0; font-size: var(--fs); line-height: var(--lh); }
 .ed-row { display: flex; align-items: center; gap: 4px; height: var(--control-sm); padding-right: 8px; white-space: nowrap; cursor: pointer; user-select: none; }
 .ed-row:hover { background: var(--overlay-hover); }
+.ed-row-loading { cursor: default; }
+.ed-row-loading:hover { background: none; }
+.ed-row-loading .skeleton { flex: 1; }
+.ed-row-loading .skeleton-line { width: 8em; max-width: 100%; height: 10px; }
 .ed-row.active { background: var(--accent-soft); color: var(--text); }
 .ed-row:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 .ed-twisty { width: 12px; flex: none; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); }
@@ -2001,6 +2016,10 @@ a.dl-task:hover { text-decoration: underline; }
 .notes-panes { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--term-bg); }
 .notes-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .notes-pane[hidden] { display: none; }
+.notes-box { flex: 1; min-height: 0; display: flex; position: relative; }
+/* Before the first read (SPEC-092): fields over the box instead of its placeholder. */
+.notes-box > .skeleton { position: absolute; inset: 0 0 auto; pointer-events: none; }
+.notes-loading .notes-text::placeholder { color: transparent; }
 .notes-text { flex: 1; min-height: 0; width: 100%; resize: none; padding: 12px 16px; border: 0; background: transparent; color: var(--text); font: inherit; font-size: var(--fs); line-height: var(--lh); }
 .notes-text:focus-visible { outline: none; box-shadow: inset 2px 0 0 var(--accent); }
 .notes-text[readonly] { color: var(--text-2); }

@@ -73,7 +73,7 @@ grants per client and 1000 per instance; past either it answers 429.
 | POST | `/api/playgrounds?name=<name>` | anyone signed in | raw body: a gzip tar of the folder (`files/…` its working tree, `git/…` its `.git`, of which only `HEAD`, `packed-refs`, `shallow`, `objects/` and `refs/` are taken) → 201 `Sandbox` (`playground: true`); at most 1 GiB (refused from `Content-Length` before it is read) and the import bounds once unpacked (2 GiB, 200 000 entries); 422 for an empty, unreadable or over-limit archive, nothing kept (SPEC-099) |
 | GET | `/api/sandboxes/{sid}` | read | → `Sandbox` |
 | PATCH | `/api/sandboxes/{sid}` | admin | `{"profile": Profile}` → `Sandbox` |
-| POST | `/api/sandboxes/{sid}/onboarding/skip` | admin | → `Sandbox` (`pending`/`preparing` → `skipped`) |
+| POST | `/api/sandboxes/{sid}/onboarding/skip` | admin | → `Sandbox` (`pending`/`preparing` → `skipped`); an operator's recovery path for an onboarding that cannot finish: the web UI offers no skip (ADR-0076) |
 | POST | `/api/sandboxes/{sid}/onboarding/approve` | write, browser session | Start onboarding → `Sandbox`; starts the onboarding task (`pending` → `preparing`; a missing one is created); idempotent while `preparing`; 403 for a bearer token (the CLI only uploads, SPEC-051); 409 when nothing awaits preparation or the task cannot start |
 | DELETE | `/api/sandboxes/{sid}` | admin | → 204; stops live/queued tasks; GitHub repository, clone and task records kept |
 
@@ -95,7 +95,8 @@ onboarding on the sandbox page, SPEC-051). While
 automation run or a held prompt's Start in parallel / Run after) returns it `chained` after the
 preparation task, and it starts by itself once the sandbox is `ready` or `skipped`
 (`POST /api/tasks/{tid}/start-now` starts one at once); continuing a task and continuing an
-imported session are 409 (U-08, IMP-010). Create mode
+imported session are 409 (U-08, IMP-010). The web UI's new-task page shows no task input
+meanwhile, only what onboarding will do and its button (SPEC-096). Create mode
 (instance admins) creates a private repository, pushes the template scaffold to `main` and `dev`,
 and adds rulesets requiring pull requests on both.
 

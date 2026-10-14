@@ -1025,6 +1025,8 @@ impl App {
             AttemptId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?;
         let run_dir = self.config.data_dir.join("runs").join(attempt_id.as_str());
         std::fs::create_dir_all(&run_dir).map_err(AppError::internal)?;
+        // The repository's `.mcp.json` servers join the sandbox's first (SPEC-095 PMC-001).
+        self.import_project_mcp(&sandbox).await;
         let plan = self.deps.harness.plan(&HarnessLaunch {
             harness,
             mode,
