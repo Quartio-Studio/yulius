@@ -100,3 +100,10 @@ the keyboard into it) shows a copy button inside the value box. The current **Co
   instructions people read alongside it.
 - **The two-factor setup key stays shown**: it is not a stored password and the person has to
   read or copy it into an authenticator once.
+- **Review round 1 (approved at aba21f22).** The two minor findings were taken: the test now runs
+  axe in the light theme too (masked and shown) and presses Tab from the eye to reach the quick
+  copy; with `:focus-within` dropped from the CSS that test fails. Nits not taken: the tooltip
+  says "Hide value" while pressed with the name constant, as chosen above; the eye is built by
+  hand because it redraws its own icon and title; on touch screens the quick copy shows once the
+  eye is tapped (focus in the box), and the always-visible Copy button covers a direct copy, so
+  no `hover: none` rule is added.

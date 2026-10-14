@@ -167,6 +167,16 @@ test('a shown value stays masked until the eye is pressed, and copies on hover',
   await expect(quick).toBeHidden();
   await eye.focus();
   await expect(quick).toBeVisible();
+  await browser.keyboard.press('Tab');
+  expect(await browser.evaluate(() => document.activeElement!.getAttribute('aria-label'))).toBe('Copy');
+
+  // The light theme has no violations either, masked and shown.
+  await browser.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
+  expect(await axeViolations(browser)).toEqual([]);
+  await eye.click();
+  expect(await axeViolations(browser)).toEqual([]);
+  await eye.click();
+  await browser.evaluate(() => document.documentElement.removeAttribute('data-theme'));
 
   // A new Show starts masked again, even after the eye was pressed.
   await eye.click();
