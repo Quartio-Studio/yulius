@@ -137,6 +137,9 @@ flowchart LR
 - `scripts/dev ci` exit 0 at `5826006a` (after merging `origin/dev`): nextest 1534 passed,
   16 skipped; repository contracts (unique decision numbers, links, UI tokens), lint, deps and
   docs passed. `python3 scripts/check_repository.py --ui`: UI contracts passed.
+- After the confirmation review's fixes and a second merge of `origin/dev`, at `434d2923`:
+  `scripts/dev ci` exit 0 (nextest 1535 passed, 16 skipped) and the full e2e suite 42 files
+  passed, 1 skipped; 308 tests passed, 1 skipped.
 - Independent review in a fresh session: approve, no blocker or major; its minors fixed in
   `0f9ee27b` and `5826006a` (see Decisions).
 - Not tested here: two real devices of one person against a real server (the mock simulates the
