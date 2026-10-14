@@ -22,8 +22,8 @@
 //! ([`ProcessEntry::ns_init`]) is skipped with everything under it (SPEC-130 DMD-001; task #108
 //! read Working for good behind such a preview server). The probe reads the process table once:
 //! on Linux it walks `/proc/<pid>/task/<tid>/children` from the agent (falling back to a scan of
-//! `/proc`), elsewhere it runs `ps` with a timeout. Every read is bounded ([`MAX_PROCESSES`], [`MAX_DEPTH`],
-//! [`MAX_CMDLINE_BYTES`], [`PS_TIMEOUT`]); `None` means the table could not be read.
+//! `/proc`), elsewhere it runs `ps` with a timeout. Every read is bounded ([`MAX_PROCESSES`],
+//! [`MAX_DEPTH`], [`MAX_CMDLINE_BYTES`], [`PS_TIMEOUT`]); `None` means the table could not be read.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
@@ -525,10 +525,8 @@ mod tests {
             entry(20, 11, true),  // the orphaned subshell, adopted by the init
             entry(21, 20, false), // the server it started
             entry(22, 20, true),  // a subshell of the orphan
-            ProcessEntry {
-                waits: true,
-                ..entry(23, 11, true) // an orphaned `yulius wait` shell
-            },
+            entry(23, 11, true),  // an orphaned shell running `yulius wait`
+            wait(24, 23),
         ];
         assert_eq!(
             count_background(&table, 10),
