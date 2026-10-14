@@ -1,11 +1,11 @@
 ---
 yulius-task: 7caf70b1-25f1-4986-a274-7ce2babebc65
-status: draft
+status: done
 ---
 
 # SPEC-134: CD (deployment): dev and production deploys that agents build but cannot cheat
 
-Status: draft
+Status: done
 Date: 2026-10-14
 Owner: Yulius task #113
 Scope authorization: the person's request (task #113, which replaces the archived task #112):
@@ -191,7 +191,7 @@ Teaching (CDK):
 - [x] Yulius's own CD defined, docs and decisions updated
 - [x] Review round 1: deploys run verified commits out of the agents' reach, fixed test-first
 - [x] Review round 2: production off the host loopback, exclusive secrets, commit-bound confirmation
-- [ ] Review round 3 approves the exact head
+- [x] Review round 3 approves the exact head
 - [ ] Every gate green, merged into dev on green CI
 
 ## Acceptance criteria
@@ -301,4 +301,41 @@ Teaching (CDK):
 
 ## Evidence
 
-To be completed with the delivered head.
+- Domain (`cargo nextest run -p yulius-domain`): `cd::tests` (states, who may deploy, the typed
+  slug), `spec_format::config::tests::cd_tables_*` (tables, errors with line numbers) and
+  `the_repositorys_own_cd_is_defined` (Yulius: dev empty, production a promotion) pass.
+- Git adapter (`cargo nextest run -p yulius-git`):
+  `the_cd_mirror_takes_only_the_expected_commit_and_ignores_replacements` passes (a planted
+  `git replace` never reaches the mirror; a moved tracking ref is refused).
+- Store: `cd::tests` (one running run per environment, ends once, retention keeps the deployed run).
+- Process host and wiring: `containment::tests::host_system_runs_take_the_hosts_system_read_only`
+  and `wiring::session::tests::a_production_cd_run_launches_on_the_hosts_system` (the production
+  containment passes the launch validation and becomes a joined bwrap run on the host's read-only
+  system; it failed before round 3's fix); `ci::cd::tests::production_runs_on_the_sandbox_network_with_the_hosts_system`.
+- Integration (`cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^cd::/)'`): 11
+  passed. They cover dev from the integration head with the allowed secret redacted (AC2), a
+  task branch changing nothing (AC1), a failing deploy, one run at a time, cancel (AC3), empty
+  and undefined environments (AC3), a lost run (AC5, files removed), production by an
+  administrator with the typed slug, a stale confirmation refused, promotion, nothing to promote
+  (AC4), agents deploying dev, asking with `needs_you`, `yulius wait`, refused production,
+  `delivery_promote` gone and production-stage `delivery_deploy` refused (AC2/AC4/AC6), a person's
+  prompt ending `needs_you` and a Yulius-typed one not (AC6), and tampering, exclusive production
+  secrets (no `.env`, hosts, MCP reference or agent request) and lost-run cleanup (AC9).
+- `wait_cli` unit tests: a running deploy keeps the wait; an end before the wait, between two polls,
+  or with a merge outcome in the same poll is reported once.
+- Onboarding, briefing and automation catalog tests (CDK-001..003, AC8) pass; the delivery,
+  automations, import, playground and secrets suites were updated and pass.
+- e2e (`npx e2e run`): `cd.e2e.ts` 5 passed (the page, the slug dialog naming the promoted commit,
+  members, setup task, `needs_you`), `secrets.e2e.ts` 11 passed (production allowance),
+  `navigation.e2e.ts` 8 passed, `menus.e2e.ts` and `workflows.e2e.ts` pass. Whole suite: 433 of 435.
+  The one remaining failure, `places.e2e.ts` "a sandbox left without a tool comes back without one",
+  fails the same way on `origin/dev` in this sandbox and passes on Yulius CI (dev 3052c54).
+- `scripts/dev ci` (format, Clippy, repository contracts, 1713 tests, docs, dependencies): green
+  on c6e2fb11.
+- `scripts/dev security`: not run (exit 2). Vidoc rejected the agent secret `VIDOC_API_KEY`
+  (HTTP 401, invalid or expired token), so the scan is unrun, not passed.
+- Independent review in fresh sessions: three rounds, each requesting changes, all findings fixed
+  test-first (Decisions), and a confirmation review of the round-3 fixes.
+- Not tested here: a real production deploy under sandbox isolation (this sandbox has no user
+  namespaces for the holder; the argv and launch validation are tested instead), and a real VPS
+  dev deploy (Yulius has no dev machine yet; its `[cd.dev]` is empty).

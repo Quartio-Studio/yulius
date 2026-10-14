@@ -72,6 +72,14 @@ test('read access watches; CD is set up with an agent through a task', async ({ 
   await expect(screen.getByRole('button', 'Set up CD with an agent')).toBeDisabled();
 
   await app.open(mock('/s/product/cd'));
+  await mockReady(browser);
+  // The server ships the Infra bootstrap workflow (catalog/workflows); the shared mock lists fewer,
+  // so the composer's menus elsewhere keep their size.
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { workflows: object[] } }).__yuliusMock.workflows.push({
+    id: 'wf-infra-bootstrap', sandbox: null, name: 'Infra bootstrap', description: 'Foundations and CD (deployment).',
+    when_to_use: 'CD must be set up or changed.', steps: ['Survey', 'CD dev and production defined'], instructions: 'Follow infra-bootstrap.',
+    gates: { require_spec: true, require_tests: true }, scope: 'instance', builtin: true,
+  }));
   await screen.getByRole('button', 'Set up CD with an agent').click();
   const setup = screen.getByRole('dialog', 'Set up CD with an agent');
   await expect(setup.getByRole('textbox', 'What the agent should do')).toHaveValue(/Define \[cd\.dev\] and \[cd\.prod\] explicitly/);
