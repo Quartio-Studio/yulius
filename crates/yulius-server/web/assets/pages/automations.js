@@ -44,7 +44,7 @@ export function mountAutomationsPage(ctx, sandbox) {
     const items = Array.isArray(list) ? list : [];
     const offered = (Array.isArray(templates) ? templates : []).filter((t) => !t.automation_id);
     return h('div', { class: 'stack' }, automationList(items), offered.length ? readyMade(offered) : null);
-  });
+  }, { shape: 'items' });
 
   function readyMade(templates) {
     return h('section', { class: 'stack-sm', 'aria-labelledby': 'automations-ready-made' },
@@ -129,7 +129,7 @@ export function mountAutomationsPage(ctx, sandbox) {
   }
 
   function history(a) {
-    const modal = openModal({ title: `Runs · ${a.name}`, wide: true, body: placeholder('Loading the runs…', 'loading'), actions: [{ label: 'Close' }] });
+    const modal = openModal({ title: `Runs · ${a.name}`, wide: true, body: placeholder('Loading the runs…', 'loading', ['table', 4]), actions: [{ label: 'Close' }] });
     ctx.api.get(`/api/automations/${enc(a.id)}/runs`).then((runs) => {
       setChildren(modal.body, dataTable([
         { label: 'Scheduled for', render: (r) => dateTime(r.scheduled_for) },

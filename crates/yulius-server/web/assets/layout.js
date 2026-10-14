@@ -1,7 +1,7 @@
 // Global layout pieces (SPEC-001 §6.1): thin sandbox tab row with the Status panel, and the
 // left sidebar with navigation, the active task list and the user menu at its foot.
 
-import { h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip, skeleton } from './dom.js';
+import { h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip, skeleton, bar, skeletonOf } from './dom.js';
 import { relLong, bytes, duration, dateTime, resetLabel, compact } from './format.js';
 import { sparkline, usd } from './charts.js';
 import { taskTime } from './tasktime.js';
@@ -856,7 +856,12 @@ export function createSidebar(ctx) {
       const error = ctx.store.tasksError(sandbox.id);
       setChildren(list, error
         ? loadError(`Couldn’t load tasks: ${error.message}`, () => ctx.store.loadTasks(sandbox.id).catch(() => {}))
-        : skeleton('Loading tasks…', 3, { block: true }));
+        // A group band over task rows, as the list will be (SPEC-120); `.task-row` stays real tasks'.
+        : skeletonOf('Loading tasks…', h('div', { class: 'skeleton-task-group' },
+          h('div', { class: 'task-group-head' }, bar('lg')),
+          [70, 55, 80, 45, 62].map((width) => h('div', { class: 'skeleton-task-row' },
+            h('span', { class: 'task-mark' }, h('span', { class: 'skeleton-tile skeleton-dot' })),
+            h('span', { class: 'task-title' }, bar(width)), h('span', { class: 'task-age' }, bar('sm')))))));
       return;
     }
     // A task the user left normally is done for now: it stays under Tasks (with Continue) but
