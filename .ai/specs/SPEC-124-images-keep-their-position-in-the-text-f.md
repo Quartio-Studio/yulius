@@ -155,9 +155,14 @@ the keys go to the history. Formatting commands are refused (plain text only).
 
 Run on this branch (Linux, Chromium 153 headless, Claude Code behaviour through the fake agent):
 
-- `scripts/dev ci` at `2336fd1a`: doctor, repository contracts, check, fmt and Clippy
-  (`-D warnings`), nextest 1643 passed (16 skipped), doctests, cargo-deny, cargo-shear, exit 0.
-- `cd e2e && npx e2e run` at `2336fd1a`: 380 passed, 1 skipped (49 files), among them
+- `scripts/dev ci`: exit 0 at `2336fd1a` (nextest 1643 passed, 16 skipped) and at `61b44f93`
+  after the dev merge and the round-2/3 fixes (doctor, repository contracts, check, fmt and Clippy
+  `-D warnings`, nextest 1647 passed, 16 skipped, doctests, cargo-deny, cargo-shear). Later
+  commits change only the web UI, its e2e tests and this spec; Yulius CI runs both gates on the
+  final head before the merge.
+- `cd e2e && npx e2e run` at `2336fd1a`: 380 passed, 1 skipped (49 files). After it, the affected
+  suites (`inline-images`, `filedrop`, `drafts`, `original-prompt`, `new-task`) passed at each fix
+  round. Among them is
   `inline-images.e2e.ts`, which covers the done criterion of task #105. It types text, pastes an
   image in the middle, types more, deletes it with one Backspace and brings it back with undo,
   moves it by cut and paste, and starts the task. The task's prompt has
