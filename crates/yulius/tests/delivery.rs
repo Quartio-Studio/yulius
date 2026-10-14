@@ -2384,6 +2384,8 @@ async fn a_review_carries_over_clean_merges_of_the_integration_branch() -> TestR
     git(&t.wt, &["merge", "--quiet", "--no-edit", "origin/quartio"])?;
     let merged = git(&t.wt, &["rev-parse", "HEAD"])?;
     assert_ne!(merged, t.head);
+    // `delivery_merge` pushes the merge (DMG-001); its checks still run, so the merge arms.
+    f.h.github.set_checks(&merged, ChecksState::Pending);
     let armed = t.merge_at(&t.head).await?;
     assert_eq!(
         armed["isError"], false,
@@ -3195,6 +3197,8 @@ impl ArmedTask {
         assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
         let head = git(&wt, &["rev-parse", "HEAD"])?;
         f.h.github.set_checks(&head, ChecksState::Pending);
+        // Its plan is finished, as `delivery_merge` needs to deliver a later head (DMG-001).
+        set_steps(&f, "t1", &["done", "done"]).await?;
         f.h.store
             .insert_attempt(&AttemptRecord {
                 id: AttemptId::parse("a1")?,
@@ -3739,6 +3743,101 @@ async fn a_restore_never_brings_back_a_merge_decided_since() -> TestResult {
     let state = t.wait(Value::Null).await?;
     assert_eq!(state["merge_armed"], false, "{state}");
     assert_eq!(state["merge_outcome"], decided.as_str(), "{state}");
+    Ok(())
+}
+
+/// SPEC-116 DMG-001 (task #101): a goal task whose evaluator keeps its turn going never reaches
+/// the clean end of turn that opens its pull request, so `delivery_merge` delivers the head
+/// itself: pushed, the pull request opened by the task's creator, then the merge armed. A head
+/// that cannot be delivered yet is refused with why, and nothing opens or arms.
+#[tokio::test]
+async fn a_merge_call_opens_the_pull_request_a_goal_task_still_lacks() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&head, ChecksState::Pending);
+    let agent = live_agent(&f, "t1", "tok-agent").await?;
+    let pulls_opened = || {
+        f.h.github
+            .writes()
+            .iter()
+            .filter(|w| w.starts_with("create_pull"))
+            .count()
+    };
+    let merge = json!({"reviewed_head": head, "review_summary": "approve"});
+    let refusal = |result: &Value| {
+        assert_eq!(result["isError"], true, "{result}");
+        result["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+
+    // A feature without a plan is not delivered either (review of SPEC-116, finding 2).
+    let unplanned = agent_tool(&f, &agent, "delivery_merge", merge.clone()).await?;
+    assert!(refusal(&unplanned).contains("no plan"), "{unplanned}");
+    assert_eq!(pulls_opened(), 0);
+
+    set_steps(&f, "t1", &["done", "in_progress"]).await?;
+    let blocked = agent_tool(&f, &agent, "delivery_merge", merge.clone()).await?;
+    assert_eq!(blocked["isError"], true, "{blocked}");
+    let why = blocked["content"][0]["text"].as_str().unwrap_or_default();
+    assert!(why.contains("is in_progress"), "{why}");
+    assert_eq!(pulls_opened(), 0, "nothing opened");
+    assert_eq!(
+        wait_state(&f, &agent, &head).await?["merge_armed"],
+        false,
+        "nothing armed"
+    );
+
+    set_steps(&f, "t1", &["done", "done"]).await?;
+    let armed = arm_merge(&f, &agent, &head).await?;
+    assert_eq!(armed["armed"], true, "{armed}");
+    assert_eq!(pulls_opened(), 1, "{:?}", f.h.github.writes());
+    assert_eq!(f.origin_sha("feat/1-checkout-api")?, head, "pushed");
+    assert_eq!(
+        f.h.github.actors_of("create_pull"),
+        ["bob"],
+        "as its creator"
+    );
+    assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
+
+    // A later commit reaches the open pull request through the call too, before it arms.
+    commit_file(&wt, "follow-up.txt", "more", "Follow-up")?;
+    let follow_up = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&follow_up, ChecksState::Pending);
+    let again = arm_merge(&f, &agent, &follow_up).await?;
+    assert_eq!(again["armed"], true, "{again}");
+    assert_eq!(f.origin_sha("feat/1-checkout-api")?, follow_up, "pushed");
+    assert_eq!(pulls_opened(), 1, "no second pull request");
+
+    // A rewritten branch GitHub refuses: the call answers with the remedy, not git's words
+    // (review of SPEC-116, finding 3), and nothing is force-pushed.
+    git(&wt, &["reset", "--quiet", "--hard", &head])?;
+    commit_file(&wt, "rewritten.txt", "other", "Rewritten")?;
+    let rewritten = git(&wt, &["rev-parse", "HEAD"])?;
+    let refused = agent_tool(
+        &f,
+        &agent,
+        "delivery_merge",
+        json!({"reviewed_head": rewritten, "review_summary": "approve"}),
+    )
+    .await?;
+    let why = refusal(&refused);
+    assert!(
+        why.contains("Do not force-push")
+            && why.contains("git merge --no-edit origin/feat/1-checkout-api"),
+        "{why}"
+    );
+    assert_eq!(
+        f.origin_sha("feat/1-checkout-api")?,
+        follow_up,
+        "not forced"
+    );
     Ok(())
 }
 

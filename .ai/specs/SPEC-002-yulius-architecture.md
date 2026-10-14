@@ -995,7 +995,9 @@ head (Yulius CI, #138), review on the exact head, up to date. Agent merge/deploy
 
 **Foundations.** The briefing reads `yulius.toml` (test, lint) and counts `.github/workflows/*.y(a)ml`
 (a real directory inside the repository) and asks a code-changing task to bootstrap first
-(workflow Infra bootstrap, skill `infra-bootstrap`); the onboarding prompt does the same.
+(workflow Infra bootstrap, skill `infra-bootstrap`). The onboarding prompt lays that gate (tests,
+lint and format, a dead-code check, a CI job per project, existing findings baselined) in the
+onboarding pull request itself (SPEC-116, ADR-0094).
 
 **Taken from Bartek's N2/N3 playbook:** small PRs, a test that fails without the change,
 independent review in a fresh session, machine-checked gates, flaky-test rules (no retries,
