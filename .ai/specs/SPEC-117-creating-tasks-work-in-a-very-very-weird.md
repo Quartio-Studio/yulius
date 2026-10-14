@@ -1,11 +1,11 @@
 ---
 yulius-task: e824d53d-7796-4a84-8ff4-dc00dab16c08
-status: in-progress
+status: done
 ---
 
 # SPEC-117: A task starts with one message, before anyone can type
 
-Status: in progress
+Status: done
 Date: 2026-10-14
 Owner: task #102
 Scope authorization: the person's request (task #102): "Creating tasks work in a very very weird
@@ -80,8 +80,9 @@ session, so nothing a person types is mixed into it.
 - [x] A goal task starts with its /goal as the launch prompt, nothing typed
 - [x] A person's keys wait while Yulius types an image task's first message
 - [x] ADR, architecture and the earlier specs say how a task starts
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Review rounds 1 and 2 in fresh sessions, findings fixed test-first
+- [x] Review round 3 approves the final head
+- [x] Every gate green, docs and the changes log updated
 
 ## Test plan
 
@@ -133,9 +134,51 @@ session, so nothing a person types is mixed into it.
   hook, so a held launch goal cannot be staged without reordering every goal test. It mirrors the
   tested capacity-pause path. A race on `typing_opening` was judged unreachable: a new run starts
   only after the old one is gone.
+- **Review round 3** approved 5c374034. Its minor finding, a held launch goal not watched again
+  after a server restart (not watched before this change either), is issue #453. A held launch
+  goal resumed on another subscription without a recorded session starts with that `/goal` as its
+  prompt and does not rewrite the request file: the earlier start wrote it in the same sandbox
+  home, and the condition carries the definition of done.
 - **Resumed sessions keep the typed goal.** They open with a continuation prompt (gate reasons,
   "Continue …"), which a `/goal` prompt would replace. Changing that is not part of creating a task.
 
 ## Evidence
 
-(Filled in when the task is done.)
+- **Measurements.** Claude Code 2.1.292 was run against a local mock of the Messages API (scratch
+  only, not committed): a Python HTTP server on 127.0.0.1 logging each `/v1/messages` body, Claude
+  Code in a PTY driven by `pexpect`, a scratch `HOME` and `CLAUDE_CONFIG_DIR` with onboarding done
+  and the folder trusted, `ANTHROPIC_BASE_URL` pointed at the mock.
+  - `claude "/goal Make it blue | Done = merged"`: the first request holds `<command-name>/goal`,
+    `Goal set: …` and the directive "A session-scoped Stop hook is now active with condition: …".
+    The Stop hook evaluates the condition.
+  - The same in an untrusted folder, after Down and Enter on the trust dialog: the goal is set.
+  - A `UserPromptSubmit` command hook received `{"prompt": "/goal Make it blue | Done = merged"}`.
+  - Typed `/goal …` with two pasted images: `<command-args>… [Image #1] [Image #2]`. The user
+    message has only text blocks, `[Image: source: <path>]` per image, and no `image` block. The
+    transcript agrees.
+  - An image pasted before `/goal`: `[Image #1]/goal …` plus an `image` block, an ordinary prompt
+    with no goal set.
+  - `claude '/goal …\n\n@"/abs/notes.txt"'`: the mention stays text and the file is not attached.
+  - From the 2.1.292 bundle: `/goal` is `local-jsx` and calls `lnt`; the condition cap `NEt=4000`
+    gives "Goal condition is limited to 4000 characters".
+- **Tests first.** `request.rs` (condition with files, cap fallback): 3 failed before the change.
+  `fake-agent` `a_goal_prompt_argument_sets_the_goal`: failed before (`ECHO: /goal …` without
+  `GOAL SET`). `task_done::a_goal_task_starts_from_its_request_file`: failed before (`prompt: None`).
+  `first_message::keys_typed_while_yulius_types_the_first_message_wait`: failed before (the keys
+  were mixed into the message). Review fixes: `a_launch_goal_never_taken_flags_the_task` and
+  `a_goal_run_of_an_older_server_held_across_the_update_is_flagged` failed before their fixes.
+  The latter also failed with the reconcile branch disabled (checked).
+  `a_trust_prompt_before_a_typed_first_message_takes_the_answer` failed with the trust exception
+  removed from `keys_wait_for_opening` (checked, then restored).
+- **Gate.** `scripts/dev ci` on 5c374034: exit 0. Repository checks, script unit tests, `cargo
+  check`, fmt, clippy `-D warnings`, nextest (1626 run, 1626 passed, 16 skipped), doctests,
+  cargo-deny, cargo-shear, docs. An earlier run (0b648824) passed every test (1609), but its
+  doctests failed: a `rustls` rlib was missing because my `cargo test` ran in the same target
+  directory at the same time. It did not recur when nothing else built.
+- **Review.** Fresh read-only sessions with the om-code-review skill. Round 1 (44c794fe) and round
+  2 (0b648824) requested changes, all fixed (Decisions). Round 3 approved 5c374034. Its minor
+  finding is issue #453; its nits are fixed after it (docs only).
+- **Not tested here.** A live model reading an attached image with its Read tool, and a live
+  Claude Code taking a launch `/goal` with a paid credential: both need a subscription. The
+  mock-API runs above are the evidence for the CLI behaviour. The update-hold exclusion in the goal
+  watch has no test (Decisions, round 2).

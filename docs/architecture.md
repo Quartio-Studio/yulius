@@ -224,8 +224,9 @@ type into it ([SPEC-117](../.ai/specs/SPEC-117-creating-tasks-work-in-a-very-ver
 [decision 0095](decisions/0095-a-goal-task-starts-with-its-goal-as-the-launch-prompt.md)). Files
 attached on the new-task composer are uploaded to the sandbox's drafts folder. A goal task (the
 default) is launched with `/goal <condition>` as Claude Code's prompt argument: one message, nothing
-typed; Claude Code's record of the goal confirms it, and a goal not taken flags the task. The condition names the request file in the sandbox home, which keeps the whole request,
-and the attached files, which the agent opens with its Read tool (a `/goal` carries no image
+typed; Claude Code's record of the goal confirms it, and a goal not taken flags the task. The
+condition names the request file in the sandbox home, which keeps the whole request, and the
+attached files, which the agent opens with its Read tool (a `/goal` carries no image
 block). A prompt task's first message is its request. Without an image it is the CLI prompt
 argument, each file mentioned there (`@path`). With an image the session starts with no prompt
 and Yulius types the message into the TUI. Each image's path is pasted on its own, and Claude Code

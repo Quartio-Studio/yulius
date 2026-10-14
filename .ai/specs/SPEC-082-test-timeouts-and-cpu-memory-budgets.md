@@ -119,7 +119,7 @@ Not in scope:
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| TST-001 | The fake agent runs Claude Code's SessionStart hook whenever it runs hooks, as every supported Claude Code does; a test of an older CLI leaves it out (`no_session_start`). The hookless fallback keeps its product default (half of 90 s); its own test shortens the bound through `AppConfig::goal_ready_ms` instead of sleeping 45 s. | `task_done::*`, `supervision::goal_mode_types_the_goal_once_the_session_is_ready (renamed `goal_mode_launches_the_session_with_its_goal` by SPEC-117)` (durations in Evidence) |
+| TST-001 | The fake agent runs Claude Code's SessionStart hook whenever it runs hooks, as every supported Claude Code does; a test of an older CLI leaves it out (`no_session_start`). The hookless fallback keeps its product default (half of 90 s); its own test shortens the bound through `AppConfig::goal_ready_ms` instead of sleeping 45 s. | `task_done::*`, `supervision::goal_mode_types_the_goal_once_the_session_is_ready` (renamed `goal_mode_launches_the_session_with_its_goal` by SPEC-117) (durations in Evidence) |
 | TST-002 | `task_done::a_message_queued_before_the_start_reaches_the_agent` makes the wait real: another task holds the only session slot, so the session limit queues the task, a queue pass leaves it queued, the message is accepted, and the holder's stop lets the queue start it with the message. No state is set by hand. | the test, 10 of 10 in a row; the old test fails at once with one queue pass injected |
 | TST-003 | An e2e test that moves the keyboard on a task's page waits for the task's terminal to show first (`terminalShown`); a test acts on a list or a file once it has loaded (both Done rows, the file's text); the other viewer's grid leaves a wide margin whatever the fonts (70 columns). | `archive.e2e.ts` 105 of 105 (`--repeat-each 15`), `editor.e2e.ts` 30 of 30, `terminal.e2e.ts` 3 of 3 for the margin test; the whole suite 834 of 834 (`--repeat-each 3`) |
 | RES-001 | A sandbox's capacity is its enforced CPU and memory limits (the isolation adapter's `cpu.max` and `memory.max`, only with cgroup delegation) within the host's CPUs; without a memory limit, 2 GiB per CPU. | `resources.rs`; `local_ci::jobs_wait_for_their_cpu_budget_and_are_told_it` (limits 4 CPUs, 8 GiB) |
@@ -239,7 +239,7 @@ this branch (`task_done::` and the supervision test, 6 threads, one run):
 | `task_done::a_done_task_can_be_archived` | 46.8 s (52) | 11.0 s |
 | `task_done::a_done_task_can_be_deleted_its_session_is_closed_first` | 46.8 s (52) | 5.2 s |
 | `task_done::a_turn_closed_without_a_verdict_settles_as_before` | 46.3 s (3) | 5.0 s |
-| `supervision::goal_mode_types_the_goal_once_the_session_is_ready (renamed `goal_mode_launches_the_session_with_its_goal` by SPEC-117)` | 46.1 s (52) | 12.4 s |
+| `supervision::goal_mode_types_the_goal_once_the_session_is_ready` (renamed `goal_mode_launches_the_session_with_its_goal` by SPEC-117) | 46.1 s (52) | 12.4 s |
 
 Together about 980 s before and 250 s after. The whole `task_done::` file (28 tests) and the
 supervision test ran in 63 s.
