@@ -1,11 +1,11 @@
 ---
 yulius-task: 2df292c3-521c-4323-b6cb-bc08cf82281f
-status: in-progress
+status: done
 ---
 
 # SPEC-130: Done means done: orphaned subshells and `yulius wait`
 
-Status: in progress
+Status: implemented
 Date: 2026-10-14
 Owner: Yulius task #117
 Scope authorization: task #117 ("#458 got achieved but wasn't marked as done. I closed it manually.
@@ -73,10 +73,10 @@ consulted only for failing checks and for the no-PR path. Both doc comments alre
 
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
-- [ ] An orphaned subshell the sandbox adopted no longer counts as a background shell
-- [ ] A task waiting in yulius wait with a tested pull request reads Working, not Done
-- [ ] Fix the cause until the regression test and every gate pass
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] An orphaned subshell the sandbox adopted no longer counts as a background shell
+- [x] A task waiting in yulius wait with a tested pull request reads Working, not Done
+- [x] Fix the cause until the regression test and every gate pass
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -114,5 +114,42 @@ consulted only for failing checks and for the no-PR path. Both doc comments alre
 - **`yulius wait` wins over a tested PR, not over an achieved goal.** The agent still merges,
   deploys and reports. An achieved goal is Claude Code's own verdict that the work is done, and the
   existing rule keeps it Done with a leftover wait.
+- **The `/proc/<pid>/status` read stays per non-shell process.** It is bounded (64 KiB each,
+  within `MAX_PROCESSES`), and only the probe of idle tasks pays it. Reading it lazily only for
+  the parents of shells found outside counted shells would mix the `/proc` reads into the pure
+  counting rule. That is reconsidered if the probe ever shows in a profile.
 - **Both fixes ship in one change.** Both are the same concern, "the sidebar's Done is wrong", and
   the person raised the second in this task. Each is a few lines, with its own regression test.
+
+## Evidence
+
+- **Root cause 1, reproduced in a task sandbox.** `(cd /tmp && python3 -m http.server 20118 &)`
+  run as a foreground command leaves `python3` (7285) under
+  `/bin/bash -c … && pwd -P >| /tmp/claude-…-cwd` (7283), and that subshell is under `bwrap`
+  (pid 1, `NSpid: 1`). Claude Code's own shells sit under `claude` (pid 2) →
+  `yulius --scrub-exec …` → bash. Task #108's transcript, replayed through `observe_line`, ends
+  `TurnComplete` → `Goal{Met}` → `TurnEnded{background_agents: None}`, so its activity was Done.
+- **Root cause 2.** Task #109 read `running (waiting)`, steps 6/6, PR #471 open with green
+  checks, armed merge, agent in `yulius wait` (`task_get`, transcript 20:18:37–20:18:41Z).
+- **Regression tests failed first** (commit `349b82d3`):
+  - `shells::tests::an_orphan_the_sandbox_adopted_is_no_background_shell`: left
+    `ShellCount { shells: 3 }`, right 1.
+  - `task::tests::a_wait_for_the_merge_is_not_done_before_it`: `Tested`, left `Done`, right
+    `Working`.
+  - e2e `a task waiting for its armed merge is not Done before it`: observed "Done · PR #221",
+    expected /Waiting for checks or merge/.
+- **After the fix:**
+  - `cargo test -p yulius-ptyhost --lib shells::`: 8 passed, including the real `/proc` read of
+    the namespace init.
+  - `cargo test -p yulius-domain --lib task::`: 16 passed.
+  - `npx e2e run tests/task-done.e2e.ts`: 14 passed.
+- **Gates:**
+  - `scripts/dev ci` exit 0 on `6226dc56`: 1643 tests passed, 16 skipped.
+  - Full e2e suite (`npx e2e run`) exit 0 on `f61c9b7e`: 395 passed, 1 skipped. The later commits
+    change only Rust doc comments and an ADR.
+- **Independent review** (fresh session, om-code-review): APPROVE `f61c9b7e`. Its minor (complete
+  the spec) and two nits (doc wrap, ADR-0068 amendment) are done; the others are recorded above
+  or out of scope.
+- **Not tested here:** the probe on a real host against a live sandboxed task. The sandbox cannot
+  read its own init's child list from the host's side, so the rule is covered by the synthetic
+  table of the observed tree and the real `NSpid` read.
