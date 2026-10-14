@@ -108,6 +108,58 @@ def run(api=None, cli=None, git=None, env=None):
     return code, out.getvalue()
 
 
+class Switch(unittest.TestCase):
+    """SPEC-131: `.config/vidoc.toml` turns the gate on or off; it ships on."""
+
+    def root_with(self, text=None):
+        root = Path(tempfile.mkdtemp(prefix="vidoc-switch-"))
+        self.addCleanup(shutil.rmtree, root)
+        if text is not None:
+            (root / ".config").mkdir()
+            (root / ".config" / "vidoc.toml").write_text(text)
+        return root
+
+    def test_the_repository_ships_the_gate_enabled(self):
+        self.assertTrue(vidoc_scan.switch(Path(__file__).resolve().parent.parent))
+
+    def test_on_off_and_a_missing_file_which_means_on(self):
+        self.assertTrue(vidoc_scan.switch(self.root_with("enabled = true\n")))
+        self.assertFalse(vidoc_scan.switch(self.root_with("# off for now\nenabled = false\n")))
+        self.assertTrue(vidoc_scan.switch(self.root_with()))
+
+    def test_a_malformed_switch_is_not_run_and_names_the_file(self):
+        for text in ("enabled = \n", 'enabled = "false"\n', "enabled = 0\n", "# nothing\n",
+                     "enabled = true\nscan = false\n", "[vidoc]\nenabled = false\n"):
+            with self.subTest(text=text), self.assertRaises(Usage) as caught:
+                vidoc_scan.switch(self.root_with(text))
+            self.assertIn(".config/vidoc.toml", str(caught.exception))
+
+    def run_main(self, root):
+        previous = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
+        self.addCleanup(lambda: [signal.signal(s, h) for s, h in previous.items()])
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = vidoc_scan.main(root=root, env={"PATH": os.environ.get("PATH", "")})
+        return code, out.getvalue(), err.getvalue()
+
+    def test_disabled_passes_at_once_without_a_key_and_says_nothing_was_scanned(self):
+        code, out, err = self.run_main(self.root_with("enabled = false\n"))
+        self.assertEqual(code, 0)
+        self.assertIn("Security scan disabled: .config/vidoc.toml sets enabled = false; "
+                      "nothing was scanned.", out)
+        self.assertEqual(err, "")
+
+    def test_enabled_still_needs_a_key(self):
+        code, _, err = self.run_main(self.root_with("enabled = true\n"))
+        self.assertEqual(code, 2)
+        self.assertIn("No Vidoc API key", err)
+
+    def test_a_malformed_switch_exits_2_from_main(self):
+        code, _, err = self.run_main(self.root_with('enabled = "no"\n'))
+        self.assertEqual(code, 2)
+        self.assertIn("Security scan not run: .config/vidoc.toml", err)
+
+
 class Settings(unittest.TestCase):
     def test_token_prefers_vidoc_token_then_the_agent_secret(self):
         self.assertEqual(vidoc_scan.settings({"VIDOC_TOKEN": "a", "VIDOC_API_KEY": "b"})[0], "a")

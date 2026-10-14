@@ -7,6 +7,9 @@ even when it found issues. So the gate runs it only on a clean tree whose base i
 takes the verdict from the REST API: the scan this run started must be complete for this branch,
 and the branch must have no open critical or high finding. Exit codes: 0 passed, 1 failed, 2 not
 run (no key or a rejected one, no Node, a detached HEAD, uncommitted files, no base).
+
+`.config/vidoc.toml` (SPEC-131) turns the gate off with `enabled = false`: it then exits 0 at once
+and says nothing was scanned. Without the file the gate is on; a malformed one exits 2.
 """
 from collections import deque
 import hashlib
@@ -21,10 +24,12 @@ import subprocess
 import sys
 import tempfile
 import threading
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
 
+SWITCH = ".config/vidoc.toml"
 DEFAULT_API = "https://api.vidoc.dev"
 CLI_PACKAGE = "@vidocsecurity/cli"
 MIN_NODE = 20
@@ -83,6 +88,21 @@ class HttpError(Exception):
     def __init__(self, status, message):
         super().__init__(f"HTTP {status}: {message}" if status else message)
         self.status = status
+
+
+def switch(root):
+    """Whether the gate is on: `enabled` in `.config/vidoc.toml`, the only key; no file means on."""
+    path = root / SWITCH
+    try:
+        config = tomllib.loads(path.read_text())
+    except FileNotFoundError:
+        return True
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as err:
+        raise Usage(f"{SWITCH} cannot be read: {err}") from err
+    if set(config) != {"enabled"} or not isinstance(config["enabled"], bool):
+        raise Usage(f"{SWITCH} must hold exactly one key, enabled = true or enabled = false, "
+                    f"not {sorted(config)} with enabled = {config.get('enabled')!r}")
+    return config["enabled"]
 
 
 def settings(env):
@@ -384,13 +404,17 @@ def install_signal_handlers():
         signal.signal(signum, _interrupted)
 
 
-def main():
-    root = Path(__file__).resolve().parent.parent
+def main(root=None, env=None):
+    root = Path(__file__).resolve().parent.parent if root is None else root
     tool = root / "tools" / "vidoc"
-    env = dict(os.environ)
+    env = dict(os.environ) if env is None else env
     install_signal_handlers()
     log = None
     try:
+        if not switch(root):
+            print(f"Security scan disabled: {SWITCH} sets enabled = false; nothing was scanned.",
+                  flush=True)
+            return 0
         token, url = settings(env)
         require_node(shutil.which, lambda node: subprocess.run(
             [node, "--version"], capture_output=True, text=True, timeout=GIT_TIMEOUT_S).stdout)
