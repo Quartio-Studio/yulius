@@ -871,7 +871,7 @@ resolves to nothing, the run gets the server without that variable or token.
   4096 bytes); a selection needs an existing regular file (404; leaving a deleted one is fine);
   422 for unknown fields, a bad `sha256` or `client`, or an offset over 2 Mi; 403/404 without
   write access; 429 past 20 updates a second per person and file (the notepads' limiter) or past
-  64 files a person is busy in at once.
+  64 files and notepads a person is busy in at once.
 - Dropped files (EDT-006, UI-048). One file per request, the raw bytes as the body (`Content-Type`
   is not interpreted), streamed to disk; at most the upload limit (`YULIUS_UPLOAD_MAX_MB`, 25 MiB by
   default; `GET /api/me` → `instance.upload_max_bytes`): a larger `Content-Length` is 422 before

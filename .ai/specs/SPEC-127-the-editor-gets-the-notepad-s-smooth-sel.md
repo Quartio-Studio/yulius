@@ -196,9 +196,10 @@ sequenceDiagram
     one person keeps at most 64 busy counters (Rust `presence_counters_are_bounded_per_person`,
     `presence_is_refused_when_malformed`, unit `one_person_keeps_only_so_many_counters_busy`,
     failing before).
-  - Every keystroke diffed the whole file even with nobody else in it. Now nothing is mapped
-    without teammates, and a text still at its saved version (Monaco's alternative version id)
-    is not diffed; a leave computes no selection. A performance change without its own test (the
+  - Every keystroke diffed the whole file even with nobody else in it. Now teammates are not
+    mapped when there are none, and a text still at its saved version (Monaco's alternative
+    version id) is not diffed; the person's own selection is mapped at most ten times a second
+    (the send throttle), and a leave computes none. A performance change without its own test (the
     presence e2e cover the mapping it keeps).
   - Minors: refusals that cannot succeed (403, 404, 409, 422) are not retried (429, 408, 5xx and
     lost ones still are); a strip redraw during a drag waits for the drag to end (e2e failing

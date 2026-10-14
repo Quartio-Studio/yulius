@@ -78,7 +78,7 @@ export function createTabDrag(tablist, { keyOf, commit, cancelled = () => {} }) 
   function end(event) {
     if (!drag || event.pointerId !== drag.pointerId) return;
     const state = done();
-    if (!state.moved) return;
+    if (!state.moved) { cancelled(); return; } // a click: a redraw held back meanwhile happens now
     dragged = true; // the click after this release
     setTimeout(() => { dragged = false; }, 0); // a release outside the tab clicks nothing
     const dx = event.clientX - state.startX;
@@ -101,7 +101,7 @@ export function createTabDrag(tablist, { keyOf, commit, cancelled = () => {} }) 
     const state = done();
     if (!state) return;
     for (const tab of state.tabs) { tab.style.transform = ''; tab.classList.remove('dragging'); }
-    if (state.moved) cancelled();
+    cancelled();
   }
 
   function escape(event) {
@@ -123,8 +123,8 @@ export function createTabDrag(tablist, { keyOf, commit, cancelled = () => {} }) 
   return {
     press,
     cancel,
-    /** A tab is being dragged: its strip is not drawn again until it is let go. */
-    get dragging() { return Boolean(drag && drag.moved); },
+    /** A tab is pressed (maybe about to be dragged): its strip is not drawn again until it is let go. */
+    get dragging() { return Boolean(drag); },
     /** Whether this click ends a drag (and so chooses nothing); it is used up. */
     clickConsumed() {
       if (!dragged) return false;

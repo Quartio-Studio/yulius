@@ -311,12 +311,7 @@ test('two people in one file see each other’s caret, name and selection in the
   await bobOpens(browser, 'README.md');
   await expect.poll(() => peersIn(browser, 'me')).toEqual([expect.objectContaining({ name: 'bob' })]);
   await bobClick(browser, '.rail button', 'Editor');
-  try {
-    await expect.poll(() => peersIn(browser, 'me')).toEqual([]);
-  } catch (error) {
-    console.log('DIAG', await browser.evaluate(() => { const b = (window as any).__bob; return JSON.stringify({ bobSent: b.__yuliusMock.filePresenceSent.slice(-4), panelHidden: b.document.querySelector('.panel')?.hidden, pressed: [...b.document.querySelectorAll('.rail button')].map((x: Element) => `${x.textContent}:${x.getAttribute('aria-pressed')}`) }); }));
-    throw error;
-  }
+  await expect.poll(() => peersIn(browser, 'me')).toEqual([]);
 
   // The person closes the Editor (Bob's shown again first): gone for Bob.
   await bobClick(browser, '.rail button', 'Editor');

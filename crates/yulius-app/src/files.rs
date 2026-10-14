@@ -519,7 +519,9 @@ impl App {
         let target = self
             .file_target(ctx, sandbox, Some(root), &input.path, false)
             .await?;
-        if target.relative.is_empty() || target.path.is_dir() {
+        // A folder is not a file; a link is not followed to tell (it may lead outside the folder).
+        let folder = std::fs::symlink_metadata(&target.path).is_ok_and(|meta| meta.is_dir());
+        if target.relative.is_empty() || folder {
             return Err(AppError::Invalid("presence names a file".into()));
         }
         // Someone is in a file that is there; leaving one may come after it was deleted.

@@ -69,7 +69,7 @@ export function createPresence({ put, state, draw, myId }) {
     const update = JSON.stringify({ revision: now.revision, selection });
     // Nothing new, or nothing to take back: nothing to say, unless asked.
     if (!helloDue && !forceDue && (update === last || (!selection && !wasThere))) return;
-    const hello = helloDue && !leaving;
+    const hello = helloDue && !away;
     helloDue = false;
     forceDue = false;
     last = update;
@@ -176,6 +176,10 @@ export function createPresence({ put, state, draw, myId }) {
     destroy({ going = true } = {}) {
       setShown(false, { going });
       destroyed = true;
+      // Nothing more to say but the leave (which waits for the update on its way, not a timer).
+      helloDue = false;
+      clearTimeout(timer);
+      timer = 0;
       clearTimeout(answerTimer);
     },
   };
