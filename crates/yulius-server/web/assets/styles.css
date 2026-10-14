@@ -367,7 +367,7 @@ p { margin: 0; }
 /* Active tasks (UI-005): groups — Needs you, Working, Stopped — of two-line rows. */
 /* Task list rows read like a chat list (WhatsApp, cmux): a state tile, a 16 px title with the age
    on the right, then what is happening or what to do. */
-.task-group { display: flex; flex-direction: column; gap: 2px; padding-top: 16px; }
+.task-group, .skeleton-task-group { display: flex; flex-direction: column; gap: 2px; padding-top: 16px; }
 /* A group's head is a band of its own (its background and edge set it apart from the tasks below). */
 .task-group-head {
   position: sticky; top: 0; z-index: var(--z-raised);
@@ -394,7 +394,7 @@ button.task-group-head:hover { color: var(--text); }
 .task-row, .tl-row { content-visibility: auto; }
 .task-row { contain-intrinsic-size: auto 36px; }
 .tl-row { contain-intrinsic-size: auto 72px; }
-.task-link { display: flex; align-items: center; gap: 12px; height: 36px; padding: 0 12px; color: var(--text-2); text-decoration: none; }
+.task-link, .skeleton-task-row { display: flex; align-items: center; gap: 12px; height: 36px; padding: 0 12px; color: var(--text-2); text-decoration: none; }
 .task-link:hover { text-decoration: none; }
 .task-link:focus-visible { border-radius: var(--radius); box-shadow: var(--focus-inset); }
 .task-row:hover .task-link, .task-row.active .task-link, .task-row:focus-within .task-link { color: var(--text); }
@@ -1153,6 +1153,41 @@ a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
 .skeleton-line:nth-child(1) { width: 72%; }
 .skeleton-line:nth-child(2) { width: 54%; }
 .skeleton-line:nth-child(3) { width: 36%; }
+/* Loading shapes (SPEC-120): the final layout's own boxes; a bar is one line of the text it
+   replaces (1lh tall, the pill centred in it), a tile an icon's square. */
+.skeleton-shaped { display: block; padding: 0; }
+.skeleton-bar { display: flex; align-items: center; max-width: 100%; height: 1lh; }
+.skeleton-bar::before, .skeleton-shape .skeleton-tile, .skeleton-field, .skeleton-chart, .skeleton-spark, .skeleton-button, .skeleton-chip {
+  background: var(--surface-3) linear-gradient(90deg, transparent, var(--overlay-active), transparent) no-repeat; background-size: 50% 100%;
+  animation: shimmer var(--duration-pulse) linear infinite;
+}
+.skeleton-bar::before { content: ""; flex: 1; height: min(12px, 0.7lh); border-radius: var(--radius-full); }
+.skeleton-shape .skeleton-tile { border-color: transparent; }
+/* Fixed bar lengths (bar('xs' … 'xl')): a count, an age, a heading. */
+.skeleton-bar-xs { width: 1em; }
+.skeleton-bar-sm { width: 2em; }
+.skeleton-bar-md { width: 5em; }
+.skeleton-bar-lg { width: 8em; }
+.skeleton-bar-xl { width: 10em; }
+.skeleton-card { display: flex; flex-direction: column; gap: 8px; padding: 16px; }
+.skeleton-field { height: var(--control-xl); border-radius: var(--radius-lg); }
+.skeleton-chart { height: 160px; border-radius: var(--radius); }
+.skeleton-spark { border-radius: var(--radius-sm); }
+.skeleton-button { flex: none; width: 72px; height: var(--control-md); border-radius: var(--radius); }
+.skeleton-dot { display: block; flex: none; width: 16px; height: 16px; border-radius: 50%; }
+.tl-chips-loading { display: flex; gap: 8px; }
+.tl-chips-loading[hidden] { display: none; }
+.skeleton-chip { width: 88px; height: var(--control-lg); border-radius: var(--radius-full); }
+.tl-tabs[aria-busy="true"] .tl-tab { cursor: default; }
+.tl-tabs[aria-busy="true"] .tl-tab:hover { background: transparent; color: var(--text-2); }
+.skeleton-shape .ss-row-link:hover { background: var(--surface); border-color: var(--border); }
+.skeleton .task-group-head, .skeleton .tl-group-head { cursor: default; }
+/* The Tasks band is surface-3 itself: its bar is a step brighter. */
+.skeleton .tl-group-head .skeleton-bar::before { background-color: var(--border-strong); }
+/* Task rows while a list loads (layout.js, pages/tasks.js): the rows' own grid and height. */
+.skeleton-tl-row { border-top: 1px solid var(--border); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.tl-group-head + .skeleton-tl-row { border-top: 0; }
+.skeleton-tl-link { font-size: var(--fs-md); line-height: var(--lh-md); }
 .intake-slot { display: flex; flex-direction: column; }
 .intake-status {
   display: flex; align-items: center; gap: 12px; padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--radius-lg);
@@ -1514,7 +1549,7 @@ summary { cursor: pointer; }
 /* Tasks as a table: one line per task, the same columns under every group; fewer columns as the list
    narrows (container queries on .tl). */
 .tl { container-type: inline-size; }
-.tl-row, .tl-columns {
+.tl-row, .tl-columns, .skeleton-tl-row {
   display: grid; align-items: center; gap: 20px; padding: 0 16px 0 0;
   grid-template-columns: minmax(0, 2fr) minmax(0, 1.6fr) minmax(0, 1.1fr) 96px 104px 28px 48px 112px 64px;
 }
@@ -1524,7 +1559,7 @@ summary { cursor: pointer; }
 .tl-columns { height: var(--control-xl); border-bottom: 1px solid var(--border); color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
 .tl-columns > :first-child { padding-left: 20px; }
 .tl-columns > :nth-child(5), .tl-columns > :nth-child(7), .tl-columns > :nth-child(8) { text-align: right; }
-.tl-link { display: flex; align-items: center; gap: 12px; min-width: 0; height: 52px; padding: 0 0 0 16px; color: var(--text); text-decoration: none; }
+.tl-link, .skeleton-tl-link { display: flex; align-items: center; gap: 12px; min-width: 0; height: 52px; padding: 0 0 0 16px; color: var(--text); text-decoration: none; }
 .tl-link:hover { text-decoration: none; }
 .tl-link::after { content: ""; position: absolute; inset: 0; }
 .tl-link:focus-visible { box-shadow: none; }
@@ -1543,22 +1578,25 @@ summary { cursor: pointer; }
 .tl-diff { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 .tl-started { color: var(--muted); text-align: right; font-variant-numeric: tabular-nums; }
 @container (max-width: 1060px) {
-  .tl-row, .tl-columns { grid-template-columns: minmax(0, 2fr) minmax(0, 1.6fr) 96px 104px 28px 112px 64px; }
-  .tl-branch, .tl-started, .tl-columns > :nth-child(3), .tl-columns > :nth-child(7) { display: none; }
+  .tl-row, .tl-columns, .skeleton-tl-row { grid-template-columns: minmax(0, 2fr) minmax(0, 1.6fr) 96px 104px 28px 112px 64px; }
+  .tl-branch, .tl-started, :is(.tl-columns, .skeleton-tl-row) > :is(:nth-child(3), :nth-child(7)) { display: none; }
 }
 @container (max-width: 760px) {
-  .tl-row, .tl-columns { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) 104px 112px 64px; }
-  .tl-diff, .tl-avatar, .tl-columns > :nth-child(4), .tl-columns > :nth-child(6) { display: none; }
+  .tl-row, .tl-columns, .skeleton-tl-row { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) 104px 112px 64px; }
+  .tl-diff, .tl-avatar, :is(.tl-columns, .skeleton-tl-row) > :is(:nth-child(4), :nth-child(6)) { display: none; }
 }
 /* A narrow list (a phone, or a tool panel open beside it): the title takes the line, the status in
    words goes under it, the time and the actions stay on the right; no column headers (UI-046). */
 @container (max-width: 600px) {
   .tl-columns, .tl-row > .tl-branch, .tl-row > .tl-diff, .tl-row > .tl-pr, .tl-row > .tl-avatar, .tl-row > .tl-started { display: none; }
-  .tl-row { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "link time actions" "status status status"; gap: 0 12px; padding-right: 8px; }
-  .tl-link { grid-area: link; height: auto; padding: 12px 0 2px 16px; }
-  .tl-status { grid-area: status; padding: 0 0 12px calc(16px + 24px + 12px); }
-  .tl-time { grid-area: time; }
-  .tl-actions { grid-area: actions; }
+  /* Loading rows (pages/tasks.js) take the same two lines: their cells follow the columns' order. */
+  .skeleton-tl-row > :is(:nth-child(3), :nth-child(4), :nth-child(5), :nth-child(6), :nth-child(7)) { display: none; }
+  .tl-row, .skeleton-tl-row { grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "link time actions" "status status status"; gap: 0 12px; padding-right: 8px; }
+  .tl-link, .skeleton-tl-link { grid-area: link; height: auto; padding: 12px 0 2px 16px; }
+  .tl-status, .skeleton-tl-row > :nth-child(2) { grid-area: status; padding: 0 0 12px calc(16px + 24px + 12px); }
+  .tl-time, .skeleton-tl-row > :nth-child(8) { grid-area: time; }
+  .tl-actions, .skeleton-tl-row > :nth-child(9) { grid-area: actions; }
+  .skeleton-tl-row > :nth-child(8) { width: 64px; }
 }
 .tl-pr, .tl-avatar, .tl-time, .tl-actions { position: relative; z-index: var(--z-raised); }
 .tl-avatar, .tl-time { pointer-events: none; }
@@ -1800,7 +1838,7 @@ a.dl-task:hover { text-decoration: underline; }
 .db-delta { display: inline-flex; align-items: center; gap: 2px; height: 20px; padding: 0 6px; border-radius: var(--radius-full); background: var(--surface-3); color: var(--text-2); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 500; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .db-delta-good { background: var(--ok-soft); color: var(--ok-fg); }
 .db-delta-bad { background: var(--danger-soft); color: var(--danger-fg); }
-.spark { display: block; width: 100%; height: 28px; }
+.spark, .skeleton-spark { display: block; width: 100%; height: 28px; }
 .spark-line { fill: none; stroke: var(--series-1); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .spark-area { fill: var(--accent-soft); }
 .db-ratio { display: flex; gap: 2px; height: 6px; overflow: hidden; border-radius: var(--radius-full); }
@@ -2065,6 +2103,11 @@ a.dl-task:hover { text-decoration: underline; }
 /* Notes (SPEC-041): a notepad per sandbox and one for the team, saved while typing. */
 .notes-tabs .term-tab { padding: 0 12px; border-top: 0; border-bottom: 0; border-left: 0; background: none; font: inherit; }
 .notes-tabs .term-tab.active { background: var(--term-bg); }
+/* Tabs in any order (SPEC-112): the dragged tab rides above, the others slide aside, it settles. */
+.notes-tabs.reordering { cursor: grabbing; user-select: none; }
+.notes-tabs.reordering .term-tab { transition: transform var(--duration-fast) var(--ease); }
+.notes-tabs .term-tab.dragging { position: relative; z-index: var(--z-raised); transition: none; background: var(--surface-2); box-shadow: var(--shadow); cursor: grabbing; }
+.notes-tabs .term-tab.settling { position: relative; z-index: var(--z-raised); transition: transform var(--duration-fast) var(--ease); }
 .notes-panes { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--term-bg); }
 .notes-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .notes-pane[hidden] { display: none; }
@@ -2074,6 +2117,34 @@ a.dl-task:hover { text-decoration: underline; }
 .notes-loading .notes-text::placeholder { color: transparent; }
 .notes-text { flex: 1; min-height: 0; width: 100%; resize: none; padding: 12px 16px; border: 0; background: transparent; color: var(--text); font: inherit; font-size: var(--fs); line-height: var(--lh); }
 .notes-text:focus-visible { outline: none; box-shadow: inset 2px 0 0 var(--accent); }
+/* Drawn selection (SPEC-112): the text box is see-through above a layer of rounded shapes that
+   glide from one selection to the next; the browser's own square highlight is not painted. */
+.notes-text.drawn-selection { position: relative; }
+.notes-text.drawn-selection::selection { background: transparent; }
+.text-layer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.tl-content { position: absolute; inset: 0; }
+.tl-mirror { position: absolute; top: 0; left: 0; visibility: hidden; box-sizing: content-box; border: 0; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; }
+.tl-group { --tl-colour: var(--accent); }
+.tl-shape { position: absolute; top: 0; left: 0; border-radius: var(--radius-xs); background: color-mix(in srgb, var(--tl-colour) 35%, transparent);
+  transition: transform var(--duration-fast) var(--ease), width var(--duration-fast) var(--ease), height var(--duration-fast) var(--ease), opacity var(--duration-fast) var(--ease), background-color var(--duration-fast) var(--ease); }
+.tl-blurred .tl-shape { background: color-mix(in srgb, var(--tl-colour) 16%, transparent); }
+.tl-shape.tl-gone { opacity: 0; }
+.tl-shape.tl-still, .tl-jump .tl-shape, .tl-jump .tl-caret { transition: none; }
+/* Teammates: a caret in their colour with their name on a tag above it (below it on the first
+   line), their selection in their colour; they glide like one's own and fade in and out. */
+.tl-peer { transition: opacity var(--duration-slow) var(--ease); }
+.tl-peer.tl-leaving { opacity: 0; }
+.tl-caret { position: absolute; top: 0; left: 0; width: 2px; border-radius: 0; background: var(--tl-colour);
+  transition: transform var(--duration-fast) var(--ease), height var(--duration-fast) var(--ease); }
+.tl-caret.tl-still { transition: none; }
+.tl-name { position: absolute; left: 0; bottom: 100%; max-width: 16ch; overflow: hidden; text-overflow: ellipsis; padding: 0 4px;
+  border-radius: var(--radius-xs) var(--radius-xs) var(--radius-xs) 0; background: var(--tl-colour); color: var(--peer-ink); font-size: var(--fs-xs); font-weight: 600; line-height: var(--lh-xs); white-space: nowrap; }
+.tl-caret.tl-below .tl-name { bottom: auto; top: 100%; border-radius: 0 var(--radius-xs) var(--radius-xs) var(--radius-xs); }
+/* Forced colours paint author backgrounds away: the browser's own selection comes back. */
+@media (forced-colors: active) {
+  .notes-text.drawn-selection::selection { background: Highlight; color: HighlightText; }
+  .text-layer { display: none; }
+}
 .notes-text[readonly] { color: var(--text-2); }
 .notes-meta { flex: none; margin: 0; padding: 4px 16px; min-height: calc(var(--lh-sm) + 8px); border-top: 1px solid var(--border); color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .notes-readonly { flex: none; margin: 0; padding: 6px 16px; border-bottom: 1px solid var(--border); background: var(--surface-2); color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }

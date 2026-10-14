@@ -35,10 +35,16 @@ const pageHelpers = () => {
   });
 };
 
-async function openNotes(screen: Screen): Promise<void> {
+/** Opens Notes on `tab` (Team opens first by default, SPEC-112), or as it opens with `null`. */
+async function openNotes(screen: Screen, tab: string | null = 'This sandbox'): Promise<void> {
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('navigation', 'Tools').getByRole('button', 'Notes').click();
+  if (tab) await screen.getByRole('tab', tab).click();
 }
+
+/** The Notes tabs' names, in order. */
+const tabOrder = (browser: Browser) =>
+  browser.evaluate(() => [...document.querySelectorAll('[role="tablist"][aria-label="Notes"] [role="tab"]')].map((tab) => tab.textContent));
 
 /** The text stored by the mock server for `scope` (`team` or `sandbox:<sid>`). */
 const stored = (browser: Browser, scope: string) =>
@@ -231,6 +237,40 @@ test('a save whose answer was lost is not a conflict with oneself', async ({ app
   expect(await stored(browser, 'sandbox:sb_studio')).toBe('stored, answer lost, and more');
 });
 
+// Review of SPEC-112: a second save refused while the first refusal was still being looked into
+// went on from its own look, which no longer knew the lost save (the first look had rebased on it).
+test('a save made while a refused one is looked into is not a conflict with oneself', async ({ app, browser, screen }) => {
+  await browser.addInitScript(pageHelpers);
+  await app.open(mock('/s/studio'));
+  await openNotes(screen);
+  const notes = screen.getByRole('textbox', 'Sandbox notes');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  await setMock(browser, 'loseNoteResponse', true);
+  await notes.fill('stored, answer lost');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Not saved, retrying…');
+  await setMock(browser, 'loseNoteResponse', false);
+  const loads = await browser.evaluate(() => {
+    const mockDb = (window as unknown as { __yuliusMock: { holdNoteLoad: Promise<void> | null; noteLoads: number } }).__yuliusMock;
+    mockDb.holdNoteLoad = new Promise((resolve) => { (window as unknown as { releaseLoads: () => void }).releaseLoads = resolve; });
+    return mockDb.noteLoads;
+  });
+  // Saved at once (a blur): refused, and the look at the server is held.
+  const blur = () => browser.evaluate(() => (document.querySelector('.notes-pane:not([hidden]) textarea') as HTMLElement).dispatchEvent(new Event('blur')));
+  await browser.evaluate(() => typeInto('stored, answer lost, and more'));
+  await blur();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as MockNotes).__yuliusMock.noteLoads)).toBe(loads + 1);
+  // More typing saved meanwhile.
+  await browser.evaluate(() => typeInto('stored, answer lost, and more!'));
+  await blur();
+  await browser.evaluate(() => {
+    (window as unknown as { __yuliusMock: { holdNoteLoad: null } }).__yuliusMock.holdNoteLoad = null;
+    (window as unknown as { releaseLoads: () => void }).releaseLoads();
+  });
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  await expect(screen.getByRole('alert')).toBeHidden();
+  expect(await stored(browser, 'sandbox:sb_studio')).toBe('stored, answer lost, and more!');
+});
+
 test('notes fit a phone', async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 390, height: 844 });
   await app.open(mock('/s/studio'));
@@ -383,8 +423,8 @@ test('an undo after a lost answer is not Saved until the server is checked', asy
 // it focuses the notepad.
 test('Notes beside a task does not take the keyboard when another task opens', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
-  await openNotes(screen);
-  const notes = screen.getByRole('textbox', 'Sandbox notes');
+  await openNotes(screen, null);
+  const notes = screen.getByRole('textbox', 'Team notes');
   await expect(notes).toBeFocused();
 
   await screen.getByRole('link', /3D model viewer/).click();
@@ -399,9 +439,8 @@ test('Notes beside a task does not take the keyboard when another task opens', a
 
 test('Me after Team is the person’s own notepad, the same in every sandbox', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
-  await openNotes(screen);
-  expect(await browser.evaluate(() => [...document.querySelectorAll('[role="tablist"][aria-label="Notes"] [role="tab"]')].map((tab) => tab.textContent)))
-    .toEqual(['This sandbox', 'Team', 'Me']);
+  await openNotes(screen, null);
+  expect(await tabOrder(browser)).toEqual(['Team', 'This sandbox', 'Me']);
 
   await screen.getByRole('tab', 'Me').click();
   await expect(screen.getByRole('tab', 'Me')).toHaveAttribute('aria-selected', 'true');
@@ -474,4 +513,354 @@ test('a conflict on Me is always with the person’s own other tab, even under a
   const banner = screen.getByRole('alert');
   await expect(banner).toHaveText(/You changed these notes in another tab or on another device/);
   await expect(banner.getByRole('button', 'Use that version')).toBeVisible();
+});
+
+// SPEC-112: the tabs in any order, Team first by default.
+
+test('Team comes first and opens first; the tabs move by drag, keyboard and menu and stay so', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen, null);
+  expect(await tabOrder(browser)).toEqual(['Team', 'This sandbox', 'Me']);
+  await expect(screen.getByRole('tab', 'Team')).toHaveAttribute('aria-selected', 'true');
+  await expect(screen.getByRole('textbox', 'Team notes')).toBeVisible();
+
+  // Drag Me before Team: the press does not choose Me.
+  const me = await screen.getByRole('tab', 'Me').boundingBox();
+  const team = await screen.getByRole('tab', 'Team').boundingBox();
+  if (!me || !team) throw new Error('tabs not laid out');
+  await browser.mouse.move(me.x + me.width / 2, me.y + me.height / 2);
+  await browser.mouse.down();
+  for (const x of [me.x - 10, team.x + team.width, team.x + team.width / 2, team.x + 4]) await browser.mouse.move(x, me.y + me.height / 2);
+  await browser.mouse.up();
+  await expect.poll(() => tabOrder(browser)).toEqual(['Me', 'Team', 'This sandbox']);
+  await expect(screen.getByRole('tab', 'Team')).toHaveAttribute('aria-selected', 'true');
+
+  // Alt+← moves the focused tab one place and keeps the keyboard on it; the first goes no further.
+  await screen.getByRole('tab', 'Team').focus();
+  await expect(screen.getByRole('tab', 'Team')).toHaveAttribute('aria-keyshortcuts', 'Alt+ArrowLeft Alt+ArrowRight');
+  await browser.keyboard.press('Alt+ArrowLeft');
+  expect(await tabOrder(browser)).toEqual(['Team', 'Me', 'This sandbox']);
+  await expect(screen.getByRole('tab', 'Team')).toBeFocused();
+  await browser.keyboard.press('Alt+ArrowLeft');
+  expect(await tabOrder(browser)).toEqual(['Team', 'Me', 'This sandbox']);
+  await browser.keyboard.press('Alt+ArrowRight');
+  expect(await tabOrder(browser)).toEqual(['Me', 'Team', 'This sandbox']);
+
+  // The context menu moves it without dragging (WCAG 2.5.7); the first tab cannot go left.
+  await browser.evaluate(() => {
+    const tab = document.getElementById('notes-tab-me') as HTMLElement;
+    const box = tab.getBoundingClientRect();
+    tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: box.left + 8, clientY: box.bottom }));
+  });
+  await expect(screen.getByRole('menuitem', 'Move left')).toHaveAttribute('aria-disabled', 'true');
+  await screen.getByRole('menuitem', 'Move right').click();
+  expect(await tabOrder(browser)).toEqual(['Team', 'Me', 'This sandbox']);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // Kept after a reload and in another sandbox.
+  await browser.reload();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Notes').click();
+  expect(await tabOrder(browser)).toEqual(['Team', 'Me', 'This sandbox']);
+  await app.open(mock('/s/product'));
+  expect(await tabOrder(browser)).toEqual(['Team', 'Me', 'This sandbox']);
+
+  // A stored order that is not the three tabs is ignored.
+  await browser.evaluate(() => localStorage.setItem('yulius.notesOrder', JSON.stringify(['team', 'team', 'me'])));
+  await browser.reload();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Notes').click();
+  expect(await tabOrder(browser)).toEqual(['Team', 'This sandbox', 'Me']);
+});
+
+test('a remembered tab still opens first', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen, 'Me');
+  await browser.reload();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Notes').click();
+  await expect(screen.getByRole('tab', 'Me')).toHaveAttribute('aria-selected', 'true');
+  expect(await tabOrder(browser)).toEqual(['Team', 'This sandbox', 'Me']);
+});
+
+/** The drawn shapes of the visible notepad's own selection, relative to its text box. */
+const ownShapes = (browser: Browser) => browser.evaluate(() => {
+  const pane = document.querySelector('.notes-pane:not([hidden])') as HTMLElement;
+  const box = (pane.querySelector('textarea') as HTMLTextAreaElement).getBoundingClientRect();
+  return [...pane.querySelectorAll<HTMLElement>('.text-layer .tl-own .tl-shape:not(.tl-gone)')].map((shape) => {
+    const r = shape.getBoundingClientRect();
+    return { left: Math.round(r.left - box.left), top: Math.round(r.top - box.top), width: Math.round(r.width), height: Math.round(r.height), radius: getComputedStyle(shape).borderTopLeftRadius };
+  });
+});
+
+/** Selects `start..end` in the visible notepad, as a person would, and waits for the layer to draw it. */
+const selectText = (browser: Browser, start: number, end: number) => browser.evaluate(([from, to]) => new Promise<void>((resolve) => {
+  const box = document.querySelector('.notes-pane:not([hidden]) textarea') as HTMLTextAreaElement;
+  box.focus();
+  box.setSelectionRange(from, to);
+  requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+}), [start, end] as const);
+
+test('a selection is drawn behind the text in rounded shapes that glide with it', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen, null);
+  const team = screen.getByRole('textbox', 'Team notes');
+  await team.fill('line one\nline two is longer\nthree');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+
+  // The browser's own highlight is not painted; the layer is decoration only.
+  expect(await browser.evaluate(() => getComputedStyle(document.querySelector('.notes-pane:not([hidden]) textarea') as Element, '::selection').backgroundColor)).toBe('rgba(0, 0, 0, 0)');
+  expect(await browser.evaluate(() => (document.querySelector('.notes-pane:not([hidden]) .text-layer') as Element).getAttribute('aria-hidden'))).toBe('true');
+
+  // A caret alone draws nothing.
+  await selectText(browser, 3, 3);
+  expect(await ownShapes(browser)).toEqual([]);
+
+  // "one\nline two": one rounded shape per line, the second starting at the line's start.
+  await selectText(browser, 5, 18);
+  await expect.poll(async () => (await ownShapes(browser)).length).toBe(2);
+  const [first, second] = await ownShapes(browser);
+  expect(first.radius).toBe('4px');
+  expect(second.top).toBeGreaterThan(first.top);
+  expect(first.left).toBeGreaterThan(second.left);
+  expect(second.left).toBe(16); // the text box's padding
+  // It glides: the shapes move and resize with a transition, not at once.
+  expect(await browser.evaluate(() => getComputedStyle(document.querySelector('.text-layer .tl-own .tl-shape') as Element).transitionProperty)).toMatch(/transform/);
+
+  // A smaller selection reuses the first shape and lets the second go.
+  await selectText(browser, 0, 4);
+  await expect.poll(async () => (await ownShapes(browser)).length).toBe(1);
+  await expect.poll(async () => (await ownShapes(browser))[0]).toMatchObject({ left: 16, top: first.top });
+
+  // Scrolling keeps the shape on its text.
+  await team.fill(Array.from({ length: 80 }, (_, i) => `line ${i}`).join('\n'));
+  const scrollTo = (top: number) => browser.evaluate((y) => { (document.querySelector('.notes-pane:not([hidden]) textarea') as HTMLTextAreaElement).scrollTop = y; }, top);
+  await selectText(browser, 0, 6);
+  await scrollTo(0);
+  await expect.poll(async () => (await ownShapes(browser))[0]?.top).toBe(first.top);
+  await scrollTo(40);
+  await expect.poll(async () => (await ownShapes(browser))[0].top).toBe(first.top - 40);
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+type Presence = { scope: string; sandbox_id?: string | null; user_id: string; client?: string; name: string; revision: number; selection: { anchor: number; head: number } | null; hello?: boolean };
+type MockPresence = { __yuliusMock: { notes: Record<string, { revision: number }>; presenceSent?: Array<{ scope: string; revision: number; selection: { anchor: number; head: number } | null; hello?: boolean; client?: string }>; notePresence: (event: Presence) => void; failNoteSaves: boolean; failPresence: boolean; resyncNow: () => void; keepaliveRequests: string[] } };
+
+/** A teammate's presence, as the server relays it. */
+const teammate = (browser: Browser, event: Presence) =>
+  browser.evaluate((e) => (window as unknown as MockPresence).__yuliusMock.notePresence(e), event);
+
+/** The visible notepad's teammates as drawn: name, mapped offsets, shapes and the caret's place. */
+const peersShown = (browser: Browser) => browser.evaluate(() => {
+  const pane = document.querySelector('.notes-pane:not([hidden])') as HTMLElement;
+  const box = (pane.querySelector('textarea') as HTMLTextAreaElement).getBoundingClientRect();
+  return [...pane.querySelectorAll<HTMLElement>('.text-layer .tl-peer:not(.tl-leaving)')].map((group) => {
+    const caret = (group.querySelector('.tl-caret') as HTMLElement).getBoundingClientRect();
+    return {
+      name: (group.querySelector('.tl-name') as HTMLElement).textContent,
+      colour: group.style.getPropertyValue('--tl-colour'),
+      head: Number(group.dataset.head), start: Number(group.dataset.start), end: Number(group.dataset.end),
+      shapes: group.querySelectorAll('.tl-shape:not(.tl-gone)').length,
+      caretLeft: Math.round(caret.left - box.left),
+    };
+  });
+});
+
+const sent = (browser: Browser) => browser.evaluate(() => (window as unknown as MockPresence).__yuliusMock.presenceSent ?? []);
+
+test('a teammate in the notepad shows as a caret with their name and selection, in their colour', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen, null);
+  const team = screen.getByRole('textbox', 'Team notes');
+  await team.fill('Standup at 10:30 today\nsecond line');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  const revision = await browser.evaluate(() => (window as unknown as MockPresence).__yuliusMock.notes.team.revision);
+
+  // The person's own selection goes out in the saved text's offsets, at its revision.
+  await selectText(browser, 4, 8);
+  await expect.poll(async () => (await sent(browser)).at(-1)).toMatchObject({ scope: 'team', revision, selection: { anchor: 4, head: 8 } });
+
+  // A teammate's selection: their colour, their name, a rounded shape and a caret at its head.
+  await teammate(browser, { scope: 'team', user_id: 'usr_alice', name: 'alice', revision, selection: { anchor: 0, head: 7 } });
+  await expect.poll(async () => (await peersShown(browser)).length).toBe(1);
+  let [alice] = await peersShown(browser);
+  expect(alice).toMatchObject({ name: 'alice', start: 0, end: 7, head: 7, shapes: 1 });
+  expect(alice.colour).toMatch(/^var\(--peer-[1-8]\)$/);
+  expect(alice.caretLeft).toBeGreaterThan(16);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // They move: a caret alone at the start of the text.
+  await teammate(browser, { scope: 'team', user_id: 'usr_alice', name: 'alice', revision, selection: { anchor: 0, head: 0 } });
+  await expect.poll(async () => (await peersShown(browser))[0]).toMatchObject({ head: 0, shapes: 0, caretLeft: 15 });
+
+  // Unsaved typing before their caret moves it along.
+  await teammate(browser, { scope: 'team', user_id: 'usr_alice', name: 'alice', revision, selection: { anchor: 11, head: 16 } });
+  await browser.evaluate(() => { (window as unknown as MockPresence).__yuliusMock.failNoteSaves = true; });
+  await browser.evaluate(() => {
+    const box = document.querySelector('.notes-pane:not([hidden]) textarea') as HTMLTextAreaElement;
+    box.setRangeText('Daily ', 0, 0, 'end');
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await expect.poll(async () => (await peersShown(browser))[0]).toMatchObject({ start: 17, end: 22, head: 22 });
+  await browser.evaluate(() => { (window as unknown as MockPresence).__yuliusMock.failNoteSaves = false; });
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+
+  // Their offsets are in an older text now: hidden until they send them for this revision.
+  await expect.poll(async () => (await peersShown(browser)).length).toBe(0);
+  await teammate(browser, { scope: 'team', user_id: 'usr_alice', name: 'alice', revision: revision + 1, selection: { anchor: 6, head: 6 } });
+  await expect.poll(async () => (await peersShown(browser)).length).toBe(1);
+
+  // A second teammate gets a colour of their own; the person's own echo is not drawn.
+  await teammate(browser, { scope: 'team', user_id: 'usr_bob', name: 'bob', revision: revision + 1, selection: { anchor: 1, head: 3 } });
+  await teammate(browser, { scope: 'team', user_id: 'usr_1', name: 'mkarp', revision: revision + 1, selection: { anchor: 2, head: 5 } });
+  await expect.poll(async () => (await peersShown(browser)).map((p) => p.name)).toEqual(['alice', 'bob']);
+  [alice] = await peersShown(browser);
+  expect((await peersShown(browser))[1].colour).not.toBe(alice.colour);
+
+  // Someone who opens the notepad says hello: the person answers with where they are at once.
+  const before = (await sent(browser)).length;
+  await teammate(browser, { scope: 'team', user_id: 'usr_carol', name: 'carol', revision: revision + 1, selection: null, hello: true });
+  await expect.poll(async () => (await sent(browser)).length).toBeGreaterThan(before);
+  expect((await sent(browser)).at(-1)).toMatchObject({ scope: 'team', revision: revision + 1, hello: false });
+
+  // Leaving (null) takes them away; so does silence for 45 s.
+  await teammate(browser, { scope: 'team', user_id: 'usr_bob', name: 'bob', revision: revision + 1, selection: null });
+  await expect.poll(async () => (await peersShown(browser)).map((p) => p.name)).toEqual(['alice']);
+  await browser.evaluate(() => { const now = Date.now.bind(Date); Date.now = () => now() + 60_000; });
+  await expect.poll(async () => (await peersShown(browser)).length).toBe(0);
+
+  // Another tab is chosen: the person leaves the Team notepad.
+  await screen.getByRole('tab', 'This sandbox').click();
+  await expect.poll(async () => (await sent(browser)).filter((s) => s.scope === 'team').at(-1)?.selection).toBeNull();
+});
+
+test('a sandbox notepad shows only that sandbox’s teammates, and Me shows nobody', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen);
+  await screen.getByRole('textbox', 'Sandbox notes').fill('studio notes');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  const revision = await browser.evaluate(() => (window as unknown as MockPresence).__yuliusMock.notes['sandbox:sb_studio'].revision);
+  await teammate(browser, { scope: 'sandbox', sandbox_id: 'sb_other', user_id: 'usr_alice', name: 'alice', revision, selection: { anchor: 0, head: 3 } });
+  await teammate(browser, { scope: 'team', user_id: 'usr_bob', name: 'bob', revision, selection: { anchor: 0, head: 3 } });
+  await teammate(browser, { scope: 'sandbox', sandbox_id: 'sb_studio', user_id: 'usr_carol', name: 'carol', revision, selection: { anchor: 0, head: 3 } });
+  await expect.poll(async () => (await peersShown(browser)).map((p) => p.name)).toEqual(['carol']);
+
+  await screen.getByRole('tab', 'Me').click();
+  await screen.getByRole('textbox', 'My notes').click();
+  expect(await peersShown(browser)).toEqual([]);
+  expect((await sent(browser)).filter((s) => s.scope === 'me')).toEqual([]);
+});
+
+test('presence says hello when shown, again after lost events, is sent again when refused and leaves as the page goes', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen, null);
+  await screen.getByRole('textbox', 'Team notes').fill('one two three');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  // Shown: a hello from this tab, named by a client id of its own.
+  const first = (await sent(browser))[0];
+  expect(first).toMatchObject({ scope: 'team', hello: true });
+  expect(first.client).toMatch(/^[a-z0-9]{8,32}$/);
+
+  // Events were lost (a reconnect): teammates are asked again, nobody stays drawn from before.
+  const revision = await browser.evaluate(() => (window as unknown as MockPresence).__yuliusMock.notes.team.revision);
+  await teammate(browser, { scope: 'team', user_id: 'usr_alice', name: 'alice', revision, selection: { anchor: 0, head: 3 } });
+  await expect.poll(async () => (await peersShown(browser)).length).toBe(1);
+  const before = (await sent(browser)).length;
+  await browser.evaluate(() => (window as unknown as MockPresence).__yuliusMock.resyncNow());
+  await expect.poll(async () => (await sent(browser)).slice(before).some((s) => s.hello)).toBe(true);
+  await expect.poll(async () => (await peersShown(browser)).length).toBe(0);
+
+  // A refused update (429) is sent again, unchanged, once the server takes it.
+  await browser.evaluate(() => { (window as unknown as MockPresence).__yuliusMock.failPresence = true; });
+  await selectText(browser, 4, 7);
+  await browser.evaluate(() => { (window as unknown as MockPresence).__yuliusMock.failPresence = false; });
+  await expect.poll(async () => (await sent(browser)).at(-1)?.selection, { timeout: 10_000 }).toEqual({ anchor: 4, head: 7 });
+
+  // Quiet for 15 s: it says it is still there.
+  const quiet = (await sent(browser)).length;
+  await browser.evaluate(() => { const now = Date.now.bind(Date); Date.now = () => now() + 16_000; });
+  await expect.poll(async () => (await sent(browser)).length).toBeGreaterThan(quiet);
+  expect((await sent(browser)).at(-1)).toMatchObject({ selection: { anchor: 4, head: 7 } });
+
+  // The page goes: it leaves with a request that outlives the page.
+  await browser.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+  await expect.poll(async () => (await sent(browser)).at(-1)?.selection).toBeNull();
+  expect(await browser.evaluate(() => (window as unknown as MockPresence).__yuliusMock.keepaliveRequests)).toContain('/api/notes/presence');
+});
+
+test('one person in two tabs stays shown until both have left', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen, null);
+  await screen.getByRole('textbox', 'Team notes').fill('one two three');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  const revision = await browser.evaluate(() => (window as unknown as MockPresence).__yuliusMock.notes.team.revision);
+  await teammate(browser, { scope: 'team', user_id: 'usr_alice', client: 'laptop', name: 'alice', revision, selection: { anchor: 0, head: 3 } });
+  await teammate(browser, { scope: 'team', user_id: 'usr_alice', client: 'phone', name: 'alice', revision, selection: { anchor: 4, head: 4 } });
+  await expect.poll(async () => (await peersShown(browser)).length).toBe(2);
+  await teammate(browser, { scope: 'team', user_id: 'usr_alice', client: 'laptop', name: 'alice', revision, selection: null });
+  await expect.poll(async () => (await peersShown(browser)).map((p) => p.head)).toEqual([4]);
+  // Both in alice's colour.
+  await teammate(browser, { scope: 'team', user_id: 'usr_alice', client: 'laptop', name: 'alice', revision, selection: { anchor: 8, head: 8 } });
+  await expect.poll(async () => new Set((await peersShown(browser)).map((p) => p.colour)).size).toBe(1);
+});
+
+test('Escape puts a dragged tab back, and a forced-colours screen gets the native selection', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen, null);
+  const me = await screen.getByRole('tab', 'Me').boundingBox();
+  const team = await screen.getByRole('tab', 'Team').boundingBox();
+  if (!me || !team) throw new Error('tabs not laid out');
+  await browser.mouse.move(me.x + me.width / 2, me.y + me.height / 2);
+  await browser.mouse.down();
+  await browser.mouse.move(team.x + 4, me.y + me.height / 2);
+  await browser.keyboard.press('Escape');
+  // Released back over the pressed tab, where a click would land.
+  await browser.mouse.move(me.x + me.width / 2, me.y + me.height / 2);
+  await browser.mouse.up();
+  expect(await tabOrder(browser)).toEqual(['Team', 'This sandbox', 'Me']);
+  // The release after Escape chooses nothing either.
+  await expect(screen.getByRole('tab', 'Team')).toHaveAttribute('aria-selected', 'true');
+  expect(await browser.evaluate(() => [...document.querySelectorAll<HTMLElement>('[role="tablist"][aria-label="Notes"] [role="tab"]')].map((tab) => tab.style.transform).filter(Boolean))).toEqual([]);
+
+  // Forced colours paint author backgrounds away: the native selection comes back, the layer goes.
+  const rules = await browser.evaluate(() => {
+    const found: string[] = [];
+    const visit = (list: CSSRuleList, forced: boolean) => {
+      for (const rule of [...list]) {
+        if (rule instanceof CSSMediaRule) visit(rule.cssRules, forced || rule.conditionText.includes('forced-colors: active'));
+        else if (forced && rule instanceof CSSStyleRule) found.push(rule.cssText);
+      }
+    };
+    for (const sheet of [...document.styleSheets]) { try { visit(sheet.cssRules, false); } catch { /* another origin */ } }
+    return found.join('\n');
+  });
+  expect(rules).toMatch(/\.text-layer \{ display: none; \}/);
+  expect(rules).toMatch(/\.notes-text\.drawn-selection::selection \{ background: highlight; color: highlighttext; \}/);
+});
+
+test('two hellos within a second are both answered, the second a moment later', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen, null);
+  await screen.getByRole('textbox', 'Team notes').fill('one two three');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  const revision = await browser.evaluate(() => (window as unknown as MockPresence).__yuliusMock.notes.team.revision);
+  await selectText(browser, 0, 3);
+  await expect.poll(async () => (await sent(browser)).at(-1)?.selection).toEqual({ anchor: 0, head: 3 });
+  const before = (await sent(browser)).length;
+  await teammate(browser, { scope: 'team', user_id: 'usr_bob', name: 'bob', revision, selection: null, hello: true });
+  await expect.poll(async () => (await sent(browser)).length - before).toBe(1);
+  // Within the second after that answer: answered too, once the second has passed.
+  await teammate(browser, { scope: 'team', user_id: 'usr_carol', name: 'carol', revision, selection: null, hello: true });
+  await expect.poll(async () => (await sent(browser)).length - before).toBe(2);
+});
+
+test('a teammate’s offsets never split a character outside the BMP (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const edits = await browser.evaluate(async () => {
+    const { textEdit, mapPosition } = await import('/assets/textlayer.js' as string);
+    // "a😀b" → "a😃b": the two emoji share their first UTF-16 unit.
+    const edit = textEdit('a\u{1F600}b', 'a\u{1F603}b');
+    return { edit, inside: mapPosition(2, edit), after: mapPosition(4, edit), typed: mapPosition(3, textEdit('abc', 'aXbc')) };
+  });
+  expect(edits.edit).toEqual({ start: 1, endA: 3, endB: 3 });
+  expect(edits.inside).toBe(1);
+  expect(edits.after).toBe(4);
+  expect(edits.typed).toBe(4);
 });

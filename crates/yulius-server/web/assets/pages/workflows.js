@@ -71,7 +71,7 @@ export function mountWorkflowsPage(ctx, sandbox) {
       section('wf-custom', 'Custom', 'yours to change', custom.length
         ? h('div', { class: 'item-list' }, custom.map(card))
         : emptyState({ iconName: 'workflow', title: 'No custom workflows yet', text: 'Duplicate a default to change it, or start one from Blank.', action: write ? createButton('New workflow', create) : null })));
-  });
+  }, { shape: 'item-section' });
 
   async function remove(wf) {
     if (!(await confirmDialog({ title: `Delete workflow “${wf.name}”?`, message: 'Existing tasks keep their steps. New tasks can no longer select it.', confirmLabel: 'Delete', danger: true }))) return;

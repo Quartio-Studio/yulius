@@ -12,6 +12,24 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   scheduled, started now or as a supertask. A task that started keeps its start, and a wait on
   itself is refused. API: `PUT /api/tasks/{tid}/start`. A chain evaluated before the change no
   longer starts the task, and a start rule judges the tasks that existed when it was written.
+- Loading fields take the shape of what loads (SPEC-120, ADR-0097, task #106). The Git page loaded
+  as three grey bars under its header, and every list, table and editor did the same. Now each
+  loading state is drawn with its page's own layout. The Git page shows its two status cards,
+  Blocked, the board with the profile's columns and Activity. Lists of cards load as cards,
+  tables as tables with their columns, editors as their section cards, Sessions, CI and the
+  Dashboard as their own layouts, and the sidebar and Tasks lists as task rows (two lines on a
+  phone) under their real toolbar and column names. What loads lands where the fields were;
+  Subscriptions now reads its capacity beside the subscriptions, so the panel above them no
+  longer pushes them down.
+- Notes feel like a shared document (SPEC-112, ADR-0091, task #97). The Notes tabs go in any
+  order: drag one along the strip, press Alt+← / Alt+→ on it, or use its context menu; the order
+  is kept per browser, and until someone moves them Team comes first and opens first. A selection
+  in a notepad is drawn by Yulius, one rounded shape per line gliding from one selection to the
+  next. Teammates who have the Team or a sandbox notepad open show up in it, each in a colour of
+  their own, with their caret, their name and their selection, moving as they move and fading
+  out when they leave. The server relays where people are (`PUT …/notes/presence`,
+  `note.presence`) to the notepad's readers, stores nothing and takes at most 20 updates a
+  second per person and notepad.
 - The name beside the logo is set like the quote above the composer (SPEC-123, ADR-0100, task
   #110). It used to read "YULIUS" in bold, widely spaced capitals of the interface face. Now it
   reads "Yulius" in Tenor Sans 400 at the quote's 22 px with no extra spacing, in the sidebar and

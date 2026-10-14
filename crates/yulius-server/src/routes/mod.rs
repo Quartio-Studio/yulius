@@ -307,6 +307,12 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
                 .put(notes::save_sandbox)
                 .layer(DefaultBodyLimit::max(2 << 20)),
         )
+        // Who has a shared notepad open (SPEC-112): a selection, relayed and stored nowhere.
+        .route("/api/notes/presence", put(notes::team_presence))
+        .route(
+            "/api/sandboxes/{sid}/notes/presence",
+            put(notes::sandbox_presence),
+        )
         // The caller's own notepad, the same in every sandbox (SPEC-103).
         .route(
             "/api/me/notes",
