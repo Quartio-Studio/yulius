@@ -2488,3 +2488,14 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .ci-tab.active { border-color: var(--border-strong); background: var(--surface-2); color: var(--text); }
 .ci-tab:focus-visible { box-shadow: var(--focus); outline: none; }
 
+/* ---- CD page (pages/cd.js) */
+.cd-envs { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 12px; }
+.cd-env { min-width: 0; }
+.cd-facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; }
+.cd-facts dt { color: var(--muted); }
+.cd-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.cd-secrets { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.cd-secrets li { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.cd-steps { margin: 8px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; overflow-wrap: anywhere; }
+.cd-setup { width: 100%; font-family: var(--font-mono); font-size: var(--fs-sm); }
+

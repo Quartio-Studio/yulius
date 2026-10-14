@@ -20,6 +20,7 @@ import { mountSetup, mountSignIn, signInProblem } from './pages/auth.js';
 import { mountTasksPage, mountArchivedPage, mountDevicePage } from './pages/tasks.js';
 import { mountGitPage } from './pages/git.js';
 import { mountCiPage } from './pages/ci.js';
+import { mountCdPage } from './pages/cd.js';
 import { mountGitTaskView } from './pages/gittask.js';
 import { mountTaskInfoView } from './pages/taskinfo.js';
 import { mountSkillEditor } from './pages/skilledit.js';
@@ -60,6 +61,7 @@ const SANDBOX_PAGES = {
   mcp: (ctx, sandbox, route) => mountMcpPage(ctx, sandbox, route),
   secrets: (ctx, sandbox, route) => mountSecretsPage(ctx, sandbox, route),
   ci: (ctx, sandbox, route) => mountCiPage(ctx, sandbox, route),
+  cd: (ctx, sandbox, route) => mountCdPage(ctx, sandbox, route),
   dashboard: (ctx, sandbox, route) => mountDashboardPage(ctx, sandbox, route),
 };
 
