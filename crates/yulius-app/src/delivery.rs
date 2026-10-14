@@ -1686,6 +1686,20 @@ impl App {
                     github_reason(&err)
                 )),
             }
+            // A pull request Yulius recorded as merged is merged, even while GitHub's list, read
+            // just after the merge, still says open (SPEC-108 PRL-007): it reads as merged below.
+            if !open_pulls.is_empty() {
+                let merged: Vec<u64> = self
+                    .deps
+                    .store
+                    .deliveries(&sandbox.id)
+                    .await?
+                    .into_iter()
+                    .filter(|record| past_merge(&record.stage))
+                    .filter_map(|record| record.pr_number)
+                    .collect();
+                open_pulls.retain(|pull| !merged.contains(&pull.number));
+            }
             let mut checks_failed = false;
             for pull in &open_pulls {
                 // With Yulius CI its run at the head decides, as in the merge gate (S5).

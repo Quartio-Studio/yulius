@@ -455,28 +455,6 @@ async fn runs_jobs_in_parallel_publishes_statuses_and_gates_merges() -> TestResu
     Ok(())
 }
 
-/// How many `pulls.updated` events for sandbox `s1` the bus delivered since the last call.
-fn pulls_announced(
-    events: &mut tokio::sync::broadcast::Receiver<yulius_app::events::Envelope>,
-) -> usize {
-    let mut count = 0;
-    while let Ok(envelope) = events.try_recv() {
-        if let yulius_contracts::events::UiEvent::PullsUpdated { sandbox_id } = &envelope.event {
-            assert_eq!(sandbox_id, "s1");
-            assert_eq!(
-                envelope
-                    .sandbox
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .as_deref(),
-                Some("s1")
-            );
-            count += 1;
-        }
-    }
-    count
-}
-
 /// SPEC-108 PRL-003 (task #93): a run's queueing and its end change what a pull request's checks
 /// say, so each tells the sandbox's browsers to read them again, even when GitHub refuses the
 /// commit status.
@@ -486,11 +464,21 @@ async fn a_run_announces_its_pull_requests() -> TestResult {
     f.h.github
         .statuses_forbidden
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    let mut events = f.h.app.events.subscribe();
+    let mut announced = support::PullAnnouncements::new(&f.h.app, "s1");
     f.h.app.ci_sync_sandbox(&f.sandbox).await?;
-    assert!(pulls_announced(&mut events) >= 1, "queued");
+    let runs = f.get("/api/sandboxes/s1/ci").await?["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .len();
+    assert!(runs >= 1);
+    assert_eq!(announced.take(), runs, "each run, queued");
     f.settle().await?;
-    assert!(pulls_announced(&mut events) >= 1, "ended");
+    // Each run started and ended; its end may be published just after the run settles.
+    assert_eq!(
+        announced.wait_for(2 * runs, WAIT).await,
+        2 * runs,
+        "each run, started and ended"
+    );
     Ok(())
 }
 
