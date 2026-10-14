@@ -109,3 +109,11 @@ onboarding** no longer exists: whoever opens a sandbox while its onboarding runs
 - Kept in words: a task list that cannot be read and a missing onboarding task, where there is no
   task to open and the page must say why.
 - Recorded as ADR-0090, amending ADR-0076's description of the gate's action.
+- Review round 1 (fresh session) at 35f239f9: REQUEST CHANGES. Blocker: the loading line named the
+  product in a string (repository check, red), now `BRAND.name`. Minors fixed: ADR-0076's Status
+  and index entry and SPEC-001 IMP-010 name the amendment; a failed slow start no longer pulls the
+  keyboard back when the person moved it (new e2e test, red first: focus was taken); `opening`
+  resets after the navigation; nit: the "Opening onboarding" state while tasks load is asserted
+  (held task list). Not changed: the `preparing` event arriving before the approval answers is
+  handled (the composer is torn down, `destroyed` stops the rest) and the server's order is
+  pinned by the mock, which follows `start_onboarding`.

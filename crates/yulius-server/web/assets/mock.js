@@ -873,6 +873,8 @@ route('POST', `/api/sandboxes/${ID}/onboarding/approve`, async ({ db, p }) => {
   const task = preparationTask(db, sandbox);
   touch(db, task, { status: 'starting', branch: 'yulius/prepare-repository' });
   if (db.holdApprove) await db.holdApprove;
+  // …and make the run's start fail then (`__yuliusMock.failApprove = true`), as `start_run` can.
+  if (db.failApprove) fail(409, 'conflict', 'the onboarding task could not start');
   sandbox.onboarding = 'preparing';
   later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1200);
   // A test that sets `__yuliusMock.manualOnboarding` ends it itself (`finishOnboarding(slug)`).

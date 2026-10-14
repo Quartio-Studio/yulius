@@ -8,6 +8,7 @@ type Mocked = Window & { __release?: () => void; __yuliusMock: {
   manualOnboarding?: boolean;
   holdApprove?: Promise<void>;
   failPostPath?: string | null;
+  failApprove?: boolean;
   finishOnboarding(slug: string): void;
   touchTask(sandboxId: string, number: number, changes: Record<string, unknown>): void;
   sandboxes: { id: string; slug: string }[];
@@ -164,6 +165,26 @@ test('a Start onboarding that fails brings the gate back with its button', async
   await expect(browser).toHaveURL(/#\/s\/website$/);
 });
 
+// The review of SPEC-111: the start takes seconds, so the person may be elsewhere when it fails;
+// the keyboard stays where they put it.
+test('a slow Start onboarding that fails leaves the keyboard where the person moved it', async ({ app, browser, screen }) => {
+  await importRepository({ app, browser, screen }, 'website');
+  await browser.evaluate(() => { location.hash = '#/s/website'; });
+  await browser.evaluate(() => {
+    const w = window as unknown as Mocked;
+    w.__yuliusMock.failApprove = true;
+    w.__yuliusMock.holdApprove = new Promise<void>((resolve) => { w.__release = resolve; });
+  });
+  await screen.getByRole('region', 'Onboard website first').getByRole('button', 'Start onboarding').click();
+  await expect(screen.getByRole('region', 'Starting onboarding website')).toBeVisible();
+  const elsewhere = browser.locator('.sidebar a[href]').first();
+  await elsewhere.focus();
+  await browser.evaluate(() => (window as unknown as Mocked).__release!());
+  await expect(screen.getByText(/Couldn’t start onboarding: the onboarding task could not start/)).toBeVisible();
+  await expect(screen.getByRole('region', 'Onboard website first').getByRole('button', 'Start onboarding')).toBeVisible();
+  await expect(elsewhere).toBeFocused();
+});
+
 // The person's screenshot of task #96: "Onboarding studio … Follow onboarding" should not exist.
 // Whoever opens a sandbox while its onboarding runs lands on its task, whatever the task's state
 // (running, waiting for capacity, stopped: the task page says each), and Back does not bounce.
@@ -188,7 +209,14 @@ test('opening a sandbox while onboarding runs opens its task, never a Follow onb
 });
 
 test('a sandbox already preparing when the app opens goes to its onboarding task', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/product', '&onboarding=preparing'));
+  // Until its tasks are read the page loads, busy, with nothing to press (OBS-005).
+  await app.open(mock('/s/product', '&onboarding=preparing&hold=/api/sandboxes/sb_product/tasks'));
+  const opening = screen.getByRole('region', 'Opening onboarding product');
+  await expect(opening).toBeVisible();
+  await expect(opening).toHaveAttribute('aria-busy', 'true');
+  await expect(opening.getByRole('button')).toHaveCount(0);
+  await expect(opening).not.toContainText('missing');
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release(): void } }).__yuliusMock.release());
   await expect(browser).toHaveURL(/#\/s\/product\/t\/1$/);
   await expect(screen.getByRole('link', 'Follow onboarding')).toHaveCount(0);
 });

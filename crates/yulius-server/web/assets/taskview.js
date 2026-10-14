@@ -894,6 +894,8 @@ export function mountComposer(ctx, sandbox) {
     setTimeout(() => {
       if (destroyed || !el.isConnected) { opening = false; return; }
       ctx.navigate(`/s/${encodeURIComponent(sb.slug)}/t/${prep.number}`, { replace: true });
+      // A view kept after the navigation (none is today) may open it again.
+      if (!destroyed) opening = false;
     }, 0);
   }
 
@@ -932,7 +934,7 @@ export function mountComposer(ctx, sandbox) {
       h('div', { class: 'onboarding-gate-loading' }, skeleton(line, 3, { announce: false })),
     ];
     if (sb.onboarding === 'pending' && starting) {
-      return loading(`Starting onboarding ${sb.name}`, 'Yulius is starting the agent’s session; it opens here in a moment.');
+      return loading(`Starting onboarding ${sb.name}`, `${BRAND.name} is starting the agent’s session; it opens here in a moment.`);
     }
     if (sb.onboarding === 'preparing') {
       if (prep) return loading(`Opening onboarding ${sb.name}`, `Opening #${prep.number}, where the agent prepares this sandbox.`);
@@ -966,6 +968,7 @@ export function mountComposer(ctx, sandbox) {
   // The gate loads at once and nothing in it can be pressed again; the approval answers once the
   // task's run has started, and the page then opens that task (SPEC-111).
   const approveOnboarding = singleFlight(async () => {
+    const away = () => !gate.contains(document.activeElement) && document.activeElement !== document.body && document.activeElement;
     starting = true;
     renderBanner();
     try {
@@ -980,8 +983,9 @@ export function mountComposer(ctx, sandbox) {
       starting = false;
       if (!destroyed) renderBanner();
     }
-    // Back as it was (a failure), or a task that could not be read: the keyboard stays on the gate.
-    if (!destroyed && !opening) focusGate();
+    // Back as it was (a failure), or a task that could not be read: the keyboard goes back to the
+    // gate, unless the person moved it elsewhere while the start ran.
+    if (!destroyed && !opening && !away()) focusGate();
   });
 
   /** Puts the keyboard on the gate's action, else its heading. */
