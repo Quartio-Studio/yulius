@@ -23,7 +23,13 @@ example when it starts deploying for real), and record every change as a decisio
   GitHub Actions or anything that needs a paid GitHub plan (rulesets, hosted runner minutes).
 - **Decide, don't ask.** Compare options, choose, and write an ADR per lasting choice.
 - **Small pull requests.** Deliver the bootstrap as a short series of pull requests, one concern
-  each, through the normal pipeline (`delivery-pipeline`).
+  each, through the normal pipeline (`delivery-pipeline`). During onboarding, steps 1 and 2 land
+  in the onboarding pull request itself, so the project starts work with its gate; never leave
+  them as follow-up issues.
+- **Ratchet, don't rewrite.** On an existing code base, adopt each check without changing
+  application code for findings that already exist: commit the tool's baseline or allowlist, or
+  scope the check to what passes today, so the gate passes now and fails on new findings, and
+  file one issue to burn the baseline down.
 
 ## Steps (each one a pull request of similar effort)
 
@@ -38,7 +44,9 @@ example when it starts deploying for real), and record every change as a decisio
    - one entry point that runs them all in order (for example `scripts/ci` or `make ci`), exiting
      non-zero on any failure, plus the dependency and license audit the ecosystem offers;
    - `yulius.toml` `[commands]`: `test`, `lint`, `build`, and `gate` (the entry point), or
-     `[[ci.jobs]]` entries (`name`, `command`, optional `matrix`) when parallel jobs pay off.
+     `[[ci.jobs]]` entries (`name`, `command`, optional `matrix`) when parallel jobs pay off;
+   - in a monorepo, a CI job for every project (each app, client, package or service with its own
+     build) running its own checks, so no project is left without CI.
 2. **CI on our own machines.** Translate every `.github/workflows/*.yml` job into the Yulius CI
    configuration so nothing is lost (in Yulius, `ci_setup` lists the workflows, jobs, steps and
    matrices to translate): each job's run steps become the gate script or a `[[ci.jobs]]` entry,

@@ -396,7 +396,8 @@ impl App {
             product_head: repo.product.as_deref(),
             architecture_present: repo.architecture_present,
             decision_titles: decision_titles(&decisions),
-            changes_head: repo.changes.as_deref(),
+            changes_head: repo.changes.as_ref().map(|(head, _)| head.as_str()),
+            changes_newest_at_end: repo.changes.as_ref().is_some_and(|(_, at_end)| *at_end),
             recent_changes,
             parallel_tasks,
             port_base: sandbox.port_base,
@@ -907,7 +908,8 @@ struct RepoDocs {
     layout: yulius_domain::spec_format::DocsLayout,
     product: Option<String>,
     architecture_present: bool,
-    changes: Option<String>,
+    /// The newest part of the changes log, and whether it is the log's end.
+    changes: Option<(String, bool)>,
     decision_file: Option<String>,
     decision_dir: Vec<(String, String)>,
     instructions: Vec<String>,
@@ -963,7 +965,8 @@ impl RepoDocs {
         let doc = |rel: &str| read_repo_doc(root, rel);
         let product = doc(&layout.product).map(|t| t.chars().take(4_000).collect());
         let architecture_present = repo_doc_exists(root, &layout.architecture);
-        let changes = doc(&layout.changes).map(|t| t.chars().take(4_000).collect());
+        let changes =
+            doc(&layout.changes).map(|t| yulius_domain::briefing::changes_excerpt(&t, 4_000));
         let (mut decision_file, mut decision_dir) = (None, Vec::new());
         match &layout.decisions {
             DecisionsLocation::File(rel) => decision_file = doc(rel.as_str()),
