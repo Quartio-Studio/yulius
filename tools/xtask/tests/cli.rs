@@ -30,3 +30,20 @@ fn missing_prerequisite_fails_ci_without_running_later_gates() -> std::io::Resul
     assert!(!String::from_utf8_lossy(&result.stdout).contains("clippy"));
     Ok(())
 }
+
+#[test]
+fn security_is_listed_and_needs_a_vidoc_key() -> std::io::Result<()> {
+    let help = Command::new(env!("CARGO_BIN_EXE_xtask"))
+        .arg("--help")
+        .output()?;
+    assert!(String::from_utf8_lossy(&help.stdout).contains("security"));
+    let result = Command::new(env!("CARGO_BIN_EXE_xtask"))
+        .env_remove("VIDOC_TOKEN")
+        .env_remove("VIDOC_API_KEY")
+        .arg("security")
+        .output()?;
+    // Exit 2 is "not run", distinct from findings (1): the gate's code passes through.
+    assert_eq!(result.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("No Vidoc API key"));
+    Ok(())
+}

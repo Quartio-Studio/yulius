@@ -106,3 +106,4 @@ number differs from the file name, and a record this index does not list.
 - [0092](0092-screens-remember-where-they-were-left.md): Screens remember where they were left: places in the router per browser tab, tool views kept for the 3 sandboxes used last
 - [0097](0097-loading-fields-take-the-shape-of-what-loads.md): Loading fields take the shape of what loads, drawn with the page's own layout classes
 - [0100](0100-the-wordmark-is-set-like-the-composer-quote.md): The wordmark is set like the composer's quote: Tenor Sans at 400 and the quote's size, the name as written, untracked
+- [0104](0104-agents-scan-their-branch-with-vidoc-before-delivery.md): Agents scan their branch with Vidoc (`scripts/dev security`) before delivery; Yulius CI does not, as its jobs hold no secret
