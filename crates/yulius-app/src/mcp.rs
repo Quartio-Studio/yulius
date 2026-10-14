@@ -342,6 +342,15 @@ fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
             }), &["secret", "hosts"]),
         },
         ToolDescriptor {
+            name: "secret_copy_to_env".into(),
+            description: "Copy agent secrets' real values into a git-ignored dotenv file of your worktree (default .env) and their names into the .env.example beside it (SPEC-129), for code that runs outside Yulius' proxy (a deployed app, a deploy script). You never see the values, so never write or edit those lines yourself: you would write [secret:NAME]. A person allows each secret once: until then nothing is written and the result gives the Secrets page link to print. Refused unless Git ignores the file and does not track it.".into(),
+            input_schema: schema(json!({
+                "secrets": {"type": "array", "items": {"type": "string"}, "description": "Secret NAMEs from secrets_list (1-16)"},
+                "path": {"type": "string", "description": "Dotenv file relative to the worktree, e.g. .env (default) or deploy/.env.production"},
+                "reason": {"type": "string", "description": "What needs the real value (short), recorded in the secrets activity"}
+            }), &["secrets"]),
+        },
+        ToolDescriptor {
             name: "browser_fill_secret".into(),
             description: "Type an agent secret into the project browser without seeing it: its value (password or key) or, when the secret stores them (Basic credentials, older secrets), its user name or current two-factor (TOTP) code, into the focused field or the element matching selector, in a tab whose page is on one of the secret's bound hosts. Use browser_snapshot first to find the field.".into(),
             input_schema: schema(json!({
@@ -522,6 +531,7 @@ impl App {
             "secrets_list" => self.tool_secrets_list(ctx).await,
             "browser_fill_secret" => self.tool_browser_fill_secret(ctx, &args).await,
             "secret_request_hosts" => self.tool_secret_request_hosts(ctx, &args).await,
+            "secret_copy_to_env" => self.tool_secret_copy_to_env(ctx, &args).await,
             other => Err(AppError::Invalid(format!("unknown tool: {other}"))),
         })
     }

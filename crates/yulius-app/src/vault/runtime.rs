@@ -232,7 +232,7 @@ impl App {
 
     /// Records an agent's use of a secret: `last_used_at`, and one audit entry per run, secret
     /// and context.
-    async fn note_agent_use(
+    pub(super) async fn note_agent_use(
         &self,
         attempt: &str,
         task_number: u32,
