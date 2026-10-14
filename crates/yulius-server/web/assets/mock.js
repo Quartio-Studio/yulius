@@ -2273,7 +2273,7 @@ route('DELETE', `/api/sandboxes/${ID}/shells/${ID}`, ({ db, p }) => {
 // (`me:<user id>`, SPEC-103); a save names the revision it
 // started from and a stale one is refused (409). Kept in sessionStorage so a reload finds them, as
 // it would on the server. Tests edit as a teammate (`editNote`), fail saves (`failNoteSaves`) and
-// loads (`failNoteLoads`), lose a stored save's answer (`loseNoteResponse`) and see which requests
+// loads (`failNoteLoads`), hold loads (`holdNoteLoad`), lose a stored save's answer (`loseNoteResponse`) and see which requests
 // were sent to outlive the page (`keepaliveRequests`).
 
 const NOTES_KEY = 'yulius.mock.notes';
@@ -2327,6 +2327,8 @@ function saveNote(db, scope, body) {
 function loadNote(db, scope) {
   db.noteLoads = (db.noteLoads || 0) + 1;
   if (db.failNoteLoads) fail(503, 'unavailable', 'The mock server is unavailable on purpose');
+  // A test can hold reads (`__yuliusMock.holdNoteLoad = promise`): they answer what is stored then.
+  if (db.holdNoteLoad) return db.holdNoteLoad.then(() => noteView(db, scope));
   return noteView(db, scope);
 }
 
@@ -2343,18 +2345,22 @@ route('PUT', `/api/sandboxes/${ID}/notes`, ({ db, p, body }) => {
 
 // Presence (SPEC-112): the browser's own selection is recorded (`presenceSent`) and relayed like
 // the server does (its own echo included, which the page leaves out); tests act as a teammate with
-// `notePresence(event)`.
+// `notePresence(event)`, refuse updates (`failPresence`) and lose events (`resyncNow()`).
 function relayPresence(db, scope, sandboxId, body) {
-  for (const key of Object.keys(body)) if (!['revision', 'selection', 'hello'].includes(key)) fail(422, 'invalid', `unknown field ${key}`);
+  for (const key of Object.keys(body)) if (!['revision', 'selection', 'hello', 'client'].includes(key)) fail(422, 'invalid', `unknown field ${key}`);
+  if (body.client !== undefined && !/^[A-Za-z0-9]{0,32}$/.test(body.client)) fail(422, 'invalid', 'a client is at most 32 letters and digits');
+  // `failPresence`: the server refuses it as too many (429).
+  if (db.failPresence) fail(429, 'capacity', 'too many presence updates; slow down');
   const selection = body.selection;
   const offset = (n) => Number.isInteger(n) && n >= 0 && n <= 1 << 20;
   if (!Number.isInteger(body.revision) || selection === undefined
     || (selection !== null && (typeof selection !== 'object' || Object.keys(selection).some((k) => k !== 'anchor' && k !== 'head') || !offset(selection.anchor) || !offset(selection.head)))) {
     fail(422, 'invalid', 'revision and selection are required');
   }
-  (db.presenceSent = db.presenceSent || []).push({ scope, sandbox_id: sandboxId, revision: body.revision, selection, hello: Boolean(body.hello) });
+  const client = body.client || '';
+  (db.presenceSent = db.presenceSent || []).push({ scope, sandbox_id: sandboxId, revision: body.revision, selection, hello: Boolean(body.hello), client });
   const user = db.me.user;
-  emit(db, { type: 'note.presence', scope, sandbox_id: sandboxId, user_id: user.id, name: user.github_linked ? user.login : user.display_name, revision: body.revision, selection, hello: Boolean(body.hello) });
+  emit(db, { type: 'note.presence', scope, sandbox_id: sandboxId, user_id: user.id, client, name: user.github_linked ? user.login : user.display_name, revision: body.revision, selection, hello: Boolean(body.hello) });
   return json(204);
 }
 
@@ -4000,7 +4006,8 @@ export function createMockTransport(params) {
   // A teammate's save of a notepad (`team` or `sandbox:<sid>`); `announce: false` holds back its
   // event, as if it were still on its way (SPEC-041).
   db.editNote = (scope, body, by = 'alice', options) => putNote(db, scope, body, by, options);
-  db.notePresence = (event) => emit(db, { type: 'note.presence', sandbox_id: null, hello: false, ...event });
+  db.notePresence = (event) => emit(db, { type: 'note.presence', sandbox_id: null, client: '', hello: false, ...event });
+  db.resyncNow = () => resync(db);
   db.keepaliveRequests = [];
   // `noteloads=fail`: the notes cannot be loaded from the start (a server still restarting).
   db.failNoteLoads = params.get('noteloads') === 'fail';

@@ -237,6 +237,40 @@ test('a save whose answer was lost is not a conflict with oneself', async ({ app
   expect(await stored(browser, 'sandbox:sb_studio')).toBe('stored, answer lost, and more');
 });
 
+// Review of SPEC-112: a second save refused while the first refusal was still being looked into
+// went on from its own look, which no longer knew the lost save (the first look had rebased on it).
+test('a save made while a refused one is looked into is not a conflict with oneself', async ({ app, browser, screen }) => {
+  await browser.addInitScript(pageHelpers);
+  await app.open(mock('/s/studio'));
+  await openNotes(screen);
+  const notes = screen.getByRole('textbox', 'Sandbox notes');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  await setMock(browser, 'loseNoteResponse', true);
+  await notes.fill('stored, answer lost');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Not saved, retrying…');
+  await setMock(browser, 'loseNoteResponse', false);
+  const loads = await browser.evaluate(() => {
+    const mockDb = (window as unknown as { __yuliusMock: { holdNoteLoad: Promise<void> | null; noteLoads: number } }).__yuliusMock;
+    mockDb.holdNoteLoad = new Promise((resolve) => { (window as unknown as { releaseLoads: () => void }).releaseLoads = resolve; });
+    return mockDb.noteLoads;
+  });
+  // Saved at once (a blur): refused, and the look at the server is held.
+  const blur = () => browser.evaluate(() => (document.querySelector('.notes-pane:not([hidden]) textarea') as HTMLElement).dispatchEvent(new Event('blur')));
+  await browser.evaluate(() => typeInto('stored, answer lost, and more'));
+  await blur();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as MockNotes).__yuliusMock.noteLoads)).toBe(loads + 1);
+  // More typing saved meanwhile.
+  await browser.evaluate(() => typeInto('stored, answer lost, and more!'));
+  await blur();
+  await browser.evaluate(() => {
+    (window as unknown as { __yuliusMock: { holdNoteLoad: null } }).__yuliusMock.holdNoteLoad = null;
+    (window as unknown as { releaseLoads: () => void }).releaseLoads();
+  });
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  await expect(screen.getByRole('alert')).toBeHidden();
+  expect(await stored(browser, 'sandbox:sb_studio')).toBe('stored, answer lost, and more!');
+});
+
 test('notes fit a phone', async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 390, height: 844 });
   await app.open(mock('/s/studio'));
@@ -606,8 +640,8 @@ test('a selection is drawn behind the text in rounded shapes that glide with it'
   expect(await axeViolations(browser)).toEqual([]);
 });
 
-type Presence = { scope: string; sandbox_id?: string | null; user_id: string; name: string; revision: number; selection: { anchor: number; head: number } | null; hello?: boolean };
-type MockPresence = { __yuliusMock: { notes: Record<string, { revision: number }>; presenceSent?: Array<{ scope: string; revision: number; selection: { anchor: number; head: number } | null; hello?: boolean }>; notePresence: (event: Presence) => void; failNoteSaves: boolean } };
+type Presence = { scope: string; sandbox_id?: string | null; user_id: string; client?: string; name: string; revision: number; selection: { anchor: number; head: number } | null; hello?: boolean };
+type MockPresence = { __yuliusMock: { notes: Record<string, { revision: number }>; presenceSent?: Array<{ scope: string; revision: number; selection: { anchor: number; head: number } | null; hello?: boolean; client?: string }>; notePresence: (event: Presence) => void; failNoteSaves: boolean; failPresence: boolean; resyncNow: () => void; keepaliveRequests: string[] } };
 
 /** A teammate's presence, as the server relays it. */
 const teammate = (browser: Browser, event: Presence) =>
@@ -712,4 +746,91 @@ test('a sandbox notepad shows only that sandbox’s teammates, and Me shows nobo
   await screen.getByRole('textbox', 'My notes').click();
   expect(await peersShown(browser)).toEqual([]);
   expect((await sent(browser)).filter((s) => s.scope === 'me')).toEqual([]);
+});
+
+test('presence says hello when shown, again after lost events, is sent again when refused and leaves as the page goes', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen, null);
+  await screen.getByRole('textbox', 'Team notes').fill('one two three');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  // Shown: a hello from this tab, named by a client id of its own.
+  const first = (await sent(browser))[0];
+  expect(first).toMatchObject({ scope: 'team', hello: true });
+  expect(first.client).toMatch(/^[a-z0-9]{8,32}$/);
+
+  // Events were lost (a reconnect): teammates are asked again, nobody stays drawn from before.
+  const revision = await browser.evaluate(() => (window as unknown as MockPresence).__yuliusMock.notes.team.revision);
+  await teammate(browser, { scope: 'team', user_id: 'usr_alice', name: 'alice', revision, selection: { anchor: 0, head: 3 } });
+  await expect.poll(async () => (await peersShown(browser)).length).toBe(1);
+  const before = (await sent(browser)).length;
+  await browser.evaluate(() => (window as unknown as MockPresence).__yuliusMock.resyncNow());
+  await expect.poll(async () => (await sent(browser)).slice(before).some((s) => s.hello)).toBe(true);
+  await expect.poll(async () => (await peersShown(browser)).length).toBe(0);
+
+  // A refused update (429) is sent again, unchanged, once the server takes it.
+  await browser.evaluate(() => { (window as unknown as MockPresence).__yuliusMock.failPresence = true; });
+  await selectText(browser, 4, 7);
+  await browser.evaluate(() => { (window as unknown as MockPresence).__yuliusMock.failPresence = false; });
+  await expect.poll(async () => (await sent(browser)).at(-1)?.selection, { timeout: 10_000 }).toEqual({ anchor: 4, head: 7 });
+
+  // Quiet for 15 s: it says it is still there.
+  const quiet = (await sent(browser)).length;
+  await browser.evaluate(() => { const now = Date.now.bind(Date); Date.now = () => now() + 16_000; });
+  await expect.poll(async () => (await sent(browser)).length).toBeGreaterThan(quiet);
+  expect((await sent(browser)).at(-1)).toMatchObject({ selection: { anchor: 4, head: 7 } });
+
+  // The page goes: it leaves with a request that outlives the page.
+  await browser.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+  await expect.poll(async () => (await sent(browser)).at(-1)?.selection).toBeNull();
+  expect(await browser.evaluate(() => (window as unknown as MockPresence).__yuliusMock.keepaliveRequests)).toContain('/api/notes/presence');
+});
+
+test('one person in two tabs stays shown until both have left', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen, null);
+  await screen.getByRole('textbox', 'Team notes').fill('one two three');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  const revision = await browser.evaluate(() => (window as unknown as MockPresence).__yuliusMock.notes.team.revision);
+  await teammate(browser, { scope: 'team', user_id: 'usr_alice', client: 'laptop', name: 'alice', revision, selection: { anchor: 0, head: 3 } });
+  await teammate(browser, { scope: 'team', user_id: 'usr_alice', client: 'phone', name: 'alice', revision, selection: { anchor: 4, head: 4 } });
+  await expect.poll(async () => (await peersShown(browser)).length).toBe(2);
+  await teammate(browser, { scope: 'team', user_id: 'usr_alice', client: 'laptop', name: 'alice', revision, selection: null });
+  await expect.poll(async () => (await peersShown(browser)).map((p) => p.head)).toEqual([4]);
+  // Both in alice's colour.
+  await teammate(browser, { scope: 'team', user_id: 'usr_alice', client: 'laptop', name: 'alice', revision, selection: { anchor: 8, head: 8 } });
+  await expect.poll(async () => new Set((await peersShown(browser)).map((p) => p.colour)).size).toBe(1);
+});
+
+test('Escape puts a dragged tab back, and a forced-colours screen gets the native selection', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen, null);
+  const me = await screen.getByRole('tab', 'Me').boundingBox();
+  const team = await screen.getByRole('tab', 'Team').boundingBox();
+  if (!me || !team) throw new Error('tabs not laid out');
+  await browser.mouse.move(me.x + me.width / 2, me.y + me.height / 2);
+  await browser.mouse.down();
+  await browser.mouse.move(team.x + 4, me.y + me.height / 2);
+  await browser.keyboard.press('Escape');
+  // Released back over the pressed tab, where a click would land.
+  await browser.mouse.move(me.x + me.width / 2, me.y + me.height / 2);
+  await browser.mouse.up();
+  expect(await tabOrder(browser)).toEqual(['Team', 'This sandbox', 'Me']);
+  // The release after Escape chooses nothing either.
+  await expect(screen.getByRole('tab', 'Team')).toHaveAttribute('aria-selected', 'true');
+  expect(await browser.evaluate(() => [...document.querySelectorAll<HTMLElement>('[role="tablist"][aria-label="Notes"] [role="tab"]')].map((tab) => tab.style.transform).filter(Boolean))).toEqual([]);
+
+  // Forced colours paint author backgrounds away: the native selection comes back, the layer goes.
+  const rules = await browser.evaluate(() => {
+    const found: string[] = [];
+    const visit = (list: CSSRuleList, forced: boolean) => {
+      for (const rule of [...list]) {
+        if (rule instanceof CSSMediaRule) visit(rule.cssRules, forced || rule.conditionText.includes('forced-colors: active'));
+        else if (forced && rule instanceof CSSStyleRule) found.push(rule.cssText);
+      }
+    };
+    for (const sheet of [...document.styleSheets]) { try { visit(sheet.cssRules, false); } catch { /* another origin */ } }
+    return found.join('\n');
+  });
+  expect(rules).toMatch(/\.text-layer \{ display: none; \}/);
+  expect(rules).toMatch(/\.notes-text\.drawn-selection::selection \{ background: highlight; color: highlighttext; \}/);
 });

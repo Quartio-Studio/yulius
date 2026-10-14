@@ -29,6 +29,8 @@ const PRESENCE_WINDOW_MS: i64 = 1_000;
 const MAX_PRESENCE_COUNTERS: usize = 4_096;
 /// Largest offset a selection may name: notes hold at most 256 KiB, far fewer UTF-16 units.
 pub const MAX_PRESENCE_OFFSET: u32 = 1 << 20;
+/// Longest browser tab id a presence update may carry (letters and digits).
+pub const MAX_PRESENCE_CLIENT: usize = 32;
 
 /// A stored notepad.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,6 +204,13 @@ impl App {
                 "a selection lies within the notes' text".into(),
             ));
         }
+        if input.client.len() > MAX_PRESENCE_CLIENT
+            || !input.client.bytes().all(|b| b.is_ascii_alphanumeric())
+        {
+            return Err(AppError::Invalid(format!(
+                "a client is at most {MAX_PRESENCE_CLIENT} letters and digits"
+            )));
+        }
         self.count_presence(&format!("{}|{}", ctx.user.id, scope.key()))?;
         let name = ctx
             .user
@@ -215,6 +224,7 @@ impl App {
                 Scope::Team | Scope::Me(_) => None,
             },
             user_id: ctx.user.id.to_string(),
+            client: input.client.clone(),
             name,
             revision: input.revision,
             selection: input.selection,
@@ -229,27 +239,72 @@ impl App {
 
     /// Counts one presence update under `key`, refusing it past the limit (NOT-019).
     fn count_presence(&self, key: &str) -> AppResult<()> {
-        const REFUSAL: &str = "too many presence updates; slow down";
-        let now = self.now();
         let mut counters = self
             .note_presence
             .lock()
             .map_err(|_| AppError::Internal("presence limiter poisoned".into()))?;
-        if !counters.contains_key(key) && counters.len() >= MAX_PRESENCE_COUNTERS {
-            counters.retain(|_, times| {
-                times.retain(|t| now.0 - *t < PRESENCE_WINDOW_MS);
-                !times.is_empty()
-            });
-            if counters.len() >= MAX_PRESENCE_COUNTERS {
-                return Err(AppError::Capacity(REFUSAL.into()));
-            }
+        if count_in_window(
+            &mut counters,
+            key,
+            self.now(),
+            PRESENCE_PER_SECOND,
+            MAX_PRESENCE_COUNTERS,
+        ) {
+            Ok(())
+        } else {
+            Err(AppError::Capacity(
+                "too many presence updates; slow down".into(),
+            ))
         }
-        let times = counters.entry(key.to_owned()).or_default();
-        times.retain(|t| now.0 - *t < PRESENCE_WINDOW_MS);
-        if times.len() >= PRESENCE_PER_SECOND {
-            return Err(AppError::Capacity(REFUSAL.into()));
+    }
+}
+
+/// Counts one update under `key` when it has had fewer than `per_window` in the last
+/// [`PRESENCE_WINDOW_MS`] and there is room for it among at most `max_keys` keys (keys idle for a
+/// window are dropped first). Returns whether it was counted.
+fn count_in_window(
+    counters: &mut std::collections::HashMap<String, Vec<i64>>,
+    key: &str,
+    now: Timestamp,
+    per_window: usize,
+    max_keys: usize,
+) -> bool {
+    if !counters.contains_key(key) && counters.len() >= max_keys {
+        counters.retain(|_, times| {
+            times.retain(|t| now.0 - *t < PRESENCE_WINDOW_MS);
+            !times.is_empty()
+        });
+        if counters.len() >= max_keys {
+            return false;
         }
-        times.push(now.0);
-        Ok(())
+    }
+    let times = counters.entry(key.to_owned()).or_default();
+    times.retain(|t| now.0 - *t < PRESENCE_WINDOW_MS);
+    if times.len() >= per_window {
+        return false;
+    }
+    times.push(now.0);
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn presence_counters_are_bounded_and_idle_ones_make_room() {
+        let mut counters = std::collections::HashMap::new();
+        let start = Timestamp(10_000);
+        assert!(count_in_window(&mut counters, "a", start, 2, 2));
+        assert!(count_in_window(&mut counters, "b", start, 2, 2));
+        // Full of active keys: a new one is refused, known ones still count up to their limit.
+        assert!(!count_in_window(&mut counters, "c", start, 2, 2));
+        assert!(count_in_window(&mut counters, "a", start, 2, 2));
+        assert!(!count_in_window(&mut counters, "a", start, 2, 2));
+        assert_eq!(counters.len(), 2);
+        // A window later the idle keys go and make room.
+        let later = start.plus_millis(PRESENCE_WINDOW_MS);
+        assert!(count_in_window(&mut counters, "c", later, 2, 2));
+        assert_eq!(counters.len(), 1);
     }
 }

@@ -585,7 +585,7 @@ async fn presence_is_relayed_to_readers() -> TestResult {
         &h.router,
         Method::PUT,
         "/api/notes/presence",
-        Some(json!({"revision": 3, "selection": {"anchor": 5, "head": 2}, "hello": true})),
+        Some(json!({"revision": 3, "selection": {"anchor": 5, "head": 2}, "hello": true, "client": "tab1"})),
         &alice,
     )
     .await?;
@@ -598,6 +598,7 @@ async fn presence_is_relayed_to_readers() -> TestResult {
             scope: "team".into(),
             sandbox_id: None,
             user_id: "u-alice".into(),
+            client: "tab1".into(),
             name: "alice".into(),
             revision: 3,
             selection: Some(NoteSelection { anchor: 5, head: 2 }),
@@ -632,6 +633,7 @@ async fn presence_is_relayed_to_readers() -> TestResult {
             scope: "sandbox".into(),
             sandbox_id: Some("s1".into()),
             user_id: "u-bob".into(),
+            client: String::new(),
             name: "bob".into(),
             revision: 0,
             selection: None,
@@ -654,6 +656,8 @@ async fn presence_is_relayed_to_readers() -> TestResult {
         json!({"revision": 0, "selection": null, "colour": "red"}),
         json!({"revision": 0, "selection": {"anchor": 1, "head": 2, "x": 1}}),
         json!({"revision": 0, "selection": {"anchor": 0, "head": 1_048_577}}),
+        json!({"revision": 0, "selection": null, "client": "a".repeat(33)}),
+        json!({"revision": 0, "selection": null, "client": "tab one"}),
         json!({"selection": null}),
     ] {
         let refused = call(

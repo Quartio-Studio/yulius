@@ -2077,7 +2077,7 @@ a.dl-task:hover { text-decoration: underline; }
   transition: transform var(--duration-fast) var(--ease), width var(--duration-fast) var(--ease), height var(--duration-fast) var(--ease), opacity var(--duration-fast) var(--ease), background-color var(--duration-fast) var(--ease); }
 .tl-blurred .tl-shape { background: color-mix(in srgb, var(--tl-colour) 16%, transparent); }
 .tl-shape.tl-gone { opacity: 0; }
-.tl-shape.tl-still { transition: none; }
+.tl-shape.tl-still, .tl-jump .tl-shape, .tl-jump .tl-caret { transition: none; }
 /* Teammates: a caret in their colour with their name on a tag above it (below it on the first
    line), their selection in their colour; they glide like one's own and fade in and out. */
 .tl-peer { transition: opacity var(--duration-slow) var(--ease); }
@@ -2088,6 +2088,11 @@ a.dl-task:hover { text-decoration: underline; }
 .tl-name { position: absolute; left: 0; bottom: 100%; max-width: 16ch; overflow: hidden; text-overflow: ellipsis; padding: 0 4px;
   border-radius: var(--radius-xs) var(--radius-xs) var(--radius-xs) 0; background: var(--tl-colour); color: var(--peer-ink); font-size: var(--fs-xs); font-weight: 600; line-height: var(--lh-xs); white-space: nowrap; }
 .tl-caret.tl-below .tl-name { bottom: auto; top: 100%; border-radius: 0 var(--radius-xs) var(--radius-xs) var(--radius-xs); }
+/* Forced colours paint author backgrounds away: the browser's own selection comes back. */
+@media (forced-colors: active) {
+  .notes-text.drawn-selection::selection { background: Highlight; color: HighlightText; }
+  .text-layer { display: none; }
+}
 .notes-text[readonly] { color: var(--text-2); }
 .notes-meta { flex: none; margin: 0; padding: 4px 16px; min-height: calc(var(--lh-sm) + 8px); border-top: 1px solid var(--border); color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .notes-readonly { flex: none; margin: 0; padding: 6px 16px; border-bottom: 1px solid var(--border); background: var(--surface-2); color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }

@@ -20,9 +20,11 @@ the server knew who had a notepad open. Notes are saved whole with a revision 60
   event bus to the notepad's readers (everyone signed in for Team, the sandbox's viewers for a
   sandbox; nothing for "Me"). The server stores nothing; it counts at most 20 updates a second per
   person and notepad (429 past it) so one browser cannot flood the bounded bus.
-- **Liveness in the browser.** A browser sends its selection at most every 100 ms, again every
-  15 s while the notepad is shown, `hello` when it is shown (the others answer at once) and `null`
-  when it is hidden or the page goes. A teammate not heard of for 45 s fades out.
+- **Liveness in the browser.** A browser tab (a random `client` id) sends its selection at most
+  every 100 ms, again every 15 s while the notepad is shown, `hello` when it is shown and after
+  lost events (the others answer at once, at most once a second), `null` when it is hidden or the
+  page goes, and a refused update again after 1 s, doubling up to 15 s. A tab not heard of for
+  45 s fades out.
 - **Positions.** Offsets are UTF-16 offsets in the saved text at `revision`; each side maps them
   through its own unsaved typing (the common prefix and suffix of the two texts). A teammate at
   another revision is hidden until both meet again.
@@ -41,7 +43,8 @@ the server knew who had a notepad open. Notes are saved whole with a revision 60
 
 ## Consequences
 
-- Presence costs no storage and survives restarts trivially: browsers say hello again.
+- Presence costs no storage and survives restarts trivially: browsers say hello again after the
+  reconnect's `resync`.
 - A person who keeps a notepad open sends one tiny request every 15 s; a dragged selection at most
   ten a second.
 - Until both sides save and reload, a teammate who typed elsewhere is hidden rather than misplaced.

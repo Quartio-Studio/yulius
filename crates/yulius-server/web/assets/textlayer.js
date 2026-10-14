@@ -31,6 +31,10 @@ export function textEdit(a, b) {
   while (start < shortest && a.charCodeAt(start) === b.charCodeAt(start)) start += 1;
   let tail = 0;
   while (tail < shortest - start && a.charCodeAt(a.length - 1 - tail) === b.charCodeAt(b.length - 1 - tail)) tail += 1;
+  // Never between the halves of a character outside the BMP (an emoji).
+  const high = (code) => code >= 0xd800 && code <= 0xdbff;
+  if (start > 0 && high(a.charCodeAt(start - 1))) start -= 1;
+  if (tail > 0 && high(a.charCodeAt(a.length - tail - 1))) tail -= 1;
   return { start, endA: a.length - tail, endB: b.length - tail };
 }
 
@@ -51,8 +55,8 @@ export function peerColour(id) {
 /**
  * The layer for `textarea`: `{el, refresh, setPeers, destroy}`. `el` goes right before the text
  * box in a positioned parent; `refresh()` redraws after the text changed from code;
- * `setPeers([{id, name, start, end, head}])` shows those teammates (in offsets of the text box's
- * text) and lets the others fade out.
+ * `setPeers([{id, colourOf, name, start, end, head}])` shows those teammates (in offsets of the
+ * text box's text; `colourOf` picks the colour, default `id`) and lets the others fade out.
  */
 export function createTextLayer(textarea) {
   const own = h('div', { class: 'tl-group tl-own' });
@@ -64,6 +68,7 @@ export function createTextLayer(textarea) {
   const peerMarks = new Map(); // id → {group, caret, name}
   let peers = [];
   let frame = 0;
+  let scrolled = false; // a scroll moved the lines in view: this draw jumps, it does not glide
 
   /** Lays the mirror out like the text box, with its text: the text node and the line height. */
   function layOut() {
@@ -128,8 +133,13 @@ export function createTextLayer(textarea) {
     return { x: rect.left - origin.left, y: middle - lineHeight / 2, height: lineHeight };
   }
 
-  /** Shows `boxes` in `group`, reusing its shapes in order so a changing selection glides. */
-  function place(group, boxes) {
+  /**
+   * Shows `boxes` in `group`, reusing its shapes in order so a changing selection glides. Only
+   * lines within a screen of the view are drawn: selecting all of a long note stays light.
+   */
+  function place(group, all) {
+    const reach = textarea.clientHeight;
+    const boxes = all.filter((box) => box.y + box.height >= textarea.scrollTop - reach && box.y <= textarea.scrollTop + 2 * reach);
     const pool = shapes.get(group);
     boxes.forEach((box, i) => {
       let shape = pool[i];
@@ -162,7 +172,7 @@ export function createTextLayer(textarea) {
       const name = h('span', { class: 'tl-name' });
       const caret = h('div', { class: 'tl-caret tl-still' }, name);
       const group = h('div', { class: 'tl-group tl-peer tl-leaving' }, caret);
-      group.style.setProperty('--tl-colour', peerColour(peer.id));
+      group.style.setProperty('--tl-colour', peerColour(peer.colourOf || peer.id));
       shapes.set(group, []);
       content.append(group);
       marks = { group, caret, name, fresh: true };
@@ -192,8 +202,8 @@ export function createTextLayer(textarea) {
       const at = caretBox(layout, peer.head);
       caret.style.transform = `translate(${at.x - CARET_PX / 2}px, ${at.y}px)`;
       caret.style.height = `${at.height}px`;
-      // On the first line the name hangs below the caret, where the layer does not cut it off.
-      caret.classList.toggle('tl-below', at.y < at.height);
+      // On the first line in view the name hangs below the caret, where the layer does not cut it off.
+      caret.classList.toggle('tl-below', at.y - textarea.scrollTop < at.height);
       if (marks.fresh) {
         caret.getBoundingClientRect(); // in place before it fades in
         marks.fresh = false;
@@ -206,6 +216,11 @@ export function createTextLayer(textarea) {
   function draw() {
     frame = 0;
     if (!textarea.isConnected || textarea.clientWidth === 0) return; // hidden: drawn when shown
+    if (scrolled) {
+      scrolled = false;
+      content.classList.add('tl-jump');
+      requestAnimationFrame(() => content.classList.remove('tl-jump'));
+    }
     content.style.transform = `translate(${-textarea.scrollLeft}px, ${-textarea.scrollTop}px)`;
     own.classList.toggle('tl-blurred', document.activeElement !== textarea);
     const layout = layOut();
@@ -216,7 +231,11 @@ export function createTextLayer(textarea) {
 
   const schedule = () => { if (!frame) frame = requestAnimationFrame(draw); };
   // The scroll moves the shapes with the text at once, never late by a frame.
-  const onScroll = () => { content.style.transform = `translate(${-textarea.scrollLeft}px, ${-textarea.scrollTop}px)`; };
+  const onScroll = () => {
+    content.style.transform = `translate(${-textarea.scrollLeft}px, ${-textarea.scrollTop}px)`;
+    scrolled = true;
+    schedule();
+  };
   const onSelection = () => { if (document.activeElement === textarea) schedule(); };
   const events = ['input', 'select', 'selectionchange', 'focus', 'blur', 'keyup', 'pointerup'];
   for (const name of events) textarea.addEventListener(name, schedule);

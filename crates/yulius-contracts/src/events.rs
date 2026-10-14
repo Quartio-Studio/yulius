@@ -95,6 +95,8 @@ pub enum UiEvent {
         sandbox_id: Option<String>,
         /// Who: their user id (the browser leaves out its own).
         user_id: String,
+        /// Their browser tab, as they sent it (one person may have several).
+        client: String,
         /// Their name: the GitHub login, else the display name.
         name: String,
         /// The revision whose text the offsets are in.

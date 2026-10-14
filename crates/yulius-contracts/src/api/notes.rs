@@ -54,6 +54,9 @@ pub struct NotePresence {
     /// The notepad was just shown: the others answer with their own presence.
     #[serde(default)]
     pub hello: bool,
+    /// The browser tab (at most 32 letters and digits), so one person's tabs are told apart.
+    #[serde(default)]
+    pub client: String,
 }
 
 #[cfg(test)]

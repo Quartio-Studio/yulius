@@ -44,6 +44,12 @@ const PRESENCE_HEARTBEAT_MS = 15000;
 const PRESENCE_EXPIRY_MS = 45000;
 /** How often teammates who went quiet are looked for. */
 const PRESENCE_SWEEP_MS = 1000;
+/** A refused or lost update is sent again after this, doubling up to the heartbeat. */
+const PRESENCE_RETRY_MS = 1000;
+/** Hellos are answered at most this often, however many people open the notepad at once. */
+const PRESENCE_ANSWER_GAP_MS = 1000;
+/** This browser tab, so one person's tabs are told apart (SPEC-112 NOT-020). */
+const CLIENT_ID = Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join('');
 
 const retryable = (error) => !error.status || error.status === 408 || error.status === 429 || error.status >= 500;
 const byteLength = (text) => new TextEncoder().encode(text).length;
@@ -274,6 +280,9 @@ export function createNotesView(ctx, sandbox) {
     event.preventDefault();
     event.stopPropagation();
     dragCancel();
+    // The release that follows clicks nothing (it may land back on the pressed tab).
+    dragged = true;
+    window.addEventListener('pointerup', () => setTimeout(() => { dragged = false; }, 0), { once: true, capture: true });
   }
 
   function select(pad, { focusTab = false } = {}) {
@@ -308,7 +317,7 @@ export function createNotesView(ctx, sandbox) {
 
   const offs = [
     ctx.store.on('note', (event) => { for (const pad of pads) if (pad.matches(event)) pad.announced(event); }),
-    ctx.store.on('resync', () => { for (const pad of pads) pad.announced(null); }),
+    ctx.store.on('resync', () => { for (const pad of pads) { pad.announced(null); pad.presenceLost(); } }),
     ctx.store.on('note-presence', (event) => { for (const pad of pads) if (pad.matches(event)) pad.peerPresence(event); }),
   ];
   // Teammates who went quiet fade out; the shown notepad says it is still there now and then.
@@ -604,8 +613,13 @@ function notepad(ctx, { key, label, textLabel, path, putPresence = null, unsaved
       else { dropUnsaved(); catchUp(); }
     } catch (error) {
       saving = null;
-      if (error.status === 409) await resolveConflict();
-      else if (!retryable(error)) failed = error.message;
+      if (error.status === 409) {
+        // No other save starts while the refusal is looked into: its own look would no longer
+        // know a lost save this look goes on from (review of SPEC-112). Typing meanwhile is
+        // saved after it.
+        saving = resolveConflict();
+        try { await saving; } finally { saving = null; }
+      } else if (!retryable(error)) failed = error.message;
       else {
         failed = 'retrying';
         // Bounded after the view is gone: the text is also kept for the next load.
@@ -688,8 +702,9 @@ function notepad(ctx, { key, label, textLabel, path, putPresence = null, unsaved
   // ---- presence (SPEC-112 NOT-020): where this person is in a shared notepad goes to its other
   // readers, and theirs is drawn here. Offsets travel in the saved text at `base`, mapped through
   // the unsaved typing on each side; someone at another revision is hidden until both meet again.
-  // Nothing goes out before the person first puts the caret in the text box.
-  const peers = new Map(); // user id → {name, revision, selection, seen}
+  // Nothing goes out before the text box first has the keyboard (opening Notes gives it; Notes
+  // shown again because the page changed does not), so nobody shows at the start unasked.
+  const peers = new Map(); // `user id:tab` → {userId, name, revision, selection, seen}
   let present = false; // the notepad is shown
   let touched = false; // the caret was put in it
   let presenceTimer = 0;
@@ -698,6 +713,8 @@ function notepad(ctx, { key, label, textLabel, path, putPresence = null, unsaved
   let wasThere = false; // the last update sent had a selection
   let helloDue = false;
   let forceDue = false;
+  let retryMs = PRESENCE_RETRY_MS;
+  let lastAnswerAt = 0;
 
   /** The text box's own text and the saved one are the same document, unless a conflict is open. */
   const inStep = () => loaded && !conflict;
@@ -725,8 +742,17 @@ function notepad(ctx, { key, label, textLabel, path, putPresence = null, unsaved
     lastPresence = update;
     lastPresenceAt = Date.now();
     wasThere = Boolean(selection);
-    // A lost or refused update is replaced by the next one: nothing to retry or show.
-    putPresence({ revision: base, selection, hello }, { keepalive: going }).catch(() => {});
+    putPresence({ revision: base, selection, hello, client: CLIENT_ID }, { keepalive: going }).then(() => {
+      retryMs = PRESENCE_RETRY_MS;
+    }, () => {
+      // Refused (429) or lost: sent again later, unless something newer went out meanwhile.
+      if (lastPresence !== update || leaving || destroyed) return;
+      lastPresence = null;
+      if (hello) helloDue = true;
+      clearTimeout(presenceTimer);
+      presenceTimer = setTimeout(sendPresence, retryMs);
+      retryMs = Math.min(retryMs * 2, PRESENCE_HEARTBEAT_MS);
+    });
   }
 
   /** Sends where this person is soon: at most one update per PRESENCE_GAP_MS, the last always. */
@@ -745,7 +771,7 @@ function notepad(ctx, { key, label, textLabel, path, putPresence = null, unsaved
         if (peer.revision !== base) continue;
         const anchor = mapPosition(peer.selection.anchor, edit);
         const head = mapPosition(peer.selection.head, edit);
-        list.push({ id, name: peer.name, start: Math.min(anchor, head), end: Math.max(anchor, head), head });
+        list.push({ id, colourOf: peer.userId, name: peer.name, start: Math.min(anchor, head), end: Math.max(anchor, head), head });
       }
     }
     layer.setPeers(list);
@@ -760,13 +786,25 @@ function notepad(ctx, { key, label, textLabel, path, putPresence = null, unsaved
   /** A teammate's update (`note.presence`); this person's own, from any tab, is not drawn. */
   function peerPresence(event) {
     if (!putPresence || event.user_id === myId) return;
-    if (event.selection) peers.set(event.user_id, { name: event.name, revision: event.revision, selection: event.selection, seen: Date.now() });
-    else peers.delete(event.user_id);
-    // Someone opened the notepad: tell them where this person is, even if it did not change.
-    if (event.hello && present && wasThere) {
+    const id = `${event.user_id}:${event.client || ''}`;
+    if (event.selection) peers.set(id, { userId: event.user_id, name: event.name, revision: event.revision, selection: event.selection, seen: Date.now() });
+    else peers.delete(id);
+    // Someone opened the notepad: tell them where this person is, even if it did not change
+    // (once a second at most, however many open it at once).
+    if (event.hello && present && wasThere && Date.now() - lastAnswerAt >= PRESENCE_ANSWER_GAP_MS) {
+      lastAnswerAt = Date.now();
       forceDue = true;
       presenceSoon();
     }
+    drawPeers();
+  }
+
+  /** Events were lost (a reconnect): who is here is asked again, and nobody stays from before. */
+  function presenceLost() {
+    if (!putPresence || !present) return;
+    peers.clear();
+    helloDue = true;
+    presenceSoon();
     drawPeers();
   }
 
@@ -825,6 +863,7 @@ function notepad(ctx, { key, label, textLabel, path, putPresence = null, unsaved
     focus() { textarea.focus(); },
     setShown,
     peerPresence,
+    presenceLost,
     tick,
     destroy() {
       flush({ leaving: true }); // kept for the next load; the save goes on after the view is gone
