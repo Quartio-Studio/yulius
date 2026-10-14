@@ -15,6 +15,33 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   A prompt task with images still has its first message typed, since a paste is the only way to
   attach an image natively. Until it is sent, a person's keys are not written into it, and the
   first one is answered with "Yulius is typing this task's first message".
+- The new-task composer squeezed keeps its controls tidy (SPEC-119, task #104, #442). In a
+  narrow window or beside a tool panel, Preview, model, effort and Start used to wrap as one block
+  pushed to the right, leaving the left half of the row empty. At its narrowest, Start also stuck
+  out of the box. Now they take a full-width last row with Start at its right end, and no control
+  leaves the box.
+- Typing in a task terminal or a shell shows up as fast as the agent echoes it (SPEC-118,
+  ADR-0096, task #103). A keystroke used to wait for three database reads, plus a GitHub call
+  whenever the permission cache had expired. The 60 s access re-check also froze the terminal's
+  output while it ran. Now each viewer holds a write grant, checked again only when something that
+  decides access changes, and the re-check runs beside the stream. A hand-over still refuses the
+  previous owner's next keystroke.
+- Onboarding leaves the project ready to work in the discipline (SPEC-116, ADR-0094, task #101).
+  Studio's onboarding left its linter, dead-code check and per-project CI as issues #57 and #58.
+  Both onboarding prompts now lay the gate in the onboarding pull request itself:
+  - tests, lint and format;
+  - a dead-code and unused-dependency check;
+  - a Yulius CI job for every project, with existing findings baselined.
+
+  A workflow Yulius CI cannot run (Windows, macOS) is kept with a decision record instead of a
+  question to a person. The agent learns that it and CI run as root.
+
+  `delivery_merge` now pushes the head and opens the pull request when the task has none. A goal
+  task whose evaluator kept every turn going never got its pull request, so studio's agent had
+  pushed PR #59 by hand.
+
+  The briefing quotes the end of a changes log whose dates run oldest first (studio's
+  `knowledge/log.md`) and asks for new entries there.
 - A shown secret value stays masked until its eye is pressed (SPEC-114, ADR-0093, task #99). The
   Show dialog of a team or agent secret draws a fixed run of dots and keeps the value out of the
   page; the eye button in the value box shows it and hides it again, and every dialog opens

@@ -995,7 +995,9 @@ head (Yulius CI, #138), review on the exact head, up to date. Agent merge/deploy
 
 **Foundations.** The briefing reads `yulius.toml` (test, lint) and counts `.github/workflows/*.y(a)ml`
 (a real directory inside the repository) and asks a code-changing task to bootstrap first
-(workflow Infra bootstrap, skill `infra-bootstrap`); the onboarding prompt does the same.
+(workflow Infra bootstrap, skill `infra-bootstrap`). The onboarding prompt lays that gate (tests,
+lint and format, a dead-code check, a CI job per project, existing findings baselined) in the
+onboarding pull request itself (SPEC-116, ADR-0094).
 
 **Taken from Bartek's N2/N3 playbook:** small PRs, a test that fails without the change,
 independent review in a fresh session, machine-checked gates, flaky-test rules (no retries,
@@ -2010,7 +2012,12 @@ waits (≤ 400 ms, until 40 ms without output) for the agent's redraw, so the te
 the viewer's size (F 2026-10-09); the same size again (hello, reconnect) resizes nothing. Per
 viewer queue 512 frames / 8 MiB; overflow closes with code 4008; client reconnects with backoff
 (0.5 s → 10 s). Input requires write permission and is applied in arrival order; each input frame
-carries a client sequence for duplicate suppression after reconnect. At most 16 viewers per task.
+carries a client sequence for duplicate suppression after reconnect. Write permission is the
+viewer's grant (SPEC-118, ADR-0096). It is confirmed at open and checked again before the next frame
+only when the store's access epoch moved (owner, sandbox, user, session or GitHub level changed).
+It is re-confirmed in the background after 30 s. While the epoch is unchanged a keystroke waits
+for neither the database nor GitHub, and the 60 s access re-check runs beside the viewer's loop,
+never pausing its output. At most 16 viewers per task.
 Accepted TCP connections set `TCP_NODELAY`, so a keystroke's echo — one small frame — is sent at once
 instead of waiting behind Nagle's algorithm for the proxy's delayed ACK (F 2026-10-09, #29).
 

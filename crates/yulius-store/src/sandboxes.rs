@@ -177,7 +177,7 @@ impl SandboxStore for SqliteStore {
 
     async fn remove_sandbox(&self, id: &SandboxId, at: Timestamp) -> AppResult<()> {
         let id = id.as_str().to_owned();
-        self.call(move |c| {
+        self.call_access(move |c| {
             c.execute(
                 "UPDATE sandboxes SET removed_at = ?1 WHERE id = ?2 AND removed_at IS NULL",
                 params![at.0, id],
