@@ -2059,6 +2059,19 @@ a.dl-task:hover { text-decoration: underline; }
 .notes-loading .notes-text::placeholder { color: transparent; }
 .notes-text { flex: 1; min-height: 0; width: 100%; resize: none; padding: 12px 16px; border: 0; background: transparent; color: var(--text); font: inherit; font-size: var(--fs); line-height: var(--lh); }
 .notes-text:focus-visible { outline: none; box-shadow: inset 2px 0 0 var(--accent); }
+/* Drawn selection (SPEC-112): the text box is see-through above a layer of rounded shapes that
+   glide from one selection to the next; the browser's own square highlight is not painted. */
+.notes-text.drawn-selection { position: relative; }
+.notes-text.drawn-selection::selection { background: transparent; }
+.text-layer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.tl-content { position: absolute; inset: 0; }
+.tl-mirror { position: absolute; top: 0; left: 0; visibility: hidden; box-sizing: content-box; border: 0; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; }
+.tl-group { --tl-colour: var(--accent); }
+.tl-shape { position: absolute; top: 0; left: 0; border-radius: 4px; background: color-mix(in srgb, var(--tl-colour) 32%, transparent);
+  transition: transform var(--duration-fast) var(--ease), width var(--duration-fast) var(--ease), height var(--duration-fast) var(--ease), opacity var(--duration-fast) var(--ease), background-color var(--duration-fast) var(--ease); }
+.tl-blurred .tl-shape { background: color-mix(in srgb, var(--tl-colour) 16%, transparent); }
+.tl-shape.tl-gone { opacity: 0; }
+.tl-shape.tl-still { transition: none; }
 .notes-text[readonly] { color: var(--text-2); }
 .notes-meta { flex: none; margin: 0; padding: 4px 16px; min-height: calc(var(--lh-sm) + 8px); border-top: 1px solid var(--border); color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .notes-readonly { flex: none; margin: 0; padding: 6px 16px; border-bottom: 1px solid var(--border); background: var(--surface-2); color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }

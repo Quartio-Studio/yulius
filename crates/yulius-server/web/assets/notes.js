@@ -17,6 +17,7 @@ import { h, openMenu, setChildren, skeleton } from './dom.js';
 import { relLong } from './format.js';
 import { attachMarkdownInput } from './mdinput.js';
 import { allows } from './status.js';
+import { createTextLayer } from './textlayer.js';
 import { readJson, writeJson } from './store.js';
 
 const TAB_KEY = 'yulius.notesTab';
@@ -344,9 +345,11 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
   const meta = h('p', { class: 'notes-meta' });
   // Until the first read, shimmering fields cover the empty box (SPEC-092); the box keeps focus.
   const fields = skeleton('Loading the notes…', 3, { block: true });
+  // The selection is drawn, rounded and gliding (SPEC-112 NOT-017).
+  const layer = createTextLayer(textarea);
   const el = h('div', { class: 'notes-pane notes-loading' },
     readOnly ? h('p', { class: 'notes-readonly', id: hintId }, readOnly) : null,
-    banner, h('div', { class: 'notes-box' }, textarea, fields), meta);
+    banner, h('div', { class: 'notes-box' }, layer.el, textarea, fields), meta);
   if (!readOnly) attachMarkdownInput(textarea);
 
   let loaded = false;
@@ -429,6 +432,7 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
     lastEdit = note.updated_by ? { updated_by: note.updated_by, updated_at: note.updated_at } : null;
     if (focused) textarea.setSelectionRange(Math.min(selectionStart, note.body.length), Math.min(selectionEnd, note.body.length));
     textarea.scrollTop = scrollTop;
+    layer.refresh();
     settled();
     if (!readOnly) dropUnsaved(); // a reader who lost write access keeps theirs for later
     renderMeta();
@@ -669,6 +673,7 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
     destroy() {
       flush({ leaving: true }); // kept for the next load; the save goes on after the view is gone
       destroyed = true;
+      layer.destroy();
       clearTimeout(timer);
     },
   };

@@ -545,3 +545,63 @@ test('a remembered tab still opens first', async ({ app, browser, screen }) => {
   await expect(screen.getByRole('tab', 'Me')).toHaveAttribute('aria-selected', 'true');
   expect(await tabOrder(browser)).toEqual(['Team', 'This sandbox', 'Me']);
 });
+
+/** The drawn shapes of the visible notepad's own selection, relative to its text box. */
+const ownShapes = (browser: Browser) => browser.evaluate(() => {
+  const pane = document.querySelector('.notes-pane:not([hidden])') as HTMLElement;
+  const box = (pane.querySelector('textarea') as HTMLTextAreaElement).getBoundingClientRect();
+  return [...pane.querySelectorAll<HTMLElement>('.text-layer .tl-own .tl-shape:not(.tl-gone)')].map((shape) => {
+    const r = shape.getBoundingClientRect();
+    return { left: Math.round(r.left - box.left), top: Math.round(r.top - box.top), width: Math.round(r.width), height: Math.round(r.height), radius: getComputedStyle(shape).borderTopLeftRadius };
+  });
+});
+
+/** Selects `start..end` in the visible notepad, as a person would, and waits for the layer to draw it. */
+const selectText = (browser: Browser, start: number, end: number) => browser.evaluate(([from, to]) => new Promise<void>((resolve) => {
+  const box = document.querySelector('.notes-pane:not([hidden]) textarea') as HTMLTextAreaElement;
+  box.focus();
+  box.setSelectionRange(from, to);
+  requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+}), [start, end] as const);
+
+test('a selection is drawn behind the text in rounded shapes that glide with it', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen, null);
+  const team = screen.getByRole('textbox', 'Team notes');
+  await team.fill('line one\nline two is longer\nthree');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+
+  // The browser's own highlight is not painted; the layer is decoration only.
+  expect(await browser.evaluate(() => getComputedStyle(document.querySelector('.notes-pane:not([hidden]) textarea') as Element, '::selection').backgroundColor)).toBe('rgba(0, 0, 0, 0)');
+  expect(await browser.evaluate(() => (document.querySelector('.notes-pane:not([hidden]) .text-layer') as Element).getAttribute('aria-hidden'))).toBe('true');
+
+  // A caret alone draws nothing.
+  await selectText(browser, 3, 3);
+  expect(await ownShapes(browser)).toEqual([]);
+
+  // "one\nline two": one rounded shape per line, the second starting at the line's start.
+  await selectText(browser, 5, 18);
+  await expect.poll(async () => (await ownShapes(browser)).length).toBe(2);
+  const [first, second] = await ownShapes(browser);
+  expect(first.radius).toBe('4px');
+  expect(second.top).toBeGreaterThan(first.top);
+  expect(first.left).toBeGreaterThan(second.left);
+  expect(second.left).toBe(16); // the text box's padding
+  // It glides: the shapes move and resize with a transition, not at once.
+  expect(await browser.evaluate(() => getComputedStyle(document.querySelector('.text-layer .tl-own .tl-shape') as Element).transitionProperty)).toMatch(/transform/);
+
+  // A smaller selection reuses the first shape and lets the second go.
+  await selectText(browser, 0, 4);
+  await expect.poll(async () => (await ownShapes(browser)).length).toBe(1);
+  await expect.poll(async () => (await ownShapes(browser))[0]).toMatchObject({ left: 16, top: first.top });
+
+  // Scrolling keeps the shape on its text.
+  await team.fill(Array.from({ length: 80 }, (_, i) => `line ${i}`).join('\n'));
+  const scrollTo = (top: number) => browser.evaluate((y) => { (document.querySelector('.notes-pane:not([hidden]) textarea') as HTMLTextAreaElement).scrollTop = y; }, top);
+  await selectText(browser, 0, 6);
+  await scrollTo(0);
+  await expect.poll(async () => (await ownShapes(browser))[0]?.top).toBe(first.top);
+  await scrollTo(40);
+  await expect.poll(async () => (await ownShapes(browser))[0].top).toBe(first.top - 40);
+  expect(await axeViolations(browser)).toEqual([]);
+});
