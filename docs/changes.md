@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- The Git page beside a tool panel stays readable (SPEC-115, task #100). Its summary cards and board
+  columns now respond to the page's width, not the window's. Beside the Editor, the board goes from
+  four columns to two or one, and task titles no longer break letter by letter.
 - Token use, its API-price cost and a chart for every figure (SPEC-110, ADR-0089, task #95). The
   Capacity card (Subscriptions page and the Dashboard) adds "Tokens (7 days)" and "API cost (7
   days)": what the pool used and what it would have cost at Claude API list prices (input, output,
