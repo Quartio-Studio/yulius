@@ -115,7 +115,8 @@ it needs: browsers say hello again on reconnect (`resync`).
 **Presence (web).** Each shared notepad has a presence sender (trailing throttle of 100 ms,
 heartbeat 15 s while shown, `hello` when shown and after `resync`, `null` when hidden or left
 (with `keepalive` when the page goes); a refused or lost update is sent again after 1 s, doubling
-up to 15 s, unless a newer one went out; hellos answered at most once a second, a later one then) and a peer map `user_id:client → {name,
+up to 15 s, unless a newer one went out; one update on its way at a time, so they arrive in order;
+hellos answered at most once a second, a later one then) and a peer map `user_id:client → {name,
 revision, selection, seen}` swept every second (45 s expiry). `store.js` emits
 `note-presence`; `mock.js` relays the routes and lets tests act as a teammate (`notePresence`).
 
@@ -184,7 +185,14 @@ sequenceDiagram
   architecture); the mock refuses a `client` that is not a string; Escape then `pointercancel`
   no longer swallows the next tab click; the surrogate-pair mapping has a test. Kept: a newer
   revision announced during a conflict look waits for the next event or save (older than this
-  task, the text is dirty then); a scroll re-measures the selection near the view each frame
-  (`getClientRects` stays linear in the selection: smooth for notes of usual size, not measured
-  at the 256 KiB limit); forced colours hide teammates' marks with the layer (NOT-021).
+  task, the text is dirty then); a scroll re-measures the whole selection and draws the lines
+  near the view (`getClientRects` stays linear in the selection: smooth for notes of usual size,
+  not measured at the 256 KiB limit); forced colours hide teammates' marks with the layer (NOT-021).
+- Re-confirmation (approve `6acf4266`): its nit that the new hello test could see one answer for
+  two hellos led to a real bug: repeated, the test failed 1 in about 20 runs because two presence
+  updates were on their way at once and arrived out of order (the caret at the end after the
+  selection), leaving teammates a stale caret until the next move. Now one update is on its way
+  at a time and the newest follows when it is answered (a page going away does not wait); the
+  test waits for the first answer before the second hello. 40 of 40 runs passed after the fix.
+  Rows are counted from the first row's middle (a piece a pixel off stays in its row).
 

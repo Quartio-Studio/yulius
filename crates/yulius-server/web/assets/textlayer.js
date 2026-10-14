@@ -95,9 +95,12 @@ export function createTextLayer(textarea) {
     range.setEnd(node, to);
     // One entry per row of text, found by the row's number (not a search: long selections).
     const rows = new Map();
+    let firstMiddle = null;
     for (const rect of range.getClientRects()) {
       const middle = rect.top + rect.height / 2 - origin.top;
-      const row = Math.floor(middle / lineHeight);
+      if (firstMiddle === null) firstMiddle = middle;
+      // Rows counted from the first one's middle: a piece a pixel off still lands in its row.
+      const row = Math.round((middle - firstMiddle) / lineHeight);
       const line = rows.get(row);
       if (line) {
         line.left = Math.min(line.left, rect.left - origin.left);

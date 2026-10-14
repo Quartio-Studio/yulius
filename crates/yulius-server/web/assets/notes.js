@@ -722,6 +722,8 @@ function notepad(ctx, { key, label, textLabel, path, putPresence = null, unsaved
   let retryMs = PRESENCE_RETRY_MS;
   let lastAnswerAt = 0;
   let answerTimer = 0;
+  let presenceInFlight = false;
+  let presenceQueued = false; // an update waits for the one on its way
 
   /** The text box's own text and the saved one are the same document, unless a conflict is open. */
   const inStep = () => loaded && !conflict;
@@ -739,6 +741,12 @@ function notepad(ctx, { key, label, textLabel, path, putPresence = null, unsaved
     clearTimeout(presenceTimer);
     presenceTimer = 0;
     if (!putPresence || !loaded) return;
+    // One update on its way at a time, so they reach the others in order: the newest goes when it
+    // is answered (hidden by then, that is `null`). A page going away cannot wait.
+    if (presenceInFlight && !going) {
+      presenceQueued = true;
+      return;
+    }
     const selection = leaving ? null : ownSelection();
     const update = JSON.stringify({ revision: base, selection });
     // Nothing new, or nothing to take back: nothing to say, unless asked.
@@ -749,9 +757,19 @@ function notepad(ctx, { key, label, textLabel, path, putPresence = null, unsaved
     lastPresence = update;
     lastPresenceAt = Date.now();
     wasThere = Boolean(selection);
+    presenceInFlight = true;
+    const answered = () => {
+      presenceInFlight = false;
+      if (presenceQueued && !destroyed) {
+        presenceQueued = false;
+        sendPresence();
+      }
+    };
     putPresence({ revision: base, selection, hello, client: CLIENT_ID }, { keepalive: going }).then(() => {
       retryMs = PRESENCE_RETRY_MS;
+      answered();
     }, () => {
+      answered();
       // Refused (429) or lost: sent again later, unless something newer went out meanwhile.
       if (lastPresence !== update || leaving || destroyed) return;
       lastPresence = null;

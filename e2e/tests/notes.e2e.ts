@@ -845,8 +845,10 @@ test('two hellos within a second are both answered, the second a moment later', 
   await expect.poll(async () => (await sent(browser)).at(-1)?.selection).toEqual({ anchor: 0, head: 3 });
   const before = (await sent(browser)).length;
   await teammate(browser, { scope: 'team', user_id: 'usr_bob', name: 'bob', revision, selection: null, hello: true });
+  await expect.poll(async () => (await sent(browser)).length - before).toBe(1);
+  // Within the second after that answer: answered too, once the second has passed.
   await teammate(browser, { scope: 'team', user_id: 'usr_carol', name: 'carol', revision, selection: null, hello: true });
-  await expect.poll(async () => (await sent(browser)).length - before, { timeout: 5000 }).toBe(2);
+  await expect.poll(async () => (await sent(browser)).length - before).toBe(2);
 });
 
 test('a teammate’s offsets never split a character outside the BMP (unit, in the page)', async ({ app, browser }) => {

@@ -23,7 +23,8 @@ the server knew who had a notepad open. Notes are saved whole with a revision 60
 - **Liveness in the browser.** A browser tab (a random `client` id) sends its selection at most
   every 100 ms, again every 15 s while the notepad is shown, `hello` when it is shown and after
   lost events (the others answer at once, at most once a second), `null` when it is hidden or the
-  page goes, and a refused update again after 1 s, doubling up to 15 s. A tab not heard of for
+  page goes, and a refused update again after 1 s, doubling up to 15 s. One update is on its way
+  at a time, so they reach the others in order. A tab not heard of for
   45 s fades out.
 - **Positions.** Offsets are UTF-16 offsets in the saved text at `revision`; each side maps them
   through its own unsaved typing (the common prefix and suffix of the two texts). A teammate at
