@@ -21,7 +21,8 @@ client could call it, including the CLI's bearer token from `yulius login`.
 ## Decision
 
 - Applying an upload no longer starts the onboarding task: the sandbox stays `pending` with its
-  resting task, and new tasks wait after it as before (IMP-010).
+  resting task, and new tasks wait after it as before (IMP-010). Since ADR-0077 that task is
+  created only when onboarding starts or a new task waits for it.
 - The approve endpoint is the **Start onboarding** button and accepts only a browser session (a
   cookie session, which carries a CSRF token). A bearer token gets 403 before the sandbox is read.
 - Every other way to start it follows the same rule: continuing a `pending` sandbox's onboarding

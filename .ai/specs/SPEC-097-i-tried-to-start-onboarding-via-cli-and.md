@@ -1,11 +1,11 @@
 ---
 yulius-task: 8ef8d8e7-4134-46ea-877e-d569fd4eba81
-status: in-progress
+status: done
 ---
 
 # SPEC-097: a CLI upload creates no onboarding task until someone starts onboarding
 
-Status: in progress
+Status: implemented
 Date: 2026-10-14
 Owner: Yulius task #82
 Scope authorization: task request: "I tried to start onboarding via cli and I correctly got info
@@ -42,15 +42,15 @@ empty instead of showing a "Closed · 0/6 steps" task that never ran.
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | OBT-001 | Linking a repository with a bearer token (`yulius onboard`, `POST /api/sandboxes` with a token) creates no task: the sandbox is `pending` with no onboarding task, and its task list is empty. | Rust `import_server::onboarding_starts_only_from_the_browser` |
-| OBT-002 | Start onboarding in the browser creates the onboarding task (full preparation, or the environment task for a repository that already validates) and starts it; the sandbox becomes `preparing`. Adding a repository in the browser still starts onboarding at once. | Rust `import_server::onboarding_starts_only_from_the_browser`, `projects::import_links_owner_repositories_with_profiles_ports_and_onboarding` |
-| OBT-003 | A new task created in a `pending` sandbox without an onboarding task still waits after one (IMP-010, OBD-005): the onboarding task is created then, resting, and the new task is `chained` after it. Continuing that resting task with a token is still refused (OBD-002). | Rust `import_server::onboarding_starts_only_from_the_browser` |
+| OBT-002 | Start onboarding in the browser creates the onboarding task (full preparation, or the environment task for a repository that already validates) and starts it; the sandbox becomes `preparing`. Adding a repository in the browser still starts onboarding at once. | Rust `import_server::start_onboarding_creates_the_task_a_cli_upload_left_out`, `projects::import_links_owner_repositories_with_profiles_ports_and_onboarding`; e2e `onboarding.e2e.ts` (the mock follows the server) |
+| OBT-003 | A new task created in a `pending` sandbox without an onboarding task still waits after one (IMP-010, OBD-005): the onboarding task is created then, resting, and the new task is `chained` after it. Continuing that resting task with a token is still refused (OBD-002). Simultaneous requests create one onboarding task, and a skip made meanwhile is never undone (the creation and the skip share one lock; nothing is created once the sandbox is no longer `pending`). | Rust `import_server::onboarding_starts_only_from_the_browser`, `import_server::simultaneous_new_tasks_create_one_onboarding_task` |
 
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Write the fix spec and the regression test that fails
+- [x] Fix the cause until the regression test and every gate pass
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -67,6 +67,9 @@ empty instead of showing a "Closed · 0/6 steps" task that never ran.
   AC-OBT-3 and the token refusal of continue, then AC-OBT-2.
 - `projects::import_links_owner_repositories_with_profiles_ports_and_onboarding`: a token import of
   a validating repository has no task; Start onboarding in the browser creates the environment task.
+- `import_server::simultaneous_new_tasks_create_one_onboarding_task`: two new tasks at once wait
+  after the same, single onboarding task (fails without the lock: two are created).
+- e2e `onboarding.e2e.ts`: the mock's pending sandbox lists no task until Start onboarding.
 - The whole gate (`scripts/dev ci`).
 
 ## Decisions
@@ -78,3 +81,23 @@ empty instead of showing a "Closed · 0/6 steps" task that never ran.
   `pending` sandbox without one (changes the IMP-010 contract that new tasks wait).
 - Sandboxes already `pending` with a resting onboarding task keep it: deleting it is the person's
   call, and Start onboarding starts it as before. No migration.
+- Review findings left as they are (recorded): when a new task's later checks refuse it (for
+  example `ensure_chain_room`), the onboarding task created for it stays, resting; it is the task
+  the next request waits after, so nothing is lost. A request cancelled between creating the task
+  and linking it to the sandbox can leave it unlinked, as import already could. A never-run task
+  still reads "Closed" when a task waits after it: follow-up issue #399.
+
+## Evidence
+
+- Root cause reproduced: `import_server::onboarding_starts_only_from_the_browser` failed on the
+  test commit c4b3b8f2 (`left: Some(TaskId(..)) right: None`), as did
+  `start_onboarding_creates_the_task_a_cli_upload_left_out`. Reported as issue #397.
+- `simultaneous_new_tasks_create_one_onboarding_task` failed 3 out of 3 runs with the lock
+  commented out (two onboarding tasks, numbers 1 and 2), and passes with it.
+- e2e `npx e2e run tests/onboarding.e2e.ts`: fails against the previous mock ("expect.toBeVisible
+  failed" on the empty task list), passes (2/2) with the updated mock.
+- `scripts/dev ci` at 2f84fbbf: exit 0, 1521 tests passed, 16 skipped; rerun after the review fixes
+  (below).
+- Independent review in a fresh session (om-code-review) of e6bbeeef: APPROVE, no blocker or major;
+  minor findings 1-4 fixed (skip lock and `pending` guard, concurrency test, mock and its e2e,
+  SPEC-051 and ADR-0038 text), 5 and nits recorded above.
