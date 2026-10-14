@@ -2,13 +2,17 @@
 // action bar (SPEC-093). Start now, Supertask (SPEC-071), after a task is done (TSK-012; the
 // filterable list of SPEC-038) or when a rule is true (SPEC-017, picked in the rule editor of
 // SPEC-022); New task also prepares a task, started when you decide or at a time (SPEC-105).
-// Each page keeps its own state and opens the rule editor with its own value.
+// Each page keeps its own state and opens the rule editor with its own value. A task that waits
+// to start changes its choice with the same menu, from its view (SPEC-126).
+// Every API path is a literal at its call site (tests/ui_contract.rs checks them).
 
-import { h, icon, setChildren, openMenu } from './dom.js';
+import { enc } from './api.js';
+import { h, icon, setChildren, openMenu, toast, errorToast } from './dom.js';
 import { statusInfo } from './status.js';
 import { whenLabel } from './format.js';
 import { chainCandidates } from './intake.js';
-import { ruleChoices } from './ruleeditor.js';
+import { ruleChoices, openRuleEditor, ruleText, ruleFromText } from './ruleeditor.js';
+import { openScheduleDialog } from './actions.js';
 
 export const SUPERTASK_HELP = 'Waits for this project’s running tasks, then runs alone while the project’s other tasks wait. For broad work such as security hardening.';
 
@@ -47,10 +51,10 @@ export function renderStartChip(chip, { kind, number, rule, at, prefix }) {
  * gets `{ kind: 'now' }`, `{ kind: 'supertask' }`, `{ kind: 'prepared' }` or
  * `{ kind: 'after', task }`, and `onRule` opens the caller's rule editor. With `onTime` (New task
  * only, SPEC-105) it also offers "When I decide" and "At a time…", which calls `onTime`; `at` is
- * the time picked before.
+ * the time picked before. `exclude` is a task the menu leaves out: one cannot wait for itself.
  */
-export function openStartMenu(anchor, ctx, sandbox, { kind, afterTaskId, at, onPick, onRule, onTime }) {
-  const candidates = chainCandidates(ctx, sandbox);
+export function openStartMenu(anchor, ctx, sandbox, { kind, afterTaskId, at, onPick, onRule, onTime, exclude }) {
+  const candidates = chainCandidates(ctx, sandbox).filter((t) => t.id !== exclude);
   openMenu(anchor, [
     { label: 'Start now', icon: 'up', description: 'The task starts as soon as a session slot is free', checked: kind === 'now', onSelect: () => onPick({ kind: 'now' }) },
     { label: 'Supertask', icon: 'shield', description: SUPERTASK_HELP, checked: kind === 'supertask', onSelect: () => onPick({ kind: 'supertask' }) },
@@ -66,9 +70,66 @@ export function openStartMenu(anchor, ctx, sandbox, { kind, afterTaskId, at, onP
       items: candidates.map((t) => ({ label: `#${t.number} ${t.title}`, hint: statusInfo(t).label, title: `Starts by itself when #${t.number} is done`, checked: kind === 'after' && t.id === afterTaskId, onSelect: () => onPick({ kind: 'after', task: t }) })),
     }] : []),
     // A rule names tasks of this sandbox, so a sandbox without any offers none (SPEC-022).
-    ...(ruleChoices(ctx.store.tasksOf(sandbox.id)).length ? [
+    ...(ruleChoices((ctx.store.tasksOf(sandbox.id) || []).filter((t) => t.id !== exclude)).length ? [
       { separator: true },
       { label: 'When a rule is true…', icon: 'branch', description: 'Pick tasks and whether they are done, merged or ended', checked: kind === 'rule', onSelect: onRule },
     ] : []),
   ]);
+}
+
+// ---------------------------------------------------------------- a waiting task (SPEC-126)
+
+/** The start choice of a task that waits to start: 'prepared', 'scheduled', 'rule' or 'after'. */
+export function waitingKind(task) {
+  if (task.status === 'prepared') return task.start_at ? 'scheduled' : 'prepared';
+  return task.after && task.after.rule ? 'rule' : 'after';
+}
+
+/** How a task starts now, after "#12 " in a toast. */
+function startLine(task) {
+  if (task.status === 'prepared') return task.start_at ? `starts ${whenLabel(task.start_at)}.` : 'waits until you start it.';
+  if (task.status === 'chained' && task.after) return task.after.rule ? `starts when ${task.after.rule}.` : `runs after #${task.after.number}.`;
+  return 'is starting.';
+}
+
+/**
+ * Changes how a waiting task starts (`body` as New task's start choice; `{}`: Start now).
+ * Resolves to the updated task; throws the server's refusal.
+ */
+export async function changeStart(ctx, task, body) {
+  const updated = await ctx.api.put(`/api/tasks/${enc(task.id)}/start`, body);
+  if (updated && updated.id) ctx.store.upsertTask(updated);
+  toast(`#${task.number} ${startLine(updated || task)}`, { kind: 'ok' });
+  return updated;
+}
+
+/**
+ * The chip of a waiting task's view ("When I decide", "After #12", "When #12 done", "At …"): it
+ * opens the start menu, without the task itself, and a pick changes how the task starts.
+ */
+export function waitingStartChip(ctx, sandbox, task) {
+  const button = h('button', { type: 'button', class: 'chip-btn start-change', 'aria-haspopup': 'menu', 'aria-expanded': 'false', title: 'Change how this task starts' });
+  const kind = waitingKind(task);
+  renderStartChip(button, { kind, number: task.after && task.after.number, rule: task.after && task.after.rule, at: task.start_at, prefix: 'Starts: ' });
+  const change = (body) => changeStart(ctx, task, body).catch((error) => errorToast(error, `Couldn’t change how #${task.number} starts`));
+  const afterTaskId = kind === 'after' && task.after ? task.after.task_id : '';
+  button.addEventListener('click', () => openStartMenu(button, ctx, sandbox, {
+    kind,
+    afterTaskId,
+    at: task.start_at,
+    exclude: task.id,
+    onPick: ({ kind: picked, task: before }) => {
+      // The choice it has already changes nothing.
+      if (picked === kind && (picked !== 'after' || (before && before.id === afterTaskId))) return;
+      change(picked === 'after' ? { after_task_id: before.id } : picked === 'supertask' ? { supertask: true } : picked === 'prepared' ? { prepared: true } : {});
+    },
+    onRule: () => openRuleEditor({
+      tasks: (ctx.store.tasksOf(sandbox.id) || []).filter((t) => t.id !== task.id),
+      value: kind === 'rule' ? ruleFromText(task.after.rule) : null,
+      onUse: (rule) => change({ start_rule: ruleText(rule) }),
+    }),
+    // The dialog stays open with the server's reason when it refuses the time.
+    onTime: () => openScheduleDialog({ value: task.start_at, onUse: (at) => changeStart(ctx, task, { start_at: at }) }),
+  }));
+  return button;
 }

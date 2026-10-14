@@ -1052,6 +1052,10 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 .attention-text { flex: 1; min-width: 0; }
 /* A request for control (SPEC-070) above what else the task needs. */
 .attention-bar.stacked { flex-direction: column; align-items: stretch; gap: 8px; }
+/* A waiting task's bar (SPEC-126): its words on one row, its start chip and buttons below. */
+.attention-bar.wrap { flex-wrap: wrap; row-gap: 8px; }
+/* The icon (16px) and the gap (12px) share the first row with the words. */
+.attention-bar.wrap .attention-text { flex-basis: calc(100% - 28px); }
 .attention-row { display: flex; align-items: center; gap: 12px; }
 /* Queued messages (SPEC-052): at the bottom of a waiting task's empty terminal. */
 .queue-slot { position: absolute; left: 50%; bottom: 16px; z-index: var(--z-float); width: min(640px, calc(100% - 32px)); transform: translateX(-50%); }

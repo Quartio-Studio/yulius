@@ -1050,6 +1050,63 @@ route('PUT', `/api/tasks/${ID}/schedule`, ({ db, p, body }) => {
   touch(db, task, { start_at: body.start_at ? mockStartAt(body.start_at) : null });
   return summary(task);
 });
+// How a task that waits to start starts instead (SPEC-126): New task's choices and checks, a wait
+// on itself refused; a started task keeps its start.
+route('PUT', `/api/tasks/${ID}/start`, ({ db, p, body }) => {
+  const task = taskOf(db, p[0]);
+  needTaskWrite(db, task);
+  if (task.status !== 'chained' && task.status !== 'prepared') fail(409, 'conflict', `the task has started (it is ${task.status}): only a task waiting to start changes how it starts`);
+  const rule = body.start_rule && body.start_rule.trim() ? body.start_rule.trim().replace(/\s+/g, ' ') : null;
+  if (body.after_task_id && rule) fail(422, 'invalid', 'give a task to run after or a start rule, not both');
+  if (body.supertask && (body.after_task_id || rule)) fail(422, 'invalid', 'a supertask starts after the running tasks: it cannot also run after a task or a rule');
+  const prepared = body.prepared === true || Boolean(body.start_at);
+  if (prepared && (body.after_task_id || body.supertask || rule)) fail(422, 'invalid', 'a prepared task starts when you decide or at its time: it cannot also run after a task, by a rule or as a supertask');
+  const startAt = body.start_at ? mockStartAt(body.start_at) : null;
+  const tasks = db.tasks.filter((x) => x.sandbox_id === task.sandbox_id);
+  const numbersOf = (text) => [...text.matchAll(/#(\d+)/g)].map((m) => Number(m[1]));
+  let before = null;
+  if (rule) {
+    if (!/^[#\w\s()!&|]+$/.test(rule) || !/#\d/.test(rule)) fail(422, 'invalid', 'the rule must name tasks like #12');
+    const missing = numbersOf(rule).find((n) => !tasks.some((x) => x.number === n));
+    if (missing) fail(422, 'invalid', `the rule names #${missing}, which does not exist in this sandbox`);
+    before = tasks.find((x) => x.number === numbersOf(rule)[0]);
+  } else if (body.after_task_id) {
+    before = tasks.find((x) => x.id === body.after_task_id);
+    if (!before || !(LIVE.has(before.status) || before.status === 'chained' || before.status === 'prepared')) fail(422, 'invalid', 'the task to run after does not exist or has ended');
+  }
+  if (before) {
+    // Through the predecessors and rules of the chained tasks it would wait for.
+    const pending = rule ? numbersOf(rule).map((n) => tasks.find((x) => x.number === n)) : [before];
+    const seen = new Set();
+    while (pending.length) {
+      const next = pending.pop();
+      if (!next || seen.has(next.id)) continue;
+      if (next.id === task.id) fail(422, 'invalid', `#${task.number} cannot wait for itself: what it would wait for already waits for it`);
+      seen.add(next.id);
+      const link = next.status === 'chained' && next.afterLink;
+      if (link) pending.push(...(link.rule ? numbersOf(link.rule).map((n) => tasks.find((x) => x.number === n)) : [tasks.find((x) => x.id === link.task_id)]));
+    }
+  }
+  // The old predecessor no longer lists it.
+  const old = task.afterLink && db.tasks.find((x) => x.id === task.afterLink.task_id);
+  if (old) {
+    old.nextLinks = (old.nextLinks || []).filter((l) => l.task_id !== task.id);
+    emit(db, { type: 'task.updated', task: summary(old) });
+  }
+  task.afterLink = null;
+  if (before) {
+    chainAfter(task, before, rule);
+    touch(db, task, { status: 'chained', start_at: null, supertask: false });
+    emit(db, { type: 'task.updated', task: summary(before) });
+  } else if (prepared) {
+    touch(db, task, { status: 'prepared', start_at: startAt, supertask: false });
+  } else {
+    touch(db, task, { status: 'queued', start_at: null, supertask: body.supertask === true });
+    later(() => touch(db, task, { status: 'starting' }), 700);
+    later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1800);
+  }
+  return summary(task);
+});
 /** A prepared task's start time (SPEC-105) checked like the server: at most a minute past, 366 days ahead. */
 function mockStartAt(text) {
   const at = Date.parse(text);
