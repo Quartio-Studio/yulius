@@ -36,8 +36,11 @@ function writeJson(key, value) {
   try { window.localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage unavailable */ }
 }
 
-/** Create the store bound to an API client. */
-export function createStore(api) {
+/**
+ * Create the store bound to an API client. `pullGapMs`: the least time between the starts of a
+ * sandbox's pull request reads that an announced change brings (SPEC-108).
+ */
+export function createStore(api, { pullGapMs = 3000 } = {}) {
   const subscribers = new Map();
   const state = {
     me: null,
@@ -208,6 +211,7 @@ export function createStore(api) {
       case 'account.updated': emit('account', event.account); break;
       case 'update.updated': emit('update', event); break;
       case 'note.updated': emit('note', event); break;
+      case 'pulls.updated': pullsChanged(event.sandbox_id); break;
       case 'resync': emit('resync'); break;
       default: break;
     }
@@ -235,8 +239,13 @@ export function createStore(api) {
 
   // Pull requests per sandbox, for the sidebar and the Tasks page: one read of the Git overview
   // shared by every view watching the sandbox, refreshed every minute while the tab is in view and
-  // online and when it is shown again (at most every 15 s) — never while hidden (PERF-12).
-  const pullWatch = new Map(); // sandbox id → { views, at, timer }
+  // online and when it is shown again (at most every 15 s) — never while hidden (PERF-12). The
+  // server says when they changed (`pulls.updated`, SPEC-108): read while in view, at least
+  // `pullGapMs` after the last read started (a push announces several times), or as soon as the
+  // tab is shown again. Reads of a sandbox never overlap, so an older one cannot answer last, and a
+  // change announced during a read brings one more read after it.
+  const pullWatch = new Map(); // sandbox id → { views, at, timer, due, soon }
+  const pullReads = new Map(); // sandbox id → { again } while its read runs, watched or not
   const pollPaused = () => document.hidden || navigator.onLine === false;
   // The overview takes seconds (GitHub and Git for every task), so this browser keeps what the
   // last read said, per user, and a page load shows it at once until its own read replaces it
@@ -265,9 +274,17 @@ export function createStore(api) {
       for (const key of Object.keys(window.localStorage)) if (key.startsWith(PULLS_PREFIX)) window.localStorage.removeItem(key);
     } catch { /* storage unavailable: nothing kept */ }
   }
-  async function loadPulls(sandboxId) {
+  /** Reads the sandbox's pull requests; `fresh`: a change was announced, so a read in flight (which may predate it) is followed by another. */
+  async function loadPulls(sandboxId, fresh = false) {
+    const running = pullReads.get(sandboxId);
+    if (running) {
+      if (fresh) running.again = true;
+      return;
+    }
+    const read = { again: false };
+    pullReads.set(sandboxId, read);
     const entry = pullWatch.get(sandboxId);
-    if (entry) entry.at = Date.now();
+    if (entry) Object.assign(entry, { at: Date.now(), due: false });
     try {
       const git = await api.get(`/api/sandboxes/${enc(sandboxId)}/git`);
       const rows = Array.isArray(git.tasks) ? git.tasks : [];
@@ -290,13 +307,42 @@ export function createStore(api) {
         state.pulls.set(sandboxId, new Map());
         emit('pulls', sandboxId);
       }
+    } finally {
+      pullReads.delete(sandboxId);
+      if (read.again) pullsChanged(sandboxId);
     }
+  }
+  /** The server announced a change of the sandbox's pull requests (SPEC-108). */
+  function pullsChanged(sandboxId) {
+    const entry = pullWatch.get(sandboxId);
+    // Not watched: the next view to watch it reads at once anyway.
+    if (!entry) return;
+    if (pollPaused()) {
+      entry.due = true;
+      return;
+    }
+    if (entry.soon) return; // a read is planned already and will see this change
+    const wait = entry.at + pullGapMs - Date.now();
+    if (wait <= 0) {
+      loadPulls(sandboxId, true);
+      return;
+    }
+    entry.soon = setTimeout(() => {
+      entry.soon = null;
+      if (pullWatch.get(sandboxId) !== entry) return;
+      if (pollPaused()) entry.due = true;
+      else loadPulls(sandboxId, true);
+    }, wait);
   }
   function watchPulls(sandboxId) {
     let entry = pullWatch.get(sandboxId);
     if (!entry) {
-      entry = { views: 0, at: 0, timer: setInterval(() => { if (!pollPaused()) loadPulls(sandboxId); }, 60_000) };
+      entry = { views: 0, at: 0, due: false, soon: null, timer: setInterval(() => { if (!pollPaused()) loadPulls(sandboxId); }, 60_000) };
       pullWatch.set(sandboxId, entry);
+      // A read that runs from before this watch may predate a change announced while nobody
+      // watched (and so dropped): read again after it.
+      const running = pullReads.get(sandboxId);
+      if (running) running.again = true;
     }
     entry.views += 1;
     if (Date.now() - entry.at > 15_000) loadPulls(sandboxId);
@@ -305,18 +351,18 @@ export function createStore(api) {
       if (done) return;
       done = true;
       entry.views -= 1;
-      if (entry.views <= 0) { clearInterval(entry.timer); pullWatch.delete(sandboxId); }
+      if (entry.views <= 0) { clearInterval(entry.timer); clearTimeout(entry.soon); pullWatch.delete(sandboxId); }
     };
   }
   const refreshPulls = () => {
     if (pollPaused()) return;
-    for (const [id, entry] of pullWatch) if (Date.now() - entry.at > 15_000) loadPulls(id);
+    for (const [id, entry] of pullWatch) if (entry.due || Date.now() - entry.at > 15_000) loadPulls(id, entry.due);
   };
   document.addEventListener('visibilitychange', refreshPulls);
   window.addEventListener('focus', refreshPulls);
   // After lost events or a restart, read the watched pull requests again at once: the server's
   // "needs you" counts start from what such a read sees (#147).
-  on('resync', () => { for (const id of pullWatch.keys()) loadPulls(id); });
+  on('resync', () => { for (const id of pullWatch.keys()) loadPulls(id, true); });
 
   function stopEvents() {
     if (events) events.stop();

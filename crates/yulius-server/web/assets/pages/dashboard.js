@@ -12,6 +12,7 @@ import { statusInfo } from '../status.js';
 import { pageFrame, loader } from './common.js';
 import { modelLabel } from '../models.js';
 import { accountUsage, capacityPanel } from '../layout.js';
+import { sparkline } from '../charts.js';
 
 const RANGES = [[7, '7 days'], [30, '30 days'], [90, '90 days']];
 const DAY = 86400000;
@@ -126,19 +127,6 @@ function kpi({ label, value, change, sub, extra, note, hint }) {
     note ? h('span', { class: 'db-kpi-note' }, note) : null);
 }
 
-/** A small trend line under a number (decorative; the chart below has the values). */
-function sparkline(values) {
-  if (values.length < 2) return null;
-  const w = 120;
-  const hgt = 28;
-  const max = Math.max(...values, 1);
-  const pts = values.map((v, i) => [(i / (values.length - 1)) * w, hgt - 2 - (v / max) * (hgt - 4)]);
-  const line = pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`).join('');
-  return svgEl('svg', { class: 'db-spark', viewBox: `0 0 ${w} ${hgt}`, preserveAspectRatio: 'none', 'aria-hidden': 'true' },
-    svgEl('path', { class: 'db-spark-area', d: `${line}L${w},${hgt}L0,${hgt}Z` }),
-    svgEl('path', { class: 'db-spark-line', d: line }));
-}
-
 function card(title, sub, body, { tools, className } = {}) {
   return h('section', { class: ['card', 'db-card', className] },
     h('header', { class: 'db-card-head' }, h('div', { class: 'db-card-titles' }, h('h2', { class: 'card-title' }, title), sub ? h('span', { class: 'db-card-sub' }, sub) : null), tools || null),
@@ -168,6 +156,10 @@ export function renderSummary(data, previous = null, days = 30, capacity = null)
   const before = figures(previous);
   const was = (key) => (before ? before[key] : null);
   const rated = (feedback.correct || 0) + (feedback.incorrect || 0);
+  // A chart of the range's days beside each figure whose days mean something (SPEC-110 TUS-009):
+  // sums read a day without runs as 0, the median leaves a day without tasks as a gap.
+  const trend = (name, pick, format) => sparkline(perDay.map(pick), { label: `${name}, last ${days} days`, format });
+  const orZero = (v) => (Number.isFinite(v) ? v : 0);
   const unknownRuns = Number.isFinite(tokens.unknown_usage_runs) ? tokens.unknown_usage_runs : 0;
 
   // `done` counts running tasks whose goal is achieved: finished, though their session is open.
@@ -184,14 +176,14 @@ export function renderSummary(data, previous = null, days = 30, capacity = null)
   return [
     data.truncated ? h('div', { class: 'banner banner-warn small' }, icon('warn', { size: 14 }), h('span', { class: 'banner-text' }, `This range has more than ${int(50000)} tasks; the figures describe the newest ${int(50000)}.`)) : null,
     h('section', { class: 'card db-kpis', 'aria-label': 'Key figures' },
-      kpi({ label: 'Tasks', value: int(tasks.total), change: delta(now.tasks, was('tasks'), { days }), sub: Number.isFinite(tasks.closed) ? `${int(tasks.closed)} closed` : null, extra: sparkline(perDay.map((x) => x.count || 0)) }),
+      kpi({ label: 'Tasks', value: int(tasks.total), change: delta(now.tasks, was('tasks'), { days }), sub: Number.isFinite(tasks.closed) ? `${int(tasks.closed)} closed` : null, extra: trend('Tasks', (x) => x.count || 0, int) }),
       // Agent work is the time Claude Code spent in its turns (waiting for its own background agents
       // included), never how long a session stayed open while idle (SPEC-087 MET-005).
-      kpi({ label: 'Agent work per task', value: duration(d.median_active ?? null), change: delta(now.work, was('work'), { better: null, days }), sub: Number.isFinite(d.p90_active) ? `median · 9 in 10 within ${duration(d.p90_active)}` : 'median', hint: 'The median of each task’s agent working time: the time Claude Code spent in its turns' }),
-      kpi({ label: 'Agent working time', value: duration(d.total_active ?? null), change: delta(now.active, was('active'), { better: null, days }), sub: d.total_wall !== undefined ? `sessions open ${duration(d.total_wall)}, idle included` : null, hint: 'All tasks’ agent working time; sessions stay open while they wait for a person' }),
-      kpi({ label: 'Tokens', value: compact(now.tokens), change: delta(now.tokens, was('tokens'), { better: null, days }), sub: `${compact(tokens.input)} in · ${compact(tokens.output)} out, sub-agents included`, hint: tokenNotes || null,
+      kpi({ label: 'Agent work per task', value: duration(d.median_active ?? null), change: delta(now.work, was('work'), { better: null, days }), extra: trend('Agent work per task', (x) => (Number.isFinite(x.median_active_ms) ? x.median_active_ms : null), duration), sub: Number.isFinite(d.p90_active) ? `median · 9 in 10 within ${duration(d.p90_active)}` : 'median', hint: 'The median of each task’s agent working time: the time Claude Code spent in its turns' }),
+      kpi({ label: 'Agent working time', value: duration(d.total_active ?? null), change: delta(now.active, was('active'), { better: null, days }), extra: trend('Agent working time', (x) => orZero(x.active_ms), duration), sub: d.total_wall !== undefined ? `sessions open ${duration(d.total_wall)}, idle included` : null, hint: 'All tasks’ agent working time; sessions stay open while they wait for a person' }),
+      kpi({ label: 'Tokens', value: compact(now.tokens), change: delta(now.tokens, was('tokens'), { better: null, days }), extra: trend('Tokens', (x) => orZero(x.input) + orZero(x.output), compact), sub: `${compact(tokens.input)} in · ${compact(tokens.output)} out, sub-agents included`, hint: tokenNotes || null,
         note: tokenNotes || null }),
-      kpi({ label: 'Subscription switches', value: int(switches(data)), change: delta(now.switches, was('switches'), { better: 'down', days }), sub: 'made by the pool, between subscriptions' }),
+      kpi({ label: 'Subscription switches', value: int(switches(data)), change: delta(now.switches, was('switches'), { better: 'down', days }), extra: trend('Subscription switches', (x) => x.switches || 0, int), sub: 'made by the pool, between subscriptions' }),
       kpi({ label: 'Feedback correct', value: rated ? `${Math.round(now.correct * 100)}%` : '—', change: delta(now.correct, was('correct'), { points: true, days }), extra: feedbackBar, sub: rated ? `${feedback.correct || 0} of ${rated} rated` : 'no feedback yet' })),
     subscriptions(capacity),
     h('div', { class: 'db-row' },

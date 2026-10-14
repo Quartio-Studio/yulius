@@ -960,7 +960,7 @@ resolves to nothing, the run gets the server without that variable or token.
 | DELETE | `/api/admin/accounts/{id}` | instance admin | → 204; 409 while a task that is not Done uses it; Done tasks' idle sessions on it are closed first (`closed`, as archiving does; 409 if one is still closing), SPEC-057; cancels its running login |
 | POST | `/api/admin/accounts/{id}/relogin` | instance admin | → `{"account":Account,"login_id"}`; replaces a running login of the account |
 | WS | `/api/admin/accounts/login/{login_id}/terminal` | instance admin | login terminal (below) |
-| POST | `/api/admin/accounts/{id}/usage` | instance admin | → `AccountView`: asks Claude for the account's usage windows (`/api/oauth/usage`) and stores them; at or above 98 % in a window its tasks move to the best other subscription at their next turn boundary (ADR-17). The endpoint needs the OAuth scope `user:profile`, which a `claude setup-token` sign-in does not have: its HTTP 403 is not an error — the answer is the account as it is (its usage comes from its running sessions, `StatusLine` below), an earlier `usage: …` note is cleared and the background round asks again a day later. 502 with one plain sentence (also kept as `last_error`, prefixed `usage: `) when Claude refuses the sign-in (401) or the request fails for now. `AccountView` also carries `tokens_24h` / `tokens_7d` = `{"runs","tasks","input|null","output|null","cache_read|null","cache_write|null"}` observed by Yulius (ROT-009) The server also refreshes every signed-in account in the background (every 10 min; on HTTP 429 it waits for `Retry-After`, else 30 min) and keeps the last known windows on failure; a limit the CLI reports fills its window at 100 % until the reset (ROT-009). |
+| POST | `/api/admin/accounts/{id}/usage` | instance admin | → `AccountView`: asks Claude for the account's usage windows (`/api/oauth/usage`) and stores them; at or above 98 % in a window its tasks move to the best other subscription at their next turn boundary (ADR-17). The endpoint needs the OAuth scope `user:profile`, which a `claude setup-token` sign-in does not have: its HTTP 403 is not an error — the answer is the account as it is (its usage comes from its running sessions, `StatusLine` below), an earlier `usage: …` note is cleared and the background round asks again a day later. 502 with one plain sentence (also kept as `last_error`, prefixed `usage: `) when Claude refuses the sign-in (401) or the request fails for now. `AccountView` also carries `tokens_24h` / `tokens_7d` = `{"runs","tasks","input|null","output|null","cache_read|null","cache_write|null","cost_usd|null"}` observed by Yulius (ROT-009; runs started in the window; `cost_usd` is their estimate at Claude API list prices, SPEC-110) The server also refreshes every signed-in account in the background (every 10 min; on HTTP 429 it waits for `Retry-After`, else 30 min) and keeps the last known windows on failure; a limit the CLI reports fills its window at 100 % until the reset (ROT-009). |
 | GET | `/api/capacity` | signed in | → `CapacityView`: the subscription pool, burn rate, forecast and recommendation (ROT-013, formula in SPEC-002 ADR-17 §2.4) |
 | GET | `/api/admin/github` | superadmin | `{"configured","app_slug","owner_login","install_url|null","installed"}` |
 | POST | `/api/admin/github/manifest` | superadmin | `{"owner_login","owner_kind":"org|user"}` → `{"post_url","manifest"}` (browser posts the manifest form to GitHub; `post_url` carries a one-time `state`, 30 min); 409 when an App is configured; 422 for a non-https public URL |
@@ -1029,7 +1029,9 @@ AnalyticsSummary = {
   "range": {"sandbox": "…|null", "from": "2026-10-01|null", "to": "2026-10-07|null"},
   "tasks": {"total": 3, "closed": 1, "by_status": {"closed": 1}, "by_harness": {"claude": 2},
             "by_origin": {"ui": 3}},
-  "tasks_per_day": [{"date": "2026-10-01", "count": 1}],
+  "tasks_per_day": [{"date": "2026-10-01", "count": 1, "active_ms": 600000|null,
+                     "median_active_ms": 600000|null, "input": 100|null, "output": 50|null,
+                     "switches": 0}],
   "duration_ms": {"median": 1800000, "p90": 2400000, "total_wall": 3600000,
                   "total_active": 600000, "median_active": 600000, "p90_active": 600000},
   "tokens": Tokens,
@@ -1050,7 +1052,9 @@ TaskRow = {"task_id","sandbox","number","title","status","origin","harness","har
 ```
 
 `tasks_per_day` lists every day of a range up to 366 days (zero-task days included), otherwise only
-days with tasks. `harnesses`, `models` and `accounts` are `;`-separated. `format=csv` returns
+days with tasks, runs or switches (never a day outside the range). A day's `active_ms`, `input` and `output` are of the cohort's runs
+started that day, `switches` of its switches made that day, and `median_active_ms` the median agent
+work of the tasks created that day (SPEC-110). `harnesses`, `models` and `accounts` are `;`-separated. `format=csv` returns
 `text/csv` (attachment `yulius-tasks-<from>-<to>.csv`) with the `TaskRow` keys as the header,
 CRLF line ends, RFC 4180 quoting, empty cells for unknown values, and a leading `'` on text
 cells that start with `=`, `+`, `-`, `@`, tab or CR (spreadsheet formula injection).
@@ -1082,8 +1086,13 @@ CapacityView = {
   "paused_hours_7d": 8.0, "active_hours_7d": 32.0,
   "needed": 4, "add": 1, "recommendation": "Add about 1 subscription to stop pausing",
   "paused_tasks": 0, "resumes_at": "…|null",
-  "accounts": [{"label", "status", "usage", "available", "id?", "in_use_by?"}]
+  "accounts": [{"label", "status", "usage", "available", "id?", "in_use_by?"}],
+  "burn_per_day": [null, 1.2, …, 2.0], "paused_hours_per_day": [0.0, …, 8.0],
+  "tokens": {"last_24h": Spend, "last_7d": Spend, "per_day": [Spend, …],
+             "unknown_usage_runs": 0, "unpriced_runs": 0}
 }
+Spend = {"input": 600000, "output": 600000, "cache_read": 6000000, "cache_write": 600000,
+         "cost_usd": 18.6|null}
 ```
 
 Points are percentage points of one subscription's weekly window: `weekly_left` / `five_hour_left`
@@ -1094,6 +1103,15 @@ each subscription's weekly reset, if within 7 days; `paused_hours_7d` / `active_
 task-hours; `needed` = ⌈max(burn_24h × 168 ÷ 98, subscriptions × (active + paused) ÷ active)⌉ and
 `add` = needed − subscriptions (SPEC-002 ADR-17 §2.4). `resumes_at` is set while no subscription is
 available. `id` and `in_use_by` are for instance administrators only.
+
+The `*_per_day` lists and `tokens.per_day` are seven rolling 24-hour periods, oldest first, the last
+ending now (SPEC-110). A run's tokens count in each period by the share of its lifetime (start to
+end, or now) inside it; `last_24h` is the last period and `last_7d` their sum. `cost_usd` estimates
+what the tokens would cost at Claude API list prices (`yulius_domain::pricing`, ADR-0089: cache
+writes at the 5-minute rate); runs of a model without a price add tokens but no cost
+(`unpriced_runs`), and `cost_usd` is `null` when every run that spent tokens there lacks a price
+(a period without runs costs `0`). Runs without usage are
+counted in `unknown_usage_runs`, never as zero.
 
 ```json
 UpdateView = {"current":{"commit":"<40 hex>|null","short":"…|null"},
@@ -1177,7 +1195,9 @@ after an unlock.
 found or moved; clients refetch `GET /api/update`),
 `{"type":"note.updated","scope":"team|sandbox|me","sandbox_id","revision","updated_by"}` (a
 notepad was saved; a sandbox note's event reaches only that sandbox's viewers, a personal note's
-only its owner), `{"type":"resync"}`.
+only its owner), `{"type":"pulls.updated","sandbox_id"}` (the sandbox's pull requests may have
+changed: a delivery stage moved or a Yulius CI run was queued, started or ended; clients watching
+it read `GET /api/sandboxes/{sid}/git` again; SPEC-108), `{"type":"resync"}`.
 
 Sandbox views depend on the viewer's access level, so after a sandbox change (import, create,
 onboarding transitions, removal) the server publishes `resync` to that sandbox's viewers (or

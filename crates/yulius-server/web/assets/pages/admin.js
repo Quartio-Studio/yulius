@@ -4,6 +4,7 @@
 import { enc } from '../api.js';
 import { h, badge, openModal, field, invalid, toast, confirmDialog, errorToast, toggle, setChildren, emptyState, skeleton } from '../dom.js';
 import { compact } from '../format.js';
+import { usd } from '../charts.js';
 import { createTerminalView } from '../terminal.js';
 import { accountUsage, capacityPanel } from '../layout.js';
 import { pageFrame, loader, dataTable, createButton } from './common.js';
@@ -118,7 +119,7 @@ function tokenTotals(account) {
       ? (t.input || 0) + (t.output || 0) + (t.cache_read || 0) + (t.cache_write || 0)
       : null;
     return h('div', { class: 'kv-line' }, h('span', { class: 'muted' }, label),
-      h('span', null, `${fmt(total)} tokens · ${t.runs} run${t.runs === 1 ? '' : 's'} · ${t.tasks} task${t.tasks === 1 ? '' : 's'}`),
+      h('span', null, `${fmt(total)} tokens · ${t.runs} run${t.runs === 1 ? '' : 's'} · ${t.tasks} task${t.tasks === 1 ? '' : 's'}${Number.isFinite(t.cost_usd) ? ` · ≈ ${usd(t.cost_usd)} at API prices` : ''}`),
       total != null ? h('span', { class: 'muted xs' }, `in ${fmt(t.input)} · out ${fmt(t.output)} · cache ${fmt((t.cache_read || 0) + (t.cache_write || 0))}`) : null);
   };
   const rows = [row('Last 24 h', account.tokens_24h), row('Last 7 days', account.tokens_7d)].filter(Boolean);

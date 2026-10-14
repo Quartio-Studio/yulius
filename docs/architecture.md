@@ -222,8 +222,15 @@ block. The text is pasted next, with the other files mentioned, then Enter (an `
 image would only be a Read tool call). A goal task then gets its `/goal` typed into the terminal;
 the request file in the sandbox home keeps the whole request. A person who typed into the
 terminal before the goal keeps their draft: no goal is typed and the task needs attention (only
-keystrokes count as typing; focus and mouse reports and terminal answers do not). A typed first
-message is pending (`opening-pending` in the run directory) until its `UserPromptSubmit`: a
+keystrokes count as typing; focus and mouse reports and terminal answers do not). Each
+launch trusts the worktree and its main repository in the Claude config. Claude Code 2.1.292 looks
+a worktree's trust up there when `.claude/settings.json` pre-approves tools. If a trust prompt
+still shows before SessionStart, Yulius types nothing into it, and the keys a person answers it
+with are no draft: the goal follows once it is gone, and a prompt left unanswered for 5 minutes
+flags the task
+([SPEC-106](../.ai/specs/SPEC-106-onboarding-another-repo-got-fucked-up-by.md),
+[decision 0086](decisions/0086-a-lost-onboarding-task-returns-the-sandbox-to-pending.md)). A typed
+first message is pending (`opening-pending` in the run directory) until its `UserPromptSubmit`: a
 restart flags a task whose first message never reached that hook (a submitted one a hold keeps
 goes on, and a goal task's goal is typed after it), and a first message held for capacity resumes
 on another account, or a manual switch, as a fresh session that types it again with its images
@@ -260,11 +267,36 @@ sequenceDiagram
         C->>S: UserPromptSubmit: the first message is no longer pending
     end
     C->>S: Stop hook of that turn (goal mode)
+    opt Claude Code shows its folder-trust prompt
+        S-->>UI: notice: answer it in the terminal
+        UI->>C: a person answers (not a draft)
+    end
     alt a person typed since the launch
         S-->>UI: no goal; task needs attention, notice in the terminal
     else
         S->>C: types /goal <condition>
     end
+```
+
+### Onboarding repair
+
+A sandbox waits in `pending` or `preparing` until its onboarding task has made it ready
+([decision 0076](decisions/0076-onboarding-is-mandatory-in-the-ui.md),
+[decision 0077](decisions/0077-onboarding-task-is-created-when-needed.md)). That task stays in
+the task list while the sandbox waits: archiving it is refused. If it is deleted, the sandbox
+returns to `pending` and Start onboarding creates a new one. `refresh_onboarding` makes these
+repairs, and the server makes them once for every sandbox at start, which heals sandboxes stuck
+before the fix ([SPEC-106](../.ai/specs/SPEC-106-onboarding-another-repo-got-fucked-up-by.md),
+[decision 0086](decisions/0086-a-lost-onboarding-task-returns-the-sandbox-to-pending.md)).
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: import
+    pending --> preparing: Start onboarding (creates the task)
+    preparing --> ready: task finished, format check passes
+    preparing --> pending: onboarding task deleted (repair, also at server start)
+    pending --> skipped: admin skip
+    preparing --> skipped: admin skip
 ```
 
 ### Supertasks
@@ -446,7 +478,13 @@ column widths, model and effort), the notification history, the new-task compose
 ([decision 0021](decisions/0021-composer-drafts-in-the-browser.md)), and each sandbox's pull
 requests as the last Git overview read said them (`yulius.pulls.<user>.<sandbox>`), shown at once
 after a reload, for a sandbox a view watches, until the page's own read replaces them (dropped if
-that read fails; SPEC-104).
+that read fails; SPEC-104). The overview is read every minute while the tab is in view, and at once
+when the server announces a change of the sandbox's pull requests (`pulls.updated`: a delivery
+stage moved, a Yulius CI run was queued, started or ended), at least 3 s after the start of the
+last read, or when a hidden tab that missed one is shown again. Reads of a sandbox never overlap,
+also across views that stop and start watching it; an announcement during a read brings one more
+read after it. A pull request Yulius recorded as merged reads merged even while GitHub still lists
+it open ([decision 0087](decisions/0087-pull-request-changes-are-announced.md)).
 Sign-out removes the notification history, the drafts and the pull requests; an expired session
 removes the pull requests too.
 
@@ -465,6 +503,7 @@ flowchart LR
   C -->|"task started: clear"| D
   SO["Sign-out"] -->|"forget"| LS
   G["GET /api/sandboxes/:id/git"] -->|"every read"| P["store.js loadPulls / pullsOf()"]
+  EV["pulls.updated (stage moved, CI run changed)"] -->|"read again"| G
   P -->|"write"| LP[("localStorage yulius.pulls.*")]
   LP -->|"after a reload, until the read answers"| P
   SO -->|"forget"| LP

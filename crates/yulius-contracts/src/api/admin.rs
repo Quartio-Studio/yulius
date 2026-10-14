@@ -99,7 +99,7 @@ pub struct AccountView {
 }
 
 /// Token totals of an account's runs; `None` values are unknown (runs without usage data).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct TokenTotalsView {
     /// Runs started in the window.
     pub runs: u32,
@@ -113,6 +113,10 @@ pub struct TokenTotalsView {
     pub cache_read: Option<u64>,
     /// Cache-write tokens.
     pub cache_write: Option<u64>,
+    /// What the runs whose model has a price would cost at Claude API list prices, in USD;
+    /// `null` when none has one (SPEC-110 TUS-004).
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
 }
 
 /// `POST /api/admin/accounts`.
@@ -162,6 +166,38 @@ pub struct CapacityAccount {
     pub in_use_by: Option<u32>,
 }
 
+/// Tokens spent in a period and what they would cost at Claude API list prices (SPEC-110).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TokenSpendView {
+    /// Input tokens.
+    pub input: u64,
+    /// Output tokens.
+    pub output: u64,
+    /// Cache-read tokens.
+    pub cache_read: u64,
+    /// Cache-write tokens.
+    pub cache_write: u64,
+    /// Estimated USD at API list prices of the runs whose model has a price; `null` when no run
+    /// that spent tokens here has one.
+    pub cost_usd: Option<f64>,
+}
+
+/// The pool's token use over the last 7 days (SPEC-110 TUS-003): a run counts in each 24-hour
+/// period by the share of its lifetime inside it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PoolTokensView {
+    /// The last 24 hours (the last entry of `per_day`).
+    pub last_24h: TokenSpendView,
+    /// The last 7 days (the sum of `per_day`).
+    pub last_7d: TokenSpendView,
+    /// Seven rolling 24-hour periods, oldest first; the last ends now.
+    pub per_day: Vec<TokenSpendView>,
+    /// Runs in the 7 days that reported no usage (not counted as zero).
+    pub unknown_usage_runs: u32,
+    /// Runs in the 7 days whose model has no price (tokens counted, cost not).
+    pub unpriced_runs: u32,
+}
+
 /// `GET /api/capacity` (signed in): the subscription pool, its burn rate and forecast
 /// (SPEC-001 ROT-013, SPEC-002 ADR-17 §2.4). Points are percentage points of one
 /// subscription's weekly window.
@@ -183,6 +219,13 @@ pub struct CapacityView {
     pub burn_24h: Option<f64>,
     /// Burn rate of the last 7 days in points per hour.
     pub burn_7d: Option<f64>,
+    /// Burn rate of each of the last 7 rolling 24 hours, oldest first (the last ends now);
+    /// `null` for a period without enough readings (SPEC-110 TUS-005).
+    #[serde(default)]
+    pub burn_per_day: Vec<Option<f64>>,
+    /// Task-hours paused for lack of capacity in each of the last 7 rolling 24 hours.
+    #[serde(default)]
+    pub paused_hours_per_day: Vec<f64>,
     /// When the pool's weekly capacity runs out at the 24-hour rate, if within 7 days.
     pub runs_out_at: Option<String>,
     /// Task-hours paused for lack of capacity in the last 7 days.
@@ -202,6 +245,9 @@ pub struct CapacityView {
     pub resumes_at: Option<String>,
     /// The subscriptions.
     pub accounts: Vec<CapacityAccount>,
+    /// The pool's tokens and their estimated API cost over the last 7 days.
+    #[serde(default)]
+    pub tokens: PoolTokensView,
 }
 
 /// `GET /api/admin/github`.

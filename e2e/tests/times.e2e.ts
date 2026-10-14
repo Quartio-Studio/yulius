@@ -97,6 +97,11 @@ test('a task overview and the dashboard name what each figure measures', async (
   await expect(kpis).toContainText(/Agent working time/);
   await expect(kpis).toContainText(/sessions open .+, idle included/);
   await expect(kpis).not.toContainText('Median duration');
+  // A chart for every figure whose days mean something, like Tasks (SPEC-110 TUS-009, TUS-010).
+  for (const name of ['Tasks', 'Agent work per task', 'Agent working time', 'Tokens', 'Subscription switches']) {
+    await expect(kpis.getByRole('img', new RegExp(`^${name}, last 30 days: first .+, highest .+, last .+$`))).toBeVisible();
+  }
+  await expect(kpis.getByRole('img', /^Feedback correct/)).toBeHidden();
   // A running task whose goal is achieved is finished: Done, not Running, in the outcomes.
   await expect(browser.locator('.db-legend')).toContainText(/Done\s*2/);
   await expect(browser.locator('.db-card.db-main')).toContainText('UTC days');

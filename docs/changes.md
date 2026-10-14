@@ -6,6 +6,38 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- Token use, its API-price cost and a chart for every figure (SPEC-110, ADR-0089, task #95). The
+  Capacity card (Subscriptions page and the Dashboard) adds "Tokens (7 days)" and "API cost (7
+  days)": what the pool used and what it would have cost at Claude API list prices (input, output,
+  cache reads and writes, per model), each with a 7-day chart; Burn rate and Paused get one too.
+  Each subscription's "Observed by Yulius" rows end with "≈ $X at API prices". The Dashboard's
+  Agent work per task, Agent working time, Tokens and Subscription switches figures get a chart of
+  the range's days, like Tasks; every chart names its first, highest and last values for screen
+  readers.
+- A pull request's change reaches the sidebar when it happens (SPEC-108, ADR-0087, task #93). Task
+  #56 read Done with PR #340 "checks running" 4.5 minutes after Yulius had merged it: the task's
+  state came live, its pull request only from the Git overview read every minute, never while the
+  tab was hidden. The server now publishes `pulls.updated` to a sandbox's viewers when a delivery
+  stage moves (opened, merged, reconciled with GitHub, by any path) and when a Yulius CI run is
+  queued, starts or ends; the browser reads the overview again within seconds (at most one such
+  read per 3 s), or when a hidden tab is shown again. Reads of a sandbox no longer overlap, and a
+  change announced during a read brings one more read after it, so an older read never has the
+  last word. A pull request Yulius recorded as merged reads merged even while GitHub's list, read
+  just after the merge, still says open.
+- Onboarding no longer gets stuck (SPEC-106, ADR-0086, task #91, #425).
+  - **Trust prompt.** A task in a repository whose `.claude/settings.json` pre-approves tools
+    starts without Claude Code's folder-trust prompt: its main repository is trusted too, where
+    Claude Code 2.1.292 looks a worktree's trust up. If a trust prompt still shows, Yulius waits
+    for a person to answer it and then sets the goal; the answer no longer counts as a draft.
+  - **Lost onboarding task.** A sandbox whose onboarding task was deleted goes back to "Onboard
+    first" with Start onboarding. While onboarding is in progress, its task can't be archived.
+  - **Healing.** Sandboxes stuck this way (studio) heal at the next server start.
+- A session's spider web hangs exactly in its corner and keeps its colour while the transcript
+  scrolls (SPEC-109, ADR-0088, task #94, issue #427). It used to start 16 px above the well, over
+  the header, and to fade nearly into the background once stuck.
+- "Update now" works again with the GitHub App (SPEC-107, task #92, #423). GitHub now issues
+  installation tokens of about 520 characters (`ghs_<APPID>_<JWT>`). The update helper refused
+  anything over 255 as "the token is malformed"; it now accepts up to 4096 of the same characters.
 - A session's spider web stays in view, its spider moves and a cockroach runs by (SPEC-101,
   ADR-0082, task #86). The web sticks to the top-right corner while the transcript scrolls. Every
   8 s the spider climbs its thread in pixel steps, legs switching, and drops back. Now and then (20–60 s

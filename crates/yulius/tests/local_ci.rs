@@ -455,6 +455,33 @@ async fn runs_jobs_in_parallel_publishes_statuses_and_gates_merges() -> TestResu
     Ok(())
 }
 
+/// SPEC-108 PRL-003 (task #93): a run's queueing and its end change what a pull request's checks
+/// say, so each tells the sandbox's browsers to read them again, even when GitHub refuses the
+/// commit status.
+#[tokio::test]
+async fn a_run_announces_its_pull_requests() -> TestResult {
+    let f = fixture().await?;
+    f.h.github
+        .statuses_forbidden
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut announced = support::PullAnnouncements::new(&f.h.app, "s1");
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let runs = f.get("/api/sandboxes/s1/ci").await?["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .len();
+    assert!(runs >= 1);
+    assert_eq!(announced.take(), runs, "each run, queued");
+    f.settle().await?;
+    // Each run started and ended; its end may be published just after the run settles.
+    assert_eq!(
+        announced.wait_for(2 * runs, WAIT).await,
+        2 * runs,
+        "each run, started and ended"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn without_the_status_permission_runs_still_gate() -> TestResult {
     let f = fixture().await?;

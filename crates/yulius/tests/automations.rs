@@ -1178,10 +1178,13 @@ async fn run_now_and_failures_are_recorded() -> TestResult {
     assert_eq!(busy.body["state"], "skipped_previous_active");
     assert_eq!(automation_tasks(&w.h, &id).await?.len(), 1);
 
-    // A failing task creation is recorded on the run (sandbox being prepared).
+    // A failing task creation is recorded on the run. The sandbox waits for onboarding that
+    // nobody started, so the task would wait after a new onboarding task, made by the sandbox's
+    // creator, who is no user in this fixture (SPEC-106 returns a preparing sandbox without its
+    // task to this state).
     let failing = create_automation(&w, daily("Blocked", "0 9 * * *")).await?;
     w.h.store
-        .set_onboarding(&SandboxId::parse("s1")?, "preparing", None)
+        .set_onboarding(&SandboxId::parse("s1")?, "pending", None)
         .await?;
     set_clock(&w.h, BASE + 9 * HOUR + 10_000);
     let report = w.h.app.automation_tick().await?;
@@ -1192,7 +1195,7 @@ async fn run_now_and_failures_are_recorded() -> TestResult {
         history[0]["error"]
             .as_str()
             .unwrap_or("")
-            .contains("prepared"),
+            .contains("not found"),
         "{}",
         history[0]
     );

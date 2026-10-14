@@ -142,7 +142,6 @@
   --session-add-bg: #222a24;
   --session-del-bg: #2f2220;
   --session-web: #4a4744;  /* the corner's spider web, decoration */
-  --session-web-stuck: #292725; /* the web stuck under the text while it scrolls: the well's text stays AA on it */
   --session-roach: #6f5646; /* the cockroach that runs by now and then, decoration */
   /* material: a fine grain and a soft light from above over the canvas, pages, sidebar and rail */
   --texture: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.94 0 0 0 0 0.92 0 0 0 0 0.88 0 0 0 0.075 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
@@ -221,7 +220,6 @@
   --session-add-bg: #dfe5df;
   --session-del-bg: #eedcd7;
   --session-web: #c4bdb1;
-  --session-web-stuck: #e6e2da;
   --session-roach: #8c6d58;
   /* material: a fine grain and a soft light from above over the canvas, pages, sidebar and rail */
   --texture: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.09 0 0 0 0 0.08 0 0 0 0 0.07 0 0 0 0.06 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");

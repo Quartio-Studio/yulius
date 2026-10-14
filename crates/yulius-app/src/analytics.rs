@@ -279,6 +279,17 @@ fn switch_counts(data: &AnalyticsData) -> (SwitchCounts, HashMap<TaskId, u32>) {
     (counts, per_task)
 }
 
+/// One UTC day of a summary (SPEC-110 TUS-008).
+#[derive(Default)]
+struct DayAcc {
+    count: u32,
+    active: Option<u64>,
+    input: Option<u64>,
+    output: Option<u64>,
+    switches: u32,
+    task_actives: Vec<u64>,
+}
+
 fn bump(map: &mut BTreeMap<String, u32>, key: &str) {
     *map.entry(key.to_owned()).or_default() += 1;
 }
@@ -292,7 +303,8 @@ pub fn summarize(
     now: Timestamp,
 ) -> AnalyticsSummary {
     let mut tasks = TaskCounts::default();
-    let mut per_day: BTreeMap<i64, u32> = BTreeMap::new();
+    let mut per_day: BTreeMap<i64, DayAcc> = BTreeMap::new();
+    let mut created_day: HashMap<&TaskId, i64> = HashMap::new();
     for t in &data.tasks {
         tasks.total = tasks.total.saturating_add(1);
         if t.status == TaskStatus::Closed {
@@ -301,7 +313,9 @@ pub fn summarize(
         bump(&mut tasks.by_status, outcome_key(t.status, t.activity));
         bump(&mut tasks.by_harness, t.harness.as_str());
         bump(&mut tasks.by_origin, t.origin.as_str());
-        *per_day.entry(day_of(t.created_at)).or_default() += 1;
+        let day = per_day.entry(day_of(t.created_at)).or_default();
+        day.count = day.count.saturating_add(1);
+        created_day.insert(&t.id, day_of(t.created_at));
     }
     if let Some((first, last)) = days
         && last >= first
@@ -312,6 +326,9 @@ pub fn summarize(
         }
     }
 
+    // A run or switch after the range's last day (a task created late that day ran on) adds no
+    // day outside the range; the range's totals still count it.
+    let in_range = |day: i64| days.is_none_or(|(first, last)| (first..=last).contains(&day));
     let mut all = Acc::default();
     let mut by_model: BTreeMap<String, Acc> = BTreeMap::new();
     let mut by_harness: BTreeMap<String, Acc> = BTreeMap::new();
@@ -342,10 +359,31 @@ pub fn summarize(
         *task_wall = task_wall.saturating_add(wall);
         let active = run.metrics.as_ref().and_then(|m| m.active_ms);
         add_known(&mut total_active, active);
+        if in_range(day_of(run.started_at)) {
+            let day = per_day.entry(day_of(run.started_at)).or_default();
+            add_known(&mut day.active, active);
+            add_known(
+                &mut day.input,
+                run.metrics.as_ref().and_then(|m| m.input_tokens),
+            );
+            add_known(
+                &mut day.output,
+                run.metrics.as_ref().and_then(|m| m.output_tokens),
+            );
+        }
         if let Some(active) = active {
             let task_active = active_by_task.entry(run.task_id.clone()).or_default();
             *task_active = task_active.saturating_add(active);
         }
+    }
+    for (task, active) in &active_by_task {
+        if let Some(day) = created_day.get(task) {
+            per_day.entry(*day).or_default().task_actives.push(*active);
+        }
+    }
+    for s in data.switches.iter().filter(|s| in_range(day_of(s.at))) {
+        let day = per_day.entry(day_of(s.at)).or_default();
+        day.switches = day.switches.saturating_add(1);
     }
     let mut walls: Vec<u64> = wall_by_task.into_values().collect();
     let (median, p90) = median_p90(&mut walls);
@@ -365,9 +403,14 @@ pub fn summarize(
         tasks,
         tasks_per_day: per_day
             .into_iter()
-            .map(|(day, count)| DayCount {
+            .map(|(day, mut acc)| DayCount {
                 date: day_string(day),
-                count,
+                count: acc.count,
+                active_ms: acc.active,
+                median_active_ms: median_p90(&mut acc.task_actives).0,
+                input: acc.input,
+                output: acc.output,
+                switches: acc.switches,
             })
             .collect(),
         duration_ms: DurationStats {
@@ -772,6 +815,96 @@ mod tests {
             "running"
         );
         assert_eq!(outcome_key(TaskStatus::Closed, None), "closed");
+        Ok(())
+    }
+
+    /// SPEC-110 TUS-008: per UTC day, a run counts on the day it started, a switch on the day it
+    /// was made, and the work per task is the median over the tasks created that day.
+    #[test]
+    fn days_carry_runs_tokens_and_switches() -> Result<(), Box<dyn std::error::Error>> {
+        let task = |name: &str, day: i64| -> Result<AnalyticsTask, Box<dyn std::error::Error>> {
+            Ok(AnalyticsTask {
+                id: id(name)?,
+                sandbox_id: SandboxId::parse("s")?,
+                sandbox_slug: "s".into(),
+                number: 1,
+                title: name.into(),
+                harness: Harness::ClaudeCode,
+                status: TaskStatus::Closed,
+                activity: None,
+                origin: TaskOrigin::Ui,
+                created_at: Timestamp(day * DAY_MS + 5),
+                closed_at: None,
+            })
+        };
+        let run = |name: &str,
+                   day: i64,
+                   active: u64,
+                   input: Option<u64>,
+                   output: Option<u64>|
+         -> Result<AnalyticsRun, Box<dyn std::error::Error>> {
+            Ok(AnalyticsRun {
+                task_id: id(name)?,
+                seq: 1,
+                harness: Harness::ClaudeCode,
+                account_id: None,
+                account_label: None,
+                started_at: Timestamp(day * DAY_MS + 10),
+                ended_at: Some(Timestamp(day * DAY_MS + 20)),
+                metrics: Some(MetricsRecord {
+                    active_ms: Some(active),
+                    input_tokens: input,
+                    output_tokens: output,
+                    ..MetricsRecord::default()
+                }),
+            })
+        };
+        let data = AnalyticsData {
+            tasks: vec![task("t1", 0)?, task("t2", 1)?],
+            runs: vec![
+                run("t1", 0, 600_000, Some(10), Some(5))?,
+                run("t1", 1, 300_000, Some(1), None)?,
+                run("t2", 1, 1_200_000, None, Some(2))?,
+            ],
+            switches: vec![AnalyticsSwitch {
+                task_id: id("t1")?,
+                at: Timestamp(DAY_MS + 30),
+                inputs: String::new(),
+            }],
+            ..AnalyticsData::default()
+        };
+        let mut data = data;
+        // A run and a switch after the range's last day (a task created late that day ran on)
+        // add no day outside the range.
+        data.runs.push(run("t2", 3, 1_000, Some(1), Some(1))?);
+        data.switches.push(AnalyticsSwitch {
+            task_id: id("t2")?,
+            at: Timestamp(3 * DAY_MS + 1),
+            inputs: String::new(),
+        });
+        let s = summarize(&data, AnalyticsRange::default(), Some((0, 2)), Timestamp(0));
+        let days: Vec<_> = s
+            .tasks_per_day
+            .iter()
+            .map(|d| {
+                (
+                    d.count,
+                    d.active_ms,
+                    d.median_active_ms,
+                    d.input,
+                    d.output,
+                    d.switches,
+                )
+            })
+            .collect();
+        assert_eq!(
+            days,
+            vec![
+                (1, Some(600_000), Some(900_000), Some(10), Some(5), 0),
+                (1, Some(1_500_000), Some(1_201_000), Some(1), Some(2), 1),
+                (0, None, None, None, None, 0),
+            ]
+        );
         Ok(())
     }
 }

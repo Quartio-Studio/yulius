@@ -892,14 +892,16 @@ impl App {
     }
 
     /// Publishes the commit status of a run's current state (best effort; failures are
-    /// recorded on the run and retried by the loop).
+    /// recorded on the run and retried by the loop), after a change of the run: the sandbox's
+    /// browsers read its pull requests again (SPEC-108 PRL-003).
     pub(crate) async fn ci_publish(&self, run_id: &str) {
-        if let Err(err) = self.ci_try_publish(run_id).await {
+        if let Err(err) = self.ci_try_publish(run_id, true).await {
             tracing::debug!(error = %err, run = %run_id, "publishing a CI status failed");
         }
     }
 
-    async fn ci_try_publish(&self, run_id: &str) -> AppResult<()> {
+    /// `announce`: the run changed (not a retry of its status), so the browsers are told.
+    async fn ci_try_publish(&self, run_id: &str, announce: bool) -> AppResult<()> {
         let store = &self.deps.store;
         let Some(run) = store.ci_run(run_id).await? else {
             return Ok(());
@@ -913,6 +915,11 @@ impl App {
             return store
                 .record_ci_status(run_id, None, Some(crate::merge_train::TRAIN_STATUS_NOTE))
                 .await;
+        }
+        // The run's state is what a pull request's checks say (`ci_gate_result`), whether or not
+        // GitHub takes the status below.
+        if announce {
+            self.publish_pulls(&run.sandbox_id);
         }
         let jobs = store.ci_jobs(run_id, false).await?;
         let failed = jobs.iter().find(|j| j.state == RunState::Failed);
@@ -1021,7 +1028,10 @@ impl App {
             return;
         };
         for run in runs {
-            self.ci_publish(&run.id).await;
+            // A retry changes nothing a pull request's checks say: no announcement.
+            if let Err(err) = self.ci_try_publish(&run.id, false).await {
+                tracing::debug!(error = %err, run = %run.id, "publishing a CI status failed");
+            }
         }
     }
 

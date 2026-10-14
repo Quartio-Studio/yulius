@@ -153,3 +153,136 @@ test('signing out removes the stored pull requests', async ({ app, browser, scre
   await expect(browser).toHaveURL(/#\/signin/);
   expect(await storedPulls(browser)).toBeNull();
 });
+
+// Task #93 (SPEC-108): "we got wrong status again". Task #56 read Done with PR #340 "checks
+// running" 4.5 minutes after Yulius had merged it: the task's state comes live, its pull request
+// only from the overview read, every minute in view and never while hidden. The server now says
+// when a sandbox's pull requests changed (`pulls.updated`) and the browser reads them again.
+type Mocked = {
+  __yuliusMock: {
+    changePull: (sandbox: string, number: number, changes: Record<string, unknown>, announce?: boolean) => void;
+    announcePulls: (sandbox: string) => void;
+    holdGitReads: boolean;
+    gitReads: () => number;
+    gitRequests: number;
+    releaseGit: () => void;
+  };
+};
+const mocked = <T>(browser: Browser, run: (m: Mocked['__yuliusMock']) => T) => browser.evaluate(`(${run.toString()})(window.__yuliusMock)`) as Promise<T>;
+// #13's goal is achieved (Done) and its pull request #520 is open with its checks running: the
+// row of the screenshot.
+const chip520 = (browser: Browser) => browser.locator('.task-list .tl-pr-chip').filter({ hasText: '#520' });
+
+/**
+ * Events arrive in order and the page asks for a read as it handles one: once a rename announced
+ * after them shows, every event before it was handled. Returns the Git reads asked for by then.
+ */
+async function handledSoFar(browser: Browser, title: string): Promise<number> {
+  await touchTask(browser, 'sb_studio', 13, { title });
+  await expect(browser.locator('.task-list .task-row').filter({ hasText: title })).toBeVisible();
+  return mocked(browser, (m) => m.gitRequests);
+}
+
+test('a merge Yulius announces reaches the row at once', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await expect(screen.getByRole('region', 'Done').getByRole('link', /Improve the code/)).toBeVisible();
+  await expect(chip520(browser)).toHaveAttribute('title', 'Pull request #520 · open · checks running');
+  await mocked(browser, (m) => m.changePull('sb_studio', 520, { state: 'merged' }));
+  // Within the 3 s between announced reads, well before the next minute's read.
+  await expect(chip520(browser)).toHaveAttribute('title', 'Pull request #520 · merged', { timeout: 10_000 });
+});
+
+test('an announcement during a read is read again after it', async ({ app, browser }) => {
+  await app.open(mock('/s/studio', '&pullgap=0'));
+  await expect(chip520(browser)).toHaveAttribute('title', /checks running/);
+  // A read starts before the merge and answers after it; the merge's announcement comes meanwhile.
+  const before = await handledSoFar(browser, 'Improve the code, read');
+  await mocked(browser, (m) => { m.holdGitReads = true; m.announcePulls('sb_studio'); });
+  await expect.poll(() => mocked(browser, (m) => m.gitReads())).toBe(1);
+  await mocked(browser, (m) => m.changePull('sb_studio', 520, { state: 'merged' }));
+  // Reads do not overlap: the announcement waits for the read in flight.
+  expect(await handledSoFar(browser, 'Improve the code, merged')).toBe(before + 1);
+  // Every held read answers, the newest first: the one from before the merge must not have the
+  // last word.
+  await expect.poll(async () => {
+    await mocked(browser, (m) => m.releaseGit());
+    return chip520(browser).getAttribute('title');
+  }, { timeout: 3_000 }).toBe('Pull request #520 · merged');
+});
+
+test('a hidden tab reads nothing on an announcement and catches up when shown', async ({ app, browser }) => {
+  await app.open(mock('/s/studio', '&pullgap=0'));
+  await expect(chip520(browser)).toHaveAttribute('title', /checks running/);
+  const before = await handledSoFar(browser, 'Improve the code, shown');
+  await browser.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await mocked(browser, (m) => m.changePull('sb_studio', 520, { state: 'merged' }));
+  expect(await handledSoFar(browser, 'Improve the code, hidden')).toBe(before);
+  await expect(chip520(browser)).toHaveAttribute('title', /checks running/);
+
+  // Shown again seconds after the last read: the announcement it missed is read at once.
+  await browser.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await expect(chip520(browser)).toHaveAttribute('title', 'Pull request #520 · merged', { timeout: 3_000 });
+});
+
+test('announced reads of a sandbox keep their gap', async ({ app, browser }) => {
+  // A minute between announced reads: what this test sees in seconds stays apart.
+  await app.open(mock('/s/studio', '&pullgap=60000'));
+  await expect(chip520(browser)).toHaveAttribute('title', /checks running/);
+  const before = await handledSoFar(browser, 'Improve the code, before');
+  // A push: its run queued, started and ended, a superseded run cancelled.
+  await mocked(browser, (m) => { for (let i = 0; i < 4; i += 1) m.announcePulls('sb_studio'); });
+  expect(await handledSoFar(browser, 'Improve the code, after')).toBe(before);
+});
+
+test('announcements within the gap make one read when it has passed', async ({ app, browser }) => {
+  await app.open(mock('/s/studio', '&pullgap=1500'));
+  await expect(chip520(browser)).toHaveAttribute('title', /checks running/);
+  const before = await handledSoFar(browser, 'Improve the code, before');
+  await mocked(browser, (m) => {
+    m.changePull('sb_studio', 520, { state: 'merged' });
+    for (let i = 0; i < 3; i += 1) m.announcePulls('sb_studio');
+  });
+  await expect(chip520(browser)).toHaveAttribute('title', 'Pull request #520 · merged', { timeout: 10_000 });
+  expect(await handledSoFar(browser, 'Improve the code, after')).toBe(before + 1);
+});
+
+test('watching a sandbox again during its read starts no second read', async ({ app, browser }) => {
+  await app.open(mock('/s/studio', '&pullgap=0'));
+  await expect(chip520(browser)).toHaveAttribute('title', /checks running/);
+  const before = await handledSoFar(browser, 'Improve the code, before');
+  await mocked(browser, (m) => { m.holdGitReads = true; m.announcePulls('sb_studio'); });
+  await expect.poll(() => mocked(browser, (m) => m.gitReads())).toBe(1);
+  // To another sandbox and back while studio's read is held: product reads once, studio waits for
+  // its read in flight.
+  await browser.evaluate(() => { location.hash = '#/s/product'; });
+  await expect(browser.locator('.task-list .task-row').filter({ hasText: 'Invoice PDF export' })).toBeVisible();
+  await browser.evaluate(() => { location.hash = '#/s/studio'; });
+  expect(await handledSoFar(browser, 'Improve the code, back')).toBe(before + 2);
+  await mocked(browser, (m) => { m.holdGitReads = false; m.releaseGit(); });
+  await expect(chip520(browser)).toHaveAttribute('title', /checks running/);
+});
+
+test('a change announced while nobody watched reaches the view that watches again', async ({ app, browser }) => {
+  await app.open(mock('/s/studio', '&pullgap=0'));
+  await expect(chip520(browser)).toHaveAttribute('title', /checks running/);
+  await mocked(browser, (m) => { m.holdGitReads = true; m.announcePulls('sb_studio'); });
+  await expect.poll(() => mocked(browser, (m) => m.gitReads())).toBe(1);
+  // Studio's read is held (it started before the merge) while the sidebar shows product.
+  await browser.evaluate(() => { location.hash = '#/s/product'; });
+  await expect(browser.locator('.task-list .task-row').filter({ hasText: 'Invoice PDF export' })).toBeVisible();
+  await mocked(browser, (m) => m.changePull('sb_studio', 520, { state: 'merged' }));
+  // Events arrive in order: once this rename shows, the merge's announcement was handled.
+  await touchTask(browser, 'sb_product', 4, { title: 'Invoice PDF export, renamed' });
+  await expect(browser.locator('.task-list .task-row').filter({ hasText: 'Invoice PDF export, renamed' })).toBeVisible();
+  await browser.evaluate(() => { location.hash = '#/s/studio'; });
+  await expect.poll(async () => {
+    await mocked(browser, (m) => m.releaseGit());
+    return chip520(browser).getAttribute('title');
+  }, { timeout: 5_000 }).toBe('Pull request #520 · merged');
+});

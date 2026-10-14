@@ -529,21 +529,6 @@ export function scheduleCockroaches(well, { random = Math.random, timer = { set:
   };
 }
 
-/**
- * Mark the well `.ss-web-stuck` while its web is stuck to the top of the scrolled page (`root`), that
- * is once a mark at the well's top has scrolled above it, so the stylesheet fades the web under the
- * text (SPEC-101). Returns the stop.
- */
-function watchStuckWeb(well, mark, root) {
-  if (typeof IntersectionObserver !== 'function') return () => {};
-  const observer = new IntersectionObserver((entries) => {
-    const entry = entries[entries.length - 1]; // the latest, after a fast scroll there and back
-    well.classList.toggle('ss-web-stuck', !entry.isIntersecting && entry.boundingClientRect.top < (entry.rootBounds?.top ?? 0));
-  }, { root });
-  observer.observe(mark);
-  return () => observer.disconnect();
-}
-
 /** Where the TUI's prompt box was: locked, nothing can be typed or sent (not a control). */
 const lockedPrompt = () => h('div', { class: 'ss-locked' }, mark('>', 'prompt'), h('span', { class: 'ss-line-body' }, 'Read-only session · nothing can be sent'), icon('lock', { size: 14 }));
 
@@ -665,12 +650,9 @@ export function mountSessionView(ctx, sandbox, id, route) {
       next = page.next;
       renderHead();
       if (first) {
-        const mark = h('div', { class: 'ss-web-mark', 'aria-hidden': 'true' });
-        const tui = h('div', { class: 'ss-tui' }, mark, spiderWeb(), entriesEl, more, lockedPrompt());
+        const tui = h('div', { class: 'ss-tui' }, spiderWeb(), entriesEl, more, lockedPrompt());
         setChildren(body, earlier, tui);
-        const stopWatching = watchStuckWeb(tui, mark, el);
-        const stopRunning = scheduleCockroaches(tui);
-        stopCockroaches = () => { stopWatching(); stopRunning(); };
+        stopCockroaches = scheduleCockroaches(tui);
       }
       append(page.entries || []);
       if (first && !entriesEl.children.length && next === null) {

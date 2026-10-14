@@ -1115,6 +1115,32 @@ impl App {
             .await
     }
 
+    /// The store's compare-and-set of a task's delivery stage; a stage that moved tells the
+    /// sandbox's browsers to read its pull requests again (SPEC-108 PRL-002).
+    pub(crate) async fn dlv_transition(
+        &self,
+        sandbox: &SandboxId,
+        expected: &DeliveryStage,
+        next: &DeliveryRecord,
+    ) -> AppResult<bool> {
+        let written = self.deps.store.transition_delivery(expected, next).await?;
+        if written && next.stage != *expected {
+            self.publish_pulls(sandbox);
+        }
+        Ok(written)
+    }
+
+    /// Tells the browsers watching `sandbox` that its pull requests may have changed (SPEC-108).
+    pub(crate) fn publish_pulls(&self, sandbox: &SandboxId) {
+        self.events.publish(
+            Some(sandbox.clone()),
+            false,
+            yulius_contracts::events::UiEvent::PullsUpdated {
+                sandbox_id: sandbox.to_string(),
+            },
+        );
+    }
+
     pub(crate) async fn dlv_audit(&self, actor: &str, action: &str, target: &str, detail: &str) {
         if let Err(err) = self
             .deps
@@ -1444,8 +1470,8 @@ impl App {
                 stage: next,
                 updated_at: self.now(),
             };
-            if store
-                .transition_delivery(&observed.record.stage, &reconciled)
+            if self
+                .dlv_transition(&task.sandbox_id, &observed.record.stage, &reconciled)
                 .await?
             {
                 if reconciled.stage != observed.record.stage {
@@ -1660,6 +1686,20 @@ impl App {
                     github_reason(&err)
                 )),
             }
+            // A pull request Yulius recorded as merged is merged, even while GitHub's list, read
+            // just after the merge, still says open (SPEC-108 PRL-007): it reads as merged below.
+            if !open_pulls.is_empty() {
+                let merged: Vec<u64> = self
+                    .deps
+                    .store
+                    .deliveries(&sandbox.id)
+                    .await?
+                    .into_iter()
+                    .filter(|record| past_merge(&record.stage))
+                    .filter_map(|record| record.pr_number)
+                    .collect();
+                open_pulls.retain(|pull| !merged.contains(&pull.number));
+            }
             let mut checks_failed = false;
             for pull in &open_pulls {
                 // With Yulius CI its run at the head decides, as in the merge gate (S5).
@@ -1800,9 +1840,7 @@ impl App {
                         ..record.clone()
                     };
                     let _ = self
-                        .deps
-                        .store
-                        .transition_delivery(&record.stage, &reconciled)
+                        .dlv_transition(&sandbox.id, &record.stage, &reconciled)
                         .await;
                 }
             }
@@ -2079,9 +2117,7 @@ impl App {
             updated_at: self.now(),
         };
         if !self
-            .deps
-            .store
-            .transition_delivery(&observed.record.stage, &next)
+            .dlv_transition(&task.sandbox_id, &observed.record.stage, &next)
             .await?
         {
             return Err(AppError::Conflict(
@@ -2853,9 +2889,7 @@ impl App {
             pr_number: Some(pull.number),
             updated_at: self.now(),
         };
-        self.deps
-            .store
-            .transition_delivery(&observed.record.stage, &next)
+        self.dlv_transition(&task.sandbox_id, &observed.record.stage, &next)
             .await?;
         let actor = Self::dlv_actor_login(&ctx.user);
         self.dlv_audit(
@@ -2943,9 +2977,7 @@ impl App {
                 ..record.clone()
             };
             if self
-                .deps
-                .store
-                .transition_delivery(&record.stage, &updated)
+                .dlv_transition(&task.sandbox_id, &record.stage, &updated)
                 .await?
             {
                 moved.push(task.number);

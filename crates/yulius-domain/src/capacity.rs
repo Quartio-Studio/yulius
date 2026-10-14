@@ -14,6 +14,8 @@ const HOUR_MS: f64 = 3_600_000.0;
 pub const WEEK_HOURS: f64 = 168.0;
 /// The forecast horizon: this week.
 const HORIZON_MS: i64 = 7 * 24 * 3_600_000;
+/// One rolling day.
+const DAY_MS: i64 = 24 * 3_600_000;
 /// An account's samples must span at least this long to give a rate.
 const MIN_SPAN_HOURS: f64 = 1.0;
 
@@ -83,6 +85,10 @@ pub struct Forecast {
     pub burn_24h: Option<f64>,
     /// Burn rate over the last 7 days in points per hour; `None` without enough readings.
     pub burn_7d: Option<f64>,
+    /// Burn rate of each of the last 7 rolling 24 hours (oldest first; the last ends now).
+    pub burn_per_day: Vec<Option<f64>>,
+    /// Task-hours paused in each of the last 7 rolling 24 hours (oldest first).
+    pub paused_hours_per_day: Vec<f64>,
     /// When the pool's weekly headroom runs out at the 24-hour burn rate, if within 7 days.
     pub runs_out_at: Option<Timestamp>,
     /// Task-hours paused for lack of capacity in the last 7 days.
@@ -236,6 +242,11 @@ pub fn needed_subscriptions(
     needed as u32
 }
 
+/// The ends of the last 7 rolling 24-hour periods, oldest first; the last is `now`.
+fn day_ends(now: Timestamp) -> impl Iterator<Item = Timestamp> {
+    (0..7).rev().map(move |i| now.plus_millis(-i * DAY_MS))
+}
+
 /// The whole capacity picture (ADR-17 §2.4).
 #[must_use]
 pub fn forecast(input: &ForecastInput<'_>) -> Forecast {
@@ -277,12 +288,147 @@ pub fn forecast(input: &ForecastInput<'_>) -> Forecast {
         weekly_headroom,
         burn_24h,
         burn_7d,
+        burn_per_day: day_ends(now)
+            .map(|end| burn_rate(input.samples, end, DAY_MS))
+            .collect(),
+        paused_hours_per_day: day_ends(now)
+            .map(|end| overlap_hours(input.pauses, end.plus_millis(-DAY_MS), end))
+            .collect(),
         runs_out_at: run_out(input.members, input.threshold, burn_24h, now),
         paused_hours_7d,
         active_hours_7d,
         needed,
         add,
     }
+}
+
+/// One agent run's tokens for the pool's token use (SPEC-110 TUS-003).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TokenRun {
+    /// Its lifetime; `end = None` while it runs.
+    pub span: Span,
+    /// The model it ran, when known.
+    pub model: Option<String>,
+    /// Input tokens, when reported.
+    pub input: Option<u64>,
+    /// Output tokens, when reported.
+    pub output: Option<u64>,
+    /// Cache-read tokens, when reported.
+    pub cache_read: Option<u64>,
+    /// Cache-write tokens, when reported.
+    pub cache_write: Option<u64>,
+}
+
+/// Tokens spent in one period and what they would cost at API list prices.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TokenSpend {
+    /// Input tokens.
+    pub input: f64,
+    /// Output tokens.
+    pub output: f64,
+    /// Cache-read tokens.
+    pub cache_read: f64,
+    /// Cache-write tokens.
+    pub cache_write: f64,
+    /// Estimated cost in USD of the runs with a price.
+    pub cost_usd: f64,
+    /// Some run with a price spent tokens here.
+    pub priced: bool,
+    /// Some run without a price spent tokens here.
+    pub unpriced: bool,
+}
+
+impl TokenSpend {
+    /// The estimated cost, or `None` when every run here lacks a price.
+    #[must_use]
+    pub fn cost(&self) -> Option<f64> {
+        (self.priced || !self.unpriced).then_some(self.cost_usd)
+    }
+
+    fn add(&mut self, run: &TokenRun, share: f64, cost: Option<f64>) {
+        let part = |v: Option<u64>| v.map_or(0.0, |v| v as f64 * share);
+        self.input += part(run.input);
+        self.output += part(run.output);
+        self.cache_read += part(run.cache_read);
+        self.cache_write += part(run.cache_write);
+        match cost {
+            Some(c) => {
+                self.cost_usd += c * share;
+                self.priced = true;
+            }
+            None => self.unpriced = true,
+        }
+    }
+}
+
+/// The pool's token use over the last `days` rolling 24-hour periods.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PoolTokens {
+    /// One entry per 24 hours, oldest first; the last ends at `now`.
+    pub per_day: Vec<TokenSpend>,
+    /// Runs in the window that reported no usage.
+    pub unknown_usage_runs: u32,
+    /// Runs in the window whose model has no price.
+    pub unpriced_runs: u32,
+}
+
+/// Spreads every run's tokens over `days` rolling 24-hour periods ending at `now`, in proportion
+/// to the part of its lifetime (start to end, or `now`) inside each; a run without duration counts
+/// where it started. Runs outside the window count nowhere.
+#[must_use]
+pub fn pool_tokens(runs: &[TokenRun], now: Timestamp, days: usize) -> PoolTokens {
+    let n = i64::try_from(days).unwrap_or(0);
+    let from = now.plus_millis(-n * DAY_MS);
+    let mut out = PoolTokens {
+        per_day: vec![TokenSpend::default(); days],
+        ..PoolTokens::default()
+    };
+    for run in runs {
+        let start = run.span.start;
+        let end = run.span.end.unwrap_or(now).min(now).max(start);
+        let inside = if end > start {
+            end > from && start < now
+        } else {
+            start >= from && start <= now
+        };
+        if !inside {
+            continue;
+        }
+        if run.input.is_none()
+            && run.output.is_none()
+            && run.cache_read.is_none()
+            && run.cache_write.is_none()
+        {
+            out.unknown_usage_runs = out.unknown_usage_runs.saturating_add(1);
+            continue;
+        }
+        let cost = run
+            .model
+            .as_deref()
+            .and_then(crate::pricing::price_of)
+            .map(|p| {
+                crate::pricing::cost_usd(p, run.input, run.output, run.cache_read, run.cache_write)
+            });
+        if cost.is_none() {
+            out.unpriced_runs = out.unpriced_runs.saturating_add(1);
+        }
+        let length = end.millis_since(start);
+        for (i, bucket) in out.per_day.iter_mut().enumerate() {
+            let lo = from.plus_millis(i64::try_from(i).unwrap_or(0) * DAY_MS);
+            let hi = lo.plus_millis(DAY_MS);
+            let share = if length > 0 {
+                end.min(hi).millis_since(start.max(lo)).max(0) as f64 / length as f64
+            } else if start >= lo && (start < hi || (hi == now && start == now)) {
+                1.0
+            } else {
+                0.0
+            };
+            if share > 0.0 {
+                bucket.add(run, share, cost);
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -451,6 +597,15 @@ mod tests {
         assert_eq!(forecast.runs_out_at, Some(at(98)));
         assert!(close(forecast.paused_hours_7d, 8.0));
         assert!(close(forecast.active_hours_7d, 32.0));
+        // TUS-005: per rolling 24 hours, oldest first; the readings span only the last 24 h.
+        assert_eq!(
+            forecast.burn_per_day,
+            vec![None, None, None, None, None, None, Some(2.0)]
+        );
+        assert_eq!(
+            forecast.paused_hours_per_day,
+            vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0]
+        );
         // max(2 × 168 / 98 = 3.43, 3 × 40 / 32 = 3.75) → 4: add 1.
         assert_eq!(forecast.needed, 4);
         assert_eq!(forecast.add, 1);
@@ -498,5 +653,78 @@ mod tests {
             empty.recommendation(),
             "Add a subscription to start working"
         );
+    }
+
+    fn token_run(from: i64, to: Option<i64>, model: &str, tokens: u64) -> TokenRun {
+        TokenRun {
+            span: Span {
+                start: at(from),
+                end: to.map(at),
+            },
+            model: Some(model.into()),
+            input: Some(tokens),
+            output: Some(tokens),
+            cache_read: Some(tokens),
+            cache_write: None,
+        }
+    }
+
+    /// TUS-003: a run counts in each 24-hour period by the share of its lifetime inside it.
+    #[test]
+    fn pool_tokens_spread_runs_over_rolling_days() {
+        let runs = vec![
+            // 40 h, still running: 16 h in the day before yesterday's window, 24 h in the last.
+            token_run(-40, None, "claude-opus-5-5", 1_000_000),
+            // Ended 12 h ago after 2 h: all in the last 24 h.
+            token_run(-14, Some(-12), "claude-sonnet-5-5", 100),
+            // Ended before the window: nowhere.
+            token_run(-200, Some(-170), "claude-opus-5-5", 9_999),
+            // Half of its 4 h lifetime falls before the 7 days.
+            token_run(-170, Some(-166), "claude-opus-5-5", 1_000),
+        ];
+        let pool = pool_tokens(&runs, NOW, 7);
+        assert_eq!(pool.per_day.len(), 7);
+        assert!(close(pool.per_day[6].input, 600_000.0 + 100.0));
+        assert!(close(pool.per_day[5].input, 400_000.0));
+        assert!(close(pool.per_day[0].input, 500.0));
+        assert!(close(pool.per_day[3].input, 0.0));
+        // Opus 5.5: $4 in + $20 out + $0.20 cache read per million.
+        assert!(close(pool.per_day[5].cost_usd, 0.4 * 24.2));
+        assert_eq!(pool.per_day[3].cost(), Some(0.0));
+        assert_eq!((pool.unknown_usage_runs, pool.unpriced_runs), (0, 0));
+    }
+
+    #[test]
+    fn pool_tokens_count_unknown_usage_and_models_without_price() {
+        let mut silent = token_run(-3, Some(-2), "claude-opus-5-5", 0);
+        silent.input = None;
+        silent.output = None;
+        silent.cache_read = None;
+        let runs = vec![
+            silent,
+            token_run(-5, Some(-4), "mystery-model", 1_000),
+            token_run(-6, Some(-6), "claude-opus-5-5", 0),
+        ];
+        let pool = pool_tokens(&runs, NOW, 7);
+        assert_eq!(pool.unknown_usage_runs, 1);
+        assert_eq!(pool.unpriced_runs, 1);
+        let last = &pool.per_day[6];
+        assert!(
+            close(last.input, 1_000.0),
+            "the unpriced run's tokens count"
+        );
+        assert_eq!(last.cost(), Some(0.0), "the priced zero-length run counts");
+        // A zero-length run at the very end of the window counts in the last period.
+        let at_now = pool_tokens(
+            &[token_run(0, Some(0), "claude-opus-5-5", 1_000_000)],
+            NOW,
+            7,
+        );
+        assert!(close(at_now.per_day[6].input, 1_000_000.0));
+        // A period mixing priced and unpriced runs has the priced runs' cost, not none.
+        assert!(last.priced && last.unpriced);
+        let only_unpriced = pool_tokens(&runs[1..2], NOW, 7);
+        assert_eq!(only_unpriced.per_day[6].cost(), None);
+        assert_eq!(only_unpriced.per_day[5].cost(), Some(0.0), "nothing ran");
     }
 }

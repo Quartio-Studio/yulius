@@ -90,4 +90,8 @@ number differs from the file name, and a record this index does not list.
 - [0080](0080-a-wait-for-yulius-shows-a-still-muted-branch.md): A wait for Yulius shows a still, muted branch, not Working's turning green
 - [0085](0085-a-prepared-task-waits-for-a-person-or-its-time.md): A prepared task waits for a person's Start now or its time; the minute tick releases it
 - [0084](0084-personal-notes-in-the-notes-table.md): Personal notes ("Me") live in the notes table, and their events reach only their owner
+- [0088](0088-the-session-web-keeps-its-colours-when-stuck.md): The session's web keeps its colours when stuck and hangs exactly in the well's corner (supersedes 0082's stuck colour)
 - [0083](0083-long-menu-groups-scroll-five-rows.md): A long menu group (the start menu's tasks) shows five rows and says there is more
+- [0089](0089-api-price-estimates-from-a-built-in-table.md): Token cost is estimated from a built-in table of Claude API list prices
+- [0087](0087-pull-request-changes-are-announced.md): A change of a sandbox's pull requests is announced, and browsers read them again
+- [0086](0086-a-lost-onboarding-task-returns-the-sandbox-to-pending.md): A lost onboarding task returns the sandbox to pending; a worktree's main repository is trusted too

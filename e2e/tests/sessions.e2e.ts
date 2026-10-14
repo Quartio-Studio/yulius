@@ -330,7 +330,8 @@ test('a session ends with a locked prompt box and has a spider web in its corner
   expect(await browser.evaluate(() => document.querySelectorAll('#main textarea, #main input:not([type=search]), #main [contenteditable], #main .xterm').length)).toBe(0);
 
   const web = await browser.evaluate(() => {
-    const well = document.querySelector('.ss-tui')!.getBoundingClientRect();
+    const wellEl = document.querySelector('.ss-tui')!;
+    const well = wellEl.getBoundingClientRect();
     const svg = document.querySelector('.ss-tui > svg.ss-web')!;
     const box = svg.getBoundingClientRect();
     return {
@@ -338,7 +339,8 @@ test('a session ends with a locked prompt box and has a spider web in its corner
       pointer: getComputedStyle(svg).pointerEvents,
       crisp: svg.getAttribute('shape-rendering'),
       pixels: svg.querySelectorAll('rect').length,
-      top: Math.round(box.top - well.top),
+      // From the well's top inside its border: task #94 found it 16 px above, over the header.
+      top: Math.round(box.top - well.top - wellEl.clientTop),
       right: Math.round(well.right - box.right),
       // The first lines make room for it instead of running under it.
       clear: [...document.querySelectorAll('.ss-tui .ss-entries > li')].filter((li) => li.getBoundingClientRect().top < box.bottom).every((li) => li.getBoundingClientRect().right <= box.left + 1),
@@ -348,8 +350,10 @@ test('a session ends with a locked prompt box and has a spider web in its corner
   expect(web.pointer).toBe('none');
   expect(web.crisp).toBe('crispEdges');
   expect(web.pixels).toBeGreaterThan(20);
-  expect(web.top).toBeLessThanOrEqual(2);
-  expect(web.right).toBeLessThanOrEqual(2);
+  expect(web.top).toBeGreaterThanOrEqual(0);
+  expect(web.top).toBeLessThanOrEqual(1);
+  expect(web.right).toBeGreaterThanOrEqual(0);
+  expect(web.right).toBeLessThanOrEqual(1);
   expect(web.clear).toBe(true);
   expect(await axeViolations(browser)).toEqual([]);
 });
@@ -362,64 +366,60 @@ test('the spider web sticks to the top of the view while the session scrolls', a
   await expect(browser.locator('.ss-tui .ss-locked')).toBeVisible();
   const place = () => browser.evaluate(() => {
     const page = document.querySelector<HTMLElement>('.ss-page')!;
-    const well = document.querySelector('.ss-tui')!.getBoundingClientRect();
+    const wellEl = document.querySelector('.ss-tui')!;
+    const well = wellEl.getBoundingClientRect();
     const box = document.querySelector('.ss-tui > svg.ss-web')!.getBoundingClientRect();
     const view = page.getBoundingClientRect().top + page.clientTop;
-    return { scrollable: page.scrollHeight - page.clientHeight, top: Math.round(box.top - Math.max(view, well.top)), right: Math.round(well.right - box.right), inWell: box.bottom <= well.bottom + 1 };
+    return { scrollable: page.scrollHeight - page.clientHeight, top: Math.round(box.top - Math.max(view, well.top + wellEl.clientTop)), right: Math.round(well.right - box.right), inWell: box.bottom <= well.bottom + 1 };
   });
   const before = await place();
   expect(before.scrollable).toBeGreaterThan(200);
-  expect(before.top).toBeLessThanOrEqual(2);
+  // Task #94: "web is not aligned to the corner". Its top is the corner's, at the top and stuck.
+  expect(before.top).toBeGreaterThanOrEqual(0);
+  expect(before.top).toBeLessThanOrEqual(1);
   await browser.evaluate(() => { document.querySelector<HTMLElement>('.ss-page')!.scrollTop = 200; });
-  await expect.poll(async () => (await place()).top).toBeLessThanOrEqual(2);
+  await expect.poll(async () => (await place()).top).toBeLessThanOrEqual(1);
   const after = await place();
-  expect(after.top).toBeGreaterThanOrEqual(-2);
-  expect(after.right).toBeLessThanOrEqual(2);
+  expect(after.top).toBeGreaterThanOrEqual(0);
+  expect(after.right).toBeGreaterThanOrEqual(0);
+  expect(after.right).toBeLessThanOrEqual(1);
   expect(after.inWell).toBe(true);
 
-  // Stuck, the web lies under the text, so it fades to a colour every text of the well reads on at
-  // AA, spider included; at the top, beside the first lines, it keeps its own colours. Everything
-  // after it in the well paints over it.
+  // Task #94: "web gets almost invisible … when scrolling, it should stay in the same color". Stuck
+  // under the text, the threads, silk and spider keep their own colours, in both themes, and
+  // everything after the web in the well still paints over it.
   const colours = (theme: string) => browser.evaluate((name) => {
     document.documentElement.setAttribute('data-theme', name);
     const well = document.querySelector('.ss-tui')!;
-    const parse = (c: string) => c.match(/\d+(\.\d+)?/g)!.slice(0, 3).map(Number);
     const token = (t: string) => {
       const probe = well.appendChild(document.createElement('span'));
       probe.style.color = `var(${t})`;
       const c = getComputedStyle(probe).color;
       probe.remove();
-      return parse(c);
+      return c;
     };
-    const lum = (c: number[]) => {
-      const [r, g, b] = c.map((v) => { const x = v / 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; });
-      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    };
-    const contrast = (a: number[], b: number[]) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
-    const fills = ['.ss-web-thread', '.ss-web-silk', '.ss-web-body'].map((sel) => parse(getComputedStyle(well.querySelector(sel)!).fill));
-    const texts = ['--session-fg', '--session-dim', '--session-ok', '--session-err'].map(token);
+    const fill = (sel: string) => getComputedStyle(well.querySelector(sel)!).fill;
     return {
-      web: String(fills[0]) === String(token('--session-web')),
-      lowest: Math.min(...fills.flatMap((f) => texts.map((t) => contrast(t, f)))),
+      same: fill('.ss-web-thread') === token('--session-web') && fill('.ss-web-silk') === token('--session-web') && fill('.ss-web-body') === token('--session-dim'),
       over: ['.ss-entries > li', '.ss-more', '.ss-locked'].every((sel) => [...well.querySelectorAll(sel)].every((el) => getComputedStyle(el).position !== 'static')),
     };
   }, theme);
-  // It fades as soon as it sticks: the well's top just past the view's.
-  await browser.evaluate(() => {
+  const scrollTo = (top: string) => browser.evaluate((at) => {
     const page = document.querySelector<HTMLElement>('.ss-page')!;
     page.scrollTop = 0;
-    page.scrollTop = document.querySelector('.ss-tui')!.getBoundingClientRect().top - page.getBoundingClientRect().top - page.clientTop + 3;
-  });
-  await expect.poll(async () => (await colours('dark')).web).toBe(false);
-  await browser.evaluate(() => { document.querySelector<HTMLElement>('.ss-page')!.scrollTop = 200; });
-  for (const theme of ['dark', 'light']) {
-    await expect.poll(async () => (await colours(theme)).web, theme).toBe(false);
-    const stuck = await colours(theme);
-    expect(stuck.lowest, theme).toBeGreaterThanOrEqual(4.5);
-    expect(stuck.over, theme).toBe(true);
+    page.scrollTop = at === 'past' ? document.querySelector('.ss-tui')!.getBoundingClientRect().top - page.getBoundingClientRect().top - page.clientTop + 3 : Number(at);
+  }, top);
+  for (const at of ['past', '200', '0']) {
+    await scrollTo(at);
+    await browser.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+    for (const theme of ['dark', 'light']) {
+      const now = await colours(theme);
+      expect(now.same, `${theme}, scrolled ${at}`).toBe(true);
+      expect(now.over, theme).toBe(true);
+    }
   }
-  await browser.evaluate(() => { document.querySelector<HTMLElement>('.ss-page')!.scrollTop = 0; });
-  await expect.poll(async () => (await colours('dark')).web).toBe(true);
+  expect(await browser.evaluate(() => document.querySelector('.ss-web-stuck, .ss-web-mark'))).toBeNull();
+  await browser.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
   expect(await axeViolations(browser)).toEqual([]);
 });
 
@@ -702,6 +702,15 @@ test('a session fills the content area edge to edge, beside the Superagent and o
   await browser.setViewport({ width: 390, height: 844 });
   await expect.poll(async () => (await fit()).head).toBe(12);
   expect(await fit()).toMatchObject(edgeToEdge);
+  // Task #94: on a phone too, the web hangs in the well's corner, inside its border.
+  const corner = await browser.evaluate(() => {
+    document.querySelector<HTMLElement>('.ss-page')!.scrollTop = 0; // at the top, not stuck lower down
+    const wellEl = document.querySelector('.ss-tui')!;
+    const well = wellEl.getBoundingClientRect();
+    const box = wellEl.querySelector(':scope > svg.ss-web')!.getBoundingClientRect();
+    return { top: Math.round(box.top - well.top - wellEl.clientTop), right: Math.round(well.right - box.right) };
+  });
+  expect(corner).toEqual({ top: 0, right: 0 });
   expect(await axeViolations(browser)).toEqual([]);
 });
 

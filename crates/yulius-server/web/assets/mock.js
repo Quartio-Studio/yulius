@@ -520,6 +520,14 @@ function emit(db, event) {
   for (const socket of db.eventSockets) socket.push(data);
 }
 
+/**
+ * A sandbox's pull requests may have changed (a delivery stage moved, a CI run was queued or
+ * ended): the server says so and watching browsers read the Git overview again (SPEC-108).
+ */
+function announcePulls(db, sandboxId) {
+  emit(db, { type: 'pulls.updated', sandbox_id: sandboxId });
+}
+
 /** Sandbox changes: the server publishes `resync` (sandbox views differ per user). */
 function resync(db) {
   emit(db, { type: 'resync' });
@@ -1227,7 +1235,7 @@ route('GET', `/api/sandboxes/${ID}/git`, async ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
   const tasks = db.tasks.filter((t) => t.sandbox_id === sandbox.id && !t.archived && t.branch);
   const pull = pullOf;
-  return {
+  const overview = {
     integration_branch: sandbox.profile.integration_branch, production_branch: sandbox.profile.production_branch, default_branch: sandbox.default_branch,
     tasks: tasks.map((t) => ({ task_id: t.id, title: t.title, branch: t.branch, ahead: (t.number * 3) % 11 + 1, behind: t.number % 3, files_changed: (t.number * 7) % 23 + 1, insertions: (t.number * 131) % 900 + 12, deletions: (t.number * 37) % 200, pr: pull(t) })),
     recent_commits: [
@@ -1241,6 +1249,10 @@ route('GET', `/api/sandboxes/${ID}/git`, async ({ db, p }) => {
     notes: sandbox.id === 'sb_three' ? ['Pull requests can\u2019t be listed: GitHub rate limit exceeded; lists may be incomplete.'] : [],
     checks_access: checksAccess(db, sandbox),
   };
+  // `__yuliusMock.holdGitReads = true`: each read waits on its own until `releaseGit()`, answering
+  // what it saw when it started, as a server read that began before a change (SPEC-108).
+  if (db.holdGitReads) await new Promise((resolve) => db.gitHolds.push(resolve));
+  return overview;
 });
 route('GET', `/api/tasks/${ID}/delivery`, ({ db, p }) => delivery(db, taskOf(db, p[0])));
 // The server has no task changes API yet (GET /api/tasks/{tid}/changes and /commits are proposed in
@@ -1257,7 +1269,8 @@ route('POST', `/api/tasks/${ID}/delivery/pr`, ({ db, p, body }) => {
   const sandbox = sandboxOf(db, task.sandbox_id);
   const number = 300 + db.nextId;
   task.delivery = { stage: 'pr_open', environment: null, pr: { number, url: `${sandbox.repo.url}/pull/${number}`, title: body.title || task.title, state: 'open', base: sandbox.profile.integration_branch, head: task.branch, checks: 'pending' } };
-  later(() => { if (task.delivery && task.delivery.pr) task.delivery.pr.checks = 'success'; }, 4000);
+  later(() => { if (task.delivery && task.delivery.pr) { task.delivery.pr.checks = 'success'; announcePulls(db, task.sandbox_id); } }, 4000);
+  announcePulls(db, task.sandbox_id);
   return delivery(db, task);
 });
 route('POST', `/api/tasks/${ID}/delivery/merge`, ({ db, p }) => {
@@ -1276,6 +1289,7 @@ route('POST', `/api/tasks/${ID}/delivery/merge`, ({ db, p }) => {
     task.delivery.stage = production.length ? 'promoted' : 'production_done';
   }
   touch(db, task);
+  announcePulls(db, task.sandbox_id);
   return { ...delivery(db, task), notes };
 });
 route('POST', `/api/sandboxes/${ID}/delivery/promote`, ({ db, p }) => {
@@ -1297,6 +1311,7 @@ route('POST', `/api/sandboxes/${ID}/delivery/promote`, ({ db, p }) => {
     task.delivery = { ...task.delivery, stage: production.length ? 'promoted' : 'production_done', environment: null };
     touch(db, task);
   }
+  announcePulls(db, sandbox.id);
   return { result: 'promoted', sha: 'e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3' };
 });
 
@@ -2355,7 +2370,12 @@ route('PATCH', `/api/admin/users/${ID}`, ({ db, p, body }) => {
   if (body.is_instance_admin !== undefined) user.is_instance_admin = Boolean(body.is_instance_admin);
   return user;
 });
-route('GET', '/api/admin/accounts', ({ db }) => { adminOnly(db); return db.accounts; });
+// Each subscription's tokens Yulius observed, with their cost at API list prices (SPEC-110).
+route('GET', '/api/admin/accounts', ({ db }) => {
+  adminOnly(db);
+  const totals = (k, runs) => ({ runs, tasks: Math.max(1, runs - 1), ...poolSpend(k) });
+  return db.accounts.map((a, i) => (a.status === 'pending_login' ? a : { ...a, tokens_24h: totals(0.3 / (i + 1), 2), tokens_7d: totals(2 / (i + 1), 9) }));
+});
 // 201 {account, login_id}: the account waits in `pending_login` until the login terminal finishes.
 route('POST', '/api/admin/accounts', ({ db, body }) => {
   adminOnly(db);
@@ -2421,7 +2441,11 @@ route('GET', '/api/analytics/summary', ({ db, query }) => {
     const date = new Date(from + i * DAY).toISOString().slice(0, 10);
     const weekday = new Date(date).getUTCDay();
     const base = weekday === 0 || weekday === 6 ? 0 : 3;
-    perDay.push({ date, count: (hashString(date + query.get('sandbox')) % 5) + base });
+    const count = (hashString(date + query.get('sandbox')) % 5) + base;
+    // The cohort's runs and switches that day (SPEC-110): about 31 min of agent work a task.
+    const vary = (hashString(`${date}w`) % 7) / 10 + 0.7;
+    perDay.push({ date, count, active_ms: count ? Math.round(count * 31 * MIN * vary) : null, median_active_ms: count ? Math.round(26 * MIN * vary) : null,
+      input: count ? Math.round(count * 340e3 * vary) : null, output: count ? Math.round(count * 43e3 * vary) : null, switches: Math.round(count * 0.15 * vary * 2) });
   }
   const total = perDay.reduce((a, d) => a + d.count, 0);
   const scale = total / 120;
@@ -2644,6 +2668,24 @@ route('POST', '/api/admin/jev/test', ({ db }) => {
   return { ok: true, result: 'ok', message: 'Jev answered: the key works.', latency_ms: 240 };
 });
 
+// The pool's tokens over 7 rolling days (SPEC-110), priced as Opus 5.5 ($4 in, $20 out, $0.20
+// cache read, $5 cache write per million).
+const poolSpend = (k) => {
+  const t = { input: Math.round(2.1e6 * k), output: Math.round(1.4e6 * k), cache_read: Math.round(310e6 * k), cache_write: Math.round(9e6 * k) };
+  return { ...t, cost_usd: (t.input * 4 + t.output * 20 + t.cache_read * 0.2 + t.cache_write * 5) / 1e6 };
+};
+function poolTokens() {
+  const perDay = [0.6, 0.9, 0.4, 1.1, 1.3, 0.8, 1.2].map(poolSpend);
+  const sum = (key) => perDay.reduce((a, d) => a + d[key], 0);
+  return {
+    last_24h: perDay[6],
+    last_7d: { input: sum('input'), output: sum('output'), cache_read: sum('cache_read'), cache_write: sum('cache_write'), cost_usd: sum('cost_usd') },
+    per_day: perDay,
+    unknown_usage_runs: 1,
+    unpriced_runs: 0,
+  };
+}
+
 // GET /api/capacity (`CapacityView`, ROT-013): the pool, burn rate and forecast. The mock's pool
 // burns faster than it refills and tasks waited this week, so it recommends one more subscription.
 route('GET', '/api/capacity', ({ db }) => {
@@ -2665,6 +2707,8 @@ route('GET', '/api/capacity', ({ db }) => {
     five_hour_left: left('primary'),
     burn_24h: 2.4,
     burn_7d: 1.9,
+    burn_per_day: [1.2, 1.6, null, 1.9, 2.2, 2.0, 2.4],
+    paused_hours_per_day: [0, 0, 1.5, 0, 2, 0.5, 2.5],
     runs_out_at: isoIn(1.6 * DAY),
     paused_hours_7d: 6.5,
     active_hours_7d: 118,
@@ -2677,6 +2721,7 @@ route('GET', '/api/capacity', ({ db }) => {
       label: a.label, status: a.status, usage: a.usage, available: isAvailable(a),
       ...(admin ? { id: a.id, in_use_by: a.in_use_by } : {}),
     })),
+    tokens: poolTokens(),
   };
 });
 
@@ -2862,6 +2907,8 @@ route('DELETE', `/api/sessions/${ID}`, ({ db, p }) => {
 const PUBLIC = ['/api/setup/status', '/api/setup', '/api/auth/password', '/api/auth/mock-github'];
 
 async function handleFetch(db, url, init = {}) {
+  // Counted as the page asks, before the simulated latency (SPEC-108 tests).
+  if ((init.method || 'GET') === 'GET' && /^\/api\/sandboxes\/[^/]+\/git$/.test(new URL(url, ORIGIN).pathname)) db.gitRequests += 1;
   await delay(50 + Math.random() * 150);
   if (db.offline) throw new TypeError('Failed to fetch'); // simulated outage (__yuliusMock.goOffline())
   const u = new URL(url, ORIGIN);
@@ -3872,6 +3919,21 @@ export function createMockTransport(params) {
   // Tests change a task as the server would announce it (`touchTask('sb_studio', 12, {…})`).
   db.finishOnboarding = (slug) => finishOnboarding(db, db.sandboxes.find((s) => s.slug === slug));
   db.touchTask = (sandboxId, number, changes) => touch(db, db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number), changes);
+  // A pull request changed on the server (`changePull('sb_studio', 520, { state: 'merged' })`):
+  // announced like the server does, unless `announce` is false (a change Yulius did not see).
+  db.changePull = (sandboxId, number, changes, announce = true) => {
+    const task = db.tasks.find((t) => t.sandbox_id === sandboxId && t.delivery && t.delivery.pr && t.delivery.pr.number === number);
+    Object.assign(task.delivery.pr, changes);
+    if (changes.state === 'merged') task.delivery.stage = 'merged_integration';
+    recount(db);
+    if (announce) announcePulls(db, sandboxId);
+  };
+  db.announcePulls = (sandboxId) => announcePulls(db, sandboxId);
+  db.gitHolds = [];
+  db.gitReads = () => db.gitHolds.length;
+  db.gitRequests = 0; // Git overview reads the page asked for
+  // Releases the held Git overview reads, the newest first (an older read answering last).
+  db.releaseGit = () => { for (const resolve of db.gitHolds.splice(0).reverse()) resolve(); };
   // Simulate an outage and its end: __yuliusMock.goOffline() / .goOnline().
   db.goOffline = () => {
     db.offline = true;
@@ -3911,6 +3973,8 @@ export function createMockTransport(params) {
   notesOf(db);
   return {
     kind: 'mock',
+    // `pullgap=<ms>`: the store's least time between announced pull request reads (SPEC-108).
+    pullGapMs: params.has('pullgap') ? Number(params.get('pullgap')) : undefined,
     // Like window.fetch, an aborted signal (a timeout, a view that went away) rejects the request.
     fetch: (url, init = {}) => {
       if (init.keepalive) db.keepaliveRequests.push(url);
