@@ -13,6 +13,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- The superadmin updates Yulius from the sidebar (SPEC-133, ADR-0108, task #121). A button beside
+  the account button reads "Update" when main has moved on, and one click opens the update's
+  confirmation; while an update runs it reads "Updating", and otherwise it is a quiet "Version
+  and updates" icon leading to the instance page. Dismissing the tab-row pill no longer hides the
+  way to update, and the account menu lists "Version and updates" too.
 - The Editor gets the notepads' smooth selection and teammates' presence (SPEC-127, ADR-0103,
   task #114). A selection in the Editor is drawn in rounded shapes that glide, exactly where
   Monaco lays it out, so it stays right with word wrap on or off and when scrolled. People who

@@ -116,7 +116,8 @@ watching, steering and unblocking.
   one click (SPEC-121). A project's keys live in a git-ignored `.env` beside a tracked
   `.env.example`; when its code needs a secret's real value, the agent asks Yulius to copy it
   there, and a person allows that once per secret (SPEC-129).
-- **Updates**: Yulius updates itself from `main` without losing running work.
+- **Updates**: Yulius updates itself from `main` without losing running work. The superadmin
+  starts an update from the Update button beside their account button in the sidebar (SPEC-133).
 
 ## Principles
 
