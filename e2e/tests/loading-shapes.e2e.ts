@@ -68,7 +68,8 @@ test('a page of item cards loads as item cards where the cards will be', async (
 test('a table loads as a table with its columns', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/users', '&hold=/api/admin/users'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Users');
-  const shape = '#main .skeleton[role="status"]';
+  // The recovery card below loads with its own status.
+  const shape = '#main .skeleton[role="status"]:has(.table-wrap)';
   await expect(browser.locator(shape)).toHaveText('Loading the users…');
   await expectQuietShape(browser, shape);
   const columns = await browser.locator(`${shape} table thead th`).count();
@@ -104,4 +105,38 @@ test('a grid of cards loads as cards, and an editor as its fields', async ({ app
   expect(await axeViolations(browser)).toEqual([]);
   await release(browser);
   await expect(browser.locator(shape)).toHaveCount(0);
+});
+
+type HoldingGit = Window & { __yuliusHoldGit?: Promise<void>; __releaseGit?: () => void };
+
+test('the Git page loads as its status cards, sections and board (the reported screen)', async ({ app, browser, screen }) => {
+  await browser.addInitScript(() => {
+    const w = window as unknown as HoldingGit;
+    w.__yuliusHoldGit = new Promise<void>((resolve) => { w.__releaseGit = resolve; });
+  });
+  await app.open(mock('/s/studio/git'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Git');
+  const shape = '#main .skeleton[role="status"]';
+  await expect(browser.locator(shape)).toHaveText('Loading delivery…');
+  await expectQuietShape(browser, shape);
+  // Two status cards side by side, then Blocked, the board and Activity with their headings.
+  expect(await browser.locator(`${shape} .dl-strip > .dl-card`).count()).toBe(2);
+  expect(await browser.locator(`${shape} .dl-section-title`).count()).toBe(3);
+  expect(await browser.locator(`${shape} .dl-needs > .dl-need`).count()).toBeGreaterThan(0);
+  expect(await browser.locator(`${shape} .dl-col .dl-card-task`).count()).toBeGreaterThan(0);
+  expect(await browser.locator(`${shape} .dl-activity > .dl-event`).count()).toBeGreaterThan(0);
+  const columns = await browser.locator(`${shape} .dl-board > .dl-col`).count();
+  const live = await box(browser, `${shape} .dl-strip > .dl-card:first-child`);
+  const waiting = await box(browser, `${shape} .dl-strip > .dl-card:last-child`);
+  const boardBox = await box(browser, `${shape} .dl-board`);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  await browser.evaluate(() => (window as unknown as HoldingGit).__releaseGit!());
+  await expect(screen.getByRole('heading', /^Where every task is/)).toBeVisible();
+  await expect(browser.locator(shape)).toHaveCount(0);
+  // The board has the profile's columns, and the cards and board land in the outlines' columns.
+  expect(await browser.locator('#main .dl-board > .dl-col').count()).toBe(columns);
+  expectSameBox(live, await box(browser, '#main .dl-strip > .dl-card:first-child'), ['x', 'width']);
+  expectSameBox(waiting, await box(browser, '#main .dl-strip > .dl-card:last-child'), ['x', 'width']);
+  expectSameBox(boardBox, await box(browser, '#main .dl-board'), ['x', 'width']);
 });

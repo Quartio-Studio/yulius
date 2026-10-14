@@ -1153,7 +1153,7 @@ a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
    replaces (1lh tall, the pill centred in it), a tile an icon's square. */
 .skeleton-shaped { display: block; padding: 0; }
 .skeleton-bar { display: flex; align-items: center; max-width: 100%; height: 1lh; }
-.skeleton-bar::before, .skeleton-tile, .skeleton-field {
+.skeleton-bar::before, .skeleton-tile, .skeleton-field, .skeleton-button {
   background: var(--surface-3) linear-gradient(90deg, transparent, var(--overlay-active), transparent) no-repeat; background-size: 50% 100%;
   animation: shimmer var(--duration-pulse) linear infinite;
 }
@@ -1161,6 +1161,7 @@ a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
 .skeleton-tile { border-color: transparent; }
 .skeleton-card { display: flex; flex-direction: column; gap: 8px; padding: 16px; }
 .skeleton-field { height: var(--control-xl); border-radius: var(--radius-lg); }
+.skeleton-button { flex: none; width: 72px; height: var(--control-md); border-radius: var(--radius); }
 .intake-slot { display: flex; flex-direction: column; }
 .intake-status {
   display: flex; align-items: center; gap: 12px; padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--radius-lg);
