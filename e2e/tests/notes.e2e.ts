@@ -239,6 +239,7 @@ test('notes fit a phone', async ({ app, browser, screen }) => {
   await notes.fill('on the go');
   await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
   await expect(screen.getByRole('tab', 'Team')).toBeVisible();
+  await expect(screen.getByRole('tab', 'Me')).toBeVisible();
   expect(await browser.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   expect(await axeViolations(browser)).toEqual([]);
 });
@@ -392,4 +393,85 @@ test('Notes beside a task does not take the keyboard when another task opens', a
   // Past the timers the panel's show queued when the page changed (a focus is deferred by one).
   await browser.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0))));
   await expect(notes).not.toBeFocused();
+});
+
+// SPEC-103: a personal notepad, "Me", after Team: only its owner's, the same in every sandbox.
+
+test('Me after Team is the person’s own notepad, the same in every sandbox', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen);
+  expect(await browser.evaluate(() => [...document.querySelectorAll('[role="tablist"][aria-label="Notes"] [role="tab"]')].map((tab) => tab.textContent)))
+    .toEqual(['This sandbox', 'Team', 'Me']);
+
+  await screen.getByRole('tab', 'Me').click();
+  await expect(screen.getByRole('tab', 'Me')).toHaveAttribute('aria-selected', 'true');
+  const mine = screen.getByRole('textbox', 'My notes');
+  await expect(mine).not.toHaveAttribute('readonly', '');
+  await expect(mine).toHaveAttribute('placeholder', /Only you see these notes/);
+  await mine.fill('grep instead of read?');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  expect(await stored(browser, 'me:usr_1')).toBe('grep instead of read?');
+  expect(await stored(browser, 'team')).toBe('');
+  expect(await stored(browser, 'sandbox:sb_studio')).toBe('');
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // Another sandbox: the same notepad, still on the Me tab.
+  await app.open(mock('/s/product'));
+  await expect(screen.getByRole('textbox', 'My notes')).toHaveValue('grep instead of read?');
+
+  // A reload keeps it.
+  await browser.reload();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Notes').click();
+  await expect(screen.getByRole('textbox', 'My notes')).toHaveValue('grep instead of read?');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+});
+
+test('an edit of Me from the person’s other tab appears in an idle notepad', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen);
+  await screen.getByRole('tab', 'Me').click();
+  const mine = screen.getByRole('textbox', 'My notes');
+  await expect(mine).toHaveValue('');
+
+  await browser.evaluate(() => (window as unknown as MockNotes).__yuliusMock.editNote('me:usr_1', 'From my laptop', 'mkarp'));
+  await expect(mine).toHaveValue('From my laptop');
+  // A teammate's notes do not reach this notepad.
+  await editAs(browser, 'team', 'Team text');
+  await expect(mine).toHaveValue('From my laptop');
+});
+
+test('a conflict with the person’s own other tab names them, not a teammate', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen);
+  await screen.getByRole('tab', 'Me').click();
+  const mine = screen.getByRole('textbox', 'My notes');
+  await mine.fill('first');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+
+  // Saved from the person's laptop while this tab did not hear of it yet.
+  await browser.evaluate(() => (window as unknown as MockNotes).__yuliusMock.editNote('me:usr_1', 'from my laptop', 'mkarp', { announce: false }));
+  await mine.fill('from this tab');
+  const banner = screen.getByRole('alert');
+  await expect(banner).toHaveText(/You changed these notes in another tab or on another device/);
+  await expect(banner).not.toHaveText(/mkarp/);
+  expect(await axeViolations(browser)).toEqual([]);
+  await banner.getByRole('button', 'Use that version').click();
+  await expect(mine).toHaveValue('from my laptop');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+});
+
+test('a conflict on Me is always with the person’s own other tab, even under an older login', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen);
+  await screen.getByRole('tab', 'Me').click();
+  const mine = screen.getByRole('textbox', 'My notes');
+  await mine.fill('first');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+
+  // Saved before the person renamed their GitHub login: still nobody else's.
+  await browser.evaluate(() => (window as unknown as MockNotes).__yuliusMock.editNote('me:usr_1', 'from before the rename', 'old-login', { announce: false }));
+  await mine.fill('from this tab');
+  const banner = screen.getByRole('alert');
+  await expect(banner).toHaveText(/You changed these notes in another tab or on another device/);
+  await expect(banner.getByRole('button', 'Use that version')).toBeVisible();
 });

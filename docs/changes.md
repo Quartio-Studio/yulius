@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- Notes has a third tab, **Me**, after Team (SPEC-103, ADR-0084, task #88): each person's own
+  notepad, which nobody else can read (`GET/PUT /api/me/notes` always answer the caller's own) and
+  which is the same in every sandbox. It saves and resolves conflicts like the other notepads, and
+  an edit from the person's other tab or device shows up live: the event stream now addresses an
+  event to one person (`Envelope.user`) and drops it for everyone else.
 - `yulius onboard` no longer leaves a "Closed · 0/6 steps" onboarding task behind (SPEC-097,
   ADR-0077). Linking a repository creates no task: the onboarding task is created when someone
   clicks Start onboarding in the browser, or when a new task has to wait after it. Sandboxes
