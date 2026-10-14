@@ -507,3 +507,37 @@ test('a tab closed while another is dragged keeps the drag going, and the order 
   await browser.mouse.up();
   await expect.poll(() => editorTabs(browser)).toEqual(['src/api/checkout.rs', 'AGENTS.md']);
 });
+
+// #394: Monaco's language chunks touch its services as they run, and the chunk that registers the
+// code lens, inlay hint, suggestion memory and action widget services does not come before them by
+// itself: when it arrived last (a slow machine), every later editor threw "depends on UNKNOWN
+// service ICodeLensCache". Here it arrives late on purpose: the editor still opens cleanly.
+test('Monaco’s services chunk arriving last still gives a clean editor (#394)', async ({ app, browser, screen }) => {
+  let contributionAsked: () => void = () => {};
+  const asked = new Promise<void>((resolve) => { contributionAsked = resolve; });
+  await browser.route(/\/vs\/monaco\.contribution-[^/]+\.js$/, async (route) => { contributionAsked(); await route.continue(); });
+  await browser.route(/\/vs\/toggleHighContrast-[^/]+\.js$/, async (route) => {
+    // Held until a language chunk is asked for, or for at most half a second when none can be yet.
+    await Promise.race([asked, new Promise((resolve) => setTimeout(resolve, 500))]);
+    await route.continue();
+  });
+  await browser.addInitScript(() => {
+    const order: string[] = [];
+    (window as unknown as { __chunks: string[] }).__chunks = order;
+    document.addEventListener('load', (event) => {
+      const src = (event.target as HTMLScriptElement).src ?? '';
+      const chunk = /\/vs\/(toggleHighContrast|monaco\.contribution)-/.exec(src);
+      if (chunk) order.push(chunk[1]);
+    }, true);
+  });
+  await app.open(mock('/s/studio/t/12'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  await screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md').click();
+  await expect.poll(() => inEditor<number>(browser, 'me', 'return ed.getModel()?.getValue().length ?? 0')).toBeGreaterThan(0);
+  // The services chunk ran before any language chunk, and the contributions that need it start.
+  const chunks = await browser.evaluate(() => (window as unknown as { __chunks: string[] }).__chunks);
+  expect(chunks[0]).toBe('toggleHighContrast');
+  await inEditor(browser, 'me', 'ed.focus(); ed.trigger("t", "editor.action.triggerSuggest", {})');
+  await expect.poll(() => browser.evaluate(() => Boolean(document.querySelector('.ed-host .suggest-widget')))).toBe(true);
+});

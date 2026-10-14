@@ -208,3 +208,13 @@ sequenceDiagram
     boxes (it could pass on the old ones; under load it once failed the other way). Kept: Escape
     and press-without-move are covered through Notes' tests of the same `tabdrag.js`; suspend
     and resume across sandboxes reuse `syncPresence` with `suspended` (not separately tested).
+- Final review (approve `26bd661e`); its minors (a redraw held during a click in Firefox, test
+  gaps for the nit fixes) are #477, decided after three rounds rather than a fourth.
+- The two-person test failed twice in full, loaded e2e runs. The second time the page logged
+  Monaco's "depends on UNKNOWN service ICodeLensCache" (#394, older than this task, first seen in
+  `terminal.e2e.ts`). Cause: the vendored Monaco's language chunks use its services as they run,
+  while the five services named in the errors are registered by another chunk
+  (`toggleHighContrast-*.js`) that they do not wait for; when it arrived last, Monaco had already
+  collected its services without them. The editor now loads that chunk before `editor.main`
+  (e2e "Monaco's services chunk arriving last…" holds it back on purpose, failing before). Fixed
+  here because this task's tests open Monaco more often; it closes #394.

@@ -16,7 +16,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   only to the sandbox's writers, with the notepads' rate limit. The Editor's file tabs move by
   drag, Alt+← / Alt+→ or the tab's menu. Notes and the Editor now share the presence loop, the
   drawing and the tab drag; and a tool replaced by another in the panel is hidden like a closed
-  panel, so its presence leaves and the browser stream stops.
+  panel, so its presence leaves and the browser stream stops. The Editor no longer fails now and
+  then on a slow machine with "depends on UNKNOWN service ICodeLensCache" (#394): Monaco's chunk
+  that registers those services is loaded before its language chunks.
 - Agents scan every change with Vidoc before delivery (SPEC-128, ADR-0104, task #109).
   `scripts/dev security` runs the Vidoc CLI pinned in `tools/vidoc` on the current branch. Vidoc
   scans the files that the branch changed since `dev`, and the command fails when the branch has

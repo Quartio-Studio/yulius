@@ -34,7 +34,9 @@ Monaco (the built-in editor, SPEC-001 EDT-001): download `monaco-editor@<v>` fro
 registry, verify the tarball's `dist.integrity`, copy `package/min/vs` to `monaco/vs`,
 delete `monaco/vs/language` and `monaco/vs/nls/lang`, then check in headless Chrome that the
 editor loads, colors JavaScript and suggests `console.` members (the TypeScript worker) with no
-failed requests.
+failed requests. After an update, set `MONACO_SERVICES` in `editorview.js` to the chunk
+that registers `ICodeLensCache` (`grep -l ICodeLensCache vs/*.js`): it is loaded before
+`editor.main` so the language chunks never run before it (#394; `editor.e2e.ts` delays it on purpose).
 
 Shaders (the brand's WebGPU effects, brandfx.js, SPEC-001 UI-041): `npm pack shaders@<v>`, then copy
 the module graph of `dist/js/createShader.js` (follow its relative imports) to `shaders/`, keeping

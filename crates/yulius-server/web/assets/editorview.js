@@ -27,6 +27,13 @@ import { mapPosition, textEdit } from './textlayer.js';
 import { createTabDrag, movedBy } from './tabdrag.js';
 
 const MONACO_BASE = '/assets/vendor/monaco/vs';
+/**
+ * The vendored Monaco's chunk that registers the code lens, inlay hint, suggestion memory and
+ * action widget services. Its language chunks use the services as they run without waiting for
+ * it, so it is loaded first: arriving last, it left every editor short of those services (#394).
+ * A new Monaco build names it anew (assets/vendor/README.md).
+ */
+const MONACO_SERVICES = 'vs/toggleHighContrast-DuqAmExZ';
 const LANGUAGE_SERVICES = new Set(['javascript', 'typescript', 'json', 'css', 'scss', 'less', 'html']);
 /** Word wrap preference per user in this browser: `true` wraps long lines (default off). */
 const WRAP_KEY = 'yulius.editorWordWrap';
@@ -74,9 +81,11 @@ function loadMonaco() {
     script.src = `${MONACO_BASE}/loader.js`;
     script.onload = () => {
       window.require.config({ paths: { vs: MONACO_BASE } });
-      window.require(['vs/editor/editor.main'], () => {
-        setupMonaco(window.monaco);
-        resolve(window.monaco);
+      window.require([MONACO_SERVICES], () => {
+        window.require(['vs/editor/editor.main'], () => {
+          setupMonaco(window.monaco);
+          resolve(window.monaco);
+        }, (error) => reject(error));
       }, (error) => reject(error));
     };
     script.onerror = () => reject(new Error('The editor couldn’t be loaded.'));
