@@ -1,11 +1,11 @@
 ---
 yulius-task: c44bfbbc-18b4-4207-b597-fe54df6f5e9f
-status: in-progress
+status: done
 ---
 
 # SPEC-098: the terminal's mouse goes to the program, with no mouse chip
 
-Status: in progress
+Status: done
 Date: 2026-10-14
 Owner: task #83
 Scope authorization: the person's request (task #83), with a screenshot of the terminal's
@@ -57,11 +57,11 @@ xterm, iTerm2 and GNOME Terminal.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] A writer's mouse goes to the program by default, without the chip
-- [ ] Read-only viewers and the margin beside another viewer's grid keep the mouse off the program
-- [ ] Product spec, ADR-0079 and the docs say the mouse is the program's
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] A writer's mouse goes to the program by default, without the chip
+- [x] Read-only viewers and the margin beside another viewer's grid keep the mouse off the program
+- [x] Product spec, ADR-0079 and the docs say the mouse is the program's
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -104,3 +104,23 @@ xterm, iTerm2 and GNOME Terminal.
 ## Open questions
 
 None.
+
+## Evidence
+
+- `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run`: 282 passed, 1 skipped (42 files), on the final
+  head. The new and rewritten tests failed before their change: the chip existed and a plain drag
+  selected text; a margin press was reported as `ESC[<0;1;18M`; pinch and swipe were cancelled
+  (`[false, false]`); a plain right-click was not cancelled; a click while disconnected showed
+  "Not connected"; with the write-access switch removed, the hand-over test timed out.
+- `scripts/dev ci` (after `python3 scripts/bootstrap.py`): exit 0. Repository check, script unit
+  tests, cargo check, fmt, clippy `-D warnings`, nextest (1520 passed, 16 skipped), doctests, cargo
+  deny, cargo shear and cargo doc all passed. It ran after merging `origin/dev`; later commits
+  touch only JS, e2e tests and docs, and `python3 scripts/check_repository.py` passed again on the
+  final head.
+- Independent review in a fresh session (`om-code-review`). Round 1 asked for changes: pinch-zoom
+  was cancelled by xterm (major), there were four minor findings and some nits. All were fixed
+  test-first in bc2e1454, and the link click reaching the program was accepted in ADR-0079.
+  Round 2 approved.
+- Not run here: `live_ui_browser.rs` and `live_ui_terminal.rs` (opt-in, they need
+  `YULIUS_LIVE_CHROME`). Real Claude Code was not tried in the browser; the mock reproduces its
+  mouse modes (1000 + 1006, alternate screen).
