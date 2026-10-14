@@ -512,6 +512,13 @@ impl App {
                 "the tab is not showing a web page".into(),
             ));
         };
+        if record.hosts.is_empty() {
+            return Err(AppError::Forbidden(format!(
+                "{} is bound to no host yet: find the service's sign-in host from its description \
+                 and ask for it with secret_request_hosts; a person allows it",
+                record.name
+            )));
+        }
         if !bound_to(&record, &host, port) {
             return Err(AppError::Forbidden(format!(
                 "{} may only be typed into pages of {}; this tab is on {host}",

@@ -182,9 +182,10 @@ pub struct AgentSecretInput {
     /// What it is for.
     #[serde(default)]
     pub description: Option<String>,
-    /// Bound hosts (at least one).
+    /// Bound hosts; none by default: agents propose them and a person allows them (SPEC-121).
+    #[serde(default)]
     pub hosts: Vec<String>,
-    /// `none`, `bearer` (default), `basic` or `header`.
+    /// `none` (default: agents send the placeholder themselves), `bearer`, `basic` or `header`.
     #[serde(default)]
     pub injection: Option<String>,
     /// Header for `header`.

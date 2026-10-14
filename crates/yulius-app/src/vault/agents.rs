@@ -75,7 +75,7 @@ struct Meta {
 fn meta(name: &str, hosts: &[String], kind: Option<&str>, header: Option<&str>) -> AppResult<Meta> {
     let name = SecretName::parse(name).map_err(invalid)?;
     let hosts = parse_hosts(hosts).map_err(invalid)?;
-    let injection = Injection::parse(kind.unwrap_or("bearer"), header).map_err(invalid)?;
+    let injection = Injection::parse(kind.unwrap_or("none"), header).map_err(invalid)?;
     Ok(Meta {
         name: name.as_str().to_owned(),
         hosts: hosts.iter().map(ToString::to_string).collect(),

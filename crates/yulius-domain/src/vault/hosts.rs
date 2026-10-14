@@ -105,10 +105,11 @@ impl std::fmt::Display for HostPattern {
     }
 }
 
-/// Parses a list of bindings (1..=[`MAX_HOSTS`], duplicates removed).
+/// Parses a list of bindings (at most [`MAX_HOSTS`], duplicates removed). An empty list binds a
+/// secret to nowhere: agents propose hosts and a person allows them (SPEC-121).
 ///
 /// # Errors
-/// [`VaultError::Host`] for an empty or too long list or a bad entry.
+/// [`VaultError::Host`] for a too long list or a bad entry.
 pub fn parse_hosts(items: &[String]) -> Result<Vec<HostPattern>, VaultError> {
     let mut out: Vec<HostPattern> = Vec::new();
     for item in items.iter().filter(|i| !i.trim().is_empty()) {
@@ -116,11 +117,6 @@ pub fn parse_hosts(items: &[String]) -> Result<Vec<HostPattern>, VaultError> {
         if !out.contains(&pattern) {
             out.push(pattern);
         }
-    }
-    if out.is_empty() {
-        return Err(VaultError::Host(
-            "bind the secret to at least one host: the only destinations it is sent to".into(),
-        ));
     }
     if out.len() > MAX_HOSTS {
         return Err(VaultError::Host(format!("at most {MAX_HOSTS} hosts")));
@@ -178,8 +174,8 @@ mod tests {
 
     #[test]
     fn lists_need_one_to_sixteen_distinct_hosts() -> Result<(), VaultError> {
-        assert!(parse_hosts(&[]).is_err());
-        assert!(parse_hosts(&[" ".into()]).is_err());
+        assert!(parse_hosts(&[])?.is_empty(), "bound to nowhere yet");
+        assert!(parse_hosts(&[" ".into()])?.is_empty());
         let list = parse_hosts(&["a.com".into(), "A.com".into(), "b.com".into()])?;
         assert_eq!(list.len(), 2);
         let many: Vec<String> = (0..17).map(|i| format!("h{i}.example.com")).collect();

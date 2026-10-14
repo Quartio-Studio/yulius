@@ -1169,7 +1169,7 @@ async fn older_agent_secrets_reveal_their_user_name_and_seed() -> TestResult {
 async fn agent_secrets_follow_sandbox_access_and_reveal_only_to_managers() -> TestResult {
     let w = world().await?;
     let stripe = json!({"name": "STRIPE_KEY", "description": "test-mode key",
-        "hosts": ["api.stripe.test"], "value": STRIPE});
+        "hosts": ["api.stripe.test"], "injection": "bearer", "value": STRIPE});
     let created = add_agent_secret(&w, &w.writer, "s1", stripe.clone()).await?;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
     assert_eq!(created.body["placeholder"], "yulius-secret-STRIPE_KEY");
@@ -1265,10 +1265,6 @@ async fn agent_secrets_follow_sandbox_access_and_reveal_only_to_managers() -> Te
         ),
         (
             json!({"name": "PATH", "hosts": ["a.test"], "value": "12345678"}),
-            StatusCode::UNPROCESSABLE_ENTITY,
-        ),
-        (
-            json!({"name": "NO_HOST", "hosts": [], "value": "12345678"}),
             StatusCode::UNPROCESSABLE_ENTITY,
         ),
         (
@@ -1402,11 +1398,11 @@ fn header<'a>(decision: &'a EgressDecision, name: &str) -> Option<&'a str> {
 async fn the_egress_policy_adds_secrets_for_bound_hosts_only() -> TestResult {
     let w = world().await?;
     for body in [
-        json!({"name": "STRIPE_KEY", "hosts": ["api.stripe.test"], "value": STRIPE}),
+        json!({"name": "STRIPE_KEY", "hosts": ["api.stripe.test"], "injection": "bearer", "value": STRIPE}),
         json!({"name": "SVC_PASS", "hosts": ["svc.test"], "injection": "basic", "username": "bob", "value": "svc-password-42"}),
         json!({"name": "HDR_KEY", "hosts": ["*.hdr.test"], "injection": "header", "header_name": "X-Api-Key", "value": "hdr-value-12345"}),
-        json!({"name": "TWIN_A", "hosts": ["twin.test"], "value": "twin-a-value-1"}),
-        json!({"name": "TWIN_B", "hosts": ["twin.test"], "value": "twin-b-value-2"}),
+        json!({"name": "TWIN_A", "hosts": ["twin.test"], "injection": "bearer", "value": "twin-a-value-1"}),
+        json!({"name": "TWIN_B", "hosts": ["twin.test"], "injection": "bearer", "value": "twin-b-value-2"}),
     ] {
         let created = add_agent_secret(&w, &w.writer, "s1", body).await?;
         assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
@@ -1907,5 +1903,65 @@ async fn the_proxy_shares_the_internal_listener() -> TestResult {
     )
     .await?;
     assert!(health.starts_with("HTTP/1.1 200"), "{health}");
+    Ok(())
+}
+
+/// SPEC-121 ASH-002, AC-ASH-2: a secret added with a name, a value and a description only is
+/// bound to no host and has no injection: the proxy sends it nowhere until hosts are allowed.
+#[tokio::test]
+async fn a_secret_without_hosts_is_sent_nowhere() -> TestResult {
+    let w = world().await?;
+    let created = add_agent_secret(
+        &w,
+        &w.writer,
+        "s1",
+        json!({"name": "VIDOC_API_KEY", "description": "API key for Vidoc", "value": "vidoc-key-123456"}),
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(created.body["hosts"], json!([]));
+    assert_eq!(created.body["injection"], "none");
+    let app: Arc<dyn EgressPolicy> = w.h.app.clone();
+    let s1 = app.egress_client(TOKEN_S1).await.ok_or("s1 client")?;
+    for host in ["api.vidoc.test", "vidoc.test", "example.com"] {
+        assert!(!app.egress_intercepts(&s1, host, 443).await, "{host}");
+    }
+    let decision = app
+        .egress_apply(
+            &s1,
+            request(
+                "api.vidoc.test",
+                "/v1?key=yulius-secret-VIDOC_API_KEY",
+                &[("Authorization", "Bearer yulius-secret-VIDOC_API_KEY")],
+            ),
+        )
+        .await;
+    assert_eq!(
+        header(&decision, "Authorization"),
+        Some("Bearer yulius-secret-VIDOC_API_KEY"),
+        "the placeholder stays: the host is not bound"
+    );
+    // People may still bind (and unbind) hosts directly.
+    let id = created.body["id"].as_str().ok_or("id")?;
+    let bound = call(
+        &w.h.router,
+        Method::PATCH,
+        &format!("/api/agent-secrets/{id}"),
+        Some(json!({"hosts": ["api.vidoc.test"]})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(bound.status, StatusCode::OK, "{}", bound.body);
+    assert!(app.egress_intercepts(&s1, "api.vidoc.test", 443).await);
+    let unbound = call(
+        &w.h.router,
+        Method::PATCH,
+        &format!("/api/agent-secrets/{id}"),
+        Some(json!({"hosts": []})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(unbound.status, StatusCode::OK, "{}", unbound.body);
+    assert!(!app.egress_intercepts(&s1, "api.vidoc.test", 443).await);
     Ok(())
 }
