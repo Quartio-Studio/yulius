@@ -264,7 +264,35 @@ test('a file opened just before a sandbox switch shows when the sandbox is back'
   await tab(screen, 'product').click();
   await expect(heading(screen)).toHaveText('New task');
   await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+  // The answer lands while studio is in the background: its tab exists, hidden, with no model.
+  await expect.poll(() => browser.evaluate(() => document.querySelectorAll('.ed-tab').length)).toBe(1);
   await tab(screen, 'studio').click();
   await expect(screen.getByRole('tab', /^README\.md/)).toHaveAttribute('aria-selected', 'true');
   await expect(screen.getByRole('textbox', 'Editor content')).toBeAttached();
+});
+
+// Review round 2: a filter kept in the address and the page in view agree after a plain link.
+test('the link to the page in view resets a filter kept in the address', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/dashboard'));
+  await screen.getByRole('radiogroup', 'Date range').getByText('7 days').click();
+  await expect(browser).toHaveURL(/#\/s\/studio\/dashboard\?days=7$/);
+  await screen.getByRole('navigation', 'Sandbox').getByRole('link', 'Dashboard').click();
+  await expect(browser).toHaveURL(/#\/s\/studio\/dashboard$/);
+  await expect(screen.getByRole('radiogroup', 'Date range').getByRole('radio', '30 days')).toBeChecked();
+});
+
+test('leaving a new skill unsaved for another sandbox goes where that sandbox was left', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/product/git'));
+  await expect(heading(screen)).toHaveText('Git');
+  await browser.evaluate(() => { window.location.hash = '#/s/studio/skills/new'; });
+  await screen.getByRole('textbox', /name/i).first().fill('half-written');
+  await tab(screen, 'product').click();
+  await screen.getByRole('dialog', 'Leave without creating?').getByRole('button', 'Leave').click();
+  await expect(browser).toHaveURL(/#\/s\/product\/git$/);
+});
+
+test('the Git back link of a task’s changes returns to Git', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/git/t/12'));
+  await browser.locator('.gt-back').click();
+  await expect(browser).toHaveURL(/#\/s\/studio\/git$/);
 });
