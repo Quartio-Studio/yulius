@@ -1,11 +1,11 @@
 ---
 yulius-task: 251c8280-fdce-43f8-b318-8dc2dcf93b63
-status: in-progress
+status: done
 ---
 
 # SPEC-119: The new-task composer's controls give way in rows that read as one layout
 
-Status: in progress
+Status: implemented
 Date: 2026-10-14
 Owner: Yulius task #104
 Scope authorization: task #104 ("This looks weird when squeezed. Fix.", with a screenshot of the
@@ -52,9 +52,9 @@ scoped to `.composer-tools`.
 
 ## Requirements
 
-- CMP-SQ-1: When the prompt box is at least 740 px wide, all the composer's controls sit on one
+- CMP-SQ-1: When the prompt box's content is at least 740 px wide (a box of 742 px with its border), all the composer's controls sit on one
   row as before. Long chip labels truncate with an ellipsis instead of wrapping the row.
-- CMP-SQ-2: When the prompt box is narrower than 740 px, Preview, Model, Effort and Start take a
+- CMP-SQ-2: When the prompt box's content is narrower than 740 px, Preview, Model, Effort and Start take a
   row of their own, the last one. It starts at the same left edge as the first row, and Start ends
   it at the right. The choices (mode, workflow, run after) wrap above it from the left.
 - CMP-SQ-3: No control extends past the prompt box, and no two controls overlap. This holds down
@@ -67,7 +67,7 @@ scoped to `.composer-tools`.
 - [x] Regression test in `e2e/tests/responsive.e2e.ts` that fails on the current CSS.
 - [x] Make the prompt box a size container and lay out its controls in two deliberate rows below
   740 px.
-- [ ] Gates: the e2e suite and `scripts/dev ci`. Independent review.
+- [x] Gates: the e2e suite and `scripts/dev ci`. Independent review.
 
 ## Acceptance criteria
 
@@ -79,7 +79,7 @@ scoped to `.composer-tools`.
 
 `e2e/tests/responsive.e2e.ts`: "the new-task composer squeezed keeps its controls in the box, the
 last row starting at the left". It covers the following (CMP-SQ-1 to 3):
-- One row in a wide window.
+- One row in a wide window, also with every chip label long, the labels truncating.
 - At 900, 768, 600 and 390 px windows, and beside the Shell panel at 1920, 1440, 1280 and 1024 px:
   - every control is inside the box,
   - no two controls overlap,
@@ -120,3 +120,12 @@ last row starting at the left". It covers the following (CMP-SQ-1 to 3):
 - After merging `origin/dev` (`17b2fefa`): `responsive`, `new-task`, `places`, `menus`, `drafts`,
   `phone`, `intake`, `onboarding`, `prepared` and `supertask` give 114 passed.
 - `scripts/dev ci`: exit 0, with nextest at 1604 passed and 16 skipped.
+- Independent review (fresh session, `om-code-review`) of `3eaba0ba`: APPROVE.
+  - The reviewer measured box widths from 260 to 800 px, with both default and 240 px labels. No
+    control left the box and none overlapped.
+  - Minor finding: no test covered long labels on one row. Fixed test-first. The new check fails
+    with the chips' `min-width: 0` removed (Preview, Model, Effort and Start leave the box) and
+    passes with it (`responsive.e2e.ts`: 22 passed).
+  - Nit: 740 px is the box's content width. The wording is fixed.
+  - Nit, left as is: chips spill 2 px past their own border in a worst case with every label at
+    240 px and a 742 to 745 px box. Realistic labels do not trigger it.

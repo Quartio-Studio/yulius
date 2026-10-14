@@ -262,6 +262,11 @@ test('the new-task composer squeezed keeps its controls in the box, the last row
   // Wide, every control is on one row.
   await expect.poll(async () => (await composerControls(browser)).rows).toBe(1);
   const squeezed = { outside: [], overlaps: 0, lastRowAligned: true, startEndsLastRow: true };
+  // A long label (a workflow or a task to run after) truncates and keeps the row whole.
+  await browser.evaluate(() => {
+    for (const label of document.querySelectorAll('.composer-tools .chip-label')) label.textContent = 'After #123 Migrate the billing service';
+  });
+  await expect.poll(() => composerControls(browser)).toEqual({ rows: 1, ...squeezed });
   const check = async () => {
     await expect.poll(async () => {
       const { rows: _rows, ...rest } = await composerControls(browser);
