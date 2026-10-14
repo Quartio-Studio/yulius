@@ -182,6 +182,16 @@ test('files dropped or pasted on the new-task prompt sit in its text, at the car
   await expect(browser.locator('dialog.modal')).toHaveCount(0);
   await screen.getByRole('button', 'Preview').click();
   await expect(browser.locator('.composer-prompt .pi-atom')).toHaveCount(2);
+  // ⌘/Ctrl+Enter still starts the task from a file's button in the Preview.
+  await screen.getByRole('button', 'Preview').click();
+  await screen.getByRole('button', 'Open screen-shot.png').press('ControlOrMeta+Enter');
+  await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
+  await browser.locator('.btn-newtask').click();
+  await installDrop(browser);
+  const prompt2 = screen.getByRole('textbox', 'Task prompt');
+  await prompt2.fill('Fix the layout in ');
+  await browser.evaluate(() => (window as unknown as Mocked).__e2eDrop!('.composer-box', [['screen shot.png', 'png', 'image/png'], ['shot2.png', 'png', 'image/png']], ['drop']));
+  await expect(browser.locator('.composer-prompt .pi-atom:not(.pi-pending)')).toHaveCount(2);
   // Backspace takes the file before the caret, whole.
   await prompt.press('End');
   await prompt.press('Backspace');

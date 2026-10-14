@@ -855,7 +855,7 @@ export function mountComposer(ctx, sandbox) {
   previewEl.addEventListener('dblclick', () => setPreview(false));
   previewEl.addEventListener('keydown', (event) => {
     // Enter on a file's button opens the file; only the Preview's own Enter goes back.
-    if (event.key === 'Enter' && event.target !== previewEl) return;
+    if (event.key === 'Enter' && !event.metaKey && !event.ctrlKey && event.target !== previewEl) return;
     if (event.key === 'Escape' || (event.key === 'Enter' && !event.metaKey && !event.ctrlKey)) { event.preventDefault(); setPreview(false); }
     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); start(); }
   });

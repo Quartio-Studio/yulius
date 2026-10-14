@@ -124,9 +124,12 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
     return Boolean(end) && end.nodeName === 'BR' && nodes.every((n) => (n.nodeType === 3 && !n.data.includes(ATOM)) || (n.nodeType === 1 && isAtom(n)));
   }
 
-  /** Draws the model; a drag from this box under way is forgotten (its offsets would be stale). */
-  function draw(plain, atoms) {
-    if (moving) dragDone();
+  /**
+   * Draws the model; a drag from this box under way is forgotten unless the text stays the same
+   * (`same`): its offsets would be stale.
+   */
+  function draw(plain, atoms, { same = false } = {}) {
+    if (moving && !same) dragDone();
     const nodes = [];
     plain.split(ATOM).forEach((text, i) => {
       if (i > 0) nodes.push(atomEl(atoms[i - 1]));
@@ -294,7 +297,9 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
     if (!editable()) { event.preventDefault(); return; }
     const type = event.inputType;
     // Typing stops at the length cap, as a textarea's maxlength does (over a selection it replaces).
-    if (type.startsWith('insert') && type !== 'insertParagraph' && type !== 'insertLineBreak' && event.data) {
+    // A composition (IME, Android) cannot be stopped, so it is not counted; the server's prompt
+    // limit still holds.
+    if (type.startsWith('insert') && type !== 'insertParagraph' && type !== 'insertLineBreak' && type !== 'insertCompositionText' && event.data) {
       const [start, end] = selection();
       if (scan().plain.length - (end - start) + event.data.length > maxLength) { event.preventDefault(); return; }
     }
@@ -591,8 +596,9 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
           replace(plain.length, plain.length, ATOM.repeat(files.length), files, null, { files: true });
         },
         cancel() {
-          if (!swapPending(id, [])) return;
-          // The placeholder's step is now a copy of the one before it: not a step to undo.
+          swapPending(id, []);
+          // Taken out of every step (also when the box no longer held it), the placeholder's step is
+          // now a copy of the one before it: not a step to undo.
           const same = (a, b) => a.plain === b.plain && sameAtoms(a.atoms, b.atoms);
           const states = history.states;
           const kept = states.filter((state, i) => i === 0 || !same(state, states[i - 1]));
@@ -615,7 +621,7 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
       const focused = document.activeElement === el;
       const [start, end] = focused ? selection() : [0, 0];
       const { plain, atoms } = scan();
-      draw(plain, atoms);
+      draw(plain, atoms, { same: true });
       if (focused) select(start, end);
     },
   };

@@ -243,3 +243,94 @@ test('at the length cap typing stops, and a pasted image still lands', async ({ 
   await expect(browser.locator('.composer-prompt .pi-image img')).toHaveCount(1);
   await expect(browser.locator('.composer-prompt .pi-pending')).toHaveCount(0);
 });
+
+type Holding = Window & { __yuliusMock: { holdUpload?: Promise<void>; failUpload?: boolean; tasks: unknown[] }; __release?: () => void; __fail?: () => void };
+
+/** Holds the next uploads until `__release()`, or fails them with `__fail()`. */
+async function holdUploads(browser: Browser): Promise<void> {
+  await browser.evaluate(() => {
+    const w = window as unknown as Holding;
+    w.__yuliusMock.failUpload = false;
+    w.__yuliusMock.holdUpload = new Promise<void>((resolve) => {
+      w.__release = resolve;
+      w.__fail = () => { w.__yuliusMock.failUpload = true; resolve(); };
+    });
+  });
+}
+
+// SPEC-124 review round 3: a failed upload leaves no undo step behind.
+test('a failed upload leaves no empty undo step, typed text around it included', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await screen.getByRole('textbox', 'Task prompt').click();
+  await browser.keyboard.type('alpha beta');
+  await holdUploads(browser);
+  await pasteImage(browser, 'lost.png');
+  await expect(browser.locator('.composer-prompt .pi-pending')).toHaveCount(1);
+  await browser.evaluate(() => (window as unknown as Holding).__fail!());
+  await expect(browser.locator('.composer-prompt .pi-pending')).toHaveCount(0);
+  await browser.keyboard.press('ControlOrMeta+z');
+  await expect.poll(() => promptText(browser)).not.toBe('alpha beta');
+
+  await screen.getByRole('textbox', 'Task prompt').fill('');
+  await screen.getByRole('textbox', 'Task prompt').click();
+  await browser.keyboard.type('One');
+  await holdUploads(browser);
+  await pasteImage(browser, 'lost.png');
+  await expect(browser.locator('.composer-prompt .pi-pending')).toHaveCount(1);
+  await browser.keyboard.type(' more');
+  await browser.evaluate(() => (window as unknown as Holding).__fail!());
+  await expect(browser.locator('.composer-prompt .pi-pending')).toHaveCount(0);
+  expect(await promptText(browser)).toBe('One more');
+  // Every undo changes the text; redo brings it all back.
+  let before = await promptText(browser);
+  for (let i = 0; i < 3 && before; i += 1) {
+    await browser.keyboard.press('ControlOrMeta+z');
+    const now = await promptText(browser);
+    expect(now).not.toBe(before);
+    before = now;
+  }
+  for (let i = 0; i < 3; i += 1) await browser.keyboard.press('ControlOrMeta+Shift+z');
+  expect(await promptText(browser)).toBe('One more');
+});
+
+// SPEC-124 review round 3: a drag that ended elsewhere, or whose text was redrawn, is no move.
+test('a drag that ended off the prompt, or outlived a redraw, moves no stale range', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await screen.getByRole('textbox', 'Task prompt').fill('alpha beta gamma');
+  const dragOut = (redraw: boolean) => browser.evaluate((mid) => {
+    const input = document.querySelector('.composer-prompt')!;
+    const text = input.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, 5);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    const data = new DataTransfer();
+    text.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: data }));
+    if (mid) {
+      // The text changes under the drag (an upload ending): its saved range no longer holds.
+      const caret = document.createRange();
+      caret.setStart(text, text.data.length);
+      window.getSelection()!.removeAllRanges();
+      window.getSelection()!.addRange(caret);
+      input.dispatchEvent(new InputEvent('beforeinput', { inputType: 'insertParagraph', bubbles: true, cancelable: true }));
+    } else {
+      document.body.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: data }));
+    }
+    const last = input.lastChild!.previousSibling as Text;
+    const end = document.createRange();
+    end.setStart(last, last.data.length - 1);
+    end.setEnd(last, last.data.length);
+    const box = end.getBoundingClientRect();
+    const outside = new DataTransfer();
+    outside.setData('text/plain', 'X');
+    const at = { clientX: box.right, clientY: box.top + box.height / 2 };
+    input.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: outside, ...at }));
+    input.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: outside, ...at }));
+  }, redraw);
+  await dragOut(false);
+  // The drop brought text from outside: it is inserted, nothing of the old selection moved.
+  expect(await promptText(browser)).toBe('alpha beta gammaX');
+  await dragOut(true);
+  expect((await promptText(browser)).replace(/\n/g, '')).toBe('alpha beta gammaXX');
+});

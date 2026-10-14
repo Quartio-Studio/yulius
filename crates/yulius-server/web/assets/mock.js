@@ -1845,8 +1845,10 @@ route('POST', `/api/tasks/${ID}/attachments`, ({ db, p, query, body }) => {
 });
 route('POST', `/api/sandboxes/${ID}/attachments`, async ({ db, p, query, body }) => {
   need(sandboxOf(db, p[0]), 'write');
-  // A test can hold the answer (`__yuliusMock.holdUpload = promise`) to leave the composer meanwhile.
+  // A test can hold the answer (`__yuliusMock.holdUpload = promise`) to leave the composer meanwhile,
+  // and make it fail then (`__yuliusMock.failUpload = true`).
   if (db.holdUpload) await db.holdUpload;
+  if (db.failUpload) fail(500, 'internal', 'The upload failed on purpose.');
   return storeAttachment(db, p[0], `drafts/${db.me.user.id}`, query, body);
 });
 route('POST', `/api/sandboxes/${ID}/shells/${ID}/attachments`, ({ db, p, query, body }) => {

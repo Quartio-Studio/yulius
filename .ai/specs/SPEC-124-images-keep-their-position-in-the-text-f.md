@@ -182,12 +182,20 @@ Run on this branch (Linux, Chromium 153 headless, Claude Code behaviour through 
   forged file markers. Recorded in Decisions instead of fixed: the older-prompt wording and the
   quadratic parse bound. Opening a file is reachable from the Preview by keyboard (INL-003).
 - Review round 2 (fresh session) approved `6640b84e` (no blocker or major). Its minors were fixed
-  test-first after merging dev: Enter on a Preview file now opens it (it closed the Preview),
-  a drag's saved range is dropped on any redraw and when the drag ends anywhere, a failed upload
-  leaves no empty undo step, typing stops at the length cap while an uploaded file still lands,
-  forged markers and the cap have e2e tests, and the `first_message` waits check that the image
-  comes after the text.
-- Review round 3 (fresh session) confirms the final head; `delivery_merge` names that commit.
+  after merging dev (`60efc265`): Enter on a Preview file opens it (it closed the Preview), a
+  drag's saved range is dropped when the text changes and when the drag ends anywhere, a failed
+  upload leaves no empty undo step, typing stops at the length cap while an uploaded file still
+  lands, and the `first_message` waits check that the image comes after the text.
+- Review round 3 (fresh session) requested changes on `60efc265`. The stale-drag and failed-upload
+  fixes had no regression test. The new Enter guard also swallowed ⌘/Ctrl+Enter on a Preview file
+  button. Also flagged: `cancel()` kept duplicate steps when the placeholder had been deleted, and
+  a composition was counted against the cap. Fixed with e2e tests that fail on `60efc265`'s parent
+  code (verified by running them against it): `a failed upload leaves no empty undo step…`,
+  `a drag that ended off the prompt, or outlived a redraw…`, `at the length cap…` and ⌘/Ctrl+Enter
+  from a Preview file in `filedrop.e2e.ts`. A thumbnail redraw no longer cancels a drag.
+- Past three rounds the decision recorded here is to take one more confirmation round, narrowed to
+  the round-3 delta: every finding left was concrete and is fixed with a regression test, and
+  `delivery_merge` needs an approval of the exact head.
 
 Not tested here: a real Claude Code TUI receiving an interleaved typed message (the fake agent
 models Claude Code 2.1.292's paste handling), and browsers other than Chromium.
