@@ -2206,7 +2206,7 @@ button.task-group-head:hover { color: var(--text); }
 .ss-web-thread, .ss-web-silk { fill: var(--session-web); }
 .ss-web-spider { fill: var(--session-dim); }
 .ss-web-stuck :is(.ss-web-thread, .ss-web-silk, .ss-web-spider) { fill: var(--session-web-stuck); }
-.ss-web-mark { height: 0; margin-top: -16px; } /* at the well's top, where the web sticks, above its padding */
+.ss-web-mark { position: absolute; top: 0; } /* at the well's top, out of the flow so the web's float starts at the padding */
 /* Every 8 s the spider climbs 6 pixels up its thread, one pixel a step, hangs there and drops back,
    its legs switching frames on each step (SPEC-101); the thread shortens with it, from its top. */
 .ss-web-spider { animation: ss-spider-climb var(--duration-spider) steps(6, end) infinite; }
