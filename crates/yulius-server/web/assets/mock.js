@@ -1826,18 +1826,44 @@ route('PUT', `/api/automations/${ID}`, ({ db, p, body }) => {
   return out;
 });
 route('DELETE', `/api/automations/${ID}`, ({ db, p }) => { db.automations = db.automations.filter((a) => a.id !== p[0]); return json(204); });
-// Run now: one run, also when disabled; 200 with the AutomationRun.
-route('POST', `/api/automations/${ID}/run`, ({ db, p }) => {
+// Run now: one run, also when disabled; 200 with the AutomationRun. A body is this run's start
+// choice, checked like a save and not stored (SPEC-093); without one, the stored choice.
+route('POST', `/api/automations/${ID}/run`, ({ db, p, body }) => {
   const a = db.automations.find((x) => x.id === p[0]);
   if (!a) fail(404, 'not_found', 'not found');
+  need(sandboxOf(db, a.sandbox), 'write');
+  const stored = { supertask: Boolean(a.supertask), after_task_id: a.after_task_id || null, start_rule: a.start_rule || null };
+  const same = !body || (Boolean(body.supertask) === stored.supertask && (body.after_task_id || null) === stored.after_task_id && (body.start_rule || null) === stored.start_rule);
+  const start = same ? stored : automationStart(db, a.sandbox, body);
   const previous = a.last_run && a.last_run.task_id ? db.tasks.find((t) => t.id === a.last_run.task_id) : null;
   const run = previous && (LIVE.has(previous.status) || previous.status === 'chained')
     ? { scheduled_for: new Date().toISOString(), state: 'skipped_previous_active', task_id: null, error: null }
-    : { scheduled_for: new Date().toISOString(), state: 'task_created', task_id: 'tsk_studio_8', error: null };
+    : { scheduled_for: new Date().toISOString(), state: 'task_created', task_id: automationTask(db, a, start).id, error: null };
   a.last_run = run;
   emit(db, { type: 'automation.run', automation_id: a.id, state: run.state, task_id: run.task_id });
   return run;
 });
+/** The task a run of automation `a` creates, started as `start` says (SPEC-078 AUT-015). */
+function automationTask(db, a, start) {
+  const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === a.sandbox).map((t) => t.number)) + 1;
+  const id = `tsk_${a.sandbox.slice(3)}_${number}`;
+  const rule = start.start_rule;
+  const before = rule ? db.tasks.find((t) => t.sandbox_id === a.sandbox && t.number === Number(rule.match(/#(\d+)/)[1]))
+    : start.after_task_id ? db.tasks.find((t) => t.id === start.after_task_id) : null;
+  const now = new Date().toISOString();
+  const task = {
+    id, sandbox_id: a.sandbox, number, title: a.name, harness: 'claude', status: before ? 'chained' : 'queued', activity: null,
+    branch: `feat/${number}-automation`, origin: 'automation', created_by: { login: db.me.user.login }, created_at: now, updated_at: now,
+    archived: false, account_label: null, stepsList: [], model: 'claude-opus-4', effort: 'default', prompt: a.prompt,
+    delivery: null, mode: 'goal', auto: null, supertask: start.supertask,
+  };
+  db.tasks.push(task);
+  if (before) chainAfter(task, before, rule);
+  else task.heldBy = mockHeldBy(db, task);
+  recount(db);
+  emit(db, { type: 'task.updated', task: summary(task) });
+  return task;
+}
 route('GET', `/api/automations/${ID}/runs`, ({ db, p }) => {
   const a = db.automations.find((x) => x.id === p[0]);
   if (!a) fail(404, 'not_found', 'not found');
