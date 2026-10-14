@@ -8,6 +8,7 @@ use axum::http::HeaderMap;
 use axum::response::Response;
 use serde::Deserialize;
 use tokio::sync::broadcast::error::RecvError;
+use tokio::task::JoinHandle;
 use yulius_app::auth::AuthContext;
 use yulius_app::hub::HubFrame;
 use yulius_app::terminal::TerminalAttach;
@@ -80,6 +81,53 @@ async fn send_state(app: &AppState, socket: &mut WebSocket, attach: &TerminalAtt
     .await
 }
 
+/// What a periodic re-check found.
+enum Recheck {
+    /// Still allowed as before.
+    Fine,
+    /// The session ended (close 4003).
+    SignedOut,
+    /// The viewer cannot see the task any more (close 4003).
+    Revoked,
+    /// The viewer can still watch but no longer type.
+    WriteLost,
+}
+
+/// The periodic re-check, run beside the viewer's loop: it may wait for the database and GitHub,
+/// and output and input keep flowing meanwhile (SPEC-118 KEY-005).
+fn recheck_access(
+    app: &AppState,
+    ctx: &AuthContext,
+    attach: &TerminalAttach,
+) -> JoinHandle<Recheck> {
+    let (app, ctx, task, can_write) = (
+        app.clone(),
+        ctx.clone(),
+        attach.task_id.clone(),
+        attach.can_write,
+    );
+    tokio::spawn(async move {
+        if !app.still_signed_in(&ctx).await {
+            Recheck::SignedOut
+        } else if !app.can_view_task(&ctx, &task).await {
+            Recheck::Revoked
+        } else if can_write && !app.can_work(&ctx, &task).await {
+            Recheck::WriteLost
+        } else {
+            Recheck::Fine
+        }
+    })
+}
+
+/// The pending re-check's verdict; never ready without one.
+async fn verdict(pending: &mut Option<JoinHandle<Recheck>>) -> Recheck {
+    match pending.as_mut() {
+        // A re-check that panicked changes nothing; the next one runs on time.
+        Some(handle) => handle.await.unwrap_or(Recheck::Fine),
+        None => std::future::pending().await,
+    }
+}
+
 async fn pump(app: AppState, ctx: AuthContext, mut attach: TerminalAttach, mut socket: WebSocket) {
     if !send_state(&app, &mut socket, &attach).await {
         app.terminal_leave(&attach).await;
@@ -99,6 +147,7 @@ async fn pump(app: AppState, ctx: AuthContext, mut attach: TerminalAttach, mut s
     let mut recheck =
         tokio::time::interval(Duration::from_millis(app.config.viewer_recheck_ms.max(100)));
     recheck.tick().await;
+    let mut pending: Option<JoinHandle<Recheck>> = None;
     loop {
         tokio::select! {
             frame = attach.subscription.rx.recv() => {
@@ -155,23 +204,36 @@ async fn pump(app: AppState, ctx: AuthContext, mut attach: TerminalAttach, mut s
                     break;
                 }
             }
-            _ = recheck.tick() => {
-                if !app.still_signed_in(&ctx).await {
-                    let _ = socket.send(Message::Close(Some(CloseFrame { code: 4003, reason: "signed out".into() }))).await;
-                    break;
-                }
-                if !app.can_view_task(&ctx, &attach.task_id).await {
-                    let _ = socket.send(Message::Close(Some(CloseFrame { code: 4003, reason: "access revoked".into() }))).await;
-                    break;
-                }
-                if attach.can_write && !app.can_work(&ctx, &attach.task_id).await {
-                    attach.can_write = false;
-                    // A viewer who can no longer type no longer sets the size either.
-                    app.terminal_leave(&attach).await;
-                    if !send_state(&app, &mut socket, &attach).await { break; }
+            // At most one re-check at a time: a slow one delays the next, never this loop.
+            _ = recheck.tick(), if pending.is_none() => {
+                pending = Some(recheck_access(&app, &ctx, &attach));
+            }
+            found = verdict(&mut pending), if pending.is_some() => {
+                pending = None;
+                match found {
+                    Recheck::Fine => {}
+                    Recheck::SignedOut => {
+                        let _ = socket.send(Message::Close(Some(CloseFrame { code: 4003, reason: "signed out".into() }))).await;
+                        break;
+                    }
+                    Recheck::Revoked => {
+                        let _ = socket.send(Message::Close(Some(CloseFrame { code: 4003, reason: "access revoked".into() }))).await;
+                        break;
+                    }
+                    Recheck::WriteLost => {
+                        if attach.can_write {
+                            attach.can_write = false;
+                            // A viewer who can no longer type no longer sets the size either.
+                            app.terminal_leave(&attach).await;
+                            if !send_state(&app, &mut socket, &attach).await { break; }
+                        }
+                    }
                 }
             }
         }
+    }
+    if let Some(handle) = pending {
+        handle.abort();
     }
     // Control and the size pass to another viewer before this one is dropped.
     app.terminal_leave(&attach).await;
