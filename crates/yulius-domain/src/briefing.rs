@@ -550,8 +550,8 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          given only the diff range, the spec and skill `om-code-review`); fix findings \
          test-first; after 3 rounds, decide and record why.\n\
          - When the work is ready (spec valid if needed, steps done, all committed), Yulius \
-         pushes your branch and opens the pull request at the end of your turn, and pushes later \
-         commits. CI runs on our own machines (`ci_status`). Once the review approved the exact \
+         pushes your branch and opens the pull request at the end of your turn or when you call \
+         `delivery_merge`, and pushes later commits. CI runs on our own machines (`ci_status`). Once the review approved the exact \
          head, call `delivery_merge`: on green it merges; while the checks run it arms the merge \
          and Yulius merges when they pass. Then deploy and verify each environment after \
          {integration} (`delivery_deploy`), as `delivery_status` says. Fix failures on this \
@@ -1232,6 +1232,8 @@ mod tests {
             "`steps_set`",
             "`step_update`",
             "Never commit or push to `dev` or `main`",
+            // SPEC-116 DMG-001: the merge call delivers the head, not only the turn's end.
+            "or when you call `delivery_merge`",
             "Use only ports 20000-20019",
         ] {
             assert!(text.contains(needle), "missing {needle}");
