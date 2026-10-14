@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- Token use, its API-price cost and a chart for every figure (SPEC-110, ADR-0089, task #95). The
+  Capacity card (Subscriptions page and the Dashboard) adds "Tokens (7 days)" and "API cost (7
+  days)": what the pool used and what it would have cost at Claude API list prices (input, output,
+  cache reads and writes, per model), each with a 7-day chart; Burn rate and Paused get one too.
+  Each subscription's "Observed by Yulius" rows end with "≈ $X at API prices". The Dashboard's
+  Agent work per task, Agent working time, Tokens and Subscription switches figures get a chart of
+  the range's days, like Tasks; every chart names its first, highest and last values for screen
+  readers.
 - A session's spider web stays in view, its spider moves and a cockroach runs by (SPEC-101,
   ADR-0082, task #86). The web sticks to the top-right corner while the transcript scrolls. Every
   8 s the spider climbs its thread in pixel steps, legs switching, and drops back. Now and then (20–60 s

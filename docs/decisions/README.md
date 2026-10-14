@@ -91,3 +91,4 @@ number differs from the file name, and a record this index does not list.
 - [0085](0085-a-prepared-task-waits-for-a-person-or-its-time.md): A prepared task waits for a person's Start now or its time; the minute tick releases it
 - [0084](0084-personal-notes-in-the-notes-table.md): Personal notes ("Me") live in the notes table, and their events reach only their owner
 - [0083](0083-long-menu-groups-scroll-five-rows.md): A long menu group (the start menu's tasks) shows five rows and says there is more
+- [0089](0089-api-price-estimates-from-a-built-in-table.md): Token cost is estimated from a built-in table of Claude API list prices
