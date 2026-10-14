@@ -1,11 +1,11 @@
 ---
 yulius-task: 04be3bab-2271-45f2-aded-78f1d0f469d7
-status: in-progress
+status: done
 ---
 
 # SPEC-118: A keystroke reaches the terminal without waiting for a permission check
 
-Status: in progress
+Status: implemented
 Date: 2026-10-14
 Owner: Yulius task #103
 Scope authorization: task #103 ("When I write something in a claude terminal or shell terminal, I
@@ -77,8 +77,8 @@ a removed sandbox, a disabled user. Those must stay immediate.
 - [x] A shell keystroke and its echo never wait for a permission check; a hand-over still refuses the next one
 - [x] An old grant is re-confirmed beside the input, and a downgrade found there refuses the next keystroke
 - [x] ADR, architecture, API and SPEC-002 text say how terminal input is authorized
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -118,3 +118,26 @@ a removed sandbox, a disabled user. Those must stay immediate.
   epoch, re-confirmed in the background; the periodic re-check runs beside the viewer's loop.
   Alternatives (drop the per-input check and rely on the 60 s re-check; a separate database
   connection for reads; a client-side local echo) are compared there.
+
+## Evidence
+
+- Reproduction (before the fix): `terminal_ws::keystrokes_and_echo_never_wait_for_a_permission_check`
+  failed with `"key 0" was not echoed within 5 s while permission checks hang`, and
+  `shells::shell_keystrokes_never_wait_for_a_permission_check` with `key-100 was not echoed within
+  5 s`. Both pass after it.
+- New tests that failed first: the store's epoch test (no `access_epoch`, then a first cached
+  level that moved it), `disabling_the_typist_refuses_their_next_keystroke` (the keystroke was
+  allowed), `input_flows_while_a_re_confirmation_is_pending` (a guard captured by field settled at
+  once). A mutation that skipped the background re-confirmation made
+  `a_downgrade_found_beside_the_input_refuses_the_next_keystroke` fail.
+- Existing access tests are unchanged and green: the read-only refusal, the GitHub downgrade and the
+  4003 close in `terminal_ws`, and the shell hand-over in `shells`.
+- `scripts/dev ci` on the head after merging `origin/dev`: exit 0, with fmt, clippy `-D warnings`,
+  deny, shear and docs. nextest ran 1617 tests: 1617 passed, 16 skipped.
+- Independent review: round 1 requested changes. A disabled or signed-out typist was not refused at
+  once. A failed re-check counted as fine. A panicking re-confirmation stuck. A first cached level
+  moved the epoch. The interval could burst. Round 2 approved with minors (a signed-out test, an
+  unused method, wording), and those are fixed.
+- Not tested in this environment: typing latency against the production server's real database
+  load and real GitHub. The fix removes the waits on both, and the hanging-GitHub tests prove a
+  keystroke no longer waits on them.
