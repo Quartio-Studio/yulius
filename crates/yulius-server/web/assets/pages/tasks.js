@@ -287,7 +287,7 @@ export function mountTasksPage(ctx, sandbox) {
     const time = taskTime(task, info);
     const kebab = iconButton('more', `Actions for ${task.title || `task #${task.number}`}`, () => openTaskMenu(ctx, kebab, task), { class: 'tl-action', 'aria-haspopup': 'menu' });
     const row = h('li', { class: ['tl-row', `group-${group}`], dataset: { taskId: task.id, tone: info.tone } },
-      h('a', { class: 'tl-link', href: href(path), dataset: { route: path }, title: `#${task.number} ${task.title}${task.branch ? ` · ${task.branch}` : ''}` },
+      h('a', { class: 'tl-link', href: href(path), dataset: { route: path }, title: `Task #${task.number} ${task.title}${task.branch ? ` · ${task.branch}` : ''}` },
         h('span', { class: 'tl-mark' }, statusMark(info, 16)),
         // The task's own number, as in the sidebar; its pull request's chip says "PR #N" (SPEC-122).
         h('span', { class: 'task-num', title: `Task #${task.number}` }, h('span', { class: 'sr-only' }, 'Task '), `#${task.number}`),

@@ -224,6 +224,7 @@ test('the Tasks page rows show the task number before the title', async ({ app, 
   await app.open(mock('/s/studio/tasks'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Tasks');
   await expect(browser.locator('#main .tl-row:has-text("Improve the code") .task-num')).toHaveText('Task #13');
+  await expect(browser.locator('#main .tl-row:has-text("Improve the code") .tl-link')).toHaveAttribute('title', /^Task #13 Improve the code/);
   const rows = await browser.locator('#main .tl-row').count();
   await expect(browser.locator('#main .tl-row .tl-link .task-num')).toHaveCount(rows);
 });
