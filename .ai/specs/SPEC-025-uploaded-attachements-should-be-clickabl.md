@@ -5,7 +5,7 @@ status: done
 
 # SPEC-025: Attachments open when clicked and reach Claude Code natively
 
-Status: implemented; for goal tasks superseded by [SPEC-117](SPEC-117-creating-tasks-work-in-a-very-very-weird.md)
+Status: implemented; for goal tasks superseded by [SPEC-117](SPEC-117-creating-tasks-work-in-a-very-very-weird.md); the files' place in the text refined by [SPEC-124](SPEC-124-images-keep-their-position-in-the-text-f.md) (each file mentioned where it sits, not after the text)
 (their only first message is the `/goal` launch prompt, which names the attached files).
 Date: 2026-10-12
 Owner: Yulius task #23

@@ -320,6 +320,8 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
                 .put(notes::save_me)
                 .layer(DefaultBodyLimit::max(2 << 20)),
         )
+        // Who has a file open in the editor (SPEC-127): a selection, relayed and stored nowhere.
+        .route("/api/sandboxes/{sid}/files/presence", put(files::presence))
         // Dropped files (EDT-006, UI-048): raw streamed bodies, bounded by the upload limit.
         .route("/api/sandboxes/{sid}/files/upload", put(uploads::file))
         // A folder packed by the browser becomes a playground (SPEC-099).

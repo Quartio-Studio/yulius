@@ -5,7 +5,7 @@ status: done
 
 # SPEC-043: "See the original prompt" in the task menu
 
-Status: implemented
+Status: implemented; files inside the text show in place since [SPEC-124](SPEC-124-images-keep-their-position-in-the-text-f.md), the files after it below
 Date: 2026-10-13
 Owner: Yulius task #42
 Scope authorization: user request (F 2026-10-12, task #42): "Here I want a button: 'see the

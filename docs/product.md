@@ -66,6 +66,8 @@ watching, steering and unblocking.
   Until a task starts, how it starts can change: the start chip in a waiting task's view offers
   the same choices as New task (after a task, a rule, When I decide, a time, Start now or
   Supertask); a task that started keeps its start.
+  An image or file pasted or dropped into the prompt sits in its text where it was put, as a
+  thumbnail or chip that moves and deletes like a character, and the agent gets it at that place.
   A half-written task (its prompt, attached files and choices) waits in the composer while
   people look elsewhere, also across a reload, until it starts.
   A task is its owner's: it acts on GitHub with their credentials, so only they change it. Others
@@ -94,6 +96,10 @@ watching, steering and unblocking.
   clicked or dragged. Selections are drawn rounded and glide, and
   teammates who have a shared notepad open show as a caret with their name and their selection
   in their own colour.
+- **Editor**: Monaco over the sandbox's files for people with write access. Like Notes, its
+  selection is drawn rounded and glides, people who have the same file open see each other's
+  caret, name and selection in their Notes colour (awareness only: unsaved text stays each
+  person's own), and its tabs go in any order.
 - **Editor, terminals, Git view, automations, workflow catalog** in one web UI, whose menus fit
   the window and filter as people type when they are long; the start menu shows five tasks at a
   time and says how many more it scrolls to. Messages are

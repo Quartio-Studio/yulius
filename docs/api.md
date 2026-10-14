@@ -237,7 +237,7 @@ limited to the agent's sandbox.
 | POST | `/api/tasks/{tid}/held-prompts/{hid}` | write | `{"action":"parallel|after|send|skip_after|revert|dismiss","skip_step_ids?":[…],"confirm?":bool}` → `{"task":TaskSummary,"created":TaskSummary|null,"note"}`; one decision per held prompt (409 for a second). `send` needs a running task; `skip_after` marks the given open steps `skipped`; `revert` needs `"confirm":true` (422 otherwise) — see "Task intake" below |
 | POST | `/api/tasks/{tid}/queued-messages` | write | `{"text"}` → `{"request"}`; adds the message to the request of a task that has never started (`queued`, `chained`, `prepared` or `waiting_capacity`, no run, no provider session) under "**Added by {login} before the task started ({UTC time}):**", so the agent gets it when the task starts (SPEC-052 / SPEC-001 TSK-017, ADR-0035). 409 once the task has started (type into its session instead), or, rarely, when it changed between the check and the update (try again); 422 for an empty message or a request past 64 KiB; publishes `task.updated` |
 | GET | `/api/tasks/{tid}` | read | → `TaskDetail` |
-| GET | `/api/tasks/{tid}/prompt` | read | → `{"text","attachments":[{"name","image":bool,"available":bool}]}`: the prompt the task started with, without its `@path` attachment lines, and its attached files in order (SPEC-043). `available` is false for a file that is gone (composer drafts are removed after a week) or not in the task's own attachment folders (a path mentioned by hand, another task's or user's file); at most 500 are checked |
+| GET | `/api/tasks/{tid}/prompt` | read | → `{"text","attachments":[{"name","image":bool,"available":bool}],"parts":[{"text"}\|{"attachment":n}]}`: the prompt the task started with, without its attached files (an inline `@'path'` mention or an `@path` line each), its attached files in order (SPEC-043), and `parts`, the prompt in order with each file where it sits (`n` indexes `attachments`; SPEC-124). `available` is false for a file that is gone (composer drafts are removed after a week) or not in the task's own attachment folders (a path mentioned by hand, another task's or user's file); at most 500 are checked |
 | GET | `/api/tasks/{tid}/prompt/attachments/{n}` | read | → the bytes of attachment `n` (from 0) of that list, only when the prompt names it directly in one of the task's own attachment folders (its creator's composer drafts, `attachments/drafts/<user>/`, or the task's terminal attachments, `attachments/tasks/<task>/`), reached without a link, a regular file within the upload limit and, on Linux, opened at its real path as `/proc/self/fd` says (404 otherwise, also out of range or not a number; 429 when none of the 16 read slots frees within 30 s; uploads have their own bound). The body is streamed in chunks of at most 64 KiB with its `Content-Length`, holding its read slot; left unread for 60 s it gives the slot back and closes the file, and the response breaks off at the client's next read (SPEC-080, ADR-0064). An image (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`) is served with its image type, any other file as `application/octet-stream` with `Content-Disposition: attachment`; the content security policy includes `sandbox` (ADR-0033) |
 | POST | `/api/tasks/{tid}/stop` | write | → `TaskSummary`; a `stopping` task is stopped again: its escalation is armed anew (a run whose processes could not be ended is retried, SPEC-065) |
 | POST | `/api/tasks/{tid}/continue` | write | `{"account_id?"}` → `TaskSummary`; resumes the latest session natively, on the best Claude subscription (the pool's choice; `account_id` is an operator override the web UI never sends); 403 for a bearer token on a `pending` sandbox's onboarding task (Start onboarding is a browser action, SPEC-051) |
@@ -863,6 +863,16 @@ resolves to nothing, the run gets the server without that variable or token.
   → 201 entry (409 when it exists). `DELETE /api/sandboxes/{sid}/files?root&path` → 204 (files,
   links and directory trees; never the folder itself). 409 before the repository is cloned.
   The editor UI (Monaco) keeps each user's open files and unsaved text in their browser only.
+  `PUT /api/sandboxes/{sid}/files/presence` (write) `{"root?","path","sha256?","selection":
+  {"anchor","head"}|null,"hello"?,"client"?}` → 204 (SPEC-127): the caller's selection in UTF-16
+  offsets of the file's text as saved at `sha256` (64 lowercase hex digits, empty when unknown),
+  or `null` when they left the file; `hello` and `client` as for notepad presence. Relayed as
+  `file.presence` to the sandbox's writers only, stored nowhere. The path is checked like the
+  other file requests (403 for `.git`, 422 for an empty or escaping path, a folder or a path over
+  4096 bytes); a selection needs an existing regular file (404; leaving a deleted one is fine);
+  422 for unknown fields, a bad `sha256` or `client`, or an offset over 2 Mi; 403/404 without
+  write access; 429 past 20 updates a second per person and file (the notepads' limiter) or past
+  64 files and notepads a person is busy in at once.
 - Dropped files (EDT-006, UI-048). One file per request, the raw bytes as the body (`Content-Type`
   is not interpreted), streamed to disk; at most the upload limit (`YULIUS_UPLOAD_MAX_MB`, 25 MiB by
   default; `GET /api/me` → `instance.upload_max_bytes`): a larger `Content-Length` is 422 before
@@ -1216,7 +1226,10 @@ found or moved; clients refetch `GET /api/update`),
 notepad was saved; a sandbox note's event reaches only that sandbox's viewers, a personal note's
 only its owner), `{"type":"note.presence","scope":"team|sandbox","sandbox_id","user_id","client","name",
 "revision","selection":{"anchor","head"}|null,"hello"}` (someone's selection in a shared notepad, to
-the people who may read it; SPEC-112), `{"type":"pulls.updated","sandbox_id"}` (the sandbox's pull requests may have
+the people who may read it; SPEC-112), `{"type":"file.presence","sandbox_id","root","path","user_id",
+"client","name","sha256","selection":{"anchor","head"}|null,"hello"}` (someone's selection in a file
+open in the editor, only to people with write access to that sandbox; SPEC-127),
+`{"type":"pulls.updated","sandbox_id"}` (the sandbox's pull requests may have
 changed: a delivery stage moved or a Yulius CI run was queued, started or ended; clients watching
 it read `GET /api/sandboxes/{sid}/git` again; SPEC-108), `{"type":"resync"}`.
 

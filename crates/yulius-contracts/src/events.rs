@@ -106,6 +106,30 @@ pub enum UiEvent {
         /// They just opened it: the others answer with their own.
         hello: bool,
     },
+    /// Someone's selection in a file open in the editor (SPEC-127), relayed as they sent it to the
+    /// people who may read the sandbox's files (its writers). `selection: null` means they left it;
+    /// `hello` asks the others to send theirs.
+    #[serde(rename = "file.presence")]
+    FilePresence {
+        /// The sandbox.
+        sandbox_id: String,
+        /// `sandbox` or `task:<task id>`.
+        root: String,
+        /// The file, relative to the root (normalized).
+        path: String,
+        /// Who: their user id (the browser leaves out its own).
+        user_id: String,
+        /// Their browser tab, as they sent it.
+        client: String,
+        /// Their name: the GitHub login, else the display name.
+        name: String,
+        /// SHA-256 hex of the saved text the offsets are in.
+        sha256: String,
+        /// Their selection, or `None` when they left.
+        selection: Option<NoteSelection>,
+        /// They just opened it: the others answer with their own.
+        hello: bool,
+    },
     /// The sandbox's pull requests may have changed (a delivery stage moved, a Yulius CI run was
     /// queued, started or ended): watching clients read the Git overview again (SPEC-108).
     #[serde(rename = "pulls.updated")]

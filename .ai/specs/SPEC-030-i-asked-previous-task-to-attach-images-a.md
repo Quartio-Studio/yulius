@@ -5,7 +5,7 @@ status: done
 
 # SPEC-030: Attached images reach Claude Code as pasted images, not as paths
 
-Status: implemented; for goal tasks superseded by [SPEC-117](SPEC-117-creating-tasks-work-in-a-very-very-weird.md)
+Status: implemented; for goal tasks superseded by [SPEC-117](SPEC-117-creating-tasks-work-in-a-very-very-weird.md); images are pasted where they sit in the text since [SPEC-124](SPEC-124-images-keep-their-position-in-the-text-f.md), not before it
 (no typed first message: the `/goal` launch prompt names the attached files; a `/goal` carries no
 image block). Prompt tasks still paste images, and a person's keys wait meanwhile.
 Date: 2026-10-12

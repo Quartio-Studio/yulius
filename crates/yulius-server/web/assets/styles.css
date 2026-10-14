@@ -1401,19 +1401,31 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
   min-height: 112px; max-height: 50vh; padding: 16px 20px 8px; border: 0; background: transparent; color: var(--text);
   font: inherit; font-size: var(--fs-md); line-height: var(--lh-md); resize: none; outline: none;
 }
-.composer-attachments { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; padding: 12px 16px 0; list-style: none; }
-.composer-attachment {
-  position: relative; display: flex; align-items: center; justify-content: center; width: 72px; height: 72px;
-  border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-2, var(--surface)); color: var(--text-2); overflow: hidden;
+/* The prompt with its files inside the text (SPEC-124): plain text, wrapped as typed. */
+.prompt-input { overflow-x: hidden; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; }
+.prompt-input.pi-empty::before { content: attr(data-placeholder); float: left; height: 0; color: var(--text-faint); pointer-events: none; }
+.prompt-input[aria-disabled="true"] { cursor: not-allowed; }
+/* A file in the text: one character, a thumbnail or a chip, never wider than the box. */
+.pi-atom {
+  display: inline-flex; align-items: center; gap: 4px; max-width: 100%; margin: 0 2px; vertical-align: bottom;
+  border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-2, var(--surface));
+  color: var(--text-2); white-space: nowrap; cursor: grab; user-select: all;
 }
-.composer-attachment-open {
-  display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; padding: 0; border: 0;
-  background: transparent; color: inherit; cursor: pointer;
-}
-button.composer-attachment-open:has(img) { cursor: zoom-in; }
-span.composer-attachment-open { cursor: default; }
-.composer-attachment-open:focus-visible { outline: 2px solid var(--accent-border-strong); outline-offset: -2px; }
-.composer-attachment img { width: 100%; height: 100%; object-fit: cover; }
+.pi-atom:hover { border-color: var(--accent-border-strong); }
+.pi-image { max-width: min(160px, 100%); padding: 0; overflow: hidden; }
+.pi-image img { display: block; max-width: 100%; height: 64px; object-fit: cover; pointer-events: none; }
+.pi-file, .pi-pending { height: 1.6em; padding: 0 6px; font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.pi-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.pi-pending { border-style: dashed; cursor: progress; }
+.pi-spinner { flex: none; width: 10px; height: 10px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin var(--duration-spin) linear infinite; }
+.pi-dragging { opacity: 0.4; }
+.pi-preview-image { display: block; max-width: 100%; max-height: 160px; border-radius: var(--radius); }
+.pi-preview-file { display: inline-flex; max-width: min(240px, 100%); margin: 2px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; vertical-align: middle; cursor: zoom-in; }
+.pi-preview-file.pi-file { padding: 0 6px; border: 1px solid var(--border-strong); cursor: pointer; }
+/* Files dragged over the prompt land at the caret: the overlay keeps the text in sight, and the
+   upload's progress shows above the box, not over the words being typed. */
+.composer-box .drop-overlay { align-items: flex-end; background: transparent; }
+.composer-box .upload-status-float { top: auto; bottom: calc(100% + 8px); }
 .attachment-modal .modal-body { display: flex; justify-content: center; }
 /* The prompt a task started with (SPEC-043): the text as written, then its attached files. */
 .prompt-text { max-height: 60vh; overflow: auto; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2, var(--surface)); }
@@ -1426,13 +1438,14 @@ span.composer-attachment-open { cursor: default; }
 .prompt-thumb { width: 96px; height: 72px; padding: 0; overflow: hidden; border: 1px solid var(--border-strong); border-radius: var(--radius); background: var(--surface-2, var(--surface)); cursor: zoom-in; }
 .prompt-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .prompt-file.gone { opacity: 0.8; }
+/* A file inside the text (SPEC-124) sits in the line, where it was put. */
+.prompt-file.inline { display: inline-flex; max-width: 100%; margin: 2px; vertical-align: middle; }
+.prompt-file.image.inline { width: auto; }
+.prompt-file.inline .prompt-thumb { width: auto; min-width: 48px; max-width: min(240px, 100%); height: auto; min-height: 36px; }
+.prompt-file.inline .prompt-thumb img { width: auto; max-width: 100%; height: auto; max-height: 160px; object-fit: contain; }
 .attachment-preview { display: block; max-width: 100%; max-height: 75vh; object-fit: contain; }
-.composer-attachment-name { position: absolute; inset: auto 0 0; padding: 0 4px; overflow: hidden; background: var(--surface-2); color: var(--text); font-size: var(--fs-xs); text-overflow: ellipsis; white-space: nowrap; }
-.composer-attachment-remove { position: absolute; top: 2px; right: 2px; }
-.composer-prompt::placeholder { color: var(--text-faint); }
 /* The box shows focus; the prompt itself draws no ring (the global :focus-visible would). */
 .composer-prompt:focus-visible { box-shadow: none; }
-.composer-prompt:disabled { cursor: not-allowed; }
 .composer-tools { display: flex; align-items: center; gap: 4px; padding: 6px 8px 8px 12px; }
 /* One row while the box has room for it: a long label truncates rather than wrapping the row. */
 .composer-tools > .chip-btn { flex: 0 1 auto; min-width: 0; }
@@ -2132,10 +2145,10 @@ a.dl-task:hover { text-decoration: underline; }
 .notes-tabs .term-tab { padding: 0 12px; border-top: 0; border-bottom: 0; border-left: 0; background: none; font: inherit; }
 .notes-tabs .term-tab.active { background: var(--term-bg); }
 /* Tabs in any order (SPEC-112): the dragged tab rides above, the others slide aside, it settles. */
-.notes-tabs.reordering { cursor: grabbing; user-select: none; }
-.notes-tabs.reordering .term-tab { transition: transform var(--duration-fast) var(--ease); }
-.notes-tabs .term-tab.dragging { position: relative; z-index: var(--z-raised); transition: none; background: var(--surface-2); box-shadow: var(--shadow); cursor: grabbing; }
-.notes-tabs .term-tab.settling { position: relative; z-index: var(--z-raised); transition: transform var(--duration-fast) var(--ease); }
+.notes-tabs.reordering, .ed-tabs.reordering { cursor: grabbing; user-select: none; }
+.notes-tabs.reordering .term-tab, .ed-tabs.reordering .ed-tab { transition: transform var(--duration-fast) var(--ease); }
+.notes-tabs .term-tab.dragging, .ed-tabs .ed-tab.dragging { position: relative; z-index: var(--z-raised); transition: none; background: var(--surface-2); box-shadow: var(--shadow); cursor: grabbing; }
+.notes-tabs .term-tab.settling, .ed-tabs .ed-tab.settling { position: relative; z-index: var(--z-raised); transition: transform var(--duration-fast) var(--ease); }
 /* The grip says a tab drags (SPEC-136): faint at rest, the tab's colour when it is hovered, chosen
    or dragged. Only a mouse or pen drags (touch scrolls the strip), so a device with neither does not
    see it, whatever its primary pointer. */
@@ -2179,10 +2192,18 @@ a.dl-task:hover { text-decoration: underline; }
 .tl-name { position: absolute; left: 0; bottom: 100%; max-width: 16ch; overflow: hidden; text-overflow: ellipsis; padding: 0 4px;
   border-radius: var(--radius-xs) var(--radius-xs) var(--radius-xs) 0; background: var(--tl-colour); color: var(--peer-ink); font-size: var(--fs-xs); font-weight: 600; line-height: var(--lh-xs); white-space: nowrap; }
 .tl-caret.tl-below .tl-name { bottom: auto; top: 100%; border-radius: 0 var(--radius-xs) var(--radius-xs) var(--radius-xs); }
+.tl-caret.tl-off { opacity: 0; }
+/* The Editor (SPEC-127): Monaco's selection boxes and teammates' decorations are see-through and
+   copied into the same shapes, in a layer that scrolls with Monaco's text, behind it. */
+.ed-layer { position: absolute; top: 0; left: 0; width: 0; height: 0; overflow: visible; pointer-events: none; }
+.ed-host .monaco-editor .view-overlays .selected-text,
+.ed-host .monaco-editor .view-overlays .ed-peer-range { background: transparent; }
 /* Forced colours paint author backgrounds away: the browser's own selection comes back. */
 @media (forced-colors: active) {
   .notes-text.drawn-selection::selection { background: Highlight; color: HighlightText; }
   .text-layer { display: none; }
+  .ed-layer { display: none; }
+  .ed-host .monaco-editor .view-overlays .selected-text { background: Highlight; }
 }
 .notes-text[readonly] { color: var(--text-2); }
 .notes-meta { flex: none; margin: 0; padding: 4px 16px; min-height: calc(var(--lh-sm) + 8px); border-top: 1px solid var(--border); color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }

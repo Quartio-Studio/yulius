@@ -1237,7 +1237,8 @@ fn a_continuation_with_hooks_ends_the_limit_pause_and_its_stop_is_answered() -> 
 
 /// SPEC-030 PIMG-002: a prompt-mode task with an attached image starts with no command-line
 /// prompt; its first message is typed into the TUI with the image pasted (`[Image #1]`, as
-/// Claude Code attaches a pasted image) and the other files mentioned.
+/// Claude Code attaches a pasted image) and the other files mentioned. An older prompt's files
+/// follow its text, so the image is pasted after it (SPEC-124 INL-007).
 #[test]
 fn an_attached_image_is_pasted_into_the_first_message() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -1271,15 +1272,68 @@ fn an_attached_image_is_pasted_into_the_first_message() -> TestResult {
             .await?
             .id;
         wait_for("the first message", Duration::from_secs(90), || {
-            screen_contains(&app, &id, "ECHO: [Image #1] Make it blue")
+            screen_contains(&app, &id, "ECHO: Make it blue")
         })
         .await?;
         let launch = first_launch(&app, &id).await?;
         assert!(launch.contains("prompt: None"), "{launch}");
         let screen = app.runtime(&id).hub.screen_text();
+        assert!(screen.contains("[Image #1] "), "{screen}");
         assert!(screen.contains("@\"/srv/notes.txt\""), "{screen}");
         assert!(!screen.contains("@\"/srv/shot.png\""), "{screen}");
-        assert_eq!(screen.matches("ECHO: [Image #1]").count(), 1, "{screen}");
+        assert_eq!(screen.matches("ECHO: ").count(), 1, "{screen}");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-124 INL-007: an image written inside the text (`@'path'`, as the composer writes it) is
+/// pasted where it sits: one first message with `[Image #1]` between the words around it.
+#[test]
+fn an_image_in_the_text_is_pasted_where_it_sits() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = app
+            .create_task_internal(NewTask {
+                sandbox: sandbox.clone(),
+                created_by: user.clone(),
+                prompt: "This part @'/srv/my shot.png' looks wrong, see @'/srv/notes.txt'".into(),
+                harness: Harness::ClaudeCode,
+                title: None,
+                workflow_id: None,
+                steps: Vec::new(),
+                model: None,
+                effort: None,
+                origin: TaskOrigin::Ui,
+                automation_run: None,
+                start: true,
+                mode: TaskMode::Prompt,
+                supertask: false,
+            })
+            .await?
+            .id;
+        wait_for("the first message", Duration::from_secs(90), || {
+            screen_contains(
+                &app,
+                &id,
+                "ECHO: This part [Image #1] looks wrong, see @\"/srv/notes.txt\"",
+            )
+        })
+        .await?;
+        let screen = app.runtime(&id).hub.screen_text();
+        assert_eq!(screen.matches("ECHO: ").count(), 1, "one message: {screen}");
+        let task = app.deps.store.task(&id).await?.ok_or("no task")?;
+        assert_eq!(task.title, "This part looks wrong, see");
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

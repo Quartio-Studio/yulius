@@ -18,6 +18,25 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   confirmation; while an update runs it reads "Updating", and otherwise it is a quiet "Version
   and updates" icon leading to the instance page. Dismissing the tab-row pill no longer hides the
   way to update, and the account menu lists "Version and updates" too.
+- The Editor gets the notepads' smooth selection and teammates' presence (SPEC-127, ADR-0103,
+  task #114). A selection in the Editor is drawn in rounded shapes that glide, exactly where
+  Monaco lays it out, so it stays right with word wrap on or off and when scrolled. People who
+  have the same file open see each other's caret, name and selection in the colour they have in
+  Notes, live; someone who switches file, closes it or leaves the Editor disappears at once.
+  It is awareness only: unsaved text stays each person's own and saving works as before. The
+  server relays where people are (`PUT /api/sandboxes/{sid}/files/presence`, `file.presence`)
+  only to the sandbox's writers, with the notepads' rate limit. The Editor's file tabs move by
+  drag, Alt+← / Alt+→ or the tab's menu. Notes and the Editor now share the presence loop, the
+  drawing and the tab drag; and a tool replaced by another in the panel is hidden like a closed
+  panel, so its presence leaves and the browser stream stops.
+- Images keep their place in the text, from paste to the agent (SPEC-124, ADR-0101, task #105).
+  A pasted or dropped image used to become a thumbnail in a row above the prompt, and the agent
+  got the images after the text, apart from the words about them. Now a file lands at the caret
+  (or the drop point) inside the text, as a thumbnail or a chip. It deletes like a character, with
+  undo, and moves by drag or by cut and paste. The prompt is stored with each file at its place
+  (`@'<path>'`). The agent gets it there: in the request file, in the CLI prompt, or pasted where
+  it sits in a typed first message, still one message. The original prompt view shows it inside
+  the text. Older prompts and drafts keep working; their files show after the text.
 - The top bar has no Superagent button any more (SPEC-132, ADR-0106, task #120). The Superagent
   is first in the tools rail, right under the tools toggle, so the button beside the toggle was a
   second way to the same panel. The toggle now reads "Show tools (Superagent, browser, editor,
