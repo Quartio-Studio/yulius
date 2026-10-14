@@ -371,26 +371,37 @@ function agentForm(ctx, secret) {
   return form;
 }
 
+/** A host as people read it: a wildcard says it covers any subdomain. */
+function hostText(name) {
+  return name.startsWith('*.') ? `${name} (any subdomain of ${name.slice(2)})` : name;
+}
+
 /** Where a secret goes: its bound hosts, or that it goes nowhere yet; and what an agent asks for. */
 function agentHosts(ctx, secret, reload) {
   const parts = [];
   if (secret.hosts.length) parts.push(h('div', { class: 'chips' }, secret.hosts.map((name) => iconBadge('globe', name, '', 'Bound host'))));
   else if (!secret.requested_hosts.length) parts.push(h('span', { class: 'muted small' }, 'Not sent anywhere yet: agents ask for its hosts and you allow them here.'));
   if (secret.requested_hosts.length) {
+    // The answer names the hosts shown here: the server refuses it if an agent asked for more
+    // meanwhile, so nothing is allowed unseen (SPEC-121).
+    const shown = [...secret.requested_hosts];
     const answer = async (allow) => {
+      buttons.forEach((b) => { b.disabled = true; });
       try {
-        await ctx.api.post(`/api/agent-secrets/${enc(secret.id)}/request`, { allow });
-        toast(allow ? `Allowed. Agents can use ${secret.name} on ${secret.requested_hosts.join(', ')}.` : 'Dismissed.', { kind: 'ok' });
+        const saved = await ctx.api.post(`/api/agent-secrets/${enc(secret.id)}/request`, { allow, hosts: shown });
+        toast(allow ? `Allowed. Agents can use ${saved.name} on ${shown.join(', ')}.` : 'Dismissed.', { kind: 'ok' });
       } catch (error) { errorToast(error, allow ? 'Couldn’t allow' : 'Couldn’t dismiss'); }
       reload();
     };
-    const asked = secret.requested_hosts.join(', ');
+    const asked = shown.join(', ');
+    const buttons = secret.can_manage ? [
+      smallButton('Allow', `Allow ${asked} for ${secret.name}`, () => answer(true), { class: 'btn-primary' }),
+      smallButton('Dismiss', `Dismiss the hosts asked for ${secret.name}`, () => answer(false)),
+    ] : [];
     parts.push(h('div', { class: 'row-wrap' },
-      h('span', { class: 'small' }, `Task ${secret.requested_by || ''} asks to send it to`),
-      h('div', { class: 'chips' }, secret.requested_hosts.map((name) => iconBadge('globe', name, 'warn', 'Requested host'))),
-      secret.can_manage ? h('span', { class: 'row-wrap' },
-        smallButton('Allow', `Allow ${asked} for ${secret.name}`, () => answer(true), { class: 'btn-primary' }),
-        smallButton('Dismiss', `Dismiss the hosts asked for ${secret.name}`, () => answer(false))) : null));
+      h('span', { class: 'small' }, secret.requested_by ? `Task ${secret.requested_by} asks to send it to` : 'An agent asks to send it to'),
+      h('div', { class: 'chips' }, shown.map((name) => iconBadge('globe', hostText(name), 'warn', 'Requested host'))),
+      buttons.length ? h('span', { class: 'row-wrap' }, buttons) : null));
   }
   return parts;
 }

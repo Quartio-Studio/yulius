@@ -5,7 +5,7 @@
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use yulius_contracts::api::secrets::AgentSecretView;
+use yulius_contracts::api::secrets::{AgentSecretView, HostRequestAnswer};
 use yulius_domain::task::Activity;
 use yulius_domain::vault::VaultError;
 use yulius_domain::vault::hosts::{HostPattern, MAX_HOSTS, parse_hosts};
@@ -77,9 +77,16 @@ fn merge(
     })
 }
 
+/// Bidirectional and invisible format characters, which could make an audit line read
+/// differently from what it says.
+fn hidden_format(c: char) -> bool {
+    matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
+}
+
 fn reason(text: Option<&str>) -> String {
     text.unwrap_or_default()
         .chars()
+        .filter(|c| !hidden_format(*c))
         .map(|c| if c.is_control() { ' ' } else { c })
         .take(MAX_REASON)
         .collect::<String>()
@@ -138,7 +145,12 @@ impl App {
                 },
             }));
         }
-        let by = format!("#{}", ctx.task.number);
+        let by = requester(
+            record.requested_by.as_deref(),
+            !record.requested_hosts.is_empty(),
+            ctx.task.number,
+            record.sandbox_id.is_none().then_some(sandbox.slug.as_str()),
+        );
         if !store
             .vault_set_request(
                 &record.id,
@@ -189,17 +201,19 @@ impl App {
     }
 
     /// `POST /api/agent-secrets/{id}/request`: a person who manages the secret allows the hosts
-    /// an agent asked for (they join the bindings) or dismisses them.
+    /// an agent asked for (they join the bindings) or dismisses them. `answer.hosts` must be
+    /// exactly the hosts waiting, so a host asked for after the person looked is never allowed
+    /// unseen; the bindings and the request change in one step, nothing else in the row does.
     ///
     /// # Errors
     /// `NotFound` for invisible secrets, `Forbidden` for people who cannot manage it,
-    /// `Conflict` when nothing waits or the request changed meanwhile, validation and store
-    /// failures.
+    /// `Conflict` when nothing waits or the request or bindings changed meanwhile, `Invalid`
+    /// when allowing would bind more than 16 hosts (the request stays), store failures.
     pub async fn answer_host_request(
         &self,
         ctx: &AuthContext,
         id: &str,
-        allow: bool,
+        answer: &HostRequestAnswer,
     ) -> AppResult<AgentSecretView> {
         let mut record = self.agent_record(ctx, id).await?;
         self.require_manage_agent(ctx, record.sandbox_id.as_ref())
@@ -209,38 +223,43 @@ impl App {
                 "no hosts wait to be allowed for this secret".into(),
             ));
         }
+        let seen = parse_hosts(&answer.hosts).map_err(invalid)?;
+        if !same_hosts(&seen, &patterns(&record.requested_hosts)) {
+            return Err(AppError::Conflict(format!(
+                "an agent changed the request meanwhile: reload to see the hosts that wait ({})",
+                record.requested_hosts.join(", ")
+            )));
+        }
         let asked = std::mem::take(&mut record.requested_hosts);
         let by = record.requested_by.take().unwrap_or_default();
-        let hosts = if allow {
+        let hosts = if answer.allow {
             let all: Vec<String> = record.hosts.iter().chain(&asked).cloned().collect();
             let parsed = parse_hosts(&all).map_err(invalid)?;
-            Some(parsed.iter().map(ToString::to_string).collect::<Vec<_>>())
+            parsed.iter().map(ToString::to_string).collect::<Vec<_>>()
         } else {
-            None
+            record.hosts.clone()
         };
-        // Clear first: a request made meanwhile is never answered unseen.
+        let now = self.now();
+        let user = ctx.user.id.as_str();
         if !self
             .deps
             .store
-            .vault_set_request(id, &asked, &[], None)
+            .vault_answer_request(id, &asked, &record.hosts, &hosts, user, now)
             .await?
         {
             return Err(AppError::Conflict(
-                "the request changed meanwhile: reload and answer again".into(),
+                "the secret changed meanwhile: reload and answer again".into(),
             ));
         }
-        if let Some(hosts) = hosts {
-            record.hosts = hosts;
-            record.updated_by = ctx.user.id.as_str().to_owned();
-            record.updated_at = self.now();
-            if !self.deps.store.vault_update(&record).await? {
-                return Err(AppError::NotFound);
-            }
+        record.hosts = hosts;
+        user.clone_into(&mut record.updated_by);
+        record.updated_at = now;
+        if answer.allow {
             self.vault.bump();
         }
         self.vault_audit(
             &Self::vault_actor(ctx),
-            if allow {
+            if answer.allow {
                 "vault.agent.allow"
             } else {
                 "vault.agent.dismiss"
@@ -250,6 +269,25 @@ impl App {
         )
         .await?;
         self.agent_view(&record, true).await
+    }
+}
+
+/// Whether two lists name the same hosts, in any order.
+fn same_hosts(a: &[HostPattern], b: &[HostPattern]) -> bool {
+    a.len() == b.len() && a.iter().all(|h| b.contains(h))
+}
+
+/// Who asks: `#N`, with the sandbox for a secret of every sandbox (shown on every sandbox's
+/// page); added to the earlier askers of a request that still waits.
+fn requester(earlier: Option<&str>, waiting: bool, number: u32, slug: Option<&str>) -> String {
+    let me = match slug {
+        Some(slug) => format!("#{number} in {slug}"),
+        None => format!("#{number}"),
+    };
+    match earlier {
+        Some(earlier) if waiting && earlier.split(", ").any(|e| e == me) => earlier.to_owned(),
+        Some(earlier) if waiting => format!("{earlier}, {me}"),
+        _ => me,
     }
 }
 
@@ -290,7 +328,25 @@ mod tests {
     }
 
     #[test]
+    fn requesters_name_each_task_once() {
+        assert_eq!(requester(None, false, 7, None), "#7");
+        assert_eq!(requester(Some("#3"), true, 7, None), "#3, #7");
+        assert_eq!(requester(Some("#3, #7"), true, 7, None), "#3, #7");
+        assert_eq!(
+            requester(Some("#3"), false, 7, None),
+            "#7",
+            "an answered request is forgotten"
+        );
+        assert_eq!(requester(None, false, 7, Some("app")), "#7 in app");
+        assert!(same_hosts(
+            &parse_hosts(&hosts(&["b.test", "a.test"])).unwrap_or_default(),
+            &parse_hosts(&hosts(&["A.test", "b.test"])).unwrap_or_default()
+        ));
+    }
+
+    #[test]
     fn reasons_are_short_single_lines() {
+        assert_eq!(reason(Some("evil\u{202e}moc.test")), "evilmoc.test");
         assert_eq!(reason(Some(" upload\nvideos ")), "upload videos");
         assert_eq!(reason(Some(&"x".repeat(400))).len(), MAX_REASON);
         assert_eq!(reason(None), "");

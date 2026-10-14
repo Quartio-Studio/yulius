@@ -329,7 +329,7 @@ fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
     vec![
         ToolDescriptor {
             name: "secrets_list".into(),
-            description: "List the agent secrets this project may use: names, descriptions, the hosts each is bound to and how it is added to requests. You never receive values: Yulius' proxy adds a secret to HTTP requests for its bound hosts (call them normally; in code use the environment variable NAME, which holds a placeholder), browser_fill_secret types it into a sign-in page, and any value that would appear in output shows as [secret:NAME].".into(),
+            description: "List the agent secrets this project may use: names, descriptions, the hosts each is bound to (and requested_hosts waiting for a person to allow, see secret_request_hosts) and how it is added to requests. You never receive values: Yulius' proxy adds a secret to HTTP requests for its bound hosts (call them normally; in code use the environment variable NAME, which holds a placeholder), browser_fill_secret types it into a sign-in page, and any value that would appear in output shows as [secret:NAME].".into(),
             input_schema: schema(json!({}), &[]),
         },
         ToolDescriptor {
@@ -338,7 +338,7 @@ fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
             input_schema: schema(json!({
                 "secret": {"type": "string", "description": "Secret NAME from secrets_list"},
                 "hosts": {"type": "array", "items": {"type": "string"}, "description": "Host names like api.example.com, *.example.com or api.example.com:8443"},
-                "reason": {"type": "string", "description": "What you need it for, shown to the person (short)"}
+                "reason": {"type": "string", "description": "What you need it for (short), recorded in the secrets activity"}
             }), &["secret", "hosts"]),
         },
         ToolDescriptor {

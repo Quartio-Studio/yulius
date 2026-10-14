@@ -245,7 +245,11 @@ impl App {
                 } else {
                     "every sandbox"
                 },
-                record.hosts.join(", ")
+                if record.hosts.is_empty() {
+                    "no hosts yet".to_owned()
+                } else {
+                    record.hosts.join(", ")
+                }
             ),
         )
         .await?;

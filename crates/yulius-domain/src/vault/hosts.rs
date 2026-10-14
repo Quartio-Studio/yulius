@@ -173,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn lists_need_one_to_sixteen_distinct_hosts() -> Result<(), VaultError> {
+    fn lists_hold_up_to_sixteen_distinct_hosts() -> Result<(), VaultError> {
         assert!(parse_hosts(&[])?.is_empty(), "bound to nowhere yet");
         assert!(parse_hosts(&[" ".into()])?.is_empty());
         let list = parse_hosts(&["a.com".into(), "A.com".into(), "b.com".into()])?;

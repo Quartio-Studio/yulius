@@ -232,11 +232,14 @@ pub struct AgentSecretPatch {
 }
 
 /// `POST /api/agent-secrets/{id}/request` body: answers the hosts an agent asked for (SPEC-121).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostRequestAnswer {
     /// `true`: the requested hosts join the secret's bindings; `false`: they are dismissed.
     pub allow: bool,
+    /// The requested hosts the person saw: the answer is refused (409) unless they are exactly
+    /// what waits, so a host asked for meanwhile is never allowed unseen.
+    pub hosts: Vec<String>,
 }
 
 /// One vault audit entry.

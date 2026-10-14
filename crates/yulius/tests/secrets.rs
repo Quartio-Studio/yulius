@@ -1992,12 +1992,13 @@ async fn answer_request(
     creds: &Creds,
     id: &str,
     allow: bool,
+    hosts: &[&str],
 ) -> Result<support::Resp, Box<dyn std::error::Error>> {
     call(
         &w.h.router,
         Method::POST,
         &format!("/api/agent-secrets/{id}/request"),
-        Some(json!({"allow": allow})),
+        Some(json!({"allow": allow, "hosts": hosts})),
         creds,
     )
     .await
@@ -2097,17 +2098,17 @@ async fn agents_request_hosts_and_people_allow_them() -> TestResult {
     );
 
     // Only its managers answer: a reader is refused, someone who cannot see it finds nothing.
-    let reader = answer_request(&w, &w.reader, &id, true).await?;
+    let reader = answer_request(&w, &w.reader, &id, true, &["api.vidoc.test"]).await?;
     assert_eq!(reader.status, StatusCode::FORBIDDEN, "{}", reader.body);
-    let outsider = answer_request(&w, &w.outsider, &id, true).await?;
+    let outsider = answer_request(&w, &w.outsider, &id, true, &["api.vidoc.test"]).await?;
     assert_eq!(outsider.status, StatusCode::NOT_FOUND, "{}", outsider.body);
-    let allowed = answer_request(&w, &w.writer, &id, true).await?;
+    let allowed = answer_request(&w, &w.writer, &id, true, &["api.vidoc.test"]).await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
     assert_eq!(allowed.body["hosts"], json!(["api.vidoc.test"]));
     assert_eq!(allowed.body["requested_hosts"], json!([]));
     assert_eq!(allowed.body["requested_by"], Value::Null);
     assert!(app.egress_intercepts(&s1, "api.vidoc.test", 443).await);
-    let none = answer_request(&w, &w.writer, &id, true).await?;
+    let none = answer_request(&w, &w.writer, &id, true, &["api.vidoc.test"]).await?;
     assert_eq!(none.status, StatusCode::CONFLICT, "nothing to answer");
 
     // A bound host is reported as bound; a new one dismissed binds nothing.
@@ -2133,7 +2134,7 @@ async fn agents_request_hosts_and_people_allow_them() -> TestResult {
         json!({"secret": "VIDOC_API_KEY", "hosts": ["evil.test"], "reason": "upload"}),
     )
     .await?;
-    let dismissed = answer_request(&w, &w.writer, &id, false).await?;
+    let dismissed = answer_request(&w, &w.writer, &id, false, &["evil.test"]).await?;
     assert_eq!(dismissed.status, StatusCode::OK, "{}", dismissed.body);
     assert_eq!(dismissed.body["hosts"], json!(["api.vidoc.test"]));
     assert_eq!(dismissed.body["requested_hosts"], json!([]));
@@ -2161,5 +2162,121 @@ async fn agents_request_hosts_and_people_allow_them() -> TestResult {
             activity.body
         );
     }
+    Ok(())
+}
+
+/// SPEC-121 review round 1: an answer covers exactly the hosts the person saw. A host an agent
+/// added while the page was open is never allowed unseen; the answer changes only the hosts and
+/// the request; limits and instance-wide secrets hold.
+#[tokio::test]
+async fn an_answer_covers_only_the_hosts_the_person_saw() -> TestResult {
+    let w = world().await?;
+    let created = add_agent_secret(
+        &w,
+        &w.writer,
+        "s1",
+        json!({"name": "VIDOC_API_KEY", "description": "API key for Vidoc", "value": "vidoc-key-123456"}),
+    )
+    .await?;
+    let id = created.body["id"].as_str().ok_or("id")?.to_owned();
+    let ask = |hosts: Value| {
+        mcp_tool(
+            &w.h,
+            TOKEN_S1,
+            "secret_request_hosts",
+            json!({"secret": "VIDOC_API_KEY", "hosts": hosts}),
+        )
+    };
+    ask(json!(["api.vidoc.test"])).await?;
+    // The person sees api.vidoc.test; meanwhile the agent adds evil.test.
+    ask(json!(["evil.test"])).await?;
+    for allow in [true, false] {
+        let stale = answer_request(&w, &w.writer, &id, allow, &["api.vidoc.test"]).await?;
+        assert_eq!(stale.status, StatusCode::CONFLICT, "{}", stale.body);
+    }
+    let secret = agent_secret_of(&w, "VIDOC_API_KEY").await?;
+    assert_eq!(secret["hosts"], json!([]));
+    assert_eq!(
+        secret["requested_hosts"],
+        json!(["api.vidoc.test", "evil.test"])
+    );
+    let app: Arc<dyn EgressPolicy> = w.h.app.clone();
+    let s1 = app.egress_client(TOKEN_S1).await.ok_or("s1 client")?;
+    assert!(!app.egress_intercepts(&s1, "evil.test", 443).await);
+    // What the page shows after a reload answers it (any order, any case).
+    let allowed =
+        answer_request(&w, &w.writer, &id, true, &["EVIL.test", "api.vidoc.test"]).await?;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
+    assert_eq!(
+        allowed.body["hosts"],
+        json!(["api.vidoc.test", "evil.test"])
+    );
+
+    // Bound and requested together stay within 16: the answer is refused, the request kept.
+    let many: Vec<String> = (0..16).map(|i| format!("h{i}.vidoc.test")).collect();
+    let patched = call(
+        &w.h.router,
+        Method::PATCH,
+        &format!("/api/agent-secrets/{id}"),
+        Some(json!({"hosts": many[..15]})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    ask(json!(["new.vidoc.test"])).await?;
+    let full = call(
+        &w.h.router,
+        Method::PATCH,
+        &format!("/api/agent-secrets/{id}"),
+        Some(json!({"hosts": many})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(full.status, StatusCode::OK, "{}", full.body);
+    let over = answer_request(&w, &w.writer, &id, true, &["new.vidoc.test"]).await?;
+    assert_eq!(
+        over.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        over.body
+    );
+    assert_eq!(
+        agent_secret_of(&w, "VIDOC_API_KEY").await?["requested_hosts"],
+        json!(["new.vidoc.test"])
+    );
+
+    // An instance-wide secret's request names the sandbox and is answered by administrators.
+    let global = add_agent_secret(
+        &w,
+        &w.admin,
+        "s1",
+        json!({"scope": "instance", "name": "GLOBAL_KEY", "value": "global-value-123"}),
+    )
+    .await?;
+    assert_eq!(global.status, StatusCode::CREATED, "{}", global.body);
+    let global_id = global.body["id"].as_str().ok_or("id")?.to_owned();
+    mcp_tool(
+        &w.h,
+        TOKEN_S1,
+        "secret_request_hosts",
+        json!({"secret": "GLOBAL_KEY", "hosts": ["global.test"]}),
+    )
+    .await?;
+    let listed = agent_secret_of(&w, "GLOBAL_KEY").await?;
+    assert!(
+        listed["requested_by"]
+            .as_str()
+            .is_some_and(|b| b.ends_with(" in app")),
+        "{listed}"
+    );
+    let by_writer = answer_request(&w, &w.writer, &global_id, true, &["global.test"]).await?;
+    assert_eq!(
+        by_writer.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        by_writer.body
+    );
+    let by_admin = answer_request(&w, &w.admin, &global_id, true, &["global.test"]).await?;
+    assert_eq!(by_admin.status, StatusCode::OK, "{}", by_admin.body);
     Ok(())
 }

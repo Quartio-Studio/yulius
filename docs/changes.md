@@ -11,7 +11,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   administrators find the scope under More options. Agents send the `$NAME` placeholder in
   whatever header or query the service wants. They work out the service's host and ask for it
   with `secret_request_hosts`. The Secrets page shows "Task #N asks to send it to …" with Allow
-  and Dismiss, and nothing is sent anywhere before a person allows it.
+  and Dismiss, and nothing is sent anywhere before a person allows it. Allow names the hosts the
+  person saw, so a host an agent asks for meanwhile is never allowed unseen. API change:
+  `POST /api/sandboxes/{sid}/agent-secrets` now defaults to no hosts and `injection: "none"`
+  (it was `bearer`).
 - Typing in a task terminal or a shell shows up as fast as the agent echoes it (SPEC-118,
   ADR-0096, task #103). A keystroke used to wait for three database reads, plus a GitHub call
   whenever the permission cache had expired. The 60 s access re-check also froze the terminal's

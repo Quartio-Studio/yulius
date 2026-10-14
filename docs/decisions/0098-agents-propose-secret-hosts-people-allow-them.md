@@ -22,8 +22,12 @@ host from the description and the service's documentation and proposes it with t
 `requested_hosts`, `requested_by`), audits it (`vault.agent.request`) and flags the task as
 needing a person. It never binds anything. On the Secrets page, a person who manages the secret
 sees "Task #N asks to send it to …" and presses Allow (the hosts join the bindings,
-`vault.agent.allow`) or Dismiss (`vault.agent.dismiss`). Requests are compare-and-set, so an
-answer never drops a newer request unseen. People can still edit the hosts directly. Instance
+`vault.agent.allow`) or Dismiss (`vault.agent.dismiss`). The answer names the hosts the person
+saw and is refused (409) unless they are exactly what waits, so a host an agent adds while the
+page is open is never allowed unseen. The bindings and the request change in one compare-and-set
+UPDATE that touches nothing else in the row, so an answer cannot undo a concurrent edit (a rotated
+value, a removed host). A request names its askers (`#N`, and the sandbox for a secret of every
+sandbox). People can still edit the hosts directly. Instance
 administrators pick the scope under "More options". Older secrets keep their injection, and the
 edit dialog shows it only for them.
 

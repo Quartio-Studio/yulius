@@ -250,6 +250,36 @@ impl VaultStore for SqliteStore {
         .await
     }
 
+    async fn vault_answer_request(
+        &self,
+        id: &str,
+        request: &[String],
+        bound: &[String],
+        hosts: &[String],
+        by: &str,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let (id, request, bound, hosts, by) = (
+            id.to_owned(),
+            to_json(request),
+            to_json(bound),
+            to_json(hosts),
+            by.to_owned(),
+        );
+        self.call(move |c| {
+            let changed = c
+                .execute(
+                    "UPDATE vault_secrets SET hosts = ?4, requested_hosts = '[]', requested_by = NULL, \
+                     updated_by = ?5, updated_at = ?6 \
+                     WHERE id = ?1 AND section = 'agent' AND requested_hosts = ?2 AND hosts = ?3",
+                    params![id, request, bound, hosts, by, at.0],
+                )
+                .map_err(db)?;
+            Ok(changed == 1)
+        })
+        .await
+    }
+
     async fn vault_touch_used(&self, id: &str, at: Timestamp) -> AppResult<()> {
         let id = id.to_owned();
         self.call(move |c| {
@@ -572,6 +602,59 @@ mod tests {
             })
             .await?;
         Ok(store)
+    }
+
+    #[tokio::test]
+    async fn requests_are_answered_only_as_seen() -> Result<(), Box<dyn std::error::Error>> {
+        let store = store_with_sandboxes().await?;
+        let hosts = |l: &[&str]| l.iter().map(|h| (*h).to_owned()).collect::<Vec<String>>();
+        store
+            .vault_insert(&record("a", VaultSection::Agent, Some("s1"), "KEY"))
+            .await?;
+        assert!(
+            store
+                .vault_set_request("a", &[], &hosts(&["new.test"]), Some("#1"))
+                .await?
+        );
+        assert!(
+            !store
+                .vault_set_request("a", &[], &hosts(&["other.test"]), Some("#2"))
+                .await?,
+            "the request is no longer empty"
+        );
+        let both = hosts(&["api.example.com", "new.test"]);
+        let bound = hosts(&["api.example.com"]);
+        // A stale request or stale bindings change nothing.
+        for (request, seen) in [(hosts(&["x.test"]), &bound), (hosts(&["new.test"]), &both)] {
+            assert!(
+                !store
+                    .vault_answer_request("a", &request, seen, &both, "u1", Timestamp(9))
+                    .await?
+            );
+        }
+        assert!(
+            store
+                .vault_answer_request(
+                    "a",
+                    &hosts(&["new.test"]),
+                    &bound,
+                    &both,
+                    "u1",
+                    Timestamp(9)
+                )
+                .await?
+        );
+        let got = store.vault_get("a").await?.ok_or("row")?;
+        assert_eq!(got.hosts, both);
+        assert!(got.requested_hosts.is_empty());
+        assert_eq!(got.requested_by, None);
+        assert_eq!(got.updated_at, Timestamp(9));
+        assert_eq!(
+            got.envelope.ciphertext,
+            vec![4, 5, 6],
+            "the value is untouched"
+        );
+        Ok(())
     }
 
     #[tokio::test]

@@ -140,6 +140,18 @@ pub trait VaultStore: Send + Sync {
         to: &[String],
         by: Option<&str>,
     ) -> AppResult<bool>;
+    /// Answers an agent secret's host request in one step: `hosts` replace its bindings and the
+    /// request is cleared, only while the request still is `request` and the bindings still are
+    /// `bound` (what the person saw); `false` otherwise. Nothing else in the row changes.
+    async fn vault_answer_request(
+        &self,
+        id: &str,
+        request: &[String],
+        bound: &[String],
+        hosts: &[String],
+        by: &str,
+        at: Timestamp,
+    ) -> AppResult<bool>;
     /// Records an agent's use.
     async fn vault_touch_used(&self, id: &str, at: Timestamp) -> AppResult<()>;
     /// Records a re-authentication of a browser session.

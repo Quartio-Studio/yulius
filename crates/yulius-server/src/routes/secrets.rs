@@ -239,9 +239,7 @@ async fn agent_answer(
     Path(id): Path<String>,
     Json(answer): Json<HostRequestAnswer>,
 ) -> ApiResult<Json<AgentSecretView>> {
-    Ok(Json(
-        app.answer_host_request(&ctx, &id, answer.allow).await?,
-    ))
+    Ok(Json(app.answer_host_request(&ctx, &id, &answer).await?))
 }
 
 async fn agent_delete(

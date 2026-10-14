@@ -2137,7 +2137,7 @@ route('POST', `/api/sandboxes/${ID}/agent-secrets`, ({ db, p, body }) => {
   if (vaultOf(db).agent.some((s) => s.name === body.name && (s.scope === 'instance' || s.sandbox === sandbox.id))) fail(409, 'conflict', `an agent secret named ${body.name} already applies here`);
   const secret = { id: `as_${db.nextId++}`, sandbox: scope === 'sandbox' ? sandbox.id : null, scope, name: body.name, description: body.description || '', hosts: body.hosts || [], injection: body.injection || 'none', header_name: body.header_name || null, username: body.username || null, value: body.value, created_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString(), last_used_at: null, requested_hosts: [], requested_by: null };
   vaultOf(db).agent.push(secret);
-  audit(db, 'vault.agent.create', secret.id, `${secret.name} → ${secret.hosts.join(', ')}`);
+  audit(db, 'vault.agent.create', secret.id, `${secret.name} → ${secret.hosts.join(', ') || 'no hosts yet'}`);
   return json(201, agentView(db, secret, sandbox));
 });
 route('PATCH', `/api/agent-secrets/${ID}`, ({ db, p, body }) => {
@@ -2166,7 +2166,11 @@ route('POST', `/api/agent-secrets/${ID}/request`, ({ db, p, body }) => {
   if (!agentView(db, secret, sandbox).can_manage) fail(403, 'forbidden', 'only people who manage this secret answer its requests');
   if (!secret.requested_hosts.length) fail(409, 'conflict', 'no hosts wait to be allowed for this secret');
   const asked = secret.requested_hosts;
-  if (body.allow) secret.hosts = [...new Set([...secret.hosts, ...asked])];
+  const seen = (body.hosts || []).map((h) => String(h).toLowerCase());
+  if (seen.length !== asked.length || !asked.every((h) => seen.includes(h))) fail(409, 'conflict', `an agent changed the request meanwhile: reload to see the hosts that wait (${asked.join(', ')})`);
+  const hosts = [...new Set([...secret.hosts, ...asked])];
+  if (body.allow && hosts.length > 16) fail(422, 'invalid', 'at most 16 hosts');
+  if (body.allow) secret.hosts = hosts;
   secret.requested_hosts = [];
   secret.requested_by = null;
   audit(db, body.allow ? 'vault.agent.allow' : 'vault.agent.dismiss', secret.id, `${secret.name} → ${asked.join(', ')}`);
