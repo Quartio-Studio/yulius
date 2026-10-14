@@ -367,7 +367,7 @@ impl TaskStore for SqliteStore {
 
     async fn delete_task(&self, id: &TaskId) -> AppResult<bool> {
         let id = id.as_str().to_owned();
-        self.call(move |c| {
+        self.call_access(move |c| {
             let tx = c.transaction().map_err(db)?;
             let statements = [
                 "DELETE FROM metrics WHERE task_id = ?1",
@@ -517,7 +517,7 @@ impl TaskStore for SqliteStore {
             from.as_str().to_owned(),
             to.as_str().to_owned(),
         );
-        self.call(move |c| {
+        self.call_access(move |c| {
             let n = c
                 .execute(
                     "UPDATE tasks SET owner_id = ?3, control_requested_by = NULL, \
@@ -543,7 +543,7 @@ impl TaskStore for SqliteStore {
             from.as_str().to_owned(),
             to.as_str().to_owned(),
         );
-        self.call(move |c| {
+        self.call_access(move |c| {
             let n = c
                 .execute(
                     "UPDATE tasks SET owner_id = ?3, control_requested_by = NULL, \
