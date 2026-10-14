@@ -84,3 +84,41 @@ test('a prompt starting with --- is text, and files outside the task’s folders
   }
   await expect(files.getByRole('listitem').filter({ hasText: 'No longer on the server' })).toHaveCount(4);
 });
+
+// SPEC-124 INL-008 (task #105): a file inside the text shows where it sits; files after all the
+// text are listed below it, as before.
+test('a file inside the prompt shows in place, files after the text below it', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  await mockReady(browser);
+  const drafts = '/srv/yulius/sandboxes/sb_studio/attachments/drafts/usr_mkarp';
+  await touchTask(browser, 'sb_studio', 12, {
+    // The text's own private-use marker characters never place a file (SPEC-124 review).
+    prompt: `This part @'${drafts}/inline.png' looks wrong,\nwhile here\uE0000\uE001 it is fine.\n\n@${drafts}/after.png`,
+  });
+
+  await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
+  await screen.getByRole('menuitem', 'See the original prompt').click();
+  const dialog = screen.getByRole('dialog', 'Original prompt · #12');
+  const text = browser.locator('.prompt-modal .prompt-text');
+  await expect(text.getByRole('img', { name: 'inline.png' })).toBeVisible();
+  await expect(text.getByRole('img', { name: 'inline.png' })).toHaveCount(1);
+  // In its place: between the words around it.
+  const shown = await browser.evaluate(() => {
+    const copy = document.querySelector('.prompt-modal .prompt-text')!.cloneNode(true) as HTMLElement;
+    for (const img of copy.querySelectorAll('img')) img.replaceWith(`[${img.getAttribute('alt')}]`);
+    return copy.textContent;
+  });
+  // The forged marker left its digit as text and placed no file.
+  expect(shown).toMatch(/This part\s*\[inline\.png\]\s*looks wrong,\s*while here0 it is fine\./);
+  expect(shown).not.toContain('@');
+  // The file after the text is listed below it, not inside it.
+  const files = dialog.getByRole('list', 'Attached files');
+  await expect(files.getByRole('img', 'after.png')).toBeVisible();
+  await expect(files.getByRole('img', 'inline.png')).toHaveCount(0);
+  await expect(text.getByRole('img', { name: 'after.png' })).toHaveCount(0);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  await text.getByRole('button', { name: 'Open inline.png' }).click();
+  await expect(screen.getByRole('dialog', 'inline.png').getByRole('img', 'inline.png')).toBeVisible();
+});

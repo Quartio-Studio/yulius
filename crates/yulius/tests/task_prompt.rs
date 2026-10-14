@@ -94,6 +94,28 @@ async fn the_original_prompt_is_its_text_and_attached_files_for_whoever_sees_the
     Ok(())
 }
 
+/// SPEC-124 INL-008: the prompt in order, each file where it sits, so the view shows it there; an
+/// older prompt's files follow its text.
+#[tokio::test]
+async fn the_original_prompt_keeps_each_file_at_its_place() -> TestResult {
+    let (h, _, [alice, ..]) =
+        seeded(|d| format!("This part @'{d}/shot.png' looks wrong.\n\n@{d}/notes.txt")).await?;
+    let prompt = call(&h.router, Method::GET, "/api/tasks/t1/prompt", None, &alice).await?;
+    assert_eq!(prompt.status, StatusCode::OK, "{:?}", prompt.body);
+    assert_eq!(prompt.body["text"], "This part looks wrong.");
+    assert_eq!(
+        prompt.body["parts"],
+        serde_json::json!([
+            {"text": "This part "},
+            {"attachment": 0},
+            {"text": " looks wrong.\n\n"},
+            {"attachment": 1},
+        ])
+    );
+    assert_eq!(prompt.body["attachments"][0]["name"], "shot.png");
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_prompt_without_attachments_or_whose_files_are_gone() -> TestResult {
     let (h, drafts, [alice, ..]) = seeded(|d| format!("@{d}/shot.png")).await?;

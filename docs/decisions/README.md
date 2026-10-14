@@ -99,6 +99,7 @@ number differs from the file name, and a record this index does not list.
 - [0086](0086-a-lost-onboarding-task-returns-the-sandbox-to-pending.md): A lost onboarding task returns the sandbox to pending; a worktree's main repository is trusted too
 - [0095](0095-a-goal-task-starts-with-its-goal-as-the-launch-prompt.md): A goal task starts with its `/goal` as the launch prompt: one message, nothing typed; a person's keys wait while a prompt task's images are typed
 - [0096](0096-terminal-input-rides-a-write-grant.md): Terminal input rides a per-viewer write grant tied to the store's access epoch; the access re-check runs beside the stream
+- [0101](0101-attached-files-keep-their-place-in-the-prompt.md): Attached files keep their place in the prompt: an inline `@'path'` mention, kept in order to the request file, the first message and the original prompt view; the composer holds files inside its text
 - [0094](0094-onboarding-installs-the-gate-in-its-own-pull-request.md): Onboarding installs the gate (lint, format, dead-code check, CI per project) in its own pull request, baselining existing findings
 - [0099](0099-a-bare-number-is-a-task-a-pull-request-says-pr.md): A bare #N is a task (sidebar and Tasks rows show it); a pull request's chip says "PR #N"
 - [0098](0098-agents-propose-secret-hosts-people-allow-them.md): Agents propose an agent secret's hosts and people allow them; a new secret is a name, a value and a description

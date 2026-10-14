@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, mock, promptText } from './support.ts';
 
 failOnPageErrors();
 
@@ -99,7 +99,7 @@ test('a kept draft whose time has passed waits for you instead; the send button 
     }));
   });
   await app.open(mock('/s/studio'));
-  await expect(screen.getByRole('textbox', 'Task prompt')).toHaveValue('Kept from yesterday');
+  await expect.poll(() => promptText(browser)).toBe('Kept from yesterday');
   await expect(screen.getByRole('button', /Run after: When I decide/)).toBeVisible();
   await expect(screen.getByRole('button', 'Prepare task')).toHaveAttribute('title', /^Prepare task \(/);
 });
