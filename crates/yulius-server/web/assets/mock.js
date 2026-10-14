@@ -12,7 +12,8 @@
 // role=member|admin|superadmin (default superadmin), contained=0 (not isolated), github=0,
 // update=1|fail (an update is on offer | its install rolls back), helper=0 (no update helper),
 // jev=config (a Jev key file is configured), fail=<path> (GETs of that path answer 500),
-// failpost=<path> (POSTs of that path answer 500).
+// failpost=<path> (POSTs of that path answer 500), as=<login> (signed in as another member, a
+// teammate in a second window: mock pages of one origin relay presence to each other, SPEC-127).
 
 import { counter, taskInfo } from './status.js';
 
@@ -283,6 +284,11 @@ function seed(params) {
   db.promotionPr = new Map(); // sandbox id → open promotion PR URL (merge_commit promotion)
   // `sandboxes=0`: a fresh instance with no sandbox yet; the home screen shows its first steps
   // (import a repository, create one from a template).
+  // `as=<login>`: a teammate with write access, for a second window (SPEC-127).
+  if (params.get('as')) {
+    const login = params.get('as').replace(/[^A-Za-z0-9-]/g, '');
+    Object.assign(db.me.user, { id: `usr_${login}`, login, display_name: login, is_superadmin: false, is_instance_admin: false });
+  }
   if ((!linked && role !== 'superadmin') || params.get('sandboxes') === '0') {
     db.sandboxes = [];
     db.tasks = [];
@@ -2383,6 +2389,34 @@ function relayPresence(db, scope, sandboxId, body) {
 }
 
 route('PUT', '/api/notes/presence', ({ db, body }) => relayPresence(db, 'team', null, body));
+
+// File presence (SPEC-127): recorded (`filePresenceSent`) and relayed like the server does, to this
+// page and to the other mock pages of this origin (a teammate's window, `as=<login>`); tests act
+// as a teammate with `filePresence(event)`.
+route('PUT', `/api/sandboxes/${ID}/files/presence`, ({ db, p, body }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  need(sandbox, 'write');
+  for (const key of Object.keys(body)) if (!['root', 'path', 'sha256', 'selection', 'hello', 'client'].includes(key)) fail(422, 'invalid', `unknown field ${key}`);
+  if (body.client !== undefined && (typeof body.client !== 'string' || !/^[A-Za-z0-9]{0,32}$/.test(body.client))) fail(422, 'invalid', 'a client is at most 32 letters and digits');
+  if (body.sha256 !== undefined && !/^([0-9a-f]{64})?$/.test(body.sha256)) fail(422, 'invalid', 'sha256 is 64 lowercase hex digits');
+  if (db.failPresence) fail(429, 'capacity', 'too many presence updates; slow down');
+  const path = repoPath(body.path);
+  const selection = body.selection;
+  const offset = (n) => Number.isInteger(n) && n >= 0 && n <= 2 << 20;
+  if (!path || selection === undefined
+    || (selection !== null && (typeof selection !== 'object' || Object.keys(selection).some((k) => k !== 'anchor' && k !== 'head') || !offset(selection.anchor) || !offset(selection.head)))) {
+    fail(422, 'invalid', 'path and selection are required');
+  }
+  const root = body.root || 'sandbox';
+  const client = body.client || '';
+  const sha256 = body.sha256 || '';
+  (db.filePresenceSent = db.filePresenceSent || []).push({ sandbox_id: sandbox.id, root, path, sha256, selection, hello: Boolean(body.hello), client });
+  const user = db.me.user;
+  const event = { type: 'file.presence', sandbox_id: sandbox.id, root, path, user_id: user.id, client, name: user.github_linked ? user.login : user.display_name, sha256, selection, hello: Boolean(body.hello) };
+  emit(db, event);
+  if (db.presenceChannel) db.presenceChannel.postMessage(event);
+  return json(204);
+});
 route('PUT', `/api/sandboxes/${ID}/notes/presence`, ({ db, p, body }) => relayPresence(db, 'sandbox', sandboxOf(db, p[0]).id, body));
 
 // ---- Administration
@@ -4025,6 +4059,12 @@ export function createMockTransport(params) {
   // event, as if it were still on its way (SPEC-041).
   db.editNote = (scope, body, by = 'alice', options) => putNote(db, scope, body, by, options);
   db.notePresence = (event) => emit(db, { type: 'note.presence', sandbox_id: null, client: '', hello: false, ...event });
+  db.filePresence = (event) => emit(db, { type: 'file.presence', sandbox_id: 'sb_studio', root: 'sandbox', client: '', hello: false, ...event });
+  // The other mock windows of this origin are teammates on the same server (SPEC-127).
+  db.presenceChannel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('yulius-mock-presence') : null;
+  if (db.presenceChannel) db.presenceChannel.onmessage = (message) => emit(db, message.data);
+  // A file's text in the mock repository (`repoFile('sb_studio', 'long.md', text)`), before it is opened.
+  db.repoFile = (sandboxId, path, text, root = 'sandbox') => { repoTree(db, sandboxId, root).files.set(path, text); };
   db.resyncNow = () => resync(db);
   db.keepaliveRequests = [];
   // `noteloads=fail`: the notes cannot be loaded from the start (a server still restarting).

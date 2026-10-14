@@ -16,6 +16,7 @@ import { readJson, writeJson } from './store.js';
 import { SAVE_KEYS, WRAP_KEYS, WRAP_ARIA } from './shortcuts.js';
 import { attachEditorDrop } from './filedrop.js';
 import { createSplitter, layoutPrefs } from './splitter.js';
+import { createEditorLayer } from './editorlayer.js';
 
 const MONACO_BASE = '/assets/vendor/monaco/vs';
 const LANGUAGE_SERVICES = new Set(['javascript', 'typescript', 'json', 'css', 'scss', 'less', 'html']);
@@ -182,6 +183,7 @@ export function createEditorView(ctx, sandbox, getTask) {
   let root = 'sandbox';
   let monaco = null;
   let editor = null;
+  let layer = null; // the drawn selections (SPEC-127 EDT-007)
   let started = false;
   const tabs = []; // {path, model, sha, dirty, viewState, external}; text instead of model while suspended
   let active = null;
@@ -436,7 +438,11 @@ export function createEditorView(ctx, sandbox, getTask) {
       tabSize: 2,
       wordBasedSuggestions: 'allDocuments',
       quickSuggestions: { other: true, comments: false, strings: false },
+      // One plain box per range and row, copied into rounded, gliding shapes (editorlayer.js).
+      roundedSelection: false,
+      cursorSmoothCaretAnimation: 'on',
     });
+    layer = createEditorLayer(monaco, editor);
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => { if (active) save(active); });
     editor.onDidChangeCursorPosition(() => renderStatus());
     return true;
@@ -690,6 +696,8 @@ export function createEditorView(ctx, sandbox, getTask) {
     // models, so other sandboxes' files neither leak nor feed suggestions.
     destroy() {
       if (sizeWatch) sizeWatch.disconnect();
+      if (layer) layer.destroy();
+      layer = null;
       for (const tab of tabs) if (tab.model) tab.model.dispose();
       tabs.length = 0;
       active = null;

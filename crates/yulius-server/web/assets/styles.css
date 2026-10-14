@@ -2098,10 +2098,18 @@ a.dl-task:hover { text-decoration: underline; }
 .tl-name { position: absolute; left: 0; bottom: 100%; max-width: 16ch; overflow: hidden; text-overflow: ellipsis; padding: 0 4px;
   border-radius: var(--radius-xs) var(--radius-xs) var(--radius-xs) 0; background: var(--tl-colour); color: var(--peer-ink); font-size: var(--fs-xs); font-weight: 600; line-height: var(--lh-xs); white-space: nowrap; }
 .tl-caret.tl-below .tl-name { bottom: auto; top: 100%; border-radius: 0 var(--radius-xs) var(--radius-xs) var(--radius-xs); }
+.tl-caret.tl-off { opacity: 0; }
+/* The Editor (SPEC-127): Monaco's selection boxes and teammates' decorations are see-through and
+   copied into the same shapes, in a layer that scrolls with Monaco's text, behind it. */
+.ed-layer { position: absolute; top: 0; left: 0; width: 0; height: 0; overflow: visible; pointer-events: none; }
+.ed-host .monaco-editor .view-overlays .selected-text,
+.ed-host .monaco-editor .view-overlays .ed-peer-range { background: transparent; }
 /* Forced colours paint author backgrounds away: the browser's own selection comes back. */
 @media (forced-colors: active) {
   .notes-text.drawn-selection::selection { background: Highlight; color: HighlightText; }
   .text-layer { display: none; }
+  .ed-layer { display: none; }
+  .ed-host .monaco-editor .view-overlays .selected-text { background: Highlight; }
 }
 .notes-text[readonly] { color: var(--text-2); }
 .notes-meta { flex: none; margin: 0; padding: 4px 16px; min-height: calc(var(--lh-sm) + 8px); border-top: 1px solid var(--border); color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }

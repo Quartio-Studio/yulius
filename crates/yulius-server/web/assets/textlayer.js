@@ -53,19 +53,116 @@ export function peerColour(id) {
 }
 
 /**
+ * The shapes of a layer (the notepads' and the Editor's): `own`, the group of the person's own
+ * selection, `place(group, boxes)` shows `boxes` ({x, y, width, height}) in a group, reusing its
+ * shapes in order so a changing selection glides, and `drawPeers([{id, colourOf, name, boxes,
+ * caret, below, data}])` shows those teammates (`caret` {x, y, height}, or `null` when their caret
+ * is out of sight; `below` hangs the name under it; `data` lands on the group's dataset) and lets
+ * the others fade out.
+ */
+export function createMarks(content) {
+  const own = h('div', { class: 'tl-group tl-own' });
+  content.append(own);
+  const shapes = new Map([[own, []]]);
+  const peerMarks = new Map(); // id → {group, caret, name}
+
+  function place(group, boxes) {
+    const pool = shapes.get(group);
+    boxes.forEach((box, i) => {
+      let shape = pool[i];
+      const fresh = !shape;
+      if (fresh) {
+        // A new shape starts where it belongs and fades in, instead of flying in from the corner.
+        shape = h('div', { class: 'tl-shape tl-gone tl-still' });
+        // Faded out and not taken back meanwhile: gone for good (the pool's tail).
+        shape.addEventListener('transitionend', () => {
+          if (!shape.classList.contains('tl-gone') || !shape.isConnected) return;
+          pool.splice(pool.indexOf(shape), 1);
+          shape.remove();
+        });
+        pool.push(shape);
+        group.append(shape);
+      }
+      shape.style.transform = `translate(${box.x}px, ${box.y}px)`;
+      shape.style.width = `${box.width}px`;
+      shape.style.height = `${box.height}px`;
+      if (fresh) shape.getBoundingClientRect(); // the start of its fade
+      shape.classList.remove('tl-gone', 'tl-still');
+    });
+    for (const shape of pool.slice(boxes.length)) shape.classList.add('tl-gone');
+  }
+
+  /** A teammate's marks: a group in their colour with their selection, caret and name. */
+  function marksOf(peer) {
+    let marks = peerMarks.get(peer.id);
+    if (!marks) {
+      const name = h('span', { class: 'tl-name' });
+      const caret = h('div', { class: 'tl-caret tl-still' }, name);
+      const group = h('div', { class: 'tl-group tl-peer tl-leaving' }, caret);
+      group.style.setProperty('--tl-colour', peerColour(peer.colourOf || peer.id));
+      shapes.set(group, []);
+      content.append(group);
+      marks = { group, caret, name, fresh: true };
+      peerMarks.set(peer.id, marks);
+    }
+    return marks;
+  }
+
+  function drawPeers(peers) {
+    const showing = new Set(peers.map((peer) => peer.id));
+    for (const [id, marks] of peerMarks) {
+      if (showing.has(id) || marks.group.classList.contains('tl-leaving')) continue;
+      marks.group.classList.add('tl-leaving');
+      marks.leaving = setTimeout(() => {
+        marks.group.remove();
+        shapes.delete(marks.group);
+        peerMarks.delete(id);
+      }, LEAVE_MS);
+    }
+    for (const peer of peers) {
+      const marks = marksOf(peer);
+      clearTimeout(marks.leaving);
+      const { group, caret, name } = marks;
+      Object.assign(group.dataset, peer.data || {});
+      if (name.textContent !== peer.name) name.textContent = peer.name;
+      place(group, peer.boxes);
+      caret.classList.toggle('tl-off', !peer.caret);
+      if (peer.caret) {
+        caret.style.transform = `translate(${peer.caret.x - CARET_PX / 2}px, ${peer.caret.y}px)`;
+        caret.style.height = `${peer.caret.height}px`;
+        caret.classList.toggle('tl-below', Boolean(peer.below));
+        if (marks.fresh) {
+          caret.getBoundingClientRect(); // in place before it fades in
+          marks.fresh = false;
+        }
+        caret.classList.remove('tl-still');
+      }
+      group.classList.remove('tl-leaving');
+    }
+  }
+
+  return {
+    own,
+    place,
+    drawPeers,
+    destroy() {
+      for (const marks of peerMarks.values()) clearTimeout(marks.leaving);
+    },
+  };
+}
+
+/**
  * The layer for `textarea`: `{el, refresh, setPeers, destroy}`. `el` goes right before the text
  * box in a positioned parent; `refresh()` redraws after the text changed from code;
  * `setPeers([{id, colourOf, name, start, end, head}])` shows those teammates (in offsets of the
  * text box's text; `colourOf` picks the colour, default `id`) and lets the others fade out.
  */
 export function createTextLayer(textarea) {
-  const own = h('div', { class: 'tl-group tl-own' });
-  const content = h('div', { class: 'tl-content' }, own);
+  const content = h('div', { class: 'tl-content' });
   const mirror = h('div', { class: 'tl-mirror' });
   const el = h('div', { class: 'text-layer', 'aria-hidden': 'true' }, mirror, content);
   textarea.classList.add('drawn-selection');
-  const shapes = new Map([[own, []]]);
-  const peerMarks = new Map(); // id → {group, caret, name}
+  const marks = createMarks(content);
   let peers = [];
   let frame = 0;
   let scrolled = false; // a scroll moved the lines in view: this draw jumps, it does not glide
@@ -138,84 +235,26 @@ export function createTextLayer(textarea) {
     return { x: rect.left - origin.left, y: middle - lineHeight / 2, height: lineHeight };
   }
 
-  /**
-   * Shows `boxes` in `group`, reusing its shapes in order so a changing selection glides. Only
-   * lines within a screen of the view are drawn: selecting all of a long note stays light.
-   */
-  function place(group, all) {
+  /** Only lines within a screen of the view are drawn: selecting all of a long note stays light. */
+  function near(boxes) {
     const reach = textarea.clientHeight;
-    const boxes = all.filter((box) => box.y + box.height >= textarea.scrollTop - reach && box.y <= textarea.scrollTop + 2 * reach);
-    const pool = shapes.get(group);
-    boxes.forEach((box, i) => {
-      let shape = pool[i];
-      const fresh = !shape;
-      if (fresh) {
-        // A new shape starts where it belongs and fades in, instead of flying in from the corner.
-        shape = h('div', { class: 'tl-shape tl-gone tl-still' });
-        // Faded out and not taken back meanwhile: gone for good (the pool's tail).
-        shape.addEventListener('transitionend', () => {
-          if (!shape.classList.contains('tl-gone') || !shape.isConnected) return;
-          pool.splice(pool.indexOf(shape), 1);
-          shape.remove();
-        });
-        pool.push(shape);
-        group.append(shape);
-      }
-      shape.style.transform = `translate(${box.x}px, ${box.y}px)`;
-      shape.style.width = `${box.width}px`;
-      shape.style.height = `${box.height}px`;
-      if (fresh) shape.getBoundingClientRect(); // the start of its fade
-      shape.classList.remove('tl-gone', 'tl-still');
-    });
-    for (const shape of pool.slice(boxes.length)) shape.classList.add('tl-gone');
-  }
-
-  /** A teammate's marks: a group in their colour with their selection, caret and name. */
-  function marksOf(peer) {
-    let marks = peerMarks.get(peer.id);
-    if (!marks) {
-      const name = h('span', { class: 'tl-name' });
-      const caret = h('div', { class: 'tl-caret tl-still' }, name);
-      const group = h('div', { class: 'tl-group tl-peer tl-leaving' }, caret);
-      group.style.setProperty('--tl-colour', peerColour(peer.colourOf || peer.id));
-      shapes.set(group, []);
-      content.append(group);
-      marks = { group, caret, name, fresh: true };
-      peerMarks.set(peer.id, marks);
-    }
-    return marks;
+    return boxes.filter((box) => box.y + box.height >= textarea.scrollTop - reach && box.y <= textarea.scrollTop + 2 * reach);
   }
 
   function drawPeers(layout) {
-    const showing = new Set(peers.map((peer) => peer.id));
-    for (const [id, marks] of peerMarks) {
-      if (showing.has(id) || marks.group.classList.contains('tl-leaving')) continue;
-      marks.group.classList.add('tl-leaving');
-      marks.leaving = setTimeout(() => {
-        marks.group.remove();
-        shapes.delete(marks.group);
-        peerMarks.delete(id);
-      }, LEAVE_MS);
-    }
-    for (const peer of peers) {
-      const marks = marksOf(peer);
-      clearTimeout(marks.leaving);
-      const { group, caret, name } = marks;
-      Object.assign(group.dataset, { start: String(peer.start), end: String(peer.end), head: String(peer.head) });
-      if (name.textContent !== peer.name) name.textContent = peer.name;
-      place(group, lineBoxes(layout, peer.start, peer.end));
+    marks.drawPeers(peers.map((peer) => {
       const at = caretBox(layout, peer.head);
-      caret.style.transform = `translate(${at.x - CARET_PX / 2}px, ${at.y}px)`;
-      caret.style.height = `${at.height}px`;
-      // On the first line in view the name hangs below the caret, where the layer does not cut it off.
-      caret.classList.toggle('tl-below', at.y - textarea.scrollTop < at.height);
-      if (marks.fresh) {
-        caret.getBoundingClientRect(); // in place before it fades in
-        marks.fresh = false;
-      }
-      caret.classList.remove('tl-still');
-      group.classList.remove('tl-leaving');
-    }
+      return {
+        id: peer.id,
+        colourOf: peer.colourOf,
+        name: peer.name,
+        boxes: near(lineBoxes(layout, peer.start, peer.end)),
+        caret: at,
+        // On the first line in view the name hangs below the caret, where the layer does not cut it off.
+        below: at.y - textarea.scrollTop < at.height,
+        data: { start: String(peer.start), end: String(peer.end), head: String(peer.head) },
+      };
+    }));
   }
 
   function draw() {
@@ -227,10 +266,10 @@ export function createTextLayer(textarea) {
       requestAnimationFrame(() => content.classList.remove('tl-jump'));
     }
     content.style.transform = `translate(${-textarea.scrollLeft}px, ${-textarea.scrollTop}px)`;
-    own.classList.toggle('tl-blurred', document.activeElement !== textarea);
+    marks.own.classList.toggle('tl-blurred', document.activeElement !== textarea);
     const layout = layOut();
     const { selectionStart, selectionEnd } = textarea;
-    place(own, lineBoxes(layout, Math.min(selectionStart, selectionEnd), Math.max(selectionStart, selectionEnd)));
+    marks.place(marks.own, near(lineBoxes(layout, Math.min(selectionStart, selectionEnd), Math.max(selectionStart, selectionEnd))));
     drawPeers(layout);
   }
 
@@ -258,7 +297,7 @@ export function createTextLayer(textarea) {
     },
     destroy() {
       if (frame) cancelAnimationFrame(frame);
-      for (const marks of peerMarks.values()) clearTimeout(marks.leaving);
+      marks.destroy();
       for (const name of events) textarea.removeEventListener(name, schedule);
       textarea.removeEventListener('scroll', onScroll);
       document.removeEventListener('selectionchange', onSelection);
