@@ -238,8 +238,8 @@ fn github_cli_check(version: Option<&str>) -> Check {
             Level::Warn,
             format!(
                 "{v} is older than {major}.{minor}.{patch}: `gh pr edit` and `gh issue view \
-                 --comments` fail in every sandbox; install it from GitHub's package repository \
-                 ({GH_INSTALL_URL}), {rebuild}"
+                 --comments` fail here and in every sandbox; install it from GitHub's package \
+                 repository ({GH_INSTALL_URL}), {rebuild}"
             ),
         ),
         Some(v) => check("GitHub CLI", Level::Ok, v),
@@ -540,6 +540,8 @@ mod tests {
                 line,
                 "2.82.1",
                 "gh pr edit",
+                "gh issue view --comments",
+                "fail here and in every sandbox",
                 GH_INSTALL_URL,
                 "sandbox-base build",
             ] {
@@ -572,6 +574,7 @@ mod tests {
         let c = github_cli_check(None);
         assert_eq!(c.level, Level::Warn);
         assert!(c.detail.contains(GH_INSTALL_URL), "{}", c.detail);
+        assert!(c.detail.contains("sandbox-base build"), "{}", c.detail);
         assert!(!c.detail.contains("apt-get install gh"), "{}", c.detail);
     }
 }
