@@ -208,6 +208,7 @@ export function createStore(api) {
       case 'account.updated': emit('account', event.account); break;
       case 'update.updated': emit('update', event); break;
       case 'note.updated': emit('note', event); break;
+      case 'pulls.updated': pullsChanged(event.sandbox_id); break;
       case 'resync': emit('resync'); break;
       default: break;
     }
@@ -235,8 +236,11 @@ export function createStore(api) {
 
   // Pull requests per sandbox, for the sidebar and the Tasks page: one read of the Git overview
   // shared by every view watching the sandbox, refreshed every minute while the tab is in view and
-  // online and when it is shown again (at most every 15 s) — never while hidden (PERF-12).
-  const pullWatch = new Map(); // sandbox id → { views, at, timer }
+  // online and when it is shown again (at most every 15 s) — never while hidden (PERF-12). The
+  // server says when they changed (`pulls.updated`, SPEC-108): read at once while in view, or as
+  // soon as the tab is shown again. Reads of a sandbox never overlap, so an older one cannot answer
+  // last, and a change announced during a read brings one more read after it.
+  const pullWatch = new Map(); // sandbox id → { views, at, timer, reading, again, due }
   const pollPaused = () => document.hidden || navigator.onLine === false;
   // The overview takes seconds (GitHub and Git for every task), so this browser keeps what the
   // last read said, per user, and a page load shows it at once until its own read replaces it
@@ -265,9 +269,14 @@ export function createStore(api) {
       for (const key of Object.keys(window.localStorage)) if (key.startsWith(PULLS_PREFIX)) window.localStorage.removeItem(key);
     } catch { /* storage unavailable: nothing kept */ }
   }
-  async function loadPulls(sandboxId) {
+  /** Reads the sandbox's pull requests; `fresh`: a change was announced, so a read in flight (which may predate it) is followed by another. */
+  async function loadPulls(sandboxId, fresh = false) {
     const entry = pullWatch.get(sandboxId);
-    if (entry) entry.at = Date.now();
+    if (entry && entry.reading) {
+      if (fresh) entry.again = true;
+      return;
+    }
+    if (entry) Object.assign(entry, { at: Date.now(), reading: true, due: false });
     try {
       const git = await api.get(`/api/sandboxes/${enc(sandboxId)}/git`);
       const rows = Array.isArray(git.tasks) ? git.tasks : [];
@@ -290,12 +299,28 @@ export function createStore(api) {
         state.pulls.set(sandboxId, new Map());
         emit('pulls', sandboxId);
       }
+    } finally {
+      if (entry) {
+        entry.reading = false;
+        if (entry.again) {
+          entry.again = false;
+          pullsChanged(sandboxId);
+        }
+      }
     }
+  }
+  /** The server announced a change of the sandbox's pull requests (SPEC-108). */
+  function pullsChanged(sandboxId) {
+    const entry = pullWatch.get(sandboxId);
+    // Not watched: the next view to watch it reads at once anyway.
+    if (!entry) return;
+    if (pollPaused()) entry.due = true;
+    else loadPulls(sandboxId, true);
   }
   function watchPulls(sandboxId) {
     let entry = pullWatch.get(sandboxId);
     if (!entry) {
-      entry = { views: 0, at: 0, timer: setInterval(() => { if (!pollPaused()) loadPulls(sandboxId); }, 60_000) };
+      entry = { views: 0, at: 0, reading: false, again: false, due: false, timer: setInterval(() => { if (!pollPaused()) loadPulls(sandboxId); }, 60_000) };
       pullWatch.set(sandboxId, entry);
     }
     entry.views += 1;
@@ -310,13 +335,13 @@ export function createStore(api) {
   }
   const refreshPulls = () => {
     if (pollPaused()) return;
-    for (const [id, entry] of pullWatch) if (Date.now() - entry.at > 15_000) loadPulls(id);
+    for (const [id, entry] of pullWatch) if (entry.due || Date.now() - entry.at > 15_000) loadPulls(id, entry.due);
   };
   document.addEventListener('visibilitychange', refreshPulls);
   window.addEventListener('focus', refreshPulls);
   // After lost events or a restart, read the watched pull requests again at once: the server's
   // "needs you" counts start from what such a read sees (#147).
-  on('resync', () => { for (const id of pullWatch.keys()) loadPulls(id); });
+  on('resync', () => { for (const id of pullWatch.keys()) pullsChanged(id); });
 
   function stopEvents() {
     if (events) events.stop();
