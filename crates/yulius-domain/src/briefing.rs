@@ -588,8 +588,10 @@ fn playground_git_rules(input: &BriefingInput<'_>) -> String {
          nothing in the repository ends with its result.\n\
          - Git (skill `git-hygiene`): work only on {branch}. Never commit or push to \
          {integration} or {production}, never `--no-verify`, never rewrite commits. Small \
-         conventional commits; nothing unrelated, generated or secret. No `git stash`. Stay \
-         current by merging `origin/{integration}` and rerun the tests after a conflict.\n\
+         conventional commits; nothing unrelated, generated or secret. No `git stash`. `origin` \
+         is outside this sandbox: never fetch or push; Yulius keeps `origin/{integration}` \
+         current in your clone. Stay current by merging `origin/{integration}` and rerun the \
+         tests after a conflict.\n\
          - Before delivery, get an independent review in a fresh session (a read-only subagent \
          given only the diff range, the spec and skill `om-code-review`); fix findings \
          test-first.\n\

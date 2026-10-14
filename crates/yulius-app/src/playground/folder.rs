@@ -32,7 +32,9 @@ use super::{no_token, playground_name};
 use crate::auth::AuthContext;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
-use crate::imports::{MAX_SNAPSHOT_ENTRIES, extract_snapshot, prepare_target, safe_relative};
+use crate::imports::{
+    MAX_SNAPSHOT_ENTRIES, check_archive, extract_snapshot, prepare_target, safe_relative,
+};
 use crate::model::UserRecord;
 use crate::projects::{blocking, identity, import_profile, remove_tree, write_scaffold};
 
@@ -127,25 +129,19 @@ fn is_history(rel: &Path) -> bool {
 /// # Errors
 /// Unreadable archives and archives over the import bounds.
 fn extract_history(archive: &Path, root: &Path) -> AppResult<u64> {
+    check_archive(archive, MAX_ARCHIVE_EXPANSION)?;
     fs::create_dir_all(root).map_err(AppError::internal)?;
     let root = fs::canonicalize(root).map_err(AppError::internal)?;
     let file = File::open(archive).map_err(AppError::internal)?;
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(BufReader::new(file)));
     let invalid = |err: io::Error| AppError::Invalid(format!("unreadable folder archive: {err}"));
-    let (mut entries, mut declared, mut bytes, mut files) = (0_u64, 0_u64, 0_u64, 0_u64);
+    let (mut entries, mut bytes, mut files) = (0_u64, 0_u64, 0_u64);
     for entry in tar.entries().map_err(invalid)? {
         let mut entry = entry.map_err(invalid)?;
         entries += 1;
         if entries > MAX_SNAPSHOT_ENTRIES {
             return Err(AppError::Invalid(
                 "the folder has too many files for a playground".into(),
-            ));
-        }
-        // Every entry counts, skipped ones too: their bytes are decompressed to reach the next.
-        declared = declared.saturating_add(entry.header().size().map_err(invalid)?);
-        if declared > MAX_ARCHIVE_EXPANSION {
-            return Err(AppError::Invalid(
-                "the folder expands beyond the import size limit".into(),
             ));
         }
         let raw = entry.path_bytes().into_owned();
@@ -268,7 +264,7 @@ impl App {
         let profile = match seeded {
             Ok(profile) => profile,
             Err(err) => {
-                remove_tree(self.sandbox_dir(&id)).await;
+                self.discard_playground(&id).await;
                 return Err(err);
             }
         };
@@ -351,6 +347,7 @@ impl App {
         // A playground has no deploy: commands from an uploaded `yulius.toml` never run on the
         // server, whoever made the playground (SPEC-099).
         profile.environments.clear();
+        profile.auto_promote = false;
         for target in [&profile.production_branch, &profile.integration_branch] {
             if *target != branch && !git.branch_exists(&work, target).await? {
                 git.push(&work, &branch, target, &no_token()).await?;
@@ -486,6 +483,53 @@ mod tests {
             matches!(&refused, Err(AppError::Invalid(m)) if m.contains("size limit")),
             "refused by its declared size, before reading it: {refused:?}"
         );
+        Ok(())
+    }
+
+    /// A gzip tar holding one raw `kind` entry of `data` (a GNU long name, a PAX record) before a
+    /// small file.
+    fn with_meta(
+        dir: &Path,
+        kind: tar::EntryType,
+        data: &[u8],
+    ) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let path = dir.join("m.tgz");
+        let gz = flate2::write::GzEncoder::new(File::create(&path)?, flate2::Compression::fast());
+        let mut tar = tar::Builder::new(gz);
+        let mut meta = tar::Header::new_gnu();
+        meta.set_path("././@LongLink")?;
+        meta.set_entry_type(kind);
+        meta.set_size(data.len() as u64);
+        meta.set_cksum();
+        tar.append(&meta, data)?;
+        let mut file = tar::Header::new_gnu();
+        file.set_path("git/HEAD")?;
+        file.set_size(2);
+        file.set_mode(0o644);
+        file.set_cksum();
+        tar.append(&file, &b"x\n"[..])?;
+        tar.into_inner()?.finish()?;
+        Ok(path)
+    }
+
+    #[test]
+    fn oversized_names_and_size_overrides_are_refused() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        // The tar reader reads a long name whole, in memory, before any loop sees it.
+        let long = with_meta(
+            dir.path(),
+            tar::EntryType::GNULongName,
+            &vec![b'a'; 1 << 20],
+        )?;
+        let refused =
+            |r: AppResult<u64>| matches!(r, Err(AppError::Invalid(m)) if m.contains("metadata"));
+        assert!(refused(extract_history(&long, &dir.path().join("h1"))));
+        assert!(refused(
+            extract_snapshot(&long, dir.path()).map(|s| s.files)
+        ));
+        // A PAX `size` would make the next entry larger than its header says.
+        let pax = with_meta(dir.path(), tar::EntryType::XHeader, b"20 size=9999999999\n")?;
+        assert!(refused(extract_history(&pax, &dir.path().join("h2"))));
         Ok(())
     }
 }

@@ -314,6 +314,12 @@ pub trait GitPort: Send + Sync {
         let _ = worktree;
         unsupported("keeping a repository's modes")
     }
+    /// Fetches every branch of the repository at `source` into `repo`'s `refs/remotes/origin/*`
+    /// by that path, not by `repo`'s configured URL (a playground's refresh, SPEC-099).
+    async fn fetch_branches_from(&self, repo: &Path, source: &Path) -> AppResult<()> {
+        let _ = (repo, source);
+        unsupported("fetching a playground's origin")
+    }
     /// Copies every branch and tag of the repository at `source` into the bare repository
     /// `repo` (SPEC-099: an uploaded folder's history).
     async fn copy_refs(&self, repo: &Path, source: &Path) -> AppResult<()> {
@@ -353,7 +359,10 @@ pub struct SquashRequest<'a> {
     pub name: &'a str,
     /// Author and committer email.
     pub email: &'a str,
-    /// The branch of `origin` that receives the commit.
+    /// The repository pushed to: the playground's `origin` by its path, never by the URL in
+    /// `repo`'s configuration, which a sandbox may rewrite.
+    pub remote: &'a str,
+    /// The branch of `remote` that receives the commit.
     pub branch: &'a str,
 }
 

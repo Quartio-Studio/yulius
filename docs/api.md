@@ -79,8 +79,8 @@ grants per client and 1000 per instance; past either it answers 429.
 
 A **playground** (SPEC-099) is a sandbox without GitHub: `Sandbox.playground` is true, its `repo`
 has an empty `owner` and `url`, its onboarding is `not_needed`, and only its maker and the
-superadmin see it (admin). Its `origin` is a bare repository on the server, so nothing is pushed
-anywhere; Yulius CI, pull requests, hygiene's GitHub checks and the automatic pull request skip
+superadmin see it (admin). Its `origin` is a bare repository on the server outside the sandbox, so
+nothing is pushed anywhere; Yulius CI, pull requests, hygiene's GitHub checks and the automatic pull request skip
 it, and its delivery view and Git page carry one note saying so. Nothing issues a GitHub token for
 it (`/internal/git-credential` answers 403), promotion and `issue_create` answer 409, and since its
 maker may be anyone signed in, it has no deploy: a profile with an environment command is 422 and

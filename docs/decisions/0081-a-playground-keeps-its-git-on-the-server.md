@@ -15,8 +15,13 @@ GitHub identity (ACC-012).
 
 ## Decision
 
-1. **A playground is a sandbox whose `origin` is a bare repository in its own sandbox directory**
-   (`<sandbox>/origin.git`). It is seeded from a template or from a folder uploaded from the
+1. **A playground is a sandbox whose `origin` is a bare repository on the server, outside its
+   sandbox** (`<data>/playgrounds/<id>.git`). Its maker may be anyone signed in, and a local push
+   runs the receiving repository's own hooks and configuration in the server's Git, outside
+   containment (`-c` options do not reach the receiving side), so the sandbox's processes must
+   never reach it. The server fetches and pushes it by that path, never by the clone's `origin`
+   URL, which the sandbox may rewrite; agents do not fetch it: Yulius keeps `origin/<branch>`
+   current in the clone. It is seeded from a template or from a folder uploaded from the
    browser. The clone, worktrees, merges and trains use it as they use GitHub, so the code stays
    on the server by construction.
 2. **The record marks it with an empty repository owner** (`SandboxRecord::is_playground`). A
@@ -51,8 +56,11 @@ GitHub identity (ACC-012).
   needed to try tasks, agents, the browser and the editor on one's own code.
 - A playground has no Yulius CI and no pull requests. Agents run the gates themselves, and a
   person reviews the result in the Git page and the editor.
-- A playground's `origin.git` sits inside the sandbox root, so its agents can write to it. The
-  pre-push guard keeps `dev` and `main` for Yulius, as on GitHub, but no GitHub ruleset backs it
-  up. That is acceptable for a trial.
+- A playground's `origin` is out of its sandbox's reach: agents cannot fetch or push it, and only
+  Yulius's merge moves its `dev`. Their `origin/<branch>` refs are as fresh as Yulius's last
+  refresh (each merge and each start).
+- Since its maker may be anyone signed in, a playground runs nothing on the server for them: no
+  deploy environment, no automatic promotion, no GitHub token, and a person keeps at most 10
+  playgrounds, a removed one counted while its files stay.
 - Follow-ups: CLI onboarding into a playground, moving a playground to GitHub, CI on local heads,
   and teammates without GitHub.

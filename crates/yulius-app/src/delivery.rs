@@ -1100,12 +1100,15 @@ impl App {
                 "the sandbox repository is not cloned yet".into(),
             ));
         }
-        // A playground fetches its own `origin` on this server, with no token (SPEC-099).
-        let token = if sandbox.is_playground() {
-            crate::playground::no_token()
-        } else {
-            self.dlv_installation_token(sandbox).await?
-        };
+        // A playground fetches its own `origin` on this server, by its path (SPEC-099).
+        if sandbox.is_playground() {
+            return self
+                .deps
+                .git
+                .fetch_branches_from(&repo, &self.playground_origin(&sandbox.id))
+                .await;
+        }
+        let token = self.dlv_installation_token(sandbox).await?;
         self.deps
             .git
             .sync_clone(&self.origin_url(sandbox), &repo, &token)
@@ -1891,9 +1894,11 @@ impl App {
         let profile = profile_from_contract(requested)?;
         // A playground's maker may be anyone signed in, and commands run on the server: a
         // playground has no deploy (SPEC-099).
-        if sandbox.is_playground() && profile.environments.iter().any(|e| e.command.is_some()) {
+        if sandbox.is_playground() && (!profile.environments.is_empty() || profile.auto_promote) {
             return Err(invalid(
-                "a playground has no deploy: its environments cannot run commands".to_owned(),
+                "a playground has no deploy or promotion: its profile has no environment and no \
+                 automatic promotion"
+                    .to_owned(),
             ));
         }
         let gate = match requested.gate.as_deref() {
@@ -2985,6 +2990,7 @@ impl App {
         token: &Secret,
         fetched: bool,
     ) -> AppResult<PromoteResult> {
+        crate::playground::refuse_in_playground(sandbox, "Promotion")?;
         let candidates: Vec<(TaskRecord, DeliveryRecord)> = self
             .dlv_sandbox_deliveries(sandbox)
             .await?

@@ -114,17 +114,17 @@ impl Git {
             "--diff-filter=T",
             "-z",
         ]))?;
-        let paths: Vec<String> = changed
+        let paths: Vec<&std::ffi::OsStr> = changed
             .stdout
             .split(|b| *b == 0)
             .filter(|p| !p.is_empty())
-            .map(|p| String::from_utf8_lossy(p).into_owned())
+            .map(std::os::unix::ffi::OsStrExt::from_bytes)
             .collect();
         for chunk in paths.chunks(100) {
             self.run_ok(
                 Invocation::new(self, "checkout", Some(worktree))
                     .args(["checkout", "--quiet", "--"])
-                    .args(chunk.iter().map(String::as_str))
+                    .args(chunk.iter().copied())
                     .env("GIT_LITERAL_PATHSPECS", "1"),
             )?;
         }

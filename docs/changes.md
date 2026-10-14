@@ -10,7 +10,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   task #84). On a fresh instance Home says "Try Yulius on your own code": drop a project folder
   (a repository keeps its branches, tags and history; its uncommitted work lands as one commit) or
   start from a template, and the playground opens with tasks startable at once. Its Git stays on the
-  server (a bare `origin.git` in the sandbox), nothing is pushed anywhere, and only the history
+  server (a bare repository outside the sandbox, out of its processes' reach), nothing is pushed anywhere, and only the history
   part of an uploaded `.git` is taken, never its config or hooks. Its tasks merge into its own
   `dev` with `delivery_merge` (a squash after the spec, steps and clean-worktree gates; no pull
   request or Yulius CI), and their briefing and definition of done say so. It is its maker's and

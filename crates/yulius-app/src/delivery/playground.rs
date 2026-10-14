@@ -104,6 +104,8 @@ impl App {
         );
         let (name, email) = crate::projects::identity(user);
         let repo = self.sandbox_repo(&sandbox.id);
+        let origin = self.playground_origin(&sandbox.id);
+        let origin = origin.to_string_lossy();
         let landed = git
             .land_squash(
                 &repo,
@@ -113,6 +115,7 @@ impl App {
                     message: &message,
                     name: &name,
                     email: &email,
+                    remote: &origin,
                     branch: integration,
                 },
             )
@@ -138,8 +141,8 @@ impl App {
             SquashLanding::Conflict(files) => {
                 return Err(AppError::Conflict(format!(
                     "`{branch}` conflicts with `{integration}` in {}: merge it into your branch \
-                     (`git fetch origin && git merge origin/{integration}`), resolve the \
-                     conflicts, commit, rerun the gates and merge again",
+                     (`git merge origin/{integration}`; Yulius has just brought it up to date), \
+                     resolve the conflicts, commit, rerun the gates and merge again",
                     if files.is_empty() {
                         "some files".to_owned()
                     } else {

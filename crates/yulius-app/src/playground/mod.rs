@@ -1,7 +1,8 @@
 //! Playgrounds (SPEC-099, ADR-0081): a team tries Yulius on its own code before it connects
-//! GitHub. A playground is a sandbox whose `origin` is a bare repository in its own sandbox
-//! directory (`<sandbox>/origin.git`), so the clone, worktrees and merges work as with GitHub
-//! while the code never leaves the server. The record marks it with an empty repository owner
+//! GitHub. A playground is a sandbox whose `origin` is a bare repository on the server outside
+//! the sandbox (`<data>/playgrounds/<id>.git`), so the clone, worktrees and merges work as with
+//! GitHub while the code never leaves the server, and the sandbox never reaches a repository
+//! whose hooks the server's Git runs. The record marks it with an empty repository owner
 //! ([`SandboxRecord::is_playground`]); it is its maker's (and the superadmin's), its onboarding is
 //! `not_needed`, and Yulius never calls GitHub for it.
 
@@ -61,11 +62,23 @@ pub fn playground_name(raw: &str) -> AppResult<String> {
 }
 
 impl App {
-    /// The bare repository that is a playground's `origin` (absolute: containment binds the
-    /// sandbox directory at the same path, so the agents' Git finds it too).
+    /// The bare repository that is a playground's `origin`: `<data>/playgrounds/<id>.git`,
+    /// outside the sandbox, which its processes (any signed-in maker's) may write. The server's
+    /// Git pushes there, and a local push runs the receiving repository's own hooks and
+    /// configuration outside containment, so the sandbox must never reach them (ADR-0081).
     pub(crate) fn playground_origin(&self, sandbox: &SandboxId) -> PathBuf {
-        let dir = self.sandbox_dir(sandbox).join("origin.git");
+        let dir = self
+            .config
+            .data_dir
+            .join("playgrounds")
+            .join(format!("{}.git", sandbox.as_str()));
         std::path::absolute(&dir).unwrap_or(dir)
+    }
+
+    /// Removes what a playground that failed to start left on disk: its sandbox and `origin`.
+    pub(crate) async fn discard_playground(&self, sandbox: &SandboxId) {
+        remove_tree(self.sandbox_dir(sandbox)).await;
+        remove_tree(self.playground_origin(sandbox)).await;
     }
 
     /// `origin`'s URL for `sandbox`'s clone: the playground's own bare repository, else GitHub.
@@ -87,18 +100,36 @@ impl App {
         if user.is_superadmin {
             return Ok(());
         }
-        let kept = self
-            .deps
-            .store
-            .sandboxes()
-            .await?
-            .iter()
-            .filter(|s| s.is_playground() && s.removed_at.is_none() && s.created_by == user.id)
-            .count();
+        // Every repository on disk counts, a removed playground's too: removal keeps its files
+        // (PRJ-009), so removing cannot free room for more.
+        let dir = self.config.data_dir.join("playgrounds");
+        let ids: Vec<SandboxId> = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries
+                .filter_map(Result::ok)
+                .filter_map(|e| {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    SandboxId::parse(name.strip_suffix(".git")?).ok()
+                })
+                .collect(),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(err) => return Err(AppError::internal(err)),
+        };
+        let mut kept = 0;
+        for id in ids {
+            if self
+                .deps
+                .store
+                .sandbox(&id)
+                .await?
+                .is_some_and(|s| s.is_playground() && s.created_by == user.id)
+            {
+                kept += 1;
+            }
+        }
         if kept >= MAX_PLAYGROUNDS_PER_PERSON {
             return Err(AppError::Conflict(format!(
-                "you keep {MAX_PLAYGROUNDS_PER_PERSON} playgrounds, the most a person may: remove \
-                 one first"
+                "you keep {MAX_PLAYGROUNDS_PER_PERSON} playgrounds, the most a person may (a \
+                 removed one keeps its files until the superadmin deletes them)"
             )));
         }
         Ok(())
@@ -134,7 +165,7 @@ impl App {
             .seed_from_template(&id, &name, kind, &files, &profile, user)
             .await;
         if let Err(err) = seeded {
-            remove_tree(self.sandbox_dir(&id)).await;
+            self.discard_playground(&id).await;
             return Err(err);
         }
         self.record_playground(
@@ -180,7 +211,8 @@ impl App {
         self.clone_playground(id, &origin).await
     }
 
-    /// Clones a playground's `origin` into its sandbox repository.
+    /// Clones a playground's `origin` into its sandbox repository. Agents cannot reach `origin`:
+    /// Yulius keeps `origin/<branch>` current in the clone (ADR-0081).
     async fn clone_playground(&self, id: &SandboxId, origin: &Path) -> AppResult<()> {
         self.deps
             .git
@@ -202,6 +234,11 @@ impl App {
         user: &UserRecord,
         detail: &str,
     ) -> AppResult<SandboxRecord> {
+        // Again here: creations that ran at once each passed the first check.
+        if let Err(err) = self.playground_quota(user).await {
+            self.discard_playground(&id).await;
+            return Err(err);
+        }
         let record = SandboxRecord {
             id: id.clone(),
             slug: String::new(),
@@ -222,7 +259,7 @@ impl App {
         let record = match self.insert_sandbox_unique(record).await {
             Ok(record) => record,
             Err(err) => {
-                remove_tree(self.sandbox_dir(&id)).await;
+                self.discard_playground(&id).await;
                 return Err(err);
             }
         };

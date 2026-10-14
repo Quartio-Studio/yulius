@@ -127,6 +127,11 @@ impl GitPort for GitAdapter {
         blocking(move || git.keep_modes_and_links(&worktree)).await
     }
 
+    async fn fetch_branches_from(&self, repo: &Path, source: &Path) -> AppResult<()> {
+        let (git, repo, source) = (self.git(), repo.to_path_buf(), source.to_path_buf());
+        blocking(move || git.fetch_branches_from(&repo, &source)).await
+    }
+
     async fn copy_refs(&self, repo: &Path, source: &Path) -> AppResult<()> {
         let (git, repo, source) = (self.git(), repo.to_path_buf(), source.to_path_buf());
         blocking(move || git.copy_refs(&repo, &source)).await
@@ -138,10 +143,11 @@ impl GitPort for GitAdapter {
         request: &SquashRequest<'_>,
     ) -> AppResult<SquashLanding> {
         let (git, repo) = (self.git(), repo.to_path_buf());
-        let (base, head, message, branch) = (
+        let (base, head, message, remote, branch) = (
             request.base.to_owned(),
             request.head.to_owned(),
             request.message.to_owned(),
+            request.remote.to_owned(),
             request.branch.to_owned(),
         );
         let author = Author::new(request.name, request.email);
@@ -153,7 +159,7 @@ impl GitPort for GitAdapter {
                     head: &head,
                     message: &message,
                     author: &author,
-                    remote: "origin",
+                    remote: &remote,
                     branch: &branch,
                 },
             )

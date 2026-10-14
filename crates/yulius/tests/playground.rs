@@ -1,5 +1,5 @@
 //! Playgrounds (SPEC-099): a team tries Yulius on its own code without GitHub. A playground's Git
-//! lives in a bare `origin.git` in its sandbox directory; nothing reaches GitHub. Real Git, a real
+//! lives in a bare repository on the server, outside its sandbox; nothing reaches GitHub. Real Git, a real
 //! store, the fake GitHub (which records every state-changing call) and no GitHub App.
 
 use crate::support;
@@ -34,6 +34,15 @@ async fn from_template(h: &Harness, creds: &Creds, name: &str) -> BoxResult<supp
         creds,
     )
     .await
+}
+
+/// A playground's `origin`: a bare repository of the server, outside the sandbox (ADR-0081).
+fn origin_of(h: &Harness, body: &Value) -> PathBuf {
+    h.app
+        .config
+        .data_dir
+        .join("playgrounds")
+        .join(format!("{}.git", body["id"].as_str().unwrap_or_default()))
 }
 
 fn sandbox_dir(h: &Harness, body: &Value) -> PathBuf {
@@ -79,11 +88,20 @@ async fn a_playground_starts_from_a_template_without_github() -> TestResult {
     assert_eq!(body["default_branch"], "main");
 
     let dir = sandbox_dir(&h, body);
-    let origin = dir.join("origin.git");
+    let origin = origin_of(&h, body);
     assert_eq!(
         git(&origin, &["rev-parse", "--is-bare-repository"])?.trim(),
         "true"
     );
+    // Outside the sandbox, which its processes may write: its hooks and configuration are the
+    // server's alone, and the server's Git runs them outside containment (review round 2).
+    assert!(
+        !origin.starts_with(&dir),
+        "{} is inside {}",
+        origin.display(),
+        dir.display()
+    );
+    assert!(!dir.join("origin.git").exists());
     assert_eq!(branches(&origin)?, vec!["dev", "main"]);
     let repo = dir.join("repo");
     assert_eq!(
@@ -247,7 +265,7 @@ async fn a_folder_with_history_keeps_it_and_its_uncommitted_work() -> TestResult
     assert_eq!(made.body["default_branch"], "trunk");
     assert_eq!(made.body["onboarding"], "not_needed");
 
-    let origin = sandbox_dir(&h, &made.body).join("origin.git");
+    let origin = origin_of(&h, &made.body);
     assert_eq!(branches(&origin)?, vec!["dev", "feature", "trunk"]);
     git(&origin, &["rev-parse", "--verify", "refs/tags/v1"])?;
     assert_eq!(file_at(&origin, "feature", "feature.txt")?, "wip\n");
@@ -290,7 +308,7 @@ async fn a_folder_without_git_becomes_one_commit() -> TestResult {
     let made = upload(&h, &owner, "lab", pack(&stage)?).await?;
     assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
     assert_eq!(made.body["default_branch"], "main");
-    let origin = sandbox_dir(&h, &made.body).join("origin.git");
+    let origin = origin_of(&h, &made.body);
     assert_eq!(branches(&origin)?, vec!["dev", "main"]);
     assert_eq!(git(&origin, &["rev-list", "--count", "main"])?.trim(), "1");
     assert_eq!(file_at(&origin, "dev", "src/app.py")?, "print('hi')\n");
@@ -346,14 +364,18 @@ async fn a_git_config_or_hook_in_the_upload_is_never_taken() -> TestResult {
     assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
     let dir = sandbox_dir(&h, &made.body);
     assert!(!marker.exists(), "nothing of the upload ran");
-    let origin_config = std::fs::read_to_string(dir.join("origin.git/config"))?;
+    let origin_config = std::fs::read_to_string(origin_of(&h, &made.body).join("config"))?;
     assert!(!origin_config.contains("fsmonitor") && !origin_config.contains("filter"));
-    assert!(!dir.join("origin.git/info/attributes").exists());
-    assert!(!dir.join("origin.git/hooks/post-checkout").exists());
+    assert!(!origin_of(&h, &made.body).join("info/attributes").exists());
+    assert!(
+        !origin_of(&h, &made.body)
+            .join("hooks/post-checkout")
+            .exists()
+    );
     assert!(!dir.join("repo/.git/hooks/post-checkout").exists());
     assert!(!dir.join("repo/sub/.git").exists());
     assert_eq!(
-        file_at(&dir.join("origin.git"), "main", "README.md")?,
+        file_at(&origin_of(&h, &made.body), "main", "README.md")?,
         "hello\n"
     );
     Ok(())
@@ -524,7 +546,7 @@ async fn a_playgrounds_task_merges_into_its_local_dev() -> TestResult {
     use axum::extract::connect_info::MockConnectInfo;
     let (h, owner) = world().await?;
     let made = from_template(&h, &owner, "shop").await?;
-    let origin = sandbox_dir(&h, &made.body).join("origin.git");
+    let origin = origin_of(&h, &made.body);
     let before = git(&origin, &["rev-parse", "dev"])?.trim().to_owned();
     playground_task(
         &h,
@@ -593,7 +615,7 @@ async fn a_playgrounds_task_merges_into_its_local_dev() -> TestResult {
 async fn an_unfinished_task_is_not_merged() -> TestResult {
     let (h, owner) = world().await?;
     let made = from_template(&h, &owner, "shop").await?;
-    let origin = sandbox_dir(&h, &made.body).join("origin.git");
+    let origin = origin_of(&h, &made.body);
     let before = git(&origin, &["rev-parse", "dev"])?;
 
     playground_task(
@@ -725,7 +747,7 @@ async fn an_uploaded_alternate_never_reads_another_repository() -> TestResult {
 
     let made = upload(&h, &owner, "proj", pack(&stage)?).await?;
     if made.status == StatusCode::CREATED {
-        let origin = sandbox_dir(&h, &made.body).join("origin.git");
+        let origin = origin_of(&h, &made.body);
         assert!(
             git(&origin, &["cat-file", "-e", &secret]).is_err(),
             "the other repository's commit reached the playground"
@@ -734,7 +756,7 @@ async fn an_uploaded_alternate_never_reads_another_repository() -> TestResult {
     let list = call(&h.router, Method::GET, "/api/sandboxes", None, &owner).await?;
     let leaked = list.body.as_array().is_some_and(|items| {
         items.iter().any(|s| {
-            let origin = sandbox_dir(&h, s).join("origin.git");
+            let origin = origin_of(&h, s);
             git(&origin, &["cat-file", "-e", &secret]).is_ok()
         })
     });
@@ -911,7 +933,7 @@ async fn an_upload_keeps_executable_bits_and_links_of_the_repository() -> TestRe
 
     let made = upload(&h, &owner, "proj", pack(&stage)?).await?;
     assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
-    let origin = sandbox_dir(&h, &made.body).join("origin.git");
+    let origin = origin_of(&h, &made.body);
     assert_eq!(
         git(&origin, &["rev-list", "--count", "main"])?.trim(),
         "1",
@@ -959,7 +981,7 @@ async fn a_shallow_repository_keeps_its_branches() -> TestResult {
     stage_folder(&shallow, &stage)?;
     let made = upload(&h, &owner, "shallow", pack(&stage)?).await?;
     assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
-    let origin = sandbox_dir(&h, &made.body).join("origin.git");
+    let origin = origin_of(&h, &made.body);
     let log = git(&origin, &["log", "--format=%s", "main"])?;
     assert_eq!(
         log.lines().collect::<Vec<_>>(),
@@ -1070,6 +1092,103 @@ async fn a_closed_tab_during_setup_leaves_no_stray_directory() -> TestResult {
             "{dirs} directories, {recorded} playgrounds"
         );
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    Ok(())
+}
+
+/// Review round 2 (PLY-002): the clone's `origin` URL is the sandbox's to write, so the server
+/// fetches and lands a playground's merges by the playground's own path, never by that URL: a
+/// clone pointed at another playground neither reads it nor changes its `dev`.
+#[tokio::test]
+async fn a_rewritten_origin_url_is_never_followed() -> TestResult {
+    let (h, owner) = world().await?;
+    let victim = from_template(&h, &owner, "victim").await?;
+    let victim_origin = origin_of(&h, &victim.body);
+    let victim_dev = git(&victim_origin, &["rev-parse", "dev"])?;
+    let made = from_template(&h, &owner, "shop").await?;
+    playground_task(&h, &made.body, "t1", &[("a.txt", "a\n")], &["done"]).await?;
+    let repo = sandbox_dir(&h, &made.body).join("repo");
+    git(
+        &repo,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            victim_origin.to_str().ok_or("path")?,
+        ],
+    )?;
+
+    let merged = merge(&h, &owner, "t1").await?;
+    assert_eq!(merged.status, StatusCode::OK, "{:?}", merged.body);
+    assert_eq!(
+        git(&victim_origin, &["rev-parse", "dev"])?,
+        victim_dev,
+        "the victim's dev is untouched"
+    );
+    assert_eq!(file_at(&origin_of(&h, &made.body), "dev", "a.txt")?, "a\n");
+    Ok(())
+}
+
+/// Review round 2: a removed playground keeps its repository on the server's disk, so it still
+/// counts toward its maker's ten.
+#[tokio::test]
+async fn a_removed_playground_still_counts_toward_the_ten() -> TestResult {
+    let (h, _owner) = world().await?;
+    support::configure_github_app(&h).await?;
+    let alice = support::seed_github_user(&h, "u-alice", "alice").await?;
+    let mut last = Value::Null;
+    for n in 0..10 {
+        let made = from_template(&h, &alice, &format!("lab {n}")).await?;
+        assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
+        last = made.body;
+    }
+    let sid = last["id"].as_str().ok_or("id")?;
+    let removed = call(
+        &h.router,
+        Method::DELETE,
+        &format!("/api/sandboxes/{sid}"),
+        None,
+        &alice,
+    )
+    .await?;
+    assert!(removed.status.is_success(), "{:?}", removed.body);
+    let refused = from_template(&h, &alice, "lab again").await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{:?}", refused.body);
+    Ok(())
+}
+
+/// Review round 2 (PLY-005, PLY-008): a playground's profile has no environment and no
+/// automatic promotion, whose confirmation would promote through GitHub.
+#[tokio::test]
+async fn a_playground_profile_has_no_environment_or_automatic_promotion() -> TestResult {
+    let (h, owner) = world().await?;
+    let made = from_template(&h, &owner, "shop").await?;
+    let sid = made.body["id"].as_str().ok_or("id")?;
+    for (environments, auto_promote) in [
+        (
+            json!([{"name": "review", "after": "integration", "verify": "manual", "command": null}]),
+            false,
+        ),
+        (json!([]), true),
+    ] {
+        let patched = call(
+            &h.router,
+            Method::PATCH,
+            &format!("/api/sandboxes/{sid}"),
+            Some(json!({"profile": {
+                "preset": "standard", "integration_branch": "dev", "production_branch": "main",
+                "merge": "squash", "promote": "merge_commit", "auto_promote": auto_promote,
+                "environments": environments
+            }})),
+            &owner,
+        )
+        .await?;
+        assert_eq!(
+            patched.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{:?}",
+            patched.body
+        );
     }
     Ok(())
 }
