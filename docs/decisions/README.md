@@ -79,3 +79,4 @@ number differs from the file name, and a record this index does not list.
 - [0072](0072-recount-old-runs-from-their-transcripts-once.md): Runs recorded before SPEC-087 are recounted from their transcripts once, after the upgrade
 - [0071](0071-long-injected-context-folds-in-the-session-view.md): Long injected context folds to one line in the session view; short notes stay readable
 - [0075](0075-menu-descriptions-wrap.md): Menu descriptions wrap onto as many lines as they need instead of being cut
+- [0081](0081-a-playground-keeps-its-git-on-the-server.md): A playground keeps its Git on the server: a bare `origin` of its own and local squash merges
