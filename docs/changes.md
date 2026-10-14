@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- The start menu's tasks show five at a time and say there is more (SPEC-102, ADR-0083, task #87).
+  "After a task is done" lists its tasks in a box five rows tall that scrolls the rest, so Start
+  now, Supertask and "When a rule is true…" stay in view however many tasks a project has. The box
+  fades at the edge it continues past and a "↓ N more" line under it counts the tasks below (a
+  click scrolls a page); the picked task opens in view (and focused when the menu has no filter
+  focused), and the arrows and the filter work inside the box. The automation editor's start menu does the same. `openMenu` takes such a
+  group as `{ header, items }`.
 - The automation editor's start choice is a chip in its action bar, before Run now (SPEC-093,
   ADR-0074, task #78). It looks and works like New task's start chip and opens the same menu, now
   one shared module: Start now, Supertask, the filterable "After a task is done" list and "When a
