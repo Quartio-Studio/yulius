@@ -380,7 +380,7 @@ async fn an_edit_is_announced_to_viewers() -> TestResult {
 #[tokio::test]
 async fn a_personal_edit_reaches_only_its_owner() -> TestResult {
     use futures::StreamExt as _;
-    use support::{serve, ws_connect};
+    use support::{serve, setup_superadmin_creds, superadmin_bearer, ws_connect};
     use tokio_tungstenite::tungstenite::Message;
     type Socket = tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -388,10 +388,14 @@ async fn a_personal_edit_reaches_only_its_owner() -> TestResult {
     let h = harness()?;
     let alice = seed_github_user(&h, "u-alice", "alice").await?;
     let bob = seed_github_user(&h, "u-bob", "bob").await?;
+    // The superadmin sees everything else, and still not someone's own notes.
+    setup_superadmin_creds(&h).await?;
+    let admin = superadmin_bearer(&h).await?;
     let served = serve(h.router.clone()).await?;
     let origin = h.app.config.public_url.clone();
     let mut alices = ws_connect(served.addr, "/api/events", &alice, &origin).await?;
     let mut bobs = ws_connect(served.addr, "/api/events", &bob, &origin).await?;
+    let mut admins = ws_connect(served.addr, "/api/events", &admin, &origin).await?;
     let mark = |task: &str| {
         h.app.events.publish(
             None,
@@ -423,8 +427,11 @@ async fn a_personal_edit_reaches_only_its_owner() -> TestResult {
         }
     }
 
-    // The server subscribes once the upgrade completes: mark until both streams have it.
-    for (round, socket) in [&mut alices, &mut bobs].into_iter().enumerate() {
+    // The server subscribes once the upgrade completes: mark until every stream has it.
+    for (round, socket) in [&mut alices, &mut bobs, &mut admins]
+        .into_iter()
+        .enumerate()
+    {
         let marker = format!("t-ready-{round}");
         let mut ready = false;
         for _ in 0..40 {
@@ -459,11 +466,13 @@ async fn a_personal_edit_reaches_only_its_owner() -> TestResult {
             .any(|f| f.contains(r#""type":"note.updated""#) && f.contains(r#""scope":"me""#)),
         "the owner's stream: {owners:?}"
     );
-    let others = until(&mut bobs, "t-after").await?;
-    assert!(
-        !others.iter().any(|f| f.contains("note.updated")),
-        "another person's stream: {others:?}"
-    );
+    for (who, socket) in [("bob", &mut bobs), ("the superadmin", &mut admins)] {
+        let others = until(socket, "t-after").await?;
+        assert!(
+            !others.iter().any(|f| f.contains("note.updated")),
+            "{who}'s stream: {others:?}"
+        );
+    }
     Ok(())
 }
 
