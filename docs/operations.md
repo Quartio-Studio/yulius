@@ -659,6 +659,8 @@ commit's tree, `HOME` and log, removed after each run); none is visible to agent
   it outside the proxy on the Secrets page (the same allowance as copying it into `.env`); a
   production run only once someone who manages it chose "Allow for production deploys". Output is
   redacted, but scripts hold the values while they run, so allow only what a deploy needs.
+- **Egress off.** With `YULIUS_SANDBOX_EGRESS=none` sandboxes have no network, and production
+  deploys (which use the sandbox's network) have none either.
 - **Production.** Only an administrator deploys it, on the CD page, typing the project's slug. With
   `promote = true` the deploy first promotes under that person's GitHub identity; a promotion pull
   request whose checks still run refuses the deploy until they pass.

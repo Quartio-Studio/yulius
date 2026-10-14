@@ -44,7 +44,9 @@ build them, and a command that runs a repository script would run agent-written 
   (no host loopback, as agents), on the host's read-only `/usr`, `/etc` and `/opt` with empty
   `/var`, `/root` and `/home`, the sandbox's resolver, and only the run's directory and its cache
   bound in: nothing an agent installed or wrote runs with production's secrets, and production
-  reaches no more of the host than an agent does. Its scripts fetch the tools they need into
+  reaches no more of the host than an agent does. The process host builds this itself from an
+  explicit `host_system` mode of the launch spec's join (with the sandbox's resolver bound where
+  the host's resolver file really is). Its scripts fetch the tools they need into
   `$YULIUS_CD_CACHE`. Where sandbox isolation does not run, both use the previous containment
   (production with the run's directory as its root), on the network agents have there.
 - **Secrets per environment.** Dev runs get the secrets their table names that a person allowed

@@ -13,6 +13,21 @@ pub const SYSTEM_READONLY_DIRS: [&str; 6] = ["/usr", "/bin", "/lib", "/lib64", "
 /// The host resolver configuration.
 const RESOLV_CONF: &str = "/etc/resolv.conf";
 
+/// A host-system run's read-only system directories (SPEC-134: a production CD run).
+const HOST_SYSTEM_DIRS: [&str; 3] = ["/usr", "/etc", "/opt"];
+
+/// A host-system run's empty directories (`/var` holds Yulius's data on the host).
+const HOST_EMPTY_DIRS: [&str; 6] = ["/var", "/root", "/home", "/srv", "/mnt", "/media"];
+
+/// Where the host's resolver file really is (`/etc/resolv.conf` is a link into `/run` on
+/// Ubuntu): a host-system run's own resolver is bound there, so the link resolves to it.
+fn resolver_target(resolv_conf: &Path) -> String {
+    std::fs::canonicalize(resolv_conf).map_or_else(
+        |_| resolv_conf.to_string_lossy().into_owned(),
+        |p| p.to_string_lossy().into_owned(),
+    )
+}
+
 /// The directory holding the real resolver file when `resolv_conf` is a symbolic link out of the
 /// bound system directories (Ubuntu: `/run/systemd/resolve/stub-resolv.conf`). Without it name
 /// resolution fails inside the sandbox even though the network is shared.
@@ -185,9 +200,19 @@ fn joined_argv(
         ]
         .map(str::to_owned),
     );
-    let root = join.system_root.trim_end_matches('/');
-    for dir in SYSTEM_LAYER_DIRS {
-        argv.extend(["--bind-try".into(), format!("{root}{dir}"), dir.to_owned()]);
+    if join.host_system.is_some() {
+        // The host's system, read-only; nothing of the sandbox's system layer (SPEC-134).
+        for dir in HOST_SYSTEM_DIRS {
+            push_bind(&mut argv, "--ro-bind-try", dir);
+        }
+        for dir in HOST_EMPTY_DIRS {
+            argv.extend(["--tmpfs".into(), dir.to_owned()]);
+        }
+    } else {
+        let root = join.system_root.trim_end_matches('/');
+        for dir in SYSTEM_LAYER_DIRS {
+            argv.extend(["--bind-try".into(), format!("{root}{dir}"), dir.to_owned()]);
+        }
     }
     for (target, link) in ROOT_LINKS {
         argv.extend(["--symlink".into(), target.into(), link.into()]);
@@ -209,6 +234,13 @@ fn joined_argv(
     for bind in &c.binds {
         let option = if bind.writable { "--bind" } else { "--ro-bind" };
         argv.extend([option.to_owned(), bind.source.clone(), bind.dest.clone()]);
+    }
+    if let Some(resolver) = &join.host_system {
+        argv.extend([
+            "--ro-bind".into(),
+            resolver.clone(),
+            resolver_target(Path::new(RESOLV_CONF)),
+        ]);
     }
     argv.extend(["--setenv".into(), "HOME".into(), c.home.clone()]);
     argv.extend(["--chdir".into(), cwd.to_owned()]);
@@ -390,6 +422,7 @@ mod tests {
             hostname: "fixture".into(),
             exec_shim: None,
             private_dirs: vec!["/data".into()],
+            host_system: None,
         }));
         let argv = bwrap_argv(&c, &["bash".into()], "/data/sandboxes/s1/repo");
         for flag in ["--unshare-user", "--unshare-net", "--share-net", "--uid"] {
@@ -429,6 +462,61 @@ mod tests {
         assert_eq!(
             &argv[argv.len() - 2..],
             &["--".to_owned(), "bash".to_owned()]
+        );
+    }
+
+    /// SPEC-134 (review round 3): a production CD run joins the holder (its network) but runs on
+    /// the host's read-only system: no path of the sandbox's system layer, empty `/var` (Yulius's
+    /// data), and its own resolver where the host's resolver file really is.
+    #[test]
+    fn host_system_runs_take_the_hosts_system_read_only() {
+        let mut c = spec();
+        c.sandbox_root = "/data/runs/cd-r/work".into();
+        c.home = "/data/runs/cd-r/work/home".into();
+        c.join = Some(Box::new(yulius_contracts::ptyhost::SandboxJoin {
+            holder_pid: 4242,
+            user_ns: 1,
+            net_ns: 2,
+            mnt_ns: 3,
+            cgroup: None,
+            system_root: "/data/runtime/sandboxes/s1/root".into(),
+            hostname: "fixture".into(),
+            exec_shim: None,
+            private_dirs: vec!["/data".into()],
+            host_system: Some("/data/runs/cd-r/work/resolv.conf".into()),
+        }));
+        let argv = bwrap_argv(&c, &["sh".into()], "/data/runs/cd-r/work/src");
+        assert!(
+            !argv.iter().any(|a| a.contains("/data/runtime/sandboxes")),
+            "no system layer: {argv:?}"
+        );
+        for dir in ["/usr", "/etc", "/opt"] {
+            assert!(
+                position(&argv, &["--ro-bind-try", dir, dir]).is_some(),
+                "{dir}: {argv:?}"
+            );
+            assert!(
+                position(&argv, &["--bind-try", dir, dir]).is_none(),
+                "{dir} writable"
+            );
+        }
+        let var = position(&argv, &["--tmpfs", "/var"]);
+        let work = position(
+            &argv,
+            &["--bind", "/data/runs/cd-r/work", "/data/runs/cd-r/work"],
+        );
+        assert!(var.is_some() && var < work, "{argv:?}");
+        assert!(position(&argv, &["--tmpfs", "/home"]).is_some());
+        let resolver = argv
+            .windows(3)
+            .position(|w| w[0] == "--ro-bind" && w[1] == "/data/runs/cd-r/work/resolv.conf");
+        assert!(
+            resolver.is_some() && resolver > work,
+            "the resolver comes last: {argv:?}"
+        );
+        assert!(
+            !argv.contains(&"--share-net".to_owned())
+                && !argv.contains(&"--unshare-net".to_owned())
         );
     }
 

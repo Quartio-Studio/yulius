@@ -395,6 +395,12 @@ impl App {
                     "no agent secret named {name:?} applies to this project (see secrets_list)"
                 ))
             })?;
+            if record.cd_prod {
+                return Err(AppError::Forbidden(format!(
+                    "{name}: {}",
+                    super::PRODUCTION_SECRET
+                )));
+            }
             records.push(record.clone());
         }
 
@@ -701,6 +707,8 @@ pub(crate) enum CdSecretState {
     NotAllowed,
     /// No agent secret of the project has this name.
     Missing,
+    /// A production secret, named by dev: dev never gets it.
+    Production,
 }
 
 impl CdSecretState {
@@ -709,6 +717,7 @@ impl CdSecretState {
             Self::Ready => "ready",
             Self::NotAllowed => "not_allowed",
             Self::Missing => "missing",
+            Self::Production => "production",
         }
     }
 }
@@ -738,6 +747,9 @@ impl App {
             .map(|name| {
                 let state = match all.iter().find(|r| &r.name == name) {
                     None => CdSecretState::Missing,
+                    Some(r) if r.cd_prod && env == yulius_domain::cd::CdEnv::Dev => {
+                        CdSecretState::Production
+                    }
                     Some(r) if allowed_for(r, env) => CdSecretState::Ready,
                     Some(_) => CdSecretState::NotAllowed,
                 };

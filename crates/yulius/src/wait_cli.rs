@@ -61,6 +61,23 @@ pub fn run(out: &mut dyn Write, minutes: u64, env: &dyn Fn(&str) -> Option<Strin
 /// the wait last saw, `None` when it starts).
 #[must_use]
 pub fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
+    // A CD run this task started ended (SPEC-134 CDT-003): during this wait, or before it began
+    // and no wait reported it yet. First: its end is reported once, while a merge outcome stays
+    // readable for the next wait.
+    let cd_ended_now = before.is_some_and(|before| {
+        before.cd_state.as_deref() == Some("running")
+            && now.cd_run == before.cd_run
+            && now.cd_state.as_deref() != Some("running")
+    });
+    if cd_ended_now || now.cd_unreported {
+        return Some(format!(
+            "The CD run {} ({}) ended {}. Read it with `cd_status` and run_id {}.",
+            now.cd_run.as_deref().unwrap_or("?"),
+            now.cd_detail.as_deref().unwrap_or("dev"),
+            now.cd_state.as_deref().unwrap_or("?"),
+            now.cd_run.as_deref().unwrap_or("?"),
+        ));
+    }
     // How an armed merge ended (MSR-003): when it is decided during this wait, or already was
     // at this head when the wait starts.
     let decided = match before {
@@ -79,22 +96,6 @@ pub fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
     };
     if decided && let Some(outcome) = &now.merge_outcome {
         return Some(outcome.clone());
-    }
-    // A CD run this task started ended (SPEC-134 CDT-003): during this wait, or before it began
-    // and no wait reported it yet.
-    let cd_ended_now = before.is_some_and(|before| {
-        before.cd_state.as_deref() == Some("running")
-            && now.cd_run == before.cd_run
-            && now.cd_state.as_deref() != Some("running")
-    });
-    if cd_ended_now || now.cd_unreported {
-        return Some(format!(
-            "The CD run {} ({}) ended {}. Read it with `cd_status` and run_id {}.",
-            now.cd_run.as_deref().unwrap_or("?"),
-            now.cd_detail.as_deref().unwrap_or("dev"),
-            now.cd_state.as_deref().unwrap_or("?"),
-            now.cd_run.as_deref().unwrap_or("?"),
-        ));
     }
     let deploying = now.cd_state.as_deref() == Some("running");
     // Yulius could not push this head (DLV-201): no run will come until the agent acts.

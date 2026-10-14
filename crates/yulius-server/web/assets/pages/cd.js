@@ -29,6 +29,7 @@ const SECRET_STATE = {
   ready: { label: 'allowed', tone: 'ok' },
   not_allowed: { label: 'waiting for a person to allow it', tone: 'warn' },
   missing: { label: 'not in Secrets yet', tone: 'danger' },
+  production: { label: 'a production secret: dev never gets it', tone: 'danger' },
 };
 const POLL_ACTIVE_MS = 3000;
 const POLL_IDLE_MS = 30000;

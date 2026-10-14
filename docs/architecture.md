@@ -489,7 +489,7 @@ person with write access or an agent (`cd_deploy`), production only an administr
 project's slug. The commit is the one GitHub reports, taken into a mirror only Yulius writes
 (`yulius_git::Git::cd_mirror_fetch`, every object checked); its tree is written into the run's
 own directory (`export_tree`) and runs through the process host like a CI job (`ci_watch`): dev in
-the sandbox's containment, production in the sandbox's network only on the host's read-only system, each with the
+the sandbox's containment, production in the sandbox's network only on the host's read-only system (the launch spec's `host_system` join mode), each with the
 secrets allowed for that environment; nothing agents can write is bound in. Output is redacted
 before it is stored in `cd_runs`. A run has no lane and no retry: a deploy is not assumed repeatable, so one left by a
 restart is recorded as an error. `needs_you` (table column `tasks.needs_you`) puts a task in Needs

@@ -77,6 +77,10 @@ pub fn wire_containment(containment: &Containment) -> wire::Containment {
                         .iter()
                         .map(|p| p.to_string_lossy().into_owned())
                         .collect(),
+                    host_system: j
+                        .host_system
+                        .as_ref()
+                        .map(|p| p.to_string_lossy().into_owned()),
                 })
             }),
         }),
@@ -323,5 +327,79 @@ impl RunWriter for Writer {
             .send(ClientFrame::Shutdown { grace_ms })
             .await
             .map_err(|e| upstream("session shutdown", e))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SPEC-134 (review round 3, H1): a production CD run's containment passes the process
+    /// host's launch validation and becomes a joined `bwrap` run on the host's read-only system.
+    #[test]
+    fn a_production_cd_run_launches_on_the_hosts_system() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let join = yulius_app::ports::isolation::SandboxJoin {
+            holder_pid: 4242,
+            user_ns: 1,
+            net_ns: 2,
+            mnt_ns: 3,
+            cgroup: Some("/sys/fs/cgroup/yulius/sandboxes/s1/agents".into()),
+            ci_cgroup: Some("/sys/fs/cgroup/yulius/sandboxes/s1/ci".into()),
+            system_root: "/data/runtime/sandboxes/s1/root".into(),
+            hostname: "app".into(),
+            exec_shim: Some("/usr/local/bin/yulius".into()),
+            extra_readonly: Vec::new(),
+            private_dirs: vec!["/data".into()],
+            system_passwd: None,
+            system_group: None,
+            host_system: None,
+        };
+        let containment = yulius_app::ci::cd::production_containment(
+            std::path::Path::new("/data/runs/cd-r/work"),
+            std::path::Path::new("/data/runs/cd-r/work/home"),
+            std::path::Path::new("/data/cd/s1/cache/prod"),
+            vec!["/usr/local/bin/yulius".into()],
+            std::path::Path::new("/data/runs/cd-r/work/resolv.conf"),
+            join,
+        );
+        let launch = LaunchSpec {
+            version: wire::RECORD_VERSION,
+            attempt_id: "r".into(),
+            task_id: "cd-r".into(),
+            argv: vec!["/bin/sh".into(), "-c".into(), "true".into()],
+            cwd: "/data/runs/cd-r/work/src".into(),
+            env: BTreeMap::new(),
+            secret_env_names: vec!["PROD_TOKEN".into()],
+            cols: 160,
+            rows: 48,
+            containment: wire_containment(&containment),
+            ring_bytes: 0,
+            token_sha256: "0".repeat(64),
+            linger_ms: wire::DEFAULT_LINGER_MS,
+        };
+        launch.validate()?;
+        let wire::Containment::Bubblewrap(spec) = &launch.containment else {
+            return Err("a bubblewrap containment".into());
+        };
+        let argv = yulius_ptyhost::bwrap_argv(spec, &launch.argv, &launch.cwd);
+        assert!(
+            argv.windows(3)
+                .any(|w| w == ["--ro-bind-try", "/etc", "/etc"]),
+            "{argv:?}"
+        );
+        assert!(
+            argv.windows(2).any(|w| w == ["--tmpfs", "/var"]),
+            "{argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|a| a.contains("/data/runtime/sandboxes")),
+            "{argv:?}"
+        );
+        assert!(
+            !argv.iter().any(|a| a.contains("/data/sandboxes")),
+            "{argv:?}"
+        );
+        Ok(())
     }
 }

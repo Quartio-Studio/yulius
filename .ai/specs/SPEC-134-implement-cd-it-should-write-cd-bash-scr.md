@@ -182,14 +182,16 @@ Teaching (CDK):
 
 ## Plan
 
-- [ ] CD configuration parsed from yulius.toml with the rule of who may deploy each environment
-- [ ] CD runs recorded and executed in the sandbox from the protected branch, with allowed secrets
-- [ ] Production is deployed only by a person who types the confirmation, promoting first
-- [ ] Agents deploy dev, wait for it and ask a person through needs_you
-- [ ] The CD (deployment) page shows both environments, deploys them and starts a setup task
-- [ ] Onboarding, skills, briefing and a nightly automation teach CD
-- [ ] Yulius's own CD defined, docs and decisions updated
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] CD configuration parsed from yulius.toml with the rule of who may deploy each environment
+- [x] CD runs recorded and executed in the sandbox from the protected branch, with allowed secrets
+- [x] Production is deployed only by a person who types the confirmation, promoting first
+- [x] Agents deploy dev, wait for it and ask a person through needs_you
+- [x] The CD (deployment) page shows both environments, deploys them and starts a setup task
+- [x] Onboarding, skills, briefing and a nightly automation teach CD
+- [x] Yulius's own CD defined, docs and decisions updated
+- [x] Review round 1: deploys run verified commits out of the agents' reach, fixed test-first
+- [x] Review round 2: production off the host loopback, exclusive secrets, commit-bound confirmation
+- [ ] Review round 3 approves the exact head
 - [ ] Every gate green, merged into dev on green CI
 
 ## Acceptance criteria
@@ -281,6 +283,18 @@ Teaching (CDK):
   showed and promotion is decided and verified on the mirror. M-D (agents' GitHub token can write
   `main` outside Yulius, predating this task): issue #486, ADR-0110 states the limit. L-a, L-b
   fixed; L-d recorded in ADR-0111; L-e fixed; the ADR-0109 file renamed.
+- **Independent review, round 3 (request changes; all fixed test-first).** H1: the process host
+  refused a joined run whose system root is `/`, so production would never have launched under
+  isolation; the launch spec gained an explicit `host_system` join mode that the process host
+  builds itself (host `/usr`, `/etc`, `/opt` read-only, `/var` and the homes empty), tested through
+  the wiring, the launch validation and the `bwrap` argv. M1: the run's resolver is bound where the
+  host's `/etc/resolv.conf` really points (Ubuntu's link into `/run`). M2: `${secret:NAME}` MCP
+  references never resolve a production secret. M3: a promotion takes exactly the confirmed
+  commit (`dlv_promote_exactly`), refused before anything moves otherwise. L1: a CD end is
+  reported before a merge outcome; L3: agents cannot ask for production secrets and dev shows
+  them as `production`; L4 documented; L2 (`expect` stays optional for API callers, the page
+  always sends it) and L5 (two administrators racing on one secret's allowances) accepted as
+  low. After three rounds, a confirmation review checks only these fixes on the final head.
 - **One pull request.** The parts depend on each other (the page needs the runs, the tools need the
   rule, onboarding teaches the tools); split, each part would ship unusable. The diff is larger
   than the usual 400 lines; the review gets the whole.

@@ -3041,7 +3041,33 @@ impl App {
         token: &Secret,
         fetched: bool,
     ) -> AppResult<PromoteResult> {
+        self.dlv_promote_exactly(sandbox, profile, by, actor, token, fetched, None)
+            .await
+    }
+
+    /// [`App::dlv_promote`] that promotes only `expected`, the integration commit a person
+    /// confirmed (SPEC-134 review round 3): refused, before anything moves, when the integration
+    /// branch or the promotion pull request's head is another commit.
+    #[allow(clippy::too_many_arguments)] // `dlv_promote`'s context and the confirmed commit.
+    pub(crate) async fn dlv_promote_exactly(
+        &self,
+        sandbox: &SandboxRecord,
+        profile: &DeliveryProfile,
+        by: Initiator,
+        actor: &UserRecord,
+        token: &Secret,
+        fetched: bool,
+        expected: Option<&str>,
+    ) -> AppResult<PromoteResult> {
         crate::playground::refuse_in_playground(sandbox, "Promotion")?;
+        let moved = |at: &str| {
+            AppError::Conflict(format!(
+                "nothing was promoted: '{}' moved since it was confirmed (it is now {}); review \
+                 it and deploy again",
+                profile.integration_branch,
+                at.get(..7).unwrap_or(at)
+            ))
+        };
         let candidates: Vec<(TaskRecord, DeliveryRecord)> = self
             .dlv_sandbox_deliveries(sandbox)
             .await?
@@ -3072,6 +3098,9 @@ impl App {
                     profile.integration_branch
                 ))
             })?;
+        if expected.is_some_and(|sha| !sha.eq_ignore_ascii_case(&integration_sha)) {
+            return Err(moved(&integration_sha));
+        }
         let production_sha = github
             .branch_sha(token, owner, name, &profile.production_branch)
             .await?;
@@ -3217,6 +3246,9 @@ impl App {
                         ));
                     }
                     Some(pull) => {
+                        if expected.is_some_and(|sha| !sha.eq_ignore_ascii_case(&pull.head_sha)) {
+                            return Err(moved(&pull.head_sha));
+                        }
                         self.dlv_check_policy(sandbox, profile, pull.number, &pull_facts(&pull))
                             .await?;
                         if profile.require_checks {

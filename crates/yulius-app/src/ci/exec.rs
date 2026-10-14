@@ -892,6 +892,7 @@ mod tests {
             private_dirs: Vec::new(),
             system_passwd: None,
             system_group: None,
+            host_system: None,
         };
         let ci = ci_join(join.clone());
         assert_eq!(ci.cgroup, join.ci_cgroup);

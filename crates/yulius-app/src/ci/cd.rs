@@ -745,7 +745,7 @@ impl App {
                 profile.production_branch, profile.integration_branch
             )
         } else {
-            self.cd_promote(sandbox, &profile, user).await?
+            self.cd_promote(sandbox, &profile, user, &sha).await?
         };
         self.dlv_refresh_clone(sandbox).await?;
         let production = self
@@ -798,16 +798,19 @@ impl App {
         sandbox: &SandboxRecord,
         profile: &DeliveryProfile,
         user: &UserRecord,
+        confirmed: &str,
     ) -> AppResult<String> {
         let (integration, production) = (&profile.integration_branch, &profile.production_branch);
         let token = self
             .person_github_token(user, &format!("Deploying {production}"))
             .await?;
-        let mut result = self.cd_promote_once(sandbox, profile, user, &token).await?;
+        let mut result = self
+            .cd_promote_once(sandbox, profile, user, &token, confirmed)
+            .await?;
         if result.result == "pr_opened" {
             let url = result.sha.clone().unwrap_or_default();
             result = self
-                .cd_promote_once(sandbox, profile, user, &token)
+                .cd_promote_once(sandbox, profile, user, &token, confirmed)
                 .await
                 .map_err(|err| {
                     AppError::Conflict(format!(
@@ -829,14 +832,16 @@ impl App {
         profile: &DeliveryProfile,
         user: &UserRecord,
         token: &Secret,
+        confirmed: &str,
     ) -> AppResult<yulius_contracts::api::git::PromoteResult> {
-        self.dlv_promote(
+        self.dlv_promote_exactly(
             sandbox,
             profile,
             yulius_domain::delivery::Initiator::User,
             user,
             token,
             true,
+            Some(confirmed),
         )
         .await
     }
@@ -1247,16 +1252,12 @@ fn mirror_lock(sandbox: &SandboxId) -> Arc<tokio::sync::Mutex<()>> {
 /// The resolver of a sandbox's network (`slirp4netns`'s DNS; `yulius_sandbox::base`).
 const SANDBOX_RESOLVER: &str = "nameserver 10.0.2.3\n";
 
-/// The host system directories a production run sees, read-only.
-const PRODUCTION_SYSTEM_DIRS: [&str; 3] = ["/usr", "/etc", "/opt"];
-
-/// The system directories a production run gets empty (`/var` holds Yulius's data on the host).
-const PRODUCTION_EMPTY_DIRS: [&str; 6] = ["/var", "/root", "/home", "/srv", "/mnt", "/media"];
-
-/// A production run joined to its sandbox's network (no host loopback, review H-A), but not to
-/// its system layer: the host's system directories read-only, the others empty, the sandbox's
-/// resolver, and only the run's directory and its cache bound in (review C1).
-fn production_containment(
+/// A production run (review H-A, C1; round 3): it joins its sandbox's holder for the network
+/// only (no host loopback); the process host gives it the host's system read-only instead of the
+/// sandbox's system layer (`host_system`), with the sandbox's resolver, and only the run's
+/// directory and its cache are bound in.
+#[must_use]
+pub fn production_containment(
     work: &Path,
     home: &Path,
     cache: &Path,
@@ -1265,23 +1266,14 @@ fn production_containment(
     join: crate::ports::isolation::SandboxJoin,
 ) -> Containment {
     let mut join = ci_join(join);
-    join.system_root = PathBuf::from("/");
-    join.private_dirs
-        .extend(PRODUCTION_EMPTY_DIRS.iter().map(PathBuf::from));
+    join.host_system = Some(resolver.to_path_buf());
     join.extra_readonly.clear();
     Containment::Bubblewrap {
         sandbox_root: work.to_path_buf(),
         home: home.to_path_buf(),
         writable: vec![cache.to_path_buf()],
-        readonly: readonly
-            .into_iter()
-            .chain(PRODUCTION_SYSTEM_DIRS.iter().map(PathBuf::from))
-            .collect(),
-        binds: vec![crate::ports::session::Bind {
-            source: resolver.to_path_buf(),
-            dest: PathBuf::from("/etc/resolv.conf"),
-            writable: false,
-        }],
+        readonly,
+        binds: Vec::new(),
         identity: None,
         join: Some(Box::new(join)),
     }
@@ -1489,6 +1481,7 @@ mod tests {
             private_dirs: vec!["/tmp/x".into()],
             system_passwd: None,
             system_group: None,
+            host_system: None,
         };
         let (work, home, cache) = (
             Path::new("/data/runs/cd-r/work"),

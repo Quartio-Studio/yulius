@@ -8,8 +8,9 @@ use serde::{Deserialize, Serialize};
 pub struct CdSecret {
     /// Agent-secret name.
     pub name: String,
-    /// `ready` (a person allowed it outside the proxy), `not_allowed` (it exists, nobody allowed
-    /// it yet) or `missing` (no agent secret of the project has this name).
+    /// `ready` (a person allowed it for this environment), `not_allowed` (it exists, nobody allowed
+    /// it yet), `missing` (no agent secret of the project has this name) or `production` (dev
+    /// names a production secret, which it never gets).
     pub state: String,
 }
 

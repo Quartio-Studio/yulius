@@ -434,6 +434,12 @@ pub struct SandboxJoin {
     /// directory), so their mount points never land in the sandbox's system layer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub private_dirs: Vec<String>,
+    /// Run on the host's system instead of the sandbox's system layer (a production CD run,
+    /// SPEC-134): the host's `/usr`, `/etc` and `/opt` read-only, `/var`, `/root`, `/home`,
+    /// `/srv`, `/mnt` and `/media` empty, in the holder's network. The value is the resolver file
+    /// shown at the host's resolver path (where `/etc/resolv.conf` really points).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_system: Option<String>,
 }
 
 /// A bind mount at a different path inside the sandbox.
@@ -715,6 +721,7 @@ fn validate_bubblewrap(spec: &BubblewrapSpec) -> Result<(), LaunchSpecError> {
             && join.system_root != "/"
             && join.cgroup.as_deref().is_none_or(valid_abs_path)
             && join.exec_shim.as_deref().is_none_or(valid_abs_path)
+            && join.host_system.as_deref().is_none_or(valid_abs_path)
             && join.private_dirs.len() <= 8
             && join
                 .private_dirs
@@ -1687,6 +1694,7 @@ mod tests {
                 hostname: "s1".into(),
                 exec_shim: Some("/usr/local/bin/yulius".into()),
                 private_dirs: vec!["/data".into()],
+                host_system: None,
             })),
         });
         spec.validate()?;
@@ -1773,6 +1781,7 @@ mod tests {
                             hostname: "s1".into(),
                             exec_shim: None,
                             private_dirs: Vec::new(),
+                            host_system: None,
                         })),
                     });
                 },

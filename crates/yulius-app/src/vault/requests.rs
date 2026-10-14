@@ -131,6 +131,9 @@ impl App {
                     args.secret
                 ))
             })?;
+        if record.cd_prod {
+            return Err(AppError::Forbidden(super::PRODUCTION_SECRET.into()));
+        }
         let merged = merge(&record.hosts, &record.requested_hosts, &asked).map_err(invalid)?;
         let sandbox = store
             .sandbox(&ctx.task.sandbox_id)
