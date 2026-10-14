@@ -41,7 +41,7 @@ export function mountTaskInfoView(ctx, sandbox, task) {
   const body = h('div', { class: 'ti-body' }, placeholder('Loading the task…', 'loading'));
   const titleEl = h('h1', { class: 'page-title gt-title' });
   const head = h('header', { class: 'gt-head' },
-    h('a', { class: 'gt-back', href: href(`${base}/tasks`), dataset: { route: `${base}/tasks` } }, icon('back', { size: 14 }), 'Tasks'),
+    h('a', { class: 'gt-back', href: href(`${base}/tasks`), dataset: { route: `${base}/tasks`, restore: 'page' } }, icon('back', { size: 14 }), 'Tasks'),
     h('div', { class: 'gt-title-row' }, titleEl,
       task.branch ? h('a', { class: 'btn', href: href(reviewPath), dataset: { route: reviewPath } }, icon('branch', { size: 14 }), 'Review changes') : null,
       h('a', { class: 'btn btn-primary gt-go', href: href(taskPath), dataset: { route: taskPath } }, 'Go to task', icon('forward', { size: 14 }))),
