@@ -47,10 +47,10 @@ onboarding** no longer exists: whoever opens a sandbox while its onboarding runs
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | OBS-001 | Pressing Start onboarding replaces the gate's text and button with a loading state at once: the heading "Starting onboarding <name>", a line saying the agent's session is being started, and loading bars; the region is `aria-busy`. Nothing in it can be pressed, so the approval cannot be sent twice. | e2e with the approval held |
-| OBS-002 | The loading state stays while the approval runs, even when the new task's events arrive meanwhile: the page shows neither the pending gate with a live button nor a Follow onboarding link. | e2e: events delivered while held |
+| OBS-002 | The loading state stays while the approval runs, even when the new task's events arrive meanwhile, and when the person leaves the page and comes back before it answers: the page shows neither the pending gate with a live button nor a Follow onboarding link. | e2e: events delivered while held; leave and return while held |
 | OBS-003 | When the approval succeeds the page opens the onboarding task (`/s/<slug>/t/<number>`), without a further click. | e2e: URL after release |
 | OBS-004 | When the approval fails, the loading state ends, the gate shows what it showed before with Start onboarding pressable and focused, and an error toast says onboarding could not start. | e2e with the approval failing |
-| OBS-005 | Opening a sandbox's new-task page while its onboarding runs (`preparing`) opens its onboarding task in the page's place, whatever the task's state (running, waiting for capacity, stopped), replacing the history entry so Back does not bounce; until the sandbox's tasks are read it shows "Opening onboarding <name>" loading. There is no Follow onboarding or Open onboarding screen. | e2e: three task states, Back, a sandbox preparing at app start |
+| OBS-005 | Opening a sandbox's new-task page while its onboarding runs (`preparing`) opens its onboarding task in the page's place, whatever the task's state (running, waiting for capacity, stopped), replacing the history entry so Back does not bounce; until the sandbox's tasks are read it shows "Opening onboarding <name>" loading. There is no Follow onboarding or Open onboarding screen. When onboarding is started elsewhere (another person or tab) while the gate is open, the page opens the task too, with the toast "Onboarding started: opened #N.". New task (the shortcut, a New task button) for such a sandbox goes to its onboarding task directly, adding no history entry when already there. | e2e: three task states, Back, a sandbox preparing at app start (loading while its tasks are read), started elsewhere, New task |
 | OBS-006 | Only when the page cannot open the task does it say so in words: the task list could not be read (onboarding runs, the task box appears when it lands) or the onboarding task is missing (the administrator's recovery path). The task box still comes back by itself when onboarding lands while such a page is open. | e2e (unchanged SPEC-096 cases, adapted) |
 | OBS-007 | SPEC-096 (OBG-005), ADR-0090 (amending ADR-0076), `docs/changes.md` and `e2e/README.md` describe it. | review |
 
@@ -59,7 +59,7 @@ onboarding** no longer exists: whoever opens a sandbox while its onboarding runs
 - [x] Read the product context and related work, then write and validate the spec
 - [x] Start onboarding shows a loading state at once and ignores further presses
 - [x] Start onboarding opens the onboarding task's session when it has started
-- [ ] Docs, changelog and review findings addressed
+- [x] Docs, changelog and review findings addressed
 - [ ] Gates green, merged into dev on green CI
 
 ## Acceptance criteria
@@ -100,7 +100,7 @@ onboarding** no longer exists: whoever opens a sandbox while its onboarding runs
   says onboarding started; an event-driven jump would race a failure.
 - A gate-wide loading state rather than a busy button only: the person asked for "the screen to
   become loading", and the gate's text would be stale while the server starts the session.
-- A `starting` flag in `renderBanner`'s key keeps the loading state through the rebuilds that task
+- Whether a start is in flight (per sandbox, for the tab) is part of `renderBanner`'s key; it keeps the loading state through the rebuilds that task
   events cause during the request.
 - The person's screenshot widened the scope: the `preparing` screen goes for everyone, not only
   after a press here. Opening the task is a `replace` navigation so Back does not land on the page
@@ -117,3 +117,9 @@ onboarding** no longer exists: whoever opens a sandbox while its onboarding runs
   (held task list). Not changed: the `preparing` event arriving before the approval answers is
   handled (the composer is torn down, `destroyed` stops the rest) and the server's order is
   pinned by the mock, which follows `start_onboarding`.
+- Review round 2 at 348353ea: APPROVE with 2 minors and 2 nits, all fixed test-first (each new
+  e2e test red first): onboarding started elsewhere opens the task with a toast that outlives the
+  page (the old live-region text was dropped with the page); New task on a preparing sandbox goes
+  to its onboarding task directly instead of through the sandbox's page (history grew by one,
+  the task view was rebuilt); a start in flight is kept per sandbox for the tab (a module-level
+  set), so leaving and coming back still shows it loading; the Plan is ticked as steps finish.

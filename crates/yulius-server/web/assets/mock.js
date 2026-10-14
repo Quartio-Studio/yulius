@@ -3924,6 +3924,13 @@ export function createMockTransport(params) {
   window.__yuliusMock = db; // debugging aid in the browser console (mock mode only)
   // Tests change a task as the server would announce it (`touchTask('sb_studio', 12, {…})`).
   db.finishOnboarding = (slug) => finishOnboarding(db, db.sandboxes.find((s) => s.slug === slug));
+  // Someone else presses Start onboarding (another person or tab): the approval, without its hold.
+  db.startOnboarding = (slug) => {
+    const sandbox = db.sandboxes.find((s) => s.slug === slug);
+    touch(db, preparationTask(db, sandbox), { status: 'starting', branch: 'yulius/prepare-repository' });
+    sandbox.onboarding = 'preparing';
+    resync(db);
+  };
   db.touchTask = (sandboxId, number, changes) => touch(db, db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number), changes);
   // A pull request changed on the server (`changePull('sb_studio', 520, { state: 'merged' })`):
   // announced like the server does, unless `announce` is false (a change Yulius did not see).

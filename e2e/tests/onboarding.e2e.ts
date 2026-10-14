@@ -9,6 +9,7 @@ type Mocked = Window & { __release?: () => void; __yuliusMock: {
   holdApprove?: Promise<void>;
   failPostPath?: string | null;
   failApprove?: boolean;
+  startOnboarding(slug: string): void;
   finishOnboarding(slug: string): void;
   touchTask(sandboxId: string, number: number, changes: Record<string, unknown>): void;
   sandboxes: { id: string; slug: string }[];
@@ -206,6 +207,47 @@ test('opening a sandbox while onboarding runs opens its task, never a Follow onb
   // The sandbox page was replaced in the history: Back returns to the task list.
   await browser.evaluate(() => history.back());
   await expect(browser).toHaveURL(/#\/s\/website\/tasks$/);
+});
+
+// Review round 2 of SPEC-111: someone else (or another tab) starts it while the gate is open here.
+test('onboarding started elsewhere takes the open gate to its task and says so', async ({ app, browser, screen }) => {
+  await importRepository({ app, browser, screen }, 'website');
+  await browser.evaluate(() => { location.hash = '#/s/website'; });
+  await expect(screen.getByRole('region', 'Onboard website first')).toBeVisible();
+  await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.startOnboarding('website'));
+  await expect(browser).toHaveURL(/#\/s\/website\/t\/1$/);
+  await expect(screen.getByText('Onboarding started: opened #1.')).toBeVisible();
+});
+
+test('leaving and coming back while Start onboarding runs still shows it loading', async ({ app, browser, screen }) => {
+  await importRepository({ app, browser, screen }, 'website');
+  await browser.evaluate(() => { location.hash = '#/s/website'; });
+  await browser.evaluate(() => {
+    const w = window as unknown as Mocked;
+    w.__yuliusMock.holdApprove = new Promise<void>((resolve) => { w.__release = resolve; });
+  });
+  await screen.getByRole('region', 'Onboard website first').getByRole('button', 'Start onboarding').click();
+  await expect(screen.getByRole('region', 'Starting onboarding website')).toBeVisible();
+  await browser.evaluate(() => { location.hash = '#/s/website/tasks'; });
+  await expect(browser).toHaveURL(/#\/s\/website\/tasks$/);
+  await browser.evaluate(() => { location.hash = '#/s/website'; });
+  const starting = screen.getByRole('region', 'Starting onboarding website');
+  await expect(starting).toBeVisible();
+  await expect(starting.getByRole('button')).toHaveCount(0);
+  await expect(screen.getByRole('button', 'Start onboarding')).toHaveCount(0);
+  await browser.evaluate(() => (window as unknown as Mocked).__release!());
+  await expect(browser).toHaveURL(/#\/s\/website\/t\/1$/);
+});
+
+test('New task on a sandbox being onboarded stays on its onboarding task', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/product', '&onboarding=preparing'));
+  await expect(browser).toHaveURL(/#\/s\/product\/t\/1$/);
+  const before = await browser.evaluate(() => history.length);
+  await browser.keyboard.press('ControlOrMeta+Shift+O');
+  await expect(browser).toHaveURL(/#\/s\/product\/t\/1$/);
+  // No detour through the sandbox's page: no new history entry, the task view is not rebuilt.
+  await expect(screen.getByRole('region', 'Opening onboarding product')).toHaveCount(0);
+  expect(await browser.evaluate(() => history.length)).toBe(before);
 });
 
 test('a sandbox already preparing when the app opens goes to its onboarding task', async ({ app, browser, screen }) => {

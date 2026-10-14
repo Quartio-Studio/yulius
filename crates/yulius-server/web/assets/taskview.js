@@ -494,6 +494,10 @@ function pickSummary(detail) {
 // ---------------------------------------------------------------- composer
 
 const AUTO = 'auto';
+// The sandboxes whose Start onboarding was pressed in this tab and has not answered yet: a composer
+// mounted again meanwhile (the person left and came back) still shows it loading (SPEC-111).
+const onboardingStarts = new Set();
+const onboardingStartsChanged = new EventTarget();
 // Auto is the default for the mode and the workflow (TSK-015): Jev decides when the task is created.
 const MODES = [
   { id: AUTO, name: 'Auto mode', icon: 'zap', description: 'Jev decides: a goal for work to build, change or fix; a prompt for questions and research.' },
@@ -822,10 +826,10 @@ export function mountComposer(ctx, sandbox) {
   }
 
   let gateKey = '';
-  let startedHere = false;
-  // Start onboarding was pressed here and its approval has not answered yet (SPEC-111).
-  let starting = false;
   let opening = false;
+  let sentToTask = false; // this view sent the page to the onboarding task
+  // The gate offered Start onboarding in this view: opening the task then is news to say.
+  let offered = false;
   function renderBanner() {
     const sb = ctx.store.sandboxById(sandbox.id) || sandbox;
     const items = [];
@@ -849,7 +853,7 @@ export function mountComposer(ctx, sandbox) {
     // While onboarding runs the page opens its task, where the session is (SPEC-111): no message
     // stands in between, only a loading state until the task is known.
     const shown = sb.onboarding === 'pending'
-      ? [starting || [prep && prep.title, plans.get(planKey(prep)), branchOf(sb)]]
+      ? [onboardingStarts.has(sb.id) || [prep && prep.title, plans.get(planKey(prep)), branchOf(sb)]]
       : [prep === undefined ? (ctx.store.tasksError(sb.id) ? 'unknown' : 'loading') : prep ? 'open' : 'missing'];
     const key = preparing ? JSON.stringify([sb.onboarding, sb.name, sb.slug, sb.access, prep && prep.number, ...shown]) : '';
     if (key !== gateKey) {
@@ -859,12 +863,13 @@ export function mountComposer(ctx, sandbox) {
       if (hadFocus && preparing) focusGate();
       // A start from this page has its own toast: the status speaks for someone else's.
       if (before && before !== (preparing ? sb.onboarding : null)) {
-        gateNews.textContent = sb.onboarding === 'preparing' ? (startedHere ? '' : 'Onboarding started.') : preparing ? '' : 'Onboarding finished: the task box is ready.';
+        gateNews.textContent = preparing ? '' : 'Onboarding finished: the task box is ready.';
       }
     }
     gateKey = key;
     gate.hidden = !preparing;
     gate.setAttribute('aria-busy', String(Boolean(gate.querySelector('.onboarding-gate-loading'))));
+    if (sb.onboarding === 'pending') offered = true;
     if (sb.onboarding === 'preparing' && prep) openOnboarding(sb, prep);
     card.hidden = preparing;
     el.classList.toggle('gated', preparing);
@@ -893,7 +898,10 @@ export function mountComposer(ctx, sandbox) {
     opening = true;
     setTimeout(() => {
       if (destroyed || !el.isConnected) { opening = false; return; }
+      // Started here or elsewhere while this page offered it: a toast outlives the page it leaves.
+      if (offered) toast(`Onboarding started: opened #${prep.number}.`, { kind: 'ok' });
       ctx.navigate(`/s/${encodeURIComponent(sb.slug)}/t/${prep.number}`, { replace: true });
+      sentToTask = true;
       // A view kept after the navigation (none is today) may open it again.
       if (!destroyed) opening = false;
     }, 0);
@@ -933,7 +941,7 @@ export function mountComposer(ctx, sandbox) {
       // The region is `aria-busy` and its line says what loads: the bars are drawn only.
       h('div', { class: 'onboarding-gate-loading' }, skeleton(line, 3, { announce: false })),
     ];
-    if (sb.onboarding === 'pending' && starting) {
+    if (sb.onboarding === 'pending' && onboardingStarts.has(sb.id)) {
       return loading(`Starting onboarding ${sb.name}`, `${BRAND.name} is starting the agent’s session; it opens here in a moment.`);
     }
     if (sb.onboarding === 'preparing') {
@@ -969,19 +977,22 @@ export function mountComposer(ctx, sandbox) {
   // task's run has started, and the page then opens that task (SPEC-111).
   const approveOnboarding = singleFlight(async () => {
     const away = () => !gate.contains(document.activeElement) && document.activeElement !== document.body && document.activeElement;
-    starting = true;
-    renderBanner();
+    if (onboardingStarts.has(sandbox.id)) return;
+    const changed = () => onboardingStartsChanged.dispatchEvent(new Event('change'));
+    onboardingStarts.add(sandbox.id);
+    changed();
     try {
       const updated = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/onboarding/approve`);
-      startedHere = true;
       await ctx.store.loadTasks(sandbox.id).catch(() => null);
       if (updated && updated.id) ctx.store.upsertSandbox(updated);
-      toast('Onboarding started.', { kind: 'ok' });
+      // Opening the task says so itself; otherwise (the task could not be read, or the person went
+      // elsewhere meanwhile) this does.
+      if (!opening && !sentToTask) toast('Onboarding started.', { kind: 'ok' });
     } catch (error) {
       errorToast(error, 'Couldn’t start onboarding');
     } finally {
-      starting = false;
-      if (!destroyed) renderBanner();
+      onboardingStarts.delete(sandbox.id);
+      changed();
     }
     // Back as it was (a failure), or a task that could not be read: the keyboard goes back to the
     // gate, unless the person moved it elsewhere while the start ran.
@@ -1145,6 +1156,9 @@ export function mountComposer(ctx, sandbox) {
   // A kept "Run after" shows once the sandbox's tasks are read.
   destroyers.push(ctx.store.on('tasks', (sid) => { if (sid === sandbox.id) { renderBanner(); if (afterTaskId) renderChips(); } }));
   destroyers.push(onDraftChange(userId, sandbox.id, renderTray));
+  const onStarts = () => { if (!destroyed) renderBanner(); };
+  onboardingStartsChanged.addEventListener('change', onStarts);
+  destroyers.push(() => onboardingStartsChanged.removeEventListener('change', onStarts));
   renderBanner();
 
   return {

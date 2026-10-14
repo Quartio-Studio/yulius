@@ -39,7 +39,10 @@ to click again to reach the session they had just started. The person then point
 ## Consequences
 
 - One click from the gate to the onboarding session, and opening a sandbox during onboarding lands
-  on that session. New task (the shortcut, the sidebar) for such a sandbox opens it too.
+  on that session, also when someone else started it while the gate was open here (a toast says
+  so). New task (the shortcut, a New task button) for such a sandbox goes to the task directly.
+- A start in flight is remembered per sandbox for the browser tab, so a composer mounted again
+  before it answers still shows it loading.
 - Back from the onboarding task returns to the page before the sandbox, not to a page that
   redirects again.
-- The gate keeps a `starting` flag in its render key; a new rebuild trigger must respect it.
+- The gate's render key includes whether a start is in flight; a new rebuild trigger must respect it.
