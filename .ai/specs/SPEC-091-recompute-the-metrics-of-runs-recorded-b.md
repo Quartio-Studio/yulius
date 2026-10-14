@@ -124,7 +124,7 @@ None.
 - Tests written first and seen failing: the window API (compile), the store's `before` at queue
   time and the sub-agent read failure (assertions).
 - `scripts/dev ci` (doctor, check, lint with clippy `-D warnings`, nextest, doctests, deny,
-  shear, doc): exit 0, 1,509 tests passed before the review fixes; rerun after them (below).
+  shear, doc): exit 0, 1,509 tests passed before the review fixes and 1,510 after them.
 - Independent review (fresh session, `om-code-review`): round one requested changes (failure path
   untested; `before` read after reconciliation; sub-agent errors cut the count; untested
   `no_lines` and next-run window; session id); all fixed test-first. The reconciliation overwrite
