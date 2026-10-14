@@ -432,6 +432,142 @@ test('the spider climbs its thread and drops back, and keeps still under reduced
   for (const part of ['.ss-web-spider', '.ss-web-silk', '.ss-web-legs']) expect(still).toContain(part);
 });
 
+// Task #86 (SPEC-101): "sometimes pixelart cockroach should run through the screen in this view".
+test('a cockroach runs across the visible part of the session now and then (unit, in the page)', async ({ app, browser }) => {
+  await browser.setViewport({ width: 1280, height: 420 });
+  await app.open(mock('/s/studio/sessions/ses_imp_checkout'));
+  await expect(browser.locator('.ss-tui .ss-locked')).toBeVisible();
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/pages/sessions.js';
+    const { cockroachDelay, runCockroach, scheduleCockroaches } = await import(url);
+    const delays = {
+      firstMin: cockroachDelay(true, () => 0),
+      firstMax: cockroachDelay(true, () => 0.999999),
+      laterMin: cockroachDelay(false, () => 0),
+      laterMax: cockroachDelay(false, () => 0.999999),
+    };
+    const page = document.querySelector<HTMLElement>('.ss-page')!;
+    const well = document.querySelector<HTMLElement>('.ss-tui')!;
+    page.scrollTop = 150;
+    const view = page.getBoundingClientRect();
+    const roach = runCockroach(well, () => 0.5) as SVGSVGElement;
+    const [run] = roach.getAnimations();
+    const placed = (fraction: number) => {
+      run.pause();
+      run.currentTime = fraction * Number(run.effect!.getComputedTiming().duration);
+      const box = roach.getBoundingClientRect();
+      const w = well.getBoundingClientRect();
+      return { left: Math.round(box.left - w.left), right: Math.round(w.right - box.right), top: box.top, bottom: box.bottom, overflow: page.scrollWidth - page.clientWidth };
+    };
+    const start = placed(0);
+    const middle = placed(0.5);
+    const end = placed(0.999);
+    const shape = {
+      inWell: roach.parentElement === well,
+      hidden: roach.getAttribute('aria-hidden'),
+      pointer: getComputedStyle(roach).pointerEvents,
+      legs: roach.querySelectorAll('.ss-roach-legs').length,
+      duration: Number(run.effect!.getComputedTiming().duration),
+    };
+    run.finish();
+    await run.finished;
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const removed = !roach.isConnected;
+
+    // The scheduler on a fake timer: one cockroach per timer, then the next delay, until stopped.
+    const timers: { fn: () => void; ms: number; cleared: boolean }[] = [];
+    const timer = { set: (fn: () => void, ms: number) => timers.push({ fn, ms, cleared: false }) - 1, clear: (id: number) => { if (timers[id]) timers[id].cleared = true; } };
+    const stop = scheduleCockroaches(well, { random: () => 0.5, timer });
+    const scheduled = timers.map((t) => t.ms);
+    timers[0].fn();
+    const ran = well.querySelectorAll('.ss-roach').length;
+    const next = timers.map((t) => t.ms);
+    stop();
+    const afterStop = { cleared: timers[1].cleared, left: well.querySelectorAll('.ss-roach').length };
+    timers[1].fn();
+    const stale = { timers: timers.length, roaches: well.querySelectorAll('.ss-roach').length };
+    return { delays, view: { top: view.top, bottom: view.bottom }, start, middle, end, shape, removed, scheduled, ran, next, afterStop, stale };
+  });
+  expect(result.delays).toEqual({ firstMin: 20000, firstMax: 59999, laterMin: 45000, laterMax: 149999 });
+  expect(result.shape).toMatchObject({ inWell: true, hidden: 'true', pointer: 'none', legs: 2 });
+  expect(result.shape.duration).toBeGreaterThanOrEqual(2000);
+  expect(result.shape.duration).toBeLessThanOrEqual(4000);
+  // It enters at one side, crosses the well and leaves at the other, in the part one can see.
+  expect(result.start.right).toBeGreaterThan(0);
+  expect(result.start.left).toBeLessThan(0);
+  expect(result.middle.left).toBeGreaterThan(0);
+  expect(result.middle.right).toBeGreaterThan(0);
+  expect(result.end.left).toBeGreaterThan(result.middle.left);
+  expect(result.middle.top).toBeGreaterThanOrEqual(result.view.top);
+  expect(result.middle.bottom).toBeLessThanOrEqual(result.view.bottom);
+  for (const at of [result.start, result.middle, result.end]) expect(at.overflow).toBe(0);
+  expect(result.removed).toBe(true);
+  expect(result.scheduled).toEqual([40000]);
+  expect(result.ran).toBe(1);
+  expect(result.next).toEqual([40000, 97500]);
+  expect(result.afterStop).toEqual({ cleared: true, left: 0 });
+  expect(result.stale).toEqual({ timers: 2, roaches: 0 });
+});
+
+// The session view schedules them itself and stops when it is left; nothing runs for people who
+// asked for reduced motion (the harness cannot emulate the media query, so matchMedia is stubbed).
+const recordTimers = (reduce: boolean) => {
+  const w = window as unknown as { roachTimers: { ms: number; fn: () => void; cleared: boolean; id: number }[] };
+  w.roachTimers = [];
+  const set = window.setTimeout.bind(window);
+  const clear = window.clearTimeout.bind(window);
+  window.setTimeout = ((fn: () => void, ms?: number, ...rest: unknown[]) => {
+    const id = set(fn, ms, ...rest);
+    // The app keeps other long timers (a request's timeout); only those set in the session view count.
+    if ((ms ?? 0) >= 20000 && new Error().stack?.split('\n')[2]?.includes('/pages/sessions.js')) w.roachTimers.push({ ms: ms ?? 0, fn, cleared: false, id: Number(id) });
+    return id;
+  }) as typeof window.setTimeout;
+  window.clearTimeout = ((id?: number) => {
+    for (const t of w.roachTimers) if (t.id === id) t.cleared = true;
+    clear(id);
+  }) as typeof window.clearTimeout;
+  if (reduce) {
+    const media = window.matchMedia.bind(window);
+    window.matchMedia = (query: string) => (query.includes('prefers-reduced-motion') ? ({ ...media(query), matches: true, media: query } as MediaQueryList) : media(query));
+  }
+};
+
+test('the session view sends cockroaches now and then and stops when it is left', async ({ app, browser, screen }) => {
+  await browser.addInitScript(recordTimers, false);
+  await app.open(mock('/s/studio/sessions/ses_imp_checkout'));
+  await expect(browser.locator('.ss-tui .ss-locked')).toBeVisible();
+  const timers = () => browser.evaluate(() => (window as unknown as { roachTimers: { ms: number; cleared: boolean }[] }).roachTimers.map((t) => ({ ms: t.ms, cleared: t.cleared })));
+  await expect.poll(async () => (await timers()).length).toBe(1);
+  const [first] = await timers();
+  expect(first.ms).toBeGreaterThanOrEqual(20000);
+  expect(first.ms).toBeLessThan(60000);
+  // Its time comes: a cockroach runs and the next one is scheduled further apart.
+  await browser.evaluate(() => (window as unknown as { roachTimers: { fn: () => void }[] }).roachTimers[0].fn());
+  await expect(browser.locator('.ss-tui > svg.ss-roach')).toHaveCount(1);
+  const [, second] = await timers();
+  expect(second.ms).toBeGreaterThanOrEqual(45000);
+  expect(second.ms).toBeLessThan(150000);
+  expect(await axeViolations(browser)).toEqual([]);
+  // Leaving the session stops the next one.
+  await screen.getByRole('link', 'Sessions').first().click();
+  await expect(browser).toHaveURL(/#\/s\/studio\/sessions$/);
+  await expect.poll(async () => (await timers())[1].cleared).toBe(true);
+});
+
+test('no cockroach runs under reduced motion', async ({ app, browser }) => {
+  await browser.addInitScript(recordTimers, true);
+  await app.open(mock('/s/studio/sessions/ses_imp_checkout'));
+  await expect(browser.locator('.ss-tui .ss-locked')).toBeVisible();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { roachTimers: unknown[] }).roachTimers.length)).toBeGreaterThan(0);
+  const ran = await browser.evaluate(async () => {
+    (window as unknown as { roachTimers: { fn: () => void }[] }).roachTimers[0].fn();
+    const url = '/assets/pages/sessions.js';
+    const { runCockroach } = await import(url);
+    return { direct: runCockroach(document.querySelector('.ss-tui')), shown: document.querySelectorAll('.ss-roach').length };
+  });
+  expect(ran).toEqual({ direct: null, shown: 0 });
+});
+
 // F 2026-10-13 (SPEC-086): "Sessions are beautiful but should be always 100% width and not only
 // when minimised. Even left and right margin of the session window and border radius should be
 // thrown out to make it look similar to the original session." The well spans the content area

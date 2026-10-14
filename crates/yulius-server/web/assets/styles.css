@@ -2171,7 +2171,15 @@ button.task-group-head:hover { color: var(--text); }
   0%, 54%, 58%, 62%, 84%, 88%, 92%, 100% { visibility: hidden; }
   52%, 56%, 60%, 82%, 86%, 90% { visibility: visible; }
 }
-@media (prefers-reduced-motion: reduce) { .ss-web-spider, .ss-web-silk, .ss-web-legs { animation: none; } }
+/* Now and then a cockroach runs across the well (SPEC-101; pages/sessions.js runCockroach moves it).
+   The well clips it at its sides: clip, not hidden, so the web's sticky position keeps the page's scroll. */
+.ss-tui { overflow-x: clip; }
+.ss-roach { position: absolute; top: 0; left: 0; width: 48px; height: 21px; pointer-events: none; fill: var(--session-roach); } /* 3 px pixels */
+.ss-roach-legs-a { animation: ss-roach-legs-a 160ms steps(1, end) infinite; }
+.ss-roach-legs-b { visibility: hidden; animation: ss-roach-legs-b 160ms steps(1, end) infinite; }
+@keyframes ss-roach-legs-a { 0%, 100% { visibility: visible; } 50% { visibility: hidden; } }
+@keyframes ss-roach-legs-b { 0%, 100% { visibility: hidden; } 50% { visibility: visible; } }
+@media (prefers-reduced-motion: reduce) { .ss-web-spider, .ss-web-silk, .ss-web-legs, .ss-roach-legs { animation: none; } }
 .ss-locked { display: flex; align-items: center; gap: 1ch; padding: 6px 1ch; border: 1px solid var(--session-border); border-radius: var(--radius); color: var(--session-dim); cursor: not-allowed; }
 .ss-locked > .icon { flex: none; }
 /* content-visibility clips paint at the entry's edge: what highlights it (focus, the search target,
@@ -2224,6 +2232,7 @@ button.task-group-head:hover { color: var(--text); }
   .ss-inner > .ss-body > :not(.ss-tui) { margin: 0 12px 12px; }
   .ss-tui { padding: 12px 12px 24px; font-size: var(--fs-sm); line-height: var(--lh-sm); }
   .ss-web { width: 56px; height: 68px; margin: -12px -12px 8px 12px; } /* 2 px pixels */
+  .ss-roach { width: 32px; height: 14px; } /* 2 px pixels */
   .ss-has-when .ss-prompt { padding-right: 1ch; }
   .ss-when { position: static; align-self: flex-end; padding: 0; }
   .ss-summary { margin-left: 0; }

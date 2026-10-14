@@ -52,7 +52,7 @@ the way of reading, selecting or using the keyboard.
 - [x] Read the product context and related work, then write and validate the spec
 - [x] The corner's web sticks to the top of the view while the transcript scrolls
 - [x] The spider climbs its thread and wiggles its legs, still under reduced motion
-- [ ] Now and then a pixel-art cockroach runs across the session, never under reduced motion
+- [x] Now and then a pixel-art cockroach runs across the session, never under reduced motion
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
