@@ -35,6 +35,11 @@ there does. The Superagent opens straight on its prompt.
   - Nothing in Yulius reads `.mcp.json`, so the MCP section (instance and sandbox servers,
     SPEC-001 MCP-001..004, `crates/yulius-app/src/mcp_config.rs`) never lists the project's
     servers and no run gets them.
+  - Found while fixing: a stdio server's value travelled in the run's environment under the
+    server's own variable name (`APIFY_TOKEN`). An agent secret of that name already puts its
+    placeholder there (SPEC-002 ADR-20), and the session host refuses the duplicate ("name also
+    present in the non-secret env"), so every run of the sandbox failed to spawn. With the import,
+    `${APIFY_TOKEN}` maps to the agent secret `APIFY_TOKEN`, so the clash becomes the normal case.
 - **Why no test caught it.** The Superagent tests run it in an empty repository, and no test
   had a `.mcp.json` in a sandbox.
 - **What settles the dialog (measured on Claude Code 2.1.292).** Claude Code keeps the answers as
@@ -56,7 +61,7 @@ there does. The Superagent opens straight on its prompt.
   `${secret:NAME}` (MCP-003), resolved when a run starts. A header may be `Bearer ${secret:NAME}`.
 - Gaps found and not fixed here: the Superagent gets none of the servers configured in Yulius
   (MGT-004 attaches only `yulius`), and they would reach it without the redaction hook that task
-  runs have. Filed as a follow-up issue.
+  runs have. Filed as #395.
 
 ## Requirements
 
@@ -67,6 +72,7 @@ there does. The Superagent opens straight on its prompt.
 | PMC-003 | A missing, unreadable, invalid or oversized `.mcp.json`, or a server the store refuses (limit, a concurrent import of the same name), never stops a run or a Superagent; a warning is logged and the rest goes on. | unit tests, `cockpit.rs` |
 | PMC-004 | The Superagent starts with `--settings '{"disabledMcpjsonServers":[…]}'` naming every server in the repository's `.mcp.json` (also skipped ones), so Claude Code never asks about them; the names are JSON in one argv element, never through a shell. Without such servers it starts as before, with no `--settings`. This amends MGT-004 ("no settings") for this one key. | harness unit test, `cockpit.rs` |
 | PMC-005 | Task runs are unchanged: `--strict-mcp-config` with the Yulius servers, which now include the imported ones with their secret references resolved (MCP-003, MCP-004). | `pool_supervision.rs` |
+| PMC-006 | An MCP server's secret values reach a run in variables of their own: `YULIUS_MCP_<SERVER>_<VAR>` for a stdio server's variable, and `YULIUS_MCP_<SERVER>_TOKEN` for an HTTP bearer as before. A name that two values would share gets a numbered suffix. The run's `mcp.json` maps each variable back to the server's own name, so an agent secret's placeholder of that name stays in the agent's environment and the run starts. | wiring unit test, `pool_supervision.rs` |
 
 ## Plan
 

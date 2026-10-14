@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- A repository's `.mcp.json` no longer stops the Superagent on Claude Code's "N new MCP servers
+  found in this project" dialog (SPEC-095, ADR-0078, #391). Before each task run and Superagent
+  start, Yulius adds the file's servers that the sandbox lacks to its MCP servers, with `${VAR}`
+  values read as the agent secret VAR, so every task gets them. The Superagent starts rejecting
+  them through `--settings`. A server already configured is left as it is, so one turned off stays
+  off. An MCP server's values now reach a run in `YULIUS_MCP_<SERVER>_<VAR>` variables. Before, one
+  named like an agent secret, such as `APIFY_TOKEN`, clashed with that secret's placeholder, and
+  every run of the sandbox failed to start.
 - Runs recorded before SPEC-087 get their metrics from their transcripts (SPEC-091, ADR-0072).
   The upgrade queues every run recorded so far (migration 23, `metrics_recounts`). On the first
   start, once reconciliation is done, Yulius counts each ended run's own window of its transcript
