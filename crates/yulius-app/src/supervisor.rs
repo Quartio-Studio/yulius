@@ -2298,6 +2298,7 @@ impl App {
         let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
         if task.status == TaskStatus::Queued
             || task.status == TaskStatus::Chained
+            || task.status == TaskStatus::Prepared
             || task.status == TaskStatus::WaitingCapacity
                 && store.live_attempt(task_id).await?.is_none()
         {

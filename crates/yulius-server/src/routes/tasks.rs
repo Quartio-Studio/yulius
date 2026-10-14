@@ -230,6 +230,15 @@ pub async fn start_now(
     Ok(Json(app.start_chained_now(&ctx, &tid).await?))
 }
 
+pub async fn schedule(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(tid): Path<String>,
+    Json(req): Json<yulius_contracts::api::tasks::ScheduleTask>,
+) -> ApiResult<Json<TaskSummary>> {
+    Ok(Json(app.schedule_task(&ctx, &tid, &req).await?))
+}
+
 pub async fn queue_message(
     State(app): State<AppState>,
     Auth(ctx): Auth,

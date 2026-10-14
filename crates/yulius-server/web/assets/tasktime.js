@@ -80,6 +80,8 @@ export function taskTime(task, info, now = Date.now()) {
     }
     default:
       if (status === 'queued' || status === 'chained') return lasting('queued', state, 'In line since');
+      // Written and waiting to be started (SPEC-105).
+      if (status === 'prepared') return lasting('prepared', state, task.start_at ? 'Scheduled since' : 'Prepared since');
       if (status === 'waiting_capacity') return lasting('paused', state, 'Paused for subscription capacity since');
       // The agent finished its turn and its pull request's checks run: since the turn ended.
       if (idle && info.pr && !info.shells) return lasting('in review', state, 'In review since the agent finished its turn at');

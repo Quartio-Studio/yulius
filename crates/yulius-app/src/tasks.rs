@@ -164,6 +164,7 @@ impl App {
             held_prompt: self.held_prompt_view(&task.id).await,
             auto: self.auto_choice_view(&task.id).await,
             supertask: task.supertask,
+            start_at: self.prepared_start_at(task).await.map(rfc3339),
             held_by: if task.status == TaskStatus::Queued {
                 self.supertask_holders(task).await.unwrap_or_default()
             } else {
@@ -192,7 +193,9 @@ impl App {
             self.events.publish(
                 Some(task.sandbox_id.clone()),
                 false,
-                yulius_contracts::events::UiEvent::TaskUpdated { task: summary },
+                yulius_contracts::events::UiEvent::TaskUpdated {
+                    task: Box::new(summary),
+                },
             );
         }
     }

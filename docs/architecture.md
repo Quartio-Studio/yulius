@@ -291,6 +291,25 @@ flowchart LR
     D --> G
 ```
 
+### Prepared tasks
+
+A task can wait as `prepared` before its first run (`yulius-app/src/prepared.rs`,
+[SPEC-105](../.ai/specs/SPEC-105-add-scheduling-when-i-decide-in-this-mod.md),
+[decision 0085](decisions/0085-a-prepared-task-waits-for-a-person-or-its-time.md)). Without a time
+it waits for a person's Start now; with one (a row in `task_schedules`) the background tick
+releases it once the time has come and the sandbox's onboarding no longer blocks tasks. Released,
+it goes `prepared → queued` by compare-and-set and starts through `start_run` like a new task.
+
+```mermaid
+flowchart LR
+    C[New task: When I decide / At a time] --> P[prepared]
+    P -->|Start now| Q[queued]
+    P -->|tick: time due, onboarding done| Q
+    P -->|PUT schedule| P
+    P -->|Cancel| S[stopped cancelled]
+    Q --> R[start_run: supertask hold, session limit, capacity]
+```
+
 ## Superagent (the Cockpit)
 
 Every user has one plain Claude Code session per sandbox, shown as the **Superagent**
@@ -423,9 +442,13 @@ flowchart LR
 
 The web UI is plain ES modules. Server state comes from the API and the UI event stream
 (`store.js`); what only one person's browser needs stays in `localStorage`: preferences (theme,
-column widths, model and effort), the notification history, and the new-task composer's drafts
-([decision 0021](decisions/0021-composer-drafts-in-the-browser.md)). Sign-out removes the
-notification history and the drafts.
+column widths, model and effort), the notification history, the new-task composer's drafts
+([decision 0021](decisions/0021-composer-drafts-in-the-browser.md)), and each sandbox's pull
+requests as the last Git overview read said them (`yulius.pulls.<user>.<sandbox>`), shown at once
+after a reload, for a sandbox a view watches, until the page's own read replaces them (dropped if
+that read fails; SPEC-104).
+Sign-out removes the notification history, the drafts and the pull requests; an expired session
+removes the pull requests too.
 
 Every drop-down menu is built by `openMenu` (`dom.js`). It stays inside the window, scrolling its
 items, and a menu of 8 or more items opens with a filter box
@@ -441,6 +464,11 @@ flowchart LR
   LS -->|"after a reload"| D
   C -->|"task started: clear"| D
   SO["Sign-out"] -->|"forget"| LS
+  G["GET /api/sandboxes/:id/git"] -->|"every read"| P["store.js loadPulls / pullsOf()"]
+  P -->|"write"| LP[("localStorage yulius.pulls.*")]
+  LP -->|"after a reload, until the read answers"| P
+  SO -->|"forget"| LP
+  EX["Session expired"] -->|"forget"| LP
 ```
 
 ## Task status

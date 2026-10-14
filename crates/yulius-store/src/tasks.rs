@@ -312,6 +312,7 @@ impl TaskStore for SqliteStore {
         at: Timestamp,
     ) -> AppResult<bool> {
         let id = id.as_str().to_owned();
+        // `release_scheduled` (intake.rs) repeats this bookkeeping for prepared → queued.
         self.call(move |c| {
             let closed = matches!(next, TaskStatus::Closed).then_some(at.0);
             let queued = matches!(next, TaskStatus::Queued).then_some(at.0);
@@ -385,6 +386,7 @@ impl TaskStore for SqliteStore {
                 "DELETE FROM provider_sessions WHERE task_id = ?1",
                 "DELETE FROM attempts WHERE task_id = ?1",
                 "DELETE FROM task_chains WHERE task_id = ?1",
+                "DELETE FROM task_schedules WHERE task_id = ?1",
                 "UPDATE task_chains SET after_task_id = NULL WHERE after_task_id = ?1",
                 "DELETE FROM prompt_holds WHERE task_id = ?1",
                 "UPDATE prompt_holds SET new_task_id = NULL WHERE new_task_id = ?1",
@@ -568,7 +570,7 @@ impl TaskStore for SqliteStore {
             let n = c
                 .execute(
                     "UPDATE tasks SET prompt = prompt || ?1, updated_at = ?2 \
-                     WHERE id = ?3 AND status IN (?4, ?5, ?6) \
+                     WHERE id = ?3 AND status IN (?4, ?5, ?6, ?8) \
                      AND NOT EXISTS (SELECT 1 FROM attempts WHERE task_id = ?3) \
                      AND NOT EXISTS (SELECT 1 FROM provider_sessions WHERE task_id = ?3) \
                      AND length(CAST(prompt AS BLOB)) + length(CAST(?1 AS BLOB)) <= ?7",
@@ -579,7 +581,8 @@ impl TaskStore for SqliteStore {
                         TaskStatus::Queued.as_str(),
                         TaskStatus::Chained.as_str(),
                         TaskStatus::WaitingCapacity.as_str(),
-                        max
+                        max,
+                        TaskStatus::Prepared.as_str()
                     ],
                 )
                 .map_err(db)?;

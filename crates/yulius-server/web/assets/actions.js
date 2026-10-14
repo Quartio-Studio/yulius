@@ -5,9 +5,9 @@
 // itself, so no action chooses one.
 
 import { enc } from './api.js';
-import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, badge, setChildren, icon, iconButton, placeholder } from './dom.js';
+import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, invalid, badge, setChildren, icon, iconButton, placeholder } from './dom.js';
 import { taskActions, taskInfo, allows, isLive, otherOwner } from './status.js';
-import { relLong } from './format.js';
+import { relLong, whenLabel, localInputValue, fromLocalInput } from './format.js';
 import { BRAND } from './brand.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { openAttachment } from './filedrop.js';
@@ -27,8 +27,9 @@ export function openTaskMenu(ctx, anchor, task) {
   openMenu(anchor, [
     // The same rule as the row it opens from (pull request, held prompt, browser request).
     { header: `#${task.number} · ${taskInfo(task, ctx.store.state.actionRequests, pr).label}` },
-    task.status === 'chained' ? { label: 'Start now', disabled: !can.startNow, title: can.startNow ? null : why, onSelect: () => startNow(ctx, task) } : null,
-    { label: task.status === 'chained' ? 'Cancel' : 'Stop', disabled: !can.stop, title: can.stop ? null : why, onSelect: () => stopTask(ctx, task) },
+    task.status === 'chained' || task.status === 'prepared' ? { label: 'Start now', disabled: !can.startNow, title: can.startNow ? null : why, onSelect: () => startNow(ctx, task) } : null,
+    task.status === 'prepared' ? { label: task.start_at ? 'Change time…' : 'Schedule…', disabled: !can.schedule, title: can.schedule ? null : why, onSelect: () => rescheduleTask(ctx, task) } : null,
+    { label: task.status === 'chained' || task.status === 'prepared' ? 'Cancel' : 'Stop', disabled: !can.stop, title: can.stop ? null : why, onSelect: () => stopTask(ctx, task) },
     { label: 'Continue', disabled: !can.continue, title: can.continue ? null : why, onSelect: () => continueTask(ctx, task) },
     { label: 'See the original prompt', onSelect: () => openPromptDialog(ctx, task) },
     { label: 'Delivery…', onSelect: () => openDeliveryDialog(ctx, task) },
@@ -62,6 +63,59 @@ async function taskPost(ctx, task, verb, request, okMessage) {
   }
 }
 
+/**
+ * When a task starts (SPEC-105): a date and time in the person's time zone, at most 366 days
+ * ahead. `value` is the time picked before (ISO) or null; `onUse(iso)` gets the new time and may
+ * throw to keep the dialog open with the reason. With `onClear`, a "When I decide" button clears
+ * the time instead.
+ */
+export function openScheduleDialog({ value, onUse, onClear }) {
+  const next = new Date();
+  next.setHours(next.getHours() + 1, 0, 0, 0);
+  const id = `schedule-${Math.random().toString(36).slice(2, 8)}`;
+  const hintId = `${id}-hint`;
+  const input = h('input', { id, class: 'input', type: 'datetime-local', value: localInputValue(value || next.toISOString()), min: localInputValue(new Date().toISOString()), required: true, 'aria-describedby': hintId });
+  return openModal({
+    title: 'Start at a time',
+    className: 'schedule-dialog',
+    body: h('div', { class: 'stack' },
+      // A label of its own: a validation message joins the field, not the input's name.
+      h('div', { class: 'field' }, h('label', { class: 'field-label', for: id }, 'Date and time'), input,
+        h('span', { class: 'field-hint', id: hintId }, 'In your time zone. The task starts by itself within a minute of it.'))),
+    actions: [
+      { label: 'Cancel', value: false },
+      onClear ? { label: 'When I decide', run: () => onClear() } : null,
+      { label: 'Use this time', kind: 'primary', run: async () => {
+        const at = fromLocalInput(input.value);
+        const ahead = at ? Date.parse(at) - Date.now() : NaN;
+        if (!at) { invalid(input, 'Pick a date and a time.'); return false; }
+        if (ahead < -60e3) { invalid(input, 'That time has passed: pick a later one.'); return false; }
+        if (ahead > 366 * 86400e3) { invalid(input, 'Pick a time at most 366 days ahead.'); return false; }
+        await onUse(at);
+        return true;
+      } },
+    ].filter(Boolean),
+  });
+}
+
+/** Sets or clears when a prepared task starts by itself (SPEC-105); null: when I decide. */
+export function scheduleTask(ctx, task, at) {
+  return ctx.api.put(`/api/tasks/${enc(task.id)}/schedule`, { start_at: at }).then((updated) => {
+    if (updated && updated.id) ctx.store.upsertTask(updated);
+    toast(at ? `#${task.number} starts ${whenLabel(at)}.` : `#${task.number} waits until you start it.`, { kind: 'ok' });
+    return updated;
+  });
+}
+
+/** Schedule… / Change time… of a prepared task: the dialog, then the server. */
+export function rescheduleTask(ctx, task) {
+  return openScheduleDialog({
+    value: task.start_at,
+    onUse: (at) => scheduleTask(ctx, task, at),
+    onClear: task.start_at ? () => scheduleTask(ctx, task, null) : null,
+  });
+}
+
 /** A task waiting in a chain starts now, whatever its predecessor does (TSK-012). */
 export function startNow(ctx, task) {
   return taskPost(ctx, task, 'start', () => ctx.api.post(`/api/tasks/${enc(task.id)}/start-now`), `Starting #${task.number}…`);
@@ -69,6 +123,16 @@ export function startNow(ctx, task) {
 
 /** Stop a live task (confirmation: stopping interrupts the agent); cancel a chained one. */
 export async function stopTask(ctx, task) {
+  if (task.status === 'prepared') {
+    const cancel = await confirmDialog({
+      title: `Cancel task #${task.number}?`,
+      message: `It is prepared${task.start_at ? ` to start ${whenLabel(task.start_at)}` : ''} and will not start. You can continue it later.`,
+      confirmLabel: 'Cancel task',
+      danger: true,
+    });
+    if (cancel) await taskPost(ctx, task, 'stop', () => ctx.api.post(`/api/tasks/${enc(task.id)}/stop`), `Cancelled #${task.number}`);
+    return;
+  }
   if (task.status === 'chained') {
     const cancel = await confirmDialog({
       title: `Cancel task #${task.number}?`,

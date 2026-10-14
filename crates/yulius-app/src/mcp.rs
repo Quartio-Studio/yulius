@@ -93,7 +93,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "task_create".into(),
-            description: "Create and start a new task in this project (another Claude Code session with its own branch), e.g. when the user says \"create a task from that\" or a follow-up should run separately. It is created like New task in the UI, on behalf of the person you work for; write the prompt as a complete request (what, why, where, done when). With after_task it waits until that task is done; with start_rule until the rule is true. A supertask (for broad work such as security hardening) waits for the project's running tasks, then runs alone: every other task of the project waits for it, so create one only when the person asks. Tools create at most 20 tasks an hour per project.".into(),
+            description: "Create and start a new task in this project (another Claude Code session with its own branch), e.g. when the user says \"create a task from that\" or a follow-up should run separately. It is created like New task in the UI, on behalf of the person you work for; write the prompt as a complete request (what, why, where, done when). With after_task it waits until that task is done; with start_rule until the rule is true; prepared, it waits until the person starts it, or until start_at. A supertask (for broad work such as security hardening) waits for the project's running tasks, then runs alone: every other task of the project waits for it, so create one only when the person asks. Tools create at most 20 tasks an hour per project.".into(),
             input_schema: schema(json!({
                 "prompt": {"type": "string", "description": "The request for the new task"},
                 "title": {"type": "string", "description": "Short title (derived from the prompt when absent)"},
@@ -102,6 +102,8 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
                 "after_task": {"type": "integer", "description": "Task number to wait for (starts when it is done)"},
                 "start_rule": {"type": "string", "description": "Start when this rule over the project's tasks is true, e.g. \"#12 done and #13 done\" (not with after_task)"},
                 "supertask": {"type": "boolean", "description": "Run alone in the project: wait for the running tasks, and every other task waits for this one (not with after_task or start_rule)"},
+                "prepared": {"type": "boolean", "description": "Prepare it without starting: it waits until the person presses Start now (not with after_task, start_rule or supertask)"},
+                "start_at": {"type": "string", "description": "Prepare it and start it by itself at this RFC 3339 time, e.g. \"2026-10-15T09:00:00+02:00\" (at most 366 days ahead)"},
                 "model": {"type": "string", "description": "Model override (default Opus)"},
                 "effort": {"type": "string", "description": "Effort override (default high)"}
             }), &["prompt"]),

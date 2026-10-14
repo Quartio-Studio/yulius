@@ -16,6 +16,21 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   request or Yulius CI), and their briefing and definition of done say so. It is its maker's and
   the superadmin's. Connecting GitHub is optional: the sign-in toast is gone, a notification says
   playgrounds work without it, and Import and Create follow once it is connected.
+- A task can be prepared now and started later (SPEC-105, ADR-0085, task #90). New task's start
+  menu offers **When I decide**: the task waits with the new status `prepared`, holding no
+  session, until you press Start now in its view or menu. **At a time…** picks a date and time:
+  the task starts by itself then, within a minute (after a restart, at the first minute past it;
+  while onboarding blocks the project, once it is ready). Its row reads "Prepared" or
+  "Scheduled · tomorrow 09:00", sits with the queued tasks, and its view offers Start now,
+  Schedule… or Change time…, and Cancel. The automation editor's shared start menu does not offer
+  them yet (#416). The API takes `prepared` and `start_at` on New task and
+  `task_create`, shows `start_at`, and `PUT /api/tasks/{tid}/schedule` moves or clears the time
+  (schema version 24, `task_schedules`).
+- After a reload, the sidebar shows pull request chips at once (SPEC-104, task #89, #414). Before,
+  they appeared seconds later, when the sandbox's Git overview answered, and rows could move
+  between Working and Done meanwhile. The browser keeps what the last overview read said, per user
+  and sandbox. It shows that until the page's own read replaces it, and drops it if that read
+  fails. Sign-out or an expired session removes it.
 - Notes has a third tab, **Me**, after Team (SPEC-103, ADR-0084, task #88): each person's own
   notepad, which nobody else can read (`GET/PUT /api/me/notes` always answer the caller's own) and
   which is the same in every sandbox. It saves and resolves conflicts like the other notepads, and

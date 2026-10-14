@@ -122,8 +122,11 @@ function createApp(root, transport) {
       const me = await meRead;
       await signedIn(me);
     } catch (error) {
-      if (error.status === 401) renderSignIn();
-      else fatal(error);
+      if (error.status === 401) {
+        // A session found expired at load: what it kept for the next page load goes (SPEC-104).
+        store.forgetPulls();
+        renderSignIn();
+      } else fatal(error);
     }
   }
 
@@ -224,6 +227,9 @@ function createApp(root, transport) {
     ctx.updates = null;
     shell = null;
     store.state.me = null;
+    // The pull requests kept for the next page load go with the session, signed out or expired
+    // (SPEC-104); a read answering later finds no user and writes nothing to storage.
+    store.forgetPulls();
     unsubscribers.splice(0).forEach((off) => off());
     document.body.classList.remove('drawer-open');
   }

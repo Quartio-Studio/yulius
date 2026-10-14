@@ -11,6 +11,8 @@ import { enc } from './api.js';
 import { ReconnectingSocket } from './termsocket.js';
 
 const ORDER_KEY = 'yulius.sandboxOrder';
+/** `yulius.pulls.<user id>.<sandbox id>`: the pull requests the last Git overview read said (SPEC-104). */
+const PULLS_PREFIX = 'yulius.pulls.';
 /** Delay before task events refresh the sandbox counters (one reload per burst). */
 const COUNTS_REFRESH_MS = 1500;
 
@@ -236,20 +238,59 @@ export function createStore(api) {
   // online and when it is shown again (at most every 15 s) — never while hidden (PERF-12).
   const pullWatch = new Map(); // sandbox id → { views, at, timer }
   const pollPaused = () => document.hidden || navigator.onLine === false;
+  // The overview takes seconds (GitHub and Git for every task), so this browser keeps what the
+  // last read said, per user, and a page load shows it at once until its own read replaces it
+  // (SPEC-104). Only for a watched sandbox, whose read is on its way: elsewhere (a notification
+  // about another sandbox) an old read would stay unreplaced. A stored value of the wrong shape is
+  // ignored.
+  const pullsKey = (sandboxId) => (state.me && state.me.user && state.me.user.id ? `${PULLS_PREFIX}${state.me.user.id}.${sandboxId}` : null);
+  const isPullRow = (row) => Array.isArray(row) && typeof row[0] === 'string' && row[1] !== null && typeof row[1] === 'object'
+    && Number.isInteger(row[1].number) && typeof row[1].state === 'string';
+  const seeded = new Set(); // sandbox ids whose pull requests came from storage, not a read yet
+  function pullsOf(sandboxId) {
+    if (!state.pulls.has(sandboxId) && pullWatch.has(sandboxId)) {
+      const key = pullsKey(sandboxId);
+      if (key) {
+        state.pulls.set(sandboxId, new Map(readJson(key, []).filter(isPullRow)));
+        seeded.add(sandboxId);
+      }
+    }
+    return state.pulls.get(sandboxId) || new Map();
+  }
+  /** Sign-out or an expired session: the pull requests (titles included) do not stay in this browser. */
+  function forgetPulls() {
+    state.pulls.clear();
+    seeded.clear();
+    try {
+      for (const key of Object.keys(window.localStorage)) if (key.startsWith(PULLS_PREFIX)) window.localStorage.removeItem(key);
+    } catch { /* storage unavailable: nothing kept */ }
+  }
   async function loadPulls(sandboxId) {
     const entry = pullWatch.get(sandboxId);
     if (entry) entry.at = Date.now();
     try {
       const git = await api.get(`/api/sandboxes/${enc(sandboxId)}/git`);
       const rows = Array.isArray(git.tasks) ? git.tasks : [];
-      state.pulls.set(sandboxId, new Map(rows.filter((t) => t.pr).map((t) => [t.task_id, t.pr])));
+      const pulls = rows.filter((t) => t.pr).map((t) => [t.task_id, t.pr]);
+      state.pulls.set(sandboxId, new Map(pulls));
+      seeded.delete(sandboxId);
+      const key = pullsKey(sandboxId);
+      if (key) writeJson(key, pulls);
       // The server counts "needs you" from what this read saw (a tested or failing pull request),
       // and after a restart it had seen nothing yet: reload the counters after every read, so the
       // tab and Home agree with the sidebar (#147). One debounced request per burst.
       scheduleCountsRefresh();
       state.gitRows.set(sandboxId, new Map(rows.map((t) => [t.task_id, t])));
       emit('pulls', sandboxId);
-    } catch { /* the chips stay as they were; the lists work without them */ }
+    } catch {
+      // The chips of an earlier read on this page stay; stored ones of any age do not pass for
+      // current when this page could not read (SPEC-104), shown already or not (an empty entry
+      // keeps pullsOf from reading them later): the lists work without them.
+      if (seeded.delete(sandboxId) || !state.pulls.has(sandboxId)) {
+        state.pulls.set(sandboxId, new Map());
+        emit('pulls', sandboxId);
+      }
+    }
   }
   function watchPulls(sandboxId) {
     let entry = pullWatch.get(sandboxId);
@@ -307,7 +348,9 @@ export function createStore(api) {
     retryEvents: () => events && events.retry(),
     /** Keeps the sandbox's pull requests fresh while a view shows them; returns a stop function. */
     watchPulls,
-    pullsOf: (sandboxId) => state.pulls.get(sandboxId) || new Map(),
+    /** The sandbox's pull requests by task id: the last overview read, or the stored one before it. */
+    pullsOf,
+    forgetPulls,
     /** A task's row of its sandbox's Git overview (changed files and lines), or null. */
     gitRowOf: (sandboxId, taskId) => (state.gitRows.get(sandboxId) || new Map()).get(taskId) || null,
   };

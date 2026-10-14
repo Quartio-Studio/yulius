@@ -97,6 +97,8 @@ const ICONS = {
   'st-queued': [['path', { d: 'M7 3.5h10M7 20.5h10M8.2 3.5c0 4.6 3.8 5.4 3.8 8.5s-3.8 3.9-3.8 8.5M15.8 3.5c0 4.6-3.8 5.4-3.8 8.5s3.8 3.9 3.8 8.5' }]],
   'st-starting': [['circle', { cx: 12, cy: 12, r: 8.5, 'stroke-dasharray': '2.6 3.1' }], ['circle', { cx: 12, cy: 12, r: 2, fill: 'currentColor', stroke: 'none' }]],
   'st-paused': [['circle', { cx: 12, cy: 12, r: 8.5 }], ['path', { d: 'M10 9v6M14 9v6' }]],
+  // A tray: the task is written and waits to be sent (SPEC-105).
+  'st-prepared': [['path', { d: 'M4 13h4l1.5 2.5h5L16 13h4M4 13l2.5-7h11L20 13v5H4z' }]],
   'st-chained': [['path', { d: 'M9.5 14.5l5-5M11 7.6l1.7-1.7a3.6 3.6 0 0 1 5.1 5.1l-1.7 1.7M13 16.4l-1.7 1.7a3.6 3.6 0 0 1-5.1-5.1l1.7-1.7' }]],
   trash: [['path', { d: 'M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2' }]],
   tasks: [['path', { d: 'M9 6h11M9 12h11M9 18h11' }], ['path', { d: 'M3.5 6l1.2 1.2L7 5M3.5 12l1.2 1.2L7 11M3.5 18l1.2 1.2L7 17' }]],

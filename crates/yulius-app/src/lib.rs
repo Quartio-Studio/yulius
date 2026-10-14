@@ -47,6 +47,7 @@ pub mod notes;
 pub mod onboarding;
 pub mod playground;
 pub mod ports;
+pub mod prepared;
 pub mod preview;
 pub mod projects;
 pub mod queued_messages;

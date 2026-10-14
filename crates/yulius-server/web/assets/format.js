@@ -66,6 +66,38 @@ export function resetLabel(iso, now = Date.now()) {
   return `Resets ${MONTH_DAY.format(t)}`;
 }
 
+const SHORT_DAY = new Intl.DateTimeFormat(undefined, { weekday: 'short' });
+
+/**
+ * When a prepared task starts (SPEC-105), in the person's time: "today 14:30", "tomorrow 09:00",
+ * "Fri 09:00" within the week, otherwise "Oct 21 09:00".
+ */
+export function whenLabel(iso, now = Date.now()) {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return '';
+  const day = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
+  const days = Math.round((day(t) - day(now)) / 86400e3);
+  const time = TIME.format(t);
+  if (days === 0) return `today ${time}`;
+  if (days === 1) return `tomorrow ${time}`;
+  if (days > 1 && days < 7) return `${SHORT_DAY.format(t)} ${time}`;
+  return `${MONTH_DAY.format(t)} ${time}`;
+}
+
+/** An ISO time as a `datetime-local` value in the person's time zone ("2026-10-15T09:00"). */
+export function localInputValue(iso) {
+  const t = new Date(iso);
+  if (Number.isNaN(t.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${t.getFullYear()}-${pad(t.getMonth() + 1)}-${pad(t.getDate())}T${pad(t.getHours())}:${pad(t.getMinutes())}`;
+}
+
+/** A `datetime-local` value (the person's time zone) as an ISO time in UTC, or null. */
+export function fromLocalInput(value) {
+  const t = value ? new Date(value) : null;
+  return t && !Number.isNaN(t.getTime()) ? t.toISOString().replace(/\.\d{3}Z$/, 'Z') : null;
+}
+
 /** Duration from milliseconds: "45 s", "12 min", "1 h 05 min", "2 d 3 h". */
 export function duration(ms) {
   if (ms === null || ms === undefined || !Number.isFinite(ms)) return '—';

@@ -47,6 +47,7 @@ mod metrics_recount;
 mod notes;
 mod playground;
 mod pool_supervision;
+mod prepared;
 mod preview;
 mod projects;
 mod queued_messages;
