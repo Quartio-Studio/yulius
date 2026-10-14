@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- Done means done (SPEC-130, task #117, #473, #474). The process probe could keep a task whose
+  goal was achieved reading Working for good: a server the agent started as `(server &)` left
+  an orphaned subshell with Claude Code's wrapper command line, which the sandbox's init adopted.
+  Task #108 read Working until it was closed. Such orphans are no longer counted; only the
+  agent's own shells are. The opposite case is fixed too: a task whose agent waits in
+  `yulius wait` for its armed merge no longer reads Done because its plan is complete and its
+  checks are green. It reads "Waiting for checks or merge" until the merge, in the sidebar and
+  on the server.
 - Agents scan every change with Vidoc before delivery (SPEC-128, ADR-0104, task #109).
   `scripts/dev security` runs the Vidoc CLI pinned in `tools/vidoc` on the current branch. Vidoc
   scans the files that the branch changed since `dev`, and the command fails when the branch has
