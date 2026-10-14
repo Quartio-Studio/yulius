@@ -406,6 +406,39 @@ flowchart LR
   MCP -->|"automation_*, automation_template_enable"| AU["Automations and ready-made ones"]
 ```
 
+## Terminal input
+
+A keystroke goes from xterm to the PTY and its echo comes back without waiting for the database or
+GitHub ([SPEC-118](../.ai/specs/SPEC-118-when-i-write-something-in-a-claude-termi.md),
+[decision 0096](decisions/0096-terminal-input-rides-a-write-grant.md)). Each viewer holds a write
+grant, confirmed when it opens the terminal. The store's access epoch grows with every write that
+can change who may type. While the epoch is unchanged, input is written at once. When it moves,
+the next input is checked first. A grant older than 30 s is re-confirmed in the background. The
+viewer's socket loop never awaits a permission check: the 60 s re-check runs in a spawned task, and
+the loop picks up its verdict.
+
+```mermaid
+sequenceDiagram
+  participant X as xterm (browser)
+  participant L as Viewer loop (routes/terminal.rs, routes/shells.rs)
+  participant G as WriteGrant + access epoch
+  participant P as ptyhost (PTY)
+  participant H as Hub
+  X->>L: input frame
+  L->>G: decide(epoch, now)
+  alt grant holds
+    G-->>L: allow (and re-confirm beside it after 30 s)
+  else epoch moved or no grant
+    G->>G: can_work / shell check (database, GitHub)
+    G-->>L: allow or forbidden
+  end
+  L->>P: bytes
+  P-->>H: echo (output chunk)
+  H-->>L: broadcast
+  L-->>X: binary output frame
+  Note over L: every 60 s a spawned re-check, its verdict selected beside input and output
+```
+
 ## Task ownership
 
 A task acts on GitHub with one person's token, so it is that person's: its owner, the creator

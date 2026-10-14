@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- Typing in a task terminal or a shell shows up as fast as the agent echoes it (SPEC-118,
+  ADR-0096, task #103). A keystroke used to wait for three database reads, plus a GitHub call
+  whenever the permission cache had expired. The 60 s access re-check also froze the terminal's
+  output while it ran. Now each viewer holds a write grant, checked again only when something that
+  decides access changes, and the re-check runs beside the stream. A hand-over still refuses the
+  previous owner's next keystroke.
 - The Git page beside a tool panel stays readable (SPEC-115, task #100). Its summary cards and board
   columns now respond to the page's width, not the window's. Beside the Editor, the board goes from
   four columns to two or one, and task titles no longer break letter by letter.

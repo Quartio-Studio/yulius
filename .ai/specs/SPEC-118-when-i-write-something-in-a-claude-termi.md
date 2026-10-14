@@ -72,11 +72,11 @@ a removed sandbox, a disabled user. Those must stay immediate.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] The store counts changes to who may type (an access epoch) and the app keeps a write grant per viewer
-- [ ] A task terminal keystroke reaches the agent while GitHub and the permission check are slow
-- [ ] A shell keystroke reaches the shell while the permission check is slow; a hand-over still refuses the next one
-- [ ] The periodic access re-check never pauses a terminal's output or input
-- [ ] ADR, architecture, API and SPEC-002 text say how terminal input is authorized
+- [x] The store counts changes to who may type (an access epoch) and the app keeps a write grant per viewer
+- [x] A task terminal keystroke and its echo never wait for a permission check, across re-checks
+- [x] A shell keystroke and its echo never wait for a permission check; a hand-over still refuses the next one
+- [x] An old grant is re-confirmed beside the input, and a downgrade found there refuses the next keystroke
+- [x] ADR, architecture, API and SPEC-002 text say how terminal input is authorized
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
@@ -95,11 +95,16 @@ a removed sandbox, a disabled user. Those must stay immediate.
 
 ## Test plan
 
-- `crates/yulius-store`: unit tests for the access epoch (KEY-002).
-- `crates/yulius-app`: unit tests for the write grant's decisions (KEY-001, KEY-003).
-- `crates/yulius/tests/terminal_ws.rs`: typing while GitHub hangs (KEY-001, KEY-004); output and
-  input across re-check ticks while GitHub hangs (KEY-005).
-- `crates/yulius/tests/shells.rs`: typing while GitHub hangs; the existing hand-over test (KEY-002).
+- `crates/yulius-store/tests/store.rs` `writes_that_change_access_grow_the_access_epoch` (KEY-002).
+- `crates/yulius-app/src/write_grant.rs` unit tests: check first, allow while the epoch holds,
+  re-confirm once beside the input when old, check again after a refusal (KEY-001, KEY-003).
+- `crates/yulius/tests/terminal_ws.rs` `keystrokes_and_echo_never_wait_for_a_permission_check`:
+  input, `resize` and `active` with GitHub hanging, the cache expired and the 300 ms re-check
+  ticking (KEY-001, KEY-004, KEY-005).
+- `crates/yulius/tests/shells.rs` `shell_keystrokes_never_wait_for_a_permission_check` (the same for
+  a shell) and the existing `a_task_shell_stops_taking_input_once_the_task_is_handed_over` (KEY-002).
+- `crates/yulius/tests/task_ownership.rs` `a_hand_over_refuses_the_previous_owners_next_keystroke`
+  (KEY-002) and `a_downgrade_found_beside_the_input_refuses_the_next_keystroke` (KEY-003).
 - The fake GitHub gains a `hang_permissions` switch: `repo_access` never answers while it is on.
 
 ## Decisions

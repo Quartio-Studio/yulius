@@ -95,3 +95,4 @@ number differs from the file name, and a record this index does not list.
 - [0089](0089-api-price-estimates-from-a-built-in-table.md): Token cost is estimated from a built-in table of Claude API list prices
 - [0087](0087-pull-request-changes-are-announced.md): A change of a sandbox's pull requests is announced, and browsers read them again
 - [0086](0086-a-lost-onboarding-task-returns-the-sandbox-to-pending.md): A lost onboarding task returns the sandbox to pending; a worktree's main repository is trusted too
+- [0096](0096-terminal-input-rides-a-write-grant.md): Terminal input rides a per-viewer write grant tied to the store's access epoch; the access re-check runs beside the stream
