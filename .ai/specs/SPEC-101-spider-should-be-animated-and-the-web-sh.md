@@ -42,7 +42,7 @@ the way of reading, selecting or using the keyboard.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| SPD-001 | The web sticks: while the transcript scrolls, the web stays at the top-right corner of the visible part of the well (`position: sticky; top: 0` on the float), and it never leaves the well. Text keeps wrapping beside it at the top, paints over it further down, and it never catches the pointer. | e2e |
+| SPD-001 | The web sticks: while the transcript scrolls, the web stays at the top-right corner of the visible part of the well (`position: sticky; top: 0` on the float), and it never leaves the well. Text keeps wrapping beside it at the top, paints over it further down (everything after it is positioned), and it never catches the pointer. While it is stuck under the text, its threads and spider fade to `--session-web-stuck`, on which every text colour of the well is at least 4.5:1 in both themes. | e2e, repository check |
 | SPD-002 | The spider is animated: on a loop of about 8 s it hangs still, climbs 6 pixels up its thread in pixel steps (the thread shortening with it), hangs, and drops back, its legs switching between two frames while it moves. It rests where SPEC-075 drew it. Under reduced motion it does not move. | e2e (animations sought to a time, the reduced-motion rule) |
 | SPD-003 | Now and then a cockroach runs through: a pixel-art cockroach (inline SVG, `aria-hidden`, `pointer-events: none`, legs in two frames) crosses the visible part of the well from one side to the other in about 2–4 s, left to right or right to left, at a random height, and is removed when it is out. The first comes 20–60 s after the session opens, then one every 45–150 s. None runs under reduced motion or while the page is hidden; none is left or scheduled after the view is left. The well clips it, so it never adds a horizontal scroll bar. | e2e (the scheduler and runner as pure exports in the page, and the mounted view) |
 | SPD-004 | SPEC-001 UI-049, an ADR, `docs/changes.md`, the web README and `e2e/README.md` describe it. | review |
@@ -93,5 +93,10 @@ the way of reading, selecting or using the keyboard.
 - The cockroach is a script on a random timer with the Web Animations API, because its path
   depends on the well's visible size and a random height and direction. It is checked against
   `prefers-reduced-motion` and `document.hidden` each time, and the timer stops with the view.
+- Stuck under the text, the web fades (review round 1): text crossing its threads fell to 2.9:1
+  (`--session-dim`, dark). An IntersectionObserver on a mark at the well's top sets
+  `.ss-web-stuck` and the web takes `--session-web-stuck`, which the repository check holds to AA
+  against the well's text colours. CSS `scroll-state(stuck)` queries were not used because they
+  cannot style inside the SVG reliably and are Chromium-only.
 - The well clips horizontally (`overflow-x: clip`), not `hidden`: `clip` makes no scroll
   container, so the web's sticky position still follows the page's scroll.

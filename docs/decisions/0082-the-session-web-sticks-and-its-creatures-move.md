@@ -18,8 +18,10 @@ the UI stops under `prefers-reduced-motion`.
 
 - The web stays a float and becomes `position: sticky; top: 0`. The float still makes the first
   lines wrap beside it. When the page scrolls, the sticky offset keeps it in the corner of the part
-  of the well that is visible. Entries come after it in the document and are positioned, so further
-  down the text paints over its dim threads.
+  of the well that is visible. Everything after it in the well is positioned, so further down the
+  text paints over it. While it is stuck, which an IntersectionObserver on a mark at the well's top
+  detects (`.ss-web-stuck`), the threads and the spider fade to `--session-web-stuck`. Every text
+  colour of the well stays at least 4.5:1 on it, and `check_repository.py` checks those pairs.
 - The spider moves with CSS keyframes in `steps()` on SVG groups: it climbs 6 pixels on an 8 s loop
   with two leg frames, and its thread is a rect of its own that `scaleY` shortens from the top, one
   whole pixel per step. A reduced-motion rule sets `animation: none` on all of them.
@@ -43,9 +45,10 @@ the UI stops under `prefers-reduced-motion`.
 
 ## Consequences
 
-- Text lower in the well can run over the stuck web. The threads are in the faint `--session-web`
-  and the text paints above them, so reading is not hindered.
+- Text lower in the well runs over the stuck web. The text paints above the web, and the web's
+  stuck colour keeps the text at AA, so reading is not hindered. At the top, the web keeps its own
+  colours, because the first lines wrap beside it.
 - One timer per open session view, stopped when the view is left. The cockroach is `aria-hidden`
   and never catches the pointer, so screen readers, selection and the keyboard are unaffected.
-- `--session-roach` joins the session palette in both themes. It is decoration, so it has no
-  contrast pair.
+- `--session-roach` and `--session-web-stuck` join the session palette in both themes. The
+  cockroach is decoration, so it has no contrast pair.
