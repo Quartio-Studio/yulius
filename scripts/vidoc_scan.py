@@ -7,6 +7,10 @@ even when it found issues. So the gate runs it only on a clean tree whose base i
 takes the verdict from the REST API: the scan this run started must be complete for this branch,
 and the branch must have no open critical or high finding. Exit codes: 0 passed, 1 failed, 2 not
 run (no key or a rejected one, no Node, a detached HEAD, uncommitted files, no base).
+
+`.config/vidoc.toml` (SPEC-131) turns the gate off with `enabled = false`: it then exits 0 at once
+and says nothing was scanned, once that line is committed (an uncommitted edit exits 2). Without
+the file the gate is on; a malformed one exits 2.
 """
 from collections import deque
 import hashlib
@@ -21,10 +25,12 @@ import subprocess
 import sys
 import tempfile
 import threading
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
 
+SWITCH = ".config/vidoc.toml"
 DEFAULT_API = "https://api.vidoc.dev"
 CLI_PACKAGE = "@vidocsecurity/cli"
 MIN_NODE = 20
@@ -83,6 +89,46 @@ class HttpError(Exception):
     def __init__(self, status, message):
         super().__init__(f"HTTP {status}: {message}" if status else message)
         self.status = status
+
+
+def switch(root):
+    """Whether the gate is on: `enabled` in `.config/vidoc.toml`, the only key; no file means on."""
+    try:
+        text = (root / SWITCH).read_bytes().decode("utf-8")
+    except FileNotFoundError:
+        return True
+    except (OSError, UnicodeDecodeError) as err:
+        raise Usage(f"{SWITCH} cannot be read: {err}") from err
+    return _parse_switch(text, SWITCH)
+
+
+def _parse_switch(text, where):
+    try:
+        config = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as err:
+        raise Usage(f"{where} cannot be read: {err}") from err
+    if set(config) - {"enabled"}:
+        raise Usage(f"{where} has unexpected keys {sorted(set(config) - {'enabled'})}; "
+                    "it holds only enabled = true or enabled = false")
+    if not isinstance(config.get("enabled"), bool):
+        raise Usage(f"{where} must set enabled = true or enabled = false, "
+                    f"not {config.get('enabled')!r}")
+    return config["enabled"]
+
+
+def committed_switch(git):
+    """Only a committed switch turns the gate off: an edit in the working tree does not count, nor
+    one that `git status` cannot see (skip-worktree, an ignored file), so HEAD must say off too."""
+    code, output = git("status", "--porcelain", "--untracked-files=all", "--", SWITCH)
+    if code != 0:
+        raise Usage(f"cannot tell whether {SWITCH} is committed (git status exit {code})")
+    if output.strip():
+        raise Usage(f"{SWITCH} turns the gate off in an uncommitted change; commit it in a "
+                    "reviewed pull request, or restore it")
+    code, text = git("cat-file", "blob", f"HEAD:{SWITCH}")
+    if code != 0 or _parse_switch(text, f"HEAD:{SWITCH}"):
+        raise Usage(f"{SWITCH} turns the gate off, but the switch committed in HEAD does not; "
+                    "commit it in a reviewed pull request, or restore it")
 
 
 def settings(env):
@@ -384,13 +430,18 @@ def install_signal_handlers():
         signal.signal(signum, _interrupted)
 
 
-def main():
-    root = Path(__file__).resolve().parent.parent
+def main(root=None, env=None):
+    root = Path(__file__).resolve().parent.parent if root is None else root
     tool = root / "tools" / "vidoc"
-    env = dict(os.environ)
+    env = dict(os.environ) if env is None else env
     install_signal_handlers()
     log = None
     try:
+        if not switch(root):
+            committed_switch(git_in(root))
+            print(f"Security scan disabled: {SWITCH} sets enabled = false; nothing was scanned.",
+                  flush=True)
+            return 0
         token, url = settings(env)
         require_node(shutil.which, lambda node: subprocess.run(
             [node, "--version"], capture_output=True, text=True, timeout=GIT_TIMEOUT_S).stdout)

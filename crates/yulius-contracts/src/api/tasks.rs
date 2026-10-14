@@ -258,6 +258,28 @@ pub struct ScheduleTask {
     pub start_at: Option<String>,
 }
 
+/// `PUT /api/tasks/{tid}/start` (SPEC-126): how a task that waits to start (`chained` or
+/// `prepared`) starts instead, as New task's start choice; none of the fields: Start now.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ChangeStart {
+    /// Run after this task of the same sandbox (TSK-012).
+    #[serde(default)]
+    pub after_task_id: Option<String>,
+    /// Start when this rule over the sandbox's tasks is true (SPEC-017). Not together with
+    /// `after_task_id`.
+    #[serde(default)]
+    pub start_rule: Option<String>,
+    /// Start now as a supertask (SPEC-071). Not together with `after_task_id` or `start_rule`.
+    #[serde(default)]
+    pub supertask: bool,
+    /// Wait until a person starts it (SPEC-105). Not together with the other choices.
+    #[serde(default)]
+    pub prepared: bool,
+    /// Prepared, and it starts by itself at this time (RFC 3339, PRP-001's window).
+    #[serde(default)]
+    pub start_at: Option<String>,
+}
+
 /// `POST /api/tasks/{tid}/continue` and `/switch`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct ContinueTask {

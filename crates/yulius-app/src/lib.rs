@@ -60,6 +60,7 @@ pub mod scopes;
 pub mod session_docs;
 pub mod shells;
 pub mod skills;
+pub mod start_change;
 pub mod status;
 mod supertask;
 pub mod supervisor;

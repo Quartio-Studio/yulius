@@ -300,6 +300,8 @@ export function taskInfo(task, actionRequests, pr) {
     const done = { ...info, ...DONE, label: pr.state === 'merged' ? `Done · PR #${pr.number} merged` : `Done · PR #${pr.number}`, pr };
     // An achieved goal is done whatever the checks are still doing (TSK-014).
     if (task.activity === 'done') return done;
+    // Its agent waits for its checks or the merge it armed: not done before that (SPEC-130 DMD-003).
+    if (task.yulius_wait === true) return { ...info, pr };
     // Tested means known green (or no required checks); running or unreadable checks are not.
     if (pr.state === 'open' && !['success', 'none'].includes(pr.checks)) return { ...info, icon: 'branch', tone: 'waiting', label: `In review · PR #${pr.number} · ${pr.checks === 'pending' ? 'checks running' : 'checks not known yet'}`, group: 'working', pr };
     return done;

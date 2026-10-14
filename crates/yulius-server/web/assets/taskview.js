@@ -4,7 +4,7 @@
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, errorToast, skeleton, openMenu, statusMark, singleFlight, keepFocus } from './dom.js';
 import { openRuleEditor, ruleText } from './ruleeditor.js';
-import { openStartMenu, renderStartChip, startKind, SUPERTASK_HELP, WHEN_I_DECIDE_HELP } from './startchoice.js';
+import { openStartMenu, renderStartChip, startKind, waitingStartChip, SUPERTASK_HELP, WHEN_I_DECIDE_HELP } from './startchoice.js';
 import { createTerminalView } from './terminal.js';
 import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, pausedLine, resetAround, shellsLine, heldBy, supertaskLine, preparedLine } from './status.js';
 import { heldPromptCard, splitCard, looksSeveral, intakeStatus, SPLIT_MIN_WORDS } from './intake.js';
@@ -195,12 +195,15 @@ export function mountTaskView(ctx, sandbox, task) {
         : after && after.rule ? [h('strong', null, 'Queued by a rule. '), `It starts by itself when ${after.rule}.`]
         : [h('strong', null, after ? `Queued after #${after.number}. ` : 'Queued. '), after ? `It starts by itself when #${after.number} is done.` : ''];
       content = [icon(after && after.blocked ? 'st-attention' : 'clock', { size: 16 }), h('span', { class: 'attention-text' }, label),
+        // Not started yet: how it starts can change (SPEC-126).
+        can.startNow ? waitingStartChip(ctx, sandbox, current) : null,
         can.startNow ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => startNow(ctx, current) }, 'Start now') : null,
         can.stop ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => stopTask(ctx, current) }, 'Cancel') : null];
     } else if (current.status === 'prepared') {
       // Written now, started later (SPEC-105): Start now, a time, or Cancel.
       content = [icon(current.start_at ? 'clock' : 'st-prepared', { size: 16 }), h('span', { class: 'attention-text' },
         h('strong', null, current.start_at ? 'Scheduled. ' : 'Prepared. '), preparedLine(current)),
+      can.startNow ? waitingStartChip(ctx, sandbox, current) : null,
       can.startNow ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => startNow(ctx, current) }, 'Start now') : null,
       can.schedule ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => rescheduleTask(ctx, current) }, current.start_at ? 'Change time…' : 'Schedule…') : null,
       can.stop ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => stopTask(ctx, current) }, 'Cancel') : null];
@@ -231,6 +234,9 @@ export function mountTaskView(ctx, sandbox, task) {
     attention.hidden = !content && !control;
     attention.classList.toggle('waiting', !control && !info.request && current.activity === 'waiting' && info.group === 'needs');
     attention.classList.toggle('stacked', Boolean(control && content));
+    // A waiting task's start chip and buttons go below its words (SPEC-126).
+    const waits = (current.status === 'chained' || current.status === 'prepared') && can.startNow;
+    attention.classList.toggle('wrap', waits && !control);
     setChildren(attention, control && content
       ? [h('div', { class: 'attention-row' }, control), h('div', { class: 'attention-row' }, content)]
       : control || content);

@@ -48,7 +48,7 @@ depends on domain and contracts. `scripts/check_repository.py` enforces this.
 | adapter | `yulius-store`, `yulius-ptyhost`, `yulius-sandbox`, `yulius-harness`, `yulius-github`, `yulius-git`, `yulius-browser`, `yulius-egress`, `yulius-import` |
 | interface | `yulius-server` (axum routes, embedded web UI in `web/`) |
 | composition | `yulius` (configuration, wiring, subcommands) |
-| tooling | `tools/` (fake agent, xtask, the pinned Vidoc CLI for `scripts/dev security`) |
+| tooling | `tools/` (fake agent, xtask, the pinned Vidoc CLI for `scripts/dev security`, switched on or off in `.config/vidoc.toml`) |
 
 ## CPU
 
@@ -364,6 +364,26 @@ flowchart LR
     P -->|PUT schedule| P
     P -->|Cancel| S[stopped cancelled]
     Q --> R[start_run: supertask hold, session limit, capacity]
+```
+
+### Changing how a waiting task starts
+
+A `chained` or `prepared` task takes another start choice before its first run
+(`yulius-app/src/start_change.rs`, `PUT /api/tasks/{tid}/start`,
+[SPEC-126](../.ai/specs/SPEC-126-we-d-like-to-be-able-to-change-task-runn.md),
+[decision 0102](decisions/0102-a-waiting-task-changes-how-it-starts.md)). The choice is checked
+as at creation, a wait on itself is refused, and the store replaces the status, chain row and
+start time in one transaction guarded by the status read. A chain evaluation releases a task only
+while its chain still names what was evaluated, and a rule judges the tasks that existed when it
+was written (the chain row's time).
+
+```mermaid
+flowchart LR
+    W[chained or prepared] -->|PUT start: after a task or a rule| C[chained]
+    W -->|PUT start: When I decide / At a time| P[prepared]
+    W -->|PUT start: Start now / Supertask| Q[queued]
+    C -->|evaluation of the same chain| Q
+    X[queued, running, ended] -->|PUT start| N[409: keeps its start]
 ```
 
 ## Superagent (the Cockpit)
@@ -684,6 +704,13 @@ is counted from three sources:
 - background shells, from the process probe;
 - background agents, from the turn record;
 - Monitor streams and agents launched in the turn that ends, from the transcript.
+
+The probe counts only the agent's own shells. In the sandbox, an orphaned subshell that the PID
+namespace's init adopted is not one, even though it still carries Claude Code's wrapper command
+line (a server started as `(server &)`)
+([SPEC-130](../.ai/specs/SPEC-130-458-got-achieved-but-wasn-t-marked-as-do.md)). An idle agent
+that waits in `yulius wait` goes on by itself. Its task reads Working ("Waiting for checks or
+merge"), even with a complete plan and a tested pull request; only an achieved goal makes it Done.
 
 While a goal is open, a clean Stop reads idle only after the goal verdict (or the turn record, or
 20 s). A proactive switch waits for any of this background work
