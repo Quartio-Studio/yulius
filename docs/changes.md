@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- A task that has not started can change how it starts (SPEC-126, ADR-0102, task #115). A chained
+  or prepared task's view has a start chip ("When I decide", "After #12", "When #12 done",
+  "At …") that opens New task's start menu: it can be chained after a task or a rule, prepared,
+  scheduled, started now or as a supertask. A task that started keeps its start, and a wait on
+  itself is refused. API: `PUT /api/tasks/{tid}/start`. A chain evaluated before the change no
+  longer starts the task, and a start rule judges the tasks that existed when it was written.
 - An agent secret is a name, a value and a description (SPEC-121, ADR-0098, task #107). The add
   dialog no longer asks for hosts or for how the secret is added to requests. Instance
   administrators find the scope under More options. Agents send the `$NAME` placeholder in

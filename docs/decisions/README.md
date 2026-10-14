@@ -102,3 +102,4 @@ number differs from the file name, and a record this index does not list.
 - [0098](0098-agents-propose-secret-hosts-people-allow-them.md): Agents propose an agent secret's hosts and people allow them; a new secret is a name, a value and a description
 - [0093](0093-a-shown-secret-value-stays-masked.md): A shown secret value stays masked until its eye is pressed; a quick copy shows on hover
 - [0092](0092-screens-remember-where-they-were-left.md): Screens remember where they were left: places in the router per browser tab, tool views kept for the 3 sandboxes used last
+- [0102](0102-a-waiting-task-changes-how-it-starts.md): A waiting task (chained or prepared) changes how it starts in one guarded store step; a chain release compares the chain it evaluated
