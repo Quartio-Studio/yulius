@@ -286,6 +286,8 @@ function seed(params) {
     db.sandboxes = [];
     db.tasks = [];
   }
+  // `onboarding=preparing`: `product` is being onboarded (SPEC-096); its onboarding task is #1.
+  if (params.get('onboarding') === 'preparing') db.sandboxes.find((s) => s.id === 'sb_product').onboarding = 'preparing';
   // `tasks=0`: sandboxes without any task yet (the composer then offers no start rule, SPEC-022).
   if (params.get('tasks') === '0') db.tasks = [];
   // `tasks=many`: 30 more queued tasks in studio, a long "Run after" menu (SPEC-038).

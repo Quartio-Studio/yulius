@@ -266,7 +266,8 @@ superadmin recovery code (mock code `123456`) and the GitHub App connection. Imp
 sandbox whose onboarding is `pending` with a resting preparation task carrying the server's plan
 (`mobile-app` already follows the format, so its task only sets up the environment): its new-task
 page shows only the onboarding message with Start onboarding, and the mock marks it ready 9 s
-later (a test sets `__yuliusMock.manualOnboarding` and calls `finishOnboarding(slug)` instead). Uploads report progress in steps, a dropped file lands in the editor's in-memory
+later (a test sets `__yuliusMock.manualOnboarding` and calls `finishOnboarding(slug)` instead).
+`&onboarding=preparing` starts with `product` being onboarded. Uploads report progress in steps, a dropped file lands in the editor's in-memory
 repository and attachments get server-like paths and names. Task terminals print TUI-like ANSI output (with file references in every form the terminal links
 to the editor, and some it must not), echo input and answer on Enter; type
 `/exit` to close a task, `/lag` to force a 4008 reconnect, `/help` for the list. The

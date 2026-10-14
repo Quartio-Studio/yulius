@@ -156,3 +156,21 @@ test('Start onboarding runs it, Follow onboarding opens it, and the task box com
   await prompt.press('ControlOrMeta+Enter');
   await expect(browser).toHaveURL(/#\/s\/website\/t\/2$/);
 });
+
+// The review of SPEC-096: until the sandbox's task list is read (or when reading it failed), the
+// page cannot know whether the onboarding task exists, so it must not call it missing. Mock
+// `onboarding=preparing` puts `product` in preparation; `fail=` makes its task list fail.
+test('a preparing sandbox whose tasks are not known yet does not call its onboarding task missing', async ({ app, screen }) => {
+  await app.open(mock('/s/product', '&onboarding=preparing&fail=/api/sandboxes/sb_product/tasks'));
+  const gate = screen.getByRole('region', 'Onboarding product');
+  await expect(gate).toContainText('An agent is setting up this sandbox');
+  await expect(gate).not.toContainText('missing');
+  await expect(screen.getByRole('textbox', 'Task prompt')).toBeHidden();
+});
+
+test('a preparing sandbox without its onboarding task tells an administrator the way out', async ({ app, screen }) => {
+  await app.open(mock('/s/product', '&onboarding=preparing&tasks=0'));
+  const gate = screen.getByRole('region', 'Onboarding product');
+  await expect(gate).toContainText('The onboarding task is missing');
+  await expect(gate).toContainText('POST /api/sandboxes/sb_product/onboarding/skip');
+});

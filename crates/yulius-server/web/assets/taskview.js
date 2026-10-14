@@ -781,6 +781,7 @@ export function mountComposer(ctx, sandbox) {
   }
 
   let gateKey = '';
+  let startedHere = false;
   function renderBanner() {
     const sb = ctx.store.sandboxById(sandbox.id) || sandbox;
     const items = [];
@@ -794,21 +795,25 @@ export function mountComposer(ctx, sandbox) {
     // shows only the onboarding message, never the task input; the composer stays built, hidden.
     const preparing = sb.onboarding === 'pending' || sb.onboarding === 'preparing';
     const wasGated = !gate.hidden;
-    const prep = preparing ? (ctx.store.tasksOf(sb.id) || []).find((t) => t.origin === 'onboarding') : null;
+    // The onboarding task: `undefined` while the sandbox's tasks are not known (not read yet, or
+    // reading them failed), `null` when they are and it is not among them.
+    const list = ctx.store.tasksOf(sb.id);
+    const prep = !preparing ? null : !list || ctx.store.tasksError(sb.id) ? undefined : list.find((t) => t.origin === 'onboarding') || null;
     if (sb.onboarding === 'pending' && prep) loadPlan(prep);
     // Rebuilt only when what it says changes (task events are frequent), and a rebuild keeps the
     // keyboard on its action.
     const shown = sb.onboarding === 'pending'
       ? [prep && prep.title, prep && plans.get(prep.id), branchOf(sb)]
-      : [prep && phaseOf(prep)];
+      : [prep === undefined ? 'unknown' : prep && phaseOf(prep)];
     const key = preparing ? JSON.stringify([sb.onboarding, sb.name, sb.slug, sb.access, prep && prep.number, ...shown]) : '';
     if (key !== gateKey) {
       const before = gateKey ? JSON.parse(gateKey)[0] : null;
       const hadFocus = gate.contains(document.activeElement);
       setChildren(gate, preparing ? onboardingGate(sb, prep) : null);
       if (hadFocus && preparing) focusGate();
+      // A start from this page has its own toast: the status speaks for someone else's.
       if (before && before !== (preparing ? sb.onboarding : null)) {
-        gateNews.textContent = sb.onboarding === 'preparing' ? 'Onboarding started.' : preparing ? '' : 'Onboarding finished: the task box is ready.';
+        gateNews.textContent = sb.onboarding === 'preparing' ? (startedHere ? '' : 'Onboarding started.') : preparing ? '' : 'Onboarding finished: the task box is ready.';
       }
     }
     gateKey = key;
@@ -859,6 +864,7 @@ export function mountComposer(ctx, sandbox) {
     if (sb.onboarding === 'preparing') {
       const title = h('h2', { id: titleId, class: 'onboarding-gate-title', tabindex: -1 }, `Onboarding ${sb.name}`);
       // The server's own reading of a preparing sandbox (`onboarding_status`), in the page's words.
+      if (prep === undefined) return [title, h('p', null, `An agent is setting up this sandbox and adapting the repository to the ${BRAND.name} standards. ${ready}`)];
       if (!prep) {
         return [title,
           h('p', null, 'The onboarding task is missing, so onboarding cannot finish by itself.'),
@@ -893,6 +899,7 @@ export function mountComposer(ctx, sandbox) {
   const approveOnboarding = singleFlight(async () => {
     try {
       const updated = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/onboarding/approve`);
+      startedHere = true;
       await ctx.store.loadTasks(sandbox.id).catch(() => null);
       if (updated && updated.id) ctx.store.upsertSandbox(updated);
       toast('Onboarding started.', { kind: 'ok' });
