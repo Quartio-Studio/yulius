@@ -20,14 +20,17 @@ tables, grids of cards, editor forms and task lists. The Git page has a layout o
 - A loading state is drawn in the shape of what replaces it, with the final layout's own classes
   (`.item-card`, `.table`, `.grid-2 > .card`, `.dl-card`, `.tl-columns` and others), so the page's
   CSS sizes the shape and the content lands where the fields were. A bar (`bar()` in `dom.js`) is
-  one line of the text it stands for: it is 1lh tall, with the pill centred in it.
+  one line of the text it stands for: it is 1lh tall, with the pill centred in it. Its length is
+  a percentage of the line or a size from the CSS scale (`xs` to `xl`), never a fixed inline
+  length.
 - `dom.js` holds the shared shapes: `items`, `item-section`, `table` (with its column count),
-  `cards` and `form`. `placeholder(text, 'loading', shape)` and
-  `loader(…, { shape })` use them. Text content (a prompt, a transcript, a log) keeps the `lines`
-  shape: lines are its shape.
-- A page with its own layout composes its shape from its own classes with `bar()` and
-  `skeletonOf()`, next to the code that renders it: the Git page (status cards, Blocked, the
-  board with the profile's columns, Activity), the sidebar task list and the Tasks page (its
+  `cards`, `form` (the editors' section cards) and `editor` (those beside the summary).
+  `placeholder(text, 'loading', shape)` and `loader(…, { shape })` take a shape's name or a
+  function that draws a page's own layout (`drawShape` reuses a shared shape inside it). Text
+  content (a prompt, a transcript, a log) keeps the `lines` shape: lines are its shape.
+- A page with its own layout composes its shape from its own classes with `bar()`, next to the
+  code that renders it: the Git page (status cards, Blocked, the board with the profile's
+  columns, Activity), Sessions, CI, the Dashboard, the sidebar task list and the Tasks page (its
   toolbar stays in place: tab names, chip outlines, a summary bar).
 - Where a real class is a hook for tests or the keyboard (`.task-row`, `.tl-row`, `.task-group`,
   `.tl-link`), the shape uses a skeleton class that shares the real rule's selector in
@@ -48,8 +51,9 @@ tables, grids of cards, editor forms and task lists. The Git page has a layout o
 ## Consequences
 
 - Loading content lands in place. `e2e/tests/loading-shapes.e2e.ts` compares the edges of a
-  loading shape with the loaded content for item cards, a table, cards, the Git page and both
-  task lists.
+  loading shape with the loaded content for item cards, a table, cards, the workflow editor,
+  Sessions, CI, the Dashboard, the Git page and both task lists (also narrow). A note or banner
+  that comes with the read still pushes content down; it cannot be known before the read.
 - A page whose layout changes changes its loading shape with it. A new layout needs its shape
   added (a SHAPES entry or a composed one), and `/design` shows a shaped sample.
 - Shapes guess counts (three cards, four rows); the content can be longer or shorter than the

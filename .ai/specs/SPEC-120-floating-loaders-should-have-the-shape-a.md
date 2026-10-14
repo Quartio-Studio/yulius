@@ -41,11 +41,11 @@ arrives it lands where the fields were, without the page jumping.
 
 | ID | Requirement | Verification |
 | --- | --- | --- |
-| SHP-001 | `dom.js` offers loading shapes built from the page's own layout classes, so their geometry follows the final layout's CSS: `lines` (today's bars), `items` (item cards: icon tile, name, description, control), `table` (header and rows of a given column count), `cards` (a grid of cards with a title and lines) and `form` (labelled fields). Every shape keeps SPEC-092's contract: `role="status"` with the label for assistive technology only, the shape itself `aria-hidden`, nothing focusable. | e2e `loading.e2e.ts` |
-| SHP-002 | `placeholder(text, 'loading', shape)` and `loader(container, what, fetcher, render, { shape })` take the shape; every `loader()` page and editor passes the shape of what it renders (item cards, a table, a card grid or a form). | e2e: a held Workflows page loads as item cards whose first card has the loaded card's left edge, width and height (±2 px) |
-| SHP-003 | The Git page loads as its final layout: the two-card strip, the Blocked and board sections with their headings, board columns with task cards, and Activity rows. The strip's cards sit where the loaded ones do (same top, left and width, ±2 px). | e2e: held Git page |
-| SHP-004 | The sidebar task list loads as a group band and task rows of the loaded rows' height; the Tasks page as rows of the loaded `.tl-row` height. Skeleton rows use skeleton-only classes, so `.task-row` and `.tl-row` match real tasks only. | e2e: held task lists |
-| SHP-005 | Under reduced motion the shapes do not shimmer; the loading pages have no WCAG violation, in both themes. | e2e with axe |
+| SHP-001 | `dom.js` offers loading shapes built from the page's own layout classes, so their geometry follows the final layout's CSS: `lines` (today's bars), `items` and `item-section` (item cards: icon tile, name, description, meta; with a section heading), `table` (header and rows of a given column count), `cards` (a grid of cards with a title and lines), `form` (the editors' titled section cards around a field) and `editor` (those beside the summary card). A page with a layout of its own passes a function that draws it with `bar()`. A bar is a percentage of its line or a length from a CSS scale, never a fixed inline length. Every shape keeps SPEC-092's contract: `role="status"` with the label for assistive technology only, the shape itself `aria-hidden`, nothing focusable; an unknown shape name draws lines. | e2e `loading-shapes.e2e.ts` |
+| SHP-002 | `placeholder(text, 'loading', shape)` and `loader(container, what, fetcher, render, { shape })` take the shape; every `loader()` page and editor passes the shape of what it renders: item cards (Workflows, Skills, MCP, Automations, secrets), a table (Users, archived tasks, runs), a card grid (Subscriptions), editor sections (workflow, automation and MCP server editors), and their own layouts for Sessions, CI and the Dashboard. A card's height follows its content, so it matches a loaded one's within a fifth; left edge and width match within 2 px. | e2e: held Workflows, Users, Subscriptions, workflow editor, Sessions, CI, Dashboard |
+| SHP-003 | The Git page loads as its final layout: the two-card strip, the Blocked and board sections with their headings, board columns (the profile's) with task cards, and Activity rows. The strip's cards sit where the loaded ones do (same top, left and width, ±2 px). A note or banner that comes with the read (the App permission note) is drawn above them and pushes them down; that is the one move left. | e2e: held Git page with the note dismissed |
+| SHP-004 | The sidebar task list loads as a group band and task rows of the loaded rows' height; the Tasks page keeps its toolbar (tab names, chip outlines, summary) and column names in place and loads rows of the loaded `.tl-row` height, two lines in a narrow list as the real rows. Skeleton rows use skeleton-only classes, so `.task-row` and `.tl-row` match real tasks only. | e2e: held task lists, also at 390 px |
+| SHP-005 | Under reduced motion the shapes do not shimmer (the global rule covers the bars' pseudo-element and every shimmering box); the loading pages have no WCAG violation, in both themes. | e2e: the reduced-motion rule's selectors, axe in the light theme |
 
 ## Plan
 
@@ -70,7 +70,7 @@ arrives it lands where the fields were, without the page jumping.
 
 ## Test plan
 
-- `e2e/tests/loading.e2e.ts`, written first and failing on today's UI:
+- `e2e/tests/loading-shapes.e2e.ts`, written first and failing on today's UI:
   - Git page held: the skeleton contains `.dl-strip` with two `.dl-card`s, `.dl-section` headings,
     a `.dl-board` and activity rows. The rectangles of the two strip cards are recorded and
     compared with the loaded cards' rectangles after release.
@@ -79,7 +79,12 @@ arrives it lands where the fields were, without the page jumping.
   - Users held: a table with the loaded table's column count.
   - Sidebar and Tasks held: skeleton rows of the loaded row height; `.task-list .task-row` count 0
     while held.
+  - Review round 1 added: the icon tile shimmers; the workflow editor's sections and summary,
+    Sessions rows, CI's configuration card and runs and the Dashboard's key figures land where
+    their outlines were; narrow Tasks rows (390 px) are as tall as real ones; the reduced-motion
+    rule covers the bars; axe passes in the light theme.
   - Each keeps the SPEC-092 checks: `role="status"` label, no visible "Loading", axe clean.
+- `loading.e2e.ts` (SPEC-092) now counts `.skeleton-bar`s on the Git page.
 - Gates: `scripts/dev ci` and the full e2e suite.
 
 ## Decisions
@@ -93,4 +98,13 @@ arrives it lands where the fields were, without the page jumping.
   from its own classes.
 - Detail views whose final content is text (a prompt, a transcript, a CI run's log, a task's
   overview, the delivery dialog) keep the `lines` shape. Text lines are their shape. Shaping each of
-  them separately is follow-up work if it is wanted.
+  them separately is follow-up work if it is wanted. The non-text ones left as lines (the new
+  sandbox dialog's lists, the delivery and CI run dialogs, a task's changes and commits, the task
+  overview, the hygiene and GitHub cards) are #449.
+- The Tasks toolbar always draws two chip outlines (Author, Origin): whether the real chips show
+  depends on the tasks (two or more authors or origins). A team sandbox usually has both; a
+  one-person sandbox sees the summary move up a line when they do not.
+- Parts of a page that do not depend on the read are drawn at once: the Tasks column names and
+  toolbar (tab names, chip outlines, a summary bar), and the Subscriptions capacity panel, now
+  read beside the subscriptions instead of after them, so it does not push them down when it
+  lands.
