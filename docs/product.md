@@ -94,7 +94,8 @@ watching, steering and unblocking.
 - **Secrets vault**: secrets are a title, a value and notes. Team secrets are for people; agent
   secrets are used by agents, who never see them. Reading a value needs your own two-factor code
   (set up once, mandatory); an administrator resets it for someone who lost their authenticator.
-  The people who manage an agent secret can read it too.
+  The people who manage an agent secret can read it too. A shown value stays masked until its eye
+  button is pressed; it copies without being shown.
 - **Updates**: Yulius updates itself from `main` without losing running work.
 
 ## Principles
