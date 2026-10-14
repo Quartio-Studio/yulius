@@ -1,11 +1,11 @@
 ---
 yulius-task: e7d97052-fbf1-40c4-94be-926f5162f9e9
-status: in-progress
+status: done
 ---
 
 # SPEC-111: Start onboarding loads at once and opens the onboarding session
 
-Status: in-progress
+Status: done
 Date: 2026-10-14
 Owner: Yulius task #96
 Scope authorization: the person's request (task #96), "When I click "Onboarding" i gota short lag
@@ -60,7 +60,7 @@ onboarding** no longer exists: whoever opens a sandbox while its onboarding runs
 - [x] Start onboarding shows a loading state at once and ignores further presses
 - [x] Start onboarding opens the onboarding task's session when it has started
 - [x] Docs, changelog and review findings addressed
-- [ ] Gates green, merged into dev on green CI
+- [x] Gates green, merged into dev on green CI
 
 ## Acceptance criteria
 
@@ -123,3 +123,27 @@ onboarding** no longer exists: whoever opens a sandbox while its onboarding runs
   to its onboarding task directly instead of through the sandbox's page (history grew by one,
   the task view was rebuilt); a start in flight is kept per sandbox for the tab (a module-level
   set), so leaving and coming back still shows it loading; the Plan is ticked as steps finish.
+- Review round 3 at 8137cb26: APPROVE with one minor (leaving and coming back while the start
+  runs shows two toasts) and two nits (a stale comment, `openNewTask` reading a possibly stale
+  sandbox). After three rounds these go to issue #436 rather than a fourth: the path needs the
+  person to leave and return within the seconds the start takes, and its effect is one redundant
+  toast.
+
+## Evidence
+
+- Red first, `e2e/tests/onboarding.e2e.ts` (mock mode): against the old `taskview.js`, 5 of 8
+  failed (no "Starting onboarding" region, URL stayed `#/s/website`, no `aria-busy`); review
+  round 1's focus test failed on `toBeFocused` before its fix, and `check_repository.py` failed
+  on the product name; round 2's three tests failed before their fixes (no toast, a live Start
+  onboarding after coming back, `history.length` 3 instead of 2).
+- `cd e2e && npx e2e run tests/onboarding.e2e.ts` at 8137cb26: 12 of 12 passed.
+- `cd e2e && npx e2e run` at 8137cb26: 343 passed, 1 skipped, 1 failed:
+  `pulls.e2e.ts` "after a reload the sidebar shows the pull requests at once" (its helper
+  captured empty chip labels under load average ~27). It is untouched by this change and passed
+  3 of 3 alone. Issue #438 tracks it.
+- `scripts/dev ci` at 8137cb26 (after `python3 scripts/bootstrap.py`; the first attempt stopped
+  at `--doctor` because this worktree's `.tools/bin` was not linked yet): exit 0, with nextest at
+  1604 of 1604 passed and 16 skipped.
+- `python3 scripts/check_repository.py`: passes.
+- Not covered here: a real server starting a real Claude session (the mock serves the same assets
+  and follows `start_onboarding`'s order). Yulius CI on the pull request is the gate of record.
