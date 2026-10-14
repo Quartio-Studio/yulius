@@ -590,7 +590,7 @@ sequenceDiagram
     participant A as Alice's notepad
     participant S as Server (App::note_presence)
     participant B as Bob's notepad
-    A->>S: PUT notes/presence {revision, selection, hello} (≤ 1 per 100 ms, every 15 s)
+    A->>S: PUT notes/presence {revision, selection, hello, client} (≤ 1 per 100 ms, every 15 s)
     S-->>B: note.presence (team: everyone; sandbox: its viewers)
     B->>S: PUT notes/presence (answers a hello)
     S-->>A: note.presence

@@ -2348,7 +2348,7 @@ route('PUT', `/api/sandboxes/${ID}/notes`, ({ db, p, body }) => {
 // `notePresence(event)`, refuse updates (`failPresence`) and lose events (`resyncNow()`).
 function relayPresence(db, scope, sandboxId, body) {
   for (const key of Object.keys(body)) if (!['revision', 'selection', 'hello', 'client'].includes(key)) fail(422, 'invalid', `unknown field ${key}`);
-  if (body.client !== undefined && !/^[A-Za-z0-9]{0,32}$/.test(body.client)) fail(422, 'invalid', 'a client is at most 32 letters and digits');
+  if (body.client !== undefined && (typeof body.client !== 'string' || !/^[A-Za-z0-9]{0,32}$/.test(body.client))) fail(422, 'invalid', 'a client is at most 32 letters and digits');
   // `failPresence`: the server refuses it as too many (429).
   if (db.failPresence) fail(429, 'capacity', 'too many presence updates; slow down');
   const selection = body.selection;

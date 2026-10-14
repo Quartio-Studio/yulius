@@ -834,3 +834,31 @@ test('Escape puts a dragged tab back, and a forced-colours screen gets the nativ
   expect(rules).toMatch(/\.text-layer \{ display: none; \}/);
   expect(rules).toMatch(/\.notes-text\.drawn-selection::selection \{ background: highlight; color: highlighttext; \}/);
 });
+
+test('two hellos within a second are both answered, the second a moment later', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen, null);
+  await screen.getByRole('textbox', 'Team notes').fill('one two three');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  const revision = await browser.evaluate(() => (window as unknown as MockPresence).__yuliusMock.notes.team.revision);
+  await selectText(browser, 0, 3);
+  await expect.poll(async () => (await sent(browser)).at(-1)?.selection).toEqual({ anchor: 0, head: 3 });
+  const before = (await sent(browser)).length;
+  await teammate(browser, { scope: 'team', user_id: 'usr_bob', name: 'bob', revision, selection: null, hello: true });
+  await teammate(browser, { scope: 'team', user_id: 'usr_carol', name: 'carol', revision, selection: null, hello: true });
+  await expect.poll(async () => (await sent(browser)).length - before, { timeout: 5000 }).toBe(2);
+});
+
+test('a teammate’s offsets never split a character outside the BMP (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const edits = await browser.evaluate(async () => {
+    const { textEdit, mapPosition } = await import('/assets/textlayer.js' as string);
+    // "a😀b" → "a😃b": the two emoji share their first UTF-16 unit.
+    const edit = textEdit('a\u{1F600}b', 'a\u{1F603}b');
+    return { edit, inside: mapPosition(2, edit), after: mapPosition(4, edit), typed: mapPosition(3, textEdit('abc', 'aXbc')) };
+  });
+  expect(edits.edit).toEqual({ start: 1, endA: 3, endB: 3 });
+  expect(edits.inside).toBe(1);
+  expect(edits.after).toBe(4);
+  expect(edits.typed).toBe(4);
+});

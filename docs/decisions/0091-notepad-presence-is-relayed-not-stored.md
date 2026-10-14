@@ -16,7 +16,7 @@ the server knew who had a notepad open. Notes are saved whole with a revision 60
 ## Decision
 
 - **Relay.** `PUT /api/notes/presence` and `PUT /api/sandboxes/{sid}/notes/presence` take
-  `{revision, selection: {anchor, head} | null, hello}` and publish `note.presence` on the existing
+  `{revision, selection: {anchor, head} | null, hello, client}` and publish `note.presence` on the existing
   event bus to the notepad's readers (everyone signed in for Team, the sandbox's viewers for a
   sandbox; nothing for "Me"). The server stores nothing; it counts at most 20 updates a second per
   person and notepad (429 past it) so one browser cannot flood the bounded bus.

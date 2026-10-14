@@ -282,7 +282,13 @@ export function createNotesView(ctx, sandbox) {
     dragCancel();
     // The release that follows clicks nothing (it may land back on the pressed tab).
     dragged = true;
-    window.addEventListener('pointerup', () => setTimeout(() => { dragged = false; }, 0), { once: true, capture: true });
+    const released = () => {
+      window.removeEventListener('pointerup', released, true);
+      window.removeEventListener('pointercancel', released, true);
+      setTimeout(() => { dragged = false; }, 0);
+    };
+    window.addEventListener('pointerup', released, true);
+    window.addEventListener('pointercancel', released, true);
   }
 
   function select(pad, { focusTab = false } = {}) {
@@ -715,6 +721,7 @@ function notepad(ctx, { key, label, textLabel, path, putPresence = null, unsaved
   let forceDue = false;
   let retryMs = PRESENCE_RETRY_MS;
   let lastAnswerAt = 0;
+  let answerTimer = 0;
 
   /** The text box's own text and the saved one are the same document, unless a conflict is open. */
   const inStep = () => loaded && !conflict;
@@ -790,11 +797,15 @@ function notepad(ctx, { key, label, textLabel, path, putPresence = null, unsaved
     if (event.selection) peers.set(id, { userId: event.user_id, name: event.name, revision: event.revision, selection: event.selection, seen: Date.now() });
     else peers.delete(id);
     // Someone opened the notepad: tell them where this person is, even if it did not change
-    // (once a second at most, however many open it at once).
-    if (event.hello && present && wasThere && Date.now() - lastAnswerAt >= PRESENCE_ANSWER_GAP_MS) {
-      lastAnswerAt = Date.now();
-      forceDue = true;
-      presenceSoon();
+    // (once a second at most, however many open it at once: a later hello is answered then).
+    if (event.hello && present && wasThere && !answerTimer) {
+      answerTimer = setTimeout(() => {
+        answerTimer = 0;
+        if (!present || !wasThere) return;
+        lastAnswerAt = Date.now();
+        forceDue = true;
+        sendPresence();
+      }, Math.max(0, lastAnswerAt + PRESENCE_ANSWER_GAP_MS - Date.now()));
     }
     drawPeers();
   }
@@ -818,6 +829,8 @@ function notepad(ctx, { key, label, textLabel, path, putPresence = null, unsaved
     } else {
       helloDue = false; // a hello not sent yet has nobody to greet
       forceDue = false;
+      clearTimeout(answerTimer);
+      answerTimer = 0;
       sendPresence({ leaving: true, going });
       peers.clear(); // drawn again from their answers to the next hello
     }

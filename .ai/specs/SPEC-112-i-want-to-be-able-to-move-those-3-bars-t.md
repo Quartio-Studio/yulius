@@ -105,15 +105,17 @@ text at `base` and sends that revision; a receiver whose `base` equals it maps t
 the saved text into its own text box. Another revision hides that person until both sides reload.
 
 **Presence (server).** `App::note_presence(ctx, target, input)` checks `View` for a sandbox note
-(Team and sandbox only; `Me` is not routable), validates the offsets (≤ 1 Mi), counts the update
+(Team and sandbox only; `Me` is not routable), validates the offsets (≤ 1 Mi) and the tab's
+`client` (at most 32 letters and digits, relayed as sent), counts the update
 in `note_presence: Mutex<HashMap<String, Vec<i64>>>` keyed by `user|scope` (20 per 1000 ms, at
 most 4096 keys, expired keys pruned first, else 429), and publishes `UiEvent::NotePresence` with
 the sandbox scope (sandbox) or none (team). Nothing is stored, so a server restart forgets nobody
 it needs: browsers say hello again on reconnect (`resync`).
 
 **Presence (web).** Each shared notepad has a presence sender (trailing throttle of 100 ms,
-heartbeat 15 s while shown, `hello` when shown, `null` with `keepalive` when hidden or left;
-429 and failures are dropped, the next update replaces them) and a peer map `user_id:client → {name,
+heartbeat 15 s while shown, `hello` when shown and after `resync`, `null` when hidden or left
+(with `keepalive` when the page goes); a refused or lost update is sent again after 1 s, doubling
+up to 15 s, unless a newer one went out; hellos answered at most once a second, a later one then) and a peer map `user_id:client → {name,
 revision, selection, seen}` swept every second (45 s expiry). `store.js` emits
 `note-presence`; `mock.js` relays the routes and lets tests act as a teammate (`notePresence`).
 
@@ -176,4 +178,13 @@ sequenceDiagram
     nothing on release; the name tag flips by its place in view; diffs never split a surrogate
     pair. Kept: the remaining heuristics of `textEdit` with repeated characters (a mapped offset
     may sit a character off until the next save) only affect drawing.
+- Confirmation review (approve `856c156a`, no blocker or major): minors fixed — a second hello
+  within a second is answered a moment later instead of not at all (e2e failing before); a
+  selection's rows are found by row number, not a search; stale docs made true (spec, ADR-0091,
+  architecture); the mock refuses a `client` that is not a string; Escape then `pointercancel`
+  no longer swallows the next tab click; the surrogate-pair mapping has a test. Kept: a newer
+  revision announced during a conflict look waits for the next event or save (older than this
+  task, the text is dirty then); a scroll re-measures the selection near the view each frame
+  (`getClientRects` stays linear in the selection: smooth for notes of usual size, not measured
+  at the 256 KiB limit); forced colours hide teammates' marks with the layer (NOT-021).
 

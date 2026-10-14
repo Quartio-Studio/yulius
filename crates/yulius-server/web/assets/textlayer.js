@@ -93,18 +93,20 @@ export function createTextLayer(textarea) {
     const range = document.createRange();
     range.setStart(node, from);
     range.setEnd(node, to);
-    const lines = [];
+    // One entry per row of text, found by the row's number (not a search: long selections).
+    const rows = new Map();
     for (const rect of range.getClientRects()) {
       const middle = rect.top + rect.height / 2 - origin.top;
-      const line = lines.find((l) => Math.abs(l.middle - middle) < lineHeight / 2);
+      const row = Math.floor(middle / lineHeight);
+      const line = rows.get(row);
       if (line) {
         line.left = Math.min(line.left, rect.left - origin.left);
         line.right = Math.max(line.right, rect.right - origin.left);
       } else {
-        lines.push({ middle, left: rect.left - origin.left, right: rect.right - origin.left });
+        rows.set(row, { middle, left: rect.left - origin.left, right: rect.right - origin.left });
       }
     }
-    lines.sort((a, b) => a.middle - b.middle);
+    const lines = [...rows.values()].sort((a, b) => a.middle - b.middle);
     // A selection ending at a line's start or starting at a line's end draws nothing there; a
     // blank line inside it shows as a sliver.
     return lines
