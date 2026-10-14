@@ -3,10 +3,11 @@
 
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, errorToast, skeleton, openMenu, statusMark, singleFlight, keepFocus } from './dom.js';
-import { openRuleEditor, ruleChoices, ruleText } from './ruleeditor.js';
+import { openRuleEditor, ruleText } from './ruleeditor.js';
+import { openStartMenu, renderStartChip, startKind, SUPERTASK_HELP } from './startchoice.js';
 import { createTerminalView } from './terminal.js';
-import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, statusInfo, pausedLine, resetAround, shellsLine, heldBy, supertaskLine } from './status.js';
-import { heldPromptCard, splitCard, looksSeveral, chainCandidates, intakeStatus, SPLIT_MIN_WORDS } from './intake.js';
+import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, pausedLine, resetAround, shellsLine, heldBy, supertaskLine } from './status.js';
+import { heldPromptCard, splitCard, looksSeveral, intakeStatus, SPLIT_MIN_WORDS } from './intake.js';
 import { attachMarkdownInput } from './mdinput.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
@@ -505,9 +506,6 @@ export function autoChoiceLabel(task) {
   };
 }
 
-/** What a supertask is, in the start menu and on its chip (SPEC-071). */
-const SUPERTASK_HELP = 'Waits for this project’s running tasks, then runs alone while the project’s other tasks wait. For broad work such as security hardening.';
-
 /**
  * New-task composer (J3, UI-021, F 2026-10-10): a rounded prompt box whose bottom edge holds the
  * task's choices — mode and workflow (Auto by default: Jev decides), run after, model and effort
@@ -659,8 +657,7 @@ export function mountComposer(ctx, sandbox) {
     const after = (tasks || []).find((t) => t.id === afterTaskId);
     if (afterTaskId && tasks && !after) afterTaskId = ''; // gone (a kept draft waits for the list)
     const rule = startRule ? ruleText(startRule) : '';
-    const ruleLabel = rule.length > 28 ? `${rule.slice(0, 27)}…` : rule;
-    setChildren(afterChip, icon(supertask ? 'shield' : 'branch', { size: 14 }), h('span', { class: 'sr-only' }, 'Run after: '), h('span', { class: 'chip-label' }, supertask ? 'Supertask' : rule ? `When ${ruleLabel}` : after ? `After #${after.number}` : 'Start now'), icon('down', { size: 12 }));
+    renderStartChip(afterChip, { kind: startKind({ supertask, afterTaskId: after && after.id, rule }), number: after && after.number, rule, prefix: 'Run after: ' });
     afterChip.title = supertask ? SUPERTASK_HELP : rule ? `Starts by itself when ${rule}` : after ? `Runs after #${after.number} ${after.title} is done` : 'Starts right away; or pick a task to run after, or give a rule';
     const found = findModel(modelId);
     setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
@@ -696,19 +693,18 @@ export function mountComposer(ctx, sandbox) {
   }
 
   function openAfterMenu(anchor) {
-    const candidates = chainCandidates(ctx, sandbox);
-    openMenu(anchor, [
-      { label: 'Start now', icon: 'up', description: 'The task starts as soon as a session slot is free', checked: !afterTaskId && !startRule && !supertask, onSelect: () => { afterTaskId = ''; startRule = null; supertask = false; renderChips(); prompt.focus(); } },
-      { label: 'Supertask', icon: 'shield', description: SUPERTASK_HELP, checked: supertask, onSelect: () => { afterTaskId = ''; startRule = null; supertask = true; renderChips(); prompt.focus(); } },
-      // One line per task under one heading, every live one: the menu's filter finds it (SPEC-038).
-      ...(candidates.length ? [{ separator: true }, { header: 'After a task is done' }] : []),
-      ...candidates.map((t) => ({ label: `#${t.number} ${t.title}`, hint: statusInfo(t).label, title: `Starts by itself when #${t.number} is done`, checked: t.id === afterTaskId, onSelect: () => { afterTaskId = t.id; startRule = null; supertask = false; renderChips(); prompt.focus(); } })),
-      // A rule names tasks of this sandbox, so a sandbox without any offers none (SPEC-022).
-      ...(ruleChoices(ctx.store.tasksOf(sandbox.id)).length ? [
-        { separator: true },
-        { label: 'When a rule is true…', icon: 'branch', description: 'Pick tasks and whether they are done, merged or ended', checked: Boolean(startRule), onSelect: openRuleDialog },
-      ] : []),
-    ]);
+    openStartMenu(anchor, ctx, sandbox, {
+      kind: startKind({ supertask, afterTaskId, rule: startRule }),
+      afterTaskId,
+      onPick: ({ kind, task }) => {
+        afterTaskId = kind === 'after' ? task.id : '';
+        startRule = null;
+        supertask = kind === 'supertask';
+        renderChips();
+        prompt.focus();
+      },
+      onRule: openRuleDialog,
+    });
   }
 
   /** A start rule (SPEC-017) picked as conditions (SPEC-022); the server checks it. */

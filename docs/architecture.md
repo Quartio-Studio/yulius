@@ -378,11 +378,15 @@ chip ([SPEC-078](../.ai/specs/SPEC-078-we-d-like-to-be-able-to-set-the-automati.
 [decision 0062](decisions/0062-an-automation-starts-its-tasks-like-new-task.md)). A run creates
 its task through the same `create_task_ruled` as New task. A task to run after that has ended
 turns into the rule `#N done`, so a recurring automation keeps working once its predecessor is
-finished.
+finished. The editor shows the choice as New task's start chip in its action bar, and Run now
+sends the choice the chip shows for that run only
+([SPEC-093](../.ai/specs/SPEC-093-automation-editor-the-start-choice-sits.md),
+[decision 0074](decisions/0074-run-now-uses-the-start-choice-the-editor-shows.md)); without it a
+run uses the stored choice.
 
 ```mermaid
 flowchart LR
-  RUN["Scheduler or Run now: one slot"] --> START{"automation.start"}
+  RUN["Scheduler or Run now: one slot"] --> START{"automation.start, or Run now's body"}
   START -->|"Now"| Q["queued"]
   START -->|"Supertask"| ST["queued supertask (SPEC-071)"]
   START -->|"After #N, not ended"| CH["chained after #N"]
@@ -400,7 +404,9 @@ notification history and the drafts.
 
 Every drop-down menu is built by `openMenu` (`dom.js`). It stays inside the window, scrolling its
 items, and a menu of 8 or more items opens with a filter box
-([decision 0030](decisions/0030-menus-filter-when-long.md)).
+([decision 0030](decisions/0030-menus-filter-when-long.md)). A group of items under a header (the
+start menu's tasks) shows five rows and scrolls the rest in a box of its own, fading at the edge it
+continues past with a "↓ N more" line under it ([decision 0083](decisions/0083-long-menu-groups-scroll-five-rows.md)).
 
 ```mermaid
 flowchart LR
