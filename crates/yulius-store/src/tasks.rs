@@ -5,7 +5,8 @@ use rusqlite::{OptionalExtension, Row, params};
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::{
     AttemptRecord, ControlRequest, FeedbackRecord, LaunchKind, MetricsRecord,
-    ProviderSessionRecord, SwitchDecisionRecord, TaskMode, TaskOrigin, TaskRecord, TaskTimes,
+    ProviderSessionRecord, RecountOutcome, SwitchDecisionRecord, TaskMode, TaskOrigin, TaskRecord,
+    TaskTimes,
 };
 use yulius_app::ports::store::{AttemptUpdate, TaskFieldUpdate, TaskStore};
 use yulius_domain::harness::Harness;
@@ -125,6 +126,30 @@ fn metrics_from_row(row: &Row<'_>) -> rusqlite::Result<MetricsRecord> {
         turns: row.get::<_, Option<i64>>("turns")?.map(to_u32),
         active_ms: opt_u64(row.get("active_ms")?),
     })
+}
+
+/// An attempt's stored figures as JSON, `None` without a row (SPEC-091 RCT-004).
+fn stored_metrics_json(c: &rusqlite::Connection, attempt: &str) -> AppResult<Option<String>> {
+    let row = c
+        .query_row(
+            "SELECT model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms FROM metrics WHERE attempt_id = ?1",
+            [attempt],
+            metrics_from_row,
+        )
+        .optional()
+        .map_err(db)?;
+    Ok(row.map(|m| {
+        serde_json::json!({
+            "model": m.model,
+            "input_tokens": m.input_tokens,
+            "output_tokens": m.output_tokens,
+            "cache_read": m.cache_read,
+            "cache_write": m.cache_write,
+            "turns": m.turns,
+            "active_ms": m.active_ms,
+        })
+        .to_string()
+    }))
 }
 
 impl SqliteStore {
@@ -345,6 +370,7 @@ impl TaskStore for SqliteStore {
             let tx = c.transaction().map_err(db)?;
             let statements = [
                 "DELETE FROM metrics WHERE task_id = ?1",
+                "DELETE FROM metrics_recounts WHERE task_id = ?1",
                 "DELETE FROM message_receipts WHERE task_id = ?1",
                 "DELETE FROM message_receipts WHERE message_id IN (SELECT id FROM messages WHERE from_task = ?1 OR to_task = ?1)",
                 "DELETE FROM messages WHERE from_task = ?1 OR to_task = ?1",
@@ -875,6 +901,83 @@ impl TaskStore for SqliteStore {
                 .map_err(db)?;
             let rows = stmt.query_map([t], metrics_from_row).map_err(db)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(db)
+        })
+        .await
+    }
+
+    async fn queued_metrics_recounts(&self) -> AppResult<Vec<AttemptId>> {
+        self.call(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT r.attempt_id FROM metrics_recounts r LEFT JOIN attempts a ON a.id = r.attempt_id \
+                     WHERE r.outcome IS NULL ORDER BY COALESCE(a.started_at, 0), r.attempt_id",
+                )
+                .map_err(db)?;
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .map_err(db)?;
+            rows.map(|id| {
+                let id = id.map_err(db)?;
+                AttemptId::parse(&id).map_err(|_| db(bad_column("attempt_id", &id)))
+            })
+            .collect()
+        })
+        .await
+    }
+
+    async fn finish_metrics_recount(
+        &self,
+        attempt: &AttemptId,
+        outcome: RecountOutcome,
+        metrics: Option<&MetricsRecord>,
+        at: Timestamp,
+    ) -> AppResult<bool> {
+        let (a, m) = (attempt.as_str().to_owned(), metrics.cloned());
+        self.call(move |c| {
+            let tx = c.transaction().map_err(db)?;
+            let task: Option<String> = tx
+                .query_row(
+                    "SELECT task_id FROM metrics_recounts WHERE attempt_id = ?1 AND outcome IS NULL",
+                    [&a],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(db)?;
+            let Some(task) = task else {
+                return Ok(false);
+            };
+            let before = stored_metrics_json(&tx, &a)?;
+            let after = if let Some(m) = m {
+                tx.execute(
+                    "INSERT INTO metrics (attempt_id, task_id, model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms, updated_at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) ON CONFLICT(attempt_id) DO UPDATE SET model = COALESCE(excluded.model, metrics.model), \
+                     input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens, cache_read = excluded.cache_read, \
+                     cache_write = excluded.cache_write, turns = excluded.turns, active_ms = excluded.active_ms, updated_at = excluded.updated_at",
+                    params![
+                        a,
+                        task,
+                        m.model,
+                        m.input_tokens.map(to_i64),
+                        m.output_tokens.map(to_i64),
+                        m.cache_read.map(to_i64),
+                        m.cache_write.map(to_i64),
+                        m.turns.map(i64::from),
+                        m.active_ms.map(to_i64),
+                        at.0
+                    ],
+                )
+                .map_err(db)?;
+                stored_metrics_json(&tx, &a)?
+            } else {
+                before.clone()
+            };
+            tx.execute(
+                "UPDATE metrics_recounts SET outcome = ?2, before = ?3, after = ?4, done_at = ?5 WHERE attempt_id = ?1",
+                params![a, outcome.as_str(), before, after, at.0],
+            )
+            .map_err(db)?;
+            tx.commit().map_err(db)?;
+            Ok(true)
         })
         .await
     }
