@@ -207,7 +207,9 @@ description, controls), `meter`, `openMenu` (icons, descriptions, check marks), 
 
 One pattern per kind of state (SPEC-001 UI-050): `emptyState` for every empty list (with the action
 that fills it), `loadError` for a failed load said in place (`loader(container, 'the users', …)` in
-`pages/common.js` names what failed: "Couldn’t load the users: …"), `skeleton` while loading, and
+`pages/common.js` names what failed: "Couldn’t load the users: …"), `skeleton` while loading (shimmering
+fields, never a spinner with "Loading…"; `placeholder(text, 'loading')` returns it; a spinner marks only an
+action under way, ADR-0073), and
 `notFound` (`pages/common.js`) for a missing page, sandbox, task or item: a heading and the way
 back. Page headers come from `pageFrame`: a title, a subtitle that says what the page is for, and
 actions; `createButton` is the primary "add" button with its "+". "Needs you" is `taskInfo`'s

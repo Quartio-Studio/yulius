@@ -8,7 +8,7 @@ failOnPageErrors();
 // Git page's spinner and "Loading delivery…". Content that loads shows shimmering bars where it
 // will appear; what loads is said to assistive technology only.
 
-/** Visible text inside `#main` that says "Loading", ignoring screen-reader-only labels. */
+/** Visible text inside `root` that says "Loading" or "Reading usage", ignoring screen-reader-only labels. */
 function visibleLoadingText(browser: Browser, root = '#main'): Promise<string[]> {
   return browser.evaluate((selector) => {
     const found: string[] = [];
@@ -17,7 +17,7 @@ function visibleLoadingText(browser: Browser, root = '#main'): Promise<string[]>
     const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {
       const parent = node.parentElement;
-      if (!parent || !/Loading/.test(node.textContent ?? '')) continue;
+      if (!parent || !/Loading|Reading usage/.test(node.textContent ?? '')) continue;
       if (parent.closest('.sr-only') || !parent.checkVisibility()) continue;
       found.push((node.textContent ?? '').trim());
     }
@@ -69,6 +69,10 @@ test('task lists and the status popover load as shimmering fields', async ({ app
   await release(browser);
   await expect(browser.locator('.status-pop .skeleton')).toHaveCount(0);
   await expect(pop).toBeVisible();
+  // A subscription whose usage is not read yet shows a bar where its reset time will be.
+  await expect(browser.locator('.status-pop .usage-reset .skeleton-line').first()).toBeVisible();
+  expect(await visibleLoadingText(browser, '.status-pop')).toEqual([]);
+  expect(await axeViolations(browser)).toEqual([]);
 });
 
 test('a home card, the editor tree and a notepad load as shimmering fields', async ({ app, browser, screen }) => {

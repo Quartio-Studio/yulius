@@ -589,6 +589,7 @@ body.resizing iframe, body.resizing canvas { pointer-events: none; }
 .usage-row { display: grid; grid-template-columns: minmax(132px, 1fr) minmax(64px, 1.3fr) 72px; align-items: center; gap: 12px; }
 .usage-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--text); }
 .usage-reset { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); }
+.usage-reset .skeleton-line { width: 6em; height: 8px; margin-top: 4px; }
 .usage-pct { color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .usage-pct.tone-ok { color: var(--ok-fg); }
 .usage-pct.tone-warn { color: var(--warn-fg); }

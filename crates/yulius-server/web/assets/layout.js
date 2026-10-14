@@ -443,11 +443,13 @@ export function accountUsage(account, { foldable = false, open = false } = {}) {
   const usage = account.usage || {};
   const provider = account.provider === 'anthropic' ? 'Claude' : account.provider;
   const state = ACCOUNT_STATES[account.status] || { icon: 'warn', tone: 'muted', label: account.status || 'Unknown' };
+  // Usage not read yet: a shimmering bar where the reset time will be (SPEC-092).
+  const reading = () => [h('span', { class: 'skeleton-line', 'aria-hidden': 'true' }), h('span', { class: 'sr-only' }, 'Reading usage…')];
   const usageRow = (w, fallback) => {
     const name = limitName(w && w.window_minutes, fallback);
     const used = w ? w.used_percent : null;
     return h('div', { class: 'usage-row' },
-      h('div', { class: 'usage-name' }, h('span', null, name), h('span', { class: 'usage-reset', title: w && w.resets_at ? dateTime(w.resets_at) : '' }, w && w.resets_at ? resetLabel(w.resets_at) : Number.isFinite(used) ? '' : 'Reading usage…')),
+      h('div', { class: 'usage-name' }, h('span', null, name), h('span', { class: 'usage-reset', title: w && w.resets_at ? dateTime(w.resets_at) : '' }, w && w.resets_at ? resetLabel(w.resets_at) : Number.isFinite(used) ? '' : reading())),
       usageBar(used, name),
       h('span', { class: ['usage-pct', `tone-${toneOf(used)}`] }, Number.isFinite(used) ? `${Math.round(used)}% used` : '—'));
   };

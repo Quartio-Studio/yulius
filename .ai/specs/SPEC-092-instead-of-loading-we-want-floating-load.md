@@ -30,7 +30,7 @@ still hear what is loading.
   automation and task-info pages, CI runs and the boot screen. Seven more spots wrote the same
   markup by hand: the task lists, the status popover, Instance, the Jev key card and the
   Superagent's start. Four drew their own "Loading…" text: the editor tree, the notes status, the
-  home cards' activity and the browser panel's page load.
+  home cards' activity and the browser panel's page load; the status popover and Accounts said "Reading usage…" for usage not read yet.
 - Spinners also mark things that are not content loading: an action under way (an update, "Asking
   Jev one small question…"), a terminal connecting, a working task's icon. Each says what is
   happening and has no content shape to stand in for. They stay as they are (ADR-0073).
@@ -43,7 +43,7 @@ still hear what is loading.
 | --- | --- | --- |
 | FLD-001 | `placeholder(text, 'loading')` renders the skeleton: shimmering bars announced as `text` (`role="status"`, the text only for screen readers), padded like the placeholder it replaces. Every caller gets it, `loader()` included. | e2e `loading.e2e.ts` (Git page held) |
 | FLD-002 | Every hand-written loading placeholder (task lists in the sidebar and on Tasks, the status popover, Instance, the Jev key card, the Superagent's start) uses the skeleton. | e2e `loading.e2e.ts`; source search finds no `placeholder-loading` |
-| FLD-003 | Inline loading text becomes a skeleton of the content's size: a folder loading in the editor tree is one bar at its depth; a home card's unknown activity is one short bar; a notepad not loaded yet shows bars over its empty text box and no "Loading…" status; the browser panel loading a page shows bars on its cover. | e2e `loading.e2e.ts`, `notes.e2e.ts` |
+| FLD-003 | Inline loading text becomes a skeleton of the content's size: a folder loading in the editor tree is one bar at its depth; a home card's unknown activity is one short bar; a notepad not loaded yet shows bars over its empty text box and no "Loading…" status; the browser panel loading a page shows bars on its cover; a subscription whose usage is not read yet shows one bar where its reset time goes, not "Reading usage…". | e2e `loading.e2e.ts`, `notes.e2e.ts` |
 | FLD-004 | No visible "Loading…" text remains while content loads. Spinners for actions under way, connections and working tasks are unchanged. A button busy with its own action ("Load more") still says so on the button. | source search (Evidence); e2e |
 | FLD-005 | Under `prefers-reduced-motion` the bars do not shimmer (the global rule); the loading pages have no WCAG violation. | e2e with axe |
 
