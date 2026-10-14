@@ -243,7 +243,7 @@ function mountTeam(ctx, host, actions) {
     })));
   }
 
-  const reload = loader(list, 'the team secrets', () => ctx.api.get('/api/team-secrets'), render);
+  const reload = loader(list, 'the team secrets', () => ctx.api.get('/api/team-secrets'), render, { shape: 'items' });
   const reloadActivity = loader(activity, 'the secrets activity', () => ctx.api.get('/api/secrets/activity?limit=50'), (entries) => {
     if (!entries.length) return h('p', { class: 'muted small' }, 'Nothing yet.');
     return h('ul', { class: 'plain-list activity-list' }, entries.map((e) => h('li', { class: 'small' },
@@ -474,7 +474,7 @@ function mountAgents(ctx, sandbox, host, actions) {
     })));
   }
 
-  const reload = loader(list, 'the agent secrets', () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/agent-secrets`), render);
+  const reload = loader(list, 'the agent secrets', () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/agent-secrets`), render, { shape: 'items' });
 
   function edit(secret) {
     const form = agentForm(ctx, secret);

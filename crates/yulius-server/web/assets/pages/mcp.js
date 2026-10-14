@@ -106,7 +106,7 @@ export function mountMcpPage(ctx, sandbox, route) {
     for (const s of servers) counts.set(s.scope, (counts.get(s.scope) || 0) + 1);
     scopeFilter.setCounts(counts, servers.length);
     return render();
-  });
+  }, { shape: 'items' });
 
   function baseBody(server) {
     return { name: server.name, transport: server.transport, command: server.command || null, args: server.args || [], url: server.url || null, enabled: server.enabled };
