@@ -1192,7 +1192,10 @@ async fn run_now_and_failures_are_recorded() -> TestResult {
     let history = runs(&w, &failing).await?;
     assert_eq!(history[0]["state"], "failed");
     assert!(
-        !history[0]["error"].as_str().unwrap_or("").is_empty(),
+        history[0]["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("not found"),
         "{}",
         history[0]
     );

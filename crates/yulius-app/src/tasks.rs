@@ -379,7 +379,10 @@ impl App {
     ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::Work).await?;
         let done = task.status == TaskStatus::Running && self.task_is_done(&task).await;
-        if archive && done {
+        if archive && done && task.origin == TaskOrigin::Onboarding {
+            // Its run's end decides whether onboarding is over, which the check below reads.
+            self.close_task_and_wait(&task.id).await?;
+        } else if archive && done {
             self.close_task_now(&task.id).await?;
         } else if archive && !task.status.is_resting() {
             return Err(AppError::Conflict(

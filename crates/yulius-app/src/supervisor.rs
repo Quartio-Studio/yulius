@@ -1609,7 +1609,7 @@ impl App {
         tokio::spawn(async move {
             let runtime = app.runtime(&task_id);
             let live = || app.attempt_live(&task_id, &attempt_id);
-            let started = tokio::time::Instant::now();
+            let mut started = tokio::time::Instant::now();
             let mut typed_before = typed_before;
             let unanswered = || async {
                 app.goal_not_taken(&task_id, TRUST_UNANSWERED).await;
@@ -1624,6 +1624,8 @@ impl App {
                     InputReady::TrustUnanswered => return unanswered().await,
                 }
                 app.type_opening(&task_id, &attempt_id, opening).await;
+                // Its turn starts now, however long a trust prompt waited before it.
+                started = tokio::time::Instant::now();
             }
             match app
                 .wait_input_ready(&task_id, &attempt_id, started, true, &mut typed_before)

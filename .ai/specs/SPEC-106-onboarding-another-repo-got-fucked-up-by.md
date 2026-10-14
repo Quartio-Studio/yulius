@@ -75,7 +75,7 @@ Root causes, each reproduced with Claude Code 2.1.292 and the code on `dev`:
 | OTR-001 | `ensure_claude_config` trusts the worktree and, when it is a linked git worktree (its `.git` is a `gitdir:` file), the main repository too. That is the parent of the common git directory when the directory is named `.git`, else the common directory itself (a bare repository). An unreadable or malformed `.git` file, or one that is not a regular file, trusts the worktree alone, as before. | `claude_config` unit tests, including a real `git worktree add` |
 | OTR-002 | Before the session's SessionStart hook, while Claude Code shows its folder-trust prompt, nothing is typed: no first message and no goal. The keys a person types to answer it are not a draft. Once it is answered, the wait for a ready TUI starts over and the goal is typed as usual. A prompt still shown `trust_answer_ms` (default 5 min) after it appeared flags the task, and nothing is typed. After SessionStart, the dialog's words on screen are ordinary output. | `first_message::a_trust_prompt_answered_before_the_goal_keeps_the_goal`, `…::an_unanswered_trust_prompt_gets_nothing_typed_and_flags_the_task`, `…::trust_words_after_the_session_started_are_no_trust_prompt`, `supervisor::tests::the_folder_trust_dialog_is_recognised` |
 | OTR-003 | A `preparing` sandbox whose onboarding task does not exist (it was deleted) is moved to `pending`. The page then offers Start onboarding again, which creates a new onboarding task. The state is read again under the onboarding lock, so a skip landing meanwhile is kept. Recorded in the audit log as `system`. | `projects::a_preparing_sandbox_whose_onboarding_task_is_gone_returns_to_pending` |
-| OTR-004 | Archiving the onboarding task of a blocking sandbox is refused (409). The message names the ways out: continue the task, or delete it to start onboarding again. Onboarding is refreshed first, so a task that has finished its work is archived as before and the sandbox becomes ready. An onboarding task archived before this change is restored to the task list (OTR-005). | `projects::the_onboarding_task_is_not_archived_while_onboarding_blocks`, `projects::a_finished_onboarding_task_is_archived_and_the_sandbox_is_ready` |
+| OTR-004 | Archiving the onboarding task of a blocking sandbox is refused (409). The message names the ways out: continue the task, or delete it to start onboarding again. Onboarding is refreshed first, so a task that has finished its work is archived as before and the sandbox becomes ready. A finished running one is closed and its run's end awaited before the check. An onboarding task archived another way (before this change, or a reverted intake task) is restored to the task list (OTR-005). | `projects::the_onboarding_task_is_not_archived_while_onboarding_blocks`, `projects::a_finished_onboarding_task_is_archived_and_the_sandbox_is_ready` |
 | OTR-005 | The repairs (OTR-003, and restoring an archived onboarding task) run at server start for every sandbox, right after a task is deleted, and on every onboarding refresh. That is how sandboxes already stuck this way (studio) heal with the deploy. At start, one sandbox's failure is logged, and the other sandboxes are still repaired. | `projects::stuck_onboarding_heals_at_server_start` |
 
 ## Plan
@@ -128,6 +128,10 @@ Root causes, each reproduced with Claude Code 2.1.292 and the code on `dev`:
   fake agent reads input as soon as it is answered, so typing too early would not show. The
   change is to reset the clock when the dialog goes, and the live check shows real Claude Code
   removes the dialog from the screen once it is answered.
+- Archiving a running onboarding task whose goal is achieved waits for its run to end
+  (`close_task_and_wait`, as delete does) before the check. A test would need a live run whose
+  goal is achieved with steps still open; the stopped-task case is covered (second review,
+  minor 1).
 - The page's "The onboarding task is missing" message (`taskview.js`) is unchanged. A delete now
   moves the sandbox to `pending` at once, and the startup repair heals older states, so the
   message shows only for a moment (review finding 9).
@@ -157,5 +161,8 @@ Root causes, each reproduced with Claude Code 2.1.292 and the code on `dev`:
 - **`automations::run_now_and_failures_are_recorded`:** its "being prepared" failure used the
   stuck state this fix repairs. It now starts from `pending` (a fixture without the sandbox's
   creator) and still checks that a failed creation is recorded.
-- **Full gate:** see the delivery summary. `task_done::` timeouts under full load are tracked
+- **Full gate (`scripts/dev ci`) at b7cb5147:** 1591 of 1592 tests passed. The one failure,
+  `context_full::a_full_fresh_session_needs_a_person`, is a race in that test under load: it reads
+  the audit before the last row is written. It passes on its own (3 of 3) and is filed as #430.
+  Every other gate passed. `task_done::` timeouts under full load are tracked
   by #404 (they pass on their own).
