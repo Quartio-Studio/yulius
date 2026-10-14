@@ -7,11 +7,13 @@ import os
 import signal
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 
 import vidoc_scan
 from vidoc_scan import Failed, Usage
@@ -106,6 +108,101 @@ def run(api=None, cli=None, git=None, env=None):
     code = vidoc_scan.gate(env, git or FakeGit(), api or api_for(), cli or FakeCli(),
                            Path("/tmp/vidoc.log"), out)
     return code, out.getvalue()
+
+
+class Switch(unittest.TestCase):
+    """SPEC-131: `.config/vidoc.toml` turns the gate on or off; it ships on."""
+
+    # Git of the temporary repositories only, whatever GIT_* variables the suite runs under.
+    git_env = {**{k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
+               "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+
+    def root_with(self, text=None):
+        root = Path(tempfile.mkdtemp(prefix="vidoc-switch-"))
+        self.addCleanup(shutil.rmtree, root)
+        if text is not None:
+            (root / ".config").mkdir()
+            (root / ".config" / "vidoc.toml").write_text(text)
+        return root
+
+    def test_the_repository_ships_the_gate_enabled(self):
+        self.assertTrue(vidoc_scan.switch(Path(__file__).resolve().parent.parent))
+
+    def test_on_off_and_a_missing_file_which_means_on(self):
+        self.assertTrue(vidoc_scan.switch(self.root_with("enabled = true\n")))
+        self.assertFalse(vidoc_scan.switch(self.root_with("# off for now\nenabled = false\n")))
+        self.assertTrue(vidoc_scan.switch(self.root_with()))
+
+    def test_a_malformed_switch_is_not_run_and_names_the_file(self):
+        for text in ("enabled = \n", 'enabled = "false"\n', "enabled = 0\n", "# nothing\n",
+                     "enabled = true\nscan = false\n", "[vidoc]\nenabled = false\n"):
+            with self.subTest(text=text), self.assertRaises(Usage) as caught:
+                vidoc_scan.switch(self.root_with(text))
+            self.assertIn(".config/vidoc.toml", str(caught.exception))
+
+    def run_main(self, root):
+        previous = {s: signal.getsignal(s) for s in (signal.SIGTERM, signal.SIGHUP)}
+        self.addCleanup(lambda: [signal.signal(s, h) for s, h in previous.items()])
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            with unittest.mock.patch.dict(os.environ, self.git_env, clear=True):
+                code = vidoc_scan.main(root=root, env={"PATH": os.environ.get("PATH", "")})
+        return code, out.getvalue(), err.getvalue()
+
+    def committed(self, text):
+        root = self.root_with(text)
+        for args in (["init", "-q"], ["add", "-A"],
+                     ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "switch"]):
+            subprocess.run(["git", *args], cwd=root, env=self.git_env, check=True,
+                           capture_output=True)
+        return root
+
+    def test_only_a_committed_switch_turns_the_gate_off(self):
+        off = (0, "enabled = false\n")
+        vidoc_scan.committed_switch(FakeGit(status=(0, ""), **{"cat-file": off}))
+        for answers in ({"status": (0, " M .config/vidoc.toml\n")},
+                        {"status": (0, "?? .config/vidoc.toml\n")}, {"status": (128, "")},
+                        {"cat-file": (128, "")}, {"cat-file": (0, "enabled = true\n")},
+                        {"cat-file": (0, "enabled = \n")}):
+            answers = {"cat-file": off, **answers}
+            with self.subTest(answers=answers), self.assertRaises(Usage) as caught:
+                vidoc_scan.committed_switch(FakeGit(**answers))
+            self.assertIn(".config/vidoc.toml", str(caught.exception))
+
+    def test_a_switch_hidden_from_git_status_is_still_not_run(self):
+        root = self.committed("enabled = true\n")
+        subprocess.run(["git", "update-index", "--skip-worktree", ".config/vidoc.toml"], cwd=root,
+                       env=self.git_env, check=True)
+        (root / ".config" / "vidoc.toml").write_text("enabled = false\n")
+        code, out, err = self.run_main(root)
+        self.assertEqual(code, 2)
+        self.assertNotIn("disabled", out)
+        self.assertIn("committed", err)
+
+    def test_an_uncommitted_off_switch_is_not_run(self):
+        root = self.committed("enabled = true\n")
+        (root / ".config" / "vidoc.toml").write_text("enabled = false\n")
+        code, out, err = self.run_main(root)
+        self.assertEqual(code, 2)
+        self.assertNotIn("disabled", out)
+        self.assertIn("uncommitted", err)
+
+    def test_disabled_passes_at_once_without_a_key_and_says_nothing_was_scanned(self):
+        code, out, err = self.run_main(self.committed("enabled = false\n"))
+        self.assertEqual(code, 0)
+        self.assertIn("Security scan disabled: .config/vidoc.toml sets enabled = false; "
+                      "nothing was scanned.", out)
+        self.assertEqual(err, "")
+
+    def test_enabled_still_needs_a_key(self):
+        code, _, err = self.run_main(self.root_with("enabled = true\n"))
+        self.assertEqual(code, 2)
+        self.assertIn("No Vidoc API key", err)
+
+    def test_a_malformed_switch_exits_2_from_main(self):
+        code, _, err = self.run_main(self.root_with('enabled = "no"\n'))
+        self.assertEqual(code, 2)
+        self.assertIn("Security scan not run: .config/vidoc.toml", err)
 
 
 class Settings(unittest.TestCase):

@@ -3,6 +3,8 @@
 ## Status
 
 Accepted. Specified in [SPEC-128](../../.ai/specs/SPEC-128-in-keys-for-agents-you-have-vidoc-securi.md).
+Amended by [0107](0107-a-committed-switch-turns-the-vidoc-gate-on-or-off.md): `.config/vidoc.toml`
+turns the gate on or off.
 
 ## Context
 
