@@ -1,11 +1,11 @@
 ---
 yulius-task: ad9045a3-586a-41ee-878f-c4b053a73303
-status: in-progress
+status: done
 ---
 
 # SPEC-109: the session's spider web sits in its corner and keeps its colour
 
-Status: in progress
+Status: done
 Date: 2026-10-14
 Owner: Yulius task #94 (issue #427)
 Scope authorization: the person's request (task #94), "web is not aligned to the corner, top
@@ -48,11 +48,11 @@ same colours whether it is stuck or not.
 
 ## Plan
 
-- [ ] Root cause found and the spec written and validated
-- [ ] The web sits exactly in the well's corner, at the top and while stuck
-- [ ] The stuck web keeps its colour while the session scrolls
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs, ADR and the changes log updated
+- [x] Root cause found and the spec written and validated
+- [x] The web sits exactly in the well's corner, at the top and while stuck
+- [x] The stuck web keeps its colour while the session scrolls
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs, ADR and the changes log updated
 
 ## Acceptance criteria
 
@@ -84,3 +84,29 @@ same colours whether it is stuck or not.
   `check_repository.py` go away.
 - Rejected: reserving a right gutter beside the stuck web for the whole transcript (84 px less text
   everywhere, worse at 390 px) and a thinner faded variant (still "a different colour").
+- Review round 1 (fresh session): APPROVE at b4bbfeaf with 2 minors and 3 nits. Fixed test-first:
+  the corner is also checked at 390 px (red against the old assets: top -12), the test checks that
+  no `.ss-web-stuck`/`.ss-web-mark` is left, and SPD-001's row points to SPEC-109. Round 2 at
+  b755918d: APPROVE; its nit (measure the phone corner scrolled to the top) is fixed.
+
+## Evidence
+
+- Red first, `e2e/tests/sessions.e2e.ts` (mock mode):
+  - corner and sticky tests, two-sided: `expected -16 to be greater than or equal to 0` before
+    the fix; the phone check against the old assets: `{"top":-12,"right":0}`.
+  - colour test: `dark, scrolled past: expected false to be true` (the stuck fill was
+    `--session-web-stuck`).
+- Measured by hand (Playwright, mock `ses_imp_checkout`): at 1280 px the web's top went from 171
+  to 187 px, the well's inner top (187 px), and scrolled it sits at the scroll area's top (34 px)
+  with its right on the well's right; at 390 px likewise (279 px, then 44 px). Screenshots in dark
+  and light show the stuck web in `--session-web` and `--session-dim`.
+- `cd e2e && npx e2e run` at 360261cc: 45 files passed, 1 skipped; 329 tests passed, 1 skipped.
+  `tests/sessions.e2e.ts`: 20 of 20, axe clean.
+- `python3 scripts/check_repository.py`: passes (the `--session-web-stuck` pairs removed).
+- `scripts/dev ci` at 360261cc: 1579 of 1580 Rust tests passed; one `task_done` test timed out
+  under host load (load average 15–18 on 12 cores): `a_live_monitor_keeps_the_task_working_until_it_ends`
+  (at b755918d, `a_background_shell_keeps_the_task_working_until_it_ends`). Both are the known
+  load-flaky family of issue #404 (evidence added there); this change touches no Rust. Yulius CI on
+  the pull request is the gate of record.
+- Not covered: a real server with real sessions (the mock serves the same assets).
+
