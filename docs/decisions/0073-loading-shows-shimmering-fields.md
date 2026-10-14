@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted. Specified in [SPEC-092](../../.ai/specs/SPEC-092-instead-of-loading-we-want-floating-load.md)
+Accepted; its choice of three bars over per-page shapes is superseded by
+[ADR-0097](0097-loading-fields-take-the-shape-of-what-loads.md) (fields in the shape of what loads).
+Specified in [SPEC-092](../../.ai/specs/SPEC-092-instead-of-loading-we-want-floating-load.md)
 (task #77, SPEC-001 UI-050). It extends the calm loading of F 2026-10-10 (`skeleton` in `dom.js`)
 to every place content loads.
 

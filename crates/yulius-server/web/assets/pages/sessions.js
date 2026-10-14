@@ -6,7 +6,7 @@
 // POST /api/sessions/{id}/continue and DELETE /api/sessions/{id} (docs/api.md "Sessions").
 
 import { enc } from '../api.js';
-import { h, icon, setChildren, placeholder, emptyState, filterTabs, badge, toast, errorToast, confirmDialog, openModal, loadError, coalesce } from '../dom.js';
+import { h, icon, setChildren, placeholder, bar, emptyState, filterTabs, badge, toast, errorToast, confirmDialog, openModal, loadError, coalesce } from '../dom.js';
 import { href, navigate, replaceQuietly, currentLocation, placeFor } from '../router.js';
 import { relLong, dateTime, bytes, plural } from '../format.js';
 import { pageFrame, notFound } from './common.js';
@@ -51,6 +51,13 @@ function openHowTo(ctx) {
   });
 }
 
+/** The list while it loads (SPEC-120): session rows with the kind tile, a title and a meta line. */
+function loadingRows() {
+  return h('div', { class: 'ss-rows' }, [55, 70, 40, 62].map((title) => h('div', { class: 'ss-row-link' },
+    h('span', { class: 'ss-kind skeleton-tile' }),
+    h('span', { class: 'ss-row-main' }, h('span', { class: 'ss-row-title' }, bar(title)), h('span', { class: 'ss-row-meta' }, bar(45))))));
+}
+
 /** Mount the Sessions page of a sandbox. */
 export function mountSessionsPage(ctx, sandbox) {
   const base = sessionsPath(sandbox);
@@ -69,7 +76,7 @@ export function mountSessionsPage(ctx, sandbox) {
   const kinds = filterTabs({ label: 'Kind of session', options: KIND_OPTIONS, value: state.kind, onChange: (value) => { state.kind = value; sync(); reload(); } });
   const people = h('select', { class: 'select select-sm ss-people', 'aria-label': 'Person', onChange: () => { state.author = people.value; sync(); reload(); } });
   const summary = h('span', { class: 'ss-summary muted small', 'aria-live': 'polite' });
-  const list = h('div', { class: 'ss-list' }, placeholder('Loading sessions…', 'loading'));
+  const list = h('div', { class: 'ss-list' }, placeholder('Loading sessions…', 'loading', loadingRows));
   frame.body.append(h('div', { class: 'ss-toolbar' }, h('label', { class: 'ss-search-wrap' }, icon('search', { size: 14 }), search), kinds.el, people, summary), list);
 
   let alive = true;

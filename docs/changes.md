@@ -17,6 +17,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   drag, Alt+← / Alt+→ or the tab's menu. Notes and the Editor now share the presence loop, the
   drawing and the tab drag; and a tool replaced by another in the panel is hidden like a closed
   panel, so its presence leaves and the browser stream stops.
+- Loading fields take the shape of what loads (SPEC-120, ADR-0097, task #106). The Git page loaded
+  as three grey bars under its header, and every list, table and editor did the same. Now each
+  loading state is drawn with its page's own layout. The Git page shows its two status cards,
+  Blocked, the board with the profile's columns and Activity. Lists of cards load as cards,
+  tables as tables with their columns, editors as their section cards, Sessions, CI and the
+  Dashboard as their own layouts, and the sidebar and Tasks lists as task rows (two lines on a
+  phone) under their real toolbar and column names. What loads lands where the fields were;
+  Subscriptions now reads its capacity beside the subscriptions, so the panel above them no
+  longer pushes them down.
 - Notes feel like a shared document (SPEC-112, ADR-0091, task #97). The Notes tabs go in any
   order: drag one along the strip, press Alt+← / Alt+→ on it, or use its context menu; the order
   is kept per browser, and until someone moves them Team comes first and opens first. A selection

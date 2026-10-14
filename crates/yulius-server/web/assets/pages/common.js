@@ -60,18 +60,19 @@ export function dataTable(columns, rows, { onRowClick, empty = 'Nothing here yet
 }
 
 /**
- * Load data into a container: shows loading, then render(data) or the error, which names what
- * failed to load (`what`, such as "the users": "Couldn’t load the users: …").
+ * Load data into a container: shows loading (in the `shape` of what render draws, SPEC-120), then
+ * render(data) or the error, which names what failed to load (`what`, such as "the users":
+ * "Couldn’t load the users: …").
  * Returns a reload function. Concurrent reloads keep only the latest result. `reload({ quiet })`
  * refreshes in place for live pages: no dimming, and a failure keeps what is shown.
  */
-export function loader(container, what, fetcher, render) {
+export function loader(container, what, fetcher, render, { shape = 'lines' } = {}) {
   let generation = 0;
   let hasContent = false;
   async function reload({ quiet = false } = {}) {
     generation += 1;
     const mine = generation;
-    if (!hasContent) setChildren(container, placeholder(`Loading ${what}…`, 'loading'));
+    if (!hasContent) setChildren(container, placeholder(`Loading ${what}…`, 'loading', shape));
     else if (!quiet) container.style.opacity = '0.6';
     try {
       const data = await fetcher();
