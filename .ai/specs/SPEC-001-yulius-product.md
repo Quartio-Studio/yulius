@@ -518,6 +518,7 @@ and mail, and **agent secrets** agents use without seeing them.
 | VLT-007 | Exact-value redaction: every channel through which an agent reads — Bash command output, every tool result, Yulius MCP results (browser page text included), HTTP responses through the proxy — and the task terminal people watch and the transcripts Yulius serves show `[secret:NAME]` instead of an agent secret's value or its hexadecimal, base64, URL or JSON-escaped form. | F 2026-10-10 (3a) and follow-up "check all input for the exact strings we have and redact them" | C | AC-VLT-3, AC-VLT-4 |
 | VLT-008 | Every value is encrypted at rest with a vetted library (per-secret data keys under the instance master key); no value appears in the database file, its journal, backups, logs, API errors or audit entries. | F 2026-10-10 (3a) "use some ready library … very safe" | E | AC-VLT-7 |
 | VLT-009 | An MCP server's configuration may reference an agent secret as `${secret:NAME}`; each run receives the value in the server's environment, never in the agent's view, and redaction covers it. | F 2026-10-10 (#146) | A | AC-VLT-8 |
+| VLT-010 | A revealed value opens masked (a fixed run of dots, the value not in the page) and shows only after the person presses its eye button, which hides it again; hovering the value, or focus in it, offers a quick copy beside the Copy button (F 2026-10-14, task #99: "Value in passwords should be hidden by default even after show, and shown after explicitly clicking eye icon"; SPEC-114, ADR-0093). | F 2026-10-14 (task #99) | A | AC-VLT-9 |
 
 ## 6. Interface specification
 
@@ -936,6 +937,7 @@ instance — out of scope).
 | AC-VLT-6 | `browser_fill_secret` types into a tab whose page is on a bound host and refuses any other page; the result contains no value. | int (fake browser) |
 | AC-VLT-7 | After storing secrets, the database file, its WAL and a `yulius backup` copy contain no value, user name or seed; a ciphertext moved to another row or altered does not open. | int, unit |
 | AC-VLT-8 | An MCP server with `${secret:NAME}` gets the value in its run environment; an unknown name is not resolved. | int |
+| AC-VLT-9 | After the code, the Show dialog contains no value and a "Show value" button not pressed; pressing it shows the value, pressing again removes it, and a new Show starts masked; the quick copy shows on hover or focus and copies the masked value, and the Copy button still copies; no WCAG violations either way. | ui (mock) |
 | AC-NFR-1 | Closing all browser connections leaves sessions running; reconnecting shows the current screen. | int |
 | AC-NFR-2 | Killing and restarting the server reattaches live sessions; dead sessions are marked stopped without respawn. | int |
 | AC-NFR-3 | Exceeding the concurrency limit queues tasks; queue bound rejects with a clear error. | int |
@@ -1198,6 +1200,8 @@ observed. Live provider compatibility and deployment are reported separately fro
 
 - 2026-10-14 (task #81): onboarding is mandatory on the page: a sandbox awaiting it shows only
   what onboarding will do and its button, no task input and no skip (IMP-010, U-08; SPEC-096).
+- 2026-10-14 (task #99): a revealed secret value opens masked and shows after its eye button; a
+  quick copy on hover joins the Copy button (VLT-010 new, AC-VLT-9; SPEC-114, ADR-0093).
 
 - 2026-10-07: initial specification from the full transcript, video review, morning notes, draft
   prompt, user clarifications and Product/Studio inspection; self-reviewed (SPEC-003).

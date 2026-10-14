@@ -49,9 +49,9 @@ the keyboard into it) shows a copy button inside the value box. The current **Co
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] A shown secret value opens masked and the eye button reveals and hides it
-- [ ] Hovering or focusing the value offers a quick copy beside the kept Copy button
-- [ ] Docs, decision record and changes log describe the masked value
+- [x] A shown secret value opens masked and the eye button reveals and hides it
+- [x] Hovering or focusing the value offers a quick copy beside the kept Copy button
+- [x] Docs, decision record and changes log describe the masked value
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 

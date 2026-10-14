@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- A shown secret value stays masked until its eye is pressed (SPEC-114, ADR-0093, task #99). The
+  Show dialog of a team or agent secret draws a fixed run of dots and keeps the value out of the
+  page; the eye button in the value box shows it and hides it again, and every dialog opens
+  masked. Hovering the value (or focus in it) shows a copy button in the box, which copies even
+  while masked; the Copy button beside it stays.
 - Token use, its API-price cost and a chart for every figure (SPEC-110, ADR-0089, task #95). The
   Capacity card (Subscriptions page and the Dashboard) adds "Tokens (7 days)" and "API cost (7
   days)": what the pool used and what it would have cost at Claude API list prices (input, output,
