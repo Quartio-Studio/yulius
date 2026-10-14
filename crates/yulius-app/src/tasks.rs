@@ -193,7 +193,9 @@ impl App {
             self.events.publish(
                 Some(task.sandbox_id.clone()),
                 false,
-                yulius_contracts::events::UiEvent::TaskUpdated { task: summary },
+                yulius_contracts::events::UiEvent::TaskUpdated {
+                    task: Box::new(summary),
+                },
             );
         }
     }
