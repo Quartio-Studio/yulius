@@ -2706,10 +2706,10 @@ async function handleFetch(db, url, init = {}) {
   } else if (init.body) {
     try { body = JSON.parse(init.body); } catch { return json(422, { error: { code: 'invalid', message: 'Malformed JSON' } }); }
   }
-  if (!PUBLIC.includes(u.pathname) && !db.signedIn) return json(401, { error: { code: 'unauthenticated', message: 'Sign in first.' } });
-  if (db.failPath && method === 'GET' && u.pathname === db.failPath) return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
   // `hold=<path>` keeps GET requests of that path waiting, to look at a view while it loads (SPEC-092).
   if (db.held && method === 'GET' && u.pathname === db.holdPath) await db.held;
+  if (!PUBLIC.includes(u.pathname) && !db.signedIn) return json(401, { error: { code: 'unauthenticated', message: 'Sign in first.' } });
+  if (db.failPath && method === 'GET' && u.pathname === db.failPath) return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
   // Tests count archive requests (`__yuliusMock.archiveRequests`), also those failed on purpose.
   if (method === 'POST' && /^\/api\/tasks\/[^/]+\/archive$/.test(u.pathname)) db.archiveRequests = (db.archiveRequests || 0) + 1;
   if (db.failPostPath && method === 'POST' && u.pathname === db.failPostPath) return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
@@ -3538,7 +3538,10 @@ class BrowserSession {
   }
 
   async drawFrame() {
-    if (this.db.holdPath === 'frames' && !this.db.released) { this.db.held.then(() => this.render()); return; }
+    if (this.db.holdPath === 'frames' && !this.db.released) {
+      if (!this.heldFrame) this.heldFrame = this.db.held.then(() => this.render());
+      return;
+    }
     const tab = this.tabs.find((t) => t.active);
     if (!tab || this.viewers.size === 0) return;
     const { width, height } = this.size;

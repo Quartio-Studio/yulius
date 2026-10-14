@@ -30,7 +30,8 @@ still hear what is loading.
   automation and task-info pages, CI runs and the boot screen. Seven more spots wrote the same
   markup by hand: the task lists, the status popover, Instance, the Jev key card and the
   Superagent's start. Four drew their own "Loading…" text: the editor tree, the notes status, the
-  home cards' activity and the browser panel's page load; the status popover and Accounts said "Reading usage…" for usage not read yet.
+  home cards' activity and the browser panel's page load; the status popover and Accounts said "Reading usage…" for usage not read yet, and the superadmin
+  recovery card and the "Forgot password?" form said "Checking…" while they read the recovery state.
 - Spinners also mark things that are not content loading: an action under way (an update, "Asking
   Jev one small question…"), a terminal connecting, a working task's icon. Each says what is
   happening and has no content shape to stand in for. They stay as they are (ADR-0073).
@@ -42,19 +43,19 @@ still hear what is loading.
 | ID | Requirement | Verification |
 | --- | --- | --- |
 | FLD-001 | `placeholder(text, 'loading')` renders the skeleton: shimmering bars announced as `text` (`role="status"`, the text only for screen readers), padded like the placeholder it replaces. Every caller gets it, `loader()` included. | e2e `loading.e2e.ts` (Git page held) |
-| FLD-002 | Every hand-written loading placeholder (task lists in the sidebar and on Tasks, the status popover, Instance, the Jev key card, the Superagent's start) uses the skeleton. | e2e `loading.e2e.ts`; source search finds no `placeholder-loading` |
-| FLD-003 | Inline loading text becomes a skeleton of the content's size: a folder loading in the editor tree is one bar at its depth; a home card's unknown activity is one short bar; a notepad not loaded yet shows bars over its empty text box and no "Loading…" status; the browser panel loading a page shows bars on its cover; a subscription whose usage is not read yet shows one bar where its reset time goes, not "Reading usage…". | e2e `loading.e2e.ts`, `notes.e2e.ts` |
+| FLD-002 | Every hand-written loading placeholder (task lists in the sidebar and on Tasks, the status popover, Instance, the Jev key card, the Superagent's start, the recovery card and form) uses the skeleton, and each label names what loads (`loader()` says "Loading the workflows…" from its `what`). | e2e `loading.e2e.ts`; source search finds no `placeholder-loading` |
+| FLD-003 | Inline loading text becomes a skeleton of the content's size: a folder loading in the editor tree is one bar at its depth; a home card's unknown activity is one short bar; a notepad not loaded yet shows bars over its empty text box and no "Loading…" status; the browser panel loading a page shows bars on its cover; a subscription whose usage is not read yet shows one bar where its reset time goes, not "Reading usage…". Where many such bars load at once (home cards) or the container allows only its own items (the editor tree), the bars are decoration and the container is `aria-busy`, so screen readers hear no burst of status messages. | e2e `loading.e2e.ts`, `notes.e2e.ts` |
 | FLD-004 | No visible "Loading…" text remains while content loads. Spinners for actions under way, connections and working tasks are unchanged. A button busy with its own action ("Load more") still says so on the button. | source search (Evidence); e2e |
 | FLD-005 | Under `prefers-reduced-motion` the bars do not shimmer (the global rule); the loading pages have no WCAG violation. | e2e with axe |
 
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Loading placeholders shimmer as skeleton fields on every page, with the Git page test
-- [ ] Hand-written loading placeholders become skeleton fields
-- [ ] Inline loading text in the editor, notes, home cards and browser becomes skeleton fields
-- [ ] ADR, design page and UI docs say skeleton for loading, spinner for actions
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Loading placeholders shimmer as skeleton fields on every page, with the Git page test
+- [x] Hand-written loading placeholders become skeleton fields
+- [x] Inline loading text in the editor, notes, home cards and browser becomes skeleton fields
+- [x] ADR, design page and UI docs say skeleton for loading, spinner for actions
+- [x] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria

@@ -70,7 +70,10 @@ test('task lists and the status popover load as shimmering fields', async ({ app
   await expect(browser.locator('.status-pop .skeleton')).toHaveCount(0);
   await expect(pop).toBeVisible();
   // A subscription whose usage is not read yet shows a bar where its reset time will be.
-  await expect(browser.locator('.status-pop .usage-reset .skeleton-line').first()).toBeVisible();
+  const usageBar = browser.locator('.status-pop .usage-reset .skeleton-line').first();
+  await expect(usageBar).toBeVisible();
+  // A short bar where the reset time goes (6em of the small text), not most of the row.
+  expect(await browser.evaluate(() => document.querySelector('.status-pop .usage-reset .skeleton-line')!.getBoundingClientRect().width)).toBeLessThan(80);
   expect(await visibleLoadingText(browser, '.status-pop')).toEqual([]);
   expect(await axeViolations(browser)).toEqual([]);
 });
@@ -79,12 +82,16 @@ test('a home card, the editor tree and a notepad load as shimmering fields', asy
   // A home card's last activity waits for its sandbox's tasks.
   await app.open(mock('/', '&hold=/api/sandboxes/sb_studio/tasks'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
-  const activity = browser.locator('.home-card[data-id="sb_studio"] .home-activity .skeleton[role="status"]');
-  await expect(activity).toHaveText('Loading activity…');
+  // One bar per card; the grid, not each card, says it is busy (no three status messages at once).
+  const activity = browser.locator('.home-card[data-id="sb_studio"] .home-activity .skeleton');
+  await expect(activity).toBeVisible();
+  await expect(browser.locator('.home-grid[aria-busy="true"]')).toBeVisible();
+  expect(await browser.locator('.home-grid [role="status"]').count()).toBe(0);
   expect(await visibleLoadingText(browser)).toEqual([]);
   expect(await axeViolations(browser)).toEqual([]);
   await release(browser);
   await expect(activity).toHaveCount(0);
+  await expect(browser.locator('.home-grid[aria-busy="true"]')).toHaveCount(0);
 
   // The editor's file tree, while a folder is listed.
   await app.open(mock('/s/studio/t/12', '&hold=/api/sandboxes/sb_studio/files'));
@@ -101,7 +108,10 @@ test('a home card, the editor tree and a notepad load as shimmering fields', asy
 
   // A notepad before its first read: fields over the empty box, no "Loading…" save state.
   await app.open(mock('/s/studio/t/12', '&hold=/api/sandboxes/sb_studio/notes'));
-  // The tools rail stays shown from the editor above.
+  // The tools rail is remembered from the editor above: hide it to open Notes like a person would.
+  await browser.evaluate(() => localStorage.clear());
+  await browser.reload();
+  await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('navigation', 'Tools').getByRole('button', 'Notes').click();
   const pad = browser.locator('.notes-pane:not([hidden]) .skeleton[role="status"]');
   await expect(pad).toHaveText('Loading the notes…');
@@ -122,4 +132,30 @@ test('the browser panel covers a page still loading with shimmering fields', asy
   expect(await axeViolations(browser)).toEqual([]);
   await release(browser);
   await expect(browser.locator('.bp-overlay')).toBeHidden();
+});
+
+test('a loader names what loads, and the recovery views show fields while they check', async ({ app, browser, screen }) => {
+  // loader() (pages/common.js) says what it loads, as its error does.
+  await app.open(mock('/s/studio/workflows', '&hold=/api/sandboxes/sb_studio/workflows'));
+  await expect(browser.locator('#main .skeleton[role="status"]')).toHaveText('Loading the workflows…');
+  await release(browser);
+  await expect(browser.locator('#main .skeleton')).toHaveCount(0);
+
+  // The superadmin recovery card on Users.
+  await app.open(mock('/admin/users', '&hold=/api/auth/recovery'));
+  await expect(screen.getByRole('heading', 'Superadmin recovery code')).toBeVisible();
+  await expect(browser.locator('#main .skeleton[role="status"]').filter({ hasText: 'Checking the recovery code…' })).toBeVisible();
+  expect(await browser.evaluate(() => /Checking/.test(document.querySelector('#main')?.textContent?.replace(/Checking the recovery code…/g, '') ?? ''))).toBe(false);
+  await release(browser);
+  await expect(screen.getByText(/A recovery code is set/)).toBeVisible();
+
+  // "Forgot password?" while the recovery state is read.
+  await app.open(mock('/signin', '&signedout=1&hold=/api/auth/recovery'));
+  await screen.getByText('Superadmin password').click();
+  await screen.getByRole('button', 'Forgot password?').click();
+  await expect(browser.locator('.skeleton[role="status"]')).toHaveText('Checking the recovery code…');
+  expect(await visibleLoadingText(browser, 'body')).toEqual([]);
+  expect(await browser.evaluate(() => [...document.querySelectorAll('p')].some((p) => p.checkVisibility() && /^Checking/.test(p.textContent ?? '')))).toBe(false);
+  await release(browser);
+  await expect(browser.locator('.skeleton')).toHaveCount(0);
 });

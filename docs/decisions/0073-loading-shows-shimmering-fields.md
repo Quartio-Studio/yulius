@@ -20,11 +20,12 @@ in all places".
 - Content that is still loading shows the skeleton: shimmering bars where it will appear, its
   label (what loads) said to assistive technology only through `role="status"`.
   `placeholder(text, 'loading')` returns it, padded for a page, panel or dialog
-  (`skeleton(label, lines, { block: true })`). There is no other loading markup.
+  (`skeleton(label, lines, { block: true })`). There is no other loading markup. The label names
+  what loads (`loader()` uses its `what`: "Loading the workflows…").
 - Inline places use bars of the content's size: one bar for a home card's activity or an editor
   tree row, bars over a notepad's empty box or the browser panel's cover. Where the container's
-  role allows only its own items (a `tree`), the bars are decoration (`announce: false`) and the
-  container is `aria-busy`.
+  role allows only its own items (a `tree`), or many bars load at once (the home cards), the bars
+  are decoration (`announce: false`) and the container is `aria-busy`.
 - A spinner stays where nothing is drawn in place: an action under way (an update, the Jev key
   test), a terminal connecting, a working task's icon. A button busy with its own action ("Load
   more") says so on the button.

@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- Loading shows shimmering fields everywhere, never a spinner with "Loading…" (SPEC-092, ADR-0073,
+  task #77). `placeholder(text, 'loading')` is the skeleton, so the Git page, dialogs, Sessions,
+  the editor pages and every `loader()` list draw bars where the content will appear, with what
+  loads said to screen readers. The task lists, the status popover, Instance, the Jev key card,
+  the Superagent's start, the editor tree, home cards, notepads, the browser panel's cover and
+  usage not read yet do the same. Spinners stay for actions under way, connections and working
+  tasks. The mock's `hold=<path>` and `hold=frames` keep a view loading for tests.
 - Runs recorded before SPEC-087 get their metrics from their transcripts (SPEC-091, ADR-0072).
   The upgrade queues every run recorded so far (migration 23, `metrics_recounts`). On the first
   start, once reconciliation is done, Yulius counts each ended run's own window of its transcript
