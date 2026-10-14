@@ -156,7 +156,7 @@ export function mountMcpEditor(ctx, sandbox, id) {
   const save = h('button', { type: 'button', class: 'btn btn-primary', onClick: () => doSave() }, creating ? 'Add server' : 'Save');
   const del = creating ? null : h('button', { type: 'button', class: 'btn btn-quiet-danger', onClick: () => doDelete() }, icon('trash', { size: 14 }), 'Delete');
   const note = h('div');
-  const body = h('div', { class: 'mc-body' }, placeholder('Loading the MCP server…', 'loading'));
+  const body = h('div', { class: 'mc-body' }, placeholder('Loading the MCP server…', 'loading', 'form'));
   const head = h('header', { class: 'gt-head wf-head' },
     h('a', { class: 'gt-back', href: href(base), dataset: { route: base, restore: 'page' } }, icon('back', { size: 14 }), 'MCP'),
     h('div', { class: 'gt-title-row' }, h('div', { class: 'wf-titles' }, nameInput, h('span', { class: 'muted small' }, 'Claude Code sees its tools under this name.')), del, save),

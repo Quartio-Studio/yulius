@@ -89,6 +89,9 @@ watching, steering and unblocking.
 - **Notes**: in the tools rail, a notepad per sandbox and one for the whole team, shared and saved
   while people type; a teammate's edit shows up live, and two edits at once end in a choice. A
   third, **Me**, is each person's own: nobody else sees it, and it is the same in every sandbox.
+  The tabs go in any order (Team first until moved). Selections are drawn rounded and glide, and
+  teammates who have a shared notepad open show as a caret with their name and their selection
+  in their own colour.
 - **Editor, terminals, Git view, automations, workflow catalog** in one web UI, whose menus fit
   the window and filter as people type when they are long; the start menu shows five tasks at a
   time and says how many more it scrolls to. Messages are
