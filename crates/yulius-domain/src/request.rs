@@ -3,13 +3,15 @@
 //! condition Claude Code keeps the session working towards.
 //!
 //! The request is written to a file the agent reads (no length limit), and the goal condition
-//! names it: Claude Code caps a goal condition at 500 characters, so a long request is never the
-//! condition itself. Attached files reach the session's first message natively: an image pasted
-//! into the TUI (`[Image #N]`, SPEC-030, ADR-0026), another file mentioned as `@path` (SPEC-025,
-//! ADR-0022).
+//! names it, so a long request is never the condition itself. A goal session's only first message
+//! is its `/goal` (SPEC-117, ADR-0095): the condition names the attached files, which the agent
+//! opens with its Read tool, since a `/goal` carries no image block. In prompt mode the attached
+//! files reach the first message natively: an image pasted into the TUI (`[Image #N]`, SPEC-030,
+//! ADR-0026), another file mentioned as `@path` (SPEC-025, ADR-0022).
 
-/// Longest goal condition Yulius types (Claude Code caps goal conditions at 500 characters).
-pub const GOAL_MAX_CHARS: usize = 450;
+/// Longest goal condition Yulius gives (Claude Code 2.1.292 caps goal conditions at 4000
+/// characters; half of it leaves room for a lower cap again).
+pub const GOAL_MAX_CHARS: usize = 2000;
 
 /// How a goal-mode session's first message (its attached files) begins.
 const ATTACHMENTS_INTRO: &str = "The files attached to this task. Its goal follows in the next \
@@ -193,8 +195,8 @@ fn attachment_path(line: &str) -> Option<String> {
 
 fn attachments_section(paths: &[String]) -> String {
     let mut out = String::from(
-        "These files were given in the session's first message; open one again with the Read \
-         tool (it shows images) if you need it:",
+        "These files are attached to this task (its goal names them); open each with the Read \
+         tool (it shows images):",
     );
     for path in paths {
         out.push_str("\n- ");
@@ -352,8 +354,8 @@ pub fn request_markdown(
 }
 
 /// The `/goal` condition for a task: the request itself when it is short (with no attached
-/// file), else the request file, followed by the definition of done. Never longer than
-/// [`GOAL_MAX_CHARS`].
+/// file), else the request file and the attached files (when they fit), followed by the
+/// definition of done. Never longer than [`GOAL_MAX_CHARS`].
 #[must_use]
 pub fn goal_condition(request: &Request, request_path: &str, done: &DoneDefinition) -> String {
     let text = one_line(&request.text);
@@ -367,6 +369,21 @@ pub fn goal_condition(request: &Request, request_path: &str, done: &DoneDefiniti
         return inline;
     }
     let named = format!("Everything requested in {request_path} is done. {done}");
+    if !request.attachments.is_empty() {
+        let files = request
+            .attachments
+            .iter()
+            .map(|path| one_line(path))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let with_files = format!(
+            "Everything requested in {request_path} is done. Attached files (open each with the \
+             Read tool; it shows images): {files}. {done}"
+        );
+        if with_files.chars().count() <= GOAL_MAX_CHARS {
+            return with_files;
+        }
+    }
     if named.chars().count() <= GOAL_MAX_CHARS {
         return named;
     }
@@ -579,7 +596,8 @@ mod tests {
         let long = Request::parse(&"word ".repeat(200));
         for request in [long, Request::parse("Short\n@/srv/a.png")] {
             let goal = goal_condition(&request, PATH, &done(&["dev"]));
-            assert!(goal.starts_with(&format!("Everything requested in {PATH} is done. Done =")));
+            assert!(goal.starts_with(&format!("Everything requested in {PATH} is done.")));
+            assert!(goal.contains(" Done = "), "{goal}");
             assert!(goal.contains("deployed to dev and verified"));
             assert!(
                 goal.chars().count() <= GOAL_MAX_CHARS,
@@ -600,6 +618,57 @@ mod tests {
         );
     }
 
+    /// SPEC-117 ONE-002: the goal is the session's only first message, so it names the attached
+    /// files (images too: a `/goal` carries no image block), as plain paths in order.
+    #[test]
+    fn the_goal_names_the_attached_files() {
+        let request =
+            Request::parse("Make it blue\n@/srv/a.png\n@'/srv/my shot.JPG'\n@/srv/notes.txt");
+        let goal = goal_condition(&request, PATH, &done(&[]));
+        assert_eq!(
+            goal,
+            format!(
+                "Everything requested in {PATH} is done. Attached files (open each with the Read \
+                 tool; it shows images): /srv/a.png, /srv/my shot.JPG, /srv/notes.txt. {}",
+                done(&[]).short()
+            )
+        );
+        assert!(!goal.contains('@'), "{goal}");
+        // Without files, a short request is still quoted and a long one named.
+        assert!(!goal_condition(&Request::parse("Short"), PATH, &done(&[])).contains("Attached"));
+    }
+
+    #[test]
+    fn attached_files_that_would_pass_the_cap_are_left_to_the_request_file() {
+        let many: String = (0..40)
+            .map(|i| format!("\n@/srv/attachments/{}/shot-{i}.png", "x".repeat(60)))
+            .collect();
+        let goal = goal_condition(&Request::parse(&format!("Look{many}")), PATH, &done(&[]));
+        assert_eq!(
+            goal,
+            format!(
+                "Everything requested in {PATH} is done. {}",
+                done(&[]).short()
+            )
+        );
+        // A few files of a real sandbox fit.
+        let few: String = (0..4)
+            .map(|i| {
+                format!(
+                    "\n@/var/lib/yulius/sandboxes/{}/attachments/pasted-{i}.png",
+                    "d".repeat(36)
+                )
+            })
+            .collect();
+        let goal = goal_condition(
+            &Request::parse(&format!("Look{few}")),
+            PATH,
+            &done(&["dev"]),
+        );
+        assert!(goal.contains("pasted-3.png. Done = "), "{goal}");
+        assert!(goal.chars().count() <= GOAL_MAX_CHARS);
+    }
+
     #[test]
     fn the_request_file_has_the_request_the_files_and_the_definition_of_done() {
         let request = Request::parse("Make it fast\nreally\n@/srv/a.png");
@@ -608,7 +677,8 @@ mod tests {
         assert!(file.contains("## Request\n\nMake it fast\nreally\n"));
         assert!(
             file.contains(
-                "## Attached files\n\nThese files were given in the session's first message"
+                "## Attached files\n\nThese files are attached to this task (its goal names them); \
+                 open each with the Read tool (it shows images):"
             ),
             "{file}"
         );
