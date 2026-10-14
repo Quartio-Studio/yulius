@@ -3,7 +3,8 @@
 ## Status
 
 Accepted. Specified in
-[SPEC-038](../../.ai/specs/SPEC-038-it-should-be-more-compact-maybe-some-sea.md).
+[SPEC-038](../../.ai/specs/SPEC-038-it-should-be-more-compact-maybe-some-sea.md). The one-line
+description is replaced by [0075](0075-menu-descriptions-wrap.md): descriptions wrap.
 
 ## Context
 
@@ -18,7 +19,8 @@ search", and the same in every such widget.
 
 - `openMenu` keeps every menu inside the window: it opens below its anchor, or above when there
   is more room there, and its items scroll inside it.
-- An item's description is one line cut with an ellipsis; the full text is its tooltip.
+- An item's description is one line cut with an ellipsis; the full text is its tooltip
+  (replaced by [0075](0075-menu-descriptions-wrap.md)).
 - A menu with 8 or more items to choose from (`MENU_FILTER_MIN`) opens with a focused "Filter"
   search field (on a touch screen the first item takes focus, so the keyboard does not cover the
   menu). Typed words narrow the items by label, description and hint (`menuMatches`), not the
