@@ -16,6 +16,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   them yet (#416). The API takes `prepared` and `start_at` on New task and
   `task_create`, shows `start_at`, and `PUT /api/tasks/{tid}/schedule` moves or clears the time
   (schema version 24, `task_schedules`).
+- `yulius onboard` no longer leaves a "Closed · 0/6 steps" onboarding task behind (SPEC-097,
+  ADR-0077). Linking a repository creates no task: the onboarding task is created when someone
+  clicks Start onboarding in the browser, or when a new task has to wait after it. Sandboxes
+  already waiting keep their task. The onboarding page still lists what onboarding will do, now
+  from `GET /api/sandboxes/{sid}/onboarding/plan`.
 - The start menu's tasks show five at a time and say there is more (SPEC-102, ADR-0083, task #87).
   "After a task is done" lists its tasks in a box five rows tall that scrolls the rest, so Start
   now, Supertask and "When a rule is true…" stay in view however many tasks a project has. The box
