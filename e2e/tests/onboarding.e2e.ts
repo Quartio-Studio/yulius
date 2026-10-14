@@ -1,61 +1,98 @@
-import { test } from '@e2e-dev/web';
+import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
 import { axeViolations, failOnPageErrors, mock } from './support.ts';
 
 failOnPageErrors();
 
-// F 2026-10-11: while a sandbox was being prepared nothing else could start ("Couldn't handle the
-// held prompt: this project is being prepared…", and a disabled composer). A new task now waits
-// after the preparation task and starts by itself once the sandbox is ready or an admin skips
-// preparation (SPEC-001 IMP-010, U-08).
-test('a task started while the sandbox is being prepared waits for it, then starts', async ({ app, browser, screen }) => {
+/** Imports Quartio-Studio/website from the home screen. The mock leaves it `pending`, as `yulius onboard` does. */
+async function importWebsite({ app, screen }: { app: { open(url: string): Promise<unknown> }; screen: any }) {
   await app.open(mock('/'));
   await screen.getByRole('button', 'Import repository').click();
   const dialog = screen.getByRole('dialog', 'Add sandbox');
   await screen.getByRole('radio', /Quartio-Studio\/website/).check();
   await dialog.getByRole('button', 'Import').click();
   await expect(dialog).toBeHidden();
+}
 
-  await browser.evaluate(() => { location.hash = '#/s/website'; });
-  await expect(browser.locator('.banner-info')).toContainText('New tasks wait for it and start by themselves');
-  const prompt = screen.getByRole('textbox', 'Task prompt');
-  await expect(prompt).toBeEnabled();
-  await expect(screen.getByRole('button', 'Start task')).toBeEnabled();
-  expect(await axeViolations(browser)).toEqual([]);
-
-  await prompt.fill('Install the GitHub CLI');
-  await prompt.press('ControlOrMeta+Enter');
-  await expect(browser).toHaveURL(/#\/s\/website\/t\/2$/);
-  await expect(screen.getByText('Queued after #1').first()).toBeVisible();
-
-  // Skipping preparation starts the task that waited.
-  await browser.evaluate(() => { location.hash = '#/s/website'; });
-  await browser.locator('.banner-info').getByRole('button', 'Skip for now').click();
-  await screen.getByRole('dialog', 'Skip sandbox preparation?').getByRole('button', 'Skip for now').click();
-  await expect(browser.locator('.banner-info')).toHaveCount(0);
-  await browser.evaluate(() => { location.hash = '#/s/website/t/2'; });
-  await expect(screen.getByText('Queued after #1')).toHaveCount(0);
+/**
+ * How far the onboarding region sits from the centre of the free page area (pixels, x and y). The
+ * free area is the composer's box, below its top bar when that bar is in the flow (phones).
+ */
+const offCentre = (browser: Browser) => browser.evaluate(() => {
+  const page = document.querySelector('.composer')!.getBoundingClientRect();
+  const bar = document.querySelector('.composer-top')!;
+  const top = getComputedStyle(bar).position === 'absolute' ? page.top : bar.getBoundingClientRect().bottom;
+  const gate = document.querySelector('.onboarding-gate')!.getBoundingClientRect();
+  return {
+    x: Math.round(Math.abs((gate.left + gate.right) / 2 - (page.left + page.right) / 2)),
+    y: Math.round(Math.abs((gate.top + gate.bottom) / 2 - (top + page.bottom) / 2)),
+  };
 });
 
-// SPEC-051 (task #43): `yulius onboard` only uploads; adapting the repository to the Yulius
-// standards waits for a person to click Start onboarding on the sandbox page. The mock's import
-// leaves the sandbox `pending`, standing in for a repository added with `yulius onboard`.
-test('a pending sandbox waits for Start onboarding in the browser', async ({ app, browser, screen }) => {
-  await app.open(mock('/'));
-  await screen.getByRole('button', 'Import repository').click();
-  const dialog = screen.getByRole('dialog', 'Add sandbox');
-  await screen.getByRole('radio', /Quartio-Studio\/website/).check();
-  await dialog.getByRole('button', 'Import').click();
-  await expect(dialog).toBeHidden();
+// SPEC-096 (task #81): onboarding is mandatory. Until it has finished, the new-task page shows no
+// task input, only a centred message saying what onboarding will do and its button; no Skip.
+// SPEC-051: `yulius onboard` only uploads, so a `pending` sandbox waits for Start onboarding here.
+test('a pending sandbox shows only what onboarding will do and Start onboarding, centred', async ({ app, browser, screen }) => {
+  await importWebsite({ app, screen });
   await browser.evaluate(() => { location.hash = '#/'; });
   await expect(screen.getByText('Needs onboarding').first()).toBeVisible();
 
   await browser.evaluate(() => { location.hash = '#/s/website'; });
-  const banner = browser.locator('.banner-info');
-  await expect(banner).toContainText('This sandbox needs onboarding.');
-  await expect(banner).toContainText('Yulius standards');
+  const gate = screen.getByRole('region', 'Onboard website first');
+  await expect(gate).toBeVisible();
+  await expect(gate).toContainText('one task an agent runs before any other');
+  await expect(gate).toContainText('Installs the toolchains and packages');
+  await expect(gate).toContainText('Yulius standards');
+  await expect(gate).toContainText('GitHub Actions');
+  await expect(gate).toContainText('never application code');
+  await expect(gate).toContainText('pull request into dev');
+  await expect(gate.getByRole('button', 'Start onboarding')).toBeVisible();
+  // No task input and no way around onboarding.
+  await expect(screen.getByRole('textbox', 'Task prompt')).toBeHidden();
+  await expect(screen.getByRole('button', 'Start task')).toBeHidden();
+  await expect(browser.locator('.composer-tools')).toBeHidden();
+  await expect(screen.getByRole('button', 'Skip for now')).toHaveCount(0);
+  await expect(browser.locator('.composer-quote')).toBeHidden();
+  await expect(browser.locator('.banner-info')).toHaveCount(0);
+  const desktop = await offCentre(browser);
+  expect(desktop.x).toBeLessThanOrEqual(2);
+  expect(desktop.y).toBeLessThanOrEqual(2);
   expect(await axeViolations(browser)).toEqual([]);
-  await banner.getByRole('button', 'Start onboarding').click();
-  await expect(banner).toContainText('Preparing this sandbox.');
-  await expect(banner.getByRole('button', 'Start onboarding')).toHaveCount(0);
+
+  await browser.setViewport({ width: 390, height: 844 });
+  await expect(gate).toBeVisible();
+  const phone = await offCentre(browser);
+  expect(phone.x).toBeLessThanOrEqual(2);
+  expect(phone.y).toBeLessThanOrEqual(2);
+  expect(await browser.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});
+
+test('Start onboarding runs it, Follow onboarding opens it, and the task box comes back once it lands', async ({ app, browser, screen }) => {
+  await importWebsite({ app, screen });
+  await browser.evaluate(() => { location.hash = '#/s/website'; });
+  await screen.getByRole('region', 'Onboard website first').getByRole('button', 'Start onboarding').click();
+
+  const running = screen.getByRole('region', 'Onboarding website');
+  await expect(running).toBeVisible();
+  await expect(running).toContainText('An agent is setting up this sandbox');
+  await expect(running.getByRole('button', 'Start onboarding')).toHaveCount(0);
+  await expect(screen.getByRole('button', 'Skip for now')).toHaveCount(0);
+  await expect(screen.getByRole('textbox', 'Task prompt')).toBeHidden();
+  const centred = await offCentre(browser);
+  expect(centred.x).toBeLessThanOrEqual(2);
+  expect(centred.y).toBeLessThanOrEqual(2);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  await running.getByRole('link', 'Follow onboarding').click();
+  await expect(browser).toHaveURL(/#\/s\/website\/t\/1$/);
+
+  // The mock marks the sandbox ready 9 s after Start onboarding: the composer shows by itself.
+  await browser.evaluate(() => { location.hash = '#/s/website'; });
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await expect(prompt).toBeVisible({ timeout: 15_000 });
+  await expect(browser.locator('.onboarding-gate')).toBeHidden();
+  await expect(browser.locator('.composer-quote')).toBeVisible();
+  await prompt.fill('Install the GitHub CLI');
+  await prompt.press('ControlOrMeta+Enter');
+  await expect(browser).toHaveURL(/#\/s\/website\/t\/2$/);
 });
