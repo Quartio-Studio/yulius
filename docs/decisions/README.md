@@ -114,3 +114,4 @@ number differs from the file name, and a record this index does not list.
 - [0109](0109-cd-runs-scripts-from-protected-branches-in-the-sandbox.md): CD (deployment) runs the repository's `[cd.dev]`/`[cd.prod]` scripts from verified protected-branch commits, out of the agents' reach (dev in the sandbox, production outside it), with secrets allowed per environment; a merge never deploys
 - [0110](0110-only-a-person-deploys-production.md): Only a person with administrator access deploys production, typing the project's slug; agents never promote
 - [0111](0111-agents-ask-a-person-with-needs-you.md): Agents ask a person to act with one tool, `needs_you`; the task stays in Needs you until a person writes to it or the agent resolves it
+- [0106](0106-the-superagent-is-opened-from-the-tools-rail-only.md): The Superagent is opened from the tools rail, not a top-bar button

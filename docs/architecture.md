@@ -398,9 +398,10 @@ conversation resumed whenever it starts again. Its start, like a terminal's, run
 the request, so a client that goes away mid-start never leaves a second or half-started session
 ([SPEC-077](../.ai/specs/SPEC-077-fix-250-cockpit-and-shell-starts-survive.md),
 [decision 0053](decisions/0053-shell-starts-run-detached-from-the-request.md)). The web UI shows it in the right tool panel beside
-the page, under a notice that it is for quick work only
-([SPEC-035](../.ai/specs/SPEC-035-move-cockpit-to-the-right-and-change-coc.md),
-[decision 0036](decisions/0036-agent-in-the-right-panel.md)).
+the page, under a notice that it is for quick work only, opened from the first button of the tools
+rail ([SPEC-035](../.ai/specs/SPEC-035-move-cockpit-to-the-right-and-change-coc.md),
+[decision 0036](decisions/0036-agent-in-the-right-panel.md),
+[decision 0106](decisions/0106-the-superagent-is-opened-from-the-tools-rail-only.md)).
 
 A Cockpit remembers its pool subscription (in `shell.json`) and watches its newest conversation
 while it runs ([SPEC-074](../.ai/specs/SPEC-074-i-just-hit-usage-limit-in-the-agent-it-s.md),

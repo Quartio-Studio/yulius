@@ -268,7 +268,6 @@ function createApp(root, transport) {
     ctx.defaultSandbox = () => defaultSandbox();
     ctx.openBrowserTab = (sandbox, tabId) => openBrowserTab(sandbox, tabId);
     ctx.toggleRail = () => panels.setRailVisible(!panels.railVisible);
-    ctx.toggleAgent = () => panels.toggle('agent', { persistRail: false });
     ctx.closePanel = () => panels.close();
     ctx.railVisible = () => panels.railVisible;
     ctx.setRailVisible = (visible) => panels.setRailVisible(visible);
