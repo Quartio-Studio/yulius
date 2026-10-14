@@ -171,6 +171,8 @@ pub struct App {
     pub(crate) login_attempts: Mutex<HashMap<String, Vec<i64>>>,
     /// CLI device sign-in starts per client key (rate limiting, #169).
     pub(crate) device_starts: Mutex<HashMap<String, Vec<i64>>>,
+    /// Notepad presence updates per person and notepad (rate limiting, SPEC-112 NOT-019).
+    pub(crate) note_presence: Mutex<HashMap<String, Vec<i64>>>,
     /// Session supervisor runtime state.
     pub(crate) supervisor: crate::supervisor::SupervisorState,
     /// Account login terminals.
@@ -230,6 +232,7 @@ impl App {
             events: EventBus::new(1024),
             login_attempts: Mutex::new(HashMap::new()),
             device_starts: Mutex::new(HashMap::new()),
+            note_presence: Mutex::new(HashMap::new()),
             supervisor: crate::supervisor::SupervisorState::default(),
             logins: crate::accounts::LoginRegistry::default(),
             capacity: crate::capacity::CapacityState::default(),
