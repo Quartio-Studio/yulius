@@ -106,7 +106,9 @@ watching, steering and unblocking.
   The people who manage an agent secret can read it too. A shown value stays masked until its eye
   button is pressed; it copies without being shown. An agent secret is added with a name, a value
   and a description: agents find the service's host and ask for it, and a person allows it with
-  one click (SPEC-121).
+  one click (SPEC-121). A project's keys live in a git-ignored `.env` beside a tracked
+  `.env.example`; when its code needs a secret's real value, the agent asks Yulius to copy it
+  there, and a person allows that once per secret (SPEC-129).
 - **Updates**: Yulius updates itself from `main` without losing running work.
 
 ## Principles

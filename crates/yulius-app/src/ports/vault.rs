@@ -78,6 +78,47 @@ pub struct VaultSecretRecord {
     pub requested_hosts: Vec<String>,
     /// Agent: the task that asked last (`#107`).
     pub requested_by: Option<String>,
+    /// Agent: whether agents may copy the value into the project's `.env` files (SPEC-129);
+    /// written only by [`VaultStore::vault_set_env_files`].
+    pub env_files: EnvFiles,
+    /// Agent: the tasks asking to copy it while `env_files` is [`EnvFiles::Asked`] (`#111`).
+    pub env_requested_by: Option<String>,
+}
+
+/// Whether agents may copy an agent secret's value into the project's git-ignored `.env` files
+/// (SPEC-129, ADR-0105): a person allows each secret once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EnvFiles {
+    /// Never copied.
+    #[default]
+    No,
+    /// An agent asked; a person allows or dismisses it.
+    Asked,
+    /// A person allowed it.
+    Allowed,
+}
+
+impl EnvFiles {
+    /// Stored form.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::No => "no",
+            Self::Asked => "asked",
+            Self::Allowed => "allowed",
+        }
+    }
+
+    /// Parses the stored form.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "no" => Some(Self::No),
+            "asked" => Some(Self::Asked),
+            "allowed" => Some(Self::Allowed),
+            _ => None,
+        }
+    }
 }
 
 /// A person's two-factor seed (SPEC-040).
@@ -151,6 +192,15 @@ pub trait VaultStore: Send + Sync {
         hosts: &[String],
         by: &str,
         at: Timestamp,
+    ) -> AppResult<bool>;
+    /// Sets whether agents may copy an agent secret into `.env` files, and who asks, only while
+    /// they still are `from` (compare and set); `false` otherwise. Nothing else in the row
+    /// changes.
+    async fn vault_set_env_files(
+        &self,
+        id: &str,
+        from: (EnvFiles, Option<&str>),
+        to: (EnvFiles, Option<&str>),
     ) -> AppResult<bool>;
     /// Records an agent's use.
     async fn vault_touch_used(&self, id: &str, at: Timestamp) -> AppResult<()>;

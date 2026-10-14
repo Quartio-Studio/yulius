@@ -474,6 +474,32 @@ sequenceDiagram
     X-->>A: placeholder replaced by the value, response redacted
 ```
 
+## Keys in .env
+
+A project keeps its keys in a `.env` that Git ignores, beside a tracked `.env.example` that names
+them without values ([SPEC-129](../.ai/specs/SPEC-129-default-place-for-keys-should-be-env-tha.md),
+ADR-0105). Code that runs outside the egress proxy (a deployed app, a deploy script of Yulius CD)
+reads them there. The agent never holds a value, so Yulius writes it: `secret_copy_to_env` checks
+with Git that the file is ignored and untracked, then writes the file whole (mode 0600). A value in
+a file leaves the secret's bound hosts, so a person allows each secret once (`env_files`).
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant App as Yulius (vault)
+    participant G as Git
+    participant W as Task worktree
+    participant P as Person
+    A->>App: secret_copy_to_env(STRIPE_KEY)
+    App-->>A: nothing written, waiting for a person (task needs attention)
+    P->>App: Secrets page: Allow (POST agent-secrets/{id}/env)
+    A->>App: secret_copy_to_env(STRIPE_KEY)
+    App->>G: check-ignore .env, ls-files .env
+    G-->>App: ignored, untracked
+    App->>W: .env gets STRIPE_KEY=value, .env.example gets STRIPE_KEY=
+    App-->>A: copied (no value in the result)
+```
+
 ## Terminal input
 
 A keystroke goes from xterm to the PTY and its echo comes back without waiting for the database or
