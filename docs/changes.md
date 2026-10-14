@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- The Vidoc security gate can be turned off and on (SPEC-131, ADR-0107, task #119). `enabled` in
+  `.config/vidoc.toml` is committed as `true`; with `false`, `scripts/dev security` exits 0 at once
+  and says nothing was scanned, and agents report the scan as disabled. Only a committed `false`
+  counts: an uncommitted one exits 2. A missing file means on; a malformed one exits 2.
 - Done means done (SPEC-130, task #117, #473, #474). The process probe could keep a task whose
   goal was achieved reading Working for good: a server the agent started as `(server &)` left
   an orphaned subshell with Claude Code's wrapper command line, which the sandbox's init adopted.

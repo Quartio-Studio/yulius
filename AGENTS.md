@@ -71,7 +71,9 @@ scripts/dev security
 Every change: before delivery run `scripts/dev security`, which scans the branch's commits with
 Vidoc through the agent secret `VIDOC_API_KEY` and fails on open critical or high findings
 ([ADR-0104](docs/decisions/0104-agents-scan-their-branch-with-vidoc-before-delivery.md)); exit 2
-(not runnable here) is unrun, not passed.
+(not runnable here) is unrun, not passed. `enabled` in `.config/vidoc.toml` turns the scan on (as
+committed) or off ([ADR-0107](docs/decisions/0107-a-committed-switch-turns-the-vidoc-gate-on-or-off.md));
+a disabled scan exits 0 saying so and is reported as disabled, not passed.
 
 Web UI changes: also run the end-to-end suite, `cd e2e && npm ci --ignore-scripts && npx e2e run`
 (Node 24.8+, test-only; see [e2e/README.md](e2e/README.md)).
