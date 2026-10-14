@@ -1,6 +1,6 @@
 ---
 name: infra-bootstrap
-description: Lay a project's engineering foundations the way a senior engineer would - strong unit and integration tests, lint and format, one local gate that our own CI runs (no GitHub Actions), dev and production environments with deploy and verification, AGENTS.md, architecture and product docs, GitHub labels and templates. Use on the first prompt of a fresh project, during onboarding, or when the briefing lists missing foundations.
+description: Lay a project's engineering foundations the way a senior engineer would - strong unit and integration tests, lint and format, one local gate that our own CI runs (no GitHub Actions), CD (deployment) with dev and production deploy and verify scripts, AGENTS.md, architecture and product docs, GitHub labels and templates. Use on the first prompt of a fresh project, during onboarding, when the briefing lists missing foundations, or to set up or change CD.
 ---
 
 # Infra bootstrap
@@ -87,17 +87,54 @@ example when it starts deploying for real), and record every change as a decisio
    Then delete `.github/workflows/` in the same pull request, so gates and merges rely only on
    Yulius CI results (`ci_status`). Merge gating needs no rulesets: Yulius enforces the gate at
    merge.
-3. **Environments.** Define dev (after integration) and production (after promotion) in
-   `yulius.toml` `[delivery]` as `[[delivery.environments]]` entries with an idempotent deploy
-   `command` and `verify = "command"` for a smoke test against the deployed app (health endpoint,
-   one real user path). Deploy scripts read secrets from the environment, roll forward safely,
-   and print where the app runs.
-   Keys have one default place: a `.env` file Git ignores (`.gitignore` lists `.env`, `.env.*`
-   and `!.env.example`), beside a committed `.env.example` that names every key the code and
-   the deploy scripts read, with no values. Code loads `.env` when its variables are unset. When
-   code that runs outside Yulius' proxy (the deployed app, a deploy script) needs an agent
-   secret's real value, copy it with `secret_copy_to_env` (a person allows each secret once).
-   Never write or edit those lines yourself: you only see `[secret:NAME]`.
+3. **CD (deployment).** Yulius runs CD like CI, never GitHub: `yulius.toml` defines two
+   environments, and both are always explicit, even when one deploys nothing yet.
+
+   ```toml
+   [cd.dev]                              # read from the integration branch head
+   about = "the team's dev VM"
+   deploy = "scripts/cd/deploy.sh dev"
+   verify = "scripts/cd/verify.sh dev"   # a smoke test of what is deployed
+   secrets = "DEV_SSH_KEY DEV_HOST"      # agent secrets; a person allows each outside the proxy
+
+   [cd.prod]                             # read from what production deploys
+   promote = true                        # first promote the integration branch (a push to main)
+   deploy = "scripts/cd/deploy.sh prod"
+   verify = "scripts/cd/verify.sh prod"
+   ```
+
+   - **Find what exists first**: deploy or release scripts, a Dockerfile or compose file,
+     platform files (`fly.toml`, `vercel.json`, `netlify.toml`, `Procfile`, `k8s/`, Helm,
+     Terraform, Ansible), deploy jobs in `.github/workflows`, the README. Move them into
+     `scripts/cd/` instead of inventing a second way. When nothing deploys yet, write the table
+     empty with an `about` line ("no dev machine yet"): empty is a decision, a missing table a gap.
+   - **Scripts, not commands.** Each environment runs `deploy` and then, if it succeeded, `verify`
+     (`/bin/sh -c`, one line each, usually a committed bash script). Scripts are idempotent (a
+     second run changes nothing), roll forward safely, print where the app runs, and exit non-zero
+     on any failure (`set -euo pipefail`). `verify` checks the deployed app from outside (a health
+     endpoint, one real user path), not the build.
+   - **What is committed.** Scripts and the tables are reviewed and tested like code (add
+     `bash -n` or `shellcheck` of `scripts/cd/` to the gate). Machines, addresses, keys and tokens
+     are agent secrets named in `secrets`, never in the repository; the run gets their real values
+     as environment variables, only once a person allowed each one outside the proxy (the Secrets
+     page). Do not write secrets to disk: the run's `HOME` is removed after it, `$YULIUS_CD_CACHE`
+     persists for caches only.
+   - **How it runs.** Yulius checks out the exact head of the protected branch (never your task
+     branch or worktree), runs inside the sandbox's containment with `YULIUS_CD_ENV`,
+     `YULIUS_CD_SHA` and `YULIUS_CD_BRANCH`, keeps a redacted output tail, and allows one run per
+     environment at a time. So you improve CD only through a pull request, and nothing you merge
+     reaches production until a person deploys it.
+   - **Who deploys.** A merge deploys nothing. Dev: a person on the CD page, or an agent with
+     `cd_deploy` when its task asks (then `yulius wait`), or a nightly automation that deploys and
+     tests it. Production: only a person with administrator access, typing the project's slug;
+     agents never promote or deploy it. What only a person can do (add a machine's credentials,
+     allow a secret, deploy production) you ask with `needs_you`, then carry on.
+   - Keys the app itself reads have one default place: a `.env` file Git ignores (`.gitignore`
+     lists `.env`, `.env.*` and `!.env.example`), beside a committed `.env.example` that names
+     every key with no values. Code loads `.env` when its variables are unset. When code that runs
+     outside Yulius' proxy needs an agent secret's real value, copy it with `secret_copy_to_env`
+     (a person allows each secret once). Never write or edit those lines yourself: you only see
+     `[secret:NAME]`.
 4. **Docs.** `AGENTS.md` (rules, commands, layout and the docs index), a `CLAUDE.md` pointer to
    it, `docs/product.md` (purpose, users, scope, current state), `docs/architecture.md` with a
    Mermaid diagram, ADRs for the choices above, and the first entry of `docs/changes.md`. When
@@ -124,6 +161,7 @@ example when it starts deploying for real), and record every change as a decisio
 - The gate passes from a clean checkout and fails on a deliberately broken test.
 - No GitHub Actions workflow is left; `[commands] gate` (or `[[ci.jobs]]`) is set and Yulius CI
   reports on it.
-- Dev and production deploy and verify by command.
+- `[cd.dev]` and `[cd.prod]` are defined (empty with an `about` when nothing deploys yet), and
+  each one that deploys has a deploy and a verify script that passed on a real run.
 - The docs describe the project as it is, and each choice has an ADR.
 - The critical and high-cost conventions are codified as primitives or checked by the gate.

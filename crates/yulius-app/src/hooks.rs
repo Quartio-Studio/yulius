@@ -961,6 +961,9 @@ fn foundations(root: &Path, toml: Option<&str>) -> Foundations {
         test_command: commands.as_ref().is_some_and(|c| set(c.test.as_ref())),
         lint_command: commands.as_ref().is_some_and(|c| set(c.lint.as_ref())),
         actions_workflows: actions_workflows(root),
+        cd_defined: toml.is_some_and(|text| {
+            yulius_domain::spec_format::parse_yulius_toml_cd(text).is_ok_and(|cd| cd.is_defined())
+        }),
     }
 }
 

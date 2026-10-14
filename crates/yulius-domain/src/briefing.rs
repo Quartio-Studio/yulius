@@ -179,6 +179,8 @@ pub struct Foundations {
     pub lint_command: bool,
     /// GitHub Actions workflow files in `.github/workflows` (CI runs on Yulius instead).
     pub actions_workflows: usize,
+    /// `[cd.dev]` and `[cd.prod]` are both defined, empty or not (SPEC-134 CDC-002).
+    pub cd_defined: bool,
 }
 
 impl Default for Foundations {
@@ -189,6 +191,7 @@ impl Default for Foundations {
             test_command: true,
             lint_command: true,
             actions_workflows: 0,
+            cd_defined: true,
         }
     }
 }
@@ -213,6 +216,13 @@ impl Foundations {
                  must become the Yulius CI gate and then be deleted",
                 self.actions_workflows
             ));
+        }
+        if self.config && !self.cd_defined {
+            out.push(
+                "CD (deployment): `[cd.dev]` and `[cd.prod]` in `yulius.toml`, each with its deploy \
+                 and verify scripts or empty with an `about` line"
+                    .to_owned(),
+            );
         }
         out
     }
@@ -625,12 +635,12 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
         "## Git and delivery\n\n\
          You are autonomous: never ask a person for help, a decision or an action, and never end \
          a turn waiting for one; decide, record why and carry on. When only a person can do \
-         something (a credential, a paid plan, a permission outside the repository), open an \
-         issue (`issue_create`) and continue with the rest.\n\
+         something (a credential, a paid plan, a permission outside the repository), ask with \
+         `needs_you` and continue with the rest.\n\
          Features and fixes take one path, with no human acceptance step: spec → implementation \
          with tests → independent review → fixes → gates green → pull request → merge into \
-         {integration} on green → deploy and verify its environments → summary. Promotion to \
-         {production} is a separate task a person starts: never promote unless your task asks. \
+         {integration} on green → summary. Merges deploy nothing: `cd_deploy` dev only if asked; \
+         {production} is a person's: never promote. \
          Work that changes nothing in the repository (research, a brainstorm, an answer) ends \
          with its result.\n\
          - Git (skill `git-hygiene`): work only on {branch}. Never commit or push to \
@@ -647,9 +657,7 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          pushes your branch and opens the pull request at the end of your turn or when you call \
          `delivery_merge`, and pushes later commits. CI runs on our own machines (`ci_status`). Once the review approved the exact \
          head, call `delivery_merge`: on green it merges; while the checks run it arms the merge \
-         and Yulius merges when they pass. Then deploy and verify each environment after \
-         {integration} (`delivery_deploy`), as `delivery_status` says. Fix failures on this \
-         branch, test-first. {checks}\n\
+         and Yulius merges when they pass. Fix failures on this branch, test-first. {checks}\n\
          - To wait for checks, a merge or a person, start `yulius wait` with run_in_background \
          and end your turn. Never poll with `sleep`, `pgrep -f` loops or monitors, and never hide \
          an exit code behind `| tail`.\n\
@@ -736,8 +744,8 @@ fn foundations(input: &BriefingInput<'_>) -> String {
          senior engineer would (workflow Infra bootstrap, skill `infra-bootstrap`): strong unit \
          and integration tests, lint and format, one local gate that Yulius CI runs on our own \
          machines (`[commands] gate` or `[[ci.jobs]]` in `yulius.toml`; `ci_setup` lists the \
-         GitHub Actions to translate before you delete them), dev and production environments \
-         with deploy and verification, the docs and the GitHub labels. Never add GitHub Actions \
+         GitHub Actions to translate before you delete them), CD (deployment) with `[cd.dev]` and \
+         `[cd.prod]` and their deploy and verify scripts, the docs and the GitHub labels. Never add GitHub Actions \
          or anything that needs a paid GitHub plan. Research and questions go ahead without \
          it.\n\n",
         gaps.join("; ")
@@ -1694,6 +1702,7 @@ mod tests {
             test_command: false,
             lint_command: true,
             actions_workflows: 2,
+            cd_defined: false,
         };
         let text = build_briefing(&input, DEFAULT_BUDGET_BYTES);
         let section = text
@@ -1708,6 +1717,7 @@ mod tests {
             "`ci_setup`",
             "Never add GitHub Actions",
             "Research and questions go ahead without it.",
+            "`[cd.dev]` and `[cd.prod]` in `yulius.toml`",
         ] {
             assert!(section.contains(needle), "missing {needle}");
         }
@@ -1720,8 +1730,22 @@ mod tests {
             test_command: false,
             lint_command: false,
             actions_workflows: 0,
+            cd_defined: false,
         };
-        assert_eq!(none.gaps().len(), 3);
+        assert_eq!(
+            none.gaps().len(),
+            3,
+            "without yulius.toml CD is part of its gap"
+        );
+        let no_cd = Foundations {
+            cd_defined: false,
+            ..Foundations::default()
+        };
+        assert!(
+            no_cd.gaps().iter().any(|g| g.contains("[cd.dev]")),
+            "{:?}",
+            no_cd.gaps()
+        );
         assert!(Foundations::default().gaps().is_empty());
         Ok(())
     }
