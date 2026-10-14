@@ -98,8 +98,8 @@ fn io_error(err: &io::Error) -> AppError {
 }
 
 /// Whether `rel` (below `git/`) is part of a repository's history: `HEAD`, `packed-refs`,
-/// `shallow`, or a file under `objects/` or `refs/`. Configuration, hooks, `info/`, the index,
-/// logs and everything else are not.
+/// `shallow`, or a file under `objects/` (but not `objects/info/`, the alternates) or `refs/`.
+/// Configuration, hooks, `info/`, the index, logs and everything else are not.
 fn is_history(rel: &Path) -> bool {
     let parts: Vec<&OsStr> = rel
         .components()
@@ -110,7 +110,10 @@ fn is_history(rel: &Path) -> bool {
         .collect();
     match parts.first().map(|p| p.as_bytes()) {
         Some(b"HEAD" | b"packed-refs" | b"shallow") => parts.len() == 1,
-        Some(b"objects" | b"refs") => parts.len() > 1,
+        // `objects/info/` holds alternates, which would make Git read another repository on the
+        // server; the objects themselves are everything else under `objects/`.
+        Some(b"objects") => parts.len() > 1 && parts[1].as_bytes() != b"info",
+        Some(b"refs") => parts.len() > 1,
         _ => false,
     }
 }
@@ -360,6 +363,9 @@ mod tests {
             "HEAD/x",
             "modules/a/config",
             "FETCH_HEAD",
+            // Alternates would make Git read another repository on the server.
+            "objects/info/alternates",
+            "objects/info/http-alternates",
             "description",
         ] {
             assert!(!is_history(Path::new(refused)), "{refused}");

@@ -690,3 +690,54 @@ async fn a_playground_never_calls_github() -> TestResult {
     assert!(!notes.contains("GitHub"), "{notes}");
     Ok(())
 }
+
+/// PLY-003: an uploaded `.git/objects/info/alternates` is never taken, so an upload cannot make
+/// the server's Git read another repository on the server (here: a commit only it has).
+#[tokio::test]
+async fn an_uploaded_alternate_never_reads_another_repository() -> TestResult {
+    let (h, owner) = world().await?;
+    let tmp = tempfile::tempdir()?;
+    let other = tmp.path().join("other");
+    std::fs::create_dir_all(&other)?;
+    git(&other, &["init", "-q", "-b", "main"])?;
+    std::fs::write(other.join("secret.txt"), "not yours\n")?;
+    git(&other, &["add", "-A"])?;
+    git(&other, &["commit", "-q", "-m", "secret"])?;
+    let secret = git(&other, &["rev-parse", "HEAD"])?.trim().to_owned();
+
+    let project = tmp.path().join("proj");
+    std::fs::create_dir_all(&project)?;
+    git(&project, &["init", "-q", "-b", "main"])?;
+    std::fs::write(project.join("README.md"), "hello\n")?;
+    git(&project, &["add", "-A"])?;
+    git(&project, &["commit", "-q", "-m", "first"])?;
+    std::fs::create_dir_all(project.join(".git/objects/info"))?;
+    std::fs::write(
+        project.join(".git/objects/info/alternates"),
+        format!("{}\n", other.join(".git/objects").display()),
+    )?;
+    std::fs::write(
+        project.join(".git/refs/heads/stolen"),
+        format!("{secret}\n"),
+    )?;
+    let stage = tmp.path().join("stage");
+    stage_folder(&project, &stage)?;
+
+    let made = upload(&h, &owner, "proj", pack(&stage)?).await?;
+    if made.status == StatusCode::CREATED {
+        let origin = sandbox_dir(&h, &made.body).join("origin.git");
+        assert!(
+            git(&origin, &["cat-file", "-e", &secret]).is_err(),
+            "the other repository's commit reached the playground"
+        );
+    }
+    let list = call(&h.router, Method::GET, "/api/sandboxes", None, &owner).await?;
+    let leaked = list.body.as_array().is_some_and(|items| {
+        items.iter().any(|s| {
+            let origin = sandbox_dir(&h, s).join("origin.git");
+            git(&origin, &["cat-file", "-e", &secret]).is_ok()
+        })
+    });
+    assert!(!leaked, "no playground holds the other repository's commit");
+    Ok(())
+}
