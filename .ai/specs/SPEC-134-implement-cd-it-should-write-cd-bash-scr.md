@@ -1,0 +1,253 @@
+---
+yulius-task: 7caf70b1-25f1-4986-a274-7ce2babebc65
+status: draft
+---
+
+# SPEC-134: CD (deployment): dev and production deploys that agents build but cannot cheat
+
+Status: draft
+Date: 2026-10-14
+Owner: Yulius task #113
+Scope authorization: the person's request (task #113, which replaces the archived task #112):
+"Implement CD. It should write CD bash scripts that handles deployment. It should have forced
+discipline and be protected and work at the same level as CI. […] dev deployment = installing on
+some machine (it's not specified yet - i'll later just add vps credentials to the vault and the
+agent should be able to set up everything), prod deployment = pushing to main and installing on our
+machine (VMs self-updates themselves). Dev deployment can be done by agent but main deployment
+should require strong confirmation and be always done by humans. CD can evolve in time […] we dont
+have dev deployment at the moment so it'll be nearly empty (but should be!!!) but we have main
+deployment. […] On onboarding it should be detected whether CD already exists. On configuring CD
+user can be prompted. To make something be in "needs you" the agent should explicitly call a tool
+and prompt the user to do something, for example to put the credential in secrets etc. CD dev +
+prod should be explicitly defined but both can be empty […] possible for non-tech but techy users
+to configure using our harness. […] make sure there are no leftovers. […] in CD section add
+deployment in brackets: "CD (deployment)". […] make sure we have integration tests. And make sure
+what you build generalises to all other projects (like studio, product etc). Decide how much of the
+infra scripts should be commited to github", and the two additions: "it should not be done with
+github but be a separate mechanism like CI. Make sure agents can build and improve the infra but
+can't cheat it" and "there is no need for dev deployment after every dev merge. It should be
+something separate. For example we can set an automation to deploy to dev every night and test it".
+
+## Goal
+
+Every Yulius project has a CD (deployment) next to its CI (tests): two explicitly defined
+environments, **dev** and **production**, each with an optional deploy script and an optional
+verify script committed to the repository. Yulius runs them itself, like CI: from a clean checkout
+of a protected branch's exact commit, inside the sandbox's containment, with only the secrets the
+environment names, recorded with their output. Agents write and improve the scripts through the
+normal pull-request pipeline and may deploy dev; only a person deploys production, after typing a
+confirmation. A dev deploy is its own action (a person, an agent, or a nightly automation), not a
+step of every merge.
+
+## Context
+
+- **CI already is the model** (DLV-006, ADR-0015, `crates/yulius-app/src/ci/`): configuration in
+  `yulius.toml` read from the integration branch head (a pull request cannot weaken its own CI);
+  jobs run through the process host inside the sandbox's containment (`ci/exec.rs`), with a
+  persistent home and cache, a timeout, an output tail and a log; results in `ci_runs`/`ci_jobs`;
+  the CI page (`pages/ci.js`, nav "CI (tests)") and the tools `ci_status`/`ci_rerun`/`ci_setup`.
+  `layout.js` already says "a CD page would join CI here".
+- **Deploy environments exist but are not CD.** `[[delivery.environments]]` (DLV-001/003/008) are
+  per-task checkpoints of the delivery path. Their commands live in the database profile that only
+  an administrator edits, run **unsandboxed with the server's privileges** in the shared clone,
+  get **no secrets**, and are tied to each merged task (`delivery_deploy`). The `product` preset's
+  `dev-vm` and `rollout` are manual checkpoints with no command. Nothing reads `[delivery]` from
+  `yulius.toml` after the import.
+- **Promotion is open to agents.** `delivery_promote` acts with `Initiator::User` under the task
+  owner's authority; only the tool's description asks agents not to use it. For Yulius, pushing to
+  `main` is the production deployment: instances update themselves from `main` when a superadmin
+  chooses Update now (ADR-0013, `docs/operations.md` "Updates from main").
+- **Secrets** (ADR-0014/0098/0105): agents never see values; the egress proxy adds them for bound
+  hosts; `secret_copy_to_env` writes a value into a git-ignored `.env` once a person allowed that
+  secret (`env_files = allowed`: "its value may be used outside the proxy"). CI jobs get no secret.
+  ADR-0105 was written to prepare this task.
+- **"Needs you"** (ADR-0068) is per task: a held prompt, a browser request, or an agent that stopped
+  and waits. `browser_request_user_action`, `secret_request_hosts` and `secret_copy_to_env` flag the
+  task, but there is no general tool for "a person has to do this".
+- **Automations** (ADR-0034) start tasks from a prompt on a cron; the ready-made catalog lives in
+  `catalog/automations/`.
+- **Onboarding** (`crates/yulius-app/src/onboarding.rs`, ADR-0094) lays the gate and says missing
+  deploy environments "need a person's machines and credentials: file an issue". The
+  `infra-bootstrap` skill's step 3 describes `[[delivery.environments]]`.
+- **Leftovers of task #112.** The earlier, archived attempt left no branch (local or remote), no
+  worktree, no spec file and no commit; its reserved spec number SPEC-125 was never written.
+
+## Requirements
+
+Configuration (CDC):
+
+- CDC-001. `yulius.toml` defines CD with two tables, `[cd.dev]` and `[cd.prod]`, each with optional
+  keys `deploy` (one-line command), `verify` (one-line command, a smoke test of what is deployed),
+  `secrets` (space-separated agent-secret names, at most 16) and `about` (one line for people,
+  ≤ 300 characters); `[cd.prod]` also takes `promote = true|false` (default false). Unknown keys,
+  `promote` under dev, multi-line or overlong commands and invalid secret names are errors with a
+  line number, like every other table.
+- CDC-002. Each environment is in one of three states: **not defined** (its table is missing),
+  **empty** (the table is there, with nothing to run: no deploy, no verify, no promotion) or
+  **ready**. Both may be empty; "not defined" is a gap the briefing and onboarding report.
+- CDC-003. Yulius reads dev's table from the integration branch head and production's from the
+  commit it deploys: the integration head when that head's `[cd.prod]` says `promote = true`, else
+  the production head. A task branch, a worktree or the database never changes what a deploy runs.
+- CDC-004. Scripts live in the repository (`scripts/cd/` by convention) and are reviewed and tested
+  like code; machines, addresses and credentials are agent secrets, never committed; run records
+  and logs live in Yulius, not in Git.
+
+Runs (CDR):
+
+- CDR-001. A deploy of an environment is one **CD run**: Yulius fetches, resolves the branch head,
+  reads the configuration at that commit, checks it out into the environment's own checkout and
+  runs `deploy` and then `verify` (each skipped when absent, `verify` only after a successful
+  `deploy`) through the process host inside the sandbox's containment. Its result is `passed`
+  (every step exited 0), `failed`, `error` (could not run, timed out, lost) or `cancelled`.
+- CDR-002. A run's environment has no task token, provider credential or GitHub token; it has
+  `YULIUS_CD=1`, `YULIUS_CD_ENV` (`dev` or `prod`), `YULIUS_CD_SHA`, `YULIUS_CD_BRANCH`,
+  `YULIUS_CD_RUN`, a `HOME` made for the run and removed after it, a persistent `YULIUS_CD_CACHE`,
+  and each named secret's real value. A secret is given only when it is an agent secret of the
+  project that a person allowed outside the proxy (`env_files = allowed`, ADR-0105); a missing or
+  not-allowed secret refuses the run before anything starts and says what a person must do.
+- CDR-003. Stored output is the run's tail with every agent secret's value replaced by
+  `[secret:NAME]`.
+- CDR-004. One active run per environment and project; a second request is refused while one runs.
+  A run is bounded by the CI job timeout; cancelling kills its process group. A run that was
+  running when Yulius restarted is recorded as `error` ("outcome unknown") and never started again
+  by itself. Runs are kept like CI runs (50 per project, 14 days).
+- CDR-005. Every run and refusal of a production deploy is audited (`cd.deploy`, `cd.finished`,
+  `cd.refused`) with the actor (`login`, `task:#N`).
+
+Who deploys (CDA):
+
+- CDA-001. **Dev**: a person with write access (the CD page, `POST /api/sandboxes/{sid}/cd/dev/deploy`)
+  or an agent (`cd_deploy`), including an automation's task. No step of a task's delivery waits
+  for it.
+- CDA-002. **Production**: only a person with administrator access, through the CD page or the API
+  with `{"confirm": "<project slug>"}` typed exactly. Agents are refused, whatever they pass.
+  With `promote = true` the deploy first promotes the integration branch with the profile's method
+  (it opens the promotion pull request, or merges it when its checks passed; a promotion that cannot
+  complete now refuses the deploy and says why); then it deploys the new production head.
+- CDA-003. Agents never promote: `delivery_promote` refuses for agents ("a person deploys
+  production on the CD page"), and `delivery_deploy` refuses production-stage environments. A
+  profile's `auto_promote`, set by an administrator, keeps working.
+
+Agents and people (CDT):
+
+- CDT-001. MCP `cd_status`: each environment's state, commands, secrets (ready, missing, waiting for
+  a person's allowance), the branch head, the last run and the page link.
+- CDT-002. MCP `cd_deploy {environment: "dev"}`: starts a dev run and returns its id; refuses
+  production (CDA-002), an empty or undefined environment, missing secrets (asking a person to
+  allow the ones that exist, like `secret_copy_to_env`) and a running run.
+- CDT-003. `yulius wait` also returns when a CD run the task started ends, with its result.
+- CDT-004. MCP `needs_you {action, why?, link?}`: the agent asks a person to do something only a
+  person can (add a credential, allow a secret, deploy production). The task shows "Needs you:
+  <action>" (sidebar group Needs you, on every page that groups tasks) until a person writes to the
+  task or the agent calls `needs_you {resolved: true}`. The request is audited (`task.needs_you`).
+- CDT-005. The **CD (deployment)** page (nav entry next to "CI (tests)") shows dev and production:
+  state, what runs, secrets and their state with a link to Secrets, the deployed commit against the
+  branch head, the last run, Deploy buttons (dev: confirm; production: a dialog that says what will
+  happen and asks for the project's slug), recent runs with their output and Cancel, and "Set up CD
+  with an agent", which starts an Infra bootstrap task with a CD prompt, so a person who does not
+  write scripts configures CD through the harness.
+
+Teaching (CDK):
+
+- CDK-001. Onboarding detects existing CD (deploy scripts, container and platform files such as
+  `Dockerfile`, `compose.yaml`, `fly.toml`, `vercel.json`, `netlify.toml`, `Procfile`, `k8s/`,
+  Ansible or Terraform, deploy jobs in `.github/workflows`) and maps it into `[cd.dev]`/`[cd.prod]`
+  with scripts under `scripts/cd/`; when there is none, both tables are written empty with an
+  `about` saying so. Credentials it needs are asked for with `needs_you`.
+- CDK-002. The `infra-bootstrap` skill, its workflow and the `delivery-pipeline` skill describe CD as
+  above; the briefing reports "CD (deployment) not defined" as a missing foundation and ends the
+  delivery path at the merge (deploys are CD runs).
+- CDK-003. A ready-made automation "Deploy dev every night" starts a task that runs `cd_deploy dev`,
+  waits for it, and files an issue when it fails.
+- CDK-004. Yulius's own `yulius.toml` defines CD: dev empty (no dev machine yet: an agent writes
+  `scripts/cd/` once a person adds the machine's credentials), production `promote = true` (instances
+  update themselves from `main`).
+
+## Plan
+
+- [ ] CD configuration parsed from yulius.toml with the rule of who may deploy each environment
+- [ ] CD runs recorded and executed in the sandbox from the protected branch, with allowed secrets
+- [ ] Production is deployed only by a person who types the confirmation, promoting first
+- [ ] Agents deploy dev, wait for it and ask a person through needs_you
+- [ ] The CD (deployment) page shows both environments, deploys them and starts a setup task
+- [ ] Onboarding, skills, briefing and a nightly automation teach CD
+- [ ] Yulius's own CD defined, docs and decisions updated
+- [ ] Independent review in a fresh session, findings fixed test-first
+- [ ] Every gate green, merged into dev on green CI
+
+## Acceptance criteria
+
+- AC1 (CDC-001..003): a configuration with both tables, with empty ones, with one missing, and each
+  invalid form parses to the documented states or errors; a task branch that changes `[cd.dev]`
+  changes nothing a deploy runs until it is merged.
+- AC2 (CDR-001..003, CDA-001): an agent's `cd_deploy dev` runs the integration head's deploy and
+  verify scripts in a fresh checkout; the run passes, its output holds `[secret:NAME]` but never
+  the value, and the scripts saw the value, `YULIUS_CD_*` and no task token.
+- AC3 (CDR-001): a failing deploy skips verify and the run is `failed`; a failing verify is
+  `failed`; an empty or undefined environment and a missing or not-allowed secret are refused
+  before anything runs.
+- AC4 (CDA-002/003): an agent's production deploy, `delivery_promote` and a production-stage
+  `delivery_deploy` are refused; a person without the typed slug, or below administrator, is
+  refused; with it, production is promoted and the production head is deployed.
+- AC5 (CDR-004): a second request while a run is active is refused; a run left running at a restart
+  is recorded as `error`.
+- AC6 (CDT-003/004): `yulius wait` returns when the task's CD run ends; `needs_you` puts the task
+  in Needs you until a person writes to it or the agent resolves it.
+- AC7 (CDT-005): the CD (deployment) page shows the two environments and deploys dev; production asks
+  for the slug (e2e).
+- AC8 (CDK-*): the briefing, onboarding prompt, skills and the catalog automation say the above
+  (unit tests on their text and the catalog parser).
+
+## Test plan
+
+- Domain unit tests: `cd` configuration parsing and states, the deploy rule (who, which
+  environment, the typed confirmation), `config.rs` errors with line numbers.
+- Store tests: CD runs (insert, one active per environment, finish, restart reconcile, prune).
+- Integration tests (`crates/yulius/tests/cd.rs`, real Git and the real process host as in
+  `local_ci.rs`): AC1–AC6 through MCP and the HTTP API, including the anti-cheat case (a worktree
+  and a task branch with another `[cd.dev]`), secrets and redaction, refusals, promotion with the
+  fake GitHub, restart reconcile, `yulius wait`.
+- e2e: the CD page (`e2e/tests/cd.e2e.ts`), with the axe check every page test has.
+- Gates: `scripts/dev ci`, `scripts/dev security`, the e2e suite.
+
+## Decisions
+
+- **CD is its own mechanism beside CI, not `[[delivery.environments]]`** (ADR-0109). It reuses CI's
+  pieces (configuration in `yulius.toml` read from protected branches, the process host, the
+  sandbox's containment, logs and output tails) but has its own runs table: deploy runs must never
+  count as test results of a commit (the CI planner tests a commit once whatever reference carries
+  it) and must never be re-run by themselves after a restart. Alternatives: extend the delivery
+  environments (commands in the database, run unsandboxed, tied to every merge: the opposite of
+  three of the person's points); reuse `ci_runs` with a new reference kind (deploy results would
+  leak into the merge gate and the planner).
+- **Configuration and scripts in Git, read only from protected branches** (ADR-0109). Agents improve
+  CD by pull requests that pass CI and review; nothing in a task's branch or worktree runs as a
+  deploy. Production reads what it deploys, so a script change reaches production only through a
+  person's production deploy. Alternatives: the database profile (agents cannot build CD at all),
+  the task worktree (an agent could run anything as a deploy).
+- **Runs inside the sandbox, not on the server** (ADR-0109). Deploy scripts are code agents write;
+  running them with the server's privileges (as delivery environments do) would hand agents the
+  instance. The sandbox's network reaches machines over SSH and HTTPS.
+- **Secrets by the existing allowance** (ADR-0109). A deploy needs real values (SSH keys, tokens);
+  the person's allowance that lets a value leave the proxy into `.env` (ADR-0105) is the same
+  exposure, so it also covers CD runs. Alternatives: a second allowance (one more click with the
+  same meaning), all of the project's secrets (more than a deploy needs).
+- **Production is a person's, always** (ADR-0110). An agent never deploys production or promotes;
+  a person with administrator access types the project's slug. Alternatives: a checkbox confirm (a
+  click is not strong), two-factor codes (not every account has a second factor), letting agents
+  promote when asked (the person said "always done by humans").
+- **Dev deploys are separate from merges.** Merges do not trigger dev; an agent deploys dev when its
+  task asks, and a nightly automation can deploy and test it. Alternatives: deploy on every merge
+  (the person said there is no need), a Yulius-native schedule (automations already schedule work
+  and a task can test what it deployed).
+- **`needs_you` is one general tool** (ADR-0111). The person asked that something reaches "needs you"
+  only when an agent explicitly asks; the existing requests are each bound to one surface (the
+  browser, a secret). Alternatives: steps marked blocked (a plan state, not a request to a person),
+  issues (they never reach "needs you").
+- **One pull request.** The parts depend on each other (the page needs the runs, the tools need the
+  rule, onboarding teaches the tools); split, each part would ship unusable. The diff is larger
+  than the usual 400 lines; the review gets the whole.
+
+## Evidence
+
+To be completed with the delivered head.

@@ -108,3 +108,6 @@ number differs from the file name, and a record this index does not list.
 - [0100](0100-the-wordmark-is-set-like-the-composer-quote.md): The wordmark is set like the composer's quote: Tenor Sans at 400 and the quote's size, the name as written, untracked
 - [0105](0105-agents-copy-allowed-secrets-into-an-ignored-env.md): Keys live in a git-ignored `.env` beside a tracked `.env.example`; agents copy an agent secret there with `secret_copy_to_env` only after a person allows it
 - [0104](0104-agents-scan-their-branch-with-vidoc-before-delivery.md): Agents scan their branch with Vidoc (`scripts/dev security`) before delivery; Yulius CI does not, as its jobs hold no secret
+- [0109](0109-cd-runs-scripts-from-protected-branches-in-the-sandbox.md): CD (deployment) runs the repository's `[cd.dev]`/`[cd.prod]` scripts from protected branches, inside the sandbox's containment, with allowed secrets; a merge never deploys
+- [0110](0110-only-a-person-deploys-production.md): Only a person with administrator access deploys production, typing the project's slug; agents never promote
+- [0111](0111-agents-ask-a-person-with-needs-you.md): Agents ask a person to act with one tool, `needs_you`; the task stays in Needs you until a person writes to it or the agent resolves it
