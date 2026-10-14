@@ -1,11 +1,11 @@
 ---
 yulius-task: 1e0c5639-069d-465d-b8fc-0a06d556f040
-status: in-progress
+status: done
 ---
 
 # SPEC-110: token usage, API-price cost and a chart for every figure
 
-Status: in-progress
+Status: done
 Date: 2026-10-14
 Owner: task #95
 Scope authorization: the person's request (task #95), "here we want token usage statistics, also we
@@ -65,10 +65,10 @@ history means something carries a small chart like Tasks has.
 - [x] The pool's tokens and cost per 24 hours and per subscription in `GET /api/capacity`
 - [x] Burn rate and paused hours per 24 hours in `GET /api/capacity`
 - [x] Tokens, cost and their charts in the Capacity card and the subscriptions
-- [ ] Daily agent time, tokens and switches in the analytics summary
-- [ ] Charts beside the Dashboard's key figures
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Daily agent time, tokens and switches in the analytics summary
+- [x] Charts beside the Dashboard's key figures
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -118,4 +118,29 @@ history means something carries a small chart like Tasks has.
 
 ## Evidence
 
-To be filled in when the work is done.
+- `cargo test -p yulius-domain --lib pricing` (5 tests: list prices, ids with date suffix and
+  `[1m]`, unknown models, cost arithmetic: Opus 5.5 1 M of each = $29.20) and `capacity`
+  (bucketing over rolling days, unknown usage and unpriced models, zero-length runs, per-day burn
+  and paused hours): pass.
+- `cargo test -p yulius-app --lib analytics` (per-day agent time, median, tokens, switches; nothing
+  outside the range) and `accounts::tests::a_subscriptions_cost_counts_only_priced_runs_with_usage`:
+  pass.
+- `cargo test -p yulius --test main -- subscription_pool::` (10): `GET /api/capacity` gives 7
+  periods, 600 000 / 400 000 input split of a 40-hour run, $31 for 7 days and $18.60 for the last
+  24 h, `burn_per_day` and `paused_hours_per_day`; `GET /api/admin/accounts` gives the
+  subscription's `cost_usd` $31 and `null` where nothing ran: pass.
+- `scripts/dev ci` on the reviewed head `b064b81c`: check, lint (fmt, clippy `-D warnings`), deps,
+  repository contracts, nextest `1589 tests run: 1589 passed, 16 skipped`; exit 0.
+- `cd e2e && npx e2e run` (whole suite, before the last `dev` merge): `45 passed | 1 skipped`
+  files, `330 passed | 1 skipped` tests; after merging `dev` (#429) `subscriptions`, `times` and
+  `sessions`: 28 passed. Covers the Capacity tiles and their labelled charts, the per-subscription
+  "≈ $X at API prices", an unknown 24-hour cost shown as "—", the Dashboard figures' charts and
+  axe.
+- Screenshots in the mock (dark theme) of the Capacity card, a subscription card and the Dashboard
+  key figures looked right: charts sit between the value and the detail lines, nothing overflows.
+- Independent review (fresh session, `om-code-review`): round 1 asked for changes (one major:
+  days outside the range; minors: unknown 24-hour cost shown as $0.00, no-usage runs costing $0,
+  a duplicate attempts scan, ADR gaps, test gaps), all fixed test-first; round 2 approved
+  `b064b81c`.
+- Not tested here: real Claude Code runs against live subscriptions (the figures come from the
+  stored metrics, exercised through the store in the integration tests).
