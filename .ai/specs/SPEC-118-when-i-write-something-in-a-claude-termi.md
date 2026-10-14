@@ -103,8 +103,13 @@ a removed sandbox, a disabled user. Those must stay immediate.
   ticking (KEY-001, KEY-004, KEY-005).
 - `crates/yulius/tests/shells.rs` `shell_keystrokes_never_wait_for_a_permission_check` (the same for
   a shell) and the existing `a_task_shell_stops_taking_input_once_the_task_is_handed_over` (KEY-002).
-- `crates/yulius/tests/task_ownership.rs` `a_hand_over_refuses_the_previous_owners_next_keystroke`
+- `crates/yulius/tests/task_ownership.rs` `a_hand_over_refuses_the_previous_owners_next_keystroke`,
+  `disabling_the_typist_refuses_their_next_keystroke`, `signing_out_refuses_the_next_keystroke`
   (KEY-002) and `a_downgrade_found_beside_the_input_refuses_the_next_keystroke` (KEY-003).
+- `write_grant.rs` `input_flows_while_a_re_confirmation_is_pending` and
+  `a_re_confirmation_that_fails_checks_the_next_input` (a failed re-confirmation drops the grant).
+- Not covered by a test: a periodic re-check that panics closes the viewer (no way to inject the
+  panic without a test-only hook); reviewed by reading.
 - The fake GitHub gains a `hang_permissions` switch: `repo_access` never answers while it is on.
 
 ## Decisions

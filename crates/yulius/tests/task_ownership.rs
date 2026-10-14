@@ -241,6 +241,35 @@ async fn disabling_the_typist_refuses_their_next_keystroke() -> TestResult {
     Ok(())
 }
 
+/// SPEC-118 KEY-002 (review): signing out (the web session revoked) refuses the next keystroke of
+/// a terminal opened with that session.
+#[tokio::test]
+async fn signing_out_refuses_the_next_keystroke() -> TestResult {
+    use yulius_app::model::WebSessionRecord;
+    use yulius_app::ports::store::SessionStore as _;
+    let f = fixture().await?;
+    let mut alice = auth(&f.h, "u-a").await?;
+    let now = f.h.app.now();
+    f.h.store
+        .insert_web_session(&WebSessionRecord {
+            id_hash: "alice-session".into(),
+            user_id: alice.user.id.clone(),
+            csrf_token: "csrf".into(),
+            created_at: now,
+            expires_at: now.plus_millis(60 * 60 * 1000),
+            revoked_at: None,
+        })
+        .await?;
+    alice.session_hash = Some("alice-session".into());
+    let typing = f.h.app.terminal_open(&alice, id_of(&f), None).await?;
+    let first = f.h.app.terminal_input(&alice, &typing, b"a", false).await;
+    assert!(!forbidden(&first), "{first:?}");
+    f.h.store.revoke_web_session("alice-session", now).await?;
+    let after = f.h.app.terminal_input(&alice, &typing, b"b", false).await;
+    assert!(forbidden(&after), "{after:?}");
+    Ok(())
+}
+
 /// SPEC-118 KEY-003: a grant older than 30 s is re-confirmed beside the input. A GitHub downgrade
 /// found there (the permission cache expired) refuses the keystrokes after the one that found it.
 #[tokio::test]

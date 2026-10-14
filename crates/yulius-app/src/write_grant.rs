@@ -44,8 +44,8 @@ impl WriteGrant {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// What to do with input at access epoch `epoch` and time `now_ms`. At most one background
-    /// re-confirmation runs at a time.
+    /// What to do with input at access epoch `epoch` and time `now_ms`. While a background
+    /// re-confirmation is pending, no other is asked for.
     pub fn decide(&self, epoch: u64, now_ms: i64) -> Decision {
         let mut state = self.state();
         match state.confirmed {
@@ -72,7 +72,8 @@ impl WriteGrant {
     /// Re-confirms the grant in a background task (a check that began at `epoch` and `at_ms`).
     /// A check that fails or is cancelled counts as a refusal, so a stuck flag never stops later
     /// re-confirmations. The task is not tied to the viewer: it ends with the check (GitHub calls
-    /// have their own timeout), at most one per grant.
+    /// have their own timeout). Normally one runs per grant; a check before the input (after an
+    /// access change) may let one more start, which costs only an extra check.
     pub fn refresh(
         self: &Arc<Self>,
         epoch: u64,
@@ -91,11 +92,6 @@ impl WriteGrant {
             let mut verdict = verdict;
             verdict.allowed = check.await;
         })
-    }
-
-    /// Drops the grant: the next input is checked first.
-    pub fn revoke(&self) {
-        self.state().confirmed = None;
     }
 }
 
@@ -208,14 +204,11 @@ mod tests {
     }
 
     #[test]
-    fn a_refusal_or_revocation_checks_the_next_input() {
+    fn a_refusal_checks_the_next_input() {
         let grant = WriteGrant::default();
         grant.settle(1, 0, true);
         assert_eq!(grant.decide(1, GRANT_REFRESH_MS), Decision::AllowAndRefresh);
         grant.settle(1, GRANT_REFRESH_MS, false);
         assert_eq!(grant.decide(1, GRANT_REFRESH_MS + 1), Decision::Check);
-        grant.settle(1, 0, true);
-        grant.revoke();
-        assert_eq!(grant.decide(1, 1), Decision::Check);
     }
 }
