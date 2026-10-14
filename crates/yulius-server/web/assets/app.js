@@ -720,6 +720,15 @@ function createApp(root, transport) {
   function openNewTask(target) {
     document.body.classList.remove('drawer-open');
     const sandbox = target || defaultSandbox();
+    // While onboarding runs, the sandbox's page is its onboarding task (SPEC-111): go there
+    // directly, not through the page that would open it again.
+    const onboarding = sandbox && sandbox.onboarding === 'preparing' && !store.tasksError(sandbox.id)
+      ? (store.tasksOf(sandbox.id) || []).find((t) => t.origin === 'onboarding') : null;
+    if (onboarding) {
+      const taskPath = `/s/${encodeURIComponent(sandbox.slug)}/t/${onboarding.number}`;
+      if (currentLocation().path !== taskPath) navigate(taskPath);
+      return;
+    }
     const path = sandbox ? `/s/${encodeURIComponent(sandbox.slug)}` : '/';
     if (currentLocation().path !== path) navigate(path);
     setTimeout(() => {
