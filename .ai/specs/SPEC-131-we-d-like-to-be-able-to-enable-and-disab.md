@@ -38,7 +38,8 @@ network or a scan, and agents report the scan as disabled, not as passed.
 - VSW-002: With `enabled = false`, `scripts/dev security` prints
   `Security scan disabled: .config/vidoc.toml sets enabled = false; nothing was scanned.` and exits
   0 before it reads the key, checks Node, installs the CLI or calls the API. Its only Git call
-  checks that the switch is committed: an uncommitted `enabled = false` exits 2.
+  checks that the switch is committed (clean in `git status` and off in `HEAD`): an uncommitted
+  `enabled = false` exits 2.
 - VSW-003: With `enabled = true`, or without the file, the gate behaves exactly as in SPEC-128.
 - VSW-004: A file that is not valid TOML, an `enabled` that is not a boolean, a missing `enabled`
   or any other key exits 2 ("not run") naming the file and the problem; the gate never guesses.
@@ -66,8 +67,10 @@ network or a scan, and agents report the scan as disabled, not as passed.
 
 - `scripts/test_vidoc_scan.py` (run by `scripts/dev check`): `switch()` for a missing file, `true`,
   `false`, invalid TOML, a string value, a missing key and an unknown key; `main()` against a
-  temporary root with the switch off (exit 0, message, no key needed) and on (exit 2 without a
-  key); the committed file is on.
+  temporary Git repository with the switch committed off (exit 0, message, no key needed) and on
+  (exit 2 without a key); `committed_switch()` with a fake Git (dirty, untracked, unreadable,
+  `HEAD` on or malformed); a real repository with an uncommitted off switch and with one hidden by
+  `--skip-worktree` (both exit 2); the committed file is on.
 - `tools/xtask/tests/cli.rs`: the existing "missing key exits 2" test runs through the committed
   switch.
 
@@ -89,3 +92,7 @@ network or a scan, and agents report the scan as disabled, not as passed.
   ADR-0107 asks its reviewer to check it changes only the switch and says why. The other minors
   (ADR-0104 cross-reference, the missing-`enabled` case in the ADR, plan ticks) and the nits
   (binary read for `tomllib`, separate messages for extra keys and a non-boolean) were fixed.
+- Review round 2 (fresh session, approved 63d74cc2) showed that `--skip-worktree` or an ignored
+  file hides an off switch from `git status`. The off path now also reads the switch from `HEAD`
+  (`git cat-file blob HEAD:.config/vidoc.toml`) and exits 2 unless it says off, and the tests'
+  temporary repositories ignore the caller's `GIT_*` variables.

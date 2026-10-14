@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
+import unittest.mock
 
 import vidoc_scan
 from vidoc_scan import Failed, Usage
@@ -140,24 +141,43 @@ class Switch(unittest.TestCase):
         self.addCleanup(lambda: [signal.signal(s, h) for s, h in previous.items()])
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            code = vidoc_scan.main(root=root, env={"PATH": os.environ.get("PATH", "")})
+            with unittest.mock.patch.dict(os.environ, self.git_env, clear=True):
+                code = vidoc_scan.main(root=root, env={"PATH": os.environ.get("PATH", "")})
         return code, out.getvalue(), err.getvalue()
+
+    # Git of the temporary repositories only, whatever GIT_* variables the suite runs under.
+    git_env = {**{k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
+               "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
 
     def committed(self, text):
         root = self.root_with(text)
-        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
         for args in (["init", "-q"], ["add", "-A"],
                      ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "switch"]):
-            subprocess.run(["git", *args], cwd=root, env=env, check=True, capture_output=True)
+            subprocess.run(["git", *args], cwd=root, env=self.git_env, check=True,
+                           capture_output=True)
         return root
 
     def test_only_a_committed_switch_turns_the_gate_off(self):
-        vidoc_scan.committed_switch(FakeGit(status=(0, "")))
-        for status in ((0, " M .config/vidoc.toml\n"), (0, "?? .config/vidoc.toml\n"),
-                       (128, "")):
-            with self.subTest(status=status), self.assertRaises(Usage) as caught:
-                vidoc_scan.committed_switch(FakeGit(status=status))
+        off = (0, "enabled = false\n")
+        vidoc_scan.committed_switch(FakeGit(status=(0, ""), **{"cat-file": off}))
+        for answers in ({"status": (0, " M .config/vidoc.toml\n")},
+                        {"status": (0, "?? .config/vidoc.toml\n")}, {"status": (128, "")},
+                        {"cat-file": (128, "")}, {"cat-file": (0, "enabled = true\n")},
+                        {"cat-file": (0, "enabled = \n")}):
+            answers = {"cat-file": off, **answers}
+            with self.subTest(answers=answers), self.assertRaises(Usage) as caught:
+                vidoc_scan.committed_switch(FakeGit(**answers))
             self.assertIn(".config/vidoc.toml", str(caught.exception))
+
+    def test_a_switch_hidden_from_git_status_is_still_not_run(self):
+        root = self.committed("enabled = true\n")
+        subprocess.run(["git", "update-index", "--skip-worktree", ".config/vidoc.toml"], cwd=root,
+                       env=self.git_env, check=True)
+        (root / ".config" / "vidoc.toml").write_text("enabled = false\n")
+        code, out, err = self.run_main(root)
+        self.assertEqual(code, 2)
+        self.assertNotIn("disabled", out)
+        self.assertIn("committed", err)
 
     def test_an_uncommitted_off_switch_is_not_run(self):
         root = self.committed("enabled = true\n")

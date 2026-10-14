@@ -94,29 +94,41 @@ class HttpError(Exception):
 def switch(root):
     """Whether the gate is on: `enabled` in `.config/vidoc.toml`, the only key; no file means on."""
     try:
-        with (root / SWITCH).open("rb") as file:
-            config = tomllib.load(file)
+        text = (root / SWITCH).read_bytes().decode("utf-8")
     except FileNotFoundError:
         return True
-    except (OSError, tomllib.TOMLDecodeError) as err:
+    except (OSError, UnicodeDecodeError) as err:
         raise Usage(f"{SWITCH} cannot be read: {err}") from err
+    return _parse_switch(text, SWITCH)
+
+
+def _parse_switch(text, where):
+    try:
+        config = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as err:
+        raise Usage(f"{where} cannot be read: {err}") from err
     if set(config) - {"enabled"}:
-        raise Usage(f"{SWITCH} has unexpected keys {sorted(set(config) - {'enabled'})}; "
+        raise Usage(f"{where} has unexpected keys {sorted(set(config) - {'enabled'})}; "
                     "it holds only enabled = true or enabled = false")
     if not isinstance(config.get("enabled"), bool):
-        raise Usage(f"{SWITCH} must set enabled = true or enabled = false, "
+        raise Usage(f"{where} must set enabled = true or enabled = false, "
                     f"not {config.get('enabled')!r}")
     return config["enabled"]
 
 
 def committed_switch(git):
-    """Only a committed switch turns the gate off: an edit in the working tree does not count."""
+    """Only a committed switch turns the gate off: an edit in the working tree does not count, nor
+    one that `git status` cannot see (skip-worktree, an ignored file), so HEAD must say off too."""
     code, output = git("status", "--porcelain", "--untracked-files=all", "--", SWITCH)
     if code != 0:
         raise Usage(f"cannot tell whether {SWITCH} is committed (git status exit {code})")
     if output.strip():
         raise Usage(f"{SWITCH} turns the gate off in an uncommitted change; commit it in a "
                     "reviewed pull request, or restore it")
+    code, text = git("cat-file", "blob", f"HEAD:{SWITCH}")
+    if code != 0 or _parse_switch(text, f"HEAD:{SWITCH}"):
+        raise Usage(f"{SWITCH} turns the gate off, but the switch committed in HEAD does not; "
+                    "commit it in a reviewed pull request, or restore it")
 
 
 def settings(env):

@@ -8,8 +8,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - The Vidoc security gate can be turned off and on (SPEC-131, ADR-0107, task #119). `enabled` in
   `.config/vidoc.toml` is committed as `true`; with `false`, `scripts/dev security` exits 0 at once
-  and says nothing was scanned, and agents report the scan as disabled. A missing file means on;
-  a malformed one exits 2.
+  and says nothing was scanned, and agents report the scan as disabled. Only a committed `false`
+  counts: an uncommitted one exits 2. A missing file means on; a malformed one exits 2.
 - Agents scan every change with Vidoc before delivery (SPEC-128, ADR-0104, task #109).
   `scripts/dev security` runs the Vidoc CLI pinned in `tools/vidoc` on the current branch. Vidoc
   scans the files that the branch changed since `dev`, and the command fails when the branch has
