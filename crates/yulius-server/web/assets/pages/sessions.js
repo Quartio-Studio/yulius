@@ -298,6 +298,24 @@ export function metaLines(text) {
     : line)).filter((line) => line.text);
 }
 
+// A note longer than this is context the TUI does not print (a skill's body, hook context): folded
+// (SPEC-090). Notes people act on, such as the Stop hook's goal and feedback, are at most 4 lines.
+const NOTE_FOLD_LINES = 8;
+const NOTE_FOLD_CHARS = 2000;
+
+/** Whether a meta note folds to one `⎿ Context added (size)` line: over 8 lines or 2,000 characters. */
+export function foldsNote(text) {
+  const value = String(text || '');
+  return value.length > NOTE_FOLD_CHARS || linesOf(value).length > NOTE_FOLD_LINES;
+}
+
+const utf8 = new TextEncoder();
+
+/** A long meta note as one faint line that opens to the text as recorded. */
+const foldedNote = (text) => h('details', { class: 'ss-fold ss-note' },
+  h('summary', null, tuiLine('⎿', `Context added (${bytes(utf8.encode(text).length)})`, { kind: 'out', className: 'ss-out' })),
+  h('div', { class: 'ss-meta ss-dim ss-note-text', ...scroller(text, 'Added context') }, text));
+
 const parsedMeta = new WeakMap(); // meta block → its lines, parsed once
 
 /** `metaLines` of a meta block. */
@@ -349,7 +367,7 @@ function block(item, results, role) {
         if (line.kind === 'command') return tuiLine('>', line.text, { kind: 'prompt', className: 'ss-prompt' });
         if (line.kind === 'shell') return tuiLine('!', line.text, { kind: 'shell', className: 'ss-prompt' });
         if (line.kind === 'out' || line.kind === 'err') return outLines(linesOf(line.text), line.kind === 'err' && 'ss-out-err');
-        return h('div', { class: 'ss-meta ss-dim' }, line.text);
+        return foldsNote(line.text) ? foldedNote(line.text) : h('div', { class: 'ss-meta ss-dim' }, line.text);
       });
       return lines.length ? h('div', { class: 'ss-block' }, lines) : null;
     }

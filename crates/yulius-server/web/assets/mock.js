@@ -2558,6 +2558,8 @@ function sessionDocs(db) {
     entry(10, 'user', [meta('A session-scoped Stop hook is now active with condition: "Payment webhook ships on green CI".')]),
     entry(11, 'assistant', [call('w9', 'Write', 'src/webhooks/fixtures.ts', { file_path: 'src/webhooks/fixtures.ts' }, { path: 'src/webhooks/fixtures.ts', hunks: [{ old: '', new: Array.from({ length: 60 }, (_, i) => `export const event${i} = { id: 'evt_${i}', type: 'checkout.session.completed' };`).join('\n') }] })]),
     entry(12, 'user', [result('w9', 'File created successfully at: src/webhooks/fixtures.ts')]),
+    // A skill's body, loaded as context (SPEC-090): the TUI does not print it.
+    entry(13, 'user', [meta(['Base directory for this skill: /home/dev/.claude/skills/retry-policy', '', '# Retry policy', '', ...Array.from({ length: 36 }, (_, i) => `- Rule ${i + 1}: back off before attempt ${i + 2}.`)].join('\n'))]),
   ];
   const task = (id, number) => db.tasks.find((t) => t.id === id && t.number === number);
   const docs = [];
