@@ -303,6 +303,12 @@ pub trait GitPort: Send + Sync {
         let _ = repo;
         unsupported("pruning worktrees")
     }
+    /// Creates an empty bare repository at the absolute `path` whose first branch is `branch`:
+    /// a playground's `origin` (SPEC-099).
+    async fn init_bare(&self, path: &Path, branch: &str) -> AppResult<()> {
+        let _ = (path, branch);
+        unsupported("creating a repository")
+    }
     /// Imports a bundle's refs under `refs/heads/<prefix>/…`.
     async fn import_bundle(
         &self,

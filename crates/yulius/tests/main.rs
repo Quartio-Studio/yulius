@@ -45,6 +45,7 @@ mod mcp_coordination;
 mod merge_train;
 mod metrics_recount;
 mod notes;
+mod playground;
 mod pool_supervision;
 mod preview;
 mod projects;

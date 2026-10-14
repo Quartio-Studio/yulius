@@ -1,0 +1,206 @@
+//! Playgrounds (SPEC-099, ADR-0081): a team tries Yulius on its own code before it connects
+//! GitHub. A playground is a sandbox whose `origin` is a bare repository in its own sandbox
+//! directory (`<sandbox>/origin.git`), so the clone, worktrees and merges work as with GitHub
+//! while the code never leaves the server. The record marks it with an empty repository owner
+//! ([`SandboxRecord::is_playground`]); it is its maker's (and the superadmin's), its onboarding is
+//! `not_needed`, and Yulius never calls GitHub for it.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use yulius_domain::delivery::DeliveryProfile;
+use yulius_domain::ids::SandboxId;
+use yulius_domain::spec_format::{TemplateKind, scaffold_files};
+
+use crate::context::App;
+use crate::error::{AppError, AppResult};
+use crate::model::{SandboxRecord, Secret, UserRecord};
+use crate::projects::{PORT_RANGE_SIZE, Scaffold, profile_view, remove_tree, slug_base};
+
+/// The note a playground's delivery views carry instead of a GitHub error (PLY-008).
+pub const PLAYGROUND_NOTE: &str = "This playground keeps its Git on this server: no pull \
+     requests; `delivery_merge` squashes a task into the integration branch here.";
+
+/// Git transport needs no credential for a playground's own `origin`; nothing is sent anywhere.
+pub(crate) fn no_token() -> Secret {
+    Secret(String::new())
+}
+
+/// A playground's name: its slug base (lowercase letters, digits and `-`), from what the person
+/// typed or the uploaded folder's name.
+///
+/// # Errors
+/// `Invalid` when nothing is typed.
+pub fn playground_name(raw: &str) -> AppResult<String> {
+    if raw.trim().is_empty() {
+        return Err(AppError::Invalid("a playground needs a name".into()));
+    }
+    Ok(slug_base(raw.trim()))
+}
+
+impl App {
+    /// The bare repository that is a playground's `origin` (absolute: containment binds the
+    /// sandbox directory at the same path, so the agents' Git finds it too).
+    pub(crate) fn playground_origin(&self, sandbox: &SandboxId) -> PathBuf {
+        let dir = self.sandbox_dir(sandbox).join("origin.git");
+        std::path::absolute(&dir).unwrap_or(dir)
+    }
+
+    /// `origin`'s URL for `sandbox`'s clone: the playground's own bare repository, else GitHub.
+    pub(crate) fn origin_url(&self, sandbox: &SandboxRecord) -> String {
+        if sandbox.is_playground() {
+            self.playground_origin(&sandbox.id)
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            crate::projects::clone_url(&sandbox.repo_owner, &sandbox.repo_name)
+        }
+    }
+
+    /// `POST /api/sandboxes` `{mode: "playground"}` (PLY-001): a playground from a template, for
+    /// anyone signed in, with or without GitHub.
+    ///
+    /// # Errors
+    /// `Invalid` for an empty name or an unknown template; Git failures (nothing stays behind).
+    pub(crate) async fn playground_from_template(
+        self: &Arc<Self>,
+        user: &UserRecord,
+        name: &str,
+        template: &str,
+    ) -> AppResult<SandboxRecord> {
+        let kind = TemplateKind::parse(template).ok_or_else(|| {
+            AppError::Invalid(format!(
+                "unknown template {template}; choose one of {}",
+                TemplateKind::ALL
+                    .iter()
+                    .map(|kind| kind.id())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        })?;
+        let name = playground_name(name)?;
+        let id = SandboxId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?;
+        let profile = DeliveryProfile::standard();
+        let files = scaffold_files(&name, kind);
+        let seeded = self
+            .seed_from_template(&id, &name, kind, &files, &profile, user)
+            .await;
+        if let Err(err) = seeded {
+            remove_tree(self.sandbox_dir(&id)).await;
+            return Err(err);
+        }
+        self.record_playground(
+            id,
+            &name,
+            &profile,
+            user,
+            &format!("template={}", kind.id()),
+        )
+        .await
+    }
+
+    /// The bare `origin`, the template's scaffold pushed to the production and integration
+    /// branches (as for a GitHub repository), and the sandbox clone.
+    async fn seed_from_template(
+        &self,
+        id: &SandboxId,
+        name: &str,
+        template: TemplateKind,
+        files: &[(String, String)],
+        profile: &DeliveryProfile,
+        user: &UserRecord,
+    ) -> AppResult<()> {
+        let origin = self.playground_origin(id);
+        self.deps
+            .git
+            .init_bare(&origin, &profile.production_branch)
+            .await?;
+        let url = origin.to_string_lossy().into_owned();
+        self.push_scaffold(
+            id,
+            &Scaffold {
+                url: &url,
+                name,
+                files,
+                template,
+                profile,
+                user,
+            },
+            &no_token(),
+        )
+        .await?;
+        self.clone_playground(id, &origin).await
+    }
+
+    /// Clones a playground's `origin` into its sandbox repository.
+    async fn clone_playground(&self, id: &SandboxId, origin: &Path) -> AppResult<()> {
+        self.deps
+            .git
+            .sync_clone(
+                &origin.to_string_lossy(),
+                &self.sandbox_repo(id),
+                &no_token(),
+            )
+            .await
+    }
+
+    /// Records a seeded playground as a sandbox (its slug and name unique), audits it and tells
+    /// viewers. On failure its directory is removed.
+    async fn record_playground(
+        &self,
+        id: SandboxId,
+        name: &str,
+        profile: &DeliveryProfile,
+        user: &UserRecord,
+        detail: &str,
+    ) -> AppResult<SandboxRecord> {
+        let record = SandboxRecord {
+            id: id.clone(),
+            slug: String::new(),
+            repo_owner: String::new(),
+            repo_name: name.to_owned(),
+            github_repo_id: None,
+            default_branch: profile.production_branch.clone(),
+            profile_json: serde_json::to_string(&profile_view(profile))
+                .map_err(AppError::internal)?,
+            port_base: 0,
+            port_count: PORT_RANGE_SIZE,
+            onboarding_state: "not_needed".into(),
+            onboarding_task_id: None,
+            created_by: user.id.clone(),
+            created_at: self.now(),
+            removed_at: None,
+        };
+        let record = match self.insert_sandbox_unique(record).await {
+            Ok(record) => record,
+            Err(err) => {
+                remove_tree(self.sandbox_dir(&id)).await;
+                return Err(err);
+            }
+        };
+        self.deps
+            .store
+            .audit(
+                self.now(),
+                &self.login_of(&user.id).await,
+                "sandbox.playground",
+                Some(record.id.as_str()),
+                Some(&format!("{} {detail}", record.slug)),
+            )
+            .await?;
+        self.publish_resync(Some(record.id.clone()));
+        Ok(record)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_playground_is_named_by_its_slug() {
+        assert_eq!(playground_name("My Shop").ok().as_deref(), Some("my-shop"));
+        assert_eq!(playground_name("  ✨ ").ok().as_deref(), Some("project"));
+        assert!(playground_name("   ").is_err());
+    }
+}

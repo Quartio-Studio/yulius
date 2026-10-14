@@ -1094,12 +1094,16 @@ impl App {
                 "the sandbox repository is not cloned yet".into(),
             ));
         }
-        let token = self.dlv_installation_token(sandbox).await?;
-        let url = format!(
-            "https://github.com/{}/{}.git",
-            sandbox.repo_owner, sandbox.repo_name
-        );
-        self.deps.git.sync_clone(&url, &repo, &token).await
+        // A playground fetches its own `origin` on this server, with no token (SPEC-099).
+        let token = if sandbox.is_playground() {
+            crate::playground::no_token()
+        } else {
+            self.dlv_installation_token(sandbox).await?
+        };
+        self.deps
+            .git
+            .sync_clone(&self.origin_url(sandbox), &repo, &token)
+            .await
     }
 
     pub(crate) async fn dlv_audit(&self, actor: &str, action: &str, target: &str, detail: &str) {

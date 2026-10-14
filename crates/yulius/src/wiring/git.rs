@@ -110,6 +110,18 @@ impl GitPort for GitAdapter {
         .await
     }
 
+    async fn init_bare(&self, path: &Path, branch: &str) -> AppResult<()> {
+        let (git, path, branch) = (self.git(), path.to_path_buf(), branch.to_owned());
+        blocking(move || {
+            std::fs::create_dir_all(&path).map_err(|source| GitError::Io {
+                context: "creating the repository directory",
+                source,
+            })?;
+            git.init(&path, &branch, true)
+        })
+        .await
+    }
+
     async fn default_branch(&self, repo: &Path) -> AppResult<String> {
         let (git, repo) = (self.git(), repo.to_path_buf());
         blocking(move || git.default_branch(&repo)).await
