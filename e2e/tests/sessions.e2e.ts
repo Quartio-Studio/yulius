@@ -378,6 +378,60 @@ test('the spider web sticks to the top of the view while the session scrolls', a
   expect(after.inWell).toBe(true);
 });
 
+// Task #86 (SPEC-101): "spider should be animated". On its loop the spider climbs its thread in
+// pixel steps, the thread shortening with it, its legs switching frames, and drops back; it rests
+// where SPEC-075 drew it, and keeps still for people who asked for reduced motion.
+test('the spider climbs its thread and drops back, and keeps still under reduced motion', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/sessions/ses_imp_checkout'));
+  await expect(browser.locator('.ss-tui .ss-locked')).toBeVisible();
+  // Seek every animation of the spider to a fraction of its loop and measure it in pixels.
+  const at = (fraction: number) => browser.evaluate((f) => {
+    const svg = document.querySelector('.ss-tui > svg.ss-web')!;
+    const spider = svg.querySelector('.ss-web-spider')!;
+    const silk = svg.querySelector('.ss-web-silk')!;
+    const animations = [spider, silk, ...svg.querySelectorAll('.ss-web-legs')].flatMap((el) => el.getAnimations());
+    for (const a of animations) {
+      a.pause();
+      a.currentTime = f * Number(a.effect!.getComputedTiming().duration);
+    }
+    const frame = svg.getBoundingClientRect();
+    const pixel = frame.height / 34;
+    const s = spider.getBoundingClientRect();
+    const t = silk.getBoundingClientRect();
+    const shown = (selector: string) => getComputedStyle(svg.querySelector(selector)!).visibility === 'visible';
+    return {
+      animations: animations.length,
+      spiderTop: Math.round((s.top - frame.top) / pixel),
+      silk: Math.round(t.height / pixel),
+      silkEnd: Math.round((t.top - frame.top) / pixel),
+      legs: shown('.ss-web-legs-a') && !shown('.ss-web-legs-b') ? 'a' : shown('.ss-web-legs-b') && !shown('.ss-web-legs-a') ? 'b' : 'both or none',
+    };
+  }, fraction);
+
+  const rest = await at(0);
+  expect(rest.animations).toBe(4);
+  expect(rest).toMatchObject({ spiderTop: 29, silk: 17, silkEnd: 12, legs: 'a' });
+  expect(await at(0.53)).toMatchObject({ legs: 'b' });
+  expect(await at(0.55)).toMatchObject({ legs: 'a' });
+  expect(await at(0.7)).toMatchObject({ spiderTop: 23, silk: 11, silkEnd: 12, legs: 'a' });
+  expect(await at(0.83)).toMatchObject({ legs: 'b' });
+  expect(await at(0.99)).toMatchObject({ spiderTop: 29, silk: 17, legs: 'a' });
+
+  // The reduced-motion rule stops each of them (the harness cannot emulate the media query).
+  const still = await browser.evaluate(() => {
+    const stopped: string[] = [];
+    const visit = (rules: CSSRuleList, reduced: boolean) => {
+      for (const rule of rules) {
+        if (rule instanceof CSSMediaRule) visit(rule.cssRules, reduced || rule.conditionText.includes('prefers-reduced-motion: reduce'));
+        else if (reduced && rule instanceof CSSStyleRule && rule.style.animationName === 'none') stopped.push(rule.selectorText);
+      }
+    };
+    for (const sheet of document.styleSheets) visit(sheet.cssRules, false);
+    return stopped.join(', ');
+  });
+  for (const part of ['.ss-web-spider', '.ss-web-silk', '.ss-web-legs']) expect(still).toContain(part);
+});
+
 // F 2026-10-13 (SPEC-086): "Sessions are beautiful but should be always 100% width and not only
 // when minimised. Even left and right margin of the session window and border radius should be
 // thrown out to make it look similar to the original session." The well spans the content area

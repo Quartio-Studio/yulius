@@ -2153,8 +2153,25 @@ button.task-group-head:hover { color: var(--text); }
 /* The web floats in the well's corner and sticks there while the page scrolls (SPEC-101): the first
    lines wrap beside it, later ones (positioned entries, after it) paint over its dim threads. */
 .ss-web { position: sticky; top: 0; float: right; width: 84px; height: 102px; margin: -16px -32px 8px 16px; pointer-events: none; } /* 3 px pixels, in the well's corner */
-.ss-web-thread { fill: var(--session-web); }
+.ss-web-thread, .ss-web-silk { fill: var(--session-web); }
 .ss-web-spider { fill: var(--session-dim); }
+/* Every 8 s the spider climbs 6 pixels up its thread, one pixel a step, hangs there and drops back,
+   its legs switching frames on each step (SPEC-101); the thread shortens with it, from its top. */
+.ss-web-spider { animation: ss-spider-climb 8s steps(6, end) infinite; }
+.ss-web-silk { transform-box: fill-box; transform-origin: top; animation: ss-spider-silk 8s steps(6, end) infinite; }
+.ss-web-legs-a { animation: ss-spider-legs-a 8s steps(1, end) infinite; }
+.ss-web-legs-b { visibility: hidden; animation: ss-spider-legs-b 8s steps(1, end) infinite; }
+@keyframes ss-spider-climb { 0%, 50% { transform: none; } 62%, 80% { transform: translateY(-6px); } 92%, 100% { transform: none; } }
+@keyframes ss-spider-silk { 0%, 50% { transform: none; } 62%, 80% { transform: scaleY(var(--ss-silk-top)); } 92%, 100% { transform: none; } }
+@keyframes ss-spider-legs-a {
+  0%, 54%, 58%, 62%, 84%, 88%, 92%, 100% { visibility: visible; }
+  52%, 56%, 60%, 82%, 86%, 90% { visibility: hidden; }
+}
+@keyframes ss-spider-legs-b {
+  0%, 54%, 58%, 62%, 84%, 88%, 92%, 100% { visibility: hidden; }
+  52%, 56%, 60%, 82%, 86%, 90% { visibility: visible; }
+}
+@media (prefers-reduced-motion: reduce) { .ss-web-spider, .ss-web-silk, .ss-web-legs { animation: none; } }
 .ss-locked { display: flex; align-items: center; gap: 1ch; padding: 6px 1ch; border: 1px solid var(--session-border); border-radius: var(--radius); color: var(--session-dim); cursor: not-allowed; }
 .ss-locked > .icon { flex: none; }
 /* content-visibility clips paint at the entry's edge: what highlights it (focus, the search target,

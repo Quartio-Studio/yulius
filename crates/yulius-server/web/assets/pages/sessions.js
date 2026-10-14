@@ -377,16 +377,19 @@ function block(item, results, role) {
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
+/** How many pixels the spider climbs its thread (`ss-spider-climb` in styles.css climbs as many). */
+const SPIDER_CLIMB = 6;
 
 /**
  * A spider web in pixel art for the well's top-right corner (SPEC-075): threads from the corner,
- * rings between them and a spider hanging from one, as rows of square pixels.
+ * rings between them and a spider hanging from one, as rows of square pixels. The spider and its
+ * thread are groups of their own, so the stylesheet can make it climb (SPEC-101): its thread is
+ * one rect that shortens by `--ss-silk-top`, and its legs are two frames.
  */
 function spiderWeb() {
   const width = 28;
   const height = 34;
   const web = new Set();
-  const spider = new Set();
   const plot = (into, x, y) => { if (x >= 0 && x < width && y >= 0 && y < height) into.add(`${x},${y}`); };
   const line = (into, x0, y0, x1, y1) => { // Bresenham
     const dx = Math.abs(x1 - x0);
@@ -411,26 +414,41 @@ function spiderWeb() {
     for (let i = 0; i + 1 < angles.length; i += 1) line(web, ...at(angles[i], r), ...at(angles[i + 1], r));
   }
   const [hx, hy] = at(angles[2], 15);
-  line(web, hx, hy, hx, 28);
-  ['.#...#.', '..###..', '#######', '..###..', '.#...#.'].forEach((row, dy) => [...row].forEach((c, dx) => { if (c === '#') plot(spider, hx - 3 + dx, 29 + dy); }));
-  const svg = document.createElementNS(SVG_NS, 'svg');
-  for (const [name, value] of Object.entries({ class: 'ss-web', viewBox: `0 0 ${width} ${height}`, 'aria-hidden': 'true', focusable: 'false', 'shape-rendering': 'crispEdges' })) svg.setAttribute(name, value);
+  const body = 29; // the spider's top row at rest
+  const sprite = (rows) => {
+    const cells = new Set();
+    rows.forEach((row, dy) => [...row].forEach((c, dx) => { if (c === '#') plot(cells, hx - 3 + dx, body + dy); }));
+    return cells;
+  };
+  const spider = sprite(['.......', '..###..', '#######', '..###..', '.......']);
+  const legs = [sprite(['.#...#.', '', '', '', '.#...#.']), sprite(['#.....#', '', '', '', '#.....#'])];
+  const el = (name, attributes, ...children) => {
+    const node = document.createElementNS(SVG_NS, name);
+    for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, String(value));
+    node.append(...children);
+    return node;
+  };
   const pixels = (cells, className) => {
+    const rects = [];
     for (let y = 0; y < height; y += 1) {
       for (let x = 0; x < width; x += 1) {
         if (!cells.has(`${x},${y}`)) continue;
         let run = 1;
         while (cells.has(`${x + run},${y}`)) run += 1;
-        const rect = document.createElementNS(SVG_NS, 'rect');
-        for (const [name, value] of Object.entries({ class: className, x, y, width: run, height: 1 })) rect.setAttribute(name, String(value));
-        svg.append(rect);
+        rects.push(el('rect', { class: className, x, y, width: run, height: 1 }));
         x += run - 1;
       }
     }
+    return rects;
   };
-  for (const cell of spider) web.delete(cell);
-  pixels(web, 'ss-web-thread');
-  pixels(spider, 'ss-web-spider');
+  for (const cell of [...spider, ...legs[0]]) web.delete(cell);
+  // The thread it hangs by, from below the hub to just above it; it climbs SPIDER_CLIMB pixels.
+  const silk = body - 1 - hy;
+  const svg = el('svg', { class: 'ss-web', viewBox: `0 0 ${width} ${height}`, 'aria-hidden': 'true', focusable: 'false', 'shape-rendering': 'crispEdges' },
+    ...pixels(web, 'ss-web-thread'),
+    el('rect', { class: 'ss-web-silk', x: hx, y: hy + 1, width: 1, height: silk }),
+    el('g', { class: 'ss-web-spider' }, ...pixels(spider, 'ss-web-body'), el('g', { class: 'ss-web-legs ss-web-legs-a' }, ...pixels(legs[0], 'ss-web-leg')), el('g', { class: 'ss-web-legs ss-web-legs-b' }, ...pixels(legs[1], 'ss-web-leg'))));
+  svg.style.setProperty('--ss-silk-top', String((silk - SPIDER_CLIMB) / silk));
   return svg;
 }
 
