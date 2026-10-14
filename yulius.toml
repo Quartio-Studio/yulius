@@ -46,6 +46,16 @@ command = "python3 scripts/bootstrap.py --install-rustup && scripts/dev ci"
 name = "e2e"
 command = "cd e2e && npm ci --ignore-scripts && npx e2e-web install chromium && E2E_TELEMETRY_DISABLED=1 npx e2e run --reporter list,junit"
 
+# CD (deployment), SPEC-134: Yulius runs these from the protected branches, inside the sandbox
+# (CD page, `cd_deploy`). Both are explicit, even when one deploys nothing yet. A merge deploys
+# nothing; only a person deploys production (ADR-0110).
+[cd.dev]
+about = "No dev machine yet: once a person adds its credentials to the vault, an agent writes scripts/cd/ and fills this in"
+
+[cd.prod]
+about = "A push to main is the release: instances update themselves from main (Settings, Instance, Update now)"
+promote = true
+
 # Build caches beyond the recognised ones (SPEC-008): pruned for tasks that do not work.
 [disk]
 caches = "e2e/node_modules tools/vidoc/node_modules"

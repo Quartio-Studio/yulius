@@ -15,11 +15,14 @@ flowchart LR
     APP["Application services"]
     SUP["Session supervisor"]
     CI["Yulius CI runner"]
+    CD["Yulius CD runner"]
     DB[("SQLite WAL")]
   end
   API --- APP --- DB
   APP --- SUP
   APP --- CI
+  APP --- CD
+  CD -->|"deploy + verify, allowed secrets"| SB
   APP -->|"prune caches, quota"| SB
   SUP <-->|"Unix socket"| PH["yulius ptyhost (per run)"]
   subgraph SB["Sandbox (namespace holder)"]
@@ -452,6 +455,47 @@ sequenceDiagram
     UI->>App: POST agent-secrets/{id}/request {allow: true}
     A->>X: request to api.vidoc.com with the placeholder
     X-->>A: placeholder replaced by the value, response redacted
+```
+
+## CD (deployment)
+
+CD runs a project's deploy and verify scripts like CI runs its checks
+([SPEC-134](../.ai/specs/SPEC-134-implement-cd-it-should-write-cd-bash-scr.md), ADR-0109,
+ADR-0110, ADR-0111). `yulius.toml` defines `[cd.dev]` and `[cd.prod]`; Yulius reads them only at the
+heads of the protected branches (`crates/yulius-app/src/ci/cd.rs`), so a task branch or a worktree
+never changes what a deploy runs. `yulius_domain::cd::authorize` decides who may deploy: dev a
+person with write access or an agent (`cd_deploy`), production only an administrator who typed the
+project's slug. A run checks the commit out into the environment's own checkout and runs through
+the process host inside the sandbox's containment, the same way as a CI job (`ci_watch`), with the
+secrets a person allowed outside the proxy; its output is redacted before it is stored in
+`cd_runs`. A run has no lane and no retry: a deploy is not assumed repeatable, so one left by a
+restart is recorded as an error. `needs_you` (table column `tasks.needs_you`) puts a task in Needs
+you until a person writes to it.
+
+```mermaid
+sequenceDiagram
+    participant A as Agent or person
+    participant App as Yulius (CD)
+    participant G as Git clone
+    participant V as Vault
+    participant S as Sandbox (process host)
+    A->>App: deploy dev (cd_deploy / CD page)
+    App->>App: authorize (production: administrator + typed slug)
+    App->>G: fetch, read [cd.dev] at origin/dev head
+    App->>V: values of the named secrets (allowed outside the proxy)
+    V-->>App: values, or "nothing ran: a person allows …"
+    App->>App: record the run (cd_runs) and audit cd.deploy
+    App->>S: checkout head, run deploy then verify
+    S-->>App: output (redacted), exit status
+    App->>App: passed / failed / error, audit cd.finished
+```
+
+```mermaid
+flowchart LR
+  M["merge into dev"] -->|"deploys nothing"| DEV
+  DEV["dev: [cd.dev] at the dev head"] -.->|"cd_deploy, CD page, nightly automation"| RUN1["CD run"]
+  P["a person on the CD page, slug typed"] --> PROMO["promote dev into main"] --> PROD["prod: [cd.prod] at the main head"] --> RUN2["CD run"]
+  AG["agent"] -.->|"refused"| P
 ```
 
 ## Keys in .env

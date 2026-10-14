@@ -1254,6 +1254,17 @@ mod tests {
         Ok(())
     }
 
+    /// SPEC-134 CDK-004: Yulius defines its own CD: dev explicitly empty, production a promotion.
+    #[test]
+    fn the_repositorys_own_cd_is_defined() -> TestResult {
+        let cd = parse_yulius_toml_cd(include_str!("../../../../yulius.toml"))?;
+        assert!(cd.is_defined());
+        assert_eq!(cd.state(CdEnv::Dev), CdState::Empty);
+        let prod = cd.prod.as_ref().ok_or("prod")?;
+        assert!(prod.promote && prod.deploy.is_none());
+        Ok(())
+    }
+
     /// SPEC-134 CDC-001: every invalid form names its line.
     #[test]
     fn cd_tables_refuse_what_cannot_run() {

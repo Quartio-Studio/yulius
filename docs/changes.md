@@ -4,6 +4,24 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-15
+
+- CD (deployment) runs beside CI, with the same discipline (SPEC-134, ADR-0109..0111, task #113).
+  Every project defines dev and production in `yulius.toml`, as `[cd.dev]` and `[cd.prod]`. Each
+  has deploy and verify scripts committed under `scripts/cd/`, or is explicitly empty while it
+  deploys nothing yet. Yulius reads the tables only at the heads of the protected branches, so a
+  task branch or a worktree never changes what a deploy runs. It runs them inside the sandbox
+  like a CI job, with the real values of the agent secrets a person allowed outside the proxy,
+  and stores a redacted output. A merge deploys nothing. Dev is deployed by a person on the new
+  CD (deployment) page, by an agent with `cd_deploy` (and `yulius wait`), or by the ready-made
+  "Deploy dev every night" automation, which also tests it. Production, with its promotion, is
+  only an administrator's, who types the project's slug. Agents lost `delivery_promote` and can no
+  longer run production-stage environments. A new tool, `needs_you`, lets an agent put its task
+  in Needs you ("Needs you: <action>") until a person writes to it. Onboarding finds how a project
+  deploys today and writes it down this way, and "Set up CD with an agent" does the same later
+  through a task. Yulius itself: dev empty (no dev machine yet), production the push to `main`
+  that instances install by themselves. Task #112, the archived first attempt, left nothing behind.
+
 ## 2026-10-14
 
 - Keys have a default place: a git-ignored `.env` beside a tracked `.env.example` (SPEC-129,
