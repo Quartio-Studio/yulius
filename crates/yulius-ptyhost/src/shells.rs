@@ -47,6 +47,9 @@ pub struct ProcessEntry {
     pub shell: bool,
     /// The process is `yulius wait` ([`is_yulius_wait`]).
     pub waits: bool,
+    /// The process is the init of a PID namespace (the sandbox's `bwrap`): it adopts the orphans
+    /// of the processes in that namespace.
+    pub ns_init: bool,
 }
 
 /// Whether a command line (raw `/proc` bytes or `ps` text) is a Claude Code Bash tool shell.
@@ -229,6 +232,7 @@ mod imp {
                     ppid: pid,
                     shell: is_agent_shell(&line),
                     waits: is_yulius_wait(&line),
+                    ns_init: false,
                 });
                 queue.push_back((kid, depth + 1));
             }
@@ -269,6 +273,7 @@ mod imp {
                         ppid,
                         shell,
                         waits,
+                        ns_init: false,
                     });
                 }
             }
@@ -311,6 +316,7 @@ mod imp {
                     ppid: ppid.parse().ok()?,
                     shell: is_agent_shell(command.as_bytes()),
                     waits: is_yulius_wait(command.as_bytes()),
+                    ns_init: false,
                 })
             })
             .collect()
@@ -365,6 +371,15 @@ mod tests {
             ppid,
             shell,
             waits: false,
+            ns_init: false,
+        }
+    }
+
+    /// The init of a PID namespace (the sandbox's inner `bwrap`).
+    fn ns_init(pid: u32, ppid: u32) -> ProcessEntry {
+        ProcessEntry {
+            ns_init: true,
+            ..entry(pid, ppid, false)
         }
     }
 
@@ -374,6 +389,7 @@ mod tests {
             ppid,
             shell: false,
             waits: true,
+            ns_init: false,
         }
     }
 
@@ -451,6 +467,39 @@ mod tests {
         assert_eq!(count_shells(&table, 11), 1);
         // A self-parented entry (a racy read) does not loop.
         assert_eq!(count_shells(&[entry(5, 5, true), entry(6, 5, true)], 5), 1);
+    }
+
+    /// #473 (task #108 on 2026-10-14: Done, read Working for 10 minutes until it was closed): in
+    /// the sandbox the probe's root is `bwrap`. A foreground command's backgrounded subshell
+    /// (`(cd web && python3 -m http.server 20100 &)`) keeps the wrapper's command line and outlives
+    /// it; the namespace's init adopts it. It is no shell of the agent's: neither it nor anything
+    /// under it counts, while the agent's own shells still do.
+    #[test]
+    fn an_orphan_the_sandbox_adopted_is_no_background_shell() {
+        let table = vec![
+            ns_init(11, 10),      // the sandbox's init, below the probe's root (the outer bwrap)
+            entry(12, 11, false), // the agent
+            entry(13, 12, true),  // its background shell (Claude Code's scrub-exec wrapper)
+            entry(14, 13, true),  // the wrapper's bash: inside the counted one
+            entry(20, 11, true),  // the orphaned subshell, adopted by the init
+            entry(21, 20, false), // the server it started
+            entry(22, 20, true),  // a subshell of the orphan
+            ProcessEntry {
+                waits: true,
+                ..entry(23, 11, true) // an orphaned `yulius wait` shell
+            },
+        ];
+        assert_eq!(
+            count_background(&table, 10),
+            ShellCount {
+                shells: 1,
+                waits: 0
+            }
+        );
+        assert_eq!(count_shells(&table[..4], 10), 1, "the agent's shell alone");
+        assert_eq!(count_shells(&table[..2], 10), 0, "nothing running");
+        // Unsandboxed, the root is the agent and its shells are its children.
+        assert_eq!(count_shells(&[entry(31, 30, true)], 30), 1);
     }
 
     #[test]

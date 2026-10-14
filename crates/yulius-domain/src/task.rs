@@ -815,6 +815,40 @@ mod tests {
         );
     }
 
+    /// #474 (task #109 on 2026-10-14: Done while its agent waited in `yulius wait` for the merge
+    /// it had armed, its pull request open with green checks): a complete plan and a tested pull
+    /// request do not make the task Done while its agent goes on by itself. Only an achieved goal
+    /// does.
+    #[test]
+    fn a_wait_for_the_merge_is_not_done_before_it() {
+        use Activity as A;
+        use PullSignal as P;
+        use TaskGroup as G;
+        for pull in [P::Tested, P::InReview, P::Merged] {
+            let waiting = AttentionFacts {
+                pull: Some(pull),
+                yulius_wait: true,
+                ..facts(TaskStatus::Running, Some(A::Waiting))
+            };
+            assert_eq!(waiting.group(), G::Working, "{pull:?}");
+            let achieved = AttentionFacts {
+                activity: Some(A::Done),
+                ..waiting
+            };
+            assert_eq!(achieved.group(), G::Done, "{pull:?}: the goal is achieved");
+            let stopped = AttentionFacts {
+                yulius_wait: false,
+                ..waiting
+            };
+            let expected = if pull == P::InReview {
+                G::Working
+            } else {
+                G::Done
+            };
+            assert_eq!(stopped.group(), expected, "{pull:?}: no wait");
+        }
+    }
+
     /// The sidebar's "Needs you" rule (UI-005, #147): the counts on Home and the tabs use it.
     #[test]
     fn needs_you_follows_the_sidebar_rule() {
