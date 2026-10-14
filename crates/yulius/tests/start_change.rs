@@ -296,3 +296,40 @@ async fn the_bounds_count_only_a_move_into_another_wait() -> TestResult {
     assert_eq!(body["status"], "chained", "{body}");
     Ok(())
 }
+
+/// AC-CHS-7: a rule written by a change judges the tasks that existed when it was written: a task
+/// created after the waiting task, before the change, answers for it.
+#[tokio::test]
+async fn a_changed_rule_judges_tasks_from_when_it_was_written() -> TestResult {
+    let (h, alice, _, _, _) = world().await?;
+    let waiting = created(&h, &alice, json!({"prompt": "older", "prepared": true})).await?;
+    h.clock.0.fetch_add(60_000, Ordering::SeqCst);
+    let newer = seed_task(&h, "t-newer", "s1", "u-alice", TaskStatus::Running, None).await?;
+    h.clock.0.fetch_add(60_000, Ordering::SeqCst);
+    let body = changed(
+        &h,
+        &alice,
+        &waiting,
+        json!({"start_rule": format!("#{} done", newer.number)}),
+    )
+    .await?;
+    assert_eq!(body["status"], "chained", "{body}");
+    h.app.advance_all_chains().await;
+    let still = record(&h, &waiting).await?;
+    assert_eq!(still.status, TaskStatus::Chained);
+    assert_eq!(
+        h.store
+            .chain(&still.id)
+            .await?
+            .and_then(|c| c.blocked_reason),
+        None,
+        "#{} has not ended",
+        newer.number
+    );
+    h.store
+        .set_activity(&newer.id, Some(Activity::Done), h.app.now())
+        .await?;
+    h.app.advance_chains(&newer.id).await;
+    assert!(started(&h, &waiting).await?);
+    Ok(())
+}

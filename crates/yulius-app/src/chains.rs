@@ -463,11 +463,12 @@ impl App {
             ended: true,
             ..Facts::default()
         };
-        // Only tasks that existed when this task was created answer for its rule.
+        // Only tasks that existed when the rule was written (the task was created, or its start
+        // changed, SPEC-126 CHS-006) answer for it.
         let facts: HashMap<u32, Facts> = known
             .iter()
             .map(|(n, (facts, created))| {
-                let current = created.is_some_and(|at| at <= task.created_at);
+                let current = created.is_some_and(|at| at <= chain.created_at);
                 (*n, if current { *facts } else { ended })
             })
             .collect();
@@ -502,7 +503,7 @@ impl App {
         {
             if let Ok(Some(chain)) = store.chain(&task.id).await
                 && chain.blocked_reason.is_some()
-                && before.created_at <= task.created_at
+                && before.created_at <= chain.created_at
                 && chain
                     .rule
                     .as_deref()
