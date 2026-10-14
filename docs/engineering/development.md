@@ -73,12 +73,21 @@ reads the verdict from the API. It needs Node 20+ and an API key in `VIDOC_TOKEN
 files included, and scans the changed files as they are on disk, so the gate refuses a tree that is
 not clean. It also checks that `git remote show origin` names the default branch: without access
 to origin, the CLI would compare with `origin/main`. A scan takes 10 to 15 minutes, so run the gate
-with a tool timeout of 45 minutes or more, or in the background. Exit codes:
+with a tool timeout of 45 minutes or more, or in the background.
 
-- 0: passed, or the branch changed nothing that Vidoc scans.
+The gate is on. `enabled = false` in `.config/vidoc.toml`
+([SPEC-131](../../.ai/specs/SPEC-131-we-d-like-to-be-able-to-enable-and-disab.md),
+[ADR-0107](../decisions/0107-a-committed-switch-turns-the-vidoc-gate-on-or-off.md)) turns it off
+for every branch that has that commit: it then prints `Security scan disabled: ...; nothing was
+scanned.` and exits 0 without a key, Node or the network. Agents report such a run as disabled,
+never as passed. Turn it off or on in a reviewed pull request that says why; without the file the
+gate is on. Exit codes:
+
+- 0: passed, the branch changed nothing that Vidoc scans, or the gate is disabled (its message says
+  so).
 - 1: failed. The causes: open critical or high findings (each one is printed); a failed or foreign
   scan; an unexpected API answer; a CLI error, a timeout or a signal; a failed `npm ci`.
-- 2: not run. The causes: no key, a malformed key, or a rejected one; Vidoc unreachable or out of
+- 2: not run. The causes: a malformed `.config/vidoc.toml`; no key, a malformed key, or a rejected one; Vidoc unreachable or out of
   quota (402, 429) before the scan; "nothing to scan" although the branch changed source files; no Node
   20+ or npm; a detached HEAD; uncommitted or untracked files; a first remote other than `origin`,
   or origin unreachable the way the CLI checks it; no default branch or no merge base.
