@@ -45,7 +45,6 @@ empty instead of showing a "Closed · 0/6 steps" task that never ran.
 | OBT-001 | Linking a repository with a bearer token (`yulius onboard`, `POST /api/sandboxes` with a token) creates no task: the sandbox is `pending` with no onboarding task, and its task list is empty. | Rust `import_server::onboarding_starts_only_from_the_browser` |
 | OBT-002 | Start onboarding in the browser creates the onboarding task (full preparation, or the environment task for a repository that already validates) and starts it; the sandbox becomes `preparing`. Adding a repository in the browser still starts onboarding at once. | Rust `import_server::start_onboarding_creates_the_task_a_cli_upload_left_out`, `projects::import_links_owner_repositories_with_profiles_ports_and_onboarding`; e2e `onboarding.e2e.ts` (the mock follows the server) |
 | OBT-003 | A new task created in a `pending` sandbox without an onboarding task still waits after one (IMP-010, OBD-005): the onboarding task is created then, resting, and the new task is `chained` after it. Continuing that resting task with a token is still refused (OBD-002). Simultaneous requests create one onboarding task, and a skip made meanwhile is never undone (the creation and the skip share one lock; nothing is created once the sandbox is no longer `pending`). | Rust `import_server::onboarding_starts_only_from_the_browser`, `import_server::simultaneous_new_tasks_create_one_onboarding_task` |
-
 | OBT-004 | What onboarding will do stays readable before its task exists: `GET /api/sandboxes/{sid}/onboarding/plan` (read access) returns the task's title and steps, or the ones it would be created with (`task_number: null`), and creates nothing. The mandatory-onboarding page (SPEC-096 OBG-002) shows that plan for a `pending` sandbox, naming the task once it exists. | Rust `import_server::onboarding_starts_only_from_the_browser`, `projects::import_links_owner_repositories_with_profiles_ports_and_onboarding`; e2e `onboarding.e2e.ts` (both kinds) |
 
 ## Plan
@@ -120,3 +119,8 @@ empty instead of showing a "Closed · 0/6 steps" task that never ran.
 - At 10d01392 (after merging #402 and adding OBT-004): `scripts/dev ci` exit 0, 1534 tests passed,
   16 skipped (the #404 tests passed this time, load average about 28); `npx e2e run`: 291 passed,
   1 skipped.
+- Round 3 review of 6fe88f44: APPROVE with minors (a misplaced doc comment, the plan route missing
+  from `http_auth::scoped_routes`, a broken table row, an e2e title that could not fail) and nits.
+  They were fixed rather than shipped, so a fourth, narrow review approved the final head: the
+  merge needs approval of the exact head, and these were cheap, test-backed corrections. The
+  never-retried failed plan fetch came over from SPEC-096 unchanged and is left as it is.

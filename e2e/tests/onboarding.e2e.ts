@@ -60,7 +60,7 @@ test('a pending sandbox shows only what onboarding will do and Start onboarding,
   // SPEC-097 (task #82): nothing has started, so there is no task, not even a Closed one.
   await browser.evaluate(() => { location.hash = '#/s/website/tasks'; });
   await expect(browser.locator('.tl .empty-state')).toBeVisible();
-  await expect(screen.getByText('Prepare repository for Yulius')).toHaveCount(0);
+  await expect(screen.getByText('Prepare this repository for Yulius')).toHaveCount(0);
 
   await browser.evaluate(() => { location.hash = '#/s/website'; });
   const gate = screen.getByRole('region', 'Onboard website first');

@@ -773,7 +773,7 @@ impl App {
     /// only; creates nothing (SPEC-097 OBT-004).
     ///
     /// # Errors
-    /// `NotFound` without access.
+    /// `NotFound` without access; store failures and a failed read of the checkout.
     pub async fn onboarding_plan(&self, ctx: &AuthContext, sid: &str) -> AppResult<OnboardingPlan> {
         let id = SandboxId::parse(sid).map_err(|_| AppError::NotFound)?;
         let (record, _) = self.require(&ctx.user, &id, Action::View).await?;
