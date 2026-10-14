@@ -162,12 +162,11 @@ function loadingLayout() {
     h('div', { class: 'card db-kpis' }, Array.from({ length: 6 }, (_, i) => h('div', { class: 'db-kpi' },
       h('div', { class: 'db-kpi-label' }, bar(60)), h('div', { class: 'db-kpi-value' }, bar(50)), h('div', { class: 'skeleton-spark' }),
       h('div', { class: 'db-kpi-sub' }, bar(70)), i === 3 ? h('div', { class: 'db-kpi-note' }, bar(50)) : null))),
-    h('div', { class: 'card db-card db-subscriptions-outline' }, titles(), h('div', { class: 'skeleton-field' })),
+    h('div', { class: 'card db-card' }, titles(), h('div', { class: 'skeleton-field' })),
     h('div', { class: 'db-row' }, chartCard(), chartCard()));
 }
 
 /** Render `AnalyticsSummary` (docs/api.md "Administration, analytics, status"). */
-
 export function renderSummary(data, previous = null, days = 30, capacity = null) {
   const tasks = data.tasks || {};
   const tokens = data.tokens || {};

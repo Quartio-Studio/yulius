@@ -1,11 +1,11 @@
 ---
 yulius-task: 6f00a08c-5c27-43a1-a38e-567ae9caaad2
-status: in-progress
+status: done
 ---
 
 # SPEC-120: loading fields take the shape and layout of what loads
 
-Status: in progress
+Status: implemented
 Date: 2026-10-14
 Owner: Yulius task #106
 Scope authorization: task request: "Floating loaders should have the shape and layout of the final
@@ -49,13 +49,13 @@ arrives it lands where the fields were, without the page jumping.
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] Loading shapes for item cards, tables, card grids and forms, used by every loader page and editor
-- [ ] The Git page loads as its strip, sections and board
-- [ ] Task lists in the sidebar and on Tasks load as task rows
-- [ ] ADR, design page and UI docs describe shaped loading
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Read the product context and related work, then write and validate the spec
+- [x] Loading shapes for item cards, tables, card grids and forms, used by every loader page and editor
+- [x] The Git page loads as its strip, sections and board
+- [x] Task lists in the sidebar and on Tasks load as task rows
+- [x] ADR, design page and UI docs describe shaped loading
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -112,3 +112,32 @@ arrives it lands where the fields were, without the page jumping.
   toolbar (tab names, chip outlines, a summary bar), and the Subscriptions capacity panel, now
   read beside the subscriptions instead of after them, so it does not push them down when it
   lands.
+
+## Evidence
+
+- Red first: `npx e2e run tests/loading-shapes.e2e.ts` failed on the three-bar UI (no item cards,
+  table or card grid in the skeleton; the Git page had no `.dl-strip`; the task lists had no
+  skeleton rows). Each review round's new checks failed before their fixes: the tile kept the
+  item icon's still background, the editors had no `.wf-section`, Sessions, CI and the Dashboard
+  had no own layout, narrow Tasks rows were 18 px short, and the Dashboard cards sat 90 px high.
+- `cd e2e && npx e2e run tests/loading-shapes.e2e.ts`: 8 passed (item cards, a table, cards and
+  the workflow editor; Sessions, CI and the Dashboard; the Git page; both task lists; narrow rows;
+  reduced motion and the light theme).
+- Full e2e suite at `cce51868` with the round-3 nits: 47 files passed, 1 skipped; 373 tests
+  passed, 1 skipped, 0 failed.
+- `scripts/dev ci` at `0fc9ea5b` (the later commits change only web assets and docs): repository
+  contracts passed; 1608 tests run, 1607 passed, 16 skipped. One failed:
+  `task_done::an_agent_waiting_for_yulius_does_not_need_a_person` ("timed out waiting for Your
+  turn" after 90.5 s at load average about 35 on 12 CPUs). Run alone it passed in 12.1 s. This
+  change touches no Rust, and the test is in the load-dependent class tracked by #404 (commented
+  there). The stages the failure skipped were run separately: `scripts/doctests.py` ok,
+  `scripts/dev deps` ok (cargo-deny, cargo-shear: no issues), `cargo doc --workspace` ok.
+- `python3 scripts/check_repository.py`: repository and UI contracts passed (design tokens,
+  inline styles, contrast in every theme).
+- Independent review in a fresh session (`om-code-review`). Round 1 at `2d606cca` requested changes:
+  1 major (the Git test skipped the top edge) and 5 minors and 5 nits, all fixed in `7cebede3`
+  and `0fc9ea5b`. Round 2 approved `0fc9ea5b` with 2 minors and 2 nits, fixed in `cce51868`.
+  Round 3 approved `cce51868` with 2 nits (a blank line, an unused class), fixed with this
+  evidence; the reviewer confirms the final head.
+- Follow-up: #449 shapes the remaining non-text loading states (dialogs, a task's changes and
+  overview, the hygiene and GitHub cards).
