@@ -137,7 +137,19 @@ impl App {
             SquashLanding::Landed(commit) => commit,
             // The branch's changes are already in the integration branch (a squash that landed
             // before its stage was recorded): it is merged.
-            SquashLanding::Unchanged => format!("{base} (already there)"),
+            // The branch changes something, and the integration branch already has it all (a
+            // squash that landed before its stage was recorded): it is merged. A branch whose
+            // commits cancel out delivers nothing.
+            SquashLanding::Unchanged => {
+                let since = git
+                    .merge_base(&repo, &base, &head)
+                    .await?
+                    .ok_or_else(nothing)?;
+                if git.diff_stat(&repo, &since, &head).await?.files == 0 {
+                    return Err(nothing());
+                }
+                format!("{base} (already there)")
+            }
             SquashLanding::Conflict(files) => {
                 return Err(AppError::Conflict(format!(
                     "`{branch}` conflicts with `{integration}` in {}: merge it into your branch \
@@ -157,10 +169,15 @@ impl App {
             pr_number: None,
             updated_at: self.now(),
         };
-        self.deps
+        if !self
+            .deps
             .store
             .transition_delivery(&observed.record.stage, &next)
-            .await?;
+            .await?
+        {
+            // Changed meanwhile (another merge of this task): the view below shows what it is.
+            tracing::warn!(task = %task.id, "a playground merge found the delivery stage changed");
+        }
         self.dlv_audit(
             &Self::dlv_actor_login(user),
             "delivery.merge",

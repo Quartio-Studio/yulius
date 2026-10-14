@@ -329,6 +329,7 @@ impl App {
         owner: &str,
         name: &str,
     ) -> AppResult<SandboxRecord> {
+        refuse_non_github(owner)?;
         match self.deps.store.sandbox_by_repo(owner, name).await? {
             Some(existing) => {
                 let (record, _) = self.require(&ctx.user, &existing.id, Action::Work).await?;
@@ -365,6 +366,7 @@ impl App {
                 bad.session_id
             )));
         }
+        refuse_non_github(req.owner.trim())?;
         let login = self.login_of(&ctx.user.id).await;
         let new_states = || {
             req.sessions
@@ -1429,6 +1431,42 @@ fn parents_are_directories(root: &Path, rel: &Path) -> bool {
     true
 }
 
+/// `yulius onboard` imports GitHub repositories: an owner that is none (a playground's empty one,
+/// SPEC-099) is refused before any lookup reaches a playground or GitHub.
+fn refuse_non_github(owner: &str) -> AppResult<()> {
+    if crate::projects::valid_owner(owner) {
+        Ok(())
+    } else {
+        Err(AppError::Invalid(format!(
+            "{owner:?} is not a GitHub owner; `yulius onboard` imports GitHub repositories (a \
+             playground is made in the browser)"
+        )))
+    }
+}
+
+/// Whether a PAX extension record (`<len> <key>=<value>\n`, repeated) sets `size`.
+fn pax_sets_size(record: &[u8]) -> bool {
+    let mut rest = record;
+    while !rest.is_empty() {
+        let Some(space) = rest.iter().position(|b| *b == b' ') else {
+            return false;
+        };
+        let Some(len) = std::str::from_utf8(&rest[..space])
+            .ok()
+            .and_then(|digits| digits.parse::<usize>().ok())
+            .filter(|len| *len > space && *len <= rest.len())
+        else {
+            return false;
+        };
+        let body = &rest[space + 1..len];
+        if body.split(|b| *b == b'=').next() == Some(b"size".as_slice()) {
+            return true;
+        }
+        rest = &rest[len..];
+    }
+    false
+}
+
 /// Longest metadata entry (a GNU long name or link, a PAX record) an uploaded archive may hold:
 /// the tar reader reads one whole, in memory, before the entry it describes.
 const MAX_ARCHIVE_METADATA_BYTES: u64 = 64 * 1024;
@@ -1468,11 +1506,7 @@ pub(crate) fn check_archive(archive: &Path, max_bytes: u64) -> AppResult<()> {
             let mut record = Vec::new();
             entry.read_to_end(&mut record).map_err(invalid)?;
             let pax = kind.is_pax_local_extensions() || kind.is_pax_global_extensions();
-            if pax
-                && record
-                    .split(|b| *b == b'\n')
-                    .any(|line| line.windows(6).any(|w| w == b" size="))
-            {
+            if pax && pax_sets_size(&record) {
                 return Err(AppError::Invalid(
                     "the archive has a PAX size override in a metadata entry".into(),
                 ));

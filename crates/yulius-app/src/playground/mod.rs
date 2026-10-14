@@ -128,8 +128,8 @@ impl App {
         }
         if kept >= MAX_PLAYGROUNDS_PER_PERSON {
             return Err(AppError::Conflict(format!(
-                "you keep {MAX_PLAYGROUNDS_PER_PERSON} playgrounds, the most a person may (a \
-                 removed one keeps its files until the superadmin deletes them)"
+                "you keep {MAX_PLAYGROUNDS_PER_PERSON} playgrounds, the most a person may; a \
+                 removed one keeps its files on the server and still counts"
             )));
         }
         Ok(())

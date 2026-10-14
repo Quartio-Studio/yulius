@@ -528,7 +528,7 @@ mod tests {
             extract_snapshot(&long, dir.path()).map(|s| s.files)
         ));
         // A PAX `size` would make the next entry larger than its header says.
-        let pax = with_meta(dir.path(), tar::EntryType::XHeader, b"20 size=9999999999\n")?;
+        let pax = with_meta(dir.path(), tar::EntryType::XHeader, b"19 size=9999999999\n")?;
         assert!(refused(extract_history(&pax, &dir.path().join("h2"))));
         Ok(())
     }

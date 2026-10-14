@@ -212,8 +212,8 @@ pub struct SandboxRecord {
 }
 
 impl SandboxRecord {
-    /// A playground (SPEC-099, ADR-0081): its `origin` is a bare repository in its sandbox
-    /// directory and Yulius never calls GitHub for it. Marked by an empty repository owner, which
+    /// A playground (SPEC-099, ADR-0081): its `origin` is a bare repository on the server,
+    /// outside the sandbox (`<data>/playgrounds/<id>.git`), and Yulius never calls GitHub for it. Marked by an empty repository owner, which
     /// a GitHub owner never is.
     #[must_use]
     pub fn is_playground(&self) -> bool {

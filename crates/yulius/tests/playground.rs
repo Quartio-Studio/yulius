@@ -1192,3 +1192,58 @@ async fn a_playground_profile_has_no_environment_or_automatic_promotion() -> Tes
     }
     Ok(())
 }
+
+/// Review round 3 (PLY-002): `yulius onboard`'s import is for GitHub repositories; an import or a
+/// plan naming a playground (its empty owner) is refused before anything asks GitHub.
+#[tokio::test]
+async fn the_cli_import_never_reaches_a_playground() -> TestResult {
+    let (h, owner) = world().await?;
+    support::configure_github_app(&h).await?;
+    let made = from_template(&h, &owner, "shop").await?;
+    let slug = made.body["slug"].as_str().ok_or("slug")?;
+    let import = call(
+        &h.router,
+        Method::POST,
+        "/api/import",
+        Some(json!({"manifest": {
+            "version": 1,
+            "repo": {"remote_url": format!("https://github.com//{slug}"), "owner": "", "name": slug,
+                     "head_branch": "main", "head_sha": "0123456789abcdef0123456789abcdef01234567"},
+            "bundle": null, "snapshot": null, "sessions": [], "since": "2026-09-23T00:00:00.000Z"
+        }})),
+        &owner,
+    )
+    .await?;
+    assert!(import.status.is_client_error(), "{:?}", import.body);
+    let plan = call(
+        &h.router,
+        Method::POST,
+        "/api/onboard/plan",
+        Some(json!({"owner": "", "name": slug, "sessions": []})),
+        &owner,
+    )
+    .await?;
+    assert!(plan.status.is_client_error(), "{:?}", plan.body);
+    no_github_writes(&h)?;
+    Ok(())
+}
+
+/// Review round 3: a long path holding ` size=` is a name, not a PAX size override.
+#[tokio::test]
+async fn a_long_path_with_size_in_its_name_is_uploaded() -> TestResult {
+    let (h, owner) = world().await?;
+    let tmp = tempfile::tempdir()?;
+    let stage = tmp.path().join("stage");
+    let deep = format!("files/{}", "long-folder-name/".repeat(6));
+    std::fs::create_dir_all(stage.join(&deep))?;
+    std::fs::write(stage.join(&deep).join("font size=12.md"), "big\n")?;
+    let output = std::process::Command::new("tar")
+        .args(["--format=pax", "-czf", "-", "-C"])
+        .arg(&stage)
+        .arg("files")
+        .output()?;
+    assert!(output.status.success());
+    let made = upload(&h, &owner, "fonts", output.stdout).await?;
+    assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
+    Ok(())
+}
