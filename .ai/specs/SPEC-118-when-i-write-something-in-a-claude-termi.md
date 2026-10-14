@@ -1,0 +1,110 @@
+---
+yulius-task: 04be3bab-2271-45f2-aded-78f1d0f469d7
+status: in-progress
+---
+
+# SPEC-118: A keystroke reaches the terminal without waiting for a permission check
+
+Status: in progress
+Date: 2026-10-14
+Owner: Yulius task #103
+Scope authorization: task #103 ("When I write something in a claude terminal or shell terminal, I
+get delay. Things should be written instantly and show up while it's streamed to the engine").
+Refines SPEC-002 §7.7 (terminal WebSocket) and AC-ACC-5; keeps SPEC-070 R3 (only the owner types).
+
+## Goal
+
+What a person types into a task terminal (Claude Code) or a shell shows up as fast as the agent or
+shell echoes it. A keystroke never waits for the database or GitHub, and the terminal's output never
+pauses while access is re-checked.
+
+## Context
+
+**Symptom.** Typing into a task terminal or a shell lags: characters appear late, sometimes in
+bursts.
+
+**Path of a keystroke.** xterm `onData` → `TerminalSocket.sendInput` (one JSON frame, no batching) →
+the server's per-viewer loop (`routes/terminal.rs`, `routes/shells.rs`) → `App::terminal_input` /
+`App::shell_input` → the ptyhost's Unix socket → the PTY. The echo goes back the same way: ptyhost
+output pump → `Hub::output` (broadcast) → the same per-viewer loop → the browser. Accepted TCP
+connections already set `TCP_NODELAY` (#29); the client, ptyhost and hub forward at once.
+
+**Root cause.** The per-viewer loop handles one thing at a time, and two of them wait on slow work:
+
+1. Every input frame re-checks write access before it is written: `terminal_input` calls
+   `can_work` (task, sandbox and cached GitHub level: three database reads) and `shell_input` calls
+   `shell_still_allowed` (sandbox, cached level, task). `resize`, `active` and `take_control` do the
+   same. The store is one SQLite thread shared by the whole server (`yulius-store/src/lib.rs`: CI
+   logs, transcript sync and indexing, metrics, every API call), so each keystroke queues three
+   jobs behind everything else. When the 5-minute GitHub permission cache has expired, the
+   keystroke waits for a GitHub API round trip too.
+2. The 60 s access re-check runs inside the same `select!` loop. While it waits for the database
+   (and, every fifth minute, for GitHub), the loop neither forwards output nor reads input: the
+   terminal freezes, then catches up in a burst.
+
+The secret redactor (VLT-007) holds back only a tail of at least 4 bytes that begins a secret
+value, so it does not delay ordinary echo; it is out of scope.
+
+**What the per-keystroke check bought.** The GitHub level was already cached for 5 minutes, so a
+downgrade on GitHub reached input only after that. What it made immediate were facts in the
+database: a task handed to another owner (SPEC-070: `a_task_shell_stops_taking_input_once_the_task_is_handed_over`),
+a removed sandbox, a disabled user. Those must stay immediate.
+
+## Requirements
+
+- KEY-001: An input frame from a viewer whose write access was confirmed reaches the PTY without a
+  database read or a GitHub call, while nothing that decides access has changed since.
+- KEY-002: The store keeps an in-memory access epoch that grows with every write that can change
+  who may type: a task's owner (hand-over, take-over, delete), a sandbox's removal, a user's
+  disabling, instance-admin flag or GitHub link, a session or API token revocation, a cached GitHub
+  level that changed, a user's cleared permission cache. A grant confirmed at an older epoch is
+  checked again before the next input is written, so these changes still refuse the very next
+  keystroke.
+- KEY-003: A grant older than 30 s is re-confirmed in the background while input keeps flowing; a
+  refusal there refuses the following input. A GitHub downgrade still reaches input once the
+  permission cache expires (AC-ACC-5).
+- KEY-004: `resize`, `take_control` and `active` use the same grant as input.
+- KEY-005: The periodic re-check (sign-in, view access, write access; `viewer_recheck_ms`, 60 s)
+  runs beside the viewer's loop: output and input keep flowing while it waits on the database or
+  GitHub, and at most one runs per viewer at a time. Its verdicts are unchanged: signed out or
+  access lost → close 4003; write access lost on a task → `state` with `can_write: false`.
+
+## Plan
+
+- [x] Read the product context and related work, then write and validate the spec
+- [ ] The store counts changes to who may type (an access epoch) and the app keeps a write grant per viewer
+- [ ] A task terminal keystroke reaches the agent while GitHub and the permission check are slow
+- [ ] A shell keystroke reaches the shell while the permission check is slow; a hand-over still refuses the next one
+- [ ] The periodic access re-check never pauses a terminal's output or input
+- [ ] ADR, architecture, API and SPEC-002 text say how terminal input is authorized
+- [ ] Independent review in a fresh session, findings fixed test-first
+- [ ] Every gate green, docs and the changes log updated
+
+## Acceptance criteria
+
+- With GitHub hanging and the permission cache expired, a task terminal writer's keystroke is echoed
+  (it previously waited for GitHub forever).
+- With GitHub hanging and the permission cache expired, a shell keystroke is echoed.
+- With the re-check interval at its floor and GitHub hanging, a task terminal keeps carrying output
+  and input across several re-check ticks.
+- Existing access tests stay green unchanged: a read-only viewer's input is refused, a GitHub
+  downgrade reaches open sockets once the cache expires, a viewer without access is closed with
+  4003, a task shell refuses input at once after the task is handed over.
+- Unit tests: the store's epoch grows on each listed write and not on a `put_access` with the same
+  level; the grant decides check / allow / allow-and-refresh as KEY-001..003 say.
+
+## Test plan
+
+- `crates/yulius-store`: unit tests for the access epoch (KEY-002).
+- `crates/yulius-app`: unit tests for the write grant's decisions (KEY-001, KEY-003).
+- `crates/yulius/tests/terminal_ws.rs`: typing while GitHub hangs (KEY-001, KEY-004); output and
+  input across re-check ticks while GitHub hangs (KEY-005).
+- `crates/yulius/tests/shells.rs`: typing while GitHub hangs; the existing hand-over test (KEY-002).
+- The fake GitHub gains a `hang_permissions` switch: `repo_access` never answers while it is on.
+
+## Decisions
+
+- ADR-0096: terminal input is authorized by a per-viewer write grant tied to the store's access
+  epoch, re-confirmed in the background; the periodic re-check runs beside the viewer's loop.
+  Alternatives (drop the per-input check and rely on the 60 s re-check; a separate database
+  connection for reads; a client-side local echo) are compared there.
