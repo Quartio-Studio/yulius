@@ -2,7 +2,7 @@
 // sign-in (GitHub OAuth + superadmin password, ACC-005), with the superadmin recovery code
 // (ACC-002/011): shown once at setup and after a recovery; "Forgot password?" uses it.
 
-import { h, icon, field, setChildren, toast } from '../dom.js';
+import { h, icon, field, setChildren, toast, skeleton } from '../dom.js';
 import { BRAND } from '../brand.js';
 import { jevSetupCard } from '../jevkey.js';
 
@@ -145,7 +145,7 @@ function recoveryForm(ctx, { onBack, onRecovered }) {
   const code = h('input', { class: 'input mono recovery-input', type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 6, placeholder: '000000', 'aria-label': 'Recovery code' });
   const password = h('input', { class: 'input', type: 'password', autocomplete: 'new-password', minlength: MIN_PASSWORD });
   const confirm = h('input', { class: 'input', type: 'password', autocomplete: 'new-password' });
-  const status = h('p', { class: 'text-2' }, 'Checking recovery…');
+  const status = h('div', { class: 'text-2' }, skeleton('Checking the recovery code…', 1));
   const checks = passwordChecks(password, confirm, 'recovery');
   const problems = h('div', { class: 'field-error', role: 'alert' });
   const submit = h('button', { type: 'submit', class: 'btn btn-primary', disabled: true }, 'Reset password');

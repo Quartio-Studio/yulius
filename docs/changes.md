@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- Loading shows shimmering fields everywhere, never a spinner with "Loading…" (SPEC-092, ADR-0073,
+  task #77). `placeholder(text, 'loading')` is the skeleton, so the Git page, dialogs, Sessions,
+  the editor pages and every `loader()` list draw bars where the content will appear, with what
+  loads said to screen readers. The task lists, the status popover, Instance, the Jev key card,
+  the Superagent's start, the editor tree, home cards, notepads, the browser panel's cover and
+  usage not read yet do the same. Spinners stay for actions under way, connections and working
+  tasks. The mock's `hold=<path>` and `hold=frames` keep a view loading for tests.
 - Menus show an option's whole description (SPEC-094, ADR-0075, task #79). A description wraps
   onto as many lines as it needs instead of ending in an ellipsis, in every `openMenu` menu; menus
   keep their width (at most 320 px and the window less 16 px), so a short description stays one

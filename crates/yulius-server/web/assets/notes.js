@@ -9,7 +9,7 @@
 // text in sessionStorage, which the next load offers again; leaving with unsaved text asks first.
 
 import { enc } from './api.js';
-import { h, setChildren } from './dom.js';
+import { h, setChildren, skeleton } from './dom.js';
 import { relLong } from './format.js';
 import { attachMarkdownInput } from './mdinput.js';
 import { allows } from './status.js';
@@ -173,9 +173,11 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
   const textarea = h('textarea', { class: 'notes-text', 'aria-label': textLabel, 'aria-describedby': readOnly ? hintId : null, placeholder, spellcheck: 'true', readOnly: true });
   const banner = h('div', { class: 'notes-banner', hidden: true });
   const meta = h('p', { class: 'notes-meta' });
-  const el = h('div', { class: 'notes-pane' },
+  // Until the first read, shimmering fields cover the empty box (SPEC-092); the box keeps focus.
+  const fields = skeleton('Loading the notes…', 3, { block: true });
+  const el = h('div', { class: 'notes-pane notes-loading' },
     readOnly ? h('p', { class: 'notes-readonly', id: hintId }, readOnly) : null,
-    banner, textarea, meta);
+    banner, h('div', { class: 'notes-box' }, textarea, fields), meta);
   if (!readOnly) attachMarkdownInput(textarea);
 
   let loaded = false;
@@ -198,7 +200,7 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
 
   function statusText() {
     if (failed === 'loading') return 'Couldn’t load the notes, retrying…';
-    if (!loaded) return 'Loading…';
+    if (!loaded) return ''; // the fields say it
     if (conflict) return 'Not saved';
     if (failed === 'retrying') return 'Not saved, retrying…';
     if (failed) return `Not saved: ${failed}`;
@@ -278,6 +280,8 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
   function first(note) {
     const kept = readOnly ? null : takeUnsaved();
     loaded = true;
+    el.classList.remove('notes-loading');
+    fields.remove();
     textarea.readOnly = Boolean(readOnly);
     adopt(note);
     if (!kept || kept.body === note.body) return;

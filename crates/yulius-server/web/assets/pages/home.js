@@ -2,7 +2,7 @@
 // see, in the tab order, as a card with its counts, last activity and two quick actions; with no
 // sandbox, the first steps (import a repository or create one from a template).
 
-import { h, icon, badge, setChildren, keepFocus, coalesce } from '../dom.js';
+import { h, icon, badge, setChildren, keepFocus, coalesce, skeleton } from '../dom.js';
 import { relLong, dateTime } from '../format.js';
 import { allows } from '../status.js';
 import { href } from '../router.js';
@@ -39,7 +39,8 @@ export function mountHomePage(ctx) {
     const tasks = store.tasksOf(sandbox.id);
     const newest = tasks ? lastActivity(tasks) : null;
     let activity;
-    if (tasks === null) activity = store.tasksError(sandbox.id) ? 'Last activity unknown' : 'Loading activity…';
+    // One bar per card; the grid says it is busy, not each card (SPEC-092).
+    if (tasks === null) activity = store.tasksError(sandbox.id) ? 'Last activity unknown' : skeleton('Loading activity…', 1, { announce: false });
     else if (!newest) activity = 'No tasks yet';
     else activity = `Last activity ${relLong(newest)}`;
     const write = allows(sandbox.access, 'write');
@@ -57,7 +58,7 @@ export function mountHomePage(ctx) {
         count('bell', counts.needs_attention || 0, 'needs you', 'need you', 'attention'),
         count('pulse', counts.running || 0, 'working', 'working', 'running'),
         count('clock', counts.queued || 0, 'queued', 'queued', '')),
-      h('p', { class: 'home-activity', title: newest ? dateTime(newest) : null }, activity),
+      h('div', { class: 'home-activity', title: newest ? dateTime(newest) : null }, activity),
       h('div', { class: 'home-card-actions' },
         h('a', { class: 'btn btn-sm', href: href(path), dataset: { route: path }, 'aria-label': `Open ${sandbox.name}` }, 'Open'),
         h('button', {
@@ -123,7 +124,7 @@ export function mountHomePage(ctx) {
         h('h1', { class: 'page-title' }, 'Sandboxes'),
         h('span', { class: 'page-sub' }, 'one GitHub repository each, with its tasks, browser and editor'),
         h('div', { class: 'page-actions' }, addActions(needsGithub, user, { primary: false }))),
-      h('div', { class: 'home-grid' }, sandboxes.map(card))))));
+      h('div', { class: 'home-grid', 'aria-busy': String(sandboxes.some((s) => store.tasksOf(s.id) === null && !store.tasksError(s.id))) }, sandboxes.map(card))))));
   }
 
   // Last activity comes from each sandbox's task list: load the ones not loaded yet, a few at a time
