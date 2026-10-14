@@ -291,6 +291,9 @@ pub trait CapacityStore: Send + Sync {
         &self,
         since: Timestamp,
     ) -> AppResult<Vec<(Timestamp, Option<Timestamp>)>>;
+    /// Attempts that ran at or after `since` (as [`Self::attempt_spans`]) with their subscription
+    /// and metrics.
+    async fn token_runs(&self, since: Timestamp) -> AppResult<Vec<crate::model::TokenRunRecord>>;
 }
 
 /// Chained tasks and held prompts (SPEC-001 TSK-012, TSK-013).

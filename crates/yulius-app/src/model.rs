@@ -613,6 +613,19 @@ pub struct UsageSampleRecord {
     pub source: String,
 }
 
+/// One run's lifetime, subscription and metrics, for the pool's token use (SPEC-110).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TokenRunRecord {
+    /// The subscription it ran on.
+    pub account_id: Option<AccountId>,
+    /// Start.
+    pub started_at: Timestamp,
+    /// End, `None` while it runs.
+    pub ended_at: Option<Timestamp>,
+    /// Its metrics, when any were recorded.
+    pub metrics: Option<MetricsRecord>,
+}
+
 /// A usage reading from the provider's usage endpoint.
 pub const USAGE_FROM_PROBE: &str = "probe";
 /// A usage reading a running session passed on (Claude Code's status line, ADR-17).

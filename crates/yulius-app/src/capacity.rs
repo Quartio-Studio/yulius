@@ -24,9 +24,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::sync::Notify;
-use yulius_contracts::api::admin::{CapacityAccount, CapacityView};
+use yulius_contracts::api::admin::{CapacityAccount, CapacityView, PoolTokensView, TokenSpendView};
 use yulius_contracts::hooks::{RateLimitWindow, RateLimits};
-use yulius_domain::capacity::{ForecastInput, PoolMember, Span, WeeklySample};
+use yulius_domain::capacity::{
+    ForecastInput, PoolMember, PoolTokens, Span, TokenRun, TokenSpend, WeeklySample,
+};
 use yulius_domain::ids::{AccountId, TaskId};
 use yulius_domain::rotation::{self, Decision, RotationInput, Trigger};
 use yulius_domain::task::{Activity, TaskEvent, TaskStatus};
@@ -709,6 +711,7 @@ impl App {
         // A subscription is held by working tasks only (SPEC-057 SUB-001).
         let live = self.working_attempts().await?;
         let views = self.account_views().await?;
+        let pool = self.pool_tokens(now).await?;
         let mut accounts = Vec::with_capacity(records.len());
         let mut members = Vec::new();
         let mut five_hour_left: Option<f64> = None;
@@ -737,6 +740,7 @@ impl App {
                 available: is_available,
                 id: admin.then(|| record.id.to_string()),
                 in_use_by: admin.then(|| in_use_count(&record.id, &live)),
+                tokens_7d: pool.by_account.get(record.id.as_str()).map(spend_view),
             });
         }
         let since = now.plus_millis(-WEEK_MS);
@@ -815,7 +819,78 @@ impl App {
             paused_tasks,
             resumes_at: resumes_at.map(rfc3339),
             accounts,
+            tokens: pool_view(&pool),
         })
+    }
+
+    /// The pool's token use over the last 7 days from every run that lived in them (SPEC-110).
+    async fn pool_tokens(&self, now: Timestamp) -> AppResult<PoolTokens> {
+        let runs: Vec<TokenRun> = self
+            .deps
+            .store
+            .token_runs(now.plus_millis(-WEEK_MS))
+            .await?
+            .into_iter()
+            .map(|r| {
+                let m = r.metrics.unwrap_or_default();
+                TokenRun {
+                    account: r.account_id.map(|a| a.to_string()),
+                    span: Span {
+                        start: r.started_at,
+                        end: r.ended_at,
+                    },
+                    model: m.model,
+                    input: m.input_tokens,
+                    output: m.output_tokens,
+                    cache_read: m.cache_read,
+                    cache_write: m.cache_write,
+                }
+            })
+            .collect();
+        Ok(yulius_domain::capacity::pool_tokens(&runs, now, 7))
+    }
+}
+
+fn round_tokens(v: f64) -> u64 {
+    if v.is_finite() && v > 0.0 {
+        v.round() as u64
+    } else {
+        0
+    }
+}
+
+fn spend_view(s: &TokenSpend) -> TokenSpendView {
+    TokenSpendView {
+        input: round_tokens(s.input),
+        output: round_tokens(s.output),
+        cache_read: round_tokens(s.cache_read),
+        cache_write: round_tokens(s.cache_write),
+        cost_usd: s.cost(),
+    }
+}
+
+/// The wire form: whole tokens per period, and a 7-day total that is the sum of its periods.
+fn pool_view(pool: &PoolTokens) -> PoolTokensView {
+    let per_day: Vec<TokenSpendView> = pool.per_day.iter().map(spend_view).collect();
+    let all = pool.per_day.iter().fold(TokenSpend::default(), |mut a, d| {
+        a.cost_usd += d.cost_usd;
+        a.priced |= d.priced;
+        a.unpriced |= d.unpriced;
+        a
+    });
+    let sum = |f: fn(&TokenSpendView) -> u64| per_day.iter().map(f).sum::<u64>();
+    PoolTokensView {
+        last_24h: per_day.last().cloned().unwrap_or_default(),
+        last_7d: TokenSpendView {
+            input: sum(|d| d.input),
+            output: sum(|d| d.output),
+            cache_read: sum(|d| d.cache_read),
+            cache_write: sum(|d| d.cache_write),
+            cost_usd: all.cost(),
+        },
+        per_day,
+        unknown_usage_runs: pool.unknown_usage_runs,
+        unpriced_runs: pool.unpriced_runs,
     }
 }
 

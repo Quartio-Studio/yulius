@@ -160,6 +160,42 @@ pub struct CapacityAccount {
     /// Live tasks on it, except Done ones (instance administrators only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_use_by: Option<u32>,
+    /// Its tokens and their estimated cost over the last 7 days; `null` when no run with usage
+    /// ran on it (SPEC-110 TUS-004).
+    #[serde(default)]
+    pub tokens_7d: Option<TokenSpendView>,
+}
+
+/// Tokens spent in a period and what they would cost at Claude API list prices (SPEC-110).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TokenSpendView {
+    /// Input tokens.
+    pub input: u64,
+    /// Output tokens.
+    pub output: u64,
+    /// Cache-read tokens.
+    pub cache_read: u64,
+    /// Cache-write tokens.
+    pub cache_write: u64,
+    /// Estimated USD at API list prices of the runs whose model has a price; `null` when no run
+    /// that spent tokens here has one.
+    pub cost_usd: Option<f64>,
+}
+
+/// The pool's token use over the last 7 days (SPEC-110 TUS-003): a run counts in each 24-hour
+/// period by the share of its lifetime inside it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PoolTokensView {
+    /// The last 24 hours (the last entry of `per_day`).
+    pub last_24h: TokenSpendView,
+    /// The last 7 days (the sum of `per_day`).
+    pub last_7d: TokenSpendView,
+    /// Seven rolling 24-hour periods, oldest first; the last ends now.
+    pub per_day: Vec<TokenSpendView>,
+    /// Runs in the 7 days that reported no usage (not counted as zero).
+    pub unknown_usage_runs: u32,
+    /// Runs in the 7 days whose model has no price (tokens counted, cost not).
+    pub unpriced_runs: u32,
 }
 
 /// `GET /api/capacity` (signed in): the subscription pool, its burn rate and forecast
@@ -202,6 +238,9 @@ pub struct CapacityView {
     pub resumes_at: Option<String>,
     /// The subscriptions.
     pub accounts: Vec<CapacityAccount>,
+    /// The pool's tokens and their estimated API cost over the last 7 days.
+    #[serde(default)]
+    pub tokens: PoolTokensView,
 }
 
 /// `GET /api/admin/github`.

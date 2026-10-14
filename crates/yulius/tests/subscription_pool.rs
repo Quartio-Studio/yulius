@@ -20,8 +20,8 @@ use support::{
 use yulius_app::context::App;
 use yulius_app::model::Secret;
 use yulius_app::model::{
-    AccountRecord, AccountStatus, AttemptRecord, LaunchKind, MessageRecord, PauseKind, PauseRecord,
-    TaskMode, TaskOrigin, TaskRecord, UsageSampleRecord,
+    AccountRecord, AccountStatus, AttemptRecord, LaunchKind, MessageRecord, MetricsRecord,
+    PauseKind, PauseRecord, TaskMode, TaskOrigin, TaskRecord, UsageSampleRecord,
 };
 use yulius_app::ports::store::{AccountStore, CoordinationStore, TaskStore, UserStore};
 use yulius_app::ports::store_ext::CapacityStore;
@@ -491,6 +491,23 @@ async fn the_capacity_view_reports_burn_forecast_and_recommendation() -> TestRes
             exit_reason: None,
         })
         .await?;
+    // Its tokens (Opus 5.5): 40 % of its lifetime before the last 24 h, 60 % in it.
+    h.store
+        .put_metrics(
+            &AttemptId::parse("at1")?,
+            &TaskId::parse("t1")?,
+            &MetricsRecord {
+                model: Some("claude-opus-5-5".into()),
+                input_tokens: Some(1_000_000),
+                output_tokens: Some(1_000_000),
+                cache_read: Some(10_000_000),
+                cache_write: Some(1_000_000),
+                turns: Some(3),
+                active_ms: Some(HOUR as u64),
+            },
+            t0,
+        )
+        .await?;
     h.store
         .insert_pause(&PauseRecord {
             id: "p1".into(),
@@ -536,6 +553,27 @@ async fn the_capacity_view_reports_burn_forecast_and_recommendation() -> TestRes
     assert_eq!(first["id"], "acc-a");
     assert_eq!(first["in_use_by"], 1);
     assert_eq!(first["available"], true);
+    // SPEC-110 TUS-003, TUS-004: $4 + $20 + 10 × $0.20 + $5 = $31 at Opus 5.5 list prices.
+    let tokens = &v["tokens"];
+    assert_eq!(tokens["per_day"].as_array().map(Vec::len), Some(7));
+    assert_eq!(tokens["last_7d"]["input"], 1_000_000);
+    assert_eq!(tokens["last_7d"]["cache_read"], 10_000_000);
+    assert_eq!(tokens["last_24h"]["input"], 600_000);
+    assert_eq!(tokens["per_day"][5]["input"], 400_000);
+    assert_eq!(tokens["per_day"][0]["input"], 0);
+    let close = |value: &serde_json::Value, want: f64| {
+        value.as_f64().is_some_and(|c| (c - want).abs() < 1e-6)
+    };
+    assert!(close(&tokens["last_7d"]["cost_usd"], 31.0), "{tokens}");
+    assert!(close(&tokens["last_24h"]["cost_usd"], 18.6), "{tokens}");
+    assert_eq!(tokens["unknown_usage_runs"], 0);
+    assert_eq!(tokens["unpriced_runs"], 0);
+    assert_eq!(first["tokens_7d"]["output"], 1_000_000);
+    assert!(close(&first["tokens_7d"]["cost_usd"], 31.0));
+    assert!(
+        v["accounts"][1]["tokens_7d"].is_null(),
+        "nothing ran on acc-b"
+    );
 
     let member = call(&h.router, Method::GET, "/api/capacity", None, &alice).await?;
     assert_eq!(member.status, 200);

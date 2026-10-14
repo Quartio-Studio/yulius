@@ -5,7 +5,7 @@
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};
 use yulius_app::error::AppResult;
-use yulius_app::model::{PauseKind, PauseRecord, UsageSampleRecord};
+use yulius_app::model::{PauseKind, PauseRecord, TokenRunRecord, UsageSampleRecord};
 use yulius_app::ports::store_ext::CapacityStore;
 use yulius_domain::ids::{AccountId, TaskId};
 use yulius_domain::time::Timestamp;
@@ -214,6 +214,37 @@ impl CapacityStore for SqliteStore {
                         Timestamp(row.get(0)?),
                         row.get::<_, Option<i64>>(1)?.map(Timestamp),
                     ))
+                })
+                .map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)
+        })
+        .await
+    }
+
+    async fn token_runs(&self, since: Timestamp) -> AppResult<Vec<TokenRunRecord>> {
+        self.call(move |c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT a.account_id, a.started_at, a.ended_at, m.attempt_id AS metrics_attempt, \
+                     m.model, m.input_tokens, m.output_tokens, m.cache_read, m.cache_write, \
+                     m.turns, m.active_ms FROM attempts a LEFT JOIN metrics m ON m.attempt_id = a.id \
+                     WHERE a.ended_at IS NULL AND a.state IN ('spawning', 'live') OR a.ended_at >= ?1",
+                )
+                .map_err(db)?;
+            let rows = stmt
+                .query_map([since.0], |row| {
+                    let account: Option<String> = row.get("account_id")?;
+                    let metrics: Option<String> = row.get("metrics_attempt")?;
+                    Ok(TokenRunRecord {
+                        account_id: account
+                            .map(|a| AccountId::parse(&a).map_err(|_| bad_column("account id", &a)))
+                            .transpose()?,
+                        started_at: Timestamp(row.get("started_at")?),
+                        ended_at: row.get::<_, Option<i64>>("ended_at")?.map(Timestamp),
+                        metrics: metrics
+                            .map(|_| crate::tasks::metrics_from_row(row))
+                            .transpose()?,
+                    })
                 })
                 .map_err(db)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(db)

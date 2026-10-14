@@ -116,7 +116,7 @@ fn opt_u64(v: Option<i64>) -> Option<u64> {
     v.map(to_u64)
 }
 
-fn metrics_from_row(row: &Row<'_>) -> rusqlite::Result<MetricsRecord> {
+pub(crate) fn metrics_from_row(row: &Row<'_>) -> rusqlite::Result<MetricsRecord> {
     Ok(MetricsRecord {
         model: row.get("model")?,
         input_tokens: opt_u64(row.get("input_tokens")?),
