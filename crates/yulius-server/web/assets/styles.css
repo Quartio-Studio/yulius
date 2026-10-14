@@ -1056,7 +1056,7 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 .held-text { margin: 0; }
 .held-steps { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
 .held-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.taskview-term:has(.held-slot:not([hidden])) .term-notice, .taskview-term:has(.held-slot:not([hidden])) .term-mouse-toggle { top: 64px; }
+.taskview-term:has(.held-slot:not([hidden])) .term-notice { top: 64px; }
 /* The chain on both tasks (TSK-012). */
 .chain-chip { border: 1px solid var(--border); color: var(--text-2); text-decoration: none; }
 a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
@@ -1974,10 +1974,6 @@ a.dl-task:hover { text-decoration: underline; }
   .grid-2 { grid-template-columns: minmax(0, 1fr); }
   .table .hide-phone { display: none; }
 }
-
-/* Terminal mouse hand-over (shown only when the program asked for the mouse). */
-.term-mouse-toggle { background: var(--surface-2); box-shadow: var(--shadow-sm); font-size: var(--fs-xs); line-height: var(--lh-xs); opacity: 0; transition: opacity var(--duration-fast) var(--ease); }
-.term:hover .term-mouse-toggle, .term-mouse-toggle:focus-visible { opacity: 1; }
 
 /* Harness change waiting for approval (ROT-012). */
 
