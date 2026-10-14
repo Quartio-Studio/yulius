@@ -5,6 +5,7 @@ mod admin;
 mod analytics;
 mod automations;
 mod browser;
+mod cd;
 mod ci;
 mod delivery;
 mod events;
@@ -250,6 +251,13 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             post(delivery::confirm_environment),
         )
         .route("/api/sandboxes/{sid}/delivery/runs", get(delivery::runs))
+        .route("/api/sandboxes/{sid}/cd", get(cd::overview))
+        .route("/api/sandboxes/{sid}/cd/{env}/deploy", post(cd::deploy))
+        .route("/api/sandboxes/{sid}/cd/runs/{rid}", get(cd::run))
+        .route(
+            "/api/sandboxes/{sid}/cd/runs/{rid}/cancel",
+            post(cd::cancel),
+        )
         .route("/api/sandboxes/{sid}/ci", get(ci::overview))
         .route("/api/sandboxes/{sid}/ci/sync", post(ci::sync))
         .route("/api/sandboxes/{sid}/ci/runs/{rid}", get(ci::run))

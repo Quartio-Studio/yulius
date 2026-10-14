@@ -6,6 +6,7 @@ pub mod admin;
 pub mod analytics;
 pub mod auth;
 pub mod automations;
+pub mod cd;
 pub mod ci;
 pub mod common;
 pub mod files;

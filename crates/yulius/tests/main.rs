@@ -16,6 +16,7 @@ mod auto_choice;
 mod automation_start;
 mod automations;
 mod browser;
+mod cd;
 mod cli;
 mod cockpit;
 mod context_full;

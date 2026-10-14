@@ -28,6 +28,7 @@
 //! Restart: runs recorded as running lose their executor; their hosts are terminated and they
 //! go back to the queue (a run is repeatable).
 
+pub mod cd;
 mod disk_wait;
 mod exec;
 pub mod hygiene;
@@ -1056,6 +1057,7 @@ impl App {
             Ok(n) => tracing::info!(runs = n, "old CI runs deleted"),
             Err(err) => tracing::warn!(error = %err, "pruning CI runs failed"),
         }
+        self.cd_prune().await;
     }
 
     /// Starts the oldest queued runs of every sandbox, as many as it has free lanes

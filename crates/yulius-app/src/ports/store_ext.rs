@@ -457,6 +457,36 @@ pub trait CiStore: Send + Sync {
     async fn prune_ci_runs(&self, keep: u32, before: Timestamp) -> AppResult<u64>;
 }
 
+/// CD (deployment) runs (SPEC-134, table `cd_runs`).
+#[async_trait]
+pub trait CdStore: Send + Sync {
+    /// Inserts a running run. `Conflict` while another run of the same environment of the
+    /// sandbox is running.
+    async fn insert_cd_run(&self, run: &crate::ci::cd::CdRunRecord) -> AppResult<()>;
+    /// One run; its output only when `with_output`.
+    async fn cd_run(
+        &self,
+        id: &str,
+        with_output: bool,
+    ) -> AppResult<Option<crate::ci::cd::CdRunRecord>>;
+    /// Most recent runs of a sandbox, newest first, at most `limit`, without output.
+    async fn cd_runs(
+        &self,
+        sandbox: &SandboxId,
+        limit: u32,
+    ) -> AppResult<Vec<crate::ci::cd::CdRunRecord>>;
+    /// Running runs of every sandbox, without output.
+    async fn running_cd_runs(&self) -> AppResult<Vec<crate::ci::cd::CdRunRecord>>;
+    /// Replaces the output of a running run.
+    async fn set_cd_run_output(&self, id: &str, output: &str) -> AppResult<()>;
+    /// Ends a running run; `false` when it was not running.
+    async fn finish_cd_run(&self, id: &str, end: &crate::ci::cd::CdRunEnd) -> AppResult<bool>;
+    /// Deletes ended runs beyond the newest `keep` of each sandbox and environment and those
+    /// started before `before`, keeping each environment's newest passed run (what is deployed);
+    /// returns how many were deleted.
+    async fn prune_cd_runs(&self, keep: u32, before: Timestamp) -> AppResult<u64>;
+}
+
 /// Notepads (SPEC-041): one row per scope (`team`, `sandbox:<sid>`).
 #[async_trait]
 pub trait NoteStore: Send + Sync {
@@ -489,6 +519,7 @@ pub trait ExtensionStores:
     + UpdateStore
     + crate::ports::vault::VaultStore
     + CiStore
+    + CdStore
     + crate::ports::session_docs::SessionDocStore
     + NoteStore
 {
@@ -507,6 +538,7 @@ impl<T> ExtensionStores for T where
         + UpdateStore
         + crate::ports::vault::VaultStore
         + CiStore
+        + CdStore
         + crate::ports::session_docs::SessionDocStore
         + NoteStore
 {

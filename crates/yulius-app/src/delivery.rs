@@ -3008,7 +3008,7 @@ impl App {
 
     /// `(integration-only commits, production-only commits)` from the sandbox clone, fetched
     /// first unless `fetched`; `None` when Git cannot tell.
-    async fn dlv_branch_relation(
+    pub(crate) async fn dlv_branch_relation(
         &self,
         sandbox: &SandboxRecord,
         profile: &DeliveryProfile,
@@ -3032,7 +3032,7 @@ impl App {
     /// Promotes the integration branch: fast-forward, or open/merge the promotion pull request
     /// (merge commit). Tasks waiting for promotion advance once production moved. `fetched`
     /// says the sandbox clone was fetched just before.
-    async fn dlv_promote(
+    pub(crate) async fn dlv_promote(
         &self,
         sandbox: &SandboxRecord,
         profile: &DeliveryProfile,

@@ -468,7 +468,7 @@ impl App {
 
     /// Records that `ctx`'s task asks to copy `record` into `.env` files (compare and set; a
     /// repeated ask by the same task changes nothing).
-    async fn ask_env_files(
+    pub(crate) async fn ask_env_files(
         &self,
         ctx: &AgentContext,
         record: &VaultSecretRecord,
@@ -635,5 +635,117 @@ mod tests {
         assert!(write_in(&folder, ".env", "K=v\n", 0o600, &Writing::InPlace).is_err());
         assert_eq!(std::fs::read_to_string(wt.join("deploy/target"))?, "x");
         Ok(())
+    }
+}
+
+/// Where a secret a CD environment names stands (SPEC-134 CDR-002).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CdSecretState {
+    /// A person allowed it outside the proxy: a CD run gets its value.
+    Ready,
+    /// It exists; no person allowed it outside the proxy yet.
+    NotAllowed,
+    /// No agent secret of the project has this name.
+    Missing,
+}
+
+impl CdSecretState {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::NotAllowed => "not_allowed",
+            Self::Missing => "missing",
+        }
+    }
+}
+
+impl App {
+    /// The state of each secret `names` (SPEC-134 CDT-001).
+    pub(crate) async fn cd_secret_states(
+        &self,
+        sandbox: &yulius_domain::ids::SandboxId,
+        names: &[String],
+    ) -> AppResult<Vec<(String, CdSecretState)>> {
+        let all = self.deps.store.vault_agent(Some(sandbox)).await?;
+        Ok(names
+            .iter()
+            .map(|name| {
+                let state = match all.iter().find(|r| &r.name == name) {
+                    None => CdSecretState::Missing,
+                    Some(r) if r.env_files == EnvFiles::Allowed => CdSecretState::Ready,
+                    Some(_) => CdSecretState::NotAllowed,
+                };
+                (name.clone(), state)
+            })
+            .collect())
+    }
+
+    /// The values of the secrets a CD run of `sandbox` needs (SPEC-134 CDR-002, ADR-0109): each
+    /// must be an agent secret of the project that a person allowed outside the proxy. Otherwise
+    /// nothing is returned: a secret that exists is asked for when an agent (`asker`) wants the
+    /// run (as `secret_copy_to_env` does, the task then needs a person), and the refusal says what
+    /// a person must do.
+    ///
+    /// # Errors
+    /// `Conflict` naming the missing or not-allowed secrets; store or decryption failures.
+    pub(crate) async fn cd_secret_values(
+        &self,
+        sandbox: &crate::model::SandboxRecord,
+        names: &[String],
+        asker: Option<&AgentContext>,
+        why: &str,
+    ) -> AppResult<Vec<(String, String)>> {
+        let all = self.deps.store.vault_agent(Some(&sandbox.id)).await?;
+        let link = self.agent_secrets_link(&sandbox.slug);
+        let missing: Vec<&str> = names
+            .iter()
+            .filter(|name| !all.iter().any(|r| &r.name == *name))
+            .map(String::as_str)
+            .collect();
+        if !missing.is_empty() {
+            return Err(AppError::Conflict(format!(
+                "nothing ran: {} {} not an agent secret of this project. A person adds {} on the \
+                 Secrets page ({link}); an agent asks one with needs_you",
+                missing.join(", "),
+                if missing.len() == 1 { "is" } else { "are" },
+                if missing.len() == 1 { "it" } else { "them" },
+            )));
+        }
+        let records: Vec<&VaultSecretRecord> = names
+            .iter()
+            .filter_map(|name| all.iter().find(|r| &r.name == name))
+            .collect();
+        let waiting: Vec<&VaultSecretRecord> = records
+            .iter()
+            .copied()
+            .filter(|r| r.env_files != EnvFiles::Allowed)
+            .collect();
+        if !waiting.is_empty() {
+            if let Some(ctx) = asker {
+                for record in &waiting {
+                    self.ask_env_files(ctx, record, &sandbox.slug, why).await?;
+                }
+                if let Some(task) = self.deps.store.task(&ctx.task.id).await?
+                    && let Err(err) = self
+                        .set_task_activity(&task, Activity::NeedsAttention)
+                        .await
+                {
+                    tracing::warn!(task = %task.id, error = %err, "could not flag a CD secret request");
+                }
+            }
+            let names: Vec<&str> = waiting.iter().map(|r| r.name.as_str()).collect();
+            return Err(AppError::Conflict(format!(
+                "nothing ran: a person who manages {} allows using {} outside the proxy (the \
+                 project's .env and its CD runs) on the Secrets page: {link}",
+                names.join(", "),
+                if names.len() == 1 { "it" } else { "them" },
+            )));
+        }
+        let mut values = Vec::with_capacity(records.len());
+        for record in records {
+            let payload: AgentPayload = self.open_payload(record)?;
+            values.push((record.name.clone(), payload.value.clone()));
+        }
+        Ok(values)
     }
 }

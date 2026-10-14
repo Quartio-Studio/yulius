@@ -195,33 +195,46 @@ pub enum CdRefusal {
     NothingToRun(&'static str, &'static str),
 }
 
-/// Whether `requester` may deploy `env` of the project `slug`, given its configuration.
+/// Whether `requester` may deploy `env` of the project `slug` at all, whatever it defines:
+/// production is a person's, an administrator's, with the slug typed exactly (surrounding spaces
+/// ignored). Checked before anything of the environment is read.
 ///
 /// # Errors
-/// The [`CdRefusal`] that applies first: who (production is a person's, an administrator's, with
-/// the slug typed exactly), then what (a defined environment with something to run).
+/// [`CdRefusal::ProductionIsAPersons`], [`CdRefusal::ProductionNeedsAdministrator`] or
+/// [`CdRefusal::ConfirmationMismatch`].
+pub fn may_deploy(env: CdEnv, requester: Requester<'_>, slug: &str) -> Result<(), CdRefusal> {
+    if env == CdEnv::Dev {
+        return Ok(());
+    }
+    match requester {
+        Requester::Agent => Err(CdRefusal::ProductionIsAPersons),
+        Requester::Person {
+            administrator: false,
+            ..
+        } => Err(CdRefusal::ProductionNeedsAdministrator),
+        Requester::Person { confirmation, .. } => {
+            if slug.is_empty() || confirmation.map(str::trim) != Some(slug) {
+                return Err(CdRefusal::ConfirmationMismatch {
+                    expected: slug.to_owned(),
+                });
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Whether `requester` may deploy `env` of the project `slug`, given its configuration: who
+/// ([`may_deploy`]), then what (a defined environment with something to run).
+///
+/// # Errors
+/// The [`CdRefusal`] that applies first.
 pub fn authorize(
     config: &CdConfig,
     env: CdEnv,
     requester: Requester<'_>,
     slug: &str,
 ) -> Result<(), CdRefusal> {
-    if env == CdEnv::Prod {
-        match requester {
-            Requester::Agent => return Err(CdRefusal::ProductionIsAPersons),
-            Requester::Person {
-                administrator: false,
-                ..
-            } => return Err(CdRefusal::ProductionNeedsAdministrator),
-            Requester::Person { confirmation, .. } => {
-                if confirmation.map(str::trim) != Some(slug) || slug.is_empty() {
-                    return Err(CdRefusal::ConfirmationMismatch {
-                        expected: slug.to_owned(),
-                    });
-                }
-            }
-        }
-    }
+    may_deploy(env, requester, slug)?;
     match config.state(env) {
         CdState::NotDefined => Err(CdRefusal::NotDefined(env.label(), env.as_str())),
         CdState::Empty => Err(CdRefusal::NothingToRun(env.label(), env.as_str())),
