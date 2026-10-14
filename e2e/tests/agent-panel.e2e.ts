@@ -8,7 +8,8 @@ failOnPageErrors();
 // user's own plain Claude Code session per sandbox, in the right tool panel beside the page, for
 // quick work that should not become a task.
 
-const agentTerminal = '.agent-term .xterm-rows';
+// The shown Superagent: another sandbox's stays alive, hidden, after a switch (SPEC-113).
+const agentTerminal = '.panel-view:not([hidden]) > .agent .xterm-rows';
 
 test('the Superagent opens on the right beside the page, says what it is for and keeps its session', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));

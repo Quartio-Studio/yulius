@@ -5,7 +5,8 @@ status: done
 
 # SPEC-011: tasks start from their request and finish on dev by themselves
 
-Status: done
+Status: done; how a goal task's `/goal` is given amended by
+[SPEC-117](SPEC-117-creating-tasks-work-in-a-very-very-weird.md) (the launch prompt of a new session).
 Date: 2026-10-12
 Owner: Yulius tasks #10, #12 and #16, finished by hand after their transcripts were analysed
 Scope authorization: user requests (F 2026-10-12): "Dev deployment/merge should be automatic,
@@ -53,8 +54,8 @@ finish on their own:
 | DLV-010 | A stored or `yulius.toml` `standard` profile that still holds only the former manual `dev` checkpoint (no command) reads as the new `standard` profile; any other environment is untouched; `product` keeps its manual checkpoints. | `delivery::legacy_standard_*`, `spec_format::config` |
 | DLV-011 | `delivery_merge` called while the checks of the reviewed head still run arms the merge: Yulius merges exactly that head when they pass (after each CI run and from the delivery loop), tells the agent, and drops the armed merge (telling why) when the branch moved on or the merge is refused. Failing checks are still refused. | `tests/delivery.rs` `an_armed_merge_happens_when_the_checks_pass` |
 | DLV-012 | `yulius wait` (the agents' shell command; `POST /internal/agent/wait` with the task token) returns when the Yulius CI checks at the agent's head end, its delivery stage changes, or an armed merge is decided, and says how the armed merge ended (SPEC-028 MSR-003; notices are gone); it reads only Yulius's records. | `wait_cli` tests, the armed-merge test |
-| TSK-010 | A goal task's request file (`<sandbox home>/.yulius/tasks/<number>.md`: the request, its attached files to open, the definition of done, how to wait) is written at each start, and `/goal` names it; a short request without files is also quoted in the condition (≤ 450 characters). | `request` unit tests, `task_done.rs` `a_goal_task_starts_from_its_request_file` |
-| TSK-010 | `/goal` is typed after the SessionStart hook and quiet output, confirmed by Claude Code's goal record, retried (Enter, retype, Enter; 5–30 s apart); a goal never taken flags the task (needs attention, notice in the terminal). | `task_done.rs` |
+| TSK-010 | A goal task's request file (`<sandbox home>/.yulius/tasks/<number>.md`: the request, its attached files to open, the definition of done, how to wait) is written at each start, and `/goal` names it; a short request without files is also quoted in the condition (≤ 450 characters; SPEC-117: up to 2000, and the attached files are named). | `request` unit tests, `task_done.rs` `a_goal_task_starts_from_its_request_file` |
+| TSK-010 | `/goal` is the launch prompt of a new session (SPEC-117); a resumed session gets it typed after the SessionStart hook and quiet output, retried (Enter, retype, Enter; 5–30 s apart). Either is confirmed by Claude Code's goal record; a goal never taken flags the task (needs attention, notice in the terminal). | `task_done.rs` |
 | HRN-012 | A task that names no model runs Claude Code's `opus` (the latest Opus; superseded by SPEC-023 DEF-001: `claude-opus-5-5` at effort `high`); auto-compact is on for every run (run settings outrank the sandbox's `settings.json`); Bash defaults to 10 minutes, at most 30. | `yulius-harness` launch tests |
 | COM-004 | The briefing stays under 9,500 bytes (Claude Code keeps larger hook context in a file and shows a 2 KB preview), lists tools by name, ends the delivery path at the merge into the integration branch and its environments, says never to promote unless asked, and tells agents to wait with `yulius wait`. | `briefing` tests |
 

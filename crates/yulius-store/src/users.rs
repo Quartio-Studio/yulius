@@ -130,7 +130,7 @@ impl UserStore for SqliteStore {
         is_instance_admin: Option<bool>,
     ) -> AppResult<()> {
         let id = id.as_str().to_owned();
-        self.call(move |c| {
+        self.call_access(move |c| {
             let tx = c.transaction().map_err(db)?;
             if let Some(disabled) = disabled_at {
                 tx.execute(
@@ -178,7 +178,7 @@ impl UserStore for SqliteStore {
             display_name.to_owned(),
             avatar_url.map(str::to_owned),
         );
-        self.call(move |c| {
+        self.call_access(move |c| {
             let changed = c
                 .execute(
                     "UPDATE users SET github_id = ?1, github_login = ?2, display_name = ?3, avatar_url = ?4 WHERE id = ?5",

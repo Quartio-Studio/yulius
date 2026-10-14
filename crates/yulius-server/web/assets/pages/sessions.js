@@ -7,7 +7,7 @@
 
 import { enc } from '../api.js';
 import { h, icon, setChildren, placeholder, emptyState, filterTabs, badge, toast, errorToast, confirmDialog, openModal, loadError, coalesce } from '../dom.js';
-import { href, navigate, replaceQuietly, currentLocation } from '../router.js';
+import { href, navigate, replaceQuietly, currentLocation, placeFor } from '../router.js';
 import { relLong, dateTime, bytes, plural } from '../format.js';
 import { pageFrame, notFound } from './common.js';
 import { BRAND } from '../brand.js';
@@ -549,7 +549,7 @@ export function mountSessionView(ctx, sandbox, id, route) {
   const actions = h('div', { class: 'ss-actions' });
   const notice = h('p', { class: 'ss-notice muted small' }, icon('lock', { size: 12 }), ' Read-only. Secrets are redacted.');
   const head = h('header', { class: 'gt-head' },
-    h('a', { class: 'gt-back', href: href(back), dataset: { route: back } }, icon('back', { size: 14 }), 'Sessions'),
+    h('a', { class: 'gt-back', href: href(back), dataset: { route: back, restore: 'page' } }, icon('back', { size: 14 }), 'Sessions'),
     h('div', { class: 'gt-title-row' }, titleEl, actions),
     meta, notice);
   const entriesEl = h('ol', { class: 'ss-entries', 'aria-label': 'Transcript' });
@@ -602,7 +602,7 @@ export function mountSessionView(ctx, sandbox, id, route) {
     try {
       await ctx.api.del(`/api/sessions/${enc(id)}`);
       toast('Session deleted.', { kind: 'ok' });
-      navigate(back);
+      navigate(placeFor(back, 'page')); // the list's search stays (SPEC-113)
     } catch (error) {
       errorToast(error, 'Couldn’t delete the session');
     }

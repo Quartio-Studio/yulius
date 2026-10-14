@@ -83,7 +83,7 @@ impl SessionStore for SqliteStore {
 
     async fn revoke_web_session(&self, id_hash: &str, at: Timestamp) -> AppResult<()> {
         let h = id_hash.to_owned();
-        self.call(move |c| {
+        self.call_access(move |c| {
             c.execute(
                 "UPDATE web_sessions SET revoked_at = ?1 WHERE id_hash = ?2 AND revoked_at IS NULL",
                 params![at.0, h],
@@ -96,7 +96,7 @@ impl SessionStore for SqliteStore {
 
     async fn revoke_user_credentials(&self, user: &UserId, at: Timestamp) -> AppResult<()> {
         let u = user.as_str().to_owned();
-        self.call(move |c| {
+        self.call_access(move |c| {
             let tx = c.transaction().map_err(db)?;
             tx.execute(
                 "UPDATE web_sessions SET revoked_at = ?1 WHERE user_id = ?2 AND revoked_at IS NULL",
@@ -353,13 +353,27 @@ impl PermissionStore for SqliteStore {
         at: Timestamp,
     ) -> AppResult<()> {
         let (u, s) = (user.as_str().to_owned(), sandbox.as_str().to_owned());
+        let epoch = self.access_epoch_handle();
         self.call(move |c| {
+            let before: Option<String> = c
+                .query_row(
+                    "SELECT level FROM permission_cache WHERE user_id = ?1 AND sandbox_id = ?2",
+                    params![u, s],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(db)?;
             c.execute(
                 "INSERT INTO permission_cache (user_id, sandbox_id, level, checked_at) VALUES (?1, ?2, ?3, ?4) \
                  ON CONFLICT(user_id, sandbox_id) DO UPDATE SET level = excluded.level, checked_at = excluded.checked_at",
                 params![u, s, level.as_str(), at.0],
             )
             .map_err(db)?;
+            // Only a changed level changes who may type (SPEC-118 KEY-002); a first one takes
+            // nothing away (no grant was confirmed without it).
+            if before.is_some_and(|before| before != level.as_str()) {
+                epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             Ok(())
         })
         .await
@@ -367,11 +381,15 @@ impl PermissionStore for SqliteStore {
 
     async fn clear_access(&self, user: &UserId) -> AppResult<()> {
         let u = user.as_str().to_owned();
-        self.call(move |c| {
+        self.call_access(move |c| {
             c.execute("DELETE FROM permission_cache WHERE user_id = ?1", [u])
                 .map_err(db)?;
             Ok(())
         })
         .await
+    }
+
+    fn access_epoch(&self) -> u64 {
+        self.current_access_epoch()
     }
 }

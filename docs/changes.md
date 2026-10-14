@@ -15,6 +15,64 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   out when they leave. The server relays where people are (`PUT …/notes/presence`,
   `note.presence`) to the notepad's readers, stores nothing and takes at most 20 updates a
   second per person and notepad.
+- An agent secret is a name, a value and a description (SPEC-121, ADR-0098, task #107). The add
+  dialog no longer asks for hosts or for how the secret is added to requests. Instance
+  administrators find the scope under More options. Agents send the `$NAME` placeholder in
+  whatever header or query the service wants. They work out the service's host and ask for it
+  with `secret_request_hosts`. The Secrets page shows "Task #N asks to send it to …" with Allow
+  and Dismiss, and nothing is sent anywhere before a person allows it. Allow names the hosts the
+  person saw, so a host an agent asks for meanwhile is never allowed unseen. API change:
+  `POST /api/sandboxes/{sid}/agent-secrets` now defaults to no hosts and `injection: "none"`
+  (it was `bearer`).
+- A task starts with one message, before anyone can type (SPEC-117, ADR-0095, task #102). A goal
+  task used to open as an empty session. Yulius then typed a first message with the attached
+  images and, after its turn, a second one with `/goal`, and a person could type into the session
+  the whole time. Now Claude Code is launched with `/goal <condition>` as its prompt: one message,
+  nothing typed. The condition names the request file and the attached files, which the agent
+  opens with its Read tool, because a `/goal` drops pasted images (measured on Claude Code 2.1.292).
+  A prompt task with images still has its first message typed, since a paste is the only way to
+  attach an image natively. Until it is sent, a person's keys are not written into it, and the
+  first one is answered with "Yulius is typing this task's first message".
+- The new-task composer squeezed keeps its controls tidy (SPEC-119, task #104, #442). In a
+  narrow window or beside a tool panel, Preview, model, effort and Start used to wrap as one block
+  pushed to the right, leaving the left half of the row empty. At its narrowest, Start also stuck
+  out of the box. Now they take a full-width last row with Start at its right end, and no control
+  leaves the box.
+- Typing in a task terminal or a shell shows up as fast as the agent echoes it (SPEC-118,
+  ADR-0096, task #103). A keystroke used to wait for three database reads, plus a GitHub call
+  whenever the permission cache had expired. The 60 s access re-check also froze the terminal's
+  output while it ran. Now each viewer holds a write grant, checked again only when something that
+  decides access changes, and the re-check runs beside the stream. A hand-over still refuses the
+  previous owner's next keystroke.
+- Onboarding leaves the project ready to work in the discipline (SPEC-116, ADR-0094, task #101).
+  Studio's onboarding left its linter, dead-code check and per-project CI as issues #57 and #58.
+  Both onboarding prompts now lay the gate in the onboarding pull request itself:
+  - tests, lint and format;
+  - a dead-code and unused-dependency check;
+  - a Yulius CI job for every project, with existing findings baselined.
+
+  A workflow Yulius CI cannot run (Windows, macOS) is kept with a decision record instead of a
+  question to a person. The agent learns that it and CI run as root.
+
+  `delivery_merge` now pushes the head and opens the pull request when the task has none. A goal
+  task whose evaluator kept every turn going never got its pull request, so studio's agent had
+  pushed PR #59 by hand.
+
+  The briefing quotes the end of a changes log whose dates run oldest first (studio's
+  `knowledge/log.md`) and asks for new entries there.
+- A shown secret value stays masked until its eye is pressed (SPEC-114, ADR-0093, task #99). The
+  Show dialog of a team or agent secret draws a fixed run of dots and keeps the value out of the
+  page; the eye button in the value box shows it and hides it again, and every dialog opens
+  masked. Hovering the value (or focus in it) shows a copy button in the box, which copies even
+  while masked; the Copy button beside it stays.
+- Screens keep their state when you switch away and back (SPEC-113, ADR-0092, task #98, #435).
+  Studio's tab used to open New task after a visit to another sandbox, whatever was open there.
+  Now a sandbox tab, Home's card and the phone picker return to the screen last shown in that
+  sandbox, with its filters; the sidebar's pages and the Tasks and Git back links return to the
+  page's filters (the tab or link of where you are still opens it plain). Each sandbox reopens
+  the tool it had (or none), and its Superagent, Browser, Editor (with unsaved text) and Shell
+  survive the switch for the 3 sandboxes used last. MCP's scope and the Dashboard's period are
+  now in the address too.
 - Start onboarding goes straight into the onboarding session (SPEC-111, ADR-0090, task #96). The
   press turned nothing visible for seconds while the server started the task's run (the button
   stayed pressable), then stopped on "Onboarding <name>" with Follow onboarding. Now the gate turns

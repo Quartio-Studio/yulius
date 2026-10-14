@@ -258,8 +258,10 @@ pub struct BriefingInput<'a> {
     pub architecture_present: bool,
     /// Decision titles (see `spec_format::decision_titles`).
     pub decision_titles: Vec<String>,
-    /// Head of the changes document, if it exists.
+    /// The newest part of the changes document, if it exists ([`changes_excerpt`]).
     pub changes_head: Option<&'a str>,
+    /// The changes document adds its entries at its end (oldest first, [`changes_excerpt`]).
+    pub changes_newest_at_end: bool,
     /// Recently delivered tasks, newest first.
     pub recent_changes: Vec<RecentChange>,
     /// Other active tasks of the sandbox.
@@ -328,6 +330,83 @@ fn truncate_block(text: &str, max: usize) -> String {
         cut = newline;
     }
     format!("{}\n{marker}", text[..cut].trim_end_matches('\n'))
+}
+
+/// The ISO date (`YYYY-MM-DD`) that starts at byte `at` of `bytes`, not inside a longer number.
+fn iso_date_at(bytes: &[u8], at: usize) -> Option<&[u8]> {
+    let date = bytes.get(at..at + 10)?;
+    let digits = |range: std::ops::Range<usize>| date[range].iter().all(u8::is_ascii_digit);
+    let shaped =
+        digits(0..4) && date[4] == b'-' && digits(5..7) && date[7] == b'-' && digits(8..10);
+    if !shaped {
+        return None;
+    }
+    let month = (date[5] - b'0') * 10 + (date[6] - b'0');
+    let day = (date[8] - b'0') * 10 + (date[9] - b'0');
+    let bounded = !(at > 0 && bytes[at - 1].is_ascii_digit())
+        && !bytes.get(at + 10).is_some_and(u8::is_ascii_digit);
+    ((1..=12).contains(&month) && (1..=31).contains(&day) && bounded).then_some(date)
+}
+
+/// The first and last ISO dates of `lines`.
+fn date_span<'t>(lines: impl Iterator<Item = &'t str>) -> Option<(&'t [u8], &'t [u8])> {
+    let mut span: Option<(&[u8], &[u8])> = None;
+    for line in lines {
+        let bytes = line.as_bytes();
+        for at in 0..bytes.len() {
+            if let Some(date) = iso_date_at(bytes, at) {
+                span = Some(span.map_or((date, date), |(first, _)| (first, date)));
+            }
+        }
+    }
+    span
+}
+
+/// Whether a changes log adds its entries at its end: its first ISO date is earlier than its
+/// last. Dates in entry headings (`##` and deeper, not the title) decide when there are two;
+/// otherwise every date counts. Without two
+/// dates the log reads as newest first, the Yulius format (SPEC-116 CHG-001).
+fn newest_at_end(text: &str) -> bool {
+    let headings = date_span(
+        text.lines()
+            .filter(|line| line.trim_start().starts_with("##")),
+    );
+    let span = match headings {
+        Some((first, last)) if first != last => Some((first, last)),
+        // Every date but the title's ("# Changes since 2020-01-01").
+        _ => date_span(
+            text.lines()
+                .filter(|line| !line.trim_start().starts_with("# ")),
+        ),
+    };
+    span.is_some_and(|(first, last)| first < last)
+}
+
+/// `text` from the first line start in its last `max` bytes (all of it when it fits).
+fn tail_lines(text: &str, max: usize) -> &str {
+    if text.len() <= max {
+        return text;
+    }
+    let mut start = text.len() - max;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    let tail = &text[start..];
+    match tail.find('\n') {
+        Some(newline) if newline + 1 < tail.len() => tail[newline + 1..].trim_start_matches('\n'),
+        _ => tail,
+    }
+}
+
+/// The part of a changes log the briefing quotes, at most `max` bytes: its newest entries, and
+/// whether they are at its end (the log adds entries at the end, SPEC-116 CHG-001) or its top.
+#[must_use]
+pub fn changes_excerpt(text: &str, max: usize) -> (String, bool) {
+    if newest_at_end(text) {
+        (tail_lines(text, max).to_owned(), true)
+    } else {
+        (text[..floor_boundary(text, max)].to_owned(), false)
+    }
 }
 
 /// A Markdown quote of untrusted multi-line text, at most about `max` bytes of source.
@@ -481,7 +560,7 @@ fn discipline(input: &BriefingInput<'_>) -> String {
          summary and AGENTS.md true in the same change. No secrets in the repository.\n\
          6. Finish with evidence: run every project gate. With a spec, check every Plan item, \
          add an Evidence section (commands run and results) and set `status: done`. Add a short \
-         entry at the top of {changes}.\n\n",
+         entry at the {end} of {changes}.\n\n",
         spec = spec_rule(input),
         min = steps::COARSE_BELOW,
         max = steps::FINE_ABOVE,
@@ -489,6 +568,11 @@ fn discipline(input: &BriefingInput<'_>) -> String {
         decisions = decisions_rule(layout),
         architecture = code(&layout.architecture, 200),
         changes = code(&layout.changes, 200),
+        end = if input.changes_newest_at_end {
+            "end"
+        } else {
+            "top"
+        },
     )
 }
 
@@ -550,8 +634,8 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          given only the diff range, the spec and skill `om-code-review`); fix findings \
          test-first; after 3 rounds, decide and record why.\n\
          - When the work is ready (spec valid if needed, steps done, all committed), Yulius \
-         pushes your branch and opens the pull request at the end of your turn, and pushes later \
-         commits. CI runs on our own machines (`ci_status`). Once the review approved the exact \
+         pushes your branch and opens the pull request at the end of your turn or when you call \
+         `delivery_merge`, and pushes later commits. CI runs on our own machines (`ci_status`). Once the review approved the exact \
          head, call `delivery_merge`: on green it merges; while the checks run it arms the merge \
          and Yulius merges when they pass. Then deploy and verify each environment after \
          {integration} (`delivery_deploy`), as `delivery_status` says. Fix failures on this \
@@ -833,11 +917,19 @@ fn recent_changes(input: &BriefingInput<'_>, head_max: usize) -> String {
         if !input.recent_changes.is_empty() {
             out.push('\n');
         }
-        out.push_str(&format!(
-            "From {}:\n{}",
-            code(&input.layout.changes, 200),
-            quoted(head, head_max)
-        ));
+        let path = code(&input.layout.changes, 200);
+        // An oldest-first log keeps its newest entries, at its end, within the share.
+        let (label, head) = if input.changes_newest_at_end {
+            (
+                format!("From {path} (newest entries, at its end):"),
+                tail_lines(head, head_max),
+            )
+        } else {
+            (format!("From {path}:"), head)
+        };
+        if !head.trim().is_empty() {
+            out.push_str(&format!("{label}\n{}", quoted(head, head_max)));
+        }
     }
     out.push('\n');
     out
@@ -915,7 +1007,38 @@ fn allocate(needs: &[usize], weights: &[usize], mut available: usize) -> Vec<usi
 
 enum Part {
     Mandatory(String),
-    Optional { text: String, weight: usize },
+    Optional {
+        text: String,
+        weight: usize,
+    },
+    /// The recent changes: cut to its grant from the quote's top when the log's newest entries
+    /// are at its end ([`recent_changes_within`]).
+    Changes {
+        text: String,
+        weight: usize,
+    },
+}
+
+/// The recent changes section within `grant` bytes. A log whose newest entries are at its end
+/// loses its quote's oldest lines, not its newest (SPEC-116 CHG-001); otherwise the section is
+/// cut from its end like every other part.
+fn recent_changes_within(input: &BriefingInput<'_>, rendered: String, grant: usize) -> String {
+    if rendered.len() <= grant || !input.changes_newest_at_end {
+        return truncate_block(&rendered, grant);
+    }
+    // Quoting adds "> " per line, so shrink the quote by the excess until the section fits.
+    let mut head_max = grant;
+    for _ in 0..32 {
+        let text = recent_changes(input, head_max);
+        if text.len() <= grant {
+            return text;
+        }
+        if head_max == 0 {
+            break;
+        }
+        head_max = head_max.saturating_sub((text.len() - grant).max(16));
+    }
+    truncate_block(&recent_changes(input, 0), grant)
 }
 
 /// Assembles the session briefing within `budget_bytes` (use [`DEFAULT_BUDGET_BYTES`]).
@@ -949,7 +1072,7 @@ pub fn build_briefing(input: &BriefingInput<'_>, budget_bytes: usize) -> String 
             text: decisions(input),
             weight: 2,
         },
-        Part::Optional {
+        Part::Changes {
             text: recent_changes(input, source_cap),
             weight: 3,
         },
@@ -962,13 +1085,15 @@ pub fn build_briefing(input: &BriefingInput<'_>, budget_bytes: usize) -> String 
         .iter()
         .map(|part| match part {
             Part::Mandatory(text) => text.len(),
-            Part::Optional { .. } => 0,
+            Part::Optional { .. } | Part::Changes { .. } => 0,
         })
         .sum();
     let (needs, weights): (Vec<usize>, Vec<usize>) = parts
         .iter()
         .filter_map(|part| match part {
-            Part::Optional { text, weight } => Some((text.len(), *weight)),
+            Part::Optional { text, weight } | Part::Changes { text, weight } => {
+                Some((text.len(), *weight))
+            }
             Part::Mandatory(_) => None,
         })
         .unzip();
@@ -980,6 +1105,10 @@ pub fn build_briefing(input: &BriefingInput<'_>, budget_bytes: usize) -> String 
             Part::Optional { text, .. } => {
                 let grant = grants.next().unwrap_or(0);
                 out.push_str(&truncate_block(&text, grant));
+            }
+            Part::Changes { text, .. } => {
+                let grant = grants.next().unwrap_or(0);
+                out.push_str(&recent_changes_within(input, text, grant));
             }
         }
     }
@@ -1046,6 +1175,7 @@ mod tests {
             architecture_present: true,
             decision_titles: vec!["1. Record architecture decisions".to_owned()],
             changes_head: Some("# Changes\n\n## Project created"),
+            changes_newest_at_end: false,
             recent_changes: vec![RecentChange {
                 title: "Catalog".to_owned(),
                 summary: "Product list and detail pages.".to_owned(),
@@ -1066,6 +1196,117 @@ mod tests {
             now: Timestamp(1_791_352_800_000),
             playground: false,
         })
+    }
+
+    /// SPEC-116 CHG-001 (task #101): studio's `knowledge/log.md` adds entries at its end, and the
+    /// briefing quoted its oldest entry and asked for a new one "at the top". A log whose dates
+    /// run oldest first is quoted from its end, and rule 6 asks for the entry at the end.
+    #[test]
+    fn an_oldest_first_changes_log_is_quoted_from_its_end() -> TestResult {
+        let oldest_first: String = (1..=28)
+            .map(|day| format!("## 2026-09-{day:02}\n\n- Entry of day {day}.\n\n"))
+            .collect();
+        let (excerpt, at_end) = changes_excerpt(&oldest_first, 200);
+        assert!(at_end);
+        assert!(excerpt.len() <= 200, "{}", excerpt.len());
+        assert!(excerpt.contains("Entry of day 28."), "{excerpt}");
+        assert!(!excerpt.contains("Entry of day 1."), "{excerpt}");
+        assert!(
+            excerpt.starts_with("## ") || excerpt.starts_with("- "),
+            "a line start: {excerpt:?}"
+        );
+
+        let newest_first: String = (1..=28)
+            .rev()
+            .map(|day| format!("## 2026-09-{day:02}\n\n- Entry of day {day}.\n\n"))
+            .collect();
+        let (excerpt, at_end) = changes_excerpt(&newest_first, 200);
+        assert!(!at_end);
+        assert!(excerpt.contains("Entry of day 28."), "{excerpt}");
+        // Undated, or one date only: the top, as before.
+        assert!(!changes_excerpt("# Changes\n\n- First.\n- Second.\n", 200).1);
+        assert!(!changes_excerpt("# Changes\n\n## 2026-10-01\n- One.\n", 200).1);
+        // A heading's date decides over dates quoted in the entries' prose.
+        let prose = "# Log\n\n## 2026-10-01\n- Fixed what 2026-10-30 broke.\n\n## 2026-10-02\n- \
+                     Follow-up of 2026-09-01.\n";
+        assert!(changes_excerpt(prose, 200).1);
+        // A title's date is not an entry's (review of SPEC-116, finding 6).
+        let titled =
+            "# Changes since 2020-01-01\n\n## 2026-10-14\n- New.\n\n## 2026-10-01\n- Old.\n";
+        assert!(!changes_excerpt(titled, 200).1);
+        // Nor when the entries carry their dates in bullets (second review, L2).
+        let bullets = "# Changes since 2020-01-01\n\n- 2026-10-14: New.\n- 2026-10-01: Old.\n";
+        assert!(!changes_excerpt(bullets, 200).1);
+
+        let profile = DeliveryProfile::standard();
+        let layout = DocsLayout {
+            changes: "knowledge/log.md".to_owned(),
+            ..DocsLayout::default()
+        };
+        let mut input = base(&profile, &layout)?;
+        let (excerpt, at_end) = changes_excerpt(&oldest_first, 4_000);
+        input.changes_head = Some(&excerpt);
+        input.changes_newest_at_end = at_end;
+        let text = build_briefing(&input, DEFAULT_BUDGET_BYTES);
+        assert!(
+            text.contains("From `knowledge/log.md` (newest entries, at its end):"),
+            "{text}"
+        );
+        assert!(text.contains("Entry of day 28."));
+        assert!(
+            text.contains("entry at the end of `knowledge/log.md`"),
+            "{text}"
+        );
+        assert!(!text.contains("entry at the top of"));
+        // However small the section's share, its newest entry is the one kept.
+        let tight = recent_changes(&input, 120);
+        assert!(tight.contains("Entry of day 28."), "{tight}");
+        assert!(!tight.contains("Entry of day 20."), "{tight}");
+
+        // The real budget (review of SPEC-116, finding 1): a full 4,000-byte excerpt, delivered
+        // tasks and a long product summary share the briefing; the share the section gets keeps
+        // the newest entry, not the excerpt's first one.
+        let long_log: String = (1..=200)
+            .map(|n| {
+                format!(
+                    "## 2026-{:02}-{:02}\n\n- Entry number {n}.\n\n",
+                    1 + n / 28,
+                    1 + n % 28
+                )
+            })
+            .collect();
+        let (excerpt, at_end) = changes_excerpt(&long_log, 4_000);
+        assert!(at_end);
+        let first_kept = excerpt
+            .lines()
+            .find(|line| line.starts_with("- Entry number"))
+            .ok_or("an entry")?
+            .to_owned();
+        let product = "The shop sells handmade goods. ".repeat(130);
+        input.changes_head = Some(&excerpt);
+        input.product_head = Some(&product);
+        input.recent_changes = (0..3)
+            .map(|n| RecentChange {
+                title: format!("Delivered task {n}"),
+                summary: "A change that was merged into the integration branch.".to_owned(),
+                at: Timestamp(1_791_352_800_000),
+            })
+            .collect();
+        let text = build_briefing(&input, DEFAULT_BUDGET_BYTES);
+        assert!(text.len() <= DEFAULT_BUDGET_BYTES);
+        let section = &text[text.find("## Recent changes").ok_or("recent")?..];
+        assert!(section.contains("- Entry number 200."), "{section}");
+        assert!(!section.contains(&first_kept), "{first_kept} {section}");
+        assert!(section.contains("(newest entries, at its end)"));
+        input.product_head = Some("# Online Shop\n\nSells handmade goods.");
+        input.recent_changes.truncate(1);
+        input.changes_head = Some(&excerpt);
+
+        input.changes_newest_at_end = false;
+        let text = build_briefing(&input, DEFAULT_BUDGET_BYTES);
+        assert!(text.contains("entry at the top of `knowledge/log.md`"));
+        assert!(text.contains("From `knowledge/log.md`:"));
+        Ok(())
     }
 
     fn step(title: &str, status: StepStatus, effort: u8) -> StepState {
@@ -1232,6 +1473,8 @@ mod tests {
             "`steps_set`",
             "`step_update`",
             "Never commit or push to `dev` or `main`",
+            // SPEC-116 DMG-001: the merge call delivers the head, not only the turn's end.
+            "or when you call `delivery_merge`",
             "Use only ports 20000-20019",
         ] {
             assert!(text.contains(needle), "missing {needle}");

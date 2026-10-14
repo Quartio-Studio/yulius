@@ -91,9 +91,25 @@ is killed, its cleanup never runs, so remove what it left at the path it printed
 home is shared with other tasks' running proofs, so remove theirs only when they started over six \
 hours ago (`find \"$HOME\" -maxdepth 1 -name '.ci-proof.*' -mmin +360 -exec chmod -R u+w {} \\; \
 -exec rm -rf {} \\;`), then run `git worktree prune`. A monorepo's jobs \
-may run only its affected project's checks. End with a summary of what works and how it was \
+may run only its affected project's checks. You and every CI job run as root (uid 0 in the \
+sandbox's own user namespace), so file permissions never stop a read: a test that expects \
+`chmod 000` to make a file unreadable must skip when the current user can still read it. End with a summary of what works and how it was \
 verified; a check that still cannot run is a problem to report there, never a reason to skip it \
 silently.";
+
+/// The gate every onboarding lays in its own pull request (SPEC-116 OBG-001, F 2026-10-14: the
+/// studio onboarding filed its missing linter, dead-code check and per-project CI as issues, so
+/// the project started without the checks every later task relies on).
+const GATE_SETUP: &str = "Lay the project's gate in this pull request, not as follow-ups, as skill \
+infra-bootstrap describes: a test command, a lint and format check with the stack's established \
+tools, and a dead-code and unused-dependency check (skill dead-code-cleanup names each language's \
+tools), pinned, with its allowlist committed. Keep the tools and configuration the repository \
+already has. Put them in yulius.toml [commands] (test, lint, build, gate) and [[ci.jobs]], so Yulius \
+CI runs them; in a monorepo every project (each app, client, package or service with its own \
+build) gets a CI job running its own checks, so no later task meets a project without CI. Findings \
+that already exist do not change application code here: commit the tool's baseline or allowlist, \
+or scope the check to what passes today, so the gate passes now and fails on new findings, and \
+file one issue (`issue_create`) to burn the baseline down. Prove every job as described above.";
 
 /// Title of the onboarding task of a repository that already follows the Yulius format.
 pub const ENVIRONMENT_TITLE: &str = "Set up this sandbox's environment";
@@ -305,26 +321,33 @@ pub fn onboarding_prompt(repo: &str, profile: &Profile, report: &ProjectReport) 
          7. Foundations (skill infra-bootstrap): CI runs only on our own machines through Yulius \
          CI, never GitHub Actions. Translate every .github/workflows/* job into the Yulius CI \
          configuration ([commands] gate or [[ci.jobs]] in yulius.toml; ci_setup lists them) so \
-         nothing is lost, run it, then delete .github/workflows/ in the same pull request. If \
-         GitHub refuses that push because the Yulius GitHub App may not change workflow files \
-         (its Workflows permission), keep .github/workflows/, finish everything else, mark that \
-         step skipped with this reason, and say in the pull request that the deletion follows \
-         once an admin grants the permission. When tests, lint, a dead-code and unused-dependency \
-         check (skill dead-code-cleanup names each language's tools) or environments are \
-         missing, lay them as the infra-bootstrap skill describes, as follow-up pull requests.\n\
-         8. git-crypt: encrypted files stay locked. Never unlock or decrypt them, never commit \
+         nothing is lost, run it, then delete .github/workflows/ in the same pull request. A \
+         workflow whose jobs need a runner Yulius CI lacks (Windows, macOS) cannot be translated: \
+         keep that workflow, and record why in a decision record and your summary; nobody needs \
+         to accept it. If GitHub refuses that push because the Yulius GitHub App may not change \
+         workflow files (its Workflows permission), keep .github/workflows/, finish everything \
+         else, mark that step skipped with this reason, and say in the pull request that the \
+         deletion follows once an admin grants the permission.\n\
+         8. {gate} Missing deploy environments need a person's machines and credentials: file an \
+         issue for them.\n\
+         9. git-crypt: encrypted files stay locked. Never unlock or decrypt them, never commit \
          decrypted content, and leave encrypted files byte-for-byte unchanged.\n\
-         9. Hooks: when the repository's instructions describe a hooks setup (for example \
+         10. Hooks: when the repository's instructions describe a hooks setup (for example \
          `git config core.hooksPath .githooks`), apply it in your worktree before committing. \
          Never bypass hooks with --no-verify.\n\
-         10. Commit on your task branch and mark every step done as you finish it: Yulius opens \
-         the pull request into {integration} by itself once every step is done, and pushes later \
-         commits to it. Do not open it yourself, and never push to {integration} or \
-         {production}. Change documentation, configuration and CI only, not application code.\n\
-         11. Before finishing, make sure every problem listed above is resolved.",
+         11. Change documentation, configuration and CI only, not application code; a test \
+         changes only to run correctly on Yulius CI. Make sure every problem listed above is \
+         resolved.\n\
+         12. Commit on your task branch and mark every step done as you finish it. Then get \
+         the independent review of the exact head and call `delivery_merge` with that head: \
+         Yulius pushes your branch, opens the pull request into {integration} (or pushes later \
+         commits to it) and merges it once its checks pass. Then start `yulius wait` with \
+         run_in_background and end your turn. Do not open it yourself or push it by hand, and \
+         never push to {integration} or {production}.",
         preset = profile.preset,
         problems = problems.join("\n"),
         environment = ENVIRONMENT_SETUP,
+        gate = GATE_SETUP,
     )
 }
 
@@ -338,15 +361,21 @@ pub fn environment_prompt(repo: &str, profile: &Profile) -> String {
     format!(
         "Set up the sandbox of the repository {repo} for work.\n\n\
          The repository already follows the Yulius documentation format; what this sandbox \
-         still needs is its development environment.\n\n\
+         still needs is its development environment and, where they are missing, the checks of \
+         its gate.\n\n\
          1. Read the repository's own instructions first (AGENTS.md, CLAUDE.md, README, \
          CONTRIBUTING and the development docs). They stay authoritative.\n\
          2. {ENVIRONMENT_SETUP}\n\
-         3. Change only what the environment needs (yulius.toml [commands], a missing setup \
-         note in the docs), never application code. When you changed something, commit it on \
-         your task branch and mark every step done: Yulius opens the pull request into \
-         {integration} by itself. Do not open it yourself, and never push to {integration} or \
-         {production}. When nothing needed to change, just mark the steps done."
+         3. {GATE_SETUP}\n\
+         4. Change only what the environment and the gate need (yulius.toml [commands] and \
+         [[ci.jobs]], the checks' configuration, a missing setup note in the docs), never \
+         application code; a test changes only to run correctly on Yulius CI. When you changed something, commit it on your task branch, mark \
+         every step done, get the independent review of the exact head and call \
+         `delivery_merge` with that head: Yulius pushes your branch, opens the pull request into \
+         {integration} and merges it once its checks pass. Then start `yulius wait` with \
+         run_in_background and end your turn. Do not open it yourself, and never push to \
+         {integration} or {production}. When nothing needed to change, just mark the steps \
+         done."
     )
 }
 
@@ -355,6 +384,8 @@ fn environment_steps() -> Vec<String> {
     [
         "Read the repository's instructions and conventions",
         "Install the toolchains and run the repository's own checks",
+        "Wire tests and the lint, format and dead-code checks into the gate",
+        "Give every project of the repository its CI job",
         "Record the working commands in yulius.toml [commands]",
     ]
     .iter()
@@ -370,6 +401,8 @@ fn onboarding_steps() -> Vec<String> {
         "Reverse-engineer the product, architecture and decisions into the docs",
         "Map existing documents and commands in yulius.toml",
         "Move GitHub Actions into Yulius CI and delete them",
+        "Wire tests and the lint, format and dead-code checks into the gate",
+        "Give every project of the repository its CI job",
         "Add the missing documents and check the format",
     ]
     .iter()
@@ -1179,7 +1212,7 @@ mod tests {
         assert!(!prompt.contains("Ask the user"), "onboarding is autonomous");
         assert!(prompt.contains("delete .github/workflows/"));
         // F 2026-10-11: the agent never needs the GitHub CLI and never stops on a permission.
-        assert!(prompt.contains("Yulius opens the pull request"));
+        assert!(prompt.contains("Yulius pushes your branch, opens the pull request"));
         assert!(prompt.contains("Do not open it yourself"));
         assert!(prompt.contains("Workflows permission"));
         // F 2026-10-11: the preparation agent had no Rust toolchain afterwards.
@@ -1199,6 +1232,128 @@ mod tests {
         assert!(prompt.contains("dead-code-cleanup"));
         assert!(prompt.contains("--no-verify"));
         assert!(prompt.len() < crate::lifecycle::MAX_PROMPT_BYTES);
+        Ok(())
+    }
+
+    /// SPEC-116 OBG-001…003 (task #101): onboarding installs the gate in its own pull request —
+    /// tests, lint and format, a dead-code check and a CI job per project, existing findings
+    /// baselined — instead of filing them as follow-ups (studio #57, #58), and keeps a workflow
+    /// Yulius CI cannot run with a decision record instead of asking a person.
+    #[test]
+    fn prompts_install_the_gate_in_the_onboarding_pull_request() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let (report, _) = validate_checkout(dir.path());
+        let profile =
+            crate::projects::profile_view(&yulius_domain::delivery::DeliveryProfile::studio());
+        let preparation = onboarding_prompt("Quartio-Studio/studio", &profile, &report);
+        let environment = environment_prompt("Quartio-Studio/studio", &profile);
+        for prompt in [&preparation, &environment] {
+            for wording in [
+                "in this pull request, not as follow-ups",
+                "a lint and format check",
+                "dead-code and unused-dependency check",
+                "skill dead-code-cleanup",
+                "pinned, with its allowlist committed",
+                "[[ci.jobs]]",
+                "every project",
+                "gets a CI job",
+                "baseline",
+                "fails on new findings",
+                "burn the baseline down",
+            ] {
+                assert!(prompt.contains(wording), "missing {wording:?}");
+            }
+            assert!(!prompt.contains("follow-up pull requests"), "no deferral");
+            assert!(prompt.len() < crate::lifecycle::MAX_PROMPT_BYTES);
+        }
+        for wording in [
+            "need a runner Yulius CI lacks",
+            "keep that workflow",
+            "decision record",
+            "nobody needs to accept it",
+        ] {
+            assert!(preparation.contains(wording), "missing {wording:?}");
+        }
+        for steps in [onboarding_steps(), environment_steps()] {
+            assert!(
+                steps
+                    .iter()
+                    .any(|s| s.contains("lint, format and dead-code checks")),
+                "{steps:?}"
+            );
+            assert!(
+                steps.iter().any(|s| s.contains("every project")),
+                "{steps:?}"
+            );
+        }
+        // The skill the prompt names says the same, for every later bootstrap too.
+        let skill = crate::skills::pack::PACKS
+            .iter()
+            .flat_map(|pack| pack.files.iter())
+            .find(|(rel, _)| *rel == "infra-bootstrap/SKILL.md")
+            .map(|(_, bytes)| {
+                String::from_utf8_lossy(bytes)
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .ok_or("infra-bootstrap is bundled")?;
+        for wording in [
+            "land in the onboarding pull request itself",
+            "never leave them as follow-up issues",
+            "fails on new findings",
+            "a CI job for every project",
+        ] {
+            assert!(
+                skill.contains(wording),
+                "infra-bootstrap misses {wording:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// SPEC-116 OBG-004, OBG-005 (task #101): the onboarding agent learns that it and CI run as
+    /// root (studio's `chmod 000` test passed only for non-root users), and delivers like every
+    /// task — review, `delivery_merge`, `yulius wait` — instead of waiting for a pull request
+    /// that a goal held open never let Yulius open (studio PR #59, pushed by hand).
+    #[test]
+    fn prompts_deliver_like_every_task_and_name_the_root_sandbox() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let (report, _) = validate_checkout(dir.path());
+        let profile =
+            crate::projects::profile_view(&yulius_domain::delivery::DeliveryProfile::studio());
+        for prompt in [
+            onboarding_prompt("Quartio-Studio/studio", &profile, &report),
+            environment_prompt("Quartio-Studio/studio", &profile),
+        ] {
+            for wording in [
+                "run as root",
+                "chmod 000",
+                "skip when the current user can still read",
+                "independent review of the exact head",
+                "call `delivery_merge` with that head",
+                "opens the pull request into quartio",
+                "merges it once its checks pass",
+                "start `yulius wait` with run_in_background and end your turn",
+                "Do not open it yourself",
+            ] {
+                assert!(prompt.contains(wording), "missing {wording:?}");
+            }
+            assert!(
+                !prompt.contains("by itself once every step is done"),
+                "the pull request does not appear while the agent keeps working"
+            );
+            // Review of SPEC-116, findings 5 and 7: the root note's test skip is allowed, and
+            // the turn's end is the prompt's last instruction.
+            assert!(prompt.contains("a test changes only to run correctly on Yulius CI"));
+            assert!(
+                prompt
+                    .trim_end()
+                    .ends_with("never push to quartio or main.")
+                    || prompt.contains("When nothing needed to change, just mark the steps done"),
+                "{prompt}"
+            );
+        }
         Ok(())
     }
 

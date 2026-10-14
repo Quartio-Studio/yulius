@@ -2,7 +2,9 @@
 // its user gave it (UI-044). The whole rail is hidden by default (F 2026-10-07) and shown with the
 // top-bar Tools toggle, remembered per browser; opening a panel from a link shows it.
 // Sandbox-scoped panels stay alive while hidden so the browser stream, editor and shell sessions
-// are not torn down on every toggle. A panel can be maximized over the center.
+// are not torn down on every toggle, nor on a switch to another sandbox and back (SPEC-113): each
+// sandbox keeps its open tool and, for the sandboxes used last, its views. A panel can be maximized
+// over the center.
 
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, errorToast, singleFlight, closableTabKeys } from './dom.js';
@@ -34,6 +36,15 @@ const KINDS = [
   // Auto-saved notepads for this sandbox and the team (SPEC-041).
   ['notes', 'note', 'Notes'],
 ];
+/** Tool views kept for this many sandboxes, the one in view included (SPEC-113 KST-006). */
+const KEEP_SANDBOXES = 3;
+/**
+ * Tools whose views a sandbox switch keeps. Notes are rebuilt instead: the Team and Me notepads are
+ * the same in every sandbox, and two live copies in one tab would edit them against each other.
+ */
+const KEPT_KINDS = new Set(['agent', 'browser', 'editor', 'shell']);
+/** The sandbox id of a view key (`<kind>:<sandbox id>`). */
+const keySandbox = (key) => key.slice(key.indexOf(':') + 1);
 
 /** Create the rail + panel. setContext(sandbox, task) on navigation; open(kind, opts). */
 export function createPanelHost(ctx) {
@@ -110,6 +121,8 @@ export function createPanelHost(ctx) {
   let sandbox = null;
   let task = null;
   const views = new Map(); // key → view
+  let recent = []; // sandbox ids whose views are kept, the one used last first
+  const toolOf = new Map(); // sandbox id → the tool it had open, or null (SPEC-113 KST-005)
 
   // ---- width (default 45 % of the work area, resizable, remembered per user in this browser). The
   // work area is the room the centre and the panel share: the window less the rail and the sidebar,
@@ -159,14 +172,18 @@ export function createPanelHost(ctx) {
     if (!sandbox) return simpleView(h('div', { class: 'panel-msg' }, 'Open a sandbox first.'));
     if (k === 'agent') return createAgentView(ctx, sandbox);
     if (k === 'browser') return createBrowserPanel(ctx, sandbox);
-    if (k === 'editor') return createEditorView(ctx, sandbox, () => task);
-    if (k === 'shell') return createShellView(ctx, sandbox, () => task);
+    // The selected task, while it is one of this view's sandbox (the view outlives a switch).
+    const own = sandbox;
+    const taskHere = () => (task && task.sandbox_id === own.id ? task : null);
+    if (k === 'editor') return createEditorView(ctx, sandbox, taskHere);
+    if (k === 'shell') return createShellView(ctx, sandbox, taskHere);
     if (k === 'notes') return createNotesView(ctx, sandbox);
     return simpleView(h('div'));
   }
 
   function show(k, opts = {}) {
     kind = k;
+    if (sandbox) toolOf.set(sandbox.id, k);
     const key = viewKey(k);
     let view = views.get(key);
     if (!view) {
@@ -195,6 +212,7 @@ export function createPanelHost(ctx) {
       button.classList.toggle('active', name === k);
       button.setAttribute('aria-pressed', String(name === k));
     }
+    if (view.resume) view.resume();
     if (view.show) view.show(opts);
     ctx.onPanelChange && ctx.onPanelChange(k);
   }
@@ -205,6 +223,7 @@ export function createPanelHost(ctx) {
     if (app) app.classList.remove('panel-max');
     if (ctx.fitSidebar) ctx.fitSidebar(); // the sidebar grows back to its width
     kind = null;
+    if (sandbox) toolOf.set(sandbox.id, null);
     for (const button of buttons.values()) {
       button.classList.remove('active');
       button.setAttribute('aria-pressed', 'false');
@@ -239,6 +258,24 @@ export function createPanelHost(ctx) {
     }
   }
 
+  /**
+   * Destroys the views of these sandboxes and forgets their tool. An editor holding unsaved text
+   * is kept past the bound (the person was told it stays in this tab) until its sandbox is gone.
+   */
+  function dropSandboxes(ids, { gone = false } = {}) {
+    const dropped = new Set(ids);
+    destroyWhere((key) => dropped.has(keySandbox(key)) && (gone || !(views.get(key).unsaved)));
+    if (gone) for (const id of dropped) toolOf.delete(id);
+  }
+
+  /** A sandbox removed, or no longer visible to the person: its views and sockets go (KST-006). */
+  function pruneGone() {
+    const known = new Set(ctx.store.state.sandboxes.map((s) => s.id));
+    const gone = [...new Set([...views.keys()].map(keySandbox))].filter((id) => id !== 'none' && !known.has(id));
+    recent = recent.filter((id) => known.has(id));
+    if (gone.length) dropSandboxes(gone, { gone: true });
+  }
+
   function updateBadges() {
     const requests = sandbox ? ctx.store.state.actionRequests.get(sandbox.id) : null;
     badges.get('browser').hidden = !(requests && requests.size);
@@ -256,6 +293,7 @@ export function createPanelHost(ctx) {
 
   const offs = [
     ctx.store.on('browser-action', updateBadges),
+    ctx.store.on('sandboxes', pruneGone),
     ctx.store.on('task', (t) => { if (task && t.id === task.id) { task = t; updateBadges(); } }),
   ];
 
@@ -272,15 +310,40 @@ export function createPanelHost(ctx) {
     setContext(nextSandbox, nextTask) {
       const sandboxChanged = (nextSandbox && nextSandbox.id) !== (sandbox && sandbox.id);
       const taskChanged = (nextTask && nextTask.id) !== (task && task.id);
+      const left = sandbox;
       sandbox = nextSandbox;
       task = nextTask;
-      if (sandboxChanged) destroyWhere(() => true);
-      else if (taskChanged) {
-        for (const [key, view] of views) if (key.startsWith('editor:') && view.taskChanged) view.taskChanged();
+      if (sandboxChanged) {
+        // The sandbox left keeps its views, hidden (the browser stream stops, the editor lets its
+        // Monaco models go); its notes are rebuilt when it is back. Past KEEP_SANDBOXES the views of
+        // the sandbox used longest ago go (SPEC-113 KST-006).
+        if (left) {
+          // What it shows when it is back, also when nothing was open (KST-005).
+          toolOf.set(left.id, panel.hidden ? null : kind);
+          for (const [key, view] of views) {
+            if (keySandbox(key) !== left.id) continue;
+            if (view.hide) view.hide();
+            if (view.suspend) view.suspend();
+          }
+          destroyWhere((key) => keySandbox(key) === left.id && !KEPT_KINDS.has(key.slice(0, key.indexOf(':'))));
+        }
+        if (sandbox) recent = [sandbox.id, ...recent.filter((id) => id !== sandbox.id)];
+        dropSandboxes(recent.splice(KEEP_SANDBOXES));
       }
-      if (!sandbox && !panel.hidden) close();
+      if (sandbox && (sandboxChanged || taskChanged)) {
+        const editor = views.get(`editor:${sandbox.id}`);
+        if (editor && editor.taskChanged) editor.taskChanged();
+      }
+      if (!sandbox) {
+        if (!panel.hidden) close();
+      } else if (sandboxChanged && toolOf.has(sandbox.id)) {
+        // Back in a sandbox: the tool it had open, or none (KST-005). A rail the person hid is shown
+        // for that tool only, as for the top-bar Superagent.
+        const tool = toolOf.get(sandbox.id);
+        if (tool) show(tool, { context: true, persistRail: false });
+        else if (!panel.hidden) close();
       // Shown again for the new context, not opened by the person: the keyboard stays with the page.
-      else if (!panel.hidden && kind && (sandboxChanged || taskChanged)) show(kind, { context: true });
+      } else if (!panel.hidden && kind && (sandboxChanged || taskChanged)) show(kind, { context: true });
       updateBadges();
     },
     open: show,
