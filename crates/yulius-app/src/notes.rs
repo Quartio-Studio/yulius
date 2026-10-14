@@ -8,7 +8,7 @@
 //! to the notepad's readers as they send it and stored nowhere, at most
 //! [`PRESENCE_PER_SECOND`] updates per person and notepad.
 
-use yulius_contracts::api::notes::{Note, NotePresence, SaveNote};
+use yulius_contracts::api::notes::{Note, NotePresence, NoteSelection, SaveNote};
 use yulius_contracts::events::UiEvent;
 use yulius_domain::ids::{SandboxId, UserId};
 use yulius_domain::permission::Action;
@@ -196,27 +196,9 @@ impl App {
             return Err(AppError::NotFound);
         }
         let scope = self.note_scope(ctx, target, Action::View).await?;
-        if input
-            .selection
-            .is_some_and(|s| s.anchor.max(s.head) > MAX_PRESENCE_OFFSET)
-        {
-            return Err(AppError::Invalid(
-                "a selection lies within the notes' text".into(),
-            ));
-        }
-        if input.client.len() > MAX_PRESENCE_CLIENT
-            || !input.client.bytes().all(|b| b.is_ascii_alphanumeric())
-        {
-            return Err(AppError::Invalid(format!(
-                "a client is at most {MAX_PRESENCE_CLIENT} letters and digits"
-            )));
-        }
+        check_presence(input.selection, MAX_PRESENCE_OFFSET, &input.client)?;
         self.count_presence(&format!("{}|{}", ctx.user.id, scope.key()))?;
-        let name = ctx
-            .user
-            .github_login
-            .clone()
-            .unwrap_or_else(|| ctx.user.display_name.clone());
+        let name = presence_name(ctx);
         let event = UiEvent::NotePresence {
             scope: scope.wire().to_owned(),
             sandbox_id: match &scope {
@@ -237,8 +219,9 @@ impl App {
         Ok(())
     }
 
-    /// Counts one presence update under `key`, refusing it past the limit (NOT-019).
-    fn count_presence(&self, key: &str) -> AppResult<()> {
+    /// Counts one presence update under `key` (a person and what they have open), refusing it past
+    /// the limit (NOT-019; files share it, SPEC-127 EDT-009).
+    pub(crate) fn count_presence(&self, key: &str) -> AppResult<()> {
         let mut counters = self
             .note_presence
             .lock()
@@ -257,6 +240,32 @@ impl App {
             ))
         }
     }
+}
+
+/// Refuses a presence update whose selection reaches past `max_offset` or whose `client` is not
+/// at most [`MAX_PRESENCE_CLIENT`] letters and digits.
+pub(crate) fn check_presence(
+    selection: Option<NoteSelection>,
+    max_offset: u32,
+    client: &str,
+) -> AppResult<()> {
+    if selection.is_some_and(|s| s.anchor.max(s.head) > max_offset) {
+        return Err(AppError::Invalid("a selection lies within the text".into()));
+    }
+    if client.len() > MAX_PRESENCE_CLIENT || !client.bytes().all(|b| b.is_ascii_alphanumeric()) {
+        return Err(AppError::Invalid(format!(
+            "a client is at most {MAX_PRESENCE_CLIENT} letters and digits"
+        )));
+    }
+    Ok(())
+}
+
+/// How a person is named to the others: the GitHub login, else the display name.
+pub(crate) fn presence_name(ctx: &AuthContext) -> String {
+    ctx.user
+        .github_login
+        .clone()
+        .unwrap_or_else(|| ctx.user.display_name.clone())
 }
 
 /// Counts one update under `key` when it has had fewer than `per_window` in the last

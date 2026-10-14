@@ -231,6 +231,12 @@ impl App {
         self.require(user, sandbox, Action::View).await.is_ok()
     }
 
+    /// Whether the user may work in a sandbox: its files, terminals and editor (errors count as
+    /// no).
+    pub async fn can_work_in(&self, user: &UserRecord, sandbox: &SandboxId) -> bool {
+        self.require(user, sandbox, Action::Work).await.is_ok()
+    }
+
     /// Sandboxes the user can see with their levels. GitHub failures for one sandbox hide it
     /// rather than failing the whole list.
     ///

@@ -242,3 +242,282 @@ async fn write_users_edit_files_inside_the_folder_only() -> TestResult {
     assert_eq!(task.body["entries"][0]["name"], "task.txt");
     Ok(())
 }
+
+/// A repository with one file for the presence tests; alice writes, bob reads, carol has nothing.
+async fn presence_fixture() -> Result<
+    (
+        support::Harness,
+        support::Creds,
+        support::Creds,
+        support::Creds,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let h = support::harness_with(support::HarnessOptions {
+        configure: Some(Box::new(|c| c.viewer_recheck_ms = 200)),
+        ..support::HarnessOptions::default()
+    })?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    let bob = seed_github_user(&h, "u-bob", "bob").await?;
+    let carol = seed_github_user(&h, "u-carol", "carol").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    h.github.set_perm("bob", "acme/fixture", perms("read"));
+    let repo = h.app.config.data_dir.join("sandboxes/s1/repo");
+    std::fs::create_dir_all(repo.join("src"))?;
+    std::fs::write(repo.join("src/main.rs"), "fn main() {}\n")?;
+    Ok((h, alice, bob, carol))
+}
+
+fn published(
+    events: &mut tokio::sync::broadcast::Receiver<yulius_app::events::Envelope>,
+) -> Vec<yulius_app::events::Envelope> {
+    std::iter::from_fn(|| events.try_recv().ok()).collect()
+}
+
+const SHA: &str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+
+/// SPEC-127 EDT-008: a writer's selection in a file is relayed, with the path as the files API
+/// reads it, to the sandbox's writers only; readers may neither send nor receive it.
+#[tokio::test]
+async fn presence_is_relayed_to_writers_only() -> TestResult {
+    use yulius_contracts::api::notes::NoteSelection;
+    use yulius_contracts::events::UiEvent;
+    let (h, alice, bob, carol) = presence_fixture().await?;
+    let mut events = h.app.events.subscribe();
+
+    let sent = call(
+        &h.router,
+        Method::PUT,
+        "/api/sandboxes/s1/files/presence",
+        Some(json!({"path": "./src/main.rs", "sha256": SHA, "selection": {"anchor": 3, "head": 7}, "hello": true, "client": "tab1"})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(sent.status, StatusCode::NO_CONTENT, "{:?}", sent.body);
+    let envelope = events.try_recv()?;
+    assert!(envelope.writers_only && envelope.user.is_none() && !envelope.admin_only);
+    assert_eq!(
+        envelope
+            .sandbox
+            .as_ref()
+            .map(ToString::to_string)
+            .as_deref(),
+        Some("s1")
+    );
+    assert_eq!(
+        envelope.event,
+        UiEvent::FilePresence {
+            sandbox_id: "s1".into(),
+            root: "sandbox".into(),
+            path: "src/main.rs".into(),
+            user_id: "u-alice".into(),
+            client: "tab1".into(),
+            name: "alice".into(),
+            sha256: SHA.into(),
+            selection: Some(NoteSelection { anchor: 3, head: 7 }),
+            hello: true,
+        }
+    );
+
+    // Reading files needs write access, and so does saying where one is in them.
+    for (who, status) in [
+        (&bob, StatusCode::FORBIDDEN),
+        (&carol, StatusCode::NOT_FOUND),
+    ] {
+        let refused = call(
+            &h.router,
+            Method::PUT,
+            "/api/sandboxes/s1/files/presence",
+            Some(json!({"path": "src/main.rs", "selection": null})),
+            who,
+        )
+        .await?;
+        assert_eq!(refused.status, status, "{:?}", refused.body);
+    }
+    assert!(published(&mut events).is_empty());
+
+    // On the event stream: the writer gets it, the reader of the same sandbox never does (an
+    // event of the sandbox sent after it reaches them first).
+    let served = support::serve(h.router.clone()).await?;
+    let origin = h.app.config.public_url.clone();
+    let mut writer = support::ws_connect(served.addr, "/api/events", &alice, &origin).await?;
+    let mut reader = support::ws_connect(served.addr, "/api/events", &bob, &origin).await?;
+    let sandbox = yulius_domain::ids::SandboxId::parse("s1")?;
+    let marker = |task: &str| {
+        h.app.events.publish(
+            Some(sandbox.clone()),
+            false,
+            UiEvent::TaskRemoved {
+                task_id: task.into(),
+            },
+        );
+    };
+    // The server subscribes once the upgrade completes: publish until both streams have one.
+    for socket in [&mut writer, &mut reader] {
+        let mut seen = None;
+        for _ in 0..20 {
+            marker("t-ready");
+            seen = next_text(socket, std::time::Duration::from_millis(250)).await;
+            if seen.is_some() {
+                break;
+            }
+        }
+        assert!(
+            matches!(&seen, Some(Ok(text)) if text.contains("t-ready")),
+            "{seen:?}"
+        );
+    }
+    for socket in [&mut writer, &mut reader] {
+        while let Some(Ok(_)) = next_text(socket, std::time::Duration::from_millis(300)).await {}
+    }
+    let again = call(
+        &h.router,
+        Method::PUT,
+        "/api/sandboxes/s1/files/presence",
+        Some(json!({"path": "src/main.rs", "sha256": SHA, "selection": {"anchor": 1, "head": 1}, "client": "tab1"})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(again.status, StatusCode::NO_CONTENT);
+    marker("t-after");
+    let first = next_text(&mut writer, std::time::Duration::from_secs(2)).await;
+    assert!(
+        matches!(&first, Some(Ok(text)) if text.contains("\"file.presence\"") && text.contains("src/main.rs")),
+        "{first:?}"
+    );
+    let first = next_text(&mut reader, std::time::Duration::from_secs(2)).await;
+    assert!(
+        matches!(&first, Some(Ok(text)) if text.contains("t-after")),
+        "a reader got file presence: {first:?}"
+    );
+    Ok(())
+}
+
+/// SPEC-127 EDT-008: malformed updates are refused and relay nothing.
+#[tokio::test]
+async fn presence_is_refused_when_malformed() -> TestResult {
+    let (h, alice, _, _) = presence_fixture().await?;
+    let mut events = h.app.events.subscribe();
+    for (body, status) in [
+        (
+            json!({"path": "src/main.rs", "selection": null, "revision": 1}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (json!({"selection": null}), StatusCode::UNPROCESSABLE_ENTITY),
+        (
+            json!({"path": "", "selection": null}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            json!({"path": "../secret.txt", "selection": null}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            json!({"path": ".git/config", "selection": null}),
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            json!({"path": "src/main.rs", "root": "elsewhere", "selection": null}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            json!({"path": "src/main.rs", "sha256": "abc", "selection": null}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            json!({"path": "src/main.rs", "sha256": SHA.to_uppercase(), "selection": null}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            json!({"path": "src/main.rs", "selection": null, "client": "tab one"}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            json!({"path": "src/main.rs", "selection": {"anchor": 0, "head": 2_097_153}}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+    ] {
+        let refused = call(
+            &h.router,
+            Method::PUT,
+            "/api/sandboxes/s1/files/presence",
+            Some(body.clone()),
+            &alice,
+        )
+        .await?;
+        assert_eq!(refused.status, status, "{body}: {:?}", refused.body);
+    }
+    // The largest file's last offset is fine.
+    let edge = call(
+        &h.router,
+        Method::PUT,
+        "/api/sandboxes/s1/files/presence",
+        Some(json!({"path": "src/main.rs", "selection": {"anchor": 0, "head": 2_097_152}})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(edge.status, StatusCode::NO_CONTENT, "{:?}", edge.body);
+    assert_eq!(published(&mut events).len(), 1);
+    Ok(())
+}
+
+/// SPEC-127 EDT-009: the notepads' limit, per person and file.
+#[tokio::test]
+async fn presence_is_rate_limited() -> TestResult {
+    let (h, alice, _, _) = presence_fixture().await?;
+    std::fs::write(
+        h.app.config.data_dir.join("sandboxes/s1/repo/README.md"),
+        "# Fixture\n",
+    )?;
+    let mut events = h.app.events.subscribe();
+    let send = |path: &'static str| {
+        call(
+            &h.router,
+            Method::PUT,
+            "/api/sandboxes/s1/files/presence",
+            Some(json!({"path": path, "selection": {"anchor": 0, "head": 0}})),
+            &alice,
+        )
+    };
+    for _ in 0..20 {
+        assert_eq!(send("src/main.rs").await?.status, StatusCode::NO_CONTENT);
+    }
+    assert_eq!(
+        send("src/main.rs").await?.status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(published(&mut events).len(), 20, "the 21st is not relayed");
+    // Each file counts on its own, and the next second starts afresh.
+    assert_eq!(send("README.md").await?.status, StatusCode::NO_CONTENT);
+    h.clock
+        .0
+        .fetch_add(1_000, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(send("src/main.rs").await?.status, StatusCode::NO_CONTENT);
+    assert_eq!(published(&mut events).len(), 2);
+    Ok(())
+}
+
+/// The next text frame within `wait`: `Ok(text)`, `Err(close code)` when the socket closed, or
+/// `None` when nothing arrived.
+async fn next_text(
+    socket: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    wait: std::time::Duration,
+) -> Option<Result<String, Option<u16>>> {
+    use futures::StreamExt as _;
+    use tokio_tungstenite::tungstenite::Message;
+    let deadline = tokio::time::Instant::now() + wait;
+    loop {
+        match tokio::time::timeout_at(deadline, socket.next()).await {
+            Err(_) => return None,
+            Ok(Some(Ok(Message::Text(text)))) => return Some(Ok(text.to_string())),
+            Ok(Some(Ok(Message::Close(frame)))) => {
+                return Some(Err(frame.map(|f| u16::from(f.code))));
+            }
+            Ok(None | Some(Err(_))) => return Some(Err(None)),
+            Ok(Some(Ok(_))) => {}
+        }
+    }
+}
