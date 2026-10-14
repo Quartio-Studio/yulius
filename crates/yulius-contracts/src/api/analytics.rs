@@ -34,13 +34,29 @@ pub struct TaskCounts {
     pub by_origin: BTreeMap<String, u32>,
 }
 
-/// Tasks created on one UTC day.
+/// One UTC day of the range: tasks created, and the cohort's runs and switches that day
+/// (SPEC-110 TUS-008).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DayCount {
     /// `YYYY-MM-DD`.
     pub date: String,
     /// Tasks created that day.
     pub count: u32,
+    /// Agent working time (ms) of the runs started that day; `null` when none reported it.
+    #[serde(default)]
+    pub active_ms: Option<u64>,
+    /// Median agent working time (ms) of the tasks created that day whose runs reported it.
+    #[serde(default)]
+    pub median_active_ms: Option<u64>,
+    /// Input tokens of the runs started that day; `null` when none reported them.
+    #[serde(default)]
+    pub input: Option<u64>,
+    /// Output tokens of the runs started that day.
+    #[serde(default)]
+    pub output: Option<u64>,
+    /// Subscription switches made that day.
+    #[serde(default)]
+    pub switches: u32,
 }
 
 /// Durations of the cohort, computed from attempts (wall: a session open, idle or not) and
