@@ -1195,7 +1195,9 @@ after an unlock.
 found or moved; clients refetch `GET /api/update`),
 `{"type":"note.updated","scope":"team|sandbox|me","sandbox_id","revision","updated_by"}` (a
 notepad was saved; a sandbox note's event reaches only that sandbox's viewers, a personal note's
-only its owner), `{"type":"resync"}`.
+only its owner), `{"type":"pulls.updated","sandbox_id"}` (the sandbox's pull requests may have
+changed: a delivery stage moved or a Yulius CI run was queued, started or ended; clients watching
+it read `GET /api/sandboxes/{sid}/git` again; SPEC-108), `{"type":"resync"}`.
 
 Sandbox views depend on the viewer's access level, so after a sandbox change (import, create,
 onboarding transitions, removal) the server publishes `resync` to that sandbox's viewers (or

@@ -14,6 +14,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Agent work per task, Agent working time, Tokens and Subscription switches figures get a chart of
   the range's days, like Tasks; every chart names its first, highest and last values for screen
   readers.
+- A pull request's change reaches the sidebar when it happens (SPEC-108, ADR-0087, task #93). Task
+  #56 read Done with PR #340 "checks running" 4.5 minutes after Yulius had merged it: the task's
+  state came live, its pull request only from the Git overview read every minute, never while the
+  tab was hidden. The server now publishes `pulls.updated` to a sandbox's viewers when a delivery
+  stage moves (opened, merged, reconciled with GitHub, by any path) and when a Yulius CI run is
+  queued, starts or ends; the browser reads the overview again within seconds (at most one such
+  read per 3 s), or when a hidden tab is shown again. Reads of a sandbox no longer overlap, and a
+  change announced during a read brings one more read after it, so an older read never has the
+  last word. A pull request Yulius recorded as merged reads merged even while GitHub's list, read
+  just after the merge, still says open.
 - Onboarding no longer gets stuck (SPEC-106, ADR-0086, task #91, #425).
   - **Trust prompt.** A task in a repository whose `.claude/settings.json` pre-approves tools
     starts without Claude Code's folder-trust prompt: its main repository is trusted too, where

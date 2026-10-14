@@ -170,9 +170,7 @@ impl App {
             updated_at: self.now(),
         };
         if !self
-            .deps
-            .store
-            .transition_delivery(&observed.record.stage, &next)
+            .dlv_transition(&task.sandbox_id, &observed.record.stage, &next)
             .await?
         {
             // Changed meanwhile (another merge of this task): the view below shows what it is.
