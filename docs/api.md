@@ -867,9 +867,11 @@ resolves to nothing, the run gets the server without that variable or token.
   offsets of the file's text as saved at `sha256` (64 lowercase hex digits, empty when unknown),
   or `null` when they left the file; `hello` and `client` as for notepad presence. Relayed as
   `file.presence` to the sandbox's writers only, stored nowhere. The path is checked like the
-  other file requests (403 for `.git`, 422 for an empty or escaping path); 422 for unknown fields,
-  a bad `sha256` or `client`, or an offset over 2 Mi; 403/404 without write access; 429 past 20
-  updates a second per person and file (the notepads' limiter).
+  other file requests (403 for `.git`, 422 for an empty or escaping path, a folder or a path over
+  4096 bytes); a selection needs an existing regular file (404; leaving a deleted one is fine);
+  422 for unknown fields, a bad `sha256` or `client`, or an offset over 2 Mi; 403/404 without
+  write access; 429 past 20 updates a second per person and file (the notepads' limiter) or past
+  64 files a person is busy in at once.
 - Dropped files (EDT-006, UI-048). One file per request, the raw bytes as the body (`Content-Type`
   is not interpreted), streamed to disk; at most the upload limit (`YULIUS_UPLOAD_MAX_MB`, 25 MiB by
   default; `GET /api/me` → `instance.upload_max_bytes`): a larger `Content-Length` is 422 before
