@@ -182,7 +182,7 @@ p { margin: 0; }
 
 .menu {
   position: fixed; z-index: var(--z-menu); display: flex; flex-direction: column;
-  min-width: 180px; max-width: 320px; max-height: calc(100vh - 16px); padding: 4px;
+  min-width: 180px; max-width: min(320px, 100vw - 16px); max-height: calc(100vh - 16px); padding: 4px;
   background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
   box-shadow: var(--shadow);
 }
@@ -207,9 +207,8 @@ p { margin: 0; }
 .menu-hint { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); }
 .menu-item.rich { height: auto; min-height: var(--control-md); padding: 4px 12px; align-items: flex-start; }
 .menu-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
-/* One line; the whole description is the item's tooltip, and shows on the focused item. */
-.menu-desc { overflow: hidden; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); text-overflow: ellipsis; white-space: nowrap; }
-.menu-item:focus-visible .menu-desc { white-space: normal; }
+/* As many lines as it needs, never cut (SPEC-094); the menu keeps its width, so a short one is one line. */
+.menu-desc { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); overflow-wrap: anywhere; }
 .menu-check { display: inline-flex; width: 14px; flex: none; color: var(--accent); }
 .menu-icon { display: inline-flex; width: 16px; flex: none; color: var(--muted); }
 .menu-item:hover .menu-icon, .menu-item:focus-visible .menu-icon { color: var(--text-2); }
