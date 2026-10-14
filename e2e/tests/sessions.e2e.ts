@@ -704,6 +704,7 @@ test('a session fills the content area edge to edge, beside the Superagent and o
   expect(await fit()).toMatchObject(edgeToEdge);
   // Task #94: on a phone too, the web hangs in the well's corner, inside its border.
   const corner = await browser.evaluate(() => {
+    document.querySelector<HTMLElement>('.ss-page')!.scrollTop = 0; // at the top, not stuck lower down
     const wellEl = document.querySelector('.ss-tui')!;
     const well = wellEl.getBoundingClientRect();
     const box = wellEl.querySelector(':scope > svg.ss-web')!.getBoundingClientRect();
