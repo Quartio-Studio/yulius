@@ -43,4 +43,8 @@ mouse to go to the program by default (task #83).
   page text in a full-screen program needs Shift (Option on macOS).
 - Less code: no forwarding of wheel and click reports, no click-count tracking, no chip.
 - Mouse reports still neither count as typing nor take control (ADR-0052); a settled click still
-  takes the size.
+  takes the size. A mouse report lost while disconnected shows no "Not connected" notice; typing
+  still does.
+- A click on a link (a web link or a file path) also reaches the program, as a click there does in
+  a native terminal: xterm reports every press and its link handling cannot hold one back. In
+  Claude Code a click on a path inside a collapsed tool group opens the file and toggles the group.

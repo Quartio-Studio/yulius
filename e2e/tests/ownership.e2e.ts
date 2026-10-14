@@ -53,6 +53,10 @@ test('the owner is asked for control and hands the task over', async ({ app, bro
   await expect(screen.getByText('Read-only: @anna-q owns this task')).toBeVisible();
   // A watcher cannot send anything: its mouse selects text again.
   await expect.poll(programMouse, { message: 'the watcher keeps the mouse for selection' }).toBe(false);
+  // anna-q hands it back: mkarp writes again and the program gets the mouse again.
+  await touch(browser, 'sb_studio', 12, { owner: { login: 'mkarp' }, controlRequest: null });
+  await expect(screen.getByText('Read-only: @anna-q owns this task')).toBeHidden();
+  await expect.poll(programMouse, { message: 'the writer hands the program its mouse again' }).toBe(true);
 });
 
 test('the owner declines a request for control', async ({ app, browser, screen }) => {

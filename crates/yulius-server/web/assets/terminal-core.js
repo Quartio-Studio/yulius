@@ -376,12 +376,14 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     event.stopPropagation();
     showNotice(readOnlyText());
   }, true);
-  // Right-click: Copy, Paste and Select all (Shift+right-click keeps the browser's own menu). While
-  // the program has the mouse, right-clicks are the program's and the key that selects text
-  // (Shift; Option on macOS) brings the menu instead (SPEC-098 MSE-003).
+  // Right-click: Copy, Paste and Select all; Shift+right-click keeps the browser's own menu. While
+  // the program has the mouse, a right-click is the program's alone (no menu over it) and the key
+  // that selects text (Shift; Option on macOS) brings this menu instead (SPEC-098 MSE-003).
   el.addEventListener('contextmenu', (event) => {
     if (!host.contains(event.target)) return;
-    if (programHasMouse() ? !(IS_MAC ? event.altKey : event.shiftKey) : event.shiftKey) return;
+    if (programHasMouse()) {
+      if (!pageKey(event)) { event.preventDefault(); return; }
+    } else if (event.shiftKey) return;
     event.preventDefault();
     const selected = term.getSelection();
     openMenu({ x: event.clientX, y: event.clientY }, [
@@ -415,13 +417,19 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   // Claude Code draws full screen (the alternate buffer has no scrollback) and asks for the mouse:
   // xterm reports its clicks, drags and wheel turns in the program's encoding, as a native terminal
   // does, and they take neither control nor the size (typing.js). Pinch-zoom (ctrl+wheel) and
-  // horizontal swipes stay with the browser (#78).
+  // horizontal swipes stay with the browser (#78): xterm would cancel them even when it does not
+  // report them, so they never reach it.
   const programHasMouse = () => term.modes.mouseTrackingMode !== 'none';
-  term.attachCustomWheelEventHandler((event) => !(programHasMouse() && (event.ctrlKey || !event.deltaY)));
+  /** The key that takes the mouse back from the program: Option on macOS, Shift elsewhere (xterm). */
+  const pageKey = (event) => (IS_MAC ? event.altKey : event.shiftKey);
+  host.addEventListener('wheel', (event) => {
+    if (programHasMouse() && (event.ctrlKey || !event.deltaY)) event.stopPropagation();
+  }, { capture: true, passive: true });
   // Another viewer's grid is centred in this box, and xterm would report a press in the margin
-  // beside it at the grid's edge: that press only takes the size (SPEC-098 MSE-005).
+  // beside it at the grid's edge: that press only takes the size (SPEC-098 MSE-005). A press with
+  // the selection key still starts a selection there.
   host.addEventListener('mousedown', (event) => {
-    if (!programHasMouse()) return;
+    if (!programHasMouse() || pageKey(event)) return;
     const grid = (host.querySelector('.xterm-screen') || host).getBoundingClientRect();
     if (event.clientX >= grid.left && event.clientX < grid.right && event.clientY >= grid.top && event.clientY < grid.bottom) return;
     event.preventDefault();
@@ -566,15 +574,17 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       showNotice(readOnlyText());
       return false;
     }
+    // Focus and mouse reports and xterm's answers to queries are not typing: the server neither
+    // counts them nor moves control for them, so this view does not take the size (SPEC-068), and
+    // one lost while disconnected is not worth a notice.
+    const typing = isTyping(data);
     for (const piece of pieces(data)) {
       if (!socket.sendInput(piece)) {
-        showNotice('Not connected — input was not sent');
+        if (typing) showNotice('Not connected — input was not sent');
         return false;
       }
     }
-    // Focus and mouse reports and xterm's answers to queries are not typing: the server neither
-    // counts them nor moves control for them, so this view does not take the size (SPEC-068).
-    if (!isTyping(data)) return true;
+    if (!typing) return true;
     used();
     // The server makes the viewer who types the controller; mirror it until the next state frame.
     if (!state.controller && !followServerSize) takeSize();

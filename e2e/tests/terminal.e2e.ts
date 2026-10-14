@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { failOnPageErrors, mock } from './support.ts';
+import { failOnPageErrors, mock, mockReady } from './support.ts';
 
 failOnPageErrors();
 
@@ -279,9 +279,12 @@ test('Ctrl+C copies a selection and interrupts without one; paste types the clip
   const rightClick = (key: string | null) => browser.evaluate((key) => {
     const line = [...document.querySelectorAll('.taskview .xterm-rows > div')].find((d) => (d.textContent || '').includes('Read 142 lines'))!;
     const box = line.getBoundingClientRect();
-    line.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: box.left + 60, clientY: box.top + box.height / 2, ...(key ? { [key]: true } : {}) }));
+    const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: box.left + 60, clientY: box.top + box.height / 2, ...(key ? { [key]: true } : {}) });
+    line.dispatchEvent(event);
+    return event.defaultPrevented;
   }, key);
-  await rightClick(null);
+  // No menu at all, not even the browser's own over the program's right-click.
+  expect(await rightClick(null), 'the browser menu is held back').toBe(true);
   await settle();
   await expect(screen.getByRole('menuitem', /^Paste/)).toBeHidden();
   await rightClick(await pageKey(browser));
@@ -418,6 +421,50 @@ test('the program has the mouse, as in a native terminal; Shift (Option on macOS
   await expect.poll(() => selected(browser), { message: 'a Shift-drag selects' }).toBe(true);
   await settle();
   await expect(rows(browser)).not.toHaveText(expanded);
+});
+
+test('the wheel scrolls the program; pinch-zoom and horizontal swipes stay with the browser', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
+  await holdStill(browser);
+  const sent = await recordInput(browser);
+  const point = await spot(browser, 'Searched for 2 patterns');
+  expect(point, 'the group is on the screen').not.toBeNull();
+  // A wheel turn reaches the program as a wheel report in its encoding (SGR 64: up).
+  await browser.mouse.move(point!.x, point!.y);
+  await browser.mouse.wheel(0, -200);
+  await expect.poll(async () => (await sent()).some((data) => data.startsWith('\x1b[<64;')), { message: 'a wheel report' }).toBe(true);
+  // Ctrl+wheel (a trackpad pinch) and a horizontal swipe are the browser's: xterm neither reports
+  // nor cancels them (SPEC-098 MSE-006, #78).
+  const before = (await sent()).length;
+  const kept = await browser.evaluate(({ x, y }) => {
+    const target = document.elementFromPoint(x, y)!;
+    return [{ deltaY: -120, ctrlKey: true }, { deltaX: 120 }].map((delta) => {
+      const event = new WheelEvent('wheel', { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, deltaMode: 0, ...delta });
+      target.dispatchEvent(event);
+      return !event.defaultPrevented;
+    });
+  }, point!);
+  expect(kept, 'pinch and swipe left to the browser').toEqual([true, true]);
+  await settle();
+  expect((await sent()).length, 'no report for a pinch or a swipe').toBe(before);
+});
+
+test('mouse use while disconnected says nothing; typed input still warns', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
+  await holdStill(browser);
+  const point = await spot(browser, 'Searched for 2 patterns');
+  expect(point, 'the group is on the screen').not.toBeNull();
+  await mockReady(browser);
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { goOffline(): void } }).__yuliusMock.goOffline());
+  await expect(browser.locator('.taskview .term-conn')).toBeVisible();
+  // A click is not input the person sent: no "Not connected" notice for it (SPEC-098).
+  await clickAt(browser, point!);
+  await settle();
+  await expect(browser.locator('.taskview .term-notice')).toBeHidden();
+  await browser.keyboard.press('x');
+  await expect(browser.locator('.taskview .term-notice')).toHaveText('Not connected — input was not sent');
 });
 
 test('a read-only viewer’s mouse selects text and does not reach the program', async ({ app, browser, screen }) => {
