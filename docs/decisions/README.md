@@ -80,3 +80,4 @@ number differs from the file name, and a record this index does not list.
 - [0071](0071-long-injected-context-folds-in-the-session-view.md): Long injected context folds to one line in the session view; short notes stay readable
 - [0073](0073-loading-shows-shimmering-fields.md): Loading shows shimmering fields everywhere; a spinner marks only an action under way
 - [0075](0075-menu-descriptions-wrap.md): Menu descriptions wrap onto as many lines as they need instead of being cut
+- [0082](0082-the-session-web-sticks-and-its-creatures-move.md): The session's web sticks in its corner, its spider climbs in CSS, and a cockroach runs by from a timer
