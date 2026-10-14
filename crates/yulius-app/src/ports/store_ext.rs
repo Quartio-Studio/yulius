@@ -315,6 +315,10 @@ pub trait IntakeStore: Send + Sync {
     async fn task_schedule(&self, task: &TaskId) -> AppResult<Option<Timestamp>>;
     /// Prepared tasks whose time is at or before `now`, earliest first (at most 100 per call).
     async fn due_prepared(&self, now: Timestamp) -> AppResult<Vec<TaskId>>;
+    /// `prepared → queued` for the tick, in one statement: only while the task is prepared and
+    /// its stored time is at or before `now` (a time moved or cleared meanwhile wins). `false`
+    /// when either no longer holds.
+    async fn release_scheduled(&self, task: &TaskId, now: Timestamp) -> AppResult<bool>;
     /// Inserts a pending held prompt; earlier pending holds of the task become `superseded`.
     async fn insert_hold(&self, hold: &crate::intake::HoldRecord) -> AppResult<()>;
     /// A held prompt by id.

@@ -453,3 +453,58 @@ async fn a_prepared_task_is_rescheduled() -> TestResult {
     assert_eq!(r.status, StatusCode::CONFLICT, "{:?}", r.body);
     Ok(())
 }
+
+/// Review of SPEC-105: a request starts only its own task when its time is due; another
+/// sandbox-wide due task waits for the tick, and a second writer who does not own the task
+/// (SPEC-070) changes nothing.
+#[tokio::test]
+async fn a_request_releases_only_its_own_task_and_only_for_its_owner() -> TestResult {
+    let (h, alice, _) = world().await?;
+    let carol = user_with_token(&h, "u-carol", "carol", false).await?;
+    h.github
+        .set_perm("carol", "Quartio-Studio/studio", perms("write"));
+    let at = now(&h) + HOUR;
+    let waiting = created(
+        &h,
+        &alice,
+        json!({"prompt": "At its time", "start_at": rfc3339(at)}),
+    )
+    .await?;
+    h.clock.0.store(at + 1_000, Ordering::SeqCst);
+    // Creating another prepared task does not start the due one: that is the tick's job.
+    let other = created(&h, &alice, json!({"prompt": "Later", "prepared": true})).await?;
+    assert_eq!(status(&h, &waiting).await?, TaskStatus::Prepared);
+    // Nor does rescheduling another task to now: it starts that one only.
+    let r = act(
+        &h,
+        &alice,
+        Method::PUT,
+        format!("/api/tasks/{other}/schedule"),
+        Some(json!({"start_at": rfc3339(now(&h))})),
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_ne!(status(&h, &other).await?, TaskStatus::Prepared);
+    assert_eq!(status(&h, &waiting).await?, TaskStatus::Prepared);
+
+    for (method, path, body) in [
+        (
+            Method::POST,
+            format!("/api/tasks/{waiting}/start-now"),
+            None,
+        ),
+        (Method::POST, format!("/api/tasks/{waiting}/stop"), None),
+        (
+            Method::PUT,
+            format!("/api/tasks/{waiting}/schedule"),
+            Some(json!({"start_at": null})),
+        ),
+    ] {
+        let r = act(&h, &carol, method, path.clone(), body).await?;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{path}: {:?}", r.body);
+    }
+    assert_eq!(status(&h, &waiting).await?, TaskStatus::Prepared);
+    h.app.release_due_prepared().await;
+    assert_ne!(status(&h, &waiting).await?, TaskStatus::Prepared);
+    Ok(())
+}

@@ -78,27 +78,59 @@ impl App {
         if task.status != TaskStatus::Prepared {
             return None;
         }
-        self.deps.store.task_schedule(&task.id).await.ok().flatten()
+        match self.deps.store.task_schedule(&task.id).await {
+            Ok(at) => at,
+            Err(err) => {
+                tracing::warn!(task = %task.id, error = %err, "start time could not be read");
+                None
+            }
+        }
+    }
+
+    /// A new prepared task whose time is already due (within the grace minute) starts on its
+    /// creation rather than up to a minute later.
+    pub(crate) async fn release_new_prepared(self: &Arc<Self>, task: &TaskRecord) {
+        self.release_if_due(task).await;
     }
 
     /// Releases every prepared task whose time has come (background tick, PRP-003). A task whose
     /// sandbox's onboarding still blocks tasks waits for a later tick.
     pub async fn release_due_prepared(self: &Arc<Self>) {
-        let Ok(due) = self.deps.store.due_prepared(self.now()).await else {
-            return;
+        let due = match self.deps.store.due_prepared(self.now()).await {
+            Ok(due) => due,
+            Err(err) => {
+                tracing::warn!(error = %err, "due prepared tasks could not be read");
+                return;
+            }
         };
         for id in due {
-            let Ok(Some(task)) = self.deps.store.task(&id).await else {
-                continue;
-            };
-            if self
-                .ensure_tasks_may_start(&task.sandbox_id, task.origin)
-                .await
-                .is_err()
-            {
-                continue;
+            if let Ok(Some(task)) = self.deps.store.task(&id).await {
+                self.release_if_due(&task).await;
             }
-            if let Err(err) = self.release_prepared(&task).await {
+        }
+    }
+
+    /// Releases `task` when its time has come and its sandbox's onboarding no longer blocks
+    /// tasks; otherwise leaves it prepared.
+    async fn release_if_due(self: &Arc<Self>, task: &TaskRecord) {
+        if self
+            .ensure_tasks_may_start(&task.sandbox_id, task.origin)
+            .await
+            .is_err()
+        {
+            return;
+        }
+        // The time is checked again as the status changes: one moved or cleared after it was
+        // read wins (a reschedule racing the tick).
+        match self
+            .deps
+            .store
+            .release_scheduled(&task.id, self.now())
+            .await
+        {
+            Ok(true) => self.after_release(task).await,
+            Ok(false) => {}
+            Err(err) => {
                 tracing::warn!(task = %task.id, error = %err, "scheduled task did not start");
             }
         }
@@ -109,17 +141,17 @@ impl App {
     /// # Errors
     /// `Conflict` while the sandbox's onboarding blocks tasks or when it changed concurrently.
     pub(crate) async fn start_prepared_now(self: &Arc<Self>, task: &TaskRecord) -> AppResult<()> {
-        self.ensure_tasks_may_start(&task.sandbox_id, task.origin)
-            .await?;
-        if !self.release_prepared(task).await? {
-            return Err(AppError::Conflict("task state changed concurrently".into()));
+        if self
+            .ensure_tasks_may_start(&task.sandbox_id, task.origin)
+            .await
+            .is_err()
+        {
+            return Err(AppError::Conflict(
+                "this project is being prepared for Yulius; start this task once onboarding has \
+                 made it ready (a scheduled task starts by itself then)"
+                    .into(),
+            ));
         }
-        Ok(())
-    }
-
-    /// Prepared → queued (compare-and-set), then the normal start. `false` when it was no longer
-    /// prepared.
-    async fn release_prepared(self: &Arc<Self>, task: &TaskRecord) -> AppResult<bool> {
         let next = TaskStatus::Prepared
             .apply(TaskEvent::PreparedReleased)
             .map_err(AppError::internal)?;
@@ -129,8 +161,14 @@ impl App {
             .transition_task(&task.id, Some(TaskStatus::Prepared), next, None, self.now())
             .await?
         {
-            return Ok(false);
+            return Err(AppError::Conflict("task state changed concurrently".into()));
         }
+        self.after_release(task).await;
+        Ok(())
+    }
+
+    /// A released task (now `queued`) is shown and starts like a new task.
+    async fn after_release(self: &Arc<Self>, task: &TaskRecord) {
         self.publish_task(&task.id).await;
         let app = Arc::clone(self);
         let id = task.id.clone();
@@ -142,7 +180,6 @@ impl App {
                 tracing::warn!(error = %err, task = %id, "prepared task failed to start");
             }
         });
-        Ok(true)
     }
 
     /// `PUT /api/tasks/{tid}/schedule`: sets or clears when a prepared task starts by itself.
@@ -184,7 +221,7 @@ impl App {
             .await?;
         self.publish_task(&task.id).await;
         // A time already due starts it on this call rather than up to a minute later.
-        self.release_due_prepared().await;
+        self.release_if_due(&task).await;
         let task = self
             .deps
             .store

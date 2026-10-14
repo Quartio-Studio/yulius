@@ -202,6 +202,30 @@ impl IntakeStore for SqliteStore {
         .await
     }
 
+    async fn release_scheduled(&self, task: &TaskId, now: Timestamp) -> AppResult<bool> {
+        let task = task.as_str().to_owned();
+        self.call(move |conn| {
+            // `transition_task`'s bookkeeping for prepared → queued: a new state, in line from
+            // now, no activity or working stretch.
+            let n = conn
+                .execute(
+                    "UPDATE tasks SET status = ?1, activity = NULL, updated_at = ?3, state_at = ?3, \
+                     working_since = NULL, queued_at = ?3, gate_blocks = 0 \
+                     WHERE id = ?4 AND status = ?2 AND EXISTS \
+                     (SELECT 1 FROM task_schedules WHERE task_id = ?4 AND start_at <= ?3)",
+                    params![
+                        TaskStatus::Queued.as_str(),
+                        TaskStatus::Prepared.as_str(),
+                        now.0,
+                        task
+                    ],
+                )
+                .map_err(db)?;
+            Ok(n == 1)
+        })
+        .await
+    }
+
     async fn insert_hold(&self, hold: &HoldRecord) -> AppResult<()> {
         let h = hold.clone();
         self.call(move |conn| {

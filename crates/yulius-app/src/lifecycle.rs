@@ -270,8 +270,7 @@ impl App {
             self.advance_chains(&before.id).await;
             self.publish_task(&before.id).await;
         } else if prepared.is_some() {
-            // A time within the grace minute starts it now rather than on the next tick.
-            self.release_due_prepared().await;
+            self.release_new_prepared(&task).await;
         } else if req.start {
             let app = self.clone();
             let id = task.id.clone();
