@@ -444,6 +444,9 @@ const GOAL_QUIET: Duration = Duration::from_millis(1500);
 /// output); a busy host starts Claude Code slowly. A TUI without hooks gets half of it. The
 /// default of [`crate::context::AppConfig::goal_ready_ms`].
 pub const GOAL_READY_TIMEOUT: Duration = Duration::from_secs(90);
+/// How long a person gets to answer Claude Code's folder-trust prompt, from when it shows; the
+/// default of [`crate::context::AppConfig::trust_answer_ms`] (SPEC-106 OTR-002).
+pub const TRUST_ANSWER_TIMEOUT: Duration = Duration::from_secs(300);
 /// Upper bound for waiting until the turn on a goal session's first message ended; after it the
 /// goal is typed anyway (Claude Code queues it behind a running turn).
 const GOAL_OPENING_TIMEOUT: Duration = Duration::from_secs(300);
@@ -461,7 +464,9 @@ const GOAL_SUBMIT_WAITS: [Duration; 5] = [
 const GOAL_RETYPE_ATTEMPT: usize = 2;
 /// What Claude Code's folder-trust dialog shows: 2.1.x ("Quick safety check"), then older
 /// releases. Yulius trusts every worktree and its main repository (SPEC-106), so the dialog means
-/// Claude Code looks trust up somewhere new; a person answers it, never Yulius's typing.
+/// Claude Code looks trust up somewhere new; a person answers it, never Yulius's typing. Looked
+/// for only before the session's SessionStart hook: Claude Code asks before it starts the
+/// session, and later the words can be anyone's output.
 const TRUST_PROMPT_TEXTS: [&str; 2] = [
     "Yes, I trust this folder",
     "Do you trust the files in this folder?",
@@ -474,8 +479,8 @@ enum InputReady {
     Ready,
     /// The attempt is no longer live: type nothing.
     Gone,
-    /// Claude Code's folder-trust dialog was still shown after [`GOAL_OPENING_TIMEOUT`]: type
-    /// nothing into it.
+    /// Claude Code's folder-trust dialog was still shown after
+    /// [`crate::context::AppConfig::trust_answer_ms`]: type nothing into it.
     TrustUnanswered,
 }
 
@@ -1408,10 +1413,12 @@ impl App {
     /// `after_opening`, also until the turn on a first message ended (its Stop hook, at most
     /// [`GOAL_OPENING_TIMEOUT`]). [`InputReady::Gone`] once the attempt is no longer live.
     ///
-    /// Claude Code's folder-trust dialog is never ready: Yulius waits for a person to answer it, at
-    /// most [`GOAL_OPENING_TIMEOUT`] after `started` ([`InputReady::TrustUnanswered`] when still
-    /// shown then, so nothing is typed into it). The keys that answered it are no draft:
-    /// `typed_before` moves past them (SPEC-106 OTR-002).
+    /// Claude Code's folder-trust dialog (before the SessionStart hook) is never ready: Yulius
+    /// waits for a person to answer it, at most [`crate::context::AppConfig::trust_answer_ms`]
+    /// from when it showed ([`InputReady::TrustUnanswered`] when still shown then, so nothing is
+    /// typed into it). The keys that answered it are no draft: `typed_before` moves past them.
+    /// Once it is answered the wait starts over, as for a TUI that just started (SPEC-106
+    /// OTR-002).
     async fn wait_input_ready(
         &self,
         task_id: &TaskId,
@@ -1424,30 +1431,44 @@ impl App {
         let ready_timeout = Duration::from_millis(self.config.goal_ready_ms);
         let mut last = runtime.hub.output_seq();
         let mut quiet_since = tokio::time::Instant::now();
-        let mut trust_seen = false;
+        // When the trust dialog showed; `None` while it does not.
+        let mut trust_since: Option<tokio::time::Instant> = None;
+        let mut started = started;
         loop {
             tokio::time::sleep(Duration::from_millis(200)).await;
             if !self.attempt_live(task_id, attempt_id).await {
                 return InputReady::Gone;
             }
-            let trust = trust_prompt_shown(&runtime.hub.screen_text());
-            if trust && !trust_seen {
-                runtime.hub.notice(
-                    "Claude Code asks whether to trust this folder. Answer it in the terminal; \
-                     Yulius sets the task going once it is answered."
-                        .to_owned(),
-                );
-            }
-            if trust || trust_seen {
+            let trust = !runtime.session_started.load(Ordering::SeqCst)
+                && trust_prompt_shown(&runtime.hub.screen_text());
+            if trust || trust_since.is_some() {
                 // Typed while the dialog shows, or in the moment it went: its answer.
                 *typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
             }
-            trust_seen = trust;
-            if trust {
-                if started.elapsed() >= GOAL_OPENING_TIMEOUT {
-                    return InputReady::TrustUnanswered;
+            match (trust, trust_since) {
+                (true, None) => {
+                    runtime.hub.notice(
+                        "Claude Code asks whether to trust this folder. Answer it in the \
+                         terminal; Yulius sets the task going once it is answered."
+                            .to_owned(),
+                    );
+                    trust_since = Some(tokio::time::Instant::now());
+                    continue;
                 }
-                continue;
+                (true, Some(since)) => {
+                    if since.elapsed() >= Duration::from_millis(self.config.trust_answer_ms) {
+                        return InputReady::TrustUnanswered;
+                    }
+                    continue;
+                }
+                (false, Some(_)) => {
+                    // Answered: the TUI starts its session now.
+                    trust_since = None;
+                    started = tokio::time::Instant::now();
+                    quiet_since = started;
+                    last = runtime.hub.output_seq();
+                }
+                (false, None) => {}
             }
             let seq = runtime.hub.output_seq();
             if seq != last {

@@ -54,6 +54,9 @@ pub struct AppConfig {
     /// ([`crate::supervisor::GOAL_READY_TIMEOUT`]; a TUI without hooks gets half). Tests of the
     /// hookless path shorten it.
     pub goal_ready_ms: u64,
+    /// How long a person gets to answer Claude Code's folder-trust prompt before the task is
+    /// flagged ([`crate::supervisor::TRUST_ANSWER_TIMEOUT`], SPEC-106 OTR-002). Tests shorten it.
+    pub trust_answer_ms: u64,
     /// Extra host paths visible read-only inside containment (for example agent CLI install
     /// directories outside `/usr` and `/opt`).
     pub contained_readonly: Vec<PathBuf>,
@@ -110,6 +113,8 @@ impl AppConfig {
             .unwrap_or(20_000),
             goal_ready_ms: u64::try_from(crate::supervisor::GOAL_READY_TIMEOUT.as_millis())
                 .unwrap_or(90_000),
+            trust_answer_ms: u64::try_from(crate::supervisor::TRUST_ANSWER_TIMEOUT.as_millis())
+                .unwrap_or(300_000),
             agent_cpus: None,
             contained_readonly: Vec::new(),
             allowed_origins: Vec::new(),
