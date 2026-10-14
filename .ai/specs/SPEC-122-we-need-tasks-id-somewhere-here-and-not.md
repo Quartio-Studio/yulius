@@ -48,8 +48,12 @@ copy in `actions.js` `deliveryStrip`.
   its checks icon and its state colours as before: in the sidebar, the Tasks page, the task
   overview, the Git review page and the task view's delivery strip. Its tooltip and accessible
   name keep saying "Pull request #N".
-- TID-4: In a narrow sidebar, the number and the chip keep their width and the title ellipsis
-  takes the squeeze. Nothing wraps, and the row stays one line.
+- TID-4: The sidebar's rows stay one line at any sidebar width (200 to 480 px). Nothing spills
+  out of a row, the number and any chip or time shown are whole, and every title keeps at least
+  3 em. When space runs short, the time gives way first: below a 360 px task list on rows with a
+  pull request, below 280 px on every row. Below 250 px the chip goes too. The row's tooltip
+  still names the task, its pull request (`PR #N`) and the time.
+- TID-5: The Tasks page's rows show the task's number the same way, before the title.
 
 ## Plan
 
@@ -66,16 +70,24 @@ copy in `actions.js` `deliveryStrip`.
   title.
 - The number's accessible text is "Task #13". The chip's tooltip starts with "Pull request #520".
 - The delivery strip of #13's task view and its chip on the Tasks page read `PR #520`.
-- At the narrowest sidebar the rows are one line high, and the number and the chip are not cut.
+- At sidebar widths of 456, 328 and 200 px the rows are one line high, nothing is cut or
+  spills, and titles are at least 36 px wide. At 456 px every row shows its time. At 200 px no
+  chip shows, and #13's tooltip names `PR #520`.
+- The Tasks page's row of #13 shows "Task #13" before its title.
 - No WCAG violations in the sidebar.
 
 ## Test plan
 
-`e2e/tests/navigation.e2e.ts`: "sidebar rows show the task number apart from the pull request
-number" (TID-1, TID-2, TID-3 for the sidebar, TID-4 at the sidebar's narrowest width, axe).
-`e2e/tests/pulls.e2e.ts` already finds chips by `#520`, so it keeps passing. `e2e/tests/git.e2e.ts`
-covers the delivery strip and the details. A new assertion there checks `PR #520` in the strip
-and on the Tasks page (TID-3).
+`e2e/tests/navigation.e2e.ts`:
+- "sidebar rows show the task number apart from the pull request number" covers TID-1, TID-2 and
+  TID-4 at three sidebar widths, with axe.
+- "the Tasks page rows show the task number before the title" covers TID-5.
+
+`e2e/tests/git.e2e.ts`: "pull request chips read "PR #N" wherever they show" covers TID-3 in the
+sidebar, the Tasks page and the task view's delivery strip, with the tooltip kept.
+
+`e2e/tests/pulls.e2e.ts` finds chips by `#520` and keeps passing. In `e2e/tests/task-done.e2e.ts`,
+the sidebar link's name now starts "Needs you in the browser Task #10 …".
 
 ## Decisions
 
@@ -87,5 +99,10 @@ and on the Tasks page (TID-3).
 - **"PR" replaces the branch icon** instead of joining it. The chip stays about as wide as
   before (an icon of 12 px plus a gap against two letters), which matters in a squeezed sidebar.
   The violet border still marks a merged pull request.
+- **The time gives way, not the title or the number.** At the default 300 px sidebar, a row with
+  a number, a chip and a time leaves the title 0 to 5 px. Container queries on the task list hide
+  the time where it cannot fit, which is more predictable than an ellipsis ("do…"), and keep it
+  in the row's tooltip. The thresholds come from measured widths: a row with a chip and the
+  longest times needs about 335 px of content, and one without needs about 260 px.
 - **Muted plain text for the number, not a second pill.** Two pills side by side would compete,
   and the muted `#N` before a title matches the Git board and the step strip.
