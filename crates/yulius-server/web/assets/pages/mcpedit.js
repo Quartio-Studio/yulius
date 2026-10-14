@@ -8,7 +8,7 @@
 
 import { enc } from '../api.js';
 import { h, icon, iconButton, setChildren, placeholder, loadError, confirmDialog, toast, invalid } from '../dom.js';
-import { href, navigate, currentLocation, replaceQuietly } from '../router.js';
+import { href, navigate, currentLocation, replaceQuietly, linkTarget, placeFor } from '../router.js';
 import { allows } from '../status.js';
 import { BRAND } from '../brand.js';
 import { notFound } from './common.js';
@@ -158,7 +158,7 @@ export function mountMcpEditor(ctx, sandbox, id) {
   const note = h('div');
   const body = h('div', { class: 'mc-body' }, placeholder('Loading the MCP server…', 'loading'));
   const head = h('header', { class: 'gt-head wf-head' },
-    h('a', { class: 'gt-back', href: href(base), dataset: { route: base } }, icon('back', { size: 14 }), 'MCP'),
+    h('a', { class: 'gt-back', href: href(base), dataset: { route: base, restore: 'page' } }, icon('back', { size: 14 }), 'MCP'),
     h('div', { class: 'gt-title-row' }, h('div', { class: 'wf-titles' }, nameInput, h('span', { class: 'muted small' }, 'Claude Code sees its tools under this name.')), del, save),
     note);
   const el = h('div', { class: 'page mc-page' }, h('div', { class: 'page-inner mc-inner' }, h('h1', { class: 'sr-only' }, creating ? 'Add MCP server' : 'Edit MCP server'), head, body, live));
@@ -395,7 +395,7 @@ export function mountMcpEditor(ctx, sandbox, id) {
       await ctx.api.del(`/api/mcp/${enc(id)}`);
       saved = snapshot();
       toast(`MCP server ${server.name} deleted.`, { kind: 'ok' });
-      navigate(base);
+      navigate(placeFor(base, 'page'));
     } catch (error) {
       toast(`Couldn’t delete: ${error.message}`, { kind: 'error' });
     }
@@ -407,7 +407,7 @@ export function mountMcpEditor(ctx, sandbox, id) {
     if (!link || !dirty() || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
-    if (await confirmDialog({ title: 'Leave without saving?', message: 'Your changes to this server are not saved.', confirmLabel: 'Leave', danger: true })) { saved = snapshot(); navigate(link.dataset.route); }
+    if (await confirmDialog({ title: 'Leave without saving?', message: 'Your changes to this server are not saved.', confirmLabel: 'Leave', danger: true })) { saved = snapshot(); navigate(linkTarget(link)); }
   };
   window.addEventListener('beforeunload', onBeforeUnload);
   document.addEventListener('click', onLink, true);

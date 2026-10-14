@@ -97,3 +97,5 @@ number differs from the file name, and a record this index does not list.
 - [0087](0087-pull-request-changes-are-announced.md): A change of a sandbox's pull requests is announced, and browsers read them again
 - [0086](0086-a-lost-onboarding-task-returns-the-sandbox-to-pending.md): A lost onboarding task returns the sandbox to pending; a worktree's main repository is trusted too
 - [0095](0095-a-goal-task-starts-with-its-goal-as-the-launch-prompt.md): A goal task starts with its `/goal` as the launch prompt: one message, nothing typed; a person's keys wait while a prompt task's images are typed
+- [0093](0093-a-shown-secret-value-stays-masked.md): A shown secret value stays masked until its eye is pressed; a quick copy shows on hover
+- [0092](0092-screens-remember-where-they-were-left.md): Screens remember where they were left: places in the router per browser tab, tool views kept for the 3 sandboxes used last

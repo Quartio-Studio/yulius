@@ -9,7 +9,7 @@
 
 import { enc } from '../api.js';
 import { h, icon, iconButton, setChildren, placeholder, loadError, confirmDialog, toast, invalid } from '../dom.js';
-import { href, navigate, currentLocation } from '../router.js';
+import { href, navigate, currentLocation, linkTarget } from '../router.js';
 import { allows } from '../status.js';
 import { BRAND } from '../brand.js';
 import { workflowIcon } from './workflows.js';
@@ -48,7 +48,7 @@ export function mountWorkflowEditor(ctx, sandbox, id) {
   const body = h('div', { class: 'wf-body' }, placeholder('Loading the workflow…', 'loading'));
   const note = h('div');
   const head = h('header', { class: 'gt-head wf-head' },
-    h('a', { class: 'gt-back', href: href(base), dataset: { route: base } }, icon('back', { size: 14 }), 'Workflows'),
+    h('a', { class: 'gt-back', href: href(base), dataset: { route: base, restore: 'page' } }, icon('back', { size: 14 }), 'Workflows'),
     h('div', { class: 'gt-title-row' }, h('div', { class: 'wf-titles' }, nameInput, descInput), del, save),
     note);
   const el = h('div', { class: 'page wf-page' }, h('div', { class: 'page-inner wf-inner' }, h('h1', { class: 'sr-only' }, creating ? 'New workflow' : 'Edit workflow'), head, body, live));
@@ -282,7 +282,7 @@ export function mountWorkflowEditor(ctx, sandbox, id) {
     if (!link || !dirty() || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
-    if (await confirmDialog({ title: 'Leave without saving?', message: 'Your changes to this workflow are not saved.', confirmLabel: 'Leave', danger: true })) { saved = snapshot(); navigate(link.dataset.route); }
+    if (await confirmDialog({ title: 'Leave without saving?', message: 'Your changes to this workflow are not saved.', confirmLabel: 'Leave', danger: true })) { saved = snapshot(); navigate(linkTarget(link)); }
   };
   window.addEventListener('beforeunload', onBeforeUnload);
   document.addEventListener('click', onLink, true);
