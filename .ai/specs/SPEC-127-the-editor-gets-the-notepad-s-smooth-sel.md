@@ -210,34 +210,32 @@ sequenceDiagram
     and resume across sandboxes reuse `syncPresence` with `suspended` (not separately tested).
 - Final review (approve `26bd661e`); its minors (a redraw held during a click in Firefox, test
   gaps for the nit fixes) are #477, decided after three rounds rather than a fourth.
-- The two-person test failed twice in full, loaded e2e runs. The second time the page logged
-  Monaco's "depends on UNKNOWN service ICodeLensCache" (#394, older than this task, first seen in
-  `terminal.e2e.ts`). Cause: the vendored Monaco's language chunks use its services as they run,
-  while the five services named in the errors are registered by another chunk
-  (`toggleHighContrast-*.js`) that they do not wait for; when it arrived last, Monaco had already
-  collected its services without them. The editor now loads that chunk before `editor.main`
-  (e2e "Monaco's services chunk arriving last…" holds it back on purpose, failing before). Fixed
-  here because this task's tests open Monaco more often; it closes #394.
-
+- The two-person test failed twice in full, loaded e2e runs. Once (before the fixes of round 1)
+  Bob stayed shown after closing the Editor, never seen again in 300+ runs since; once the page
+  logged Monaco's "depends on UNKNOWN service ICodeLensCache" (#394, older than this task, first
+  seen in `terminal.e2e.ts`). A first explanation (Monaco's language chunks running before the
+  chunk that registers those services) was disproved by the final review and by the test: with
+  that chunk held back until last, the old loader still opened a clean editor 3 times out of 3,
+  since `editor.main` waits for it through `index-*.js` and the language chunks touch no services
+  as they run. The loader change was reverted; #394 stays open with this sighting. The presence
+  tests themselves are not the cause (the errors come from Monaco's idle-time contributions).
 ## Evidence
 
 Run on the branch merged with `origin/dev` (2026-10-14):
 
-- `scripts/dev ci` at `715928e5` (fmt, clippy `-D warnings`, nextest, doctests, cargo-deny,
-  cargo-shear, rustdoc, repository check): exit 0, 1645 tests passed, 16 skipped; advisories,
-  bans, licenses and sources ok. No Rust changed after it.
+- `scripts/dev ci` at the delivered head (fmt, clippy `-D warnings`, nextest, doctests,
+  cargo-deny, cargo-shear, rustdoc, repository check): see the last line of this section.
 - File presence in Rust: `files::presence_is_relayed_to_writers_only` (the envelope; a reader's
   stream never gets it, failing with the filter turned off; a demoted writer's stream stops after
   its re-check; the task worktree root), `files::presence_is_refused_when_malformed`,
   `files::presence_is_rate_limited`, `files::presence_counters_are_bounded_per_person`, unit
   `one_person_keeps_only_so_many_counters_busy`; the `notes::` tests pass unchanged.
-- `cd e2e && npx e2e run --workers 4` at `5a494e0d`: 48 files, 401 tests passed, 1 skipped
-  (needs a model). Editor tests: the drawn selection on Monaco's boxes (wrap on and off,
+- `cd e2e && npx e2e run --workers 4`: see the last line of this section. Editor tests: the drawn selection on Monaco's boxes (wrap on and off,
   scrolled, blurred); two signed-in people (a second window as `bob`) see each other in their
   colour and lose each other on switching file, closing it and closing the Editor; mapping over
   typing, another saved version, own echo, hello and axe; leaving with an update on its way, on a
   folder switch and as the page goes; tab order by drag, Alt+arrows and the menu; a redraw during
-  a drag; Monaco's services chunk arriving last (#394).
+  a drag.
 - Repeated under load: `editor.e2e.ts` and `notes.e2e.ts` × 4 at load average about 40 with 10
   workers, 175 of 176; the one failure was a Monaco worker script the shared Python test server
   did not serve (its listen backlog is 5, ten workers share it), not seen at 4 workers. Earlier,

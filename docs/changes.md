@@ -16,9 +16,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   only to the sandbox's writers, with the notepads' rate limit. The Editor's file tabs move by
   drag, Alt+← / Alt+→ or the tab's menu. Notes and the Editor now share the presence loop, the
   drawing and the tab drag; and a tool replaced by another in the panel is hidden like a closed
-  panel, so its presence leaves and the browser stream stops. The Editor no longer fails now and
-  then on a slow machine with "depends on UNKNOWN service ICodeLensCache" (#394): Monaco's chunk
-  that registers those services is loaded before its language chunks.
+  panel, so its presence leaves and the browser stream stops.
 - The Vidoc security gate can be turned off and on (SPEC-131, ADR-0107, task #119). `enabled` in
   `.config/vidoc.toml` is committed as `true`; with `false`, `scripts/dev security` exits 0 at once
   and says nothing was scanned, and agents report the scan as disabled. Only a committed `false`
@@ -45,6 +43,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Secrets page ("Task #N asks to copy its value into the project's git-ignored .env": Allow,
   Dismiss, later Revoke). The briefing, `secrets_list` and `infra-bootstrap` name this default.
   This prepares Yulius CD (task #113).
+  panel, so its presence leaves and the browser stream stops.
 - Agents scan every change with Vidoc before delivery (SPEC-128, ADR-0104, task #109).
   `scripts/dev security` runs the Vidoc CLI pinned in `tools/vidoc` on the current branch. Vidoc
   scans the files that the branch changed since `dev`, and the command fails when the branch has
