@@ -99,6 +99,10 @@ gate checks it before every merge it makes (task PRs, armed merges, the Git page
 PRs) and refuses a violation with the rule in words; fix the title (`gh pr edit`) or the branch
 and merge again. It is configured in `yulius.toml` `[branch_policy]` (`preset = "standard"` or
 `"none"`, optional `types`), read from `dev` (SPEC-069, ADR 0051).
+A task PR Yulius opens is titled with the task's title after the type and scope of its most
+significant commit (feat, fix, perf, refactor, revert, build and ci, test, docs, style, chore), so
+not the spec commit's `docs` when the branch holds a feature or a fix; before it merges, Yulius
+renews a title it gave from the final commits, and keeps a title you wrote (SPEC-069 BPL-008).
 Intermediate commit wording is a convention, not an additional blocking check.
 
 ## Keep history tidy with squash, not stash

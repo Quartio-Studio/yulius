@@ -81,6 +81,16 @@ impl GitHubPort for UnavailableGitHub {
     async fn get_pull(&self, _: &Secret, _: &str, _: &str, _: u64) -> AppResult<GhPull> {
         unavailable()
     }
+    async fn update_pull_title(
+        &self,
+        _: &Secret,
+        _: &str,
+        _: &str,
+        _: u64,
+        _: &str,
+    ) -> AppResult<()> {
+        unavailable()
+    }
     async fn list_pulls(
         &self,
         _: &Secret,

@@ -534,6 +534,16 @@ impl GitHubPort for RepoGitHub {
     async fn get_pull(&self, t: &Secret, o: &str, r: &str, n: u64) -> AppResult<GhPull> {
         self.base.get_pull(t, o, r, n).await
     }
+    async fn update_pull_title(
+        &self,
+        t: &Secret,
+        o: &str,
+        r: &str,
+        n: u64,
+        title: &str,
+    ) -> AppResult<()> {
+        self.base.update_pull_title(t, o, r, n, title).await
+    }
     async fn list_pulls(
         &self,
         t: &Secret,

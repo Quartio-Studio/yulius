@@ -4028,3 +4028,210 @@ async fn agents_cannot_arm_or_land_a_merge_the_policy_refuses() -> TestResult {
     assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
     Ok(())
 }
+
+/// Opens task `id`'s pull request after its spec commit alone, then commits `code` (oldest first)
+/// and pushes it, as Yulius pushes a ready task's new commits to its open pull request. Returns
+/// the pull request's number and the pushed head.
+async fn open_after_the_spec(
+    f: &Fixture,
+    id: &str,
+    title: &str,
+    branch: &str,
+    spec: &str,
+    code: &[&str],
+) -> BoxResult<(u64, String)> {
+    let wt = f.add_task(id, title, branch, "dev").await?;
+    commit_file(
+        &wt,
+        &format!("docs/specs/2026-10-14-{id}.md"),
+        &valid_spec(id),
+        spec,
+    )?;
+    let opened = f
+        .req(
+            Method::POST,
+            &format!("/api/tasks/{id}/delivery/pr"),
+            None,
+            &f.bob,
+        )
+        .await?;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    let number = opened.body["pr"]["number"]
+        .as_u64()
+        .ok_or_else(|| format!("no pull request: {}", opened.body))?;
+    for (n, subject) in code.iter().enumerate() {
+        commit_file(&wt, &format!("{id}-{n}.txt"), subject, subject)?;
+    }
+    git(
+        &wt,
+        &["push", "--quiet", "origin", &format!("HEAD:{branch}")],
+    )?;
+    Ok((number, git(&wt, &["rev-parse", "HEAD"])?))
+}
+
+/// The next retitles on the fake GitHub fail with `errors`, one each.
+fn fail_retitles(f: &Fixture, errors: Vec<AppError>) {
+    if let Ok(mut failures) = f.h.github.retitle_errors.lock() {
+        failures.extend(errors);
+    }
+}
+
+/// SPEC-069 BPL-008 (#381, #382): a pull request Yulius opened after the spec commit alone reads
+/// `docs(spec): …`. Before Yulius merges it, by the armed merge and on the Git page alike, it
+/// takes the type of its most significant commit on GitHub, so the squash commit names the
+/// change; a title a person wrote stays. A title GitHub cannot take for now (a 5xx) keeps the
+/// merge armed for the next pass; one GitHub refuses (a 422) stops it, and `yulius wait` says
+/// why and what to do.
+#[tokio::test]
+async fn a_merge_names_the_change_by_its_most_significant_commit() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let sandbox = SandboxId::parse("s1")?;
+    let squash_subject = || git(&f.origin, &["log", "-1", "--format=%s", "dev"]);
+    let merges = |f: &Fixture| {
+        f.h.github
+            .writes()
+            .into_iter()
+            .filter(|w| w.starts_with("merge_pull"))
+            .count()
+    };
+    let outage = || AppError::Upstream("GitHub: GitHub upstream error (HTTP 502)".into());
+
+    // #382's commits, merged by the agent's armed merge once the checks pass; GitHub fails the
+    // first retitle with a 502, so the merge stays armed and lands on the next pass.
+    let (pr, head) = open_after_the_spec(
+        &f,
+        "t1",
+        "yulius doctor warns about a GitHub CLI older than 2.82.1",
+        "feat/1-doctor-gh",
+        "docs(spec): SPEC-088 doctor warns about a GitHub CLI older than 2.82.1",
+        &[
+            "feat(doctor): warn about a GitHub CLI older than 2.82.1 (SPEC-088)",
+            "test(doctor): the gh warning names both commands and the base rebuild",
+            "fix(doctor): clearer gh warning wording",
+            "docs(spec): SPEC-088 evidence and done",
+        ],
+    )
+    .await?;
+    assert_eq!(
+        f.h.github.pull(pr).ok_or("pull")?.title,
+        "docs(spec): yulius doctor warns about a GitHub CLI older than 2.82.1",
+        "titled by the only commit there was"
+    );
+    let agent = live_agent(&f, "t1", "tok-t1").await?;
+    f.h.github.set_checks(&head, ChecksState::Pending);
+    arm_merge(&f, &agent, &head).await?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    fail_retitles(&f, vec![outage()]);
+    f.h.app.merge_armed(&sandbox).await;
+    let waiting = wait_state(&f, &agent, &head).await?;
+    assert_eq!(
+        waiting["merge_armed"], true,
+        "kept for the next pass: {waiting}"
+    );
+    assert_eq!(waiting["merge_outcome"], Value::Null, "{waiting}");
+    assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
+    assert_eq!(merges(&f), 0);
+    f.h.app.merge_armed(&sandbox).await;
+    assert_eq!(f.delivery("t1").await?["stage"], "merged_integration");
+    let feat = "feat(doctor): yulius doctor warns about a GitHub CLI older than 2.82.1";
+    assert_eq!(f.h.github.pull(pr).ok_or("pull")?.title, feat);
+    assert_eq!(squash_subject()?, format!("{feat} (#{pr})"));
+    let writes = f.h.github.writes();
+    let retitled = writes
+        .iter()
+        .position(|w| *w == format!("update_pull #{pr} {feat}"))
+        .ok_or("retitled")?;
+    let merged = writes
+        .iter()
+        .position(|w| *w == format!("merge_pull #{pr} squash"))
+        .ok_or("merged")?;
+    assert!(retitled < merged, "{writes:?}");
+
+    // #381's commits, green already. The agent's `delivery_merge` meets a 502 and arms the
+    // merge; on the next pass GitHub refuses the title (422): nothing is merged, and the agent
+    // hears why and how to set a title. A person then merges on the Git page.
+    let (pr, head) = open_after_the_spec(
+        &f,
+        "t2",
+        "Fix #364: the repository check catches committed conflict markers",
+        "feat/2-conflict-markers",
+        "docs(spec): SPEC-089 the repository check catches conflict markers (#364)",
+        &[
+            "fix(check): the repository check fails on committed conflict markers (#364)",
+            "docs: the repository check's conflict markers in development and changes (#364)",
+        ],
+    )
+    .await?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    fail_retitles(
+        &f,
+        vec![
+            outage(),
+            AppError::Invalid(
+                "GitHub: GitHub rejected the request as invalid (HTTP 422): Validation Failed"
+                    .into(),
+            ),
+        ],
+    );
+    let agent = live_agent(&f, "t2", "tok-t2").await?;
+    let armed = arm_merge(&f, &agent, &head).await?;
+    assert_eq!(
+        (&armed["merged"], &armed["armed"]),
+        (&json!(false), &json!(true)),
+        "{armed}"
+    );
+    f.h.app.merge_armed(&sandbox).await;
+    let refused = wait_state(&f, &agent, &head).await?;
+    assert_eq!(refused["merge_armed"], false, "{refused}");
+    let outcome = refused["merge_outcome"].as_str().unwrap_or_default();
+    let edit = format!("gh pr edit {pr} --title");
+    for part in [
+        "The merge you armed was refused",
+        "GitHub refused the title `fix(check): fix #364",
+        "HTTP 422",
+        edit.as_str(),
+        "Yulius keeps a title you write",
+    ] {
+        assert!(outcome.contains(part), "{part}: {outcome}");
+    }
+    assert_eq!(merges(&f), 1, "nothing merged under the wrong title");
+    let landed = f
+        .req(Method::POST, "/api/tasks/t2/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(landed.status, StatusCode::OK, "{}", landed.body);
+    let fix = "fix(check): fix #364: the repository check catches committed conflict markers";
+    assert_eq!(f.h.github.pull(pr).ok_or("pull")?.title, fix);
+    assert_eq!(squash_subject()?, format!("{fix} (#{pr})"));
+
+    // A title a person wrote on GitHub is kept.
+    let (pr, head) = open_after_the_spec(
+        &f,
+        "t3",
+        "Search",
+        "feat/3-search",
+        "docs(spec): search",
+        &["feat(search): the search box"],
+    )
+    .await?;
+    assert_eq!(
+        f.h.github.pull(pr).ok_or("pull")?.title,
+        "docs(spec): search"
+    );
+    let written = "feat(search): a search box on every page";
+    edit_pull(&f, pr, |p| p.title = written.into());
+    f.h.github.set_checks(&head, ChecksState::Success);
+    let landed = f
+        .req(Method::POST, "/api/tasks/t3/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(landed.status, StatusCode::OK, "{}", landed.body);
+    assert_eq!(f.h.github.pull(pr).ok_or("pull")?.title, written);
+    assert_eq!(squash_subject()?, format!("{written} (#{pr})"));
+    assert!(
+        !f.h.github
+            .writes()
+            .iter()
+            .any(|w| w.starts_with(&format!("update_pull #{pr} "))),
+        "kept"
+    );
+    Ok(())
+}

@@ -52,6 +52,8 @@ pub struct FakeGitHub {
     pub check_states: Mutex<HashMap<String, ChecksReport>>,
     /// When set, reading checks fails with this error (as the adapter maps GitHub errors).
     pub checks_error: Mutex<Option<AppError>>,
+    /// The next retitles of pull requests fail with these errors, one each, in order.
+    pub retitle_errors: Mutex<Vec<AppError>>,
     /// Repository side of PRs and refs; without it PR heads are unknown.
     pub remote: Mutex<Option<Arc<dyn FakeRemote>>>,
     /// Recorded state-changing calls (`create_pull …`, `merge_pull …`, `fast_forward …`).
@@ -284,6 +286,30 @@ impl GitHubPort for FakeGitHub {
             .cloned()
             .ok_or(AppError::NotFound)
     }
+    async fn update_pull_title(
+        &self,
+        token: &Secret,
+        _: &str,
+        _: &str,
+        number: u64,
+        title: &str,
+    ) -> AppResult<()> {
+        {
+            let mut failures = self.retitle_errors.lock().map_err(AppError::internal)?;
+            if !failures.is_empty() {
+                return Err(failures.remove(0));
+            }
+        }
+        self.pulls
+            .lock()
+            .map_err(AppError::internal)?
+            .iter_mut()
+            .find(|p| p.number == number)
+            .ok_or(AppError::NotFound)?
+            .title = title.to_owned();
+        self.record(token, format!("update_pull #{number} {title}"));
+        Ok(())
+    }
     async fn list_pulls(
         &self,
         _: &Secret,
@@ -366,13 +392,14 @@ impl GitHubPort for FakeGitHub {
                 ));
             }
         }
+        // GitHub titles a squash commit with the pull request's title (SPEC-069 BPL-008).
+        let message = if method == "squash" {
+            format!("{} (#{number})", pull.title)
+        } else {
+            format!("Merge pull request #{number}")
+        };
         let sha = remote
-            .merge(
-                &pull.base,
-                &pull.head_sha,
-                method,
-                &format!("Merge pull request #{number}"),
-            )
+            .merge(&pull.base, &pull.head_sha, method, &message)
             .map_err(AppError::Upstream)?;
         if let Ok(mut pulls) = self.pulls.lock()
             && let Some(p) = pulls.iter_mut().find(|p| p.number == number)

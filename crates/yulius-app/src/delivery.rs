@@ -610,13 +610,45 @@ fn conventional_prefix(subject: &str) -> Option<&str> {
         .then_some(head)
 }
 
+/// The `type(scope)!` head of `subject` the default title may take: under an enforced branch
+/// `policy` only a conventional head of its types, else any conventional-looking one.
+fn title_head(subject: &str, policy: &BranchPolicy) -> Option<String> {
+    if policy.is_enforced() {
+        policy.conventional_head(subject.trim()).map(str::to_owned)
+    } else {
+        conventional_prefix(subject).map(str::to_owned)
+    }
+}
+
+/// How much a change of conventional `head`'s type says about a pull request, highest first:
+/// feat, fix, perf, refactor, revert, build and ci, test, docs, style, chore; any other type
+/// ranks lowest (SPEC-069 BPL-008).
+fn type_rank(head: &str) -> u8 {
+    let bare = head.strip_suffix('!').unwrap_or(head);
+    match bare.split_once('(').map_or(bare, |(kind, _)| kind) {
+        "feat" => 10,
+        "fix" => 9,
+        "perf" => 8,
+        "refactor" => 7,
+        "revert" => 6,
+        "build" | "ci" => 5,
+        "test" => 4,
+        "docs" => 3,
+        "style" => 2,
+        "chore" => 1,
+        _ => 0,
+    }
+}
+
 /// The default title of a task's pull request: the task's title, prefixed — when it is not a
-/// conventional title itself — with the type and scope of the branch's oldest conventional
-/// commit, so repositories that require conventional titles accept it ("Prepare this
-/// repository for Yulius" → "docs: prepare this repository for Yulius", F 2026-10-11).
-/// `subjects` are the branch's commit subjects, newest first. Under an enforced branch `policy`
-/// only its types count, and without such a commit the branch's own type prefixes the title
-/// (SPEC-069 BPL-006); the caller clips it to the policy's length.
+/// conventional title itself — with the type and scope of the branch's most significant
+/// conventional commit (the oldest of the highest [`type_rank`]), so repositories that require
+/// conventional titles accept it and the squash commit names the change, not its spec
+/// ("Prepare this repository for Yulius" → "docs: prepare this repository for Yulius",
+/// F 2026-10-11; a `docs(spec)` commit then `feat(doctor)` → "feat(doctor): …", SPEC-069
+/// BPL-008). `subjects` are the branch's commit subjects, newest first. Under an enforced branch
+/// `policy` only its types count, and without such a commit the branch's own type prefixes the
+/// title (BPL-006); the caller clips it to the policy's length.
 fn default_pr_title(
     task_title: &str,
     subjects: &[String],
@@ -624,25 +656,28 @@ fn default_pr_title(
     policy: &BranchPolicy,
 ) -> String {
     let title = task_title.trim();
-    let head = |subject: &str| -> Option<String> {
-        if policy.is_enforced() {
-            policy.conventional_head(subject.trim()).map(str::to_owned)
-        } else {
-            conventional_prefix(subject).map(str::to_owned)
-        }
-    };
-    if head(title).is_some() {
+    if title_head(title, policy).is_some() {
         return title.to_owned();
     }
-    let Some(prefix) = subjects
-        .iter()
-        .rev()
-        .find_map(|s| head(s))
-        .or_else(|| policy.branch_type(branch).map(str::to_owned))
-    else {
+    let mut best: Option<String> = None;
+    for head in subjects.iter().rev().filter_map(|s| title_head(s, policy)) {
+        if best
+            .as_deref()
+            .is_none_or(|b| type_rank(&head) > type_rank(b))
+        {
+            best = Some(head);
+        }
+    }
+    let prefix = best.or_else(|| policy.branch_type(branch).map(str::to_owned));
+    prefixed_title(title, prefix.as_deref())
+}
+
+/// `title` after `prefix` and ": " (as is without one). "Prepare …" reads "prepare …" after the
+/// prefix; an acronym ("API …") keeps its case.
+fn prefixed_title(title: &str, prefix: Option<&str>) -> String {
+    let Some(prefix) = prefix else {
         return title.to_owned();
     };
-    // "Prepare …" reads "prepare …" after the prefix; an acronym ("API …") keeps its case.
     let mut chars = title.chars();
     let first = chars.next();
     let second_lower = chars.clone().next().is_some_and(char::is_lowercase);
@@ -654,6 +689,50 @@ fn default_pr_title(
         Some(c) => format!("{prefix}: {c}{rest}"),
         None => title.to_owned(),
     }
+}
+
+/// A pull request title as Yulius sends it: one line, at most `max` characters.
+fn sent_title(title: &str, max: usize) -> String {
+    clip_title(&title.replace(['\n', '\r'], " "), max)
+}
+
+/// The longest title Yulius gives a pull request under `policy`.
+fn max_title_chars(policy: &BranchPolicy) -> usize {
+    if policy.is_enforced() {
+        branch_policy::MAX_TITLE_CHARS
+    } else {
+        MAX_PR_TITLE_CHARS
+    }
+}
+
+/// The title a task's pull request should carry before Yulius merges it (SPEC-069 BPL-008):
+/// the default title of its final commits, when its title `current` is still one Yulius gave it
+/// and differs. A title Yulius gave it is the task's title with the type of one of the branch's
+/// commits, or with the branch's type when none has a type (the default of the commits there
+/// were when it opened, by the rule then or now: commits are only added, never rewritten). A
+/// title a person or an agent wrote is none of these and is kept. `None`: leave it.
+fn merge_title(
+    current: &str,
+    task_title: &str,
+    subjects: &[String],
+    branch: &str,
+    policy: &BranchPolicy,
+) -> Option<String> {
+    let max = max_title_chars(policy);
+    let current = current.trim();
+    let task = task_title.trim();
+    let gave = |prefix: Option<&str>| sent_title(&prefixed_title(task, prefix), max) == current;
+    let given = if title_head(task, policy).is_some() {
+        gave(None)
+    } else {
+        subjects
+            .iter()
+            .filter_map(|s| title_head(s, policy))
+            .any(|head| gave(Some(&head)))
+            || gave(policy.branch_type(branch))
+    };
+    let title = sent_title(&default_pr_title(task, subjects, branch, policy), max);
+    (given && title != current).then_some(title)
 }
 
 /// `text` when it has at most `max` characters, else its first `max - 1` and "…".
@@ -845,6 +924,44 @@ impl SpecCheck {
             required: true,
         }
     }
+}
+
+/// Why a merge of a task's pull request did not happen. Nothing was merged either way.
+#[derive(Debug)]
+pub(crate) enum MergeFailure {
+    /// GitHub could not take the pull request's new title for now (a rate limit, a 5xx, a
+    /// timeout, the network; SPEC-069 BPL-008): the same merge may succeed on the next pass, so
+    /// an armed merge stays armed.
+    Later(AppError),
+    /// Refused: a delivery rule, GitHub's refusal, or a failure on the way.
+    Refused(AppError),
+}
+
+impl From<AppError> for MergeFailure {
+    fn from(err: AppError) -> Self {
+        Self::Refused(err)
+    }
+}
+
+impl MergeFailure {
+    /// The error to answer with when nothing will try again by itself.
+    pub(crate) fn into_error(self) -> AppError {
+        match self {
+            Self::Later(err) | Self::Refused(err) => err,
+        }
+    }
+}
+
+/// Whether a failure of a GitHub write may pass by itself: [`GitHubPort::update_pull_title`]
+/// answers `Upstream` for a rate limit, a 5xx, a timeout or the network, and another error for
+/// GitHub's refusal (a 4xx).
+///
+/// [`GitHubPort::update_pull_title`]: gh::GitHubPort::update_pull_title
+fn may_pass(err: &AppError) -> bool {
+    matches!(
+        err,
+        AppError::Upstream(_) | AppError::Capacity(_) | AppError::Internal(_)
+    )
 }
 
 /// Everything observed about one task before a delivery decision.
@@ -1909,12 +2026,6 @@ impl App {
                     .unwrap_or_default();
                 default_pr_title(&task.title, &subjects, &branch, &policy)
             }
-        }
-        .replace(['\n', '\r'], " ");
-        let max_title = if policy.is_enforced() {
-            branch_policy::MAX_TITLE_CHARS
-        } else {
-            MAX_PR_TITLE_CHARS
         };
         let pull = self
             .deps
@@ -1926,7 +2037,7 @@ impl App {
                 &NewPull {
                     head: branch.clone(),
                     base: profile.integration_branch.clone(),
-                    title: clip_title(&title, max_title),
+                    title: sent_title(&title, max_title_chars(&policy)),
                     body: pull_request_body(
                         &format!(
                             "Delivered with Yulius task #{}: {}/s/{}/t/{}",
@@ -2475,7 +2586,9 @@ impl App {
         let token = self
             .person_github_token(&ctx.user, "Merging a pull request")
             .await?;
-        self.dlv_merge(ctx, task, &token).await
+        self.dlv_merge(ctx, task, &token)
+            .await
+            .map_err(MergeFailure::into_error)
     }
 
     /// [`App::merge_task_pr`] for the task's agent (`delivery_merge`) under its owner's
@@ -2483,12 +2596,14 @@ impl App {
     /// GitHub token (F 2026-10-11).
     ///
     /// # Errors
-    /// As [`App::merge_task_pr`], without the refusal for an account with no GitHub identity.
+    /// [`MergeFailure::Later`] when GitHub could not take the new title for now (the armed
+    /// merge and the merge train try again on their next pass); [`MergeFailure::Refused`] as
+    /// [`App::merge_task_pr`], without the refusal for an account with no GitHub identity.
     pub(crate) async fn merge_task_pr_for_task(
         &self,
         ctx: &AuthContext,
         task_id: &str,
-    ) -> AppResult<Delivery> {
+    ) -> Result<Delivery, MergeFailure> {
         let task = self.load_task(ctx, task_id, Action::Work).await?;
         let sandbox = self.dlv_sandbox_of(&task).await?;
         let token = self.task_github_token(&task, &sandbox).await?;
@@ -2555,13 +2670,102 @@ impl App {
             })
     }
 
+    /// Before Yulius merges `task`'s pull request: when it still carries a title Yulius gave it,
+    /// the default title of its final commits replaces it on GitHub, so the squash commit names
+    /// the change (SPEC-069 BPL-008). Yulius opens a pull request as soon as the task is ready,
+    /// often after the spec commit alone. Returns the new title; `None` when the title stays (a
+    /// title a person or an agent wrote, or the commits cannot be read: then as before).
+    ///
+    /// # Errors
+    /// Nothing is merged under a title Yulius knows is wrong: [`MergeFailure::Later`] when
+    /// GitHub could not take the new title for now, [`MergeFailure::Refused`] (a conflict that
+    /// says why and how to set a title) when GitHub refused it.
+    async fn dlv_merge_title(
+        &self,
+        sandbox: &SandboxRecord,
+        profile: &DeliveryProfile,
+        task: &TaskRecord,
+        pull: &GhPull,
+        token: &Secret,
+    ) -> Result<Option<String>, MergeFailure> {
+        let (Some(worktree), Some(branch)) =
+            (task.worktree_path.as_deref(), task.branch.as_deref())
+        else {
+            return Ok(None);
+        };
+        let base = format!("origin/{}", profile.integration_branch);
+        let subjects: Vec<String> = match self
+            .deps
+            .git
+            .review_commits(Path::new(worktree), &base, &pull.head_sha, 50)
+            .await
+        {
+            Ok(commits) => commits.into_iter().map(|c| c.subject).collect(),
+            Err(err) => {
+                tracing::warn!(
+                    task = %task.id,
+                    error = %err,
+                    "the commits of a pull request cannot be read; its title stays"
+                );
+                return Ok(None);
+            }
+        };
+        let (policy, _) = self.dlv_branch_policy(sandbox, profile).await;
+        let Some(title) = merge_title(&pull.title, &task.title, &subjects, branch, &policy) else {
+            return Ok(None);
+        };
+        self.deps
+            .github
+            .update_pull_title(
+                token,
+                &sandbox.repo_owner,
+                &sandbox.repo_name,
+                pull.number,
+                &title,
+            )
+            .await
+            .map_err(|err| {
+                let number = pull.number;
+                let reason = err.public_message();
+                if may_pass(&err) {
+                    tracing::warn!(
+                        task = %task.id,
+                        error = %err,
+                        "GitHub could not take a pull request's title for now; the merge waits"
+                    );
+                    MergeFailure::Later(AppError::Upstream(format!(
+                        "GitHub could not take the title `{title}` for pull request #{number} \
+                         before the merge ({reason}); nothing was merged, and Yulius tries again"
+                    )))
+                } else {
+                    MergeFailure::Refused(AppError::Conflict(format!(
+                        "GitHub refused the title `{title}` Yulius gives pull request #{number} \
+                         before merging it ({reason}). Give the pull request a title GitHub \
+                         accepts yourself (`gh pr edit {number} --title \"<type>(<scope>): <the \
+                         change>\"`); Yulius keeps a title you write"
+                    )))
+                }
+            })?;
+        self.dlv_audit(
+            "yulius",
+            "delivery.pr.retitle",
+            &format!("{}#{}", sandbox.slug, task.number),
+            &format!(
+                "pull request #{}: `{}` -> `{title}` (its commits' most significant type)",
+                pull.number, pull.title
+            ),
+        )
+        .await;
+        Ok(Some(title))
+    }
+
     /// Merges `task`'s pull request with `token` (see [`App::merge_task_pr`]).
     async fn dlv_merge(
         &self,
         ctx: &AuthContext,
         task: TaskRecord,
         token: &Secret,
-    ) -> AppResult<Delivery> {
+    ) -> Result<Delivery, MergeFailure> {
         let sandbox = self.dlv_sandbox_of(&task).await?;
         let profile = delivery_profile(&sandbox);
         let observed = self
@@ -2575,10 +2779,16 @@ impl App {
             &observed.facts(),
         )
         .map_err(|err| refusal(&err))?;
-        let pull = observed
+        let mut pull = observed
             .pr
             .clone()
             .ok_or_else(|| AppError::Conflict("the pull request cannot be read".into()))?;
+        if let Some(title) = self
+            .dlv_merge_title(&sandbox, &profile, &task, &pull, token)
+            .await?
+        {
+            pull.title = title;
+        }
         self.dlv_check_policy(&sandbox, &profile, pull.number, &pull_facts(&pull))
             .await?;
         // GitHub's own refusal ("required status checks are expected") reads like a missing
@@ -2589,7 +2799,8 @@ impl App {
                  merge `origin/{base}` into it, push, wait for the checks on the new head, then \
                  merge that head",
                 base = pull.base
-            )));
+            ))
+            .into());
         }
         let merge_sha = self
             .deps
@@ -3841,6 +4052,185 @@ mod tests {
     }
 
     use super::*;
+
+    fn subjects(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    /// Pull request #381's commits (task #74), newest first as `review_commits` lists them.
+    const PR_381: [&str; 4] = [
+        "fix(check): report each conflicted file once and skip symbolic links (#364)",
+        "docs: the repository check's conflict markers in development and changes (#364)",
+        "fix(check): the repository check fails on committed conflict markers (#364)",
+        "docs(spec): SPEC-089 the repository check catches conflict markers (#364)",
+    ];
+    /// Pull request #382's commits (task #73), newest first.
+    const PR_382: [&str; 7] = [
+        "docs(spec): SPEC-088 manual evidence at the reviewed wording",
+        "fix(doctor): clearer gh warning wording; accurate review record (SPEC-088 review 2)",
+        "docs(spec): SPEC-088 evidence and done",
+        "test(doctor): the gh warning names both commands and the base rebuild (SPEC-088 review)",
+        "docs(operations): a GitHub CLI of at least 2.82.1 from GitHub's package repository (SPEC-088)",
+        "feat(doctor): warn about a GitHub CLI older than 2.82.1 (SPEC-088)",
+        "docs(spec): SPEC-088 doctor warns about a GitHub CLI older than 2.82.1",
+    ];
+
+    /// SPEC-069 BPL-008: the default title takes the type and scope of the branch's most
+    /// significant commit, not of its oldest (the spec commit). The squash commits of #381 and
+    /// #382 (2026-10-14) read `docs(spec)` for a fix and a feature.
+    #[test]
+    fn the_default_title_names_the_most_significant_change() {
+        let standard = BranchPolicy::standard();
+        assert_eq!(
+            default_pr_title(
+                "Fix #364: the repository check catches committed conflict markers",
+                &subjects(&PR_381),
+                "feat/74-fix-364-the-repository-check-catches-com",
+                &standard,
+            ),
+            "fix(check): fix #364: the repository check catches committed conflict markers"
+        );
+        assert_eq!(
+            default_pr_title(
+                "yulius doctor warns about a GitHub CLI older than 2.82.1",
+                &subjects(&PR_382),
+                "feat/73-yulius-doctor-warns-about-a-github-cli-o",
+                &standard,
+            ),
+            "feat(doctor): yulius doctor warns about a GitHub CLI older than 2.82.1"
+        );
+        let none = BranchPolicy::none();
+        let title = |list: &[&str], policy: &BranchPolicy| {
+            default_pr_title("Tidy", &subjects(list), "topic", policy)
+        };
+        // The ranking, each against the next one down, whichever came first.
+        for (higher, lower) in [
+            ("feat(a)", "fix(b)"),
+            ("fix(a)", "perf(b)"),
+            ("perf(a)", "refactor(b)"),
+            ("refactor(a)", "revert(b)"),
+            ("revert(a)", "build(b)"),
+            ("build(a)", "test(b)"),
+            ("ci(a)", "test(b)"),
+            ("test(a)", "docs(b)"),
+            ("docs(a)", "style(b)"),
+            ("style(a)", "chore(b)"),
+            ("chore(a)", "wip(b)"),
+        ] {
+            let (h, l) = (format!("{higher}: x"), format!("{lower}: y"));
+            let expected = format!("{higher}: tidy");
+            assert_eq!(title(&[h.as_str(), l.as_str()], &none), expected);
+            assert_eq!(title(&[l.as_str(), h.as_str()], &none), expected);
+        }
+        // A tie goes to the oldest; a breaking change keeps its mark.
+        assert_eq!(
+            title(&["fix(new): y", "ci: z", "fix(old): x"], &none),
+            "fix(old): tidy"
+        );
+        assert_eq!(
+            title(&["fix(api)!: y", "docs: x"], &none),
+            "fix(api)!: tidy"
+        );
+        // An enforced policy takes only its own types (`style` is not a standard one).
+        assert_eq!(
+            title(&["style(ui): y", "docs(ui): x"], &standard),
+            "docs(ui): tidy"
+        );
+        // A repository without conventional commits keeps the task's title.
+        assert_eq!(title(&["Add search", "Merge branch 'dev'"], &none), "Tidy");
+    }
+
+    /// SPEC-069 BPL-008: before a merge, a title Yulius gave the pull request (by the rule then
+    /// or now, for the commits there were) becomes the default of the final commits; a title a
+    /// person or an agent wrote stays, and so does one that is already right.
+    #[test]
+    fn a_title_yulius_gave_is_renewed_before_the_merge_and_a_written_one_kept() {
+        let standard = BranchPolicy::standard();
+        let none = BranchPolicy::none();
+        let doctor = "yulius doctor warns about a GitHub CLI older than 2.82.1";
+        let branch = "feat/73-yulius-doctor-warns-about-a-github-cli-o";
+        let renewed = |current: &str, list: &[&str], policy: &BranchPolicy| {
+            merge_title(current, doctor, &subjects(list), branch, policy)
+        };
+        let feat = "feat(doctor): yulius doctor warns about a GitHub CLI older than 2.82.1";
+        // #382: titled by its oldest commit (the rule before), or opened after the spec commit
+        // alone (the rule now): renewed from its final commits, with or without a policy.
+        for policy in [&standard, &none] {
+            assert_eq!(
+                renewed(
+                    "docs(spec): yulius doctor warns about a GitHub CLI older than 2.82.1",
+                    &PR_382,
+                    policy
+                )
+                .as_deref(),
+                Some(feat)
+            );
+        }
+        // Opened before any typed commit: the branch's type.
+        assert_eq!(
+            renewed(
+                "feat: yulius doctor warns about a GitHub CLI older than 2.82.1",
+                &["fix(doctor): y", "Spec"],
+                &standard
+            )
+            .as_deref(),
+            Some("fix(doctor): yulius doctor warns about a GitHub CLI older than 2.82.1")
+        );
+        // Already right, or written by a person or an agent: kept.
+        assert_eq!(renewed(feat, &PR_382, &standard), None);
+        for written in [
+            "feat(doctor): warn about an old GitHub CLI",
+            "docs(spec): SPEC-088 doctor warns about a GitHub CLI older than 2.82.1",
+            "Yulius doctor warns about a GitHub CLI older than 2.82.1",
+        ] {
+            assert_eq!(renewed(written, &PR_382, &standard), None, "{written}");
+        }
+        // A conventional task title is the default whatever the commits.
+        assert_eq!(
+            merge_title(
+                "fix(ci): retry",
+                "fix(ci): retry",
+                &subjects(&["feat(ci): x"]),
+                "feat/4-retry",
+                &standard
+            ),
+            None
+        );
+        // A repository without conventional titles: nothing changes.
+        assert_eq!(
+            merge_title(
+                "Add search",
+                "Add search",
+                &subjects(&["Add the box", "Merge branch 'dev'"]),
+                "search-box",
+                &none
+            ),
+            None
+        );
+        // A long title Yulius clipped to the policy's length is recognised clipped.
+        let long = format!("Fix #223: the merge gate {}", "and more ".repeat(12));
+        let clipped = clip_title(
+            &format!(
+                "docs(spec): fix #223: the merge gate {}",
+                "and more ".repeat(12)
+            ),
+            branch_policy::MAX_TITLE_CHARS,
+        );
+        let renewed = merge_title(
+            &clipped,
+            &long,
+            &subjects(&["fix(delivery): gate", "docs(spec): SPEC-069"]),
+            "feat/59-fix-223",
+            &standard,
+        )
+        .unwrap_or_default();
+        assert!(renewed.starts_with("fix(delivery): fix #223"), "{renewed}");
+        assert_eq!(
+            renewed.chars().count(),
+            branch_policy::MAX_TITLE_CHARS,
+            "{renewed}"
+        );
+    }
 
     /// S5: an errored Yulius CI run reads `error`, not a failure of the code.
     #[test]
