@@ -1,7 +1,7 @@
 // Global layout pieces (SPEC-001 §6.1): thin sandbox tab row with the Status panel, and the
 // left sidebar with navigation, the active task list and the user menu at its foot.
 
-import { h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip, skeleton } from './dom.js';
+import { h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip, skeleton, bar, skeletonOf } from './dom.js';
 import { relLong, bytes, duration, dateTime, resetLabel, compact } from './format.js';
 import { sparkline, usd } from './charts.js';
 import { taskTime } from './tasktime.js';
@@ -729,14 +729,16 @@ export function createSidebar(ctx) {
   function rowFor(task) {
     let row = rows.get(task.id);
     if (!row) {
-      // One line: state icon, pull request, title, age. What the task needs is said by
-      // the icon, the tooltip and (for screen readers) the hidden sentence after the title.
+      // One line: state icon, task number, pull request, title, age. What the task needs is said
+      // by the icon, the tooltip and (for screen readers) the hidden sentence after the title.
+      // A bare #N is the task's, the chip's "PR #N" its pull request's (SPEC-122).
       const mark = h('span', { class: 'task-mark' });
+      const num = h('span', { class: 'task-num' });
       const chips = h('span', { class: 'task-chips' });
       const title = h('span', { class: 'task-title' });
       const sub = h('span', { class: 'sr-only' });
       const age = h('span', { class: 'task-age' });
-      const link = h('a', { class: 'task-link' }, mark, chips, title, sub, age);
+      const link = h('a', { class: 'task-link' }, mark, num, chips, title, sub, age);
       const kebab = iconButton('more', 'Task actions', (event) => {
         event.preventDefault();
         event.stopPropagation();
@@ -750,7 +752,7 @@ export function createSidebar(ctx) {
         openTaskMenu(ctx, { x: event.clientX, y: event.clientY }, row.task);
       });
       link.addEventListener('click', () => document.body.classList.remove('drawer-open'));
-      row = { el, link, mark, chips, title, age, sub, archive, task };
+      row = { el, link, mark, num, chips, title, age, sub, archive, task };
       rows.set(task.id, row);
     }
     row.task = task;
@@ -777,8 +779,10 @@ export function createSidebar(ctx) {
     row.el.classList.toggle('active', active);
     row.el.dataset.group = info.group;
     row.el.dataset.tone = info.tone;
-    row.link.title = `#${task.number} ${task.title} — ${info.label}${info.detail ? `: ${info.detail}` : ''}${task.branch ? ` · ${task.branch}` : ''} · ${row.time.text}`;
+    row.link.title = `Task #${task.number} ${task.title} — ${info.label}${info.detail ? `: ${info.detail}` : ''}${row.pr && !info.label.includes(`PR #${row.pr.number}`) ? ` · PR #${row.pr.number}` : ''}${task.branch ? ` · ${task.branch}` : ''} · ${row.time.text}`;
     setChildren(row.mark, statusMark(info, 16));
+    setChildren(row.num, h('span', { class: 'sr-only' }, 'Task '), `#${task.number}`);
+    row.num.title = `Task #${task.number}`;
     setChildren(row.chips, row.pr ? prChip(row.pr, { link: false }) : null);
     row.title.textContent = task.title || `Task #${task.number}`;
     // Colour stays on the state icon; the words (tooltip, screen readers) say what to do.
@@ -856,7 +860,12 @@ export function createSidebar(ctx) {
       const error = ctx.store.tasksError(sandbox.id);
       setChildren(list, error
         ? loadError(`Couldn’t load tasks: ${error.message}`, () => ctx.store.loadTasks(sandbox.id).catch(() => {}))
-        : skeleton('Loading tasks…', 3, { block: true }));
+        // A group band over task rows, as the list will be (SPEC-120); `.task-row` stays real tasks'.
+        : skeletonOf('Loading tasks…', h('div', { class: 'skeleton-task-group' },
+          h('div', { class: 'task-group-head' }, bar('lg')),
+          [70, 55, 80, 45, 62].map((width) => h('div', { class: 'skeleton-task-row' },
+            h('span', { class: 'task-mark' }, h('span', { class: 'skeleton-tile skeleton-dot' })),
+            h('span', { class: 'task-num' }, bar('sm')), h('span', { class: 'task-title' }, bar(width)), h('span', { class: 'task-age' }, bar('sm')))))));
       return;
     }
     // A task the user left normally is done for now: it stays under Tasks (with Continue) but

@@ -6,6 +6,41 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- Agents scan every change with Vidoc before delivery (SPEC-128, ADR-0104, task #109).
+  `scripts/dev security` runs the Vidoc CLI pinned in `tools/vidoc` on the current branch. Vidoc
+  scans the files that the branch changed since `dev`, and the command fails when the branch has
+  an open critical or high finding, printing each one. The key is the agent secret
+  `VIDOC_API_KEY`: the egress proxy adds it for `api.vidoc.dev`, so agents never see it. The
+  command refuses to run, with exit 2, on a tree with uncommitted files (the CLI scans the working
+  tree, not the commits) and without a usable key. The verification skill and AGENTS.md make the
+  scan part of every change's checks. Yulius CI does not run it yet, because CI jobs hold no secret
+  (#466).
+- Task numbers show in the sidebar and on the Tasks page, and pull request chips say "PR"
+  (SPEC-122, ADR-0099, task #108). Each row reads `#108` (heard as "Task #108") before its
+  title, and the chip reads `PR #450` everywhere, so a bare `#N` is always a task. In a narrow
+  sidebar the time gives way first, then the chip, and the row's tooltip still names both.
+- Loading fields take the shape of what loads (SPEC-120, ADR-0097, task #106). The Git page loaded
+  as three grey bars under its header, and every list, table and editor did the same. Now each
+  loading state is drawn with its page's own layout. The Git page shows its two status cards,
+  Blocked, the board with the profile's columns and Activity. Lists of cards load as cards,
+  tables as tables with their columns, editors as their section cards, Sessions, CI and the
+  Dashboard as their own layouts, and the sidebar and Tasks lists as task rows (two lines on a
+  phone) under their real toolbar and column names. What loads lands where the fields were;
+  Subscriptions now reads its capacity beside the subscriptions, so the panel above them no
+  longer pushes them down.
+- Notes feel like a shared document (SPEC-112, ADR-0091, task #97). The Notes tabs go in any
+  order: drag one along the strip, press Alt+← / Alt+→ on it, or use its context menu; the order
+  is kept per browser, and until someone moves them Team comes first and opens first. A selection
+  in a notepad is drawn by Yulius, one rounded shape per line gliding from one selection to the
+  next. Teammates who have the Team or a sandbox notepad open show up in it, each in a colour of
+  their own, with their caret, their name and their selection, moving as they move and fading
+  out when they leave. The server relays where people are (`PUT …/notes/presence`,
+  `note.presence`) to the notepad's readers, stores nothing and takes at most 20 updates a
+  second per person and notepad.
+- The name beside the logo is set like the quote above the composer (SPEC-123, ADR-0100, task
+  #110). It used to read "YULIUS" in bold, widely spaced capitals of the interface face. Now it
+  reads "Yulius" in Tenor Sans 400 at the quote's 22 px with no extra spacing, in the sidebar and
+  on the sign-in and setup screens.
 - An agent secret is a name, a value and a description (SPEC-121, ADR-0098, task #107). The add
   dialog no longer asks for hosts or for how the secret is added to requests. Instance
   administrators find the scope under More options. Agents send the `$NAME` placeholder in

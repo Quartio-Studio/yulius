@@ -39,7 +39,7 @@ export const PROPOSALS = [
       "--radius-lg": "12px",
       "--radius-xl": "20px",
       "--icon-stroke": "1.25px",
-      "--wordmark-tracking": "0.32em",
+      "--wordmark-tracking": "0",
       "--logo-tile-dark": "#191918"
     },
     "dark": {
@@ -216,7 +216,7 @@ export const PROPOSALS = [
       "--radius-lg": "12px",
       "--radius-xl": "20px",
       "--icon-stroke": "1.25px",
-      "--wordmark-tracking": "0.32em",
+      "--wordmark-tracking": "0",
       "--logo-tile-dark": "#191918"
     },
     "dark": {
@@ -393,7 +393,7 @@ export const PROPOSALS = [
       "--radius-lg": "12px",
       "--radius-xl": "20px",
       "--icon-stroke": "1.25px",
-      "--wordmark-tracking": "0.32em",
+      "--wordmark-tracking": "0",
       "--logo-tile-dark": "#191918"
     },
     "dark": {
@@ -570,7 +570,7 @@ export const PROPOSALS = [
       "--radius-lg": "12px",
       "--radius-xl": "20px",
       "--icon-stroke": "1.25px",
-      "--wordmark-tracking": "0.32em",
+      "--wordmark-tracking": "0",
       "--logo-tile-dark": "#191918"
     },
     "dark": {

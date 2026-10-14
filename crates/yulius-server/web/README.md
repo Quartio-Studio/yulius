@@ -40,7 +40,7 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/termsocket.js` | WebSocket protocol code: binary frame parsing, `ReconnectingSocket` (backoff 0.5–10 s, bounded attempts, 4008 → immediate resync), `TerminalSocket`. |
 | `assets/terminal.js` | Terminal views on demand: returns the view at once and loads `terminal-core.js`, xterm, `xterm.css` and the terminal typeface together with the first terminal (or on idle after sign-in, `preloadTerminal()`). |
 | `assets/terminal-core.js` | xterm view: fit/resize, controller handover, read-only banner, floating reconnect notices, exit banners, web links and OSC 8 links. It appears once at its final size and font: fitted before connecting (`?cols=&rows=`), hidden under a placeholder until the first state and screen are drawn (F 2026-10-09). |
-| `assets/layout.js` | Sandbox tab row (All sandboxes, the sandboxes, +, Status panel, notifications, Agent button, tools toggle) and the sidebar (wordmark, navigation — Tasks, Git, CI (tests), Secrets, Dashboard, then a More disclosure for Sessions, Workflows, Skills, Automations and MCP, SPEC-029 —, active task list, user menu at its foot); the sidebar's width is dragged on its edge, kept per user and clamped so the rail and a 360 px centre stay in the window (with a panel open it gives way first, down to 200 px). |
+| `assets/layout.js` | Sandbox tab row (All sandboxes, the sandboxes, +, Status panel, notifications, Agent button, tools toggle) and the sidebar (wordmark, navigation — Tasks, Git, CI (tests), Secrets, Dashboard, then a More disclosure for Sessions, Workflows, Skills, Automations and MCP, SPEC-029 —, active task list — each row's state, task number `#N`, pull request chip `PR #N`, title and time, the time and then the chip giving way in a narrow sidebar (SPEC-122, ADR-0099) —, user menu at its foot); the sidebar's width is dragged on its edge, kept per user and clamped so the rail and a 360 px centre stay in the window (with a panel open it gives way first, down to 200 px). |
 | `assets/splitter.js` | Column splitters (UI-044) for the sidebar, the editor's explorer and the tool panel: a quiet grip that is a focusable separator (←/→, Shift for 64 px steps, Home/End; double-click resets), and the widths kept per user in `localStorage` (`yulius.layout.<user id>`: `sidebar` and `explorer` in px, `panel-<tool>` as a share of the work area). Phones have none. |
 | `assets/pages/home.js` | Home (UI-045), the default view at `/`: every sandbox as a card (repository, running / needs you / queued, last activity from its tasks, Open and New task), Import and Create; with no sandbox, the first steps and the GitHub notes. |
 | `assets/notifications.js` | Notification center (UI-020, UI-028): the bell, its panel with the All / Unread filter, and entries derived from the event stream; kept per user in `localStorage`, bounded to 100; optional OS notifications while the tab is hidden. |
@@ -94,8 +94,9 @@ and component in the current theme and computes contrast as you change things.
 1. **`assets/brand.js`** — product `name`, `tagline` and `mark`: SVG path data with its `markViewBox`
    and `markStyle` (`'fill'` for a solid logo such as the current one from
    `assets/brand/logo-lockup.svg`, `'stroke'` for a line drawing). The mark's colour is the
-   `--brand-mark` token (monochrome by default) and the wordmark's case and tracking are
-   `--wordmark-case` / `--wordmark-tracking`.
+   `--brand-mark` token (monochrome by default). The wordmark is set like the composer's quote
+   (ADR-0100): `--font-display` at 400 and `--fs-xl`, with its case and tracking in
+   `--wordmark-case` / `--wordmark-tracking` (`none` and `0`: the name as written).
    The sidebar wordmark, sign-in/setup screens, browser tab title, favicon and every sentence that
    names the product follow (`BRAND.name`; the check rejects the name written anywhere else).
 2. **`assets/tokens.css`, Layer 1** — the brand ramp `--brand-200 … --brand-800` and `--brand-ink`
@@ -151,7 +152,7 @@ not part of the app's start-up.
 ### Brand typeface
 
 Fonts are self-hosted (no CDNs). The brand's are Instrument Sans (UI text), Tenor Sans (titles and
-the wordmark, for its Roman capital proportions) and IBM Plex Mono (code, terminals, the editor):
+the wordmark, for its Roman proportions) and IBM Plex Mono (code, terminals, the editor):
 `.woff2` files from Fontsource 5.3.0 in `assets/fonts/` (Latin and Latin Extended, one per weight,
 with their SIL Open Font License texts), declared at the end of `tokens.css`. To change one, put
 its `.woff2` files in `assets/fonts/`, replace its `@font-face` rules, and put the family first in `--font` (UI text),
@@ -211,7 +212,10 @@ One pattern per kind of state (SPEC-001 UI-050): `emptyState` for every empty li
 that fills it), `loadError` for a failed load said in place (`loader(container, 'the users', …)` in
 `pages/common.js` names what failed: "Couldn’t load the users: …"), `skeleton` while loading (shimmering
 fields, never a spinner with "Loading…"; `placeholder(text, 'loading')` returns it; a spinner marks only an
-action under way, ADR-0073), and
+action under way, ADR-0073) in the shape of what loads (ADR-0097: `placeholder(text, 'loading', shape)` and
+`loader(…, { shape })` draw `items`, `item-section`, `table`, `cards`, `form` or `editor` with the page's own
+classes; a page with a layout of its own passes a function drawing it with `bar()`s (Sessions, CI, the
+Dashboard) or wraps one in `skeletonOf()`, as the Git page and the task lists do), and
 `notFound` (`pages/common.js`) for a missing page, sandbox, task or item: a heading and the way
 back. Page headers come from `pageFrame`: a title, a subtitle that says what the page is for, and
 actions; `createButton` is the primary "add" button with its "+". "Needs you" is `taskInfo`'s
