@@ -6,7 +6,7 @@ use rusqlite::{OptionalExtension, Row, Transaction, params};
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::Envelope;
 use yulius_app::ports::vault::{
-    TwoFactorRecord, VaultAuditEntry, VaultSecretRecord, VaultSection, VaultStore,
+    EnvFiles, TwoFactorRecord, VaultAuditEntry, VaultSecretRecord, VaultSection, VaultStore,
 };
 use yulius_domain::ids::SandboxId;
 use yulius_domain::time::Timestamp;
@@ -15,7 +15,7 @@ use crate::{SqliteStore, bad_column, db, to_i64, to_u32};
 
 const COLS: &str = "id, section, sandbox_id, name, description, hosts, injection, header_name, \
      fields, kek_id, wrapped_key, ciphertext, created_by, created_at, updated_by, updated_at, \
-     value_updated_at, last_used_at, requested_hosts, requested_by";
+     value_updated_at, last_used_at, requested_hosts, requested_by, env_files, env_requested_by";
 
 fn json_list(row: &Row<'_>, column: &str) -> rusqlite::Result<Vec<String>> {
     let text: String = row.get(column)?;
@@ -51,6 +51,11 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<VaultSecretRecord> {
         last_used_at: row.get::<_, Option<i64>>("last_used_at")?.map(Timestamp),
         requested_hosts: json_list(row, "requested_hosts")?,
         requested_by: row.get("requested_by")?,
+        env_files: {
+            let text: String = row.get("env_files")?;
+            EnvFiles::parse(&text).ok_or_else(|| bad_column("env_files", &text))?
+        },
+        env_requested_by: row.get("env_requested_by")?,
     })
 }
 
@@ -102,7 +107,7 @@ impl VaultStore for SqliteStore {
             tx.execute(
                 &format!(
                     "INSERT INTO vault_secrets ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, \
-                     ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)"
+                     ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)"
                 ),
                 params![
                     r.id,
@@ -125,6 +130,8 @@ impl VaultStore for SqliteStore {
                     r.last_used_at.map(|t| t.0),
                     to_json(&r.requested_hosts),
                     r.requested_by,
+                    r.env_files.as_str(),
+                    r.env_requested_by,
                 ],
             )
             .map_err(db)?;
@@ -273,6 +280,33 @@ impl VaultStore for SqliteStore {
                      updated_by = ?5, updated_at = ?6 \
                      WHERE id = ?1 AND section = 'agent' AND requested_hosts = ?2 AND hosts = ?3",
                     params![id, request, bound, hosts, by, at.0],
+                )
+                .map_err(db)?;
+            Ok(changed == 1)
+        })
+        .await
+    }
+
+    async fn vault_set_env_files(
+        &self,
+        id: &str,
+        from: (EnvFiles, Option<&str>),
+        to: (EnvFiles, Option<&str>),
+    ) -> AppResult<bool> {
+        let (id, from_state, from_by, to_state, to_by) = (
+            id.to_owned(),
+            from.0.as_str(),
+            from.1.map(str::to_owned),
+            to.0.as_str(),
+            to.1.map(str::to_owned),
+        );
+        self.call(move |c| {
+            let changed = c
+                .execute(
+                    "UPDATE vault_secrets SET env_files = ?4, env_requested_by = ?5 \
+                     WHERE id = ?1 AND section = 'agent' AND env_files = ?2 \
+                     AND env_requested_by IS ?3",
+                    params![id, from_state, from_by, to_state, to_by],
                 )
                 .map_err(db)?;
             Ok(changed == 1)
@@ -586,6 +620,8 @@ mod tests {
             last_used_at: None,
             requested_hosts: Vec::new(),
             requested_by: None,
+            env_files: EnvFiles::No,
+            env_requested_by: None,
         }
     }
 
@@ -602,6 +638,54 @@ mod tests {
             })
             .await?;
         Ok(store)
+    }
+
+    #[tokio::test]
+    async fn env_copies_change_only_from_what_was_seen() -> Result<(), Box<dyn std::error::Error>> {
+        let store = store_with_sandboxes().await?;
+        store
+            .vault_insert(&record("a", VaultSection::Agent, Some("s1"), "KEY"))
+            .await?;
+        let no = (EnvFiles::No, None);
+        assert!(
+            store
+                .vault_set_env_files("a", no, (EnvFiles::Asked, Some("#1")))
+                .await?
+        );
+        assert!(
+            !store
+                .vault_set_env_files("a", no, (EnvFiles::Asked, Some("#2")))
+                .await?,
+            "it is no longer unasked"
+        );
+        assert!(
+            !store
+                .vault_set_env_files("a", (EnvFiles::Asked, None), (EnvFiles::Allowed, None))
+                .await?,
+            "a person who saw no asker answers nothing"
+        );
+        assert!(
+            store
+                .vault_set_env_files(
+                    "a",
+                    (EnvFiles::Asked, Some("#1")),
+                    (EnvFiles::Allowed, None)
+                )
+                .await?
+        );
+        let got = store.vault_get("a").await?.ok_or("row")?;
+        assert_eq!(got.env_files, EnvFiles::Allowed);
+        assert_eq!(got.env_requested_by, None);
+        assert_eq!(got.updated_at, Timestamp(1), "nothing else changes");
+        let mut edited = got.clone();
+        edited.description = "edited".into();
+        assert!(store.vault_update(&edited).await?);
+        assert_eq!(
+            store.vault_get("a").await?.ok_or("row")?.env_files,
+            EnvFiles::Allowed,
+            "an edit keeps the allowance"
+        );
+        Ok(())
     }
 
     #[tokio::test]
