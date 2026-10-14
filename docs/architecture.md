@@ -363,6 +363,26 @@ flowchart LR
     Q --> R[start_run: supertask hold, session limit, capacity]
 ```
 
+### Changing how a waiting task starts
+
+A `chained` or `prepared` task takes another start choice before its first run
+(`yulius-app/src/start_change.rs`, `PUT /api/tasks/{tid}/start`,
+[SPEC-126](../.ai/specs/SPEC-126-we-d-like-to-be-able-to-change-task-runn.md),
+[decision 0102](decisions/0102-a-waiting-task-changes-how-it-starts.md)). The choice is checked
+as at creation, a wait on itself is refused, and the store replaces the status, chain row and
+start time in one transaction guarded by the status read. A chain evaluation releases a task only
+while its chain still names what was evaluated, and a rule judges the tasks that existed when it
+was written (the chain row's time).
+
+```mermaid
+flowchart LR
+    W[chained or prepared] -->|PUT start: after a task or a rule| C[chained]
+    W -->|PUT start: When I decide / At a time| P[prepared]
+    W -->|PUT start: Start now / Supertask| Q[queued]
+    C -->|evaluation of the same chain| Q
+    X[queued, running, ended] -->|PUT start| N[409: keeps its start]
+```
+
 ## Superagent (the Cockpit)
 
 Every user has one plain Claude Code session per sandbox, shown as the **Superagent**

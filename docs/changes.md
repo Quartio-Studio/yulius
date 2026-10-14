@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- A task that has not started can change how it starts (SPEC-126, ADR-0102, task #115). A chained
+  or prepared task's view has a start chip ("When I decide", "After #12", "When #12 done",
+  "At …") that opens New task's start menu: it can be chained after a task or a rule, prepared,
+  scheduled, started now or as a supertask. A task that started keeps its start, and a wait on
+  itself is refused. API: `PUT /api/tasks/{tid}/start`. A chain evaluated before the change no
+  longer starts the task, and a start rule judges the tasks that existed when it was written.
 - Keys have a default place: a git-ignored `.env` beside a tracked `.env.example` (SPEC-129,
   ADR-0105, task #111). When a project's code needs an agent secret's real value, the agent calls
   `secret_copy_to_env`. Yulius writes the value into `.env` and the name into `.env.example`; the

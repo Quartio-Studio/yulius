@@ -88,6 +88,26 @@ pub struct ChainRecord {
     pub rule: Option<String>,
 }
 
+/// A waiting task's new start (SPEC-126): it replaces the status, chain and start time together.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StartChange {
+    /// The task.
+    pub task_id: TaskId,
+    /// The status it was read in (`chained` or `prepared`): the change holds only while it still
+    /// is.
+    pub from: TaskStatus,
+    /// `chained`, `prepared` or `queued`.
+    pub to: TaskStatus,
+    /// Its new chain (with `to` chained).
+    pub chain: Option<ChainRecord>,
+    /// Its new start time (with `to` prepared).
+    pub start_at: Option<Timestamp>,
+    /// Runs alone in its project (with `to` queued, SPEC-071).
+    pub supertask: bool,
+    /// When.
+    pub at: Timestamp,
+}
+
 /// A prompt held by the scope check (SPEC-001 TSK-013).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HoldRecord {
