@@ -119,6 +119,13 @@ pub enum Observed {
         /// Claude Code's task id.
         id: String,
     },
+    /// A `<task-notification>` said the background agent `id` stopped with background work of its
+    /// own still running (its `<note>`): it resumes by itself when that work ends, and the same id
+    /// notifies again; the result it carries may be interim (SPEC-079 BGW-006).
+    BackgroundResumable {
+        /// Claude Code's task id.
+        id: String,
+    },
     /// The API rejected the session's prompt as too long: its context is full, and every later
     /// prompt gets the same answer until it is compacted (#213). No Stop hook ends such a turn.
     ContextFull,

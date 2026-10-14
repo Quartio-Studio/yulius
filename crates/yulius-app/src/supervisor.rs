@@ -3212,6 +3212,9 @@ impl App {
                     .await;
             }
             Observation::BackgroundEnded { id } => self.background_ended(task_id, &id).await,
+            Observation::BackgroundResumable { id } => {
+                self.background_resumable(task_id, id).await;
+            }
             Observation::Session { .. } => {}
         }
     }

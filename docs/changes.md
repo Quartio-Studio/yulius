@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- A background agent that stops while its own background work still runs no longer ends in
+  Yulius's eyes (SPEC-079 BGW-006, task #74). Claude Code's note says its result may be interim
+  and the same task id notifies again. The task stays Working until that final notification, or
+  an hour without it, and a switch waits for it; before, the task read "Your turn" in between.
 - The session view folds long injected context as Claude Code's TUI hides it (SPEC-090, ADR-0071,
   #347): a meta note over 8 lines or 2,000 characters, such as a skill's body, is one faint
   `⎿ Context added (6.2 KiB)` line that opens on demand. Shorter notes people act on, such as the

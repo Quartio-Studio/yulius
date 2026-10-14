@@ -9,7 +9,8 @@
 //!            [--bytes N] [--code N] [--seconds N] [--ignore-term]
 //!            [--session-id ID] [--transcript PATH [--transcript-kind claude]]
 //!            [--limit-after N] [--report-env NAME]... [--tui]
-//!            [--hooks YULIUS_EXE] [--goal-background SECONDS] [--goal-agent SECONDS]
+//!            [--hooks YULIUS_EXE] [--goal-background SECONDS]
+//!            [--goal-agent SECONDS [--goal-agent-interim SECONDS]]
 //!            [--goal-monitor SECONDS [--goal-monitor-ends]] [--goal-verdict met|failed|none]
 //!            [--goal-continue-ms MS
 //!            [--goal-continue-verdict] [--goal-continue-dies]] [--goal-delay-ms MS] [--drop-lines N]
@@ -57,8 +58,11 @@
 //! Claude Code wakes an idle session (a `<task-notification>` user prompt and a short turn with
 //! its Stop hook) and prints `BACKGROUND DONE`. With `--goal-agent N` the goal turn launches a background
 //! agent (its tool result `{"status":"async_launched","agentId":"agent-1"}` before the Stop hook)
-//! that wakes the session after N seconds and prints `AGENT DONE`. With `--goal-monitor N` it
-//! starts a Monitor stream (`{"taskId":"monitor-1","timeoutMs":N000}`) that never reports; with
+//! that wakes the session after N seconds and prints `AGENT DONE`. With `--goal-agent-interim M`
+//! too, the agent first stops with background work of its own still running: after N seconds its
+//! notification says so in Claude Code's note (the result may be interim), wakes the session and
+//! prints `AGENT INTERIM`; M seconds later its final notification prints `AGENT DONE`. With
+//! `--goal-monitor N` it starts a Monitor stream (`{"taskId":"monitor-1","timeoutMs":N000}`) that never reports; with
 //! `--goal-monitor-ends` too, the stream ends after N/2 seconds and wakes the session
 //! (`MONITOR DONE`). `--goal-verdict failed` records the goal as failed instead of achieved, and
 //! `--goal-verdict none` records no verdict (the turn closes without one). With
@@ -178,6 +182,7 @@ struct Options {
     hooks: Option<PathBuf>,
     goal_background: Option<u64>,
     goal_agent: Option<u64>,
+    goal_agent_interim: Option<u64>,
     goal_monitor: Option<u64>,
     goal_monitor_ends: bool,
     goal_verdict: GoalVerdict,
@@ -222,6 +227,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         hooks: None,
         goal_background: None,
         goal_agent: None,
+        goal_agent_interim: None,
         goal_monitor: None,
         goal_monitor_ends: false,
         goal_verdict: GoalVerdict::Met,
@@ -288,6 +294,10 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
             "--goal-agent" => {
                 let seconds: u64 = parse_number(&flag, args.next())?;
                 options.goal_agent = Some(seconds.min(MAX_SLEEP_SECONDS));
+            }
+            "--goal-agent-interim" => {
+                let seconds: u64 = parse_number(&flag, args.next())?;
+                options.goal_agent_interim = Some(seconds.min(MAX_SLEEP_SECONDS));
             }
             "--goal-monitor" => {
                 let seconds: u64 = parse_number(&flag, args.next())?;
@@ -1037,6 +1047,38 @@ fn wake_after(
     });
 }
 
+/// The notes of Claude Code 2.1.292 on a background agent's notification: it stopped with
+/// background work of its own still running (its result may be interim), or with none left.
+const AGENT_INTERIM_NOTE: &str = "This agent stopped with background work of its own still running. It may resume on its own when that work completes or reports, and the same task-id notifies again if it does; the result below may be interim.";
+const AGENT_FINAL_NOTE: &str = "A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.";
+
+/// The goal turn's background agent `agent-1` wakes the session after `seconds` (`AGENT DONE`).
+/// With `interim` it first stops with background work of its own still running, like the review
+/// agent of task #74: that notification wakes the session (`AGENT INTERIM`), and `interim`
+/// seconds later the same task id's final one does.
+fn agent_notifies(
+    seconds: u64,
+    interim: Option<u64>,
+    transcript: Option<Arc<Mutex<Transcript>>>,
+    hooks: Option<Hooks>,
+) {
+    let notification = |note: &str, result: &str| {
+        format!(
+            "<task-notification>\n<task-id>agent-1</task-id>\n<status>completed</status>\n<summary>Agent \"Review\" finished</summary>\n<note>{note}</note>\n<result>{result}</result>\n</task-notification>"
+        )
+    };
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(seconds));
+        if let Some(rest) = interim {
+            let text = notification(AGENT_INTERIM_NOTE, "The tests still run; I report then.");
+            wake(&text, "AGENT INTERIM", transcript.as_ref(), hooks.as_ref());
+            std::thread::sleep(Duration::from_secs(rest));
+        }
+        let text = notification(AGENT_FINAL_NOTE, "Approve.");
+        wake(&text, "AGENT DONE", transcript.as_ref(), hooks.as_ref());
+    });
+}
+
 /// Claude Code wakes the idle session when background work ends: its `<task-notification>` is a
 /// user prompt (after `UserPromptSubmit`), the agent answers and prints `done`, the Stop hook runs
 /// and the turn closes with nothing pending.
@@ -1367,10 +1409,9 @@ fn goal_turn(
         return say("GOAL UNMET");
     }
     if let Some(seconds) = options.goal_agent {
-        wake_after(
-            seconds * 1000,
-            "<task-notification>\n<task-id>agent-1</task-id>\n<status>completed</status>\n</task-notification>",
-            "AGENT DONE",
+        agent_notifies(
+            seconds,
+            options.goal_agent_interim,
             transcript.cloned(),
             hooks.cloned(),
         );
