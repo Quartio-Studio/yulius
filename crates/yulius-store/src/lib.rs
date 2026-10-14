@@ -163,6 +163,30 @@ impl SqliteStore {
     }
 }
 
+/// Creates the database file `path` at schema `version`, as a Yulius of that version left it,
+/// for upgrade tests (the next [`SqliteStore::open`] applies the later migrations).
+///
+/// # Errors
+/// Fails when the file cannot be written or `version` is past the latest.
+#[cfg(feature = "test-support")]
+pub fn create_at_version(path: &Path, version: usize) -> Result<(), OpenError> {
+    let mut conn = Connection::open(path)?;
+    let tx = conn.transaction()?;
+    for sql in MIGRATIONS.get(..version).ok_or(OpenError::TooNew {
+        found: i64::try_from(version).unwrap_or(i64::MAX),
+        supported: i64::try_from(MIGRATIONS.len()).unwrap_or(i64::MAX),
+    })? {
+        tx.execute_batch(sql)?;
+    }
+    tx.pragma_update(
+        None,
+        "user_version",
+        i64::try_from(version).unwrap_or(i64::MAX),
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 fn prepare(conn: &mut Connection) -> Result<(), OpenError> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;

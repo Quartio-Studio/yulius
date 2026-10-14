@@ -251,28 +251,24 @@ impl HarnessPort for HarnessAdapter {
     fn recount(
         &self,
         harness: Harness,
-        path: &Path,
+        sandbox_home: &Path,
+        worktree: &Path,
+        session_id: &str,
         from: WatchFrom,
         until: Option<Timestamp>,
     ) -> AppResult<Option<UsageSnapshot>> {
-        // The session id came from the agent's hook: one that is not an id (`../x`) names no
-        // transcript.
-        if path
-            .components()
-            .any(|part| part == std::path::Component::ParentDir)
-            || !path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .is_some_and(paths::valid_session_id)
-        {
+        // The session id came from the agent's hook: one that is not an id (`../x`, `/x`, which
+        // `join` would take as the whole path) names no transcript.
+        if !paths::valid_session_id(session_id) {
             return Ok(None);
         }
+        let path = self.claude_transcript(sandbox_home, worktree, session_id);
         let since = match from {
             WatchFrom::Start => None,
             WatchFrom::Since(at) => Some(at),
         };
         let counted = match harness {
-            Harness::ClaudeCode => recount::count_run(path, since, until).map_err(io)?,
+            Harness::ClaudeCode => recount::count_run(&path, since, until).map_err(io)?,
         };
         Ok(counted.map(|acc| snapshot(&acc)))
     }

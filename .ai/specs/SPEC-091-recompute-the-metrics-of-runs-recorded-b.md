@@ -45,7 +45,7 @@ recorded.
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | RCT-001 | A run's lines are a window of its session's transcript: from its start (a new session's run: the first line; a resumed run: the first line recorded at or after its start, as MET-002) to its end, the first line recorded at or after the earlier of its end and the next start of a run of the same task on the same session, which is not the run's. Its sub-agent transcripts count over the same window, their usage only (MET-004 bounds). | `subagents::tests::a_window_ends_at_the_first_line_at_or_after_its_end`; `recount::tests::each_run_of_a_resumed_session_counts_its_own_window` |
-| RCT-002 | Recounting a run reads its window, with the same accumulator as the live watch, so it gives the figures the live watch of that run gives today: tokens with sub-agents, Claude Code's turn records as turns, active time as the union of turn spans. A missing transcript is reported as missing, not as zero; a session id that is not one (`../x`) names no transcript; a sub-agent transcript that cannot be read fails the count (partial tokens are not the run's). | `recount::tests::each_run_of_a_resumed_session_counts_its_own_window`, `a_missing_transcript_is_not_zero`, `a_sub_agent_transcript_that_cannot_be_read_fails_the_count`; fixture `claude/resumed.jsonl` (real Claude Code 2.1.292 shapes); `metrics_recount::old_runs_get_their_transcripts_figures_once` (`a7`) |
+| RCT-002 | Recounting a run reads its window, with the same accumulator as the live watch, so it gives the figures the live watch of that run gives today: tokens with sub-agents, Claude Code's turn records as turns, active time as the union of turn spans. A missing transcript is reported as missing, not as zero; a session id that is not one (`../x`, `/x`) names no transcript (checked as an id, not as the path it would build); a sub-agent transcript that cannot be read fails the count (partial tokens are not the run's). | `recount::tests::each_run_of_a_resumed_session_counts_its_own_window`, `a_missing_transcript_is_not_zero`, `a_sub_agent_transcript_that_cannot_be_read_fails_the_count`; fixture `claude/resumed.jsonl` (real Claude Code 2.1.292 shapes); `metrics_recount::old_runs_get_their_transcripts_figures_once` (`a7`, `a8`) |
 | RCT-003 | Upgrading the store queues every run recorded so far for one recount (migration 23, `metrics_recounts`), with its stored figures as they were then (`before`), before this start's reconciliation saves anything; runs started after it are never queued. | `store::metrics_recounts_queue_the_runs_recorded_before_the_upgrade_once`, `a_recount_replaces_the_figures_and_records_both` |
 | RCT-004 | After start, once reconciliation has ended the runs that did not survive the restart (not at all when it failed: a lost run would read as live), Yulius recounts each queued run and records its outcome, the figures it stored (`after`) and when: `recomputed` (figures replaced), `no_transcript` (no session, worktree or transcript: the row stays as it was), `no_lines` (the transcript holds nothing of the run: the row stays), `live` (the run still runs: its watch already reads its transcript by MET-002), `gone` (the run was deleted). A recorded run is never recounted, so a restart after it changes nothing; a crash before a run is recorded recounts it again, with the same result. A model the transcript does not name keeps the stored one. One audit entry sums the round. | `metrics_recount::old_runs_get_their_transcripts_figures_once`; `store::a_recount_replaces_the_figures_and_records_both` |
 | RCT-005 | The recount never blocks start: it runs in its own background task, reads files off the async workers (`spawn_blocking`), one run at a time, and a failure of one run is logged and leaves that run queued for the next start, the others going on. | `metrics_recount::old_runs_get_their_transcripts_figures_once` (`a6` fails while its transcript cannot be read, stays queued, and is counted the next round); `background.rs` (code review) |
@@ -120,14 +120,17 @@ None.
   run two would count the terminal's turn (1,399 tokens, 2 turns), which the test asserts.
 - Mutation checks: `metrics_recount::old_runs_get_their_transcripts_figures_once` fails when the
   window ignores the next run's start (run one: 1,910 tokens, 4 turns) and when the session id is
-  not validated (the `../../escape` run counted).
+  not validated as an id (the absolute-path id of `a8` counted).
 - Tests written first and seen failing: the window API (compile), the store's `before` at queue
   time and the sub-agent read failure (assertions).
 - `scripts/dev ci` (doctor, check, lint with clippy `-D warnings`, nextest, doctests, deny,
   shear, doc): exit 0, 1,509 tests passed before the review fixes and 1,510 after them.
 - Independent review (fresh session, `om-code-review`): round one requested changes (failure path
   untested; `before` read after reconciliation; sub-agent errors cut the count; untested
-  `no_lines` and next-run window; session id); all fixed test-first. The reconciliation overwrite
-  that predates this change is #385.
+  `no_lines` and next-run window; session id); all fixed test-first. Round two found the session
+  id checked on the built path, which an absolute id (`join` takes it whole) passed, and the
+  upgrade test built on a downgraded latest schema: the port now takes the id and validates it,
+  and the test store is built at version 22 (`yulius_store::create_at_version`). The
+  reconciliation overwrite that predates this change is #385.
 - Not testable here: the production database (41 of 109 runs at 0 active time); the recount runs
   there on the first start after `dev` reaches it.

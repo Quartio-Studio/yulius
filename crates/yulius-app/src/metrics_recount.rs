@@ -56,7 +56,9 @@ impl RecountTally {
 /// Where a run's lines are: its session transcript and its window of it.
 struct RunWindow {
     harness: Harness,
-    path: PathBuf,
+    sandbox_home: PathBuf,
+    worktree: PathBuf,
+    session_id: String,
     from: WatchFrom,
     until: Option<Timestamp>,
 }
@@ -133,7 +135,14 @@ impl App {
         };
         let harness = self.deps.harness.clone();
         let counted = tokio::task::spawn_blocking(move || {
-            harness.recount(window.harness, &window.path, window.from, window.until)
+            harness.recount(
+                window.harness,
+                &window.sandbox_home,
+                &window.worktree,
+                &window.session_id,
+                window.from,
+                window.until,
+            )
         })
         .await
         .map_err(AppError::internal)??;
@@ -167,13 +176,6 @@ impl App {
         let Some(worktree) = task.worktree_path.as_deref() else {
             return Ok(None);
         };
-        let path = match attempt.harness {
-            Harness::ClaudeCode => self.deps.harness.claude_transcript(
-                &self.sandbox_home(&task.sandbox_id),
-                worktree.as_ref(),
-                session,
-            ),
-        };
         let from = match attempt.launch_kind {
             LaunchKind::New => WatchFrom::Start,
             LaunchKind::Resume => WatchFrom::Since(attempt.started_at),
@@ -197,7 +199,9 @@ impl App {
         };
         Ok(Some(RunWindow {
             harness: attempt.harness,
-            path,
+            sandbox_home: self.sandbox_home(&task.sandbox_id),
+            worktree: PathBuf::from(worktree),
+            session_id: session.to_owned(),
             from,
             until,
         }))

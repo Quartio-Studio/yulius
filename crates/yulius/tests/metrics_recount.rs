@@ -28,10 +28,10 @@ fn fixture() -> PathBuf {
 /// A store as SPEC-087's version left it (schema 22): two runs of a resumed session with the
 /// old watcher's figures (the first without active time and ended late, by a restart, after the
 /// second had started; the second without a row), a later run of that session with no line in its
-/// transcript, a run whose transcript is gone, one whose session id is not one, a live run, and a
-/// run whose transcript cannot be read yet.
-fn old_store(db: &Path) -> TestResult {
-    drop(SqliteStore::open(db)?);
+/// transcript, a run whose transcript is gone, two whose session ids are not ones (a relative and
+/// an absolute path), a live run, and a run whose transcript cannot be read yet.
+fn old_store(db: &Path, outside: &str) -> TestResult {
+    yulius_store::create_at_version(db, 22)?;
     let conn = rusqlite::Connection::open(db)?;
     let (r1, e1) = (ms("2026-10-10T09:00:00Z")?, ms("2026-10-10T09:30:00Z")?);
     let (r2, e2) = (ms("2026-10-10T10:00:00Z")?, ms("2026-10-10T10:05:00Z")?);
@@ -51,14 +51,18 @@ fn old_store(db: &Path) -> TestResult {
            ('a4', 't2', 2, 'claude', 'live-session', 'new', 'live', '/r/a4', 'h4', x'00', {r2}, NULL),
            ('a5', 't1', 3, 'claude', '{SESSION}', 'resume', 'exited', '/r/a5', 'h5', x'00', {r3}, {e3}),
            ('a6', 't3', 1, 'claude', '{SESSION}', 'new', 'exited', '/r/a6', 'h6', x'00', {r1}, {e1}),
-           ('a7', 't2', 3, 'claude', '../../escape', 'new', 'exited', '/r/a7', 'h7', x'00', {r1}, {e1});
+           ('a7', 't2', 3, 'claude', '../../escape', 'new', 'exited', '/r/a7', 'h7', x'00', {r1}, {e1}),
+           ('a8', 't2', 4, 'claude', '{outside}', 'new', 'exited', '/r/a8', 'h8', x'00', {r1}, {e1});
          INSERT INTO metrics (attempt_id, task_id, model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms, updated_at) VALUES
            ('a1', 't1', 'claude-opus-5-5', 45, 310, 0, 0, 7, NULL, {e1}),
-           ('a3', 't2', 'claude-opus-5-5', 1, 77, 0, 0, 2, 1000, {e1});
-         DROP TABLE metrics_recounts;
-         PRAGMA user_version = 22;"
+           ('a3', 't2', 'claude-opus-5-5', 1, 77, 0, 0, 2, 1000, {e1});"
     ))?;
     Ok(())
+}
+
+/// An absolute "session id" naming a transcript outside the sandbox.
+fn outside(data: &Path) -> PathBuf {
+    data.join("outside")
 }
 
 fn transcript_of(h: &support::Harness, data: &Path, worktree: &str) -> PathBuf {
@@ -86,6 +90,11 @@ fn transcripts(h: &support::Harness, data: &Path) -> TestResult {
             .claude_transcript(&home, Path::new("/work/other"), "../../escape");
     std::fs::create_dir_all(escaped.parent().ok_or("parent")?)?;
     std::fs::copy(fixture().join("resumed.jsonl"), &escaped)?;
+    // Where the absolute session id of `a8` would lead (`join` takes it whole): never read.
+    std::fs::copy(
+        fixture().join("resumed.jsonl"),
+        outside(data).with_extension("jsonl"),
+    )?;
     let sub = transcript.with_extension("").join("subagents");
     std::fs::create_dir_all(&sub)?;
     std::fs::copy(fixture().join("resumed.jsonl"), &transcript)?;
@@ -137,8 +146,8 @@ async fn old_runs_get_their_transcripts_figures_once() -> TestResult {
     let dir = tempfile::tempdir()?;
     let data = dir.path().canonicalize()?;
     let db = data.join("yulius.db");
-    old_store(&db)?;
-    // The upgrade queues the seven runs recorded before it.
+    old_store(&db, &outside(&data).to_string_lossy())?;
+    // The upgrade queues the eight runs recorded before it.
     let store = SqliteStore::open(&db)?;
     let h = support::harness_with(HarnessOptions {
         dir: Some(dir),
@@ -156,7 +165,7 @@ async fn old_runs_get_their_transcripts_figures_once() -> TestResult {
             tally.live,
             tally.failed
         ),
-        (2, 2, 1, 1, 1)
+        (2, 3, 1, 1, 1)
     );
     let (first, saved_at) = stored(&db, "a1")?;
     assert_eq!(
@@ -200,6 +209,7 @@ async fn old_runs_get_their_transcripts_figures_once() -> TestResult {
             ("a5", Some("no_lines")),
             ("a6", None),
             ("a7", Some("no_transcript")),
+            ("a8", Some("no_transcript")),
         ]
     );
     assert!(
@@ -252,7 +262,7 @@ async fn old_runs_get_their_transcripts_figures_once() -> TestResult {
     assert_eq!(stored(&db, "a1")?, (first, saved_at));
     let after = recounts(&db)?;
     assert_eq!(after[..5], rows[..5]);
-    assert_eq!(after[6], rows[6]);
+    assert_eq!(after[6..], rows[6..]);
     assert_eq!(after[5].1.as_deref(), Some("recomputed"));
 
     // Once: a third round recounts nothing.
