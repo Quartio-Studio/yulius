@@ -1,11 +1,11 @@
 ---
 yulius-task: 32bdac19-661e-4de5-b0e1-d986fd927eac
-status: in-progress
+status: done
 ---
 
 # SPEC-122: Sidebar rows show the task number, and pull request chips say "PR"
 
-Status: in progress
+Status: implemented
 Date: 2026-10-14
 Owner: Yulius task #108
 Scope authorization: task #108 ("We need tasks id somewhere here and not only PRs id because we
@@ -67,8 +67,8 @@ details (`prLine`) link the number.
 - [x] Pull request chips read "PR #N" everywhere, so a bare #N always means a task
 - [x] Review round 1 findings fixed test-first: Git board chip, phone drawer, hover, tooltip, screen reader name
 - [x] Review round 2 findings fixed test-first: hover on non-archivable rows, shells tooltip, label in name
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -125,3 +125,35 @@ the sidebar link's name now starts "Needs you in the browser Task #10 …".
   hovered row, so it was left out after three rounds.
 - **Muted plain text for the number, not a second pill.** Two pills side by side would compete,
   and the muted `#N` before a title matches the Git board and the step strip.
+
+## Evidence
+
+- **Tests failed first, for the right reasons.**
+  - Sidebar test: it timed out on the missing `.task-num`. With the number in place, the widened
+    squeeze test then failed at the default width with titles of 0 to 5 px.
+  - Chip test: it failed with `expected "#520 pull request, open, checks running" to match
+    /^PR #520/`.
+  - Tasks page test: `.task-num` was missing.
+  - Review round 1 tests: the Git board chip was missing, the tooltip read `["PR #520","PR #520"]`,
+    and rows spilled in the 320 px drawer.
+  - Review round 2 tests: the hovered title overlapped the menu by 18 px, and the chip name
+    lookup (label in name) failed.
+- **Full e2e suite on `ebd83bf1`** (`cd e2e && npx e2e run`): 370 passed, 1 skipped (47 files).
+  After that, only the hover padding changed from 10 to 12 px (`2f83cbda`).
+  `npx e2e run tests/navigation.e2e.ts` then gave 8 passed.
+- **`scripts/dev ci` on `2f83cbda`:** exit 0. The repository contracts passed (UI design tokens
+  included), and nextest ran 1626 tests: all passed, 16 skipped. The run on `ebd83bf1` had failed
+  the 4 px spacing-scale contract (`10px`), which `2f83cbda` fixes.
+- **Screenshots of the mock studio sandbox** (dark theme):
+  - At a 300 px sidebar, rows read `#13 PR #520 ◷ Improve th…` with titles aligned.
+  - At 480 px, every row shows its time.
+  - The Tasks page shows `PR #520` chips.
+- **Independent reviews** in fresh sessions (`om-code-review`):
+  - Round 1 requested changes: the Git board chip, the phone drawer, hover, the tooltip and the
+    spoken name.
+  - Round 2 requested changes: hover on rows without Archive, the shells tooltip, and label in
+    name.
+  - Round 3 approved `ebd83bf1` with nits. The ADR wording and the plan ticks are fixed. The time
+    on hover is a recorded decision.
+- **Not testable here:** a real GitHub pull request and screen-reader speech. Both are covered
+  by the mock and by accessible-name and axe checks.
