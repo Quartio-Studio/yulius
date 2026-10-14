@@ -4,6 +4,17 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-14
+
+- `yulius doctor` warns when the host's GitHub CLI is older than 2.82.1 (SPEC-088): since GitHub
+  retired Projects (classic), `gh pr edit` and `gh issue view --comments` fail on older versions,
+  on the host and in every sandbox. Unrecognised version lines stay OK. The warning and `docs/operations.md`
+  point to GitHub's package repository instead of `apt-get install gh`.
+- The repository check fails on committed merge conflict markers (SPEC-089, #364): a line that is
+  a Git conflict marker in any tracked or new file, vendored assets and binaries aside, fails
+  `scripts/dev check` and Yulius CI with its file and line, where before markers in docs and web
+  assets passed every gate.
+
 ## 2026-10-13
 
 - A background agent that stops while its own background work still runs no longer ends in
