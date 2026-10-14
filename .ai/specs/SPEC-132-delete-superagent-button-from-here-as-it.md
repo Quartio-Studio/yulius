@@ -1,11 +1,11 @@
 ---
 yulius-task: 38a7ee87-dd89-4f68-bc9f-1ef0938d7f16
-status: in-progress
+status: done
 ---
 
 # SPEC-132: the top bar has no Superagent button; the tools rail opens it
 
-Status: in progress
+Status: implemented
 Date: 2026-10-14
 Owner: Yulius task #120
 Scope authorization: task #120, "delete superagent button from here as it's already right under the
@@ -47,10 +47,10 @@ first in the tools rail, right under the tools toggle. Its links (`/s/<slug>/sup
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] The top bar has no Superagent button; the tools rail opens it, and the e2e suite proves it
-- [ ] ADR, specs, product and UI docs describe the rail as the Superagent's way in
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] The top bar has no Superagent button; the tools rail opens it, and the e2e suite proves it
+- [x] ADR, specs, product and UI docs describe the rail as the Superagent's way in
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -78,3 +78,25 @@ first in the tools rail, right under the tools toggle. Its links (`/s/<slug>/sup
   that move around).
 - **Keep the transient rail for links and sandbox returns**: those still open a panel while the
   rail is hidden, and the person's Tools choice must survive them.
+
+## Evidence
+
+Run on the head after merging `origin/dev` (4929ee47), 2026-10-14:
+
+| Command | Result |
+| --- | --- |
+| `npx e2e run tests/agent-panel.e2e.ts --grep "top bar has no"` before the change | 2 failed: the tab row held "Show Superagent" (1280 and 390 px), as NSB-001 expects |
+| same test with `panels.js:341` set to `{ context: true }` (review round 1 test) | failed: the rail stayed after the returning tool closed; passes with the code as merged |
+| `scripts/dev check` | pass |
+| `scripts/dev lint` | pass |
+| `scripts/dev test` | pass: 1666 tests passed, 16 skipped |
+| `scripts/dev deps` | pass: cargo-deny and cargo-shear found no issues |
+| `cd e2e && npx e2e run` | pass: 401 passed, 1 skipped (`agent.e2e.ts`, the live-model test) |
+| `scripts/dev security` | not run (exit 2): Vidoc answers HTTP 401 "Invalid or expired token" for the bound `VIDOC_API_KEY`; tracked in #470 |
+
+Independent review round 1 (fresh session, `om-code-review`, head 5416a7ab): approved with two
+minors and three nits. Fixed: the sandbox-return path of the transient rail got its own e2e test
+(proved failing without the behaviour); the spec's Plan and status; the toggle label names Notes
+too; dev merged with the ADR index and changes log checked. Accepted: opening the Superagent from
+a hidden rail takes two clicks (ADR-0106 Consequences).
+
