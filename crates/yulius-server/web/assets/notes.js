@@ -10,10 +10,11 @@
 // text in sessionStorage, which the next load offers again; leaving with unsaved text asks first.
 //
 // The tabs go in any order (SPEC-112): dragged along the strip, Alt+←/→ or the context menu; the
-// order is remembered per browser and is Team, This sandbox, Me until the person moves one.
+// order is remembered per browser and is Team, This sandbox, Me until the person moves one. Each
+// tab shows a grip and says it can be clicked or dragged (SPEC-136).
 
 import { enc } from './api.js';
-import { h, openMenu, setChildren, skeleton } from './dom.js';
+import { h, icon, openMenu, setChildren, skeleton } from './dom.js';
 import { relLong } from './format.js';
 import { attachMarkdownInput } from './mdinput.js';
 import { allows } from './status.js';
@@ -24,6 +25,8 @@ const TAB_KEY = 'yulius.notesTab';
 const ORDER_KEY = 'yulius.notesOrder';
 /** The tabs' order until the person moves one: Team first (SPEC-112 NOT-015). */
 export const DEFAULT_ORDER = ['team', 'sandbox', 'me'];
+/** What a tab says under the pointer: the grip before its name shows it drags (SPEC-136). */
+const TAB_HINT = 'Click to open, drag to reorder (Alt+← / Alt+→)';
 /** How far a pressed tab moves before it is dragged rather than clicked. */
 const DRAG_THRESHOLD_PX = 4;
 /** Unsaved text per user and notepad, in sessionStorage (this browser tab only). */
@@ -138,9 +141,9 @@ export function createNotesView(ctx, sandbox) {
       const tab = h('button', {
         type: 'button', class: ['term-tab', selected && 'active'], role: 'tab', id: `notes-tab-${pad.key}`,
         'aria-selected': String(selected), 'aria-controls': `notes-pane-${pad.key}`, tabindex: selected ? '0' : '-1',
-        'aria-keyshortcuts': 'Alt+ArrowLeft Alt+ArrowRight', dataset: { key: pad.key },
+        'aria-keyshortcuts': 'Alt+ArrowLeft Alt+ArrowRight', dataset: { key: pad.key }, title: TAB_HINT,
         onClick: () => { if (dragged) { dragged = false; return; } select(pad, { focusTab: true }); },
-      }, pad.label);
+      }, h('span', { class: 'notes-tab-grip', 'aria-hidden': 'true' }, icon('grip', { size: 12 })), pad.label);
       tab.addEventListener('keydown', (event) => {
         const index = pads.indexOf(pad);
         if (event.altKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
