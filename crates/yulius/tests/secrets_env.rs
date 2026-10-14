@@ -90,16 +90,38 @@ async fn world() -> Result<World, Box<dyn std::error::Error>> {
     })
 }
 
+/// Answers as a person who sees the secret as it is now.
 async fn answer(
     w: &World,
     creds: &Creds,
     allow: bool,
 ) -> Result<support::Resp, Box<dyn std::error::Error>> {
+    let now = w.h.store.vault_get(&w.id).await?.ok_or("secret")?;
+    answer_seen(
+        w,
+        creds,
+        &w.id,
+        allow,
+        now.env_files.as_str(),
+        now.env_requested_by.as_deref(),
+    )
+    .await
+}
+
+/// Answers as a person who saw `env_files` and `by`.
+async fn answer_seen(
+    w: &World,
+    creds: &Creds,
+    id: &str,
+    allow: bool,
+    env_files: &str,
+    by: Option<&str>,
+) -> Result<support::Resp, Box<dyn std::error::Error>> {
     call(
         &w.h.router,
         Method::POST,
-        &format!("/api/agent-secrets/{}/env", w.id),
-        Some(json!({"allow": allow})),
+        &format!("/api/agent-secrets/{id}/env"),
+        Some(json!({"allow": allow, "env_files": env_files, "env_requested_by": by})),
         creds,
     )
     .await
@@ -154,6 +176,29 @@ async fn people_allow_dismiss_and_revoke_env_copies() -> TestResult {
     let revoked = answer(&w, &w.writer, false).await?;
     assert_eq!(revoked.body["env_files"], "no");
 
+    // Review of SPEC-129, L1: an answer names what the person saw. Another manager dismissed
+    // and another task asked meanwhile: the stale Allow is refused and allows nothing.
+    assert!(ask("#2").await?);
+    let stale = answer_seen(&w, &w.writer, &w.id, true, "asked", Some("#1")).await?;
+    assert_eq!(stale.status, StatusCode::CONFLICT, "{}", stale.body);
+    let stale = answer_seen(&w, &w.writer, &w.id, false, "allowed", None).await?;
+    assert_eq!(stale.status, StatusCode::CONFLICT, "{}", stale.body);
+    assert_eq!(
+        w.h.store.vault_get(&w.id).await?.ok_or("secret")?.env_files,
+        EnvFiles::Asked
+    );
+    let unknown = answer_seen(&w, &w.writer, &w.id, true, "maybe", Some("#2")).await?;
+    assert_eq!(
+        unknown.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        unknown.body
+    );
+    // Someone without access to the sandbox does not learn the secret exists.
+    let outsider = seed_github_user(&w.h, "u-carol", "carol").await?;
+    let hidden = answer(&w, &outsider, true).await?;
+    assert_eq!(hidden.status, StatusCode::NOT_FOUND, "{}", hidden.body);
+
     let actions: Vec<String> = activity(&w)
         .await?
         .iter()
@@ -170,7 +215,6 @@ async fn people_allow_dismiss_and_revoke_env_copies() -> TestResult {
             "{expected}: {actions:?}"
         );
     }
-    let _ = &w.worktree;
     Ok(())
 }
 
@@ -380,5 +424,174 @@ async fn secrets_list_teaches_the_env_default() -> TestResult {
     for needle in [".env.example", "secret_copy_to_env", "git-ignored .env"] {
         assert!(advice.contains(needle), "{needle}: {advice}");
     }
+    Ok(())
+}
+
+/// Review of SPEC-129, L2/L4/L5: everything that would refuse the copy is checked before a person
+/// is asked; one unallowed secret stops the whole copy; a second task joins the askers; a revoked
+/// secret is asked for again; a value no reader quotes alike is refused and nothing is written; a
+/// project that ignores only `.env` still gets its copy, with no temporary file left behind.
+#[tokio::test]
+async fn the_copy_is_checked_before_anyone_is_asked() -> TestResult {
+    use yulius_app::ports::store::TaskStore as _;
+    let w = world().await?;
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "WEIRD_KEY", "description": "A key with a backslash", "value": "it-is\\path-1234"})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let weird = created.body["id"].as_str().ok_or("id")?.to_owned();
+    let copy = |args: Value| support::mcp_tool(&w.h, TOKEN, "secret_copy_to_env", args);
+
+    // Not ignored: refused, and nobody is asked.
+    let refused = copy(json!({"secrets": ["STRIPE_KEY"], "path": "prod.env"})).await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    let secret = w.h.store.vault_get(&w.id).await?.ok_or("secret")?;
+    assert_eq!(
+        secret.env_files,
+        EnvFiles::No,
+        "a person is not asked for a copy that cannot work"
+    );
+
+    // A value no reader quotes alike: refused before asking, nothing written.
+    let refused = copy(json!({"secrets": ["STRIPE_KEY", "WEIRD_KEY"]})).await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert!(!refused.to_string().contains("path-1234"), "{refused}");
+    assert_eq!(
+        w.h.store.vault_get(&weird).await?.ok_or("weird")?.env_files,
+        EnvFiles::No
+    );
+    w.h.store
+        .vault_set_env_files(&weird, (EnvFiles::No, None), (EnvFiles::Allowed, None))
+        .await?;
+    w.h.store
+        .vault_set_env_files(&w.id, (EnvFiles::No, None), (EnvFiles::Allowed, None))
+        .await?;
+    let refused = copy(json!({"secrets": ["STRIPE_KEY", "WEIRD_KEY"]})).await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert!(!w.worktree.join(".env").exists(), "all or nothing");
+
+    // One allowed, one not: nothing written, only the unallowed one waits.
+    answer(&w, &w.writer, false).await?;
+    w.h.store
+        .vault_set_env_files(&weird, (EnvFiles::Allowed, None), (EnvFiles::No, None))
+        .await?;
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "DOCS_KEY", "description": "Docs", "value": "docs-key-123456"})),
+        &w.writer,
+    )
+    .await?;
+    let docs = created.body["id"].as_str().ok_or("id")?.to_owned();
+    w.h.store
+        .vault_set_env_files(&docs, (EnvFiles::No, None), (EnvFiles::Allowed, None))
+        .await?;
+    let mixed = copy(json!({"secrets": ["DOCS_KEY", "STRIPE_KEY"]})).await?;
+    assert_ne!(mixed["isError"], true, "{mixed}");
+    let text = support::tool_text(&mixed);
+    assert_eq!(
+        text["waiting"],
+        json!(["STRIPE_KEY"]),
+        "revoked, so asked again: {text}"
+    );
+    assert!(!w.worktree.join(".env").exists());
+
+    // A second task asking joins the askers.
+    let other = w.h.app.config.data_dir.join("sandboxes/s1/worktrees/t2");
+    std::fs::create_dir_all(&other)?;
+    git(&other, &["init", "-q", "-b", "dev"])?;
+    std::fs::write(other.join(".gitignore"), ".env\n")?;
+    seed_task(
+        &w.h,
+        "t2",
+        "s1",
+        "u-alice",
+        TaskStatus::Running,
+        Some(&other),
+    )
+    .await?;
+    seed_live_attempt(&w.h, "t2", "env-task-token-t2-0123456789abcdef").await?;
+    let asked = support::mcp_tool(
+        &w.h,
+        "env-task-token-t2-0123456789abcdef",
+        "secret_copy_to_env",
+        json!({"secrets": ["STRIPE_KEY"]}),
+    )
+    .await?;
+    assert_ne!(asked["isError"], true, "{asked}");
+    let numbers = |id: &str| {
+        let store = w.h.store.clone();
+        let id = yulius_domain::ids::TaskId::parse(id);
+        async move { Ok::<_, Box<dyn std::error::Error>>(store.task(&id?).await?.ok_or("task")?.number) }
+    };
+    let (n1, n2) = (numbers("t1").await?, numbers("t2").await?);
+    assert_eq!(
+        w.h.store
+            .vault_get(&w.id)
+            .await?
+            .ok_or("secret")?
+            .env_requested_by,
+        Some(format!("#{n1}, #{n2}"))
+    );
+
+    // Allowed: the second task's project ignores only `.env`, so no temporary name is ignored;
+    // the copy is written in place and leaves nothing else behind.
+    answer(&w, &w.writer, true).await?;
+    let copied = support::mcp_tool(
+        &w.h,
+        "env-task-token-t2-0123456789abcdef",
+        "secret_copy_to_env",
+        json!({"secrets": ["STRIPE_KEY"]}),
+    )
+    .await?;
+    assert_ne!(copied["isError"], true, "{copied}");
+    assert_eq!(read(&other.join(".env")), format!("STRIPE_KEY={VALUE}\n"));
+    let mut left: Vec<String> = std::fs::read_dir(&other)?
+        .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+        .collect();
+    left.sort();
+    assert_eq!(left, [".env", ".env.example", ".git", ".gitignore"]);
+    Ok(())
+}
+
+/// Review of SPEC-129, L5: a secret of every project is answered by instance administrators
+/// only, and its askers name their project.
+#[tokio::test]
+async fn secrets_of_every_project_are_answered_by_administrators() -> TestResult {
+    let w = world().await?;
+    support::setup_superadmin_creds(&w.h).await?;
+    let admin = support::superadmin_bearer(&w.h).await?;
+    let created = call(
+        &w.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"scope": "instance", "name": "SHARED_KEY", "description": "Shared", "value": "shared-key-123456"})),
+        &admin,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    let id = created.body["id"].as_str().ok_or("id")?.to_owned();
+    let asked = support::mcp_tool(
+        &w.h,
+        TOKEN,
+        "secret_copy_to_env",
+        json!({"secrets": ["SHARED_KEY"]}),
+    )
+    .await?;
+    assert_ne!(asked["isError"], true, "{asked}");
+    let secret = w.h.store.vault_get(&id).await?.ok_or("secret")?;
+    let by = secret.env_requested_by.clone().ok_or("asker")?;
+    assert!(by.ends_with(" in app"), "{by}");
+    let refused = answer_seen(&w, &w.writer, &id, true, "asked", Some(&by)).await?;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN, "{}", refused.body);
+    let allowed = answer_seen(&w, &admin, &id, true, "asked", Some(&by)).await?;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
+    assert_eq!(allowed.body["env_files"], "allowed");
     Ok(())
 }

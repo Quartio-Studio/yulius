@@ -61,14 +61,18 @@ secret allows each secret to be copied, once, on the Secrets page, the way they 
   answers with the Secrets page link. Asking again while it waits adds the asker, nothing else.
 - R4. On the Secrets page a person who manages the secret sees "Task #N asks to copy it into the
   project's .env" with Allow and Dismiss; an allowed secret shows "Copied into .env files" with
-  Revoke. `POST /api/agent-secrets/{id}/env {allow}` answers or revokes, compare-and-set on the
-  previous state, audited `vault.agent.env_allow`, `vault.agent.env_dismiss` or
+  Revoke. `POST /api/agent-secrets/{id}/env {allow, env_files, env_requested_by}` answers or
+  revokes, compare-and-set on the state the person saw, audited `vault.agent.env_allow`, `vault.agent.env_dismiss` or
   `vault.agent.env_revoke`; others get 403, invisible secrets 404, a stale answer 409.
-- R5. The file keeps every other line. A line for the name (also `export NAME=…`) is replaced in
-  place (later duplicates are dropped); a missing one is appended. Values are written unquoted
-  when they hold only `A-Za-z0-9_-./:+=@,%~^`, else in single quotes, else (a value with `'`) in
-  double quotes, refused if it also holds `"`, `\`, `$` or a backtick. The file is written
-  atomically with mode 0600 and is at most 256 KiB.
+- R5. The file keeps every other line and its line endings. A line for the name (also
+  `export NAME=…`) is replaced in place (later duplicates are dropped); a missing one is appended.
+  Values are written unquoted when they hold only `A-Za-z0-9_-./:+=@,%^`, else in single quotes,
+  else (a value with `'`) in double quotes. A value with `\` or `${`, or with `'` and also `"`,
+  `$` or a backtick, is refused. The file is written with mode 0600 and is at most 256 KiB:
+  through a temporary file renamed into place when Git ignores the temporary name, else in place.
+  Every read and write goes through the target folder's handle, opened without following links
+  and checked to be inside the worktree.
+- R5a. Everything that would refuse the copy (R2, R5) is checked before a person is asked (R3).
 - R6. The `.env.example` next to the file (created if missing, kept if it is a symbolic link)
   gains `NAME=` for each copied name it lacks (a commented `# NAME=` counts). The answer says when
   Git ignores it.

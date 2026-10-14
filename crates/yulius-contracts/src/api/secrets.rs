@@ -257,6 +257,11 @@ pub struct HostRequestAnswer {
 pub struct EnvFilesAnswer {
     /// Allow (`true`) or not.
     pub allow: bool,
+    /// The `env_files` the person saw: the answer is refused (409) unless it still holds.
+    pub env_files: String,
+    /// The askers the person saw (`env_requested_by`), compared the same way.
+    #[serde(default)]
+    pub env_requested_by: Option<String>,
 }
 
 /// One vault audit entry.

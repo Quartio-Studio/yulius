@@ -154,7 +154,7 @@ test('a person allows an agent to copy a secret into .env, then revokes it', asy
   expect(await axeViolations(browser)).toEqual([]);
   await screen.getByRole('button', 'Allow copying STRIPE_KEY into .env files').click();
   await expect(card.getByText(/asks to copy/)).toBeHidden();
-  await expect(card.getByText('Agents may copy its value into the project’s git-ignored .env files')).toBeVisible();
+  await expect(card.getByText('Agents in this sandbox may copy its value into git-ignored .env files')).toBeVisible();
   await screen.getByRole('button', 'Stop agents copying STRIPE_KEY into .env files').click();
   await expect(card.getByText(/Agents may copy its value/)).toBeHidden();
   // A secret nobody asked about says nothing about .env.

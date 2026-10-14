@@ -33,14 +33,23 @@ exactly that: any code in the worktree can read it and send it anywhere.
   (`vault.agent.env_request`), the task is flagged as needing a person, and nothing is written.
   The Secrets page shows "Task #N asks to copy its value into the project's git-ignored .env" with
   Allow and Dismiss, and Revoke once allowed (`POST /api/agent-secrets/{id}/env`, compare and set).
-- **Git is the guard.** The copy is refused, and nothing is written, unless Git ignores the file
-  and does not track it. It is also refused for a path outside the worktree, under `.git`, or
-  through a link, for a file that is not a regular file, and for a template. So a later `git add
-  .` cannot commit a value.
+- **Git is the guard against accidents.** The copy is refused, and nothing is written, unless
+  Git ignores the file and does not track it, so a later `git add .` does not commit a value. A
+  temporary file is used only under a name Git also ignores, else the file is written in place,
+  so a crash leaves nothing committable. This stops mistakes, not a determined agent, which could
+  still edit `.gitignore`.
+- **No link is followed.** Yulius runs outside the agent's containment, and the agent can rename
+  any folder of its sandbox at any moment. The target's folder is opened once, one component at a
+  time without following links, its real path must be inside the worktree and out of `.git`, and
+  every read and write goes through that handle (`openat`, `renameat`). A path outside the
+  worktree, a link, a file that is not a regular file and a template are refused.
+- **Checks before asking.** Everything that would refuse the copy (the file, Git, the values'
+  quoting) is checked before a person is asked, so an Allow is never wasted.
 - **All or nothing, portable lines.** Lines for the names are replaced in place and every other
-  line is kept. Values are written bare, in single quotes, or in double quotes; a value that no
-  common reader (Node `dotenv`, `python-dotenv`, Docker Compose, `sh`) quotes the same way is
-  refused. The file is written whole with mode 0600, and each copy is audited once per run, secret
+  line is kept, and so are Windows line endings. Values are written bare, in single quotes, or in
+  double quotes. A value that common readers (Node `dotenv`, `python-dotenv`, Docker Compose, `sh`)
+  would read differently is refused: one with `\` or `${` (unescaped or expanded even in single
+  quotes), or with `'` and `"`, `$` or a backtick. The file is written whole with mode 0600, and each copy is audited once per run, secret
   and file (`vault.agent.env`).
 
 ## Alternatives
@@ -57,6 +66,9 @@ exactly that: any code in the worktree can read it and send it anywhere.
 
 ## Consequences
 
+- An Allow covers every task of the sandbox (of every sandbox for an instance-wide secret) until
+  it is revoked; the Secrets page says so. Revoking stops new copies, and copies already written
+  stay until someone removes them or rotates the value.
 - Once allowed, a value on disk is outside the proxy's host binding. Redaction still hides it from
   the agent (the Bash wrapper and the `PostToolUse` hook read files back as `[secret:NAME]`). But
   code in the worktree can use it anywhere, which is why a person decides.

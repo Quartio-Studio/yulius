@@ -2181,6 +2181,7 @@ route('POST', `/api/agent-secrets/${ID}/env`, ({ db, p, body }) => {
   const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
   if (!agentView(db, secret, sandbox).can_manage) fail(403, 'forbidden', 'only people who manage this secret answer its requests');
   const state = secret.env_files || 'no';
+  if (body.env_files !== state || (body.env_requested_by || null) !== (secret.env_requested_by || null)) fail(409, 'conflict', 'the secret changed since you looked: reload and answer again');
   if (state === 'no') fail(409, 'conflict', 'no agent asks to copy this secret into .env files');
   if (state === 'allowed' && body.allow) return agentView(db, secret, sandbox);
   audit(db, body.allow ? 'vault.agent.env_allow' : state === 'asked' ? 'vault.agent.env_dismiss' : 'vault.agent.env_revoke', secret.id, `${secret.name} → .env files`);

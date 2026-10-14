@@ -3,24 +3,31 @@
 //!
 //! Values are quoted the way every common reader (Node `dotenv`, `python-dotenv`, Docker Compose,
 //! `sh`) reads them the same: bare when plain, in single quotes (literal) otherwise, in double
-//! quotes only for a value with `'` and nothing those readers escape differently.
+//! quotes only for a value with `'` and nothing those readers escape differently. A value with
+//! `\` or `${` is refused: `python-dotenv` unescapes the one and expands the other even inside
+//! single quotes, and Docker Compose reads `\'` as a quote.
 
 use super::VaultError;
 
 /// Characters a bare value may hold.
 fn plain(c: char) -> bool {
-    c.is_ascii_alphanumeric() || "_-./:+=@,%~^".contains(c)
+    c.is_ascii_alphanumeric() || "_-./:+=@,%^".contains(c)
 }
 
 /// The `NAME=value` line for a value (no line break).
 ///
 /// # Errors
-/// [`VaultError::Value`] for a value with a line break, or with `'` and also `"`, `\`, `$` or
-/// a backtick, which no quoting writes portably.
+/// [`VaultError::Value`] for a value with a line break, `\` or `${`, or with `'` and also `"`,
+/// `$` or a backtick, which no quoting writes portably.
 pub fn line(name: &str, value: &str) -> Result<String, VaultError> {
     if value.chars().any(char::is_control) {
         return Err(VaultError::Value(format!(
             "{name} holds a control character a .env line cannot carry"
+        )));
+    }
+    if value.contains('\\') || value.contains("${") {
+        return Err(VaultError::Value(format!(
+            "{name} holds \\ or ${{, which .env readers change (they unescape or expand it)"
         )));
     }
     if !value.is_empty() && value.chars().all(plain) {
@@ -29,12 +36,17 @@ pub fn line(name: &str, value: &str) -> Result<String, VaultError> {
     if !value.contains('\'') {
         return Ok(format!("{name}='{value}'"));
     }
-    if value.contains(['"', '\\', '$', '`']) {
+    if value.contains(['"', '$', '`']) {
         return Err(VaultError::Value(format!(
-            "{name} holds both ' and one of \" \\ $ `, which .env readers do not quote alike"
+            "{name} holds both ' and one of \" $ `, which .env readers do not quote alike"
         )));
     }
     Ok(format!("{name}=\"{value}\""))
+}
+
+/// The line ending a file uses: Windows' when it has any, else `\n`.
+fn line_end(text: &str) -> &'static str {
+    if text.contains("\r\n") { "\r\n" } else { "\n" }
 }
 
 /// The key a line assigns (`NAME=…`, `export NAME=…`), if it assigns one.
@@ -50,6 +62,7 @@ fn key_of(line: &str) -> Option<&str> {
 /// `export`), later ones are dropped, missing names are appended. Every other line is kept.
 #[must_use]
 pub fn upsert(text: &str, entries: &[(String, String)]) -> String {
+    let eol = line_end(text);
     let mut seen = vec![false; entries.len()];
     let mut out = String::with_capacity(text.len() + entries.len() * 64);
     for raw in text.lines() {
@@ -62,18 +75,18 @@ pub fn upsert(text: &str, entries: &[(String, String)]) -> String {
                     out.push_str("export ");
                 }
                 out.push_str(&entries[i].1);
-                out.push('\n');
+                out.push_str(eol);
             }
             None => {
                 out.push_str(raw);
-                out.push('\n');
+                out.push_str(eol);
             }
         }
     }
     for (i, (_, line)) in entries.iter().enumerate() {
         if !seen[i] {
             out.push_str(line);
-            out.push('\n');
+            out.push_str(eol);
         }
     }
     out
@@ -88,13 +101,15 @@ pub fn example(text: &str, names: &[String]) -> (String, Vec<String>) {
             .any(|l| key_of(l.trim_start().trim_start_matches('#')) == Some(name))
     };
     let added: Vec<String> = names.iter().filter(|n| !present(n)).cloned().collect();
+    let eol = line_end(text);
     let mut out = text.to_owned();
     if !added.is_empty() && !out.is_empty() && !out.ends_with('\n') {
-        out.push('\n');
+        out.push_str(eol);
     }
     for name in &added {
         out.push_str(name);
-        out.push_str("=\n");
+        out.push('=');
+        out.push_str(eol);
     }
     (out, added)
 }
@@ -114,7 +129,14 @@ mod tests {
             "K=sk_live_a1b2.c3/d4+e5="
         );
         assert_eq!(line("K", "has space #and hash")?, "K='has space #and hash'");
-        assert_eq!(line("K", "dollar$and\"quote\\")?, "K='dollar$and\"quote\\'");
+        assert_eq!(line("K", "dollar$and\"quote")?, "K='dollar$and\"quote'");
+        // Review of SPEC-129, M1: python-dotenv unescapes `\` and expands `${…}` even in single
+        // quotes, Docker Compose reads `\'` as a quote, and `sh` expands a bare `~`.
+        assert_eq!(line("K", "~/key-1234")?, "K='~/key-1234'");
+        assert_eq!(line("K", "x:~root-12")?, "K='x:~root-12'");
+        assert!(line("K", "dollar$and\"quote\\").is_err());
+        assert!(line("K", "a\\b-12345678").is_err());
+        assert!(line("K", "x${HOME}y-1234").is_err());
         assert_eq!(line("K", "it's-a-key")?, "K=\"it's-a-key\"");
         assert!(line("K", "it's $HOME").is_err());
         assert!(line("K", "it's \"q\"").is_err());
@@ -139,6 +161,24 @@ mod tests {
             upsert("# API_KEY=commented\n", &[entry("API_KEY", "abcdefgh")?]),
             "# API_KEY=commented\nAPI_KEY=abcdefgh\n",
             "a comment is not the key's line"
+        );
+        Ok(())
+    }
+
+    /// Review of SPEC-129, L6: a file with Windows line endings keeps them.
+    #[test]
+    fn windows_line_endings_are_kept() -> Result<(), VaultError> {
+        assert_eq!(
+            upsert(
+                "A=1\r\nKEY=old\r\n",
+                &[entry("KEY", "new-value-1")?, entry("B", "b-value-12")?]
+            ),
+            "A=1\r\nKEY=new-value-1\r\nB=b-value-12\r\n"
+        );
+        let names = vec!["KEY".to_owned()];
+        assert_eq!(
+            example("# keys\r\nA=", &names).0,
+            "# keys\r\nA=\r\nKEY=\r\n"
         );
         Ok(())
     }

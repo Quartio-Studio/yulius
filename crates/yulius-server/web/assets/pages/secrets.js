@@ -412,8 +412,9 @@ function agentEnvFiles(ctx, secret, reload) {
   const answer = async (allow) => {
     buttons.forEach((b) => { b.disabled = true; });
     try {
-      await ctx.api.post(`/api/agent-secrets/${enc(secret.id)}/env`, { allow });
-      toast(allow ? `Allowed. Agents can copy ${secret.name} into the project’s .env.` : (secret.env_files === 'allowed' ? 'Revoked.' : 'Dismissed.'), { kind: 'ok' });
+      // The answer names what is shown here: the server refuses it if it changed meanwhile.
+      await ctx.api.post(`/api/agent-secrets/${enc(secret.id)}/env`, { allow, env_files: secret.env_files, env_requested_by: secret.env_requested_by });
+      toast(allow ? `Allowed. Agents can copy ${secret.name} into .env files.` : (secret.env_files === 'allowed' ? 'Revoked. Copies already written stay until someone removes them or rotates the value.' : 'Dismissed.'), { kind: 'ok' });
     } catch (error) { errorToast(error, allow ? 'Couldn’t allow' : 'Couldn’t change it'); }
     reload();
   };
@@ -422,9 +423,11 @@ function agentEnvFiles(ctx, secret, reload) {
     smallButton('Allow', `Allow copying ${secret.name} into .env files`, () => answer(true), { class: 'btn-primary' }),
     smallButton('Dismiss', `Dismiss copying ${secret.name} into .env files`, () => answer(false)),
   ] : [smallButton('Revoke', `Stop agents copying ${secret.name} into .env files`, () => answer(false))];
+  // One answer covers every task, and for a secret of every sandbox every sandbox.
+  const where = secret.scope === 'instance' ? 'every sandbox' : 'this sandbox';
   const text = asked
-    ? `${secret.env_requested_by ? `Task ${secret.env_requested_by} asks` : 'An agent asks'} to copy its value into the project’s git-ignored .env, for code that runs outside ${BRAND.name}`
-    : 'Agents may copy its value into the project’s git-ignored .env files';
+    ? `${secret.env_requested_by ? `Task ${secret.env_requested_by} asks` : 'An agent asks'} to copy its value into the project’s git-ignored .env, for code that runs outside ${BRAND.name}. Allowing lets every task in ${where} copy it.`
+    : `Agents in ${where} may copy its value into git-ignored .env files`;
   return [h('div', { class: 'row-wrap' },
     iconBadge('file', '.env', asked ? 'warn' : '', asked ? 'Requested .env copy' : 'Allowed .env copies'),
     h('span', { class: 'small' }, text),

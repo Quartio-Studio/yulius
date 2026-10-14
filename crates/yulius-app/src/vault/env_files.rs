@@ -4,9 +4,20 @@
 //! asks Yulius to copy it there: the agent only ever sees `[secret:NAME]`, so it cannot write the
 //! value itself. A value in a file leaves the secret's bound hosts, so a person who manages the
 //! secret allows each secret once, as they allow its hosts (ADR-0098).
+//!
+//! Yulius runs outside the agent's containment, and the agent can rename any folder of its
+//! sandbox at any moment. So the target's folder is opened once, one component at a time without
+//! following links, its real path is checked to be inside the worktree, and every read and write
+//! goes through that handle (`openat`, `renameat`): a folder swapped for a link afterwards is
+//! never followed.
 
+use std::io::{Read as _, Write as _};
+use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 
+use nix::errno::Errno;
+use nix::fcntl::{OFlag, openat, renameat};
+use nix::sys::stat::Mode;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use yulius_contracts::api::secrets::{AgentSecretView, EnvFilesAnswer};
@@ -21,7 +32,7 @@ use crate::auth::AuthContext;
 use crate::context::App;
 use crate::coordination::AgentContext;
 use crate::error::{AppError, AppResult};
-use crate::files::{inside, io_error, relative_components};
+use crate::files::{inside, relative_components};
 use crate::ports::vault::{EnvFiles, VaultSecretRecord};
 
 /// Most secrets copied in one call.
@@ -30,6 +41,11 @@ const MAX_SECRETS: usize = 16;
 const MAX_ENV_BYTES: u64 = 256 * 1024;
 /// The tracked template next to every dotenv file.
 const EXAMPLE: &str = ".env.example";
+/// Flags of every folder opened on the way to the target.
+const DIR_FLAGS: OFlag = OFlag::O_RDONLY
+    .union(OFlag::O_DIRECTORY)
+    .union(OFlag::O_NOFOLLOW)
+    .union(OFlag::O_CLOEXEC);
 
 /// Arguments of `secret_copy_to_env`.
 #[derive(Deserialize)]
@@ -42,116 +58,188 @@ struct CopyArgs {
     reason: Option<String>,
 }
 
-/// A dotenv file of the worktree: its folder (resolved, inside the worktree) and names.
-struct EnvTarget {
-    folder: PathBuf,
-    file_name: String,
+/// A folder of the worktree, opened once: its handle and its real path below the worktree
+/// (`""` for the worktree itself).
+struct Folder {
+    fd: OwnedFd,
     relative: String,
-    folder_relative: String,
 }
 
-impl EnvTarget {
-    fn path(&self) -> PathBuf {
-        self.folder.join(&self.file_name)
-    }
-
-    fn example_relative(&self) -> String {
-        if self.folder_relative.is_empty() {
-            EXAMPLE.to_owned()
+impl Folder {
+    /// The worktree-relative path of `name` in this folder.
+    fn path_of(&self, name: &str) -> String {
+        if self.relative.is_empty() {
+            name.to_owned()
         } else {
-            format!("{}/{EXAMPLE}", self.folder_relative)
+            format!("{}/{name}", self.relative)
         }
     }
 }
 
-/// Resolves `relative` (a dotenv file name, no template) inside `worktree`, whose folder must
-/// exist there.
-fn env_target(worktree: &Path, relative: &str) -> AppResult<EnvTarget> {
-    let parts = relative_components(relative)?;
-    let (file_name, folders) = parts
-        .split_last()
-        .ok_or_else(|| AppError::Invalid("name the dotenv file, like .env".into()))?;
-    if !is_env_file(file_name) {
-        return Err(AppError::Invalid(format!(
-            "{relative} is not a dotenv file: copy into .env (or .env.local, prod.env); templates \
-             like {EXAMPLE} never hold values"
-        )));
-    }
-    let folder_relative = folders.join("/");
-    let folder = std::fs::canonicalize(worktree.join(&folder_relative)).map_err(|_| {
-        AppError::Invalid(format!(
-            "the folder of {relative} does not exist in the worktree"
-        ))
-    })?;
-    if !inside(worktree, &folder) || !folder.is_dir() {
-        return Err(AppError::Forbidden(format!(
-            "{relative} is outside the task's worktree"
-        )));
-    }
-    Ok(EnvTarget {
-        folder,
-        file_name: file_name.clone(),
-        relative: parts.join("/"),
-        folder_relative,
-    })
+fn os_error(err: Errno) -> AppError {
+    crate::files::io_error(&std::io::Error::from(err))
 }
 
-/// The text of a file of the worktree, `None` when it does not exist; refused when it is a link
-/// or not a regular file, or too large to rewrite.
-fn read_existing(worktree: &Path, path: &Path, relative: &str) -> AppResult<Option<String>> {
-    let meta = match std::fs::symlink_metadata(path) {
-        Ok(meta) => meta,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => return Err(io_error(&err)),
+/// Where an open folder really is.
+fn real_path(fd: &OwnedFd) -> AppResult<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd as _;
+        std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd()))
+            .map_err(|e| crate::files::io_error(&e))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        nix::fcntl::fcntl(fd, nix::fcntl::FcntlArg::F_GETPATH)
+            .map(PathBuf::from)
+            .map_err(os_error)
+    }
+}
+
+/// Opens `folders` below `worktree` one component at a time without following links, and checks
+/// that the folder reached is inside the worktree and out of `.git`.
+fn open_folder(worktree: &Path, folders: &[String]) -> AppResult<Folder> {
+    let shown = || folders.join("/");
+    let refused = |err: Errno| match err {
+        Errno::ELOOP | Errno::ENOTDIR => AppError::Forbidden(format!(
+            "a folder on the way to {} is a link or not a folder: Yulius follows no links",
+            shown()
+        )),
+        Errno::ENOENT => AppError::Invalid(format!(
+            "the folder {} does not exist in the worktree",
+            shown()
+        )),
+        other => os_error(other),
     };
+    let mut fd = nix::fcntl::open(worktree, DIR_FLAGS, Mode::empty()).map_err(refused)?;
+    for part in folders {
+        fd = openat(&fd, part.as_str(), DIR_FLAGS, Mode::empty()).map_err(refused)?;
+    }
+    let real = real_path(&fd)?;
+    if !inside(worktree, &real) {
+        return Err(AppError::Forbidden(format!(
+            "{} is outside the task's worktree",
+            shown()
+        )));
+    }
+    let relative = real
+        .strip_prefix(worktree)
+        .map_err(|_| AppError::Forbidden("outside the task's worktree".into()))?
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/");
+    Ok(Folder { fd, relative })
+}
+
+/// The text of `name` in `folder`, `None` when it does not exist; refused when it is a link or
+/// not a regular file, or too large to rewrite. Opened without blocking, so a FIFO cannot hang.
+fn read_in(folder: &Folder, name: &str) -> AppResult<Option<Zeroizing<String>>> {
+    let shown = folder.path_of(name);
+    let flags = OFlag::O_RDONLY | OFlag::O_NOFOLLOW | OFlag::O_NONBLOCK | OFlag::O_CLOEXEC;
+    let fd = match openat(&folder.fd, name, flags, Mode::empty()) {
+        Ok(fd) => fd,
+        Err(Errno::ENOENT) => return Ok(None),
+        Err(Errno::ELOOP) => {
+            return Err(AppError::Forbidden(format!(
+                "{shown} is a link: Yulius writes only regular files"
+            )));
+        }
+        Err(err) => return Err(os_error(err)),
+    };
+    let file = std::fs::File::from(fd);
+    let meta = file.metadata().map_err(|e| crate::files::io_error(&e))?;
     if !meta.is_file() {
         return Err(AppError::Forbidden(format!(
-            "{relative} is a link or not a regular file: Yulius writes only regular files"
+            "{shown} is not a regular file: Yulius writes only regular files"
         )));
     }
     if meta.len() > MAX_ENV_BYTES {
         return Err(AppError::Invalid(format!(
-            "{relative} is larger than {} KiB",
+            "{shown} is larger than {} KiB",
             MAX_ENV_BYTES / 1024
         )));
     }
-    crate::hooks::read_repo_doc(worktree, relative)
-        .map(Some)
-        .ok_or_else(|| AppError::Forbidden(format!("{relative} cannot be read as a regular file")))
+    let mut text = Zeroizing::new(String::new());
+    file.take(MAX_ENV_BYTES)
+        .read_to_string(&mut text)
+        .map_err(|_| AppError::Invalid(format!("{shown} is not UTF-8 text")))?;
+    Ok(Some(text))
 }
 
-/// Writes `text` to `folder/name` whole: a new file with `mode` beside it, renamed into place (a
-/// link swapped in meanwhile is replaced, never followed).
-fn write_whole(folder: &Path, name: &str, text: &str, mode: u32, nonce: &str) -> AppResult<()> {
-    use std::io::Write as _;
-    use std::os::unix::fs::OpenOptionsExt as _;
-    let tmp = folder.join(format!(".{name}.yulius-{nonce}"));
-    let written = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(mode)
-        .custom_flags(nix::libc::O_NOFOLLOW)
-        .open(&tmp)
-        .and_then(|mut file| {
-            file.write_all(text.as_bytes())?;
-            file.sync_all()
-        })
-        .and_then(|()| std::fs::rename(&tmp, folder.join(name)));
-    if let Err(err) = written {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(io_error(&err));
+/// How a file is written: through a temporary file Git ignores, renamed into place, or (when Git
+/// would not ignore any temporary name, so a crash could leave a committable copy) in place.
+enum Writing {
+    Replace(String),
+    InPlace,
+}
+
+/// Writes `text` to `name` in `folder` with `mode`, never following a link.
+fn write_in(folder: &Folder, name: &str, text: &str, mode: u32, how: &Writing) -> AppResult<()> {
+    let mode = Mode::from_bits_truncate(mode);
+    let flags = OFlag::O_WRONLY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    let write = |fd: OwnedFd| -> AppResult<()> {
+        let mut file = std::fs::File::from(fd);
+        let meta = file.metadata().map_err(|e| crate::files::io_error(&e))?;
+        if !meta.is_file() {
+            return Err(AppError::Forbidden(format!(
+                "{} is not a regular file",
+                folder.path_of(name)
+            )));
+        }
+        nix::sys::stat::fchmod(&file, mode).map_err(os_error)?;
+        file.set_len(0)
+            .and_then(|()| file.write_all(text.as_bytes()))
+            .and_then(|()| file.sync_all())
+            .map_err(|e| crate::files::io_error(&e))
+    };
+    match how {
+        Writing::Replace(tmp) => {
+            let fd = openat(
+                &folder.fd,
+                tmp.as_str(),
+                flags | OFlag::O_CREAT | OFlag::O_EXCL,
+                mode,
+            )
+            .map_err(os_error)?;
+            let done = write(fd).and_then(|()| {
+                renameat(&folder.fd, tmp.as_str(), &folder.fd, name).map_err(os_error)
+            });
+            if done.is_err() {
+                let _ = nix::unistd::unlinkat(
+                    &folder.fd,
+                    tmp.as_str(),
+                    nix::unistd::UnlinkatFlags::NoRemoveDir,
+                );
+            }
+            done
+        }
+        Writing::InPlace => {
+            let fd = openat(
+                &folder.fd,
+                name,
+                flags | OFlag::O_CREAT | OFlag::O_NONBLOCK,
+                mode,
+            )
+            .map_err(|err| match err {
+                Errno::ELOOP => AppError::Forbidden(format!("{} is a link", folder.path_of(name))),
+                other => os_error(other),
+            })?;
+            write(fd)
+        }
     }
-    Ok(())
 }
 
 impl App {
     /// `POST /api/agent-secrets/{id}/env`: a person who manages the secret allows agents to copy
     /// it into `.env` files (answering their request), dismisses the request, or revokes the
-    /// allowance. Compare and set on what was read, so a concurrent answer is never undone.
+    /// allowance. The answer names the state and askers the person saw: it is refused unless they
+    /// still hold, and it changes them in one compare-and-set step.
     ///
     /// # Errors
     /// `NotFound` for invisible secrets, `Forbidden` for people who cannot manage it,
-    /// `Conflict` when nothing waits to be allowed or dismissed (or it changed meanwhile).
+    /// `Conflict` when nothing waits to be allowed or dismissed or it changed since the person
+    /// looked, `Invalid` for an unknown state.
     pub async fn answer_env_files(
         &self,
         ctx: &AuthContext,
@@ -161,7 +249,15 @@ impl App {
         let mut record = self.agent_record(ctx, id).await?;
         self.require_manage_agent(ctx, record.sandbox_id.as_ref())
             .await?;
-        let action = match (record.env_files, answer.allow) {
+        let seen = EnvFiles::parse(&answer.env_files)
+            .ok_or_else(|| AppError::Invalid("env_files is no, asked or allowed".into()))?;
+        let seen_by = answer.env_requested_by.as_deref();
+        if (seen, seen_by) != (record.env_files, record.env_requested_by.as_deref()) {
+            return Err(AppError::Conflict(
+                "the secret changed since you looked: reload and answer again".into(),
+            ));
+        }
+        let action = match (seen, answer.allow) {
             (EnvFiles::Asked, true) => "vault.agent.env_allow",
             (EnvFiles::Asked, false) => "vault.agent.env_dismiss",
             (EnvFiles::Allowed, false) => "vault.agent.env_revoke",
@@ -177,18 +273,18 @@ impl App {
         } else {
             EnvFiles::No
         };
-        let by = record.env_requested_by.take();
         if !self
             .deps
             .store
-            .vault_set_env_files(id, (record.env_files, by.as_deref()), (to, None))
+            .vault_set_env_files(id, (seen, seen_by), (to, None))
             .await?
         {
             return Err(AppError::Conflict(
-                "the secret changed meanwhile: reload and answer again".into(),
+                "the secret changed since you looked: reload and answer again".into(),
             ));
         }
         record.env_files = to;
+        let by = record.env_requested_by.take();
         self.vault_audit(
             &Self::vault_actor(ctx),
             action,
@@ -201,13 +297,12 @@ impl App {
         .await?;
         self.agent_view(&record, true).await
     }
-}
 
-impl App {
     /// `secret_copy_to_env`: copies the values of agent secrets of the task's project into a
     /// dotenv file of its worktree that Git ignores (default `.env`), and their names into the
-    /// `.env.example` beside it. All or nothing: a secret no person has allowed is asked for
-    /// instead (the task then needs a person) and nothing is written.
+    /// `.env.example` beside it. All or nothing: everything that would refuse the copy is checked
+    /// first; then a secret no person has allowed is asked for instead (the task needs a person)
+    /// and nothing is written.
     pub(crate) async fn tool_secret_copy_to_env(
         &self,
         ctx: &AgentContext,
@@ -238,7 +333,19 @@ impl App {
             })?;
             records.push(record.clone());
         }
+
+        // The target: a dotenv file (no template) in a folder of the worktree.
         let relative = args.path.as_deref().map_or(".env", str::trim);
+        let parts = relative_components(relative)?;
+        let (file_name, folders) = parts
+            .split_last()
+            .ok_or_else(|| AppError::Invalid("name the dotenv file, like .env".into()))?;
+        if !is_env_file(file_name) {
+            return Err(AppError::Invalid(format!(
+                "{relative} is not a dotenv file: copy into .env (or .env.local, prod.env); \
+                 templates like {EXAMPLE} never hold values"
+            )));
+        }
         let sandbox = store
             .sandbox(&ctx.task.sandbox_id)
             .await?
@@ -246,8 +353,23 @@ impl App {
         let worktree = self
             .sandbox_worktree(&sandbox, ctx.task.id.as_str(), None)
             .await?;
-        let target = env_target(&worktree, relative)?;
+        let folder = open_folder(&worktree, folders)?;
+        let target = folder.path_of(file_name);
+        let existing = read_in(&folder, file_name)?;
+        if !self.deps.git.is_disposable(&worktree, &target).await? {
+            return Err(AppError::Forbidden(format!(
+                "Git does not ignore {target} (or tracks it), so its values could be committed: \
+                 add .env and .env.* to .gitignore with !.env.example, commit that, and copy again"
+            )));
+        }
+        let mut entries = Zeroizing::new(Vec::with_capacity(records.len()));
+        for record in &records {
+            let payload: AgentPayload = self.open_payload(record)?;
+            let line = dotenv::line(&record.name, &payload.value).map_err(invalid)?;
+            entries.push((record.name.clone(), line));
+        }
 
+        // Only then: a secret no person allowed yet is asked for, and nothing is written.
         let waiting: Vec<&VaultSecretRecord> = records
             .iter()
             .filter(|r| r.env_files != EnvFiles::Allowed)
@@ -276,61 +398,61 @@ impl App {
             }));
         }
 
-        let path = target.path();
-        let existing = read_existing(&worktree, &path, &target.relative)?;
-        if !self
-            .deps
-            .git
-            .is_disposable(&worktree, &target.relative)
-            .await?
-        {
-            return Err(AppError::Forbidden(format!(
-                "Git does not ignore {} (or tracks it), so its values could be committed: add \
-                 .env and .env.* to .gitignore with !.env.example, commit that, and copy again",
-                target.relative
-            )));
-        }
-        let mut entries = Vec::with_capacity(records.len());
-        for record in &records {
-            let payload: AgentPayload = self.open_payload(record)?;
-            let line = dotenv::line(&record.name, &payload.value).map_err(invalid)?;
-            entries.push((record.name.clone(), line));
-        }
         let text = Zeroizing::new(dotenv::upsert(
-            existing.as_deref().unwrap_or_default(),
+            existing.as_ref().map_or("", |t| t.as_str()),
             &entries,
         ));
-        drop(Zeroizing::new(entries));
-        let nonce = crate::auth::hex_token(&self.deps.crypto.random_bytes()[..8]);
-        write_whole(&target.folder, &target.file_name, &text, 0o600, &nonce)?;
+        drop(entries);
+        let how = self.writing(&worktree, &folder, file_name).await;
+        write_in(&folder, file_name, &text, 0o600, &how)?;
         drop(text);
 
-        let (example_added, warning) = self.add_example_names(&worktree, &target, &names).await;
+        let (example_added, warning) = self.add_example_names(&worktree, &folder, &names).await;
         for record in &records {
             self.note_agent_use(
                 ctx.attempt.id.as_str(),
                 ctx.task.number,
                 record,
                 "vault.agent.env",
-                &target.relative,
+                &target,
             )
             .await;
         }
+        let example = folder.path_of(EXAMPLE);
         let mut result = json!({
             "copied": names,
-            "file": target.relative,
-            "example": target.example_relative(),
+            "file": target,
+            "example": example,
             "example_added": example_added,
             "next": format!(
-                "{} holds the real values; Git ignores it. Never edit those lines yourself: you only see [secret:NAME], and writing that back replaces the value. Commit {} (names, no values). After a value is rotated, copy it again.",
-                target.relative,
-                target.example_relative()
+                "{target} holds the real values; Git ignores it. Never edit those lines yourself: you only see [secret:NAME], and writing that back replaces the value. Commit {example} (names, no values). After a value is rotated, copy it again."
             ),
         });
         if let Some(warning) = warning {
             result["warning"] = Value::String(warning);
         }
         Ok(result)
+    }
+
+    /// How to write `name` in `folder`: through a temporary name Git ignores (so a crash leaves
+    /// nothing committable), else in place.
+    async fn writing(&self, worktree: &Path, folder: &Folder, name: &str) -> Writing {
+        let nonce = crate::auth::hex_token(&self.deps.crypto.random_bytes()[..8]);
+        for tmp in [
+            format!("{name}.yulius-{nonce}"),
+            format!(".yulius-{nonce}.{name}"),
+        ] {
+            if self
+                .deps
+                .git
+                .is_disposable(worktree, &folder.path_of(&tmp))
+                .await
+                .unwrap_or(false)
+            {
+                return Writing::Replace(tmp);
+            }
+        }
+        Writing::InPlace
     }
 
     /// Records that `ctx`'s task asks to copy `record` into `.env` files (compare and set; a
@@ -379,19 +501,17 @@ impl App {
         .await
     }
 
-    /// Adds `NAME=` to the `.env.example` beside `target` for each name it lacks (created when
+    /// Adds `NAME=` to the `.env.example` in `folder` for each name it lacks (created when
     /// missing, left alone when it is not a regular file); the names added and a warning when it
     /// cannot be written or Git ignores it. Never fails the copy that already happened.
     async fn add_example_names(
         &self,
         worktree: &Path,
-        target: &EnvTarget,
+        folder: &Folder,
         names: &[String],
     ) -> (Vec<String>, Option<String>) {
-        use std::os::unix::fs::PermissionsExt as _;
-        let relative = target.example_relative();
-        let path = target.folder.join(EXAMPLE);
-        let existing = match read_existing(worktree, &path, &relative) {
+        let relative = folder.path_of(EXAMPLE);
+        let existing = match read_in(folder, EXAMPLE) {
             Ok(existing) => existing,
             Err(err) => {
                 return (
@@ -400,26 +520,98 @@ impl App {
                 );
             }
         };
-        let (text, added) = dotenv::example(existing.as_deref().unwrap_or_default(), names);
-        if !added.is_empty() {
-            let mode = std::fs::metadata(&path).map_or(0o644, |m| m.permissions().mode() & 0o777);
-            let nonce = crate::auth::hex_token(&self.deps.crypto.random_bytes()[..8]);
-            if let Err(err) = write_whole(&target.folder, EXAMPLE, &text, mode, &nonce) {
-                return (
-                    Vec::new(),
-                    Some(format!("{relative} was not changed: {err}")),
-                );
-            }
-        }
+        let (text, added) = dotenv::example(existing.as_ref().map_or("", |t| t.as_str()), names);
         let ignored = self
             .deps
             .git
             .is_disposable(worktree, &relative)
             .await
             .unwrap_or(false);
+        if !added.is_empty() {
+            let how = self.writing(worktree, folder, EXAMPLE).await;
+            if let Err(err) = write_in(folder, EXAMPLE, &text, 0o644, &how) {
+                return (
+                    Vec::new(),
+                    Some(format!("{relative} was not changed: {err}")),
+                );
+            }
+        }
         let warning = ignored.then(|| {
             format!("Git ignores {relative}: add !.env.example to .gitignore so it is committed")
         });
         (added, warning)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn worktree() -> Result<(tempfile::TempDir, PathBuf, PathBuf), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let root = std::fs::canonicalize(dir.path())?;
+        let wt = root.join("wt");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(wt.join("deploy"))?;
+        std::fs::create_dir_all(&outside)?;
+        Ok((dir, wt, outside))
+    }
+
+    /// Review of SPEC-129, H1: a folder swapped for a link after it was opened is never
+    /// followed: the read and the write stay in the folder that was checked.
+    #[test]
+    fn a_folder_swapped_for_a_link_after_the_check_is_not_followed() -> TestResult {
+        let (_dir, wt, outside) = worktree()?;
+        std::fs::write(outside.join(".env"), "OTHER_PROJECT_KEY=theirs\n")?;
+        let folder = open_folder(&wt, &["deploy".to_owned()])?;
+        assert_eq!(folder.relative, "deploy");
+        std::fs::rename(wt.join("deploy"), wt.join("moved"))?;
+        std::os::unix::fs::symlink(&outside, wt.join("deploy"))?;
+        assert_eq!(read_in(&folder, ".env")?.map(|t| t.to_string()), None);
+        write_in(&folder, ".env", "K=mine\n", 0o600, &Writing::InPlace)?;
+        let tmp = Writing::Replace(".env.yulius-1".into());
+        write_in(&folder, ".env.local", "K=mine\n", 0o600, &tmp)?;
+        assert_eq!(
+            std::fs::read_to_string(outside.join(".env"))?,
+            "OTHER_PROJECT_KEY=theirs\n"
+        );
+        assert!(!outside.join(".env.local").exists());
+        assert_eq!(std::fs::read_to_string(wt.join("moved/.env"))?, "K=mine\n");
+        assert_eq!(
+            std::fs::read_to_string(wt.join("moved/.env.local"))?,
+            "K=mine\n"
+        );
+        assert!(!wt.join("moved/.env.yulius-1").exists());
+        Ok(())
+    }
+
+    /// A link on the way, or a folder whose real path leaves the worktree, is refused.
+    #[test]
+    fn links_on_the_way_are_refused() -> TestResult {
+        let (_dir, wt, outside) = worktree()?;
+        std::os::unix::fs::symlink(&outside, wt.join("link"))?;
+        std::os::unix::fs::symlink(wt.join("deploy"), wt.join("inner"))?;
+        for folders in [vec!["link".to_owned()], vec!["inner".to_owned()]] {
+            assert!(
+                matches!(open_folder(&wt, &folders), Err(AppError::Forbidden(_))),
+                "{folders:?}"
+            );
+        }
+        assert!(matches!(
+            open_folder(&wt, &["missing".to_owned()]),
+            Err(AppError::Invalid(_))
+        ));
+        std::fs::write(wt.join("deploy/target"), "x")?;
+        std::os::unix::fs::symlink(wt.join("deploy/target"), wt.join("deploy/.env"))?;
+        let folder = open_folder(&wt, &["deploy".to_owned()])?;
+        assert!(matches!(
+            read_in(&folder, ".env"),
+            Err(AppError::Forbidden(_))
+        ));
+        assert!(write_in(&folder, ".env", "K=v\n", 0o600, &Writing::InPlace).is_err());
+        assert_eq!(std::fs::read_to_string(wt.join("deploy/target"))?, "x");
+        Ok(())
     }
 }
