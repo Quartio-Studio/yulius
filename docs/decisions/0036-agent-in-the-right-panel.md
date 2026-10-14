@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted. Specified in [SPEC-035](../../.ai/specs/SPEC-035-move-cockpit-to-the-right-and-change-coc.md);
+Accepted; the top-bar button was removed by [0106](0106-the-superagent-is-opened-from-the-tools-rail-only.md).
+Specified in [SPEC-035](../../.ai/specs/SPEC-035-move-cockpit-to-the-right-and-change-coc.md);
 changes the UI part of [0020](0020-cockpit-as-a-plain-shell-session.md) (a full page first in the
 sidebar).
 
