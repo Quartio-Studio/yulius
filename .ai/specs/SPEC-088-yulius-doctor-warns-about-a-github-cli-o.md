@@ -1,11 +1,11 @@
 ---
 yulius-task: 0d502300-4de1-4061-84fe-d2f03da16e49
-status: in-progress
+status: done
 ---
 
 # SPEC-088: `yulius doctor` warns about a GitHub CLI older than 2.82.1
 
-Status: in progress
+Status: implemented
 Date: 2026-10-14
 Owner: Yulius task #73
 Scope authorization: task request: the doctor's GitHub CLI check warns below 2.82.1, stays OK for
@@ -43,8 +43,8 @@ matters and where to get a current one, before agents in every sandbox hit the f
 - [x] Spec SPEC-088 written and validated
 - [x] yulius doctor warns about a gh older than 2.82.1, with tests
 - [x] Operations doc and changes describe the minimum gh
-- [ ] Independent review in a fresh session, findings fixed
-- [ ] Every gate green with dev merged
+- [x] Independent review in a fresh session, findings fixed
+- [x] Every gate green with dev merged
 
 ## Acceptance criteria
 
@@ -73,3 +73,25 @@ matters and where to get a current one, before agents in every sandbox hit the f
   agents, and `yulius doctor` fails only when Yulius cannot work.
 - The threshold is a constant in `doctor.rs` next to the check, not configuration: it describes
   GitHub's API, not the deployment. No ADR: this is a local check, recorded here.
+
+## Evidence
+
+- Red first: `doctor::tests::a_github_cli_older_than_2_82_1_warns_and_points_to_the_package_repository`
+  (2.45.0 was Ok) and `a_missing_github_cli_points_to_the_package_repository` (detail said
+  `apt-get install gh`) failed against the old check; `a_current_or_unrecognised_github_cli_is_ok`
+  passed before and after. All three pass with the change (`cargo test -p yulius --lib doctor::`:
+  6 passed).
+- Manual, this host (gh 2.45.0): `yulius doctor` prints `warn  GitHub CLI  gh version 2.45.0
+  (2025-07-18 Ubuntu 2.45.0-1ubuntu0.3) is older than 2.82.1: `gh pr edit` and `gh issue view
+  --comments` fail …; install it from GitHub's package repository
+  (https://github.com/cli/cli/blob/trunk/docs/install_linux.md), then rebuild the sandbox base`.
+- Review round 1 (fresh read-only session) at f4a314d7: APPROVE, no blockers or majors. Minors
+  fixed test-first: the warning test now also requires `gh issue view --comments` and "here and
+  in every sandbox" (red against "fail in every sandbox", the commands also fail on the host),
+  and the missing-`gh` test requires the base rebuild hint.
+- `scripts/dev ci` at f4a314d7 (dev up to date): exit 0; nextest 1505 run, 1505 passed,
+  16 skipped; repository check, check, fmt, clippy, doctests, deny, shear, doc green. After the
+  review fixes: `cargo fmt --check`, `cargo clippy -p yulius --all-targets --all-features -D
+  warnings` and the doctor tests green.
+- Not verified here: that 2.82.1 is exactly the first fixed release (taken from the task request;
+  the check is a constant, `GH_MIN_VERSION`, if it needs moving). The host's `gh` was not upgraded.
