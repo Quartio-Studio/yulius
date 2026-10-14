@@ -10,6 +10,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   ADR-0077). Linking a repository creates no task: the onboarding task is created when someone
   clicks Start onboarding in the browser, or when a new task has to wait after it. Sandboxes
   already waiting keep their task.
+- Menus show an option's whole description (SPEC-094, ADR-0075, task #79). A description wraps
+  onto as many lines as it needs instead of ending in an ellipsis, in every `openMenu` menu; menus
+  keep their width (at most 320 px and the window less 16 px), so a short description stays one
+  line. The start menu's Supertask now reads "Waits for this project’s running tasks, then runs
+  alone while the project’s other tasks wait. For broad work such as security hardening."
 - Runs recorded before SPEC-087 get their metrics from their transcripts (SPEC-091, ADR-0072).
   The upgrade queues every run recorded so far (migration 23, `metrics_recounts`). On the first
   start, once reconciliation is done, Yulius counts each ended run's own window of its transcript

@@ -79,3 +79,4 @@ number differs from the file name, and a record this index does not list.
 - [0072](0072-recount-old-runs-from-their-transcripts-once.md): Runs recorded before SPEC-087 are recounted from their transcripts once, after the upgrade
 - [0071](0071-long-injected-context-folds-in-the-session-view.md): Long injected context folds to one line in the session view; short notes stay readable
 - [0077](0077-onboarding-task-is-created-when-needed.md): A sandbox's onboarding task is created when onboarding starts, not at import
+- [0075](0075-menu-descriptions-wrap.md): Menu descriptions wrap onto as many lines as they need instead of being cut
