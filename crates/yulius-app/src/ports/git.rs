@@ -309,6 +309,12 @@ pub trait GitPort: Send + Sync {
         let _ = (path, branch);
         unsupported("creating a repository")
     }
+    /// Copies every branch and tag of the repository at `source` into the bare repository
+    /// `repo` (SPEC-099: an uploaded folder's history).
+    async fn copy_refs(&self, repo: &Path, source: &Path) -> AppResult<()> {
+        let _ = (repo, source);
+        unsupported("copying a repository's history")
+    }
     /// Imports a bundle's refs under `refs/heads/<prefix>/…`.
     async fn import_bundle(
         &self,

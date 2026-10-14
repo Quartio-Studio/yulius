@@ -1338,7 +1338,7 @@ pub struct SnapshotStats {
 }
 
 /// A repository-relative path made only of normal components, none of them `.git`.
-fn safe_relative(raw: &[u8]) -> Option<PathBuf> {
+pub(crate) fn safe_relative(raw: &[u8]) -> Option<PathBuf> {
     if raw.is_empty() || raw.contains(&0) {
         return None;
     }
@@ -1386,7 +1386,7 @@ fn link_stays_inside(rel: &Path, target: &[u8]) -> bool {
 
 /// Makes sure every parent of `rel` below `root` is a real directory (creating missing ones)
 /// and clears a file or link at the target; `None` when a link, file or directory is in the way.
-fn prepare_target(root: &Path, rel: &Path) -> AppResult<Option<PathBuf>> {
+pub(crate) fn prepare_target(root: &Path, rel: &Path) -> AppResult<Option<PathBuf>> {
     let parts: Vec<&OsStr> = rel.iter().collect();
     let Some((last, parents)) = parts.split_last() else {
         return Ok(None);

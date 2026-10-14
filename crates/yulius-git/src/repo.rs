@@ -68,6 +68,28 @@ impl Git {
         Ok(())
     }
 
+    /// Copies every branch and tag of the repository at the absolute `source` into `repo` under
+    /// the same names (a playground's new `origin` from an uploaded `.git`, SPEC-099). Only refs
+    /// and the objects they reach travel; `source`'s configuration and hooks are never read for
+    /// anything but the transfer, which runs with the fixed hardening.
+    pub fn copy_refs(&self, repo: &Path, source: &Path) -> Result<(), GitError> {
+        require_absolute("source repository", source)?;
+        self.run_ok(
+            Invocation::new(self, "fetch", Some(repo))
+                .args([
+                    "fetch",
+                    "--quiet",
+                    "--no-recurse-submodules",
+                    "--no-tags",
+                    "--",
+                ])
+                .arg(source)
+                .args(["refs/heads/*:refs/heads/*", "refs/tags/*:refs/tags/*"])
+                .timeout(self.network_timeout),
+        )?;
+        Ok(())
+    }
+
     /// The remote default branch (`refs/remotes/origin/HEAD`), falling back to the branch
     /// `HEAD` points at (correct for a fresh clone).
     pub fn default_branch(&self, repo: &Path) -> Result<String, GitError> {

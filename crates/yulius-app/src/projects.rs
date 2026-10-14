@@ -1112,7 +1112,11 @@ pub(crate) struct Scaffold<'a> {
 }
 
 /// Points the unborn `HEAD` of a fresh clone at `branch` and writes the scaffold files.
-fn write_scaffold(root: &Path, branch: &str, files: &[(String, String)]) -> AppResult<()> {
+pub(crate) fn write_scaffold(
+    root: &Path,
+    branch: &str,
+    files: &[(String, String)],
+) -> AppResult<()> {
     let git_dir = root.join(".git");
     if !git_dir.is_dir() {
         return Err(AppError::Internal(

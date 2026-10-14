@@ -17,6 +17,10 @@ use crate::error::{AppError, AppResult};
 use crate::model::{SandboxRecord, Secret, UserRecord};
 use crate::projects::{PORT_RANGE_SIZE, Scaffold, profile_view, remove_tree, slug_base};
 
+mod folder;
+
+pub use folder::{FolderUpload, MAX_FOLDER_UPLOAD_BYTES};
+
 /// The note a playground's delivery views carry instead of a GitHub error (PLY-008).
 pub const PLAYGROUND_NOTE: &str = "This playground keeps its Git on this server: no pull \
      requests; `delivery_merge` squashes a task into the integration branch here.";

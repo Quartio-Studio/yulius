@@ -9,8 +9,10 @@ use axum::http::{HeaderMap, StatusCode, header};
 use futures::StreamExt as _;
 use serde::Deserialize;
 use yulius_app::error::AppError;
+use yulius_app::playground::FolderUpload;
 use yulius_app::uploads::{UPLOAD_IDLE, Upload};
 use yulius_contracts::api::files::UploadedFile;
+use yulius_contracts::api::sandboxes::Sandbox;
 
 use crate::AppState;
 use crate::auth::Auth;
@@ -138,4 +140,39 @@ pub async fn shell_attachment(
         StatusCode::CREATED,
         Json(receive(&app, upload, body).await?),
     ))
+}
+
+#[derive(Deserialize)]
+pub struct PlaygroundQuery {
+    #[serde(default)]
+    name: String,
+}
+
+/// `POST /api/playgrounds?name`: a folder packed by the browser (gzip tar) becomes a playground
+/// (SPEC-099 PLY-001, PLY-003, PLY-004).
+pub async fn playground(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Query(q): Query<PlaygroundQuery>,
+    headers: HeaderMap,
+    body: Body,
+) -> ApiResult<(StatusCode, Json<Sandbox>)> {
+    let mut upload: FolderUpload = app
+        .begin_folder_upload(&ctx, declared_length(&headers))
+        .await?;
+    let mut stream = body.into_data_stream();
+    loop {
+        match tokio::time::timeout(UPLOAD_IDLE, stream.next()).await {
+            Err(_) => {
+                return Err(AppError::Invalid("the upload stalled; try again".into()).into());
+            }
+            Ok(None) => break,
+            Ok(Some(Err(_))) => {
+                return Err(AppError::Invalid("the upload was interrupted".into()).into());
+            }
+            Ok(Some(Ok(chunk))) => upload.write(&chunk).await?,
+        }
+    }
+    let sandbox = app.playground_from_folder(&ctx, upload, &q.name).await?;
+    Ok((StatusCode::CREATED, Json(sandbox)))
 }
