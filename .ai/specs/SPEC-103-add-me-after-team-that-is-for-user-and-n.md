@@ -116,6 +116,11 @@ flowchart LR
   WebSocket test now also proves the superadmin's stream never gets someone's personal note (it
   failed with an admin bypass put in the filter on purpose). A conflict with one's own other tab
   no longer names the person as a teammate (NOT-014). Long lines rewrapped.
+- Confirmation review (approve `8804eea6`): the docs' lines this task added are now within 100
+  columns, and "Me" always reads a conflict as the person's own (a save stored under a GitHub
+  login since renamed is still theirs). Accepted: on the shared notepads, a GitHub user whose
+  login is `superadmin` reads as the unlinked superadmin's own save, the same rule SPEC-041's
+  lost-answer check already uses; it only changes the banner's words, never what is saved.
 
 ## Evidence
 
@@ -125,8 +130,8 @@ flowchart LR
   `an_edit_is_announced_to_viewers` and `a_personal_edit_reaches_only_its_owner` before a
   personal save was announced; the latter again with the event published but the stream not
   filtering it (Bob received it), and with an admin bypass in the filter (the superadmin received it).
-- e2e: `npx e2e run tests/notes.e2e.ts` 22 of 22 pass; the 3 new tests failed first (no Me tab;
-  then the conflict banner named the person as a teammate).
+- e2e: `npx e2e run tests/notes.e2e.ts` 23 of 23 pass; the 4 new tests failed first (no Me tab;
+  then the conflict banner named the person as a teammate, also under a login since renamed).
 - Full e2e suite (`npx e2e run`) at `5826006a`: 42 files passed, 1 skipped (`agent.e2e.ts`, needs
   a model); 294 tests passed, 1 skipped.
 - `scripts/dev ci` exit 0 at `5826006a` (after merging `origin/dev`): nextest 1534 passed,

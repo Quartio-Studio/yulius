@@ -459,3 +459,19 @@ test('a conflict with the person’s own other tab names them, not a teammate', 
   await expect(mine).toHaveValue('from my laptop');
   await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
 });
+
+test('a conflict on Me is always with the person’s own other tab, even under an older login', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen);
+  await screen.getByRole('tab', 'Me').click();
+  const mine = screen.getByRole('textbox', 'My notes');
+  await mine.fill('first');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+
+  // Saved before the person renamed their GitHub login: still nobody else's.
+  await browser.evaluate(() => (window as unknown as MockNotes).__yuliusMock.editNote('me:usr_1', 'from before the rename', 'old-login', { announce: false }));
+  await mine.fill('from this tab');
+  const banner = screen.getByRole('alert');
+  await expect(banner).toHaveText(/You changed these notes in another tab or on another device/);
+  await expect(banner.getByRole('button', 'Use that version')).toBeVisible();
+});

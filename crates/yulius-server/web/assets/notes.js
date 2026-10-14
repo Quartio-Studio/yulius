@@ -85,6 +85,8 @@ export function createNotesView(ctx, sandbox) {
       placeholder: 'Only you see these notes, the same in every sandbox…',
       onState: () => renderStatus(),
       isMine,
+      // Nobody else saves it, whatever name an older save carries (a renamed GitHub login).
+      personal: true,
     }),
   ];
   let current = pads.find((pad) => pad.key === readJson(TAB_KEY, 'sandbox')) || pads[0];
@@ -182,7 +184,7 @@ export function createNotesView(ctx, sandbox) {
 }
 
 /** One notepad: its text box, what the server holds, and the save loop. */
-function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOnly, placeholder, onState, isMine }) {
+function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOnly, placeholder, onState, isMine, personal = false }) {
   const hintId = `notes-readonly-${key}`;
   const textarea = h('textarea', { class: 'notes-text', 'aria-label': textLabel, 'aria-describedby': readOnly ? hintId : null, placeholder, spellcheck: 'true', readOnly: true });
   const banner = h('div', { class: 'notes-banner', hidden: true });
@@ -450,13 +452,16 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
     if (!conflict) { setChildren(banner, null); banner.removeAttribute('role'); return; }
     banner.setAttribute('role', 'alert');
     // The person's own other tab or device (always so for "Me", SPEC-103) is not a teammate.
-    const own = isMine(conflict);
-    const who = own ? 'You changed these notes in another tab or on another device' : `${conflict.updated_by || 'Someone'} changed these notes`;
+    const own = personal || isMine(conflict);
+    const who = own
+      ? 'You changed these notes in another tab or on another device'
+      : `${conflict.updated_by || 'Someone'} changed these notes`;
     setChildren(banner,
       h('p', null, `${who} while you were typing. Your text is not saved yet.`),
       h('div', { class: 'row' },
         h('button', { type: 'button', class: 'btn btn-primary btn-sm', onClick: keepMine }, 'Keep mine'),
-        h('button', { type: 'button', class: 'btn btn-sm', onClick: useTheirs }, own ? 'Use that version' : 'Use theirs')));
+        h('button', { type: 'button', class: 'btn btn-sm', onClick: useTheirs },
+          own ? 'Use that version' : 'Use theirs')));
   }
 
   function keepMine() {

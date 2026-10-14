@@ -927,8 +927,9 @@ resolves to nothing, the run gets the server without that variable or token.
     written is `{"body":"","revision":0,"updated_at":null,"updated_by":null}`.
   - `PUT /api/sandboxes/{sid}/notes` (write), `PUT /api/notes` (anyone signed in) and
     `PUT /api/me/notes` (the caller's own) `{"body","revision"}` → `Note`: `revision` is the
-    revision the edit started from; the text is stored as revision + 1. 409 `conflict` (nothing stored) when the stored revision differs:
-    someone saved meanwhile, so the client loads the note again. 422 over 256 KiB of UTF-8.
+    revision the edit started from; the text is stored as revision + 1. 409 `conflict` (nothing
+    stored) when the stored revision differs: someone saved meanwhile, so the client loads the
+    note again. 422 over 256 KiB of UTF-8.
     Every stored edit publishes `note.updated`.
 
 ## Administration, analytics, status
@@ -1159,8 +1160,9 @@ after an unlock.
 `{"type":"account.updated","account":Account}` (instance administrators only),
 `{"type":"update.updated","phase":"building|pausing|restarting|resuming|null"}` (an update was
 found or moved; clients refetch `GET /api/update`),
-`{"type":"note.updated","scope":"team|sandbox|me","sandbox_id","revision","updated_by"}` (a notepad was saved; a sandbox note's event reaches only
-that sandbox's viewers, a personal note's only its owner), `{"type":"resync"}`.
+`{"type":"note.updated","scope":"team|sandbox|me","sandbox_id","revision","updated_by"}` (a
+notepad was saved; a sandbox note's event reaches only that sandbox's viewers, a personal note's
+only its owner), `{"type":"resync"}`.
 
 Sandbox views depend on the viewer's access level, so after a sandbox change (import, create,
 onboarding transitions, removal) the server publishes `resync` to that sandbox's viewers (or
