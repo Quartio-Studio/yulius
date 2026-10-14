@@ -104,3 +104,4 @@ number differs from the file name, and a record this index does not list.
 - [0093](0093-a-shown-secret-value-stays-masked.md): A shown secret value stays masked until its eye is pressed; a quick copy shows on hover
 - [0092](0092-screens-remember-where-they-were-left.md): Screens remember where they were left: places in the router per browser tab, tool views kept for the 3 sandboxes used last
 - [0100](0100-the-wordmark-is-set-like-the-composer-quote.md): The wordmark is set like the composer's quote: Tenor Sans at 400 and the quote's size, the name as written, untracked
+- [0103](0103-editor-presence-mirrors-monaco-and-reaches-writers-only.md): Editor presence mirrors Monaco's own selection boxes into gliding shapes and reaches the sandbox's writers only

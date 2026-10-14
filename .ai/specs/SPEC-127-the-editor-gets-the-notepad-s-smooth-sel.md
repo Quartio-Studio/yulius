@@ -82,13 +82,13 @@ No live co-editing: unsaved text stays each person's own, and saving works as to
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] The notepad's presence loop is a shared browser module, notes unchanged
-- [ ] The server relays file presence to the sandbox's writers, rate-limited
-- [ ] The Editor draws its own selection rounded and gliding, from Monaco's rendering
-- [ ] Teammates' carets, names and selections show in the Editor (two-user e2e)
-- [ ] The Editor's file tabs reorder by drag, keyboard and menu
-- [ ] Docs, ADR and the changes log updated
+- [x] Read the product context and related work, then write and validate the spec
+- [x] The notepad's presence loop is a shared browser module, notes unchanged
+- [x] The server relays file presence to the sandbox's writers, rate-limited
+- [x] The Editor draws its own selection rounded and gliding, from Monaco's rendering
+- [x] Teammates' carets, names and selections show in the Editor (two-user e2e)
+- [x] The Editor's file tabs reorder by drag, keyboard and menu
+- [x] Docs, ADR and the changes log updated
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, merged into dev on green CI
 
@@ -133,9 +133,13 @@ is in front. `store.js` emits `file-presence`; `mock.js` relays the route to the
 `BroadcastChannel('yulius-mock-presence')`, to other mock pages of the same origin, signed in as
 another person with `?mock=1&as=<login>`.
 
+**Panel host.** A tool replaced by another in the panel (`panels.js` `show`) now gets `hide()`,
+as when the panel closes; before, only closing the panel hid a view, so the Editor (and Notes)
+would have stayed "present" behind another tool.
+
 **Tab order.** The strip gets the notepad's drag (pointer events, 4 px threshold, FLIP settle,
 Escape cancels), Alt+←/→ and a context menu, by extracting the notepad's drag code into
-`assets/tabdrag.js` (`attachTabDrag(tablist, {keys, order, commit})`) used by both.
+`assets/tabdrag.js` (`createTabDrag(tablist, {keyOf, commit})`, `movedBy`) used by both.
 
 ```mermaid
 sequenceDiagram
