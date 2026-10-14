@@ -53,6 +53,20 @@ impl App {
         sandbox: &SandboxId,
         after: &TaskId,
     ) -> AppResult<TaskRecord> {
+        let task = self.live_predecessor(sandbox, after).await?;
+        self.ensure_chain_room(sandbox).await?;
+        Ok(task)
+    }
+
+    /// [`App::chain_predecessor`] without the chain bound (a task changing its chain, SPEC-126).
+    ///
+    /// # Errors
+    /// `Invalid` for an unknown, foreign, archived or ended task.
+    pub(crate) async fn live_predecessor(
+        &self,
+        sandbox: &SandboxId,
+        after: &TaskId,
+    ) -> AppResult<TaskRecord> {
         let store = &self.deps.store;
         let task = store
             .task(after)
@@ -65,7 +79,6 @@ impl App {
                 task.number
             )));
         }
-        self.ensure_chain_room(sandbox).await?;
         Ok(task)
     }
 
@@ -374,6 +387,20 @@ impl App {
         sandbox: &SandboxId,
         rule: &Rule,
     ) -> AppResult<TaskRecord> {
+        let anchor = self.rule_named_anchor(sandbox, rule).await?;
+        self.ensure_chain_room(sandbox).await?;
+        Ok(anchor)
+    }
+
+    /// [`App::rule_anchor`] without the chain bound (a task changing its chain, SPEC-126).
+    ///
+    /// # Errors
+    /// `Invalid` for an unknown task number.
+    pub(crate) async fn rule_named_anchor(
+        &self,
+        sandbox: &SandboxId,
+        rule: &Rule,
+    ) -> AppResult<TaskRecord> {
         let mut anchor = None;
         for number in rule.numbers() {
             let task = self
@@ -388,7 +415,6 @@ impl App {
                 })?;
             anchor.get_or_insert(task);
         }
-        self.ensure_chain_room(sandbox).await?;
         anchor.ok_or_else(|| AppError::Invalid("the rule names no task".into()))
     }
 

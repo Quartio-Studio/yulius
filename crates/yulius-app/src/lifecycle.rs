@@ -65,7 +65,7 @@ fn parse_harness(text: &str) -> AppResult<Harness> {
 }
 
 /// A prepared task has one way to start (SPEC-105 PRP-001).
-fn prepared_alone() -> AppError {
+pub(crate) fn prepared_alone() -> AppError {
     AppError::Invalid(
         "a prepared task starts when you decide or at its time: it cannot also run after a task, \
          by a rule or as a supertask"
