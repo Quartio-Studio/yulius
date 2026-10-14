@@ -40,6 +40,10 @@ the way of reading, selecting or using the keyboard.
 
 ## Requirements
 
+SPEC-109 (task #94) supersedes SPD-001's stuck colour: the web keeps `--session-web` and
+`--session-dim` when stuck, and `--session-web-stuck`, its observer and the mark are gone
+(ADR-0088). The mark also lifted the web 16 px above the well's corner, which SPEC-109 fixes.
+
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | SPD-001 | The web sticks: while the transcript scrolls, the web stays at the top-right corner of the visible part of the well (`position: sticky; top: 0` on the float), and it never leaves the well. Text keeps wrapping beside it at the top, paints over it further down (everything after it is positioned), and it never catches the pointer. While it is stuck under the text, its threads and spider fade to `--session-web-stuck`, on which every text colour of the well is at least 4.5:1 in both themes. | e2e, repository check |
