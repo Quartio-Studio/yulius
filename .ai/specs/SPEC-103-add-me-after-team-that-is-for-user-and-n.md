@@ -38,7 +38,8 @@ handles conflicts exactly like the other two notepads.
 | NOT-010 | The Notes panel shows three tabs in order: "This sandbox", "Team", "Me". "Me" holds a text box labelled "My notes", always editable, and the remembered tab includes it. | e2e `notes.e2e.ts` |
 | NOT-011 | Personal notes: one notepad per person, stored under `user:<user id>`. `GET/PUT /api/me/notes` read and save the caller's own notepad with the SPEC-041 contract (`scope: "me"`, revision, 409, 256 KiB, 2 MiB body limit). There is no route to anyone else's notepad, administrators included; signed out answers 401. | Rust `notes::personal_notes_are_each_persons_own` |
 | NOT-012 | Sandbox-agnostic: the same personal notepad shows in every sandbox and does not depend on any sandbox access. | Rust `notes::personal_notes_are_each_persons_own` (a person with no sandbox); e2e |
-| NOT-013 | A stored personal edit publishes `note.updated {scope: "me", sandbox_id: null, ...}` only to the owner's event streams (other people's streams never get it), so the owner's other tabs and devices reload an idle notepad. | Rust `notes::an_edit_is_announced_to_viewers`, `notes::a_personal_edit_reaches_only_its_owner` |
+| NOT-013 | A stored personal edit publishes `note.updated {scope: "me", sandbox_id: null, ...}` only to the owner's event streams (other people's streams never get it, the superadmin's included), so the owner's other tabs and devices reload an idle notepad. | Rust `notes::an_edit_is_announced_to_viewers`, `notes::a_personal_edit_reaches_only_its_owner` |
+| NOT-014 | A conflict with the person's own save from another tab or device (always so for "Me", possible on any notepad) says "You changed these notes in another tab or on another device" and offers "Keep mine" and "Use that version" instead of naming them as a teammate. | e2e `notes.e2e.ts` (a conflict with the person's own other tab) |
 
 ## Acceptance criteria
 
@@ -53,10 +54,10 @@ handles conflicts exactly like the other two notepads.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Personal notes are stored per user behind GET/PUT /api/me/notes
-- [ ] A saved personal note is announced only to its owner's sessions
-- [ ] The Notes panel shows a Me tab after Team with the person's own notepad
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Personal notes are stored per user behind GET/PUT /api/me/notes
+- [x] A saved personal note is announced only to its owner's sessions
+- [x] The Notes panel shows a Me tab after Team with the person's own notepad
+- [x] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
 ## Design
@@ -111,3 +112,7 @@ flowchart LR
   tabs would only learn of an edit through a 409 conflict. Not visible to others means the API and
   the event stream; the instance's operator, who holds the database, can still read the table
   (as for every other note).
+- Review round 1 (fresh session, approve, no blocker or major): minors fixed test-first. The
+  WebSocket test now also proves the superadmin's stream never gets someone's personal note (it
+  failed with an admin bypass put in the filter on purpose). A conflict with one's own other tab
+  no longer names the person as a teammate (NOT-014). Long lines rewrapped.

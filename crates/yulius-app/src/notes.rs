@@ -115,8 +115,8 @@ impl App {
         Ok(view(&scope, record))
     }
 
-    /// `PUT /api/notes`, `PUT /api/sandboxes/{sid}/notes` and `PUT /api/me/notes`: stores the text when the note is
-    /// still at `input.revision` and announces it.
+    /// `PUT /api/notes`, `PUT /api/sandboxes/{sid}/notes` and `PUT /api/me/notes`: stores the
+    /// text when the note is still at `input.revision` and announces it.
     ///
     /// # Errors
     /// `Forbidden` without write access to the sandbox, `Invalid` over [`MAX_NOTE_BYTES`],

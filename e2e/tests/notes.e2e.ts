@@ -439,3 +439,23 @@ test('an edit of Me from the person’s other tab appears in an idle notepad', a
   await editAs(browser, 'team', 'Team text');
   await expect(mine).toHaveValue('From my laptop');
 });
+
+test('a conflict with the person’s own other tab names them, not a teammate', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen);
+  await screen.getByRole('tab', 'Me').click();
+  const mine = screen.getByRole('textbox', 'My notes');
+  await mine.fill('first');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+
+  // Saved from the person's laptop while this tab did not hear of it yet.
+  await browser.evaluate(() => (window as unknown as MockNotes).__yuliusMock.editNote('me:usr_1', 'from my laptop', 'mkarp', { announce: false }));
+  await mine.fill('from this tab');
+  const banner = screen.getByRole('alert');
+  await expect(banner).toHaveText(/You changed these notes in another tab or on another device/);
+  await expect(banner).not.toHaveText(/mkarp/);
+  expect(await axeViolations(browser)).toEqual([]);
+  await banner.getByRole('button', 'Use that version').click();
+  await expect(mine).toHaveValue('from my laptop');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+});
