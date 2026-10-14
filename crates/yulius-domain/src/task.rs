@@ -415,8 +415,9 @@ impl AttentionFacts {
     /// need you once the agent stopped (SPEC-085 STT-003: while its background work runs or it
     /// waits in `yulius wait` it goes on by itself, and the task is Working), a CI run that
     /// could not run keeps it Working (In review); with the plan complete, background shells
-    /// keep it Working, an achieved goal or a tested or merged pull request makes it Done, and
-    /// checks still running keep it Working (In review). Otherwise the task's own state: a
+    /// keep it Working, an achieved goal makes it Done, an agent waiting in `yulius wait` (its
+    /// armed merge) or checks still running (In review) keep it Working, and otherwise a tested or
+    /// merged pull request makes it Done. Otherwise the task's own state: a
     /// permission prompt or "Your turn" needs you (unless the agent's background shells still
     /// run or it waits in `yulius wait`: it goes on by itself), an achieved goal is Done, a
     /// queued, chained or prepared task is Queued (a chain whose predecessor ended otherwise needs you), and
@@ -445,10 +446,13 @@ impl AttentionFacts {
             if !self.plan_open {
                 return if self.background_shells {
                     G::Working
-                } else if self.activity == Some(Activity::Done) || pull != PullSignal::InReview {
+                } else if self.activity == Some(Activity::Done) {
                     G::Done
-                } else {
+                } else if self.yulius_wait || pull == PullSignal::InReview {
+                    // Its agent waits for its checks or its armed merge (SPEC-130 DMD-003).
                     G::Working
+                } else {
+                    G::Done
                 };
             }
         }
