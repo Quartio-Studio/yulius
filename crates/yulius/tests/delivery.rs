@@ -4235,3 +4235,87 @@ async fn a_merge_names_the_change_by_its_most_significant_commit() -> TestResult
     );
     Ok(())
 }
+
+/// How many `pulls.updated` events for sandbox `s1` the bus delivered since the last call.
+fn pulls_announced(
+    events: &mut tokio::sync::broadcast::Receiver<yulius_app::events::Envelope>,
+) -> usize {
+    let mut count = 0;
+    while let Ok(envelope) = events.try_recv() {
+        if let yulius_contracts::events::UiEvent::PullsUpdated { sandbox_id } = &envelope.event {
+            assert_eq!(sandbox_id, "s1");
+            assert_eq!(
+                envelope
+                    .sandbox
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .as_deref(),
+                Some("s1"),
+                "only the sandbox's viewers receive it"
+            );
+            assert!(!envelope.admin_only);
+            count += 1;
+        }
+    }
+    count
+}
+
+/// SPEC-108 PRL-002 (task #93): a moved delivery stage tells the sandbox's browsers to read its
+/// pull requests again, whoever moved it; a read that moves nothing announces nothing.
+#[tokio::test]
+async fn pull_request_changes_are_announced_to_the_sandbox() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let mut events = f.h.app.events.subscribe();
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    pulls_announced(&mut events);
+
+    let opened = f
+        .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
+        .await?;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    assert_eq!(pulls_announced(&mut events), 1, "opened");
+
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&head, ChecksState::Success);
+    f.delivery("t1").await?;
+    f.h.app.reconcile_deliveries().await;
+    assert_eq!(pulls_announced(&mut events), 0, "nothing moved");
+
+    let merged = f
+        .req(Method::POST, "/api/tasks/t1/delivery/merge", None, &f.bob)
+        .await?;
+    assert_eq!(merged.status, StatusCode::OK, "{}", merged.body);
+    assert_eq!(pulls_announced(&mut events), 1, "merged by Yulius");
+
+    // Merged on GitHub, outside Yulius: the reconcile loop moves the stage and says so.
+    let wt = f
+        .add_task("t2", "Cart totals", "feat/2-cart-totals", "dev")
+        .await?;
+    commit_file(&wt, "cart.txt", "totals", "Add cart totals")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t2"), "Spec")?;
+    let opened = f
+        .req(Method::POST, "/api/tasks/t2/delivery/pr", None, &f.bob)
+        .await?;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    pulls_announced(&mut events);
+    let number = opened.body["pr"]["number"].as_u64().ok_or("number")?;
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    yulius_app::ports::github::GitHubPort::merge_pull(
+        f.h.github.as_ref(),
+        &Secret("token-carol".into()),
+        "Quartio-Studio",
+        "shop",
+        number,
+        "squash",
+        &head,
+    )
+    .await?;
+    f.h.app.reconcile_deliveries().await;
+    assert_eq!(f.delivery("t2").await?["stage"], "merged_integration");
+    assert_eq!(pulls_announced(&mut events), 1, "reconciled with GitHub");
+    Ok(())
+}
