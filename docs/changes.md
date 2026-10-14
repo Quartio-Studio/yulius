@@ -14,6 +14,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Agent work per task, Agent working time, Tokens and Subscription switches figures get a chart of
   the range's days, like Tasks; every chart names its first, highest and last values for screen
   readers.
+- "Update now" works again with the GitHub App (SPEC-107, task #92, #423). GitHub now issues
+  installation tokens of about 520 characters (`ghs_<APPID>_<JWT>`). The update helper refused
+  anything over 255 as "the token is malformed"; it now accepts up to 4096 of the same characters.
 - A session's spider web stays in view, its spider moves and a cockroach runs by (SPEC-101,
   ADR-0082, task #86). The web sticks to the top-right corner while the transcript scrolls. Every
   8 s the spider climbs its thread in pixel steps, legs switching, and drops back. Now and then (20–60 s
