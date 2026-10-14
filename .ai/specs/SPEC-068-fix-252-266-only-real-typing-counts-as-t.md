@@ -5,7 +5,9 @@ status: done
 
 # SPEC-068: Only real typing counts as typing; a typed first message is never lost
 
-Status: implemented
+Status: implemented; amended by [SPEC-117](SPEC-117-creating-tasks-work-in-a-very-very-weird.md)
+(goal tasks type no first message: the draft and goal typing rules apply to resumed goal
+sessions, and no goal follows a held first message).
 Date: 2026-10-13
 Owner: Yulius task #61
 Scope authorization: task #61 (part of task #47, "fix all open actionable GitHub issues without
