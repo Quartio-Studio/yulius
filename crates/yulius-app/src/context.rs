@@ -193,6 +193,9 @@ pub struct App {
     /// Serializes creating a sandbox's onboarding task so Start onboarding and a waiting new task
     /// never create two (SPEC-097).
     pub(crate) onboarding_task_lock: tokio::sync::Mutex<()>,
+    /// Serializes changes of how waiting tasks start, so two never make tasks wait for each other
+    /// (SPEC-126).
+    pub(crate) start_change_lock: tokio::sync::Mutex<()>,
     /// Live preview handshakes and grants (SPEC-002 ADR-14).
     pub(crate) previews: crate::preview::PreviewState,
     /// Uploads in progress (SPEC-001 EDT-006, UI-048).
@@ -243,6 +246,7 @@ impl App {
             recovery_lock: tokio::sync::Mutex::new(()),
             automation_template_lock: tokio::sync::Mutex::new(()),
             onboarding_task_lock: tokio::sync::Mutex::new(()),
+            start_change_lock: tokio::sync::Mutex::new(()),
             previews: crate::preview::PreviewState::default(),
             uploads: crate::uploads::UploadState::default(),
             attachment_reads: crate::task_prompt::AttachmentReads::default(),

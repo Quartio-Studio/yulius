@@ -323,12 +323,19 @@ pub trait IntakeStore: Send + Sync {
     /// left `change.from`.
     async fn change_start(&self, change: &crate::intake::StartChange) -> AppResult<bool>;
     /// `chained → queued` for an evaluation of `evaluated` (SPEC-126 CHS-005), in one statement:
-    /// only while the task is chained and its stored chain still names the same predecessor and
-    /// rule. `false` when either no longer holds.
+    /// only while the task is chained and its stored chain is still the one evaluated (the same
+    /// predecessor, rule and time). `false` when either no longer holds.
     async fn release_chain(
         &self,
         evaluated: &crate::intake::ChainRecord,
         at: Timestamp,
+    ) -> AppResult<bool>;
+    /// Marks the chain `evaluated` as needing a person, only while it is still the task's stored
+    /// chain (as [`IntakeStore::release_chain`] checks it). `false` when it was replaced.
+    async fn block_chain(
+        &self,
+        evaluated: &crate::intake::ChainRecord,
+        reason: &str,
     ) -> AppResult<bool>;
     /// Inserts a pending held prompt; earlier pending holds of the task become `superseded`.
     async fn insert_hold(&self, hold: &crate::intake::HoldRecord) -> AppResult<()>;

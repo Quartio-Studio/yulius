@@ -95,3 +95,27 @@ test('a chained task changes to When I decide; someone else sees no start chip (
   await expect(screen.getByText('@anna-q owns this task:')).toBeVisible();
   await expect(bar.getByRole('button', /^Starts:/)).toHaveCount(0);
 });
+
+test('a change the server refuses is a toast and changes nothing (AC-CHS-8)', async ({ app, browser, screen }) => {
+  const prepared = await preparedTask(app, browser, screen);
+  // Another task waits for it…
+  await browser.evaluate(() => { location.hash = '#/s/studio'; });
+  await screen.getByRole('button', /Run after: Start now/).click();
+  await screen.getByRole('menuitemradio', new RegExp(`^#${prepared} Tidy the docs`)).click();
+  await screen.getByRole('textbox', 'Task prompt').fill('After the docs');
+  await screen.getByRole('button', /^Start task/).click();
+  await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
+  const waiting = await browser.evaluate(openedNumber);
+  expect(await browser.evaluate(mockTask, waiting)).toMatchObject({ status: 'chained' });
+
+  // …so it cannot wait for that task.
+  await browser.evaluate((n) => { location.hash = `#/s/studio/t/${n}`; }, prepared);
+  const bar = browser.locator('.attention-bar');
+  await bar.getByRole('button', /^Starts: When I decide/).click();
+  await screen.getByRole('menuitemradio', new RegExp(`^#${waiting} After the docs`)).click();
+  await expect(browser.locator('#toasts .toast:has-text("cannot wait for itself")')).toBeVisible();
+  await expect(browser.locator('.strip-status')).toHaveText('Prepared');
+  const kept = await browser.evaluate(mockTask, prepared);
+  expect(kept).toMatchObject({ status: 'prepared' });
+  expect(kept && kept.afterLink).toBeFalsy();
+});

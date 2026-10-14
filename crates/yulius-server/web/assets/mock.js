@@ -943,7 +943,8 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   const preparation = () => (sandbox.onboarding === 'pending' ? preparationTask(db, sandbox)
     : sandbox.onboarding === 'preparing' ? db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding') : null);
   const before = rule ? db.tasks.find((x) => x.sandbox_id === sandbox.id && x.number === Number(rule.match(/#(\d+)/)[1])) : body.after_task_id ? db.tasks.find((x) => x.id === body.after_task_id && x.sandbox_id === sandbox.id) : null;
-  if (body.after_task_id && (!before || !(LIVE.has(before.status) || before.status === 'chained'))) fail(422, 'invalid', 'the task to run after does not exist or has ended');
+  // A waiting task may be run after, prepared ones too (SPEC-105 PRP-005).
+  if (body.after_task_id && (!before || !(LIVE.has(before.status) || before.status === 'chained' || before.status === 'prepared'))) fail(422, 'invalid', 'the task to run after does not exist or has ended');
   // A prepared task waits for onboarding when it is started instead (SPEC-105): it creates no
   // preparation task, as on the server.
   const waitsFor = prepared ? null : before || preparation();
@@ -1087,13 +1088,15 @@ route('PUT', `/api/tasks/${ID}/start`, ({ db, p, body }) => {
       if (link) pending.push(...(link.rule ? numbersOf(link.rule).map((n) => tasks.find((x) => x.number === n)) : [tasks.find((x) => x.id === link.task_id)]));
     }
   }
-  // The old predecessor no longer lists it.
-  const old = task.afterLink && db.tasks.find((x) => x.id === task.afterLink.task_id);
+  // A chained task started now keeps its chain, as Start now does; otherwise the old
+  // predecessor no longer lists it.
+  const keeps = !before && !prepared && task.status === 'chained';
+  const old = !keeps && task.afterLink && db.tasks.find((x) => x.id === task.afterLink.task_id);
   if (old) {
     old.nextLinks = (old.nextLinks || []).filter((l) => l.task_id !== task.id);
     emit(db, { type: 'task.updated', task: summary(old) });
   }
-  task.afterLink = null;
+  if (!keeps) task.afterLink = null;
   if (before) {
     chainAfter(task, before, rule);
     touch(db, task, { status: 'chained', start_at: null, supertask: false });

@@ -292,7 +292,8 @@ impl IntakeStore for SqliteStore {
                     "UPDATE tasks SET status = ?1, activity = NULL, updated_at = ?3, state_at = ?3, \
                      working_since = NULL, queued_at = ?3, gate_blocks = 0 \
                      WHERE id = ?4 AND status = ?2 AND EXISTS \
-                     (SELECT 1 FROM task_chains WHERE task_id = ?4 AND after_task_id IS ?5 AND rule IS ?6)",
+                     (SELECT 1 FROM task_chains WHERE task_id = ?4 AND after_task_id IS ?5 AND rule IS ?6 \
+                     AND created_at = ?7)",
                     params![
                         TaskStatus::Queued.as_str(),
                         TaskStatus::Chained.as_str(),
@@ -300,6 +301,28 @@ impl IntakeStore for SqliteStore {
                         c.task_id.as_str(),
                         c.after_task_id.as_ref().map(TaskId::as_str),
                         c.rule,
+                        c.created_at.0,
+                    ],
+                )
+                .map_err(db)?;
+            Ok(n == 1)
+        })
+        .await
+    }
+
+    async fn block_chain(&self, evaluated: &ChainRecord, reason: &str) -> AppResult<bool> {
+        let (c, reason) = (evaluated.clone(), reason.to_owned());
+        self.call(move |conn| {
+            let n = conn
+                .execute(
+                    "UPDATE task_chains SET blocked_reason = ?1 WHERE task_id = ?2 \
+                     AND after_task_id IS ?3 AND rule IS ?4 AND created_at = ?5",
+                    params![
+                        reason,
+                        c.task_id.as_str(),
+                        c.after_task_id.as_ref().map(TaskId::as_str),
+                        c.rule,
+                        c.created_at.0,
                     ],
                 )
                 .map_err(db)?;

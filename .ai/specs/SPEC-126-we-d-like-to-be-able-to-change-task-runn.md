@@ -46,12 +46,12 @@ A task that has started keeps its start; nothing changes for it.
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | CHS-001 | `PUT /api/tasks/{tid}/start` takes the creation's start choice (`after_task_id`, `start_rule`, `supertask`, `prepared`, `start_at`; none of them: Start now) with the same validation and messages (422), and replaces how a `chained` or `prepared` task starts. Any other status is 409 ("the task has started …"). It needs write access and ownership (SPEC-070, 403). It answers the updated `TaskSummary`. | int `start_change.rs` |
-| CHS-002 | The new choice applies as at creation: after a task or a rule → `chained` with a fresh chain row (no blocked reason) and the predecessor's or rule's evaluation run at once (a predecessor already Done starts it); prepared → `prepared`, with or without a time (a due time releases it at once); Start now or Supertask → `queued` (with the `supertask` flag), then the normal start; while the sandbox's onboarding blocks tasks, Start now and Supertask wait chained after the preparation task as a new task does. The old chain row and start time are gone. | int |
-| CHS-003 | The change is one store transaction with a compare-and-set on the status read: a task that started, was cancelled or changed meanwhile is 409 and nothing changes. Moving into `chained` or `prepared` from the other status respects the sandbox's bound of 32 (429); staying in the same status needs no room. | int, store test |
-| CHS-004 | A wait may not wait for itself: running after the task itself, a rule naming it, or a predecessor or rule that waits (through chained tasks' predecessors and rules) for this task is 422 and changes nothing. | int |
-| CHS-005 | A tick or run end that evaluated the old chain never releases the task under a new one: `release_chained` from an evaluation releases only while the stored chain still names the same predecessor and rule (compare-and-set in the store). Start now is unaffected. | store test, int |
+| CHS-002 | The new choice applies as at creation: after a task or a rule → `chained` with a fresh chain row (no blocked reason) and the predecessor's or rule's evaluation run at once (a predecessor already Done starts it); prepared → `prepared`, with or without a time (a due time releases it at once); Start now or Supertask → `queued` (with the `supertask` flag), then the normal start; a chained task keeps its chain row then, as Start now does, so it starts from its predecessor's branch with its briefing; while the sandbox's onboarding blocks tasks, Start now and Supertask wait chained after the preparation task as a new task does (a supertask keeps its flag). Otherwise the old chain row and start time are gone. The checks are New task's own (one shared validator). | int |
+| CHS-003 | The change is one store transaction with a compare-and-set on the status read: a task that started, was cancelled or changed meanwhile is 409 and nothing changes. Changes run one at a time. Moving into `chained` or `prepared` from the other status respects the sandbox's bound of 32 (429), counted before the write as at creation (a creation at the same moment can pass it by one); staying in the same status needs no room. | int, store test |
+| CHS-004 | A wait may not wait for itself: running after the task itself, a rule naming it, or a predecessor or rule that waits (through chained tasks' predecessors and rules, each rule naming the tasks it judges under CHS-006) for this task is 422 and changes nothing; two changes at once cannot both pass. | int |
+| CHS-005 | A tick or run end that evaluated the old chain never releases or blocks the task under a new one: a release or a block from an evaluation applies only while the stored chain still has the same predecessor, rule and time (compare-and-set in the store). Start now is unaffected. | store test |
 | CHS-006 | A rule written by a change judges the tasks that existed when it was written (the chain row's `created_at`), not when the task was created: a task created after the waiting task but before the change answers for it. Freed numbers still never answer for an older rule. | int |
-| CHS-007 | The change is audited (`task.start_changed`, with the choice) and published; the old and new predecessors are published too (their "runs after it" lists). | int |
+| CHS-007 | The change is audited (`task.start_changed`, with the choice) and published; the old and new predecessors are published too (their "runs after it" lists). | int (links), review (audit, events) |
 | CHS-008 | The task view's attention bar of a chained or prepared task the person may change shows a start chip ("Starts: When I decide", "Starts: After #12", "Starts: When #12 done", "Starts: At tomorrow 09:00") that opens the composer's start menu (Start now, Supertask, When I decide, At a time…, After a task is done, When a rule is true…) without the task itself among the tasks to run after or name in a rule; a pick calls `PUT …/start` and the bar, row and chip follow; an error is a toast and nothing changes. Readers and non-owners see no chip. No WCAG violations. | e2e `start-change.e2e.ts` |
 | CHS-009 | SPEC-001 (TSK-020), the API doc, an ADR, the architecture document, the product summary and `docs/changes.md` describe it. | review |
 
@@ -81,9 +81,9 @@ A task that has started keeps its start; nothing changes for it.
   after it answer 422.
 - AC-CHS-5: with 32 chained tasks in the sandbox, a prepared task changed to a chain answers 429;
   a chained task changed to another chain still succeeds.
-- AC-CHS-6 (store): `release_chain` releases a chained task only while its chain row still names
-  the evaluated predecessor and rule; after a replacement it returns false and the task stays
-  chained.
+- AC-CHS-6 (store): `release_chain` and `block_chain` act on a chained task only while its chain
+  row is still the evaluated one (predecessor, rule and time); after a replacement they return
+  false and the task stays chained and unblocked.
 - AC-CHS-7: a task created before #M and changed to the rule `#M done` starts once #M is done.
 - AC-CHS-8 (mock UI): a prepared task's bar shows "Starts: When I decide"; the menu offers the
   other choices without the task itself; picking a task to run after makes it "Queued after #N"
@@ -115,5 +115,11 @@ A task that has started keeps its start; nothing changes for it.
   the task's creation for rules given at creation. ADR-0102.
 - Agents and the Superagent do not get a tool for it in this change (the request is the UI's);
   a follow-up issue tracks it if wanted.
+- Review round 1 (REQUEST CHANGES, fixed test-first): blocking is guarded like releasing and also
+  compares the chain's time; a supertask held by onboarding keeps its flag; changes are serialized
+  (an in-process lock: Yulius is one process) so two cannot form a cycle; a chained task started
+  now keeps its chain as Start now does; creation and change share one validator; the cycle walk
+  judges a rule's numbers from its time. The bounds stay counted before the write, as creation
+  does (ADR-0085).
 - The UI reuses the composer's start menu and rule editor; the task's own Start now, Change
   time… and Cancel buttons stay as they are.

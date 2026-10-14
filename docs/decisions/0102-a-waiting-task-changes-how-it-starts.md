@@ -23,9 +23,12 @@ task.
 - The store replaces the status, the chain row and the start time in one transaction, guarded by
   the status the change read. The domain names the moves (`ChainChosen`, `PreparedChosen`, or the
   existing releases for Start now).
-- A release decided by evaluating a chain is a compare-and-set on that chain too (same
-  predecessor, same rule), so an evaluation of the old chain never starts the task under a new
-  choice. Start now is not guarded: the person asked for it.
+- A release or a block decided by evaluating a chain is a compare-and-set on that chain too (same
+  predecessor, rule and time), so an evaluation of the old chain never starts or blocks the task
+  under a new choice. Start now is not guarded: the person asked for it.
+- Changes run one at a time (an in-process lock; Yulius is one process), so two changes cannot
+  each pass the self-wait check and wait for each other. A chained task changed to Start now keeps
+  its chain, exactly as Start now does.
 - A rule judges the tasks that existed when it was written: the chain row's `created_at`, which
   equals the task's creation for rules given at creation.
 - A wait may not wait for itself, directly or through chained tasks' predecessors and rules.

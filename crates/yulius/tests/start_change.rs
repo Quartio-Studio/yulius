@@ -135,7 +135,23 @@ async fn a_waiting_task_changes_to_start_now_or_a_supertask() -> TestResult {
     let now_task = created(&h, &alice, json!({"prompt": "a", "after_task_id": "t-run"})).await?;
     let body = changed(&h, &alice, &now_task, json!({})).await?;
     assert!(started(&h, &now_task).await?, "{body}");
-    assert_eq!(h.store.chain(&TaskId::parse(&now_task)?).await?, None);
+    // As Start now: it keeps its chain, so it builds on its predecessor's branch (review).
+    assert_eq!(
+        h.store
+            .chain(&TaskId::parse(&now_task)?)
+            .await?
+            .and_then(|c| c.after_task_id),
+        Some(TaskId::parse("t-run")?)
+    );
+    let chained_super = created(
+        &h,
+        &alice,
+        json!({"prompt": "a2", "after_task_id": "t-run"}),
+    )
+    .await?;
+    let body = changed(&h, &alice, &chained_super, json!({"supertask": true})).await?;
+    assert_eq!(body["supertask"], true, "{body}");
+    assert!(started(&h, &chained_super).await?);
 
     let superb = created(&h, &alice, json!({"prompt": "b", "prepared": true})).await?;
     let body = changed(&h, &alice, &superb, json!({"supertask": true})).await?;
@@ -159,6 +175,12 @@ async fn a_waiting_task_changes_to_start_now_or_a_supertask() -> TestResult {
     let body = changed(&h, &alice, &gated, json!({})).await?;
     assert_eq!(body["status"], "chained", "{body}");
     assert_eq!(body["after"]["number"], preparation.number, "{body}");
+    // A supertask waits after the preparation as one, as a new task does (review).
+    let gated_super = created(&h, &alice, json!({"prompt": "e", "prepared": true})).await?;
+    let body = changed(&h, &alice, &gated_super, json!({"supertask": true})).await?;
+    assert_eq!(body["status"], "chained", "{body}");
+    assert_eq!(body["supertask"], true, "{body}");
+    assert!(record(&h, &gated_super).await?.supertask);
     Ok(())
 }
 
@@ -194,6 +216,7 @@ async fn a_start_change_is_refused_for_started_tasks_strangers_and_bad_choices()
     for creds in [&bob, &carol] {
         let r = change(&h, creds, &waiting, json!({"after_task_id": "t-run"})).await?;
         assert_eq!(r.status, StatusCode::FORBIDDEN, "{:?}", r.body);
+        assert_eq!(record(&h, &waiting).await?.status, TaskStatus::Prepared);
     }
     for (body, says) in [
         (
@@ -331,5 +354,54 @@ async fn a_changed_rule_judges_tasks_from_when_it_was_written() -> TestResult {
         .await?;
     h.app.advance_chains(&newer.id).await;
     assert!(started(&h, &waiting).await?);
+    Ok(())
+}
+
+/// CHS-007: the old predecessor no longer lists the task, the new one does.
+#[tokio::test]
+async fn the_predecessors_follow_a_changed_chain() -> TestResult {
+    let (h, alice, _, _, _) = world().await?;
+    seed_task(&h, "t-other", "s1", "u-alice", TaskStatus::Running, None).await?;
+    let id = created(&h, &alice, json!({"prompt": "a", "after_task_id": "t-run"})).await?;
+    let next = |body: &Value| -> Vec<Value> {
+        body["next"]
+            .as_array()
+            .map(|links| links.iter().map(|l| l["task_id"].clone()).collect())
+            .unwrap_or_default()
+    };
+    let path = |id: &str| format!("/api/tasks/{id}");
+    let run = call(&h.router, Method::GET, &path("t-run"), None, &alice).await?;
+    assert_eq!(next(&run.body), vec![json!(id)], "{:?}", run.body);
+    changed(&h, &alice, &id, json!({"after_task_id": "t-other"})).await?;
+    let run = call(&h.router, Method::GET, &path("t-run"), None, &alice).await?;
+    assert!(next(&run.body).is_empty(), "{:?}", run.body);
+    let other = call(&h.router, Method::GET, &path("t-other"), None, &alice).await?;
+    assert_eq!(next(&other.body), vec![json!(id)], "{:?}", other.body);
+    Ok(())
+}
+
+/// Review of SPEC-126: two changes at once cannot each pass the check and make two tasks wait for
+/// each other.
+#[tokio::test]
+async fn two_changes_at_once_never_make_a_cycle() -> TestResult {
+    let (h, alice, _, _, _) = world().await?;
+    let a = created(&h, &alice, json!({"prompt": "a", "prepared": true})).await?;
+    let b = created(&h, &alice, json!({"prompt": "b", "prepared": true})).await?;
+    for _ in 0..8 {
+        let (ra, rb) = tokio::join!(
+            change(&h, &alice, &a, json!({"after_task_id": b})),
+            change(&h, &alice, &b, json!({"after_task_id": a})),
+        );
+        let statuses = [ra?.status, rb?.status];
+        assert!(
+            statuses.contains(&StatusCode::OK)
+                && statuses.contains(&StatusCode::UNPROCESSABLE_ENTITY),
+            "{statuses:?}"
+        );
+        // Back to waiting for a person, for the next round.
+        for id in [&a, &b] {
+            changed(&h, &alice, id, json!({"prepared": true})).await?;
+        }
+    }
     Ok(())
 }

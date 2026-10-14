@@ -1260,10 +1260,46 @@ async fn a_chain_release_checks_the_chain_it_evaluated() -> R {
             .await?
     );
     assert!(!store.release_chain(&evaluated, Timestamp(7)).await?);
+    // Nor does it block the new chain (review of SPEC-126: an old evaluation found its rule false).
+    assert!(!store.block_chain(&evaluated, "#1 failed").await?);
+    assert_eq!(store.chain(&t3).await?.ok_or("chain")?.blocked_reason, None);
     assert_eq!(
         store.task(&t3).await?.ok_or("t3")?.status,
         TaskStatus::Chained
     );
+    // The same predecessor and rule written again later is another chain (CHS-006 judges from its
+    // time): an evaluation of the older one changes nothing.
+    let rewritten = store.chain(&t3).await?.ok_or("chain")?;
+    assert!(
+        store
+            .change_start(&StartChange {
+                task_id: t3.clone(),
+                from: TaskStatus::Chained,
+                to: TaskStatus::Chained,
+                chain: Some(ChainRecord {
+                    created_at: Timestamp(7),
+                    ..rewritten.clone()
+                }),
+                start_at: None,
+                supertask: false,
+                at: Timestamp(7),
+            })
+            .await?
+    );
+    assert!(!store.release_chain(&rewritten, Timestamp(7)).await?);
+    assert!(!store.block_chain(&rewritten, "stale").await?);
+    let current = store.chain(&t3).await?.ok_or("chain")?;
+    assert!(store.block_chain(&current, "#2 failed").await?);
+    assert_eq!(
+        store
+            .chain(&t3)
+            .await?
+            .ok_or("chain")?
+            .blocked_reason
+            .as_deref(),
+        Some("#2 failed")
+    );
+    store.set_chain_blocked(&t3, None).await?;
     // The current chain releases it, once, in line from then.
     let current = store.chain(&t3).await?.ok_or("chain")?;
     assert!(store.release_chain(&current, Timestamp(8)).await?);

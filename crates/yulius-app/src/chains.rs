@@ -229,8 +229,8 @@ impl App {
             return;
         }
         if let Some(reason) = blocked_reason(before.number, before.status) {
-            for (task, _) in waiting {
-                self.block_chained(&task, &reason).await;
+            for (task, chain) in waiting {
+                self.block_chained(&task, &chain, &reason).await;
             }
         }
     }
@@ -252,24 +252,24 @@ impl App {
                 && let Ok(Some(task)) = self.deps.store.task(&chain.task_id).await
                 && task.status == TaskStatus::Chained
             {
-                self.block_chained(&task, &reason).await;
+                self.block_chained(&task, &chain, &reason).await;
             }
         }
     }
 
-    async fn block_chained(&self, task: &TaskRecord, reason: &str) {
+    /// Marks `task` as needing a person for the chain `evaluated`, unless that chain was replaced
+    /// meanwhile (SPEC-126: a person changed how it starts).
+    async fn block_chained(&self, task: &TaskRecord, evaluated: &ChainRecord, reason: &str) {
         // Not a task that started meanwhile (Start now, a concurrent pass).
         let waiting = matches!(
             self.deps.store.task(&task.id).await,
             Ok(Some(t)) if t.status == TaskStatus::Chained
         );
         if waiting
-            && self
-                .deps
-                .store
-                .set_chain_blocked(&task.id, Some(reason))
-                .await
-                .is_ok()
+            && matches!(
+                self.deps.store.block_chain(evaluated, reason).await,
+                Ok(true)
+            )
         {
             self.runtime(&task.id)
                 .hub
@@ -450,7 +450,7 @@ impl App {
             Err(err) => {
                 let reason =
                     format!("Its start rule is invalid ({err}). Start this task now or cancel it.");
-                self.block_chained(task, &reason).await;
+                self.block_chained(task, chain, &reason).await;
                 return;
             }
         };
@@ -482,7 +482,7 @@ impl App {
                 let reason = format!(
                     "Its start rule `{rule}` can no longer become true. Start this task now or cancel it."
                 );
-                self.block_chained(task, &reason).await;
+                self.block_chained(task, chain, &reason).await;
             }
             Truth::Unknown => {}
         }
