@@ -334,8 +334,8 @@ p { margin: 0; }
   color: var(--brand-mark); /* the mark stands on its own, as in the lockup: no tile */
 }
 .brand-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-/* The wordmark as the brand sets it (tokens: --wordmark-case, --wordmark-tracking). */
-.brand-name { font-family: var(--font); font-size: var(--fs-lg); line-height: var(--lh-lg); font-weight: 600; text-transform: var(--wordmark-case); letter-spacing: var(--wordmark-tracking); }
+/* The wordmark is set like the composer's quote (ADR-0100; tokens: --wordmark-case, --wordmark-tracking). */
+.brand-name { font-family: var(--font-display); font-size: var(--fs-xl); line-height: var(--lh-xl); font-weight: 400; text-transform: var(--wordmark-case); letter-spacing: var(--wordmark-tracking); }
 /* The tagline stays a quiet caption under the name, never its rival. */
 .brand-by { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); letter-spacing: 0.01em; }
 .btn-newtask {
@@ -1919,7 +1919,7 @@ a.dl-task:hover { text-decoration: underline; }
 
 .auth { height: 100vh; height: 100dvh; overflow: auto; display: flex; align-items: flex-start; justify-content: center; padding: 10vh 16px 32px; background: var(--bg); }
 .auth-card { width: min(460px, 100%); display: flex; flex-direction: column; gap: 12px; padding: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-xl); }
-.auth-logo { display: flex; align-items: center; gap: 12px; font-family: var(--font); font-size: var(--fs-xl); line-height: var(--lh-xl); font-weight: 600; color: var(--text); text-transform: var(--wordmark-case); letter-spacing: var(--wordmark-tracking); }
+.auth-logo { display: flex; align-items: center; gap: 12px; font-family: var(--font-display); font-size: var(--fs-xl); line-height: var(--lh-xl); font-weight: 400; color: var(--text); text-transform: var(--wordmark-case); letter-spacing: var(--wordmark-tracking); }
 .auth-title { font-family: var(--font-display); font-size: var(--fs-xl); line-height: var(--lh-xl); }
 .warning-box { display: flex; gap: 8px; padding: 12px; border-radius: var(--radius); border: 1px solid var(--danger-border); background: var(--danger-soft); color: var(--danger-fg-strong); }
 .warning-box strong { color: var(--text); }

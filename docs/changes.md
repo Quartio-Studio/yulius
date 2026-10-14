@@ -12,6 +12,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   scheduled, started now or as a supertask. A task that started keeps its start, and a wait on
   itself is refused. API: `PUT /api/tasks/{tid}/start`. A chain evaluated before the change no
   longer starts the task, and a start rule judges the tasks that existed when it was written.
+- The name beside the logo is set like the quote above the composer (SPEC-123, ADR-0100, task
+  #110). It used to read "YULIUS" in bold, widely spaced capitals of the interface face. Now it
+  reads "Yulius" in Tenor Sans 400 at the quote's 22 px with no extra spacing, in the sidebar and
+  on the sign-in and setup screens.
 - An agent secret is a name, a value and a description (SPEC-121, ADR-0098, task #107). The add
   dialog no longer asks for hosts or for how the secret is added to requests. Instance
   administrators find the scope under More options. Agents send the `$NAME` placeholder in
