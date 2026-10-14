@@ -366,11 +366,15 @@ chip ([SPEC-078](../.ai/specs/SPEC-078-we-d-like-to-be-able-to-set-the-automati.
 [decision 0062](decisions/0062-an-automation-starts-its-tasks-like-new-task.md)). A run creates
 its task through the same `create_task_ruled` as New task. A task to run after that has ended
 turns into the rule `#N done`, so a recurring automation keeps working once its predecessor is
-finished.
+finished. The editor shows the choice as New task's start chip in its action bar, and Run now
+sends the choice the chip shows for that run only
+([SPEC-093](../.ai/specs/SPEC-093-automation-editor-the-start-choice-sits.md),
+[decision 0074](decisions/0074-run-now-uses-the-start-choice-the-editor-shows.md)); without it a
+run uses the stored choice.
 
 ```mermaid
 flowchart LR
-  RUN["Scheduler or Run now: one slot"] --> START{"automation.start"}
+  RUN["Scheduler or Run now: one slot"] --> START{"automation.start, or Run now's body"}
   START -->|"Now"| Q["queued"]
   START -->|"Supertask"| ST["queued supertask (SPEC-071)"]
   START -->|"After #N, not ended"| CH["chained after #N"]
