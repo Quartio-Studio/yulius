@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- A task's squash commit names the change, not its spec (SPEC-069 BPL-008): the pull request's
+  default title takes the type and scope of the branch's most significant commit (feat, then fix,
+  and so on) instead of its oldest, and before Yulius merges it renews a title it gave from the
+  final commits, so #381's `docs(spec)` would have read `fix(check)`; a title a person or agent
+  wrote is kept.
 - The repository check fails on committed merge conflict markers (SPEC-089, #364): a line that is
   a Git conflict marker in any tracked or new file, vendored assets and binaries aside, fails
   `scripts/dev check` and Yulius CI with its file and line, where before markers in docs and web

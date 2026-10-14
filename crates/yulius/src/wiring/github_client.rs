@@ -408,6 +408,21 @@ impl GitHubPort for GitHubAdapter {
         ))
     }
 
+    async fn update_pull_title(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo_name: &str,
+        number: u64,
+        title: &str,
+    ) -> AppResult<()> {
+        self.plain
+            .update_pull_title(&gh(token), owner, repo_name, number, title)
+            .await
+            .map(|_| ())
+            .map_err(map_err)
+    }
+
     async fn list_pulls(
         &self,
         token: &Secret,

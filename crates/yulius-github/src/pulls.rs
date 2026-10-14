@@ -48,6 +48,17 @@ fn repo_args(owner: &str, repo: &str) -> Result<(), GitHubError> {
     validate::repo_name(repo)
 }
 
+/// A pull request title GitHub accepts: not blank, at most 256 bytes.
+fn pull_title(title: &str) -> Result<(), GitHubError> {
+    if title.trim().is_empty() || title.len() > 256 {
+        return Err(GitHubError::InvalidInput {
+            what: "pull request title",
+            reason: "empty or longer than 256 bytes".into(),
+        });
+    }
+    Ok(())
+}
+
 impl GitHubClient {
     /// Opens a pull request from `head` into `base` in the same repository.
     ///
@@ -64,12 +75,7 @@ impl GitHubClient {
         repo_args(owner, repo)?;
         validate::branch(&pull.head)?;
         validate::branch(&pull.base)?;
-        if pull.title.trim().is_empty() || pull.title.len() > 256 {
-            return Err(GitHubError::InvalidInput {
-                what: "pull request title",
-                reason: "empty or longer than 256 bytes".into(),
-            });
-        }
+        pull_title(&pull.title)?;
         let url = self.api_url(&["repos", owner, repo, "pulls"])?;
         let body = serde_json::json!({
             "title": pull.title,
@@ -96,6 +102,30 @@ impl GitHubClient {
         let number = number.to_string();
         let url = self.api_url(&["repos", owner, repo, "pulls", &number])?;
         let wire: WirePull = self.get_json(url, Some(token)).await?;
+        Ok(wire.into())
+    }
+
+    /// Sets the title of pull request `number`; its body, base and state stay.
+    ///
+    /// # Errors
+    /// [`GitHubError::InvalidInput`] for an empty title or one longer than 256 bytes,
+    /// [`GitHubError::NotFound`] or other typed errors.
+    pub async fn update_pull_title(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        title: &str,
+    ) -> Result<PullRequest, GitHubError> {
+        repo_args(owner, repo)?;
+        pull_title(title)?;
+        let number = number.to_string();
+        let url = self.api_url(&["repos", owner, repo, "pulls", &number])?;
+        let body = serde_json::json!({ "title": title });
+        let wire: WirePull = self
+            .send_json(Method::PATCH, url, Some(token), body)
+            .await?;
         Ok(wire.into())
     }
 

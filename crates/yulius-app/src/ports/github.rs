@@ -383,6 +383,15 @@ pub trait GitHubPort: Send + Sync {
         repo: &str,
         number: u64,
     ) -> AppResult<GhPull>;
+    /// Sets the title of a pull request (SPEC-069 BPL-008).
+    async fn update_pull_title(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo: &str,
+        number: u64,
+        title: &str,
+    ) -> AppResult<()>;
     /// Open pull requests (optionally for a head branch).
     async fn list_pulls(
         &self,
