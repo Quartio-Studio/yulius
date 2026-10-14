@@ -103,6 +103,30 @@ async function clickAt(browser: Browser, point: { x: number; y: number }): Promi
   await browser.mouse.up();
 }
 
+/** Whether the task terminal shows a selection (xterm draws it as boxes over the rows). */
+const selected = (browser: Browser) => browser.evaluate(() => document.querySelectorAll('.taskview .xterm-selection > div').length > 0);
+
+/** The key that takes the mouse back from a program that asked for it: Option on macOS, else Shift (xterm). */
+const pageKey = (browser: Browser) => browser.evaluate(() => (/Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '') ? 'altKey' : 'shiftKey'));
+
+/**
+ * Selects the row showing `text` by dragging across it with the key that takes the mouse back from
+ * the program (SPEC-098 MSE-003). The test mouse cannot hold a key, so the drag is dispatched in
+ * the page, as xterm listens for it: a press on the rows, moves and the release on the document.
+ */
+async function keySelectRow(browser: Browser, text: string): Promise<void> {
+  const box = await row(browser, text).boundingBox();
+  expect(box, `${text} is on the screen`).not.toBeNull();
+  const key = await pageKey(browser);
+  await browser.evaluate(({ x, y, key }) => {
+    const at = (dx: number, buttons: number) => ({ bubbles: true, cancelable: true, composed: true, clientX: x + dx, clientY: y, button: 0, buttons, detail: 1, [key]: true });
+    document.elementFromPoint(x + 4, y)!.dispatchEvent(new MouseEvent('mousedown', at(4, 1)));
+    document.dispatchEvent(new MouseEvent('mousemove', at(200, 1)));
+    document.dispatchEvent(new MouseEvent('mousemove', at(400, 1)));
+    document.dispatchEvent(new MouseEvent('mouseup', at(400, 0)));
+  }, { x: box!.x, y: box!.y + box!.height / 2, key });
+}
+
 /** Selects the text of the row showing `text` by dragging across it. */
 async function selectRow(browser: Browser, text: string): Promise<void> {
   const box = await row(browser, text).boundingBox();
@@ -213,8 +237,9 @@ test('Ctrl+C copies a selection and interrupts without one; paste types the clip
   });
   const copied = () => browser.evaluate(() => (window as unknown as { __copied: string[] }).__copied);
 
-  // With a selection, Ctrl+C (⌘C on macOS) copies it instead of interrupting the program.
-  await selectRow(browser, 'Read 142 lines');
+  // With a selection, Ctrl+C (⌘C on macOS) copies it instead of interrupting the program. The
+  // program has the mouse, so the selection is made with Shift (Option on macOS) held.
+  await keySelectRow(browser, 'Read 142 lines');
   await browser.keyboard.press('ControlOrMeta+c');
   await expect.poll(copied).toEqual([expect.stringContaining('Read 142 lines')]);
   await expect(rows(browser)).not.toHaveText(/Interrupted by user/);
@@ -232,12 +257,17 @@ test('Ctrl+C copies a selection and interrupts without one; paste types the clip
   await expect(row(browser, '❯')).toHaveText(/pasted words/);
 
   // The right-click menu has Copy, Paste and Select all (the event a right-click sends; xterm's
-  // rows sit under its viewport, so the pointer cannot be aimed at them by role).
-  await browser.evaluate(() => {
+  // rows sit under its viewport, so the pointer cannot be aimed at them by role). The program has
+  // the mouse: a plain right-click is the program's, Shift (Option on macOS) brings the menu.
+  const rightClick = (key: string | null) => browser.evaluate((key) => {
     const line = [...document.querySelectorAll('.taskview .xterm-rows > div')].find((d) => (d.textContent || '').includes('Read 142 lines'))!;
     const box = line.getBoundingClientRect();
-    line.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: box.left + 60, clientY: box.top + box.height / 2 }));
-  });
+    line.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: box.left + 60, clientY: box.top + box.height / 2, ...(key ? { [key]: true } : {}) }));
+  }, key);
+  await rightClick(null);
+  await settle();
+  await expect(screen.getByRole('menuitem', /^Paste/)).toBeHidden();
+  await rightClick(await pageKey(browser));
   await expect(screen.getByRole('menuitem', /^Copy/)).toBeVisible();
   await expect(screen.getByRole('menuitem', /^Paste/)).toBeVisible();
   await expect(screen.getByRole('menuitem', /^Select all/)).toBeVisible();
@@ -338,9 +368,9 @@ test('another viewer’s size fills this box, with a chip instead of a banner, u
   await expect.poll(async () => (await layout()).rows).toBeGreaterThan(30);
 });
 
-test('a click on Claude Code’s output expands it, as in a native terminal; a drag still selects', async ({ app, browser }) => {
-  // Task #25: the mock draws full screen with mouse reporting, like Claude Code, and toggles a
-  // collapsed tool group on a primary click at its row.
+test('the program has the mouse, as in a native terminal; Shift (Option on macOS) selects', async ({ app, browser }) => {
+  // Task #25, SPEC-098: the mock draws full screen with mouse reporting, like Claude Code, and
+  // toggles a collapsed tool group on a primary press at its row. No chip offers to switch.
   await app.open(mock('/s/studio/t/12'));
   await expect(rows(browser)).toHaveText(/Searched for 2 patterns, read 1 file/);
   await holdStill(browser);
@@ -350,34 +380,27 @@ test('a click on Claude Code’s output expands it, as in a native terminal; a d
     expect(point, 'the group is on the screen').not.toBeNull();
     return point!;
   };
+  expect(await browser.evaluate(() => document.querySelectorAll('.term-mouse-toggle').length), 'no mouse chip').toBe(0);
 
-  // A drag across the group selects its text and does not reach the program.
-  await selectRow(browser, 'Searched for 2 patterns');
-  await settle();
-  await expect(rows(browser)).not.toHaveText(expanded);
-
-  // A click expands it at once, a second click collapses it.
+  // A click expands the group at once, a second click collapses it.
   await clickAt(browser, await group());
   await expect(rows(browser)).toHaveText(expanded);
   await expect(row(browser, 'Searched for 2 patterns')).not.toHaveText(/click to expand/);
   await clickAt(browser, await group());
   await expect(rows(browser)).not.toHaveText(expanded);
 
-  // A double-click selects a word and toggles the group once: its first click is sent, its second
-  // (click count 2, dispatched in the page: the test mouse always presses with count 1) is not. The
-  // expanded group moved up (the transcript is bottom-aligned), so the second click aims at it again.
+  // A plain drag is the program's too: its press reaches it and nothing is selected.
+  await selectRow(browser, 'Searched for 2 patterns');
+  await expect(rows(browser)).toHaveText(expanded);
+  expect(await selected(browser), 'a plain drag selects nothing').toBe(false);
   await clickAt(browser, await group());
-  await expect(rows(browser)).toHaveText(expanded);
-  await browser.evaluate(({ x, y }) => {
-    const target = document.elementFromPoint(x, y)!;
-    const at = { bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, button: 0, detail: 2 };
-    target.dispatchEvent(new PointerEvent('pointerdown', { ...at, buttons: 1, isPrimary: true }));
-    target.dispatchEvent(new MouseEvent('mousedown', { ...at, buttons: 1 }));
-    target.dispatchEvent(new PointerEvent('pointerup', { ...at, buttons: 0, isPrimary: true }));
-    target.dispatchEvent(new MouseEvent('mouseup', { ...at, buttons: 0 }));
-  }, await group());
+  await expect(rows(browser)).not.toHaveText(expanded);
+
+  // With Shift (Option on macOS) held, a drag selects the text and does not reach the program.
+  await keySelectRow(browser, 'Searched for 2 patterns');
+  await expect.poll(() => selected(browser), { message: 'a Shift-drag selects' }).toBe(true);
   await settle();
-  await expect(rows(browser)).toHaveText(expanded);
+  await expect(rows(browser)).not.toHaveText(expanded);
 });
 
 test('a read-only viewer’s click does not reach the program', async ({ app, browser, screen }) => {
@@ -421,29 +444,6 @@ test('a click beside another viewer’s grid takes the size but does not reach t
   await expect(screen.getByText('Sized by another viewer')).toBeHidden();
   await settle();
   await expect(rows(browser)).not.toHaveText(/loyalty_points/);
-});
-
-test('a click is reported in the program’s mouse encoding', async ({ app, browser }) => {
-  await app.open(mock('/s/studio'));
-  const reports = await browser.evaluate(async () => {
-    const url = '/assets/mousefilter.js';
-    const { createMouseFilter } = await import(url);
-    const on = (modes: string) => {
-      const filter = createMouseFilter();
-      filter.feed(new TextEncoder().encode(modes));
-      return filter;
-    };
-    return {
-      sgr: on('\x1b[?1000h\x1b[?1006h').clickReport(12, 7),
-      x10: on('\x1b[?1000h').clickReport(12, 7),
-      far: on('\x1b[?1000h').clickReport(500, 300),
-    };
-  });
-  expect(reports).toEqual({
-    sgr: '\x1b[<0;12;7M\x1b[<0;12;7m',
-    x10: '\x1b[M ,\'\x1b[M#,\'',
-    far: `\x1b[M ÿÿ\x1b[M#ÿÿ`,
-  });
 });
 
 test('file paths in the task terminal open the editor at the file and line', async ({ app, browser, screen }) => {

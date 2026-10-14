@@ -1,9 +1,10 @@
 // The terminal's core, loaded by terminal.js with the first terminal (PERF-04): an
 // xterm.js terminal bound to a terminal WebSocket (task terminal, sandbox shell,
 // account login). Handles fit/resize, read-only state, who sets the size, links,
-// reconnect notices and exit banners. Text behaves like page text (F 2026-10-07): xterm's DOM
-// renderer, mouse reporting requested by TUIs filtered out unless the viewer hands the mouse
-// to the app, and selections copied to the clipboard as soon as they are made.
+// reconnect notices and exit banners. Text is page text (F 2026-10-07): xterm's DOM renderer, and
+// selections copied to the clipboard as soon as they are made. The mouse is the program's when it
+// asks for it, as in a native terminal (SPEC-098): Shift-drag (Option-drag on macOS) still selects;
+// a read-only viewer, who cannot send anything, keeps the mouse for selection (mousefilter.js).
 //
 // Each viewer sees the terminal full size on its side (F 2026-10-10). A PTY has one size: the
 // active viewer's. Every writer reports the size its own window fits and whether it is active
@@ -52,9 +53,6 @@ const CLICK_SETTLE_MS = 450;
 const INPUT_CHUNK = 8192;
 /** Longest time the placeholder covers a terminal whose server has not drawn it yet. */
 const REVEAL_LIMIT_MS = 5000;
-/** Wheel travel (px) of one notch sent to an app that scrolls itself, and the most notches per event. */
-const WHEEL_NOTCH_PX = 40;
-const WHEEL_MAX_NOTCHES = 10;
 
 /**
  * Whether the person is typing in a text field outside `root` that is not a terminal's own input
@@ -112,24 +110,12 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   // Until the first screen is drawn: the terminal's colour and a few quiet lines, no text.
   const skeleton = h('div', { class: 'term-skeleton', 'aria-hidden': 'true' }, h('span'), h('span'), h('span'));
   const emptyEl = h('div', { class: 'term-empty', hidden: true, role: 'status' });
-  const mouseToggle = h('button', { type: 'button', class: 'btn btn-sm term-mouse-toggle', hidden: true });
   // Another viewer sets the size: a small, opaque chip in the corner (never a row that resizes the terminal).
   const sizeChip = h('span', { class: 'term-size-chip', hidden: true, role: 'status', title: 'Another viewer is using this terminal, so it shows their size, scaled to your window. Click in the terminal or type to use your own size.' }, 'Sized by another viewer');
-  const corner = h('div', { class: 'term-corner' }, noticeEl, sizeChip, mouseToggle);
+  const corner = h('div', { class: 'term-corner' }, noticeEl, sizeChip);
   const el = h('div', { class: 'term', 'aria-busy': 'true' }, banner, connEl, corner, host, skeleton, emptyEl);
+  // The program's mouse reporting reaches xterm only for a viewer who can write (SPEC-098 MSE-004).
   const mouse = createMouseFilter();
-  // The app asked for mouse reporting: offer to hand the mouse over (text selection otherwise).
-  function renderMouseToggle() {
-    mouseToggle.hidden = !mouse.requested();
-    mouseToggle.textContent = mouse.appMouse() ? 'Mouse: app · select text instead' : 'Mouse: select text · send to app';
-    mouseToggle.title = mouse.appMouse()
-      ? 'Clicks go to the program; Option-drag still selects. Click to select text with the mouse again.'
-      : 'The program asked for the mouse. Clicks select text now; click to send them to the program.';
-  }
-  mouseToggle.addEventListener('click', () => {
-    term.write(mouse.setAppMouse(!mouse.appMouse()));
-    renderMouseToggle();
-  });
 
   const termSize = () => fontSize || px(isPhone() ? '--fs-sm' : '--fs-term'); // tokens.css
   const size = termSize();
@@ -149,7 +135,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     // some speed, so it is opt-in).
     screenReaderMode: readJson('yulius.terminalScreenReader', false) === true,
     macOptionIsMeta: true,
-    // While the app has the mouse, Option-drag (macOS) / Shift-drag still selects text.
+    // While the program has the mouse, Option-drag (macOS) / Shift-drag still selects text.
     macOptionClickForcesSelection: true,
     disableStdin: true,
     allowProposedApi: false,
@@ -211,9 +197,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
         return size;
       },
       onOutput: (bytes) => {
-        const had = mouse.requested();
         term.write(mouse.feed(bytes));
-        if (had !== mouse.requested()) renderMouseToggle();
         if (emptyShown) renderEmpty();
       },
       onSnapshot: (bytes) => {
@@ -221,8 +205,6 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
         if (oscFiles) oscFiles.reset();
         term.reset();
         term.write(mouse.feed(bytes), () => { drawn = true; maybeReveal(); });
-        if (mouse.appMouse()) term.write(mouse.setAppMouse(true));
-        renderMouseToggle();
       },
       onState: (message) => {
         const handedOver = gotState && !state.controller && message.controller;
@@ -235,6 +217,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
         // A task that ended before this page opened still shows how it ended (and Continue).
         else if (message.status && isEndedStatus(message.status) && !exited) exited = { status: message.status, code: null };
         term.options.disableStdin = !state.can_write;
+        if (mouse.appMouse() !== state.can_write) term.write(mouse.setAppMouse(state.can_write));
         applySize();
         render();
         maybeReveal();
@@ -394,9 +377,11 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     showNotice(readOnlyText());
   }, true);
   // Right-click: Copy, Paste and Select all (Shift+right-click keeps the browser's own menu). While
-  // the program has the mouse, right-clicks are the program's.
+  // the program has the mouse, right-clicks are the program's and the key that selects text
+  // (Shift; Option on macOS) brings the menu instead (SPEC-098 MSE-003).
   el.addEventListener('contextmenu', (event) => {
-    if (event.shiftKey || mouse.appMouse() || !host.contains(event.target)) return;
+    if (!host.contains(event.target)) return;
+    if (programHasMouse() ? !(IS_MAC ? event.altKey : event.shiftKey) : event.shiftKey) return;
     event.preventDefault();
     const selected = term.getSelection();
     openMenu({ x: event.clientX, y: event.clientY }, [
@@ -427,41 +412,12 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       open: (file, event) => fileLinks.open(file, event),
     }));
   }
-  // Claude Code draws full screen (the alternate buffer has no scrollback), scrolls its own
-  // transcript with the mouse wheel and expands a clicked tool group. Text selection keeps the
-  // mouse from the app (mousefilter.js), so there only wheel turns and plain clicks go to the app,
-  // in its encoding; drags and double-clicks still select. In the normal buffer xterm scrolls its
-  // own scrollback (#34, #25).
-  const reportsToApp = () => mouse.requested() && !mouse.appMouse() && term.buffer.active.type === 'alternate' && state.can_write;
-  /**
-   * The 1-based cell of the shown grid under the pointer (also when it is scaled to fit), clamped
-   * to the grid; `inside` says whether the pointer is on the grid rather than in a margin beside it
-   * (another viewer's grid is centred in this box).
-   */
-  function cellAt(event) {
-    const screen = host.querySelector('.xterm-screen') || host;
-    const box = screen.getBoundingClientRect();
-    const col = Math.min(term.cols, Math.max(1, 1 + Math.floor(((event.clientX - box.left) / Math.max(1, box.width)) * term.cols)));
-    const row = Math.min(term.rows, Math.max(1, 1 + Math.floor(((event.clientY - box.top) / Math.max(1, box.height)) * term.rows)));
-    const inside = event.clientX >= box.left && event.clientX < box.right && event.clientY >= box.top && event.clientY < box.bottom;
-    return { col, row, inside };
-  }
-  let wheelRest = 0;
-  term.attachCustomWheelEventHandler((event) => {
-    if (!reportsToApp()) return true;
-    // Pinch-zoom (ctrl+wheel) and horizontal swipes stay with the browser (#78).
-    if (event.ctrlKey || !event.deltaY) return true;
-    event.preventDefault();
-    const pixels = event.deltaMode === 1 ? event.deltaY * WHEEL_NOTCH_PX : event.deltaMode === 2 ? event.deltaY * term.rows * WHEEL_NOTCH_PX : event.deltaY;
-    wheelRest += pixels;
-    const notches = Math.trunc(wheelRest / WHEEL_NOTCH_PX);
-    if (!notches) return false;
-    wheelRest -= notches * WHEEL_NOTCH_PX;
-    const { col, row } = cellAt(event);
-    // Scrolling is not typing: it takes neither control nor the terminal size (#78).
-    socket.sendInput(mouse.wheelReport(notches < 0, col, row).repeat(Math.min(Math.abs(notches), WHEEL_MAX_NOTCHES)), { scroll: true });
-    return false;
-  });
+  // Claude Code draws full screen (the alternate buffer has no scrollback) and asks for the mouse:
+  // xterm reports its clicks, drags and wheel turns in the program's encoding, as a native terminal
+  // does, and they take neither control nor the size (typing.js). Pinch-zoom (ctrl+wheel) and
+  // horizontal swipes stay with the browser (#78).
+  const programHasMouse = () => term.modes.mouseTrackingMode !== 'none';
+  term.attachCustomWheelEventHandler((event) => !(programHasMouse() && (event.ctrlKey || !event.deltaY)));
   term.onBinary((data) => send(data));
 
   function proposed() {
@@ -661,29 +617,19 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   document.addEventListener('visibilitychange', updatePresence);
 
   // A click takes the size once it is clearly a click: no drag, no selection (a double- or
-  // triple-click selects), the pointer not on a link. A full-screen app that asked for the mouse
-  // gets the click at once, as in a native terminal (#25), but not the second click of a
-  // double-click, which selects a word.
+  // triple-click selects), the pointer not on a link. A program that asked for the mouse already
+  // got the click from xterm.
   let press = null;
   let clickTimer = 0;
   host.addEventListener('pointerdown', (event) => {
     clearTimeout(clickTimer);
-    press = event.button === 0 ? { x: event.clientX, y: event.clientY, count: 0 } : null;
+    press = event.button === 0 ? { x: event.clientX, y: event.clientY } : null;
   }, true);
-  // Pointer events carry no click count; the mouse event that follows the press does (a touch's
-  // comes after its release: a tap counts as one click).
-  host.addEventListener('mousedown', (event) => { if (press) press.count = event.detail; }, true);
   host.addEventListener('pointerup', (event) => {
     const start = press;
     press = null;
     if (!start || event.button !== 0 || Math.abs(event.clientX - start.x) > 4 || Math.abs(event.clientY - start.y) > 4) return;
     if (host.querySelector('.xterm-cursor-pointer')) return; // a link click opens the link
-    if (start.count <= 1 && !event.altKey && !event.shiftKey && !event.ctrlKey && !event.metaKey && conn === 'open' && reportsToApp()) {
-      const { col, row, inside } = cellAt(event);
-      // A click is not typing: like a wheel turn it does not take control; the settled click below
-      // does. A click in the margin beside the grid only takes the size.
-      if (inside && socket.sendInput(mouse.clickReport(col, row), { scroll: true })) used();
-    }
     clearTimeout(clickTimer);
     clickTimer = setTimeout(() => { if (!term.hasSelection()) claim(); }, CLICK_SETTLE_MS);
   }, true);
