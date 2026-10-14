@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- A task waiting for its checks or merge shows a still, muted branch (SPEC-100, ADR-0080, task #85,
+  #393). The "Waiting for checks or merge" state took Working's tone so that it notified nobody,
+  and that tone turned its git-branch icon green and spun it like the Working ring. It now takes
+  the muted tone of Queued, Chained and Paused; it stays under Working and still notifies nobody.
 - Menus show an option's whole description (SPEC-094, ADR-0075, task #79). A description wraps
   onto as many lines as it needs instead of ending in an ellipsis, in every `openMenu` menu; menus
   keep their width (at most 320 px and the window less 16 px), so a short description stays one
