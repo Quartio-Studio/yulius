@@ -227,7 +227,7 @@ function createApp(root, transport) {
     shell = null;
     store.state.me = null;
     // The pull requests kept for the next page load go with the session, signed out or expired
-    // (SPEC-104); a read answering later finds no user and stores nothing.
+    // (SPEC-104); a read answering later finds no user and writes nothing to storage.
     store.forgetPulls();
     unsubscribers.splice(0).forEach((off) => off());
     document.body.classList.remove('drawer-open');
