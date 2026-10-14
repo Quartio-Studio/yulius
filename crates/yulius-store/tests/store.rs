@@ -1119,3 +1119,83 @@ async fn a_scheduled_release_checks_the_time_it_releases_on() -> R {
     assert!(!store.release_scheduled(&t1, Timestamp(9_500)).await?);
     Ok(())
 }
+
+/// SPEC-118 KEY-002: every write that can change who may type into a terminal grows the access
+/// epoch (an open terminal re-checks its viewer's write access before the next keystroke); a
+/// permission refresh that finds the same level does not.
+#[tokio::test]
+async fn writes_that_change_access_grow_the_access_epoch() -> R {
+    use yulius_app::ports::store::PermissionStore;
+    use yulius_domain::permission::AccessLevel;
+    fn grew(last: &mut u64, what: &str, now: u64) -> R {
+        if now <= *last {
+            return Err(format!("{what} did not grow the access epoch ({last} → {now})").into());
+        }
+        *last = now;
+        Ok(())
+    }
+    let dir = tempfile::tempdir()?;
+    let store = SqliteStore::open(&dir.path().join("y.db"))?;
+    let (sid, alice) = seed(&store).await?;
+    store.insert_user(&user("u2", Some("bob"), false)?).await?;
+    let bob = UserId::parse("u2")?;
+    let t = store.insert_task(&task("t1", &sid, &alice)?).await?;
+
+    let mut last = store.access_epoch();
+
+    store
+        .put_access(&alice, &sid, AccessLevel::Write, Timestamp(1))
+        .await?;
+    grew(&mut last, "a first cached level", store.access_epoch())?;
+    store
+        .put_access(&alice, &sid, AccessLevel::Write, Timestamp(2))
+        .await?;
+    assert_eq!(
+        store.access_epoch(),
+        last,
+        "the same level again changes nothing"
+    );
+    store
+        .put_access(&alice, &sid, AccessLevel::Read, Timestamp(3))
+        .await?;
+    grew(&mut last, "a downgrade", store.access_epoch())?;
+    store.clear_access(&alice).await?;
+    grew(&mut last, "a cleared cache", store.access_epoch())?;
+
+    assert!(store.request_control(&t.id, &bob, Timestamp(20)).await?);
+    assert!(
+        store
+            .pass_control(&t.id, &alice, &bob, Timestamp(21))
+            .await?
+    );
+    grew(&mut last, "a hand-over", store.access_epoch())?;
+    assert!(
+        store
+            .take_control(&t.id, &bob, &alice, Timestamp(22))
+            .await?
+    );
+    grew(&mut last, "a take-over", store.access_epoch())?;
+
+    store
+        .update_user_flags(&bob, Some(Some(Timestamp(30))), None)
+        .await?;
+    grew(&mut last, "disabling a user", store.access_epoch())?;
+    store.update_user_flags(&bob, None, Some(true)).await?;
+    grew(&mut last, "the instance-admin flag", store.access_epoch())?;
+    store.link_github(&bob, 7, "bobby", "Bob", None).await?;
+    grew(&mut last, "a GitHub link", store.access_epoch())?;
+    store.revoke_web_session("nohash", Timestamp(31)).await?;
+    grew(&mut last, "a session revocation", store.access_epoch())?;
+    store.revoke_user_credentials(&bob, Timestamp(32)).await?;
+    grew(
+        &mut last,
+        "revoking a user's credentials",
+        store.access_epoch(),
+    )?;
+
+    assert!(store.delete_task(&t.id).await?);
+    grew(&mut last, "deleting a task", store.access_epoch())?;
+    store.remove_sandbox(&sid, Timestamp(40)).await?;
+    grew(&mut last, "removing a sandbox", store.access_epoch())?;
+    Ok(())
+}
