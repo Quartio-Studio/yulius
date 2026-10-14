@@ -1015,3 +1015,107 @@ async fn record_numbers_are_reserved_once_and_go_with_their_task() -> R {
     );
     Ok(())
 }
+
+/// SPEC-105 PRP-002/PRP-003: a prepared task's start time survives a reopen, can be moved and
+/// cleared, and is due only while the task is still prepared; deleting the task drops it.
+#[tokio::test]
+async fn prepared_task_schedules_persist_and_come_due() -> R {
+    use yulius_app::ports::store_ext::IntakeStore;
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("y.db");
+    let (t1, t2, t3) = (
+        TaskId::parse("t1")?,
+        TaskId::parse("t2")?,
+        TaskId::parse("t3")?,
+    );
+    {
+        let store = SqliteStore::open(&path)?;
+        let (sid, uid) = seed(&store).await?;
+        for id in ["t1", "t2", "t3"] {
+            let mut record = task(id, &sid, &uid)?;
+            record.status = TaskStatus::Prepared;
+            store.insert_task(&record).await?;
+        }
+        store
+            .set_task_schedule(&t1, Some(Timestamp(1_000)), Timestamp(1))
+            .await?;
+        store
+            .set_task_schedule(&t2, Some(Timestamp(5_000)), Timestamp(1))
+            .await?;
+        store
+            .set_task_schedule(&t3, Some(Timestamp(900)), Timestamp(1))
+            .await?;
+    }
+    let store = SqliteStore::open(&path)?;
+    assert_eq!(store.task_schedule(&t1).await?, Some(Timestamp(1_000)));
+    // Due: prepared with a time at or before now, earliest first.
+    assert_eq!(store.due_prepared(Timestamp(999)).await?, vec![t3.clone()]);
+    assert_eq!(
+        store.due_prepared(Timestamp(1_000)).await?,
+        vec![t3.clone(), t1.clone()]
+    );
+    // Moved, then cleared ("when I decide"): never due again.
+    store
+        .set_task_schedule(&t1, Some(Timestamp(7_000)), Timestamp(2))
+        .await?;
+    assert_eq!(store.task_schedule(&t1).await?, Some(Timestamp(7_000)));
+    store.set_task_schedule(&t1, None, Timestamp(3)).await?;
+    assert_eq!(store.task_schedule(&t1).await?, None);
+    // A task that left `prepared` is not due, whatever its time.
+    assert!(
+        store
+            .transition_task(
+                &t2,
+                Some(TaskStatus::Prepared),
+                TaskStatus::Queued,
+                None,
+                Timestamp(4)
+            )
+            .await?
+    );
+    assert_eq!(
+        store.due_prepared(Timestamp(10_000)).await?,
+        vec![t3.clone()]
+    );
+    assert!(store.delete_task(&t3).await?);
+    assert_eq!(store.task_schedule(&t3).await?, None);
+    assert!(store.due_prepared(Timestamp(10_000)).await?.is_empty());
+    Ok(())
+}
+
+/// SPEC-105 PRP-003: the tick's release holds only while the task is prepared and its time, as
+/// stored now, has come: a time moved later or cleared after the tick read it wins.
+#[tokio::test]
+async fn a_scheduled_release_checks_the_time_it_releases_on() -> R {
+    use yulius_app::ports::store_ext::IntakeStore;
+    let dir = tempfile::tempdir()?;
+    let store = SqliteStore::open(&dir.path().join("y.db"))?;
+    let (sid, uid) = seed(&store).await?;
+    let (t1, t2) = (TaskId::parse("t1")?, TaskId::parse("t2")?);
+    for id in ["t1", "t2"] {
+        let mut record = task(id, &sid, &uid)?;
+        record.status = TaskStatus::Prepared;
+        store.insert_task(&record).await?;
+    }
+    store
+        .set_task_schedule(&t1, Some(Timestamp(1_000)), Timestamp(1))
+        .await?;
+    // Moved later after the tick saw it due: not released.
+    store
+        .set_task_schedule(&t1, Some(Timestamp(9_000)), Timestamp(2))
+        .await?;
+    assert!(!store.release_scheduled(&t1, Timestamp(1_000)).await?);
+    // No time ("when I decide"): never released by the tick.
+    assert!(!store.release_scheduled(&t2, Timestamp(50_000)).await?);
+    assert_eq!(
+        store.task(&t2).await?.ok_or("t2")?.status,
+        TaskStatus::Prepared
+    );
+    // Due: queued once, in line from now.
+    assert!(store.release_scheduled(&t1, Timestamp(9_000)).await?);
+    let released = store.task(&t1).await?.ok_or("t1")?;
+    assert_eq!(released.status, TaskStatus::Queued);
+    assert_eq!(released.queued_at, Some(Timestamp(9_000)));
+    assert!(!store.release_scheduled(&t1, Timestamp(9_500)).await?);
+    Ok(())
+}

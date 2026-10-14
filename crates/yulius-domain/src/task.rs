@@ -64,6 +64,11 @@ pub enum TaskStatus {
     /// cancel → `stopped(cancelled)`. A predecessor that ends any other way leaves it here with
     /// a reason ("needs you"); it never starts by itself after that.
     Chained,
+    /// Written now, started later (SPEC-105): it waits until a person starts it ("when I
+    /// decide") or until its scheduled time. Owner: the person, or the background tick for a
+    /// time. Exit: Start now or the time → `queued`; cancel → `stopped(cancelled)`. No timeout:
+    /// without a time it never starts by itself.
+    Prepared,
 }
 
 /// Fine-grained activity while [`TaskStatus::Running`] (derived from hooks and transcripts).
@@ -134,6 +139,8 @@ pub enum TaskEvent {
     ContinueQueued,
     /// A chained task's predecessor is Done, or a person started it now.
     ChainReleased,
+    /// A prepared task's time came, or a person started it now (SPEC-105).
+    PreparedReleased,
 }
 
 /// An event that is not valid in the current state.
@@ -183,8 +190,10 @@ impl TaskStatus {
         use TaskStatus as S;
         let next = match (self, event) {
             (S::Queued, E::CapacityGranted) => S::Starting,
-            (S::Queued | S::Chained, E::CancelRequested) => S::Stopped(StopReason::Cancelled),
-            (S::Chained, E::ChainReleased) => S::Queued,
+            (S::Queued | S::Chained | S::Prepared, E::CancelRequested) => {
+                S::Stopped(StopReason::Cancelled)
+            }
+            (S::Chained, E::ChainReleased) | (S::Prepared, E::PreparedReleased) => S::Queued,
             (S::Starting, E::Spawned) => S::Running,
             (S::Starting, E::StartFailed(reason)) => S::Failed(reason),
             (S::Starting | S::Running | S::Switching, E::CancelRequested) => S::Stopping,
@@ -243,6 +252,7 @@ impl TaskStatus {
             Self::Failed(FailReason::StartTimeout) => "failed_start_timeout",
             Self::Failed(FailReason::Precondition) => "failed_precondition",
             Self::Chained => "chained",
+            Self::Prepared => "prepared",
         }
     }
 
@@ -257,7 +267,7 @@ impl TaskStatus {
 }
 
 /// Every task status, for exhaustive mapping.
-pub const ALL_STATUSES: [TaskStatus; 18] = [
+pub const ALL_STATUSES: [TaskStatus; 19] = [
     TaskStatus::Queued,
     TaskStatus::Starting,
     TaskStatus::Running,
@@ -276,6 +286,7 @@ pub const ALL_STATUSES: [TaskStatus; 18] = [
     TaskStatus::Failed(FailReason::StartTimeout),
     TaskStatus::Failed(FailReason::Precondition),
     TaskStatus::Chained,
+    TaskStatus::Prepared,
 ];
 
 impl Activity {
@@ -408,7 +419,7 @@ impl AttentionFacts {
     /// checks still running keep it Working (In review). Otherwise the task's own state: a
     /// permission prompt or "Your turn" needs you (unless the agent's background shells still
     /// run or it waits in `yulius wait`: it goes on by itself), an achieved goal is Done, a
-    /// queued task or a chain is Queued (a chain whose predecessor ended otherwise needs you), and
+    /// queued, chained or prepared task is Queued (a chain whose predecessor ended otherwise needs you), and
     /// the rest is Working.
     #[must_use]
     pub fn group(&self) -> TaskGroup {
@@ -450,7 +461,7 @@ impl AttentionFacts {
                 Some(Activity::Working) | None => G::Working,
             },
             TaskStatus::Chained if self.chain_blocked => G::NeedsYou,
-            TaskStatus::Queued | TaskStatus::Chained => G::Queued,
+            TaskStatus::Queued | TaskStatus::Chained | TaskStatus::Prepared => G::Queued,
             TaskStatus::Starting | TaskStatus::Switching | TaskStatus::WaitingCapacity => {
                 G::Working
             }
@@ -683,6 +694,44 @@ mod tests {
         assert!(TaskStatus::Queued.apply(TaskEvent::ChainReleased).is_err());
         assert!(!TaskStatus::Chained.is_live());
         assert!(!TaskStatus::Chained.is_resting());
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_tasks_wait_for_a_person_or_their_time() -> Result<(), TransitionError> {
+        // SPEC-105 PRP-003/PRP-004: Start now or the time releases it; Cancel ends it.
+        assert_eq!(
+            TaskStatus::Prepared.apply(TaskEvent::PreparedReleased)?,
+            TaskStatus::Queued
+        );
+        assert_eq!(
+            TaskStatus::Prepared.apply(TaskEvent::CancelRequested)?,
+            TaskStatus::Stopped(StopReason::Cancelled)
+        );
+        for event in [
+            TaskEvent::CapacityGranted,
+            TaskEvent::ContinueRequested,
+            TaskEvent::ChainReleased,
+        ] {
+            assert!(TaskStatus::Prepared.apply(event).is_err(), "{event:?}");
+        }
+        assert!(
+            TaskStatus::Queued
+                .apply(TaskEvent::PreparedReleased)
+                .is_err()
+        );
+        assert!(
+            TaskStatus::Chained
+                .apply(TaskEvent::PreparedReleased)
+                .is_err()
+        );
+        assert!(!TaskStatus::Prepared.is_live());
+        assert!(!TaskStatus::Prepared.is_resting());
+        assert_eq!(TaskStatus::parse("prepared"), Some(TaskStatus::Prepared));
+        // In line with the queued tasks, never "Needs you" (PRP-005).
+        let prepared = facts(TaskStatus::Prepared, None);
+        assert_eq!(prepared.group(), TaskGroup::Queued);
+        assert!(!prepared.needs_you());
         Ok(())
     }
 

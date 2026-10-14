@@ -13,8 +13,8 @@ pub enum UiEvent {
     /// A task changed.
     #[serde(rename = "task.updated")]
     TaskUpdated {
-        /// New summary.
-        task: TaskSummary,
+        /// New summary (boxed: the largest variant by far; the wire is the same).
+        task: Box<TaskSummary>,
     },
     /// A task disappeared from the visible set.
     #[serde(rename = "task.removed")]

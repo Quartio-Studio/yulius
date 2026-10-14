@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- A task can be prepared now and started later (SPEC-105, ADR-0085, task #90). New task's start
+  menu offers **When I decide**: the task waits with the new status `prepared`, holding no
+  session, until you press Start now in its view or menu. **At a time…** picks a date and time:
+  the task starts by itself then, within a minute (after a restart, at the first minute past it;
+  while onboarding blocks the project, once it is ready). Its row reads "Prepared" or
+  "Scheduled · tomorrow 09:00", sits with the queued tasks, and its view offers Start now,
+  Schedule… or Change time…, and Cancel. The automation editor's shared start menu does not offer
+  them yet (#416). The API takes `prepared` and `start_at` on New task and
+  `task_create`, shows `start_at`, and `PUT /api/tasks/{tid}/schedule` moves or clears the time
+  (schema version 24, `task_schedules`).
 - After a reload, the sidebar shows pull request chips at once (SPEC-104, task #89, #414). Before,
   they appeared seconds later, when the sandbox's Git overview answered, and rows could move
   between Working and Done meanwhile. The browser keeps what the last overview read said, per user

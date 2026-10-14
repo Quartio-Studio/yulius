@@ -492,7 +492,8 @@ test('arrows scroll the task box so the focused task is wholly inside it (SPEC-1
   const filter = screen.getByRole('searchbox', 'Filter');
   await filter.press('ArrowDown');
   await expect(screen.getByRole('menuitemradio', /^Start now/)).toBeFocused();
-  for (let i = 0; i < 7; i += 1) await browser.keyboard.press('ArrowDown');
+  // Past Supertask, When I decide and At a time… (SPEC-105) to the sixth task.
+  for (let i = 0; i < 9; i += 1) await browser.keyboard.press('ArrowDown');
   await expect(screen.getByRole('menuitemradio', /^#9 Move to the next account/)).toBeFocused();
   await expect.poll(() => focusedInBox(browser)).toBe(true);
   // It stops clear of the bottom fade, the next task peeking under it.
@@ -589,9 +590,18 @@ test('in a short window the whole menu still scrolls and keeps its place; the wh
   expect(await browser.evaluate(() => document.querySelector('.menu-list')!.scrollTop)).toBe(scrolled);
   // The wheel over the box, scrolled to its end, goes on to the whole list.
   await screen.getByRole('searchbox', 'Filter').fill('');
-  await browser.evaluate(() => { const box = document.querySelector('.menu-scroll')!; box.scrollTop = box.scrollHeight; document.querySelector('.menu-list')!.scrollTop = 0; });
-  const box = await browser.evaluate(() => { const r = document.querySelector('.menu-scroll')!.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + Math.min(r.height / 2, 40) }; });
+  // The list shows the box's top at its bottom edge, with more of the list below to scroll to
+  // (the choices above the box push it past a short window's first screen, SPEC-105).
+  const start = await browser.evaluate(() => {
+    const box = document.querySelector('.menu-scroll')!;
+    const list = document.querySelector('.menu-list')!;
+    box.scrollTop = box.scrollHeight;
+    const top = box.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop;
+    list.scrollTop = Math.max(0, top - list.clientHeight + 60);
+    return list.scrollTop;
+  });
+  const box = await browser.evaluate(() => { const r = document.querySelector('.menu-scroll')!.getBoundingClientRect(); const l = document.querySelector('.menu-list')!.getBoundingClientRect(); return { x: r.left + r.width / 2, y: Math.min(r.top + 30, l.bottom - 20) }; });
   await browser.mouse.move(box.x, box.y);
   await browser.mouse.wheel(0, 200);
-  await expect.poll(() => browser.evaluate(() => document.querySelector('.menu-list')!.scrollTop)).toBeGreaterThan(0);
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.menu-list')!.scrollTop)).toBeGreaterThan(start);
 });

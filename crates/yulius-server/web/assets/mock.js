@@ -336,6 +336,8 @@ function summary(task) {
     // A supertask, and what a queued task waits for because of one (SPEC-071).
     supertask: Boolean(task.supertask),
     held_by: task.status === 'queued' ? [...(task.heldBy || [])] : [],
+    // A prepared task's time (SPEC-105).
+    start_at: task.status === 'prepared' ? task.start_at || null : null,
     // Background shells an idle agent left running (TSK-014).
     background_shells: task.status === 'running' ? task.background_shells ?? null : null,
     background_shells_since: task.status === 'running' && task.background_shells ? task.background_shells_since ?? null : null,
@@ -463,10 +465,10 @@ function advanceEnvironment(db, sandbox, envName) {
 }
 
 /** Waiting states in which a task that never started takes queued messages (SPEC-052). */
-const WAITING = new Set(['queued', 'chained', 'waiting_capacity']);
+const WAITING = new Set(['queued', 'chained', 'prepared', 'waiting_capacity']);
 
 /** Whether a task ever had a run: in the mock, every task past waiting in a queue or a chain. */
-const hasStarted = (task) => task.started ?? !['queued', 'chained'].includes(task.status);
+const hasStarted = (task) => task.started ?? !['queued', 'chained', 'prepared'].includes(task.status);
 
 function detail(db, task) {
   const live = LIVE.has(task.status);
@@ -851,6 +853,10 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   // A start rule (SPEC-017): the mock checks the shape the server checks, and anchors the chain
   // on the first task the rule names.
   if (body.supertask && (body.after_task_id || (body.start_rule && body.start_rule.trim()))) fail(422, 'invalid', 'a supertask starts after the running tasks: it cannot also run after a task or a rule');
+  // A prepared task (SPEC-105) waits for Start now or its time, with the server's window.
+  const prepared = body.prepared === true || Boolean(body.start_at);
+  if (prepared && (body.after_task_id || body.supertask || (body.start_rule && body.start_rule.trim()))) fail(422, 'invalid', 'a prepared task starts when you decide or at its time: it cannot also run after a task, by a rule or as a supertask');
+  const startAt = body.start_at ? mockStartAt(body.start_at) : null;
   let rule = null;
   if (body.start_rule && body.start_rule.trim()) {
     if (body.after_task_id) fail(422, 'invalid', 'give a task to run after or a start rule, not both');
@@ -866,7 +872,9 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
     : sandbox.onboarding === 'preparing' ? db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding') : null);
   const before = rule ? db.tasks.find((x) => x.sandbox_id === sandbox.id && x.number === Number(rule.match(/#(\d+)/)[1])) : body.after_task_id ? db.tasks.find((x) => x.id === body.after_task_id && x.sandbox_id === sandbox.id) : null;
   if (body.after_task_id && (!before || !(LIVE.has(before.status) || before.status === 'chained'))) fail(422, 'invalid', 'the task to run after does not exist or has ended');
-  const waitsFor = before || preparation();
+  // A prepared task waits for onboarding when it is started instead (SPEC-105): it creates no
+  // preparation task, as on the server.
+  const waitsFor = prepared ? null : before || preparation();
   const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === sandbox.id).map((t) => t.number)) + 1;
   const title = body.title || body.prompt.trim().split('\n')[0].slice(0, 60);
   const wf = choice ? choice.workflow : db.workflows.find((w) => w.id === body.workflow_id);
@@ -881,8 +889,10 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
     delivery: null, mode: choice ? choice.mode : body.mode || 'goal', auto: choice ? choice.auto : null,
     supertask: body.supertask === true,
   };
+  if (prepared) Object.assign(task, { status: 'prepared', start_at: startAt });
   db.tasks.push(task);
   recount(db);
+  if (prepared) return json(201, summary(task));
   if (waitsFor) {
     chainAfter(task, waitsFor, rule);
     emit(db, { type: 'task.updated', task: summary(waitsFor) });
@@ -955,12 +965,27 @@ route('POST', `/api/sandboxes/${ID}/intake/proposal`, async ({ db, p, body }) =>
 route('POST', `/api/tasks/${ID}/start-now`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
-  if (task.status !== 'chained') fail(409, 'conflict', `the task is ${task.status}, not waiting in a chain`);
+  if (task.status !== 'chained' && task.status !== 'prepared') fail(409, 'conflict', `the task is ${task.status}, not waiting in a chain or prepared`);
   touch(db, task, { status: 'queued' });
   later(() => touch(db, task, { status: 'starting' }), 700);
   later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1800);
   return summary(task);
 });
+route('PUT', `/api/tasks/${ID}/schedule`, ({ db, p, body }) => {
+  const task = taskOf(db, p[0]);
+  needTaskWrite(db, task);
+  if (task.status !== 'prepared') fail(409, 'conflict', `the task is ${task.status}, not prepared`);
+  touch(db, task, { start_at: body.start_at ? mockStartAt(body.start_at) : null });
+  return summary(task);
+});
+/** A prepared task's start time (SPEC-105) checked like the server: at most a minute past, 366 days ahead. */
+function mockStartAt(text) {
+  const at = Date.parse(text);
+  if (!Number.isFinite(at)) fail(422, 'invalid', '`start_at` must be an RFC 3339 time, e.g. 2026-10-15T09:00:00Z');
+  if (at - Date.now() < -60e3) fail(422, 'invalid', 'that start time has passed: pick a later one, or start the task now');
+  if (at - Date.now() > 366 * 86400e3) fail(422, 'invalid', 'a task can be scheduled at most 366 days ahead');
+  return new Date(at).toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
 route('POST', `/api/tasks/${ID}/queued-messages`, ({ db, p, body }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
@@ -1040,7 +1065,7 @@ route('GET', `/api/tasks/${ID}/prompt/attachments/${ID}`, ({ db, p }) => {
 route('POST', `/api/tasks/${ID}/stop`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
-  if (task.status === 'chained') { touch(db, task, { status: 'stopped_cancelled' }); return summary(task); }
+  if (task.status === 'chained' || task.status === 'prepared') { touch(db, task, { status: 'stopped_cancelled' }); return summary(task); }
   if (!LIVE.has(task.status)) fail(409, 'conflict', 'The task is not running.');
   touch(db, task, { status: 'stopping', activity: null });
   later(() => touch(db, task, { status: 'stopped_cancelled', account_label: null }), 1400);

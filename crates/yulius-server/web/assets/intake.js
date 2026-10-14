@@ -16,7 +16,7 @@ const PROPOSAL_WAIT_MS = 75000;
 /** Tasks a new task can run after: those of the sandbox that have not ended. */
 export function chainCandidates(ctx, sandbox) {
   return (ctx.store.tasksOf(sandbox.id) || [])
-    .filter((t) => !t.archived && (isLive(t.status) || t.status === 'chained'))
+    .filter((t) => !t.archived && (isLive(t.status) || t.status === 'chained' || t.status === 'prepared'))
     .sort((a, b) => b.number - a.number);
 }
 

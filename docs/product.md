@@ -50,6 +50,9 @@ watching, steering and unblocking.
   A **supertask** (the composer's start menu, for broad work such as security hardening) waits
   for the running tasks of its project, then runs alone: the project's other tasks wait for it,
   also those queued or chained before it, and say so.
+  A task can also be **prepared**: written now and started later, when the person presses Start
+  now ("When I decide") or by itself at a date and time they pick ("At a time…"). Until then it
+  holds no session, can be rescheduled or cancelled, and sits with the queued tasks.
   A half-written task (its prompt, attached files and choices) waits in the composer while
   people look elsewhere, also across a reload, until it starts.
   A task is its owner's: it acts on GitHub with their credentials, so only they change it. Others
