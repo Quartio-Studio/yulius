@@ -419,7 +419,8 @@ fn an_unanswered_trust_prompt_gets_nothing_typed_and_flags_the_task() -> TestRes
         );
         assert!(
             said.iter()
-                .any(|n| n.contains("still asks whether to trust this folder")),
+                .any(|n| n.contains("still asks whether to trust this folder")
+                    && n.ends_with("the task starts by itself once it is answered.")),
             "{said:?}"
         );
         stop(&app, &id).await
@@ -523,6 +524,66 @@ fn keys_typed_while_yulius_types_the_first_message_wait() -> TestResult {
             screen(&app, &id).contains("ECHO: after")
         })
         .await?;
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-117 ONE-006: the folder-trust dialog in front of a prompt task's typed first message is
+/// answered by a person: those keys pass (only a person answers it), and the message with its
+/// image is typed once the dialog is gone.
+#[test]
+fn a_trust_prompt_before_a_typed_first_message_takes_the_answer() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            trust_prompt: true,
+            ..hooked()
+        };
+        let (app, _) = start(&data, &fake, agent, 0, probe).await?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = new_task(
+            &app,
+            &sandbox,
+            &user,
+            "Make it blue\n\n@/srv/shot.png",
+            TaskMode::Prompt,
+        )
+        .await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        wait_for("the trust prompt", Duration::from_secs(60), || async {
+            screen(&app, &id).contains("Yes, I trust this folder")
+        })
+        .await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        let attach = app
+            .terminal_open(&ctx, id.as_str(), Some((120, 40)))
+            .await?;
+        app.terminal_input(&ctx, &attach, b"2\r", false).await?;
+        wait_for("the first message", Duration::from_secs(60), || async {
+            screen(&app, &id).contains("ECHO: [Image #1] Make it blue")
+        })
+        .await?;
+        let shown = screen(&app, &id);
+        let answer = shown
+            .lines()
+            .find(|line| line.starts_with("TRUST ANSWERED:"))
+            .map(str::trim_end);
+        assert_eq!(answer, Some("TRUST ANSWERED: 2"), "{shown}");
+        let said = notices(&mut watch);
+        assert!(
+            !said.iter().any(|n| n.contains("Yulius is typing")),
+            "{said:?}"
+        );
         app.terminal_leave(&attach).await;
         stop(&app, &id).await
     })?;
@@ -663,6 +724,63 @@ fn a_first_message_held_by_an_update_is_not_flagged_after_the_restart() -> TestR
         assert_ne!(activity(&app, &id).await, Some(Activity::NeedsAttention));
         let said = notices(&mut watch);
         assert!(!said.iter().any(|n| n.contains("never sent")), "{said:?}");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// A hooked agent whose goal gets no verdict: the task stays on its run (not Done).
+fn unjudged() -> FakeAgentOptions {
+    FakeAgentOptions {
+        goal_verdict: Some("none"),
+        ..hooked()
+    }
+}
+
+/// ADR-0095: a goal run started by an older server typed a first message before its goal; that
+/// message was submitted and held when the server restarted into this version, which types no
+/// goal after it. The task is flagged and says why, instead of going on without a goal.
+#[test]
+fn a_goal_run_of_an_older_server_held_across_the_update_is_flagged() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let first = runtime()?;
+    let (port, id) = first.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, port) = start(&data, &fake, unjudged(), 0, probe).await?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = new_task(&app, &sandbox, &user, "Make it blue", TaskMode::Goal).await?;
+        wait_for("the goal", Duration::from_secs(60), || async {
+            screen(&app, &id).contains("GOAL SET")
+        })
+        .await?;
+        // What the older server left in the run directory: a first message submitted, held.
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        std::fs::write(
+            Path::new(&attempt.run_dir).join("opening-pending"),
+            b"entered",
+        )?;
+        Ok::<_, BoxError>((port, id))
+    })?;
+    first.shutdown_timeout(Duration::from_secs(5));
+
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, _) = start(&data, &fake, unjudged(), port, probe).await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        app.reconcile().await?;
+        wait_for("the flag", Duration::from_secs(20), || async {
+            activity(&app, &id).await == Some(Activity::NeedsAttention)
+        })
+        .await?;
+        let said = notices(&mut watch);
+        assert!(
+            said.iter()
+                .any(|n| n.contains("Yulius restarted before it set this task's goal")),
+            "{said:?}"
+        );
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

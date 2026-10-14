@@ -76,6 +76,9 @@ pub struct FakeAgentOptions {
     pub opening_turn_ms: Option<u64>,
     /// Each echoed message is a silent turn of this many milliseconds (`--echo-turn-ms`).
     pub echo_turn_ms: Option<u64>,
+    /// The agent never takes a `/goal` launch prompt, like a Claude Code that refuses the
+    /// condition (SPEC-117): it is not passed on.
+    pub ignores_goal_prompt: bool,
     /// Also report these environment variables at start (`--report-env`: set and length, never
     /// the value).
     pub report_env: Vec<String>,
@@ -270,7 +273,8 @@ impl HarnessPort for FakeAgentHarness {
         ) = (
             self.options.answers_first_message || goal_prompt,
             &launch.mode,
-        ) {
+        ) && !(goal_prompt && self.options.ignores_goal_prompt)
+        {
             argv.extend(["--prompt".into(), prompt.clone()]);
         }
         plan.plan.argv = argv;

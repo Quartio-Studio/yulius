@@ -31,7 +31,9 @@ Measured on Claude Code 2.1.292 against a local mock of the Messages API:
 A fresh goal session is launched with `/goal <condition>` as its prompt argument, and nothing is
 typed into it. The condition names the request file and, when they fit in 2000 characters, the
 attached files as plain paths for the Read tool, which shows images. No other first message is
-sent and no `/goal` follows. A launch whose prompt is a `/goal` (also a held one continued in
+sent and no `/goal` follows. Claude Code's record of the goal confirms it, as it confirmed a typed
+one: none within the goal's submit waits (75 s once the session reads input, time a hold keeps
+the prompt not counted) flags the task. A launch whose prompt is a `/goal` (also a held one continued in
 another session) never gets one typed. A folder-trust dialog in front of it is still announced,
 and still flags the task when nobody answers it. A prompt-mode task with images still types its
 first message, the only native image path. From the spawn until its Enter, a person's keystrokes
@@ -57,7 +59,8 @@ are dropped with one notice, except into the trust dialog. Resumed goal sessions
 - A goal task starts at once: no readiness wait, no typed message and no draft race at its start.
   The `opening-pending` marker and the restart handling of SPEC-068 now apply to prompt-mode tasks
   with images only. A goal run that an older server started, with its first message held across
-  the update that deploys this, gets no goal typed after the hold.
+  the update that deploys this, gets no goal typed after the hold: it is flagged instead
+  ("Yulius restarted before it set this task's goal").
 - Conditions may be up to 2000 characters, so a Claude Code with a lower cap would refuse a long
   one. The task is then flagged ("did not take the task's goal").
 - Prompt-mode keys typed before a first message with images is sent are lost and the person is

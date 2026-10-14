@@ -1274,8 +1274,8 @@ impl App {
         runtime.hub.state_changed();
         self.publish_task(&task.id).await;
         if goal_in_prompt {
-            // Nothing to type; a folder-trust dialog in front of the goal is still said.
-            self.spawn_trust_watch(&task.id, &attempt_id);
+            // Nothing to type: the goal is watched until Claude Code records it.
+            self.spawn_goal_watch(&task.id, &attempt_id);
         } else if request_unwritten {
             self.goal_not_taken(&task.id, "Yulius could not write the task's request file")
                 .await;
@@ -1614,24 +1614,54 @@ impl App {
         }
     }
 
-    /// Watches a session that got its goal as its launch prompt until its TUI reads input: a
-    /// folder-trust dialog shown meanwhile is said in the terminal, and one still unanswered
-    /// after [`crate::context::AppConfig::trust_answer_ms`] flags the task (SPEC-117 ONE-005,
-    /// SPEC-106 OTR-002). Claude Code runs the goal once the dialog is answered.
-    fn spawn_trust_watch(self: &Arc<Self>, task_id: &TaskId, attempt_id: &AttemptId) {
+    /// Watches a session that got its goal as its launch prompt (SPEC-117). A folder-trust dialog
+    /// shown before it reads input is said in the terminal, and one still unanswered after
+    /// [`crate::context::AppConfig::trust_answer_ms`] flags the task (ONE-005, SPEC-106 OTR-002);
+    /// Claude Code runs the goal once it is answered. Once it reads input, Claude Code has to
+    /// record the goal within [`GOAL_SUBMIT_WAITS`] (time while a hold keeps the prompt does not
+    /// count), else the task is flagged as for a typed goal never taken (TSK-010).
+    fn spawn_goal_watch(self: &Arc<Self>, task_id: &TaskId, attempt_id: &AttemptId) {
         let app = Arc::clone(self);
         let (task_id, attempt_id) = (task_id.clone(), attempt_id.clone());
         tokio::spawn(async move {
             let mut typed_before = 0;
             let started = tokio::time::Instant::now();
-            if let InputReady::TrustUnanswered = app
+            match app
                 .wait_input_ready(&task_id, &attempt_id, started, false, &mut typed_before)
                 .await
             {
-                app.runtime(&task_id).hub.notice(format!(
-                    "{TRUST_UNANSWERED}; the task starts by itself once it is answered."
-                ));
-                app.flag_task(&task_id).await;
+                InputReady::Ready => {}
+                InputReady::Gone => return,
+                InputReady::TrustUnanswered => {
+                    app.runtime(&task_id).hub.notice(format!(
+                        "{TRUST_UNANSWERED}; the task starts by itself once it is answered."
+                    ));
+                    app.flag_task(&task_id).await;
+                    return;
+                }
+            }
+            let runtime = app.runtime(&task_id);
+            let bound: Duration = GOAL_SUBMIT_WAITS.iter().sum();
+            let step = Duration::from_millis(200);
+            let mut waited = Duration::ZERO;
+            while waited < bound {
+                if runtime.goal_submitted.load(Ordering::SeqCst)
+                    || !app.attempt_live(&task_id, &attempt_id).await
+                {
+                    return;
+                }
+                tokio::time::sleep(step).await;
+                // A prompt held for capacity or an update is not refused: it waits.
+                if !matches!(app.deps.store.open_pause(&task_id).await, Ok(Some(_))) {
+                    waited += step;
+                }
+            }
+            if !runtime.goal_submitted.load(Ordering::SeqCst)
+                && app.attempt_live(&task_id, &attempt_id).await
+            {
+                tracing::error!(task = %task_id, "the task's launch goal was never taken by the agent");
+                app.goal_not_taken(&task_id, "Claude Code did not take the task's goal")
+                    .await;
             }
         });
     }
@@ -2964,10 +2994,23 @@ impl App {
                 // The old server was typing the run's first message (or about to): how much of
                 // it reached the prompt box is unknown, so a person finishes it (SPEC-068
                 // OPN-002). A submitted one that a hold keeps goes on when the hold ends.
-                if opening_unsubmitted(&attempt.run_dir)
-                    && matches!(store.open_pause(&attempt.task_id).await, Ok(None))
+                if opening_unsubmitted(&attempt.run_dir) {
+                    if matches!(store.open_pause(&attempt.task_id).await, Ok(None)) {
+                        self.opening_never_sent(&attempt.task_id).await;
+                    }
+                } else if opening_pending(&attempt.run_dir)
+                    && matches!(
+                        store.task(&attempt.task_id).await,
+                        Ok(Some(task)) if task.mode == TaskMode::Goal
+                    )
                 {
-                    self.opening_never_sent(&attempt.task_id).await;
+                    // A goal run an older server started typed its first message before the goal,
+                    // which this version never types after it (ADR-0095): a person sets it.
+                    self.goal_not_taken(
+                        &attempt.task_id,
+                        "Yulius restarted before it set this task's goal",
+                    )
+                    .await;
                 }
                 continue;
             }

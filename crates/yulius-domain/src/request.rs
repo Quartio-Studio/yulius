@@ -177,8 +177,8 @@ fn attachment_path(line: &str) -> Option<String> {
 
 fn attachments_section(paths: &[String]) -> String {
     let mut out = String::from(
-        "These files are attached to this task (its goal names them); open each with the Read \
-         tool (it shows images):",
+        "These files are attached to this task; open each with the Read tool (it shows \
+         images):",
     );
     for path in paths {
         out.push_str("\n- ");
@@ -352,12 +352,8 @@ pub fn goal_condition(request: &Request, request_path: &str, done: &DoneDefiniti
     }
     let named = format!("Everything requested in {request_path} is done. {done}");
     if !request.attachments.is_empty() {
-        let files = request
-            .attachments
-            .iter()
-            .map(|path| one_line(path))
-            .collect::<Vec<_>>()
-            .join(", ");
+        // As they are: an attachment path holds no control character (`attachment_path`).
+        let files = request.attachments.join(", ");
         let with_files = format!(
             "Everything requested in {request_path} is done. Attached files (open each with the \
              Read tool; it shows images): {files}. {done}"
@@ -580,6 +576,9 @@ mod tests {
             )
         );
         assert!(!goal.contains('@'), "{goal}");
+        // A path is named as it is, its spaces kept.
+        let spaced = goal_condition(&Request::parse("Look\n@'/srv/a  b.png'"), PATH, &done(&[]));
+        assert!(spaced.contains(": /srv/a  b.png. Done"), "{spaced}");
         // Without files, a short request is still quoted and a long one named.
         assert!(!goal_condition(&Request::parse("Short"), PATH, &done(&[])).contains("Attached"));
     }
@@ -623,8 +622,8 @@ mod tests {
         assert!(file.contains("## Request\n\nMake it fast\nreally\n"));
         assert!(
             file.contains(
-                "## Attached files\n\nThese files are attached to this task (its goal names them); \
-                 open each with the Read tool (it shows images):"
+                "## Attached files\n\nThese files are attached to this task; open each with the \
+                 Read tool (it shows images):"
             ),
             "{file}"
         );

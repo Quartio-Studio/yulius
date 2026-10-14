@@ -33,7 +33,7 @@ use yulius_app::ports::store::TaskStore;
 use yulius_contracts::events::UiEvent;
 use yulius_domain::harness::{Harness, Provider};
 use yulius_domain::ids::{AccountId, SandboxId, TaskId, UserId};
-use yulius_domain::task::{Activity, TaskStatus};
+use yulius_domain::task::{Activity, AttemptState, TaskStatus};
 use yulius_domain::time::Timestamp;
 use yulius_ptyhost::test_support::locate_fake_agent;
 use yulius_store::SqliteStore;
@@ -725,8 +725,61 @@ fn an_agent_waiting_for_yulius_does_not_need_a_person() -> TestResult {
     Ok(())
 }
 
-/// TSK-010: a goal typed into a TUI that drops the first submit is typed again until Claude
-/// Code takes it, so the task starts instead of showing the goal unsubmitted.
+/// A goal task that got its goal from its launch prompt, then stopped and continued: the resumed
+/// session (no prompt) gets its `/goal` typed once it reads input (SPEC-117 ONE-007). Returns
+/// once the resumed run's screen replaced the first one's, before its goal.
+async fn continued_goal_task(
+    app: &Arc<App>,
+    sandbox: &SandboxId,
+    user: &UserId,
+) -> Result<TaskId, BoxError> {
+    let id = goal_task(app, sandbox, user, "Tidy the parser").await?;
+    wait_for("the launch goal", Duration::from_secs(60), || {
+        screen_contains(app, &id, "GOAL SET")
+    })
+    .await?;
+    stop(app, &id).await?;
+    let ctx = yulius_app::auth::AuthContext {
+        user: app.deps.store.user(user).await?.ok_or("user")?,
+        csrf_token: None,
+        session_hash: None,
+    };
+    app.continue_task(
+        &ctx,
+        id.as_str(),
+        &yulius_contracts::api::tasks::ContinueTask { account_id: None },
+    )
+    .await?;
+    wait_for("the resumed session", Duration::from_secs(60), || async {
+        let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+        attempts.len() == 2
+            && attempts[1].state == AttemptState::Live
+            && screen_contains(app, &id, "FAKE-AGENT READY").await
+            && !screen_contains(app, &id, "GOAL SET").await
+    })
+    .await?;
+    Ok(id)
+}
+
+/// The resumed session's goal was typed: its launch had no prompt, and the goal turn ran.
+async fn goal_typed_into_the_resumed_session(app: &App, id: &TaskId) -> TestResult {
+    wait_for("the typed goal", Duration::from_secs(60), || {
+        screen_contains(app, id, "ECHO: /goal Tidy the parser")
+    })
+    .await?;
+    let attempts = app.deps.store.attempts(id).await?;
+    let second = attempts.get(1).ok_or("no resumed run")?;
+    let launch = std::fs::read_to_string(Path::new(&second.run_dir).join("fake-launch.txt"))?;
+    assert!(
+        launch.contains("Resume {") && launch.contains("prompt: None"),
+        "{launch}"
+    );
+    Ok(())
+}
+
+/// TSK-010, SPEC-117 ONE-007: a goal typed into a resumed session whose TUI drops the first
+/// submit is typed again until Claude Code takes it, so the task goes on instead of showing the
+/// goal unsubmitted.
 #[test]
 fn a_goal_the_tui_dropped_is_submitted_again() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -736,17 +789,15 @@ fn a_goal_the_tui_dropped_is_submitted_again() -> TestResult {
         let agent = FakeAgentOptions {
             transcript: true,
             hooks: true,
-            // The dropped submit costs the first two submit waits (13 s).
+            // The resumed session drops the typed goal's first submit, which costs the first two
+            // submit waits (13 s). The launch goal is no typed line.
             drop_lines: Some(1),
             ..FakeAgentOptions::default()
         };
         let (app, _) = start(&data, &fake, agent, 0).await?;
         let (sandbox, user) = seed(&app, &data).await?;
-        let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
-        wait_for("the goal to start", Duration::from_secs(60), || {
-            screen_contains(&app, &id, "GOAL SET")
-        })
-        .await?;
+        let id = continued_goal_task(&app, &sandbox, &user).await?;
+        goal_typed_into_the_resumed_session(&app, &id).await?;
         // About a second after the goal turn, also at a load average of 60 (SPEC-067).
         wait_for("Done", Duration::from_secs(45), || async {
             activity(&app, &id).await == Some(Activity::Done)
@@ -758,9 +809,9 @@ fn a_goal_the_tui_dropped_is_submitted_again() -> TestResult {
     Ok(())
 }
 
-/// TSK-010 (#243): a SessionStart hook answered before the supervisor watches the run (a fast
-/// TUI, a busy host) still counts: the goal is typed once the TUI is quiet, not after the 45 s
-/// fallback for a TUI without hooks.
+/// TSK-010 (#243), SPEC-117 ONE-007: a resumed session's SessionStart hook answered before the
+/// supervisor watches the run (a fast TUI, a busy host) still counts: the goal is typed once the
+/// TUI is quiet, not after the 45 s fallback for a TUI without hooks.
 #[test]
 fn a_session_start_before_the_run_is_watched_still_types_the_goal_at_once() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -774,12 +825,15 @@ fn a_session_start_before_the_run_is_watched_still_types_the_goal_at_once() -> T
         };
         let (app, _) = start_with(&data, &fake, agent, 0, true).await?;
         let (sandbox, user) = seed(&app, &data).await?;
-        let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
+        let id = continued_goal_task(&app, &sandbox, &user).await?;
         // Well under the hookless fallback (45 s): the goal follows the hook, not the fallback.
-        wait_for("the goal to start", Duration::from_secs(30), || {
-            screen_contains(&app, &id, "GOAL SET")
-        })
-        .await?;
+        let resumed = Instant::now();
+        goal_typed_into_the_resumed_session(&app, &id).await?;
+        assert!(
+            resumed.elapsed() < Duration::from_secs(30),
+            "{:?}",
+            resumed.elapsed()
+        );
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -861,6 +915,49 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
         assert_eq!(screen.matches("GOAL SET").count(), 1, "{screen}");
         assert!(!screen.contains("[Image #1]"), "{screen}");
         assert!(!screen.contains("STOP BLOCKED"), "{screen}");
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-117 ONE-001, TSK-010: a `/goal` launch prompt that Claude Code never takes (no goal
+/// recorded once the session reads input, within the goal's submit waits) flags the task and says
+/// so, as a typed goal that was never taken does.
+#[test]
+fn a_launch_goal_never_taken_flags_the_task() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            ignores_goal_prompt: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        // The submit waits add up to 75 s after the session reads input.
+        wait_for("the flag", Duration::from_secs(150), || async {
+            activity(&app, &id).await == Some(Activity::NeedsAttention)
+        })
+        .await?;
+        let mut said = Vec::new();
+        while let Ok(frame) = watch.try_recv() {
+            if let yulius_app::hub::HubFrame::Notice(text) = frame {
+                said.push(text);
+            }
+        }
+        assert!(
+            said.iter()
+                .any(|n| n.contains("Claude Code did not take the task's goal")),
+            "{said:?}"
+        );
+        let screen = app.runtime(&id).hub.screen_text();
+        assert!(!screen.contains("/goal"), "a goal was typed:\n{screen}");
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
