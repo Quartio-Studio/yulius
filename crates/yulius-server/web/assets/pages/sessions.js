@@ -51,7 +51,6 @@ function openHowTo(ctx) {
   });
 }
 
-/** Mount the Sessions page of a sandbox. */
 /** The list while it loads (SPEC-120): session rows with the kind tile, a title and a meta line. */
 function loadingRows() {
   return h('div', { class: 'ss-rows' }, [55, 70, 40, 62].map((title) => h('div', { class: 'ss-row-link' },
@@ -59,6 +58,7 @@ function loadingRows() {
     h('span', { class: 'ss-row-main' }, h('span', { class: 'ss-row-title' }, bar(title)), h('span', { class: 'ss-row-meta' }, bar(45))))));
 }
 
+/** Mount the Sessions page of a sandbox. */
 export function mountSessionsPage(ctx, sandbox) {
   const base = sessionsPath(sandbox);
   const query = currentLocation().query;

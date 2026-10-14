@@ -94,6 +94,8 @@ test('a grid of cards loads as cards, and an editor as its fields', async ({ app
   await expect(browser.locator(shape)).toHaveText('Loading the subscriptions…');
   await expectQuietShape(browser, shape);
   expect(await browser.locator(`${shape} .grid-2 > .card`).count()).toBeGreaterThanOrEqual(2);
+  // The capacity read is not held: measure once its panel has landed above the cards.
+  await expect(browser.locator('#main section[aria-label="Capacity"] .skeleton')).toHaveCount(0);
   const loading = await box(browser, `${shape} .grid-2`);
   expect(await axeViolations(browser)).toEqual([]);
   await release(browser);
@@ -141,7 +143,8 @@ test('Sessions, CI and the Dashboard load in their own layouts', async ({ app, b
   expect(await axeViolations(browser)).toEqual([]);
   await release(browser);
   await expect(browser.locator(runs)).toHaveCount(0);
-  expectSameBox(config, await box(browser, '#main section[aria-label="CI configuration"]'), ['x', 'width']);
+  // No banner comes with this read, so the configuration card keeps its top edge too.
+  expectSameBox(config, await box(browser, '#main section[aria-label="CI configuration"]'), ['x', 'y', 'width']);
   expectSameBox(run, await box(browser, '#main .item-card'), ['x', 'width']);
 
   // Dashboard: the six key figures in their strip, then the chart cards.
@@ -151,11 +154,14 @@ test('Sessions, CI and the Dashboard load in their own layouts', async ({ app, b
   expect(await browser.locator(`${shape} .db-kpis > .db-kpi`).count()).toBe(6);
   const kpis = await box(browser, `${shape} .db-kpis`);
   const firstKpi = await box(browser, `${shape} .db-kpi`);
+  // The Subscriptions card (the capacity is read with the figures) comes before the charts.
+  const subscriptionsCard = await box(browser, `${shape} .db-kpis + .db-card`);
   expect(await axeViolations(browser)).toEqual([]);
   await release(browser);
   await expect(browser.locator(shape)).toHaveCount(0);
   expectSameBox(kpis, await box(browser, '#main .db-kpis'), ['x', 'y', 'width']);
   expectSameBox(firstKpi, await box(browser, '#main .db-kpi'), ['x', 'y', 'width']);
+  expectSameBox(subscriptionsCard, await box(browser, '#main .db-kpis + .db-card'), ['x', 'y', 'width']);
 });
 
 type HoldingGit = Window & { __yuliusHoldGit?: Promise<void>; __releaseGit?: () => void };

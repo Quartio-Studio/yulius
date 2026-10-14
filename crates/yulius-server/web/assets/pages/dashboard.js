@@ -149,15 +149,24 @@ function subscriptions(capacity) {
     accounts.length ? h('div', { class: 'account-list' }, accounts.map((a, i) => accountUsage({ ...a, id: a.id || `pool-${i}`, provider: 'anthropic' }, { foldable: true, open: false }))) : null));
 }
 
-/** Render `AnalyticsSummary` (docs/api.md "Administration, analytics, status"). */
-/** The page while its figures load (SPEC-120): the six key figures in their strip, then chart cards. */
+/**
+ * The page while its figures load (SPEC-120): the six key figures in their strip, the
+ * Subscriptions card (shown whenever the capacity is read) and chart cards. Its own stack: the
+ * page's `.db` host already holds the container.
+ */
 function loadingLayout() {
-  const chartCard = () => h('div', { class: 'card db-card' }, h('div', { class: 'db-card-titles' }, bar(40), bar(60)), h('div', { class: 'skeleton-chart' }));
-  return h('div', { class: 'db' },
-    h('div', { class: 'card db-kpis' }, Array.from({ length: 6 }, () => h('div', { class: 'db-kpi' },
-      h('div', { class: 'db-kpi-label' }, bar(60)), h('div', { class: 'db-kpi-value' }, bar(50)), h('div', { class: 'db-kpi-sub' }, bar(70))))),
+  const titles = () => h('div', { class: 'db-card-titles' }, bar(40), bar(60));
+  const chartCard = () => h('div', { class: 'card db-card' }, titles(), h('div', { class: 'skeleton-chart' }));
+  return h('div', { class: 'stack' },
+    // Tokens (the fourth figure) has a note line under its sub line: what came from the cache.
+    h('div', { class: 'card db-kpis' }, Array.from({ length: 6 }, (_, i) => h('div', { class: 'db-kpi' },
+      h('div', { class: 'db-kpi-label' }, bar(60)), h('div', { class: 'db-kpi-value' }, bar(50)), h('div', { class: 'skeleton-spark' }),
+      h('div', { class: 'db-kpi-sub' }, bar(70)), i === 3 ? h('div', { class: 'db-kpi-note' }, bar(50)) : null))),
+    h('div', { class: 'card db-card db-subscriptions-outline' }, titles(), h('div', { class: 'skeleton-field' })),
     h('div', { class: 'db-row' }, chartCard(), chartCard()));
 }
+
+/** Render `AnalyticsSummary` (docs/api.md "Administration, analytics, status"). */
 
 export function renderSummary(data, previous = null, days = 30, capacity = null) {
   const tasks = data.tasks || {};

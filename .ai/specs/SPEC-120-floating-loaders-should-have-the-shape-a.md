@@ -82,7 +82,8 @@ arrives it lands where the fields were, without the page jumping.
   - Review round 1 added: the icon tile shimmers; the workflow editor's sections and summary,
     Sessions rows, CI's configuration card and runs and the Dashboard's key figures land where
     their outlines were; narrow Tasks rows (390 px) are as tall as real ones; the reduced-motion
-    rule covers the bars; axe passes in the light theme.
+    rule covers the bars; axe passes in the light theme. Round 2 added the Dashboard's
+    Subscriptions card and CI's configuration card top edges.
   - Each keeps the SPEC-092 checks: `role="status"` label, no visible "Loading", axe clean.
 - `loading.e2e.ts` (SPEC-092) now counts `.skeleton-bar`s on the Git page.
 - Gates: `scripts/dev ci` and the full e2e suite.
@@ -104,6 +105,9 @@ arrives it lands where the fields were, without the page jumping.
 - The Tasks toolbar always draws two chip outlines (Author, Origin): whether the real chips show
   depends on the tasks (two or more authors or origins). A team sandbox usually has both; a
   one-person sandbox sees the summary move up a line when they do not.
+- The Dashboard draws what the page usually shows: the Subscriptions card under the key figures
+  (it shows whenever the capacity is read) and a note line under Tokens (what came from the
+  cache). Without them the cards below move by that card or that line, the one move left.
 - Parts of a page that do not depend on the read are drawn at once: the Tasks column names and
   toolbar (tab names, chip outlines, a summary bar), and the Subscriptions capacity panel, now
   read beside the subscriptions instead of after them, so it does not push them down when it
