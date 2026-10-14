@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, mock, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -216,6 +216,21 @@ test('sidebar rows show the task number apart from the pull request number', asy
     return right - row.querySelector('.task-quick-archive')!.getBoundingClientRect().left;
   });
   expect(overlap).toBeLessThanOrEqual(0);
+  // Review round 2: a row that cannot be archived shows only the menu, and its title ends before it.
+  await at(264);
+  await browser.locator('.task-row:has-text("Checkout API")').hover();
+  const covered = await browser.evaluate(() => {
+    const row = [...document.querySelectorAll('.task-list .task-row')].find((el) => el.textContent!.includes('Checkout API'))!;
+    const link = row.querySelector('.task-link')!;
+    const right = Math.max(...[...link.children].map((el) => el.getBoundingClientRect().right));
+    return right - row.querySelector('.task-kebab')!.getBoundingClientRect().left;
+  });
+  expect(covered).toBeLessThanOrEqual(0);
+
+  // A finished task whose shells still run reads "Working" without its pull request: the tooltip
+  // names it (and the narrowest sidebar shows no chip).
+  await touchTask(browser, 'sb_studio', 13, { background_shells: 1, background_shells_since: new Date().toISOString() });
+  await expect.poll(() => browser.evaluate(() => (document.querySelector('.task-list .task-row:has(.task-num[title="Task #13"]) .task-link') as HTMLElement).title)).toMatch(/^Task #13 Improve the code — .* · PR #520 · /);
   expect(await axeViolations(browser)).toEqual([]);
 });
 

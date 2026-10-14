@@ -62,7 +62,8 @@ function prChip(pr) {
   const check = pr.state === 'open' ? CHECK_ICON[pr.checks] : null;
   const label = `Pull request #${pr.number} · ${pr.state}${pr.state === 'open' && CHECK_TEXT[pr.checks] ? ` · ${CHECK_TEXT[pr.checks]}` : ''}`;
   const title = pr.state === 'open' && pr.checks === 'unknown' ? `${label}. ${UNKNOWN_CHECKS}` : label;
-  return h('a', { class: ['tl-pr-chip', pr.state === 'merged' && 'merged', pr.state === 'closed' && 'closed'], href: pr.url, target: '_blank', rel: 'noopener noreferrer', title, 'aria-label': label },
+  const name = `PR #${pr.number}, pull request, ${pr.state}${pr.state === 'open' && CHECK_TEXT[pr.checks] ? `, ${CHECK_TEXT[pr.checks]}` : ''}`;
+  return h('a', { class: ['tl-pr-chip', pr.state === 'merged' && 'merged', pr.state === 'closed' && 'closed'], href: pr.url, target: '_blank', rel: 'noopener noreferrer', title, 'aria-label': name },
     `PR #${pr.number}`, check ? h('span', { class: `tone-${check[1]}` }, icon(check[0], { size: 12 })) : null);
 }
 

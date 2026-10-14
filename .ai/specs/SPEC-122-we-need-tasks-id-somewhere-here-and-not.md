@@ -48,8 +48,9 @@ details (`prLine`) link the number.
 - TID-3: Every pull request chip reads `PR #N` (the word "PR" replaces the branch icon), with
   its checks icon and its state colours as before: in the sidebar, the Tasks page, the task
   overview, the Git board's cards, the Git review page, the task view's delivery strip and its
-  delivery details. Its tooltip and accessible name keep saying "Pull request #N", also inside a
-  sidebar row's link.
+  delivery details. Its tooltip keeps "Pull request #N · state · checks". Its accessible name
+  starts with what it shows and then says what it is ("PR #N, pull request, open, checks
+  running", WCAG 2.5.3), also inside a sidebar row's link.
 - TID-4: The sidebar's rows stay one line at any sidebar width (200 to 480 px). Nothing spills
   out of a row, the number and any chip or time shown are whole, and every title keeps at least
   3 em. When space runs short, the time gives way first: below a 360 px task list on rows with a
@@ -62,8 +63,8 @@ details (`prLine`) link the number.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Sidebar rows show the task number before the title
-- [ ] Pull request chips read "PR #N" everywhere, so a bare #N always means a task
+- [x] Sidebar rows show the task number before the title
+- [x] Pull request chips read "PR #N" everywhere, so a bare #N always means a task
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
@@ -72,7 +73,8 @@ details (`prLine`) link the number.
 - In the mock studio sandbox, the row of #13 "Improve the code" reads `#13`, then `PR #520`,
   then the title. A row without a pull request (#12 "Checkout API") reads `#12` before its
   title.
-- The number's accessible text is "Task #13". The chip's tooltip starts with "Pull request #520".
+- The number's accessible text is "Task #13". The chip's tooltip starts with "Pull request #520",
+  and its accessible name starts with "PR #520, pull request".
 - The delivery strip of #13's task view and its chip on the Tasks page read `PR #520`.
 - At sidebar widths of 456, 328 and 200 px the rows are one line high, nothing is cut or
   spills, and titles are at least 36 px wide. At 456 px every row shows its time. At 200 px no
@@ -84,11 +86,17 @@ details (`prLine`) link the number.
 
 `e2e/tests/navigation.e2e.ts`:
 - "sidebar rows show the task number apart from the pull request number" covers TID-1, TID-2 and
-  TID-4 at three sidebar widths, with axe.
-- "the Tasks page rows show the task number before the title" covers TID-5.
+  TID-4. It checks three sidebar widths and axe. It also checks that a hovered title ends before
+  Archive and the menu (an archivable row at 296 px, a non-archivable one at 264 px), and that
+  the tooltip names the pull request once, also in the "still working" state with shells.
+- "the navigation drawer rows fit a 320 px phone with task and pull request numbers" covers TID-4
+  on a phone.
+- "the Tasks page rows show the task number before the title" covers TID-5 and the row's
+  "Task #N" tooltip.
 
-`e2e/tests/git.e2e.ts`: "pull request chips read "PR #N" wherever they show" covers TID-3 in the
-sidebar, the Tasks page and the task view's delivery strip, with the tooltip kept.
+`e2e/tests/git.e2e.ts`: "pull request chips read "PR #N" wherever they show" covers TID-3. It
+checks the sidebar, the Tasks page, the task view's delivery strip, the Git board and the
+delivery details, and that each chip's name starts with what it shows.
 
 `e2e/tests/pulls.e2e.ts` finds chips by `#520` and keeps passing. In `e2e/tests/task-done.e2e.ts`,
 the sidebar link's name now starts "Needs you in the browser Task #10 …".

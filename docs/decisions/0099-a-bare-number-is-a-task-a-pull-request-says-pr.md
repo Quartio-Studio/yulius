@@ -20,9 +20,10 @@ in their chips. In any one row the two notations looked the same.
 - A bare `#N` always means a Yulius task. The sidebar's rows and the Tasks page's rows show it,
   muted with tabular figures, before the title. Screen readers hear "Task #N", and its tooltip
   says the same.
-- A pull request always carries its qualifier. Every chip (`prChip` in `dom.js`, and the task
-  view's delivery strip) reads `PR #N`. The word replaces the branch icon, and the tooltip and
-  accessible name keep "Pull request #N".
+- A pull request always carries its qualifier. Every chip reads `PR #N`: `prChip` in `dom.js`,
+  the Git board's chip in `git.js`, the task view's delivery strip, and the link in the delivery
+  details. The word replaces the branch icon. The tooltip keeps "Pull request #N · state", and the
+  accessible name starts with what the chip shows: "PR #N, pull request, open" (WCAG 2.5.3).
 - A narrow sidebar gives way in a fixed order. The task list is a size container, and below
   360 px rows with a pull request drop their time. Below 280 px every row drops it, and below
   250 px the chip goes too. The row's tooltip still names the time and the pull request.

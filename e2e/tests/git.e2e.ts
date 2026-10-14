@@ -65,7 +65,7 @@ test('the Git page shows delivery state without merge, release, deploy or verify
   // The task view's delivery line shows the pull request, not a Merge button.
   await app.open(mock('/s/studio/t/13'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/^#13 /);
-  await expect(screen.getByRole('button', /^Pull request #520/)).toBeVisible();
+  await expect(screen.getByRole('button', /^PR #520, pull request/)).toBeVisible();
   await expect(screen.getByRole('button', 'Merge…')).toBeHidden();
 });
 
@@ -86,10 +86,13 @@ test('pull request chips read "PR #N" wherever they show', async ({ app, browser
   await expect(browser.locator('#main a.tl-pr-chip').first()).toHaveAttribute('title', /^Pull request #\d+/);
 
   // The sidebar row's chip is heard as a pull request, not as "PR".
-  await expect(screen.getByRole('link', /Task #13 .*Pull request #520, open/)).toBeVisible();
+  await expect(screen.getByRole('link', /Task #13 PR #520\s*, pull request, open/)).toBeVisible();
+  // Review round 2 (WCAG 2.5.3): a chip's name starts with what it shows.
+  expect(await browser.evaluate(() => [...document.querySelectorAll('#main .tl-pr-chip')]
+    .filter((el) => !(el.getAttribute('aria-label') ?? '').startsWith((el.textContent ?? '').trim())).length)).toBe(0);
 
   await app.open(mock('/s/studio/t/13'));
-  await expect(screen.getByRole('button', /^Pull request #520/)).toHaveText('PR #520');
+  await expect(screen.getByRole('button', /^PR #520, pull request/)).toHaveText('PR #520');
 
   // Review round 1: the Git board's cards carry their own chip, under the task's #N.
   await app.open(mock('/s/studio/git'));

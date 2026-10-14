@@ -379,7 +379,7 @@ export function deliveryStrip(ctx, task, delivery, { reload = () => {} } = {}) {
   if (pr) {
     const checks = pr.state === 'open' ? CHECKS[pr.checks] : null;
     const glyph = checks ? CHECK_ICONS[pr.checks] : null;
-    const label = `Pull request #${pr.number}, ${pr.state}${checks ? `, ${checks[0]}` : ''} — delivery details`;
+    const label = `PR #${pr.number}, pull request, ${pr.state}${checks ? `, ${checks[0]}` : ''} — delivery details`;
     out.push(h('button', { type: 'button', class: ['tl-pr-chip', 'strip-pr', pr.state === 'merged' && 'merged', pr.state === 'closed' && 'closed'], title: label, 'aria-label': label, onClick: () => openDeliveryDialog(ctx, task).result.then(reload) },
       `PR #${pr.number}`, glyph ? h('span', { class: `tone-${checks[1]}` }, icon(glyph, { size: 12 })) : null));
   }
