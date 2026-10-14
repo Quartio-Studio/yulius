@@ -163,7 +163,7 @@ test('a task view reads Done once its pull request is read late', async ({ app, 
   await expect(browser.locator('.taskview .step-item').first()).toBeVisible();
   // The mock's one browser request (task #10, about 5 s after the start) redraws the strip too;
   // it came before the release, so only the pull request read can make the strip Done.
-  await expect(screen.getByRole('link', /^Needs you in the browser AWS login for deploy/)).toBeVisible({ timeout: 15_000 });
+  await expect(screen.getByRole('link', /^Needs you in the browser Task #10 AWS login for deploy/)).toBeVisible({ timeout: 15_000 });
   const strip = browser.locator('.strip-status');
   await expect(strip).toHaveText('Your turn');
   await browser.evaluate(() => (window as unknown as HoldingGit).__releaseGit!());

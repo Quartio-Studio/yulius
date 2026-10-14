@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- Task numbers show in the sidebar and on the Tasks page, and pull request chips say "PR"
+  (SPEC-122, ADR-0099, task #108). Each row reads `#108` (heard as "Task #108") before its
+  title, and the chip reads `PR #450` everywhere, so a bare `#N` is always a task. In a narrow
+  sidebar the time gives way first, then the chip, and the row's tooltip still names both.
 - Loading fields take the shape of what loads (SPEC-120, ADR-0097, task #106). The Git page loaded
   as three grey bars under its header, and every list, table and editor did the same. Now each
   loading state is drawn with its page's own layout. The Git page shows its two status cards,
