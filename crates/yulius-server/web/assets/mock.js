@@ -863,13 +863,19 @@ function finishOnboarding(db, sandbox) {
   releaseWaiting(db, sandbox);
   resync(db);
 }
-route('POST', `/api/sandboxes/${ID}/onboarding/approve`, ({ db, p }) => {
+route('POST', `/api/sandboxes/${ID}/onboarding/approve`, async ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'write');
   if (sandbox.onboarding !== 'pending') fail(409, 'conflict', 'nothing awaits approval');
-  sandbox.onboarding = 'preparing';
+  // In the server's order (`start_onboarding`): the task is created and its run started, and only
+  // then is the sandbox `preparing`. A test can hold the start in between
+  // (`__yuliusMock.holdApprove = promise`), while the task's events have already gone out.
   const task = preparationTask(db, sandbox);
   touch(db, task, { status: 'starting', branch: 'yulius/prepare-repository' });
+  if (db.holdApprove) await db.holdApprove;
+  // …and make the run's start fail then (`__yuliusMock.failApprove = true`), as `start_run` can.
+  if (db.failApprove) fail(409, 'conflict', 'the onboarding task could not start');
+  sandbox.onboarding = 'preparing';
   later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1200);
   // A test that sets `__yuliusMock.manualOnboarding` ends it itself (`finishOnboarding(slug)`).
   if (!db.manualOnboarding) later(() => finishOnboarding(db, sandbox), 9000);
@@ -3938,6 +3944,13 @@ export function createMockTransport(params) {
   window.__yuliusMock = db; // debugging aid in the browser console (mock mode only)
   // Tests change a task as the server would announce it (`touchTask('sb_studio', 12, {…})`).
   db.finishOnboarding = (slug) => finishOnboarding(db, db.sandboxes.find((s) => s.slug === slug));
+  // Someone else presses Start onboarding (another person or tab): the approval, without its hold.
+  db.startOnboarding = (slug) => {
+    const sandbox = db.sandboxes.find((s) => s.slug === slug);
+    touch(db, preparationTask(db, sandbox), { status: 'starting', branch: 'yulius/prepare-repository' });
+    sandbox.onboarding = 'preparing';
+    resync(db);
+  };
   db.touchTask = (sandboxId, number, changes) => touch(db, db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number), changes);
   // A pull request changed on the server (`changePull('sb_studio', 520, { state: 'merged' })`):
   // announced like the server does, unless `announce` is false (a change Yulius did not see).
