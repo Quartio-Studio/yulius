@@ -8,7 +8,7 @@ Accepted. Specified in
 Amended by [0052](0052-only-keystrokes-count-as-typing.md) (SPEC-068, #266): a restart during the
 typing flags the task, and a held first message keeps its images. For goal tasks superseded by
 [0095](0095-a-goal-task-starts-with-its-goal-as-the-launch-prompt.md): their only first message is
-the `/goal` launch prompt, which names the attached files.
+the `/goal` launch prompt, which names the attached files. Since [0101](0101-attached-files-keep-their-place-in-the-prompt.md) each image is pasted where it sits in the text, not first.
 
 ## Context
 
