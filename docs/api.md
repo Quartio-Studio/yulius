@@ -1270,5 +1270,9 @@ task; other hooks answer as usual.
   once per run, secret and channel (`vault.agent.redacted`).
 - MCP: `secrets_list`, `browser_fill_secret {tab_id, secret, field?: value|password|username|totp,
   selector?}` and `secret_request_hosts {secret, hosts, reason?}` (stores a request a person
-  allows, audited `vault.agent.request`, flags the task as needing a person; binds nothing);
-  every MCP result is redacted.
+  allows, audited `vault.agent.request`, flags the task as needing a person; binds nothing),
+  and `secret_copy_to_env {secrets, path?: ".env", reason?}` (SPEC-129: writes the values of
+  secrets a person allowed into an ignored, untracked dotenv file of the task's worktree and
+  their names into `.env.example`, audited `vault.agent.env`; a secret not yet allowed is asked
+  for instead, audited `vault.agent.env_request`, and nothing is written); every MCP result is
+  redacted.

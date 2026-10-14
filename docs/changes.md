@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- Keys have a default place: a git-ignored `.env` beside a tracked `.env.example` (SPEC-129,
+  ADR-0105, task #111). When a project's code needs an agent secret's real value, the agent calls
+  `secret_copy_to_env`. Yulius writes the value into `.env` and the name into `.env.example`; the
+  agent only ever sees `[secret:NAME]`, so it never writes the masked text by mistake. Git must
+  ignore the file and not track it, or nothing is written. A person allows each secret once on the
+  Secrets page ("Task #N asks to copy its value into the project's git-ignored .env": Allow,
+  Dismiss, later Revoke). The briefing, `secrets_list` and `infra-bootstrap` name this default.
+  This prepares Yulius CD (task #113).
 - Notes feel like a shared document (SPEC-112, ADR-0091, task #97). The Notes tabs go in any
   order: drag one along the strip, press Alt+← / Alt+→ on it, or use its context menu; the order
   is kept per browser, and until someone moves them Team comes first and opens first. A selection

@@ -104,3 +104,4 @@ number differs from the file name, and a record this index does not list.
 - [0093](0093-a-shown-secret-value-stays-masked.md): A shown secret value stays masked until its eye is pressed; a quick copy shows on hover
 - [0092](0092-screens-remember-where-they-were-left.md): Screens remember where they were left: places in the router per browser tab, tool views kept for the 3 sandboxes used last
 - [0100](0100-the-wordmark-is-set-like-the-composer-quote.md): The wordmark is set like the composer's quote: Tenor Sans at 400 and the quote's size, the name as written, untracked
+- [0105](0105-agents-copy-allowed-secrets-into-an-ignored-env.md): Keys live in a git-ignored `.env` beside a tracked `.env.example`; agents copy an agent secret there with `secret_copy_to_env` only after a person allows it
