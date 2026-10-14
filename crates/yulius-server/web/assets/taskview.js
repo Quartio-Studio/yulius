@@ -625,6 +625,8 @@ export function mountComposer(ctx, sandbox) {
     h('div', { class: 'composer-tools' }, modeChip, workflowChip, afterChip, h('div', { class: 'composer-right' }, previewButton, modelChip, effortChip, startButton)));
   // While the sandbox awaits onboarding, a centred message takes the card's place (SPEC-096).
   const gate = h('section', { class: 'onboarding-gate', hidden: true, 'aria-labelledby': `onboarding-gate-${sandbox.id}` });
+  // Says what changed when someone else starts onboarding or it lands (the gate's text is rebuilt).
+  const gateNews = h('span', { class: 'sr-only', role: 'status' });
   const card = h('div', { class: 'composer-card' },
       // A brand's niche for its mark (hidden unless a brand shows it; styles.css "Brand details").
       niche,
@@ -633,7 +635,7 @@ export function mountComposer(ctx, sandbox) {
       box,
       h('div', { class: 'composer-hint muted xs' }, modeHint, h('span', { class: 'composer-hint-sep', 'aria-hidden': 'true' }, ' · '), hint),
       intakeSlot);
-  const el = h('div', { class: 'composer' }, repoBar, card, gate);
+  const el = h('div', { class: 'composer' }, repoBar, card, gate, gateNews);
   // Files dropped (or an image pasted) on the prompt reach the new task's agent by path.
   attachPromptDrop(ctx, { box, prompt, label: 'Drop to add to the prompt', upload: draftAttachments(ctx, sandbox.id), onAttach: (items) => {
     // An upload that ends after the person left still joins the draft (DRF-002), and shows in the
@@ -792,10 +794,23 @@ export function mountComposer(ctx, sandbox) {
     // shows only the onboarding message, never the task input; the composer stays built, hidden.
     const preparing = sb.onboarding === 'pending' || sb.onboarding === 'preparing';
     const wasGated = !gate.hidden;
-    // Rebuilt only when what it says changes, so a task event does not take the focus from it.
     const prep = preparing ? (ctx.store.tasksOf(sb.id) || []).find((t) => t.origin === 'onboarding') : null;
-    const key = preparing ? [sb.onboarding, sb.name, sb.access, prep ? prep.number : ''].join('|') : '';
-    if (key !== gateKey) setChildren(gate, preparing ? onboardingGate(sb, prep) : null);
+    if (sb.onboarding === 'pending' && prep) loadPlan(prep);
+    // Rebuilt only when what it says changes (task events are frequent), and a rebuild keeps the
+    // keyboard on its action.
+    const shown = sb.onboarding === 'pending'
+      ? [prep && prep.title, prep && plans.get(prep.id), branchOf(sb)]
+      : [prep && phaseOf(prep)];
+    const key = preparing ? JSON.stringify([sb.onboarding, sb.name, sb.slug, sb.access, prep && prep.number, ...shown]) : '';
+    if (key !== gateKey) {
+      const before = gateKey ? JSON.parse(gateKey)[0] : null;
+      const hadFocus = gate.contains(document.activeElement);
+      setChildren(gate, preparing ? onboardingGate(sb, prep) : null);
+      if (hadFocus && preparing) focusGate();
+      if (before && before !== (preparing ? sb.onboarding : null)) {
+        gateNews.textContent = sb.onboarding === 'preparing' ? 'Onboarding started.' : preparing ? '' : 'Onboarding finished: the task box is ready.';
+      }
+    }
     gateKey = key;
     gate.hidden = !preparing;
     card.hidden = preparing;
@@ -805,52 +820,93 @@ export function mountComposer(ctx, sandbox) {
     startButton.disabled = !write;
     prompt.disabled = !write;
     startButton.title = !write ? 'Requires write access' : '';
-    // Onboarding landed while the page was open: the task box is ready for typing.
+    // Onboarding landed while the page was open: the task box is ready for typing, unless the
+    // person is busy elsewhere on the page.
     if (wasGated && !preparing && el.isConnected) {
       fit();
-      if (!prompt.disabled && !isPhone()) prompt.focus();
+      const idle = document.activeElement === document.body || el.contains(document.activeElement) || !document.activeElement;
+      if (idle && !prompt.disabled && !isPhone()) prompt.focus();
     }
+  }
+
+  const branchOf = (sb) => (sb.profile && sb.profile.integration_branch) || baseBranch;
+  /** Where an onboarding task stands, as the gate words it (`onboarding_status` on the server). */
+  const phaseOf = (task) => (task.status === 'waiting_capacity' ? 'capacity' : isLive(task.status) || task.status === 'chained' ? 'running' : 'stopped');
+
+  // The onboarding task's own plan (its steps' titles) per task id: what exactly it will do,
+  // whichever kind it is (`onboarding_prompt` or `environment_prompt`). `null` while it loads,
+  // `false` when it could not be read.
+  const plans = new Map();
+  let destroyed = false;
+  function loadPlan(task) {
+    if (plans.has(task.id)) return;
+    plans.set(task.id, null);
+    ctx.api.get(`/api/tasks/${enc(task.id)}`)
+      .then((detail) => {
+        const steps = detail && Array.isArray(detail.steps_list) ? detail.steps_list.map((step) => step.title).filter(Boolean) : [];
+        plans.set(task.id, steps.length ? steps : false);
+      })
+      .catch(() => plans.set(task.id, false))
+      .finally(() => { if (!destroyed) renderBanner(); });
   }
 
   /** What onboarding will do and its one action: Start onboarding, or follow it while it runs. */
   function onboardingGate(sb, prep) {
     const titleId = `onboarding-gate-${sandbox.id}`;
-    const branch = (sb.profile && sb.profile.integration_branch) || baseBranch;
+    const path = prep ? `/s/${encodeURIComponent(sb.slug)}/t/${prep.number}` : null;
+    const link = (label) => h('a', { class: 'btn btn-primary', href: href(path), dataset: { route: path } }, label);
+    const ready = `The task box appears here by itself once it has finished and the repository passes the ${BRAND.name} format check.`;
     if (sb.onboarding === 'preparing') {
-      const path = prep ? `/s/${encodeURIComponent(sb.slug)}/t/${prep.number}` : null;
-      return [
-        h('h2', { id: titleId, class: 'onboarding-gate-title' }, `Onboarding ${sb.name}`),
-        h('p', null, `An agent is setting up this sandbox and adapting the repository to the ${BRAND.name} standards. The task box appears here by itself once it has finished and the repository passes the format check.`),
-        path ? h('a', { class: 'btn btn-primary', href: href(path), dataset: { route: path } }, 'Follow onboarding') : null,
-      ];
+      const title = h('h2', { id: titleId, class: 'onboarding-gate-title', tabindex: -1 }, `Onboarding ${sb.name}`);
+      // The server's own reading of a preparing sandbox (`onboarding_status`), in the page's words.
+      if (!prep) {
+        return [title,
+          h('p', null, 'The onboarding task is missing, so onboarding cannot finish by itself.'),
+          h('p', { class: 'muted' }, allows(sb.access, 'admin')
+            ? `As an administrator you can end the wait through the API: POST /api/sandboxes/${sb.id}/onboarding/skip.`
+            : 'An administrator of this sandbox can end the wait.')];
+      }
+      const phase = phaseOf(prep);
+      const what = phase === 'capacity'
+        ? `#${prep.number} waits for a Claude subscription with capacity and starts by itself.`
+        : phase === 'stopped'
+          ? `#${prep.number} stopped before the repository passed the ${BRAND.name} format check. Open it and continue it.`
+          : `An agent is setting up this sandbox and adapting the repository to the ${BRAND.name} standards in #${prep.number}.`;
+      return [title, h('p', null, what, ' ', ready), link(phase === 'stopped' ? 'Open onboarding' : 'Follow onboarding')];
     }
+    const plan = prep ? plans.get(prep.id) : false;
     return [
-      h('h2', { id: titleId, class: 'onboarding-gate-title' }, `Onboard ${sb.name} first`),
-      h('p', null, `Onboarding is one task an agent runs before any other in this sandbox. It:`),
-      h('ol', { class: 'onboarding-gate-steps' },
-        h('li', null, 'Installs the toolchains and packages the repository needs and runs its own checks, so every later task can build and test.'),
-        h('li', null, `Adds what the repository lacks for the ${BRAND.name} standards: yulius.toml, a product summary, an architecture document, decision records, specs and a changes log. Documents that already exist are mapped, not moved.`),
-        h('li', null, `Moves GitHub Actions jobs into ${BRAND.name} CI.`),
-        h('li', null, `Changes documentation, configuration and CI only, never application code, through a pull request into ${branch}.`)),
-      h('p', null, 'New tasks can start once the agent has finished and the repository passes the format check.'),
+      h('h2', { id: titleId, class: 'onboarding-gate-title', tabindex: -1 }, `Onboard ${sb.name} first`),
+      h('p', null, prep
+        ? [`Onboarding is one task an agent runs before any other in this sandbox: `, h('a', { href: href(path), dataset: { route: path } }, `#${prep.number} ${prep.title}`), '. Its plan:']
+        : 'Onboarding is one task an agent runs before any other in this sandbox.'),
+      plan ? h('ol', { class: 'onboarding-gate-steps' }, plan.map((step) => h('li', null, step)))
+        : plan === null ? skeleton('Loading what onboarding will do…', 4) : null,
+      h('p', null, `It changes documentation, configuration and CI only, never application code, and any change reaches ${branchOf(sb)} through a pull request. ${ready}`),
       allows(sb.access, 'write')
-        ? h('button', { type: 'button', class: 'btn btn-primary', onClick: approveOnboarding }, 'Start onboarding')
+        ? h('button', { type: 'button', class: 'btn btn-primary', onClick: () => approveOnboarding() }, 'Start onboarding')
         : h('p', { class: 'muted' }, 'Someone with write access to the repository starts it here.'),
     ];
   }
 
-  async function approveOnboarding() {
+  // One start per press: a double click must not send two approvals (singleFlight).
+  const approveOnboarding = singleFlight(async () => {
     try {
       const updated = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/onboarding/approve`);
-      if (updated && updated.id) ctx.store.upsertSandbox(updated);
       await ctx.store.loadTasks(sandbox.id).catch(() => null);
+      if (updated && updated.id) ctx.store.upsertSandbox(updated);
       toast('Onboarding started.', { kind: 'ok' });
       // The button went with the message it was in: the keyboard moves on to following it.
-      const follow = gate.querySelector('a.btn');
-      if (follow) follow.focus();
+      focusGate();
     } catch (error) {
       errorToast(error, 'Couldn’t start onboarding');
     }
+  });
+
+  /** Puts the keyboard on the gate's action, else its heading. */
+  function focusGate() {
+    const target = gate.querySelector('.btn') || gate.querySelector('h2');
+    if (target) target.focus();
   }
 
   /** The request body of a new task with the composer's choices (`auto`: Jev decides, TSK-015). */
@@ -1007,9 +1063,13 @@ export function mountComposer(ctx, sandbox) {
     key: `composer:${sandbox.id}`,
     start() {
       fit(); // a kept draft's text sizes the box once it is on the page
-      if (!prompt.disabled && !card.hidden && !isPhone()) prompt.focus();
+      // While onboarding comes first the keyboard lands on its action (SPEC-096).
+      if (!isPhone()) {
+        if (card.hidden) focusGate();
+        else if (!prompt.disabled) prompt.focus();
+      }
       if (!stopSmoke) stopSmoke = brandSmoke(niche); // the brand's smoke, when its niche shows (brandfx.js)
     },
-    destroy() { forgetUrls(withUrls()); remember({ now: true }); destroyers.forEach((off) => off()); if (stopSmoke) stopSmoke(); clearTimeout(showTimer); clearSplit(); if (preview) preview.destroy(); },
+    destroy() { destroyed = true; forgetUrls(withUrls()); remember({ now: true }); destroyers.forEach((off) => off()); if (stopSmoke) stopSmoke(); clearTimeout(showTimer); clearSplit(); if (preview) preview.destroy(); },
   };
 }

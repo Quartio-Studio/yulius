@@ -263,8 +263,10 @@ accounts with usage (some unknown), Git data and delivery stages, environment ru
 CI runs with job logs and repository hygiene (`studio` has jobs and runs, `product` has no CI and
 leftover GitHub Actions workflows), workflows, skills, automations, MCP servers, analytics, the
 superadmin recovery code (mock code `123456`) and the GitHub App connection. Importing a repository creates a
-sandbox whose onboarding is `pending` with a resting preparation task: its new-task page shows
-only the onboarding message with Start onboarding, and the mock marks it ready 9 s later. Uploads report progress in steps, a dropped file lands in the editor's in-memory
+sandbox whose onboarding is `pending` with a resting preparation task carrying the server's plan
+(`mobile-app` already follows the format, so its task only sets up the environment): its new-task
+page shows only the onboarding message with Start onboarding, and the mock marks it ready 9 s
+later (a test sets `__yuliusMock.manualOnboarding` and calls `finishOnboarding(slug)` instead). Uploads report progress in steps, a dropped file lands in the editor's in-memory
 repository and attachments get server-like paths and names. Task terminals print TUI-like ANSI output (with file references in every form the terminal links
 to the editor, and some it must not), echo input and answer on Enter; type
 `/exit` to close a task, `/lag` to force a 4008 reconnect, `/help` for the list. The
