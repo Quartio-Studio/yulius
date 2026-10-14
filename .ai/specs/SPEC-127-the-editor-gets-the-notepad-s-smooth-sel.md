@@ -226,14 +226,14 @@ sequenceDiagram
 
 Run on the branch merged with `origin/dev` (2026-10-15):
 
-- `scripts/dev ci` at the delivered head (fmt, clippy `-D warnings`, nextest, doctests,
-  cargo-deny, cargo-shear, rustdoc, repository check): see the last line of this section.
+- `scripts/dev ci` (fmt, clippy `-D warnings`, nextest, doctests, cargo-deny, cargo-shear,
+  rustdoc, repository check): see "Final runs" below.
 - File presence in Rust: `files::presence_is_relayed_to_writers_only` (the envelope; a reader's
   stream never gets it, failing with the filter turned off; a demoted writer's stream stops after
   its re-check; the task worktree root), `files::presence_is_refused_when_malformed`,
   `files::presence_is_rate_limited`, `files::presence_counters_are_bounded_per_person`, unit
   `one_person_keeps_only_so_many_counters_busy`; the `notes::` tests pass unchanged.
-- `cd e2e && npx e2e run --workers 4`: see the last line of this section. Editor tests: the drawn selection on Monaco's boxes (wrap on and off,
+- `cd e2e && npx e2e run --workers 4`: see "Final runs" below. Editor tests: the drawn selection on Monaco's boxes (wrap on and off,
   scrolled, blurred); two signed-in people (a second window as `bob`) see each other in their
   colour and lose each other on switching file, closing it and closing the Editor; mapping over
   typing, another saved version, own echo, hello and axe; leaving with an update on its way, on a
@@ -245,9 +245,11 @@ Run on the branch merged with `origin/dev` (2026-10-15):
   the presence tests × 8 at load 30: 88 of 88.
 - `scripts/dev security` (Vidoc): not run, exit 2. The key bound to `api.vidoc.dev` is refused
   (HTTP 401) from this session; reported on #470.
-- Final run at `62e678d0` (the reverted head; after it only documentation changed):
-  `scripts/dev ci` exit 0, 1676 tests passed, 16 skipped, advisories, bans, licenses and sources
-  ok; `npx e2e run --workers 4` exit 0, 50 files, 405 tests passed, 1 skipped (needs a model).
+- Final runs: `scripts/dev ci` at `62e678d0` (the reverted head) exit 0, 1676 tests passed, 16
+  skipped, advisories, bans, licenses and sources ok; no Rust changed after it (two merges of
+  `dev` brought web code only). `npx e2e run --workers 4` at `fcdc2d58` (merged with `dev`,
+  including #484's Notes tab grip, resolved by hand in `notes.js` and `styles.css`): 50 files,
+  409 tests passed, 1 skipped (needs a model); the repository check passes there.
 - Not covered: two real browsers against a real server (the relay is covered in Rust over a real
   WebSocket, the browsers against the mock), browsers other than Chromium, forced colours (CSS
   rule only), the drawn selection seen by eye (the Yulius browser cannot make a selection).
