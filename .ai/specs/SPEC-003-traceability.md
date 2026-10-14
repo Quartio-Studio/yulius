@@ -257,6 +257,7 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 | 84 | (2026-10-11, `F 2026-10-11`, production incident) A full sandbox disk killed four running sessions during a switch and build caches fill sandboxes: switch only after the new session can start, re-measure a refusal over the quota, and manage disk without a person (caches and worktrees of ended tasks, idle caches near the quota, the agent told). | ROT-014, NFR-008, NFR-009, AC-ROT-17, AC-NFR-10 (new); SPEC-002 §2.8, §10; SPEC-008; ADR 0017; #8 |
 | 85 | (2026-10-12, `F 2026-10-12`, task #26, a screenshot of the tools rail pointing at Messages) "delete message mechanism for now until we make the infra very good". | COM-005 and AC-COM-2 withdrawn; DLV-008, UI-017, UI-020, AC-UI-21, AC-UI-36 (SPEC-028, ADR-0023) |
 | 86 | (2026-10-12, `F 2026-10-12`, task #39, a screenshot of the "Add team secret" dialog: Title, Address, User name, Password, Notes, Two-factor seed) "It should be only value title notes. 2FA should be per wallet and should be mandatory. The same for the agents but without 2FA for agents ofc. But for human to read them, 2FA should also be mandatory (but they should be able to read actually)". | VLT-001, VLT-002, VLT-006 changed, VLT-003 withdrawn, AC-VLT-1/2/5 (SPEC-040, ADR-0042) |
+| 87 | (2026-10-14, task #83, a screenshot of the terminal's "Mouse: select text · send to app" chip) "this is weird af, delete it. default should be sending things to the terminal". | UI-019 (changed), AC-UI-11 (SPEC-098, ADR-0079) |
 
 ## Changelog
 

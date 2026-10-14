@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- The terminal's mouse is the program's when it asks for it, as in a native terminal (SPEC-098,
+  ADR-0079, task #83). The "Mouse: select text · send to app" chip is gone. In Claude Code's
+  full-screen view, clicks, drags, the wheel and right-clicks reach Claude Code, and Shift-drag
+  (Option-drag on macOS) selects text; the same key brings the Copy and Paste menu. A read-only
+  viewer, who cannot send anything, keeps the mouse for selection. A press beside another viewer's
+  grid reaches no program.
 - Runs recorded before SPEC-087 get their metrics from their transcripts (SPEC-091, ADR-0072).
   The upgrade queues every run recorded so far (migration 23, `metrics_recounts`). On the first
   start, once reconciliation is done, Yulius counts each ended run's own window of its transcript

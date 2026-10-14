@@ -1960,8 +1960,6 @@ a.dl-task:hover { text-decoration: underline; }
   .table .hide-phone { display: none; }
 }
 
-/* Terminal mouse hand-over (shown only when the program asked for the mouse). */
-
 /* Harness change waiting for approval (ROT-012). */
 
 /* Built-in editor (EDT-001): explorer, tabs, Monaco. */
