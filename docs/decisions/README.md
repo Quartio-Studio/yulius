@@ -79,3 +79,4 @@ number differs from the file name, and a record this index does not list.
 - [0072](0072-recount-old-runs-from-their-transcripts-once.md): Runs recorded before SPEC-087 are recounted from their transcripts once, after the upgrade
 - [0071](0071-long-injected-context-folds-in-the-session-view.md): Long injected context folds to one line in the session view; short notes stay readable
 - [0078](0078-repository-mcp-json-feeds-the-mcp-section.md): A repository's .mcp.json feeds the sandbox's MCP servers; the Superagent rejects the file's servers
+- [0075](0075-menu-descriptions-wrap.md): Menu descriptions wrap onto as many lines as they need instead of being cut

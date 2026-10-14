@@ -14,6 +14,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   off. An MCP server's values now reach a run in `YULIUS_MCP_<SERVER>_<VAR>` variables. Before, one
   named like an agent secret, such as `APIFY_TOKEN`, clashed with that secret's placeholder, and
   every run of the sandbox failed to start.
+- Menus show an option's whole description (SPEC-094, ADR-0075, task #79). A description wraps
+  onto as many lines as it needs instead of ending in an ellipsis, in every `openMenu` menu; menus
+  keep their width (at most 320 px and the window less 16 px), so a short description stays one
+  line. The start menu's Supertask now reads "Waits for this project’s running tasks, then runs
+  alone while the project’s other tasks wait. For broad work such as security hardening."
 - Runs recorded before SPEC-087 get their metrics from their transcripts (SPEC-091, ADR-0072).
   The upgrade queues every run recorded so far (migration 23, `metrics_recounts`). On the first
   start, once reconciliation is done, Yulius counts each ended run's own window of its transcript

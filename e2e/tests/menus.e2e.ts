@@ -32,21 +32,72 @@ test('a menu stays inside a short window and its items scroll', async ({ app, br
   expect(shown).toBe(true);
 });
 
-test('a description is one line, its full text in the tooltip', async ({ app, browser, screen }) => {
+/** How a menu item's description shows: its text, whether anything of it is cut or clipped, and its lines. */
+const descriptionOf = (browser: any, label: string) => browser.evaluate((label: string) => {
+  const item = [...document.querySelectorAll('.menu-item')].find((el) => el.querySelector('.menu-label')!.textContent === label)!;
+  const desc = item.querySelector('.menu-desc') as HTMLElement;
+  const box = desc.getBoundingClientRect();
+  const list = document.querySelector('.menu-list')!.getBoundingClientRect();
+  const menu = document.querySelector('.menu')!.getBoundingClientRect();
+  return {
+    text: desc.textContent,
+    title: desc.getAttribute('title'),
+    cut: desc.scrollWidth > desc.clientWidth || desc.scrollHeight > desc.clientHeight,
+    insideList: box.left >= list.left - 1 && box.right <= list.right + 1 && box.top >= list.top - 1 && box.bottom <= list.bottom + 1,
+    lines: Math.round(box.height / parseFloat(getComputedStyle(desc).lineHeight)),
+    row: Math.round(item.getBoundingClientRect().height),
+    menu: { left: menu.left, right: menu.right, top: menu.top, bottom: menu.bottom, width: menu.width },
+    window: { width: innerWidth, height: innerHeight },
+  };
+}, label);
+
+test('a description wraps onto as many lines as it needs, a short one takes one, none has a tooltip (SPEC-094)', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
   await screen.getByRole('button', /^Workflow:/).click();
-  const auto = screen.getByRole('menuitemradio', /^Auto workflow/);
-  await expect(auto).toBeVisible();
-  // The tooltip is on the cut text, not the item: a screen reader would hear it twice.
-  const titles = await browser.evaluate(() => {
-    const item = [...document.querySelectorAll('.menu-item')].find((el) => el.textContent!.startsWith('Auto workflow'))!;
-    return { item: item.getAttribute('title'), desc: item.querySelector('.menu-desc')!.getAttribute('title') };
-  });
-  expect(titles.item).toBe(null);
-  expect(titles.desc).toMatch(/features get a spec, research and questions do not/);
-  const height = await browser.evaluate(() => Math.round(document.querySelector('.menu-item.rich')!.getBoundingClientRect().height));
-  expect(height).toBeLessThanOrEqual(44);
+  await expect(screen.getByRole('menuitemradio', /^Auto workflow/)).toBeVisible();
+  // Every item shows its whole description, not only the focused one.
+  await browser.keyboard.press('ArrowDown');
+  await expect(screen.getByRole('menuitemradio', /^No workflow/)).toBeFocused();
+  const long = await descriptionOf(browser, 'Auto workflow');
+  expect(long.text).toBe('Jev picks the workflow that fits, or none: features get a spec, research and questions do not');
+  expect(long.cut).toBe(false);
+  expect(long.insideList).toBe(true);
+  expect(long.lines).toBeGreaterThan(1);
+  // Shown whole, it needs no tooltip (a screen reader would read it twice); nor does the item.
+  expect(long.title).toBe(null);
+  expect(await browser.evaluate(() => document.querySelector('.menu-item.rich')!.getAttribute('title'))).toBe(null);
+  // Compact as before (SPEC-038): a short description is one line in a row of at most 44 px, and
+  // the menu is no wider than 320 px.
+  const short = await descriptionOf(browser, 'No workflow');
+  expect(short.cut).toBe(false);
+  expect(short.lines).toBe(1);
+  expect(short.row).toBeLessThanOrEqual(44);
+  expect(short.menu.width).toBeLessThanOrEqual(320);
 });
+
+for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+  test(`the start menu shows Supertask's whole description, inside a ${viewport.width} px window (SPEC-094)`, async ({ app, browser, screen }) => {
+    await browser.setViewport(viewport);
+    await app.open(mock('/s/studio'));
+    await expect(screen.getByRole('link', /Checkout API/).first()).toBeAttached();
+    await screen.getByRole('button', /Run after: Start now/).click();
+    await expect(screen.getByRole('menuitemradio', /^Supertask/)).toBeVisible();
+    const supertask = await descriptionOf(browser, 'Supertask');
+    expect(supertask.text).toBe('Waits for this project’s running tasks, then runs alone while the project’s other tasks wait. For broad work such as security hardening.');
+    expect(supertask.cut).toBe(false);
+    expect(supertask.insideList).toBe(true);
+    expect(supertask.lines).toBeGreaterThan(1);
+    const start = await descriptionOf(browser, 'Start now');
+    expect(start.cut).toBe(false);
+    // The menu stays inside the window, 8 px from its edges, and no wider than 320 px.
+    const { menu, window } = supertask;
+    expect(menu.left).toBeGreaterThanOrEqual(8);
+    expect(menu.right).toBeLessThanOrEqual(window.width - 8);
+    expect(menu.top).toBeGreaterThanOrEqual(8);
+    expect(menu.bottom).toBeLessThanOrEqual(window.height - 8);
+    expect(menu.width).toBeLessThanOrEqual(320);
+  });
+}
 
 const openRunAfter = async ({ app, screen }: { app: { open: (url: string) => Promise<unknown> }; screen: any }) => {
   await app.open(mock('/s/studio'));
@@ -228,20 +279,6 @@ test('on a touch screen a long menu focuses its first item, not the filter', asy
   await openRunAfter({ app, screen });
   await expect(screen.getByRole('searchbox', 'Filter')).toBeVisible();
   await expect(screen.getByRole('menuitemradio', /^Start now/)).toBeFocused();
-});
-
-test('a focused item shows its whole description', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
-  await screen.getByRole('button', /^Workflow:/).click();
-  await screen.getByRole('menuitemradio', /^Auto workflow/).focus();
-  await browser.keyboard.press('ArrowDown');
-  await browser.keyboard.press('ArrowUp');
-  await expect(screen.getByRole('menuitemradio', /^Auto workflow/)).toBeFocused();
-  const lines = await browser.evaluate(() => {
-    const desc = document.activeElement!.querySelector('.menu-desc')!;
-    return Math.round(desc.getBoundingClientRect().height / parseFloat(getComputedStyle(desc).lineHeight));
-  });
-  expect(lines).toBeGreaterThan(1);
 });
 
 test('an anchor taller than the window still gets a usable menu (unit, in the page)', async ({ app, browser }) => {
