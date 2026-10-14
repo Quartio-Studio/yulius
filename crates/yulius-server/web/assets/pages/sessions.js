@@ -549,7 +549,7 @@ export function mountSessionView(ctx, sandbox, id, route) {
   const actions = h('div', { class: 'ss-actions' });
   const notice = h('p', { class: 'ss-notice muted small' }, icon('lock', { size: 12 }), ' Read-only. Secrets are redacted.');
   const head = h('header', { class: 'gt-head' },
-    h('a', { class: 'gt-back', href: href(back), dataset: { route: back } }, icon('back', { size: 14 }), 'Sessions'),
+    h('a', { class: 'gt-back', href: href(back), dataset: { route: back, restore: 'page' } }, icon('back', { size: 14 }), 'Sessions'),
     h('div', { class: 'gt-title-row' }, titleEl, actions),
     meta, notice);
   const entriesEl = h('ol', { class: 'ss-entries', 'aria-label': 'Transcript' });

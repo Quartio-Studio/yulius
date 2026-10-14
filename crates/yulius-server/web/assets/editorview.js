@@ -465,6 +465,9 @@ export function createEditorView(ctx, sandbox, getTask) {
     activate(tab);
   }
 
+  /** The tab's text, from its model, or kept while suspended. */
+  const textOf = (tab) => (tab.model ? tab.model.getValue() : tab.text);
+
   /** Gives `tab` a Monaco model holding `text`; the person's edits mark it modified. */
   function attach(tab, text) {
     tab.model = monaco.editor.createModel(text, languageFor(monaco, tab.path));
@@ -491,7 +494,7 @@ export function createEditorView(ctx, sandbox, getTask) {
       loadDir('');
     }
     await openFile(path);
-    if (!line || !editor || !active || active.path !== path) return;
+    if (!line || !editor || !active || !active.model || active.path !== path) return;
     const lineNumber = Math.max(1, Math.min(line, active.model.getLineCount()));
     const column = Math.max(1, Math.min(col || 1, active.model.getLineMaxColumn(lineNumber)));
     editor.setPosition({ lineNumber, column });
@@ -519,8 +522,12 @@ export function createEditorView(ctx, sandbox, getTask) {
     if (tab.dirty) return;
     try {
       const file = await api.get(`/api/sandboxes/${sid}/files/content?${query(tab.path)}`);
-      // Suspended meanwhile: activating it again on resume reads it again.
-      if (!tab.model) return;
+      if (file.content != null && file.sha256 !== tab.sha && !tab.dirty && !tab.model) {
+        // Suspended meanwhile (another sandbox in front): the kept text takes the disk's version.
+        tab.text = file.content;
+        tab.sha = file.sha256;
+        return;
+      }
       if (file.content != null && file.sha256 !== tab.sha && !tab.dirty) {
         const view = active === tab ? editor.saveViewState() : null;
         tab.ignoreChange = true;
@@ -542,11 +549,12 @@ export function createEditorView(ctx, sandbox, getTask) {
     const index = tabs.indexOf(tab);
     if (index < 0) return;
     tabs.splice(index, 1);
-    tab.model.dispose();
+    if (tab.model) tab.model.dispose();
     if (active === tab) {
       active = null;
       const next = tabs[index] || tabs[index - 1];
-      if (next) activate(next, { focus: !fromKeyboard });
+      if (next && suspended) active = next; // shown by resume()
+      else if (next) activate(next, { focus: !fromKeyboard });
       else { editor.setModel(null); host.hidden = true; empty.hidden = false; }
     }
     renderTabs();
@@ -555,7 +563,7 @@ export function createEditorView(ctx, sandbox, getTask) {
   }
 
   function closeAll() {
-    for (const tab of tabs) tab.model.dispose();
+    for (const tab of tabs) if (tab.model) tab.model.dispose();
     tabs.length = 0;
     active = null;
     if (editor) editor.setModel(null);
@@ -575,7 +583,7 @@ export function createEditorView(ctx, sandbox, getTask) {
         const current = await api.get(`/api/sandboxes/${sid}/files/content?${query(tab.path)}`).catch(() => null);
         baseSha = current ? current.sha256 : null;
       }
-      const written = await api.put(`/api/sandboxes/${sid}/files/content`, { root, path: tab.path, content: tab.model.getValue(), base_sha256: baseSha });
+      const written = await api.put(`/api/sandboxes/${sid}/files/content`, { root, path: tab.path, content: textOf(tab), base_sha256: baseSha });
       tab.sha = written.sha256;
       tab.dirty = false;
       toast(`Saved ${tab.path}`, { kind: 'ok' });
@@ -648,6 +656,8 @@ export function createEditorView(ctx, sandbox, getTask) {
       if (opts && opts.file) openAt(opts.file);
     },
     taskChanged: folderOptions,
+    /** Open files with unsaved changes: the panel host never drops this view for its bound. */
+    get unsaved() { return tabs.some((tab) => tab.dirty); },
     // Another sandbox in front (SPEC-113 KST-006): the Monaco models go, so this sandbox's files feed
     // no suggestions there; each open file keeps its text, unsaved mark and cursor for resume().
     suspend() {

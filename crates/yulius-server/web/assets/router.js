@@ -57,6 +57,11 @@ export function placeFor(path, restore) {
   return path;
 }
 
+/** Where an `a[data-route]` link goes: its route, or the place it restores (`data-restore`). */
+export function linkTarget(anchor) {
+  return anchor.dataset.restore ? placeFor(anchor.dataset.route, anchor.dataset.restore) : anchor.dataset.route;
+}
+
 /** The address `full` is not a place to return to (a task that is not there, KST-004). */
 export function forgetPlace(full) {
   const key = `sandbox:${sandboxOf(full.split('?')[0])}`;
@@ -68,7 +73,22 @@ export function forgetPlace(full) {
 /** Sign-out: no place of this person stays in the tab. */
 export function forgetPlaces() {
   places = new Map();
-  try { window.sessionStorage.removeItem(PLACES_KEY); } catch { /* nothing kept */ }
+  try {
+    window.sessionStorage.removeItem(PLACES_KEY);
+    window.sessionStorage.removeItem(`${PLACES_KEY}.owner`);
+  } catch { /* nothing kept */ }
+}
+
+/** Signed in as `userId`: places another person left in this tab (signed in elsewhere) go. */
+export function bindPlaces(userId) {
+  const owner = String(userId || '');
+  try {
+    if (window.sessionStorage.getItem(`${PLACES_KEY}.owner`) === owner) return;
+    forgetPlaces();
+    window.sessionStorage.setItem(`${PLACES_KEY}.owner`, owner);
+  } catch {
+    places = new Map();
+  }
 }
 
 /** Start listening to navigation. */
@@ -141,7 +161,7 @@ function onDocumentClick(event) {
   const anchor = event.target.closest && event.target.closest('a[data-route]');
   if (!anchor) return;
   event.preventDefault();
-  navigate(anchor.dataset.restore ? placeFor(anchor.dataset.route, anchor.dataset.restore) : anchor.dataset.route);
+  navigate(linkTarget(anchor));
 }
 
 /** Map a path to a route descriptor {name, slug, number, page, query}. */

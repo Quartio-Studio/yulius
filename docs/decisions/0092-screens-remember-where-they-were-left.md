@@ -19,7 +19,8 @@ sandboxes. MCP's scope and the Dashboard's period were never in the address.
 - **Places in the router.** `router.js` remembers the last address (path and query) shown inside
   each sandbox and on each sandbox page, on every route change and every `replaceQuietly`. They
   live in `sessionStorage` (this browser tab), at most 200, and sign-out or an expired session
-  forgets them. A task that turns out not to be there is not kept as a place.
+  forgets them, as does a sign-in as someone else. A page that says something is not there
+  (`notFound`) is not kept as a place.
 - **Restoring is opt-in per link.** A link marked `data-restore="sandbox"` (sandbox tabs, Home's
   cards, the phone picker and the tab menu's Open) or `"page"` (the sidebar's pages, the Tasks and
   Git back links) goes to the remembered address. A link to where the person already is opens the
@@ -28,7 +29,8 @@ sandboxes. MCP's scope and the Dashboard's period were never in the address.
 - **Tool views per sandbox.** The panel host remembers each sandbox's open tool (or none) and
   restores it on return; a sandbox not visited yet keeps the tool in view, as before. The
   Superagent, Browser, Editor and Shell views of the 3 sandboxes used last stay alive, hidden (the
-  browser stream stops); older ones are destroyed. The editor of a sandbox in the background
+  browser stream stops); older ones are destroyed, except an editor holding unsaved text, and a
+  removed sandbox's go at once. The editor of a sandbox in the background
   disposes its Monaco models and keeps each file's text, unsaved mark and cursor. Notes is still
   rebuilt: its Team and Me notepads are shared by every sandbox and need one live copy per tab.
 - MCP's scope and the Dashboard's period are kept in the address (`?scope=`, `?days=`).

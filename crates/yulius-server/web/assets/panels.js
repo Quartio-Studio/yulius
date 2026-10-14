@@ -258,6 +258,24 @@ export function createPanelHost(ctx) {
     }
   }
 
+  /**
+   * Destroys the views of these sandboxes and forgets their tool. An editor holding unsaved text
+   * is kept past the bound (the person was told it stays in this tab) until its sandbox is gone.
+   */
+  function dropSandboxes(ids, { gone = false } = {}) {
+    const dropped = new Set(ids);
+    destroyWhere((key) => dropped.has(keySandbox(key)) && (gone || !(views.get(key).unsaved)));
+    if (gone) for (const id of dropped) toolOf.delete(id);
+  }
+
+  /** A sandbox removed, or no longer visible to the person: its views and sockets go (KST-006). */
+  function pruneGone() {
+    const known = new Set(ctx.store.state.sandboxes.map((s) => s.id));
+    const gone = [...new Set([...views.keys()].map(keySandbox))].filter((id) => id !== 'none' && !known.has(id));
+    recent = recent.filter((id) => known.has(id));
+    if (gone.length) dropSandboxes(gone, { gone: true });
+  }
+
   function updateBadges() {
     const requests = sandbox ? ctx.store.state.actionRequests.get(sandbox.id) : null;
     badges.get('browser').hidden = !(requests && requests.size);
@@ -275,6 +293,7 @@ export function createPanelHost(ctx) {
 
   const offs = [
     ctx.store.on('browser-action', updateBadges),
+    ctx.store.on('sandboxes', pruneGone),
     ctx.store.on('task', (t) => { if (task && t.id === task.id) { task = t; updateBadges(); } }),
   ];
 
@@ -299,6 +318,8 @@ export function createPanelHost(ctx) {
         // Monaco models go); its notes are rebuilt when it is back. Past KEEP_SANDBOXES the views of
         // the sandbox used longest ago go (SPEC-113 KST-006).
         if (left) {
+          // What it shows when it is back, also when nothing was open (KST-005).
+          toolOf.set(left.id, panel.hidden ? null : kind);
           for (const [key, view] of views) {
             if (keySandbox(key) !== left.id) continue;
             if (view.hide) view.hide();
@@ -307,8 +328,7 @@ export function createPanelHost(ctx) {
           destroyWhere((key) => keySandbox(key) === left.id && !KEPT_KINDS.has(key.slice(0, key.indexOf(':'))));
         }
         if (sandbox) recent = [sandbox.id, ...recent.filter((id) => id !== sandbox.id)];
-        const dropped = new Set(recent.splice(KEEP_SANDBOXES));
-        destroyWhere((key) => dropped.has(keySandbox(key)));
+        dropSandboxes(recent.splice(KEEP_SANDBOXES));
       }
       if (sandbox && (sandboxChanged || taskChanged)) {
         const editor = views.get(`editor:${sandbox.id}`);

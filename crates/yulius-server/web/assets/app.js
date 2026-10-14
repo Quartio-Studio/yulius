@@ -7,7 +7,7 @@
 // actions.js (task actions, dialogs), pages/*.js (pages), mock.js (?mock=1 backend).
 
 import { createApi, realTransport, enc } from './api.js';
-import { initRouter, onRoute, navigate, currentLocation, refreshRoute, parseAppLink, href, forgetPlace, forgetPlaces } from './router.js';
+import { initRouter, onRoute, navigate, currentLocation, refreshRoute, parseAppLink, href, forgetPlaces, bindPlaces } from './router.js';
 import { createStore, readJson, writeJson } from './store.js';
 import { applyTheme, PHONE } from './theme.js';
 import { BRAND } from './brand.js';
@@ -158,6 +158,7 @@ function createApp(root, transport) {
   async function signedIn(me, next) {
     expiredHandled = false;
     store.state.me = me;
+    bindPlaces(me && me.user && me.user.id);
     api.setCsrf(me && me.csrf_token);
     // A failed load is said in the view (Home, a sandbox's pages, the sidebar), not in a toast.
     try { await store.loadSandboxes(); } catch { /* store.state.sandboxesError */ }
@@ -608,8 +609,6 @@ function createApp(root, transport) {
 
   /** Task #n of a sandbox does not exist (deleted, or a wrong link). */
   function missingTask(sandbox, number) {
-    // Not the sandbox's place to come back to: its tab opens the composer (SPEC-113 KST-004).
-    forgetPlace(currentLocation().full);
     const tasks = `/s/${encodeURIComponent(sandbox.slug)}/tasks`;
     missing(`missing-task:${sandbox.id}:${number}`, { title: 'Task not found', text: `There is no task #${number} in ${sandbox.name}. It may have been deleted.`, back: ['Tasks', tasks] });
   }

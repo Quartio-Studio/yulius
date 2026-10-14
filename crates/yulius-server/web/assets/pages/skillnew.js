@@ -41,7 +41,7 @@ export function mountSkillCreator(ctx, sandbox) {
   pristine = editor.getMarkdown();
 
   const head = h('header', { class: 'gt-head se-head' },
-    h('a', { class: 'gt-back', href: href(base), dataset: { route: base } }, icon('back', { size: 14 }), 'Skills'),
+    h('a', { class: 'gt-back', href: href(base), dataset: { route: base, restore: 'page' } }, icon('back', { size: 14 }), 'Skills'),
     h('div', { class: 'gt-title-row' }, h('div', { class: 'wf-titles' }, nameInput, useInput), create),
     pathEl,
     !write ? h('p', { class: 'banner small' }, icon('lock', { size: 14 }), h('span', { class: 'banner-text' }, 'Creating skills needs write access to this sandbox.')) : null);
