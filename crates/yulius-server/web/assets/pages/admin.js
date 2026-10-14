@@ -213,19 +213,24 @@ export function mountAccountsPage(ctx, route) {
   const host = h('div');
   frame.body.append(capacityHost, host, h('p', { class: 'muted xs' }, `Tasks don't belong to a subscription: ${BRAND.name} starts each one on the subscription whose capacity expires soonest and moves it to another one by itself, at the end of a turn, when its subscription reaches 98%. A task pauses only when no subscription has capacity left — without telling the agent — and continues by itself, oldest first, when a window resets or a subscription is added. Usage comes from the running tasks, so an idle subscription shows it once a task runs on it.`));
 
+  // Resolves true once the panel shows the capacity, false when it says it is not available.
   const loadCapacity = () => ctx.api.get('/api/capacity').then((view) => {
     setChildren(capacityHost, h('h2', { class: 'card-title' }, 'Capacity'), capacityPanel(view));
+    return true;
   }).catch((error) => {
     setChildren(capacityHost, h('h2', { class: 'card-title' }, 'Capacity'), h('p', { class: 'muted small' }, `Capacity is not available: ${error.message || 'unknown error'}`));
+    return false;
   });
 
   // Capacity is read beside the subscriptions, so the panel above them is in place before they
-  // land (SPEC-120); each later render (after an add or a removal) reads it again.
-  loadCapacity();
-  let firstRender = true;
+  // land (SPEC-120). Each later render (after an add or a removal) reads it again, and so does
+  // the first one when that read failed.
+  const firstCapacity = loadCapacity();
+  let rendered = false;
   const reload = loader(host, 'the subscriptions', () => ctx.api.get('/api/admin/accounts'), (list) => {
-    if (firstRender) firstRender = false;
-    else loadCapacity();
+    if (rendered) loadCapacity();
+    else firstCapacity.then((shown) => { if (!shown) loadCapacity(); });
+    rendered = true;
     const accounts = (Array.isArray(list) ? list : []).sort((a, b) => (a.label || '').localeCompare(b.label || ''));
     if (accounts.length === 0) return emptyState({ iconName: 'user', title: 'No subscriptions yet', text: 'Add a Claude subscription for the agents; you finish Claude’s own sign-in in a terminal here.', action: createButton('Add subscription', () => add()) });
     return h('div', { class: 'grid-2' }, accounts.map((account) => {

@@ -54,6 +54,8 @@ test('a page of item cards loads as item cards where the cards will be', async (
   await expect(browser.locator(`${shape} .page-section-title`).first()).toBeAttached();
   expect(await browser.locator(`${shape} .item-list .item-card`).count()).toBeGreaterThanOrEqual(2);
   await expect(browser.locator(`${shape} .item-card .item-icon`).first()).toBeVisible();
+  // The icon tile shimmers like the bars (not the item icon's own still tile).
+  expect(await browser.evaluate((s) => getComputedStyle(document.querySelector(`${s} .item-icon`)!).backgroundImage, shape)).toMatch(/^linear-gradient/);
   const loading = await box(browser, `${shape} .item-card`);
   expect(await axeViolations(browser)).toEqual([]);
 
@@ -61,7 +63,7 @@ test('a page of item cards loads as item cards where the cards will be', async (
   await expect(browser.locator(shape)).toHaveCount(0);
   const loaded = await box(browser, '#main .item-card');
   expectSameBox(loading, loaded, ['x', 'width']);
-  // The same kind of card: its height within a fifth of a loaded one's.
+  // The same kind of card; its height follows its content (a workflow's steps line), within a fifth.
   expect(Math.abs(loading!.height - loaded!.height)).toBeLessThan(loaded!.height / 5);
 });
 
@@ -87,7 +89,8 @@ test('a table loads as a table with its columns', async ({ app, browser, screen 
 test('a grid of cards loads as cards, and an editor as its fields', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/accounts', '&hold=/api/admin/accounts'));
   await expect(screen.getByRole('heading', { level: 1 })).toBeVisible();
-  const shape = '#main .skeleton[role="status"]';
+  // The capacity panel above loads with its own status.
+  let shape = '#main .skeleton[role="status"]:has(.grid-2)';
   await expect(browser.locator(shape)).toHaveText('Loading the subscriptions…');
   await expectQuietShape(browser, shape);
   expect(await browser.locator(`${shape} .grid-2 > .card`).count()).toBeGreaterThanOrEqual(2);
@@ -97,14 +100,62 @@ test('a grid of cards loads as cards, and an editor as its fields', async ({ app
   await expect(browser.locator(shape)).toHaveCount(0);
   expectSameBox(loading, await box(browser, '#main .grid-2'), ['x', 'y', 'width']);
 
-  // The workflow editor: section headings over field boxes, not three lines of text.
-  await app.open(mock('/s/studio/workflows/wf-feature', '&hold=/api/sandboxes/sb_studio/workflows'));
+  // The workflow editor: its section cards beside the summary, where the loaded ones will be (a
+  // custom workflow: a default one adds its read-only banner above them).
+  await app.open(mock('/s/studio/workflows/wf_release', '&hold=/api/sandboxes/sb_studio/workflows'));
+  shape = '#main .skeleton[role="status"]';
   await expect(browser.locator(shape)).toHaveText('Loading the workflow…');
   await expectQuietShape(browser, shape);
-  expect(await browser.locator(`${shape} .skeleton-field`).count()).toBeGreaterThanOrEqual(2);
+  expect(await browser.locator(`${shape} .wf-section .skeleton-field`).count()).toBeGreaterThanOrEqual(2);
+  const section = await box(browser, `${shape} .wf-main > .wf-section`);
+  const aside = await box(browser, `${shape} .wf-summary`);
   expect(await axeViolations(browser)).toEqual([]);
   await release(browser);
   await expect(browser.locator(shape)).toHaveCount(0);
+  expectSameBox(section, await box(browser, '#main .wf-main > .wf-section'), ['x', 'y', 'width']);
+  expectSameBox(aside, await box(browser, '#main .wf-summary'), ['x', 'y', 'width']);
+});
+
+test('Sessions, CI and the Dashboard load in their own layouts', async ({ app, browser }) => {
+  const shape = '#main .skeleton[role="status"]';
+  // Sessions: rows with the kind tile, a title and a meta line.
+  await app.open(mock('/s/studio/sessions', '&hold=/api/sandboxes/sb_studio/sessions'));
+  const rows = '#main .skeleton[role="status"]:has(.ss-rows)';
+  await expect(browser.locator(rows)).toHaveText('Loading sessions…');
+  await expectQuietShape(browser, rows);
+  const row = await box(browser, `${rows} .ss-row-link`);
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(browser.locator(rows)).toHaveCount(0);
+  expectSameBox(row, await box(browser, '#main .ss-row-link'), ['x', 'y', 'width', 'height']);
+
+  // CI: the configuration card, the Runs heading, then run cards.
+  await app.open(mock('/s/studio/ci', '&hold=/api/sandboxes/sb_studio/ci'));
+  // The hygiene card below loads with its own status.
+  const runs = '#main .skeleton[role="status"]:has(.ci-heading)';
+  await expect(browser.locator(runs)).toHaveText('Loading the CI runs…');
+  await expectQuietShape(browser, runs);
+  await expect(browser.locator(`${runs} .ci-heading`)).toHaveCount(1);
+  const config = await box(browser, `${runs} .card`);
+  const run = await box(browser, `${runs} .item-card`);
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(browser.locator(runs)).toHaveCount(0);
+  expectSameBox(config, await box(browser, '#main section[aria-label="CI configuration"]'), ['x', 'width']);
+  expectSameBox(run, await box(browser, '#main .item-card'), ['x', 'width']);
+
+  // Dashboard: the six key figures in their strip, then the chart cards.
+  await app.open(mock('/s/studio/dashboard', '&hold=/api/analytics/summary'));
+  await expect(browser.locator(shape)).toHaveText('Loading the dashboard…');
+  await expectQuietShape(browser, shape);
+  expect(await browser.locator(`${shape} .db-kpis > .db-kpi`).count()).toBe(6);
+  const kpis = await box(browser, `${shape} .db-kpis`);
+  const firstKpi = await box(browser, `${shape} .db-kpi`);
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(browser.locator(shape)).toHaveCount(0);
+  expectSameBox(kpis, await box(browser, '#main .db-kpis'), ['x', 'y', 'width']);
+  expectSameBox(firstKpi, await box(browser, '#main .db-kpi'), ['x', 'y', 'width']);
 });
 
 type HoldingGit = Window & { __yuliusHoldGit?: Promise<void>; __releaseGit?: () => void };
@@ -113,6 +164,9 @@ test('the Git page loads as its status cards, sections and board (the reported s
   await browser.addInitScript(() => {
     const w = window as unknown as HoldingGit;
     w.__yuliusHoldGit = new Promise<void>((resolve) => { w.__releaseGit = resolve; });
+    // The App permission note comes with the read and sits above the cards; dismissed here so the
+    // cards' top edges can be compared (a note or banner from the read pushes content down).
+    sessionStorage.setItem('yulius.checks-access.dismissed:Quartio-Studio/studio:Commit statuses', '1');
   });
   await app.open(mock('/s/studio/git'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Git');
@@ -136,8 +190,9 @@ test('the Git page loads as its status cards, sections and board (the reported s
   await expect(browser.locator(shape)).toHaveCount(0);
   // The board has the profile's columns, and the cards and board land in the outlines' columns.
   expect(await browser.locator('#main .dl-board > .dl-col').count()).toBe(columns);
-  expectSameBox(live, await box(browser, '#main .dl-strip > .dl-card:first-child'), ['x', 'width']);
-  expectSameBox(waiting, await box(browser, '#main .dl-strip > .dl-card:last-child'), ['x', 'width']);
+  await expect(browser.locator('#main .checks-access')).toHaveCount(0);
+  expectSameBox(live, await box(browser, '#main .dl-strip > .dl-card:first-child'), ['x', 'y', 'width']);
+  expectSameBox(waiting, await box(browser, '#main .dl-strip > .dl-card:last-child'), ['x', 'y', 'width']);
   expectSameBox(boardBox, await box(browser, '#main .dl-board'), ['x', 'width']);
 });
 
@@ -171,4 +226,45 @@ test('the sidebar and Tasks lists load as task rows of the real rows’ height',
   expectSameBox(sideRow, await box(browser, '.task-list .task-row'), ['x', 'width', 'height']);
   expectSameBox(pageColumns, await box(browser, '#main .tl-columns'));
   expectSameBox(pageRow, await box(browser, '#main .tl-row'), ['x', 'width', 'height']);
+});
+
+test('narrow Tasks rows load as two lines, like the rows they stand for', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open(mock('/s/studio/tasks', '&hold=/api/sandboxes/sb_studio/tasks'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Tasks');
+  const page = '#main .tl .skeleton[role="status"]';
+  await expect(browser.locator(page)).toHaveText(/^Loading the tasks of /);
+  const row = await box(browser, `${page} .skeleton-tl-row`);
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(browser.locator('#main .tl-row').first()).toBeVisible();
+  // The first group's rows: a title line and the status under it.
+  expectSameBox(row, await box(browser, '#main .tl-row'), ['x', 'width', 'height']);
+});
+
+test('loading shapes keep still under reduced motion and pass in the light theme', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/workflows', '&hold=/api/sandboxes/sb_studio/workflows'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Workflows');
+  const shape = '#main .skeleton[role="status"]';
+  await expect(browser.locator(shape)).toBeVisible();
+  // The harness cannot emulate the media query: the reduced-motion rule must cover the bars'
+  // pseudo-element and every shimmering box (they all animate through the shared rule).
+  expect(await browser.evaluate(() => {
+    const selectors: string[] = [];
+    const visit = (rules: CSSRuleList, reduced: boolean) => {
+      for (const rule of rules) {
+        if (rule instanceof CSSImportRule && rule.styleSheet) visit(rule.styleSheet.cssRules, reduced);
+        else if (rule instanceof CSSMediaRule) visit(rule.cssRules, reduced || rule.conditionText.includes('prefers-reduced-motion: reduce'));
+        else if (reduced && rule instanceof CSSStyleRule && /animation/.test(rule.style.cssText)) selectors.push(rule.selectorText);
+      }
+    };
+    for (const sheet of document.styleSheets) visit(sheet.cssRules, false);
+    const parts = selectors.flatMap((s) => s.split(',').map((x) => x.trim()));
+    return parts.includes('*') && (parts.includes('*::before') || parts.includes('::before'));
+  })).toBe(true);
+  expect(await browser.evaluate((s) => getComputedStyle(document.querySelector(`${s} .skeleton-bar`)!, '::before').animationName, shape)).toBe('shimmer');
+  await browser.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(browser.locator(shape)).toHaveCount(0);
 });

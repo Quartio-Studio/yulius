@@ -84,20 +84,20 @@ function boardColumns(profile) {
  */
 function loadingShape(profile) {
   const statusCard = () => h('div', { class: 'dl-card' },
-    h('div', { class: 'card-title' }, bar('45%')), h('div', { class: 'dl-big' }, bar('75%')), h('div', { class: 'small' }, bar('55%')));
+    h('div', { class: 'card-title' }, bar(45)), h('div', { class: 'dl-big' }, bar(75)), h('div', { class: 'small' }, bar(55)));
   const section = (title, content) => h('div', { class: 'dl-section' }, h('div', { class: 'dl-section-title' }, bar(title)), content);
   const taskCard = (i) => h('div', { class: 'dl-card-task' },
-    h('div', { class: 'dl-card-title' }, bar(['80%', '60%'][i])), h('div', { class: 'dl-card-line small' }, bar('55%')), h('div', { class: 'dl-card-meta xs' }, bar('35%')));
+    h('div', { class: 'dl-card-title' }, bar([80, 60][i])), h('div', { class: 'dl-card-line small' }, bar(55)), h('div', { class: 'dl-card-meta xs' }, bar(35)));
   const columns = boardColumns(profile);
   return skeletonOf('Loading delivery…', h('div', { class: 'stack' },
     h('div', { class: 'dl-strip' }, statusCard(), statusCard()),
-    section('5em', h('div', { class: 'dl-needs' }, [0, 1].map((i) => h('div', { class: 'dl-need' },
-      h('span', { class: 'dl-need-text' }, bar(['45%', '60%'][i])), h('span', { class: 'skeleton-button' }))))),
-    section('10em', h('div', { class: 'dl-board', style: { '--dl-cols': String(columns.length) } }, columns.map(() => h('div', { class: 'dl-col' },
-      h('div', { class: 'dl-col-head' }, h('div', { class: 'dl-col-name' }, bar('60%')), h('div', { class: 'xs' }, bar('80%'))),
+    section('md', h('div', { class: 'dl-needs' }, [0, 1].map((i) => h('div', { class: 'dl-need' },
+      h('span', { class: 'dl-need-text' }, bar([45, 60][i])), h('span', { class: 'skeleton-button' }))))),
+    section('xl', h('div', { class: 'dl-board', style: { '--dl-cols': String(columns.length) } }, columns.map(() => h('div', { class: 'dl-col' },
+      h('div', { class: 'dl-col-head' }, h('div', { class: 'dl-col-name' }, bar(60)), h('div', { class: 'xs' }, bar(80))),
       taskCard(0), taskCard(1))))),
-    section('5em', h('div', { class: 'dl-activity' }, [0, 1, 2].map((i) => h('div', { class: 'dl-event' },
-      h('span', { class: 'dl-event-time' }, bar('100%')), h('span', { class: 'dl-event-text' }, bar(['55%', '70%', '40%'][i]))))))));
+    section('md', h('div', { class: 'dl-activity' }, [0, 1, 2].map((i) => h('div', { class: 'dl-event' },
+      h('span', { class: 'dl-event-time' }, bar(100)), h('span', { class: 'dl-event-text' }, bar([55, 70, 40][i]))))))));
 }
 
 // Each task's delivery, kept across visits to the page (PERF-09): read again only when its row in

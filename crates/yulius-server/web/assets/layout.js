@@ -858,10 +858,10 @@ export function createSidebar(ctx) {
         ? loadError(`Couldn’t load tasks: ${error.message}`, () => ctx.store.loadTasks(sandbox.id).catch(() => {}))
         // A group band over task rows, as the list will be (SPEC-120); `.task-row` stays real tasks'.
         : skeletonOf('Loading tasks…', h('div', { class: 'skeleton-task-group' },
-          h('div', { class: 'task-group-head' }, bar('7em')),
-          ['70%', '55%', '80%', '45%', '62%'].map((width) => h('div', { class: 'skeleton-task-row' },
+          h('div', { class: 'task-group-head' }, bar('lg')),
+          [70, 55, 80, 45, 62].map((width) => h('div', { class: 'skeleton-task-row' },
             h('span', { class: 'task-mark' }, h('span', { class: 'skeleton-tile skeleton-dot' })),
-            h('span', { class: 'task-title' }, bar(width)), h('span', { class: 'task-age' }, bar('2em')))))));
+            h('span', { class: 'task-title' }, bar(width)), h('span', { class: 'task-age' }, bar('sm')))))));
       return;
     }
     // A task the user left normally is done for now: it stays under Tasks (with Continue) but

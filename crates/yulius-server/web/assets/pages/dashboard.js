@@ -6,7 +6,7 @@
 // export of per-task rows stays one click away. The subscription pool (ROT-013) — capacity left,
 // burn rate, forecast and whether to buy more — has its own card for the whole instance.
 
-import { h, svgEl, setChildren, icon, iconButton, openMenu } from '../dom.js';
+import { h, svgEl, setChildren, icon, iconButton, openMenu, bar } from '../dom.js';
 import { compact, duration, int } from '../format.js';
 import { statusInfo } from '../status.js';
 import { pageFrame, loader } from './common.js';
@@ -72,7 +72,7 @@ export function mountDashboardPage(ctx, sandbox, route) {
       ctx.api.get('/api/capacity').catch(() => null),
     ]);
     return { now: now || {}, before, days, capacity };
-  }, ({ now, before, days: n, capacity }) => renderSummary(now, before, n, capacity), { shape: 'cards' });
+  }, ({ now, before, days: n, capacity }) => renderSummary(now, before, n, capacity), { shape: loadingLayout });
   // Live while open (#31): tokens and runs of tasks in progress change; refresh in place while
   // the tab is visible.
   const live = setInterval(() => {
@@ -150,6 +150,15 @@ function subscriptions(capacity) {
 }
 
 /** Render `AnalyticsSummary` (docs/api.md "Administration, analytics, status"). */
+/** The page while its figures load (SPEC-120): the six key figures in their strip, then chart cards. */
+function loadingLayout() {
+  const chartCard = () => h('div', { class: 'card db-card' }, h('div', { class: 'db-card-titles' }, bar(40), bar(60)), h('div', { class: 'skeleton-chart' }));
+  return h('div', { class: 'db' },
+    h('div', { class: 'card db-kpis' }, Array.from({ length: 6 }, () => h('div', { class: 'db-kpi' },
+      h('div', { class: 'db-kpi-label' }, bar(60)), h('div', { class: 'db-kpi-value' }, bar(50)), h('div', { class: 'db-kpi-sub' }, bar(70))))),
+    h('div', { class: 'db-row' }, chartCard(), chartCard()));
+}
+
 export function renderSummary(data, previous = null, days = 30, capacity = null) {
   const tasks = data.tasks || {};
   const tokens = data.tokens || {};

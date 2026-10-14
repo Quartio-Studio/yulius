@@ -45,7 +45,7 @@ export function mountWorkflowEditor(ctx, sandbox, id) {
   const descInput = h('input', { class: 'wf-desc', placeholder: 'One line on when to use it (optional)', 'aria-label': 'Description', maxlength: 500, onInput: (e) => { state.description = e.target.value; changed(); } });
   const save = h('button', { type: 'button', class: 'btn btn-primary', onClick: () => doSave() }, creating ? 'Create workflow' : 'Save');
   const del = creating ? null : h('button', { type: 'button', class: 'btn btn-quiet-danger', onClick: () => doDelete() }, icon('trash', { size: 14 }), 'Delete');
-  const body = h('div', { class: 'wf-body' }, placeholder('Loading the workflow…', 'loading', 'form'));
+  const body = h('div', { class: 'wf-body' }, placeholder('Loading the workflow…', 'loading', 'editor'));
   const note = h('div');
   const head = h('header', { class: 'gt-head wf-head' },
     h('a', { class: 'gt-back', href: href(base), dataset: { route: base, restore: 'page' } }, icon('back', { size: 14 }), 'Workflows'),

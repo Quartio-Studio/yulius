@@ -1004,10 +1004,19 @@ export function placeholder(text, kind = 'empty', shape = 'lines') {
   return h('div', { class: ['placeholder', `placeholder-${kind}`] }, text);
 }
 
-/** A shimmering bar `width` long, as tall as a line of text where it stands (SPEC-120). */
-export function bar(width = '60%') {
-  return h('span', { class: 'skeleton-bar', style: { width } });
+/**
+ * A shimmering bar as tall as a line of text where it stands (SPEC-120): `size` is a percentage of
+ * the line (a number) or a length from the CSS scale ('xs', 'sm', 'md', 'lg', 'xl': 1 to 10 em).
+ */
+export function bar(size = 60) {
+  return typeof size === 'number'
+    ? h('span', { class: 'skeleton-bar', style: { width: `${size}%` } })
+    : h('span', { class: ['skeleton-bar', `skeleton-bar-${size}`] });
 }
+
+// Editor sections (the workflow, automation and MCP server editors): a titled card around a field.
+const editorSections = (count = 3) => h('div', { class: 'wf-main' }, Array.from({ length: count }, () => h('div', { class: 'wf-section' },
+  h('div', { class: 'wf-section-title' }, bar('md')), h('div', { class: 'skeleton-field' }))));
 
 // Loading shapes (SPEC-120): the final layout's own boxes (item cards, a table, cards, fields) with
 // bars where its text goes, so the page's CSS sizes both and the content lands where they were.
@@ -1015,29 +1024,36 @@ const SHAPES = {
   items: (count = 3) => h('div', { class: 'item-list' }, Array.from({ length: count }, (_, i) => h('div', { class: 'item-card' },
     h('span', { class: 'item-icon skeleton-tile' }),
     h('div', { class: 'item-main' },
-      h('div', { class: 'item-name' }, bar(['30%', '40%', '24%'][i % 3])),
-      h('div', { class: 'item-desc' }, bar(['72%', '56%', '64%'][i % 3])),
-      h('div', { class: 'item-meta' }, bar('40%')))))),
+      h('div', { class: 'item-name' }, bar([30, 40, 24][i % 3])),
+      h('div', { class: 'item-desc' }, bar([72, 56, 64][i % 3])),
+      h('div', { class: 'item-meta' }, bar(40)))))),
   // Item cards under a section heading (Workflows, Skills).
-  'item-section': (count = 3) => h('div', { class: 'stack-sm' }, h('div', { class: 'page-section-title' }, bar('8em')), SHAPES.items(count)),
+  'item-section': (count = 3) => h('div', { class: 'stack-sm' }, h('div', { class: 'page-section-title' }, bar('lg')), SHAPES.items(count)),
   table: (columns = 4, rows = 4) => h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
-    h('thead', null, h('tr', null, Array.from({ length: columns }, () => h('th', null, bar('5em'))))),
+    h('thead', null, h('tr', null, Array.from({ length: columns }, () => h('th', null, bar('md'))))),
     h('tbody', null, Array.from({ length: rows }, (_, r) => h('tr', null,
-      Array.from({ length: columns }, (_, c) => h('td', null, bar(`${[70, 50, 60, 40][(r + c) % 4]}%`)))))))),
+      Array.from({ length: columns }, (_, c) => h('td', null, bar([70, 50, 60, 40][(r + c) % 4])))))))),
   cards: (count = 2) => h('div', { class: 'grid-2' }, Array.from({ length: count }, () => h('div', { class: 'card skeleton-card' },
-    h('div', { class: 'item-name' }, bar('40%')), bar('80%'), bar('64%'), bar('48%')))),
-  form: (count = 3) => h('div', { class: 'stack' }, Array.from({ length: count }, () => h('div', { class: 'stack-sm' },
-    h('div', { class: 'page-section-title' }, bar('8em')),
-    h('div', { class: 'skeleton-field' })))),
+    h('div', { class: 'item-name' }, bar(40)), bar(80), bar(64), bar(48)))),
+  // Editor sections alone (automation, MCP server), and beside the summary (workflow).
+  form: editorSections,
+  editor: () => h('div', { class: 'wf-grid' }, editorSections(), h('div', { class: 'card wf-summary' }, bar(50), bar(80), bar(70), bar(60))),
 };
 
 /**
  * The skeleton in the shape of what loads (SPEC-120): `shape` is a name of SHAPES ('items',
- * 'item-section', 'table', 'cards', 'form') or [name, ...its sizes], such as ['table', 6] for six columns.
+ * 'item-section', 'table', 'cards', 'form', 'editor'), [name, ...its sizes] such as ['table', 6] for
+ * six columns, or a function drawing a page's own layout. An unknown name draws lines.
  */
 export function loadingShape(label, shape) {
+  if (typeof shape === 'function') return skeletonOf(label, shape());
   const [name, ...sizes] = Array.isArray(shape) ? shape : [shape];
-  return skeletonOf(label, SHAPES[name](...sizes));
+  return SHAPES[name] ? skeletonOf(label, drawShape(name, ...sizes)) : skeleton(label, 3, { block: true });
+}
+
+/** One shape of SHAPES drawn alone, for a page that composes its loading layout around it. */
+export function drawShape(name, ...sizes) {
+  return SHAPES[name](...sizes);
 }
 
 /**

@@ -4,7 +4,7 @@
 // branches and worktrees). A run opens from `?run=<id>`, the link of the `yulius/ci` commit status.
 
 import { enc } from '../api.js';
-import { h, badge, itemCard, emptyState, setChildren, placeholder, openModal, toast, errorToast, confirmDialog, pollPaused, icon } from '../dom.js';
+import { h, badge, itemCard, emptyState, setChildren, placeholder, openModal, toast, errorToast, confirmDialog, pollPaused, icon, bar, drawShape } from '../dom.js';
 import { relLong, dateTime, duration, plural } from '../format.js';
 import { allows } from '../status.js';
 import { replaceQuietly } from '../router.js';
@@ -59,7 +59,15 @@ export function mountCiPage(ctx, sandbox, route) {
   const reload = loader(runsHost, 'the CI runs', () => ctx.api.get(`${base}/ci`), (overview) => {
     schedule(overview);
     return renderOverview(overview);
-  }, { shape: 'items' });
+  }, { shape: loadingLayout });
+
+  /** The runs while they load (SPEC-120): the configuration card, the Runs heading, run cards. */
+  function loadingLayout() {
+    return h('div', { class: 'stack' },
+      h('div', { class: 'card card-pad stack-sm' }, h('div', { class: 'card-title' }, bar('xl')), bar(70), bar(50)),
+      h('div', { class: 'ci-heading' }, bar('md')),
+      drawShape('items'));
+  }
 
   let last = { runs: [] };
   /** Refreshes quietly: every few seconds while a run is active, else now and then. */
