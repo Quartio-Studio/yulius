@@ -20,7 +20,8 @@ pub struct Price {
     pub output: f64,
 }
 
-/// The price of `model`, or `None` for a model the table does not know.
+/// The price of `model`, or `None` for a model the table does not know. First-party ids only:
+/// cloud-platform ids (Bedrock `anthropic.…-v1:0`, Vertex `…@YYYYMMDD`) count as unpriced.
 #[must_use]
 pub fn price_of(model: &str) -> Option<Price> {
     let id = model.trim().to_ascii_lowercase();

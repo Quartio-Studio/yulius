@@ -517,7 +517,7 @@ function tokenTiles(tokens) {
     capacityTile('zap', 'API cost (7 days)', cost === null ? '—' : `≈ ${usd(cost)}`, [
       'at Claude API list prices',
       cost === null ? (week && spent(week) ? 'no run’s model has a price' : null)
-        : `last 24 h ≈ ${usd(day && Number.isFinite(day.cost_usd) ? day.cost_usd : 0)}${unpriced ? ` · ${unpriced} ${unpriced === 1 ? 'run' : 'runs'} of unknown models not counted` : ''}`,
+        : `${day && Number.isFinite(day.cost_usd) ? `last 24 h ≈ ${usd(day.cost_usd)}` : 'last 24 h: —'}${unpriced ? ` · ${unpriced} ${unpriced === 1 ? 'run' : 'runs'} of unknown models not counted` : ''}`,
     ], 'ok', perDay && weekChart('API cost', perDay.map((d) => (Number.isFinite(d.cost_usd) ? d.cost_usd : null)), usd)),
   ];
 }

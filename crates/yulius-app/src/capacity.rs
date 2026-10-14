@@ -711,7 +711,15 @@ impl App {
         // A subscription is held by working tasks only (SPEC-057 SUB-001).
         let live = self.working_attempts().await?;
         let views = self.account_views().await?;
-        let pool = self.pool_tokens(now).await?;
+        // One read of the week's runs: their lifetimes for the forecast, their tokens for the
+        // pool's token use (SPEC-110).
+        let token_runs: Vec<TokenRun> = store
+            .token_runs(now.plus_millis(-WEEK_MS))
+            .await?
+            .into_iter()
+            .map(token_run)
+            .collect();
+        let pool = yulius_domain::capacity::pool_tokens(&token_runs, now, 7);
         let mut accounts = Vec::with_capacity(records.len());
         let mut members = Vec::new();
         let mut five_hour_left: Option<f64> = None;
@@ -755,12 +763,7 @@ impl App {
                 resets_at: s.resets_at,
             })
             .collect();
-        let runs: Vec<Span> = store
-            .attempt_spans(since)
-            .await?
-            .into_iter()
-            .map(|(start, end)| Span { start, end })
-            .collect();
+        let runs: Vec<Span> = token_runs.iter().map(|r| r.span).collect();
         let pause_records = store.pauses_since(since).await?;
         let span = |p: &PauseRecord| Span {
             start: p.started_at,
@@ -823,31 +826,20 @@ impl App {
             tokens: pool_view(&pool),
         })
     }
+}
 
-    /// The pool's token use over the last 7 days from every run that lived in them (SPEC-110).
-    async fn pool_tokens(&self, now: Timestamp) -> AppResult<PoolTokens> {
-        let runs: Vec<TokenRun> = self
-            .deps
-            .store
-            .token_runs(now.plus_millis(-WEEK_MS))
-            .await?
-            .into_iter()
-            .map(|r| {
-                let m = r.metrics.unwrap_or_default();
-                TokenRun {
-                    span: Span {
-                        start: r.started_at,
-                        end: r.ended_at,
-                    },
-                    model: m.model,
-                    input: m.input_tokens,
-                    output: m.output_tokens,
-                    cache_read: m.cache_read,
-                    cache_write: m.cache_write,
-                }
-            })
-            .collect();
-        Ok(yulius_domain::capacity::pool_tokens(&runs, now, 7))
+fn token_run(r: crate::model::TokenRunRecord) -> TokenRun {
+    let m = r.metrics.unwrap_or_default();
+    TokenRun {
+        span: Span {
+            start: r.started_at,
+            end: r.ended_at,
+        },
+        model: m.model,
+        input: m.input_tokens,
+        output: m.output_tokens,
+        cache_read: m.cache_read,
+        cache_write: m.cache_write,
     }
 }
 

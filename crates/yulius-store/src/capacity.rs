@@ -197,30 +197,6 @@ impl CapacityStore for SqliteStore {
         .await
     }
 
-    async fn attempt_spans(
-        &self,
-        since: Timestamp,
-    ) -> AppResult<Vec<(Timestamp, Option<Timestamp>)>> {
-        self.call(move |c| {
-            let mut stmt = c
-                .prepare(
-                    "SELECT started_at, ended_at FROM attempts \
-                     WHERE ended_at IS NULL AND state IN ('spawning', 'live') OR ended_at >= ?1",
-                )
-                .map_err(db)?;
-            let rows = stmt
-                .query_map([since.0], |row| {
-                    Ok((
-                        Timestamp(row.get(0)?),
-                        row.get::<_, Option<i64>>(1)?.map(Timestamp),
-                    ))
-                })
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)
-        })
-        .await
-    }
-
     async fn token_runs(&self, since: Timestamp) -> AppResult<Vec<TokenRunRecord>> {
         self.call(move |c| {
             let mut stmt = c

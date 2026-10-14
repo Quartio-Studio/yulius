@@ -1052,7 +1052,7 @@ TaskRow = {"task_id","sandbox","number","title","status","origin","harness","har
 ```
 
 `tasks_per_day` lists every day of a range up to 366 days (zero-task days included), otherwise only
-days with tasks, runs or switches. A day's `active_ms`, `input` and `output` are of the cohort's runs
+days with tasks, runs or switches (never a day outside the range). A day's `active_ms`, `input` and `output` are of the cohort's runs
 started that day, `switches` of its switches made that day, and `median_active_ms` the median agent
 work of the tasks created that day (SPEC-110). `harnesses`, `models` and `accounts` are `;`-separated. `format=csv` returns
 `text/csv` (attachment `yulius-tasks-<from>-<to>.csv`) with the `TaskRow` keys as the header,
@@ -1109,7 +1109,8 @@ ending now (SPEC-110). A run's tokens count in each period by the share of its l
 end, or now) inside it; `last_24h` is the last period and `last_7d` their sum. `cost_usd` estimates
 what the tokens would cost at Claude API list prices (`yulius_domain::pricing`, ADR-0089: cache
 writes at the 5-minute rate); runs of a model without a price add tokens but no cost
-(`unpriced_runs`), and `cost_usd` is `null` when no run there has a price. Runs without usage are
+(`unpriced_runs`), and `cost_usd` is `null` when every run that spent tokens there lacks a price
+(a period without runs costs `0`). Runs without usage are
 counted in `unknown_usage_runs`, never as zero.
 
 ```json

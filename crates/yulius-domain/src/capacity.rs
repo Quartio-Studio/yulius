@@ -714,6 +714,15 @@ mod tests {
             "the unpriced run's tokens count"
         );
         assert_eq!(last.cost(), Some(0.0), "the priced zero-length run counts");
+        // A zero-length run at the very end of the window counts in the last period.
+        let at_now = pool_tokens(
+            &[token_run(0, Some(0), "claude-opus-5-5", 1_000_000)],
+            NOW,
+            7,
+        );
+        assert!(close(at_now.per_day[6].input, 1_000_000.0));
+        // A period mixing priced and unpriced runs has the priced runs' cost, not none.
+        assert!(last.priced && last.unpriced);
         let only_unpriced = pool_tokens(&runs[1..2], NOW, 7);
         assert_eq!(only_unpriced.per_day[6].cost(), None);
         assert_eq!(only_unpriced.per_day[5].cost(), Some(0.0), "nothing ran");

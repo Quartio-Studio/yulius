@@ -326,6 +326,9 @@ pub fn summarize(
         }
     }
 
+    // A run or switch after the range's last day (a task created late that day ran on) adds no
+    // day outside the range; the range's totals still count it.
+    let in_range = |day: i64| days.is_none_or(|(first, last)| (first..=last).contains(&day));
     let mut all = Acc::default();
     let mut by_model: BTreeMap<String, Acc> = BTreeMap::new();
     let mut by_harness: BTreeMap<String, Acc> = BTreeMap::new();
@@ -356,16 +359,18 @@ pub fn summarize(
         *task_wall = task_wall.saturating_add(wall);
         let active = run.metrics.as_ref().and_then(|m| m.active_ms);
         add_known(&mut total_active, active);
-        let day = per_day.entry(day_of(run.started_at)).or_default();
-        add_known(&mut day.active, active);
-        add_known(
-            &mut day.input,
-            run.metrics.as_ref().and_then(|m| m.input_tokens),
-        );
-        add_known(
-            &mut day.output,
-            run.metrics.as_ref().and_then(|m| m.output_tokens),
-        );
+        if in_range(day_of(run.started_at)) {
+            let day = per_day.entry(day_of(run.started_at)).or_default();
+            add_known(&mut day.active, active);
+            add_known(
+                &mut day.input,
+                run.metrics.as_ref().and_then(|m| m.input_tokens),
+            );
+            add_known(
+                &mut day.output,
+                run.metrics.as_ref().and_then(|m| m.output_tokens),
+            );
+        }
         if let Some(active) = active {
             let task_active = active_by_task.entry(run.task_id.clone()).or_default();
             *task_active = task_active.saturating_add(active);
@@ -376,7 +381,7 @@ pub fn summarize(
             per_day.entry(*day).or_default().task_actives.push(*active);
         }
     }
-    for s in &data.switches {
+    for s in data.switches.iter().filter(|s| in_range(day_of(s.at))) {
         let day = per_day.entry(day_of(s.at)).or_default();
         day.switches = day.switches.saturating_add(1);
     }
@@ -868,6 +873,15 @@ mod tests {
             }],
             ..AnalyticsData::default()
         };
+        let mut data = data;
+        // A run and a switch after the range's last day (a task created late that day ran on)
+        // add no day outside the range.
+        data.runs.push(run("t2", 3, 1_000, Some(1), Some(1))?);
+        data.switches.push(AnalyticsSwitch {
+            task_id: id("t2")?,
+            at: Timestamp(3 * DAY_MS + 1),
+            inputs: String::new(),
+        });
         let s = summarize(&data, AnalyticsRange::default(), Some((0, 2)), Timestamp(0));
         let days: Vec<_> = s
             .tasks_per_day
@@ -887,7 +901,7 @@ mod tests {
             days,
             vec![
                 (1, Some(600_000), Some(900_000), Some(10), Some(5), 0),
-                (1, Some(1_500_000), Some(1_200_000), Some(1), Some(2), 1),
+                (1, Some(1_500_000), Some(1_201_000), Some(1), Some(2), 1),
                 (0, None, None, None, None, 0),
             ]
         );

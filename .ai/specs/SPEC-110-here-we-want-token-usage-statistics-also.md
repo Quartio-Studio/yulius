@@ -108,6 +108,11 @@ history means something carries a small chart like Tasks has.
   joins those rows instead of a second, differently counted figure in `GET /api/capacity`.
 - **Prices as a table in the domain** (ADR-0089), not fetched: Yulius must not call out for a
   figure, and prices change rarely; the table records its source and date.
+- **Pool-wide figures for everyone signed in.** `GET /api/capacity` is for every signed-in person,
+  and its tokens and cost cover the whole pool, including sandboxes they cannot see; only totals
+  are shown (no task, sandbox or person), as the burn rate already does.
+- **The Dashboard's days stay inside its range.** A run or switch after the range's last day (a
+  task created late that day ran on) counts in the range's totals but adds no day to the series.
 - **Size.** About 450 changed lines outside tests, a little over the 400 guide, kept in one pull
   request because the person asked for both parts in this task and the chart helper is shared.
 

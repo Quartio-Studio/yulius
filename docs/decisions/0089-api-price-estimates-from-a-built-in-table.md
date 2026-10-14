@@ -36,3 +36,9 @@ Prices are updated by editing the table when Anthropic changes them.
 - A new model shows its tokens with "runs of unknown models not counted" until the table learns it.
 - Batch, priority, regional (`inference_geo`) and long-context premiums are not modelled; the
   figure is the standard list price.
+- A run's metrics name one model (the last it saw) while its tokens include its sub-agents', so a
+  run whose sub-agents ran on Haiku, or that switched model, is priced at the named model's rate.
+- Haiku 5.5 is priced at its rate for prompts up to 100 000 tokens; Claude Code prompts are often
+  longer (cache reads count), where the real rate is 5× higher, so Haiku 5.5 work is understated.
+- Model ids of cloud platforms (`anthropic.…-v1:0` on Bedrock, `…@YYYYMMDD` on Vertex) are not
+  recognised and count as unpriced; Yulius runs first-party Claude subscriptions.

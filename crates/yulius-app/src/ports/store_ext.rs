@@ -286,13 +286,8 @@ pub trait CapacityStore: Send + Sync {
         &self,
         since: Timestamp,
     ) -> AppResult<Vec<crate::model::UsageSampleRecord>>;
-    /// Lifetimes `(started_at, ended_at)` of attempts that ran at or after `since`.
-    async fn attempt_spans(
-        &self,
-        since: Timestamp,
-    ) -> AppResult<Vec<(Timestamp, Option<Timestamp>)>>;
-    /// Attempts that ran at or after `since` (as [`Self::attempt_spans`]) with their subscription
-    /// and metrics.
+    /// Attempts that ran at or after `since` (still live, or ended at or after it): their
+    /// lifetimes, subscription and metrics.
     async fn token_runs(&self, since: Timestamp) -> AppResult<Vec<crate::model::TokenRunRecord>>;
 }
 
