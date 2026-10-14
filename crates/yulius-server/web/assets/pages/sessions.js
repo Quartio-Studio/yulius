@@ -536,7 +536,8 @@ export function scheduleCockroaches(well, { random = Math.random, timer = { set:
  */
 function watchStuckWeb(well, mark, root) {
   if (typeof IntersectionObserver !== 'function') return () => {};
-  const observer = new IntersectionObserver(([entry]) => {
+  const observer = new IntersectionObserver((entries) => {
+    const entry = entries[entries.length - 1]; // the latest, after a fast scroll there and back
     well.classList.toggle('ss-web-stuck', !entry.isIntersecting && entry.boundingClientRect.top < (entry.rootBounds?.top ?? 0));
   }, { root });
   observer.observe(mark);

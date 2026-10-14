@@ -404,6 +404,14 @@ test('the spider web sticks to the top of the view while the session scrolls', a
       over: ['.ss-entries > li', '.ss-more', '.ss-locked'].every((sel) => [...well.querySelectorAll(sel)].every((el) => getComputedStyle(el).position !== 'static')),
     };
   }, theme);
+  // It fades as soon as it sticks: the well's top just past the view's.
+  await browser.evaluate(() => {
+    const page = document.querySelector<HTMLElement>('.ss-page')!;
+    page.scrollTop = 0;
+    page.scrollTop = document.querySelector('.ss-tui')!.getBoundingClientRect().top - page.getBoundingClientRect().top - page.clientTop + 3;
+  });
+  await expect.poll(async () => (await colours('dark')).web).toBe(false);
+  await browser.evaluate(() => { document.querySelector<HTMLElement>('.ss-page')!.scrollTop = 200; });
   for (const theme of ['dark', 'light']) {
     await expect.poll(async () => (await colours(theme)).web, theme).toBe(false);
     const stuck = await colours(theme);
@@ -511,6 +519,18 @@ test('a cockroach runs across the visible part of the session now and then (unit
     await new Promise((resolve) => requestAnimationFrame(resolve));
     const removed = !roach.isConnected;
 
+    // It also runs the other way, facing where it goes.
+    const back = runCockroach(well, () => 0.2) as SVGSVGElement;
+    const [backRun] = back.getAnimations();
+    const backAt = (fraction: number) => {
+      backRun.pause();
+      backRun.currentTime = fraction * Number(backRun.effect!.getComputedTiming().duration);
+      const box = back.getBoundingClientRect();
+      const w = well.getBoundingClientRect();
+      return { left: Math.round(box.left - w.left), right: Math.round(w.right - box.right), flipped: getComputedStyle(back).transform.startsWith('matrix(-1') };
+    };
+    const leftward = [backAt(0), backAt(0.5), backAt(0.999)];
+    back.remove();
     // At the lowest place it can take it is still all in view.
     const low = runCockroach(well, () => 0.999999) as SVGSVGElement;
     const lowBottom = low.getBoundingClientRect().bottom;
@@ -532,7 +552,7 @@ test('a cockroach runs across the visible part of the session now and then (unit
     const afterStop = { cleared: timers[1].cleared, left: well.querySelectorAll('.ss-roach').length };
     timers[1].fn();
     const stale = { timers: timers.length, roaches: well.querySelectorAll('.ss-roach').length };
-    return { delays, view: { top: view.top, bottom: view.bottom }, start, middle, end, shape, removed, lowBottom, whileHidden, scheduled, ran, next, afterStop, stale };
+    return { delays, view: { top: view.top, bottom: view.bottom }, start, middle, end, leftward, shape, removed, lowBottom, whileHidden, scheduled, ran, next, afterStop, stale };
   });
   expect(result.delays).toEqual({ firstMin: 20000, firstMax: 59999, laterMin: 45000, laterMax: 149999 });
   expect(result.shape).toMatchObject({ inWell: true, hidden: 'true', pointer: 'none', legs: 2 });
@@ -548,6 +568,13 @@ test('a cockroach runs across the visible part of the session now and then (unit
   expect(result.middle.bottom).toBeLessThanOrEqual(result.view.bottom);
   for (const at of [result.start, result.middle, result.end]) expect(at.overflow).toBe(0);
   expect(result.removed).toBe(true);
+  const [enter, cross, leave] = result.leftward;
+  expect(enter.left).toBeGreaterThan(0);
+  expect(enter.right).toBeLessThan(0);
+  expect(cross.left).toBeGreaterThan(0);
+  expect(cross.right).toBeGreaterThan(0);
+  expect(leave.left).toBeLessThan(cross.left);
+  expect(result.leftward.every((at) => at.flipped)).toBe(true);
   expect(result.lowBottom).toBeLessThanOrEqual(result.view.bottom);
   expect(result.whileHidden).toEqual({ roach: null, shown: 0 });
   expect(result.scheduled).toEqual([40000]);
@@ -613,7 +640,9 @@ test('no cockroach runs under reduced motion', async ({ app, browser }) => {
   await expect(browser.locator('.ss-tui .ss-locked')).toBeVisible();
   await expect.poll(() => browser.evaluate(() => (window as unknown as { roachTimers: unknown[] }).roachTimers.length)).toBeGreaterThan(0);
   const ran = await browser.evaluate(async () => {
-    (window as unknown as { roachTimers: { fn: () => void }[] }).roachTimers[0].fn();
+    const [first] = (window as unknown as { roachTimers: { fn: () => void; id: number }[] }).roachTimers;
+    window.clearTimeout(first.id);
+    first.fn();
     const url = '/assets/pages/sessions.js';
     const { runCockroach } = await import(url);
     return { direct: runCockroach(document.querySelector('.ss-tui')), shown: document.querySelectorAll('.ss-roach').length };

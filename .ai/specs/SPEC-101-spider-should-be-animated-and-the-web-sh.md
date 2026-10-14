@@ -98,5 +98,8 @@ the way of reading, selecting or using the keyboard.
   `.ss-web-stuck` and the web takes `--session-web-stuck`, which the repository check holds to AA
   against the well's text colours. CSS `scroll-state(stuck)` queries were not used because they
   cannot style inside the SVG reliably and are Chromium-only.
+- Review round 2 (fresh session): APPROVE at d2931614 with minors, fixed test-first. The mark sat
+  below the well's padding, so the web stuck about 16 px before it faded; it now sits at the
+  well's top. The observer reads its latest entry. Right-to-left runs are tested.
 - The well clips horizontally (`overflow-x: clip`), not `hidden`: `clip` makes no scroll
   container, so the web's sticky position still follows the page's scroll.

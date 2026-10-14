@@ -2157,7 +2157,7 @@ button.task-group-head:hover { color: var(--text); }
 .ss-web-thread, .ss-web-silk { fill: var(--session-web); }
 .ss-web-spider { fill: var(--session-dim); }
 .ss-web-stuck :is(.ss-web-thread, .ss-web-silk, .ss-web-spider) { fill: var(--session-web-stuck); }
-.ss-web-mark { height: 0; }
+.ss-web-mark { height: 0; margin-top: -16px; } /* at the well's top, where the web sticks, above its padding */
 /* Every 8 s the spider climbs 6 pixels up its thread, one pixel a step, hangs there and drops back,
    its legs switching frames on each step (SPEC-101); the thread shortens with it, from its top. */
 .ss-web-spider { animation: ss-spider-climb var(--duration-spider) steps(6, end) infinite; }
@@ -2235,6 +2235,7 @@ button.task-group-head:hover { color: var(--text); }
   .ss-inner > .ss-body > :not(.ss-tui) { margin: 0 12px 12px; }
   .ss-tui { padding: 12px 12px 24px; font-size: var(--fs-sm); line-height: var(--lh-sm); }
   .ss-web { width: 56px; height: 68px; margin: -12px -12px 8px 12px; } /* 2 px pixels */
+  .ss-web-mark { margin-top: -12px; }
   .ss-roach { width: 32px; height: 14px; } /* 2 px pixels */
   .ss-has-when .ss-prompt { padding-right: 1ch; }
   .ss-when { position: static; align-self: flex-end; padding: 0; }
