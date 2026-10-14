@@ -476,7 +476,7 @@ impl App {
             .and_then(|failed| failed.get(&(user.id.clone(), record.id.clone())).cloned());
         let resume = newest.filter(|id| Some(id) != unresumable.as_ref());
         let mut plan = self.deps.harness.plan_cockpit(&CockpitLaunch {
-            cwd: folder,
+            cwd: folder.clone(),
             config_dir: space.home.join(".claude"),
             config_dir_host: space.home_host.join(".claude"),
             resume: resume.clone(),
@@ -497,7 +497,7 @@ impl App {
         }
         // The user's own environment (identity, Git as their GitHub account, ports), then the
         // session's; the shell its Bash tool uses stays the user's login shell.
-        let mut env = self.shell_env(record, &space, &self.shell_program());
+        let mut env = self.shell_env(record, &space, &self.shell_program(), &folder);
         env.retain(|(key, _)| !plan.env.iter().any(|(k, _)| k == key));
         env.append(&mut plan.env);
         plan.env = env;

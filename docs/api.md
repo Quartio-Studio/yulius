@@ -555,11 +555,24 @@ Yulius is the projects' only CI (SPEC-001 DLV-006/007, SPEC-002 ADR-21). The job
 name = "test"               # [a-z0-9][a-z0-9_-]*, at most 32 bytes, unique
 command = "cargo test"      # one line, run as /bin/sh -c in the job's CI checkout
 matrix = "1/2 2/2"          # optional: one job per value, as $YULIUS_CI_MATRIX ("test (1/2)")
+cpus = 4                    # optional (1-1024): the CPUs it uses; default: an equal share of the
+memory_gb = 8               #   sandbox among the run's jobs; memory_gb (1-4096) follows the CPUs
 # or, for one job: [commands] gate = "…"   (not both)
+
+[resources.env]             # optional: the budget in this repository's tools' terms (SPEC-082)
+CARGO_BUILD_JOBS = "{cpus}" # placeholders {cpus}, {memory_mb}, {memory_gb}; at most 32 variables,
+                            # not what Yulius sets or what changes how the agent CLI, Git, TLS,
+                            # proxies, shells or interpreters run (PATH, HOME, CI, YULIUS_*, GIT_*,
+                            # ANTHROPIC_*, CLAUDE_*, NODE_*, PYTHON*, *_PROXY, LD_* and similar)
 ```
 
 Jobs get `CI=true`, `HOME` (persistent), `YULIUS_CI_CACHE` (persistent), `YULIUS_CI_RUN`,
-`YULIUS_CI_JOB`, `YULIUS_CI_SHA`, `YULIUS_CI_REF`, `YULIUS_CI_MATRIX` and no secrets.
+`YULIUS_CI_JOB`, `YULIUS_CI_SHA`, `YULIUS_CI_REF`, `YULIUS_CI_MATRIX` and no secrets. A job
+starts once its CPUs and memory are free: the CI jobs of all lanes never ask for more than the
+sandbox has, and each is told its budget in `YULIUS_CPUS`, `YULIUS_MEMORY_MB` and the variables of
+`[resources.env]` in its checkout's `yulius.toml` (its output starts with
+`[yulius] budget: 4 CPUs, 8192 MiB …`). Agent sessions, terminals and the Cockpit get the agent
+budget the same way, from the `yulius.toml` where they start.
 
 | Method and path | Access | Result |
 | --- | --- | --- |

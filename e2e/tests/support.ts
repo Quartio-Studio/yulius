@@ -81,6 +81,18 @@ export function axeViolations(browser: Browser): Promise<string[]> {
 }
 
 /** Changes a mock task as the server would announce it (`__yuliusMock.touchTask`). */
+/**
+ * Waits until the task view's terminal shows its first screen. The task view asks for the
+ * keyboard when it opens, and that request lands when the terminal shows, over a button or link
+ * focused meanwhile (SPEC-056 WUI-102). A test that puts the keyboard elsewhere on a task's page
+ * waits for this first: before, it raced the terminal, which took the keyboard 30–100 ms after the
+ * sidebar showed (SPEC-082 TST-003).
+ */
+export async function terminalShown(browser: Browser): Promise<void> {
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.taskview .term') !== null
+    && document.querySelector('.taskview .term-pending, .taskview .term-placeholder') === null)).toBe(true);
+}
+
 export function touchTask(browser: Browser, sandbox: string, number: number, changes: Record<string, unknown>): Promise<void> {
   type Touching = { __yuliusMock: { touchTask: (sandbox: string, number: number, changes: unknown) => void } };
   return browser.evaluate(([s, n, c]) => (window as unknown as Touching).__yuliusMock.touchTask(s, n, c), [sandbox, number, changes] as const);

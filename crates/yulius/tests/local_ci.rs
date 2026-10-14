@@ -22,7 +22,9 @@ use yulius::wiring::session::PtySessionHost;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::SandboxRecord;
 use yulius_app::ports::github::GhPull;
-use yulius_app::ports::isolation::{DiskUsage, SandboxIsolation, SandboxJoin, SandboxRef};
+use yulius_app::ports::isolation::{
+    DiskUsage, SandboxIsolation, SandboxJoin, SandboxLimits, SandboxRef,
+};
 use yulius_domain::ci::{GateResult, RunState};
 use yulius_domain::ids::SandboxId;
 
@@ -902,5 +904,96 @@ async fn a_job_refused_for_disk_puts_its_run_back_in_the_queue() -> TestResult {
     f.h.clock.0.fetch_add(61_000, Ordering::SeqCst);
     f.settle().await?;
     f.all_passed(2).await?;
+    Ok(())
+}
+
+/// A sandbox limited to 4 CPUs and 8 GiB, without containment.
+struct Limited;
+
+#[async_trait::async_trait]
+impl SandboxIsolation for Limited {
+    async fn prepare(&self, _: &SandboxRef) -> AppResult<Option<SandboxJoin>> {
+        Ok(None)
+    }
+    fn release(&self, _: &SandboxId) {}
+    fn limits(&self) -> SandboxLimits {
+        SandboxLimits {
+            cpus: Some(4),
+            memory_bytes: Some(8 << 30),
+        }
+    }
+}
+
+/// SPEC-082 RES-002, RES-003, RES-004: CI jobs declare the CPUs they use. Jobs whose budgets do
+/// not fit in the sandbox together wait in the queue instead of running at once (two lanes,
+/// three job slots: before, all of them ran, each sized for the whole machine), and each job is
+/// told its budget in `YULIUS_CPUS`, `YULIUS_MEMORY_MB` and the repository's `[resources.env]`.
+#[tokio::test]
+async fn jobs_wait_for_their_cpu_budget_and_are_told_it() -> TestResult {
+    let f = fixture_with(false, |data| {
+        format!(
+            "[resources.env]\nMAKEFLAGS = \"-j{{cpus}}\"\n\n\
+             [[ci.jobs]]\nname = \"build\"\ncpus = 3\ncommand = 'while [ ! -e \"{go}\" ]; do \
+             sleep 0.05; done; echo \"cpus=$YULIUS_CPUS memory=$YULIUS_MEMORY_MB $MAKEFLAGS\"'\n\n\
+             [[ci.jobs]]\nname = \"check\"\ncpus = 3\ncommand = 'echo \"cpus=$YULIUS_CPUS\"'\n",
+            go = data.join("go").display()
+        )
+    })
+    .await?;
+    assert!(f.h.app.set_isolation(Arc::new(Limited)));
+    let cpus = f.h.app.capacity().cpus.min(3);
+    f.h.app.ci_sync_sandbox(&f.sandbox).await?;
+    let runs: Vec<String> = f.get("/api/sandboxes/s1/ci").await?["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .iter()
+        .filter_map(|r| r["id"].as_str().map(str::to_owned))
+        .collect();
+    assert_eq!(runs.len(), 2, "main/dev and the pull request");
+    // Until a `build` job holds its 3 CPUs (it waits for `go`), at most one job runs at a time.
+    let deadline = tokio::time::Instant::now() + WAIT;
+    loop {
+        f.h.app.ci_dispatch().await;
+        let mut running = Vec::new();
+        for id in &runs {
+            let detail = f.get(&format!("/api/sandboxes/s1/ci/runs/{id}")).await?;
+            for job in detail["jobs"].as_array().ok_or("jobs")? {
+                if job["state"] == "running" {
+                    running.push(job["name"].as_str().unwrap_or_default().to_owned());
+                }
+            }
+        }
+        assert!(
+            running.len() <= 1,
+            "jobs over the budget ran at once: {running:?}"
+        );
+        if running.iter().any(|name| name == "build") {
+            break;
+        }
+        if tokio::time::Instant::now() > deadline {
+            return Err("no build job started".into());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    std::fs::write(f.data.join("go"), "")?;
+    f.settle().await?;
+    f.all_passed(2).await?;
+    for id in &runs {
+        let detail = f.get(&format!("/api/sandboxes/s1/ci/runs/{id}")).await?;
+        for job in detail["jobs"].as_array().ok_or("jobs")? {
+            let output = job["output"].as_str().unwrap_or_default();
+            let memory = 8192 * u64::from(cpus) / 4;
+            assert!(
+                output.contains(&format!("[yulius] budget: {cpus} CPUs, {memory} MiB")),
+                "{output}"
+            );
+            if job["name"] == "build" {
+                assert!(
+                    output.contains(&format!("cpus={cpus} memory={memory} -j{cpus}")),
+                    "{output}"
+                );
+            }
+        }
+    }
     Ok(())
 }

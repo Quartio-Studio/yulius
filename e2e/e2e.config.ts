@@ -9,6 +9,11 @@ import { web } from '@e2e-dev/web';
 import { fileURLToPath } from 'node:url';
 
 const ui = fileURLToPath(new URL('../crates/yulius-server/web', import.meta.url));
+// Where Yulius runs the suite (agent sessions, CI jobs) it gives the process a CPU budget
+// (SPEC-082). Like the runner's own default of half the cores, half the budget: a worker is a
+// browser and the runner. Elsewhere the runner's default (half the cores; one in CI).
+const budget = Number.parseInt(process.env.YULIUS_CPUS ?? '', 10);
+const workers = Number.isInteger(budget) && budget > 0 ? Math.max(1, Math.floor(budget / 2)) : undefined;
 
 export default {
   tests: 'tests/**/*.e2e.ts',
@@ -34,4 +39,5 @@ export default {
   cache: { dir: 'replays' },
   // The runner retries once in CI by default; a retry would hide a slow or flaky test.
   retries: 0,
+  ...(workers ? { workers } : {}),
 } satisfies E2EConfig;

@@ -56,6 +56,16 @@ pub struct SandboxJoin {
     pub system_group: Option<PathBuf>,
 }
 
+/// The CPUs and memory every sandbox may use, where the adapter enforces them (SPEC-082
+/// RES-001).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SandboxLimits {
+    /// Whole CPUs (`cpu.max`); `None`: no CPU limit.
+    pub cpus: Option<u32>,
+    /// Bytes (`memory.max`); `None`: no memory limit.
+    pub memory_bytes: Option<u64>,
+}
+
 /// A sandbox's disk against its soft quota.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DiskUsage {
@@ -95,4 +105,10 @@ pub trait SandboxIsolation: Send + Sync {
 
     /// Ends a lease of [`SandboxIsolation::prepare`] (may finish in the background).
     fn release(&self, sandbox: &SandboxId);
+
+    /// The limits every sandbox runs under; none where nothing enforces them (no cgroup
+    /// delegation).
+    fn limits(&self) -> SandboxLimits {
+        SandboxLimits::default()
+    }
 }

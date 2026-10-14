@@ -62,8 +62,11 @@ pub struct FakeAgentOptions {
     pub interrupts: bool,
     /// Run the status line command with the rate limits in this file (`--rate-limits-file`).
     pub rate_limits_file: Option<PathBuf>,
-    /// Run Claude Code's SessionStart hook at start, like the real CLI (`--session-start`).
-    pub session_start: bool,
+    /// With `hooks`, leave out Claude Code's SessionStart hook at start, like a CLI too old to
+    /// have it. Every supported Claude Code runs it before its prompt box reads, so the fake
+    /// does too by default (`--session-start`); without it a goal is typed only after the
+    /// hookless fallback, which made every goal test wait 45 s (SPEC-082 TST-001).
+    pub no_session_start: bool,
     /// Run a turn of this many milliseconds first when the launch has a first message
     /// (`--opening-turn-ms`).
     pub opening_turn_ms: Option<u64>,
@@ -206,7 +209,7 @@ impl HarnessPort for FakeAgentHarness {
                 file.to_string_lossy().into_owned(),
             ]);
         }
-        if self.options.session_start {
+        if self.options.hooks && !self.options.no_session_start {
             argv.push("--session-start".into());
         }
         // A continued resume (CLAUDE_CODE_RESUME_INTERRUPTED_TURN) opens with the turn Claude

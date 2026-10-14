@@ -39,7 +39,7 @@ From the 2026-10-11/12 transcripts:
 | --- | --- | --- |
 | ENV-001 | `scripts/bootstrap.py` builds each pinned tool once per home (`~/.cache/yulius-tools/<name>-<version>`, locked against parallel builds) and links it into the worktree's `.tools/bin`. | run on macOS: linked from the cache, one missing tool built once |
 | ENV-002 | `docs/changes.md` merges with Git's union driver. | `.gitattributes` |
-| ENV-003 | Agent commands raise their own `oom_score_adj` to 500, so memory pressure kills a build before the agent; agent Rust builds use a third of the CPUs (`CARGO_BUILD_JOBS`). | `main.rs`, `supervisor.rs` |
+| ENV-003 | Agent commands raise their own `oom_score_adj` to 500, so memory pressure kills a build before the agent; agent Rust builds use a third of the CPUs (`CARGO_BUILD_JOBS`; since [SPEC-082](SPEC-082-test-timeouts-and-cpu-memory-budgets.md) RES-005 the agent budget in `YULIUS_CPUS`, mapped by the repository). | `main.rs`, `supervisor.rs` |
 | CI-101 | A branch commit whose tree a passed run tested is recorded as passed ("not run again") and gets `yulius/ci`. | `local_ci.rs::a_merge_with_a_tested_tree_reuses_its_result` |
 | CI-102 | A failed job stops the run's other jobs. | `exec.rs` |
 | CI-103 | A pull request's new head keeps the queue place of the run it supersedes. | `ci/mod.rs` |

@@ -18,6 +18,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::watch;
 use yulius_domain::ci::{self as dom, RunState};
+use yulius_domain::resources::{Budget, budget_env};
 
 use super::{
     CiJobRecord, CiJobUpdate, CiRunRecord, CiRunUpdate, KILL_GRACE, MAX_LOG_FILE_BYTES,
@@ -29,6 +30,7 @@ use crate::error::AppError;
 use crate::model::SandboxRecord;
 use crate::ports::isolation::SandboxJoin;
 use crate::ports::session::{Containment, LaunchPlan, RunEvent, RunExit, RunInspection, RunSignal};
+use crate::resources::repository_templates;
 
 /// The fixed wrapper: output to the log, stdin closed, then the configured command.
 const WRAPPER: &str = "exec >>\"$1\" 2>&1 </dev/null; exec /bin/sh -c \"$2\"";
@@ -234,6 +236,7 @@ impl App {
                     });
                 }
                 let mut handles = Vec::with_capacity(jobs.len());
+                let share = jobs.len();
                 for job in &jobs {
                     let app = Arc::clone(self);
                     let (sandbox, run, job) = (Arc::clone(&sandbox), run.clone(), job.clone());
@@ -242,7 +245,7 @@ impl App {
                     let stop_siblings = Arc::clone(&siblings_tx);
                     handles.push(tokio::spawn(async move {
                         let no_disk = Arc::clone(&app)
-                            .ci_job(&sandbox, &run, &job, &checkout, job_cancel)
+                            .ci_job(&sandbox, &run, &job, share, &checkout, job_cancel)
                             .await;
                         let failed =
                             app.deps
@@ -388,20 +391,28 @@ impl App {
         }
     }
 
-    /// Runs one job: waits for a slot (or cancellation), runs it and records the end; `true`
-    /// when the sandbox refused it over the disk quota.
+    /// Runs one job of a run of `share` jobs: waits for a slot and its CPU and memory budget
+    /// (or cancellation; SPEC-082 RES-003), runs it and records the end; `true` when the sandbox
+    /// refused it over the disk quota.
     async fn ci_job(
         self: Arc<Self>,
         sandbox: &SandboxRecord,
         run: &CiRunRecord,
         job: &CiJobRecord,
+        share: usize,
         checkout: &str,
         mut cancel: watch::Receiver<Option<String>>,
     ) -> bool {
         let store = &self.deps.store;
         let slots = self.ci_slots();
+        let budget = self.capacity().ci_job(job.need, share);
+        let held = async {
+            let slot = slots.acquire_owned().await.ok()?;
+            let reservation = self.ci_reserve(budget).await?;
+            Some((slot, reservation))
+        };
         let permit = tokio::select! {
-            permit = slots.acquire_owned() => permit.ok(),
+            permit = held => permit,
             reason = wait_cancel(&mut cancel) => {
                 let _ = store
                     .transition_ci_job(
@@ -434,8 +445,12 @@ impl App {
             return false;
         }
         let mut ring = OutputRing::new(OUTPUT_BYTES);
+        ring.push_str(&format!(
+            "[yulius] budget: {budget} (YULIUS_CPUS={}, YULIUS_MEMORY_MB={})\n",
+            budget.cpus, budget.memory_mb
+        ));
         let ended = self
-            .ci_job_process(sandbox, run, job, checkout, &mut ring, &mut cancel)
+            .ci_job_process(sandbox, run, job, budget, checkout, &mut ring, &mut cancel)
             .await;
         let no_disk = matches!(ended, Ok(Ended::NoDisk(_)));
         let (state, exit_code, reason) = match ended {
@@ -491,14 +506,17 @@ impl App {
         no_disk
     }
 
+    /// The job's environment: no secret; its budget and what the checkout's `[resources.env]`
+    /// makes of it (SPEC-082 RES-004).
     fn ci_job_env(
         &self,
         sandbox: &SandboxRecord,
         run: &CiRunRecord,
         job: &CiJobRecord,
-        home: &Path,
-        cache: &Path,
+        budget: Budget,
+        dirs: [&Path; 3],
     ) -> Vec<(String, String)> {
+        let [home, cache, checkout] = dirs;
         let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into());
         let mut env = vec![
             ("HOME".to_owned(), home.to_string_lossy().into_owned()),
@@ -522,6 +540,7 @@ impl App {
         if let Some(value) = &job.matrix {
             env.push(("YULIUS_CI_MATRIX".to_owned(), value.clone()));
         }
+        env.extend(budget_env(budget, &repository_templates(checkout)));
         env
     }
 
@@ -554,11 +573,13 @@ impl App {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn ci_job_process(
         &self,
         sandbox: &SandboxRecord,
         run: &CiRunRecord,
         job: &CiJobRecord,
+        budget: Budget,
         checkout_name: &str,
         ring: &mut OutputRing,
         cancel: &mut watch::Receiver<Option<String>>,
@@ -603,7 +624,7 @@ impl App {
                 job.command.clone(),
             ],
             cwd: checkout.clone(),
-            env: self.ci_job_env(sandbox, run, job, &home, &cache),
+            env: self.ci_job_env(sandbox, run, job, budget, [&home, &cache, &checkout]),
             secret_env: Vec::new(),
             files: Vec::new(),
             containment: self.ci_containment(sandbox, &home, join),
@@ -870,6 +891,7 @@ mod tests {
             output: String::new(),
             started_at: None,
             ended_at: None,
+            need: yulius_domain::resources::Need::default(),
         };
         let jobs = vec![job("a", "lint"), job("b", "test"), job("c", "test")];
         assert_eq!(checkout_name(&jobs[0], &jobs, 0), "lint");

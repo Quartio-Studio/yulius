@@ -23,10 +23,21 @@ production_branch = "main"
 [branch_policy]
 preset = "standard"
 
-# macOS has no Yulius runner: run `scripts/dev ci` on a Mac before promotion.
+# What the CPU and memory budget Yulius gives a process (YULIUS_CPUS, YULIUS_MEMORY_MB) means for
+# this repository's tools, in agent sessions, terminals and CI jobs alike (SPEC-082). Each process
+# sizes its builds and test threads to its share instead of to the whole machine: agents' local
+# test runs at one thread per CPU each starved each other and CI (load 35-47 on 12 CPUs,
+# 2026-10-13).
+[resources.env]
+CARGO_BUILD_JOBS = "{cpus}"
+NEXTEST_TEST_THREADS = "{cpus}"
+RUST_TEST_THREADS = "{cpus}"
+
+# macOS has no Yulius runner: run `scripts/dev ci` on a Mac before promotion. Each job gets an
+# equal share of the sandbox (two jobs: half each), and a run's jobs wait for theirs.
 [[ci.jobs]]
 name = "quality"
-command = "python3 scripts/bootstrap.py --install-rustup && NEXTEST_TEST_THREADS=num-cpus scripts/dev ci"
+command = "python3 scripts/bootstrap.py --install-rustup && scripts/dev ci"
 
 # The browser's system libraries are installed once in the sandbox (onboarding); installing them
 # on every run (`--with-deps`, apt) raced the other CI lane and agents for the dpkg lock and

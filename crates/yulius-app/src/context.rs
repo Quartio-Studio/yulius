@@ -47,6 +47,13 @@ pub struct AppConfig {
     /// How long a stopped or closed run gets to exit (interrupt, TERM, kill) before its host is
     /// terminated (SPEC-065 END-008).
     pub stop_escalation_ms: u64,
+    /// CPUs an agent session, terminal or Cockpit plans for (`YULIUS_AGENT_CPUS`, SPEC-082
+    /// RES-005); `None`: a third of the sandbox's.
+    pub agent_cpus: Option<u32>,
+    /// How long a goal session's TUI gets to become ready before the goal is typed anyway
+    /// ([`crate::supervisor::GOAL_READY_TIMEOUT`]; a TUI without hooks gets half). Tests of the
+    /// hookless path shorten it.
+    pub goal_ready_ms: u64,
     /// Extra host paths visible read-only inside containment (for example agent CLI install
     /// directories outside `/usr` and `/opt`).
     pub contained_readonly: Vec<PathBuf>,
@@ -101,6 +108,9 @@ impl AppConfig {
                     + yulius_domain::task::STOP_KILL_WAIT_MS,
             )
             .unwrap_or(20_000),
+            goal_ready_ms: u64::try_from(crate::supervisor::GOAL_READY_TIMEOUT.as_millis())
+                .unwrap_or(90_000),
+            agent_cpus: None,
             contained_readonly: Vec::new(),
             allowed_origins: Vec::new(),
             public_url,

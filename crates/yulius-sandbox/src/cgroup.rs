@@ -43,16 +43,22 @@ pub struct Limits {
 
 impl Limits {
     /// Defaults for a host: the memory but a reserve for the host and Yulius (an eighth, at
-    /// least 4 GiB; the sandbox gets at least 2 GiB), every CPU but two (at least one), 8192
-    /// tasks. Half the memory was too little for one sandbox running all the agents: ten
-    /// sessions and two CI lanes thrashed its page cache at 25 GiB while 20 GiB of the host stayed
-    /// free, and CI jobs timed out (F 2026-10-13).
+    /// least 4 GiB; the sandbox gets at least 2 GiB), no CPU quota, 8192 tasks. Half the memory
+    /// was too little for one sandbox running all the agents: ten sessions and two CI lanes
+    /// thrashed its page cache at 25 GiB while 20 GiB of the host stayed free, and CI jobs timed
+    /// out (F 2026-10-13).
+    ///
+    /// The CPU is shared by weight, not capped (SPEC-082 RES-006): the quota of every CPU but two
+    /// throttled the sandbox in half of its busy 100 ms periods (900 801 of 1 792 320 on the VM,
+    /// 2026-10-11..13), stopping all of its threads until the next period while the two CPUs it
+    /// left stayed nearly idle. Yulius's own group and the host's services keep their share by
+    /// weight whenever they need it.
     #[must_use]
-    pub fn defaults(total_memory: u64, cpus: u32) -> Self {
+    pub fn defaults(total_memory: u64) -> Self {
         let reserve = (total_memory / 8).max(4 << 30);
         Self {
             memory_max: Some(total_memory.saturating_sub(reserve).max(2 << 30)),
-            cpus: Some(cpus.saturating_sub(2).max(1)),
+            cpus: None,
             pids_max: Some(8192),
         }
     }
@@ -346,18 +352,18 @@ mod tests {
 
     #[test]
     fn defaults_leave_room_for_the_host() {
-        let limits = Limits::defaults(48 << 30, 12);
+        let limits = Limits::defaults(48 << 30);
         assert_eq!(limits.memory_max, Some(42 << 30), "all but an eighth");
         assert_eq!(
-            Limits::defaults(16 << 30, 4).memory_max,
+            Limits::defaults(16 << 30).memory_max,
             Some(12 << 30),
             "a 4 GiB reserve at least"
         );
-        assert_eq!(limits.cpus, Some(10));
+        assert_eq!(limits.cpus, None, "shared by weight, not capped (SPEC-082)");
+        assert_eq!(limits.files()[1], ("cpu.max", "max 100000".to_owned()));
         assert_eq!(limits.pids_max, Some(8192));
-        let small = Limits::defaults(2 << 30, 2);
+        let small = Limits::defaults(2 << 30);
         assert_eq!(small.memory_max, Some(2 << 30));
-        assert_eq!(small.cpus, Some(1));
         assert_eq!(
             Limits::default().files(),
             vec![
@@ -366,7 +372,11 @@ mod tests {
                 ("pids.max", "max".to_owned()),
             ]
         );
-        assert_eq!(limits.files()[1], ("cpu.max", "1000000 100000".to_owned()));
+        let capped = Limits {
+            cpus: Some(10),
+            ..limits
+        };
+        assert_eq!(capped.files()[1], ("cpu.max", "1000000 100000".to_owned()));
     }
 
     #[test]

@@ -4,16 +4,17 @@
 //! pre-parsed map, so the domain stays dependency-free and every problem carries a line
 //! number for the agent prompt. Supported:
 //!
-//! - `[docs]`, `[commands]`, `[delivery]`, `[disk]` and `[branch_policy]` tables, `[[delivery.environments]]` and `[[ci.jobs]]`
-//!   entries;
+//! - `[docs]`, `[commands]`, `[delivery]`, `[disk]`, `[branch_policy]` and `[resources.env]`
+//!   tables, `[[delivery.environments]]` and `[[ci.jobs]]` entries;
 //! - `key = "basic string"` (escapes `\" \\ \n \t \r \b \f \uXXXX \UXXXXXXXX`),
-//!   `key = 'literal string'`, `key = true|false`, and `environments = []`;
+//!   `key = 'literal string'`, `key = true|false`, whole numbers (`cpus = 6`) and
+//!   `environments = []`;
 //! - blank lines and `#` comments (also after a value).
 //!
 //! Keys in the known tables are strict (unknown keys are errors, catching typos). Other
 //! tables and keys before the first table are ignored for forward compatibility; their lines
-//! are skipped unparsed. Multi-line strings, numbers, non-empty arrays, inline tables, dotted
-//! and quoted keys are rejected inside known tables.
+//! are skipped unparsed. Multi-line strings, signed or fractional numbers, non-empty arrays,
+//! inline tables, dotted and quoted keys are rejected inside known tables.
 //!
 //! ```toml
 //! [docs]
@@ -31,6 +32,12 @@
 //! name = "test"
 //! command = "cargo test"
 //! matrix = "1/2 2/2"                     # one job per value, in $YULIUS_CI_MATRIX
+//! cpus = 4                               # its CPU and memory budget (SPEC-082); without them
+//! memory_gb = 8                          # the run's jobs share the sandbox equally
+//!
+//! [resources.env]                       # the budget in this repository's tools' terms
+//! CARGO_BUILD_JOBS = "{cpus}"            # also {memory_mb}, {memory_gb}; with YULIUS_CPUS and
+//!                                        # YULIUS_MEMORY_MB in agent sessions and CI jobs
 //!
 //! [branch_policy]                      # the merge gate's rules (SPEC-069)
 //! preset = "standard"                    # or "none"; types = "feat fix …" replaces the types
@@ -49,6 +56,10 @@ use crate::delivery::{
 
 use super::{Commands, DecisionsLocation, DocsLayout, ProjectConfig};
 use crate::ci::{CiConfigError, JobDef, parse_matrix, project_jobs};
+use crate::resources::{
+    EnvTemplate, EnvTemplateError, MAX_DECLARED_CPUS, MAX_DECLARED_MEMORY_GB, MAX_ENV_ENTRIES,
+    Need, check_env_template,
+};
 
 /// Largest accepted `yulius.toml`.
 pub const MAX_CONFIG_BYTES: usize = 64 * 1024;
@@ -103,7 +114,7 @@ pub enum ConfigProblem {
     },
     /// A value outside the subset.
     #[error(
-        "unsupported value; use a \"quoted string\", true/false or [] (numbers, multi-line strings, arrays and inline tables are not supported)"
+        "unsupported value; use a \"quoted string\", a whole number, true/false or [] (signed or fractional numbers, multi-line strings, arrays and inline tables are not supported)"
     )]
     UnsupportedValue,
     /// A string without its closing quote.
@@ -124,6 +135,22 @@ pub enum ConfigProblem {
     /// A key needing a boolean.
     #[error("'{0}' must be true or false")]
     ExpectedBool(String),
+    /// A key needing a whole number in a range.
+    #[error("'{key}' must be a whole number from 1 to {max}")]
+    ExpectedNumber {
+        /// The key.
+        key: String,
+        /// Largest accepted value.
+        max: u64,
+    },
+    /// An invalid `[resources.env]` entry.
+    #[error("[resources.env] '{key}': {problem}")]
+    ResourceEnv {
+        /// The variable (clipped).
+        key: String,
+        /// What is wrong.
+        problem: EnvTemplateError,
+    },
     /// A path that is absolute, escapes the repository or is malformed.
     #[error("'{key}' must be a repository-relative path: {reason}")]
     InvalidPath {
@@ -163,6 +190,7 @@ pub enum ConfigProblem {
 enum Value {
     Str(String),
     Bool(bool),
+    Int(u64),
     EmptyArray,
 }
 
@@ -188,6 +216,7 @@ struct Document {
     branch_policy: Option<Table>,
     environments: Vec<Table>,
     ci_jobs: Vec<Table>,
+    resources_env: Option<Table>,
 }
 
 enum Target {
@@ -199,6 +228,7 @@ enum Target {
     BranchPolicy,
     Environment,
     CiJob,
+    ResourcesEnv,
 }
 
 const DOCS_KEYS: &str = "product, architecture, decisions, specs_dir, changes, agents";
@@ -208,7 +238,7 @@ const DISK_KEYS: &str = "caches";
 const BRANCH_POLICY_KEYS: &str = "preset, types";
 const POLICY_TYPES: &str = "1-20 space-separated types of 1-20 lowercase letters including feat (Yulius's task branches), like \"feat fix docs\"";
 const ENVIRONMENT_KEYS: &str = "name, after, command, verify";
-const CI_JOB_KEYS: &str = "name, command, matrix";
+const CI_JOB_KEYS: &str = "name, command, matrix, cpus, memory_gb";
 
 fn err(line: usize, problem: ConfigProblem) -> FormatError {
     FormatError { line, problem }
@@ -305,6 +335,19 @@ fn parse_value(text: &str) -> Result<(Value, &str), ConfigProblem> {
             None => Err(ConfigProblem::UnsupportedValue),
         };
     }
+    let digits = text
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(text.len());
+    if digits > 0 {
+        let rest = &text[digits..];
+        if rest.starts_with(is_key_char) || rest.starts_with('.') {
+            return Err(ConfigProblem::UnsupportedValue);
+        }
+        let value = text[..digits]
+            .parse::<u64>()
+            .map_err(|_| ConfigProblem::UnsupportedValue)?;
+        return Ok((Value::Int(value), rest));
+    }
     for (word, value) in [("true", true), ("false", false)] {
         if let Some(rest) = text.strip_prefix(word)
             && !rest.starts_with(is_key_char)
@@ -359,8 +402,18 @@ fn parse_document(text: &str) -> Result<Document, FormatError> {
                 entries: Vec::new(),
             };
             target = match (name.as_str(), array) {
-                ("docs" | "commands" | "delivery" | "disk" | "branch_policy", true) => {
+                (
+                    "docs" | "commands" | "delivery" | "disk" | "branch_policy" | "resources.env",
+                    true,
+                ) => {
                     return Err(err(line, ConfigProblem::NotAnArrayTable(name)));
+                }
+                ("resources.env", false) => {
+                    if document.resources_env.is_some() {
+                        return Err(err(line, ConfigProblem::DuplicateTable(name)));
+                    }
+                    document.resources_env = Some(fresh);
+                    Target::ResourcesEnv
                 }
                 ("delivery.environments", false) => {
                     return Err(err(line, ConfigProblem::ArrayTableRequired(name)));
@@ -403,6 +456,7 @@ fn parse_document(text: &str) -> Result<Document, FormatError> {
             Target::BranchPolicy => document.branch_policy.as_mut(),
             Target::Environment => document.environments.last_mut(),
             Target::CiJob => document.ci_jobs.last_mut(),
+            Target::ResourcesEnv => document.resources_env.as_mut(),
         };
         let Some(table) = table else { continue };
         let entry = parse_entry(trimmed, line)?;
@@ -434,6 +488,19 @@ fn bool_value(entry: &Entry) -> Result<bool, FormatError> {
         _ => Err(err(
             entry.line,
             ConfigProblem::ExpectedBool(entry.key.clone()),
+        )),
+    }
+}
+
+fn number_value(entry: &Entry, max: u64) -> Result<u64, FormatError> {
+    match entry.value {
+        Value::Int(value) if (1..=max).contains(&value) => Ok(value),
+        _ => Err(err(
+            entry.line,
+            ConfigProblem::ExpectedNumber {
+                key: entry.key.clone(),
+                max,
+            },
         )),
     }
 }
@@ -580,6 +647,7 @@ fn environment(table: &Table) -> Result<Environment, FormatError> {
 
 fn ci_job(table: &Table) -> Result<JobDef, FormatError> {
     let (mut name, mut command_text, mut matrix) = (None, None, Vec::new());
+    let mut need = Need::default();
     for entry in &table.entries {
         match entry.key.as_str() {
             "name" => name = Some(string_value(entry)?.to_owned()),
@@ -589,6 +657,13 @@ fn ci_job(table: &Table) -> Result<JobDef, FormatError> {
                 matrix = parse_matrix(job, string_value(entry)?)
                     .map_err(|e| err(entry.line, ConfigProblem::Ci(e)))?;
             }
+            "cpus" => {
+                let cpus = number_value(entry, MAX_DECLARED_CPUS)?;
+                need.cpus = Some(u32::try_from(cpus).unwrap_or(u32::MAX));
+            }
+            "memory_gb" => {
+                need.memory_mb = Some(number_value(entry, MAX_DECLARED_MEMORY_GB)? * 1024);
+            }
             _ => return Err(unknown("[ci.jobs]", entry, CI_JOB_KEYS)),
         }
     }
@@ -597,7 +672,39 @@ fn ci_job(table: &Table) -> Result<JobDef, FormatError> {
         command: command_text
             .ok_or_else(|| err(table.line, ConfigProblem::MissingKey("command")))?,
         matrix,
+        need,
     })
+}
+
+fn resources_env(document: &Document) -> Result<Vec<EnvTemplate>, FormatError> {
+    let entries = document
+        .resources_env
+        .as_ref()
+        .map(|t| t.entries.as_slice())
+        .unwrap_or_default();
+    let mut templates = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let template = string_value(entry)?;
+        let problem = if templates.len() == MAX_ENV_ENTRIES {
+            Err(EnvTemplateError::TooMany)
+        } else {
+            check_env_template(&entry.key, template)
+        };
+        problem.map_err(|problem| {
+            err(
+                entry.line,
+                ConfigProblem::ResourceEnv {
+                    key: clip(&entry.key),
+                    problem,
+                },
+            )
+        })?;
+        templates.push(EnvTemplate {
+            name: entry.key.clone(),
+            template: template.to_owned(),
+        });
+    }
+    Ok(templates)
 }
 
 fn ci_jobs(document: &Document, commands: &Commands) -> Result<Vec<JobDef>, FormatError> {
@@ -649,6 +756,7 @@ fn delivery(document: &Document) -> Result<DeliveryProfile, FormatError> {
                             value: match &entry.value {
                                 Value::Str(text) => clip(text),
                                 Value::Bool(value) => value.to_string(),
+                                Value::Int(value) => value.to_string(),
                                 Value::EmptyArray => String::new(),
                             },
                             allowed: "[] (define entries with [[delivery.environments]])",
@@ -709,6 +817,7 @@ pub fn parse_yulius_toml(text: &str) -> Result<ProjectConfig, FormatError> {
     let commands = commands(document.commands.as_ref())?;
     let ci = ci_jobs(&document, &commands)?;
     branch_policy_of(&document)?;
+    resources_env(&document)?;
     Ok(ProjectConfig {
         docs: docs_layout(document.docs.as_ref())?,
         commands,
@@ -831,6 +940,25 @@ pub fn parse_yulius_toml_caches(text: &str) -> Result<Vec<String>, FormatError> 
     Ok(caches)
 }
 
+/// The repository's `[resources.env]` (SPEC-082 RES-004): the variables its tools read, as
+/// templates of the budget Yulius gives each process. Only this table is checked, so one wrong
+/// key elsewhere does not take the budget away from every session.
+///
+/// # Errors
+/// A syntax error of the file or an invalid entry of the table.
+///
+/// # Examples
+/// ```
+/// use yulius_domain::spec_format::parse_yulius_toml_resources;
+/// let env = parse_yulius_toml_resources("[resources.env]\nMAKEFLAGS = \"-j{cpus}\"\n")?;
+/// assert_eq!(env[0].name, "MAKEFLAGS");
+/// assert_eq!(env[0].template, "-j{cpus}");
+/// # Ok::<(), yulius_domain::spec_format::FormatError>(())
+/// ```
+pub fn parse_yulius_toml_resources(text: &str) -> Result<Vec<EnvTemplate>, FormatError> {
+    parse_document(text).and_then(|document| resources_env(&document))
+}
+
 fn quote(text: &str) -> String {
     let mut quoted = String::with_capacity(text.len() + 2);
     quoted.push('"');
@@ -890,6 +1018,12 @@ pub fn render_yulius_toml(config: &ProjectConfig) -> String {
         ));
         if !job.matrix.is_empty() {
             out.push_str(&format!("matrix = {}\n", quote(&job.matrix.join(" "))));
+        }
+        if let Some(cpus) = job.need.cpus {
+            out.push_str(&format!("cpus = {cpus}\n"));
+        }
+        if let Some(memory_mb) = job.need.memory_mb {
+            out.push_str(&format!("memory_gb = {}\n", memory_mb / 1024));
         }
     }
     let profile = &config.delivery;
@@ -1154,14 +1288,18 @@ mod tests {
             problem(&"#".repeat(MAX_CONFIG_BYTES + 1)),
             Some((1, ConfigProblem::TooLarge))
         );
-        let message = parse_yulius_toml("[docs]\nproduct = 1\n")
+        let message = parse_yulius_toml("[docs]\nproduct = 1.5\n")
             .err()
             .map(|e| e.to_string());
         assert_eq!(
             message.as_deref(),
             Some(
-                "yulius.toml line 2: unsupported value; use a \"quoted string\", true/false or [] (numbers, multi-line strings, arrays and inline tables are not supported)"
+                "yulius.toml line 2: unsupported value; use a \"quoted string\", a whole number, true/false or [] (signed or fractional numbers, multi-line strings, arrays and inline tables are not supported)"
             )
+        );
+        assert_eq!(
+            problem("[docs]\nproduct = 1\n"),
+            Some((2, ConfigProblem::ExpectedString("product".to_owned())))
         );
     }
 
@@ -1194,11 +1332,16 @@ mod tests {
                         name: "lint".to_owned(),
                         command: "cargo clippy -- -D warnings".to_owned(),
                         matrix: Vec::new(),
+                        need: Need::default(),
                     },
                     JobDef {
                         name: "test".to_owned(),
                         command: "cargo test --partition \"hash:$YULIUS_CI_MATRIX\"".to_owned(),
                         matrix: vec!["1/2".to_owned(), "2/2".to_owned()],
+                        need: Need {
+                            cpus: Some(6),
+                            memory_mb: Some(12 * 1024),
+                        },
                     },
                 ],
                 ..ProjectConfig::default()
@@ -1251,6 +1394,98 @@ mod tests {
         assert!(matches!(
             problem("[[ci.jobs]]\nname = \"X\"\ncommand = \"y\"\n"),
             Some((1, ConfigProblem::Ci(CiConfigError::InvalidJobName(_))))
+        ));
+        Ok(())
+    }
+
+    /// SPEC-082 RES-002, RES-004: a job declares its CPUs and memory; the repository maps the
+    /// budget to its tools' variables.
+    #[test]
+    fn jobs_declare_their_needs_and_the_budget_maps_to_variables() -> TestResult {
+        let text = "[[ci.jobs]]\nname = \"quality\"\ncommand = \"make ci\"\ncpus = 6 # half\n\
+                    memory_gb = 16\n\n[[ci.jobs]]\nname = \"e2e\"\ncommand = \"make e2e\"\n\n\
+                    [resources.env]\nCARGO_BUILD_JOBS = \"{cpus}\"\nMAKEFLAGS = \"-j{cpus}\"\n";
+        let config = parse_yulius_toml(text)?;
+        let jobs = crate::ci::project_jobs(None, &config.ci)?;
+        assert_eq!(
+            jobs[0].need,
+            Need {
+                cpus: Some(6),
+                memory_mb: Some(16 * 1024)
+            }
+        );
+        assert_eq!(jobs[1].need, Need::default());
+        let env = parse_yulius_toml_resources(text)?;
+        let names: Vec<&str> = env.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["CARGO_BUILD_JOBS", "MAKEFLAGS"]);
+        assert_eq!(env[1].template, "-j{cpus}");
+        assert!(parse_yulius_toml_resources("[docs]\n")?.is_empty());
+
+        let job = "[[ci.jobs]]\nname = \"x\"\ncommand = \"y\"\n";
+        for (extra, key, max) in [
+            ("cpus = 0\n", "cpus", MAX_DECLARED_CPUS),
+            ("cpus = 2000\n", "cpus", MAX_DECLARED_CPUS),
+            ("cpus = \"4\"\n", "cpus", MAX_DECLARED_CPUS),
+            ("memory_gb = 0\n", "memory_gb", MAX_DECLARED_MEMORY_GB),
+        ] {
+            assert_eq!(
+                problem(&format!("{job}{extra}")),
+                Some((
+                    4,
+                    ConfigProblem::ExpectedNumber {
+                        key: key.to_owned(),
+                        max
+                    }
+                )),
+                "{extra}"
+            );
+        }
+        for value in ["-1", "1.5", "4_0", "4x"] {
+            assert_eq!(
+                problem(&format!("{job}cpus = {value}\n")),
+                Some((4, ConfigProblem::UnsupportedValue)),
+                "{value}"
+            );
+        }
+        assert_eq!(
+            problem("[resources.env]\nPATH = \"/x\"\n"),
+            Some((
+                2,
+                ConfigProblem::ResourceEnv {
+                    key: "PATH".to_owned(),
+                    problem: EnvTemplateError::Reserved
+                }
+            ))
+        );
+        assert_eq!(
+            problem("[resources.env]\nJOBS = \"{threads}\"\n"),
+            Some((
+                2,
+                ConfigProblem::ResourceEnv {
+                    key: "JOBS".to_owned(),
+                    problem: EnvTemplateError::InvalidTemplate
+                }
+            ))
+        );
+        assert_eq!(
+            problem("[[resources.env]]\nJOBS = \"1\"\n"),
+            Some((
+                1,
+                ConfigProblem::NotAnArrayTable("resources.env".to_owned())
+            ))
+        );
+        let many: String = (0..=MAX_ENV_ENTRIES)
+            .map(|i| format!("V{i} = \"{{cpus}}\"\n"))
+            .collect();
+        assert!(matches!(
+            parse_yulius_toml_resources(&format!("[resources.env]\n{many}")),
+            Err(FormatError {
+                problem: ConfigProblem::ResourceEnv {
+                    problem: EnvTemplateError::TooMany,
+                    ..
+                },
+                ..
+            })
         ));
         Ok(())
     }

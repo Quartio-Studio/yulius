@@ -879,6 +879,7 @@ impl App {
                 output: format!("{note}.\n"),
                 started_at: Some(now),
                 ended_at: Some(now),
+                need: job.need,
             })
             .collect();
         store

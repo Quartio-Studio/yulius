@@ -50,6 +50,7 @@ pub mod projects;
 pub mod queued_messages;
 pub mod record_numbers;
 pub mod recovery;
+pub mod resources;
 pub mod sandboxes;
 pub mod scopes;
 pub mod session_docs;
