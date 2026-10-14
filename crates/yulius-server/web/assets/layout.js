@@ -1,7 +1,7 @@
 // Global layout pieces (SPEC-001 §6.1): thin sandbox tab row with the Status panel, and the
 // left sidebar with navigation, the active task list and the user menu at its foot.
 
-import { h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip } from './dom.js';
+import { h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip, skeleton } from './dom.js';
 import { relLong, bytes, duration, dateTime, resetLabel } from './format.js';
 import { taskTime } from './tasktime.js';
 import { taskInfo, taskActions, activityLine, allows } from './status.js';
@@ -263,7 +263,7 @@ function createStatusPanel(ctx, button) {
   }
 
   function open() {
-    el = h('div', { class: 'status-pop', role: 'dialog', 'aria-label': 'Status' }, h('div', { class: 'placeholder placeholder-loading' }, 'Loading status…'));
+    el = h('div', { class: 'status-pop', role: 'dialog', 'aria-label': 'Status' }, skeleton('Loading status…', 3, { block: true }));
     document.body.append(el);
     button.setAttribute('aria-expanded', 'true');
     offFocus = popoverFocus(el, button, close);
@@ -443,11 +443,13 @@ export function accountUsage(account, { foldable = false, open = false } = {}) {
   const usage = account.usage || {};
   const provider = account.provider === 'anthropic' ? 'Claude' : account.provider;
   const state = ACCOUNT_STATES[account.status] || { icon: 'warn', tone: 'muted', label: account.status || 'Unknown' };
+  // Usage not read yet: a shimmering bar where the reset time will be (SPEC-092).
+  const reading = () => [h('span', { class: 'skeleton-line', 'aria-hidden': 'true' }), h('span', { class: 'sr-only' }, 'Reading usage…')];
   const usageRow = (w, fallback) => {
     const name = limitName(w && w.window_minutes, fallback);
     const used = w ? w.used_percent : null;
     return h('div', { class: 'usage-row' },
-      h('div', { class: 'usage-name' }, h('span', null, name), h('span', { class: 'usage-reset', title: w && w.resets_at ? dateTime(w.resets_at) : '' }, w && w.resets_at ? resetLabel(w.resets_at) : Number.isFinite(used) ? '' : 'Reading usage…')),
+      h('div', { class: 'usage-name' }, h('span', null, name), h('span', { class: 'usage-reset', title: w && w.resets_at ? dateTime(w.resets_at) : '' }, w && w.resets_at ? resetLabel(w.resets_at) : Number.isFinite(used) ? '' : reading())),
       usageBar(used, name),
       h('span', { class: ['usage-pct', `tone-${toneOf(used)}`] }, Number.isFinite(used) ? `${Math.round(used)}% used` : '—'));
   };
@@ -815,7 +817,7 @@ export function createSidebar(ctx) {
       const error = ctx.store.tasksError(sandbox.id);
       setChildren(list, error
         ? loadError(`Couldn’t load tasks: ${error.message}`, () => ctx.store.loadTasks(sandbox.id).catch(() => {}))
-        : h('div', { class: 'placeholder placeholder-loading' }, 'Loading…'));
+        : skeleton('Loading tasks…', 3, { block: true }));
       return;
     }
     // A task the user left normally is done for now: it stays under Tasks (with Continue) but

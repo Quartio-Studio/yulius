@@ -506,7 +506,7 @@ export function autoChoiceLabel(task) {
 }
 
 /** What a supertask is, in the start menu and on its chip (SPEC-071). */
-const SUPERTASK_HELP = 'Waits for this project’s running tasks, then runs alone: its other tasks wait for it. For broad work like security hardening';
+const SUPERTASK_HELP = 'Waits for this project’s running tasks, then runs alone while the project’s other tasks wait. For broad work such as security hardening.';
 
 /**
  * New-task composer (J3, UI-021, F 2026-10-10): a rounded prompt box whose bottom edge holds the

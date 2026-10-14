@@ -497,7 +497,7 @@ let menuIds = 0;
 /**
  * Show a menu at an anchor element or {x, y} point.
  * items: [{label, onSelect, disabled, danger, hint, description, checked, icon, header, separator, href}]
- * `description` adds a second line; `checked` (true/false) makes the item a choice with a check mark;
+ * `description` adds a second line, shown whole; `checked` (true/false) makes the item a choice with a check mark;
  * `keepOpen` keeps the menu open after selecting (multi-select filters), flipping the check in place.
  * A menu of MENU_FILTER_MIN items or more opens with a filter box above them.
  */
@@ -525,7 +525,7 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
     // A disabled item says why on its second line, not only in a mouse tooltip.
     const description = item.description || (item.disabled && item.title ? item.title : null);
     const label = description
-      ? h('span', { class: 'menu-text' }, h('span', { class: 'menu-label' }, item.label), h('span', { class: 'menu-desc', title: description }, description))
+      ? h('span', { class: 'menu-text' }, h('span', { class: 'menu-label' }, item.label), h('span', { class: 'menu-desc' }, description))
       : h('span', { class: 'menu-label' }, item.label);
     const check = choice ? h('span', { class: 'menu-check' }, item.checked ? icon('check', { size: 14 }) : null) : null;
     const select = () => {
@@ -917,19 +917,26 @@ export function badge(text, tone = '', title) {
   return h('span', { class: ['badge', tone && `badge-${tone}`], title: title || null }, text);
 }
 
-/** Loading / empty / error placeholders. */
+/**
+ * Empty / error placeholders. A `loading` one is the skeleton (SPEC-092): shimmering fields with
+ * `text` said to assistive technology, padded like the placeholder it stands for.
+ */
 export function placeholder(text, kind = 'empty') {
+  if (kind === 'loading') return skeleton(text, 3, { block: true });
   return h('div', { class: ['placeholder', `placeholder-${kind}`] }, text);
 }
 
 /**
- * A calm loading state (F 2026-10-10): shimmering bars where the content will appear, announced
- * as `label`. The composer, the split card and the task view share it.
+ * The one loading state (F 2026-10-10, SPEC-092): shimmering bars where the content will appear,
+ * announced as `label`, never a spinner with "Loading…". `block` pads it as a placeholder for a
+ * page, a panel or a dialog body. `announce: false` draws the bars alone, for a container that
+ * says it is busy itself (a tree, whose children may only be its items).
  */
-export function skeleton(label, lines = 3) {
-  return h('div', { class: 'skeleton', role: 'status' },
-    Array.from({ length: lines }, () => h('span', { class: 'skeleton-line', 'aria-hidden': 'true' })),
-    h('span', { class: 'sr-only' }, label));
+export function skeleton(label, lines = 3, { block = false, announce = true } = {}) {
+  const bars = Array.from({ length: lines }, () => h('span', { class: 'skeleton-line', 'aria-hidden': 'true' }));
+  const cls = ['skeleton', block && 'skeleton-block'];
+  if (!announce) return h('div', { class: cls, 'aria-hidden': 'true' }, bars);
+  return h('div', { class: cls, role: 'status' }, bars, h('span', { class: 'sr-only' }, label));
 }
 
 /** Usage/percentage meter. `percent` null renders "unknown" (never zero). */
