@@ -150,6 +150,10 @@ approved, afa91507, plus that clean merge):
 - `cd e2e && npx e2e run`: 49 files passed, 1 skipped (393 tests passed, 1 skipped), including
   `start-change.e2e.ts` (3 tests, AC-CHS-8: no WCAG violations, the task left out of its own menu,
   a refused change is a toast and changes nothing).
+- Yulius CI first failed at `cargo doc` (a module doc linked the private
+  `App::check_start_choice`; `-D rustdoc::private-intra-doc-links`), which the gates above do not
+  run. Fixed by naming it without a link; `scripts/dev ci` (the whole CI gate: lint, check, 1650
+  tests, deps, docs) then passed locally after merging `origin/dev` again.
 - Visual check in the Yulius browser at phone width (342 px): the waiting task's bar puts its words
   on one row and the start chip, Start now and Cancel below; the menu leaves the task itself out.
 - Independent review in a fresh session: round 1 REQUEST CHANGES (stale block of a new chain,

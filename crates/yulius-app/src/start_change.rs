@@ -2,7 +2,7 @@
 //! `prepared`) takes another of New task's start choices — after a task, on a rule, when a person
 //! decides, at a time, now or as a supertask.
 //!
-//! Rules, in full: the choice is checked as at creation (one validator, [`App::check_start_choice`]).
+//! Rules, in full: the choice is checked as at creation (one validator, `App::check_start_choice`).
 //! The change replaces the status, the chain and the start time in one store transaction, only
 //! while the task is still in the status it was read in; changes run one at a time, so two of them
 //! never make tasks wait for each other. Moving into chains or prepared tasks from the other wait
