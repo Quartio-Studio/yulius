@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- The new-task composer squeezed keeps its controls tidy (SPEC-119, task #104, #442). In a
+  narrow window or beside a tool panel, Preview, model, effort and Start used to wrap as one block
+  pushed to the right, leaving the left half of the row empty. At its narrowest, Start also stuck
+  out of the box. Now they take a full-width last row with Start at its right end, and no control
+  leaves the box.
 - Start onboarding goes straight into the onboarding session (SPEC-111, ADR-0090, task #96). The
   press turned nothing visible for seconds while the server started the task's run (the button
   stayed pressable), then stopped on "Onboarding <name>" with Follow onboarding. Now the gate turns

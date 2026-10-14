@@ -65,7 +65,7 @@ scoped to `.composer-tools`.
 
 - [x] Reproduce: measure the composer's controls at narrow windows and beside a tool panel.
 - [x] Regression test in `e2e/tests/responsive.e2e.ts` that fails on the current CSS.
-- [ ] Make the prompt box a size container and lay out its controls in two deliberate rows below
+- [x] Make the prompt box a size container and lay out its controls in two deliberate rows below
   740 px.
 - [ ] Gates: the e2e suite and `scripts/dev ci`. Independent review.
 
