@@ -74,7 +74,7 @@ people act on, such as the Stop hook's goal line and its feedback, stay readable
   line, a 4-line feedback note and exactly 8 lines or 2,000 characters; true for 9 lines and for
   2,001 characters on one line.
 - Rendered page: the mock's task session #4 gains a skill body as recorded (`isMeta`, "Base
-  directory for this skill: …", 40 lines). The test checks the folded line and its size, that the
+  directory for this skill: …", 41 lines). The test checks the folded line and its size, that the
   body is hidden, that a keyboard opens it, that the Stop hook line stays visible, and axe in both
   states. Written first; it fails on today's page, which prints the body.
 - Gates: `scripts/dev ci` and the full e2e suite.
