@@ -1,11 +1,11 @@
 ---
 yulius-task: 31817ae5-f7fc-4a78-a199-a43975e8281b
-status: in-progress
+status: done
 ---
 
 # SPEC-115: The Git page gives way to the page's width, not the window's
 
-Status: in progress
+Status: implemented
 Date: 2026-10-14
 Owner: Yulius task #100
 Scope authorization: task #100 ("it get's broken when squeezed. fix", with two screenshots of
@@ -60,7 +60,7 @@ targets on phones. No other `@media` width rule in `styles.css` lays out a `.dl-
 - [x] Reproduce: a mock Git page beside the Editor panel, with the narrowest column measured.
 - [x] Regression test in `e2e/tests/responsive.e2e.ts` that fails on the current CSS (95 px).
 - [x] Move the Git page's layout breakpoints from `@media` to `@container page`.
-- [ ] Gates: the e2e suite and `scripts/dev ci`. Independent review.
+- [x] Gates: the e2e suite and `scripts/dev ci`. Independent review.
 
 ## Acceptance criteria
 
@@ -88,3 +88,17 @@ check covers phones (GIT-SQ-3 and the button heights).
 - 900 px: four columns of a 900 px page (32 px side padding, 12 px gaps) are about 200 px each,
   enough for "On dev, not live" on two lines. 560 px matches the existing page breakpoint for list
   rows (UX2-05).
+
+## Evidence
+
+- Old CSS (`eec55e98`): `npx e2e run tests/responsive.e2e.ts --grep "Git page beside"` fails
+  with "expected 95 to be greater than or equal to 180" (Editor panel, 1920 px window).
+- With the fix: `npx e2e run tests/responsive.e2e.ts` gives 21 passed. `tests/git.e2e.ts`,
+  `tests/phone.e2e.ts` and `tests/loading.e2e.ts` pass too (31 passed across the four files).
+- Screenshot of the mock Git page beside the Editor in a 1440 px window: the summary cards are
+  stacked, the board is one column, and task titles read whole.
+- `scripts/dev ci`: exit 0, with nextest at 1604 passed and 16 skipped.
+- Independent review (fresh session, `om-code-review`): APPROVE. Its minor findings are fixed in
+  `82b643bc`. That commit guards against an empty board, adds overlap checks for Blocked,
+  environment and board rows, and records the 561 to 767 px change as a decision. The pre-existing
+  dead `.dl-release .btn` rule is left as it was.
