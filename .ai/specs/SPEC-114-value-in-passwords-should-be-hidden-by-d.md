@@ -125,3 +125,8 @@ the keyboard into it) shows a copy button inside the value box. The current **Co
   fixed in 792841e2; round 2 approved 792841e2 with no findings to fix.
 - Not tested here: a real clipboard (the tests stub `navigator.clipboard.writeText`) and real touch
   devices.
+- Yulius CI at 5bf67ccf (after clean merges of `dev`): run 8e89f8af failed only on the known flake
+  #394 (`terminal.e2e.ts`, Monaco under load; 3 of 3 local runs passed), and its rerun 11f0fcf8
+  failed only on `terminals.e2e.ts` reading `window.__yuliusMock` before the mock installed.
+  `seedTwoShells` now waits with `mockReady()`, as `support.ts` documents for any test that
+  touches the mock right after `app.open`.
