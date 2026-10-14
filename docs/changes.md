@@ -15,6 +15,26 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   phone) under their real toolbar and column names. What loads lands where the fields were;
   Subscriptions now reads its capacity beside the subscriptions, so the panel above them no
   longer pushes them down.
+- A task starts with one message, before anyone can type (SPEC-117, ADR-0095, task #102). A goal
+  task used to open as an empty session. Yulius then typed a first message with the attached
+  images and, after its turn, a second one with `/goal`, and a person could type into the session
+  the whole time. Now Claude Code is launched with `/goal <condition>` as its prompt: one message,
+  nothing typed. The condition names the request file and the attached files, which the agent
+  opens with its Read tool, because a `/goal` drops pasted images (measured on Claude Code 2.1.292).
+  A prompt task with images still has its first message typed, since a paste is the only way to
+  attach an image natively. Until it is sent, a person's keys are not written into it, and the
+  first one is answered with "Yulius is typing this task's first message".
+- The new-task composer squeezed keeps its controls tidy (SPEC-119, task #104, #442). In a
+  narrow window or beside a tool panel, Preview, model, effort and Start used to wrap as one block
+  pushed to the right, leaving the left half of the row empty. At its narrowest, Start also stuck
+  out of the box. Now they take a full-width last row with Start at its right end, and no control
+  leaves the box.
+- Typing in a task terminal or a shell shows up as fast as the agent echoes it (SPEC-118,
+  ADR-0096, task #103). A keystroke used to wait for three database reads, plus a GitHub call
+  whenever the permission cache had expired. The 60 s access re-check also froze the terminal's
+  output while it ran. Now each viewer holds a write grant, checked again only when something that
+  decides access changes, and the re-check runs beside the stream. A hand-over still refuses the
+  previous owner's next keystroke.
 - Onboarding leaves the project ready to work in the discipline (SPEC-116, ADR-0094, task #101).
   Studio's onboarding left its linter, dead-code check and per-project CI as issues #57 and #58.
   Both onboarding prompts now lay the gate in the onboarding pull request itself:

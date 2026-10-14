@@ -5,7 +5,8 @@ status: done
 
 # SPEC-025: Attachments open when clicked and reach Claude Code natively
 
-Status: implemented
+Status: implemented; for goal tasks superseded by [SPEC-117](SPEC-117-creating-tasks-work-in-a-very-very-weird.md)
+(their only first message is the `/goal` launch prompt, which names the attached files).
 Date: 2026-10-12
 Owner: Yulius task #23
 Scope authorization: user request ("uploaded attachements should be clickable. Moreover, the attachement should be natively passed to claude code, not as a path"), with a screenshot of a composer attachment chip.

@@ -219,27 +219,34 @@ sequenceDiagram
 
 ## Task start
 
-A task's agent is a native Claude Code session. Files attached on the new-task composer are
-uploaded to the sandbox's drafts folder and reach the session's first message natively. Without
-an image, that message is the CLI prompt argument and each file is mentioned there (`@path`).
-With an image, the session starts with no prompt and Yulius types the message into the TUI. Each
-image's path is pasted on its own, and Claude Code shows it as `[Image #N]` and sends an image
-block. The text is pasted next, with the other files mentioned, then Enter (an `@` mention of an
-image would only be a Read tool call). A goal task then gets its `/goal` typed into the terminal;
-the request file in the sandbox home keeps the whole request. A person who typed into the
-terminal before the goal keeps their draft: no goal is typed and the task needs attention (only
-keystrokes count as typing; focus and mouse reports and terminal answers do not). Each
+A task's agent is a native Claude Code session, and its first message is in before a person can
+type into it ([SPEC-117](../.ai/specs/SPEC-117-creating-tasks-work-in-a-very-very-weird.md),
+[decision 0095](decisions/0095-a-goal-task-starts-with-its-goal-as-the-launch-prompt.md)). Files
+attached on the new-task composer are uploaded to the sandbox's drafts folder. A goal task (the
+default) is launched with `/goal <condition>` as Claude Code's prompt argument: one message, nothing
+typed; Claude Code's record of the goal confirms it, and a goal not taken flags the task. The
+condition names the request file in the sandbox home, which keeps the whole request, and the
+attached files, which the agent opens with its Read tool (a `/goal` carries no image
+block). A prompt task's first message is its request. Without an image it is the CLI prompt
+argument, each file mentioned there (`@path`). With an image the session starts with no prompt
+and Yulius types the message into the TUI. Each image's path is pasted on its own, and Claude Code
+shows it as `[Image #N]` and sends an image block; the text follows with the other files
+mentioned, then Enter (an `@` mention of an image would only be a Read tool call). Until that
+Enter a person's keys are not written into the session; the first one is answered with a notice.
+A resumed goal session (Continue, a switch) gets its `/goal` typed after its continuation turn; a
+person who typed into it before keeps their draft: no goal is typed and the task needs attention
+(only keystrokes count as typing; focus and mouse reports and terminal answers do not). Each
 launch trusts the worktree and its main repository in the Claude config. Claude Code 2.1.292 looks
 a worktree's trust up there when `.claude/settings.json` pre-approves tools. If a trust prompt
-still shows before SessionStart, Yulius types nothing into it, and the keys a person answers it
-with are no draft: the goal follows once it is gone, and a prompt left unanswered for 5 minutes
-flags the task
+still shows before SessionStart, Yulius types nothing into it and says so, and the keys a person
+answers it with are no draft. A goal launched as the prompt runs once the prompt is answered, a
+typed one follows once it is gone, and a prompt left unanswered for 5 minutes flags the task
 ([SPEC-106](../.ai/specs/SPEC-106-onboarding-another-repo-got-fucked-up-by.md),
 [decision 0086](decisions/0086-a-lost-onboarding-task-returns-the-sandbox-to-pending.md)). A typed
 first message is pending (`opening-pending` in the run directory) until its `UserPromptSubmit`: a
 restart flags a task whose first message never reached that hook (a submitted one a hold keeps
-goes on, and a goal task's goal is typed after it), and a first message held for capacity resumes
-on another account, or a manual switch, as a fresh session that types it again with its images
+goes on), and a first message held for capacity resumes on another account, or a manual switch,
+as a fresh session that types it again with its images
 ([SPEC-068](../.ai/specs/SPEC-068-fix-252-266-only-real-typing-counts-as-t.md),
 [decision 0052](decisions/0052-only-keystrokes-count-as-typing.md);
 [SPEC-011](../.ai/specs/SPEC-011-automatic-dev-delivery.md),
@@ -259,11 +266,19 @@ sequenceDiagram
     participant C as Claude Code (PTY)
     UI->>S: upload each file (drafts folder)
     UI->>S: create task (prompt + @path lines)
-    alt no attached image
-        S->>C: launch with first message: text (prompt mode) or "files attached" (goal mode) + @path mentions
+    alt goal mode
+        S->>S: write the request file (request, attached files, definition of done)
+        S->>C: launch with prompt /goal <condition naming the request file and attached files>
+        opt Claude Code shows its folder-trust prompt
+            S-->>UI: notice: answer it in the terminal (flagged if unanswered)
+            UI->>C: a person answers (not a draft)
+        end
+        C-->>C: sets the goal and runs its turn
+    else prompt mode, no attached image
+        S->>C: launch with prompt: the request + @path mentions
         C-->>C: attaches each mentioned file
-    else attached images
-        S->>C: launch with no prompt
+    else prompt mode, attached images
+        S->>C: launch with no prompt (a person's keys now wait)
         C->>S: SessionStart hook, then quiet output
         loop each image
             S->>C: bracketed paste of its path
@@ -271,16 +286,6 @@ sequenceDiagram
         end
         S->>C: bracketed paste of the text (+ @path mentions of other files), Enter
         C->>S: UserPromptSubmit: the first message is no longer pending
-    end
-    C->>S: Stop hook of that turn (goal mode)
-    opt Claude Code shows its folder-trust prompt
-        S-->>UI: notice: answer it in the terminal
-        UI->>C: a person answers (not a draft)
-    end
-    alt a person typed since the launch
-        S-->>UI: no goal; task needs attention, notice in the terminal
-    else
-        S->>C: types /goal <condition>
     end
 ```
 
@@ -420,6 +425,39 @@ flowchart LR
   MCP -->|"task_create"| NT["App::create_task_as (as New task)"]
   MCP -->|"task_stop / task_archive / task_delete"| TU["The UI's stop, archive, delete (never the caller's own task)"]
   MCP -->|"automation_*, automation_template_enable"| AU["Automations and ready-made ones"]
+```
+
+## Terminal input
+
+A keystroke goes from xterm to the PTY and its echo comes back without waiting for the database or
+GitHub ([SPEC-118](../.ai/specs/SPEC-118-when-i-write-something-in-a-claude-termi.md),
+[decision 0096](decisions/0096-terminal-input-rides-a-write-grant.md)). Each viewer holds a write
+grant, confirmed when it opens the terminal. The store's access epoch grows with every write that
+can change who may type. While the epoch is unchanged, input is written at once. When it moves,
+the next input is checked first. A grant older than 30 s is re-confirmed in the background. The
+viewer's socket loop never awaits a permission check: the 60 s re-check runs in a spawned task, and
+the loop picks up its verdict.
+
+```mermaid
+sequenceDiagram
+  participant X as xterm (browser)
+  participant L as Viewer loop (routes/terminal.rs, routes/shells.rs)
+  participant G as WriteGrant + access epoch
+  participant P as ptyhost (PTY)
+  participant H as Hub
+  X->>L: input frame
+  L->>G: decide(epoch, now)
+  alt grant holds
+    G-->>L: allow (and re-confirm beside it after 30 s)
+  else epoch moved or no grant
+    G->>G: can_work / shell check (database, GitHub)
+    G-->>L: allow or forbidden
+  end
+  L->>P: bytes
+  P-->>H: echo (output chunk)
+  H-->>L: broadcast
+  L-->>X: binary output frame
+  Note over L: every 60 s a spawned re-check, its verdict selected beside input and output
 ```
 
 ## Task ownership
