@@ -3,7 +3,7 @@
 ## Status
 
 Accepted. Specified in [SPEC-096](../../.ai/specs/SPEC-096-onboarding-should-be-mandatory-and-shoul.md).
-It narrows [ADR-0038](0038-the-cli-only-uploads.md): onboarding still starts only in the browser.
+It narrows [ADR-0038](0038-onboarding-starts-in-the-browser.md): onboarding still starts only in the browser.
 
 ## Context
 

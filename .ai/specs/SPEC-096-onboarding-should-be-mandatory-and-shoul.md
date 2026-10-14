@@ -1,11 +1,11 @@
 ---
 yulius-task: da6c0cac-674c-45da-89f1-36accddda52c
-status: draft
+status: in-progress
 ---
 
 # SPEC-096: onboarding comes first: the new-task page shows only what it will do and its button
 
-Status: draft
+Status: in progress
 Date: 2026-10-14
 Owner: Yulius task #81
 Scope authorization: task request: "onboarding should be mandatory and should show no task input
