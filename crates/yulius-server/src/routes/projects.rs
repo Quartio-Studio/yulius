@@ -4,7 +4,9 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use yulius_contracts::api::sandboxes::{AvailableRepo, CreateSandbox, Sandbox, Template};
+use yulius_contracts::api::sandboxes::{
+    AvailableRepo, CreateSandbox, OnboardingPlan, Sandbox, Template,
+};
 
 use crate::AppState;
 use crate::auth::Auth;
@@ -47,6 +49,14 @@ pub async fn skip_onboarding(
     Path(sid): Path<String>,
 ) -> ApiResult<Json<Sandbox>> {
     Ok(Json(app.skip_onboarding(&ctx, &sid).await?))
+}
+
+pub async fn onboarding_plan(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+) -> ApiResult<Json<OnboardingPlan>> {
+    Ok(Json(app.onboarding_plan(&ctx, &sid).await?))
 }
 
 pub async fn approve_onboarding(

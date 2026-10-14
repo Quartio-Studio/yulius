@@ -1,12 +1,13 @@
-//! Auto-saved notes (SPEC-041): one notepad per sandbox and one for the team.
+//! Auto-saved notes (SPEC-041): one notepad per sandbox, one for the team and one per person
+//! (SPEC-103).
 
 use serde::{Deserialize, Serialize};
 
-/// A notepad: `GET /api/notes` (team) and `GET /api/sandboxes/{sid}/notes` (sandbox); `PUT`
-/// returns the stored note.
+/// A notepad: `GET /api/notes` (team), `GET /api/sandboxes/{sid}/notes` (sandbox) and
+/// `GET /api/me/notes` (the caller's own); `PUT` returns the stored note.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Note {
-    /// `team` or `sandbox`.
+    /// `team`, `sandbox` or `me`.
     pub scope: String,
     /// The text (Markdown, at most 256 KiB of UTF-8).
     pub body: String,

@@ -1181,7 +1181,7 @@ async fn run_now_and_failures_are_recorded() -> TestResult {
     // A failing task creation is recorded on the run (sandbox being prepared).
     let failing = create_automation(&w, daily("Blocked", "0 9 * * *")).await?;
     w.h.store
-        .set_onboarding(&SandboxId::parse("s1")?, "pending", None)
+        .set_onboarding(&SandboxId::parse("s1")?, "preparing", None)
         .await?;
     set_clock(&w.h, BASE + 9 * HOUR + 10_000);
     let report = w.h.app.automation_tick().await?;

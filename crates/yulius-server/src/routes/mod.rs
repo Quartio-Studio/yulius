@@ -77,6 +77,10 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/sandboxes", get(sandboxes::list))
         .route("/api/sandboxes/{sid}", get(sandboxes::get_one))
         .route(
+            "/api/sandboxes/{sid}/onboarding/plan",
+            get(projects::onboarding_plan),
+        )
+        .route(
             "/api/sandboxes/{sid}/tasks",
             get(tasks::list).post(tasks::create),
         )
@@ -299,6 +303,13 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
             "/api/sandboxes/{sid}/notes",
             get(notes::sandbox)
                 .put(notes::save_sandbox)
+                .layer(DefaultBodyLimit::max(2 << 20)),
+        )
+        // The caller's own notepad, the same in every sandbox (SPEC-103).
+        .route(
+            "/api/me/notes",
+            get(notes::me)
+                .put(notes::save_me)
                 .layer(DefaultBodyLimit::max(2 << 20)),
         )
         // Dropped files (EDT-006, UI-048): raw streamed bodies, bounded by the upload limit.

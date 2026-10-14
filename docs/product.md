@@ -18,10 +18,11 @@ watching, steering and unblocking.
 
 - **Projects and sandboxes**: import a GitHub repository, start a playground without GitHub, or
   onboard a repository from a local machine's Claude sessions with `yulius onboard`; each gets a
-  contained sandbox with its own system layer, home, shells per user, browser and editor. The CLI only uploads: the onboarding task that
-  adapts the repository to the Yulius standards starts when someone clicks Start onboarding on the
-  sandbox page. Onboarding is mandatory: until it has finished, the sandbox's new-task page shows
-  only what it will do and its button, no task input. A playground needs none.
+  contained sandbox with its own system layer, home, shells per user, browser and editor. The CLI
+  only uploads: the onboarding task that adapts the repository to the Yulius standards is created
+  and started when someone clicks Start onboarding on the sandbox page. Onboarding is mandatory:
+  until it has finished, the sandbox's new-task page shows only what it will do and its button,
+  no task input. A playground needs none.
 - **Playgrounds**: a team tries Yulius on its own code before it connects GitHub. On a fresh
   instance Home offers it first: drop a project folder (a repository keeps its branches and
   history) or start from a template, and tasks start a minute later. Its Git stays on the server
@@ -76,7 +77,8 @@ watching, steering and unblocking.
   another task or when a rule is true, picked with New task's start chip beside Run now and Save;
   Run now starts its task the way the chip shows.
 - **Notes**: in the tools rail, a notepad per sandbox and one for the whole team, shared and saved
-  while people type; a teammate's edit shows up live, and two edits at once end in a choice.
+  while people type; a teammate's edit shows up live, and two edits at once end in a choice. A
+  third, **Me**, is each person's own: nobody else sees it, and it is the same in every sandbox.
 - **Editor, terminals, Git view, automations, workflow catalog** in one web UI, whose menus fit
   the window and filter as people type when they are long; the start menu shows five tasks at a
   time and says how many more it scrolls to. Messages are

@@ -1,7 +1,8 @@
-//! Auto-saved notes (SPEC-041): the team's notepad and one per sandbox.
+//! Auto-saved notes (SPEC-041, SPEC-103): the team's notepad, one per sandbox and the caller's own.
 
 use axum::Json;
 use axum::extract::{Path, State};
+use yulius_app::notes::NoteTarget;
 use yulius_contracts::api::notes::{Note, SaveNote};
 
 use crate::AppState;
@@ -9,7 +10,7 @@ use crate::auth::Auth;
 use crate::error::ApiResult;
 
 pub async fn team(State(app): State<AppState>, Auth(ctx): Auth) -> ApiResult<Json<Note>> {
-    Ok(Json(app.note(&ctx, None).await?))
+    Ok(Json(app.note(&ctx, NoteTarget::Team).await?))
 }
 
 pub async fn save_team(
@@ -17,7 +18,7 @@ pub async fn save_team(
     Auth(ctx): Auth,
     Json(req): Json<SaveNote>,
 ) -> ApiResult<Json<Note>> {
-    Ok(Json(app.save_note(&ctx, None, &req).await?))
+    Ok(Json(app.save_note(&ctx, NoteTarget::Team, &req).await?))
 }
 
 pub async fn sandbox(
@@ -25,7 +26,7 @@ pub async fn sandbox(
     Auth(ctx): Auth,
     Path(sid): Path<String>,
 ) -> ApiResult<Json<Note>> {
-    Ok(Json(app.note(&ctx, Some(&sid)).await?))
+    Ok(Json(app.note(&ctx, NoteTarget::Sandbox(&sid)).await?))
 }
 
 pub async fn save_sandbox(
@@ -34,5 +35,19 @@ pub async fn save_sandbox(
     Path(sid): Path<String>,
     Json(req): Json<SaveNote>,
 ) -> ApiResult<Json<Note>> {
-    Ok(Json(app.save_note(&ctx, Some(&sid), &req).await?))
+    Ok(Json(
+        app.save_note(&ctx, NoteTarget::Sandbox(&sid), &req).await?,
+    ))
+}
+
+pub async fn me(State(app): State<AppState>, Auth(ctx): Auth) -> ApiResult<Json<Note>> {
+    Ok(Json(app.note(&ctx, NoteTarget::Me).await?))
+}
+
+pub async fn save_me(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Json(req): Json<SaveNote>,
+) -> ApiResult<Json<Note>> {
+    Ok(Json(app.save_note(&ctx, NoteTarget::Me, &req).await?))
 }
