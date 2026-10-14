@@ -148,10 +148,14 @@ const ownSelection = (browser: Browser) => browser.evaluate(() => {
   };
 });
 
-/** Waits until the drawn shapes lie exactly on Monaco's boxes; answers how many there are. */
-async function drawnOnMonaco(browser: Browser): Promise<number> {
-  await expect.poll(async () => { const s = await ownSelection(browser); return s.monaco.length > 0 && JSON.stringify(s.drawn) === JSON.stringify(s.monaco); }).toBe(true);
-  return (await ownSelection(browser)).monaco.length;
+/**
+ * Waits until Monaco shows `boxes` boxes (a count, or a test of it) and the drawn shapes lie
+ * exactly on them: a new selection is rendered in Monaco's next frame, so the old, equal drawing
+ * must not pass for it.
+ */
+async function drawnOnMonaco(browser: Browser, boxes: number | ((n: number) => boolean)) {
+  const wanted = typeof boxes === 'number' ? (n: number) => n === boxes : boxes;
+  await expect.poll(async () => { const s = await ownSelection(browser); return wanted(s.monaco.length) && JSON.stringify(s.drawn) === JSON.stringify(s.monaco); }).toBe(true);
 }
 
 test('a selection in the editor is drawn rounded where Monaco lays it out, gliding, wrapped or not, scrolled', async ({ app, browser, screen }) => {
@@ -159,7 +163,7 @@ test('a selection in the editor is drawn rounded where Monaco lays it out, glidi
 
   // Three lines: three rounded shapes on Monaco's three boxes, which are not painted themselves.
   await select(browser, [1, 3, 3, 5]);
-  expect(await drawnOnMonaco(browser)).toBe(3);
+  await drawnOnMonaco(browser, 3);
   let seen = await ownSelection(browser);
   expect(seen.nativePainted).toBe(false);
   expect(seen.radius).toBe('4px');
@@ -168,31 +172,31 @@ test('a selection in the editor is drawn rounded where Monaco lays it out, glidi
 
   // It moves: the shapes glide to the new boxes.
   await select(browser, [2, 1, 6, 3]);
-  expect(await drawnOnMonaco(browser)).toBe(5);
+  await drawnOnMonaco(browser, 5);
 
   // Word wrap off: the long line is one row; on: it is several, each its own shape.
   await select(browser, [5, 1, 5, 400]);
-  expect(await drawnOnMonaco(browser)).toBe(1);
+  await drawnOnMonaco(browser, 1);
   await screen.getByRole('button', 'Word wrap').click();
   await expect(screen.getByRole('button', 'Word wrap')).toHaveAttribute('aria-pressed', 'true');
   await select(browser, [5, 1, 5, 400]);
-  expect(await drawnOnMonaco(browser)).toBeGreaterThan(1);
+  await drawnOnMonaco(browser, (n) => n > 1);
   await screen.getByRole('button', 'Word wrap').click();
   await expect(screen.getByRole('button', 'Word wrap')).toHaveAttribute('aria-pressed', 'false');
 
   // Scrolled: a selection far down is drawn on its lines, and stays on them as the view scrolls.
   await select(browser, [120, 2, 140, 4]);
   await browser.evaluate(() => (window as unknown as EdWindow).monaco.editor.getEditors()[0].revealLine(130));
-  expect(await drawnOnMonaco(browser)).toBeGreaterThan(5);
-  await browser.evaluate(() => { const ed = (window as unknown as EdWindow).monaco.editor.getEditors()[0]; ed.setScrollTop(ed.getModel() ? 2600 : 0); });
-  await drawnOnMonaco(browser);
+  await drawnOnMonaco(browser, (n) => n > 5);
+  await browser.evaluate(() => (window as unknown as EdWindow).monaco.editor.getEditors()[0].setScrollTop(2600));
+  await drawnOnMonaco(browser, (n) => n > 0);
   await browser.evaluate(() => (window as unknown as EdWindow).monaco.editor.getEditors()[0].setScrollTop(2200));
-  await drawnOnMonaco(browser);
+  await drawnOnMonaco(browser, (n) => n > 0);
 
   // Without the keyboard the selection is softer.
   await screen.getByRole('tree', 'Files').getByRole('treeitem', 'long.md').focus();
   await expect.poll(async () => (await ownSelection(browser)).blurred).toBe(true);
-  await drawnOnMonaco(browser);
+  await drawnOnMonaco(browser, (n) => n > 0);
 });
 
 /** The person's own page, or the teammate's window opened from it (`window.__bob`). */
@@ -307,9 +311,14 @@ test('two people in one file see each other’s caret, name and selection in the
   await bobOpens(browser, 'README.md');
   await expect.poll(() => peersIn(browser, 'me')).toEqual([expect.objectContaining({ name: 'bob' })]);
   await bobClick(browser, '.rail button', 'Editor');
-  await expect.poll(() => peersIn(browser, 'me')).toEqual([]);
+  try {
+    await expect.poll(() => peersIn(browser, 'me')).toEqual([]);
+  } catch (error) {
+    console.log('DIAG', await browser.evaluate(() => { const b = (window as any).__bob; return JSON.stringify({ bobSent: b.__yuliusMock.filePresenceSent.slice(-4), panelHidden: b.document.querySelector('.panel')?.hidden, pressed: [...b.document.querySelectorAll('.rail button')].map((x: Element) => `${x.textContent}:${x.getAttribute('aria-pressed')}`) }); }));
+    throw error;
+  }
 
-  // The person leaves the page (Bob's Editor shown again first): gone for Bob.
+  // The person closes the Editor (Bob's shown again first): gone for Bob.
   await bobClick(browser, '.rail button', 'Editor');
   await expect.poll(() => peersIn(browser, 'bob')).toEqual([expect.objectContaining({ name: 'mkarp' })]);
   await screen.getByRole('button', 'Editor').click();
@@ -425,4 +434,81 @@ test('the editor’s file tabs move by drag, Alt+arrows and the menu', async ({ 
   });
   await screen.getByRole('menuitem', 'Close').click();
   expect(await editorTabs(browser)).toEqual(['README.md', 'AGENTS.md']);
+});
+
+type HoldMock = { __yuliusMock: { holdPresence: boolean; releasePresence(): void; keepaliveRequests: string[] } };
+
+// Review round 1: closing a file, switching folder or leaving the page while an update is still on
+// its way must still tell the others the person left.
+test('a file closed, a folder switched or a page gone says the person left, even with an update on its way', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  const tree = screen.getByRole('tree', 'Files');
+  await tree.getByRole('treeitem', 'README.md').click();
+  await expect.poll(async () => (await fileSent(browser)).some((u) => u.path === 'README.md' && u.selection !== null)).toBe(true);
+  const last = async (path: string) => (await fileSent(browser)).filter((u) => u.path === path).at(-1);
+
+  // An update on its way (held), then the file is closed: once answered, `null` follows.
+  await browser.evaluate(() => { (window as unknown as HoldMock).__yuliusMock.holdPresence = true; });
+  await inEditor(browser, 'me', 'ed.focus(); ed.setSelection({ startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 4 })');
+  await expect.poll(async () => (await last('README.md'))?.selection).toEqual({ anchor: 0, head: 3 });
+  await screen.getByRole('tab', /^README\.md/).focus();
+  await browser.keyboard.press('Delete');
+  await expect.poll(() => editorTabs(browser)).toEqual([]);
+  await browser.evaluate(() => (window as unknown as HoldMock).__yuliusMock.releasePresence());
+  await expect.poll(async () => (await last('README.md'))?.selection).toBe(null);
+
+  // Another folder: the open file is left.
+  await tree.getByRole('treeitem', 'AGENTS.md').click();
+  await expect.poll(async () => (await last('AGENTS.md'))?.selection).toEqual({ anchor: 0, head: 0 });
+  const folder = (index: number) => browser.evaluate((i) => {
+    const select = document.querySelector('select[aria-label="Folder"]') as HTMLSelectElement;
+    select.value = select.options[i].value;
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  }, index);
+  await folder(1); // Task #12 worktree
+  await expect.poll(async () => (await last('AGENTS.md'))?.selection).toBe(null);
+  await folder(0);
+
+  // The page goes: `null` with a request that outlives it.
+  await screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md').click();
+  await expect.poll(async () => (await last('README.md'))?.selection).toEqual({ anchor: 0, head: 0 });
+  await browser.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide')));
+  await expect.poll(async () => (await last('README.md'))?.selection).toBe(null);
+  expect(await browser.evaluate(() => (window as unknown as HoldMock).__yuliusMock.keepaliveRequests.some((url) => url.includes('/files/presence')))).toBe(true);
+});
+
+// Review round 1: the strip drawn again during a drag (a save ending, a tab closed) must not leave
+// the dragged tab behind, detached and frozen.
+test('a tab closed while another is dragged keeps the drag going, and the order applies on release', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  const tree = screen.getByRole('tree', 'Files');
+  for (const name of ['README.md', 'AGENTS.md']) {
+    await tree.getByRole('treeitem', name).click();
+    await expect(screen.getByRole('tab', new RegExp(`^${name.replace('.', '\\.')}`))).toHaveAttribute('aria-selected', 'true');
+  }
+  await tree.getByRole('treeitem', /src$/).click();
+  await tree.getByRole('treeitem', /api$/).click();
+  await tree.getByRole('treeitem', 'checkout.rs').click();
+  await expect.poll(() => editorTabs(browser)).toEqual(['README.md', 'AGENTS.md', 'src/api/checkout.rs']);
+
+  const from = await screen.getByRole('tab', /^checkout\.rs/).boundingBox();
+  const to = await screen.getByRole('tab', /^AGENTS\.md/).boundingBox();
+  if (!from || !to) throw new Error('tabs not laid out');
+  await browser.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+  await browser.mouse.down();
+  await browser.mouse.move(from.x - 10, from.y + from.height / 2);
+  // README closes meanwhile (its close mark, as a click elsewhere would).
+  await browser.evaluate(() => (document.querySelector('.ed-tab[data-path="README.md"] .ed-tab-close') as HTMLElement).click());
+  const dragged = () => browser.evaluate(() => {
+    const tab = document.querySelector('.ed-tab.dragging') as HTMLElement | null;
+    return tab ? { path: tab.dataset.path, connected: tab.isConnected, moved: tab.style.transform } : null;
+  });
+  await browser.mouse.move(to.x + 4, from.y + from.height / 2);
+  expect(await dragged()).toEqual({ path: 'src/api/checkout.rs', connected: true, moved: expect.stringMatching(/^translateX\(-\d/) });
+  await browser.mouse.up();
+  await expect.poll(() => editorTabs(browser)).toEqual(['src/api/checkout.rs', 'AGENTS.md']);
 });

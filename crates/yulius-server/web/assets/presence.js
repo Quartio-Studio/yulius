@@ -6,8 +6,10 @@
 // outlives it), a refused or lost update again after 1 s, doubling up to 15 s, and one update on
 // its way at a time so they arrive in order. Someone not heard of for 45 s has gone.
 //
-// Nothing goes out before the source has something to say: `state()` answers `null` until it can
-// speak (a notepad not loaded yet), else `{revision, selection}` (selection `null`: not placed).
+// Nothing goes out before the source has something to say: `state({leaving})` answers `null` until
+// it can speak (a notepad not loaded yet), else `{revision, selection}` (selection `null`: not
+// placed; not needed when `leaving`). A leave still goes out after `destroy()`, once the update on
+// its way is answered, so a closed file never lingers for the others.
 
 /** The least time between two updates of one's own selection. */
 const GAP_MS = 100;
@@ -23,6 +25,9 @@ const RETRY_MS = 1000;
 const ANSWER_GAP_MS = 1000;
 /** This browser tab, so one person's tabs are told apart. */
 export const CLIENT_ID = Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join('');
+
+/** A refusal worth trying again (lost, too many, the server busy); access or input refusals are not. */
+const retryable = (error) => !error || !error.status || error.status === 408 || error.status === 429 || error.status >= 500;
 
 /**
  * Presence for one shared text. `put(body, {keepalive})` sends `{revision, selection, hello,
@@ -50,7 +55,9 @@ export function createPresence({ put, state, draw, myId }) {
   function send({ leaving = false, going = false } = {}) {
     clearTimeout(timer);
     timer = 0;
-    const now = state();
+    // Gone (a closed file): only the leave that waited for the update on its way.
+    const away = leaving || !present || destroyed;
+    const now = state({ leaving: away });
     if (!now) return;
     // One update on its way at a time, so they reach the others in order: the newest goes when it
     // is answered (hidden by then, that is `null`). A page going away cannot wait.
@@ -58,7 +65,7 @@ export function createPresence({ put, state, draw, myId }) {
       queued = true;
       return;
     }
-    const selection = leaving || !present ? null : now.selection;
+    const selection = away ? null : now.selection;
     const update = JSON.stringify({ revision: now.revision, selection });
     // Nothing new, or nothing to take back: nothing to say, unless asked.
     if (!helloDue && !forceDue && (update === last || (!selection && !wasThere))) return;
@@ -71,7 +78,7 @@ export function createPresence({ put, state, draw, myId }) {
     inFlight = true;
     const answered = () => {
       inFlight = false;
-      if (queued && !destroyed) {
+      if (queued) {
         queued = false;
         send();
       }
@@ -79,10 +86,10 @@ export function createPresence({ put, state, draw, myId }) {
     put({ revision: now.revision, selection, hello, client: CLIENT_ID }, { keepalive: going }).then(() => {
       retryMs = RETRY_MS;
       answered();
-    }, () => {
+    }, (error) => {
       answered();
       // Refused (429) or lost: sent again later, unless something newer went out meanwhile.
-      if (last !== update || leaving || destroyed) return;
+      if (last !== update || leaving || destroyed || !retryable(error)) return;
       last = null;
       if (hello) helloDue = true;
       clearTimeout(timer);

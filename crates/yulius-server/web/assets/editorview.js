@@ -433,6 +433,23 @@ export function createEditorView(ctx, sandbox, getTask) {
   // is hidden until both have the same saved text.
   const myId = me.id || null;
 
+  /**
+   * The edit from the shown text to the saved one (`toSaved`) or back, or `null` while they are the
+   * same (Monaco's version is the saved one's: no whole-text comparison on every key).
+   */
+  function savedEdit(tab, toSaved) {
+    if (tab.model.getAlternativeVersionId() === tab.savedVersion) return null;
+    const text = tab.model.getValue();
+    return toSaved ? textEdit(text, tab.saved) : textEdit(tab.saved, text);
+  }
+  const mapThrough = (offset, edit) => (edit ? mapPosition(offset, edit) : offset);
+
+  /** Marks `tab`'s shown text as its saved one, at `version` of its model. */
+  function savedAs(tab, text, version = tab.model ? tab.model.getAlternativeVersionId() : null) {
+    tab.saved = text;
+    tab.savedVersion = version;
+  }
+
   /** Where this person is in `tab`'s saved text, or `null` while it is not the file in front. */
   function ownSelection(tab) {
     if (!editor || tab !== active || !tab.model || editor.getModel() !== tab.model) return null;
@@ -440,20 +457,21 @@ export function createEditorView(ctx, sandbox, getTask) {
     if (!selection) return null;
     const anchor = tab.model.getOffsetAt({ lineNumber: selection.selectionStartLineNumber, column: selection.selectionStartColumn });
     const head = tab.model.getOffsetAt({ lineNumber: selection.positionLineNumber, column: selection.positionColumn });
-    const edit = textEdit(tab.model.getValue(), tab.saved);
-    return { anchor: mapPosition(anchor, edit), head: mapPosition(head, edit) };
+    const edit = savedEdit(tab, true);
+    return { anchor: mapThrough(anchor, edit), head: mapThrough(head, edit) };
   }
 
   /** The others in `tab`, drawn when it is the file in front: those at its `sha`, mapped through the typing. */
   function drawPeers(tab) {
     if (!layer || tab !== active || !tab.model || editor.getModel() !== tab.model) return;
     const list = [];
-    if (tab.presence.present) {
-      const text = tab.model.getValue();
-      const edit = textEdit(tab.saved, text);
+    // Nobody else here: nothing to map (typing in a large file stays cheap).
+    if (tab.presence.present && tab.presence.peers.size) {
+      const length = tab.model.getValueLength();
+      const edit = savedEdit(tab, false);
       for (const [id, peer] of tab.presence.peers) {
         if (peer.revision !== tab.sha) continue;
-        const clamp = (offset) => Math.min(mapPosition(offset, edit), text.length);
+        const clamp = (offset) => Math.min(mapThrough(offset, edit), length);
         const anchor = clamp(peer.selection.anchor);
         const head = clamp(peer.selection.head);
         list.push({ id, colourOf: peer.userId, name: peer.name, start: Math.min(anchor, head), end: Math.max(anchor, head), head });
@@ -465,7 +483,7 @@ export function createEditorView(ctx, sandbox, getTask) {
   function withPresence(tab) {
     tab.presence = createPresence({
       put: ({ revision, ...body }, options) => api.put(`/api/sandboxes/${sid}/files/presence`, { root: tab.root, path: tab.path, sha256: revision, ...body }, options),
-      state: () => ({ revision: tab.sha || '', selection: ownSelection(tab) }),
+      state: ({ leaving }) => ({ revision: tab.sha || '', selection: leaving ? null : ownSelection(tab) }),
       draw: () => drawPeers(tab),
       myId,
     });
@@ -564,7 +582,9 @@ export function createEditorView(ctx, sandbox, getTask) {
   function attach(tab, text) {
     tab.model = monaco.editor.createModel(text, languageFor(monaco, tab.path));
     // Monaco keeps one kind of line end: the saved text is compared in its terms.
-    if (tab.saved === text) tab.saved = tab.model.getValue();
+    // A new model counts its versions afresh: unsaved text is compared in full.
+    if (tab.saved === text) savedAs(tab, tab.model.getValue());
+    else tab.savedVersion = null;
     tab.model.onDidChangeContent(() => {
       presenceMoved(tab);
       if (tab.ignoreChange) return;
@@ -623,7 +643,7 @@ export function createEditorView(ctx, sandbox, getTask) {
       if (file.content != null && file.sha256 !== tab.sha && !tab.dirty && !tab.model) {
         // Suspended meanwhile (another sandbox in front): the kept text takes the disk's version.
         tab.text = file.content;
-        tab.saved = file.content;
+        savedAs(tab, file.content, null);
         tab.sha = file.sha256;
         return;
       }
@@ -633,7 +653,7 @@ export function createEditorView(ctx, sandbox, getTask) {
         tab.model.setValue(file.content);
         tab.ignoreChange = false;
         tab.sha = file.sha256;
-        tab.saved = tab.model.getValue();
+        savedAs(tab, tab.model.getValue());
         presenceMoved(tab);
         if (view) editor.restoreViewState(view);
         toast(`${tab.path} changed on disk and was reloaded.`, { kind: 'info' });
@@ -687,9 +707,12 @@ export function createEditorView(ctx, sandbox, getTask) {
         baseSha = current ? current.sha256 : null;
       }
       const content = textOf(tab);
+      const model = tab.model;
+      const version = model ? model.getAlternativeVersionId() : null;
       const written = await api.put(`/api/sandboxes/${sid}/files/content`, { root, path: tab.path, content, base_sha256: baseSha });
       tab.sha = written.sha256;
-      tab.saved = content;
+      // The model may have gone meanwhile (another sandbox in front): then compared in full.
+      savedAs(tab, content, model && tab.model === model ? version : null);
       tab.dirty = false;
       presenceMoved(tab);
       toast(`Saved ${tab.path}`, { kind: 'ok' });
@@ -732,9 +755,13 @@ export function createEditorView(ctx, sandbox, getTask) {
   }
 
   // Dragging a tab along the strip, as in Notes (tabdrag.js).
-  const tabDrag = createTabDrag(tabbar, { keyOf: (el) => el.dataset.path, commit: reorderTabs });
+  let tabsStale = false; // drawn again once the drag ends
+  const tabDrag = createTabDrag(tabbar, { keyOf: (el) => el.dataset.path, commit: reorderTabs, cancelled: () => { if (tabsStale) renderTabs(); } });
 
   function renderTabs() {
+    // A save or a close while a tab is dragged: the strip keeps the dragged tabs until it ends.
+    if (tabDrag.dragging) { tabsStale = true; return; }
+    tabsStale = false;
     const focused = tabbar.contains(document.activeElement) ? document.activeElement.dataset.path : null;
     const items = tabs.map((tab, index) => {
       const name = tab.path.split('/').pop();
@@ -827,9 +854,9 @@ export function createEditorView(ctx, sandbox, getTask) {
         attach(tab, tab.text);
         tab.text = null;
       }
-      const shown = active;
+      const front = active;
       active = null; // its saved cursor is restored, not replaced by the empty editor's
-      if (shown) activate(shown, { focus: false });
+      if (front) activate(front, { focus: false });
     },
     // Called when the panel host drops this view (another sandbox): free Monaco's editor and
     // models, so other sandboxes' files neither leak nor feed suggestions.

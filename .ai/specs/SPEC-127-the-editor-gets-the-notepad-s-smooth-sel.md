@@ -185,3 +185,25 @@ sequenceDiagram
   "reuse #97's presence relay … instead of building a second mechanism"); a separate route and
   event because the target (root, path, sha256) and the audience differ.
 - The tab order is not stored: the open files themselves live in this browser tab only (EDT-001).
+- Review round 1 (fresh session, request changes; three majors, fixed test-first):
+  - A file closed (or a folder switched) while an update was on its way never said the person
+    left: the queued `null` was dropped once the presence was destroyed. A queued leave now goes
+    out when the update on its way is answered (e2e "…even with an update on its way", failing
+    before; it also covers the folder switch and the page going with `keepalive`).
+  - File presence keys were made-up paths of any length: one writer could fill the 4096 shared
+    counters (429 for everyone) or hold large keys. Paths are at most 4096 bytes (422), a
+    non-null update must name an existing regular file (404; leaving a deleted one is fine), and
+    one person keeps at most 64 busy counters (Rust `presence_counters_are_bounded_per_person`,
+    `presence_is_refused_when_malformed`, unit `one_person_keeps_only_so_many_counters_busy`,
+    failing before).
+  - Every keystroke diffed the whole file even with nobody else in it. Now nothing is mapped
+    without teammates, and a text still at its saved version (Monaco's alternative version id)
+    is not diffed; a leave computes no selection. A performance change without its own test (the
+    presence e2e cover the mapping it keeps).
+  - Minors: refusals that cannot succeed (403, 404, 409, 422) are not retried (429, 408, 5xx and
+    lost ones still are); a strip redraw during a drag waits for the drag to end (e2e failing
+    before); a demoted writer's stream stops getting presence after its re-check and the task
+    worktree root are covered in Rust; the two-person test's selection waits for Monaco's new
+    boxes (it could pass on the old ones; under load it once failed the other way). Kept: Escape
+    and press-without-move are covered through Notes' tests of the same `tabdrag.js`; suspend
+    and resume across sandboxes reuse `syncPresence` with `suspended` (not separately tested).

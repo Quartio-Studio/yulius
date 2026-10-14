@@ -2,7 +2,8 @@
 // Editor's tabs. Mouse or pen; touch scrolls the strip and moves tabs from the menu. Past a few
 // pixels the tab follows the pointer, the tabs it passes slide aside, and on release it settles
 // into its place from where it was let go; Escape puts it back. The click that ends a drag (or an
-// Escape) chooses nothing: the strip's click handler asks `clickConsumed()` first.
+// Escape) chooses nothing: the strip's click handler asks `clickConsumed()` first. A strip that
+// would redraw during a drag waits (`dragging`) and redraws when it ends (`cancelled` or `commit`).
 
 /** How far a pressed tab moves before it is dragged rather than clicked. */
 const DRAG_THRESHOLD_PX = 4;
@@ -12,7 +13,7 @@ const DRAG_THRESHOLD_PX = 4;
  * in that order (keys) and answers the strip's tab elements as drawn again. Returns `{press,
  * cancel, clickConsumed}`; call `press(event, tab)` on a tab's `pointerdown`.
  */
-export function createTabDrag(tablist, { keyOf, commit }) {
+export function createTabDrag(tablist, { keyOf, commit, cancelled = () => {} }) {
   let drag = null; // {key, tab, startX, moved, tabs, keys, pointerId, lefts, widths}
   let dragged = false; // the click that ends a drag chooses nothing
 
@@ -98,7 +99,9 @@ export function createTabDrag(tablist, { keyOf, commit }) {
 
   function cancel() {
     const state = done();
-    if (state) for (const tab of state.tabs) { tab.style.transform = ''; tab.classList.remove('dragging'); }
+    if (!state) return;
+    for (const tab of state.tabs) { tab.style.transform = ''; tab.classList.remove('dragging'); }
+    if (state.moved) cancelled();
   }
 
   function escape(event) {
@@ -120,6 +123,8 @@ export function createTabDrag(tablist, { keyOf, commit }) {
   return {
     press,
     cancel,
+    /** A tab is being dragged: its strip is not drawn again until it is let go. */
+    get dragging() { return Boolean(drag && drag.moved); },
     /** Whether this click ends a drag (and so chooses nothing); it is used up. */
     clickConsumed() {
       if (!dragged) return false;

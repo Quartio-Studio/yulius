@@ -391,6 +391,53 @@ async fn presence_is_relayed_to_writers_only() -> TestResult {
         matches!(&first, Some(Ok(text)) if text.contains("t-after")),
         "a reader got file presence: {first:?}"
     );
+
+    while let Some(Ok(_)) = next_text(&mut writer, std::time::Duration::from_millis(300)).await {}
+
+    // A task worktree is a root of its own.
+    let worktree = h.app.config.data_dir.join("sandboxes/s1/worktrees/t1");
+    std::fs::create_dir_all(&worktree)?;
+    std::fs::write(worktree.join("task.txt"), "task file\n")?;
+    seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Running, Some(&worktree)).await?;
+    let in_task = call(
+        &h.router,
+        Method::PUT,
+        "/api/sandboxes/s1/files/presence",
+        Some(json!({"root": "task:t1", "path": "task.txt", "selection": {"anchor": 0, "head": 4}})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(in_task.status, StatusCode::NO_CONTENT, "{:?}", in_task.body);
+    let seen = next_text(&mut writer, std::time::Duration::from_secs(2)).await;
+    assert!(
+        matches!(&seen, Some(Ok(text)) if text.contains("\"root\":\"task:t1\"") && text.contains("task.txt")),
+        "{seen:?}"
+    );
+    while let Some(Ok(_)) = next_text(&mut reader, std::time::Duration::from_millis(300)).await {}
+
+    // Alice loses write access: once her stream re-checks, she gets no more presence (Carol, now a
+    // writer, sends it), though she still sees the sandbox's other events.
+    h.github.set_perm("alice", "acme/fixture", perms("read"));
+    h.github.set_perm("carol", "acme/fixture", perms("write"));
+    h.clock
+        .0
+        .fetch_add(6 * 60 * 1000, std::sync::atomic::Ordering::SeqCst);
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    let carols = call(
+        &h.router,
+        Method::PUT,
+        "/api/sandboxes/s1/files/presence",
+        Some(json!({"path": "src/main.rs", "selection": {"anchor": 0, "head": 0}})),
+        &carol,
+    )
+    .await?;
+    assert_eq!(carols.status, StatusCode::NO_CONTENT, "{:?}", carols.body);
+    marker("t-demoted");
+    let first = next_text(&mut writer, std::time::Duration::from_secs(2)).await;
+    assert!(
+        matches!(&first, Some(Ok(text)) if text.contains("t-demoted")),
+        "a demoted writer got file presence: {first:?}"
+    );
     Ok(())
 }
 
@@ -448,6 +495,42 @@ async fn presence_is_refused_when_malformed() -> TestResult {
         .await?;
         assert_eq!(refused.status, status, "{body}: {:?}", refused.body);
     }
+    // Made-up targets: a path past 4096 bytes, and a file that is not there unless leaving it.
+    let long = format!("src/{}.rs", "a".repeat(4096));
+    let refused = call(
+        &h.router,
+        Method::PUT,
+        "/api/sandboxes/s1/files/presence",
+        Some(json!({"path": long, "selection": null})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY);
+    let missing = call(
+        &h.router,
+        Method::PUT,
+        "/api/sandboxes/s1/files/presence",
+        Some(json!({"path": "src/nothing.rs", "selection": {"anchor": 0, "head": 0}})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND, "{:?}", missing.body);
+    for path in ["src", "src/nothing.rs"] {
+        let left = call(
+            &h.router,
+            Method::PUT,
+            "/api/sandboxes/s1/files/presence",
+            Some(json!({"path": path, "selection": null})),
+            &alice,
+        )
+        .await?;
+        let expected = if path == "src" {
+            StatusCode::UNPROCESSABLE_ENTITY
+        } else {
+            StatusCode::NO_CONTENT
+        };
+        assert_eq!(left.status, expected, "{path}: {:?}", left.body);
+    }
     // The largest file's last offset is fine.
     let edge = call(
         &h.router,
@@ -458,7 +541,8 @@ async fn presence_is_refused_when_malformed() -> TestResult {
     )
     .await?;
     assert_eq!(edge.status, StatusCode::NO_CONTENT, "{:?}", edge.body);
-    assert_eq!(published(&mut events).len(), 1);
+    // Leaving a deleted file, and the largest offset.
+    assert_eq!(published(&mut events).len(), 2);
     Ok(())
 }
 
@@ -495,6 +579,61 @@ async fn presence_is_rate_limited() -> TestResult {
         .fetch_add(1_000, std::sync::atomic::Ordering::SeqCst);
     assert_eq!(send("src/main.rs").await?.status, StatusCode::NO_CONTENT);
     assert_eq!(published(&mut events).len(), 2);
+    Ok(())
+}
+
+/// Review round 1: one person's many files cannot use up the counters everyone shares.
+#[tokio::test]
+async fn presence_counters_are_bounded_per_person() -> TestResult {
+    let (h, alice, bob, _) = presence_fixture().await?;
+    h.github.set_perm("bob", "acme/fixture", perms("write"));
+    let repo = h.app.config.data_dir.join("sandboxes/s1/repo");
+    for i in 0..80 {
+        std::fs::write(repo.join(format!("f{i}.txt")), "x\n")?;
+    }
+    let send = |path: String, who: &support::Creds| {
+        let who = who.clone();
+        let router = h.router.clone();
+        async move {
+            call(
+                &router,
+                Method::PUT,
+                "/api/sandboxes/s1/files/presence",
+                Some(json!({"path": path, "selection": {"anchor": 0, "head": 0}})),
+                &who,
+            )
+            .await
+        }
+    };
+    let mut accepted = 0;
+    for i in 0..80 {
+        if send(format!("f{i}.txt"), &alice).await?.status == StatusCode::NO_CONTENT {
+            accepted += 1;
+        }
+    }
+    assert_eq!(accepted, 64, "a person keeps at most 64 counters at once");
+    // Someone else still has room, in files and notepads.
+    assert_eq!(
+        send("f70.txt".into(), &bob).await?.status,
+        StatusCode::NO_CONTENT
+    );
+    let team = call(
+        &h.router,
+        Method::PUT,
+        "/api/notes/presence",
+        Some(json!({"revision": 0, "selection": null, "hello": true})),
+        &bob,
+    )
+    .await?;
+    assert_eq!(team.status, StatusCode::NO_CONTENT);
+    // A second later the person's idle counters make room again.
+    h.clock
+        .0
+        .fetch_add(1_000, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        send("f79.txt".into(), &alice).await?.status,
+        StatusCode::NO_CONTENT
+    );
     Ok(())
 }
 

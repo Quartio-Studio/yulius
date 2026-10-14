@@ -2408,6 +2408,9 @@ route('PUT', `/api/sandboxes/${ID}/files/presence`, ({ db, p, body }) => {
     fail(422, 'invalid', 'path and selection are required');
   }
   const root = body.root || 'sandbox';
+  if (String(body.path).length > 4096) fail(422, 'invalid', 'a path is at most 4096 bytes');
+  // Someone is in a file that is there; leaving one may come after it was deleted.
+  if (selection !== null && !repoTree(db, sandbox.id, root).files.has(path)) fail(404, 'not_found', 'not found');
   const client = body.client || '';
   const sha256 = body.sha256 || '';
   (db.filePresenceSent = db.filePresenceSent || []).push({ sandbox_id: sandbox.id, root, path, sha256, selection, hello: Boolean(body.hello), client });
@@ -2415,6 +2418,8 @@ route('PUT', `/api/sandboxes/${ID}/files/presence`, ({ db, p, body }) => {
   const event = { type: 'file.presence', sandbox_id: sandbox.id, root, path, user_id: user.id, client, name: user.github_linked ? user.login : user.display_name, sha256, selection, hello: Boolean(body.hello) };
   emit(db, event);
   if (db.presenceChannel) db.presenceChannel.postMessage(event);
+  // `holdPresence = true`: answers wait for `releasePresence()` (an update still on its way).
+  if (db.holdPresence) return new Promise((resolve) => { (db.presenceHolds = db.presenceHolds || []).push(() => resolve(json(204))); });
   return json(204);
 });
 route('PUT', `/api/sandboxes/${ID}/notes/presence`, ({ db, p, body }) => relayPresence(db, 'sandbox', sandboxOf(db, p[0]).id, body));
@@ -4059,6 +4064,7 @@ export function createMockTransport(params) {
   // event, as if it were still on its way (SPEC-041).
   db.editNote = (scope, body, by = 'alice', options) => putNote(db, scope, body, by, options);
   db.notePresence = (event) => emit(db, { type: 'note.presence', sandbox_id: null, client: '', hello: false, ...event });
+  db.releasePresence = () => { db.holdPresence = false; for (const resolve of (db.presenceHolds || []).splice(0)) resolve(); };
   db.filePresence = (event) => emit(db, { type: 'file.presence', sandbox_id: 'sb_studio', root: 'sandbox', client: '', hello: false, ...event });
   // The other mock windows of this origin are teammates on the same server (SPEC-127).
   db.presenceChannel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('yulius-mock-presence') : null;

@@ -34,6 +34,8 @@ use crate::notes::{check_presence, presence_name};
 pub const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 /// Entries returned per directory listing.
 pub const MAX_ENTRIES: usize = 2000;
+/// Longest path a presence update may name (SPEC-127).
+pub const MAX_PRESENCE_PATH: usize = 4096;
 /// Bytes inspected for NUL when telling text from binary.
 const SNIFF_BYTES: usize = 8192;
 
@@ -509,10 +511,19 @@ impl App {
             None | Some("" | "sandbox") => "sandbox",
             Some(other) => other,
         };
+        if input.path.len() > MAX_PRESENCE_PATH {
+            return Err(AppError::Invalid(format!(
+                "a path is at most {MAX_PRESENCE_PATH} bytes"
+            )));
+        }
         let target = self
             .file_target(ctx, sandbox, Some(root), &input.path, false)
             .await?;
-        if target.relative.is_empty() {
+        if target.relative.is_empty() || target.path.is_dir() {
+            return Err(AppError::Invalid("presence names a file".into()));
+        }
+        // Someone is in a file that is there; leaving one may come after it was deleted.
+        if input.selection.is_some() && !Self::existing(&target)?.is_file() {
             return Err(AppError::Invalid("presence names a file".into()));
         }
         if !(input.sha256.is_empty()
