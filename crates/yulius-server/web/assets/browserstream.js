@@ -26,7 +26,7 @@
 // tab list and the stage.
 
 import { enc } from './api.js';
-import { h, toast, focusNextRegion } from './dom.js';
+import { h, toast, focusNextRegion, skeleton } from './dom.js';
 import { ReconnectingSocket, parseBrowserFrame, CLOSE_REVOKED, CLOSE_SERVER_ERROR } from './termsocket.js';
 
 const FRAME_VIDEO = 4;
@@ -144,7 +144,7 @@ export function createStreamView(ctx, sandbox, hooks) {
     if (!watched) showOverlay('');
     else if (!tab) showOverlay('This tab of the sandbox Chrome is closed.');
     else if (hasPicture) overlay.hidden = true;
-    else showOverlay('Loading page…');
+    else showOverlay(skeleton('Loading page…', 3, { block: true }));
   }
 
   function updateBadge() {

@@ -2,7 +2,7 @@
 // the instance page where a superadmin sets, replaces, tests and removes it. The key goes to the
 // server once and never comes back: the API answers with its state only.
 
-import { h, icon, field, setChildren, toast, errorToast, confirmDialog } from './dom.js';
+import { h, icon, field, setChildren, toast, errorToast, confirmDialog, skeleton } from './dom.js';
 import { relLong } from './format.js';
 import { BRAND } from './brand.js';
 
@@ -179,7 +179,7 @@ export function jevSettingsCard(ctx) {
     }
   }
 
-  setChildren(body, h('div', { class: 'placeholder placeholder-loading' }, 'Loading…'));
+  setChildren(body, skeleton('Loading the Jev key…', 3, { block: true }));
   load();
   return card;
 }

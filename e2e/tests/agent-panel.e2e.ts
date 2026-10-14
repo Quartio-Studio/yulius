@@ -216,7 +216,8 @@ test('a Superagent that starts slowly does not take the keyboard from the page',
     w.__yuliusMock.holdCockpit = new Promise<void>((resolve) => { w.__release = resolve; });
   });
   await screen.getByRole('button', 'Show Superagent').click();
-  await expect(screen.getByRole('status')).toHaveText('Starting your Superagent…');
+  // Shimmering fields while it starts (SPEC-092), what starts said to screen readers.
+  await expect(browser.locator('.skeleton[role="status"]').filter({ hasText: 'Starting your Superagent…' })).toBeVisible();
   // While it starts, the person goes back to the page.
   await screen.getByRole('textbox', 'Task prompt').click();
   await browser.evaluate(() => (window as unknown as Holding).__release?.());
