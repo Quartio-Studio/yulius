@@ -53,6 +53,20 @@ impl App {
         sandbox: &SandboxId,
         after: &TaskId,
     ) -> AppResult<TaskRecord> {
+        let task = self.live_predecessor(sandbox, after).await?;
+        self.ensure_chain_room(sandbox).await?;
+        Ok(task)
+    }
+
+    /// [`App::chain_predecessor`] without the chain bound (a task changing its chain, SPEC-126).
+    ///
+    /// # Errors
+    /// `Invalid` for an unknown, foreign, archived or ended task.
+    pub(crate) async fn live_predecessor(
+        &self,
+        sandbox: &SandboxId,
+        after: &TaskId,
+    ) -> AppResult<TaskRecord> {
         let store = &self.deps.store;
         let task = store
             .task(after)
@@ -65,7 +79,6 @@ impl App {
                 task.number
             )));
         }
-        self.ensure_chain_room(sandbox).await?;
         Ok(task)
     }
 
@@ -179,7 +192,7 @@ impl App {
             if let Ok(Some(task)) = store.task(&chain.task_id).await
                 && task.status == TaskStatus::Chained
             {
-                waiting.push(task);
+                waiting.push((task, chain));
             }
         }
         if waiting.is_empty() {
@@ -199,8 +212,8 @@ impl App {
                         .is_some_and(crate::onboarding::OnboardingState::blocks_tasks)
                 });
             if ready {
-                for task in waiting {
-                    if let Err(err) = self.release_chained(&task).await {
+                for (task, chain) in waiting {
+                    if let Err(err) = self.release_chained(&task, Some(&chain)).await {
                         tracing::warn!(task = %task.id, error = %err, "waiting task did not start");
                     }
                 }
@@ -208,16 +221,16 @@ impl App {
             return;
         }
         if self.task_is_done(&before).await {
-            for task in waiting {
-                if let Err(err) = self.release_chained(&task).await {
+            for (task, chain) in waiting {
+                if let Err(err) = self.release_chained(&task, Some(&chain)).await {
                     tracing::warn!(task = %task.id, error = %err, "chained task did not start");
                 }
             }
             return;
         }
         if let Some(reason) = blocked_reason(before.number, before.status) {
-            for task in waiting {
-                self.block_chained(&task, &reason).await;
+            for (task, chain) in waiting {
+                self.block_chained(&task, &chain, &reason).await;
             }
         }
     }
@@ -239,24 +252,24 @@ impl App {
                 && let Ok(Some(task)) = self.deps.store.task(&chain.task_id).await
                 && task.status == TaskStatus::Chained
             {
-                self.block_chained(&task, &reason).await;
+                self.block_chained(&task, &chain, &reason).await;
             }
         }
     }
 
-    async fn block_chained(&self, task: &TaskRecord, reason: &str) {
+    /// Marks `task` as needing a person for the chain `evaluated`, unless that chain was replaced
+    /// meanwhile (SPEC-126: a person changed how it starts).
+    async fn block_chained(&self, task: &TaskRecord, evaluated: &ChainRecord, reason: &str) {
         // Not a task that started meanwhile (Start now, a concurrent pass).
         let waiting = matches!(
             self.deps.store.task(&task.id).await,
             Ok(Some(t)) if t.status == TaskStatus::Chained
         );
         if waiting
-            && self
-                .deps
-                .store
-                .set_chain_blocked(&task.id, Some(reason))
-                .await
-                .is_ok()
+            && matches!(
+                self.deps.store.block_chain(evaluated, reason).await,
+                Ok(true)
+            )
         {
             self.runtime(&task.id)
                 .hub
@@ -374,6 +387,20 @@ impl App {
         sandbox: &SandboxId,
         rule: &Rule,
     ) -> AppResult<TaskRecord> {
+        let anchor = self.rule_named_anchor(sandbox, rule).await?;
+        self.ensure_chain_room(sandbox).await?;
+        Ok(anchor)
+    }
+
+    /// [`App::rule_anchor`] without the chain bound (a task changing its chain, SPEC-126).
+    ///
+    /// # Errors
+    /// `Invalid` for an unknown task number.
+    pub(crate) async fn rule_named_anchor(
+        &self,
+        sandbox: &SandboxId,
+        rule: &Rule,
+    ) -> AppResult<TaskRecord> {
         let mut anchor = None;
         for number in rule.numbers() {
             let task = self
@@ -388,7 +415,6 @@ impl App {
                 })?;
             anchor.get_or_insert(task);
         }
-        self.ensure_chain_room(sandbox).await?;
         anchor.ok_or_else(|| AppError::Invalid("the rule names no task".into()))
     }
 
@@ -406,9 +432,9 @@ impl App {
         {
             if let Ok(Some(chain)) = self.deps.store.chain(&task.id).await
                 && chain.blocked_reason.is_none()
-                && let Some(text) = chain.rule.as_deref()
+                && chain.rule.is_some()
             {
-                self.evaluate_rule(&task, text, &mut known).await;
+                self.evaluate_rule(&task, &chain, &mut known).await;
             }
         }
     }
@@ -416,15 +442,15 @@ impl App {
     async fn evaluate_rule(
         self: &Arc<Self>,
         task: &TaskRecord,
-        text: &str,
+        chain: &ChainRecord,
         known: &mut HashMap<u32, (Facts, Option<Timestamp>)>,
     ) {
-        let rule = match Rule::parse(text) {
+        let rule = match Rule::parse(chain.rule.as_deref().unwrap_or_default()) {
             Ok(rule) => rule,
             Err(err) => {
                 let reason =
                     format!("Its start rule is invalid ({err}). Start this task now or cancel it.");
-                self.block_chained(task, &reason).await;
+                self.block_chained(task, chain, &reason).await;
                 return;
             }
         };
@@ -437,17 +463,18 @@ impl App {
             ended: true,
             ..Facts::default()
         };
-        // Only tasks that existed when this task was created answer for its rule.
+        // Only tasks that existed when the rule was written (the task was created, or its start
+        // changed, SPEC-126 CHS-006) answer for it.
         let facts: HashMap<u32, Facts> = known
             .iter()
             .map(|(n, (facts, created))| {
-                let current = created.is_some_and(|at| at <= task.created_at);
+                let current = created.is_some_and(|at| at <= chain.created_at);
                 (*n, if current { *facts } else { ended })
             })
             .collect();
         match rule.eval(&|n| facts.get(&n).copied().unwrap_or(ended)) {
             Truth::True => {
-                if let Err(err) = self.release_chained(task).await {
+                if let Err(err) = self.release_chained(task, Some(chain)).await {
                     tracing::warn!(task = %task.id, error = %err, "task did not start on its rule");
                 }
             }
@@ -455,7 +482,7 @@ impl App {
                 let reason = format!(
                     "Its start rule `{rule}` can no longer become true. Start this task now or cancel it."
                 );
-                self.block_chained(task, &reason).await;
+                self.block_chained(task, chain, &reason).await;
             }
             Truth::Unknown => {}
         }
@@ -476,7 +503,7 @@ impl App {
         {
             if let Ok(Some(chain)) = store.chain(&task.id).await
                 && chain.blocked_reason.is_some()
-                && before.created_at <= task.created_at
+                && before.created_at <= chain.created_at
                 && chain
                     .rule
                     .as_deref()
@@ -507,7 +534,7 @@ impl App {
                 "the task is {}, not waiting in a chain or prepared",
                 task.status.as_str()
             )));
-        } else if !self.release_chained(&task).await? {
+        } else if !self.release_chained(&task, None).await? {
             return Err(AppError::Conflict("task state changed concurrently".into()));
         }
         let task = self
@@ -520,18 +547,27 @@ impl App {
     }
 
     /// Chained → queued (compare-and-set), then the normal start. `false` when it was no longer
-    /// waiting.
-    async fn release_chained(self: &Arc<Self>, task: &TaskRecord) -> AppResult<bool> {
+    /// waiting. A release decided on `evaluated` holds only while the task still waits on that
+    /// chain: a start changed after the evaluation read it wins (SPEC-126 CHS-005).
+    async fn release_chained(
+        self: &Arc<Self>,
+        task: &TaskRecord,
+        evaluated: Option<&ChainRecord>,
+    ) -> AppResult<bool> {
         let next = task
             .status
             .apply(TaskEvent::ChainReleased)
             .map_err(|_| AppError::Conflict(format!("task is {}", task.status.as_str())))?;
-        if !self
-            .deps
-            .store
-            .transition_task(&task.id, Some(TaskStatus::Chained), next, None, self.now())
-            .await?
-        {
+        let store = &self.deps.store;
+        let released = match evaluated {
+            Some(chain) => store.release_chain(chain, self.now()).await?,
+            None => {
+                store
+                    .transition_task(&task.id, Some(TaskStatus::Chained), next, None, self.now())
+                    .await?
+            }
+        };
+        if !released {
             return Ok(false);
         }
         self.deps.store.set_chain_blocked(&task.id, None).await?;
