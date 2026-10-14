@@ -341,3 +341,79 @@ async fn an_edit_is_announced_to_viewers() -> TestResult {
     assert!(events.try_recv().is_err());
     Ok(())
 }
+
+#[tokio::test]
+async fn personal_notes_are_each_persons_own() -> TestResult {
+    let h = harness()?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    // Bob can see no sandbox at all and still has his own notepad.
+    let bob = seed_github_user(&h, "u-bob", "bob").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+
+    let empty = call(&h.router, Method::GET, "/api/me/notes", None, &alice).await?;
+    assert_eq!(empty.status, StatusCode::OK, "{:?}", empty.body);
+    assert_eq!(empty.body["scope"], "me");
+    assert_eq!(empty.body["body"], "");
+    assert_eq!(empty.body["revision"], 0);
+
+    let saved = call(
+        &h.router,
+        Method::PUT,
+        "/api/me/notes",
+        Some(json!({"body": "grep instead of read?", "revision": 0})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(saved.status, StatusCode::OK, "{:?}", saved.body);
+    assert_eq!(saved.body["scope"], "me");
+    assert_eq!(saved.body["revision"], 1);
+    assert_eq!(saved.body["updated_by"], "alice");
+
+    // Another person reads only their own notepad and saving it leaves Alice's alone.
+    let other = call(&h.router, Method::GET, "/api/me/notes", None, &bob).await?;
+    assert_eq!(other.status, StatusCode::OK, "{:?}", other.body);
+    assert_eq!(other.body["body"], "");
+    assert_eq!(other.body["revision"], 0);
+    let bobs = call(
+        &h.router,
+        Method::PUT,
+        "/api/me/notes",
+        Some(json!({"body": "Bob's own", "revision": 0})),
+        &bob,
+    )
+    .await?;
+    assert_eq!(bobs.status, StatusCode::OK, "{:?}", bobs.body);
+    let read = call(&h.router, Method::GET, "/api/me/notes", None, &alice).await?;
+    assert_eq!(read.body["body"], "grep instead of read?");
+    assert_eq!(read.body["revision"], 1);
+
+    // Not the team's nor a sandbox's notepad.
+    let team = call(&h.router, Method::GET, "/api/notes", None, &alice).await?;
+    assert_eq!(team.body["revision"], 0);
+    let sandbox = call(&h.router, Method::GET, "/api/sandboxes/s1/notes", None, &alice).await?;
+    assert_eq!(sandbox.body["revision"], 0);
+
+    // The same compare-and-set as the shared notepads.
+    let stale = call(
+        &h.router,
+        Method::PUT,
+        "/api/me/notes",
+        Some(json!({"body": "late", "revision": 0})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(stale.status, StatusCode::CONFLICT, "{:?}", stale.body);
+
+    // Signed out: no notes.
+    let anonymous = call(
+        &h.router,
+        Method::GET,
+        "/api/me/notes",
+        None,
+        &support::Creds::default(),
+    )
+    .await?;
+    assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
+    Ok(())
+}
