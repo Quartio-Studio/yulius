@@ -13,10 +13,17 @@
 //! waits for Yulius (checks, a merge, a message) and builds nothing (SPEC-050 DSK-102), so its
 //! caches may go under disk pressure. Such shells are counted apart ([`ShellCount::waits`]): the
 //! agent goes on by itself when Yulius has news, so its task is not the person's turn (SPEC-085
-//! STT-002). The probe reads the process table once: on Linux it walks
-//! `/proc/<pid>/task/<tid>/children` from the agent (falling back to a scan of `/proc`), elsewhere
-//! it runs `ps` with a timeout. Every read is bounded ([`MAX_PROCESSES`], [`MAX_DEPTH`],
-//! [`MAX_CMDLINE_BYTES`], [`PS_TIMEOUT`]); `None` means the table could not be read.
+//! STT-002).
+//!
+//! In the sandbox the probe's root is `bwrap`, and the agent runs in a PID namespace whose init
+//! adopts orphans. A foreground command's backgrounded subshell (`(server &)`) keeps the wrapper's
+//! command line and outlives it. Once adopted, it is no shell of the agent's: Claude Code does not
+//! track it and never wakes the agent for it. A wrapper shell whose parent is a namespace init
+//! ([`ProcessEntry::ns_init`]) is skipped with everything under it (SPEC-130 DMD-001; task #108
+//! read Working for good behind such a preview server). The probe reads the process table once:
+//! on Linux it walks `/proc/<pid>/task/<tid>/children` from the agent (falling back to a scan of
+//! `/proc`), elsewhere it runs `ps` with a timeout. Every read is bounded ([`MAX_PROCESSES`],
+//! [`MAX_DEPTH`], [`MAX_CMDLINE_BYTES`], [`PS_TIMEOUT`]); `None` means the table could not be read.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Duration;
@@ -47,6 +54,9 @@ pub struct ProcessEntry {
     pub shell: bool,
     /// The process is `yulius wait` ([`is_yulius_wait`]).
     pub waits: bool,
+    /// The process is the init of a PID namespace (the sandbox's `bwrap`): it adopts the orphans
+    /// of the processes in that namespace.
+    pub ns_init: bool,
 }
 
 /// Whether a command line (raw `/proc` bytes or `ps` text) is a Claude Code Bash tool shell.
@@ -71,6 +81,18 @@ pub fn is_yulius_wait(command_line: &[u8]) -> bool {
     name == b"yulius" && args.next() == Some(b"wait".as_slice())
 }
 
+/// Whether a `/proc/<pid>/status` text describes the init of a PID namespace: the last pid of its
+/// `NSpid` line (the pid in the innermost namespace) is 1. Without that line (an old kernel, an
+/// unreadable status) it is not one.
+#[must_use]
+pub fn is_ns_init(status: &str) -> bool {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("NSpid:"))
+        .and_then(|pids| pids.split_whitespace().next_back())
+        == Some("1")
+}
+
 /// What one probe found below an agent.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ShellCount {
@@ -83,7 +105,8 @@ pub struct ShellCount {
 
 /// Counts the background shells below `root` in `table` (the root itself never counts): wrapper
 /// shells with no wrapper shell above them, at most [`MAX_PROCESSES`] processes and
-/// [`MAX_DEPTH`] levels deep. A shell whose only processes are `yulius wait` does not count.
+/// [`MAX_DEPTH`] levels deep. A shell whose only processes are `yulius wait` does not count, nor
+/// an orphan a namespace init adopted, nor anything under it.
 #[must_use]
 pub fn count_shells(table: &[ProcessEntry], root: u32) -> u32 {
     count_background(table, root).shells
@@ -93,9 +116,13 @@ pub fn count_shells(table: &[ProcessEntry], root: u32) -> u32 {
 #[must_use]
 pub fn count_background(table: &[ProcessEntry], root: u32) -> ShellCount {
     let mut children: HashMap<u32, Vec<&ProcessEntry>> = HashMap::new();
+    let mut inits = HashSet::new();
     for entry in table {
         if entry.pid != entry.ppid {
             children.entry(entry.ppid).or_default().push(entry);
+        }
+        if entry.ns_init {
+            inits.insert(entry.pid);
         }
     }
     // Per counted shell: whether a `yulius wait` and whether anything else runs below it.
@@ -120,6 +147,8 @@ pub fn count_background(table: &[ProcessEntry], root: u32) -> ShellCount {
                     }
                     Some(top)
                 }
+                // An orphan the sandbox's init adopted: not the agent's (DMD-001).
+                None if child.shell && inits.contains(&pid) => continue,
                 None if child.shell => {
                     shells.insert(child.pid, (false, false));
                     Some(child.pid)
@@ -163,8 +192,21 @@ mod imp {
     use std::io::Read;
 
     use super::{
-        MAX_CMDLINE_BYTES, MAX_DEPTH, MAX_PROCESSES, ProcessEntry, is_agent_shell, is_yulius_wait,
+        MAX_CMDLINE_BYTES, MAX_DEPTH, MAX_PROCESSES, ProcessEntry, is_agent_shell, is_ns_init,
+        is_yulius_wait,
     };
+
+    /// Bytes of a `/proc/<pid>/status` read (a few KiB in practice).
+    const MAX_STATUS_BYTES: u64 = 64 * 1024;
+
+    /// Whether `pid` is the init of a PID namespace, from its `/proc` status ([`is_ns_init`]).
+    pub(super) fn ns_init(pid: u32) -> bool {
+        let mut text = String::new();
+        if let Ok(file) = std::fs::File::open(format!("/proc/{pid}/status")) {
+            let _ = file.take(MAX_STATUS_BYTES).read_to_string(&mut text);
+        }
+        is_ns_init(&text)
+    }
 
     fn command_line(pid: u32) -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -224,11 +266,14 @@ mod imp {
                     continue;
                 }
                 let line = command_line(kid);
+                let shell = is_agent_shell(&line);
                 table.push(ProcessEntry {
                     pid: kid,
                     ppid: pid,
-                    shell: is_agent_shell(&line),
+                    shell,
                     waits: is_yulius_wait(&line),
+                    // A wrapper shell is never a namespace's init: its status is not read.
+                    ns_init: !shell && ns_init(kid),
                 });
                 queue.push_back((kid, depth + 1));
             }
@@ -269,6 +314,7 @@ mod imp {
                         ppid,
                         shell,
                         waits,
+                        ns_init: !shell && ns_init(pid),
                     });
                 }
             }
@@ -311,6 +357,7 @@ mod imp {
                     ppid: ppid.parse().ok()?,
                     shell: is_agent_shell(command.as_bytes()),
                     waits: is_yulius_wait(command.as_bytes()),
+                    ns_init: false,
                 })
             })
             .collect()
@@ -365,6 +412,15 @@ mod tests {
             ppid,
             shell,
             waits: false,
+            ns_init: false,
+        }
+    }
+
+    /// The init of a PID namespace (the sandbox's inner `bwrap`).
+    fn ns_init(pid: u32, ppid: u32) -> ProcessEntry {
+        ProcessEntry {
+            ns_init: true,
+            ..entry(pid, ppid, false)
         }
     }
 
@@ -374,6 +430,7 @@ mod tests {
             ppid,
             shell: false,
             waits: true,
+            ns_init: false,
         }
     }
 
@@ -451,6 +508,67 @@ mod tests {
         assert_eq!(count_shells(&table, 11), 1);
         // A self-parented entry (a racy read) does not loop.
         assert_eq!(count_shells(&[entry(5, 5, true), entry(6, 5, true)], 5), 1);
+    }
+
+    /// #473 (task #108 on 2026-10-14: Done, read Working for 10 minutes until it was closed): in
+    /// the sandbox the probe's root is `bwrap`. A foreground command's backgrounded subshell
+    /// (`(cd web && python3 -m http.server 20100 &)`) keeps the wrapper's command line and outlives
+    /// it; the namespace's init adopts it. It is no shell of the agent's: neither it nor anything
+    /// under it counts, while the agent's own shells still do.
+    #[test]
+    fn an_orphan_the_sandbox_adopted_is_no_background_shell() {
+        let table = vec![
+            ns_init(11, 10),      // the sandbox's init, below the probe's root (the outer bwrap)
+            entry(12, 11, false), // the agent
+            entry(13, 12, true),  // its background shell (Claude Code's scrub-exec wrapper)
+            entry(14, 13, true),  // the wrapper's bash: inside the counted one
+            entry(20, 11, true),  // the orphaned subshell, adopted by the init
+            entry(21, 20, false), // the server it started
+            entry(22, 20, true),  // a subshell of the orphan
+            entry(23, 11, true),  // an orphaned shell running `yulius wait`
+            wait(24, 23),
+        ];
+        assert_eq!(
+            count_background(&table, 10),
+            ShellCount {
+                shells: 1,
+                waits: 0
+            }
+        );
+        assert_eq!(count_shells(&table[..4], 10), 1, "the agent's shell alone");
+        assert_eq!(count_shells(&table[..2], 10), 0, "nothing running");
+        // Unsandboxed, the root is the agent and its shells are its children.
+        assert_eq!(count_shells(&[entry(31, 30, true)], 30), 1);
+    }
+
+    /// DMD-001: the namespace init is read from the innermost `NSpid` pid.
+    #[test]
+    fn a_namespace_init_is_read_from_its_status() {
+        let status = |nspid: &str| format!("Name:\tbwrap\nTgid:\t4242\n{nspid}\nPPid:\t4241\n");
+        assert!(is_ns_init(&status("NSpid:\t4242\t1")), "the sandbox's init");
+        assert!(is_ns_init(&status("NSpid:\t1")), "the host's init");
+        assert!(
+            !is_ns_init(&status("NSpid:\t4243\t2")),
+            "the agent in the sandbox"
+        );
+        assert!(!is_ns_init(&status("NSpid:\t4243")), "a host process");
+        assert!(
+            !is_ns_init(&status("NSpid:\t11\t4")),
+            "pid 11 on the host is not pid 1"
+        );
+        assert!(!is_ns_init(""), "no status");
+        assert!(!is_ns_init("Name:\tx\nPid:\t1\n"), "no NSpid line");
+    }
+
+    /// DMD-001 on a real `/proc`: pid 1 of this namespace is its init, this process is not.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_namespace_init_is_found_in_proc() {
+        assert!(!imp::ns_init(std::process::id()), "the test process");
+        // Pid 1's status may be hidden (`hidepid`); when it is readable, it is the init.
+        if std::fs::read_to_string("/proc/1/status").is_ok_and(|s| s.contains("NSpid:")) {
+            assert!(imp::ns_init(1), "this namespace's init");
+        }
     }
 
     #[test]

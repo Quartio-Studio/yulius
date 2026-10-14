@@ -673,6 +673,13 @@ is counted from three sources:
 - background agents, from the turn record;
 - Monitor streams and agents launched in the turn that ends, from the transcript.
 
+The probe counts only the agent's own shells. In the sandbox, an orphaned subshell that the PID
+namespace's init adopted is not one, even though it still carries Claude Code's wrapper command
+line (a server started as `(server &)`)
+([SPEC-130](../.ai/specs/SPEC-130-458-got-achieved-but-wasn-t-marked-as-do.md)). An idle agent
+that waits in `yulius wait` goes on by itself. Its task reads Working ("Waiting for checks or
+merge"), even with a complete plan and a tested pull request; only an achieved goal makes it Done.
+
 While a goal is open, a clean Stop reads idle only after the goal verdict (or the turn record, or
 20 s). A proactive switch waits for any of this background work
 ([ADR-0063](decisions/0063-background-work-and-goal-verdict-from-the-transcript.md)):
