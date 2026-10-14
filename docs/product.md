@@ -33,8 +33,8 @@ watching, steering and unblocking.
   pull request, no Yulius CI). It is its maker's and the superadmin's. Connecting GitHub is
   optional and can wait (SPEC-099).
 - **Superagent** (formerly the Agent, and before that the Cockpit): every user's own plain Claude
-  Code session per sandbox, in the right tool panel beside any page (top-bar Superagent button,
-  first in the tools rail), for quick work
+  Code session per sandbox, in the right tool panel beside any page (first in the tools rail, under
+  the tools toggle; the top bar has no button of its own since SPEC-132), for quick work
   such as setting up automations or asking a quick question; anything more complex, such as
   writing code, belongs in a task, and its panel says so. `/clear` starts over, it cannot be
   deleted and comes back with its conversation. It manages the project for its owner: asked to

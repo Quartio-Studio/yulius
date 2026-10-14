@@ -84,8 +84,8 @@ export function createPanelHost(ctx) {
     body);
   let maximized = false;
   let railVisible = Boolean(readJson(RAIL_KEY, false));
-  // The rail shown only for a panel opened without it (the top-bar Agent button): it goes again
-  // when that panel closes, and the remembered choice stays (SPEC-035 review).
+  // The rail shown only for a panel opened without it (a Superagent link, a sandbox's tool coming
+  // back): it goes again when that panel closes, and the remembered choice stays (SPEC-035 review).
   let railForPanel = false;
 
   /** Shows or hides the whole rail (and closes the panel when hiding). */
@@ -220,7 +220,6 @@ export function createPanelHost(ctx) {
     }
     if (view.resume) view.resume();
     if (view.show) view.show(opts);
-    ctx.onPanelChange && ctx.onPanelChange(k);
   }
 
   function close() {
@@ -235,7 +234,6 @@ export function createPanelHost(ctx) {
       button.setAttribute('aria-pressed', 'false');
     }
     for (const view of views.values()) if (view.hide) view.hide();
-    ctx.onPanelChange && ctx.onPanelChange(null);
     if (railForPanel) {
       railForPanel = false;
       setRailVisible(false, { persist: false });
@@ -344,7 +342,7 @@ export function createPanelHost(ctx) {
         if (!panel.hidden) close();
       } else if (sandboxChanged && toolOf.has(sandbox.id)) {
         // Back in a sandbox: the tool it had open, or none (KST-005). A rail the person hid is shown
-        // for that tool only, as for the top-bar Superagent.
+        // for that tool only, as for a Superagent link.
         const tool = toolOf.get(sandbox.id);
         if (tool) show(tool, { context: true, persistRail: false });
         else if (!panel.hidden) close();
