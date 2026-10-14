@@ -467,6 +467,13 @@ const GOAL_SUBMIT_WAITS: [Duration; 5] = [
     Duration::from_secs(20),
     Duration::from_secs(30),
 ];
+/// How long a goal given as the launch prompt may take to be recorded once the session reads
+/// input: as long as all the submit waits of a typed goal (SPEC-117 ONE-001).
+pub(crate) fn launch_goal_bound_ms() -> u64 {
+    let bound: Duration = GOAL_SUBMIT_WAITS.iter().sum();
+    u64::try_from(bound.as_millis()).unwrap_or(75_000)
+}
+
 /// The attempt (index into [`GOAL_SUBMIT_WAITS`]) that types the whole line again.
 const GOAL_RETYPE_ATTEMPT: usize = 2;
 /// What Claude Code's folder-trust dialog shows: 2.1.x ("Quick safety check"), then older
@@ -1618,8 +1625,9 @@ impl App {
     /// shown before it reads input is said in the terminal, and one still unanswered after
     /// [`crate::context::AppConfig::trust_answer_ms`] flags the task (ONE-005, SPEC-106 OTR-002);
     /// Claude Code runs the goal once it is answered. Once it reads input, Claude Code has to
-    /// record the goal within [`GOAL_SUBMIT_WAITS`] (time while a hold keeps the prompt does not
-    /// count), else the task is flagged as for a typed goal never taken (TSK-010).
+    /// record the goal within [`crate::context::AppConfig::launch_goal_ms`] (time while a hold for
+    /// capacity or an update keeps the prompt does not count), else the task is flagged as for a
+    /// typed goal never taken (TSK-010).
     fn spawn_goal_watch(self: &Arc<Self>, task_id: &TaskId, attempt_id: &AttemptId) {
         let app = Arc::clone(self);
         let (task_id, attempt_id) = (task_id.clone(), attempt_id.clone());
@@ -1641,7 +1649,7 @@ impl App {
                 }
             }
             let runtime = app.runtime(&task_id);
-            let bound: Duration = GOAL_SUBMIT_WAITS.iter().sum();
+            let bound = Duration::from_millis(app.config.launch_goal_ms);
             let step = Duration::from_millis(200);
             let mut waited = Duration::ZERO;
             while waited < bound {
@@ -1652,7 +1660,9 @@ impl App {
                 }
                 tokio::time::sleep(step).await;
                 // A prompt held for capacity or an update is not refused: it waits.
-                if !matches!(app.deps.store.open_pause(&task_id).await, Ok(Some(_))) {
+                let held = app.held_for_update(&task_id)
+                    || matches!(app.deps.store.open_pause(&task_id).await, Ok(Some(_)));
+                if !held {
                     waited += step;
                 }
             }
@@ -2999,13 +3009,15 @@ impl App {
                         self.opening_never_sent(&attempt.task_id).await;
                     }
                 } else if opening_pending(&attempt.run_dir)
+                    && matches!(store.open_pause(&attempt.task_id).await, Ok(None))
                     && matches!(
                         store.task(&attempt.task_id).await,
                         Ok(Some(task)) if task.mode == TaskMode::Goal
                     )
                 {
                     // A goal run an older server started typed its first message before the goal,
-                    // which this version never types after it (ADR-0095): a person sets it.
+                    // which this version never types after it (ADR-0095): a person sets it. One
+                    // held for capacity starts afresh with its launch goal when capacity returns.
                     self.goal_not_taken(
                         &attempt.task_id,
                         "Yulius restarted before it set this task's goal",

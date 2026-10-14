@@ -549,7 +549,7 @@ fn an_agent_session_is_told_its_budget_in_the_repositorys_terms() -> TestResult 
 /// prompt of its session, not typed into it. This agent runs no hooks (an old CLI); it answers
 /// the prompt argument with its echo.
 #[test]
-fn goal_mode_types_the_goal_once_the_session_is_ready() -> TestResult {
+fn goal_mode_launches_the_session_with_its_goal() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
     let data = dir.path().canonicalize()?;

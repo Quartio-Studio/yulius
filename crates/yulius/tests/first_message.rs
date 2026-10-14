@@ -461,6 +461,49 @@ fn trust_words_after_the_session_started_are_no_trust_prompt() -> TestResult {
     Ok(())
 }
 
+/// SPEC-117 ONE-001, TSK-010: a `/goal` launch prompt that Claude Code never takes (no goal
+/// recorded within `launch_goal_ms` once the session reads input) flags the task and says so, as
+/// a typed goal that was never taken does.
+#[test]
+fn a_launch_goal_never_taken_flags_the_task() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            ignores_goal_prompt: true,
+            ..hooked()
+        };
+        let (app, _) = start_with(&data, &fake, agent, 0, probe, |config| {
+            // 75 s in production (the typed goal's submit waits): shortened (SPEC-082 TST-001).
+            config.launch_goal_ms = 3_000;
+        })
+        .await?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = new_task(&app, &sandbox, &user, "Tidy the parser", TaskMode::Goal).await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        wait_for("the flag", Duration::from_secs(45), || async {
+            activity(&app, &id).await == Some(Activity::NeedsAttention)
+        })
+        .await?;
+        let said = notices(&mut watch);
+        assert!(
+            said.iter()
+                .any(|n| n.contains("Claude Code did not take the task's goal")),
+            "{said:?}"
+        );
+        assert!(
+            !screen(&app, &id).contains("/goal"),
+            "{}",
+            screen(&app, &id)
+        );
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-117 ONE-006, AC-ONE-3: keys a person types while Yulius types a prompt task's first
 /// message with an image are not written into it, and the person is told to type once it is sent;
 /// after it, typing reaches the session again. Without a SessionStart hook the session reads input
@@ -751,8 +794,10 @@ fn a_goal_run_of_an_older_server_held_across_the_update_is_flagged() -> TestResu
         let (app, port) = start(&data, &fake, unjudged(), 0, probe).await?;
         let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
         let id = new_task(&app, &sandbox, &user, "Make it blue", TaskMode::Goal).await?;
-        wait_for("the goal", Duration::from_secs(60), || async {
+        // The goal turn ended (its Stop clears a pending first message, so it comes first).
+        wait_for("the goal turn's end", Duration::from_secs(60), || async {
             screen(&app, &id).contains("GOAL SET")
+                && !matches!(activity(&app, &id).await, Some(Activity::Working) | None)
         })
         .await?;
         // What the older server left in the run directory: a first message submitted, held.

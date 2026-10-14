@@ -53,7 +53,7 @@ session, so nothing a person types is mixed into it.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| ONE-001 | A fresh goal-mode session starts with `/goal <condition>` as Claude Code's prompt argument: one message, nothing typed. No first message with the attached files comes before it, and no `/goal` is typed after it. The request file is written before the launch. Claude Code's record of the goal confirms it: none within the goal's submit waits (75 s once the session reads input, time held for capacity or an update not counted) flags the task, "Claude Code did not take the task's goal" (TSK-010). | `task_done.rs` `a_goal_task_starts_from_its_request_file`, `a_launch_goal_never_taken_flags_the_task`; `supervision.rs` AC-TSK-9 |
+| ONE-001 | A fresh goal-mode session starts with `/goal <condition>` as Claude Code's prompt argument: one message, nothing typed. No first message with the attached files comes before it, and no `/goal` is typed after it. The request file is written before the launch. Claude Code's record of the goal confirms it: none within `launch_goal_ms` (75 s, the typed goal's submit waits, once the session reads input; time held for capacity or an update not counted) flags the task, "Claude Code did not take the task's goal" (TSK-010). | `task_done.rs` `a_goal_task_starts_from_its_request_file`; `first_message.rs` `a_launch_goal_never_taken_flags_the_task`; `supervision.rs` AC-TSK-9 |
 | ONE-002 | The goal condition of a task with attached files names them after the request file: `Everything requested in <file> is done. Attached files (open each with the Read tool; it shows images): <path>, <path>. <definition of done>`. Paths are one line each; no `@` mention. When the list would pass the cap the condition names the request file only (it lists them). The cap is 2000 characters (Claude Code 2.1.292 accepts 4000). A request without attached files keeps its condition. | `request.rs` unit tests |
 | ONE-003 | A goal-mode run whose launch prompt is itself a `/goal` command never gets a `/goal` typed after it: also a resumed session whose held first prompt was that `/goal` (SPEC-068 hold, continued elsewhere). | `supervisor.rs` unit test `only_a_goal_launch_prompt_sets_the_goal`; `task_done.rs` (fresh launch) |
 | ONE-004 | When the task's request file cannot be written, the session starts with no prompt and the task is flagged with the existing notice ("The task has no goal yet: type `/goal` …"), as before. A goal run an older server started, whose typed first message a hold kept across the restart into this version, is flagged too ("Yulius restarted before it set this task's goal"): no goal follows that message any more. | by inspection (request file); `first_message.rs` `a_goal_run_of_an_older_server_held_across_the_update_is_flagged` |
@@ -119,6 +119,20 @@ session, so nothing a person types is mixed into it.
 - **Prompt mode keeps typing images and blocks keystrokes meanwhile.** Prompt mode still has no
   other way to attach an image natively (SPEC-030). Refused keystrokes with a notice beat queued
   ones: replayed keys could include Esc or Ctrl+C, which would interrupt the turn they land in.
+- **Review round 1** (fresh session) requested changes. A launch goal Claude Code never records
+  went unflagged; it is now watched like a typed goal (`launch_goal_ms`). Three tests of the
+  typed-goal retry and the early SessionStart passed without typing anything; they now run on a
+  continued session. Minor fixes: older specs amended, the trust dialog in front of a typed first
+  message tested, a goal run an older server left held across the update flagged at reconcile,
+  attached paths kept as they are.
+- **Review round 2** requested changes. The new launch-goal test took 80 s; the bound is now
+  `AppConfig::launch_goal_ms` (75 s by default, 3 s in the test). Time a hook is held for an
+  update no longer counts toward it, as capacity pauses already did. The reconcile flag waits while
+  capacity holds the old first message: when capacity returns, a fresh session starts with its
+  launch goal. The update-hold part has no test: the fake agent records its goal before its submit
+  hook, so a held launch goal cannot be staged without reordering every goal test. It mirrors the
+  tested capacity-pause path. A race on `typing_opening` was judged unreachable: a new run starts
+  only after the old one is gone.
 - **Resumed sessions keep the typed goal.** They open with a continuation prompt (gate reasons,
   "Continue …"), which a `/goal` prompt would replace. Changing that is not part of creating a task.
 
