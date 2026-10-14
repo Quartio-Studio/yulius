@@ -312,6 +312,7 @@
   --control-xl: 40px;  /* prominent (New task, user, sign-in) and every control on touch screens */
 
   /* Radii by role (circles may use 50%). */
+  --radius-xs: 4px;      /* text marks: drawn selections and a teammate's name tag (SPEC-112) */
   --radius-sm: 6px;      /* small: kbd, tiny tiles, menu items, nav and list rows */
   --radius: 8px;         /* controls: buttons, inputs, segments, banners, inline boxes */
   --radius-lg: 12px;     /* containers: cards, tables, menus, popovers, toasts, modals, tiles */

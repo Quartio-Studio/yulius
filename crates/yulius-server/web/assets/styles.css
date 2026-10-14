@@ -2048,8 +2048,8 @@ a.dl-task:hover { text-decoration: underline; }
 /* Tabs in any order (SPEC-112): the dragged tab rides above, the others slide aside, it settles. */
 .notes-tabs.reordering { cursor: grabbing; user-select: none; }
 .notes-tabs.reordering .term-tab { transition: transform var(--duration-fast) var(--ease); }
-.notes-tabs .term-tab.dragging { position: relative; z-index: 1; transition: none; background: var(--surface-2); box-shadow: var(--shadow); cursor: grabbing; }
-.notes-tabs .term-tab.settling { position: relative; z-index: 1; transition: transform var(--duration-fast) var(--ease); }
+.notes-tabs .term-tab.dragging { position: relative; z-index: var(--z-raised); transition: none; background: var(--surface-2); box-shadow: var(--shadow); cursor: grabbing; }
+.notes-tabs .term-tab.settling { position: relative; z-index: var(--z-raised); transition: transform var(--duration-fast) var(--ease); }
 .notes-panes { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--term-bg); }
 .notes-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .notes-pane[hidden] { display: none; }
@@ -2067,7 +2067,7 @@ a.dl-task:hover { text-decoration: underline; }
 .tl-content { position: absolute; inset: 0; }
 .tl-mirror { position: absolute; top: 0; left: 0; visibility: hidden; box-sizing: content-box; border: 0; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; }
 .tl-group { --tl-colour: var(--accent); }
-.tl-shape { position: absolute; top: 0; left: 0; border-radius: 4px; background: color-mix(in srgb, var(--tl-colour) 35%, transparent);
+.tl-shape { position: absolute; top: 0; left: 0; border-radius: var(--radius-xs); background: color-mix(in srgb, var(--tl-colour) 35%, transparent);
   transition: transform var(--duration-fast) var(--ease), width var(--duration-fast) var(--ease), height var(--duration-fast) var(--ease), opacity var(--duration-fast) var(--ease), background-color var(--duration-fast) var(--ease); }
 .tl-blurred .tl-shape { background: color-mix(in srgb, var(--tl-colour) 16%, transparent); }
 .tl-shape.tl-gone { opacity: 0; }
@@ -2076,12 +2076,12 @@ a.dl-task:hover { text-decoration: underline; }
    line), their selection in their colour; they glide like one's own and fade in and out. */
 .tl-peer { transition: opacity var(--duration-slow) var(--ease); }
 .tl-peer.tl-leaving { opacity: 0; }
-.tl-caret { position: absolute; top: 0; left: 0; width: 2px; border-radius: 1px; background: var(--tl-colour);
+.tl-caret { position: absolute; top: 0; left: 0; width: 2px; border-radius: 0; background: var(--tl-colour);
   transition: transform var(--duration-fast) var(--ease), height var(--duration-fast) var(--ease); }
 .tl-caret.tl-still { transition: none; }
-.tl-name { position: absolute; left: 0; bottom: 100%; max-width: 16ch; overflow: hidden; text-overflow: ellipsis; padding: 0 5px;
-  border-radius: 4px 4px 4px 0; background: var(--tl-colour); color: var(--peer-ink); font-size: var(--fs-xs); font-weight: 600; line-height: var(--lh-xs); white-space: nowrap; }
-.tl-caret.tl-below .tl-name { bottom: auto; top: 100%; border-radius: 0 4px 4px 4px; }
+.tl-name { position: absolute; left: 0; bottom: 100%; max-width: 16ch; overflow: hidden; text-overflow: ellipsis; padding: 0 4px;
+  border-radius: var(--radius-xs) var(--radius-xs) var(--radius-xs) 0; background: var(--tl-colour); color: var(--peer-ink); font-size: var(--fs-xs); font-weight: 600; line-height: var(--lh-xs); white-space: nowrap; }
+.tl-caret.tl-below .tl-name { bottom: auto; top: 100%; border-radius: 0 var(--radius-xs) var(--radius-xs) var(--radius-xs); }
 .notes-text[readonly] { color: var(--text-2); }
 .notes-meta { flex: none; margin: 0; padding: 4px 16px; min-height: calc(var(--lh-sm) + 8px); border-top: 1px solid var(--border); color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .notes-readonly { flex: none; margin: 0; padding: 6px 16px; border-bottom: 1px solid var(--border); background: var(--surface-2); color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }

@@ -946,6 +946,12 @@ resolves to nothing, the run gets the server without that variable or token.
     stored) when the stored revision differs: someone saved meanwhile, so the client loads the
     note again. 422 over 256 KiB of UTF-8.
     Every stored edit publishes `note.updated`.
+  - `PUT /api/notes/presence` (anyone signed in) and `PUT /api/sandboxes/{sid}/notes/presence`
+    (read) `{"revision","selection":{"anchor","head"}|null,"hello"?}` → 204 (SPEC-112): the
+    caller's selection in UTF-16 offsets of the text at `revision`, or `null` when they left;
+    `hello` asks the others to answer with theirs. Relayed as `note.presence`, stored nowhere.
+    422 for unknown fields or an offset over 1 Mi, 404 without read access, 429 past 20 updates a
+    second per person and notepad. There is no presence for the personal notepad.
 
 ## Administration, analytics, status
 
@@ -1195,7 +1201,9 @@ after an unlock.
 found or moved; clients refetch `GET /api/update`),
 `{"type":"note.updated","scope":"team|sandbox|me","sandbox_id","revision","updated_by"}` (a
 notepad was saved; a sandbox note's event reaches only that sandbox's viewers, a personal note's
-only its owner), `{"type":"pulls.updated","sandbox_id"}` (the sandbox's pull requests may have
+only its owner), `{"type":"note.presence","scope":"team|sandbox","sandbox_id","user_id","name",
+"revision","selection":{"anchor","head"}|null,"hello"}` (someone's selection in a shared notepad, to
+the people who may read it; SPEC-112), `{"type":"pulls.updated","sandbox_id"}` (the sandbox's pull requests may have
 changed: a delivery stage moved or a Yulius CI run was queued, started or ended; clients watching
 it read `GET /api/sandboxes/{sid}/git` again; SPEC-108), `{"type":"resync"}`.
 

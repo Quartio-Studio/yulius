@@ -47,7 +47,7 @@ The Notes panel feels like a shared document:
 | --- | --- | --- |
 | NOT-015 | Tab order: the Notes tabs can be reordered by dragging one along the strip (the others make room as it passes, the tab settles into its place), by Alt+← / Alt+→ on a focused tab, and by "Move left" / "Move right" in the tab's context menu. The order is remembered per browser (`yulius.notesOrder`) and comes back after a reload and in every sandbox. Without a stored order it is Team, This sandbox, Me; a stored order that is not a permutation of the three is ignored. | e2e `notes.e2e.ts` (drag, keyboard, menu, reload, default) |
 | NOT-016 | First tab: a person with no remembered tab opens Team (the first tab of the default order). A remembered tab (NOT-001) still wins. | e2e `notes.e2e.ts` |
-| NOT-017 | Smooth selection: in an editable or read-only notepad, the person's selection is drawn behind the text as one rounded shape per line (radius 4 px, the accent colour, softer when the box is not focused) and animates (about 120 ms, eased) as it grows, shrinks or moves; scrolling and resizing keep it on the text. The native selection is not painted. Under `prefers-reduced-motion: reduce` it changes without animation. A caret alone draws nothing (the native caret stays). | e2e `notes.e2e.ts` (shapes follow a selection, rounded, follow a scroll; reduced motion) |
+| NOT-017 | Smooth selection: in an editable or read-only notepad, the person's selection is drawn behind the text as one rounded shape per line (radius 4 px, the accent colour, softer when the box is not focused) and animates (about 120 ms, eased) as it grows, shrinks or moves; scrolling and resizing keep it on the text. The native selection is not painted. Under `prefers-reduced-motion: reduce` it changes without animation. A caret alone draws nothing (the native caret stays). | e2e `notes.e2e.ts` (shapes follow a selection, rounded, transition on `transform`, follow a scroll); reduced motion is the global `prefers-reduced-motion` rule of `styles.css` (WCAG 2.3.3), which collapses every transition |
 | NOT-018 | Presence API: `PUT /api/notes/presence` and `PUT /api/sandboxes/{sid}/notes/presence` take `{revision, selection: {anchor, head} \| null, hello?: bool}` (unknown fields refused): the caller's selection in UTF-16 offsets of the text at `revision`, or `null` when they left. Each is relayed as `note.presence {scope, sandbox_id, user_id, name, revision, selection, hello}` to the people who may read that notepad (team: everyone signed in; sandbox: its viewers) and stored nowhere; it answers 204. A sandbox note's presence needs read access (else 404); offsets above 1 Mi are refused (422). There is no presence for "Me". | Rust `notes::presence_is_relayed_to_readers` |
 | NOT-019 | Presence is bounded: at most 20 presence updates per second per person and notepad (more answer 429 and are not relayed), and the server keeps at most 4096 such counters. | Rust `notes::presence_is_rate_limited` |
 | NOT-020 | Teammates in a notepad: while a person has the Team or a sandbox notepad shown, the browser sends their selection (at most one update per 100 ms, the last one always sent), again every 15 s, `hello` when the notepad is shown (others answer with theirs at once), and `null` when it is hidden, another tab is chosen or the page goes away. Others' updates are shown as a caret in a colour of their own (picked from 8 by their user id) with a name tag (GitHub login, else display name) and their selection in that colour, translucent and rounded, both gliding like NOT-017. Positions are mapped through the unsaved typing on both sides; an update for another revision hides that person until the revisions meet again; a person not heard of for 45 s, or who sent `null`, fades out. The person's own updates (any tab) are not drawn. | e2e `notes.e2e.ts` (a teammate's caret, name and selection appear, move, map over local typing, hide on another revision, leave; own echo ignored; hello answered) |
@@ -97,9 +97,9 @@ content is offset by the text box's scroll. `selectionchange`, `input`, `scroll`
 is transparent. The same layer draws peers (`setPeers`), each a selection group in its colour and
 a caret with a name tag above it (below it on the first line).
 
-**Positions across unsaved typing.** `textdiff.js`: `edit(a, b)` is the common prefix and suffix
-of two texts; `mapPosition(pos, a, b)` maps an offset in `a` to `b` (before the edit: same; after:
-shifted; inside: the edit's start). A sender maps its selection from its text box to the saved
+**Positions across unsaved typing.** `textlayer.js` also exports `textEdit(a, b)`, the common
+prefix and suffix of two texts, and `mapPosition(pos, edit)`, which maps an offset in `a` to `b`
+(before the edit: same; after: shifted; inside: the edit's start). A sender maps its selection from its text box to the saved
 text at `base` and sends that revision; a receiver whose `base` equals it maps the offsets from
 the saved text into its own text box. Another revision hides that person until both sides reload.
 
@@ -137,12 +137,12 @@ sequenceDiagram
   read access answers 404; unknown fields 422; large offsets 422; signed out 401; the 21st update
   within a second answers 429 and is not relayed, and one after the window passes is.
 - e2e `notes.e2e.ts`: the default order and first tab; drag, Alt+arrows and the menu reorder and
-  persist; a selection draws rounded shapes that follow a new selection and a scroll, none under
-  reduced motion animate; a teammate's presence (mock) shows a caret with their name and a
+  persist; a selection draws rounded shapes that follow a new selection and a scroll; a teammate's presence (mock) shows a caret with their name and a
   selection, moves, maps over the person's own unsaved typing, hides on another revision, goes
   away on `null` and after 45 s (clock), the person's own echo draws nothing, a `hello` is
   answered; the browser sends its own selection (mock records it); axe with a teammate shown.
-- Unit (in the page): `mapPosition` and the order parser.
+- The order parser and `mapPosition` are covered through the e2e flows above (a stored order of
+  the wrong shape; a teammate's offsets over the person's unsaved typing).
 - Not covered: two real browsers against a real server (the WebSocket relay is covered in Rust,
   the drawing in the mock); pixel-exact alignment in every browser (Chromium only).
 

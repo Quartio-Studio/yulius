@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- Notes feel like a shared document (SPEC-112, ADR-0091, task #97). The Notes tabs go in any
+  order: drag one along the strip, press Alt+← / Alt+→ on it, or use its context menu; the order
+  is kept per browser, and until someone moves them Team comes first and opens first. A selection
+  in a notepad is drawn by Yulius, one rounded shape per line gliding from one selection to the
+  next. Teammates who have the Team or a sandbox notepad open show up in it, each in a colour of
+  their own, with their caret, their name and their selection, moving as they move and fading
+  out when they leave. The server relays where people are (`PUT …/notes/presence`,
+  `note.presence`) to the notepad's readers, stores nothing and takes at most 20 updates a
+  second per person and notepad.
 - Token use, its API-price cost and a chart for every figure (SPEC-110, ADR-0089, task #95). The
   Capacity card (Subscriptions page and the Dashboard) adds "Tokens (7 days)" and "API cost (7
   days)": what the pool used and what it would have cost at Claude API list prices (input, output,
