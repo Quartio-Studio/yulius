@@ -125,10 +125,17 @@ pub fn ensure_claude_config(
 /// directory itself (a bare repository). `None` for a main checkout, a plain directory or files
 /// that do not read like that.
 fn main_repository(worktree: &Path) -> Option<std::path::PathBuf> {
-    let dot_git = read_small(&worktree.join(".git")).ok().flatten()?;
+    // Regular files only: a FIFO planted in their place would block the launch.
+    let small_file = |path: &Path| {
+        path.metadata()
+            .is_ok_and(|m| m.is_file())
+            .then(|| read_small(path).ok().flatten())
+            .flatten()
+    };
+    let dot_git = small_file(&worktree.join(".git"))?;
     let admin = dot_git.lines().next()?.strip_prefix("gitdir:")?.trim();
     let admin = worktree.join(admin);
-    let common = read_small(&admin.join("commondir")).ok().flatten()?;
+    let common = small_file(&admin.join("commondir"))?;
     let common = admin
         .join(common.lines().next()?.trim())
         .canonicalize()
@@ -311,7 +318,12 @@ mod tests {
         let repo = dir.path().join("repo");
         let worktree = dir.path().join("worktrees").join("task");
         let git = |args: &[&str]| -> TestResult {
+            // Inherited Git variables (a hook's `GIT_DIR`) would point elsewhere.
             let status = std::process::Command::new("git")
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .env_remove("GIT_COMMON_DIR")
                 .args([
                     "-c",
                     "user.name=t",

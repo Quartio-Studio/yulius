@@ -378,9 +378,6 @@ impl App {
         archive: bool,
     ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::Work).await?;
-        if archive {
-            self.ensure_archive_allowed(&task).await?;
-        }
         let done = task.status == TaskStatus::Running && self.task_is_done(&task).await;
         if archive && done {
             self.close_task_now(&task.id).await?;
@@ -388,6 +385,9 @@ impl App {
             return Err(AppError::Conflict(
                 "stop the task before archiving it".into(),
             ));
+        }
+        if archive {
+            self.ensure_archive_allowed(&task).await?;
         }
         let now = self.now();
         let update = TaskFieldUpdate {

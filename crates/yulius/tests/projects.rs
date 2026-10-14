@@ -675,6 +675,63 @@ async fn the_onboarding_task_is_not_archived_while_onboarding_blocks() -> TestRe
     Ok(())
 }
 
+/// SPEC-106 OTR-004, review: an onboarding task that has finished its work (the format check
+/// passes in its worktree) is archived as before, and the sandbox is ready.
+#[tokio::test]
+async fn a_finished_onboarding_task_is_archived_and_the_sandbox_is_ready() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice, sid, task) = preparing_with_a_stopped_task(&w).await?;
+    w.h.store
+        .insert_attempt(&AttemptRecord {
+            id: AttemptId::parse("a-prep")?,
+            task_id: task.clone(),
+            seq: 1,
+            harness: Harness::ClaudeCode,
+            account_id: None,
+            provider_session_id: None,
+            launch_kind: LaunchKind::New,
+            state: AttemptState::Exited,
+            run_dir: "/tmp/none".into(),
+            token_hash: "x".into(),
+            host_token: Sealed(vec![0]),
+            ptyhost_pid: None,
+            child_pid: None,
+            started_at: Timestamp(2),
+            ended_at: Some(Timestamp(3)),
+            exit_code: Some(0),
+            exit_reason: None,
+        })
+        .await?;
+    let worktree = w.scratch.path().join("prep-worktree");
+    for (path, contents) in scaffold("product") {
+        let target = worktree.join(path);
+        std::fs::create_dir_all(target.parent().ok_or("parent")?)?;
+        std::fs::write(target, contents)?;
+    }
+    w.h.store
+        .update_task(
+            &task,
+            &TaskFieldUpdate {
+                worktree_path: Some(worktree.to_string_lossy().into_owned()),
+                ..TaskFieldUpdate::default()
+            },
+            Timestamp(4),
+        )
+        .await?;
+    let archived = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/tasks/{task}/archive"),
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(archived.status, StatusCode::OK, "{:?}", archived.body);
+    assert_eq!(archived.body["archived"], true);
+    assert_eq!(onboarding_of(&w, &sid, &alice).await?, "ready");
+    Ok(())
+}
+
 /// SPEC-106 OTR-005 (#425): sandboxes stuck before the fix (studio) heal at server start: one
 /// left `preparing` without its task returns to `pending`, an archived onboarding task is listed
 /// again, and settled sandboxes are left alone.

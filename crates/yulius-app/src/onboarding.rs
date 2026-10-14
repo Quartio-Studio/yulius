@@ -544,12 +544,26 @@ impl App {
             None => None,
         };
         let Some(task) = task else {
-            if state == OnboardingState::Preparing {
-                self.set_onboarding_state(&record, OnboardingState::Pending, "system")
-                    .await?;
-                return Ok(OnboardingState::Pending.as_str().to_owned());
+            if state != OnboardingState::Preparing {
+                return Ok(record.onboarding_state);
             }
-            return Ok(record.onboarding_state);
+            // Under the lock skip and task creation take, read again: an admin's skip landing
+            // meanwhile is never written back to `pending`.
+            let _serial = self.onboarding_task_lock.lock().await;
+            let record = store.sandbox(sandbox).await?.ok_or(AppError::NotFound)?;
+            let task = match &record.onboarding_task_id {
+                Some(id) => store.task(id).await?,
+                None => None,
+            };
+            if task.is_some()
+                || OnboardingState::parse(&record.onboarding_state)
+                    != Some(OnboardingState::Preparing)
+            {
+                return Ok(record.onboarding_state);
+            }
+            self.set_onboarding_state(&record, OnboardingState::Pending, "system")
+                .await?;
+            return Ok(OnboardingState::Pending.as_str().to_owned());
         };
         if task.archived_at.is_some() {
             store
@@ -603,10 +617,12 @@ impl App {
     }
 
     /// Repairs, at server start, every sandbox whose onboarding was left stuck before SPEC-106
-    /// (OTR-005): see [`App::refresh_onboarding`]. Returns how many it changed.
+    /// (OTR-005): see [`App::refresh_onboarding`]. Returns how many it repaired (an onboarding
+    /// task listed again, or a sandbox back to `pending`); one sandbox's failure is logged and
+    /// the others are still repaired.
     ///
     /// # Errors
-    /// Store failures.
+    /// The sandbox list cannot be read.
     pub async fn heal_onboarding(&self) -> AppResult<u32> {
         let store = &self.deps.store;
         let mut healed = 0;
@@ -619,21 +635,32 @@ impl App {
             let archived = match &record.onboarding_task_id {
                 Some(id) => store
                     .task(id)
-                    .await?
+                    .await
+                    .ok()
+                    .flatten()
                     .is_some_and(|t| t.archived_at.is_some()),
                 None => false,
             };
-            let state = self.refresh_onboarding(&record.id).await?;
-            if archived || state != record.onboarding_state {
-                tracing::info!(sandbox = %record.id, state, "healed a stuck onboarding");
-                healed += 1;
+            match self.refresh_onboarding(&record.id).await {
+                Ok(state) => {
+                    let reset = state == OnboardingState::Pending.as_str()
+                        && record.onboarding_state != state;
+                    if archived || reset {
+                        tracing::info!(sandbox = %record.id, state, "repaired a stuck onboarding");
+                        healed += 1;
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(sandbox = %record.id, error = %err, "could not repair onboarding");
+                }
             }
         }
         Ok(healed)
     }
 
     /// Refuses archiving the onboarding task while its sandbox waits for it: archived, it left
-    /// the page's task list and the sandbox looked stuck (SPEC-106 OTR-004).
+    /// the page's task list and the sandbox looked stuck (SPEC-106 OTR-004). Onboarding is
+    /// refreshed first, so a task that has finished its work is archived as before.
     ///
     /// # Errors
     /// `Conflict` for the onboarding task of a blocking sandbox; store failures.
@@ -641,6 +668,7 @@ impl App {
         if task.origin != TaskOrigin::Onboarding {
             return Ok(());
         }
+        self.refresh_onboarding(&task.sandbox_id).await?;
         let Some(record) = self.deps.store.sandbox(&task.sandbox_id).await? else {
             return Ok(());
         };
