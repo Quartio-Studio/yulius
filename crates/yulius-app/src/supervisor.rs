@@ -444,6 +444,9 @@ const GOAL_QUIET: Duration = Duration::from_millis(1500);
 /// output); a busy host starts Claude Code slowly. A TUI without hooks gets half of it. The
 /// default of [`crate::context::AppConfig::goal_ready_ms`].
 pub const GOAL_READY_TIMEOUT: Duration = Duration::from_secs(90);
+/// How long a person gets to answer Claude Code's folder-trust prompt, from when it shows; the
+/// default of [`crate::context::AppConfig::trust_answer_ms`] (SPEC-106 OTR-002).
+pub const TRUST_ANSWER_TIMEOUT: Duration = Duration::from_secs(300);
 /// Upper bound for waiting until the turn on a goal session's first message ended; after it the
 /// goal is typed anyway (Claude Code queues it behind a running turn).
 const GOAL_OPENING_TIMEOUT: Duration = Duration::from_secs(300);
@@ -459,6 +462,37 @@ const GOAL_SUBMIT_WAITS: [Duration; 5] = [
 ];
 /// The attempt (index into [`GOAL_SUBMIT_WAITS`]) that types the whole line again.
 const GOAL_RETYPE_ATTEMPT: usize = 2;
+/// What Claude Code's folder-trust dialog shows: 2.1.x ("Quick safety check"), then older
+/// releases. Yulius trusts every worktree and its main repository (SPEC-106), so the dialog means
+/// Claude Code looks trust up somewhere new; a person answers it, never Yulius's typing. Looked
+/// for only before the session's SessionStart hook: Claude Code asks before it starts the
+/// session, and later the words can be anyone's output.
+const TRUST_PROMPT_TEXTS: [&str; 2] = [
+    "Yes, I trust this folder",
+    "Do you trust the files in this folder?",
+];
+
+/// How [`App::wait_input_ready`] ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputReady {
+    /// The TUI reads input (or the wait for it was given up on): type.
+    Ready,
+    /// The attempt is no longer live: type nothing.
+    Gone,
+    /// Claude Code's folder-trust dialog was still shown after
+    /// [`crate::context::AppConfig::trust_answer_ms`]: type nothing into it.
+    TrustUnanswered,
+}
+
+/// Said when the trust dialog is still shown at the end of the wait.
+const TRUST_UNANSWERED: &str = "Claude Code still asks whether to trust this folder, so Yulius typed nothing. Answer it in \
+     the terminal";
+
+/// Whether `screen` shows Claude Code's folder-trust dialog.
+fn trust_prompt_shown(screen: &str) -> bool {
+    TRUST_PROMPT_TEXTS.iter().any(|text| screen.contains(text))
+}
+
 /// Upper bound for waiting until the TUI took one paste of a typed first message (SPEC-030).
 const PASTE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Quiet time after a paste changed the screen before the next one is written.
@@ -1220,11 +1254,25 @@ impl App {
             let app = Arc::clone(self);
             let (task_id, attempt_id) = (task.id.clone(), attempt_id.clone());
             tokio::spawn(async move {
-                if app
-                    .wait_input_ready(&task_id, &attempt_id, tokio::time::Instant::now(), false)
+                let mut typed_before = 0;
+                match app
+                    .wait_input_ready(
+                        &task_id,
+                        &attempt_id,
+                        tokio::time::Instant::now(),
+                        false,
+                        &mut typed_before,
+                    )
                     .await
                 {
-                    app.type_opening(&task_id, &attempt_id, opening).await;
+                    InputReady::Ready => app.type_opening(&task_id, &attempt_id, opening).await,
+                    InputReady::Gone => {}
+                    InputReady::TrustUnanswered => {
+                        app.runtime(&task_id).hub.notice(format!(
+                            "{TRUST_UNANSWERED}, then type the task's first message."
+                        ));
+                        app.flag_task(&task_id).await;
+                    }
                 }
             });
         }
@@ -1280,6 +1328,11 @@ impl App {
             "{why}. The task has no goal yet: type `/goal` and the request in the terminal, or stop \
              and continue the task."
         ));
+        self.flag_task(task_id).await;
+    }
+
+    /// Marks the task as needing a person (what for is said in its terminal).
+    async fn flag_task(&self, task_id: &TaskId) {
         if let Ok(Some(task)) = self.deps.store.task(task_id).await
             && let Err(err) = self
                 .set_task_activity(&task, Activity::NeedsAttention)
@@ -1358,22 +1411,64 @@ impl App {
     /// [`GOAL_QUIET`] passed without new output (or at most the configured
     /// [`GOAL_READY_TIMEOUT`] after `started`, half of it without a SessionStart hook); with
     /// `after_opening`, also until the turn on a first message ended (its Stop hook, at most
-    /// [`GOAL_OPENING_TIMEOUT`]). `false` once the attempt is no longer live.
+    /// [`GOAL_OPENING_TIMEOUT`]). [`InputReady::Gone`] once the attempt is no longer live.
+    ///
+    /// Claude Code's folder-trust dialog (before the SessionStart hook) is never ready: Yulius
+    /// waits for a person to answer it, at most [`crate::context::AppConfig::trust_answer_ms`]
+    /// from when it showed ([`InputReady::TrustUnanswered`] when still shown then, so nothing is
+    /// typed into it). The keys that answered it are no draft: `typed_before` moves past them.
+    /// Once it is answered the wait starts over, as for a TUI that just started (SPEC-106
+    /// OTR-002).
     async fn wait_input_ready(
         &self,
         task_id: &TaskId,
         attempt_id: &AttemptId,
         started: tokio::time::Instant,
         after_opening: bool,
-    ) -> bool {
+        typed_before: &mut i64,
+    ) -> InputReady {
         let runtime = self.runtime(task_id);
         let ready_timeout = Duration::from_millis(self.config.goal_ready_ms);
         let mut last = runtime.hub.output_seq();
         let mut quiet_since = tokio::time::Instant::now();
+        // When the trust dialog showed; `None` while it does not.
+        let mut trust_since: Option<tokio::time::Instant> = None;
+        let mut started = started;
         loop {
             tokio::time::sleep(Duration::from_millis(200)).await;
             if !self.attempt_live(task_id, attempt_id).await {
-                return false;
+                return InputReady::Gone;
+            }
+            let trust = !runtime.session_started.load(Ordering::SeqCst)
+                && trust_prompt_shown(&runtime.hub.screen_text());
+            if trust || trust_since.is_some() {
+                // Typed while the dialog shows, or in the moment it went: its answer.
+                *typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
+            }
+            match (trust, trust_since) {
+                (true, None) => {
+                    runtime.hub.notice(
+                        "Claude Code asks whether to trust this folder. Answer it in the \
+                         terminal; Yulius sets the task going once it is answered."
+                            .to_owned(),
+                    );
+                    trust_since = Some(tokio::time::Instant::now());
+                    continue;
+                }
+                (true, Some(since)) => {
+                    if since.elapsed() >= Duration::from_millis(self.config.trust_answer_ms) {
+                        return InputReady::TrustUnanswered;
+                    }
+                    continue;
+                }
+                (false, Some(_)) => {
+                    // Answered: the TUI starts its session now.
+                    trust_since = None;
+                    started = tokio::time::Instant::now();
+                    quiet_since = started;
+                    last = runtime.hub.output_seq();
+                }
+                (false, None) => {}
             }
             let seq = runtime.hub.output_seq();
             if seq != last {
@@ -1393,7 +1488,7 @@ impl App {
                 ready_timeout
             };
             if ready || started.elapsed() >= limit {
-                return true;
+                return InputReady::Ready;
             }
         }
     }
@@ -1514,21 +1609,31 @@ impl App {
         tokio::spawn(async move {
             let runtime = app.runtime(&task_id);
             let live = || app.attempt_live(&task_id, &attempt_id);
-            let started = tokio::time::Instant::now();
+            let mut started = tokio::time::Instant::now();
+            let mut typed_before = typed_before;
+            let unanswered = || async {
+                app.goal_not_taken(&task_id, TRUST_UNANSWERED).await;
+            };
             if let Some(opening) = opening {
-                if !app
-                    .wait_input_ready(&task_id, &attempt_id, started, false)
+                match app
+                    .wait_input_ready(&task_id, &attempt_id, started, false, &mut typed_before)
                     .await
                 {
-                    return;
+                    InputReady::Ready => {}
+                    InputReady::Gone => return,
+                    InputReady::TrustUnanswered => return unanswered().await,
                 }
                 app.type_opening(&task_id, &attempt_id, opening).await;
+                // Its turn starts now, however long a trust prompt waited before it.
+                started = tokio::time::Instant::now();
             }
-            if !app
-                .wait_input_ready(&task_id, &attempt_id, started, true)
+            match app
+                .wait_input_ready(&task_id, &attempt_id, started, true, &mut typed_before)
                 .await
             {
-                return;
+                InputReady::Ready => {}
+                InputReady::Gone => return,
+                InputReady::TrustUnanswered => return unanswered().await,
             }
             // The opening turn is over, or given up on: a later Stop is the goal's own.
             runtime.opening_turn.store(false, Ordering::SeqCst);
@@ -3304,6 +3409,20 @@ async fn request_shutdown(runtime: &TaskRuntime) {
 
 #[cfg(test)]
 mod tests {
+
+    /// SPEC-106 OTR-002: the dialogs of Claude Code 2.1.292 (measured) and of older releases.
+    #[test]
+    fn the_folder_trust_dialog_is_recognised() {
+        let current = "Quick safety check: Is this a project you created or one you trust?\n\
+                       \u{276f} No, continue without these permissions\n  Yes, I trust this folder";
+        assert!(super::trust_prompt_shown(current));
+        assert!(super::trust_prompt_shown(
+            "Do you trust the files in this folder?\n\u{276f} 1. Yes, proceed"
+        ));
+        assert!(!super::trust_prompt_shown(
+            "\u{276f} Try \"refactor <filepath>\""
+        ));
+    }
 
     #[test]
     fn a_typed_first_message_pastes_each_image_then_the_text_ending_in_a_newline() {

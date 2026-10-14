@@ -486,6 +486,12 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
         ),
         Err(err) => tracing::error!(error = %err, "environment run reconciliation failed"),
     }
+    // Onboarding left stuck without its task (or with it archived) before SPEC-106 heals.
+    match app.heal_onboarding().await {
+        Ok(0) => {}
+        Ok(n) => tracing::warn!(sandboxes = n, "stuck onboardings were repaired"),
+        Err(err) => tracing::error!(error = %err, "onboarding repair failed"),
+    }
     if let Some(token) = app.prepare_setup().await.map_err(|e| e.to_string())? {
         let path = args.data_dir.join("setup.token");
         let _ = std::fs::remove_file(&path);
