@@ -48,16 +48,12 @@ pub fn count_run(
         }
     }
     let mut side = SubagentTails::between(transcript, since, until);
-    loop {
-        match side.poll() {
-            Ok(lines) => {
-                for line in lines {
-                    for observed in claude::observe_line(&line) {
-                        acc.observe_side(&observed);
-                    }
-                }
+    // A sub-agent transcript that cannot be read ends the sub-agents' count there.
+    while let Ok(lines) = side.poll() {
+        for line in lines {
+            for observed in claude::observe_line(&line) {
+                acc.observe_side(&observed);
             }
-            Err(_) => break,
         }
         if side.at_end() {
             break;

@@ -360,7 +360,7 @@ mod tests {
             "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 0, 0, 1);
              INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
              INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, created_by, created_at, updated_at) VALUES
-               ('t1', 's1', 1, 'T', 'p', 'claude', 'done', 'ui', 'u1', 1, 1),
+               ('t1', 's1', 1, 'T', 'p', 'claude', 'closed', 'ui', 'u1', 1, 1),
                ('t2', 's1', 2, 'T', 'p', 'claude', 'running', 'ui', 'u1', 2, 2);
              INSERT INTO attempts (id, task_id, seq, harness, launch_kind, state, run_dir, token_hash, host_token, started_at, ended_at) VALUES
                ('a2', 't1', 2, 'claude', 'resume', 'exited', '/r/a2', 'h2', x'00', 300, 400),
@@ -372,13 +372,10 @@ mod tests {
         Ok(())
     }
 
-    fn recount_row(
-        path: &Path,
-        attempt: &str,
-    ) -> Result<
-        (Option<String>, Option<String>, Option<String>, Option<i64>),
-        Box<dyn std::error::Error>,
-    > {
+    /// A recount's outcome, figures before and after, and when.
+    type RecountRow = (Option<String>, Option<String>, Option<String>, Option<i64>);
+
+    fn recount_row(path: &Path, attempt: &str) -> Result<RecountRow, Box<dyn std::error::Error>> {
         let conn = rusqlite::Connection::open(path)?;
         Ok(conn.query_row(
             "SELECT outcome, before, after, done_at FROM metrics_recounts WHERE attempt_id = ?1",

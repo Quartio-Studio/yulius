@@ -279,6 +279,15 @@ impl HarnessPort for FakeAgentHarness {
     ) -> AppResult<Box<dyn TranscriptWatch>> {
         self.inner.watch(harness, path, from)
     }
+    fn recount(
+        &self,
+        harness: Harness,
+        path: &Path,
+        from: WatchFrom,
+        until: Option<yulius_domain::time::Timestamp>,
+    ) -> AppResult<Option<yulius_app::ports::harness::UsageSnapshot>> {
+        self.inner.recount(harness, path, from, until)
+    }
     fn login_argv(&self, harness: Harness) -> Vec<String> {
         self.inner.login_argv(harness)
     }
