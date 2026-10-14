@@ -26,6 +26,8 @@ Follow `infra-bootstrap` for the content and `delivery-pipeline` for the deliver
   `.github/workflows/*` job into it (`ci_setup` lists them), run it, then delete the workflows in
   the same pull request. Never add GitHub Actions or anything that needs a paid GitHub plan.
 - Environments are `[[delivery.environments]]` with an idempotent deploy command and
-  `verify = "command"` smoke tests; secrets come from the project's agent secrets.
+  `verify = "command"` smoke tests; secrets come from the project's agent secrets. Keys live
+  in a git-ignored `.env` beside a committed `.env.example`; agent secrets get there through
+  `secret_copy_to_env`.
 - Keep each step a small pull request when it grows (chain the next task). Afterwards the
   foundations stay stable: change them only when the product needs it, with a new ADR.
