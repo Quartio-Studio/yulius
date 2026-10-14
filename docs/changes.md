@@ -10,6 +10,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   #347): a meta note over 8 lines or 2,000 characters, such as a skill's body, is one faint
   `⎿ Context added (6.2 KiB)` line that opens on demand. Shorter notes people act on, such as the
   Stop hook's goal and feedback, stay as written; `session_read` is unchanged.
+- The repository check fails on committed merge conflict markers (SPEC-089, #364): a line that is
+  a Git conflict marker in any tracked or new file, vendored assets and binaries aside, fails
+  `scripts/dev check` and Yulius CI with its file and line, where before markers in docs and web
+  assets passed every gate.
 
 ## 2026-10-13
 
