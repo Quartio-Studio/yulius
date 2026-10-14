@@ -219,6 +219,13 @@ pub struct CapacityView {
     pub burn_24h: Option<f64>,
     /// Burn rate of the last 7 days in points per hour.
     pub burn_7d: Option<f64>,
+    /// Burn rate of each of the last 7 rolling 24 hours, oldest first (the last ends now);
+    /// `null` for a period without enough readings (SPEC-110 TUS-005).
+    #[serde(default)]
+    pub burn_per_day: Vec<Option<f64>>,
+    /// Task-hours paused for lack of capacity in each of the last 7 rolling 24 hours.
+    #[serde(default)]
+    pub paused_hours_per_day: Vec<f64>,
     /// When the pool's weekly capacity runs out at the 24-hour rate, if within 7 days.
     pub runs_out_at: Option<String>,
     /// Task-hours paused for lack of capacity in the last 7 days.

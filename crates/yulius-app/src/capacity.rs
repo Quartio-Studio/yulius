@@ -810,6 +810,8 @@ impl App {
             five_hour_left,
             burn_24h: forecast.burn_24h,
             burn_7d: forecast.burn_7d,
+            burn_per_day: forecast.burn_per_day.clone(),
+            paused_hours_per_day: forecast.paused_hours_per_day.clone(),
             runs_out_at: forecast.runs_out_at.map(rfc3339),
             paused_hours_7d: forecast.paused_hours_7d,
             active_hours_7d: forecast.active_hours_7d,

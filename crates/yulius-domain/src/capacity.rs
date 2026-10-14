@@ -14,6 +14,8 @@ const HOUR_MS: f64 = 3_600_000.0;
 pub const WEEK_HOURS: f64 = 168.0;
 /// The forecast horizon: this week.
 const HORIZON_MS: i64 = 7 * 24 * 3_600_000;
+/// One rolling day.
+const DAY_MS: i64 = 24 * 3_600_000;
 /// An account's samples must span at least this long to give a rate.
 const MIN_SPAN_HOURS: f64 = 1.0;
 
@@ -83,6 +85,10 @@ pub struct Forecast {
     pub burn_24h: Option<f64>,
     /// Burn rate over the last 7 days in points per hour; `None` without enough readings.
     pub burn_7d: Option<f64>,
+    /// Burn rate of each of the last 7 rolling 24 hours (oldest first; the last ends now).
+    pub burn_per_day: Vec<Option<f64>>,
+    /// Task-hours paused in each of the last 7 rolling 24 hours (oldest first).
+    pub paused_hours_per_day: Vec<f64>,
     /// When the pool's weekly headroom runs out at the 24-hour burn rate, if within 7 days.
     pub runs_out_at: Option<Timestamp>,
     /// Task-hours paused for lack of capacity in the last 7 days.
@@ -236,6 +242,11 @@ pub fn needed_subscriptions(
     needed as u32
 }
 
+/// The ends of the last 7 rolling 24-hour periods, oldest first; the last is `now`.
+fn day_ends(now: Timestamp) -> impl Iterator<Item = Timestamp> {
+    (0..7).rev().map(move |i| now.plus_millis(-i * DAY_MS))
+}
+
 /// The whole capacity picture (ADR-17 §2.4).
 #[must_use]
 pub fn forecast(input: &ForecastInput<'_>) -> Forecast {
@@ -277,6 +288,12 @@ pub fn forecast(input: &ForecastInput<'_>) -> Forecast {
         weekly_headroom,
         burn_24h,
         burn_7d,
+        burn_per_day: day_ends(now)
+            .map(|end| burn_rate(input.samples, end, DAY_MS))
+            .collect(),
+        paused_hours_per_day: day_ends(now)
+            .map(|end| overlap_hours(input.pauses, end.plus_millis(-DAY_MS), end))
+            .collect(),
         runs_out_at: run_out(input.members, input.threshold, burn_24h, now),
         paused_hours_7d,
         active_hours_7d,
@@ -364,7 +381,6 @@ pub struct PoolTokens {
 /// where it started. Runs outside the window count nowhere.
 #[must_use]
 pub fn pool_tokens(runs: &[TokenRun], now: Timestamp, days: usize) -> PoolTokens {
-    const DAY_MS: i64 = 24 * 3_600_000;
     let n = i64::try_from(days).unwrap_or(0);
     let from = now.plus_millis(-n * DAY_MS);
     let mut out = PoolTokens {
@@ -593,6 +609,15 @@ mod tests {
         assert_eq!(forecast.runs_out_at, Some(at(98)));
         assert!(close(forecast.paused_hours_7d, 8.0));
         assert!(close(forecast.active_hours_7d, 32.0));
+        // TUS-005: per rolling 24 hours, oldest first; the readings span only the last 24 h.
+        assert_eq!(
+            forecast.burn_per_day,
+            vec![None, None, None, None, None, None, Some(2.0)]
+        );
+        assert_eq!(
+            forecast.paused_hours_per_day,
+            vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0]
+        );
         // max(2 × 168 / 98 = 3.43, 3 × 40 / 32 = 3.75) → 4: add 1.
         assert_eq!(forecast.needed, 4);
         assert_eq!(forecast.add, 1);

@@ -539,6 +539,15 @@ async fn the_capacity_view_reports_burn_forecast_and_recommendation() -> TestRes
     assert_eq!(v["runs_out_at"], "2026-10-11T02:00:00Z");
     assert_eq!(v["paused_hours_7d"], 8.0);
     assert_eq!(v["active_hours_7d"], 32.0);
+    // SPEC-110 TUS-005: per rolling 24 hours, oldest first.
+    assert_eq!(
+        v["burn_per_day"],
+        json!([null, null, null, null, null, null, 2.0])
+    );
+    assert_eq!(
+        v["paused_hours_per_day"],
+        json!([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.0])
+    );
     // max(2 × 168 / 98 = 3.43, 3 × 40 / 32 = 3.75) → 4.
     assert_eq!(v["needed"], 4);
     assert_eq!(v["add"], 1);
