@@ -2157,10 +2157,10 @@ button.task-group-head:hover { color: var(--text); }
 .ss-web-spider { fill: var(--session-dim); }
 /* Every 8 s the spider climbs 6 pixels up its thread, one pixel a step, hangs there and drops back,
    its legs switching frames on each step (SPEC-101); the thread shortens with it, from its top. */
-.ss-web-spider { animation: ss-spider-climb 8s steps(6, end) infinite; }
-.ss-web-silk { transform-box: fill-box; transform-origin: top; animation: ss-spider-silk 8s steps(6, end) infinite; }
-.ss-web-legs-a { animation: ss-spider-legs-a 8s steps(1, end) infinite; }
-.ss-web-legs-b { visibility: hidden; animation: ss-spider-legs-b 8s steps(1, end) infinite; }
+.ss-web-spider { animation: ss-spider-climb var(--duration-spider) steps(6, end) infinite; }
+.ss-web-silk { transform-box: fill-box; transform-origin: top; animation: ss-spider-silk var(--duration-spider) steps(6, end) infinite; }
+.ss-web-legs-a { animation: ss-spider-legs-a var(--duration-spider) steps(1, end) infinite; }
+.ss-web-legs-b { visibility: hidden; animation: ss-spider-legs-b var(--duration-spider) steps(1, end) infinite; }
 @keyframes ss-spider-climb { 0%, 50% { transform: none; } 62%, 80% { transform: translateY(-6px); } 92%, 100% { transform: none; } }
 @keyframes ss-spider-silk { 0%, 50% { transform: none; } 62%, 80% { transform: scaleY(var(--ss-silk-top)); } 92%, 100% { transform: none; } }
 @keyframes ss-spider-legs-a {
@@ -2175,8 +2175,8 @@ button.task-group-head:hover { color: var(--text); }
    The well clips it at its sides: clip, not hidden, so the web's sticky position keeps the page's scroll. */
 .ss-tui { overflow-x: clip; }
 .ss-roach { position: absolute; top: 0; left: 0; width: 48px; height: 21px; pointer-events: none; fill: var(--session-roach); } /* 3 px pixels */
-.ss-roach-legs-a { animation: ss-roach-legs-a 160ms steps(1, end) infinite; }
-.ss-roach-legs-b { visibility: hidden; animation: ss-roach-legs-b 160ms steps(1, end) infinite; }
+.ss-roach-legs-a { animation: ss-roach-legs-a var(--duration-scurry) steps(1, end) infinite; }
+.ss-roach-legs-b { visibility: hidden; animation: ss-roach-legs-b var(--duration-scurry) steps(1, end) infinite; }
 @keyframes ss-roach-legs-a { 0%, 100% { visibility: visible; } 50% { visibility: hidden; } }
 @keyframes ss-roach-legs-b { 0%, 100% { visibility: hidden; } 50% { visibility: visible; } }
 @media (prefers-reduced-motion: reduce) { .ss-web-spider, .ss-web-silk, .ss-web-legs, .ss-roach-legs { animation: none; } }

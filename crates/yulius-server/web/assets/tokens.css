@@ -315,6 +315,8 @@
   --duration-spin-slow: 1.6s; /* one turn of a slower spinner (switching account) */
   --duration-pulse: 1.6s;     /* one pulse of an attention highlight */
   --duration-ripple: 0.7s;    /* the agent's click ripple in the browser view */
+  --duration-spider: 8s;      /* one loop of the session web's spider: hang, climb, hang, drop */
+  --duration-scurry: 160ms;   /* one stride of the cockroach that runs across a session */
   --ease: cubic-bezier(0.2, 0, 0, 1);
 
   /* Layout */
