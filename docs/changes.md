@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- Playgrounds: a team tries Yulius on its own code before it connects GitHub (SPEC-099, ADR-0081,
+  task #84). On a fresh instance Home says "Try Yulius on your own code": drop a project folder
+  (a repository keeps its branches, tags and history; its uncommitted work lands as one commit) or
+  start from a template, and the playground opens with tasks startable at once. Its Git stays on the
+  server (a bare repository outside the sandbox, out of its processes' reach), nothing is pushed anywhere, and only the history
+  part of an uploaded `.git` is taken, never its config or hooks. Its tasks merge into its own
+  `dev` with `delivery_merge` (a squash after the spec, steps and clean-worktree gates; no pull
+  request or Yulius CI), and their briefing and definition of done say so. It is its maker's and
+  the superadmin's. Connecting GitHub is optional: the sign-in toast is gone, a notification says
+  playgrounds work without it, and Import and Create follow once it is connected.
 - A task can be prepared now and started later (SPEC-105, ADR-0085, task #90). New task's start
   menu offers **When I decide**: the task waits with the new status `prepared`, holding no
   session, until you press Start now in its view or menu. **At a time…** picks a date and time:

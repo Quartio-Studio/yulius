@@ -147,6 +147,31 @@ stateDiagram-v2
     GaveUp --> Clear: a successful reply
 ```
 
+## Playgrounds
+
+A playground lets a team try Yulius on its own code before it connects GitHub
+([SPEC-099](../.ai/specs/SPEC-099-on-onboarding-we-want-a-mode-to-play-aro.md),
+[decision 0081](decisions/0081-a-playground-keeps-its-git-on-the-server.md)). Its `origin` is a
+bare repository on the server outside the sandbox (`<data>/playgrounds/<id>.git`), so the
+clone, worktrees and merges use the same `origin/<branch>` refs as a GitHub sandbox while nothing
+leaves the server, and the sandbox's processes never reach a repository whose hooks the server's
+Git would run; the server fetches and pushes it by that path, never by the clone's configured URL.
+The record marks it with an empty repository owner. The browser packs a chosen folder into a gzip tar (`files/` the
+working tree, `git/` the history part of `.git`); the server takes only `HEAD`, `packed-refs`,
+`shallow`, `objects/` and `refs/` of it, copies the branches and tags into the new `origin` with the
+hardened Git, and commits the working files on top. `delivery_merge` squashes a task branch onto
+the integration branch there (`git merge-tree` and `commit-tree`, pushed without forcing). CI
+sync, hygiene, the automatic pull request and reconciliation skip playgrounds.
+
+```mermaid
+flowchart LR
+  B["Browser: folder → tar.gz"] -->|"POST /api/playgrounds"| S["Server: unpack files/ and the history of git/"]
+  S -->|"init --bare, copy refs, commit the files"| O[("data/playgrounds/id.git (outside the sandbox)")]
+  O -->|"clone; fetch by path"| R["sandbox/repo"]
+  R -->|"worktree from origin/dev"| T["Task worktree (agent, contained)"]
+  T -->|"delivery_merge: Yulius squashes, pushes by path"| O
+```
+
 ## Parallel tasks at merge
 
 Tasks working at once must not collide where their parallel work meets

@@ -7,8 +7,8 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use yulius_git::{
-    Author, BundleSpec, DiffStat, Git, GitError, ImportRef, MergeInto, RemovalRefusal, TrainInput,
-    TrainLanding, TrainStep, WorktreeRemoval, validate_branch_name,
+    Author, BundleSpec, DiffStat, Git, GitError, ImportRef, MergeInto, RemovalRefusal, SquashInput,
+    SquashLanding, TrainInput, TrainLanding, TrainStep, WorktreeRemoval, validate_branch_name,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -1209,5 +1209,99 @@ fn only_clean_merges_of_the_integration_branch_keep_a_review() -> TestResult {
         !fx.git
             .only_clean_merges_since(&feature, &reviewed_a, &foreign, "main", 8)?
     );
+    Ok(())
+}
+
+#[test]
+fn a_squash_lands_one_commit_on_the_remote_branch_or_names_the_conflicts() -> TestResult {
+    // SPEC-099 PLY-007: a playground's merge squashes a task branch onto its integration branch
+    // as one commit with that branch as its only parent, pushed without forcing.
+    let fx = Fixture::new()?;
+    let (remote, repo) = fx.repo_with_remote()?;
+    fx.git
+        .push(&repo, "origin", "refs/heads/main:refs/heads/dev")?;
+    fx.git.fetch(&repo, "origin")?;
+    let feature = fx.path("feature");
+    fx.git
+        .worktree_add(&repo, &feature, "feat/x", "origin/dev")?;
+    fs::write(feature.join("x.txt"), "x\n")?;
+    fx.git
+        .commit_all(&feature, "feat: x, part one", &author())?;
+    fs::write(feature.join("y.txt"), "y\n")?;
+    fx.git
+        .commit_all(&feature, "feat: x, part two", &author())?;
+    let head = fx.git.rev_parse(&feature, "HEAD")?;
+    let base = fx.git.rev_parse(&repo, "origin/dev")?;
+
+    let landed = fx.git.squash_land(
+        &repo,
+        &SquashInput {
+            base: "origin/dev",
+            head: &head,
+            message: "feat: x\n\nTask #3.",
+            author: &author(),
+            remote: "origin",
+            branch: "dev",
+        },
+    )?;
+    let SquashLanding::Landed(commit) = landed else {
+        return Err(format!("not landed: {landed:?}").into());
+    };
+    let dev = fx.git.rev_parse(&remote, "dev")?;
+    assert_eq!(dev, commit, "the remote's dev is the squash");
+    assert_eq!(
+        fx.git.parents(&remote, &dev)?,
+        vec![base],
+        "one parent: the old dev"
+    );
+    assert_eq!(
+        fx.git.tree_of(&remote, &dev)?,
+        fx.git.tree_of(&repo, &head)?,
+        "the head's tree"
+    );
+    let subject = Command::new("git")
+        .args(["-C", path_str(&remote)?, "log", "-1", "--format=%B", "dev"])
+        .output()?;
+    assert_eq!(
+        String::from_utf8_lossy(&subject.stdout).trim(),
+        "feat: x\n\nTask #3."
+    );
+
+    // The same head again changes nothing.
+    fx.git.fetch(&repo, "origin")?;
+    assert_eq!(
+        fx.git.squash_land(
+            &repo,
+            &SquashInput {
+                base: "origin/dev",
+                head: &head,
+                message: "again",
+                author: &author(),
+                remote: "origin",
+                branch: "dev",
+            },
+        )?,
+        SquashLanding::Unchanged
+    );
+
+    // A branch that conflicts with dev pushes nothing and names the files.
+    let other = fx.path("other");
+    fx.git
+        .worktree_add(&repo, &other, "feat/y", "origin/main")?;
+    fs::write(other.join("x.txt"), "a different x\n")?;
+    fx.git.commit_all(&other, "feat: y", &author())?;
+    let conflict = fx.git.squash_land(
+        &repo,
+        &SquashInput {
+            base: "origin/dev",
+            head: "feat/y",
+            message: "feat: y",
+            author: &author(),
+            remote: "origin",
+            branch: "dev",
+        },
+    )?;
+    assert_eq!(conflict, SquashLanding::Conflict(vec!["x.txt".to_owned()]));
+    assert_eq!(fx.git.rev_parse(&remote, "dev")?, commit, "nothing pushed");
     Ok(())
 }

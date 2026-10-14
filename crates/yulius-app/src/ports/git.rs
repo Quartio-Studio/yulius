@@ -303,6 +303,40 @@ pub trait GitPort: Send + Sync {
         let _ = repo;
         unsupported("pruning worktrees")
     }
+    /// Creates an empty bare repository at the absolute `path` whose first branch is `branch`:
+    /// a playground's `origin` (SPEC-099).
+    async fn init_bare(&self, path: &Path, branch: &str) -> AppResult<()> {
+        let _ = (path, branch);
+        unsupported("creating a repository")
+    }
+    /// Makes the worktree ignore file modes and links a browser turned into files (SPEC-099).
+    async fn keep_modes_and_links(&self, worktree: &Path) -> AppResult<()> {
+        let _ = worktree;
+        unsupported("keeping a repository's modes")
+    }
+    /// Fetches every branch of the repository at `source` into `repo`'s `refs/remotes/origin/*`
+    /// by that path, not by `repo`'s configured URL (a playground's refresh, SPEC-099).
+    async fn fetch_branches_from(&self, repo: &Path, source: &Path) -> AppResult<()> {
+        let _ = (repo, source);
+        unsupported("fetching a playground's origin")
+    }
+    /// Copies every branch and tag of the repository at `source` into the bare repository
+    /// `repo` (SPEC-099: an uploaded folder's history).
+    async fn copy_refs(&self, repo: &Path, source: &Path) -> AppResult<()> {
+        let _ = (repo, source);
+        unsupported("copying a repository's history")
+    }
+    /// Lands the request's head on its branch of `origin` as one commit: the tree Git's merge of
+    /// `base` and `head` gives, with `base` as its only parent, pushed without forcing (SPEC-099:
+    /// a playground's merge).
+    async fn land_squash(
+        &self,
+        repo: &Path,
+        request: &SquashRequest<'_>,
+    ) -> AppResult<SquashLanding> {
+        let _ = (repo, request);
+        unsupported("merging in a playground")
+    }
     /// Imports a bundle's refs under `refs/heads/<prefix>/…`.
     async fn import_bundle(
         &self,
@@ -310,6 +344,37 @@ pub trait GitPort: Send + Sync {
         bundle: &Path,
         prefix: &str,
     ) -> AppResult<Vec<String>>;
+}
+
+/// What [`GitPort::land_squash`] lands on `origin` (a playground's merge, SPEC-099).
+#[derive(Debug, Clone, Copy)]
+pub struct SquashRequest<'a> {
+    /// The integration branch as fetched (`origin/dev`): the commit's only parent.
+    pub base: &'a str,
+    /// The task branch's head.
+    pub head: &'a str,
+    /// The commit message.
+    pub message: &'a str,
+    /// Author and committer name.
+    pub name: &'a str,
+    /// Author and committer email.
+    pub email: &'a str,
+    /// The repository pushed to: the playground's `origin` by its path, never by the URL in
+    /// `repo`'s configuration, which a sandbox may rewrite.
+    pub remote: &'a str,
+    /// The branch of `remote` that receives the commit.
+    pub branch: &'a str,
+}
+
+/// What [`GitPort::land_squash`] did (a playground's merge, SPEC-099).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SquashLanding {
+    /// One new commit on the branch: its id.
+    Landed(String),
+    /// The head brings nothing new; nothing was pushed.
+    Unchanged,
+    /// Git's merge conflicts in these paths; nothing was pushed.
+    Conflict(Vec<String>),
 }
 
 /// How a pull request lands on the integration branch (the profile's merge method).

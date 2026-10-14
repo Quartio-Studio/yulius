@@ -315,6 +315,8 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         )
         // Dropped files (EDT-006, UI-048): raw streamed bodies, bounded by the upload limit.
         .route("/api/sandboxes/{sid}/files/upload", put(uploads::file))
+        // A folder packed by the browser becomes a playground (SPEC-099).
+        .route("/api/playgrounds", post(uploads::playground))
         .route(
             "/api/tasks/{tid}/attachments",
             post(uploads::task_attachment),

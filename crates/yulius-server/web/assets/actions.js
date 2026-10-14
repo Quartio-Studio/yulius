@@ -11,6 +11,7 @@ import { relLong, whenLabel, localInputValue, fromLocalInput } from './format.js
 import { BRAND } from './brand.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { openAttachment } from './filedrop.js';
+import { folderDropZone } from './playground.js';
 
 // ---------------------------------------------------------------- task menu
 
@@ -610,16 +611,28 @@ export function openRunViewer(ctx, sandbox, runId, envName) {
 
 const REPO_NAME_RE = /^[A-Za-z0-9._-]{1,100}$/;
 
-/** "+" dialog: import an existing repository or create a new one from a template. */
+/**
+ * "+" dialog: a playground from a folder or a template (no GitHub, SPEC-099), or the instance
+ * owner's repositories on GitHub: import one or create one from a template.
+ */
 export function openSandboxDialog(ctx, mode = 'import') {
-  // Create mode is for instance administrators (docs/api.md "Sandboxes").
+  // Create mode is for instance administrators (docs/api.md "Sandboxes"); without GitHub only a
+  // playground can be made.
   const canCreate = ctx.isInstanceAdmin();
-  const startMode = mode === 'create' && canCreate ? 'create' : 'import';
-  const tabImport = h('input', { type: 'radio', name: 'sb-mode', value: 'import', checked: startMode === 'import' });
-  const tabCreate = h('input', { type: 'radio', name: 'sb-mode', value: 'create', checked: startMode === 'create', disabled: !canCreate });
+  const me = ctx.store.state.me || {};
+  const github = !(me.instance && me.instance.github_configured === false);
+  const startMode = mode === 'playground' || !github ? 'playground' : mode === 'create' && canCreate ? 'create' : 'import';
+  const radio = (value, disabled) => h('input', { type: 'radio', name: 'sb-mode', value, checked: startMode === value, disabled });
+  const tabPlayground = radio('playground', false);
+  const tabImport = radio('import', !github);
+  const tabCreate = radio('create', !github || !canCreate);
   const content = h('div', { class: 'stack' });
+  const createTitle = !github ? 'Connect GitHub first' : canCreate ? null : 'Only instance administrators can create sandboxes from a template';
   const body = h('div', { class: 'stack' },
-    h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Mode' }, h('label', null, tabImport, 'Import repository'), h('label', { title: canCreate ? null : 'Only instance administrators can create sandboxes from a template' }, tabCreate, 'Create from template')),
+    h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Mode' },
+      h('label', null, tabPlayground, 'Playground'),
+      h('label', { title: github ? null : 'Connect GitHub first' }, tabImport, 'Import repository'),
+      h('label', { title: createTitle }, tabCreate, 'Create from template')),
     content);
   let submitButton;
   let selectedRepo = null;
@@ -629,19 +642,23 @@ export function openSandboxDialog(ctx, mode = 'import') {
   const descInput = h('input', { class: 'input', placeholder: 'One sentence about the sandbox (optional)', maxlength: 300 });
   const nameError = h('span', { class: 'field-error' });
   let templateValue = null;
+  // Set once the dialog exists: a folder dropped in it becomes a playground and closes it.
+  let closeDialog = () => {};
 
   const updateSubmit = () => {
     if (!submitButton) return;
     if (tabImport.checked) {
       submitButton.textContent = 'Import';
       submitButton.disabled = !selectedRepo;
-    } else {
-      submitButton.textContent = 'Create';
-      const valid = REPO_NAME_RE.test(nameInput.value.trim());
-      nameError.textContent = nameInput.value && !valid ? 'Use letters, digits, “.”, “-” or “_”.' : '';
-      nameInput.setAttribute('aria-invalid', nameInput.value && !valid ? 'true' : 'false');
-      submitButton.disabled = !valid || !templateValue;
+      return;
     }
+    const playground = tabPlayground.checked;
+    submitButton.textContent = playground ? 'Start playground' : 'Create';
+    // A playground's name only needs a letter or digit: the server makes its slug.
+    const valid = playground ? /[A-Za-z0-9]/.test(nameInput.value) : REPO_NAME_RE.test(nameInput.value.trim());
+    nameError.textContent = nameInput.value && !valid ? (playground ? 'Use at least one letter or digit.' : 'Use letters, digits, “.”, “-” or “_”.') : '';
+    nameInput.setAttribute('aria-invalid', nameInput.value && !valid ? 'true' : 'false');
+    submitButton.disabled = !valid || !templateValue;
   };
 
   const renderImport = async () => {
@@ -657,10 +674,10 @@ export function openSandboxDialog(ctx, mode = 'import') {
         const full = `${r.owner}/${r.name}`;
         // GitHub "maintain" is listed as Yulius `write` but may import; the server decides.
         const disabled = r.already_sandbox || r.access === 'read';
-        const radio = h('input', { type: 'radio', name: 'sb-repo', value: full, disabled, checked: selectedRepo === full });
-        radio.addEventListener('change', () => { selectedRepo = full; updateSubmit(); });
+        const choice = h('input', { type: 'radio', name: 'sb-repo', value: full, disabled, checked: selectedRepo === full });
+        choice.addEventListener('change', () => { selectedRepo = full; updateSubmit(); });
         return h('label', { class: ['list-item', 'choice', disabled && 'disabled'] },
-          radio,
+          choice,
           h('div', { class: 'list-main' }, h('div', { class: 'list-title' }, full, r.private ? badge('private') : badge('public', 'accent'))),
           r.already_sandbox ? badge('already a sandbox', 'ok') : badge(r.access, r.access === 'admin' ? '' : 'warn', r.access === 'admin' ? null : r.access === 'write' ? 'Import needs admin or maintain permission on GitHub' : 'Admin or maintain permission required'));
       }));
@@ -680,32 +697,61 @@ export function openSandboxDialog(ctx, mode = 'import') {
     search.focus();
   };
 
-  const renderCreate = async () => {
+  /** The template list (shared by a playground and a GitHub repository). */
+  const templateField = async () => {
     const templateList = h('div', { class: 'card list' }, placeholder('Loading templates…', 'loading'));
+    const fill = async () => {
+      if (!templates) {
+        try { templates = await ctx.api.get('/api/templates'); } catch (error) { setChildren(templateList, placeholder(error.message, 'error')); return; }
+      }
+      if (!templateValue && templates.length) templateValue = templates[0].id;
+      setChildren(templateList, templates.map((t) => {
+        const choice = h('input', { type: 'radio', name: 'sb-template', value: t.id, checked: t.id === templateValue });
+        choice.addEventListener('change', () => { templateValue = t.id; updateSubmit(); });
+        return h('label', { class: 'list-item choice' }, choice, h('div', { class: 'list-main' }, h('div', { class: 'list-title' }, t.name), h('div', { class: 'list-sub wrap-text' }, t.description)));
+      }));
+      updateSubmit();
+    };
+    return { el: h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Template'), templateList), fill };
+  };
+
+  const renderPlayground = async () => {
+    const templateList = await templateField();
+    const opened = (sandbox) => {
+      ctx.store.upsertSandbox(sandbox);
+      closeDialog();
+      toast(`The playground ${sandbox.name} is ready: start a task in it.`, { kind: 'ok' });
+      ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}`);
+    };
+    setChildren(content,
+      h('p', { class: 'muted small' }, `A playground is for trying ${BRAND.name} on your own code: its Git stays on this server and nothing is pushed to GitHub. Its tasks merge into its own dev branch.`),
+      folderDropZone(ctx, { onCreated: opened }),
+      h('h3', { class: 'field-label' }, 'Or start from a template'),
+      field('Name', nameInput), nameError,
+      templateList.el);
+    await templateList.fill();
+    nameInput.focus();
+  };
+
+  const renderCreate = async () => {
+    const templateList = await templateField();
     setChildren(content,
       field('Repository name', nameInput, 'Created under the instance’s GitHub owner.'), nameError,
       field('Description', descInput),
-      h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Template'), templateList),
+      templateList.el,
       h('p', { class: 'muted xs' }, `Instance administrators only. ${BRAND.name} creates a private GitHub repository, pushes the template to main and dev, adds rulesets requiring pull requests and opens the new tab.`));
-    if (!templates) {
-      try { templates = await ctx.api.get('/api/templates'); } catch (error) { setChildren(templateList, placeholder(error.message, 'error')); return; }
-    }
-    if (!templateValue && templates.length) templateValue = templates[0].id;
-    setChildren(templateList, templates.map((t) => {
-      const radio = h('input', { type: 'radio', name: 'sb-template', value: t.id, checked: t.id === templateValue });
-      radio.addEventListener('change', () => { templateValue = t.id; updateSubmit(); });
-      return h('label', { class: 'list-item choice' }, radio, h('div', { class: 'list-main' }, h('div', { class: 'list-title' }, t.name), h('div', { class: 'list-sub wrap-text' }, t.description)));
-    }));
-    updateSubmit();
+    await templateList.fill();
     nameInput.focus();
   };
 
   nameInput.addEventListener('input', updateSubmit);
-  const switchMode = () => { (tabImport.checked ? renderImport : renderCreate)(); updateSubmit(); };
-  tabImport.addEventListener('change', switchMode);
-  tabCreate.addEventListener('change', switchMode);
+  const switchMode = () => {
+    (tabImport.checked ? renderImport : tabPlayground.checked ? renderPlayground : renderCreate)();
+    updateSubmit();
+  };
+  for (const tab of [tabPlayground, tabImport, tabCreate]) tab.addEventListener('change', switchMode);
 
-  openModal({
+  const modal = openModal({
     title: 'Add sandbox',
     wide: true,
     body,
@@ -714,15 +760,19 @@ export function openSandboxDialog(ctx, mode = 'import') {
       { label: 'Import', kind: 'primary', ref: (b) => { submitButton = b; }, run: async () => {
         const payload = tabImport.checked
           ? { mode: 'import', repo: selectedRepo }
-          : { mode: 'create', name: nameInput.value.trim(), template: templateValue, description: descInput.value.trim() };
+          : tabPlayground.checked
+            ? { mode: 'playground', name: nameInput.value.trim(), template: templateValue }
+            : { mode: 'create', name: nameInput.value.trim(), template: templateValue, description: descInput.value.trim() };
         const sandbox = await ctx.api.post('/api/sandboxes', payload);
         ctx.store.upsertSandbox(sandbox);
         const preparing = sandbox.onboarding === 'pending' || sandbox.onboarding === 'preparing';
-        toast(`${tabImport.checked ? 'Imported' : 'Created'} ${sandbox.name}${preparing ? ' — it needs preparation before tasks can start' : ''}`, { kind: 'ok' });
+        const verb = tabImport.checked ? 'Imported' : tabPlayground.checked ? 'Started the playground' : 'Created';
+        toast(`${verb} ${sandbox.name}${preparing ? ' — it needs preparation before tasks can start' : ''}`, { kind: 'ok' });
         ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}`);
       } },
     ],
   });
+  closeDialog = () => modal.close(true);
   switchMode();
 }
 

@@ -16,7 +16,8 @@ impl App {
     /// Effective access of `user` to `sandbox`.
     ///
     /// The superadmin owns the instance and has admin access to every sandbox, with or without
-    /// a GitHub link, without asking GitHub (ACC-012). Everyone else mirrors GitHub: fresh cache
+    /// a GitHub link, without asking GitHub (ACC-012). A playground is its maker's alone
+    /// (SPEC-099). Everyone else mirrors GitHub: fresh cache
     /// entries are reused; otherwise GitHub is asked with the user's token. On a GitHub failure a
     /// cached value younger than the staleness bound is used, else the error is returned. Other
     /// users without a GitHub identity have no access.
@@ -36,6 +37,14 @@ impl App {
         }
         if user.is_superadmin {
             return Ok(AccessLevel::Admin);
+        }
+        // A playground has no GitHub repository to mirror: it is its maker's (SPEC-099 PLY-005).
+        if sandbox.is_playground() {
+            return Ok(if sandbox.created_by == user.id {
+                AccessLevel::Admin
+            } else {
+                AccessLevel::None
+            });
         }
         if user.github_login.is_none() {
             return Ok(AccessLevel::None);

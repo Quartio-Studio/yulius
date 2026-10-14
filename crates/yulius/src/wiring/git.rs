@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::Secret;
 use yulius_app::ports::git::{
-    BranchInfo, CommitInfo, DiffStat, GitPort, MergeIntegration, ReviewChanges, TrainBuild,
-    TrainLanding, TrainStep, WorktreeInfo,
+    BranchInfo, CommitInfo, DiffStat, GitPort, MergeIntegration, ReviewChanges, SquashLanding,
+    SquashRequest, TrainBuild, TrainLanding, TrainStep, WorktreeInfo,
 };
 use yulius_contracts::api::git::{ChangedFile, DiffHunk, DiffLine, TaskCommit};
 use yulius_git::{
@@ -108,6 +108,68 @@ impl GitPort for GitAdapter {
             }
         })
         .await
+    }
+
+    async fn init_bare(&self, path: &Path, branch: &str) -> AppResult<()> {
+        let (git, path, branch) = (self.git(), path.to_path_buf(), branch.to_owned());
+        blocking(move || {
+            std::fs::create_dir_all(&path).map_err(|source| GitError::Io {
+                context: "creating the repository directory",
+                source,
+            })?;
+            git.init(&path, &branch, true)
+        })
+        .await
+    }
+
+    async fn keep_modes_and_links(&self, worktree: &Path) -> AppResult<()> {
+        let (git, worktree) = (self.git(), worktree.to_path_buf());
+        blocking(move || git.keep_modes_and_links(&worktree)).await
+    }
+
+    async fn fetch_branches_from(&self, repo: &Path, source: &Path) -> AppResult<()> {
+        let (git, repo, source) = (self.git(), repo.to_path_buf(), source.to_path_buf());
+        blocking(move || git.fetch_branches_from(&repo, &source)).await
+    }
+
+    async fn copy_refs(&self, repo: &Path, source: &Path) -> AppResult<()> {
+        let (git, repo, source) = (self.git(), repo.to_path_buf(), source.to_path_buf());
+        blocking(move || git.copy_refs(&repo, &source)).await
+    }
+
+    async fn land_squash(
+        &self,
+        repo: &Path,
+        request: &SquashRequest<'_>,
+    ) -> AppResult<SquashLanding> {
+        let (git, repo) = (self.git(), repo.to_path_buf());
+        let (base, head, message, remote, branch) = (
+            request.base.to_owned(),
+            request.head.to_owned(),
+            request.message.to_owned(),
+            request.remote.to_owned(),
+            request.branch.to_owned(),
+        );
+        let author = Author::new(request.name, request.email);
+        blocking(move || {
+            git.squash_land(
+                &repo,
+                &yulius_git::SquashInput {
+                    base: &base,
+                    head: &head,
+                    message: &message,
+                    author: &author,
+                    remote: &remote,
+                    branch: &branch,
+                },
+            )
+        })
+        .await
+        .map(|landed| match landed {
+            yulius_git::SquashLanding::Landed(commit) => SquashLanding::Landed(commit),
+            yulius_git::SquashLanding::Unchanged => SquashLanding::Unchanged,
+            yulius_git::SquashLanding::Conflict(files) => SquashLanding::Conflict(files),
+        })
     }
 
     async fn default_branch(&self, repo: &Path) -> AppResult<String> {

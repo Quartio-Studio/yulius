@@ -42,7 +42,7 @@ pub use commit::{Author, MAX_COMMIT_MESSAGE, MergeInto};
 pub use credential::{run_credential_helper, run_gh_token};
 pub use error::GitError;
 pub use hooks::HOOKS_DIR_NAME;
-pub use merges::{ATTRIBUTES_BEGIN, ATTRIBUTES_END};
+pub use merges::{ATTRIBUTES_BEGIN, ATTRIBUTES_END, SquashInput, SquashLanding};
 pub use redact::redact;
 pub use review::{
     CommitStat, DiffHunk, DiffLine, FileDiff, FileStatus, LineKind, MAX_REVIEW_COMMITS,

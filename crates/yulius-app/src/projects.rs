@@ -427,6 +427,10 @@ impl App {
                 self.create_repository(ctx, name.trim(), template, description)
                     .await?
             }
+            CreateSandbox::Playground { name, template } => {
+                self.playground_from_template(&ctx.user, name, template)
+                    .await?
+            }
         };
         let level = self
             .access_level(&ctx.user, &record)
@@ -654,7 +658,10 @@ impl App {
     /// with `name-2`, `name-3`, … on conflicts (slugs stay reserved by removed sandboxes, except
     /// for the same repository added again: it gets its name back and the removed sandbox's slug
     /// becomes `name-removed-<ms>`, F 2026-10-11).
-    async fn insert_sandbox_unique(&self, mut record: SandboxRecord) -> AppResult<SandboxRecord> {
+    pub(crate) async fn insert_sandbox_unique(
+        &self,
+        mut record: SandboxRecord,
+    ) -> AppResult<SandboxRecord> {
         let store = &self.deps.store;
         let base = slug_base(&record.repo_name);
         store
@@ -668,6 +675,10 @@ impl App {
             };
             if store.sandbox_by_slug(&slug).await?.is_some() {
                 continue;
+            }
+            // A playground's repository name is its slug, unique like it (SPEC-099).
+            if record.is_playground() {
+                record.repo_name.clone_from(&slug);
             }
             record.slug = slug;
             record.port_base = store
@@ -773,7 +784,7 @@ impl App {
             .push_scaffold(
                 &id,
                 &Scaffold {
-                    owner: &repo_owner,
+                    url: &clone_url(&repo_owner, &repo_name),
                     name: &repo_name,
                     files: &files,
                     template,
@@ -857,14 +868,14 @@ impl App {
     /// Clones the new (empty) repository into a scratch directory, commits the scaffold on the
     /// production branch, pushes it there and to the integration branch, then deletes the
     /// scratch clone.
-    async fn push_scaffold(
+    pub(crate) async fn push_scaffold(
         &self,
         id: &SandboxId,
         scaffold: &Scaffold<'_>,
         token: &Secret,
     ) -> AppResult<()> {
         let Scaffold {
-            owner,
+            url,
             name,
             files,
             template,
@@ -876,10 +887,7 @@ impl App {
             let parent = parent.to_path_buf();
             blocking(move || std::fs::create_dir_all(&parent).map_err(AppError::internal)).await?;
         }
-        self.deps
-            .git
-            .sync_clone(&clone_url(owner, name), &scratch, token)
-            .await?;
+        self.deps.git.sync_clone(url, &scratch, token).await?;
         let production = profile.production_branch.clone();
         let files = files.to_vec();
         let root = scratch.clone();
@@ -1074,17 +1082,22 @@ impl App {
 
 /// What to push as the first commit of a new repository.
 #[derive(Clone, Copy)]
-struct Scaffold<'a> {
-    owner: &'a str,
-    name: &'a str,
-    files: &'a [(String, String)],
-    template: TemplateKind,
-    profile: &'a DeliveryProfile,
-    user: &'a UserRecord,
+pub(crate) struct Scaffold<'a> {
+    /// Where the scaffold is pushed: the new GitHub repository, or a playground's `origin`.
+    pub(crate) url: &'a str,
+    pub(crate) name: &'a str,
+    pub(crate) files: &'a [(String, String)],
+    pub(crate) template: TemplateKind,
+    pub(crate) profile: &'a DeliveryProfile,
+    pub(crate) user: &'a UserRecord,
 }
 
 /// Points the unborn `HEAD` of a fresh clone at `branch` and writes the scaffold files.
-fn write_scaffold(root: &Path, branch: &str, files: &[(String, String)]) -> AppResult<()> {
+pub(crate) fn write_scaffold(
+    root: &Path,
+    branch: &str,
+    files: &[(String, String)],
+) -> AppResult<()> {
     let git_dir = root.join(".git");
     if !git_dir.is_dir() {
         return Err(AppError::Internal(

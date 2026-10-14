@@ -45,6 +45,7 @@ pub mod metrics_recount;
 pub mod model;
 pub mod notes;
 pub mod onboarding;
+pub mod playground;
 pub mod ports;
 pub mod prepared;
 pub mod preview;

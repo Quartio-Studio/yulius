@@ -1253,6 +1253,7 @@ impl App {
                 })
                 .map(|e| e.name.clone())
                 .collect(),
+            playground: sandbox.is_playground(),
         };
         let author = match self.deps.store.user(&task.created_by).await {
             Ok(Some(user)) => user.github_login.unwrap_or(user.display_name),

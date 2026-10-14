@@ -26,6 +26,7 @@ use crate::context::App;
 use crate::coordination::AgentContext;
 use crate::delivery::MergeFailure;
 use crate::error::{AppError, AppResult};
+use crate::model::SandboxRecord;
 
 /// Longest review summary kept in the audit.
 const MAX_REVIEW_SUMMARY_CHARS: usize = 500;
@@ -169,6 +170,29 @@ impl App {
         }
         // The agent hears this call's own answer: an earlier armed merge's outcome is old news.
         self.forget_merge_outcome(&ctx.task);
+        // A playground merges at once: no pull request, no checks to wait for (SPEC-099).
+        if let Some(sandbox) = self
+            .deps
+            .store
+            .sandbox(&ctx.task.sandbox_id)
+            .await?
+            .filter(SandboxRecord::is_playground)
+        {
+            let task = self
+                .load_task(&auth, &task_id, yulius_domain::permission::Action::Work)
+                .await?;
+            let view = self
+                .playground_merge(&auth.user, &task, Some(&head))
+                .await?;
+            self.agent_audit(
+                ctx,
+                "delivery.agent.merge",
+                &format!("{}#{}", sandbox.slug, ctx.task.number),
+                &format!("playground: squashed at head {head} reviewed independently"),
+            )
+            .await;
+            return Ok(json!({"merged": true, "delivery": view}));
+        }
         let before = self.task_delivery(&auth, &task_id).await?;
         let checks = before.pr.as_ref().map_or("none", |p| p.checks.as_str());
         let sandbox = self
@@ -397,6 +421,7 @@ impl App {
             .sandbox(&ctx.task.sandbox_id)
             .await?
             .ok_or(AppError::NotFound)?;
+        crate::playground::refuse_in_playground(&sandbox, "Opening an issue")?;
         let token = match self.owner_github_token(&ctx.task).await {
             Some(token) => token,
             None => self.repository_installation_token(&sandbox).await?,
