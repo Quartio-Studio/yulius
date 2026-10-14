@@ -221,6 +221,9 @@ test('the sidebar and Tasks lists load as task rows of the real rows’ height',
   const sideHead = await box(browser, `${side} .task-group-head`);
   const pageRow = await box(browser, `${page} .skeleton-tl-row`);
   const pageColumns = await box(browser, '#main .tl > .tl-columns');
+  // Rows start with the task's number (SPEC-122), so the title bars start where the titles will.
+  const sideTitle = await box(browser, `${side} .skeleton-task-row .task-title`);
+  const pageTitle = await box(browser, `${page} .skeleton-tl-link > .skeleton-bar`);
   expect(await axeViolations(browser)).toEqual([]);
 
   await release(browser);
@@ -232,6 +235,8 @@ test('the sidebar and Tasks lists load as task rows of the real rows’ height',
   expectSameBox(sideRow, await box(browser, '.task-list .task-row'), ['x', 'width', 'height']);
   expectSameBox(pageColumns, await box(browser, '#main .tl-columns'));
   expectSameBox(pageRow, await box(browser, '#main .tl-row'), ['x', 'width', 'height']);
+  expectSameBox(sideTitle, await box(browser, '.task-list .task-link:not(:has(.tl-pr-chip)) .task-title'), ['x']);
+  expectSameBox(pageTitle, await box(browser, '#main .tl-link .tl-title'), ['x']);
 });
 
 test('narrow Tasks rows load as two lines, like the rows they stand for', async ({ app, browser, screen }) => {
