@@ -17,7 +17,7 @@
 //!            [--interrupts] [--rate-limits-file PATH] [--session-start] [--opening-turn-ms MS]
 //!            [--echo-turn-ms MS] [--context-full-after N] [--compact-fails] [--compact-hangs]
 //!            [--prompt TEXT] [--limit-continues-ms MS [--limit-continues-answer-only]]
-//!            [--idle-compact-ms MS]
+//!            [--idle-compact-ms MS] [--trust-prompt]
 //! ```
 //!
 //! Modes:
@@ -92,6 +92,10 @@
 //! (`YULIUS_EXE hook claude StatusLine`, with `--hooks`) at the start and after every turn, with
 //! the `rate_limits` object read from PATH (when it exists) in its input, and prints
 //! `STATUS <line>`.
+//!
+//! `--trust-prompt` opens like Claude Code 2.1.292 in a folder it does not trust (SPEC-106): its
+//! "Quick safety check" dialog, then one line read as the answer, which prints `TRUST ANSWERED:
+//! <line>` on a cleared screen; only then does the rest start (the `SessionStart` hook too).
 //!
 //! `--session-start` (with `--hooks`) runs Claude Code's `SessionStart` hook before anything else.
 //! `--opening-turn-ms MS` stands for a first message given on the command line (Claude Code's
@@ -203,6 +207,7 @@ struct Options {
     limit_continues_ms: Option<u64>,
     limit_continues_answer_only: bool,
     idle_compact_ms: Option<u64>,
+    trust_prompt: bool,
 }
 
 fn parse_number<T: std::str::FromStr>(flag: &str, value: Option<String>) -> Result<T, String> {
@@ -248,6 +253,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
         limit_continues_ms: None,
         limit_continues_answer_only: false,
         idle_compact_ms: None,
+        trust_prompt: false,
     };
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -329,6 +335,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Options, String>
             "--drop-lines" => options.drop_lines = parse_number(&flag, args.next())?,
             "--interrupts" => options.interrupts = true,
             "--session-start" => options.session_start = true,
+            "--trust-prompt" => options.trust_prompt = true,
             "--echo-turn-ms" => {
                 let ms: u64 = parse_number(&flag, args.next())?;
                 options.echo_turn_ms = ms.min(MAX_WORK_MS);
@@ -1443,6 +1450,23 @@ fn compact_when_idle(ms: u64, transcript: Option<Arc<Mutex<Transcript>>>, hooks:
     });
 }
 
+/// Claude Code 2.1.292's folder-trust dialog for a folder whose `.claude/settings.json`
+/// pre-approves tools; the answer is the next line, then the screen is cleared of the dialog.
+fn trust_prompt() -> io::Result<()> {
+    say("Accessing workspace:")?;
+    say("Quick safety check: Is this a project you created or one you trust?")?;
+    say("This folder pre-approves 2 tool permissions in .claude/settings.json: Write, Edit")?;
+    say("\u{276f} No, continue without these permissions")?;
+    say("  Yes, I trust this folder")?;
+    say("Enter to confirm \u{b7} Esc to cancel")?;
+    let answer = read_message(&mut io::stdin().lock())?.unwrap_or_default();
+    let mut out = io::stdout().lock();
+    out.write_all(b"\x1b[2J\x1b[H")?;
+    out.flush()?;
+    drop(out);
+    say(&format!("TRUST ANSWERED: {answer}"))
+}
+
 fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
     let transcript = match &options.transcript {
         Some(path) => Some(Arc::new(Mutex::new(Transcript::open(
@@ -1455,6 +1479,9 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
         exe: exe.clone(),
         session_id: session_id.to_owned(),
     });
+    if options.trust_prompt {
+        trust_prompt()?;
+    }
     let keys = Keys::start(options, hooks.clone())?;
     let keys = keys.as_ref();
     status_line(options, hooks.as_ref())?;

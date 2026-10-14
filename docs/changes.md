@@ -14,6 +14,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Agent work per task, Agent working time, Tokens and Subscription switches figures get a chart of
   the range's days, like Tasks; every chart names its first, highest and last values for screen
   readers.
+- Onboarding no longer gets stuck (SPEC-106, ADR-0086, task #91, #425).
+  - **Trust prompt.** A task in a repository whose `.claude/settings.json` pre-approves tools
+    starts without Claude Code's folder-trust prompt: its main repository is trusted too, where
+    Claude Code 2.1.292 looks a worktree's trust up. If a trust prompt still shows, Yulius waits
+    for a person to answer it and then sets the goal; the answer no longer counts as a draft.
+  - **Lost onboarding task.** A sandbox whose onboarding task was deleted goes back to "Onboard
+    first" with Start onboarding. While onboarding is in progress, its task can't be archived.
+  - **Healing.** Sandboxes stuck this way (studio) heal at the next server start.
 - A session's spider web hangs exactly in its corner and keeps its colour while the transcript
   scrolls (SPEC-109, ADR-0088, task #94, issue #427). It used to start 16 px above the well, over
   the header, and to fade nearly into the background once stuck.

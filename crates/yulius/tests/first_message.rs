@@ -48,6 +48,18 @@ async fn start(
     port: u16,
     probe: Arc<ScriptedUsage>,
 ) -> Result<(Arc<App>, u16), BoxError> {
+    start_with(data, fake, agent, port, probe, |_| {}).await
+}
+
+/// [`start`] with `configure` applied to the app's configuration.
+async fn start_with(
+    data: &Path,
+    fake: &Path,
+    agent: FakeAgentOptions,
+    port: u16,
+    probe: Arc<ScriptedUsage>,
+    configure: impl FnOnce(&mut AppConfig),
+) -> Result<(Arc<App>, u16), BoxError> {
     let socket = tokio::net::TcpSocket::new_v4()?;
     socket.set_reuseaddr(true)?;
     socket.bind(SocketAddr::from(([127, 0, 0, 1], port)))?;
@@ -57,6 +69,7 @@ async fn start(
     let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
     let mut config = AppConfig::new(data.to_path_buf(), "https://yulius.test", &url, exe.clone());
     config.contained = false;
+    configure(&mut config);
     let deps = Deps {
         store: Arc::new(SqliteStore::open(&data.join("yulius.db"))?),
         clock: Arc::new(SystemClock),
@@ -292,6 +305,154 @@ fn a_draft_typed_during_the_opening_turn_is_left_alone() -> TestResult {
         let shown = screen(&app, &id);
         assert!(!shown.contains("/goal"), "the goal was typed:\n{shown}");
         assert!(!shown.contains("GOAL SET"), "{shown}");
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-106 OTR-002 (#425): Claude Code opens on its folder-trust prompt and a person answers it
+/// before the goal. Yulius types nothing into the prompt, the answer is not a draft, and the goal
+/// is set once the prompt is gone, with no flag.
+#[test]
+fn a_trust_prompt_answered_before_the_goal_keeps_the_goal() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            trust_prompt: true,
+            ..hooked()
+        };
+        let (app, _) = start(&data, &fake, agent, 0, probe).await?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = new_task(
+            &app,
+            &sandbox,
+            &user,
+            "Make the header blue",
+            TaskMode::Goal,
+        )
+        .await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        wait_for("the trust prompt", Duration::from_secs(60), || async {
+            screen(&app, &id).contains("Yes, I trust this folder")
+        })
+        .await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        let attach = app
+            .terminal_open(&ctx, id.as_str(), Some((120, 40)))
+            .await?;
+        // Longer than the goal's quiet time: a Yulius that typed into the prompt would have now.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        app.terminal_input(&ctx, &attach, b"2\r", false).await?;
+        wait_for("the goal", Duration::from_secs(90), || async {
+            screen(&app, &id).contains("GOAL SET")
+        })
+        .await?;
+        let shown = screen(&app, &id);
+        let answer = shown
+            .lines()
+            .find(|line| line.starts_with("TRUST ANSWERED:"))
+            .map(str::trim_end);
+        assert_eq!(answer, Some("TRUST ANSWERED: 2"), "{shown}");
+        assert_eq!(shown.matches("GOAL SET").count(), 1, "{shown}");
+        assert_ne!(activity(&app, &id).await, Some(Activity::NeedsAttention));
+        let said = notices(&mut watch);
+        assert!(!said.iter().any(|n| n.contains("no goal yet")), "{said:?}");
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-106 OTR-002 (#425): a trust prompt nobody answers gets nothing typed into it; once the
+/// time to answer it is over the task is flagged and says why.
+#[test]
+fn an_unanswered_trust_prompt_gets_nothing_typed_and_flags_the_task() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            trust_prompt: true,
+            ..hooked()
+        };
+        let (app, _) = start_with(&data, &fake, agent, 0, probe, |config| {
+            config.trust_answer_ms = 3_000;
+            config.goal_ready_ms = 2_000;
+        })
+        .await?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = new_task(
+            &app,
+            &sandbox,
+            &user,
+            "Make the header blue",
+            TaskMode::Goal,
+        )
+        .await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        wait_for("the flag", Duration::from_secs(60), || async {
+            activity(&app, &id).await == Some(Activity::NeedsAttention)
+        })
+        .await?;
+        let shown = screen(&app, &id);
+        assert!(shown.contains("Yes, I trust this folder"), "{shown}");
+        assert!(
+            !shown.contains("TRUST ANSWERED"),
+            "something answered it:\n{shown}"
+        );
+        let said = notices(&mut watch);
+        assert!(
+            said.iter()
+                .any(|n| n.contains("asks whether to trust this folder. Answer")),
+            "{said:?}"
+        );
+        assert!(
+            said.iter()
+                .any(|n| n.contains("still asks whether to trust this folder")),
+            "{said:?}"
+        );
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-106 OTR-002: the trust dialog's words in a session that has started (here a person's
+/// draft) are no trust prompt: the draft is left alone and the task flagged, as in #252.
+#[test]
+fn trust_words_after_the_session_started_are_no_trust_prompt() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let (app, _) = start(&data, &fake, opening_turn(), 0, probe).await?;
+        let (id, ctx, attach) = goal_in_its_opening_turn(&app, &data).await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        app.terminal_input(&ctx, &attach, b"Yes, I trust this folder", false)
+            .await?;
+        wait_for("the flag", Duration::from_secs(60), || async {
+            activity(&app, &id).await == Some(Activity::NeedsAttention)
+        })
+        .await?;
+        let said = notices(&mut watch);
+        assert!(said.iter().any(|n| n.contains("no goal yet")), "{said:?}");
+        assert!(
+            !said.iter().any(|n| n.contains("asks whether to trust")),
+            "{said:?}"
+        );
+        assert!(!screen(&app, &id).contains("/goal"));
         app.terminal_leave(&attach).await;
         stop(&app, &id).await
     })?;

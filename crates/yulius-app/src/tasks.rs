@@ -14,7 +14,7 @@ use yulius_domain::task::{Activity, TaskStatus};
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
-use crate::model::{FeedbackRecord, MetricsRecord, StepRecord, TaskRecord};
+use crate::model::{FeedbackRecord, MetricsRecord, StepRecord, TaskOrigin, TaskRecord};
 use crate::ports::store::TaskFieldUpdate;
 
 /// Maximum title length derived from a prompt.
@@ -379,12 +379,18 @@ impl App {
     ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::Work).await?;
         let done = task.status == TaskStatus::Running && self.task_is_done(&task).await;
-        if archive && done {
+        if archive && done && task.origin == TaskOrigin::Onboarding {
+            // Its run's end decides whether onboarding is over, which the check below reads.
+            self.close_task_and_wait(&task.id).await?;
+        } else if archive && done {
             self.close_task_now(&task.id).await?;
         } else if archive && !task.status.is_resting() {
             return Err(AppError::Conflict(
                 "stop the task before archiving it".into(),
             ));
+        }
+        if archive {
+            self.ensure_archive_allowed(&task).await?;
         }
         let now = self.now();
         let update = TaskFieldUpdate {
@@ -481,6 +487,12 @@ impl App {
         // A start rule naming the deleted task now sees it as ended (SPEC-017), and a deleted
         // supertask no longer holds its project (SPEC-071).
         self.advance_rule_chains(&deleted_in).await;
+        // A deleted onboarding task leaves its sandbox to start onboarding again (SPEC-106).
+        if task.origin == TaskOrigin::Onboarding
+            && let Err(err) = self.refresh_onboarding(&deleted_in).await
+        {
+            tracing::warn!(sandbox = %deleted_in, error = %err, "could not refresh onboarding");
+        }
         if task.supertask {
             self.drain_queue().await;
         }

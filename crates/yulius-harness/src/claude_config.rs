@@ -5,7 +5,9 @@
 //! is "No, exit" (verified live with Claude Code 2.1.292). An unattended launch or a typed wake
 //! notice would then exit the agent. The file is merged, never replaced, because Claude Code
 //! keeps its own state there. The same preparation keeps Claude Code's diff side panel from opening
-//! by itself (SPEC-024).
+//! by itself (SPEC-024). A linked git worktree is trusted under its main repository too: Claude
+//! Code 2.1.292 looks a worktree's trust up there when `.claude/settings.json` pre-approves tools
+//! (SPEC-106, verified live).
 
 use std::io::{self, Read};
 use std::path::Path;
@@ -26,7 +28,8 @@ const DIFF_PANE_OPEN: &str = "open";
 /// Largest existing config read; a larger file is treated as corrupt and left untouched.
 const MAX_CONFIG_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Merges onboarding completion, trust for `worktree` and a closed diff side panel into the
+/// Merges onboarding completion, trust for `worktree` (and, for a linked git worktree, its main
+/// repository) and a closed diff side panel into the
 /// Claude global config of `config_dir` (created 0700 when missing). `bypass_permissions` also
 /// records acceptance of the `--dangerously-skip-permissions` warning (contained runs only).
 /// Idempotent.
@@ -63,11 +66,15 @@ pub fn ensure_claude_config(
         Err(err) if err.kind() == io::ErrorKind::NotFound => Map::new(),
         Err(err) => return Err(err),
     };
-    let key = worktree
-        .canonicalize()
-        .unwrap_or_else(|_| worktree.to_path_buf())
-        .to_string_lossy()
-        .into_owned();
+    let keys: Vec<String> = std::iter::once(worktree.to_path_buf())
+        .chain(main_repository(worktree))
+        .map(|path| {
+            path.canonicalize()
+                .unwrap_or(path)
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
     let before = root.clone();
     root.insert("hasCompletedOnboarding".into(), Value::Bool(true));
     root.entry("theme")
@@ -86,15 +93,17 @@ pub fn ensure_claude_config(
         *projects = Value::Object(Map::new());
     }
     if let Value::Object(projects) = projects {
-        let project = projects
-            .entry(key)
-            .or_insert_with(|| Value::Object(Map::new()));
-        if !project.is_object() {
-            *project = Value::Object(Map::new());
-        }
-        if let Value::Object(project) = project {
-            project.insert("hasTrustDialogAccepted".into(), Value::Bool(true));
-            project.insert("hasCompletedProjectOnboarding".into(), Value::Bool(true));
+        for key in keys {
+            let project = projects
+                .entry(key)
+                .or_insert_with(|| Value::Object(Map::new()));
+            if !project.is_object() {
+                *project = Value::Object(Map::new());
+            }
+            if let Value::Object(project) = project {
+                project.insert("hasTrustDialogAccepted".into(), Value::Bool(true));
+                project.insert("hasCompletedProjectOnboarding".into(), Value::Bool(true));
+            }
         }
     }
     if root != before {
@@ -108,6 +117,34 @@ pub fn ensure_claude_config(
     }
     close_diff_pane(config_dir);
     Ok(())
+}
+
+/// The main repository of a linked git worktree, read from its files as Git lays them out (no
+/// `git` process): `<worktree>/.git` is a file `gitdir: <admin dir>`, and `<admin dir>/commondir`
+/// leads to the common git directory. That directory's parent when it is a `.git`, else the
+/// directory itself (a bare repository). `None` for a main checkout, a plain directory or files
+/// that do not read like that.
+fn main_repository(worktree: &Path) -> Option<std::path::PathBuf> {
+    // Regular files only: a FIFO planted in their place would block the launch.
+    let small_file = |path: &Path| {
+        path.metadata()
+            .is_ok_and(|m| m.is_file())
+            .then(|| read_small(path).ok().flatten())
+            .flatten()
+    };
+    let dot_git = small_file(&worktree.join(".git"))?;
+    let admin = dot_git.lines().next()?.strip_prefix("gitdir:")?.trim();
+    let admin = worktree.join(admin);
+    let common = small_file(&admin.join("commondir"))?;
+    let common = admin
+        .join(common.lines().next()?.trim())
+        .canonicalize()
+        .ok()?;
+    if common.file_name().is_some_and(|name| name == ".git") {
+        common.parent().map(Path::to_path_buf)
+    } else {
+        Some(common)
+    }
 }
 
 /// Stores `"open": false` in every existing store of Claude Code's built-in diff plugin
@@ -220,6 +257,149 @@ mod tests {
         let value: Value =
             serde_json::from_str(&std::fs::read_to_string(config.join(CLAUDE_GLOBAL_CONFIG))?)?;
         assert_eq!(value["bypassPermissionsModeAccepted"], true);
+        Ok(())
+    }
+
+    fn trusted(
+        config: &std::path::Path,
+        path: &std::path::Path,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        let value: Value =
+            serde_json::from_str(&std::fs::read_to_string(config.join(CLAUDE_GLOBAL_CONFIG))?)?;
+        let key = path.canonicalize()?.to_string_lossy().into_owned();
+        Ok(value["projects"][key.as_str()]["hasTrustDialogAccepted"] == json!(true))
+    }
+
+    /// A linked worktree laid out as `git worktree add` does: `<worktree>/.git` names its admin
+    /// directory inside the main repository's `.git`, whose `commondir` leads back to it.
+    fn linked_worktree(
+        root: &std::path::Path,
+        common: &std::path::Path,
+        gitdir_line: impl Fn(&std::path::Path) -> String,
+    ) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+        let admin = common.join("worktrees").join("w1");
+        std::fs::create_dir_all(&admin)?;
+        std::fs::write(admin.join("commondir"), "../..\n")?;
+        let worktree = root.join("worktrees").join("w1");
+        std::fs::create_dir_all(&worktree)?;
+        std::fs::write(worktree.join(".git"), gitdir_line(&admin))?;
+        Ok(worktree)
+    }
+
+    /// SPEC-106 OTR-001 (#425): Claude Code 2.1.292 looks up the trust of a linked worktree under
+    /// its main repository when `.claude/settings.json` pre-approves tools, so both are trusted.
+    #[test]
+    fn a_linked_worktree_trusts_its_main_repository_too() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let config = dir.path().join(".claude");
+        let repo = dir.path().join("repo");
+        let common = repo.join(".git");
+        let worktree = linked_worktree(dir.path(), &common, |admin| {
+            format!("gitdir: {}\n", admin.display())
+        })?;
+        ensure_claude_config(&config, &worktree, false)?;
+        assert!(trusted(&config, &worktree)?, "the worktree");
+        assert!(trusted(&config, &repo)?, "its main repository");
+        // A relative `gitdir:` (`git worktree add --relative-paths`) leads to the same repository.
+        let config = dir.path().join(".claude-relative");
+        std::fs::write(
+            worktree.join(".git"),
+            "gitdir: ../../repo/.git/worktrees/w1\n",
+        )?;
+        ensure_claude_config(&config, &worktree, false)?;
+        assert!(trusted(&config, &repo)?, "its main repository");
+        Ok(())
+    }
+
+    /// The same with the layout the real `git worktree add` writes (Yulius's task worktrees).
+    #[test]
+    fn a_worktree_made_by_git_trusts_its_main_repository() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let repo = dir.path().join("repo");
+        let worktree = dir.path().join("worktrees").join("task");
+        let git = |args: &[&str]| -> TestResult {
+            // Inherited Git variables (a hook's `GIT_DIR`) would point elsewhere.
+            let status = std::process::Command::new("git")
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .env_remove("GIT_COMMON_DIR")
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "init.defaultBranch=main",
+                ])
+                .args(args)
+                .status()?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("git {args:?}: {status}").into())
+            }
+        };
+        let repo_text = repo.to_string_lossy().into_owned();
+        git(&["init", "-q", &repo_text])?;
+        git(&[
+            "-C",
+            &repo_text,
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "init",
+        ])?;
+        git(&[
+            "-C",
+            &repo_text,
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "task",
+            &worktree.to_string_lossy(),
+        ])?;
+        let config = dir.path().join(".claude");
+        ensure_claude_config(&config, &worktree, false)?;
+        assert!(trusted(&config, &worktree)?);
+        assert!(trusted(&config, &repo)?);
+        Ok(())
+    }
+
+    #[test]
+    fn a_worktree_of_a_bare_repository_trusts_the_repository_itself() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let config = dir.path().join(".claude");
+        let bare = dir.path().join("origin.git");
+        let worktree = linked_worktree(dir.path(), &bare, |admin| {
+            format!("gitdir: {}\n", admin.display())
+        })?;
+        ensure_claude_config(&config, &worktree, false)?;
+        assert!(trusted(&config, &worktree)?);
+        assert!(trusted(&config, &bare)?);
+        Ok(())
+    }
+
+    #[test]
+    fn an_unreadable_git_file_trusts_the_worktree_alone() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let worktree = dir.path().join("wt");
+        std::fs::create_dir_all(&worktree)?;
+        for (n, contents) in ["not a gitdir line\n", "gitdir: /nowhere/at/all\n", ""]
+            .into_iter()
+            .enumerate()
+        {
+            let config = dir.path().join(format!(".claude-{n}"));
+            std::fs::write(worktree.join(".git"), contents)?;
+            ensure_claude_config(&config, &worktree, false)?;
+            let value: Value =
+                serde_json::from_str(&std::fs::read_to_string(config.join(CLAUDE_GLOBAL_CONFIG))?)?;
+            let projects = value["projects"].as_object().ok_or("projects")?;
+            assert_eq!(projects.len(), 1, "{contents:?}: {projects:?}");
+            assert!(trusted(&config, &worktree)?);
+        }
         Ok(())
     }
 
