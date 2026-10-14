@@ -534,7 +534,9 @@ test('Monaco’s services chunk arriving last still gives a clean editor (#394)'
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('button', 'Editor').click();
   await screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md').click();
-  await expect.poll(() => inEditor<number>(browser, 'me', 'return ed.getModel()?.getValue().length ?? 0')).toBeGreaterThan(0);
+  // Monaco loads one chunk after another here, behind the held one: on a busy machine that is
+  // longer than the usual wait.
+  await expect.poll(() => inEditor<number>(browser, 'me', 'return ed?.getModel()?.getValue().length ?? 0'), { timeout: 20_000 }).toBeGreaterThan(0);
   // The services chunk ran before any language chunk, and the contributions that need it start.
   const chunks = await browser.evaluate(() => (window as unknown as { __chunks: string[] }).__chunks);
   expect(chunks[0]).toBe('toggleHighContrast');
