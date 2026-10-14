@@ -163,14 +163,9 @@ pub fn run_checks(data_dir: &Path, contained: bool, extra: &[PathBuf]) -> Vec<Ch
     });
     // Sandboxes copy the host system (ADR-22), so the GitHub CLI installed here is in every
     // sandbox, logged in as the person or task creator (F 2026-10-11).
-    checks.push(match version_of(Path::new("gh"), &["--version"]) {
-        Some(v) => check("GitHub CLI", Level::Ok, v.lines().next().unwrap_or_default().to_owned()),
-        None => check(
-            "GitHub CLI",
-            Level::Warn,
-            "`gh` is not installed; sandboxes have no GitHub CLI (install it: `apt-get install gh`)",
-        ),
-    });
+    checks.push(github_cli_check(
+        version_of(Path::new("gh"), &["--version"]).as_deref(),
+    ));
     checks.push(match version_of(Path::new("claude"), &["--version"]) {
         Some(v) => check("Claude Code", Level::Ok, v),
         None => check(
@@ -207,6 +202,56 @@ pub fn run_checks(data_dir: &Path, contained: bool, extra: &[PathBuf]) -> Vec<Ch
         checks.extend(isolation_checks(data_dir));
     }
     checks
+}
+
+/// GitHub's own package repositories for `gh`; distributions ship versions that are too old.
+const GH_INSTALL_URL: &str = "https://github.com/cli/cli/blob/trunk/docs/install_linux.md";
+
+/// The first GitHub CLI that works since GitHub retired Projects (classic): older ones fail
+/// `gh pr edit` and `gh issue view --comments` with a GraphQL error.
+const GH_MIN_VERSION: (u64, u64, u64) = (2, 82, 1);
+
+/// `X.Y.Z` from `gh version X.Y.Z…`; a suffix after the patch's digits (`-pre.0`) is ignored.
+fn gh_version(line: &str) -> Option<(u64, u64, u64)> {
+    let version = line
+        .strip_prefix("gh version ")?
+        .split_whitespace()
+        .next()?;
+    let mut parts = version.splitn(3, '.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?;
+    let digits = patch
+        .find(|c: char| !c.is_ascii_digit())
+        .map_or(patch, |end| &patch[..end]);
+    Some((major, minor, digits.parse().ok()?))
+}
+
+/// The GitHub CLI check from the first line of `gh --version`, if `gh` ran. Only a recognised
+/// version below [`GH_MIN_VERSION`] warns; an unknown format is shown as it is.
+fn github_cli_check(version: Option<&str>) -> Check {
+    let (major, minor, patch) = GH_MIN_VERSION;
+    let rebuild = "then rebuild the sandbox base (`yulius sandbox-base build`)";
+    match version {
+        Some(v) if gh_version(v).is_some_and(|found| found < GH_MIN_VERSION) => check(
+            "GitHub CLI",
+            Level::Warn,
+            format!(
+                "{v} is older than {major}.{minor}.{patch}: `gh pr edit` and `gh issue view \
+                 --comments` fail in every sandbox; install it from GitHub's package repository \
+                 ({GH_INSTALL_URL}), {rebuild}"
+            ),
+        ),
+        Some(v) => check("GitHub CLI", Level::Ok, v),
+        None => check(
+            "GitHub CLI",
+            Level::Warn,
+            format!(
+                "`gh` is not installed, so sandboxes have no GitHub CLI; install it from GitHub's \
+                 package repository ({GH_INSTALL_URL}), {rebuild}"
+            ),
+        ),
+    }
 }
 
 /// Sandbox isolation (SPEC-002 ADR-22): the namespace holder's prerequisites, the base, the
@@ -425,7 +470,10 @@ pub fn doctor(
 
 #[cfg(test)]
 mod tests {
-    use super::{Level, proxy_secret_check, run_checks, version_of, visible_when_contained};
+    use super::{
+        GH_INSTALL_URL, Level, github_cli_check, proxy_secret_check, run_checks, version_of,
+        visible_when_contained,
+    };
     use std::path::{Path, PathBuf};
 
     #[test]
@@ -477,5 +525,53 @@ mod tests {
         );
         assert!(checks.iter().any(|c| c.name == "git"));
         assert!(checks.iter().any(|c| c.name == "GitHub CLI"));
+    }
+
+    #[test]
+    fn a_github_cli_older_than_2_82_1_warns_and_points_to_the_package_repository() {
+        for line in [
+            "gh version 2.45.0 (2025-07-18 Ubuntu 2.45.0-1ubuntu0.3)",
+            "gh version 2.82.0 (2025-10-15)",
+            "gh version 1.99.9",
+        ] {
+            let c = github_cli_check(Some(line));
+            assert_eq!(c.level, Level::Warn, "{line}: {}", c.detail);
+            for needle in [
+                line,
+                "2.82.1",
+                "gh pr edit",
+                GH_INSTALL_URL,
+                "sandbox-base build",
+            ] {
+                assert!(c.detail.contains(needle), "{needle} missing: {}", c.detail);
+            }
+        }
+    }
+
+    #[test]
+    fn a_current_or_unrecognised_github_cli_is_ok() {
+        for line in [
+            "gh version 2.82.1 (2025-10-22)",
+            "gh version 2.82.1-pre.0",
+            "gh version 2.83.0",
+            "gh version 2.100.0",
+            "gh version 3.0.0 (2027-01-01)",
+            "gh version DEV",
+            "gh version 2",
+            "gh version 2.x.1",
+            "something else",
+        ] {
+            let c = github_cli_check(Some(line));
+            assert_eq!(c.level, Level::Ok, "{line}: {}", c.detail);
+            assert_eq!(c.detail, line);
+        }
+    }
+
+    #[test]
+    fn a_missing_github_cli_points_to_the_package_repository() {
+        let c = github_cli_check(None);
+        assert_eq!(c.level, Level::Warn);
+        assert!(c.detail.contains(GH_INSTALL_URL), "{}", c.detail);
+        assert!(!c.detail.contains("apt-get install gh"), "{}", c.detail);
     }
 }
