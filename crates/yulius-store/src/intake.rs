@@ -10,6 +10,7 @@ use yulius_app::ports::store_ext::IntakeStore;
 use yulius_domain::auto_choice::ChosenBy;
 use yulius_domain::ids::{TaskId, UserId};
 use yulius_domain::intake::PromptClass;
+use yulius_domain::task::TaskStatus;
 use yulius_domain::time::Timestamp;
 
 use crate::{SqliteStore, bad_column, db, to_u32};
@@ -141,6 +142,62 @@ impl IntakeStore for SqliteStore {
             )
             .map_err(db)?;
             Ok(())
+        })
+        .await
+    }
+
+    async fn set_task_schedule(
+        &self,
+        task: &TaskId,
+        start_at: Option<Timestamp>,
+        at: Timestamp,
+    ) -> AppResult<()> {
+        let task = task.as_str().to_owned();
+        self.call(move |conn| {
+            match start_at {
+                Some(start) => conn.execute(
+                    "INSERT INTO task_schedules (task_id, start_at, updated_at) VALUES (?1, ?2, ?3) \
+                     ON CONFLICT(task_id) DO UPDATE SET start_at = ?2, updated_at = ?3",
+                    params![task, start.0, at.0],
+                ),
+                None => conn.execute("DELETE FROM task_schedules WHERE task_id = ?1", [task]),
+            }
+            .map_err(db)?;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn task_schedule(&self, task: &TaskId) -> AppResult<Option<Timestamp>> {
+        let task = task.as_str().to_owned();
+        self.call(move |conn| {
+            conn.query_row(
+                "SELECT start_at FROM task_schedules WHERE task_id = ?1",
+                [task],
+                |row| row.get(0).map(Timestamp),
+            )
+            .optional()
+            .map_err(db)
+        })
+        .await
+    }
+
+    async fn due_prepared(&self, now: Timestamp) -> AppResult<Vec<TaskId>> {
+        self.call(move |conn| {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT s.task_id FROM task_schedules s JOIN tasks t ON t.id = s.task_id \
+                     WHERE t.status = ?1 AND s.start_at <= ?2 \
+                     ORDER BY s.start_at, s.task_id LIMIT 100",
+                )
+                .map_err(db)?;
+            let rows = stmt
+                .query_map(params![TaskStatus::Prepared.as_str(), now.0], |row| {
+                    let id: String = row.get(0)?;
+                    task_id("task id", &id)
+                })
+                .map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)
         })
         .await
     }

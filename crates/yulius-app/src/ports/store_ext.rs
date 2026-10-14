@@ -304,6 +304,17 @@ pub trait IntakeStore: Send + Sync {
     async fn chain_successors(&self, task: &TaskId) -> AppResult<Vec<crate::intake::ChainRecord>>;
     /// Sets or clears why a chained task needs a person.
     async fn set_chain_blocked(&self, task: &TaskId, reason: Option<&str>) -> AppResult<()>;
+    /// Sets the time a prepared task starts by itself, or clears it (SPEC-105).
+    async fn set_task_schedule(
+        &self,
+        task: &TaskId,
+        start_at: Option<Timestamp>,
+        at: Timestamp,
+    ) -> AppResult<()>;
+    /// The time a task was scheduled to start, whatever its status.
+    async fn task_schedule(&self, task: &TaskId) -> AppResult<Option<Timestamp>>;
+    /// Prepared tasks whose time is at or before `now`, earliest first (at most 100 per call).
+    async fn due_prepared(&self, now: Timestamp) -> AppResult<Vec<TaskId>>;
     /// Inserts a pending held prompt; earlier pending holds of the task become `superseded`.
     async fn insert_hold(&self, hold: &crate::intake::HoldRecord) -> AppResult<()>;
     /// A held prompt by id.

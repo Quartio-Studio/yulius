@@ -62,7 +62,10 @@ pub fn owner_of(
     };
     match status {
         TaskStatus::Closed | TaskStatus::Stopped(_) | TaskStatus::Failed(_) => Some(Owner::Ended),
-        TaskStatus::Queued | TaskStatus::Chained | TaskStatus::WaitingCapacity => Some(idle()),
+        TaskStatus::Queued
+        | TaskStatus::Chained
+        | TaskStatus::Prepared
+        | TaskStatus::WaitingCapacity => Some(idle()),
         TaskStatus::Running if activity.is_some_and(Activity::is_idle) && !background_shells => {
             Some(idle())
         }
@@ -282,6 +285,7 @@ mod tests {
             Some(Owner::Idle)
         );
         assert_eq!(owner(TaskStatus::Chained, None), Some(Owner::Idle));
+        assert_eq!(owner(TaskStatus::Prepared, None), Some(Owner::Idle));
         for working in [
             owner(TaskStatus::Running, Some(Activity::Working)),
             owner(TaskStatus::Running, Some(Activity::NeedsAttention)),
