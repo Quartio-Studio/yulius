@@ -51,8 +51,8 @@ xterm, iTerm2 and GNOME Terminal.
 | MSE-004 | A read-only viewer keeps the mouse for text selection: the reporting switches are still filtered for it, a drag selects, nothing is sent. When write access arrives or goes, the terminal switches mode at once. | "a read-only viewer's click does not reach the program" (plus a drag that selects) |
 | MSE-005 | A press in the margin beside another viewer's centred grid reaches no program; it only takes the size. | "a click beside another viewer's grid …" (unchanged test) |
 | MSE-006 | Ctrl+wheel (pinch-zoom) and horizontal swipes stay with the browser while the program has the mouse (#78): xterm neither reports nor cancels them; a plain wheel turn reaches the program as a wheel report. | "the wheel scrolls the program; pinch-zoom and horizontal swipes stay with the browser" |
-| MSE-008 | A plain right-click while the program has the mouse opens no menu (neither Yulius's nor the browser's); a mouse report lost while disconnected shows no notice, a typed key still does. | the clipboard test (`defaultPrevented`), "mouse use while disconnected says nothing" |
 | MSE-007 | The manual wheel and click forwarding (`reportsToApp`, `wheelReport`, `clickReport`) is removed: xterm reports them now. | the encoding unit test is removed with `clickReport`; MSE-002 covers the behaviour |
+| MSE-008 | A plain right-click while the program has the mouse opens no menu (neither Yulius's nor the browser's); a mouse report lost while disconnected shows no notice, a typed key still does. | the clipboard test (`defaultPrevented`), "mouse use while disconnected says nothing" |
 
 ## Plan
 
