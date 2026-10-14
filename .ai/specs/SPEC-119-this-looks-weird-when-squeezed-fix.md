@@ -100,3 +100,23 @@ last row starting at the left". It covers the following (CMP-SQ-1 to 3):
 - **Keep Start on the last row, at its right end.** The send button stays where a chat input puts
   it, and model and effort sit next to the choices they qualify. Collapsing chips to icons was
   rejected: mode and workflow share the same lightning icon.
+
+## Evidence
+
+- Old CSS (`61af0105`, the test alone):
+  `npx e2e run tests/responsive.e2e.ts --grep "new-task composer squeezed"` fails with
+  `expected {"outside":[],"overlaps":0,"lastRowAligned":false,…}` (900 px window).
+- With the fix (`8fb9acc2`), the same test passes.
+- Screenshots of the prompt box (Playwright, dark theme):
+  - 1440 px: one row as before.
+  - 900 px: the chips on row 1, then Preview, "Default model" and "Default effort" from the left
+    edge, with Start at the right.
+  - 1024 px with the Shell panel: the chips wrap from the left, the last row is the same, the
+    model and effort labels truncate, and Start stays inside the box.
+- Full e2e suite (`npx e2e run`): 345 passed, 1 skipped, 1 failed. The failure was in
+  `pulls.e2e.ts`, "announcements within the gap make one read when it has passed", which is
+  unrelated: a wall-clock 1.5 s window under load. It passed 3 times out of 3 when run alone and is
+  filed as #444.
+- After merging `origin/dev` (`17b2fefa`): `responsive`, `new-task`, `places`, `menus`, `drafts`,
+  `phone`, `intake`, `onboarding`, `prepared` and `supertask` give 114 passed.
+- `scripts/dev ci`: exit 0, with nextest at 1604 passed and 16 skipped.
