@@ -43,10 +43,9 @@ naming each file and line, instead of passing every gate until a reviewer happen
 ## Plan
 
 - [x] Spec SPEC-089 written and valid
-- [ ] Repository check fails on committed conflict markers, with regression tests
-- [ ] Docs and changes log describe the new check; full gate green
+- [x] Repository check fails on committed conflict markers, with regression tests
+- [x] Docs and changes log describe the new check; full gate green
 - [ ] Independent review of the exact head approved, findings fixed
-- [ ] Merged into dev on green Yulius CI
 
 ## Acceptance criteria
 

@@ -4,6 +4,13 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-14
+
+- The repository check fails on committed merge conflict markers (SPEC-089, #364): a line that is
+  a Git conflict marker in any tracked or new file, vendored assets and binaries aside, fails
+  `scripts/dev check` and Yulius CI with its file and line, where before markers in docs and web
+  assets passed every gate.
+
 ## 2026-10-13
 
 - Tests no longer time out under load, and every process plans for its share of the machine
