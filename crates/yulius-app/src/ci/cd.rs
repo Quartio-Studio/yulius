@@ -417,7 +417,13 @@ impl App {
             confirmation: req.confirm.as_deref(),
         };
         let run = self
-            .cd_start(&sandbox, env, requester, &CdActor::Person(&ctx.user))
+            .cd_start(
+                &sandbox,
+                env,
+                requester,
+                &CdActor::Person(&ctx.user),
+                req.expect.as_deref(),
+            )
             .await?;
         Ok(self.cd_run_view(&run, false).await)
     }
@@ -445,7 +451,7 @@ impl App {
         let (sandbox, _) = self
             .require(&owner, &ctx.task.sandbox_id, Action::Work)
             .await?;
-        self.cd_start(&sandbox, env, Requester::Agent, &CdActor::Agent(ctx))
+        self.cd_start(&sandbox, env, Requester::Agent, &CdActor::Agent(ctx), None)
             .await
     }
 
@@ -456,6 +462,7 @@ impl App {
         env: CdEnv,
         requester: Requester<'_>,
         actor: &CdActor<'_>,
+        expected: Option<&str>,
     ) -> AppResult<CdRunRecord> {
         // A playground has no deploy: its Git stays on the server (SPEC-099).
         crate::playground::refuse_in_playground(sandbox, "A deploy")?;
@@ -471,7 +478,10 @@ impl App {
             .await;
             return Err(refusal(&refused));
         }
-        let prepared = match self.cd_prepare(sandbox, env, requester, actor).await {
+        let prepared = match self
+            .cd_prepare(sandbox, env, requester, actor, expected)
+            .await
+        {
             Ok(prepared) => prepared,
             Err(err) => {
                 if env == CdEnv::Prod {
@@ -629,14 +639,23 @@ impl App {
         env: CdEnv,
         requester: Requester<'_>,
         actor: &CdActor<'_>,
+        expected: Option<&str>,
     ) -> AppResult<Prepared> {
+        // One deploy at a time reads and writes a sandbox's mirror (round 2, L-b).
+        let mirror_lock = mirror_lock(&sandbox.id);
+        let _mirror = mirror_lock.lock().await;
         let profile = delivery_profile(sandbox);
         self.dlv_refresh_clone(sandbox).await?;
         let token = self.dlv_installation_token(sandbox).await?;
         let integration = self
             .cd_verified_head(sandbox, &profile.integration_branch, &token)
             .await?;
-        let integration_config = self.cd_verified_config(sandbox, &integration).await?;
+        // Production without promotion does not depend on dev's table being valid (round 2, L-a).
+        let integration_config = match self.cd_verified_config(sandbox, &integration).await {
+            Ok(config) => config,
+            Err(_) if env == CdEnv::Prod => CdConfig::default(),
+            Err(err) => return Err(err),
+        };
         let promotes = env == CdEnv::Prod
             && integration_config
                 .prod
@@ -662,6 +681,21 @@ impl App {
                 (profile.production_branch.clone(), production, config)
             }
         };
+        // The person confirmed what they were shown (round 2, M-C): the commit it deploys, or
+        // for a promotion the integration commit it promotes.
+        if let Some(expected) = expected.map(str::trim).filter(|e| !e.is_empty())
+            && !(expected.len() >= 7 && sha.starts_with(&expected.to_ascii_lowercase()))
+        {
+            return Err(AppError::Conflict(format!(
+                "nothing ran: {} moved since you looked (it is now {}); review it and deploy again",
+                if promotes {
+                    &profile.integration_branch
+                } else {
+                    &branch
+                },
+                sha.get(..7).unwrap_or(&sha)
+            )));
+        }
         dom::authorize(&config, env, requester, &sandbox.slug).map_err(|r| refusal(&r))?;
         let Some(target) = config.target(env).cloned() else {
             return Err(AppError::Internal(
@@ -699,11 +733,37 @@ impl App {
         let CdActor::Person(user) = actor else {
             return Err(refusal(&CdRefusal::ProductionIsAPersons));
         };
-        let note = self.cd_promote(sandbox, &profile, user).await?;
+        let mirror = self.cd_mirror(&sandbox.id);
+        let before = self
+            .cd_verified_head(sandbox, &profile.production_branch, &token)
+            .await?;
+        // From verified commits, never the agents' clone (round 2, M-C).
+        let contained = self.deps.git.is_ancestor(&mirror, &sha, &before).await?;
+        let note = if contained {
+            format!(
+                "'{}' already contains '{}': nothing to promote",
+                profile.production_branch, profile.integration_branch
+            )
+        } else {
+            self.cd_promote(sandbox, &profile, user).await?
+        };
         self.dlv_refresh_clone(sandbox).await?;
         let production = self
             .cd_verified_head(sandbox, &profile.production_branch, &token)
             .await?;
+        if !self
+            .deps
+            .git
+            .is_ancestor(&mirror, &sha, &production)
+            .await?
+        {
+            return Err(AppError::Conflict(format!(
+                "nothing was deployed: '{}' at {} does not contain the promoted {} ({note})",
+                profile.production_branch,
+                production.get(..7).unwrap_or(&production),
+                sha.get(..7).unwrap_or(&sha)
+            )));
+        }
         // What production holds now is what runs, with its own table.
         let deployed = self.cd_verified_config(sandbox, &production).await?;
         let mut checked = no_promotion(deployed);
@@ -730,10 +790,9 @@ impl App {
         })
     }
 
-    /// Promotes the integration branch for a person's production deploy: nothing when
-    /// production already contains it; otherwise the profile's promotion, and with a merge-commit
-    /// promotion the pull request is merged at once when its checks passed. Returns the note the
-    /// run keeps.
+    /// Promotes the integration branch for a person's production deploy with the profile's
+    /// promotion; with a merge-commit promotion the pull request is merged at once when its
+    /// checks passed. Returns the note the run keeps.
     async fn cd_promote(
         &self,
         sandbox: &SandboxRecord,
@@ -741,15 +800,6 @@ impl App {
         user: &UserRecord,
     ) -> AppResult<String> {
         let (integration, production) = (&profile.integration_branch, &profile.production_branch);
-        let ahead = self
-            .dlv_branch_relation(sandbox, profile, true)
-            .await
-            .map(|(ahead, _)| ahead);
-        if ahead == Some(0) {
-            return Ok(format!(
-                "'{production}' already contains '{integration}': nothing to promote"
-            ));
-        }
         let token = self
             .person_github_token(user, &format!("Deploying {production}"))
             .await?;
@@ -884,9 +934,12 @@ impl App {
         .await;
     }
 
-    /// The run's containment: dev joins the sandbox (agents build and use dev); production runs
-    /// outside it on the host's read-only system with the run's own root (review C1). Either way
-    /// only the run's directory and its environment's cache are bound in.
+    /// The run's containment (review C1, H-A). Dev joins the sandbox: agents build and use
+    /// dev, with their tools. Production joins only the sandbox's network (no host loopback),
+    /// on the host's read-only system with empty `/var`, `/root` and `/home` and the sandbox's
+    /// resolver: nothing an agent installed or wrote runs with production's secrets. Without
+    /// sandbox isolation both run in the previous containment, production with the run's
+    /// directory as its root. Only the run's directory and its environment's cache are bound in.
     async fn cd_containment(
         &self,
         sandbox: &SandboxRecord,
@@ -898,28 +951,29 @@ impl App {
         if !self.config.contained {
             return Ok((Containment::None, None));
         }
-        let readonly: Vec<PathBuf> = self.config.contained_readonly.clone();
-        if env == CdEnv::Prod {
-            return Ok((
-                Containment::Bubblewrap {
-                    sandbox_root: work.to_path_buf(),
-                    home: home.to_path_buf(),
-                    writable: vec![cache.to_path_buf()],
-                    readonly,
-                    binds: Vec::new(),
-                    identity: None,
-                    join: None,
-                },
-                None,
-            ));
-        }
         // Held until the run ends: the sandbox's holder is not stopped as idle meanwhile.
         let (join, lease) = match self.isolation_join(sandbox).await {
             Ok(joined) => joined.unzip(),
             Err(err) => return Err(err.public_message()),
         };
-        Ok((
-            Containment::Bubblewrap {
+        let readonly = self.config.contained_readonly.clone();
+        let containment = match (env, join) {
+            (CdEnv::Prod, Some(join)) => {
+                let resolver = work.join("resolv.conf");
+                std::fs::write(&resolver, SANDBOX_RESOLVER)
+                    .map_err(|e| format!("writing the run's resolver failed: {e}"))?;
+                production_containment(work, home, cache, readonly, &resolver, join)
+            }
+            (CdEnv::Prod, None) => Containment::Bubblewrap {
+                sandbox_root: work.to_path_buf(),
+                home: home.to_path_buf(),
+                writable: vec![cache.to_path_buf()],
+                readonly,
+                binds: Vec::new(),
+                identity: None,
+                join: None,
+            },
+            (CdEnv::Dev, join) => Containment::Bubblewrap {
                 sandbox_root: self.sandbox_dir(&sandbox.id),
                 home: home.to_path_buf(),
                 writable: vec![work.to_path_buf(), cache.to_path_buf()],
@@ -931,8 +985,8 @@ impl App {
                 identity: None,
                 join: join.map(|join| Box::new(ci_join(join))),
             },
-            lease,
-        ))
+        };
+        Ok((containment, lease))
     }
 
     #[allow(clippy::too_many_arguments)] // One run's whole context.
@@ -1178,6 +1232,61 @@ impl App {
     }
 }
 
+/// One lock per sandbox around its CD mirror's reads and writes.
+fn mirror_lock(sandbox: &SandboxId) -> Arc<tokio::sync::Mutex<()>> {
+    static LOCKS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    > = std::sync::OnceLock::new();
+    let locks = LOCKS.get_or_init(Default::default);
+    let mut map = locks
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    map.entry(sandbox.as_str().to_owned()).or_default().clone()
+}
+
+/// The resolver of a sandbox's network (`slirp4netns`'s DNS; `yulius_sandbox::base`).
+const SANDBOX_RESOLVER: &str = "nameserver 10.0.2.3\n";
+
+/// The host system directories a production run sees, read-only.
+const PRODUCTION_SYSTEM_DIRS: [&str; 3] = ["/usr", "/etc", "/opt"];
+
+/// The system directories a production run gets empty (`/var` holds Yulius's data on the host).
+const PRODUCTION_EMPTY_DIRS: [&str; 6] = ["/var", "/root", "/home", "/srv", "/mnt", "/media"];
+
+/// A production run joined to its sandbox's network (no host loopback, review H-A), but not to
+/// its system layer: the host's system directories read-only, the others empty, the sandbox's
+/// resolver, and only the run's directory and its cache bound in (review C1).
+fn production_containment(
+    work: &Path,
+    home: &Path,
+    cache: &Path,
+    readonly: Vec<PathBuf>,
+    resolver: &Path,
+    join: crate::ports::isolation::SandboxJoin,
+) -> Containment {
+    let mut join = ci_join(join);
+    join.system_root = PathBuf::from("/");
+    join.private_dirs
+        .extend(PRODUCTION_EMPTY_DIRS.iter().map(PathBuf::from));
+    join.extra_readonly.clear();
+    Containment::Bubblewrap {
+        sandbox_root: work.to_path_buf(),
+        home: home.to_path_buf(),
+        writable: vec![cache.to_path_buf()],
+        readonly: readonly
+            .into_iter()
+            .chain(PRODUCTION_SYSTEM_DIRS.iter().map(PathBuf::from))
+            .collect(),
+        binds: vec![crate::ports::session::Bind {
+            source: resolver.to_path_buf(),
+            dest: PathBuf::from("/etc/resolv.conf"),
+            writable: false,
+        }],
+        identity: None,
+        join: Some(Box::new(join)),
+    }
+}
+
 /// A production table read from the production head: only the integration head decides a
 /// promotion (review L4).
 fn no_promotion(mut config: CdConfig) -> CdConfig {
@@ -1353,5 +1462,80 @@ impl App {
             short_sha(&run.sha)
         );
         Ok(serde_json::json!({"text": text, "run": view}))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ports::isolation::SandboxJoin;
+
+    /// Review H-A and C1: production joins the sandbox's network only. Its system is the host's,
+    /// read-only, `/var` (Yulius's data) is empty, the resolver is the sandbox's, and nothing of
+    /// the sandbox (its directory, its system layer) is bound in.
+    #[test]
+    fn production_runs_on_the_sandbox_network_with_the_hosts_system() {
+        let join = SandboxJoin {
+            holder_pid: 7,
+            user_ns: 1,
+            net_ns: 2,
+            mnt_ns: 3,
+            cgroup: Some("/cg/agents".into()),
+            ci_cgroup: Some("/cg/ci".into()),
+            system_root: "/data/sandboxes/s1/system/root".into(),
+            hostname: "app".into(),
+            exec_shim: None,
+            extra_readonly: vec!["/opt/claude".into()],
+            private_dirs: vec!["/tmp/x".into()],
+            system_passwd: None,
+            system_group: None,
+        };
+        let (work, home, cache) = (
+            Path::new("/data/runs/cd-r/work"),
+            Path::new("/data/runs/cd-r/work/home"),
+            Path::new("/data/cd/s1/cache/prod"),
+        );
+        let resolver = Path::new("/data/runs/cd-r/work/resolv.conf");
+        let Containment::Bubblewrap {
+            sandbox_root,
+            writable,
+            readonly,
+            binds,
+            join: Some(joined),
+            ..
+        } = production_containment(
+            work,
+            home,
+            cache,
+            vec!["/usr/local/bin/yulius".into()],
+            resolver,
+            join,
+        )
+        else {
+            panic!("a joined containment");
+        };
+        assert_eq!(sandbox_root, work);
+        assert_eq!(writable, [cache]);
+        for dir in ["/usr", "/etc", "/opt"] {
+            assert!(readonly.contains(&PathBuf::from(dir)), "{dir} read-only");
+        }
+        assert_eq!(
+            joined.system_root,
+            PathBuf::from("/"),
+            "the host's system, not the layer"
+        );
+        for dir in ["/var", "/root", "/home"] {
+            assert!(
+                joined.private_dirs.contains(&PathBuf::from(dir)),
+                "{dir} empty"
+            );
+        }
+        assert_eq!(joined.net_ns, 2, "the sandbox's network: no host loopback");
+        assert_eq!(joined.cgroup.as_deref(), Some(Path::new("/cg/ci")));
+        assert_eq!(binds.len(), 1);
+        assert_eq!(binds[0].dest, PathBuf::from("/etc/resolv.conf"));
+        assert!(!binds[0].writable);
+        let everything = format!("{readonly:?} {writable:?} {binds:?} {sandbox_root:?}");
+        assert!(!everything.contains("/data/sandboxes"), "{everything}");
     }
 }

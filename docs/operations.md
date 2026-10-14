@@ -648,9 +648,9 @@ with `repo_cleanup`.
 
 CD (deployment, SPEC-134) needs no configuration on the server: projects define `[cd.dev]` and
 `[cd.prod]` in their `yulius.toml`. A run uses the CI job timeout (`--ci-job-timeout-min`, `YULIUS_CI_JOB_TIMEOUT_MIN`) and the
-containment: dev runs inside the sandbox (its tools, its network); production runs outside it on
-the host's read-only system and network (the host's loopback included), so its scripts install
-the tools they need into `$YULIUS_CD_CACHE`. Files: `<data>/cd/<id>/source.git` (the verified
+containment: dev runs inside the sandbox (its tools, its network); production joins only the
+sandbox's network (no host loopback) on the host's read-only `/usr`, `/etc` and `/opt`, so its
+scripts install the tools they need into `$YULIUS_CD_CACHE`. Files: `<data>/cd/<id>/source.git` (the verified
 mirror), `<data>/cd/<id>/cache/<env>` (`$YULIUS_CD_CACHE`) and `<data>/runs/cd-<run>/work` (the
 commit's tree, `HOME` and log, removed after each run); none is visible to agents. Runs are kept
 14 days, 50 per environment, and each environment's last passed run always.

@@ -235,6 +235,9 @@ impl App {
                 record.requested_hosts.join(", ")
             )));
         }
+        if answer.allow && record.cd_prod {
+            return Err(AppError::Conflict(super::PRODUCTION_SECRET.into()));
+        }
         let asked = std::mem::take(&mut record.requested_hosts);
         let by = record.requested_by.take().unwrap_or_default();
         let hosts = if answer.allow {

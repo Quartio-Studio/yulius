@@ -688,21 +688,14 @@ impl App {
             .filter(|(at, _)| !head.is_empty() && (at.starts_with(&head) || head.starts_with(at)))
             .map(|(_, text)| text);
         let cd = self.cd_latest_run_of_task(task).await?;
-        // A run that ended is reported once: the state that shows it marks it (the wait that
-        // gets it ends on it).
-        let cd_unreported = cd.as_ref().is_some_and(|run| {
-            run.state != yulius_domain::ci::RunState::Running
-                && self
-                    .runtime(&task.id)
-                    .cd_reported
-                    .lock()
-                    .map(|mut seen| {
-                        let fresh = seen.as_deref() != Some(run.id.as_str());
-                        *seen = Some(run.id.clone());
-                        fresh
-                    })
-                    .unwrap_or(false)
-        });
+        // A run that ended is reported once, recorded with the run (a restart keeps it): the
+        // state that shows it marks it, and the wait that gets it ends on it.
+        let cd_unreported = match &cd {
+            Some(run) if run.state != yulius_domain::ci::RunState::Running => {
+                self.deps.store.mark_cd_run_reported(&run.id).await?
+            }
+            _ => false,
+        };
         Ok(WaitState {
             cd_unreported,
             cd_run: cd.as_ref().map(|run| run.id.clone()),

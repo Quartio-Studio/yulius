@@ -109,8 +109,6 @@ pub struct TaskRuntime {
     pub(crate) typed_at_ms: AtomicI64,
     /// Who typed last.
     pub(crate) typed_by: Mutex<Option<yulius_domain::ids::UserId>>,
-    /// The CD run whose end `yulius wait` already reported (SPEC-134 CDT-003).
-    pub(crate) cd_reported: Mutex<Option<String>>,
     /// Claude Code recorded the session goal as achieved and no prompt came since (TSK-014).
     pub(crate) goal_achieved: AtomicBool,
     /// Claude Code recorded something about the goal since the `/goal` was typed: it was
@@ -238,7 +236,6 @@ impl TaskRuntime {
             auto_pr_head: Mutex::new(None),
             typed_at_ms: AtomicI64::new(0),
             typed_by: Mutex::new(None),
-            cd_reported: Mutex::new(None),
             goal_achieved: AtomicBool::new(false),
             goal_submitted: AtomicBool::new(false),
             session_started: AtomicBool::new(false),

@@ -552,7 +552,31 @@ async fn production_is_deployed_by_an_administrator_who_types_the_slug() -> Test
         "nothing was promoted by a refusal"
     );
 
-    let started = f.deploy(&f.bob, "prod", Some(" app ")).await?;
+    // The person confirmed the dev commit they saw; dev moved since: refused (round 2, M-C).
+    let stale = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/cd/prod/deploy",
+        Some(json!({"confirm": "app", "expect": main_before})),
+        &f.bob,
+    )
+    .await?;
+    assert_eq!(stale.status, StatusCode::CONFLICT, "{}", stale.body);
+    assert!(
+        stale.body.to_string().contains("moved since you looked"),
+        "{}",
+        stale.body
+    );
+    assert_eq!(f.head("main")?, main_before, "nothing was promoted");
+
+    let started = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/cd/prod/deploy",
+        Some(json!({"confirm": " app ", "expect": &dev[..7]})),
+        &f.bob,
+    )
+    .await?;
     assert_eq!(started.status, StatusCode::OK, "{}", started.body);
     let main = f.head("main")?;
     assert_ne!(main, main_before, "promoted");
@@ -950,15 +974,39 @@ async fn production_secrets_need_their_own_allowance() -> TestResult {
         "not_allowed"
     );
 
+    // A secret agents can use (its .env copies) is no production secret (round 2, M-B).
+    let cd_prod_path = format!("/api/agent-secrets/{}/cd-prod", f.secret);
+    let cd_prod = |allow: bool| {
+        call(
+            &f.h.router,
+            Method::POST,
+            &cd_prod_path,
+            Some(json!({"allow": allow})),
+            &f.alice,
+        )
+    };
+    let shared = cd_prod(true).await?;
+    assert_eq!(shared.status, StatusCode::CONFLICT, "{}", shared.body);
+    assert!(
+        shared
+            .body
+            .to_string()
+            .contains("agents can use this secret"),
+        "{}",
+        shared.body
+    );
+    let now = f.h.store.vault_get(&f.secret).await?.ok_or("secret")?;
+    assert!(
+        f.h.store
+            .vault_set_env_files(
+                &f.secret,
+                (now.env_files, now.env_requested_by.as_deref()),
+                (EnvFiles::No, None),
+            )
+            .await?
+    );
     // Someone who manages the secret (its maker) allows it on the Secrets page.
-    let allowed = call(
-        &f.h.router,
-        Method::POST,
-        &format!("/api/agent-secrets/{}/cd-prod", f.secret),
-        Some(json!({"allow": true})),
-        &f.alice,
-    )
-    .await?;
+    let allowed = cd_prod(true).await?;
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
     assert_eq!(allowed.body["cd_prod"], true);
     let started = f.deploy(&f.bob, "prod", Some("app")).await?;

@@ -17,7 +17,8 @@ CREATE TABLE cd_runs (
     output TEXT NOT NULL DEFAULT '', -- bounded tail, agent secrets redacted
     exit_code INTEGER,
     started_at INTEGER NOT NULL,
-    ended_at INTEGER
+    ended_at INTEGER,
+    reported INTEGER NOT NULL DEFAULT 0 -- `yulius wait` told the task's agent it ended
 );
 CREATE INDEX cd_runs_sandbox ON cd_runs(sandbox_id, started_at);
 -- One running run per environment of a sandbox: they share its checkout.

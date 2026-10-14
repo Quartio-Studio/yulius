@@ -101,8 +101,8 @@ Runs (CDR):
 - CDR-001. A deploy of an environment is one **CD run**: Yulius verifies the commit (CDC-003),
   reads its table, writes the commit's files into the run's private directory and runs `deploy`
   and then `verify` (each skipped when absent, `verify` only after a successful `deploy`) through
-  the process host: dev inside the sandbox's containment, production outside it on the host's
-  read-only system with the run's directory as its root. The run's files, `HOME` and log are bound
+  the process host: dev inside the sandbox's containment, production in the sandbox's network
+  only (no host loopback) on the host's read-only system with empty `/var`, `/root` and `/home`. The run's files, `HOME` and log are bound
   only into its own mount namespace and removed with it; its cache is `<data>/cd/<sandbox>/cache/
   <env>`. Its result is `passed` (every step exited 0), `failed`, `error` (could not run, timed out,
   lost) or `cancelled`.
@@ -112,7 +112,8 @@ Runs (CDR):
   and each named secret's real value. A secret is given only when it is an agent secret of the
   project allowed for that environment: for dev, allowed outside the proxy (`env_files = allowed`,
   ADR-0105); for production, allowed for production deploys (`cd_prod`, its own allowance, set by
-  someone who manages the secret, `POST /api/agent-secrets/{id}/cd-prod`). A missing or not-allowed
+  someone who manages the secret, `POST /api/agent-secrets/{id}/cd-prod`; exclusive: not while
+  agents can use it through `.env` copies or proxy hosts, and dev never gets it). A missing or not-allowed
   secret refuses the run before anything starts (before a promotion) and says what a person must
   do.
 - CDR-003. Stored output is the run's tail with every agent secret's value replaced by
@@ -273,6 +274,13 @@ Teaching (CDK):
   promotion API follows the production rule. M4: `yulius wait` reports a run that ended before
   it. M5: only a person's prompt ends a `needs_you` request. L1, L2, L4, L5, L6, L7 fixed; L3
   (cancel racing the end) cannot happen: the executor leaves the map only after writing the end.
+- **Independent review, round 2 (request changes; all fixed test-first).** H-A: production on the
+  host's network reached its loopback; it now joins the sandbox's network only, on the host's
+  read-only system. M-A: reported run ends are stored with the run and reported whenever unseen.
+  M-B: production secrets are exclusive of agents' uses. M-C: the dialog sends the commit it
+  showed and promotion is decided and verified on the mirror. M-D (agents' GitHub token can write
+  `main` outside Yulius, predating this task): issue #486, ADR-0110 states the limit. L-a, L-b
+  fixed; L-d recorded in ADR-0111; L-e fixed; the ADR-0109 file renamed.
 - **One pull request.** The parts depend on each other (the page needs the runs, the tools need the
   rule, onboarding teaches the tools); split, each part would ship unusable. The diff is larger
   than the usual 400 lines; the review gets the whole.

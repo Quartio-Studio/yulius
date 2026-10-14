@@ -166,7 +166,7 @@ export function mountCdPage(ctx, sandbox, route) {
       message: `Runs [cd.dev] from ${env.branch}${env.head ? ` at ${shortSha(env.head)}` : ''}: ${[env.deploy && 'the deploy command', env.verify && 'then the verify command'].filter(Boolean).join(', ')}.`,
       confirmLabel: 'Deploy dev',
     });
-    if (ok) await start('dev');
+    if (ok) await start('dev', null, env.head);
   }
 
   async function deployProd(env, overview) {
@@ -182,12 +182,16 @@ export function mountCdPage(ctx, sandbox, route) {
       danger: true,
       typeToConfirm: overview.slug,
     });
-    if (ok) await start('prod', overview.slug);
+    if (ok) await start('prod', overview.slug, env.promote ? env.promotes_from : env.head);
   }
 
-  async function start(env, confirm) {
+  async function start(env, confirm, expect) {
     try {
-      const run = await ctx.api.post(`${base}/cd/${env}/deploy`, confirm ? { confirm } : {});
+      // The commit the person saw: the server refuses if the branch moved since.
+      const body = {};
+      if (confirm) body.confirm = confirm;
+      if (expect) body.expect = expect;
+      const run = await ctx.api.post(`${base}/cd/${env}/deploy`, body);
       toast(env === 'dev' ? 'Deploying dev.' : 'Deploying production.', { kind: 'ok' });
       reload({ quiet: true });
       showRun(run.run_id);

@@ -87,7 +87,7 @@ pub fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
             && now.cd_run == before.cd_run
             && now.cd_state.as_deref() != Some("running")
     });
-    if cd_ended_now || (before.is_none() && now.cd_unreported) {
+    if cd_ended_now || now.cd_unreported {
         return Some(format!(
             "The CD run {} ({}) ended {}. Read it with `cd_status` and run_id {}.",
             now.cd_run.as_deref().unwrap_or("?"),
@@ -295,6 +295,14 @@ mod tests {
             .is_none(),
             "a reported run does not end the next wait"
         );
+        // Another run started and ended between two polls of a running wait (round 2, M-A).
+        let earlier = WaitState {
+            cd_run: Some("r0".into()),
+            cd_state: Some("passed".into()),
+            ..state("running")
+        };
+        let line = settled(&unreported, Some(&earlier)).unwrap_or_default();
+        assert!(line.contains("CD run r1 (dev) ended failed"), "{line}");
     }
 
     #[test]

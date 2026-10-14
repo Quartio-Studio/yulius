@@ -1,6 +1,6 @@
 //! Agents ask a person to act (SPEC-134 CDT-004, ADR-0111): `needs_you {action, why?, link?}`
 //! records one open request per task. While it is open the task is in the sidebar's Needs you
-//! group ("Needs you: <action>") whatever the agent does meanwhile. It ends when a prompt is typed
+//! group ("Needs you: `<action>`") whatever the agent does meanwhile. It ends when a prompt is typed
 //! into the task (a person answered, or did it and said so) or the agent calls
 //! `needs_you {resolved: true}`.
 

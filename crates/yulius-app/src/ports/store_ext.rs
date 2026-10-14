@@ -510,6 +510,8 @@ pub trait CdStore: Send + Sync {
     async fn running_cd_runs(&self) -> AppResult<Vec<crate::ci::cd::CdRunRecord>>;
     /// Replaces the output of a running run.
     async fn set_cd_run_output(&self, id: &str, output: &str) -> AppResult<()>;
+    /// Records that the task's `yulius wait` reported the ended run `id`; `true` the first time.
+    async fn mark_cd_run_reported(&self, id: &str) -> AppResult<bool>;
     /// Ends a running run; `false` when it was not running.
     async fn finish_cd_run(&self, id: &str, end: &crate::ci::cd::CdRunEnd) -> AppResult<bool>;
     /// Deletes ended runs beyond the newest `keep` of each sandbox and environment and those

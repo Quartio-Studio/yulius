@@ -39,15 +39,23 @@ build them, and a command that runs a repository script would run agent-written 
   live in its own run directory and its cache in `<data>/cd/<sandbox>/cache/<env>`, bound only into
   that run's mount namespace and removed with the run (the cache stays). Each run has its own
   PID namespace, so no agent reads its environment.
-- **Dev in the sandbox, production outside it.** Dev runs inside the sandbox's containment: agents
-  build and use dev, with the tools they installed. Production runs on the host's read-only
-  system with the run's directory as its root and the host's network, so nothing an agent
-  installed in the sandbox runs with production's secrets; its scripts fetch the tools they need
-  into `$YULIUS_CD_CACHE`.
+- **Dev in the sandbox, production beside it.** Dev runs inside the sandbox's containment: agents
+  build and use dev, with the tools they installed. Production joins only the sandbox's network
+  (no host loopback, as agents), on the host's read-only `/usr`, `/etc` and `/opt` with empty
+  `/var`, `/root` and `/home`, the sandbox's resolver, and only the run's directory and its cache
+  bound in: nothing an agent installed or wrote runs with production's secrets, and production
+  reaches no more of the host than an agent does. Its scripts fetch the tools they need into
+  `$YULIUS_CD_CACHE`. Where sandbox isolation does not run, both use the previous containment
+  (production with the run's directory as its root), on the network agents have there.
 - **Secrets per environment.** Dev runs get the secrets their table names that a person allowed
   outside the proxy (ADR-0105's allowance: dev is the agents' ground, as `.env` is). Production
-  runs get only those a person allowed for production deploys, an allowance of its own that no
-  agent can use otherwise. Stored output is redacted.
+  runs get only those a person allowed for production deploys, an allowance of its own. A
+  production secret is exclusive: it cannot be allowed while agents can use it (`.env` copies,
+  proxy hosts), it then refuses both, and dev never gets it. Stored output is redacted.
+- **A person confirms what they saw.** The production dialog sends the commit it showed (the
+  integration commit a promotion takes, else the production head); a deploy refuses when the
+  branch moved since. Whether production already contains the integration commit, and whether
+  a promotion reached it, is decided on the verified mirror, not on the agents' clone.
 - **Bounded and never repeated.** Runs share the CI job timeout; one runs per environment at a
   time; a run a restart left behind has its process host terminated, its files removed and is
   recorded as `error`, never started again by itself (it has its own `cd_runs` table: a deploy
@@ -77,8 +85,11 @@ build them, and a command that runs a repository script would run agent-written 
 - Agents improve CD by pull requests; what they merge into the integration branch reaches dev on
   the next dev deploy, and production only through a person's production deploy.
 - Every project states its CD explicitly, even when it deploys nothing yet.
-- Dev deploys use the sandbox's network; production deploys use the host's network (its loopback
-  included) and only the host's tools, which their scripts complete in `$YULIUS_CD_CACHE`.
+- Both deploy over the sandbox's network; production has only the host's base tools, which its
+  scripts complete in `$YULIUS_CD_CACHE`.
+- Agents can still block a deploy by breaking the sandbox clone (it is refused, never misled);
+  and they still hold their task owner's GitHub token, which can write the production branch
+  outside Yulius (issue #486).
 - What the CD page shows is read from the clone as last fetched; what a deploy runs is verified
   again at the deploy.
 - `[[delivery.environments]]` keep working for projects that use them; new projects use CD.

@@ -294,6 +294,9 @@ impl App {
         let mut record = self.agent_record(ctx, id).await?;
         self.require_manage_agent(ctx, record.sandbox_id.as_ref())
             .await?;
+        if record.cd_prod && patch.hosts.as_ref().is_some_and(|hosts| !hosts.is_empty()) {
+            return Err(AppError::Conflict(super::PRODUCTION_SECRET.into()));
+        }
         let mut payload: AgentPayload = self.open_payload(&record)?;
         let meta = meta(
             patch.name.as_deref().unwrap_or(&record.name),

@@ -115,4 +115,8 @@ pub struct CdDeploy {
     /// Production: the project's slug, typed by the person.
     #[serde(default)]
     pub confirm: Option<String>,
+    /// The commit the person was shown (at least 7 hex digits): the one it deploys, or with a
+    /// promotion the integration commit it promotes. Refused (409) when the branch moved since.
+    #[serde(default)]
+    pub expect: Option<String>,
 }

@@ -20,7 +20,8 @@ stopped and waited, and its question was only in the transcript.
   do, why, and where. The task is in the sidebar's Needs you group, reads "Needs you: <action>", and
   people are notified, while the agent goes on with other work.
 - The request ends when a person writes to the task (a prompt they typed into its terminal, or
-  continuing a stopped task; prompts Yulius types do not count) or when the agent calls
+  continuing a stopped task; prompts Yulius types do not count, unless they come within the minute
+  a person typed into the terminal, which reads as theirs) or when the agent calls
   `needs_you {resolved: true}` (it saw the result, for example the secret is there). An ended task
   shows none.
 - The request is stored with the task, so a restart keeps it, and audited (`task.needs_you`).

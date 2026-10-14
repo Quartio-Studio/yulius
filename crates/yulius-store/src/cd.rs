@@ -184,6 +184,21 @@ impl CdStore for SqliteStore {
         .await
     }
 
+    async fn mark_cd_run_reported(&self, id: &str) -> AppResult<bool> {
+        let id = id.to_owned();
+        self.call(move |c| {
+            let changed = c
+                .execute(
+                    "UPDATE cd_runs SET reported = 1 \
+                     WHERE id = ?1 AND reported = 0 AND state <> 'running'",
+                    [id],
+                )
+                .map_err(db)?;
+            Ok(changed == 1)
+        })
+        .await
+    }
+
     async fn finish_cd_run(&self, id: &str, end: &CdRunEnd) -> AppResult<bool> {
         let (id, end) = (id.to_owned(), end.clone());
         self.call(move |c| {

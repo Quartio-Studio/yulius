@@ -670,7 +670,7 @@ promote = true                      # a person's deploy first promotes the integ
 A run deploys the commit GitHub reports for the branch, taken into a mirror only Yulius writes
 (every object checked, replacement refs ignored). It writes the commit's files into the run's own
 directory and runs `deploy` then `verify` through the process host (dev inside the sandbox's
-containment, production outside it on the host's read-only system), for at most the CI job
+containment, production on the sandbox's network only and the host's read-only system), for at most the CI job
 timeout, with `YULIUS_CD=1`, `YULIUS_CD_ENV`, `YULIUS_CD_RUN`, `YULIUS_CD_SHA`,
 `YULIUS_CD_BRANCH`, `YULIUS_CD_CACHE` (persistent, per environment, out of the agents' reach), a
 `HOME` made for the run and removed after it, and the real value of each named secret allowed for
@@ -683,7 +683,7 @@ restart is recorded as `error` and never run again by itself.
 | --- | --- | --- |
 | `GET /api/sandboxes/{sid}/cd` | read | `CdOverview` |
 | `POST /api/sandboxes/{sid}/cd/dev/deploy` | write | the running `CdRun` |
-| `POST /api/sandboxes/{sid}/cd/prod/deploy` | admin, `{"confirm": "<slug>"}` | the running `CdRun` after the promotion |
+| `POST /api/sandboxes/{sid}/cd/prod/deploy` | admin, `{"confirm": "<slug>", "expect": "<sha>"}` | the running `CdRun` after the promotion |
 | `GET /api/sandboxes/{sid}/cd/runs/{rid}` | read | `CdRun` with its `output` |
 | `POST /api/sandboxes/{sid}/cd/runs/{rid}/cancel` | write (a production run: admin) | `CdRun`; `conflict` when it ended |
 | `POST /api/agent-secrets/{id}/cd-prod` | manage the secret, `{"allow": true}` | `AgentSecretView` with `cd_prod`; production runs get it |
@@ -701,6 +701,11 @@ CdRun = {"run_id", "environment": "dev|prod", "state": "running|passed|failed|er
          "note": "promoted 'dev' to 'main' at …"|null, "reason", "exit_code", "started_at", "ended_at",
          "output" (detail only)}
 ```
+
+`expect` (optional, any deploy) is the commit the person was shown: the one deployed, or with a
+promotion the integration commit promoted; the deploy refuses (`conflict`) when the branch moved
+since. A production secret (`cd_prod`) is exclusive: allowing it is refused while it has `.env`
+copies allowed or proxy hosts, and it then refuses both (`conflict`); dev deploys never get it.
 
 Refusals: `forbidden` for production below administrator access, `invalid` for an unknown
 environment or a production deploy without the slug typed exactly, `conflict` for an empty or

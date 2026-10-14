@@ -267,6 +267,9 @@ impl App {
                 "the secret changed since you looked: reload and answer again".into(),
             ));
         }
+        if answer.allow && record.cd_prod {
+            return Err(AppError::Conflict(super::PRODUCTION_SECRET.into()));
+        }
         let action = match (seen, answer.allow) {
             (EnvFiles::Asked, true) => "vault.agent.env_allow",
             (EnvFiles::Asked, false) => "vault.agent.env_dismiss",
@@ -323,6 +326,15 @@ impl App {
         let mut record = self.agent_record(ctx, id).await?;
         self.require_manage_agent(ctx, record.sandbox_id.as_ref())
             .await?;
+        // A secret agents can use (its `.env` copies, its hosts) is no production secret
+        // (round 2, M-B).
+        if allow && (record.env_files == EnvFiles::Allowed || !record.hosts.is_empty()) {
+            return Err(AppError::Conflict(
+                "agents can use this secret (copies into .env files or hosts the proxy sends it \
+                 to): revoke those, or add a separate secret for production deploys"
+                    .into(),
+            ));
+        }
         if record.cd_prod != allow {
             if !self
                 .deps
@@ -769,6 +781,15 @@ impl App {
             .iter()
             .filter_map(|name| all.iter().find(|r| &r.name == name))
             .collect();
+        if env == yulius_domain::cd::CdEnv::Dev
+            && let Some(production) = records.iter().find(|r| r.cd_prod)
+        {
+            return Err(AppError::Conflict(format!(
+                "nothing ran: {} is a production secret, which dev deploys (agents' ground) never \
+                 get; dev names a secret of its own",
+                production.name
+            )));
+        }
         let waiting: Vec<&VaultSecretRecord> = records
             .iter()
             .copied()

@@ -12,7 +12,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   deploys nothing yet. Yulius deploys exactly the commit GitHub reports for the protected branch,
   taken into a mirror only it writes, so nothing an agent can write (a task branch, a worktree,
   the sandbox clone) changes what a deploy runs. Dev runs inside the sandbox like a CI job;
-  production runs outside it on the host's clean system. A run's files, `HOME`, log and cache are
+  production joins only the sandbox's network, on the host's clean system. A run's files, `HOME`, log and cache are
   out of the agents' reach, and its output is stored redacted. Dev gets the agent secrets a person
   allowed outside the proxy; production only those allowed "for production deploys" on the
   Secrets page. A merge deploys nothing. Dev is deployed by a person on the new
