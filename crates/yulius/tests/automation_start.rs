@@ -613,6 +613,9 @@ async fn run_now_starts_its_task_with_the_choice_it_is_given() -> TestResult {
     let r = run_with(&h, &alice, &orphan, json!({"after_task_id": "t-gone"})).await?;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
     assert_eq!(r.body["state"], "failed", "{}", r.body);
+    // The stored choice sent back is not another choice: the audit names none.
+    let audit = h.store.automation_audit(&orphan, 1).await?;
+    assert_eq!(audit[0].detail.as_deref(), Some("failed"));
     Ok(())
 }
 

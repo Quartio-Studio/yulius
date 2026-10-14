@@ -109,6 +109,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
   let alive = true;
   let saved = '';
   let showZone = false;
+  let loaded = false; // the automation has been read (SPEC-093): the chip and Run now turn on
   // The start choice (SPEC-078): at most one of supertask, after_task_id and start_rule.
   const state = { name: '', prompt: '', workflow_id: null, enabled: true, cron: '0 9 * * 1-5', offset: -new Date().getTimezoneOffset(), custom: false, supertask: false, after_task_id: null, after_task_number: null, start_rule: null };
   const live = h('div', { class: 'sr-only', role: 'status' });
@@ -225,6 +226,8 @@ export function mountAutomationEditor(ctx, sandbox, id) {
   const kindOf = () => startKind({ supertask: state.supertask, afterTaskId: state.after_task_id, rule: state.start_rule });
   /** The chip reads the choice; its tooltip says what it means. It follows the task list. */
   function renderStart() {
+    // Until the automation is read the chip names no choice (its name is just "Start").
+    if (!loaded) { setChildren(startChip, icon('branch', { size: 14 }), h('span', { class: 'sr-only' }, 'Start'), h('span', { class: 'chip-label', 'aria-hidden': 'true' }, '…')); return; }
     const tasks = ctx.store.tasksOf(sandbox.id) || [];
     const kind = kindOf();
     const afterTask = tasks.find((t) => t.id === state.after_task_id);
@@ -376,6 +379,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
         showZone = state.offset !== -new Date().getTimezoneOffset();
       }
       nameInput.readOnly = !write;
+      loaded = true;
       startChip.disabled = !write;
       if (runNow) runNow.disabled = !write;
       if (creating) { useRecipe(RECIPES[0]); saved = JSON.stringify({ ...state, name: '' }); } else { saved = snapshot(); render(); loadRuns(); }

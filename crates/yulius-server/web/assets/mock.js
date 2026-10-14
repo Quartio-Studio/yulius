@@ -1771,11 +1771,7 @@ function automationStart(db, sandbox, body) {
   }
   return { supertask: Boolean(body.supertask), after_task_id: after, after_task_number: task ? task.number : null, start_rule: canonical };
 }
-// A test can hold the list (`__yuliusMock.holdAutomations = promise`) to look at a loading editor.
-route('GET', `/api/sandboxes/${ID}/automations`, async ({ db, p }) => {
-  if (db.holdAutomations) await db.holdAutomations;
-  return db.automations.filter((a) => a.sandbox === p[0]).map(({ sandbox: _s, ...a }) => a);
-});
+route('GET', `/api/sandboxes/${ID}/automations`, ({ db, p }) => db.automations.filter((a) => a.sandbox === p[0]).map(({ sandbox: _s, ...a }) => a));
 route('POST', `/api/sandboxes/${ID}/automations`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
   if (Math.abs(Number(body.utc_offset_minutes) || 0) > 1080) fail(422, 'invalid', 'utc_offset_minutes must be within ±1080');
