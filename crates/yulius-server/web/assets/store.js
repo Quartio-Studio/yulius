@@ -339,6 +339,10 @@ export function createStore(api, { pullGapMs = 3000 } = {}) {
     if (!entry) {
       entry = { views: 0, at: 0, due: false, soon: null, timer: setInterval(() => { if (!pollPaused()) loadPulls(sandboxId); }, 60_000) };
       pullWatch.set(sandboxId, entry);
+      // A read that runs from before this watch may predate a change announced while nobody
+      // watched (and so dropped): read again after it.
+      const running = pullReads.get(sandboxId);
+      if (running) running.again = true;
     }
     entry.views += 1;
     if (Date.now() - entry.at > 15_000) loadPulls(sandboxId);

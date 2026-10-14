@@ -240,6 +240,18 @@ test('announced reads of a sandbox keep their gap', async ({ app, browser }) => 
   expect(await handledSoFar(browser, 'Improve the code, after')).toBe(before);
 });
 
+test('announcements within the gap make one read when it has passed', async ({ app, browser }) => {
+  await app.open(mock('/s/studio', '&pullgap=1500'));
+  await expect(chip520(browser)).toHaveAttribute('title', /checks running/);
+  const before = await handledSoFar(browser, 'Improve the code, before');
+  await mocked(browser, (m) => {
+    m.changePull('sb_studio', 520, { state: 'merged' });
+    for (let i = 0; i < 3; i += 1) m.announcePulls('sb_studio');
+  });
+  await expect(chip520(browser)).toHaveAttribute('title', 'Pull request #520 · merged', { timeout: 10_000 });
+  expect(await handledSoFar(browser, 'Improve the code, after')).toBe(before + 1);
+});
+
 test('watching a sandbox again during its read starts no second read', async ({ app, browser }) => {
   await app.open(mock('/s/studio', '&pullgap=0'));
   await expect(chip520(browser)).toHaveAttribute('title', /checks running/);
@@ -254,4 +266,23 @@ test('watching a sandbox again during its read starts no second read', async ({ 
   expect(await handledSoFar(browser, 'Improve the code, back')).toBe(before + 2);
   await mocked(browser, (m) => { m.holdGitReads = false; m.releaseGit(); });
   await expect(chip520(browser)).toHaveAttribute('title', /checks running/);
+});
+
+test('a change announced while nobody watched reaches the view that watches again', async ({ app, browser }) => {
+  await app.open(mock('/s/studio', '&pullgap=0'));
+  await expect(chip520(browser)).toHaveAttribute('title', /checks running/);
+  await mocked(browser, (m) => { m.holdGitReads = true; m.announcePulls('sb_studio'); });
+  await expect.poll(() => mocked(browser, (m) => m.gitReads())).toBe(1);
+  // Studio's read is held (it started before the merge) while the sidebar shows product.
+  await browser.evaluate(() => { location.hash = '#/s/product'; });
+  await expect(browser.locator('.task-list .task-row').filter({ hasText: 'Invoice PDF export' })).toBeVisible();
+  await mocked(browser, (m) => m.changePull('sb_studio', 520, { state: 'merged' }));
+  // Events arrive in order: once this rename shows, the merge's announcement was handled.
+  await touchTask(browser, 'sb_product', 4, { title: 'Invoice PDF export, renamed' });
+  await expect(browser.locator('.task-list .task-row').filter({ hasText: 'Invoice PDF export, renamed' })).toBeVisible();
+  await browser.evaluate(() => { location.hash = '#/s/studio'; });
+  await expect.poll(async () => {
+    await mocked(browser, (m) => m.releaseGit());
+    return chip520(browser).getAttribute('title');
+  }, { timeout: 5_000 }).toBe('Pull request #520 · merged');
 });
