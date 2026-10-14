@@ -302,6 +302,17 @@ async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() ->
     let ready_id = SandboxId::parse(text(&ready["id"]))?;
     let ready_record = w.h.store.sandbox(&ready_id).await?.ok_or("ready sandbox")?;
     assert_eq!(ready_record.onboarding_task_id, None);
+    // OBT-004: a repository already in the format is told it only gets its environment.
+    let plan = call(
+        &w.h.router,
+        Method::GET,
+        &format!("/api/sandboxes/{ready_id}/onboarding/plan"),
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(plan.status, StatusCode::OK, "{:?}", plan.body);
+    assert_eq!(plan.body["title"], "Set up this sandbox's environment");
     let started = call(
         &w.h.router,
         Method::POST,

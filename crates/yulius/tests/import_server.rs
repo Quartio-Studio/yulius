@@ -356,6 +356,17 @@ async fn onboarding_starts_only_from_the_browser() -> TestResult {
     assert_eq!(sandbox.onboarding_task_id, None);
     let listed = call(&w.h.router, Method::GET, &tasks, None, &alice).await?;
     assert_eq!(listed.body, json!([]), "the upload creates no task");
+    // OBT-004: what onboarding will do is readable without a task, and reading it creates none.
+    let plan_url = format!("/api/sandboxes/{}/onboarding/plan", sandbox.id);
+    let plan = call(&w.h.router, Method::GET, &plan_url, None, &alice).await?;
+    assert_eq!(plan.status, StatusCode::OK, "{:?}", plan.body);
+    assert_eq!(plan.body["title"], "Prepare this repository for Yulius");
+    assert_eq!(plan.body["task_number"], Value::Null);
+    let steps = plan.body["steps"].as_array().ok_or("steps")?;
+    assert_eq!(steps.len(), 6, "{steps:?}");
+    assert!(text(&steps[1]).contains("toolchains"), "{steps:?}");
+    let listed = call(&w.h.router, Method::GET, &tasks, None, &alice).await?;
+    assert_eq!(listed.body, json!([]), "reading the plan creates no task");
 
     let cli = call(&w.h.router, Method::POST, &approve, None, &alice).await?;
     assert_eq!(cli.status, StatusCode::FORBIDDEN, "{:?}", cli.body);
@@ -385,6 +396,10 @@ async fn onboarding_starts_only_from_the_browser() -> TestResult {
     assert_eq!(waiting.status, StatusCode::CREATED, "{:?}", waiting.body);
     assert_eq!(waiting.body["status"], "chained");
     assert_eq!(waiting.body["after"]["number"], 1);
+    // Once the task exists the plan is its own, with its number.
+    let task_plan = call(&w.h.router, Method::GET, &plan_url, None, &alice).await?;
+    assert_eq!(task_plan.body["task_number"], 1, "{:?}", task_plan.body);
+    assert_eq!(task_plan.body["steps"], plan.body["steps"]);
     let unchanged = w.h.store.sandbox(&sandbox.id).await?.ok_or("sandbox")?;
     assert_eq!(unchanged.onboarding_state, "pending");
 
