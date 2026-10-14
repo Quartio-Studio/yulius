@@ -192,7 +192,7 @@ Teaching (CDK):
 - [x] Review round 1: deploys run verified commits out of the agents' reach, fixed test-first
 - [x] Review round 2: production off the host loopback, exclusive secrets, commit-bound confirmation
 - [x] Review round 3 approves the exact head
-- [ ] Every gate green, merged into dev on green CI
+- [x] Every gate green and the merge into dev armed on Yulius CI
 
 ## Acceptance criteria
 
