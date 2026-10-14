@@ -5,7 +5,9 @@
 Accepted; for images superseded by [0026](0026-attached-images-are-pasted.md) (an `@` mention of
 an image reaches the model as a Read tool call, not as a pasted image). Specified in
 [SPEC-025](../../.ai/specs/SPEC-025-uploaded-attachements-should-be-clickabl.md); replaces the
-"open each one with the Read tool" list of SPEC-014.
+"open each one with the Read tool" list of SPEC-014. For goal tasks superseded by
+[0095](0095-a-goal-task-starts-with-its-goal-as-the-launch-prompt.md): the `/goal` launch prompt
+names the attached files.
 
 ## Context
 

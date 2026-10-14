@@ -2,6 +2,7 @@
 //! (SPEC-002 §7.7, AC-TSK-6, ACC-008; the size policy is [`crate::hub::control`]).
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use yulius_domain::ids::TaskId;
@@ -12,6 +13,7 @@ use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::hub::{Change, Subscription};
 use crate::supervisor::TaskRuntime;
+use crate::write_grant::WriteGrant;
 
 /// Maximum concurrent viewers per task.
 pub const MAX_VIEWERS: u64 = 16;
@@ -29,6 +31,8 @@ pub struct TerminalAttach {
     /// This viewer's id within the task's hub.
     pub viewer_id: u64,
     runtime: Arc<TaskRuntime>,
+    /// Confirmed write access, so a keystroke does not wait for a check (SPEC-118).
+    grant: Arc<WriteGrant>,
 }
 
 impl TerminalAttach {
@@ -78,6 +82,9 @@ impl App {
         task_id: &str,
         size: Option<(u16, u16)>,
     ) -> AppResult<TerminalAttach> {
+        // Read before the checks below: a change of access while they run checks the first input.
+        let epoch = self.deps.store.access_epoch();
+        let checked_at = self.now().0;
         let task = self.load_task(ctx, task_id, Action::View).await?;
         let (_, level) = self
             .require(&ctx.user, &task.sandbox_id, Action::View)
@@ -124,12 +131,16 @@ impl App {
             }
         }
         let subscription = runtime.hub.subscribe();
+        // The checks above are `can_work`'s: they confirm this writer's grant.
+        let grant = Arc::new(WriteGrant::default());
+        grant.settle(epoch, checked_at, can_write);
         Ok(TerminalAttach {
             task_id: task.id,
             subscription,
             can_write,
             viewer_id,
             runtime,
+            grant,
         })
     }
 
@@ -158,22 +169,36 @@ impl App {
         })
     }
 
-    /// Viewer input (requires write access, re-checked against the permission cache).
+    /// Viewer input (requires write access: the viewer's grant, re-checked when access changed, SPEC-118).
     ///
     /// # Errors
     /// `Forbidden` for read-only viewers, `Conflict` when nothing is running.
     pub async fn terminal_input(
-        &self,
+        self: &Arc<Self>,
         ctx: &AuthContext,
         attach: &TerminalAttach,
         data: &[u8],
         scroll: bool,
     ) -> AppResult<()> {
-        if !attach.can_write || !self.can_work(ctx, &attach.task_id).await {
+        if !self.may_write(ctx, attach).await {
             return Err(AppError::Forbidden("read-only access".into()));
         }
         if data.len() > 64 * 1024 {
             return Err(AppError::Invalid("input frame too large".into()));
+        }
+        if !scroll && is_typing(data) && self.keys_wait_for_opening(&attach.task_id) {
+            // Yulius types the task's first message: the keys would be mixed into it (SPEC-117
+            // ONE-006). They are dropped, not replayed: an Esc or Ctrl+C would cut its turn.
+            if !attach
+                .runtime
+                .typing_opening_said
+                .swap(true, Ordering::SeqCst)
+            {
+                attach.runtime.hub.notice(
+                    "Yulius is typing this task's first message. Type once it is sent.".to_owned(),
+                );
+            }
+            return Ok(());
         }
         // The viewer who types controls the terminal and its size, at once (TSK-006). A
         // forwarded wheel turn is not typing: it must not move control, and with it the size, to
@@ -197,13 +222,13 @@ impl App {
     /// # Errors
     /// `Forbidden` for read-only viewers.
     pub async fn terminal_resize(
-        &self,
+        self: &Arc<Self>,
         ctx: &AuthContext,
         attach: &TerminalAttach,
         cols: u16,
         rows: u16,
     ) -> AppResult<()> {
-        if !attach.can_write || !self.can_work(ctx, &attach.task_id).await {
+        if !self.may_write(ctx, attach).await {
             return Err(AppError::Forbidden("read-only access".into()));
         }
         let change = attach
@@ -218,11 +243,11 @@ impl App {
     /// # Errors
     /// `Forbidden` for read-only viewers.
     pub async fn terminal_take_control(
-        &self,
+        self: &Arc<Self>,
         ctx: &AuthContext,
         attach: &TerminalAttach,
     ) -> AppResult<()> {
-        if !attach.can_write || !self.can_work(ctx, &attach.task_id).await {
+        if !self.may_write(ctx, attach).await {
             return Err(AppError::Forbidden("read-only access".into()));
         }
         let change = attach.runtime.hub.claim(attach.viewer_id);
@@ -236,7 +261,7 @@ impl App {
     /// # Errors
     /// Store or PTY failures while applying a new size.
     pub async fn terminal_presence(
-        &self,
+        self: &Arc<Self>,
         ctx: &AuthContext,
         attach: &TerminalAttach,
         active: bool,
@@ -245,7 +270,7 @@ impl App {
             return Ok(());
         }
         let change = if active {
-            if !self.can_work(ctx, &attach.task_id).await {
+            if !self.may_write(ctx, attach).await {
                 return Ok(());
             }
             attach.runtime.hub.viewer_active(attach.viewer_id)
@@ -279,6 +304,21 @@ impl App {
             self.resize_run(task_id, cols, rows).await?;
         }
         Ok(())
+    }
+
+    /// Whether this writer may type now: its grant holds while nothing that decides access
+    /// changed, so a keystroke waits for neither the database nor GitHub (SPEC-118 KEY-001).
+    async fn may_write(self: &Arc<Self>, ctx: &AuthContext, attach: &TerminalAttach) -> bool {
+        if !attach.can_write {
+            return false;
+        }
+        let (ctx, task) = (ctx.clone(), attach.task_id.clone());
+        // The full check also reads the user and the session again: the viewer's `ctx` was taken
+        // when the socket opened, and does not know they were disabled or signed out since.
+        self.write_granted(&attach.grant, move |app| async move {
+            app.still_signed_in(&ctx).await && app.can_work(&ctx, &task).await
+        })
+        .await
     }
 
     /// Whether the caller still owns the task and has write access to its sandbox (SPEC-070).

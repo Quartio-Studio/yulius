@@ -863,13 +863,19 @@ function finishOnboarding(db, sandbox) {
   releaseWaiting(db, sandbox);
   resync(db);
 }
-route('POST', `/api/sandboxes/${ID}/onboarding/approve`, ({ db, p }) => {
+route('POST', `/api/sandboxes/${ID}/onboarding/approve`, async ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'write');
   if (sandbox.onboarding !== 'pending') fail(409, 'conflict', 'nothing awaits approval');
-  sandbox.onboarding = 'preparing';
+  // In the server's order (`start_onboarding`): the task is created and its run started, and only
+  // then is the sandbox `preparing`. A test can hold the start in between
+  // (`__yuliusMock.holdApprove = promise`), while the task's events have already gone out.
   const task = preparationTask(db, sandbox);
   touch(db, task, { status: 'starting', branch: 'yulius/prepare-repository' });
+  if (db.holdApprove) await db.holdApprove;
+  // …and make the run's start fail then (`__yuliusMock.failApprove = true`), as `start_run` can.
+  if (db.failApprove) fail(409, 'conflict', 'the onboarding task could not start');
+  sandbox.onboarding = 'preparing';
   later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1200);
   // A test that sets `__yuliusMock.manualOnboarding` ends it itself (`finishOnboarding(slug)`).
   if (!db.manualOnboarding) later(() => finishOnboarding(db, sandbox), 9000);
@@ -2006,14 +2012,16 @@ function vaultOf(db) {
       unlockAt: 0,
       twoFactor: 'missing',
       team: [{ id: 'ts_gmail', title: 'Shared Gmail', value: 'mock-not-a-real-password', notes: 'User name: team@example.test\nRecovery codes: mock', created_by: 'mkarp', updated_by: 'mkarp', updated_at: iso(3 * DAY), value_updated_at: iso(3 * DAY) }],
-      agent: [{ id: 'as_stripe', sandbox: 'sb_studio', scope: 'sandbox', name: 'STRIPE_KEY', description: 'Stripe test-mode key for the checkout', hosts: ['api.stripe.com'], injection: 'bearer', header_name: null, username: null, value: 'mock-agent-value-1', created_by: 'mkarp', updated_at: iso(DAY), value_updated_at: iso(DAY), last_used_at: iso(2 * HOUR) }],
+      agent: [{ id: 'as_stripe', sandbox: 'sb_studio', scope: 'sandbox', name: 'STRIPE_KEY', description: 'Stripe test-mode key for the checkout', hosts: ['api.stripe.com'], injection: 'bearer', header_name: null, username: null, value: 'mock-agent-value-1', created_by: 'mkarp', updated_at: iso(DAY), value_updated_at: iso(DAY), last_used_at: iso(2 * HOUR), requested_hosts: [], requested_by: null },
+        // SPEC-121: added with a name, a value and a description; an agent asked for its host.
+        { id: 'as_vidoc', sandbox: 'sb_studio', scope: 'sandbox', name: 'VIDOC_API_KEY', description: 'API key for Vidoc', hosts: [], injection: 'none', header_name: null, username: null, value: 'mock-agent-value-2', created_by: 'mkarp', updated_at: iso(HOUR), value_updated_at: iso(HOUR), last_used_at: null, requested_hosts: ['api.vidoc.test'], requested_by: '#107' }],
       activity: [{ at: iso(HOUR), actor: 'mkarp', action: 'vault.team.reveal', secret_id: 'ts_gmail', detail: 'Shared Gmail (value)' }],
     };
   }
   return db.vault;
 }
 
-const INJECTION_TEXT = { bearer: 'Authorization: Bearer <value>', basic: 'Authorization: Basic <username:value>', none: 'no header (placeholders and browser filling only)' };
+const INJECTION_TEXT = { bearer: 'Authorization: Bearer <value>', basic: 'Authorization: Basic <username:value>', none: 'no header (agents send the placeholder)' };
 
 function teamView(s) {
   return { id: s.id, title: s.title, has_value: Boolean(s.value), has_notes: Boolean(s.notes), created_by: s.created_by, updated_by: s.updated_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, rotate_due: false };
@@ -2021,7 +2029,7 @@ function teamView(s) {
 
 function agentView(db, s, sandbox) {
   const manage = s.scope === 'instance' ? Boolean(db.me.user.is_instance_admin || db.me.user.is_superadmin) : RANK[sandbox.access] >= RANK.write;
-  return { id: s.id, name: s.name, description: s.description, scope: s.scope, hosts: s.hosts, injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, can_manage: manage };
+  return { id: s.id, name: s.name, description: s.description, scope: s.scope, hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, can_manage: manage };
 }
 
 function reauthStatus(db) {
@@ -2056,7 +2064,7 @@ function teamSecret(db, id) {
 const AGENT_NAME_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
 function validateAgent(body, creating) {
   if (body.name !== undefined && !AGENT_NAME_RE.test(body.name)) fail(422, 'invalid', `invalid name "${body.name}"`);
-  if (body.hosts !== undefined && (!Array.isArray(body.hosts) || body.hosts.length === 0)) fail(422, 'invalid', 'bind the secret to at least one host');
+  if (body.hosts !== undefined && (!Array.isArray(body.hosts) || body.hosts.length > 16)) fail(422, 'invalid', 'at most 16 hosts');
   if ((creating || body.value !== undefined) && [...(body.value || '')].length < 8) fail(422, 'invalid', 'an agent secret needs at least 8 characters');
 }
 
@@ -2127,9 +2135,9 @@ route('POST', `/api/sandboxes/${ID}/agent-secrets`, ({ db, p, body }) => {
   if (scope === 'sandbox') need(sandbox, 'write');
   validateAgent(body, true);
   if (vaultOf(db).agent.some((s) => s.name === body.name && (s.scope === 'instance' || s.sandbox === sandbox.id))) fail(409, 'conflict', `an agent secret named ${body.name} already applies here`);
-  const secret = { id: `as_${db.nextId++}`, sandbox: scope === 'sandbox' ? sandbox.id : null, scope, name: body.name, description: body.description || '', hosts: body.hosts, injection: body.injection || 'bearer', header_name: body.header_name || null, username: body.username || null, value: body.value, created_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString(), last_used_at: null };
+  const secret = { id: `as_${db.nextId++}`, sandbox: scope === 'sandbox' ? sandbox.id : null, scope, name: body.name, description: body.description || '', hosts: body.hosts || [], injection: body.injection || 'none', header_name: body.header_name || null, username: body.username || null, value: body.value, created_by: db.me.user.login, updated_at: new Date().toISOString(), value_updated_at: new Date().toISOString(), last_used_at: null, requested_hosts: [], requested_by: null };
   vaultOf(db).agent.push(secret);
-  audit(db, 'vault.agent.create', secret.id, `${secret.name} → ${secret.hosts.join(', ')}`);
+  audit(db, 'vault.agent.create', secret.id, `${secret.name} → ${secret.hosts.join(', ') || 'no hosts yet'}`);
   return json(201, agentView(db, secret, sandbox));
 });
 route('PATCH', `/api/agent-secrets/${ID}`, ({ db, p, body }) => {
@@ -2151,6 +2159,22 @@ route('POST', `/api/agent-secrets/${ID}/reveal`, ({ db, p, body }) => {
   if (refused) return refused;
   audit(db, body.purpose === 'copy' ? 'vault.agent.copy' : 'vault.agent.reveal', secret.id, secret.name);
   return revealed(body, secret.value, [secret.username && `User name: ${secret.username}`, secret.description].filter(Boolean).join('\n\n'));
+});
+route('POST', `/api/agent-secrets/${ID}/request`, ({ db, p, body }) => {
+  const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
+  const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
+  if (!agentView(db, secret, sandbox).can_manage) fail(403, 'forbidden', 'only people who manage this secret answer its requests');
+  if (!secret.requested_hosts.length) fail(409, 'conflict', 'no hosts wait to be allowed for this secret');
+  const asked = secret.requested_hosts;
+  const seen = (body.hosts || []).map((h) => String(h).toLowerCase());
+  if (seen.length !== asked.length || !asked.every((h) => seen.includes(h))) fail(409, 'conflict', `an agent changed the request meanwhile: reload to see the hosts that wait (${asked.join(', ')})`);
+  const hosts = [...new Set([...secret.hosts, ...asked])];
+  if (body.allow && hosts.length > 16) fail(422, 'invalid', 'at most 16 hosts');
+  if (body.allow) secret.hosts = hosts;
+  secret.requested_hosts = [];
+  secret.requested_by = null;
+  audit(db, body.allow ? 'vault.agent.allow' : 'vault.agent.dismiss', secret.id, `${secret.name} → ${asked.join(', ')}`);
+  return agentView(db, secret, sandbox);
 });
 route('DELETE', `/api/agent-secrets/${ID}`, ({ db, p }) => {
   const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
@@ -3918,6 +3942,13 @@ export function createMockTransport(params) {
   window.__yuliusMock = db; // debugging aid in the browser console (mock mode only)
   // Tests change a task as the server would announce it (`touchTask('sb_studio', 12, {…})`).
   db.finishOnboarding = (slug) => finishOnboarding(db, db.sandboxes.find((s) => s.slug === slug));
+  // Someone else presses Start onboarding (another person or tab): the approval, without its hold.
+  db.startOnboarding = (slug) => {
+    const sandbox = db.sandboxes.find((s) => s.slug === slug);
+    touch(db, preparationTask(db, sandbox), { status: 'starting', branch: 'yulius/prepare-repository' });
+    sandbox.onboarding = 'preparing';
+    resync(db);
+  };
   db.touchTask = (sandboxId, number, changes) => touch(db, db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number), changes);
   // A pull request changed on the server (`changePull('sb_studio', 520, { state: 'merged' })`):
   // announced like the server does, unless `announce` is false (a change Yulius did not see).

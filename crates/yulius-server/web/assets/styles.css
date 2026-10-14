@@ -1321,11 +1321,12 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
 .onboarding-gate p { margin: 0; color: var(--text-2); }
 .onboarding-gate-steps { display: flex; flex-direction: column; gap: 6px; margin: 0; padding-left: 20px; color: var(--text-2); text-align: left; }
 .onboarding-gate .btn { margin-top: 8px; }
+.onboarding-gate-loading { align-self: stretch; margin-top: 8px; }
 @media (max-width: 767px) { .composer.gated { padding: 16px; } }
 /* The prompt box (UI-021): a rounded chat box with the task's choices along its bottom edge. */
 .composer-box {
   display: flex; flex-direction: column; border: 1px solid var(--border-control); border-radius: var(--radius-xl);
-  background: var(--surface); box-shadow: var(--shadow-raised);
+  background: var(--surface); box-shadow: var(--shadow-raised); container: composer / inline-size;
 }
 .composer-box:focus-within { border-color: var(--accent-border-strong); outline: 2px solid transparent; outline-offset: 1px; }
 .composer-prompt {
@@ -1364,7 +1365,9 @@ span.composer-attachment-open { cursor: default; }
 /* The box shows focus; the prompt itself draws no ring (the global :focus-visible would). */
 .composer-prompt:focus-visible { box-shadow: none; }
 .composer-prompt:disabled { cursor: not-allowed; }
-.composer-tools { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; padding: 6px 8px 8px 12px; }
+.composer-tools { display: flex; align-items: center; gap: 4px; padding: 6px 8px 8px 12px; }
+/* One row while the box has room for it: a long label truncates rather than wrapping the row. */
+.composer-tools > .chip-btn { flex: 0 1 auto; min-width: 0; }
 .chip-btn {
   display: inline-flex; align-items: center; gap: 6px; height: var(--control-lg); padding: 0 12px; max-width: 240px;
   border: 1px solid var(--border-control); border-radius: var(--radius-full); background: transparent; color: var(--text-2);
@@ -1379,6 +1382,14 @@ span.composer-attachment-open { cursor: default; }
 .composer-right { display: flex; align-items: center; gap: 4px; margin-left: auto; }
 .composer-send { width: var(--control-lg); height: var(--control-lg); margin-left: 4px; padding: 0; border-radius: 50%; }
 .composer-send:focus-visible { border-radius: 50%; }
+/* Squeezed (a narrow window or a tool panel, SPEC-119): the choices wrap from the left and
+   Preview, model, effort and Start take the last row, from the left edge to Start at the right. */
+@container composer (max-width: 739px) {
+  .composer-tools { flex-wrap: wrap; }
+  .composer-right { flex: 1 1 100%; min-width: 0; margin-left: 0; }
+  .composer-right .chip-btn { flex: 0 1 auto; min-width: 0; }
+  .composer-send { flex: none; margin-left: auto; }
+}
 .composer-hint { padding: 0 6px; }
 .composer-kbd .kbd { margin-right: 4px; }
 /* The keyboard way to start is for keyboards: not on touch screens. */
@@ -1650,15 +1661,20 @@ a.dl-task:hover { text-decoration: underline; }
 .release-list { display: flex; flex-direction: column; gap: 4px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-2); }
 .release-list ul { margin: 0; padding-left: 16px; }
 .release-head { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
-@media (max-width: 1023px) {
+/* The board and the cards give way to the page's width, so a tool panel beside it counts (SPEC-115). */
+@container page (max-width: 900px) {
   .dl-board { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
-@media (max-width: 767px) {
+@container page (max-width: 560px) {
   .dl-strip, .dl-board { grid-template-columns: minmax(0, 1fr); }
   .dl-need, .dl-env { flex-wrap: wrap; }
   .dl-need-text, .dl-env-text { flex: 1 1 calc(100% - 32px); }
-  .dl-need .btn, .dl-env .btn { flex: 1 1 0; height: var(--control-xl); justify-content: center; }
-  .dl-release .btn { width: 100%; height: var(--control-xl); }
+  .dl-need .btn, .dl-env .btn { flex: 1 1 0; justify-content: center; }
+  .dl-release .btn { width: 100%; }
+}
+/* Touch-sized buttons on a phone. */
+@media (max-width: 767px) {
+  .dl-need .btn, .dl-env .btn, .dl-release .btn { height: var(--control-xl); }
 }
 
 /* Design system page (/design) */
@@ -2347,6 +2363,19 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
    a quiet list. */
 .secret-value { word-break: break-all; user-select: all; }
 .secret-notes { max-height: 240px; overflow: auto; }
+/* A shown value (SPEC-114) sits in a box with its eye and quick-copy buttons; masked, it is a
+   fixed run of dots that cannot be selected. */
+.secret-box {
+  display: flex; align-items: center; gap: 4px; flex: 1 1 220px; min-width: 0;
+  min-height: var(--control-md); padding: 2px 4px 2px 8px;
+  border: 1px solid var(--border-control); border-radius: var(--radius); background: var(--bg);
+}
+.secret-box .secret-value { flex: 1; min-width: 0; }
+.secret-box .btn-icon { width: var(--control-sm); height: var(--control-sm); }
+.secret-masked { user-select: none; letter-spacing: 0.1em; }
+/* The quick copy shows on hover or with focus in the box, like a task row's quick Archive. */
+.secret-quick-copy { visibility: hidden; }
+.secret-box:hover .secret-quick-copy, .secret-box:focus-within .secret-quick-copy { visibility: visible; }
 .section-title { margin: 16px 0 0; font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 600; }
 .plain-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .stack-tight { display: flex; flex-direction: column; gap: 4px; }

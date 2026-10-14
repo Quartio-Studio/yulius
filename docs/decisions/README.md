@@ -80,7 +80,7 @@ number differs from the file name, and a record this index does not list.
 - [0071](0071-long-injected-context-folds-in-the-session-view.md): Long injected context folds to one line in the session view; short notes stay readable
 - [0074](0074-run-now-uses-the-start-choice-the-editor-shows.md): Run now uses the start choice the editor shows, for that run only
 - [0078](0078-repository-mcp-json-feeds-the-mcp-section.md): A repository's .mcp.json feeds the sandbox's MCP servers; the Superagent rejects the file's servers
-- [0076](0076-onboarding-is-mandatory-in-the-ui.md): Onboarding is mandatory in the UI: the new-task page shows only what it will do and its button; skipping is an operator's recovery
+- [0076](0076-onboarding-is-mandatory-in-the-ui.md): Onboarding is mandatory in the UI: the new-task page shows only what it will do and its button; skipping is an operator's recovery (amended by 0090)
 - [0079](0079-the-terminal-mouse-is-the-programs.md): The terminal's mouse is the program's when it asks for it (Shift or Option selects), with no mouse chip
 - [0073](0073-loading-shows-shimmering-fields.md): Loading shows shimmering fields everywhere; a spinner marks only an action under way
 - [0075](0075-menu-descriptions-wrap.md): Menu descriptions wrap onto as many lines as they need instead of being cut
@@ -90,8 +90,15 @@ number differs from the file name, and a record this index does not list.
 - [0080](0080-a-wait-for-yulius-shows-a-still-muted-branch.md): A wait for Yulius shows a still, muted branch, not Working's turning green
 - [0085](0085-a-prepared-task-waits-for-a-person-or-its-time.md): A prepared task waits for a person's Start now or its time; the minute tick releases it
 - [0084](0084-personal-notes-in-the-notes-table.md): Personal notes ("Me") live in the notes table, and their events reach only their owner
+- [0090](0090-start-onboarding-opens-its-session.md): Start onboarding loads in place and opens the onboarding task (amends 0076)
 - [0088](0088-the-session-web-keeps-its-colours-when-stuck.md): The session's web keeps its colours when stuck and hangs exactly in the well's corner (supersedes 0082's stuck colour)
 - [0083](0083-long-menu-groups-scroll-five-rows.md): A long menu group (the start menu's tasks) shows five rows and says there is more
 - [0089](0089-api-price-estimates-from-a-built-in-table.md): Token cost is estimated from a built-in table of Claude API list prices
 - [0087](0087-pull-request-changes-are-announced.md): A change of a sandbox's pull requests is announced, and browsers read them again
 - [0086](0086-a-lost-onboarding-task-returns-the-sandbox-to-pending.md): A lost onboarding task returns the sandbox to pending; a worktree's main repository is trusted too
+- [0095](0095-a-goal-task-starts-with-its-goal-as-the-launch-prompt.md): A goal task starts with its `/goal` as the launch prompt: one message, nothing typed; a person's keys wait while a prompt task's images are typed
+- [0096](0096-terminal-input-rides-a-write-grant.md): Terminal input rides a per-viewer write grant tied to the store's access epoch; the access re-check runs beside the stream
+- [0094](0094-onboarding-installs-the-gate-in-its-own-pull-request.md): Onboarding installs the gate (lint, format, dead-code check, CI per project) in its own pull request, baselining existing findings
+- [0098](0098-agents-propose-secret-hosts-people-allow-them.md): Agents propose an agent secret's hosts and people allow them; a new secret is a name, a value and a description
+- [0093](0093-a-shown-secret-value-stays-masked.md): A shown secret value stays masked until its eye is pressed; a quick copy shows on hover
+- [0092](0092-screens-remember-where-they-were-left.md): Screens remember where they were left: places in the router per browser tab, tool views kept for the 3 sandboxes used last

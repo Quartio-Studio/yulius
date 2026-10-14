@@ -7,7 +7,7 @@
 // actions.js (task actions, dialogs), pages/*.js (pages), mock.js (?mock=1 backend).
 
 import { createApi, realTransport, enc } from './api.js';
-import { initRouter, onRoute, navigate, currentLocation, refreshRoute, parseAppLink, href } from './router.js';
+import { initRouter, onRoute, navigate, currentLocation, refreshRoute, parseAppLink, href, forgetPlaces, bindPlaces, onQuietReplace } from './router.js';
 import { createStore, readJson, writeJson } from './store.js';
 import { applyTheme, PHONE } from './theme.js';
 import { BRAND } from './brand.js';
@@ -60,7 +60,7 @@ const SANDBOX_PAGES = {
   mcp: (ctx, sandbox, route) => mountMcpPage(ctx, sandbox, route),
   secrets: (ctx, sandbox, route) => mountSecretsPage(ctx, sandbox, route),
   ci: (ctx, sandbox, route) => mountCiPage(ctx, sandbox, route),
-  dashboard: (ctx, sandbox) => mountDashboardPage(ctx, sandbox),
+  dashboard: (ctx, sandbox, route) => mountDashboardPage(ctx, sandbox, route),
 };
 
 const ADMIN_PAGES = {
@@ -123,8 +123,10 @@ function createApp(root, transport) {
       await signedIn(me);
     } catch (error) {
       if (error.status === 401) {
-        // A session found expired at load: what it kept for the next page load goes (SPEC-104).
+        // A session found expired at load: what it kept for the next page load goes (SPEC-104), and
+        // where it left each sandbox (SPEC-113).
         store.forgetPulls();
+        forgetPlaces();
         renderSignIn();
       } else fatal(error);
     }
@@ -156,6 +158,7 @@ function createApp(root, transport) {
   async function signedIn(me, next) {
     expiredHandled = false;
     store.state.me = me;
+    bindPlaces(me && me.user && me.user.id);
     api.setCsrf(me && me.csrf_token);
     // A failed load is said in the view (Home, a sandbox's pages, the sidebar), not in a toast.
     try { await store.loadSandboxes(); } catch { /* store.state.sandboxesError */ }
@@ -230,6 +233,7 @@ function createApp(root, transport) {
     // The pull requests kept for the next page load go with the session, signed out or expired
     // (SPEC-104); a read answering later finds no user and writes nothing to storage.
     store.forgetPulls();
+    forgetPlaces(); // and where each sandbox was left (SPEC-113)
     unsubscribers.splice(0).forEach((off) => off());
     document.body.classList.remove('drawer-open');
   }
@@ -634,6 +638,14 @@ function createApp(root, transport) {
       loadError(`Couldn’t load your sandboxes: ${error.message}`, () => store.loadSandboxes().then(() => refreshRoute(), () => {})))) }));
   }
 
+  // A page that kept its state in the address (a filter, an open run) is that address's view now: a
+  // link to the page's plain address mounts it again instead of keeping the filtered view (SPEC-113).
+  onQuietReplace((route) => {
+    if (route.name !== 'page' || !centerView || !currentSandbox) return;
+    const base = `${route.page}:${currentSandbox.id}`;
+    if (String(centerView.key).startsWith(`${base}:`)) centerView.key = `${base}:${route.query.toString()}`;
+  });
+
   onRoute((route) => {
     handleRoute(route).catch((error) => {
       console.error(error);
@@ -720,6 +732,15 @@ function createApp(root, transport) {
   function openNewTask(target) {
     document.body.classList.remove('drawer-open');
     const sandbox = target || defaultSandbox();
+    // While onboarding runs, the sandbox's page is its onboarding task (SPEC-111): go there
+    // directly, not through the page that would open it again.
+    const onboarding = sandbox && sandbox.onboarding === 'preparing' && !store.tasksError(sandbox.id)
+      ? (store.tasksOf(sandbox.id) || []).find((t) => t.origin === 'onboarding') : null;
+    if (onboarding) {
+      const taskPath = `/s/${encodeURIComponent(sandbox.slug)}/t/${onboarding.number}`;
+      if (currentLocation().path !== taskPath) navigate(taskPath);
+      return;
+    }
     const path = sandbox ? `/s/${encodeURIComponent(sandbox.slug)}` : '/';
     if (currentLocation().path !== path) navigate(path);
     setTimeout(() => {

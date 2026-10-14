@@ -146,6 +146,41 @@ fn claude_transcript_has_one_user_and_assistant_record_per_turn_and_a_limit() ->
     Ok(())
 }
 
+/// SPEC-117: like Claude Code 2.1.292, a `/goal` prompt argument sets the goal and runs its turn
+/// before input is read; other prompt arguments are echoed.
+#[test]
+fn a_goal_prompt_argument_sets_the_goal() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("projects/x/s-3.jsonl");
+    let path_text = path.to_string_lossy().into_owned();
+    let output = run(
+        &[
+            "--session-id",
+            "s-3",
+            "--transcript",
+            &path_text,
+            "--prompt",
+            "/goal Make it blue",
+        ],
+        "/exit\n",
+    )?;
+    let text = stdout(&output);
+    assert!(
+        text.starts_with("FAKE-AGENT READY session=s-3\nGOAL SET\nECHO: /goal Make it blue\n"),
+        "{text}"
+    );
+    let records = read_jsonl(&path)?;
+    assert_eq!(records[0]["attachment"]["type"], "goal_status");
+    assert_eq!(records[0]["attachment"]["condition"], "Make it blue");
+    let plain = run(&["--session-id", "s-4", "--prompt", "Hello"], "/exit\n")?;
+    assert!(
+        stdout(&plain).contains("ECHO: Hello\nBYE"),
+        "{}",
+        stdout(&plain)
+    );
+    Ok(())
+}
+
 #[test]
 fn only_claude_transcripts_are_written() -> TestResult {
     let output = Command::new(EXE)

@@ -29,7 +29,8 @@ mod vault;
 mod workflows;
 
 use std::path::Path;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, mpsc};
 use std::thread;
 
 use rusqlite::Connection;
@@ -65,6 +66,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0022_ci_job_needs.sql"),
     include_str!("migrations/0023_metrics_recounts.sql"),
     include_str!("migrations/0024_task_schedules.sql"),
+    include_str!("migrations/0025_agent_secret_requests.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -95,6 +97,8 @@ pub enum OpenError {
 #[derive(Clone)]
 pub struct SqliteStore {
     jobs: mpsc::SyncSender<Job>,
+    /// [`yulius_app::ports::store::PermissionStore::access_epoch`].
+    access_epoch: Arc<AtomicU64>,
 }
 
 impl SqliteStore {
@@ -127,7 +131,10 @@ impl SqliteStore {
                 }
             })
             .map_err(OpenError::Thread)?;
-        Ok(Self { jobs: tx })
+        Ok(Self {
+            jobs: tx,
+            access_epoch: Arc::new(AtomicU64::new(0)),
+        })
     }
 
     /// Runs `f` on the database thread.
@@ -148,6 +155,32 @@ impl SqliteStore {
             .map_err(|_| AppError::Internal("database thread stopped".into()))?;
         rx.await
             .map_err(|_| AppError::Internal("database job dropped".into()))?
+    }
+
+    /// [`Self::call`] for a write that can change who may type into a terminal: the access epoch
+    /// grows on the database thread as soon as the write is done, before the caller resumes.
+    pub(crate) async fn call_access<R, F>(&self, f: F) -> AppResult<R>
+    where
+        R: Send + 'static,
+        F: FnOnce(&mut Connection) -> AppResult<R> + Send + 'static,
+    {
+        let epoch = Arc::clone(&self.access_epoch);
+        self.call(move |conn| {
+            let result = f(conn);
+            epoch.fetch_add(1, Ordering::SeqCst);
+            result
+        })
+        .await
+    }
+
+    /// The access epoch now.
+    pub(crate) fn current_access_epoch(&self) -> u64 {
+        self.access_epoch.load(Ordering::SeqCst)
+    }
+
+    /// Grows the access epoch from the database thread (a write that found a change).
+    pub(crate) fn access_epoch_handle(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.access_epoch)
     }
 
     /// Writes a consistent copy of the database to `dest` (`VACUUM INTO`).

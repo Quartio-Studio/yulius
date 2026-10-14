@@ -17,6 +17,7 @@ function layoutProblems(browser: Browser) {
       '.page-head > *', '.page-actions > *', '.toolbar > *', '.tl-toolbar button', '.tl-summary', '.ss-toolbar > *',
       '.tl-columns > span', '.tl-row > *', '.tl-link > *', '.item-title > *', '.item-controls > *',
       '.home-card-head > *', '.home-count', '.home-card-actions > *',
+      '.dl-need > *', '.dl-need .btn', '.dl-env > *', '.dl-strip > *', '.dl-board > *', '.dl-col-head > *',
       '.wf-head .gt-title-row > *', '.stepstrip-main > *', '.stepstrip-toggle > *', '.step-label > *', '.panel-head > *', '.panel-head .row > *',
     ].join(', ');
     const describe = (el: Element) => `${el.tagName.toLowerCase()}.${[...el.classList].slice(0, 2).join('.')} "${(el.getAttribute('aria-label') || el.textContent || '').trim().slice(0, 24)}"`;
@@ -95,6 +96,35 @@ test('the Tasks page with a tool panel open wraps its state tabs instead of over
   await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
   await expect.poll(() => layoutProblems(browser)).toEqual({ overlaps: [], sideways: false });
   await expect(screen.getByRole('radio', /^Closed/)).toBeVisible();
+});
+
+// Task #100 (SPEC-115): the Git page beside a tool panel kept four board columns and two summary
+// cards side by side, because they gave way to the window's width, not the page's. A column a few
+// letters wide broke task titles letter by letter. Each column and card now keeps room for words.
+const gitRoom = (browser: Browser) => browser.evaluate(() => {
+  const widths = [...document.querySelectorAll('#main .dl-col, #main .dl-strip > .dl-card')]
+    .map((el) => Math.round(el.getBoundingClientRect().width));
+  return { count: widths.length, narrowest: widths.length ? Math.min(...widths) : 0 };
+});
+
+test('the Git page beside a tool panel keeps its board columns and summary cards wide enough to read', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/git'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Git');
+  // Without a panel a wide window still shows the board's columns side by side, in one row.
+  await expect.poll(() => browser.evaluate(() => new Set([...document.querySelectorAll('#main .dl-col')]
+    .map((el) => Math.round(el.getBoundingClientRect().top))).size)).toBe(1);
+  await expect.poll(async () => (await gitRoom(browser)).count).toBeGreaterThan(2);
+  await screen.getByRole('button', /^Show tools/).click();
+  for (const tool of ['Editor', 'Shell']) {
+    await screen.getByRole('navigation', 'Tools').getByRole('button', new RegExp(`^${tool}`)).click();
+    await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
+    for (const width of [1920, 1440, 1024]) {
+      await browser.setViewport({ width, height: 900 });
+      await expect.poll(() => layoutProblems(browser)).toEqual({ overlaps: [], sideways: false });
+      await expect.poll(async () => (await gitRoom(browser)).narrowest).toBeGreaterThanOrEqual(180);
+      expect((await gitRoom(browser)).count).toBeGreaterThan(2);
+    }
+  }
 });
 
 // A task beside a tool panel: the step strip's parts gave way to nothing, so "Step 3/7" ran under the
@@ -195,4 +225,66 @@ test('every top-level page is centred, with no empty band on the right', async (
   await app.open(mock('/s/studio/workflows/wf-feature'));
   await expect.poll(() => browser.evaluate(() => Boolean(document.querySelector('#main .wf-page')))).toBe(true);
   await expect.poll(centred).toBe(true);
+});
+
+// Task #104 (SPEC-119, #442): squeezed, the new-task composer's model, effort and Start moved to a
+// second row as one block pushed to the right, its left half empty, and at its narrowest Start
+// left the box. Squeezed, the last row now starts where the first does and ends with Start.
+const composerControls = (browser: Browser) => browser.evaluate(() => {
+  const box = document.querySelector('.composer-box')!.getBoundingClientRect();
+  const controls = [...document.querySelectorAll('.composer-tools .chip-btn, .composer-tools .composer-preview-toggle, .composer-send')]
+    .map((el) => ({ el, r: el.getBoundingClientRect() }));
+  const send = document.querySelector('.composer-send')!.getBoundingClientRect();
+  const rows = [...new Set(controls.map(({ r }) => Math.round(r.top + r.height / 2)))].sort((a, b) => a - b);
+  const rowOf = (r: DOMRect) => rows.findIndex((y) => Math.abs(y - (r.top + r.height / 2)) <= 4);
+  const left = (row: number) => Math.min(...controls.filter(({ r }) => rowOf(r) === row).map(({ r }) => r.left));
+  const outside = controls.filter(({ r }) => r.left < box.left || r.right > box.right)
+    .map(({ el }) => el.getAttribute('aria-label') || el.textContent!.trim());
+  let overlaps = 0;
+  for (const a of controls) for (const b of controls) {
+    if (a === b) continue;
+    if (Math.min(a.r.right, b.r.right) - Math.max(a.r.left, b.r.left) > 1 && Math.min(a.r.bottom, b.r.bottom) - Math.max(a.r.top, b.r.top) > 1) overlaps += 1;
+  }
+  const last = rows.length - 1;
+  return {
+    rows: new Set(controls.map(({ r }) => rowOf(r))).size,
+    outside,
+    overlaps,
+    // The last row starts at the first row's left edge, and Start ends it, at the right.
+    lastRowAligned: Math.abs(left(last) - left(0)) <= 1,
+    startEndsLastRow: rowOf(send) === last && controls.every(({ r }) => r.right <= send.right + 0.5),
+  };
+});
+
+test('the new-task composer squeezed keeps its controls in the box, the last row starting at the left', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await expect(screen.getByRole('textbox', 'Task prompt')).toBeVisible();
+  // Wide, every control is on one row.
+  await expect.poll(async () => (await composerControls(browser)).rows).toBe(1);
+  const squeezed = { outside: [], overlaps: 0, lastRowAligned: true, startEndsLastRow: true };
+  // A long label (a workflow or a task to run after) truncates and keeps the row whole.
+  await browser.evaluate(() => {
+    for (const label of document.querySelectorAll('.composer-tools .chip-label')) label.textContent = 'After #123 Migrate the billing service';
+  });
+  await expect.poll(() => composerControls(browser)).toEqual({ rows: 1, ...squeezed });
+  const check = async () => {
+    await expect.poll(async () => {
+      const { rows: _rows, ...rest } = await composerControls(browser);
+      return rest;
+    }).toEqual(squeezed);
+  };
+  for (const width of [900, 768, 600, 390]) {
+    await browser.setViewport({ width, height: 900 });
+    await expect.poll(async () => (await composerControls(browser)).rows).toBeGreaterThan(1);
+    await check();
+  }
+  // The reported screen: a tool panel beside the composer.
+  await browser.setViewport({ width: 1440, height: 900 });
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', /^Shell/).click();
+  await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
+  for (const width of [1920, 1440, 1280, 1024]) {
+    await browser.setViewport({ width, height: 900 });
+    await check();
+  }
 });

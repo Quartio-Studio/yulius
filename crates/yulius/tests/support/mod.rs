@@ -46,6 +46,8 @@ pub struct FakeGitHub {
     pub users_by_code: Mutex<HashMap<String, GhUser>>,
     pub perms: Mutex<HashMap<(String, String), GitHubPermissions>>,
     pub fail_permissions: std::sync::atomic::AtomicBool,
+    /// While set, permission lookups never answer (a GitHub that hangs; SPEC-118).
+    pub hang_permissions: std::sync::atomic::AtomicBool,
     /// Pull requests (delivery tests).
     pub pulls: Mutex<Vec<GhPull>>,
     /// Checks per commit SHA (default: `None`, every source read).
@@ -147,6 +149,9 @@ impl GitHubPort for FakeGitHub {
     async fn repo_access(&self, token: &Secret, owner: &str, name: &str) -> AppResult<RepoAccess> {
         if self.fail_permissions.load(Ordering::SeqCst) {
             return Err(AppError::Upstream("github down".into()));
+        }
+        if self.hang_permissions.load(Ordering::SeqCst) {
+            std::future::pending::<()>().await;
         }
         let key = (login_of(token), format!("{owner}/{name}"));
         let perms = self

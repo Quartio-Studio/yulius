@@ -6,7 +6,7 @@ import { relLong, bytes, duration, dateTime, resetLabel, compact } from './forma
 import { sparkline, usd } from './charts.js';
 import { taskTime } from './tasktime.js';
 import { taskInfo, taskActions, activityLine, allows } from './status.js';
-import { href } from './router.js';
+import { href, placeFor } from './router.js';
 import { openSandboxDialog, confirmRemoveSandbox, openTaskMenu, archiveTask, archiveAll } from './actions.js';
 import { createNotificationCenter } from './notifications.js';
 import { BRAND } from './brand.js';
@@ -48,7 +48,7 @@ export function createTabRow(ctx) {
     } else if (select.value === '__home') {
       ctx.navigate('/');
     } else if (select.value) {
-      ctx.navigate(`/s/${encodeURIComponent(select.value)}`);
+      ctx.navigate(placeFor(`/s/${encodeURIComponent(select.value)}`, 'sandbox'));
     }
   } });
   const hamburger = iconButton('menu', 'Open navigation', () => document.body.classList.toggle('drawer-open'), { class: 'hamburger', 'aria-controls': 'sidebar', 'aria-expanded': 'false' });
@@ -122,7 +122,8 @@ export function createTabRow(ctx) {
       const a = h('a', {
         class: ['tab', sandbox.slug === currentSlug && 'active'],
         href: href(`/s/${encodeURIComponent(sandbox.slug)}`),
-        dataset: { route: `/s/${encodeURIComponent(sandbox.slug)}`, id: sandbox.id },
+        // Back to the screen left in that sandbox (SPEC-113); its own tab opens the composer.
+        dataset: { route: `/s/${encodeURIComponent(sandbox.slug)}`, restore: 'sandbox', id: sandbox.id },
         draggable: 'true',
         title: `${sandbox.repo ? `${sandbox.repo.owner}/${sandbox.repo.name}` : sandbox.name} · ${sandbox.access} access`,
         'aria-current': sandbox.slug === currentSlug ? 'page' : null,
@@ -141,7 +142,7 @@ export function createTabRow(ctx) {
       a.addEventListener('contextmenu', (event) => {
         event.preventDefault();
         openMenu({ x: event.clientX, y: event.clientY }, [
-          { label: 'Open', onSelect: () => ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}`) },
+          { label: 'Open', onSelect: () => ctx.navigate(placeFor(`/s/${encodeURIComponent(sandbox.slug)}`, 'sandbox')) },
           sandbox.repo && sandbox.repo.url ? { label: 'Open on GitHub', onSelect: () => window.open(sandbox.repo.url, '_blank', 'noopener,noreferrer') } : null,
           { separator: true },
           // Reordering without dragging (WCAG 2.5.7): the menu moves a tab one place.
@@ -694,6 +695,8 @@ export function createSidebar(ctx) {
       const active = routed && route.page === page;
       link.href = href(path);
       link.dataset.route = path;
+      // Back to the page's filters (SPEC-113); the link to the page in view opens it plain.
+      if (slug) link.dataset.restore = 'page'; else delete link.dataset.restore;
       link.classList.toggle('active', active);
       if (active) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
     }

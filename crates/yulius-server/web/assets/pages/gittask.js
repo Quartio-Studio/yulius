@@ -91,7 +91,7 @@ export function mountGitTaskView(ctx, sandbox, task, route) {
   const taskPath = `${base}/t/${task.number}`;
   const meta = h('div', { class: 'gt-meta' });
   const head = h('header', { class: 'gt-head' },
-    h('a', { class: 'gt-back', href: href(`${base}/git`), dataset: { route: `${base}/git` } }, icon('back', { size: 14 }), 'Git'),
+    h('a', { class: 'gt-back', href: href(`${base}/git`), dataset: { route: `${base}/git`, restore: 'page' } }, icon('back', { size: 14 }), 'Git'),
     h('div', { class: 'gt-title-row' },
       h('h1', { class: 'page-title gt-title' }, h('span', { class: 'muted' }, `#${task.number} `), task.title || `Task #${task.number}`),
       h('a', { class: 'btn btn-primary gt-go', href: href(taskPath), dataset: { route: taskPath } }, 'Go to task', icon('forward', { size: 14 }))),

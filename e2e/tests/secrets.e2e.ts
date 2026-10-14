@@ -38,6 +38,9 @@ test('team secrets are a title, a value and notes, shown after a two-factor code
   await setUpTwoFactor(screen, browser);
   const shown = screen.getByRole('dialog', 'Shared Gmail');
   await expect(shown).toBeVisible();
+  // The value stays masked until the eye is pressed (SPEC-114).
+  expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), TEAM_VALUE)).toBe(false);
+  await shown.getByRole('button', 'Show value').click();
   await expect(shown.getByText(TEAM_VALUE)).toBeVisible();
   await expect(shown.getByText(/Recovery codes/)).toBeVisible();
   await shown.getByRole('button', 'Done').click();
@@ -61,7 +64,9 @@ test('team secrets are a title, a value and notes, shown after a two-factor code
   expect(await browser.evaluate(() => document.body.innerHTML.includes('mock-aws-root-value'))).toBe(false);
 });
 
-test('agent secrets are bound to hosts and readable by their managers after a code', async ({ app, browser, screen }) => {
+// F 2026-10-14 (task #107): "Too many options. It should be: key name (like VIDOC_API_KEY), value
+// and description. Agent will find by itself the type, the adres etc" (SPEC-121).
+test('an agent secret is a name, a value and a description, readable by its managers after a code', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/secrets?section=agents'));
   await expect(screen.getByRole('radio', 'Agent secrets')).toHaveAttribute('aria-checked', 'true');
   await expect(screen.getByText('STRIPE_KEY')).toBeVisible();
@@ -71,30 +76,44 @@ test('agent secrets are bound to hosts and readable by their managers after a co
 
   await screen.getByRole('button', 'Add agent secret').first().click();
   const dialog = screen.getByRole('dialog', 'Add agent secret');
-  const labels = await browser.evaluate(() => [...document.querySelectorAll('dialog.modal .field-label')].filter((l) => !l.closest('[hidden]')).map((l) => l.textContent!.trim()));
-  expect(labels).toEqual(['Name', 'Value', 'Notes', 'Scope', 'Hosts', 'Added to requests as']);
+  const visibleLabels = () => browser.evaluate(() => [...document.querySelectorAll('dialog.modal .field-label')].filter((l) => (l as HTMLElement).checkVisibility()).map((l) => l.textContent!.trim()));
+  expect(await visibleLabels()).toEqual(['Name', 'Value', 'Description']);
+  // An instance administrator finds the scope under More options, closed.
+  await dialog.getByText('More options').click();
+  expect(await visibleLabels()).toEqual(['Name', 'Value', 'Description', 'Scope']);
+  expect(await axeViolations(browser)).toEqual([]);
   await screen.getByLabel('Name').fill('RESEND_KEY');
-  await screen.getByLabel('Hosts').fill('api.resend.com');
   await screen.getByLabel('Value').fill('short');
   await dialog.getByRole('button', 'Add').click();
   await expect(browser.locator('.field-error')).toHaveText(/At least 8 characters/);
   await screen.getByLabel('Value').fill('re_mock_value_123');
-  // A user name only for Basic credentials.
-  await browser.locator('dialog.modal select').nth(1).selectOption({ value: 'basic' });
-  await expect(screen.getByLabel('User name')).toBeVisible();
-  await browser.locator('dialog.modal select').nth(1).selectOption({ value: 'bearer' });
-  await expect(screen.getByLabel('User name')).toBeHidden();
+  await screen.getByLabel('Description').fill('Resend API key for transactional mail');
   await dialog.getByRole('button', 'Add').click();
   await expect(dialog).toBeHidden();
   await expect(screen.getByText('RESEND_KEY')).toBeVisible();
-  await expect(screen.getByText('api.resend.com')).toBeVisible();
+  // Bound to no host yet: agents find it and a person allows it.
+  const card = browser.locator('.item-card:has-text("RESEND_KEY")');
+  await expect(card.getByText(/Not sent anywhere yet/)).toBeVisible();
   expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), 're_mock_value_123')).toBe(false);
   expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), AGENT_VALUE)).toBe(false);
+
+  // Editing keeps the hosts; the request style shows only for a secret that has one.
+  await screen.getByRole('button', 'Edit RESEND_KEY').click();
+  const edit = screen.getByRole('dialog', 'Edit RESEND_KEY');
+  expect(await visibleLabels()).toEqual(['Name', 'Value', 'Description', 'Hosts']);
+  await edit.getByRole('button', 'Cancel').click();
+  await screen.getByRole('button', 'Edit STRIPE_KEY').click();
+  const stripe = screen.getByRole('dialog', 'Edit STRIPE_KEY');
+  expect(await visibleLabels()).toEqual(['Name', 'Value', 'Description', 'Hosts', 'Added to requests as']);
+  await stripe.getByRole('button', 'Cancel').click();
 
   // Its manager reads it back after a two-factor code.
   await screen.getByRole('button', 'Show STRIPE_KEY').click();
   await setUpTwoFactor(screen, browser);
   const shown = screen.getByRole('dialog', 'STRIPE_KEY');
+  await expect(shown.getByRole('button', 'Show value')).toHaveAttribute('aria-pressed', 'false');
+  expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), AGENT_VALUE)).toBe(false);
+  await shown.getByRole('button', 'Show value').click();
   await expect(shown.getByText(AGENT_VALUE)).toBeVisible();
   await shown.getByRole('button', 'Done').click();
 
@@ -103,6 +122,116 @@ test('agent secrets are bound to hosts and readable by their managers after a co
   await expect(screen.getByRole('radio', 'Agent secrets')).toHaveAttribute('aria-checked', 'true');
   await screen.getByRole('radio', 'Team secrets').click();
   await expect(screen.getByText('Shared Gmail')).toBeVisible();
+});
+
+// SPEC-121 ASH-005: the hosts an agent asked for wait on the Secrets page for a person to allow.
+test('a person allows the hosts an agent asked for', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets?section=agents'));
+  const card = browser.locator('.item-card:has-text("VIDOC_API_KEY")');
+  await expect(card.getByText('Task #107 asks to send it to')).toBeVisible();
+  await expect(card.getByText('api.vidoc.test')).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await screen.getByRole('button', 'Allow api.vidoc.test for VIDOC_API_KEY').click();
+  await expect(card.getByText(/asks to send it to/)).toBeHidden();
+  await expect(card.getByText(/Not sent anywhere yet/)).toBeHidden();
+  await expect(card.getByText('api.vidoc.test')).toBeVisible();
+
+  // A member (no instance administration) gets the three fields and no More options.
+  await app.open(mock('/s/studio/secrets?section=agents', '&role=member'));
+  await screen.getByRole('button', 'Add agent secret').first().click();
+  const dialog = screen.getByRole('dialog', 'Add agent secret');
+  const labels = await browser.evaluate(() => [...document.querySelectorAll('dialog.modal .field-label')].filter((l) => (l as HTMLElement).checkVisibility()).map((l) => l.textContent!.trim()));
+  expect(labels).toEqual(['Name', 'Value', 'Description']);
+  await expect(dialog.getByText('More options')).toBeHidden();
+});
+
+// F 2026-10-14 (task #99): "Value in passwords should be hidden by default even after show, and
+// shown after explicitly clicking eye icon. On hover there should be option to copy + the current
+// copy button." (SPEC-114)
+test('a shown value stays masked until the eye is pressed, and copies on hover', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets'));
+  // What the page puts on the clipboard, without a clipboard permission.
+  await browser.evaluate(() => {
+    (window as any).__copied = [];
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { (window as any).__copied.push(text); } } });
+  });
+  const copied = () => browser.evaluate(() => (window as any).__copied.filter((t: string) => t !== ''));
+
+  await screen.getByRole('button', 'Show Shared Gmail').click();
+  await setUpTwoFactor(screen, browser);
+  const shown = screen.getByRole('dialog', 'Shared Gmail');
+  await expect(shown).toBeVisible();
+  // Masked: dots of a fixed length, the value nowhere in the page, a name for screen readers.
+  const eye = shown.getByRole('button', 'Show value');
+  await expect(eye).toHaveAttribute('aria-pressed', 'false');
+  const box = browser.locator('dialog.modal .secret-box');
+  await expect(box).toContainText('••••••••••••');
+  await expect(browser.locator('dialog.modal .secret-box .sr-only')).toHaveText('Value hidden');
+  expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), TEAM_VALUE)).toBe(false);
+  // The notes still show.
+  await expect(shown.getByText(/Recovery codes/)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // The quick copy shows on hover only, and copies the value while it is masked.
+  const quick = browser.locator('dialog.modal .secret-quick-copy');
+  await expect(quick).toBeHidden();
+  await box.hover();
+  await expect(quick).toBeVisible();
+  await expect(quick).toHaveAttribute('aria-label', 'Copy');
+  await quick.click();
+  await expect(screen.getByText(/Value copied/).first()).toBeVisible();
+  expect(await copied()).toEqual([TEAM_VALUE]);
+  expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), TEAM_VALUE)).toBe(false);
+
+  // The eye shows it; pressed again it is masked and gone from the page.
+  await eye.click();
+  await expect(eye).toHaveAttribute('aria-pressed', 'true');
+  await expect(shown.getByText(TEAM_VALUE)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await eye.click();
+  await expect(eye).toHaveAttribute('aria-pressed', 'false');
+  expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), TEAM_VALUE)).toBe(false);
+
+  // The current Copy button stays and copies too.
+  await shown.getByRole('button', 'Copy value').click();
+  expect(await copied()).toEqual([TEAM_VALUE, TEAM_VALUE]);
+
+  // Keyboard: focus on the eye shows the quick copy, and it is the next stop.
+  await browser.mouse.move(0, 0);
+  await expect(quick).toBeHidden();
+  await eye.focus();
+  await expect(quick).toBeVisible();
+  await browser.keyboard.press('Tab');
+  expect(await browser.evaluate(() => document.activeElement!.getAttribute('aria-label'))).toBe('Copy');
+
+  // The light theme has no violations either, masked and shown.
+  await browser.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
+  expect(await axeViolations(browser)).toEqual([]);
+  await eye.click();
+  expect(await axeViolations(browser)).toEqual([]);
+  await eye.click();
+  await browser.evaluate(() => document.documentElement.removeAttribute('data-theme'));
+
+  // A new Show starts masked again, even after the eye was pressed.
+  await eye.click();
+  await expect(shown.getByText(TEAM_VALUE)).toBeVisible();
+  await shown.getByRole('button', 'Done').click();
+  await expect(shown).toBeHidden();
+  await screen.getByRole('button', 'Show Shared Gmail').click();
+  await expect(screen.getByRole('dialog', 'Shared Gmail').getByRole('button', 'Show value')).toHaveAttribute('aria-pressed', 'false');
+  expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), TEAM_VALUE)).toBe(false);
+
+  // At 390 px the box, its buttons and Copy stay inside the dialog, shown or masked.
+  await browser.setViewport({ width: 390, height: 844 });
+  for (const press of [false, true]) {
+    if (press) await screen.getByRole('dialog', 'Shared Gmail').getByRole('button', 'Show value').click();
+    const outside = await browser.evaluate(() => {
+      const dialog = document.querySelector('dialog.modal')!.getBoundingClientRect();
+      const parts = ['.secret-box', '.secret-eye', '.secret-quick-copy', '.secret-box + .btn'].map((s) => document.querySelector(`dialog.modal ${s}`)!.getBoundingClientRect());
+      return parts.filter((r) => r.left < dialog.left || r.right > dialog.right).length;
+    });
+    expect(outside).toBe(0);
+  }
 });
 
 // Review of SPEC-040: an older secret's address, user name and seed live in its notes, so its

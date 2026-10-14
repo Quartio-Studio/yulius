@@ -8,7 +8,7 @@
 
 import { enc } from '../api.js';
 import { h, icon, setChildren, placeholder, loadError, confirmDialog, toast, invalid, badge } from '../dom.js';
-import { href, navigate } from '../router.js';
+import { href, navigate, linkTarget } from '../router.js';
 import { allows } from '../status.js';
 import { openRuleEditor, ruleFromText, ruleText } from '../ruleeditor.js';
 import { openStartMenu, renderStartChip, startKind } from '../startchoice.js';
@@ -124,7 +124,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
   const del = creating ? null : h('button', { type: 'button', class: 'btn btn-quiet-danger', disabled: !write, onClick: () => doDelete() }, icon('trash', { size: 14 }), 'Delete');
   const body = h('div', { class: 'au-body' }, placeholder('Loading the automation…', 'loading'));
   const head = h('header', { class: 'gt-head wf-head' },
-    h('a', { class: 'gt-back', href: href(base), dataset: { route: base } }, icon('back', { size: 14 }), 'Automations'),
+    h('a', { class: 'gt-back', href: href(base), dataset: { route: base, restore: 'page' } }, icon('back', { size: 14 }), 'Automations'),
     h('div', { class: 'gt-title-row' }, h('div', { class: 'wf-titles' }, nameInput, when), del, del ? h('span', { class: 'au-break', 'aria-hidden': 'true' }) : null, startChip, runNow, save),
     !write ? h('p', { class: 'banner small' }, icon('lock', { size: 14 }), h('span', { class: 'banner-text' }, 'Read-only: changing automations needs write access to this sandbox.')) : null);
   const el = h('div', { class: 'page au-page' }, h('div', { class: 'page-inner mc-inner' }, h('h1', { class: 'sr-only' }, creating ? 'New automation' : 'Edit automation'), head, body, live));
@@ -351,7 +351,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
     if (!link || !dirty() || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
-    if (await confirmDialog({ title: 'Leave without saving?', message: 'Your changes to this automation are not saved.', confirmLabel: 'Leave', danger: true })) { saved = snapshot(); navigate(link.dataset.route); }
+    if (await confirmDialog({ title: 'Leave without saving?', message: 'Your changes to this automation are not saved.', confirmLabel: 'Leave', danger: true })) { saved = snapshot(); navigate(linkTarget(link)); }
   };
   renderStart();
   window.addEventListener('beforeunload', onBeforeUnload);

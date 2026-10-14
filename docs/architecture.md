@@ -198,13 +198,19 @@ base against the branch policy of `yulius.toml` `[branch_policy]` at the integra
 a violation is refused with the rule in words, also for promotion pull requests
 ([SPEC-069](../.ai/specs/SPEC-069-fix-223-yulius-s-merge-gate-enforces-the.md),
 [decision 0051](decisions/0051-the-merge-gate-enforces-the-branch-policy.md)).
+`delivery_merge` first delivers the head the way the end of a clean turn does
+(`try_auto_open_pr`): it pushes the branch and opens the pull request, or pushes new commits to
+it. A head it cannot deliver yet (open step, no plan for a task that needs a spec, invalid spec,
+uncommitted work) is refused with the reason, and a push GitHub refuses answers with the remedy
+(merge the pushed head, never force). A goal task whose evaluator keeps every turn going therefore still gets its pull request
+([SPEC-116](../.ai/specs/SPEC-116-linter-dead-code-should-be-installed-on.md) DMG-001).
 
 ```mermaid
 sequenceDiagram
     participant A as Agent (Claude Code)
     participant W as yulius wait (background shell)
     participant Y as Yulius (internal API)
-    A->>Y: delivery_merge (branch policy checked; checks still running: armed)
+    A->>Y: delivery_merge (head pushed and pull request opened if missing; policy checked; checks running: armed)
     A->>W: start, end the turn
     W->>Y: POST /internal/agent/wait (long poll)
     Y-->>W: checks ended / stage moved / armed merge decided (merged, refused, dropped)
@@ -213,27 +219,34 @@ sequenceDiagram
 
 ## Task start
 
-A task's agent is a native Claude Code session. Files attached on the new-task composer are
-uploaded to the sandbox's drafts folder and reach the session's first message natively. Without
-an image, that message is the CLI prompt argument and each file is mentioned there (`@path`).
-With an image, the session starts with no prompt and Yulius types the message into the TUI. Each
-image's path is pasted on its own, and Claude Code shows it as `[Image #N]` and sends an image
-block. The text is pasted next, with the other files mentioned, then Enter (an `@` mention of an
-image would only be a Read tool call). A goal task then gets its `/goal` typed into the terminal;
-the request file in the sandbox home keeps the whole request. A person who typed into the
-terminal before the goal keeps their draft: no goal is typed and the task needs attention (only
-keystrokes count as typing; focus and mouse reports and terminal answers do not). Each
+A task's agent is a native Claude Code session, and its first message is in before a person can
+type into it ([SPEC-117](../.ai/specs/SPEC-117-creating-tasks-work-in-a-very-very-weird.md),
+[decision 0095](decisions/0095-a-goal-task-starts-with-its-goal-as-the-launch-prompt.md)). Files
+attached on the new-task composer are uploaded to the sandbox's drafts folder. A goal task (the
+default) is launched with `/goal <condition>` as Claude Code's prompt argument: one message, nothing
+typed; Claude Code's record of the goal confirms it, and a goal not taken flags the task. The
+condition names the request file in the sandbox home, which keeps the whole request, and the
+attached files, which the agent opens with its Read tool (a `/goal` carries no image
+block). A prompt task's first message is its request. Without an image it is the CLI prompt
+argument, each file mentioned there (`@path`). With an image the session starts with no prompt
+and Yulius types the message into the TUI. Each image's path is pasted on its own, and Claude Code
+shows it as `[Image #N]` and sends an image block; the text follows with the other files
+mentioned, then Enter (an `@` mention of an image would only be a Read tool call). Until that
+Enter a person's keys are not written into the session; the first one is answered with a notice.
+A resumed goal session (Continue, a switch) gets its `/goal` typed after its continuation turn; a
+person who typed into it before keeps their draft: no goal is typed and the task needs attention
+(only keystrokes count as typing; focus and mouse reports and terminal answers do not). Each
 launch trusts the worktree and its main repository in the Claude config. Claude Code 2.1.292 looks
 a worktree's trust up there when `.claude/settings.json` pre-approves tools. If a trust prompt
-still shows before SessionStart, Yulius types nothing into it, and the keys a person answers it
-with are no draft: the goal follows once it is gone, and a prompt left unanswered for 5 minutes
-flags the task
+still shows before SessionStart, Yulius types nothing into it and says so, and the keys a person
+answers it with are no draft. A goal launched as the prompt runs once the prompt is answered, a
+typed one follows once it is gone, and a prompt left unanswered for 5 minutes flags the task
 ([SPEC-106](../.ai/specs/SPEC-106-onboarding-another-repo-got-fucked-up-by.md),
 [decision 0086](decisions/0086-a-lost-onboarding-task-returns-the-sandbox-to-pending.md)). A typed
 first message is pending (`opening-pending` in the run directory) until its `UserPromptSubmit`: a
 restart flags a task whose first message never reached that hook (a submitted one a hold keeps
-goes on, and a goal task's goal is typed after it), and a first message held for capacity resumes
-on another account, or a manual switch, as a fresh session that types it again with its images
+goes on), and a first message held for capacity resumes on another account, or a manual switch,
+as a fresh session that types it again with its images
 ([SPEC-068](../.ai/specs/SPEC-068-fix-252-266-only-real-typing-counts-as-t.md),
 [decision 0052](decisions/0052-only-keystrokes-count-as-typing.md);
 [SPEC-011](../.ai/specs/SPEC-011-automatic-dev-delivery.md),
@@ -253,11 +266,19 @@ sequenceDiagram
     participant C as Claude Code (PTY)
     UI->>S: upload each file (drafts folder)
     UI->>S: create task (prompt + @path lines)
-    alt no attached image
-        S->>C: launch with first message: text (prompt mode) or "files attached" (goal mode) + @path mentions
+    alt goal mode
+        S->>S: write the request file (request, attached files, definition of done)
+        S->>C: launch with prompt /goal <condition naming the request file and attached files>
+        opt Claude Code shows its folder-trust prompt
+            S-->>UI: notice: answer it in the terminal (flagged if unanswered)
+            UI->>C: a person answers (not a draft)
+        end
+        C-->>C: sets the goal and runs its turn
+    else prompt mode, no attached image
+        S->>C: launch with prompt: the request + @path mentions
         C-->>C: attaches each mentioned file
-    else attached images
-        S->>C: launch with no prompt
+    else prompt mode, attached images
+        S->>C: launch with no prompt (a person's keys now wait)
         C->>S: SessionStart hook, then quiet output
         loop each image
             S->>C: bracketed paste of its path
@@ -265,16 +286,6 @@ sequenceDiagram
         end
         S->>C: bracketed paste of the text (+ @path mentions of other files), Enter
         C->>S: UserPromptSubmit: the first message is no longer pending
-    end
-    C->>S: Stop hook of that turn (goal mode)
-    opt Claude Code shows its folder-trust prompt
-        S-->>UI: notice: answer it in the terminal
-        UI->>C: a person answers (not a draft)
-    end
-    alt a person typed since the launch
-        S-->>UI: no goal; task needs attention, notice in the terminal
-    else
-        S->>C: types /goal <condition>
     end
 ```
 
@@ -298,6 +309,16 @@ stateDiagram-v2
     pending --> skipped: admin skip
     preparing --> skipped: admin skip
 ```
+
+The onboarding task leaves the project ready for the discipline. In its own pull request it lays
+the gate: a test command, lint and format, and a dead-code and unused-dependency check, wired into
+`[commands]` and `[[ci.jobs]]` with a CI job for every project of a monorepo. Existing findings
+go into a committed baseline instead of application-code changes. It delivers through the review
+and `delivery_merge` like every task
+([SPEC-116](../.ai/specs/SPEC-116-linter-dead-code-should-be-installed-on.md),
+[decision 0094](decisions/0094-onboarding-installs-the-gate-in-its-own-pull-request.md)). The
+briefing quotes the newest end of the changes log: a log whose ISO dates run oldest first is
+quoted from its end, and its new entries go there.
 
 ### Supertasks
 
@@ -406,6 +427,66 @@ flowchart LR
   MCP -->|"automation_*, automation_template_enable"| AU["Automations and ready-made ones"]
 ```
 
+## Agent secret hosts
+
+An agent secret is used only on the hosts it is bound to (SPEC-002 ADR-20). Since SPEC-121
+(ADR-0098) a person adds one with a name, a value and a description, and it starts bound to
+nothing. The agent works out the service's host and proposes it; the request waits on the secret
+(`requested_hosts`) until a person who manages it allows it. An agent never binds a host itself,
+so an agent misled by injected content cannot send a secret to another server.
+
+```mermaid
+sequenceDiagram
+    participant P as Person
+    participant UI as Secrets page
+    participant App as Yulius (vault)
+    participant A as Agent
+    participant X as Egress proxy
+    P->>UI: Add VIDOC_API_KEY (name, value, description)
+    UI->>App: POST agent-secrets (hosts [], injection none)
+    A->>App: secrets_list, then secret_request_hosts(api.vidoc.com)
+    App-->>A: requested, waiting for a person (task needs attention)
+    A->>X: request to api.vidoc.com with the placeholder
+    X-->>A: forwarded without the secret (not bound yet)
+    P->>UI: Allow
+    UI->>App: POST agent-secrets/{id}/request {allow: true}
+    A->>X: request to api.vidoc.com with the placeholder
+    X-->>A: placeholder replaced by the value, response redacted
+```
+
+## Terminal input
+
+A keystroke goes from xterm to the PTY and its echo comes back without waiting for the database or
+GitHub ([SPEC-118](../.ai/specs/SPEC-118-when-i-write-something-in-a-claude-termi.md),
+[decision 0096](decisions/0096-terminal-input-rides-a-write-grant.md)). Each viewer holds a write
+grant, confirmed when it opens the terminal. The store's access epoch grows with every write that
+can change who may type. While the epoch is unchanged, input is written at once. When it moves,
+the next input is checked first. A grant older than 30 s is re-confirmed in the background. The
+viewer's socket loop never awaits a permission check: the 60 s re-check runs in a spawned task, and
+the loop picks up its verdict.
+
+```mermaid
+sequenceDiagram
+  participant X as xterm (browser)
+  participant L as Viewer loop (routes/terminal.rs, routes/shells.rs)
+  participant G as WriteGrant + access epoch
+  participant P as ptyhost (PTY)
+  participant H as Hub
+  X->>L: input frame
+  L->>G: decide(epoch, now)
+  alt grant holds
+    G-->>L: allow (and re-confirm beside it after 30 s)
+  else epoch moved or no grant
+    G->>G: can_work / shell check (database, GitHub)
+    G-->>L: allow or forbidden
+  end
+  L->>P: bytes
+  P-->>H: echo (output chunk)
+  H-->>L: broadcast
+  L-->>X: binary output frame
+  Note over L: every 60 s a spawned re-check, its verdict selected beside input and output
+```
+
 ## Task ownership
 
 A task acts on GitHub with one person's token, so it is that person's: its owner, the creator
@@ -488,6 +569,17 @@ it open ([decision 0087](decisions/0087-pull-request-changes-are-announced.md)).
 Sign-out removes the notification history, the drafts and the pull requests; an expired session
 removes the pull requests too.
 
+Screens keep their state when the person moves away and back
+([decision 0092](decisions/0092-screens-remember-where-they-were-left.md), SPEC-113). The router
+(`router.js`) remembers, in `sessionStorage` for this browser tab, the last address shown inside
+each sandbox and on each sandbox page, including the filters pages keep in their query with
+`replaceQuietly`; links marked `data-restore` (sandbox tabs, Home's cards, the sidebar's pages, the
+Tasks and Git back links) go back there, and a link to where the person already is opens the plain
+path. The tool panel (`panels.js`) keeps each sandbox's open tool, and the Superagent, Browser,
+Editor and Shell views of the 3 sandboxes used last stay alive, hidden; the editor of a sandbox in
+the background keeps its files' text without Monaco models. Sign-out and an expired session forget
+the places.
+
 Every drop-down menu is built by `openMenu` (`dom.js`). It stays inside the window, scrolling its
 items, and a menu of 8 or more items opens with a filter box
 ([decision 0030](decisions/0030-menus-filter-when-long.md)). A group of items under a header (the
@@ -508,6 +600,10 @@ flowchart LR
   LP -->|"after a reload, until the read answers"| P
   SO -->|"forget"| LP
   EX["Session expired"] -->|"forget"| LP
+  R["router.js emit / replaceQuietly"] -->|"each address in a sandbox"| PL[("sessionStorage yulius.places")]
+  PL -->|"data-restore links: tabs, Home cards, sidebar pages"| R
+  SO -->|"forget"| PL
+  EX -->|"forget"| PL
 ```
 
 ## Task status

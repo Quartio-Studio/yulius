@@ -3,11 +3,94 @@
 // ?mock=1 so a plain static file server can reload deep links.
 
 const listeners = new Set();
+const quietListeners = new Set();
 let hashMode = false;
 let lastKey = null;
 
 const SANDBOX_PAGES = new Set(['tasks', 'sessions', 'git', 'ci', 'workflows', 'skills', 'automations', 'mcp', 'secrets', 'dashboard']);
 const ADMIN_PAGES = new Set(['users', 'accounts', 'github', 'instance']);
+
+// Where each sandbox and each sandbox page was left (SPEC-113 KST-001): a link marked
+// `data-restore` goes back there instead of to its plain path. Kept for this browser tab
+// (sessionStorage), forgotten on sign-out; the oldest go first past MAX_PLACES.
+const PLACES_KEY = 'yulius.places';
+const MAX_PLACES = 200;
+let places = loadPlaces();
+
+function loadPlaces() {
+  try {
+    const saved = JSON.parse(window.sessionStorage.getItem(PLACES_KEY) || '[]');
+    return new Map((Array.isArray(saved) ? saved : []).filter((entry) => Array.isArray(entry) && typeof entry[0] === 'string' && typeof entry[1] === 'string' && entry[1].startsWith('/s/')));
+  } catch {
+    return new Map();
+  }
+}
+
+function savePlaces() {
+  try { window.sessionStorage.setItem(PLACES_KEY, JSON.stringify([...places])); } catch { /* kept in memory only */ }
+}
+
+/** `/s/<slug>` of a path inside a sandbox. */
+const sandboxOf = (path) => path.split('/').slice(0, 3).join('/');
+
+function remember(loc) {
+  const route = matchRoute(loc.path, loc.query);
+  if (!route.slug) return;
+  const entries = [[`sandbox:${sandboxOf(loc.path)}`, loc.full]];
+  if (route.name === 'page') entries.push([`page:${loc.path}`, loc.full]);
+  for (const [key, full] of entries) {
+    places.delete(key); // re-added last: the map's order is the age
+    places.set(key, full);
+  }
+  while (places.size > MAX_PLACES) places.delete(places.keys().next().value);
+  savePlaces();
+}
+
+/**
+ * Where a link to `path` goes: with `restore` 'sandbox' (a sandbox's tab or card) the address last
+ * shown inside that sandbox, with 'page' (a sandbox page's link) that page's last address. A link
+ * to where the person already is, or to a place not visited in this tab, goes to `path` itself.
+ */
+export function placeFor(path, restore) {
+  const here = currentLocation().path;
+  if (restore === 'sandbox' && here !== path && !here.startsWith(`${path}/`)) return places.get(`sandbox:${path}`) || path;
+  if (restore === 'page' && here !== path) return places.get(`page:${path}`) || path;
+  return path;
+}
+
+/** Where an `a[data-route]` link goes: its route, or the place it restores (`data-restore`). */
+export function linkTarget(anchor) {
+  return anchor.dataset.restore ? placeFor(anchor.dataset.route, anchor.dataset.restore) : anchor.dataset.route;
+}
+
+/** The address `full` is not a place to return to (a task that is not there, KST-004). */
+export function forgetPlace(full) {
+  const key = `sandbox:${sandboxOf(full.split('?')[0])}`;
+  if (places.get(key) !== full) return;
+  places.delete(key);
+  savePlaces();
+}
+
+/** Sign-out: no place of this person stays in the tab. */
+export function forgetPlaces() {
+  places = new Map();
+  try {
+    window.sessionStorage.removeItem(PLACES_KEY);
+    window.sessionStorage.removeItem(`${PLACES_KEY}.owner`);
+  } catch { /* nothing kept */ }
+}
+
+/** Signed in as `userId`: places another person left in this tab (signed in elsewhere) go. */
+export function bindPlaces(userId) {
+  const owner = String(userId || '');
+  try {
+    if (window.sessionStorage.getItem(`${PLACES_KEY}.owner`) === owner) return;
+    forgetPlaces();
+    window.sessionStorage.setItem(`${PLACES_KEY}.owner`, owner);
+  } catch {
+    places = new Map();
+  }
+}
 
 /** Start listening to navigation. */
 export function initRouter({ hash = false } = {}) {
@@ -21,6 +104,15 @@ export function initRouter({ hash = false } = {}) {
 export function onRoute(fn) {
   listeners.add(fn);
   return () => listeners.delete(fn);
+}
+
+/**
+ * Subscribe to quiet address changes (`replaceQuietly`) with the route they now name; returns an
+ * unsubscribe function. The view in place already shows it: nothing is mounted again.
+ */
+export function onQuietReplace(fn) {
+  quietListeners.add(fn);
+  return () => quietListeners.delete(fn);
 }
 
 /** Current {path, query} independent of the routing mode. */
@@ -46,7 +138,11 @@ export function href(path) {
 export function replaceQuietly(path) {
   const url = hashMode ? `${window.location.pathname}${window.location.search}#${path}` : path;
   window.history.replaceState(window.history.state, '', url);
-  lastKey = currentLocation().full;
+  const loc = currentLocation();
+  lastKey = loc.full;
+  remember(loc);
+  const route = matchRoute(loc.path, loc.query);
+  for (const fn of quietListeners) fn(route);
 }
 
 /** Navigate to an app path, e.g. navigate('/s/studio/t/12'). */
@@ -61,6 +157,7 @@ function emit() {
   const loc = currentLocation();
   if (loc.full === lastKey) return;
   lastKey = loc.full;
+  remember(loc);
   const route = matchRoute(loc.path, loc.query);
   for (const fn of listeners) fn(route);
 }
@@ -76,7 +173,7 @@ function onDocumentClick(event) {
   const anchor = event.target.closest && event.target.closest('a[data-route]');
   if (!anchor) return;
   event.preventDefault();
-  navigate(anchor.dataset.route);
+  navigate(linkTarget(anchor));
 }
 
 /** Map a path to a route descriptor {name, slug, number, page, query}. */

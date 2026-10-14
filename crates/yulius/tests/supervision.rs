@@ -545,12 +545,11 @@ fn an_agent_session_is_told_its_budget_in_the_repositorys_terms() -> TestResult 
     Ok(())
 }
 
-/// AC-TSK-9: a goal-mode task gets its prompt as `/goal <prompt>` typed into the session once
-/// the TUI is ready, not as a first message. This agent runs no hooks (an old CLI), so the goal
-/// follows the hookless fallback: half the readiness bound, shortened here from 90 s to 8 s so
-/// the test does not sleep 45 s (SPEC-082 TST-001).
+/// AC-TSK-9, SPEC-117 ONE-001: a goal-mode task gets its prompt as `/goal <prompt>`, the launch
+/// prompt of its session, not typed into it. This agent runs no hooks (an old CLI); it answers
+/// the prompt argument with its echo.
 #[test]
-fn goal_mode_types_the_goal_once_the_session_is_ready() -> TestResult {
+fn goal_mode_launches_the_session_with_its_goal() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
     let data = dir.path().canonicalize()?;
@@ -584,6 +583,14 @@ fn goal_mode_types_the_goal_once_the_session_is_ready() -> TestResult {
             screen_contains(&app, &id, "ECHO: /goal Ship the widget with tests")
         })
         .await?;
+        let attempts = app.deps.store.attempts(&id).await?;
+        let first = attempts.first().ok_or("no run")?;
+        let launch =
+            std::fs::read_to_string(std::path::Path::new(&first.run_dir).join("fake-launch.txt"))?;
+        assert!(
+            launch.contains("prompt: Some(\"/goal Ship the widget with tests | Done = "),
+            "{launch}"
+        );
         app.stop_task_now(&id).await?;
         wait_for("the stop", Duration::from_secs(30), || async {
             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
