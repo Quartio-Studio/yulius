@@ -4,7 +4,8 @@
 
 Accepted. Specified in [SPEC-051](../../.ai/specs/SPEC-051-onboarding-existing-project-using-cli-sh.md).
 Replaces the "no approval step" of the `yulius onboard` path (SPEC-001 IMP-010, F 2026-10-10);
-adding a repository in the web UI is unchanged. Amended by
+adding a repository in the web UI is unchanged. Narrowed by [ADR-0076](0076-onboarding-is-mandatory-in-the-ui.md):
+the page offers no Skip for now; skipping is an admin's recovery path through the API. Amended by
 [ADR-0077](0077-onboarding-task-is-created-when-needed.md): a `pending` sandbox has no resting
 onboarding task; it is created when onboarding starts or a task waits for it.
 
