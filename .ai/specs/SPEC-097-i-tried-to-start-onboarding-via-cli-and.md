@@ -117,3 +117,6 @@ empty instead of showing a "Closed · 0/6 steps" task that never ran.
 - Merging #402 (SPEC-096) conflicted: its page read the plan from the resting task. OBT-004 adds
   the plan read; the tests failed first (404 on `…/onboarding/plan`; e2e: the two pending-page
   tests fail with the previous page) and pass after.
+- At 10d01392 (after merging #402 and adding OBT-004): `scripts/dev ci` exit 0, 1534 tests passed,
+  16 skipped (the #404 tests passed this time, load average about 28); `npx e2e run`: 291 passed,
+  1 skipped.
