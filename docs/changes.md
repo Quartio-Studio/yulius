@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- A task can be prepared now and started later (SPEC-105, ADR-0085, task #90). New task's start
+  menu offers **When I decide**: the task waits with the new status `prepared`, holding no
+  session, until you press Start now in its view or menu. **At a time…** picks a date and time:
+  the task starts by itself then, within a minute (after a restart, at the first minute past it;
+  while onboarding blocks the project, once it is ready). Its row reads "Prepared" or
+  "Scheduled · tomorrow 09:00", sits with the queued tasks, and its view offers Start now,
+  Schedule… or Change time…, and Cancel. The API takes `prepared` and `start_at` on New task and
+  `task_create`, shows `start_at`, and `PUT /api/tasks/{tid}/schedule` moves or clears the time
+  (schema version 24, `task_schedules`).
 - A repository's `.mcp.json` no longer stops the Superagent on Claude Code's "N new MCP servers
   found in this project" dialog (SPEC-095, ADR-0078, #391). Before each task run and Superagent
   start, Yulius adds the file's servers that the sandbox lacks to its MCP servers, so every task

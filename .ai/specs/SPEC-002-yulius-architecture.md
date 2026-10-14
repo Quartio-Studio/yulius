@@ -1558,6 +1558,7 @@ Schema version 1 (tables; columns abbreviated):
 | `messages` | id, sandbox_id, from_task (null = Yulius), to_task (null = to people), kind, subject, body, created_at. History only: nothing writes or shows messages since SPEC-028 |
 | `message_receipts` | message_id, task_id, delivered_at, read_at |
 | `scope_claims` | id, task_id, pattern, note, created_at, released_at |
+| `task_schedules` | task_id, start_at, updated_at: when a prepared task starts by itself (SPEC-105, schema version 24) |
 | `record_numbers` | sandbox_id, dir, prefix, number (primary key of the four), task_id, reserved_at: numbers given out for numbered files (SPEC-083, schema version 20) |
 | `workflows` | id, sandbox_id (null = instance), name, description, steps (json), instructions, gates (json) |
 | `automations` | id, sandbox_id, name, cron, timezone, prompt, workflow_id, harness, enabled, created_by, created_via (ui/agent), supertask, after_task_id, start_rule (SPEC-078, schema version 19) |
@@ -1592,6 +1593,7 @@ For every nonterminal state: owner, exit trigger, timeout and behavior if the tr
 | State | Owner | Exit trigger | Timeout / missing trigger |
 | --- | --- | --- | --- |
 | `chained` | chain controller (ADR-16) | predecessor Done, or a person's Start now → `queued`; cancel → `stopped(cancelled)` | Re-evaluated when the predecessor's run ends, after its clean Stop, on cancel/delete and every minute; a predecessor that ends otherwise sets a reason and the task waits for a person (no timeout); at most 32 per sandbox. |
+| `prepared` | the person, or the background tick for a time (SPEC-105, ADR-0085) | Start now, or its time on the minute tick once onboarding no longer blocks the sandbox → `queued`; cancel → `stopped(cancelled)` | No timeout without a time (it never starts by itself); with one, at most a minute late, or at the first tick after a restart; at most 32 per sandbox. |
 | `queued` | scheduler | capacity available → `starting`; cancel → `stopped` | Queue bound 32; position shown; no timeout. |
 | `starting` | supervisor | ptyhost Welcome + child running → `running`; spawn error → `failed` | 30 s → kill ptyhost tree, `failed(start_timeout)`. |
 | `running` | supervisor | child exit 0, or any exit after Claude Code's `SessionEnd` said the person left (`prompt_input_exit`, `logout`) → `closed`; ended by SIGTERM/SIGKILL/SIGHUP/SIGINT or exit 129/130/137/143 → `stopped(killed)`; any other exit → `stopped(crashed)`; cancel → `stopping`; switch decision → `switching`; limit with no capacity → `waiting_capacity` | Liveness ping every 10 s; 3 missed pings + no process → `stopped(lost)`. |

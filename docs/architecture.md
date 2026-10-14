@@ -266,6 +266,25 @@ flowchart LR
     D --> G
 ```
 
+### Prepared tasks
+
+A task can wait as `prepared` before its first run (`yulius-app/src/prepared.rs`,
+[SPEC-105](../.ai/specs/SPEC-105-add-scheduling-when-i-decide-in-this-mod.md),
+[decision 0085](decisions/0085-a-prepared-task-waits-for-a-person-or-its-time.md)). Without a time
+it waits for a person's Start now; with one (a row in `task_schedules`) the background tick
+releases it once the time has come and the sandbox's onboarding no longer blocks tasks. Released,
+it goes `prepared → queued` by compare-and-set and starts through `start_run` like a new task.
+
+```mermaid
+flowchart LR
+    C[New task: When I decide / At a time] --> P[prepared]
+    P -->|Start now| Q[queued]
+    P -->|tick: time due, onboarding done| Q
+    P -->|PUT schedule| P
+    P -->|Cancel| S[stopped cancelled]
+    Q --> R[start_run: supertask hold, session limit, capacity]
+```
+
 ## Superagent (the Cockpit)
 
 Every user has one plain Claude Code session per sandbox, shown as the **Superagent**

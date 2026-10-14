@@ -95,5 +95,5 @@ cancelled.
   survives restarts; no per-task timers to cancel. ADR-0085.
 - Start now and Cancel reuse the chained task's endpoints; only rescheduling is new.
 - Automations do not get "when I decide" in this change (their own start choice is being
-  reworked by task #78): a follow-up issue.
+  reworked by task #78): issue #416.
 - Editing a prepared task's prompt is out of scope: queued messages already add to it.

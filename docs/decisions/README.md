@@ -84,3 +84,4 @@ number differs from the file name, and a record this index does not list.
 - [0073](0073-loading-shows-shimmering-fields.md): Loading shows shimmering fields everywhere; a spinner marks only an action under way
 - [0075](0075-menu-descriptions-wrap.md): Menu descriptions wrap onto as many lines as they need instead of being cut
 - [0080](0080-a-wait-for-yulius-shows-a-still-muted-branch.md): A wait for Yulius shows a still, muted branch, not Working's turning green
+- [0085](0085-a-prepared-task-waits-for-a-person-or-its-time.md): A prepared task waits for a person's Start now or its time; the minute tick releases it
