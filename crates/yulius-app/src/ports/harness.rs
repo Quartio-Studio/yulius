@@ -170,6 +170,12 @@ pub enum Observation {
         /// Claude Code's task id.
         id: String,
     },
+    /// A task notification said the background agent `id` stopped with background work of its
+    /// own still running: it resumes by itself and notifies again (SPEC-079 BGW-006).
+    BackgroundResumable {
+        /// Claude Code's task id.
+        id: String,
+    },
     /// The API rejected the prompt as too long: the session's context is full (#213).
     ContextFull,
     /// Claude Code compacted the conversation.

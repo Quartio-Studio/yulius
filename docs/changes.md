@@ -11,6 +11,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   and so on) instead of its oldest, and before Yulius merges it renews a title it gave from the
   final commits, so #381's `docs(spec)` would have read `fix(check)`; a title a person or agent
   wrote is kept.
+- A background agent that stops while its own background work still runs no longer ends in
+  Yulius's eyes (SPEC-079 BGW-006, task #74). Claude Code's note says its result may be interim
+  and the same task id notifies again. The task stays Working until that final notification, or
+  an hour without it, and a switch waits for it; before, the task read "Your turn" in between.
+- The session view folds long injected context as Claude Code's TUI hides it (SPEC-090, ADR-0071,
+  #347): a meta note over 8 lines or 2,000 characters, such as a skill's body, is one faint
+  `⎿ Context added (6.2 KiB)` line that opens on demand. Shorter notes people act on, such as the
+  Stop hook's goal and feedback, stay as written; `session_read` is unchanged.
+- `yulius doctor` warns when the host's GitHub CLI is older than 2.82.1 (SPEC-088): since GitHub
+  retired Projects (classic), `gh pr edit` and `gh issue view --comments` fail on older versions,
+  on the host and in every sandbox. Unrecognised version lines stay OK. The warning and `docs/operations.md`
+  point to GitHub's package repository instead of `apt-get install gh`.
 - The repository check fails on committed merge conflict markers (SPEC-089, #364): a line that is
   a Git conflict marker in any tracked or new file, vendored assets and binaries aside, fails
   `scripts/dev check` and Yulius CI with its file and line, where before markers in docs and web

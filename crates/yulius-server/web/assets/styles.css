@@ -2163,7 +2163,7 @@ button.task-group-head:hover { color: var(--text); }
 .ss-input { margin-left: 3ch; color: var(--session-dim); }
 .ss-fold > summary { display: flex; flex-direction: column; gap: 2px; margin: 0 -1ch; padding: 0 1ch; border-radius: var(--radius-sm); cursor: pointer; list-style: none; }
 .ss-fold > summary::-webkit-details-marker { display: none; }
-.ss-fold > summary:hover .ss-call, .ss-thinking > summary:hover .ss-line-body { text-decoration: underline; text-decoration-color: var(--session-dim); text-underline-offset: 3px; }
+.ss-fold > summary:hover .ss-call, :is(.ss-thinking, .ss-note) > summary:hover .ss-line-body { text-decoration: underline; text-decoration-color: var(--session-dim); text-underline-offset: 3px; }
 .ss-fold > summary:focus-visible { outline: none; box-shadow: var(--focus-inset); }
 .ss-fold > :not(summary) { margin: 4px 0 0 2ch; }
 .ss-thinking > summary .ss-line-body { color: var(--session-dim); font-style: italic; }
@@ -2173,10 +2173,10 @@ button.task-group-head:hover { color: var(--text); }
 .ss-out { margin-left: 2ch; color: var(--session-dim); }
 .ss-out-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .ss-out-err, .ss-out-err .ss-mark { color: var(--session-err); }
-.ss-result { max-height: 480px; overflow: auto; }
+.ss-result, .ss-note-text { max-height: 480px; overflow: auto; }
 .ss-tool[open] .ss-preview-folded { display: none; }
 .ss-diff { margin-left: 4ch; }
-.ss-tui :is(.ss-code, .ss-result, .ss-diff-hunk):focus-visible { outline: none; box-shadow: var(--focus-inset); }
+.ss-tui :is(.ss-code, .ss-result, .ss-diff-hunk, .ss-note-text):focus-visible { outline: none; box-shadow: var(--focus-inset); }
 .ss-diff-hunk { margin: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 480px; overflow: auto; }
 .ss-diff-hunk > span { display: block; padding: 0 1ch; }
 .ss-ctx { color: var(--session-dim); }
