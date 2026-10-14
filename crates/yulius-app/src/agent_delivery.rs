@@ -178,10 +178,12 @@ impl App {
             .await?
             .filter(SandboxRecord::is_playground)
         {
+            let task = self
+                .load_task(&auth, &task_id, yulius_domain::permission::Action::Work)
+                .await?;
             let view = self
-                .merge_task_pr_for_task(&auth, &task_id)
-                .await
-                .map_err(MergeFailure::into_error)?;
+                .playground_merge(&auth.user, &task, Some(&head))
+                .await?;
             self.agent_audit(
                 ctx,
                 "delivery.agent.merge",
@@ -419,6 +421,7 @@ impl App {
             .sandbox(&ctx.task.sandbox_id)
             .await?
             .ok_or(AppError::NotFound)?;
+        crate::playground::refuse_in_playground(&sandbox, "Opening an issue")?;
         let token = match self.owner_github_token(&ctx.task).await {
             Some(token) => token,
             None => self.repository_installation_token(&sandbox).await?,

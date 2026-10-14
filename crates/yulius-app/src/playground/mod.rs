@@ -25,6 +25,24 @@ pub use folder::{FolderUpload, MAX_FOLDER_UPLOAD_BYTES};
 pub const PLAYGROUND_NOTE: &str = "This playground keeps its Git on this server: no pull \
      requests; `delivery_merge` squashes a task into the integration branch here.";
 
+/// Refuses `what` in a playground (PLY-002): it needs GitHub, which a playground never calls.
+///
+/// # Errors
+/// `Conflict` for a playground.
+pub(crate) fn refuse_in_playground(sandbox: &SandboxRecord, what: &str) -> AppResult<()> {
+    if sandbox.is_playground() {
+        return Err(AppError::Conflict(format!(
+            "{what} needs GitHub, and this sandbox is a playground: its Git stays on this server, \
+             with no pull request, CI, deploy, promotion or GitHub issue"
+        )));
+    }
+    Ok(())
+}
+
+/// Playgrounds a person (not the superadmin) keeps at once: each holds a repository on the
+/// server's disk.
+pub const MAX_PLAYGROUNDS_PER_PERSON: usize = 10;
+
 /// Git transport needs no credential for a playground's own `origin`; nothing is sent anywhere.
 pub(crate) fn no_token() -> Secret {
     Secret(String::new())
@@ -61,6 +79,31 @@ impl App {
         }
     }
 
+    /// Refuses a new playground to a person who keeps [`MAX_PLAYGROUNDS_PER_PERSON`].
+    ///
+    /// # Errors
+    /// `Conflict` at the bound; store failures.
+    pub(crate) async fn playground_quota(&self, user: &UserRecord) -> AppResult<()> {
+        if user.is_superadmin {
+            return Ok(());
+        }
+        let kept = self
+            .deps
+            .store
+            .sandboxes()
+            .await?
+            .iter()
+            .filter(|s| s.is_playground() && s.removed_at.is_none() && s.created_by == user.id)
+            .count();
+        if kept >= MAX_PLAYGROUNDS_PER_PERSON {
+            return Err(AppError::Conflict(format!(
+                "you keep {MAX_PLAYGROUNDS_PER_PERSON} playgrounds, the most a person may: remove \
+                 one first"
+            )));
+        }
+        Ok(())
+    }
+
     /// `POST /api/sandboxes` `{mode: "playground"}` (PLY-001): a playground from a template, for
     /// anyone signed in, with or without GitHub.
     ///
@@ -83,6 +126,7 @@ impl App {
             ))
         })?;
         let name = playground_name(name)?;
+        self.playground_quota(user).await?;
         let id = SandboxId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?;
         let profile = DeliveryProfile::standard();
         let files = scaffold_files(&name, kind);

@@ -14,6 +14,10 @@ import { bytes } from './format.js';
 export const SKIPPED_DIRS = new Set(['node_modules', '.venv', 'venv', '__pycache__', 'target', '.next', '.nuxt', '.turbo', '.cache']);
 /** The server refuses a larger archive (`MAX_FOLDER_UPLOAD_BYTES`). */
 export const MAX_ARCHIVE_BYTES = 1024 ** 3;
+/** The server's bound on what the files of a folder hold in all (`MAX_IMPORT_TOTAL_BYTES` for
+ * the working tree and again for the history), and so on any one file. */
+export const MAX_FOLDER_BYTES = 4 * 1024 ** 3;
+export const MAX_FILE_BYTES = 2 * 1024 ** 3;
 /** The server's bound on archive entries (`MAX_SNAPSHOT_ENTRIES`). */
 export const MAX_FILES = 200000;
 /** Waiting for the server: from the last byte sent, cloning and committing take a while. */
@@ -186,6 +190,10 @@ export async function entriesOfDrop(dataTransfer) {
 export async function startFolderPlayground(api, { name, entries }, report = () => {}) {
   const tar = tarOf(entries);
   if (!tar.files) throw new Error('The folder has no files to start a playground with.');
+  // Refused here, before minutes of packing and uploading end in the server's refusal.
+  const huge = entries.find(({ path, file }) => archivePath(path) && file.size > MAX_FILE_BYTES);
+  if (huge) throw new Error(`${huge.path} is ${bytes(huge.file.size)}; a playground takes files up to 2 GB.`);
+  if (tar.size > MAX_FOLDER_BYTES) throw new Error(`The folder holds ${bytes(tar.size)}; a playground takes up to 4 GB. Leave dependencies and build output out.`);
   report('packing', 0, tar.blob.size);
   const archive = await gzip(tar.blob, (done, total) => report('packing', done, total));
   if (archive.size > MAX_ARCHIVE_BYTES) {

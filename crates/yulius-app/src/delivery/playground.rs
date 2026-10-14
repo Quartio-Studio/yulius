@@ -30,6 +30,7 @@ impl App {
         &self,
         user: &UserRecord,
         task: &TaskRecord,
+        reviewed: Option<&str>,
     ) -> AppResult<Delivery> {
         let sandbox = self.dlv_sandbox_of(task).await?;
         let profile = delivery_profile(&sandbox);
@@ -65,6 +66,15 @@ impl App {
             .worktree_head
             .clone()
             .ok_or_else(|| AppError::Conflict("the task branch has no commit".into()))?;
+        // The agent's merge lands the head the review approved, nothing committed since.
+        if let Some(reviewed) = reviewed
+            && reviewed != head
+        {
+            return Err(AppError::Conflict(format!(
+                "not merged: the branch moved from the reviewed head {reviewed} to {head}; review \
+                 the new head and merge again"
+            )));
+        }
         // The integration branch as it is now in the playground's `origin`.
         self.dlv_refresh_clone(&sandbox).await?;
         let base = format!("origin/{integration}");
@@ -94,7 +104,7 @@ impl App {
         );
         let (name, email) = crate::projects::identity(user);
         let repo = self.sandbox_repo(&sandbox.id);
-        let commit = match git
+        let landed = git
             .land_squash(
                 &repo,
                 &SquashRequest {
@@ -106,10 +116,25 @@ impl App {
                     branch: integration,
                 },
             )
-            .await?
-        {
+            .await
+            .map_err(|err| {
+                let reason = err.public_message();
+                if ["rejected", "fetch first", "non-fast-forward"]
+                    .iter()
+                    .any(|needle| reason.contains(needle))
+                {
+                    AppError::Conflict(format!(
+                        "not merged: `{integration}` moved while this merge ran; merge again"
+                    ))
+                } else {
+                    err
+                }
+            })?;
+        let commit = match landed {
             SquashLanding::Landed(commit) => commit,
-            SquashLanding::Unchanged => return Err(nothing()),
+            // The branch's changes are already in the integration branch (a squash that landed
+            // before its stage was recorded): it is merged.
+            SquashLanding::Unchanged => format!("{base} (already there)"),
             SquashLanding::Conflict(files) => {
                 return Err(AppError::Conflict(format!(
                     "`{branch}` conflicts with `{integration}` in {}: merge it into your branch \

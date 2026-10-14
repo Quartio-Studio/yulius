@@ -309,6 +309,11 @@ pub trait GitPort: Send + Sync {
         let _ = (path, branch);
         unsupported("creating a repository")
     }
+    /// Makes the worktree ignore file modes and links a browser turned into files (SPEC-099).
+    async fn keep_modes_and_links(&self, worktree: &Path) -> AppResult<()> {
+        let _ = worktree;
+        unsupported("keeping a repository's modes")
+    }
     /// Copies every branch and tag of the repository at `source` into the bare repository
     /// `repo` (SPEC-099: an uploaded folder's history).
     async fn copy_refs(&self, repo: &Path, source: &Path) -> AppResult<()> {

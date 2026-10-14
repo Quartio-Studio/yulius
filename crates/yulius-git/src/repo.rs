@@ -81,6 +81,8 @@ impl Git {
                     "--quiet",
                     "--no-recurse-submodules",
                     "--no-tags",
+                    // A shallow history stays shallow instead of being refused.
+                    "--update-shallow",
                     "--",
                 ])
                 .arg(source)

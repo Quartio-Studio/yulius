@@ -1444,6 +1444,8 @@ pub fn extract_snapshot(archive: &Path, root: &Path) -> AppResult<SnapshotStats>
     let mut deleted: Option<Vec<u8>> = None;
     let mut entries_seen = 0_u64;
     let mut bytes_written = 0_u64;
+    // Every entry's declared size, skipped ones too: reaching the next entry decompresses them.
+    let mut bytes_declared = 0_u64;
     let invalid = |err: io::Error| AppError::Invalid(format!("unreadable snapshot archive: {err}"));
     for entry in tar.entries().map_err(invalid)? {
         let mut entry = entry.map_err(invalid)?;
@@ -1451,6 +1453,12 @@ pub fn extract_snapshot(archive: &Path, root: &Path) -> AppResult<SnapshotStats>
         if entries_seen > MAX_SNAPSHOT_ENTRIES {
             return Err(AppError::Invalid(
                 "the snapshot archive has too many entries".into(),
+            ));
+        }
+        bytes_declared = bytes_declared.saturating_add(entry.header().size().map_err(invalid)?);
+        if bytes_declared > MAX_IMPORT_TOTAL_BYTES.saturating_mul(2) {
+            return Err(AppError::Invalid(
+                "the snapshot expands beyond the import size limit".into(),
             ));
         }
         let raw_path = entry.path_bytes().into_owned();

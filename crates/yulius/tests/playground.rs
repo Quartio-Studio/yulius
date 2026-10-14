@@ -741,3 +741,335 @@ async fn an_uploaded_alternate_never_reads_another_repository() -> TestResult {
     assert!(!leaked, "no playground holds the other repository's commit");
     Ok(())
 }
+
+/// Calls an MCP tool as the run whose task token is `token`.
+async fn agent_tool(h: &Harness, token: &str, name: &str, arguments: Value) -> BoxResult<Value> {
+    let agent = Creds {
+        bearer: Some(token.into()),
+        ..Creds::default()
+    };
+    let called = call(
+        &h.internal,
+        Method::POST,
+        "/mcp",
+        Some(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": name, "arguments": arguments}})),
+        &agent,
+    )
+    .await?;
+    Ok(called.body["result"].clone())
+}
+
+/// Review B1 (PLY-005, PLY-006): a playground has no deploy, so its maker — anyone signed in —
+/// can never make the server run a command: not through the profile, not through an uploaded
+/// `yulius.toml`, not through an environment run.
+#[tokio::test]
+async fn a_playground_runs_no_environment_command() -> TestResult {
+    let (h, _owner) = world().await?;
+    support::configure_github_app(&h).await?;
+    let alice = support::seed_github_user(&h, "u-alice", "alice").await?;
+    let tmp = tempfile::tempdir()?;
+    let stage = tmp.path().join("stage");
+    std::fs::create_dir_all(stage.join("files"))?;
+    std::fs::write(stage.join("files/README.md"), "# Lab\n")?;
+    let marker = tmp.path().join("ran");
+    std::fs::write(
+        stage.join("files/yulius.toml"),
+        format!(
+            "[delivery]\npreset = \"standard\"\n\n[[delivery.environments]]\nname = \"dev-vm\"\n\
+             after = \"integration\"\ncommand = \"touch '{}'\"\nverify = \"command\"\n",
+            marker.display()
+        ),
+    )?;
+    let made = upload(&h, &alice, "lab", pack(&stage)?).await?;
+    assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
+    let environments = made.body["profile"]["environments"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        environments.iter().all(|e| e["command"].is_null()),
+        "an uploaded command is never kept: {environments:?}"
+    );
+    let sid = made.body["id"].as_str().ok_or("id")?;
+    let patched = call(
+        &h.router,
+        Method::PATCH,
+        &format!("/api/sandboxes/{sid}"),
+        Some(json!({"profile": {
+            "preset": "standard", "integration_branch": "dev", "production_branch": "main",
+            "merge": "squash", "promote": "merge_commit", "auto_promote": false,
+            "environments": [{"name": "dev-vm", "after": "integration", "verify": "command",
+                "command": format!("touch '{}'", marker.display())}]
+        }})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(
+        patched.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{:?}",
+        patched.body
+    );
+    let run = call(
+        &h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{sid}/delivery/environments/dev-vm/runs"),
+        Some(json!({"confirm": true})),
+        &alice,
+    )
+    .await?;
+    assert!(run.status.is_client_error(), "{:?}", run.body);
+    assert!(!marker.exists(), "no command ran");
+    Ok(())
+}
+
+/// Review B2, M4 (PLY-002): a playground's agent gets no GitHub credential, and its GitHub tools
+/// (issues, promotion) answer with the playground note instead of calling GitHub.
+#[tokio::test]
+async fn a_playgrounds_agent_gets_no_github_token_or_tool() -> TestResult {
+    let (h, owner) = world().await?;
+    support::configure_github_app(&h).await?;
+    let made = from_template(&h, &owner, "shop").await?;
+    playground_task(&h, &made.body, "t1", &[("a.txt", "a\n")], &["done"]).await?;
+    support::seed_live_attempt(&h, "t1", "tok-t1").await?;
+    let agent = Creds {
+        bearer: Some("tok-t1".into()),
+        ..Creds::default()
+    };
+    for body in [
+        json!({"protocol": "https", "host": "github.com"}),
+        json!({"protocol": "https", "host": "github.com", "path": "Quartio-Studio/shop.git"}),
+    ] {
+        let credential = call(
+            &h.internal,
+            Method::POST,
+            "/internal/git-credential",
+            Some(body),
+            &agent,
+        )
+        .await?;
+        assert_eq!(
+            credential.status,
+            StatusCode::FORBIDDEN,
+            "{:?}",
+            credential.body
+        );
+        assert!(credential.body.get("token").is_none());
+    }
+    let issue = agent_tool(&h, "tok-t1", "issue_create", json!({"title": "x", "body": "Summary.\n\n## Acceptance criteria\n- [ ] It works", "labels": ["type: bug", "priority: low", "area: x"]})).await?;
+    assert_eq!(issue["isError"], true, "{issue}");
+    assert!(issue.to_string().contains("playground"), "{issue}");
+    let promote = agent_tool(&h, "tok-t1", "delivery_promote", json!({})).await?;
+    assert_eq!(promote["isError"], true, "{promote}");
+    assert!(promote.to_string().contains("playground"), "{promote}");
+    let sid = made.body["id"].as_str().ok_or("id")?;
+    let promoted = call(
+        &h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{sid}/delivery/promote"),
+        None,
+        &owner,
+    )
+    .await?;
+    assert_eq!(promoted.status, StatusCode::CONFLICT, "{:?}", promoted.body);
+    assert!(
+        text(&promoted).contains("playground"),
+        "{:?}",
+        promoted.body
+    );
+    no_github_writes(&h)?;
+    Ok(())
+}
+
+/// Review M1 (PLY-003): a browser cannot read file modes or links, so a repository's executable
+/// files and links stay as committed when only that differs in the upload.
+#[tokio::test]
+async fn an_upload_keeps_executable_bits_and_links_of_the_repository() -> TestResult {
+    let (h, owner) = world().await?;
+    let tmp = tempfile::tempdir()?;
+    let project = tmp.path().join("proj");
+    std::fs::create_dir_all(project.join("scripts"))?;
+    git(&project, &["init", "-q", "-b", "main"])?;
+    std::fs::write(project.join("scripts/run.sh"), "#!/bin/sh\necho hi\n")?;
+    std::process::Command::new("chmod")
+        .arg("+x")
+        .arg(project.join("scripts/run.sh"))
+        .status()?;
+    std::os::unix::fs::symlink("scripts/run.sh", project.join("run"))?;
+    git(&project, &["add", "-A"])?;
+    git(&project, &["commit", "-q", "-m", "first"])?;
+    // As the browser packs it: links followed, every mode 0644.
+    let stage = tmp.path().join("stage");
+    stage_folder(&project, &stage)?;
+    std::fs::remove_file(stage.join("files/run"))?;
+    std::fs::write(stage.join("files/run"), "#!/bin/sh\necho hi\n")?;
+    std::process::Command::new("chmod")
+        .args(["-R", "a-x,u+rwX"])
+        .arg(stage.join("files"))
+        .status()?;
+
+    let made = upload(&h, &owner, "proj", pack(&stage)?).await?;
+    assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
+    let origin = sandbox_dir(&h, &made.body).join("origin.git");
+    assert_eq!(
+        git(&origin, &["rev-list", "--count", "main"])?.trim(),
+        "1",
+        "nothing but modes and links differed: no extra commit"
+    );
+    let tree = git(&origin, &["ls-tree", "-r", "main"])?;
+    assert!(
+        tree.contains("100755 blob") && tree.contains("scripts/run.sh"),
+        "{tree}"
+    );
+    assert!(
+        tree.lines()
+            .any(|l| l.starts_with("120000") && l.ends_with("\trun")),
+        "{tree}"
+    );
+    Ok(())
+}
+
+/// Review M2 (PLY-003): a shallow repository keeps its branches and history.
+#[tokio::test]
+async fn a_shallow_repository_keeps_its_branches() -> TestResult {
+    let (h, owner) = world().await?;
+    let tmp = tempfile::tempdir()?;
+    let full = tmp.path().join("full");
+    std::fs::create_dir_all(&full)?;
+    git(&full, &["init", "-q", "-b", "main"])?;
+    for n in 1..=3 {
+        std::fs::write(full.join("n.txt"), format!("{n}\n"))?;
+        git(&full, &["add", "-A"])?;
+        git(&full, &["commit", "-q", "-m", &format!("commit {n}")])?;
+    }
+    let shallow = tmp.path().join("shallow");
+    git(
+        tmp.path(),
+        &[
+            "clone",
+            "-q",
+            "--depth",
+            "2",
+            &format!("file://{}", full.display()),
+            shallow.to_str().ok_or("path")?,
+        ],
+    )?;
+    let stage = tmp.path().join("stage");
+    stage_folder(&shallow, &stage)?;
+    let made = upload(&h, &owner, "shallow", pack(&stage)?).await?;
+    assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
+    let origin = sandbox_dir(&h, &made.body).join("origin.git");
+    let log = git(&origin, &["log", "--format=%s", "main"])?;
+    assert_eq!(
+        log.lines().collect::<Vec<_>>(),
+        vec!["commit 3", "commit 2"],
+        "{log}"
+    );
+    Ok(())
+}
+
+/// Review minor 3: a squash that landed before its stage was recorded (a crash in between) is
+/// recorded as merged when merged again, instead of "nothing to deliver" forever.
+#[tokio::test]
+async fn a_merge_landed_before_its_stage_was_recorded_is_recorded() -> TestResult {
+    use yulius_app::ports::store_ext::DeliveryStore;
+    let (h, owner) = world().await?;
+    let made = from_template(&h, &owner, "shop").await?;
+    playground_task(&h, &made.body, "t1", &[("a.txt", "a\n")], &["done"]).await?;
+    assert_eq!(merge(&h, &owner, "t1").await?.status, StatusCode::OK);
+    let id = yulius_domain::ids::TaskId::parse("t1")?;
+    let merged = h.store.delivery(&id).await?.ok_or("delivery")?;
+    let mut lost = merged.clone();
+    lost.stage = yulius_domain::delivery::DeliveryStage::None;
+    assert!(h.store.transition_delivery(&merged.stage, &lost).await?);
+    let again = merge(&h, &owner, "t1").await?;
+    assert_eq!(again.status, StatusCode::OK, "{:?}", again.body);
+    assert_eq!(again.body["stage"], "merged_integration");
+    Ok(())
+}
+
+/// Review minor 6: a person makes at most 10 playgrounds (each holds a repository on the
+/// server's disk); the superadmin's are not counted.
+#[tokio::test]
+async fn a_person_makes_at_most_ten_playgrounds() -> TestResult {
+    let (h, _owner) = world().await?;
+    support::configure_github_app(&h).await?;
+    let alice = support::seed_github_user(&h, "u-alice", "alice").await?;
+    for n in 0..10 {
+        let made = from_template(&h, &alice, &format!("lab {n}")).await?;
+        assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
+    }
+    let refused = from_template(&h, &alice, "lab 10").await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{:?}", refused.body);
+    assert!(
+        text(&refused).contains("10 playgrounds"),
+        "{:?}",
+        refused.body
+    );
+    Ok(())
+}
+
+/// Review M3 (PLY-004): a client that goes away while the playground is being set up (a closed
+/// tab) leaves no directory without its playground: the setup ends on its own.
+#[tokio::test]
+async fn a_closed_tab_during_setup_leaves_no_stray_directory() -> TestResult {
+    let (h, owner) = world().await?;
+    let tmp = tempfile::tempdir()?;
+    let project = tmp.path().join("proj");
+    std::fs::create_dir_all(&project)?;
+    git(&project, &["init", "-q", "-b", "main"])?;
+    for n in 0..200 {
+        std::fs::write(project.join(format!("f{n}.txt")), format!("{n}\n"))?;
+    }
+    git(&project, &["add", "-A"])?;
+    git(&project, &["commit", "-q", "-m", "first"])?;
+    let stage = tmp.path().join("stage");
+    stage_folder(&project, &stage)?;
+    let body = pack(&stage)?;
+    let sandboxes = h.app.config.data_dir.join("sandboxes");
+    let router = h.router.clone();
+    let request = tokio::spawn(async move {
+        support::repos::call_raw(
+            &router,
+            Method::POST,
+            "/api/playgrounds?name=proj",
+            body,
+            &[],
+            &owner,
+        )
+        .await
+        .map(|r| r.status)
+        .map_err(|e| e.to_string())
+    });
+    // Close the "tab" once the setup has started.
+    let started = std::time::Instant::now();
+    while !std::fs::read_dir(&sandboxes)
+        .is_ok_and(|mut dirs| dirs.any(|d| d.is_ok_and(|d| d.path().join("upload").exists())))
+    {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(60),
+            "the setup never started"
+        );
+        tokio::task::yield_now().await;
+    }
+    request.abort();
+    // Every directory left belongs to a recorded playground, once the setup ended by itself.
+    use yulius_app::ports::store::SandboxStore;
+    let settled = std::time::Instant::now();
+    loop {
+        let dirs = std::fs::read_dir(&sandboxes).map_or(0, Iterator::count);
+        let recorded = h.store.sandboxes().await?.len();
+        let staging = std::fs::read_dir(&sandboxes)?
+            .any(|d| d.is_ok_and(|d| d.path().join("upload").exists()));
+        if !staging && dirs == recorded {
+            break;
+        }
+        assert!(
+            settled.elapsed() < std::time::Duration::from_secs(60),
+            "{dirs} directories, {recorded} playgrounds"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    Ok(())
+}

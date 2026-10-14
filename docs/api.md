@@ -70,7 +70,7 @@ grants per client and 1000 per instance; past either it answers 429.
 | GET | `/api/github/repositories` | — | → `[{"owner","name","private","access","already_sandbox"}]` (the superadmin: every owner repository the App installation can access, `admin`; others need a GitHub identity, else 403) |
 | GET | `/api/templates` | — | → `[{"id","name","description"}]` |
 | POST | `/api/sandboxes` | admin on repo (superadmin: a repository the App can access) / owner; a playground: anyone signed in | `{"mode":"import","repo":"owner/name"}`, `{"mode":"create","name","template","description"}` or `{"mode":"playground","name","template"}` → 201 `Sandbox` (an import from the browser starts onboarding at once; with a bearer token it stays `pending`, SPEC-051; a playground needs no GitHub, SPEC-099) |
-| POST | `/api/playgrounds?name=<name>` | anyone signed in | raw body: a gzip tar of the folder (`files/…` its working tree, `git/…` its `.git`, of which only `HEAD`, `packed-refs`, `shallow`, `objects/` and `refs/` are taken) → 201 `Sandbox` (`playground: true`); at most 1 GiB (refused from `Content-Length` before it is read) and the import bounds once unpacked (2 GiB, 200 000 entries); 422 for an empty, unreadable or over-limit archive, nothing kept (SPEC-099) |
+| POST | `/api/playgrounds?name=<name>` | anyone signed in | raw body: a gzip tar of the folder (`files/…` its working tree, `git/…` its `.git`, of which only `HEAD`, `packed-refs`, `shallow`, `objects/` and `refs/` are taken) → 201 `Sandbox` (`playground: true`); 409 for a person who keeps 10 playgrounds (the superadmin is not counted); at most 1 GiB (refused from `Content-Length` before it is read) and the import bounds once unpacked (2 GiB, 200 000 entries); 422 for an empty, unreadable or over-limit archive, nothing kept (SPEC-099) |
 | GET | `/api/sandboxes/{sid}` | read | → `Sandbox` |
 | PATCH | `/api/sandboxes/{sid}` | admin | `{"profile": Profile}` → `Sandbox` |
 | POST | `/api/sandboxes/{sid}/onboarding/skip` | admin | → `Sandbox` (`pending`/`preparing` → `skipped`); an operator's recovery path for an onboarding that cannot finish: the web UI offers no skip (ADR-0076) |
@@ -81,7 +81,10 @@ A **playground** (SPEC-099) is a sandbox without GitHub: `Sandbox.playground` is
 has an empty `owner` and `url`, its onboarding is `not_needed`, and only its maker and the
 superadmin see it (admin). Its `origin` is a bare repository on the server, so nothing is pushed
 anywhere; Yulius CI, pull requests, hygiene's GitHub checks and the automatic pull request skip
-it, and its delivery view and Git page carry one note saying so.
+it, and its delivery view and Git page carry one note saying so. Nothing issues a GitHub token for
+it (`/internal/git-credential` answers 403), promotion and `issue_create` answer 409, and since its
+maker may be anyone signed in, it has no deploy: a profile with an environment command is 422 and
+an environment run 409.
 
 `GET /api/github/repositories` lists the App installation's repositories of the instance owner
 that the caller can at least read (needs a GitHub-linked account). Import mode requires a

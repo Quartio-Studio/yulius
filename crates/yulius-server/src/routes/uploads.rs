@@ -173,6 +173,12 @@ pub async fn playground(
             Ok(Some(Ok(chunk))) => upload.write(&chunk).await?,
         }
     }
-    let sandbox = app.playground_from_folder(&ctx, upload, &q.name).await?;
+    // The setup runs on its own task: a client that goes away while it runs (a closed tab) never
+    // cancels it halfway, which would leave its directories behind; it ends or cleans up alone.
+    let setup =
+        tokio::spawn(async move { app.playground_from_folder(&ctx, upload, &q.name).await });
+    let sandbox = setup
+        .await
+        .map_err(|err| AppError::Internal(format!("the playground setup stopped: {err}")))??;
     Ok((StatusCode::CREATED, Json(sandbox)))
 }

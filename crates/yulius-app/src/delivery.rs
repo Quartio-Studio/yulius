@@ -1034,6 +1034,7 @@ impl App {
         &self,
         sandbox: &SandboxRecord,
     ) -> AppResult<Secret> {
+        crate::playground::refuse_in_playground(sandbox, "A GitHub token")?;
         let app = self.github_app().await?;
         let installed = self
             .deps
@@ -1888,6 +1889,13 @@ impl App {
         };
         let before = delivery_profile(&sandbox);
         let profile = profile_from_contract(requested)?;
+        // A playground's maker may be anyone signed in, and commands run on the server: a
+        // playground has no deploy (SPEC-099).
+        if sandbox.is_playground() && profile.environments.iter().any(|e| e.command.is_some()) {
+            return Err(invalid(
+                "a playground has no deploy: its environments cannot run commands".to_owned(),
+            ));
+        }
         let gate = match requested.gate.as_deref() {
             None => None,
             Some(text) if text.trim().is_empty() => None,
@@ -2598,7 +2606,7 @@ impl App {
         let task = self.load_task(ctx, task_id, Action::Work).await?;
         // A playground merges here, with no GitHub identity needed (SPEC-099).
         if self.dlv_sandbox_of(&task).await?.is_playground() {
-            return self.playground_merge(&ctx.user, &task).await;
+            return self.playground_merge(&ctx.user, &task, None).await;
         }
         let token = self
             .person_github_token(&ctx.user, "Merging a pull request")
@@ -2624,7 +2632,7 @@ impl App {
         let task = self.load_task(ctx, task_id, Action::Work).await?;
         let sandbox = self.dlv_sandbox_of(&task).await?;
         if sandbox.is_playground() {
-            return Ok(self.playground_merge(&ctx.user, &task).await?);
+            return Ok(self.playground_merge(&ctx.user, &task, None).await?);
         }
         let token = self.task_github_token(&task, &sandbox).await?;
         self.dlv_merge(ctx, task, &token).await
@@ -3283,6 +3291,7 @@ impl App {
         let sandbox = self
             .dlv_require_sandbox(ctx, sandbox_id, Action::Work)
             .await?;
+        crate::playground::refuse_in_playground(&sandbox, "Promotion")?;
         let profile = delivery_profile(&sandbox);
         let token = self
             .person_github_token(
@@ -3315,6 +3324,7 @@ impl App {
         let sandbox = self
             .dlv_require_sandbox(ctx, task.sandbox_id.as_str(), Action::Work)
             .await?;
+        crate::playground::refuse_in_playground(&sandbox, "Promotion")?;
         let profile = delivery_profile(&sandbox);
         let token = self.task_github_token(task, &sandbox).await?;
         self.dlv_promote(
@@ -3409,6 +3419,8 @@ impl App {
         let sandbox = self
             .dlv_require_sandbox(ctx, sandbox_id, Action::Work)
             .await?;
+        // A playground has no deploy: its maker may be anyone signed in (SPEC-099).
+        crate::playground::refuse_in_playground(&sandbox, "A deploy")?;
         let profile = delivery_profile(&sandbox);
         let env = Self::dlv_environment_named(&profile, environment)?.clone();
         let Some(command) = env.command.clone() else {

@@ -40,6 +40,9 @@ use crate::projects::{blocking, identity, import_profile, remove_tree, write_sca
 pub const MAX_FOLDER_UPLOAD_BYTES: u64 = 1 << 30;
 /// Where the archive's `.git` entries are.
 const HISTORY_PREFIX: &[u8] = b"git/";
+/// Most bytes an archive's entries may declare in all: the working tree and the history, each
+/// within the import bound.
+const MAX_ARCHIVE_EXPANSION: u64 = 2 * MAX_IMPORT_TOTAL_BYTES;
 /// Longest `HEAD` file read.
 const MAX_HEAD_BYTES: u64 = 1024;
 /// Longest `yulius.toml` read for the delivery profile.
@@ -129,13 +132,20 @@ fn extract_history(archive: &Path, root: &Path) -> AppResult<u64> {
     let file = File::open(archive).map_err(AppError::internal)?;
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(BufReader::new(file)));
     let invalid = |err: io::Error| AppError::Invalid(format!("unreadable folder archive: {err}"));
-    let (mut entries, mut bytes, mut files) = (0_u64, 0_u64, 0_u64);
+    let (mut entries, mut declared, mut bytes, mut files) = (0_u64, 0_u64, 0_u64, 0_u64);
     for entry in tar.entries().map_err(invalid)? {
         let mut entry = entry.map_err(invalid)?;
         entries += 1;
         if entries > MAX_SNAPSHOT_ENTRIES {
             return Err(AppError::Invalid(
                 "the folder has too many files for a playground".into(),
+            ));
+        }
+        // Every entry counts, skipped ones too: their bytes are decompressed to reach the next.
+        declared = declared.saturating_add(entry.header().size().map_err(invalid)?);
+        if declared > MAX_ARCHIVE_EXPANSION {
+            return Err(AppError::Invalid(
+                "the folder expands beyond the import size limit".into(),
             ));
         }
         let raw = entry.path_bytes().into_owned();
@@ -184,6 +194,10 @@ fn head_branch(git_dir: &Path) -> Option<String> {
 
 /// A small text file of the working tree, if present.
 fn read_small(path: &Path, max: u64) -> Option<String> {
+    // Only a regular file: an uploaded link could point anywhere on the server.
+    if !fs::symlink_metadata(path).ok()?.is_file() {
+        return None;
+    }
     let mut text = String::new();
     File::open(path)
         .ok()?
@@ -201,12 +215,13 @@ impl App {
     /// `Invalid` above the limit; `Capacity` beyond the concurrent uploads; I/O errors.
     pub async fn begin_folder_upload(
         &self,
-        _ctx: &AuthContext,
+        ctx: &AuthContext,
         declared: Option<u64>,
     ) -> AppResult<FolderUpload> {
         if declared.is_some_and(|len| len > MAX_FOLDER_UPLOAD_BYTES) {
             return Err(too_large());
         }
+        self.playground_quota(&ctx.user).await?;
         let slot = self.upload_slot()?;
         let dir = self.config.data_dir.join("tmp");
         tokio::fs::create_dir_all(&dir)
@@ -304,6 +319,10 @@ impl App {
                 "the folder holds no files to start a playground with".into(),
             ));
         }
+        if has_history {
+            // The browser sends no file modes and follows links: keep the repository's.
+            git.keep_modes_and_links(&work).await?;
+        }
         let (author, email) = identity(user);
         let message = if has_history {
             "chore: the folder's uncommitted work, as uploaded to a Yulius playground"
@@ -325,6 +344,13 @@ impl App {
         if toml.is_none_or(|text| !text.contains("[delivery]")) {
             profile.production_branch.clone_from(&branch);
         }
+        // A folder whose own branch is the integration branch promotes to `main`.
+        if profile.production_branch == profile.integration_branch {
+            profile.production_branch = "main".to_owned();
+        }
+        // A playground has no deploy: commands from an uploaded `yulius.toml` never run on the
+        // server, whoever made the playground (SPEC-099).
+        profile.environments.clear();
         for target in [&profile.production_branch, &profile.integration_branch] {
             if *target != branch && !git.branch_exists(&work, target).await? {
                 git.push(&work, &branch, target, &no_token()).await?;
@@ -385,6 +411,80 @@ mod tests {
             head_branch(dir.path()),
             None,
             "a detached HEAD names no branch"
+        );
+        Ok(())
+    }
+
+    /// A gzip tar of `entries` (path, declared size, contents); a declared size larger than the
+    /// contents writes only the header, as a crafted archive would.
+    fn archive(
+        dir: &Path,
+        entries: &[(&str, u64, &[u8])],
+    ) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let path = dir.join("a.tgz");
+        let gz = flate2::write::GzEncoder::new(File::create(&path)?, flate2::Compression::fast());
+        let mut tar = tar::Builder::new(gz);
+        for (name, size, data) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_path(name)?;
+            header.set_size(*size);
+            header.set_mode(0o644);
+            header.set_cksum();
+            if *size == data.len() as u64 {
+                tar.append(&header, *data)?;
+            } else {
+                std::io::Write::write_all(tar.get_mut(), header.as_bytes())?;
+            }
+        }
+        tar.into_inner()?.finish()?;
+        Ok(path)
+    }
+
+    #[test]
+    fn only_the_history_of_an_uploaded_git_directory_is_written()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let entries: Vec<(&str, u64, &[u8])> = [
+            "git/HEAD",
+            "git/config",
+            "git/hooks/post-checkout",
+            "git/info/attributes",
+            "git/objects/ab/cdef",
+            "git/objects/info/alternates",
+            "git/refs/heads/main",
+            "files/README.md",
+        ]
+        .into_iter()
+        .map(|name| (name, 2, &b"x\n"[..]))
+        .collect();
+        let archive = archive(dir.path(), &entries)?;
+        let root = dir.path().join("history.git");
+        assert_eq!(extract_history(&archive, &root)?, 3);
+        for kept in ["HEAD", "objects/ab/cdef", "refs/heads/main"] {
+            assert!(root.join(kept).is_file(), "{kept}");
+        }
+        for refused in [
+            "config",
+            "hooks/post-checkout",
+            "info/attributes",
+            "objects/info/alternates",
+            "README.md",
+        ] {
+            assert!(!root.join(refused).exists(), "{refused}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn an_archive_declaring_more_than_the_bound_is_refused_unread()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        // Entries the history pass skips still count: their bytes would be decompressed.
+        let archive = archive(dir.path(), &[("files/huge.bin", 5 << 30, &b""[..])])?;
+        let refused = extract_history(&archive, &dir.path().join("history.git"));
+        assert!(
+            matches!(&refused, Err(AppError::Invalid(m)) if m.contains("size limit")),
+            "refused by its declared size, before reading it: {refused:?}"
         );
         Ok(())
     }

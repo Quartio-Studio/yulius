@@ -850,6 +850,14 @@ impl App {
             .sandbox(&ctx.task.sandbox_id)
             .await?
             .ok_or(AppError::NotFound)?;
+        // A playground has no GitHub repository: nothing is issued (SPEC-099 PLY-002).
+        if sandbox.is_playground() {
+            return Err(AppError::Forbidden(
+                "this sandbox is a playground: its Git stays on this server and needs no GitHub \
+                 credential"
+                    .into(),
+            ));
+        }
         if let Some(path) = path {
             let wanted = path
                 .trim_matches('/')
@@ -878,6 +886,7 @@ impl App {
         &self,
         sandbox: &crate::model::SandboxRecord,
     ) -> AppResult<crate::model::Secret> {
+        crate::playground::refuse_in_playground(sandbox, "A GitHub token")?;
         let installation = self
             .deps
             .store

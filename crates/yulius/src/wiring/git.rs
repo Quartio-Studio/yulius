@@ -122,6 +122,11 @@ impl GitPort for GitAdapter {
         .await
     }
 
+    async fn keep_modes_and_links(&self, worktree: &Path) -> AppResult<()> {
+        let (git, worktree) = (self.git(), worktree.to_path_buf());
+        blocking(move || git.keep_modes_and_links(&worktree)).await
+    }
+
     async fn copy_refs(&self, repo: &Path, source: &Path) -> AppResult<()> {
         let (git, repo, source) = (self.git(), repo.to_path_buf(), source.to_path_buf());
         blocking(move || git.copy_refs(&repo, &source)).await
