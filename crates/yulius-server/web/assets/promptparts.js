@@ -103,3 +103,29 @@ export function inlineCount(parts) {
   for (let i = parts.length - 1; i >= 0; i -= 1) if ('text' in parts[i] && parts[i].text.trim()) return i + 1;
   return 0;
 }
+
+/**
+ * `text` as written, split at its quoted mentions: `[{ text } | { path, mention }]`, nothing
+ * trimmed or dropped (`mention` is the mention as it was written).
+ */
+export function splitMentions(text) {
+  const out = [];
+  let rest = String(text ?? '');
+  let buffer = '';
+  for (let at = rest.indexOf("@'"); at !== -1; at = rest.indexOf("@'")) {
+    const quoted = quotedPath(rest.slice(at + 2));
+    if (quoted) {
+      buffer += rest.slice(0, at);
+      if (buffer) out.push({ text: buffer });
+      buffer = '';
+      out.push({ path: quoted.path, mention: rest.slice(at, at + 2 + quoted.used) });
+      rest = rest.slice(at + 2 + quoted.used);
+    } else {
+      buffer += rest.slice(0, at + 2);
+      rest = rest.slice(at + 2);
+    }
+  }
+  buffer += rest;
+  if (buffer) out.push({ text: buffer });
+  return out;
+}

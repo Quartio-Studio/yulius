@@ -97,3 +97,30 @@ export function touchTask(browser: Browser, sandbox: string, number: number, cha
   type Touching = { __yuliusMock: { touchTask: (sandbox: string, number: number, changes: unknown) => void } };
   return browser.evaluate(([s, n, c]) => (window as unknown as Touching).__yuliusMock.touchTask(s, n, c), [sandbox, number, changes] as const);
 }
+
+/**
+ * The new-task prompt's text as it shows (SPEC-124), each file in it as `[name]`: the prompt is a
+ * text box with files inside its text, not a textarea, so it has no value to read.
+ */
+export function promptText(browser: Browser): Promise<string> {
+  return browser.evaluate(() => {
+    const input = document.querySelector('.composer-prompt');
+    if (!input) return '';
+    const copy = input.cloneNode(true) as HTMLElement;
+    for (const atom of copy.querySelectorAll('.pi-atom')) atom.replaceWith(`[${atom.getAttribute('title') ?? ''}]`);
+    return copy.textContent || '';
+  });
+}
+
+/** Selects characters `start` to `end` of the new-task prompt's first line of text. */
+export async function selectPromptText(browser: Browser, start: number, end: number): Promise<void> {
+  await browser.evaluate(([from, to]) => {
+    const text = [...document.querySelector('.composer-prompt')!.childNodes].find((n) => n.nodeType === 3)!;
+    const range = document.createRange();
+    range.setStart(text, from);
+    range.setEnd(text, to);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }, [start, end]);
+}

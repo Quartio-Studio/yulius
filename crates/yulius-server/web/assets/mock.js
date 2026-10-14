@@ -24,6 +24,8 @@ const ORIGIN = window.location.origin;
 // Where the mock's sandboxes live, and its composer attachments as an upload reports them
 // (SPEC-043).
 const MOCK_SANDBOXES = '/srv/yulius/sandboxes';
+// Where the mock's own upload routes put files (as the server reports them).
+const MOCK_UPLOADS = '/var/lib/yulius/sandboxes';
 const MOCK_ATTACHMENTS = `${MOCK_SANDBOXES}/sb_studio/attachments/drafts/usr_mkarp`;
 // A file gone since (drafts are removed after a week).
 const MOCK_GONE = new Set([`${MOCK_ATTACHMENTS}/old-mockup.png`]);
@@ -955,7 +957,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   const task = {
     id, sandbox_id: sandbox.id, number, title, harness: 'claude', status: waitsFor ? 'chained' : 'queued', activity: null,
     branch: `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || `task-${number}`}`,
-    origin: 'ui', created_by: { login: db.me.user.login }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    origin: 'ui', created_by: { login: db.me.user.login, id: db.me.user.id }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     archived: false, account_label: null,
     stepsList: wf ? wf.steps.map((title2, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title: title2, status: 'pending', note: '', updated_by: 'workflow', updated_at: new Date().toISOString() })) : [],
     model: body.model || 'claude-opus-4', effort: body.effort || 'default', prompt: body.prompt,
@@ -1114,7 +1116,10 @@ route('GET', `/api/tasks/${ID}`, async ({ db, p }) => {
 const promptParts = (task) => parsePrompt(task.prompt ?? task.title);
 function promptFileServed(task, path) {
   const base = `${MOCK_SANDBOXES}/${task.sandbox_id}/attachments`;
+  const uploads = `${MOCK_UPLOADS}/${task.sandbox_id}/attachments`;
   const owned = [`${base}/drafts/usr_${task.created_by.login}`, `${base}/tasks/${task.id}`];
+  // A task created in this page: its creator's composer uploads, where the upload route put them.
+  if (task.created_by.id) owned.push(`${uploads}/drafts/${task.created_by.id}`, `${uploads}/tasks/${task.id}`);
   const slash = path.lastIndexOf('/');
   const plain = path.split('/').slice(1).every((part) => part && part !== '.' && part !== '..');
   return plain && owned.includes(path.slice(0, slash)) && !MOCK_GONE.has(path);
@@ -1831,7 +1836,7 @@ function storeAttachment(db, sid, folder, query, body) {
   for (let n = 2; names.has(name); n += 1) name = `${stem}-${n}${ext}`;
   names.add(name);
   db.attachments.set(folder, names);
-  return json(201, { path: `/var/lib/yulius/sandboxes/${sid}/attachments/${folder}/${name}`, name, size: body.size, sha256: mockSha(body.text || ''), replaced: false });
+  return json(201, { path: `${MOCK_UPLOADS}/${sid}/attachments/${folder}/${name}`, name, size: body.size, sha256: mockSha(body.text || ''), replaced: false });
 }
 route('POST', `/api/tasks/${ID}/attachments`, ({ db, p, query, body }) => {
   const task = taskOf(db, p[0]);

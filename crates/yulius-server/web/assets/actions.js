@@ -12,6 +12,7 @@ import { BRAND } from './brand.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { openAttachment } from './filedrop.js';
 import { inlineCount } from './promptparts.js';
+import { FILE_MARK, FILE_MARK_END, placeFiles } from './promptinput.js';
 import { folderDropZone } from './playground.js';
 
 // ---------------------------------------------------------------- task menu
@@ -573,32 +574,6 @@ export function openPromptDialog(ctx, task) {
     modal.setActions(text ? [copy, { label: 'Close' }] : [{ label: 'Close' }]);
   })();
   return modal;
-}
-
-/** Private-use characters around a file's number in the text handed to the Markdown editor. */
-const FILE_MARK = '\uE000';
-const FILE_MARK_END = '\uE001';
-
-/** Replaces each file marker in `root`'s text with `face(n)` (left as it is when that is null). */
-function placeFiles(root, face) {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  const found = [];
-  for (let node = walker.nextNode(); node; node = walker.nextNode()) if (node.data.includes(FILE_MARK)) found.push(node);
-  const mark = new RegExp(`${FILE_MARK}(\\d+)${FILE_MARK_END}`, 'g');
-  for (const node of found) {
-    const pieces = [];
-    let last = 0;
-    for (const match of node.data.matchAll(mark)) {
-      const el = face(Number(match[1]));
-      if (!el) continue;
-      if (match.index > last) pieces.push(document.createTextNode(node.data.slice(last, match.index)));
-      pieces.push(el);
-      last = match.index + match[0].length;
-    }
-    if (!pieces.length) continue;
-    if (last < node.data.length) pieces.push(document.createTextNode(node.data.slice(last)));
-    node.replaceWith(...pieces);
-  }
 }
 
 const RUN_POLL_MS = 2000;

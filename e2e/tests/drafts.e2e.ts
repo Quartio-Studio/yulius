@@ -1,6 +1,6 @@
 import { test, type Browser, type Screen } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { failOnPageErrors, mock, mockReady } from './support.ts';
+import { failOnPageErrors, mock, mockReady, promptText } from './support.ts';
 
 failOnPageErrors();
 
@@ -44,7 +44,8 @@ async function leaveAndReturn(browser: Browser, screen: Screen): Promise<void> {
   await expect(browser).toHaveURL(/#\/s\/studio$/);
 }
 
-const attachmentNames = (browser: Browser) => browser.locator('.composer-attachment-name');
+/** The names of the files in the prompt's text, in order (SPEC-124: they sit inside it). */
+const attachmentNames = (browser: Browser) => browser.evaluate(() => [...document.querySelectorAll('.composer-prompt .pi-atom:not(.pi-pending)')].map((atom) => atom.getAttribute('title')));
 
 test('the prompt and its attachments come back after visiting another page', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
@@ -52,17 +53,18 @@ test('the prompt and its attachments come back after visiting another page', asy
   await prompt.fill('If I type something here');
   await dropImage(browser, 'screen.png');
   await drop(browser, [['notes.pdf', 'pdf', 'application/pdf']]);
-  await expect(attachmentNames(browser)).toHaveText(['screen.png', 'notes.pdf']);
+  await expect.poll(() => attachmentNames(browser)).toEqual(['screen.png', 'notes.pdf']);
 
   await leaveAndReturn(browser, screen);
 
-  await expect(screen.getByRole('textbox', 'Task prompt')).toHaveValue('If I type something here');
-  await expect(attachmentNames(browser)).toHaveText(['screen.png', 'notes.pdf']);
-  await expect(browser.locator('.composer-attachment img')).toHaveCount(1);
+  await expect.poll(() => promptText(browser)).toBe('If I type something here[screen.png][notes.pdf]');
+  await expect.poll(() => attachmentNames(browser)).toEqual(['screen.png', 'notes.pdf']);
+  await expect(browser.locator('.composer-prompt .pi-image img')).toHaveCount(1);
   // A removed attachment stays removed.
-  await screen.getByRole('button', 'Remove notes.pdf').click();
+  await prompt.press('End');
+  await prompt.press('Backspace');
   await leaveAndReturn(browser, screen);
-  await expect(attachmentNames(browser)).toHaveText(['screen.png']);
+  await expect.poll(() => attachmentNames(browser)).toEqual(['screen.png']);
 });
 
 test('each sandbox keeps its own draft', async ({ app, browser, screen }) => {
@@ -72,11 +74,11 @@ test('each sandbox keeps its own draft', async ({ app, browser, screen }) => {
   // The hash route changes in the page, as the sandbox tabs do: no reload.
   await browser.evaluate(() => { location.hash = '#/s/product'; });
   await expect(browser.locator('.composer-crumbs')).toHaveText(/product/);
-  await expect(prompt).toHaveValue('');
+  await expect.poll(() => promptText(browser)).toBe('');
   await prompt.fill('For product');
   await browser.evaluate(() => { location.hash = '#/s/studio'; });
   await expect(browser.locator('.composer-crumbs')).toHaveText(/studio/);
-  await expect(prompt).toHaveValue('For studio');
+  await expect.poll(() => promptText(browser)).toBe('For studio');
 });
 
 test('the mode, workflow and "Run after" come back with the draft', async ({ app, browser, screen }) => {
@@ -113,7 +115,7 @@ test('the draft survives a reload and is cleared once the task starts', async ({
   await screen.getByRole('textbox', 'Task prompt').fill('Kept across a reload');
   await dropImage(browser, 'screen.png');
   await drop(browser, [['notes.pdf', 'pdf', 'application/pdf']]);
-  await expect(attachmentNames(browser)).toHaveText(['screen.png', 'notes.pdf']);
+  await expect.poll(() => attachmentNames(browser)).toEqual(['screen.png', 'notes.pdf']);
   await screen.getByRole('button', /^Mode:/).click();
   await screen.getByRole('menuitemradio', /^Goal/).click();
   await screen.getByRole('button', /Run after: Start now/).click();
@@ -124,17 +126,19 @@ test('the draft survives a reload and is cleared once the task starts', async ({
   await browser.reload();
 
   const prompt = screen.getByRole('textbox', 'Task prompt');
-  await expect(prompt).toHaveValue('Kept across a reload');
-  await expect(attachmentNames(browser)).toHaveText(['screen.png', 'notes.pdf']);
+  await expect.poll(() => promptText(browser)).toBe('Kept across a reload[screen.png][notes.pdf]');
+  await expect.poll(() => attachmentNames(browser)).toEqual(['screen.png', 'notes.pdf']);
   // The image keeps a (stored, scaled) thumbnail.
-  await expect(browser.locator('.composer-attachment img')).toHaveCount(1);
+  await expect(browser.locator('.composer-prompt .pi-image img')).toHaveCount(1);
   // SPEC-025: it still opens, as its thumbnail; the PDF's bytes stayed with the old page, so its
   // chip is not a button any more.
+  await screen.getByRole('button', 'Preview').click();
   await screen.getByRole('button', 'Open screen.png').click();
   await expect(screen.getByRole('dialog', 'screen.png').getByRole('img', 'screen.png')).toBeVisible();
   await browser.locator('dialog.modal').press('Escape');
   await expect(browser.locator('dialog.modal')).toHaveCount(0);
-  await expect(browser.locator('button.composer-attachment-open')).toHaveCount(1);
+  await expect(browser.locator('button.pi-preview-file')).toHaveCount(1);
+  await screen.getByRole('button', 'Preview').click();
   await expect(screen.getByRole('button', 'Mode: Goal')).toBeVisible();
   await expect(screen.getByRole('button', 'Run after: After #12')).toBeVisible();
 
@@ -146,15 +150,16 @@ test('the draft survives a reload and is cleared once the task starts', async ({
     const tasks = (window as unknown as { __yuliusMock: { tasks: { prompt: string }[] } }).__yuliusMock.tasks;
     return tasks[tasks.length - 1].prompt;
   });
-  expect(sent).toMatch(/^Kept across a reload\n\n@\S+\/screen\.png\n@\S+\/notes\.pdf$/);
+  // Each file where it sits in the text (SPEC-124).
+  expect(sent).toMatch(/^Kept across a reload@'\S+\/screen\.png'@'\S+\/notes\.pdf'$/);
 
   await browser.locator('.btn-newtask').click();
-  await expect(prompt).toHaveValue('');
-  await expect(attachmentNames(browser)).toHaveCount(0);
+  await expect.poll(() => promptText(browser)).toBe('');
+  await expect.poll(() => attachmentNames(browser)).toEqual([]);
   await expect(screen.getByRole('button', 'Mode: Auto mode')).toBeVisible();
   expect(await storedDrafts(browser)).toEqual([]);
   await browser.reload();
-  await expect(prompt).toHaveValue('');
+  await expect.poll(() => promptText(browser)).toBe('');
 });
 
 test('signing out removes the stored drafts', async ({ app, browser, screen }) => {
@@ -178,12 +183,13 @@ test('an upload that ends after leaving and coming back shows in the composer', 
   await expect(screen.getByRole('textbox', 'Task prompt')).toBeVisible();
   await drop(browser, [['late.pdf', 'pdf', 'application/pdf']]);
   await leaveAndReturn(browser, screen);
-  await expect(attachmentNames(browser)).toHaveCount(0);
+  await expect.poll(() => attachmentNames(browser)).toEqual([]);
   await browser.evaluate(() => (window as unknown as Holding).__release!());
   // What will be sent is what shows, and can be removed.
-  await expect(attachmentNames(browser)).toHaveText(['late.pdf']);
-  await screen.getByRole('button', 'Remove late.pdf').click();
-  await expect(attachmentNames(browser)).toHaveCount(0);
+  await expect.poll(() => attachmentNames(browser)).toEqual(['late.pdf']);
+  await screen.getByRole('textbox', 'Task prompt').press('End');
+  await screen.getByRole('textbox', 'Task prompt').press('Backspace');
+  await expect.poll(() => attachmentNames(browser)).toEqual([]);
 });
 
 test('a task still starting is not started again from a returned composer', async ({ app, browser, screen }) => {
@@ -218,14 +224,14 @@ test('a split into several tasks clears the draft too', async ({ app, browser, s
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await prompt.fill(MIXED);
   await drop(browser, [['spec.pdf', 'pdf', 'application/pdf']]);
-  await expect(attachmentNames(browser)).toHaveText(['spec.pdf']);
+  await expect.poll(() => attachmentNames(browser)).toEqual(['spec.pdf']);
   await prompt.press('ControlOrMeta+Enter');
   const card = screen.getByRole('region', 'Split proposal');
   await card.getByRole('button', 'Create 2 tasks').click();
   await expect(browser).toHaveURL(/#\/s\/studio\/t\/\d+$/);
   await browser.locator('.btn-newtask').click();
-  await expect(prompt).toHaveValue('');
-  await expect(attachmentNames(browser)).toHaveCount(0);
+  await expect.poll(() => promptText(browser)).toBe('');
+  await expect.poll(() => attachmentNames(browser)).toEqual([]);
   expect(await storedDrafts(browser)).toEqual([]);
 });
 
@@ -240,9 +246,10 @@ test('a stored draft drops attachments the server no longer keeps and unsafe thu
     }));
   });
   await app.open(mock('/s/studio'));
-  await expect(screen.getByRole('textbox', 'Task prompt')).toHaveValue('From last week');
-  await expect(attachmentNames(browser)).toHaveText(['fresh.png']);
-  await expect(browser.locator('.composer-attachment img')).toHaveCount(0);
+  // A draft from before SPEC-124 holds its files apart from its text: they follow it.
+  await expect.poll(() => promptText(browser)).toBe('From last week\n[fresh.png]');
+  await expect.poll(() => attachmentNames(browser)).toEqual(['fresh.png']);
+  await expect(browser.locator('.composer-prompt .pi-image img')).toHaveCount(0);
   await expect(screen.getByRole('button', 'Mode: Auto mode')).toBeVisible();
 });
 
@@ -256,7 +263,7 @@ test('signing out in another browser tab forgets this tab\'s draft too', async (
   });
   // Leaving would store the draft again; it does not.
   await leaveAndReturn(browser, screen);
-  await expect(screen.getByRole('textbox', 'Task prompt')).toHaveValue('');
+  await expect.poll(() => promptText(browser)).toBe('');
   expect(await storedDrafts(browser)).toEqual([]);
 });
 
@@ -276,7 +283,7 @@ test('a picked start rule comes back after a reload; a malformed stored one is d
   await expect(screen.getByRole('button', /Run after: When #12 done or #4 ended/)).toBeVisible();
 
   await browser.reload();
-  await expect(screen.getByRole('textbox', 'Task prompt')).toHaveValue('Wait for the others');
+  await expect.poll(() => promptText(browser)).toBe('Wait for the others');
   await expect(screen.getByRole('button', /Run after: When #12 done or #4 ended/)).toBeVisible();
 
   await browser.evaluate(() => {
@@ -286,6 +293,6 @@ test('a picked start rule comes back after a reload; a malformed stored one is d
     localStorage.setItem(key, JSON.stringify(draft));
   });
   await browser.reload();
-  await expect(screen.getByRole('textbox', 'Task prompt')).toHaveValue('Wait for the others');
+  await expect.poll(() => promptText(browser)).toBe('Wait for the others');
   await expect(screen.getByRole('button', /Run after: Start now/)).toBeVisible();
 });

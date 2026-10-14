@@ -1,6 +1,6 @@
 import { test, type Browser, type Screen } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { failOnPageErrors, mock } from './support.ts';
+import { failOnPageErrors, mock, promptText } from './support.ts';
 
 failOnPageErrors();
 
@@ -150,39 +150,49 @@ test('a read-only terminal refuses dropped files', async ({ app, browser }) => {
   await expect(browser.locator('.taskview-term .drop-overlay')).toHaveText(/Read-only/);
 });
 
-test('files dropped or pasted on the new-task prompt show as thumbnails and join it by path when the task starts', async ({ app, browser, screen }) => {
+test('files dropped or pasted on the new-task prompt sit in its text, at the caret', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
   const prompt = screen.getByRole('textbox', 'Task prompt');
-  await prompt.fill('Fix the layout in');
+  await prompt.fill('Fix the layout in ');
   await installDrop(browser);
 
   await browser.evaluate(() => (window as unknown as Mocked).__e2eDrop!('.composer-box', [['screen shot.png', 'png', 'image/png']], ['dragenter', 'dragover']));
   await expect(browser.locator('.composer-box .drop-overlay')).toHaveText('Drop to add to the prompt');
   await browser.evaluate(() => (window as unknown as Mocked).__e2eDrop!('.composer-box', [['screen shot.png', 'png', 'image/png']], ['drop']));
-  await expect(browser.locator('.composer-attachment img')).toHaveCount(1);
-  await expect(prompt).toHaveValue('Fix the layout in');
+  await expect(browser.locator('.composer-prompt .pi-image img')).toHaveCount(1);
+  await expect.poll(() => promptText(browser)).toBe('Fix the layout in [screen-shot.png]');
 
   await browser.evaluate(() => {
     const data = new DataTransfer();
     data.items.add(new File(['img'], 'image.png', { type: 'image/png' }));
-    const input = document.querySelector('.composer-prompt') as HTMLTextAreaElement;
+    const input = document.querySelector('.composer-prompt') as HTMLElement;
     input.focus();
     input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
   });
-  await expect(browser.locator('.composer-attachment img')).toHaveCount(2);
-  await expect(prompt).toHaveValue('Fix the layout in');
+  await expect(browser.locator('.composer-prompt .pi-image img')).toHaveCount(2);
+  await expect.poll(() => promptText(browser)).toMatch(/^Fix the layout in \[screen-shot\.png\]\[pasted-\d{8}-\d{6}\.png\]$/);
 
-  // SPEC-025 ATT-001: a chip opens its file; an image previews in a dialog that Esc closes.
+  // SPEC-025 ATT-001: a file opens from the prompt's preview; an image previews in a dialog that
+  // Esc closes.
+  await screen.getByRole('button', 'Preview').click();
   await screen.getByRole('button', 'Open screen-shot.png').click();
   await expect(screen.getByRole('dialog', 'screen-shot.png').getByRole('img', 'screen-shot.png')).toBeVisible();
   await browser.locator('dialog.modal').press('Escape');
   await expect(browser.locator('dialog.modal')).toHaveCount(0);
-  await expect(browser.locator('.composer-attachment')).toHaveCount(2);
-  // Remove only removes.
-  await screen.getByRole('button', 'Remove screen-shot.png').click();
+  await screen.getByRole('button', 'Preview').click();
+  await expect(browser.locator('.composer-prompt .pi-atom')).toHaveCount(2);
+  // Backspace takes the file before the caret, whole.
+  await prompt.press('End');
+  await prompt.press('Backspace');
   await expect(browser.locator('dialog.modal')).toHaveCount(0);
-  await expect(browser.locator('.composer-attachment')).toHaveCount(1);
+  await expect(browser.locator('.composer-prompt .pi-atom')).toHaveCount(1);
 });
+
+/** Opens a file of the new-task prompt from its preview. */
+async function openFromPreview(screen: Screen, name: string): Promise<void> {
+  await screen.getByRole('button', 'Preview').click();
+  await screen.getByRole('button', `Open ${name}`).click();
+}
 
 test('an attached page opens as plain text and an unknown file downloads, never running as the site', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
@@ -195,8 +205,10 @@ test('an attached page opens as plain text and an unknown file downloads, never 
     window.open = (url?: string | URL) => { w.__opened.push(String(url)); return null; };
     HTMLAnchorElement.prototype.click = function click(this: HTMLAnchorElement) { w.__downloads.push([this.href, this.download]); };
   });
+  await screen.getByRole('textbox', 'Task prompt').fill('See the files');
   await browser.evaluate(() => (window as unknown as Mocked).__e2eDrop!('.composer-box', [['bug.html', '<script>alert(1)</script>', 'text/html'], ['logs.zip', 'PK', 'application/zip']], ['drop']));
-  await screen.getByRole('button', 'Open bug.html').click();
+  await expect(browser.locator('.composer-prompt .pi-file')).toHaveCount(2);
+  await openFromPreview(screen, 'bug.html');
   await screen.getByRole('button', 'Open logs.zip').click();
   const result = await browser.evaluate(async () => {
     const w = window as unknown as { __opened: string[]; __downloads: string[][] };
@@ -215,8 +227,10 @@ test('a file attached on the new-task prompt that is not an image opens in a new
     (window as unknown as { __opened: unknown[] }).__opened = [];
     window.open = (...args: unknown[]) => { (window as unknown as { __opened: unknown[] }).__opened.push(args); return null; };
   });
+  await screen.getByRole('textbox', 'Task prompt').fill('See the notes');
   await browser.evaluate(() => (window as unknown as Mocked).__e2eDrop!('.composer-box', [['notes.txt', 'hello', 'text/plain']], ['drop']));
-  await screen.getByRole('button', 'Open notes.txt').click();
+  await expect(browser.locator('.composer-prompt .pi-file')).toHaveCount(1);
+  await openFromPreview(screen, 'notes.txt');
   const opened = await browser.evaluate(() => (window as unknown as { __opened: string[][] }).__opened);
   expect(opened).toHaveLength(1);
   expect(opened[0][0]).toMatch(/^blob:/);
@@ -237,8 +251,10 @@ test('leaving the new-task composer revokes the URL of a file opened in a tab', 
     const revoke = URL.revokeObjectURL.bind(URL);
     URL.revokeObjectURL = (url: string) => { w.__revoked.push(url); revoke(url); };
   });
+  await screen.getByRole('textbox', 'Task prompt').fill('See the notes');
   await browser.evaluate(() => (window as unknown as Mocked).__e2eDrop!('.composer-box', [['notes.txt', 'hello', 'text/plain']], ['drop']));
-  await screen.getByRole('button', 'Open notes.txt').click();
+  await expect(browser.locator('.composer-prompt .pi-file')).toHaveCount(1);
+  await openFromPreview(screen, 'notes.txt');
   const [opened] = await browser.evaluate(() => (window as unknown as { __opened: string[] }).__opened);
   expect(opened).toMatch(/^blob:/);
 
