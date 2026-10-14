@@ -4,7 +4,7 @@
 
 import { enc } from '../api.js';
 import { h, icon, badge, iconBadge, itemCard, toast, confirmDialog, errorToast, toggle, setChildren, iconButton, emptyState, filterTabs } from '../dom.js';
-import { navigate } from '../router.js';
+import { navigate, replaceQuietly } from '../router.js';
 import { allows } from '../status.js';
 import { pageFrame, loader, createButton } from './common.js';
 import { BRAND } from '../brand.js';
@@ -29,7 +29,8 @@ export function mountMcpPage(ctx, sandbox, route) {
   const base = `/s/${encodeURIComponent(sandbox.slug)}/mcp`;
   // Adding happens on its own page (UI-038); both Add buttons go there.
   const add = () => navigate(`${base}/new`);
-  const scopeFilter = filterTabs({ label: 'Scope', value: route.query.get('scope') || '', onChange: () => setChildren(host, render()),
+  // The scope is kept in the address, so it comes back with the page (SPEC-113 KST-007).
+  const scopeFilter = filterTabs({ label: 'Scope', value: route.query.get('scope') || '', onChange: (scope) => { replaceQuietly(scope ? `${base}?scope=${encodeURIComponent(scope)}` : base); setChildren(host, render()); },
     options: [{ value: '', label: 'All' }, { value: 'sandbox', label: 'This sandbox', icon: 'folder' }, { value: 'instance', label: 'Every sandbox', icon: 'globe' }] });
   const frame = pageFrame({
     title: 'MCP',

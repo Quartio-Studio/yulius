@@ -180,7 +180,8 @@ export function mountCiPage(ctx, sandbox, route) {
     const modal = openModal({
       title: 'CI run', wide: true, body: placeholder('Loading the CI run…', 'loading'),
       actions: [{ label: 'Close' }],
-      onClose: () => { clearTimeout(poll); openRun = null; replaceQuietly(`/s/${encodeURIComponent(sandbox.slug)}/ci`); },
+      // Closed because the page went (another address): that address stays as it is (SPEC-113).
+      onClose: () => { clearTimeout(poll); openRun = null; if (!destroyed) replaceQuietly(`/s/${encodeURIComponent(sandbox.slug)}/ci`); },
     });
     openRun = modal;
     replaceQuietly(`/s/${encodeURIComponent(sandbox.slug)}/ci?run=${encodeURIComponent(id)}`);
