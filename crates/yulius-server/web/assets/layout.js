@@ -865,7 +865,7 @@ export function createSidebar(ctx) {
           h('div', { class: 'task-group-head' }, bar('lg')),
           [70, 55, 80, 45, 62].map((width) => h('div', { class: 'skeleton-task-row' },
             h('span', { class: 'task-mark' }, h('span', { class: 'skeleton-tile skeleton-dot' })),
-            h('span', { class: 'task-title' }, bar(width)), h('span', { class: 'task-age' }, bar('sm')))))));
+            h('span', { class: 'task-num' }, bar('sm')), h('span', { class: 'task-title' }, bar(width)), h('span', { class: 'task-age' }, bar('sm')))))));
       return;
     }
     // A task the user left normally is done for now: it stays under Tasks (with Continue) but

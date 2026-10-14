@@ -59,6 +59,8 @@ details (`prLine`) link the number.
   where Archive and the menu show, the title may shrink below 3 em and stays clear of them. The
   row's tooltip still names the task, its pull request (`PR #N`, once) and the time.
 - TID-5: The Tasks page's rows show the task's number the same way, before the title.
+- TID-6: The loading rows of the sidebar and the Tasks page (SPEC-120) keep a bar where the number
+  goes, so each title lands where its bar was.
 
 ## Plan
 
@@ -68,6 +70,7 @@ details (`prLine`) link the number.
 - [x] Review round 1 findings fixed test-first: Git board chip, phone drawer, hover, tooltip, screen reader name
 - [x] Review round 2 findings fixed test-first: hover on non-archivable rows, shells tooltip, label in name
 - [x] Independent review in a fresh session, findings fixed test-first
+- [x] Loading rows from SPEC-120 keep the number's place, so titles land where their bars were
 - [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
@@ -99,6 +102,9 @@ details (`prLine`) link the number.
 `e2e/tests/git.e2e.ts`: "pull request chips read "PR #N" wherever they show" covers TID-3. It
 checks the sidebar, the Tasks page, the task view's delivery strip, the Git board and the
 delivery details, and that each chip's name starts with what it shows.
+
+`e2e/tests/loading-shapes.e2e.ts`: "the sidebar and Tasks lists load as task rows of the real
+rows' height" also checks that the title bars start where the titles land (TID-6).
 
 `e2e/tests/pulls.e2e.ts` finds chips by `#520` and keeps passing. In `e2e/tests/task-done.e2e.ts`,
 the sidebar link's name now starts "Needs you in the browser Task #10 …".
@@ -155,5 +161,10 @@ the sidebar link's name now starts "Needs you in the browser Task #10 …".
     name.
   - Round 3 approved `ebd83bf1` with nits. The ADR wording and the plan ticks are fixed. The time
     on hover is a recorded decision.
+- **After merging `dev` (`f19ffb58`…`6f2177e7`).** The merge was clean. SPEC-120's new loading rows had no
+  number, so a loaded title started 40 px right of its bar. The extended loading test failed first
+  with `expected {"x":-40} to equal {"x":0}`, and passed once the rows had a number bar.
+  `npx e2e run tests/loading-shapes.e2e.ts tests/loading.e2e.ts tests/navigation.e2e.ts tests/git.e2e.ts`:
+  25 passed.
 - **Not testable here:** a real GitHub pull request and screen-reader speech. Both are covered
   by the mock and by accessible-name and axe checks.

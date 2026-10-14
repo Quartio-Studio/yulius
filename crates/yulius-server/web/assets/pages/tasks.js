@@ -66,7 +66,7 @@ function loadingRows(label) {
   const cells = [80, 60, 70, 50, 60, null, 70, 80, null];
   return [columnHeads(), skeletonOf(label, [h('div', { class: 'tl-group-head' }, bar('lg')),
     [55, 70, 45, 62].map((title) => h('div', { class: 'skeleton-tl-row' }, cells.map((width, i) => {
-      if (i === 0) return h('span', { class: 'skeleton-tl-link' }, h('span', { class: 'tl-mark' }, h('span', { class: 'skeleton-tile skeleton-dot' })), bar(title));
+      if (i === 0) return h('span', { class: 'skeleton-tl-link' }, h('span', { class: 'tl-mark' }, h('span', { class: 'skeleton-tile skeleton-dot' })), h('span', { class: 'task-num' }, bar('sm')), bar(title));
       if (i === 5) return h('span', null, h('span', { class: 'skeleton-tile skeleton-dot' }));
       // The row's actions are hidden until hover but hold their room; so does this spacer.
       if (i === 8) return h('span', { class: 'tl-actions' }, h('span', { class: 'tl-action' }));
