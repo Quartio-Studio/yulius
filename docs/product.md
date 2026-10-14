@@ -98,7 +98,9 @@ watching, steering and unblocking.
   secrets are used by agents, who never see them. Reading a value needs your own two-factor code
   (set up once, mandatory); an administrator resets it for someone who lost their authenticator.
   The people who manage an agent secret can read it too. A shown value stays masked until its eye
-  button is pressed; it copies without being shown.
+  button is pressed; it copies without being shown. An agent secret is added with a name, a value
+  and a description: agents find the service's host and ask for it, and a person allows it with
+  one click (SPEC-121).
 - **Updates**: Yulius updates itself from `main` without losing running work.
 
 ## Principles

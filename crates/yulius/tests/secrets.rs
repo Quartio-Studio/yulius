@@ -899,6 +899,8 @@ async fn older_team_secrets_fold_into_a_value_and_notes() -> TestResult {
             updated_at: now,
             value_updated_at: now,
             last_used_at: None,
+            requested_hosts: Vec::new(),
+            requested_by: None,
         })
         .await?;
     let list = call(&h.router, Method::GET, "/api/team-secrets", None, &admin).await?;
@@ -1142,6 +1144,8 @@ async fn older_agent_secrets_reveal_their_user_name_and_seed() -> TestResult {
             updated_at: now,
             value_updated_at: now,
             last_used_at: None,
+            requested_hosts: Vec::new(),
+            requested_by: None,
         })
         .await?;
     let alice = browser_session(&w.h, "u-alice").await?;
@@ -1169,7 +1173,7 @@ async fn older_agent_secrets_reveal_their_user_name_and_seed() -> TestResult {
 async fn agent_secrets_follow_sandbox_access_and_reveal_only_to_managers() -> TestResult {
     let w = world().await?;
     let stripe = json!({"name": "STRIPE_KEY", "description": "test-mode key",
-        "hosts": ["api.stripe.test"], "value": STRIPE});
+        "hosts": ["api.stripe.test"], "injection": "bearer", "value": STRIPE});
     let created = add_agent_secret(&w, &w.writer, "s1", stripe.clone()).await?;
     assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
     assert_eq!(created.body["placeholder"], "yulius-secret-STRIPE_KEY");
@@ -1265,10 +1269,6 @@ async fn agent_secrets_follow_sandbox_access_and_reveal_only_to_managers() -> Te
         ),
         (
             json!({"name": "PATH", "hosts": ["a.test"], "value": "12345678"}),
-            StatusCode::UNPROCESSABLE_ENTITY,
-        ),
-        (
-            json!({"name": "NO_HOST", "hosts": [], "value": "12345678"}),
             StatusCode::UNPROCESSABLE_ENTITY,
         ),
         (
@@ -1402,11 +1402,11 @@ fn header<'a>(decision: &'a EgressDecision, name: &str) -> Option<&'a str> {
 async fn the_egress_policy_adds_secrets_for_bound_hosts_only() -> TestResult {
     let w = world().await?;
     for body in [
-        json!({"name": "STRIPE_KEY", "hosts": ["api.stripe.test"], "value": STRIPE}),
+        json!({"name": "STRIPE_KEY", "hosts": ["api.stripe.test"], "injection": "bearer", "value": STRIPE}),
         json!({"name": "SVC_PASS", "hosts": ["svc.test"], "injection": "basic", "username": "bob", "value": "svc-password-42"}),
         json!({"name": "HDR_KEY", "hosts": ["*.hdr.test"], "injection": "header", "header_name": "X-Api-Key", "value": "hdr-value-12345"}),
-        json!({"name": "TWIN_A", "hosts": ["twin.test"], "value": "twin-a-value-1"}),
-        json!({"name": "TWIN_B", "hosts": ["twin.test"], "value": "twin-b-value-2"}),
+        json!({"name": "TWIN_A", "hosts": ["twin.test"], "injection": "bearer", "value": "twin-a-value-1"}),
+        json!({"name": "TWIN_B", "hosts": ["twin.test"], "injection": "bearer", "value": "twin-b-value-2"}),
     ] {
         let created = add_agent_secret(&w, &w.writer, "s1", body).await?;
         assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
@@ -1907,5 +1907,376 @@ async fn the_proxy_shares_the_internal_listener() -> TestResult {
     )
     .await?;
     assert!(health.starts_with("HTTP/1.1 200"), "{health}");
+    Ok(())
+}
+
+/// SPEC-121 ASH-002, AC-ASH-2: a secret added with a name, a value and a description only is
+/// bound to no host and has no injection: the proxy sends it nowhere until hosts are allowed.
+#[tokio::test]
+async fn a_secret_without_hosts_is_sent_nowhere() -> TestResult {
+    let w = world().await?;
+    let created = add_agent_secret(
+        &w,
+        &w.writer,
+        "s1",
+        json!({"name": "VIDOC_API_KEY", "description": "API key for Vidoc", "value": "vidoc-key-123456"}),
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(created.body["hosts"], json!([]));
+    assert_eq!(created.body["injection"], "none");
+    let app: Arc<dyn EgressPolicy> = w.h.app.clone();
+    let s1 = app.egress_client(TOKEN_S1).await.ok_or("s1 client")?;
+    for host in ["api.vidoc.test", "vidoc.test", "example.com"] {
+        assert!(!app.egress_intercepts(&s1, host, 443).await, "{host}");
+    }
+    let decision = app
+        .egress_apply(
+            &s1,
+            request(
+                "api.vidoc.test",
+                "/v1?key=yulius-secret-VIDOC_API_KEY",
+                &[("Authorization", "Bearer yulius-secret-VIDOC_API_KEY")],
+            ),
+        )
+        .await;
+    assert_eq!(
+        header(&decision, "Authorization"),
+        Some("Bearer yulius-secret-VIDOC_API_KEY"),
+        "the placeholder stays: the host is not bound"
+    );
+    // People may still bind (and unbind) hosts directly.
+    let id = created.body["id"].as_str().ok_or("id")?;
+    let bound = call(
+        &w.h.router,
+        Method::PATCH,
+        &format!("/api/agent-secrets/{id}"),
+        Some(json!({"hosts": ["api.vidoc.test"]})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(bound.status, StatusCode::OK, "{}", bound.body);
+    assert!(app.egress_intercepts(&s1, "api.vidoc.test", 443).await);
+    let unbound = call(
+        &w.h.router,
+        Method::PATCH,
+        &format!("/api/agent-secrets/{id}"),
+        Some(json!({"hosts": []})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(unbound.status, StatusCode::OK, "{}", unbound.body);
+    assert!(!app.egress_intercepts(&s1, "api.vidoc.test", 443).await);
+    Ok(())
+}
+
+async fn agent_secret_of(w: &World, name: &str) -> Result<Value, Box<dyn std::error::Error>> {
+    let listed = call(
+        &w.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/agent-secrets",
+        None,
+        &w.writer,
+    )
+    .await?;
+    Ok(listed
+        .body
+        .as_array()
+        .and_then(|a| a.iter().find(|s| s["name"] == name))
+        .cloned()
+        .ok_or(name.to_owned())?)
+}
+
+async fn answer_request(
+    w: &World,
+    creds: &Creds,
+    id: &str,
+    allow: bool,
+    hosts: &[&str],
+) -> Result<support::Resp, Box<dyn std::error::Error>> {
+    call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/agent-secrets/{id}/request"),
+        Some(json!({"allow": allow, "hosts": hosts})),
+        creds,
+    )
+    .await
+}
+
+/// SPEC-121 ASH-003/004/006, AC-ASH-3/4: an agent proposes the hosts of a secret, which binds
+/// nothing; a person who manages it allows them (bound) or dismisses them; others cannot.
+#[tokio::test]
+async fn agents_request_hosts_and_people_allow_them() -> TestResult {
+    use yulius_app::ports::store::TaskStore as _;
+    let w = world().await?;
+    let created = add_agent_secret(
+        &w,
+        &w.writer,
+        "s1",
+        json!({"name": "VIDOC_API_KEY", "description": "API key for Vidoc", "value": "vidoc-key-123456"}),
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+    assert_eq!(created.body["requested_hosts"], json!([]));
+    let id = created.body["id"].as_str().ok_or("id")?.to_owned();
+
+    // Refusals: an unknown secret, another sandbox's agent, a bad host, too many hosts, none.
+    let many: Vec<String> = (0..17).map(|i| format!("h{i}.vidoc.test")).collect();
+    for (token, args) in [
+        (
+            TOKEN_S1,
+            json!({"secret": "NOPE", "hosts": ["api.vidoc.test"]}),
+        ),
+        (
+            TOKEN_S2,
+            json!({"secret": "VIDOC_API_KEY", "hosts": ["api.vidoc.test"]}),
+        ),
+        (
+            TOKEN_S1,
+            json!({"secret": "VIDOC_API_KEY", "hosts": ["localhost"]}),
+        ),
+        (TOKEN_S1, json!({"secret": "VIDOC_API_KEY", "hosts": many})),
+        (TOKEN_S1, json!({"secret": "VIDOC_API_KEY", "hosts": []})),
+    ] {
+        let refused = mcp_tool(&w.h, token, "secret_request_hosts", args.clone()).await?;
+        assert_eq!(refused["isError"], true, "{args}: {refused}");
+    }
+    assert_eq!(
+        agent_secret_of(&w, "VIDOC_API_KEY").await?["requested_hosts"],
+        json!([])
+    );
+
+    let asked = mcp_tool(
+        &w.h,
+        TOKEN_S1,
+        "secret_request_hosts",
+        json!({"secret": "VIDOC_API_KEY", "hosts": ["https://API.vidoc.test/"]}),
+    )
+    .await?;
+    assert_eq!(asked["isError"], false, "{asked}");
+    let body = tool_text(&asked);
+    assert_eq!(body["requested"], json!(["api.vidoc.test"]));
+    assert!(
+        body["link"]
+            .as_str()
+            .is_some_and(|l| l.ends_with("/secrets?section=agents")),
+        "{body}"
+    );
+    // Nothing bound: the request waits for a person; the task needs one.
+    let secret = agent_secret_of(&w, "VIDOC_API_KEY").await?;
+    assert_eq!(secret["hosts"], json!([]));
+    assert_eq!(secret["requested_hosts"], json!(["api.vidoc.test"]));
+    assert!(
+        secret["requested_by"]
+            .as_str()
+            .is_some_and(|b| b.starts_with('#')),
+        "{secret}"
+    );
+    let app: Arc<dyn EgressPolicy> = w.h.app.clone();
+    let s1 = app.egress_client(TOKEN_S1).await.ok_or("s1 client")?;
+    assert!(!app.egress_intercepts(&s1, "api.vidoc.test", 443).await);
+    let task =
+        w.h.store
+            .task(&yulius_domain::ids::TaskId::parse("t1")?)
+            .await?
+            .ok_or("task")?;
+    assert_eq!(
+        task.activity,
+        Some(yulius_domain::task::Activity::NeedsAttention)
+    );
+    let listed = tool_text(&mcp_tool(&w.h, TOKEN_S1, "secrets_list", json!({})).await?);
+    assert_eq!(
+        listed["secrets"][0]["requested_hosts"],
+        json!(["api.vidoc.test"])
+    );
+    assert!(
+        listed["how_to_use"]
+            .to_string()
+            .contains("secret_request_hosts"),
+        "{listed}"
+    );
+
+    // Only its managers answer: a reader is refused, someone who cannot see it finds nothing.
+    let reader = answer_request(&w, &w.reader, &id, true, &["api.vidoc.test"]).await?;
+    assert_eq!(reader.status, StatusCode::FORBIDDEN, "{}", reader.body);
+    let outsider = answer_request(&w, &w.outsider, &id, true, &["api.vidoc.test"]).await?;
+    assert_eq!(outsider.status, StatusCode::NOT_FOUND, "{}", outsider.body);
+    let allowed = answer_request(&w, &w.writer, &id, true, &["api.vidoc.test"]).await?;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
+    assert_eq!(allowed.body["hosts"], json!(["api.vidoc.test"]));
+    assert_eq!(allowed.body["requested_hosts"], json!([]));
+    assert_eq!(allowed.body["requested_by"], Value::Null);
+    assert!(app.egress_intercepts(&s1, "api.vidoc.test", 443).await);
+    let none = answer_request(&w, &w.writer, &id, true, &["api.vidoc.test"]).await?;
+    assert_eq!(none.status, StatusCode::CONFLICT, "nothing to answer");
+
+    // A bound host is reported as bound; a new one dismissed binds nothing.
+    let again = tool_text(
+        &mcp_tool(
+            &w.h,
+            TOKEN_S1,
+            "secret_request_hosts",
+            json!({"secret": "VIDOC_API_KEY", "hosts": ["api.vidoc.test"]}),
+        )
+        .await?,
+    );
+    assert_eq!(again["requested"], json!([]));
+    assert_eq!(again["already_bound"], json!(["api.vidoc.test"]));
+    assert_eq!(
+        agent_secret_of(&w, "VIDOC_API_KEY").await?["requested_hosts"],
+        json!([])
+    );
+    mcp_tool(
+        &w.h,
+        TOKEN_S1,
+        "secret_request_hosts",
+        json!({"secret": "VIDOC_API_KEY", "hosts": ["evil.test"], "reason": "upload"}),
+    )
+    .await?;
+    let dismissed = answer_request(&w, &w.writer, &id, false, &["evil.test"]).await?;
+    assert_eq!(dismissed.status, StatusCode::OK, "{}", dismissed.body);
+    assert_eq!(dismissed.body["hosts"], json!(["api.vidoc.test"]));
+    assert_eq!(dismissed.body["requested_hosts"], json!([]));
+    assert!(!app.egress_intercepts(&s1, "evil.test", 443).await);
+
+    let activity = call(
+        &w.h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &w.writer,
+    )
+    .await?;
+    for action in [
+        "vault.agent.request",
+        "vault.agent.allow",
+        "vault.agent.dismiss",
+    ] {
+        assert!(
+            activity
+                .body
+                .as_array()
+                .is_some_and(|a| a.iter().any(|e| e["action"] == action)),
+            "{action}: {}",
+            activity.body
+        );
+    }
+    Ok(())
+}
+
+/// SPEC-121 review round 1: an answer covers exactly the hosts the person saw. A host an agent
+/// added while the page was open is never allowed unseen; the answer changes only the hosts and
+/// the request; limits and instance-wide secrets hold.
+#[tokio::test]
+async fn an_answer_covers_only_the_hosts_the_person_saw() -> TestResult {
+    let w = world().await?;
+    let created = add_agent_secret(
+        &w,
+        &w.writer,
+        "s1",
+        json!({"name": "VIDOC_API_KEY", "description": "API key for Vidoc", "value": "vidoc-key-123456"}),
+    )
+    .await?;
+    let id = created.body["id"].as_str().ok_or("id")?.to_owned();
+    let ask = |hosts: Value| {
+        mcp_tool(
+            &w.h,
+            TOKEN_S1,
+            "secret_request_hosts",
+            json!({"secret": "VIDOC_API_KEY", "hosts": hosts}),
+        )
+    };
+    ask(json!(["api.vidoc.test"])).await?;
+    // The person sees api.vidoc.test; meanwhile the agent adds evil.test.
+    ask(json!(["evil.test"])).await?;
+    for allow in [true, false] {
+        let stale = answer_request(&w, &w.writer, &id, allow, &["api.vidoc.test"]).await?;
+        assert_eq!(stale.status, StatusCode::CONFLICT, "{}", stale.body);
+    }
+    let secret = agent_secret_of(&w, "VIDOC_API_KEY").await?;
+    assert_eq!(secret["hosts"], json!([]));
+    assert_eq!(
+        secret["requested_hosts"],
+        json!(["api.vidoc.test", "evil.test"])
+    );
+    let app: Arc<dyn EgressPolicy> = w.h.app.clone();
+    let s1 = app.egress_client(TOKEN_S1).await.ok_or("s1 client")?;
+    assert!(!app.egress_intercepts(&s1, "evil.test", 443).await);
+    // What the page shows after a reload answers it (any order, any case).
+    let allowed =
+        answer_request(&w, &w.writer, &id, true, &["EVIL.test", "api.vidoc.test"]).await?;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
+    assert_eq!(
+        allowed.body["hosts"],
+        json!(["api.vidoc.test", "evil.test"])
+    );
+
+    // Bound and requested together stay within 16: the answer is refused, the request kept.
+    let many: Vec<String> = (0..16).map(|i| format!("h{i}.vidoc.test")).collect();
+    let patched = call(
+        &w.h.router,
+        Method::PATCH,
+        &format!("/api/agent-secrets/{id}"),
+        Some(json!({"hosts": many[..15]})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(patched.status, StatusCode::OK, "{}", patched.body);
+    ask(json!(["new.vidoc.test"])).await?;
+    let full = call(
+        &w.h.router,
+        Method::PATCH,
+        &format!("/api/agent-secrets/{id}"),
+        Some(json!({"hosts": many})),
+        &w.writer,
+    )
+    .await?;
+    assert_eq!(full.status, StatusCode::OK, "{}", full.body);
+    let over = answer_request(&w, &w.writer, &id, true, &["new.vidoc.test"]).await?;
+    assert_eq!(
+        over.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        over.body
+    );
+    assert_eq!(
+        agent_secret_of(&w, "VIDOC_API_KEY").await?["requested_hosts"],
+        json!(["new.vidoc.test"])
+    );
+
+    // An instance-wide secret's request names the sandbox and is answered by administrators.
+    let global = add_agent_secret(
+        &w,
+        &w.admin,
+        "s1",
+        json!({"scope": "instance", "name": "GLOBAL_KEY", "value": "global-value-123"}),
+    )
+    .await?;
+    assert_eq!(global.status, StatusCode::CREATED, "{}", global.body);
+    let global_id = global.body["id"].as_str().ok_or("id")?.to_owned();
+    mcp_tool(
+        &w.h,
+        TOKEN_S1,
+        "secret_request_hosts",
+        json!({"secret": "GLOBAL_KEY", "hosts": ["global.test"]}),
+    )
+    .await?;
+    let listed = agent_secret_of(&w, "GLOBAL_KEY").await?;
+    assert!(
+        listed["requested_by"]
+            .as_str()
+            .is_some_and(|b| b.ends_with(" in app")),
+        "{listed}"
+    );
+    let by_writer = answer_request(&w, &w.writer, &global_id, true, &["global.test"]).await?;
+    assert_eq!(
+        by_writer.status,
+        StatusCode::FORBIDDEN,
+        "{}",
+        by_writer.body
+    );
+    let by_admin = answer_request(&w, &w.admin, &global_id, true, &["global.test"]).await?;
+    assert_eq!(by_admin.status, StatusCode::OK, "{}", by_admin.body);
     Ok(())
 }
