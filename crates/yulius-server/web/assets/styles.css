@@ -280,7 +280,7 @@ p { margin: 0; }
 }
 .app.no-sandbox { grid-template-columns: var(--sidebar-w) minmax(0, 1fr) 0 0; }
 /* The home screen (UI-045) has no sandbox, so no tools: the rail, its panel and its toggle go. */
-.app.no-sandbox .rail, .app.no-sandbox .panel, .app.no-sandbox .tools-toggle, .app.no-sandbox .agent-toggle { display: none; }
+.app.no-sandbox .rail, .app.no-sandbox .panel, .app.no-sandbox .tools-toggle { display: none; }
 /* The sidebar stays while a tool panel is open (developers keep their tasks in view): the panel
    takes its width from the centre (panels.js applyWidth). */
 
@@ -496,8 +496,6 @@ button.task-group-head:hover { color: var(--text); }
 .app.panel-max .panel { width: auto !important; }
 .app.panel-max .panel-resize { display: none; }
 .tools-toggle.active { background: var(--accent-soft); color: var(--text); }
-.btn-agent { height: var(--control-md); padding: 0 12px; gap: 6px; font-size: var(--fs-sm); line-height: var(--lh-sm); }
-.agent-toggle.active { background: var(--accent-soft); border-color: var(--accent-border); color: var(--text); }
 /* The rail's items stay inside it (F 2026-10-09): each pill is the rail's width less 6 px on either
    side of the edge line, its label gives way (ellipsis) before the count leaves the pill, and the
    4 px between pills leaves room for the focus ring. Hover is a quiet fill; the open tool (one at a
@@ -2044,8 +2042,7 @@ a.dl-task:hover { text-decoration: underline; }
   .tabrow-tabs, .tab-add { display: none; }
   /* The sandbox list gives way to the tools rail when it shows in this row (it never overlaps it). */
   .tab-select { display: flex; align-self: center; flex: 1; min-width: 0; max-width: 200px; height: var(--control-xl); gap: 4px; padding: 0 4px 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .btn-status .status-text, .chip-warn .chip-text, .agent-toggle-text { display: none; }
-  .btn-agent { width: var(--control-lg); height: var(--control-lg); padding: 0; justify-content: center; }
+  .btn-status .status-text, .chip-warn .chip-text { display: none; }
   .rail { flex-direction: row; align-items: center; gap: 0; padding: 0 2px; border-left: 0; border-bottom: 1px solid var(--border); background: var(--bg); }
   .rail-btn { width: var(--control-lg); height: var(--control-lg); justify-content: center; padding: 0; }
   .rail-btn.active::before { top: auto; bottom: 2px; left: 8px; right: 8px; width: auto; height: 3px; }
@@ -2138,6 +2135,17 @@ a.dl-task:hover { text-decoration: underline; }
 .notes-tabs.reordering .term-tab { transition: transform var(--duration-fast) var(--ease); }
 .notes-tabs .term-tab.dragging { position: relative; z-index: var(--z-raised); transition: none; background: var(--surface-2); box-shadow: var(--shadow); cursor: grabbing; }
 .notes-tabs .term-tab.settling { position: relative; z-index: var(--z-raised); transition: transform var(--duration-fast) var(--ease); }
+/* The grip says a tab drags (SPEC-136): faint at rest, the tab's colour when it is hovered, chosen
+   or dragged. Only a mouse or pen drags (touch scrolls the strip), so a device with neither does not
+   see it, whatever its primary pointer. */
+.notes-tabs .term-tab { padding-left: 8px; gap: 4px; }
+.notes-tab-grip { display: inline-flex; color: var(--text-faint); cursor: grab; }
+.notes-tabs .term-tab:hover .notes-tab-grip, .notes-tabs .term-tab.active .notes-tab-grip, .notes-tabs .term-tab.dragging .notes-tab-grip { color: currentColor; }
+.notes-tabs.reordering .notes-tab-grip { cursor: grabbing; }
+@media not (any-pointer: fine) {
+  .notes-tab-grip { display: none; }
+  .notes-tabs .term-tab { padding-left: 12px; }
+}
 .notes-panes { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--term-bg); }
 .notes-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .notes-pane[hidden] { display: none; }
