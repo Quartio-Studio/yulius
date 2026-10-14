@@ -1,11 +1,11 @@
 ---
 yulius-task: 315d3ee6-2891-4cfb-b861-d71d14cd83a6
-status: in-progress
+status: done
 ---
 
 # SPEC-112: notes tabs in any order, smooth selection, and teammates' cursors
 
-Status: in progress
+Status: implemented
 Date: 2026-10-14
 Owner: Yulius task #97
 Scope authorization: user request: "i want to be able to move those 3 bars "this sandbox", "team"
@@ -71,8 +71,8 @@ The Notes panel feels like a shared document:
 - [x] The server relays notepad presence to its readers, rate-limited
 - [x] Teammates' carets, names and selections show in the notepad
 - [x] Independent review in a fresh session, findings fixed test-first
-- [ ] Confirmation review of the fixed head approves it
-- [ ] Every gate green, docs and the changes log updated
+- [x] Confirmation review of the fixed head approves it
+- [x] Every gate green, docs and the changes log updated
 
 ## Design
 
@@ -195,4 +195,26 @@ sequenceDiagram
   at a time and the newest follows when it is answered (a page going away does not wait); the
   test waits for the first answer before the second hello. 40 of 40 runs passed after the fix.
   Rows are counted from the first row's middle (a piece a pixel off stays in its row).
+
+## Evidence
+
+Run on the branch merged with `origin/dev` (2026-10-14):
+
+- `scripts/dev ci` (fmt, clippy `-D warnings`, nextest, doctests, cargo-deny, cargo-shear,
+  rustdoc, repository check): exit 0, 1638 tests passed, 16 skipped; advisories, bans,
+  licenses and sources ok.
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^notes::/)'`: 9 passed,
+  including `presence_is_relayed_to_readers` and `presence_is_rate_limited` (the latter failed
+  with the limiter disabled); `yulius-app` unit `presence_counters_are_bounded_and_idle_ones_make_room`
+  and `yulius-contracts` `presence_refuses_unknown_fields_and_says_hello_only_when_asked` pass.
+- `cd e2e && npx e2e run --workers 2`: 46 files passed, 378 tests passed, 1 skipped (needs a model).
+- `npx e2e run tests/notes.e2e.ts --repeat-each 3`: 102 of 102; the former flakes repeated
+  (`--grep "answer was lost is not a conflict|looked into" --repeat-each 30`: 60 of 60 at load
+  average 26; `--grep "two hellos" --repeat-each 40`: 40 of 40).
+- Seen in the Yulius browser (mock, dark theme): Team first, a rounded own selection, two
+  teammates with name tags, carets and translucent selections, a blank line inside a selection
+  drawn as a sliver.
+- Not covered: two real browsers against a real server (the relay is covered in Rust, the drawing
+  in the mock), other browsers than Chromium, forced colours only as CSS rules (the harness
+  cannot emulate them), and drawing speed at the 256 KiB limit.
 
