@@ -385,49 +385,40 @@ test('the spider web sticks to the top of the view while the session scrolls', a
   expect(after.right).toBeLessThanOrEqual(1);
   expect(after.inWell).toBe(true);
 
-  // Stuck, the web lies under the text, so it fades to a colour every text of the well reads on at
-  // AA, spider included; at the top, beside the first lines, it keeps its own colours. Everything
-  // after it in the well paints over it.
+  // Task #94: "web gets almost invisible … when scrolling, it should stay in the same color". Stuck
+  // under the text, the threads, silk and spider keep their own colours, in both themes, and
+  // everything after the web in the well still paints over it.
   const colours = (theme: string) => browser.evaluate((name) => {
     document.documentElement.setAttribute('data-theme', name);
     const well = document.querySelector('.ss-tui')!;
-    const parse = (c: string) => c.match(/\d+(\.\d+)?/g)!.slice(0, 3).map(Number);
     const token = (t: string) => {
       const probe = well.appendChild(document.createElement('span'));
       probe.style.color = `var(${t})`;
       const c = getComputedStyle(probe).color;
       probe.remove();
-      return parse(c);
+      return c;
     };
-    const lum = (c: number[]) => {
-      const [r, g, b] = c.map((v) => { const x = v / 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; });
-      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    };
-    const contrast = (a: number[], b: number[]) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
-    const fills = ['.ss-web-thread', '.ss-web-silk', '.ss-web-body'].map((sel) => parse(getComputedStyle(well.querySelector(sel)!).fill));
-    const texts = ['--session-fg', '--session-dim', '--session-ok', '--session-err'].map(token);
+    const fill = (sel: string) => getComputedStyle(well.querySelector(sel)!).fill;
     return {
-      web: String(fills[0]) === String(token('--session-web')),
-      lowest: Math.min(...fills.flatMap((f) => texts.map((t) => contrast(t, f)))),
+      same: fill('.ss-web-thread') === token('--session-web') && fill('.ss-web-silk') === token('--session-web') && fill('.ss-web-body') === token('--session-dim'),
       over: ['.ss-entries > li', '.ss-more', '.ss-locked'].every((sel) => [...well.querySelectorAll(sel)].every((el) => getComputedStyle(el).position !== 'static')),
     };
   }, theme);
-  // It fades as soon as it sticks: the well's top just past the view's.
-  await browser.evaluate(() => {
+  const scrollTo = (top: string) => browser.evaluate((at) => {
     const page = document.querySelector<HTMLElement>('.ss-page')!;
     page.scrollTop = 0;
-    page.scrollTop = document.querySelector('.ss-tui')!.getBoundingClientRect().top - page.getBoundingClientRect().top - page.clientTop + 3;
-  });
-  await expect.poll(async () => (await colours('dark')).web).toBe(false);
-  await browser.evaluate(() => { document.querySelector<HTMLElement>('.ss-page')!.scrollTop = 200; });
-  for (const theme of ['dark', 'light']) {
-    await expect.poll(async () => (await colours(theme)).web, theme).toBe(false);
-    const stuck = await colours(theme);
-    expect(stuck.lowest, theme).toBeGreaterThanOrEqual(4.5);
-    expect(stuck.over, theme).toBe(true);
+    page.scrollTop = at === 'past' ? document.querySelector('.ss-tui')!.getBoundingClientRect().top - page.getBoundingClientRect().top - page.clientTop + 3 : Number(at);
+  }, top);
+  for (const at of ['past', '200', '0']) {
+    await scrollTo(at);
+    await browser.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+    for (const theme of ['dark', 'light']) {
+      const now = await colours(theme);
+      expect(now.same, `${theme}, scrolled ${at}`).toBe(true);
+      expect(now.over, theme).toBe(true);
+    }
   }
-  await browser.evaluate(() => { document.querySelector<HTMLElement>('.ss-page')!.scrollTop = 0; });
-  await expect.poll(async () => (await colours('dark')).web).toBe(true);
+  await browser.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
   expect(await axeViolations(browser)).toEqual([]);
 });
 
