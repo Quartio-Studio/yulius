@@ -81,10 +81,11 @@ matters and where to get a current one, before agents in every sandbox hit the f
   `apt-get install gh`) failed against the old check; `a_current_or_unrecognised_github_cli_is_ok`
   passed before and after. All three pass with the change (`cargo test -p yulius --lib doctor::`:
   6 passed).
-- Manual, this host (gh 2.45.0): `yulius doctor` prints `warn  GitHub CLI  gh version 2.45.0
-  (2025-07-18 Ubuntu 2.45.0-1ubuntu0.3) is older than 2.82.1: `gh pr edit` and `gh issue view
-  --comments` fail …; install it from GitHub's package repository
-  (https://github.com/cli/cli/blob/trunk/docs/install_linux.md), then rebuild the sandbox base`.
+- Manual, this host (gh 2.45.0), at fb5d46da: `yulius doctor` prints `warn  GitHub CLI  gh
+  version 2.45.0 (2025-07-18 Ubuntu 2.45.0-1ubuntu0.3) is older than 2.82.1: `gh pr edit` and
+  `gh issue view --comments` fail here and in every sandbox; install a current `gh` from
+  GitHub's package repository (https://github.com/cli/cli/blob/trunk/docs/install_linux.md),
+  then rebuild the sandbox base (`yulius sandbox-base build`)`.
 - Review round 1 (fresh read-only session) at f4a314d7: APPROVE, no blockers or majors. Minors
   fixed: the warning says the commands "fail here and in every sandbox" (they also fail on the
   host), test-first (red against "fail in every sandbox"); the warning test also pins
@@ -100,3 +101,7 @@ matters and where to get a current one, before agents in every sandbox hit the f
   warnings` and the doctor tests green.
 - Not verified here: that 2.82.1 is exactly the first fixed release (taken from the task request;
   the check is a constant, `GH_MIN_VERSION`, if it needs moving). The host's `gh` was not upgraded.
+- Review round 3 (fresh read-only session) at fb5d46da: APPROVE. Fixed: the manual evidence
+  above is now the output at fb5d46da. Left as they are: one changes line over 100 characters
+  (nothing enforces a width) and no test pinning the phrase "install a current `gh`" (wording;
+  the URL and the rebuild hint are pinned).
