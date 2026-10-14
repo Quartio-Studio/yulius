@@ -143,6 +143,10 @@
   --session-del-bg: #2f2220;
   --session-web: #4a4744;  /* the corner's spider web, decoration */
   --session-roach: #6f5646; /* the cockroach that runs by now and then, decoration */
+  /* teammates in a notepad (SPEC-112): caret, selection and a name tag in --peer-ink on the colour */
+  --peer-1: #f0a46b; --peer-2: #f28b8b; --peer-3: #e39be6; --peer-4: #b7a3f5;
+  --peer-5: #8db2f7; --peer-6: #67c6d6; --peer-7: #74cfa4; --peer-8: #b6d46c;
+  --peer-ink: #14110f;
   /* material: a fine grain and a soft light from above over the canvas, pages, sidebar and rail */
   --texture: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.94 0 0 0 0 0.92 0 0 0 0 0.88 0 0 0 0.075 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
   --light: radial-gradient(120% 60% at 50% -12%, rgba(240, 235, 225, 0.075), rgba(240, 235, 225, 0.02) 45%, transparent 70%);
@@ -221,6 +225,9 @@
   --session-del-bg: #eedcd7;
   --session-web: #c4bdb1;
   --session-roach: #8c6d58;
+  --peer-1: #c2410c; --peer-2: #b91c1c; --peer-3: #a21caf; --peer-4: #6d28d9;
+  --peer-5: #1d4ed8; --peer-6: #0e7490; --peer-7: #047857; --peer-8: #4d7c0f;
+  --peer-ink: #ffffff;
   /* material: a fine grain and a soft light from above over the canvas, pages, sidebar and rail */
   --texture: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.09 0 0 0 0 0.08 0 0 0 0 0.07 0 0 0 0.06 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)'/%3E%3C/svg%3E");
   --light: radial-gradient(120% 60% at 50% -12%, rgba(255, 253, 248, 0.7), transparent 65%);

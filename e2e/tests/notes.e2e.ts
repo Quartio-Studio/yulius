@@ -605,3 +605,111 @@ test('a selection is drawn behind the text in rounded shapes that glide with it'
   await expect.poll(async () => (await ownShapes(browser))[0].top).toBe(first.top - 40);
   expect(await axeViolations(browser)).toEqual([]);
 });
+
+type Presence = { scope: string; sandbox_id?: string | null; user_id: string; name: string; revision: number; selection: { anchor: number; head: number } | null; hello?: boolean };
+type MockPresence = { __yuliusMock: { notes: Record<string, { revision: number }>; presenceSent?: Array<{ scope: string; revision: number; selection: { anchor: number; head: number } | null; hello?: boolean }>; notePresence: (event: Presence) => void; failNoteSaves: boolean } };
+
+/** A teammate's presence, as the server relays it. */
+const teammate = (browser: Browser, event: Presence) =>
+  browser.evaluate((e) => (window as unknown as MockPresence).__yuliusMock.notePresence(e), event);
+
+/** The visible notepad's teammates as drawn: name, mapped offsets, shapes and the caret's place. */
+const peersShown = (browser: Browser) => browser.evaluate(() => {
+  const pane = document.querySelector('.notes-pane:not([hidden])') as HTMLElement;
+  const box = (pane.querySelector('textarea') as HTMLTextAreaElement).getBoundingClientRect();
+  return [...pane.querySelectorAll<HTMLElement>('.text-layer .tl-peer:not(.tl-leaving)')].map((group) => {
+    const caret = (group.querySelector('.tl-caret') as HTMLElement).getBoundingClientRect();
+    return {
+      name: (group.querySelector('.tl-name') as HTMLElement).textContent,
+      colour: group.style.getPropertyValue('--tl-colour'),
+      head: Number(group.dataset.head), start: Number(group.dataset.start), end: Number(group.dataset.end),
+      shapes: group.querySelectorAll('.tl-shape:not(.tl-gone)').length,
+      caretLeft: Math.round(caret.left - box.left),
+    };
+  });
+});
+
+const sent = (browser: Browser) => browser.evaluate(() => (window as unknown as MockPresence).__yuliusMock.presenceSent ?? []);
+
+test('a teammate in the notepad shows as a caret with their name and selection, in their colour', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen, null);
+  const team = screen.getByRole('textbox', 'Team notes');
+  await team.fill('Standup at 10:30 today\nsecond line');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  const revision = await browser.evaluate(() => (window as unknown as MockPresence).__yuliusMock.notes.team.revision);
+
+  // The person's own selection goes out in the saved text's offsets, at its revision.
+  await selectText(browser, 4, 8);
+  await expect.poll(async () => (await sent(browser)).at(-1)).toMatchObject({ scope: 'team', revision, selection: { anchor: 4, head: 8 } });
+
+  // A teammate's selection: their colour, their name, a rounded shape and a caret at its head.
+  await teammate(browser, { scope: 'team', user_id: 'usr_alice', name: 'alice', revision, selection: { anchor: 0, head: 7 } });
+  await expect.poll(async () => (await peersShown(browser)).length).toBe(1);
+  let [alice] = await peersShown(browser);
+  expect(alice).toMatchObject({ name: 'alice', start: 0, end: 7, head: 7, shapes: 1 });
+  expect(alice.colour).toMatch(/^var\(--peer-[1-8]\)$/);
+  expect(alice.caretLeft).toBeGreaterThan(16);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // They move: a caret alone at the start of the text.
+  await teammate(browser, { scope: 'team', user_id: 'usr_alice', name: 'alice', revision, selection: { anchor: 0, head: 0 } });
+  await expect.poll(async () => (await peersShown(browser))[0]).toMatchObject({ head: 0, shapes: 0, caretLeft: 15 });
+
+  // Unsaved typing before their caret moves it along.
+  await teammate(browser, { scope: 'team', user_id: 'usr_alice', name: 'alice', revision, selection: { anchor: 11, head: 16 } });
+  await browser.evaluate(() => { (window as unknown as MockPresence).__yuliusMock.failNoteSaves = true; });
+  await browser.evaluate(() => {
+    const box = document.querySelector('.notes-pane:not([hidden]) textarea') as HTMLTextAreaElement;
+    box.setRangeText('Daily ', 0, 0, 'end');
+    box.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await expect.poll(async () => (await peersShown(browser))[0]).toMatchObject({ start: 17, end: 22, head: 22 });
+  await browser.evaluate(() => { (window as unknown as MockPresence).__yuliusMock.failNoteSaves = false; });
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+
+  // Their offsets are in an older text now: hidden until they send them for this revision.
+  await expect.poll(async () => (await peersShown(browser)).length).toBe(0);
+  await teammate(browser, { scope: 'team', user_id: 'usr_alice', name: 'alice', revision: revision + 1, selection: { anchor: 6, head: 6 } });
+  await expect.poll(async () => (await peersShown(browser)).length).toBe(1);
+
+  // A second teammate gets a colour of their own; the person's own echo is not drawn.
+  await teammate(browser, { scope: 'team', user_id: 'usr_bob', name: 'bob', revision: revision + 1, selection: { anchor: 1, head: 3 } });
+  await teammate(browser, { scope: 'team', user_id: 'usr_1', name: 'mkarp', revision: revision + 1, selection: { anchor: 2, head: 5 } });
+  await expect.poll(async () => (await peersShown(browser)).map((p) => p.name)).toEqual(['alice', 'bob']);
+  [alice] = await peersShown(browser);
+  expect((await peersShown(browser))[1].colour).not.toBe(alice.colour);
+
+  // Someone who opens the notepad says hello: the person answers with where they are at once.
+  const before = (await sent(browser)).length;
+  await teammate(browser, { scope: 'team', user_id: 'usr_carol', name: 'carol', revision: revision + 1, selection: null, hello: true });
+  await expect.poll(async () => (await sent(browser)).length).toBeGreaterThan(before);
+  expect((await sent(browser)).at(-1)).toMatchObject({ scope: 'team', revision: revision + 1, hello: false });
+
+  // Leaving (null) takes them away; so does silence for 45 s.
+  await teammate(browser, { scope: 'team', user_id: 'usr_bob', name: 'bob', revision: revision + 1, selection: null });
+  await expect.poll(async () => (await peersShown(browser)).map((p) => p.name)).toEqual(['alice']);
+  await browser.evaluate(() => { const now = Date.now.bind(Date); Date.now = () => now() + 60_000; });
+  await expect.poll(async () => (await peersShown(browser)).length).toBe(0);
+
+  // Another tab is chosen: the person leaves the Team notepad.
+  await screen.getByRole('tab', 'This sandbox').click();
+  await expect.poll(async () => (await sent(browser)).filter((s) => s.scope === 'team').at(-1)?.selection).toBeNull();
+});
+
+test('a sandbox notepad shows only that sandbox’s teammates, and Me shows nobody', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen);
+  await screen.getByRole('textbox', 'Sandbox notes').fill('studio notes');
+  await expect(screen.getByRole('status', 'Save state')).toHaveText('Saved');
+  const revision = await browser.evaluate(() => (window as unknown as MockPresence).__yuliusMock.notes['sandbox:sb_studio'].revision);
+  await teammate(browser, { scope: 'sandbox', sandbox_id: 'sb_other', user_id: 'usr_alice', name: 'alice', revision, selection: { anchor: 0, head: 3 } });
+  await teammate(browser, { scope: 'team', user_id: 'usr_bob', name: 'bob', revision, selection: { anchor: 0, head: 3 } });
+  await teammate(browser, { scope: 'sandbox', sandbox_id: 'sb_studio', user_id: 'usr_carol', name: 'carol', revision, selection: { anchor: 0, head: 3 } });
+  await expect.poll(async () => (await peersShown(browser)).map((p) => p.name)).toEqual(['carol']);
+
+  await screen.getByRole('tab', 'Me').click();
+  await screen.getByRole('textbox', 'My notes').click();
+  expect(await peersShown(browser)).toEqual([]);
+  expect((await sent(browser)).filter((s) => s.scope === 'me')).toEqual([]);
+});

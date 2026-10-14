@@ -2335,6 +2335,26 @@ route('PUT', `/api/sandboxes/${ID}/notes`, ({ db, p, body }) => {
   return saveNote(db, `sandbox:${sandbox.id}`, body);
 });
 
+// Presence (SPEC-112): the browser's own selection is recorded (`presenceSent`) and relayed like
+// the server does (its own echo included, which the page leaves out); tests act as a teammate with
+// `notePresence(event)`.
+function relayPresence(db, scope, sandboxId, body) {
+  for (const key of Object.keys(body)) if (!['revision', 'selection', 'hello'].includes(key)) fail(422, 'invalid', `unknown field ${key}`);
+  const selection = body.selection;
+  const offset = (n) => Number.isInteger(n) && n >= 0 && n <= 1 << 20;
+  if (!Number.isInteger(body.revision) || selection === undefined
+    || (selection !== null && (typeof selection !== 'object' || Object.keys(selection).some((k) => k !== 'anchor' && k !== 'head') || !offset(selection.anchor) || !offset(selection.head)))) {
+    fail(422, 'invalid', 'revision and selection are required');
+  }
+  (db.presenceSent = db.presenceSent || []).push({ scope, sandbox_id: sandboxId, revision: body.revision, selection, hello: Boolean(body.hello) });
+  const user = db.me.user;
+  emit(db, { type: 'note.presence', scope, sandbox_id: sandboxId, user_id: user.id, name: user.github_linked ? user.login : user.display_name, revision: body.revision, selection, hello: Boolean(body.hello) });
+  return json(204);
+}
+
+route('PUT', '/api/notes/presence', ({ db, body }) => relayPresence(db, 'team', null, body));
+route('PUT', `/api/sandboxes/${ID}/notes/presence`, ({ db, p, body }) => relayPresence(db, 'sandbox', sandboxOf(db, p[0]).id, body));
+
 // ---- Administration
 
 const adminOnly = (db) => { if (!db.me.user.is_instance_admin && !db.me.user.is_superadmin) fail(403, 'forbidden', 'instance administrators only'); };
@@ -3967,6 +3987,7 @@ export function createMockTransport(params) {
   // A teammate's save of a notepad (`team` or `sandbox:<sid>`); `announce: false` holds back its
   // event, as if it were still on its way (SPEC-041).
   db.editNote = (scope, body, by = 'alice', options) => putNote(db, scope, body, by, options);
+  db.notePresence = (event) => emit(db, { type: 'note.presence', sandbox_id: null, hello: false, ...event });
   db.keepaliveRequests = [];
   // `noteloads=fail`: the notes cannot be loaded from the start (a server still restarting).
   db.failNoteLoads = params.get('noteloads') === 'fail';

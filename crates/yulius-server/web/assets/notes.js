@@ -17,7 +17,7 @@ import { h, openMenu, setChildren, skeleton } from './dom.js';
 import { relLong } from './format.js';
 import { attachMarkdownInput } from './mdinput.js';
 import { allows } from './status.js';
-import { createTextLayer } from './textlayer.js';
+import { createTextLayer, mapPosition, textEdit } from './textlayer.js';
 import { readJson, writeJson } from './store.js';
 
 const TAB_KEY = 'yulius.notesTab';
@@ -36,6 +36,14 @@ const RETRY_MAX_MS = 30000;
 const MAX_NOTE_BYTES = 256 * 1024;
 /** Browsers bound the bodies of requests that outlive the page (64 KiB in all). */
 const KEEPALIVE_MAX_BYTES = 60 * 1024;
+/** Presence (SPEC-112 NOT-020): the least time between two updates of one's own selection. */
+const PRESENCE_GAP_MS = 100;
+/** …sent again this often while the notepad is shown, so the others know one is still there. */
+const PRESENCE_HEARTBEAT_MS = 15000;
+/** A teammate not heard of for this long has gone. */
+const PRESENCE_EXPIRY_MS = 45000;
+/** How often teammates who went quiet are looked for. */
+const PRESENCE_SWEEP_MS = 1000;
 
 const retryable = (error) => !error.status || error.status === 408 || error.status === 429 || error.status >= 500;
 const byteLength = (text) => new TextEncoder().encode(text).length;
@@ -70,24 +78,28 @@ export function createNotesView(ctx, sandbox) {
       label: 'This sandbox',
       textLabel: 'Sandbox notes',
       path: `/api/sandboxes/${enc(sandbox.id)}/notes`,
+      putPresence: (body, options) => ctx.api.put(`/api/sandboxes/${enc(sandbox.id)}/notes/presence`, body, options),
       unsavedKey: `${UNSAVED_PREFIX}${userId}.sandbox:${sandbox.id}`,
       matches: (event) => event.scope === 'sandbox' && event.sandbox_id === sandbox.id,
       readOnly: !allows(sandbox.access, 'write') && 'Read-only. Editing this sandbox’s notes needs write access to the repository on GitHub.',
       placeholder: 'Notes for everyone working in this sandbox: links, decisions, what to try next…',
       onState: () => renderStatus(),
       isMine,
+      myId: userId,
     }),
     notepad(ctx, {
       key: 'team',
       label: 'Team',
       textLabel: 'Team notes',
       path: '/api/notes',
+      putPresence: (body, options) => ctx.api.put('/api/notes/presence', body, options),
       unsavedKey: `${UNSAVED_PREFIX}${userId}.team`,
       matches: (event) => event.scope === 'team',
       readOnly: false,
       placeholder: 'Notes for the whole team, the same in every sandbox…',
       onState: () => renderStatus(),
       isMine,
+      myId: userId,
     }),
     notepad(ctx, {
       key: 'me',
@@ -101,6 +113,7 @@ export function createNotesView(ctx, sandbox) {
       placeholder: 'Only you see these notes, the same in every sandbox…',
       onState: () => renderStatus(),
       isMine,
+      myId: userId,
       // Nobody else saves it, whatever name an older save carries (a renamed GitHub login).
       personal: true,
     }),
@@ -264,8 +277,12 @@ export function createNotesView(ctx, sandbox) {
   }
 
   function select(pad, { focusTab = false } = {}) {
-    if (current !== pad) current.flush();
+    if (current !== pad) {
+      current.flush();
+      current.setShown(false);
+    }
     current = pad;
+    if (shown) pad.setShown(true);
     writeJson(TAB_KEY, pad.key);
     for (const other of pads) other.el.hidden = other !== pad;
     renderTabs();
@@ -292,14 +309,22 @@ export function createNotesView(ctx, sandbox) {
   const offs = [
     ctx.store.on('note', (event) => { for (const pad of pads) if (pad.matches(event)) pad.announced(event); }),
     ctx.store.on('resync', () => { for (const pad of pads) pad.announced(null); }),
+    ctx.store.on('note-presence', (event) => { for (const pad of pads) if (pad.matches(event)) pad.peerPresence(event); }),
   ];
+  // Teammates who went quiet fade out; the shown notepad says it is still there now and then.
+  const sweep = setInterval(() => { for (const pad of pads) pad.tick(); }, PRESENCE_SWEEP_MS);
   // A hidden page (another tab, a closed laptop, a reload) saves what is typed at once.
   // The notepads share the browser's allowance for requests that outlive the page (64 KiB).
   const leave = () => {
     const budget = { left: KEEPALIVE_MAX_BYTES };
     for (const pad of pads) pad.flush({ leaving: true, budget });
+    for (const pad of pads) pad.setShown(false, { going: true });
   };
-  const onHidden = () => { if (document.visibilityState === 'hidden') leave(); };
+  // A hidden page has left the notepad for its teammates; shown again, it says hello.
+  const onHidden = () => {
+    if (document.visibilityState === 'hidden') leave();
+    else if (shown) current.setShown(true);
+  };
   const onPageHide = () => leave();
   // Unsaved text makes the browser ask before leaving the page.
   const onBeforeUnload = (event) => {
@@ -316,6 +341,7 @@ export function createNotesView(ctx, sandbox) {
     headExtra: () => [status],
     show(opts = {}) {
       shown = true;
+      current.setShown(true);
       current.load();
       renderStatus();
       // Shown again because the page changed (panels.js `{ context: true }`): the keyboard stays
@@ -325,9 +351,11 @@ export function createNotesView(ctx, sandbox) {
     hide() {
       shown = false;
       for (const pad of pads) pad.flush();
+      for (const pad of pads) pad.setShown(false);
     },
     destroy() {
       dragCancel();
+      clearInterval(sweep);
       for (const pad of pads) pad.destroy();
       offs.forEach((off) => off());
       document.removeEventListener('visibilitychange', onHidden);
@@ -338,7 +366,7 @@ export function createNotesView(ctx, sandbox) {
 }
 
 /** One notepad: its text box, what the server holds, and the save loop. */
-function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOnly, placeholder, onState, isMine, personal = false }) {
+function notepad(ctx, { key, label, textLabel, path, putPresence = null, unsavedKey, matches, readOnly, placeholder, onState, isMine, myId, personal = false }) {
   const hintId = `notes-readonly-${key}`;
   const textarea = h('textarea', { class: 'notes-text', 'aria-label': textLabel, 'aria-describedby': readOnly ? hintId : null, placeholder, spellcheck: 'true', readOnly: true });
   const banner = h('div', { class: 'notes-banner', hidden: true });
@@ -436,6 +464,7 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
     settled();
     if (!readOnly) dropUnsaved(); // a reader who lost write access keeps theirs for later
     renderMeta();
+    presenceMoved();
   }
 
   /** Goes on from `note`, this person's own stored save, keeping the text box as it is. */
@@ -445,6 +474,7 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
     lastEdit = { updated_by: note.updated_by, updated_at: note.updated_at };
     settled();
     renderMeta();
+    presenceMoved();
     if (dirty()) schedule();
     else dropUnsaved();
   }
@@ -459,6 +489,7 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
     adopt(note);
     if (!kept || kept.body === note.body) return;
     textarea.value = kept.body;
+    presenceMoved();
     // Nobody saved since, or the newer save is this person's own: it simply goes on.
     if (kept.base === note.revision || ownLostSave(note, kept.sent)) {
       unconfirmed = [...kept.sent, kept.body].slice(-8); // a save of it may still arrive
@@ -470,6 +501,7 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
     conflict = note;
     keepUnsaved();
     renderBanner();
+    presenceMoved();
   }
 
   /** Loads again when an event told of a newer revision and nothing is unsaved. */
@@ -567,6 +599,7 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
       lastEdit = { updated_by: note.updated_by, updated_at: note.updated_at };
       settled();
       renderMeta();
+      presenceMoved();
       if (dirty()) { if (!timer && !destroyed) schedule(); } // typed while the save was on its way
       else { dropUnsaved(); catchUp(); }
     } catch (error) {
@@ -627,6 +660,7 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
     saved = conflict.body;
     conflict = null;
     renderBanner();
+    presenceMoved();
     textarea.focus();
     save();
   }
@@ -651,11 +685,130 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
     load();
   }
 
+  // ---- presence (SPEC-112 NOT-020): where this person is in a shared notepad goes to its other
+  // readers, and theirs is drawn here. Offsets travel in the saved text at `base`, mapped through
+  // the unsaved typing on each side; someone at another revision is hidden until both meet again.
+  // Nothing goes out before the person first puts the caret in the text box.
+  const peers = new Map(); // user id → {name, revision, selection, seen}
+  let present = false; // the notepad is shown
+  let touched = false; // the caret was put in it
+  let presenceTimer = 0;
+  let lastPresenceAt = 0;
+  let lastPresence = null; // the last update sent, as JSON
+  let wasThere = false; // the last update sent had a selection
+  let helloDue = false;
+  let forceDue = false;
+
+  /** The text box's own text and the saved one are the same document, unless a conflict is open. */
+  const inStep = () => loaded && !conflict;
+
+  function ownSelection() {
+    if (!present || !touched || !inStep()) return null;
+    const { selectionStart, selectionEnd, selectionDirection } = textarea;
+    const [anchor, head] = selectionDirection === 'backward' ? [selectionEnd, selectionStart] : [selectionStart, selectionEnd];
+    const edit = textEdit(textarea.value, saved);
+    return { anchor: mapPosition(anchor, edit), head: mapPosition(head, edit) };
+  }
+
+  /** Sends the selection now; `leaving` sends `null`, `going` with a request that outlives the page. */
+  function sendPresence({ leaving = false, going = false } = {}) {
+    clearTimeout(presenceTimer);
+    presenceTimer = 0;
+    if (!putPresence || !loaded) return;
+    const selection = leaving ? null : ownSelection();
+    const update = JSON.stringify({ revision: base, selection });
+    // Nothing new, or nothing to take back: nothing to say, unless asked.
+    if (!helloDue && !forceDue && (update === lastPresence || (!selection && !wasThere))) return;
+    const hello = helloDue && !leaving;
+    helloDue = false;
+    forceDue = false;
+    lastPresence = update;
+    lastPresenceAt = Date.now();
+    wasThere = Boolean(selection);
+    // A lost or refused update is replaced by the next one: nothing to retry or show.
+    putPresence({ revision: base, selection, hello }, { keepalive: going }).catch(() => {});
+  }
+
+  /** Sends where this person is soon: at most one update per PRESENCE_GAP_MS, the last always. */
+  function presenceSoon() {
+    if (!putPresence || !present || presenceTimer) return;
+    presenceTimer = setTimeout(sendPresence, Math.max(0, lastPresenceAt + PRESENCE_GAP_MS - Date.now()));
+  }
+
+  /** Teammates drawn in the text box's text: those at this revision, mapped through the typing. */
+  function drawPeers() {
+    if (!putPresence) return;
+    const list = [];
+    if (present && inStep()) {
+      const edit = textEdit(saved, textarea.value);
+      for (const [id, peer] of peers) {
+        if (peer.revision !== base) continue;
+        const anchor = mapPosition(peer.selection.anchor, edit);
+        const head = mapPosition(peer.selection.head, edit);
+        list.push({ id, name: peer.name, start: Math.min(anchor, head), end: Math.max(anchor, head), head });
+      }
+    }
+    layer.setPeers(list);
+  }
+
+  /** The text, its revision or the selection moved: redraw the others and tell them. */
+  function presenceMoved() {
+    drawPeers();
+    presenceSoon();
+  }
+
+  /** A teammate's update (`note.presence`); this person's own, from any tab, is not drawn. */
+  function peerPresence(event) {
+    if (!putPresence || event.user_id === myId) return;
+    if (event.selection) peers.set(event.user_id, { name: event.name, revision: event.revision, selection: event.selection, seen: Date.now() });
+    else peers.delete(event.user_id);
+    // Someone opened the notepad: tell them where this person is, even if it did not change.
+    if (event.hello && present && wasThere) {
+      forceDue = true;
+      presenceSoon();
+    }
+    drawPeers();
+  }
+
+  /** Shown (says hello) or hidden (leaves; `going`: the page goes, so the request outlives it). */
+  function setShown(next, { going = false } = {}) {
+    if (!putPresence || next === present) return;
+    present = next;
+    if (next) {
+      helloDue = true;
+      if (loaded) sendPresence();
+    } else {
+      helloDue = false; // a hello not sent yet has nobody to greet
+      forceDue = false;
+      sendPresence({ leaving: true, going });
+      peers.clear(); // drawn again from their answers to the next hello
+    }
+    drawPeers();
+  }
+
+  /** Once a second: teammates gone quiet fade out; a present person says so now and then. */
+  function tick() {
+    if (!putPresence) return;
+    const now = Date.now();
+    let gone = false;
+    for (const [id, peer] of peers) if (now - peer.seen > PRESENCE_EXPIRY_MS) { peers.delete(id); gone = true; }
+    if (gone) drawPeers();
+    if (present && wasThere && now - lastPresenceAt >= PRESENCE_HEARTBEAT_MS) {
+      forceDue = true;
+      sendPresence();
+    }
+  }
+
   textarea.addEventListener('input', () => {
     if (failed && failed !== 'retrying' && failed !== 'loading') failed = null; // a refusal is retried after the next edit
     if (!conflict) schedule();
+    presenceMoved();
   });
   textarea.addEventListener('blur', () => flush());
+  textarea.addEventListener('focus', () => { touched = true; presenceSoon(); });
+  const onSelect = () => { if (document.activeElement === textarea) presenceSoon(); };
+  for (const name of ['select', 'selectionchange', 'keyup', 'pointerup']) textarea.addEventListener(name, onSelect);
+  document.addEventListener('selectionchange', onSelect);
 
   return {
     key,
@@ -670,9 +823,14 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
     renderMeta,
     unsaved: () => Boolean(conflict || saving || timer || checking || dirty()),
     focus() { textarea.focus(); },
+    setShown,
+    peerPresence,
+    tick,
     destroy() {
       flush({ leaving: true }); // kept for the next load; the save goes on after the view is gone
+      setShown(false, { going: true });
       destroyed = true;
+      document.removeEventListener('selectionchange', onSelect);
       layer.destroy();
       clearTimeout(timer);
     },
