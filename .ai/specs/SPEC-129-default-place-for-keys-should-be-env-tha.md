@@ -1,11 +1,11 @@
 ---
 yulius-task: 6be6436f-0918-489b-a668-5695688862ad
-status: in-progress
+status: done
 ---
 
 # SPEC-129: keys live in a git-ignored .env; agents copy agent secrets there without seeing them
 
-Status: in-progress
+Status: done
 Date: 2026-10-14
 Owner: Yulius task #111
 Scope authorization: the person's request (task #111): "Default place for keys should be .env that
@@ -85,13 +85,13 @@ secret allows each secret to be copied, once, on the Secrets page, the way they 
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] Dotenv lines are written by a pure domain function that quotes and replaces safely
-- [ ] A person allows, dismisses or revokes copying a secret into .env files on the Secrets page
-- [ ] secret_copy_to_env writes real values into an ignored .env and names into .env.example
-- [ ] secrets_list, the briefing and the onboarding skill teach .env as the default place for keys
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Read the product context and related work, then write and validate the spec
+- [x] Dotenv lines are written by a pure domain function that quotes and replaces safely
+- [x] A person allows, dismisses or revokes copying a secret into .env files on the Secrets page
+- [x] secret_copy_to_env writes real values into an ignored .env and names into .env.example
+- [x] secrets_list, the briefing and the onboarding skill teach .env as the default place for keys
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -137,3 +137,30 @@ secret allows each secret to be copied, once, on the Secrets page, the way they 
   agent's back.
 - **No `.env` for Yulius itself.** Its `.gitignore` already follows the convention and its keys
   live in its vault.
+
+## Evidence
+
+- `cargo nextest run -p yulius-domain vault::dotenv`: 5 passed (quoting, replacement, `export`,
+  duplicates, Windows line endings, multi-line values refused, example names).
+- `cargo nextest run -p yulius-app vault::env_files`: 2 passed (a folder swapped for a link after
+  the check is not followed; links on the way refused).
+- `cargo nextest run -p yulius-store vault::`: 8 passed (`env_copies_change_only_from_what_was_seen`).
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^secrets_env::/)'`: 6 passed
+  (AC1–AC6: request then allow then copy, refusals, stale answers 409, invisible 404, readers
+  403, instance-wide secrets answered by administrators, checks before asking, in-place write
+  with no leftovers).
+- Briefing (`the_discipline_names_the_default_place_for_keys`) and onboarding skill
+  (`the_bootstrap_keeps_keys_in_an_ignored_env`) tests: red before the text changes, green after.
+- `npx e2e run tests/secrets.e2e.ts`: 10 passed, including "a person allows an agent to copy a
+  secret into .env, then revokes it" (no WCAG violations).
+- `scripts/dev ci` (format, Clippy, repository contracts, every test, docs, deps): green on the
+  delivered head; see the pull request's Yulius CI. One unrelated run timed out
+  `task_done::a_switch_waits_for_a_background_agent_launched_in_the_turn` under host load (issue
+  #464); alone it passed 3 of 3.
+- Independent review: round 1 requested changes (a link race letting Yulius read or write outside
+  the sandbox, non-portable quoting, six lows), all fixed with tests; round 2 approved, and its four
+  lows were fixed too.
+- Not tested here: a live Claude Code session calling `secret_copy_to_env` end to end (no paid
+  agent run), python-dotenv/Node readers in CI (checked by the reviewer by hand), and macOS
+  (`F_GETPATH` branch compiles only there).
+

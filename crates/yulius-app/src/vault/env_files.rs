@@ -540,6 +540,10 @@ impl App {
             .unwrap_or(false);
         if !added.is_empty() {
             // The template keeps the mode it was committed with; a new one is 0644.
+            #[allow(
+                clippy::useless_conversion,
+                reason = "mode_t is u32 on Linux but u16 on macOS"
+            )]
             let mode = nix::sys::stat::fstatat(
                 &folder.fd,
                 EXAMPLE,
