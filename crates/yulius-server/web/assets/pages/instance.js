@@ -3,7 +3,7 @@
 // (building → pausing tasks → restarting → resuming, with a failure or rollback said plainly),
 // and the Jev key.
 
-import { h, icon, setChildren, toast, errorToast, confirmDialog, badge } from '../dom.js';
+import { h, icon, setChildren, toast, errorToast, confirmDialog, badge, skeleton } from '../dom.js';
 import { relLong, dateTime } from '../format.js';
 import { BRAND } from '../brand.js';
 import { pageFrame } from './common.js';
@@ -91,7 +91,7 @@ export function mountInstancePage(ctx) {
     return { el: frame.el };
   }
   const frame = pageFrame({ title: 'Instance', sub: 'version, updates and the Jev key' });
-  const updatesBody = h('div', { class: 'settings-body instance-body' }, h('div', { class: 'placeholder placeholder-loading' }, 'Loading…'));
+  const updatesBody = h('div', { class: 'settings-body instance-body' }, skeleton('Loading updates…', 3, { block: true }));
   const checkButton = h('button', { type: 'button', class: 'btn btn-sm', onClick: () => checkNow() }, icon('refresh', { size: 14 }), 'Check now');
   const updatesCard = h('section', { class: 'settings-section', 'aria-labelledby': 'updates-title' },
     h('div', { class: 'settings-head' }, icon('download', { size: 16 }), h('h2', { id: 'updates-title' }, 'Updates'), h('span', { class: 'muted small' }, 'from main of Quartio-Studio/yulius'), h('span', { class: 'spacer' }), checkButton),

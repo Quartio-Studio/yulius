@@ -69,7 +69,7 @@ export function loader(container, what, fetcher, render) {
   async function reload({ quiet = false } = {}) {
     generation += 1;
     const mine = generation;
-    if (!hasContent) setChildren(container, placeholder('Loading…', 'loading'));
+    if (!hasContent) setChildren(container, placeholder(`Loading ${what}…`, 'loading'));
     else if (!quiet) container.style.opacity = '0.6';
     try {
       const data = await fetcher();

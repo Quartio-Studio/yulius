@@ -917,19 +917,26 @@ export function badge(text, tone = '', title) {
   return h('span', { class: ['badge', tone && `badge-${tone}`], title: title || null }, text);
 }
 
-/** Loading / empty / error placeholders. */
+/**
+ * Empty / error placeholders. A `loading` one is the skeleton (SPEC-092): shimmering fields with
+ * `text` said to assistive technology, padded like the placeholder it stands for.
+ */
 export function placeholder(text, kind = 'empty') {
+  if (kind === 'loading') return skeleton(text, 3, { block: true });
   return h('div', { class: ['placeholder', `placeholder-${kind}`] }, text);
 }
 
 /**
- * A calm loading state (F 2026-10-10): shimmering bars where the content will appear, announced
- * as `label`. The composer, the split card and the task view share it.
+ * The one loading state (F 2026-10-10, SPEC-092): shimmering bars where the content will appear,
+ * announced as `label`, never a spinner with "Loading…". `block` pads it as a placeholder for a
+ * page, a panel or a dialog body. `announce: false` draws the bars alone, for a container that
+ * says it is busy itself (a tree, whose children may only be its items).
  */
-export function skeleton(label, lines = 3) {
-  return h('div', { class: 'skeleton', role: 'status' },
-    Array.from({ length: lines }, () => h('span', { class: 'skeleton-line', 'aria-hidden': 'true' })),
-    h('span', { class: 'sr-only' }, label));
+export function skeleton(label, lines = 3, { block = false, announce = true } = {}) {
+  const bars = Array.from({ length: lines }, () => h('span', { class: 'skeleton-line', 'aria-hidden': 'true' }));
+  const cls = ['skeleton', block && 'skeleton-block'];
+  if (!announce) return h('div', { class: cls, 'aria-hidden': 'true' }, bars);
+  return h('div', { class: cls, role: 'status' }, bars, h('span', { class: 'sr-only' }, label));
 }
 
 /** Usage/percentage meter. `percent` null renders "unknown" (never zero). */

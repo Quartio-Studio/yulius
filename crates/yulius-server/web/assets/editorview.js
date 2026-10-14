@@ -9,7 +9,7 @@
 // this browser.
 
 import { enc } from './api.js';
-import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, openMenu, openModal, field, closableTabKeys } from './dom.js';
+import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, openMenu, openModal, field, closableTabKeys, skeleton } from './dom.js';
 import { allows } from './status.js';
 import { token, activeTheme, onThemeChange, px, hexToken } from './theme.js';
 import { readJson, writeJson } from './store.js';
@@ -314,9 +314,10 @@ export function createEditorView(ctx, sandbox, getTask) {
 
   function renderTree() {
     const rows = [];
+    let busy = false;
     const walk = (dir, depth) => {
       const entries = expanded.get(dir);
-      if (entries === null) { rows.push(h('div', { class: 'ed-row muted', style: { paddingLeft: `${8 + depth * 12}px` } }, 'Loading…')); return; }
+      if (entries === null) { busy = true; rows.push(h('div', { class: 'ed-row ed-row-loading', style: { paddingLeft: `${8 + depth * 12}px` } }, skeleton('Loading the folder…', 1, { announce: false }))); return; }
       if (!entries) return;
       for (const entry of entries) {
         const isDir = entry.kind === 'dir';
@@ -356,6 +357,8 @@ export function createEditorView(ctx, sandbox, getTask) {
     };
     walk('', 0);
     setChildren(tree, rows.length ? rows : h('div', { class: 'ed-row muted' }, 'Empty folder'));
+    // A folder still listed shows a shimmering row; the tree says it is busy until it is read (SPEC-092).
+    tree.setAttribute('aria-busy', String(busy));
   }
 
   function newEntryMenu(anchor, dir) {

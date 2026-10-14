@@ -2,7 +2,7 @@
 // subscription pool with the login terminal, and the GitHub App connection (manifest flow).
 
 import { enc } from '../api.js';
-import { h, badge, openModal, field, invalid, toast, confirmDialog, errorToast, toggle, setChildren, emptyState } from '../dom.js';
+import { h, badge, openModal, field, invalid, toast, confirmDialog, errorToast, toggle, setChildren, emptyState, skeleton } from '../dom.js';
 import { compact } from '../format.js';
 import { createTerminalView } from '../terminal.js';
 import { accountUsage, capacityPanel } from '../layout.js';
@@ -127,7 +127,7 @@ function tokenTotals(account) {
 
 /** Superadmin recovery code (ACC-011): status and a password-confirmed regeneration. */
 export function recoveryCard(ctx) {
-  const state = h('p', { class: 'text-2' }, 'Checking…');
+  const state = h('div', { class: 'text-2' }, skeleton('Checking the recovery code…', 1));
   const generate = h('button', { type: 'button', class: 'btn btn-sm' }, 'Generate new code…');
   const card = h('div', { class: 'card card-pad stack-sm' }, h('h2', { class: 'card-title' }, 'Superadmin recovery code'), state, h('div', { class: 'row' }, generate));
   const refresh = () => ctx.api.get('/api/auth/recovery').then((s) => {

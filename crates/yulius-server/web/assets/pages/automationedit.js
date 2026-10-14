@@ -118,7 +118,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
   const save = h('button', { type: 'button', class: 'btn btn-primary', disabled: !write, onClick: () => doSave() }, creating ? 'Create automation' : 'Save');
   const runNow = creating ? null : h('button', { type: 'button', class: 'btn', disabled: !write, title: write ? 'Create a task from it now' : 'Requires write access', onClick: () => doRunNow() }, icon('send', { size: 14 }), 'Run now');
   const del = creating ? null : h('button', { type: 'button', class: 'btn btn-quiet-danger', disabled: !write, onClick: () => doDelete() }, icon('trash', { size: 14 }), 'Delete');
-  const body = h('div', { class: 'au-body' }, placeholder('Loading…', 'loading'));
+  const body = h('div', { class: 'au-body' }, placeholder('Loading the automation…', 'loading'));
   const head = h('header', { class: 'gt-head wf-head' },
     h('a', { class: 'gt-back', href: href(base), dataset: { route: base } }, icon('back', { size: 14 }), 'Automations'),
     h('div', { class: 'gt-title-row' }, h('div', { class: 'wf-titles' }, nameInput, when), del, runNow, save),
