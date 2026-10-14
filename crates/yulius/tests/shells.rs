@@ -47,14 +47,15 @@ struct Fixture {
 /// alice (write) and bob (read) on `s1` (repository folder, task `t1` with a worktree) and
 /// `s2` (task `t2`). Shells run `/bin/sh` through the real ptyhost.
 async fn fixture() -> Result<Fixture, Box<dyn std::error::Error>> {
-    fixture_with(false, None).await
+    fixture_with(false, None, None).await
 }
 
 /// [`fixture`], optionally with bubblewrap containment (Linux), optionally on the data directory
-/// of an earlier fixture (a server restart).
+/// of an earlier fixture (a server restart), optionally with another access re-check interval.
 async fn fixture_with(
     contained: bool,
     data_dir: Option<PathBuf>,
+    recheck_ms: Option<u64>,
 ) -> Result<Fixture, Box<dyn std::error::Error>> {
     // A short base: shell sockets live at <data>/shells/<16 hex>/pty.sock (Unix path limit).
     let dir = tempfile::Builder::new().prefix("ysh").tempdir_in("/tmp")?;
@@ -67,6 +68,9 @@ async fn fixture_with(
             config.contained = contained;
             if let Some(data) = data_dir {
                 config.data_dir = data;
+            }
+            if let Some(ms) = recheck_ms {
+                config.viewer_recheck_ms = ms;
             }
         })),
         ..HarnessOptions::default()
@@ -309,7 +313,7 @@ async fn workspace_tokens_stay_valid_across_a_server_restart() -> TestResult {
     f.h.app.stop_workspace_services().await;
 
     // The next server process on the same data directory accepts the token it never issued.
-    let g = fixture_with(false, Some(f.data.clone())).await?;
+    let g = fixture_with(false, Some(f.data.clone()), None).await?;
     let ask = |bearer: String| {
         let internal = g.h.internal.clone();
         async move {
@@ -800,7 +804,7 @@ async fn shells_keep_running_across_a_server_restart_and_are_adopted() -> TestRe
 
     // The next server process on the same data directory adopts it: same id, name and owner,
     // the screen so far, and the same shell process (its variable is still set).
-    let g = fixture_with(false, Some(f.data.clone())).await?;
+    let g = fixture_with(false, Some(f.data.clone()), None).await?;
     let (adopted, removed) = g.h.app.adopt_shells().await;
     assert_eq!((adopted, removed), (1, 2));
     assert!(!orphan.exists());
@@ -844,7 +848,7 @@ async fn contained_shells_run_as_the_user_with_root_in_their_own_home() -> TestR
         eprintln!("SKIPPED contained_shells_run_as_the_user_with_root_in_their_own_home: {why}");
         return Ok(());
     }
-    let f = fixture_with(true, None).await?;
+    let f = fixture_with(true, None, None).await?;
     let result = async {
         let served = serve(f.h.router.clone()).await?;
         let created = create(&f, &f.writer, "s1", None).await?;
@@ -944,5 +948,46 @@ async fn a_task_shell_stops_taking_input_once_the_task_is_handed_over() -> TestR
         reopened.as_ref().err().and_then(ws_refusal_status),
         Some(403)
     );
+    Ok(())
+}
+
+/// SPEC-118 KEY-001, KEY-005 (task #103): once the shell's viewer is confirmed, its keystrokes and
+/// resizes reach the shell and the echo comes back while every permission check hangs — GitHub
+/// stops answering, the permission cache has expired, and the 300 ms re-check ticks meanwhile.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shell_keystrokes_never_wait_for_a_permission_check() -> TestResult {
+    let f = fixture_with(false, None, Some(300)).await?;
+    let created = create(&f, &f.writer, "s1", None).await?;
+    assert_eq!(created.status, 201, "{}", created.body);
+    let id = created.body["id"].as_str().ok_or("shell id")?.to_owned();
+    let served = serve(f.h.router.clone()).await?;
+    let mut socket = open_terminal(served.addr, &id, &f.writer).await?;
+    let mut text = String::new();
+    input(&mut socket, "echo warm-$((40+2))\r").await?;
+    read_until(&mut socket, &mut text, "warm-42").await?;
+
+    f.h.github
+        .hang_permissions
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    f.h.clock
+        .0
+        .fetch_add(6 * 60 * 1000, std::sync::atomic::Ordering::SeqCst);
+    for i in 0..4u32 {
+        socket
+            .send(Message::text(
+                json!({"type": "resize", "cols": 100, "rows": 30}).to_string(),
+            ))
+            .await?;
+        input(&mut socket, &format!("echo key-$((100+{i}))\r")).await?;
+        let shown = format!("key-{}", 100 + i);
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            read_until(&mut socket, &mut text, &shown),
+        )
+        .await
+        .map_err(|_| format!("{shown} was not echoed within 5 s while permission checks hang"))??;
+        // Let the 300 ms re-check tick in between.
+        tokio::time::sleep(Duration::from_millis(350)).await;
+    }
     Ok(())
 }
