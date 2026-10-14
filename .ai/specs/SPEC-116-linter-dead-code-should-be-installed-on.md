@@ -1,11 +1,11 @@
 ---
 yulius-task: 1ddb4937-1438-4719-96e8-ec4439e7a956
-status: in-progress
+status: done
 ---
 
 # SPEC-116: onboarding leaves the project ready to work in the discipline
 
-Status: in-progress
+Status: done
 Date: 2026-10-14
 Owner: task #101
 Scope authorization: the person's request (task #101): "Linter/dead code should be installed on
@@ -90,13 +90,13 @@ Related work:
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Onboarding installs the gate: lint, format, dead-code check and CI for every project
-- [ ] Onboarding delivers like every task and knows the sandbox's limits
-- [ ] delivery_merge opens the pull request a goal task still lacks
-- [ ] The briefing quotes the newest end of an oldest-first changes log
-- [ ] Decision record, architecture, product and SPEC-002 describe the new onboarding contract
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Onboarding installs the gate: lint, format, dead-code check and CI for every project
+- [x] Onboarding delivers like every task and knows the sandbox's limits
+- [x] delivery_merge opens the pull request a goal task still lacks
+- [x] The briefing quotes the newest end of an oldest-first changes log
+- [x] Decision record, architecture, product and SPEC-002 describe the new onboarding contract
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -139,3 +139,43 @@ Related work:
 - Not now: setting up deploy environments during onboarding. They need credentials and target
   machines that only a person can provide. The prompt keeps asking the agent to file an issue for
   them (the briefing's "only a person can do it" rule).
+- Review findings (two rounds, then a check of the last fixes):
+  - Round 1 found that the section's share of a real briefing cut the quote from its top. It is
+    now fitted from the end (`recent_changes_within`, tested at `DEFAULT_BUDGET_BYTES`).
+  - Round 1 also asked to document the "no plan" refusal, to answer a refused push with its
+    remedy, to clear a stale undelivered note, and to fix the prompt's step order and test
+    carve-out.
+  - Round 2 approved, with two Low findings that are now fixed: a stored push note is used only
+    for the head being merged, and a title's date never decides the order.
+  - Not covered by a test: a non-push failure while a note about an earlier head is stored. The
+    fake GitHub cannot fail `dlv_observe`. The filter is the same commit comparison the review
+    check uses.
+
+## Evidence
+
+- `cargo test -p yulius-app --lib onboarding::tests`: 6 passed.
+  - It includes `prompts_install_the_gate_in_the_onboarding_pull_request` and
+    `prompts_deliver_like_every_task_and_name_the_root_sandbox`.
+  - Both failed before their slices, with "missing \"in this pull request, not as follow-ups\""
+    and "missing \"run as root\"".
+- `cargo test -p yulius --test main delivery::a_merge_call_opens_the_pull_request_a_goal_task_still_lacks`:
+  passed.
+  - Before the fix, the call answered `armed: true, checks: none` and no pull request was created.
+  - The refused-push case answered with git's raw text before the review fix.
+- `cargo test -p yulius-domain --lib briefing`: 14 passed.
+  - `an_oldest_first_changes_log_is_quoted_from_its_end` failed with the generic cut in place, and
+    again before the title-date fix.
+- `cargo test -p yulius --test main` on `delivery::`, `playground::`, `merge_train` and `agent`:
+  112 passed.
+  - `merge_train::a_red_train_falls_back_to_one_by_one_merges` failed once under the load of 113
+    concurrent tests. It passed three times alone, and its duration on `origin/dev` is 31–45 s
+    against a 50 s bound: issue #443.
+- `scripts/dev ci` at `8677066c` (after `python3 scripts/bootstrap.py`): exit 0.
+  - fmt, clippy `-D warnings`, deny, shear and docs all passed.
+  - nextest: "1608 tests run: 1608 passed (3 slow), 16 skipped".
+  - The final head adds only the two Low fixes, their tests and this spec; its gate result is in
+    the pull request's Yulius CI.
+- `spec_check`: valid.
+- Not testable here: a real onboarding run of another repository with Claude Code. The prompts
+  and the merge path are covered by unit and integration tests with the fake agent and fake
+  GitHub.

@@ -198,14 +198,17 @@ impl App {
         // (SPEC-116 DMG-001, task #101).
         let delivered = match self.try_auto_open_pr(&ctx.task.id).await {
             Ok(delivered) => delivered,
-            // A refused push answers with the remedy `yulius wait` would say (never force).
+            // A refused push answers with the remedy `yulius wait` would say (never force); a
+            // note about another head is not this failure's.
             Err(err) => {
                 let remedy = self
                     .runtime(&ctx.task.id)
                     .push_problem
                     .lock()
                     .ok()
-                    .and_then(|problem| problem.as_ref().map(|(_, text)| text.clone()));
+                    .and_then(|problem| problem.clone())
+                    .filter(|(noted, _)| same_commit(noted, &head))
+                    .map(|(_, text)| text);
                 return Err(remedy.map_or(err, AppError::Conflict));
             }
         };

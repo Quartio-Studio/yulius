@@ -373,7 +373,11 @@ fn newest_at_end(text: &str) -> bool {
     );
     let span = match headings {
         Some((first, last)) if first != last => Some((first, last)),
-        _ => date_span(text.lines()),
+        // Every date but the title's ("# Changes since 2020-01-01").
+        _ => date_span(
+            text.lines()
+                .filter(|line| !line.trim_start().starts_with("# ")),
+        ),
     };
     span.is_some_and(|(first, last)| first < last)
 }
@@ -1230,6 +1234,9 @@ mod tests {
         let titled =
             "# Changes since 2020-01-01\n\n## 2026-10-14\n- New.\n\n## 2026-10-01\n- Old.\n";
         assert!(!changes_excerpt(titled, 200).1);
+        // Nor when the entries carry their dates in bullets (second review, L2).
+        let bullets = "# Changes since 2020-01-01\n\n- 2026-10-14: New.\n- 2026-10-01: Old.\n";
+        assert!(!changes_excerpt(bullets, 200).1);
 
         let profile = DeliveryProfile::standard();
         let layout = DocsLayout {
