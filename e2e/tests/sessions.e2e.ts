@@ -249,7 +249,8 @@ test('a skill body shows as one folded line that opens on demand; the Stop hook 
   const line = browser.locator('.ss-tui details.ss-note > summary');
   const body = browser.locator('.ss-tui details.ss-note > .ss-note-text');
   await expect(note).toHaveCount(1);
-  await expect(line).toHaveText(/⎿\s*Context added \(1\.\d KiB\)/);
+  // Its size in UTF-8 bytes (1,621; the text is 1,539 UTF-16 units, which would read 1.5 KiB).
+  await expect(line).toHaveText(/⎿\s*Context added \(1\.6 KiB\)$/);
   await expect(note).not.toHaveAttribute('open', '');
   await expect(body).toBeHidden();
   await expect(transcript).not.toContainText('Base directory for this skill');
@@ -263,6 +264,13 @@ test('a skill body shows as one folded line that opens on demand; the Stop hook 
   await expect(body).toContainText('- Rule 36: back off before attempt 37.');
   await expect(body).toHaveAttribute('role', 'region');
   await expect(body).toHaveAttribute('aria-label', 'Added context');
+  // Opened, it scrolls within a bounded height and the keyboard reaches it with a visible ring.
+  await browser.keyboard.press('Tab');
+  const ring = await browser.evaluate(() => {
+    const text = document.activeElement as HTMLElement;
+    return { reached: text.matches('.ss-note-text:focus-visible'), scrolls: text.scrollHeight > text.clientHeight, bounded: text.clientHeight <= 480, inset: getComputedStyle(text).boxShadow.includes('inset') };
+  });
+  expect(ring).toEqual({ reached: true, scrolls: true, bounded: true, inset: true });
   expect(await axeViolations(browser)).toEqual([]);
 });
 

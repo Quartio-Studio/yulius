@@ -8,7 +8,7 @@ It extends [ADR-0059](0059-a-session-is-printed-as-the-tui-in-html.md); the tran
 ## Context
 
 The session view prints a session as Claude Code's TUI (ADR-0059). Text that Claude Code records
-as `isMeta` and that is not one of its known wrappers was shown faint and in full, up to 16 KB:
+as `isMeta` and that is not one of its known wrappers was shown faint and in full, up to the server's 16 Ki characters:
 a skill's whole body, context injected by hooks. The TUI does not print `isMeta` messages, but
 some of them carry what the TUI shows another way and people act on: the Stop hook's goal line
 and its feedback. Measured in this sandbox's transcripts (SPEC-090), those notes are at most
@@ -17,7 +17,7 @@ and its feedback. Measured in this sandbox's transcripts (SPEC-090), those notes
 ## Decision
 
 - A meta note longer than 8 lines or 2,000 characters folds to one faint line,
-  `⎿ Context added (<size>)`, that opens on demand to the text as recorded, in a bounded,
+  `⎿ Context added (<size>)`, that opens on demand to the text the server sent, in a bounded,
   keyboard-reachable region. Shorter notes are shown as before.
 - The page decides (`foldsNote` in `pages/sessions.js`), as it does for wrappers. The server,
   `session_read` and the search index are unchanged.

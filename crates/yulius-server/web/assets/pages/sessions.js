@@ -303,7 +303,7 @@ export function metaLines(text) {
 const NOTE_FOLD_LINES = 8;
 const NOTE_FOLD_CHARS = 2000;
 
-/** Whether a meta note folds to one `⎿ Context added (size)` line: over 8 lines or 2,000 characters. */
+/** Whether a meta note folds to one `⎿ Context added (size)` line: over 8 lines or 2,000 characters (UTF-16 units). */
 export function foldsNote(text) {
   const value = String(text || '');
   return value.length > NOTE_FOLD_CHARS || linesOf(value).length > NOTE_FOLD_LINES;

@@ -2173,18 +2173,16 @@ button.task-group-head:hover { color: var(--text); }
 .ss-out { margin-left: 2ch; color: var(--session-dim); }
 .ss-out-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .ss-out-err, .ss-out-err .ss-mark { color: var(--session-err); }
-.ss-result { max-height: 480px; overflow: auto; }
+.ss-result, .ss-note-text { max-height: 480px; overflow: auto; }
 .ss-tool[open] .ss-preview-folded { display: none; }
 .ss-diff { margin-left: 4ch; }
-.ss-tui :is(.ss-code, .ss-result, .ss-diff-hunk):focus-visible { outline: none; box-shadow: var(--focus-inset); }
+.ss-tui :is(.ss-code, .ss-result, .ss-diff-hunk, .ss-note-text):focus-visible { outline: none; box-shadow: var(--focus-inset); }
 .ss-diff-hunk { margin: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 480px; overflow: auto; }
 .ss-diff-hunk > span { display: block; padding: 0 1ch; }
 .ss-ctx { color: var(--session-dim); }
 .ss-add { background: var(--session-add-bg); color: var(--session-fg); }
 .ss-del { background: var(--session-del-bg); color: var(--session-fg); }
 .ss-meta { padding-left: 2ch; white-space: pre-wrap; overflow-wrap: anywhere; }
-.ss-note-text { max-height: 480px; overflow: auto; }
-.ss-tui .ss-note-text:focus-visible { outline: none; box-shadow: var(--focus-inset); }
 .ss-more { display: flex; justify-content: center; }
 .ss-more:empty { display: none; }
 .ss-tui .ss-more { justify-content: flex-start; font-family: var(--font); }

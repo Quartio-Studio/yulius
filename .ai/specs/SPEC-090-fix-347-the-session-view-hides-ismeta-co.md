@@ -22,7 +22,7 @@ people act on, such as the Stop hook's goal line and its feedback, stay readable
 
 - SPEC-075 (ADR-0059) prints a session as Claude Code's TUI. The server turns every `isMeta`
   transcript text into a `meta` block (`crates/yulius-app/src/transcripts.rs` `entry_of` /
-  `text_block`, bounded to 16 KB). The page (`metaLines` in
+  `text_block`, cut to 16 Ki characters with no mark that it was cut). The page (`metaLines` in
   `crates/yulius-server/web/assets/pages/sessions.js`) reads Claude Code's wrappers in it and shows
   any other text as a faint `note`, in full. Issue #347 is the follow-up SPEC-075 filed.
 - Claude Code's TUI does not print `isMeta` messages. Some of them still say something a person
@@ -47,7 +47,7 @@ people act on, such as the Stop hook's goal line and its feedback, stay readable
 
 | ID | Requirement | Verification |
 | --- | --- | --- |
-| MTF-001 | A meta note (text `metaLines` gives as `note`) longer than 8 lines or 2,000 characters is folded: one faint line `⎿ Context added (<size>)`, its UTF-8 size in the app's binary units, that a click or the keyboard opens to the full text as recorded. | e2e `sessions.e2e.ts` (unit `foldsNote`, rendered page) |
+| MTF-001 | A meta note (text `metaLines` gives as `note`) longer than 8 lines or 2,000 characters (UTF-16 units) is folded: one faint line `⎿ Context added (<size>)`, the UTF-8 size of the text the server sent in the app's binary units, that a click or the keyboard opens to that text. | e2e `sessions.e2e.ts` (unit `foldsNote`, rendered page) |
 | MTF-002 | A shorter note is shown as before, faint and as written; the Stop hook's goal line and feedback stay readable. | e2e `sessions.e2e.ts` |
 | MTF-003 | An opened long note scrolls within a bounded height and is a labelled region a keyboard reaches, like a long tool result; the page has no WCAG violation. | e2e `sessions.e2e.ts` with axe |
 | MTF-004 | The transcript API and `session_read` are unchanged. | No server change; `transcripts.rs` tests unchanged |
