@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- The new-task composer squeezed keeps its controls tidy (SPEC-119, task #104, #442). In a
+  narrow window or beside a tool panel, Preview, model, effort and Start used to wrap as one block
+  pushed to the right, leaving the left half of the row empty. At its narrowest, Start also stuck
+  out of the box. Now they take a full-width last row with Start at its right end, and no control
+  leaves the box.
 - Typing in a task terminal or a shell shows up as fast as the agent echoes it (SPEC-118,
   ADR-0096, task #103). A keystroke used to wait for three database reads, plus a GitHub call
   whenever the permission cache had expired. The 60 s access re-check also froze the terminal's
