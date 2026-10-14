@@ -16,14 +16,17 @@ expects that run to start the way the chip shows, saved or not. Until now `POST
 
 - `POST /api/automations/{id}/run` takes an optional body `RunAutomation` = `{"supertask",
   "after_task_id", "start_rule"}`, the same three fields as `Automation`. It is the start choice
-  of this run only. Nothing is stored, and the run history does not record it.
+  of this run only. Nothing is stored and the run history does not show it, but the
+  `automation.run_now` audit entry names a choice other than the stored one
+  (`{"state":"task_created","start":"supertask"}`).
 - The body is checked like a save (AUT-014: one choice at most, a task of the project, a rule
   that parses and names the project's tasks), and an invalid one answers 422 with no run
   recorded. The stored choice sent back is kept unchecked, as an update keeps it, so a run whose
   predecessor was deleted fails as a scheduled run does instead of refusing the request.
 - Without a body the run uses the stored choice. Scheduled runs, catch-up runs and the
   `automation_run_now` tool behave as before.
-- The editor always sends the choice its chip shows. New task and the editor share one start menu
+- The editor always sends the choice its chip shows, and keeps Run now and the chip off until it
+  has read the automation, so it never sends a default it has not shown. New task and the editor share one start menu
   module (`startchoice.js`).
 
 ## Alternatives

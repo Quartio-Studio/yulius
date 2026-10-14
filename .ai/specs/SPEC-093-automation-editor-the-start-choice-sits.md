@@ -103,6 +103,19 @@ the chip shows.
   running (silently stores every other unsaved edit too) or refuse Run now while unsaved (the
   request asks for the opposite). An optional body on `POST /run` keeps old clients and the agent
   tool on the stored choice. Recorded in ADR-0074.
+- **Review round 1** (fresh-session review of 8a014e3, REQUEST CHANGES), all fixed test-first:
+  - Major: before the automation loaded (or when it failed to load), Run now was live and sent
+    the default "start now", overriding a stored choice. Run now and the chip now stay off until
+    the automation is read, and the chip has its label from the start (e2e "wait until the
+    automation has loaded", with a mock hold on the automations read).
+  - The `automation.run_now` audit names a choice other than the stored one; a reader's request
+    is refused (403) before its choice is checked (both in `automation_start.rs`).
+  - The mock's Run now checks write access as the server does; the disabled chip has no hover
+    look; a comment says that a run row that already exists completes with the stored choice;
+    a stray comment left in `taskview.js` is gone.
+  - Accepted: "survives Save and reload" is checked by opening the editor again, because the
+    mock's data does not outlive a page reload. Storage itself is tested through the API
+    (`an_automation_stores_its_start_choice`).
 - **The chip is a menu, not four radios.** New task's menu already filters long task lists and
   holds the rule entry; four chips in the action bar would not fit a phone.
 
