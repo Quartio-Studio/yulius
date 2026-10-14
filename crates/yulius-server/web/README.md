@@ -152,7 +152,7 @@ not part of the app's start-up.
 ### Brand typeface
 
 Fonts are self-hosted (no CDNs). The brand's are Instrument Sans (UI text), Tenor Sans (titles and
-the wordmark, for its Roman capital proportions) and IBM Plex Mono (code, terminals, the editor):
+the wordmark, for its Roman proportions) and IBM Plex Mono (code, terminals, the editor):
 `.woff2` files from Fontsource 5.3.0 in `assets/fonts/` (Latin and Latin Extended, one per weight,
 with their SIL Open Font License texts), declared at the end of `tokens.css`. To change one, put
 its `.woff2` files in `assets/fonts/`, replace its `@font-face` rules, and put the family first in `--font` (UI text),

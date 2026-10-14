@@ -69,7 +69,7 @@ task touches the sidebar brand.
   computed `font-family`, `font-weight`, `font-size`, `line-height` and `letter-spacing`. Its
   `text-transform` is `none` and its rendered text is "Yulius".
 - On the signed-out sign-in screen, `.auth-logo` has the same values and the same rendered text.
-- `document.fonts.check('400 22px "Tenor Sans"')` is true once the page has loaded.
+- A Tenor Sans face at weight 400 (`tokens.css`'s `@font-face`) is loaded once the page has loaded.
 - With the old CSS the new test fails (rendered text "YULIUS", weight 600).
 - The brand still fits at a 1000 px window (200 px sidebar) and in the 390 px drawer. The existing
   suites `home`, `sign-in`, `quality`, `phone`, `responsive` and `layout` still pass.
@@ -79,13 +79,13 @@ task touches the sidebar brand.
 New `e2e/tests/wordmark.e2e.ts` (WM-1 to WM-3, WM-5):
 - "the sidebar wordmark is set like the composer's quote": `/s/studio`, compare computed styles of
   `.brand-name` with `.composer-quote blockquote`; read `innerText`; check the font is loaded.
-- "the sign-in wordmark is set like the quote": `&signedout=1`, the same properties on
-  `.auth-logo`. The values are compared with the tokens resolved on the page, because the quote is
-  not shown there.
+- "the sign-in wordmark is set like the quote": the quote's computed type is read on the
+  composer first (the sign-in screen has none), then compared with `.auth-logo` under
+  `&signedout=1`.
 - "the sidebar brand fits a narrow sidebar and the phone drawer": the brand text's right edge stays
   inside the sidebar at 1000 px and in the drawer at 390 px, with no WCAG violations.
-WM-4 is unchanged code (the lab writes the same tokens); the lab is a development aid without a
-suite.
+- "the brand lab keeps the wordmark set like the quote in every Roma proposal" (WM-4, review
+  round 1): under `?lab=roma` … `roma-3` the wordmark's letter spacing and case are the quote's.
 
 ## Decisions
 

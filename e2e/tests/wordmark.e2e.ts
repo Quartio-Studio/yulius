@@ -15,10 +15,10 @@ const typeOf = (browser: Browser, selector: string) => browser.evaluate(({ selec
   return { text: el.innerText.trim(), ...Object.fromEntries(keys.map((key) => [key, style[key]])) };
 }, { selector, keys: [...TYPE] });
 
-/** Whether the self-hosted Tenor Sans is loaded at its one weight (no synthesised bold). */
+/** Whether the self-hosted Tenor Sans (an @font-face of tokens.css) is loaded at its one weight, 400. */
 const tenorLoaded = (browser: Browser) => browser.evaluate(async () => {
   await document.fonts.ready;
-  return document.fonts.check('400 22px "Tenor Sans"');
+  return [...document.fonts].some((face) => face.family.replace(/"/g, '') === 'Tenor Sans' && face.weight === '400' && face.status === 'loaded');
 });
 
 test('the sidebar wordmark is set like the composer quote', async ({ app, browser }) => {
@@ -73,4 +73,18 @@ test('the sidebar brand fits a narrow sidebar and the phone drawer', async ({ ap
   await expect(browser.locator('.sidebar .brand-name')).toBeVisible();
   expect(await brandOverflow(browser)).toBe(0);
   expect(await browser.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});
+
+// Review round 1: the brand lab's Roma proposals (the default look at four contrast levels, UI-041)
+// tracked the wordmark for capitals, so `?lab=roma` spaced the mixed-case name apart from the quote.
+test('the brand lab keeps the wordmark set like the quote in every Roma proposal', async ({ app, browser }) => {
+  for (const id of ['roma', 'roma-1', 'roma-2', 'roma-3']) {
+    await app.open(mock('/s/studio', `&lab=${id}`));
+    await expect(browser.locator('html')).toHaveAttribute('data-brand', /^roma/);
+    await expect(browser.locator('.composer-quote blockquote')).toBeVisible();
+    const quote = await typeOf(browser, '.composer-quote blockquote');
+    const wordmark = await typeOf(browser, '.sidebar .brand-name');
+    expect({ id, letterSpacing: wordmark.letterSpacing, textTransform: wordmark.textTransform })
+      .toEqual({ id, letterSpacing: quote.letterSpacing, textTransform: quote.textTransform });
+  }
 });
