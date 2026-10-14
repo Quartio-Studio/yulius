@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-13
 
+- A background agent that stops while its own background work still runs no longer ends in
+  Yulius's eyes (SPEC-079 BGW-006, task #74). Claude Code's note says its result may be interim
+  and the same task id notifies again. The task stays Working until that final notification, or
+  an hour without it, and a switch waits for it; before, the task read "Your turn" in between.
 - Tests no longer time out under load, and every process plans for its share of the machine
   (SPEC-082, ADR-0065):
   - The fake agent runs Claude Code's SessionStart hook like the real CLI, so 17 goal tests no

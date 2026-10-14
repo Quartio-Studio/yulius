@@ -17,7 +17,9 @@
 //! the turn (`pendingBackgroundAgentCount`, SPEC-032), and the larger of the two counts is the
 //! idle task's background work. Monitor streams, and agents launched in a turn that has not
 //! closed yet, are read from the transcript's launches and the notifications that end them
-//! (SPEC-079): a Monitor counts until it ends or expires. Shells that only run `yulius wait` are
+//! (SPEC-079): a Monitor counts until it ends or expires, and an agent that stopped with
+//! background work of its own still running, which Claude Code's records no longer count, until
+//! its final notification (BGW-006). Shells that only run `yulius wait` are
 //! no background work (SPEC-050 DSK-102); the probe counts them apart, and the task view says the
 //! agent waits for Yulius, which wakes it (SPEC-085 STT-002).
 //!
@@ -117,7 +119,8 @@ impl TranscriptFacts {
             Observation::Session { .. }
             | Observation::CompactFailed
             | Observation::BackgroundStarted { .. }
-            | Observation::BackgroundEnded { .. } => {}
+            | Observation::BackgroundEnded { .. }
+            | Observation::BackgroundResumable { .. } => {}
             // An assistant line that is not a turn's end after a recorded end: a Stop hook
             // continued the turn (STA-005).
             Observation::AgentWork { .. } => {
@@ -164,16 +167,20 @@ pub(crate) struct Launch {
     pub seen_ms: i64,
     /// When a Monitor expires (ms, from its record's time); `None` for an agent.
     pub expires_ms: Option<i64>,
+    /// An agent that stopped with background work of its own still running (BGW-006): it resumes
+    /// by itself and notifies again. `seen_ms` is then when that notification was read.
+    pub resumable: bool,
 }
 
 /// Most launches remembered per session: the oldest go first.
 const MAX_LAUNCHES: usize = 64;
 
-/// How long an agent launch with no notification of its end still counts for a switch: a lost
-/// notification holds switches back at most this long.
+/// How long an agent launch with no notification of its end still counts for a switch, and a
+/// resumable agent for the task's status, from its launch or its last notification: a lost
+/// notification holds them at most this long.
 const AGENT_LAUNCH_TTL_MS: i64 = 60 * 60 * 1000;
 
-/// The launches alive at `now_ms` (BGW-003, BGW-004).
+/// The launches alive at `now_ms` (BGW-003, BGW-004, BGW-006).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct LiveLaunches {
     /// Monitors not past their expiry.
@@ -181,8 +188,24 @@ pub(crate) struct LiveLaunches {
     /// Agents read after the last turn record (`record_ms`), whose count it did not say yet.
     pub agents_this_turn: u32,
     /// Agents with no notification of their end yet, younger than [`AGENT_LAUNCH_TTL_MS`]: a turn
-    /// a wake-up or a prompt started in between does not end them.
+    /// a wake-up or a prompt started in between does not end them. Resumable agents included.
     pub agents_pending: u32,
+    /// Agents that stopped with background work of their own still running and did not notify
+    /// their end yet, their last notification younger than [`AGENT_LAUNCH_TTL_MS`] (BGW-006).
+    pub agents_resumable: u32,
+}
+
+impl LiveLaunches {
+    /// The idle task's background agents and Monitors, with `turn_agents` from the last turn
+    /// record (`pendingBackgroundAgentCount`). The agents of this turn and the resumable ones are
+    /// another view of what that record counts, not added to it: the record after a resumable
+    /// agent's notification does not count it (task #74), one after it resumed may.
+    #[must_use]
+    pub fn background(self, turn_agents: u32) -> u32 {
+        turn_agents
+            .max(self.agents_this_turn.saturating_add(self.agents_resumable))
+            .saturating_add(self.monitors)
+    }
 }
 
 /// Counts `launches` at `now_ms` with the last turn record seen at `record_ms`.
@@ -197,9 +220,13 @@ pub(crate) fn live_launches(
         match launch.expires_ms {
             Some(expires) if expires > now_ms => live.monitors += 1,
             None if launch.agent => {
-                live.agents_this_turn += u32::from(launch.seen_ms > record_ms);
-                live.agents_pending +=
-                    u32::from(now_ms.saturating_sub(launch.seen_ms) < AGENT_LAUNCH_TTL_MS);
+                let young = now_ms.saturating_sub(launch.seen_ms) < AGENT_LAUNCH_TTL_MS;
+                if launch.resumable {
+                    live.agents_resumable += u32::from(young);
+                } else {
+                    live.agents_this_turn += u32::from(launch.seen_ms > record_ms);
+                }
+                live.agents_pending += u32::from(young);
             }
             _ => {}
         }
@@ -264,6 +291,23 @@ pub(crate) fn remember_launch(
             None => break,
         };
     }
+}
+
+/// The agent `id` stopped with background work of its own still running (BGW-006): it stays
+/// live, resumable, with its TTL counted from now. One whose launch Yulius did not see (read
+/// before a restart, or forgotten) is remembered too: the notification says it notifies again.
+pub(crate) fn remember_resumable(
+    launches: &mut std::collections::BTreeMap<String, Launch>,
+    id: String,
+    now_ms: i64,
+) {
+    let launch = Launch {
+        agent: true,
+        seen_ms: now_ms,
+        expires_ms: None,
+        resumable: true,
+    };
+    remember_launch(launches, id, launch, now_ms);
 }
 
 /// How long a clean Stop of a session with an open goal waits for the verdict before the turn
@@ -760,17 +804,12 @@ impl App {
         // An agent waiting in `yulius wait` goes on by itself (SPEC-085 STT-002).
         let waits_before = runtime.background_waits.swap(waits, Ordering::SeqCst);
         // Background agents are no process of the session's shell tree: Claude Code counts them
-        // in its turn record (STA-001). The count is the larger of the two views of the same
+        // in its turn record (STA-001), the transcript the ones it does not count (this turn's,
+        // resumable ones, BGW-006). The count is the larger of the two views of the same
         // background work (a background Bash command is in both).
         let count = if idle {
-            let live = self.live_launches_of(task_id);
             let agents = runtime.background_agents.load(Ordering::SeqCst);
-            combine_background(
-                count,
-                agents
-                    .max(live.agents_this_turn)
-                    .saturating_add(live.monitors),
-            )
+            combine_background(count, self.live_launches_of(task_id).background(agents))
         } else {
             count
         };
@@ -829,6 +868,7 @@ impl App {
             seen_ms: now,
             expires_ms: expires_in_ms
                 .map(|ms| at_ms.saturating_add(i64::try_from(ms).unwrap_or(i64::MAX))),
+            resumable: false,
         };
         if let Ok(mut launches) = self.runtime(task_id).launches.lock() {
             remember_launch(&mut launches, id, launch, now);
@@ -847,6 +887,17 @@ impl App {
         if removed {
             self.probe_idle_shells(task_id).await;
         }
+    }
+
+    /// A task notification said the background agent `id` stopped with background work of its
+    /// own still running (BGW-006): it has not ended. It counts as the idle task's background work
+    /// until the same id's final notification, or [`AGENT_LAUNCH_TTL_MS`] from now.
+    pub(crate) async fn background_resumable(self: &Arc<Self>, task_id: &TaskId, id: String) {
+        let now = self.now().0;
+        if let Ok(mut launches) = self.runtime(task_id).launches.lock() {
+            remember_resumable(&mut launches, id, now);
+        }
+        self.probe_idle_shells(task_id).await;
     }
 
     /// The task's live launches ([`live_launches`]).
@@ -883,9 +934,10 @@ impl App {
     }
 
     /// Whether anything of the task's agent runs in the background right now: background agents
-    /// its last turn end said it waits for, or shells a fresh probe finds (`yulius wait` alone
-    /// does not count, DSK-102). `None` when the probe gives no answer; a task without a live
-    /// agent process has none.
+    /// its last turn end said it waits for, live Monitors, agents launched or resumable and not
+    /// ended (BGW-004, BGW-006), or shells a fresh probe finds (`yulius wait` alone does not
+    /// count, DSK-102). `None` when the probe gives no answer; a task without a live agent
+    /// process has none.
     pub(crate) async fn background_work_now(&self, task_id: &TaskId) -> Option<bool> {
         if self
             .existing_runtime(task_id)
@@ -1146,16 +1198,19 @@ mod tests {
             agent: false,
             seen_ms,
             expires_ms: Some(expires_ms),
+            resumable: false,
         };
         let agent = |seen_ms| Launch {
             agent: true,
             seen_ms,
             expires_ms: None,
+            resumable: false,
         };
         let live = |monitors, agents_this_turn, agents_pending| LiveLaunches {
             monitors,
             agents_this_turn,
             agents_pending,
+            agents_resumable: 0,
         };
         remember_launch(&mut launches, "m1".into(), monitor(100, 1_000), 100);
         remember_launch(&mut launches, "a1".into(), agent(200), 200);
@@ -1181,6 +1236,81 @@ mod tests {
         assert_eq!(launches.len(), MAX_LAUNCHES);
         assert!(!launches.contains_key("a1"), "the oldest went first");
         assert!(launches.contains_key(&format!("x{}", MAX_LAUNCHES as i64 + 4)));
+    }
+
+    /// SPEC-079 BGW-006, task #74: an agent that stopped with background work of its own still
+    /// running counts as the idle task's background work, though the turn record after its
+    /// notification counts no agent, until its final notification or the TTL from its last
+    /// notification. It is not counted twice: not with this turn's agents, not on top of a turn
+    /// record that counts it.
+    #[test]
+    fn a_resumable_agent_counts_until_its_final_notification() {
+        let mut launches = std::collections::BTreeMap::new();
+        let launch = Launch {
+            agent: true,
+            seen_ms: 200,
+            expires_ms: None,
+            resumable: false,
+        };
+        // 00:32:18 the review agent is launched; 00:32:20 the turn record counts it.
+        remember_launch(&mut launches, "a1".into(), launch, 200);
+        let at_launch = live_launches(&launches, 300, 250);
+        assert_eq!(at_launch.background(1), 1);
+        // 00:34:53 it stops with its own test shells running; 00:34:55 the turn record after
+        // its notification counts no agent. The task's background work is still 1, not 0.
+        remember_resumable(&mut launches, "a1".into(), 10_000);
+        let resumable = live_launches(&launches, 10_200, 10_100);
+        assert_eq!(
+            resumable,
+            LiveLaunches {
+                monitors: 0,
+                agents_this_turn: 0,
+                agents_pending: 1,
+                agents_resumable: 1,
+            }
+        );
+        assert_eq!(resumable.background(0), 1);
+        // A record that counts it once it resumed, or before its notification, is the same agent.
+        assert_eq!(resumable.background(1), 1);
+        // Read before the record: still one agent, not one of this turn and one resumable.
+        assert_eq!(live_launches(&launches, 10_050, 5_000).background(0), 1);
+        // With an agent launched after the record and a live Monitor.
+        remember_launch(
+            &mut launches,
+            "m1".into(),
+            Launch {
+                agent: false,
+                seen_ms: 10_300,
+                expires_ms: Some(20_000),
+                resumable: false,
+            },
+            10_300,
+        );
+        remember_launch(
+            &mut launches,
+            "a2".into(),
+            Launch {
+                seen_ms: 10_400,
+                ..launch
+            },
+            10_400,
+        );
+        assert_eq!(live_launches(&launches, 10_500, 10_100).background(0), 3);
+        launches.retain(|id, _| id == "a1");
+        // The TTL counts from its notification, not from its launch.
+        let ttl = |now_ms| live_launches(&launches, now_ms, 10_100).agents_resumable;
+        assert_eq!(ttl(200 + AGENT_LAUNCH_TTL_MS), 1);
+        assert_eq!(ttl(10_000 + AGENT_LAUNCH_TTL_MS), 0, "a lost notification");
+        // An agent whose launch Yulius did not see (a restart) is remembered as resumable.
+        remember_resumable(&mut launches, "a9".into(), 10_600);
+        assert_eq!(live_launches(&launches, 10_700, 10_100).agents_resumable, 2);
+        // 00:39:49 its final notification ends it (`background_ended` removes it).
+        launches.remove("a1");
+        launches.remove("a9");
+        assert_eq!(
+            live_launches(&launches, 10_800, 10_100),
+            LiveLaunches::default()
+        );
     }
 
     /// SPEC-079 BGW-005: one slot holds the Stop whose turn waits for its verdict; the first to
