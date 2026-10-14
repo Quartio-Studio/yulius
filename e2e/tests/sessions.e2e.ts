@@ -418,6 +418,7 @@ test('the spider web sticks to the top of the view while the session scrolls', a
       expect(now.over, theme).toBe(true);
     }
   }
+  expect(await browser.evaluate(() => document.querySelector('.ss-web-stuck, .ss-web-mark'))).toBeNull();
   await browser.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'));
   expect(await axeViolations(browser)).toEqual([]);
 });
@@ -701,6 +702,14 @@ test('a session fills the content area edge to edge, beside the Superagent and o
   await browser.setViewport({ width: 390, height: 844 });
   await expect.poll(async () => (await fit()).head).toBe(12);
   expect(await fit()).toMatchObject(edgeToEdge);
+  // Task #94: on a phone too, the web hangs in the well's corner, inside its border.
+  const corner = await browser.evaluate(() => {
+    const wellEl = document.querySelector('.ss-tui')!;
+    const well = wellEl.getBoundingClientRect();
+    const box = wellEl.querySelector(':scope > svg.ss-web')!.getBoundingClientRect();
+    return { top: Math.round(box.top - well.top - wellEl.clientTop), right: Math.round(well.right - box.right) };
+  });
+  expect(corner).toEqual({ top: 0, right: 0 });
   expect(await axeViolations(browser)).toEqual([]);
 });
 
