@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::api::admin::AccountView;
+use crate::api::notes::NoteSelection;
 use crate::api::sandboxes::Sandbox;
 use crate::api::tasks::TaskSummary;
 
@@ -82,6 +83,28 @@ pub enum UiEvent {
         revision: u64,
         /// Who saved it.
         updated_by: String,
+    },
+    /// Someone's selection in a shared notepad (SPEC-112), relayed as they sent it to the people
+    /// who may read that notepad: team notes to everyone signed in, a sandbox's to its viewers.
+    /// `selection: null` means they left it; `hello` asks the others to send theirs.
+    #[serde(rename = "note.presence")]
+    NotePresence {
+        /// `team` or `sandbox`.
+        scope: String,
+        /// The sandbox of a sandbox note.
+        sandbox_id: Option<String>,
+        /// Who: their user id (the browser leaves out its own).
+        user_id: String,
+        /// Their browser tab, as they sent it (one person may have several).
+        client: String,
+        /// Their name: the GitHub login, else the display name.
+        name: String,
+        /// The revision whose text the offsets are in.
+        revision: u64,
+        /// Their selection, or `None` when they left.
+        selection: Option<NoteSelection>,
+        /// They just opened it: the others answer with their own.
+        hello: bool,
     },
     /// The sandbox's pull requests may have changed (a delivery stage moved, a Yulius CI run was
     /// queued, started or ended): watching clients read the Git overview again (SPEC-108).

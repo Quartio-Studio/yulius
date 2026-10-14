@@ -211,6 +211,7 @@ export function createStore(api, { pullGapMs = 3000 } = {}) {
       case 'account.updated': emit('account', event.account); break;
       case 'update.updated': emit('update', event); break;
       case 'note.updated': emit('note', event); break;
+      case 'note.presence': emit('note-presence', event); break;
       case 'pulls.updated': pullsChanged(event.sandbox_id); break;
       case 'resync': emit('resync'); break;
       default: break;

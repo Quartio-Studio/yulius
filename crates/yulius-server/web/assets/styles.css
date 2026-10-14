@@ -334,8 +334,8 @@ p { margin: 0; }
   color: var(--brand-mark); /* the mark stands on its own, as in the lockup: no tile */
 }
 .brand-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-/* The wordmark as the brand sets it (tokens: --wordmark-case, --wordmark-tracking). */
-.brand-name { font-family: var(--font); font-size: var(--fs-lg); line-height: var(--lh-lg); font-weight: 600; text-transform: var(--wordmark-case); letter-spacing: var(--wordmark-tracking); }
+/* The wordmark is set like the composer's quote (ADR-0100; tokens: --wordmark-case, --wordmark-tracking). */
+.brand-name { font-family: var(--font-display); font-size: var(--fs-xl); line-height: var(--lh-xl); font-weight: 400; text-transform: var(--wordmark-case); letter-spacing: var(--wordmark-tracking); }
 /* The tagline stays a quiet caption under the name, never its rival. */
 .brand-by { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); letter-spacing: 0.01em; }
 .btn-newtask {
@@ -1953,7 +1953,7 @@ a.dl-task:hover { text-decoration: underline; }
 
 .auth { height: 100vh; height: 100dvh; overflow: auto; display: flex; align-items: flex-start; justify-content: center; padding: 10vh 16px 32px; background: var(--bg); }
 .auth-card { width: min(460px, 100%); display: flex; flex-direction: column; gap: 12px; padding: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-xl); }
-.auth-logo { display: flex; align-items: center; gap: 12px; font-family: var(--font); font-size: var(--fs-xl); line-height: var(--lh-xl); font-weight: 600; color: var(--text); text-transform: var(--wordmark-case); letter-spacing: var(--wordmark-tracking); }
+.auth-logo { display: flex; align-items: center; gap: 12px; font-family: var(--font-display); font-size: var(--fs-xl); line-height: var(--lh-xl); font-weight: 400; color: var(--text); text-transform: var(--wordmark-case); letter-spacing: var(--wordmark-tracking); }
 .auth-title { font-family: var(--font-display); font-size: var(--fs-xl); line-height: var(--lh-xl); }
 .warning-box { display: flex; gap: 8px; padding: 12px; border-radius: var(--radius); border: 1px solid var(--danger-border); background: var(--danger-soft); color: var(--danger-fg-strong); }
 .warning-box strong { color: var(--text); }
@@ -2099,6 +2099,11 @@ a.dl-task:hover { text-decoration: underline; }
 /* Notes (SPEC-041): a notepad per sandbox and one for the team, saved while typing. */
 .notes-tabs .term-tab { padding: 0 12px; border-top: 0; border-bottom: 0; border-left: 0; background: none; font: inherit; }
 .notes-tabs .term-tab.active { background: var(--term-bg); }
+/* Tabs in any order (SPEC-112): the dragged tab rides above, the others slide aside, it settles. */
+.notes-tabs.reordering { cursor: grabbing; user-select: none; }
+.notes-tabs.reordering .term-tab { transition: transform var(--duration-fast) var(--ease); }
+.notes-tabs .term-tab.dragging { position: relative; z-index: var(--z-raised); transition: none; background: var(--surface-2); box-shadow: var(--shadow); cursor: grabbing; }
+.notes-tabs .term-tab.settling { position: relative; z-index: var(--z-raised); transition: transform var(--duration-fast) var(--ease); }
 .notes-panes { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--term-bg); }
 .notes-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .notes-pane[hidden] { display: none; }
@@ -2108,6 +2113,34 @@ a.dl-task:hover { text-decoration: underline; }
 .notes-loading .notes-text::placeholder { color: transparent; }
 .notes-text { flex: 1; min-height: 0; width: 100%; resize: none; padding: 12px 16px; border: 0; background: transparent; color: var(--text); font: inherit; font-size: var(--fs); line-height: var(--lh); }
 .notes-text:focus-visible { outline: none; box-shadow: inset 2px 0 0 var(--accent); }
+/* Drawn selection (SPEC-112): the text box is see-through above a layer of rounded shapes that
+   glide from one selection to the next; the browser's own square highlight is not painted. */
+.notes-text.drawn-selection { position: relative; }
+.notes-text.drawn-selection::selection { background: transparent; }
+.text-layer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.tl-content { position: absolute; inset: 0; }
+.tl-mirror { position: absolute; top: 0; left: 0; visibility: hidden; box-sizing: content-box; border: 0; white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; }
+.tl-group { --tl-colour: var(--accent); }
+.tl-shape { position: absolute; top: 0; left: 0; border-radius: var(--radius-xs); background: color-mix(in srgb, var(--tl-colour) 35%, transparent);
+  transition: transform var(--duration-fast) var(--ease), width var(--duration-fast) var(--ease), height var(--duration-fast) var(--ease), opacity var(--duration-fast) var(--ease), background-color var(--duration-fast) var(--ease); }
+.tl-blurred .tl-shape { background: color-mix(in srgb, var(--tl-colour) 16%, transparent); }
+.tl-shape.tl-gone { opacity: 0; }
+.tl-shape.tl-still, .tl-jump .tl-shape, .tl-jump .tl-caret { transition: none; }
+/* Teammates: a caret in their colour with their name on a tag above it (below it on the first
+   line), their selection in their colour; they glide like one's own and fade in and out. */
+.tl-peer { transition: opacity var(--duration-slow) var(--ease); }
+.tl-peer.tl-leaving { opacity: 0; }
+.tl-caret { position: absolute; top: 0; left: 0; width: 2px; border-radius: 0; background: var(--tl-colour);
+  transition: transform var(--duration-fast) var(--ease), height var(--duration-fast) var(--ease); }
+.tl-caret.tl-still { transition: none; }
+.tl-name { position: absolute; left: 0; bottom: 100%; max-width: 16ch; overflow: hidden; text-overflow: ellipsis; padding: 0 4px;
+  border-radius: var(--radius-xs) var(--radius-xs) var(--radius-xs) 0; background: var(--tl-colour); color: var(--peer-ink); font-size: var(--fs-xs); font-weight: 600; line-height: var(--lh-xs); white-space: nowrap; }
+.tl-caret.tl-below .tl-name { bottom: auto; top: 100%; border-radius: 0 var(--radius-xs) var(--radius-xs) var(--radius-xs); }
+/* Forced colours paint author backgrounds away: the browser's own selection comes back. */
+@media (forced-colors: active) {
+  .notes-text.drawn-selection::selection { background: Highlight; color: HighlightText; }
+  .text-layer { display: none; }
+}
 .notes-text[readonly] { color: var(--text-2); }
 .notes-meta { flex: none; margin: 0; padding: 4px 16px; min-height: calc(var(--lh-sm) + 8px); border-top: 1px solid var(--border); color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .notes-readonly { flex: none; margin: 0; padding: 6px 16px; border-bottom: 1px solid var(--border); background: var(--surface-2); color: var(--text-2); font-size: var(--fs-sm); line-height: var(--lh-sm); }

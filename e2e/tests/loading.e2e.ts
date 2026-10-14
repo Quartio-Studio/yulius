@@ -108,7 +108,8 @@ test('a home card, the editor tree and a notepad load as shimmering fields', asy
   await expect(browser.locator('.ed-tree .skeleton')).toHaveCount(0);
 
   // A notepad before its first read: fields over the empty box, no "Loading…" save state.
-  await app.open(mock('/s/studio/t/12', '&hold=/api/sandboxes/sb_studio/notes'));
+  // Team opens first (SPEC-112).
+  await app.open(mock('/s/studio/t/12', '&hold=/api/notes'));
   // The tools rail is remembered from the editor above: hide it to open Notes like a person would.
   await browser.evaluate(() => localStorage.clear());
   await browser.reload();
@@ -120,7 +121,7 @@ test('a home card, the editor tree and a notepad load as shimmering fields', asy
   expect(await axeViolations(browser)).toEqual([]);
   await release(browser);
   await expect(pad).toHaveCount(0);
-  await expect(screen.getByRole('textbox', 'Sandbox notes')).not.toHaveAttribute('readonly', '');
+  await expect(screen.getByRole('textbox', 'Team notes')).not.toHaveAttribute('readonly', '');
 });
 
 test('the browser panel covers a page still loading with shimmering fields', async ({ app, browser, screen }) => {
