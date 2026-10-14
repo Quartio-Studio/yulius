@@ -48,8 +48,10 @@ fn repo_path(root: &Path, relative: &str) -> Option<PathBuf> {
 /// resolved path stays under `root`. Directories linked out of the repository are not followed,
 /// and on Linux the opened file's real path is checked again, so a link swapped in after the
 /// check cannot lead outside either (#70). These files are agent-written and read by the server
-/// outside containment for the briefing, `project_context` and the Stop gate.
-fn read_repo_doc(root: &Path, relative: &str) -> Option<String> {
+/// outside containment for the briefing, `project_context`, the Stop gate and the repository's
+/// `.mcp.json` (SPEC-095). The file is opened without blocking, so a FIFO swapped in after the
+/// check cannot hang the server, and read only when it is still a regular file.
+pub(crate) fn read_repo_doc(root: &Path, relative: &str) -> Option<String> {
     use std::io::Read;
     let path = repo_path(root, relative)?;
     let canonical_root = std::fs::canonicalize(root).ok()?;
@@ -60,7 +62,17 @@ fn read_repo_doc(root: &Path, relative: &str) -> Option<String> {
     if !resolved.starts_with(&canonical_root) {
         return None;
     }
-    let file = std::fs::File::open(&resolved).ok()?;
+    let file = {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(nix::libc::O_NONBLOCK)
+            .open(&resolved)
+            .ok()?
+    };
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsRawFd;

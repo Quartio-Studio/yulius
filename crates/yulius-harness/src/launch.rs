@@ -107,9 +107,11 @@ pub enum McpTransport {
         command: String,
         /// Arguments.
         args: Vec<String>,
-        /// Names of environment variables forwarded to the server; their values are supplied
-        /// by the supervisor in the child environment.
-        env_names: Vec<String>,
+        /// The server's environment: each variable it reads with the run environment variable
+        /// holding its value (supplied by the supervisor in the child environment). The two
+        /// differ so that a server's variable never clashes with the agent's own environment,
+        /// such as an agent secret's placeholder of the same name (SPEC-095).
+        env_vars: Vec<(String, String)>,
     },
     /// A Streamable HTTP server.
     Http {
@@ -360,10 +362,15 @@ fn validate(request: &LaunchRequest) -> Result<(), LaunchError> {
         names.push(&server.name);
         match &server.transport {
             McpTransport::Stdio {
-                command, env_names, ..
+                command, env_vars, ..
             } => {
                 check(!command.is_empty(), "mcp server command")?;
-                check(env_names.iter().all(|n| valid_env_name(n)), "mcp env name")?;
+                check(
+                    env_vars
+                        .iter()
+                        .all(|(name, var)| valid_env_name(name) && valid_env_name(var)),
+                    "mcp env name",
+                )?;
             }
             McpTransport::Http { url, bearer_env } => {
                 check(valid_url(url), "mcp server url")?;
@@ -486,11 +493,11 @@ fn plan_claude(request: &LaunchRequest) -> Result<LaunchPlan, LaunchError> {
             McpTransport::Stdio {
                 command,
                 args,
-                env_names,
+                env_vars,
             } => {
-                let env: Map<String, Value> = env_names
+                let env: Map<String, Value> = env_vars
                     .iter()
-                    .map(|n| (n.clone(), Value::String(format!("${{{n}}}"))))
+                    .map(|(name, var)| (name.clone(), Value::String(format!("${{{var}}}"))))
                     .collect();
                 json!({ "type": "stdio", "command": command, "args": args, "env": env })
             }
@@ -605,6 +612,9 @@ pub struct CockpitRequest {
     pub credential: Credential,
     /// The Yulius MCP server the Cockpit manages the project with (SPEC-037); `None` for none.
     pub yulius: Option<CockpitYulius>,
+    /// Every server name in the repository's `.mcp.json`. Yulius attaches them itself, so Claude
+    /// Code rejects them (`disabledMcpjsonServers`) instead of asking (SPEC-095 PMC-004).
+    pub project_mcp_servers: Vec<String>,
 }
 
 /// The Yulius MCP server of a Cockpit (SPEC-037 MGT-004).
@@ -629,11 +639,12 @@ pub const COCKPIT_READ_ONLY_TOOLS: [&str; 6] = [
 ];
 
 /// Builds the launch plan of a Cockpit: `claude [--resume <id>] [--mcp-config <yulius>
-/// --allowedTools <read-only tools>] --model <default> --effort <default>` (SPEC-023 DEF-004)
-/// with the subscription's token (and the Cockpit's Yulius bearer) in the secret environment and
-/// none of a task's settings, hooks, briefing or approval bypass (SPEC-021 CKP-002, SPEC-037
-/// MGT-004). The MCP config is inline JSON naming `${YULIUS_COCKPIT_TOKEN}`, not its value; it
-/// is not strict, so the person's own MCP servers keep working.
+/// --allowedTools <read-only tools>] [--settings <rejected .mcp.json servers>] --model <default>
+/// --effort <default>` (SPEC-023 DEF-004) with the subscription's token (and the Cockpit's Yulius
+/// bearer) in the secret environment and none of a task's settings, hooks, briefing or approval
+/// bypass (SPEC-021 CKP-002, SPEC-037 MGT-004). The MCP config is inline JSON naming
+/// `${YULIUS_COCKPIT_TOKEN}`, not its value; it is not strict, so the person's own MCP servers
+/// keep working. The only setting is `disabledMcpjsonServers` (SPEC-095 PMC-004).
 ///
 /// # Errors
 /// [`LaunchError`] for a non-UTF-8 config dir, an unsafe session id, credential, URL or token.
@@ -673,6 +684,12 @@ pub fn plan_cockpit(request: &CockpitRequest) -> Result<LaunchPlan, LaunchError>
             allowed,
         ]);
         secret_env.push((COCKPIT_TOKEN_ENV.into(), bearer.clone()));
+    }
+    // Claude Code asks about every `.mcp.json` server it has neither approved nor rejected, and
+    // an explicit `enableAllProjectMcpServers: false` still asks (measured on 2.1.292, SPEC-095).
+    if !request.project_mcp_servers.is_empty() {
+        let settings = json!({ "disabledMcpjsonServers": request.project_mcp_servers });
+        argv.extend(["--settings".into(), settings.to_string()]);
     }
     // The person's own session still starts on Yulius's default model and effort (SPEC-023).
     argv.extend([

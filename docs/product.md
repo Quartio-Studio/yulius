@@ -34,6 +34,11 @@ watching, steering and unblocking.
   can do the same for their task's owner, except to their own task. When a usage limit cuts its
   turn, it moves to a subscription with capacity and goes on with the turn, as a task does; the
   panel follows it.
+- **MCP servers**: configured once for the instance or a sandbox (MCP page) and attached to every
+  task run on every subscription, their secrets taken from the agent secrets. A repository's
+  `.mcp.json` servers join its sandbox's list by themselves, with `${VAR}` becoming the agent
+  secret VAR's placeholder (the egress proxy swaps the value in on its bound hosts), and the
+  Superagent never asks about them.
 - **Sidebar**: the sandbox pages used every day (Tasks, Git, CI (tests), Secrets, Dashboard; the Superagent is on the right),
   then "More" for Sessions, Workflows, Skills, Automations and MCP, then the active tasks.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions
