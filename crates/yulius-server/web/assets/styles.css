@@ -2021,6 +2021,18 @@ a.dl-task:hover { text-decoration: underline; }
 /* Dropped files (EDT-006, UI-048): the drop overlay says where files go (or why they cannot),
    the explorer marks the folder under the pointer, and a batch shows its progress and errors —
    at the foot of the explorer, or floating over a terminal. */
+/* A playground's project folder (SPEC-099): drop it or choose it; progress and errors in place. */
+.playground-drop { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 24px 16px; border: 2px dashed var(--border-strong); border-radius: var(--radius-lg); background: var(--surface-2); text-align: center; }
+.playground-drop.drop-over { border-color: var(--accent); background: var(--accent-soft); }
+.playground-drop.busy { border-style: solid; }
+.playground-drop-icon { display: inline-flex; color: var(--accent); }
+.playground-drop-title { margin: 0; font-weight: 600; }
+.playground-drop p { margin: 0; max-width: 56ch; }
+.playground-drop-actions { justify-content: center; }
+.playground-drop-status { display: flex; align-items: center; gap: 8px; width: min(420px, 100%); min-height: 20px; }
+.playground-drop-status:empty { display: none; }
+.home-github { padding-top: 12px; border-top: 1px solid var(--border); }
+.home-github-title { margin: 0; font-size: var(--fs); font-weight: 600; }
 .drop-overlay { position: absolute; inset: 0; z-index: var(--z-float); display: flex; align-items: center; justify-content: center; padding: 16px; border: 2px dashed var(--accent); border-radius: var(--radius); background: var(--accent-soft); pointer-events: none; }
 .drop-overlay-label { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; padding: 8px 16px; border: 1px solid var(--border-strong); border-radius: var(--radius-lg); background: var(--surface-2); color: var(--text); font-size: var(--fs); line-height: var(--lh); font-weight: 500; box-shadow: var(--shadow-sm); }
 .drop-overlay-label > span { min-width: 0; overflow-wrap: anywhere; }

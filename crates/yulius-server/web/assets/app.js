@@ -170,9 +170,10 @@ function createApp(root, transport) {
         ctx.notifications.add({ kind: 'warn', title: 'No recovery code yet', detail: 'A forgotten superadmin password can’t be reset without one.', route: '/admin/users', key: 'notice:recovery', once: true });
       }).catch(() => {});
     }
+    // GitHub is optional (SPEC-099): playgrounds work without it, so it is a quiet notification for
+    // later, never a toast on every sign-in.
     if (user.is_superadmin && me.instance && me.instance.github_configured === false) {
-      ctx.notifications.add({ kind: 'info', title: 'Connect this instance to GitHub', detail: 'Needed to create and import sandboxes.', route: '/admin/github', key: 'notice:github', once: true });
-      toast('Connect this instance to GitHub to create and import sandboxes.', { kind: 'info', timeout: 12000, action: { label: 'Connect GitHub', run: () => navigate('/admin/github') } });
+      ctx.notifications.add({ kind: 'info', title: 'GitHub is optional', detail: 'Playgrounds work without it. Connect GitHub to import or create your organisation’s repositories.', route: '/admin/github', key: 'notice:github', once: true });
     }
     const loc = currentLocation();
     if (next) navigate(next, { replace: true });

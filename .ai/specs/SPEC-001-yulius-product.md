@@ -174,7 +174,7 @@ defaults that implementation may refine without changing user-visible intent.
 | ACC-003 | Setup is reachable only with a one-time setup token available on the VM, so a public instance cannot be claimed by a stranger. | — | A | AC-ACC-2 |
 | ACC-004 | The superadmin admits users (by GitHub login); only admitted users may sign in; the superadmin can disable a user, which ends their sessions. A refused GitHub sign-in returns to the sign-in page in the same window, never to a raw error: it names the GitHub account that was refused and offers GitHub's account picker to continue with another account; reloading the page after a refusal shows the sign-in page again. | T 30:46, F 2026-10-09 | E | AC-ACC-3 |
 | ACC-005 | Every user authenticates with GitHub; there is no user password. | T 30:52–31:00, WA 13:40, P(4) | E | AC-ACC-3 |
-| ACC-006 | The instance connects either the organization's GitHub or a private GitHub account, and every project is a repository of that owner. | T 8:41–9:00, T 31:00, P(4) | E | AC-PRJ-1 |
+| ACC-006 | The instance connects either the organization's GitHub or a private GitHub account, and every project is a repository of that owner, except a playground (PRJ-012), which needs no GitHub. Connecting GitHub is optional at installation and can happen at any time. | T 8:41–9:00, T 31:00, P(4) | E | AC-PRJ-1 |
 | ACC-007 | Project permissions mirror GitHub repository permissions: no access → the sandbox is invisible (as if nonexistent); read → can view tasks, terminals (read-only), steps and history but not act; write → can create/continue/steer tasks and use browser/editor; admin → sandbox configuration. The superadmin is the one exception (ACC-012). | T 9:00–9:39, T 31:11–31:44, P(4), F 2026-10-09 | E | AC-ACC-4 |
 | ACC-008 | Permission changes on GitHub take effect in Yulius within 5 minutes without user action, and immediately after the user signs in again; revocation closes the user's live terminal connections to that sandbox and stops its live events; signing out, an expired session or a disabled user closes every open connection (#66). | T 31:38 ("consistent") | A | AC-ACC-5 |
 | ACC-009 | The superadmin may mark users as instance administrators, who may manage accounts, instance MCP servers and the instance skill catalog, and see the users and reset a person's lost two-factor (SPEC-061). Instance administration never grants repository access that GitHub does not grant (only the superadmin's ownership does, ACC-012). | — | A | AC-ACC-6 |
@@ -187,7 +187,7 @@ defaults that implementation may refine without changing user-visible intent.
 
 | ID | Requirement | Source | Class | Acceptance |
 | --- | --- | --- | --- | --- |
-| PRJ-001 | One sandbox is exactly one GitHub repository; an instance hosts many isolated sandboxes on one VM. | T 9:30–10:28, T 29:07 | E | AC-PRJ-1 |
+| PRJ-001 | One sandbox is exactly one GitHub repository (a playground, PRJ-012, one repository on the server); an instance hosts many isolated sandboxes on one VM. | T 9:30–10:28, T 29:07 | E | AC-PRJ-1 |
 | PRJ-002 | Checking out another repository inside a sandbox is not supported; cross-project knowledge comes through MCP (e.g., Quartio MCP). | T 9:51–10:22 | E (agreed to drop the wish) | AC-PRJ-2 |
 | PRJ-003 | A project is created either by importing an existing repository or by creating a new one. | T 32:06 | E | AC-PRJ-1, AC-IMP-1 |
 | PRJ-004 | Creating a project offers a few basic templates; on creation Yulius creates the GitHub repository automatically and keeps the sandbox synchronized with it. | T 32:10–32:28, WA 13:10 | E | AC-PRJ-3 |
@@ -197,6 +197,7 @@ defaults that implementation may refine without changing user-visible intent.
 | PRJ-008 | Templates (initial set): "Empty project (Yulius format only)", "Web application", "Python data project", "Rust service". Each produces the docs format and a minimal runnable skeleton with a test command. | T 32:10 ("a few basic templates") | A (selection) | AC-PRJ-3 |
 | PRJ-009 | Removing a sandbox from Yulius never deletes the GitHub repository; it stops sessions, preserves an export of tasks, and requires repository admin. Adding the same repository again gives the new sandbox its name back (the removed one keeps its records under `<name>-removed-<time>`); another repository never takes a removed sandbox's name. | —, F 2026-10-11 | A | AC-PRJ-4 |
 | PRJ-010 | Each sandbox gets a distinct port range for development servers (exposed to agents as environment variables and in the briefing) so previews of parallel sandboxes do not collide, and the sandbox browser can open them (the reference's Web panel previewed the app under development, V 2:30). | V 2:30, T 9:41 | A | AC-PRJ-5 |
+| PRJ-012 | A **playground** lets a team try Yulius on its own code before it connects GitHub: anyone signed in makes one from a project folder dropped or chosen in the browser (a repository keeps its branches and history) or from a template, with or without GitHub. Its Git stays on the server (its `origin` is a bare repository there), nothing is pushed anywhere, its tasks start at once and merge into its own `dev` with `delivery_merge`, and it is its maker's (and the superadmin's). Home offers it first on a fresh instance; connecting GitHub comes second (SPEC-099). | Task #84 (F 2026-10-14) | E | SPEC-099 |
 | PRJ-011 | Each sandbox has its own system: people in their shells and agents in their sessions install system packages with `sudo apt-get update && sudo apt-get install …` (root inside the sandbox), and what they install stays in that sandbox — in new shells and sessions and after restarts — without appearing in other sandboxes or on the host. The host's own system updates reach sandboxes without removing what they installed. Every sandbox has the GitHub CLI (`gh`, installed on the host, which sandboxes copy; `yulius doctor` warns without it), and tools installed into a home (`~/.cargo/bin`, `~/.local/bin`) are on `PATH` for every later run and shell (F 2026-10-11). | F 2026-10-10, F 2026-10-11 | E (supersedes U-12's default) | AC-PRJ-6 |
 
 ### 5.3 Workspace interface (UI)
@@ -437,7 +438,7 @@ area, right "Web | Editor", plus a top usage bar and a "AI Coding Agent | Termin
 | ID | Requirement | Source | Class | Acceptance |
 | --- | --- | --- | --- | --- |
 | IMP-001 | A CLI `yulius import` imports an existing local repository; the user provides credentials; local state is synchronized (rsync-like, resumable). | T 26:00, WA 13:09 | E | AC-IMP-1 |
-| IMP-002 | Every project must have a GitHub repository; import enforces it and enforces permissions. | T 25:45–26:00 | E | AC-IMP-2 |
+| IMP-002 | Every imported project must have a GitHub repository; import enforces it and enforces permissions. A playground (PRJ-012) is not an import. | T 25:45–26:00 | E | AC-IMP-2 |
 | IMP-003 | Import brings Claude Code sessions from a user-chosen period (prompted, e.g., two weeks), only those opened in that repository. | T 26:00, WA 13:09 | E | AC-IMP-3 |
 | IMP-004 | Imported sessions belong to the organization, not to one person: they are stored as read-only session documents of the sandbox (SES-001), not as tasks; any member with write access can continue another person's imported session natively in a new task. | T 27:50–28:33, F 2026-10-08, F 2026-10-10 (supersedes "become tasks") | C | AC-IMP-5 |
 | IMP-005 | Preparation meta-task after import (see DSC-010). | T 27:00 | E | AC-IMP-4 |
@@ -951,6 +952,9 @@ observed. Live provider compatibility and deployment are reported separately fro
 
 ## 12. Changelog
 
+- 2026-10-14 (task #84, "a mode to play around … connection github orgs accounts etc shouldnt be
+  mandatory … upload a repo or a folder but things stay in local git"): playgrounds (PRJ-012 new;
+  ACC-006, PRJ-001 and IMP-002 make room for it; SPEC-099, ADR-0081).
 - 2026-10-13 (task #62, #170): a sandbox's "working" and "queued" counts on Home and the tabs split
   the sidebar's Working group by its rule, as "needs you" already did; a task being stopped no
   longer counts as needing you (UI-045, UI-050, AC-UI-45 changed; SPEC-076, ADR-0061).

@@ -6,6 +6,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- Playgrounds: a team tries Yulius on its own code before it connects GitHub (SPEC-099, ADR-0081,
+  task #84). On a fresh instance Home says "Try Yulius on your own code": drop a project folder
+  (a repository keeps its branches, tags and history; its uncommitted work lands as one commit) or
+  start from a template, and the playground opens with tasks startable at once. Its Git stays on the
+  server (a bare `origin.git` in the sandbox), nothing is pushed anywhere, and only the history
+  part of an uploaded `.git` is taken, never its config or hooks. Its tasks merge into its own
+  `dev` with `delivery_merge` (a squash after the spec, steps and clean-worktree gates; no pull
+  request or Yulius CI), and their briefing and definition of done say so. It is its maker's and
+  the superadmin's. Connecting GitHub is optional: the sign-in toast is gone, a notification says
+  playgrounds work without it, and Import and Create follow once it is connected.
 - Menus show an option's whole description (SPEC-094, ADR-0075, task #79). A description wraps
   onto as many lines as it needs instead of ending in an ellipsis, in every `openMenu` menu; menus
   keep their width (at most 320 px and the window less 16 px), so a short description stays one
