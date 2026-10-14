@@ -427,6 +427,33 @@ flowchart LR
   MCP -->|"automation_*, automation_template_enable"| AU["Automations and ready-made ones"]
 ```
 
+## Agent secret hosts
+
+An agent secret is used only on the hosts it is bound to (SPEC-002 ADR-20). Since SPEC-121
+(ADR-0098) a person adds one with a name, a value and a description, and it starts bound to
+nothing. The agent works out the service's host and proposes it; the request waits on the secret
+(`requested_hosts`) until a person who manages it allows it. An agent never binds a host itself,
+so an agent misled by injected content cannot send a secret to another server.
+
+```mermaid
+sequenceDiagram
+    participant P as Person
+    participant UI as Secrets page
+    participant App as Yulius (vault)
+    participant A as Agent
+    participant X as Egress proxy
+    P->>UI: Add VIDOC_API_KEY (name, value, description)
+    UI->>App: POST agent-secrets (hosts [], injection none)
+    A->>App: secrets_list, then secret_request_hosts(api.vidoc.com)
+    App-->>A: requested, waiting for a person (task needs attention)
+    A->>X: request to api.vidoc.com with the placeholder
+    X-->>A: forwarded without the secret (not bound yet)
+    P->>UI: Allow
+    UI->>App: POST agent-secrets/{id}/request {allow: true}
+    A->>X: request to api.vidoc.com with the placeholder
+    X-->>A: placeholder replaced by the value, response redacted
+```
+
 ## Terminal input
 
 A keystroke goes from xterm to the PTY and its echo comes back without waiting for the database or
@@ -645,6 +672,27 @@ people type ([SPEC-041](../.ai/specs/SPEC-041-here-we-want-auto-saved-notes-sand
 text and the revision it started from; the store writes it only when that revision is still
 current, and every stored edit is announced on the event stream: a personal note's event is
 addressed to its owner (`Envelope.user`), and `WS /api/events` drops it for everyone else.
+
+The tabs go in any order, Team first by default (`yulius.notesOrder` in the browser). Each notepad
+draws its selections itself (`textlayer.js`: rounded shapes under the transparent text box,
+measured on a hidden mirror) and shows the teammates who have it open
+([SPEC-112](../.ai/specs/SPEC-112-i-want-to-be-able-to-move-those-3-bars-t.md),
+[decision 0091](decisions/0091-notepad-presence-is-relayed-not-stored.md)): a browser sends its
+selection in the saved text's offsets, `App::note_presence` relays it as `note.presence` to the
+notepad's readers (20 a second per person and notepad at most) and stores nothing.
+
+```mermaid
+sequenceDiagram
+    participant A as Alice's notepad
+    participant S as Server (App::note_presence)
+    participant B as Bob's notepad
+    A->>S: PUT notes/presence {revision, selection, hello, client} (≤ 1 per 100 ms, every 15 s)
+    S-->>B: note.presence (team: everyone; sandbox: its viewers)
+    B->>S: PUT notes/presence (answers a hello)
+    S-->>A: note.presence
+    Note over A,B: offsets mapped through each side's unsaved typing; another revision hides
+    A->>S: PUT notes/presence {selection: null} (hidden, another tab, page gone)
+```
 
 ```mermaid
 sequenceDiagram

@@ -955,6 +955,13 @@ resolves to nothing, the run gets the server without that variable or token.
     stored) when the stored revision differs: someone saved meanwhile, so the client loads the
     note again. 422 over 256 KiB of UTF-8.
     Every stored edit publishes `note.updated`.
+  - `PUT /api/notes/presence` (anyone signed in) and `PUT /api/sandboxes/{sid}/notes/presence`
+    (read) `{"revision","selection":{"anchor","head"}|null,"hello"?,"client"?}` → 204 (SPEC-112):
+    the caller's selection in UTF-16 offsets of the text at `revision`, or `null` when they left;
+    `hello` asks the others to answer with theirs; `client` names the browser tab (at most 32
+    letters and digits). Relayed as `note.presence`, stored nowhere.
+    422 for unknown fields or an offset over 1 Mi, 404 without read access, 429 past 20 updates a
+    second per person and notepad. There is no presence for the personal notepad.
 
 ## Administration, analytics, status
 
@@ -1187,10 +1194,11 @@ after an unlock.
 
 | Method | Path | Body → Response |
 | --- | --- | --- |
-| GET | `/api/sandboxes/{sid}/agent-secrets` | (read) → `[AgentSecret]`: `{id, name, description, scope ("sandbox"\|"instance"), hosts, injection, header_name, injection_text, placeholder, has_username, has_totp, created_by, updated_at, value_updated_at, last_used_at, rotate_due, can_manage}` — the sandbox's and the instance-wide ones (`has_totp`: only older secrets) |
-| POST | `/api/sandboxes/{sid}/agent-secrets` | `{scope?: "sandbox"\|"instance", name, description?, hosts: [..], injection?: "none"\|"bearer"\|"basic"\|"header", header_name?, username?, value}` → 201. Sandbox scope: write access; instance: instance administrators. `name` is `[A-Z][A-Z0-9_]*` (not a reserved environment name); `hosts` 1–16 of `api.example.com`, `*.example.com`, optionally `:port`; `value` ≥ 8 characters without line breaks; `username` only for (and required by) `basic`. 409 when the name already applies to the sandbox |
+| GET | `/api/sandboxes/{sid}/agent-secrets` | (read) → `[AgentSecret]`: `{id, name, description, scope ("sandbox"\|"instance"), hosts, requested_hosts, requested_by, injection, header_name, injection_text, placeholder, has_username, has_totp, created_by, updated_at, value_updated_at, last_used_at, rotate_due, can_manage}` — the sandbox's and the instance-wide ones (`has_totp`: only older secrets) |
+| POST | `/api/sandboxes/{sid}/agent-secrets` | `{scope?: "sandbox"\|"instance", name, description?, hosts?: [..], injection?: "none" (default)\|"bearer"\|"basic"\|"header", header_name?, username?, value}` → 201. Sandbox scope: write access; instance: instance administrators. `name` is `[A-Z][A-Z0-9_]*` (not a reserved environment name); `hosts` 0–16 of `api.example.com`, `*.example.com`, optionally `:port`; `value` ≥ 8 characters without line breaks; `username` only for (and required by) `basic`. 409 when the name already applies to the sandbox |
 | PATCH | `/api/agent-secrets/{id}` | any of `name, description, hosts, injection, header_name, username, value` → `AgentSecret` (`value` replaces it; `""` clears `username`) |
 | DELETE | `/api/agent-secrets/{id}` | → 204 |
+| POST | `/api/agent-secrets/{id}/request` | `{allow: bool, hosts: [..]}` → `AgentSecret`: answers the hosts an agent asked for with `secret_request_hosts` (SPEC-121): `true` binds them, `false` dismisses them; the request is cleared either way, in one step with the bindings. `hosts` are the requested hosts the person saw, in any order: 409 unless they are exactly what waits (a host asked for meanwhile is never allowed unseen), and 409 when nothing waits or the bindings changed meanwhile; 422 when allowing would bind more than 16 hosts (the request stays). People who manage it (403 for readers, 404 without access). Audited (`vault.agent.allow` / `vault.agent.dismiss`) |
 | POST | `/api/agent-secrets/{id}/reveal` | `{purpose?, fields?: ["value","notes"]}` → `{value, notes}` (`notes` = the description, led by a stored user name and, for older secrets, `Two-factor seed: …`) for people who manage it, after an unlock (403 `reauth_required` otherwise; 403 for readers, 404 without access). Audited (`vault.agent.reveal` / `vault.agent.copy`) |
 
 ## UI event stream
@@ -1204,7 +1212,9 @@ after an unlock.
 found or moved; clients refetch `GET /api/update`),
 `{"type":"note.updated","scope":"team|sandbox|me","sandbox_id","revision","updated_by"}` (a
 notepad was saved; a sandbox note's event reaches only that sandbox's viewers, a personal note's
-only its owner), `{"type":"pulls.updated","sandbox_id"}` (the sandbox's pull requests may have
+only its owner), `{"type":"note.presence","scope":"team|sandbox","sandbox_id","user_id","client","name",
+"revision","selection":{"anchor","head"}|null,"hello"}` (someone's selection in a shared notepad, to
+the people who may read it; SPEC-112), `{"type":"pulls.updated","sandbox_id"}` (the sandbox's pull requests may have
 changed: a delivery stage moved or a Yulius CI run was queued, started or ended; clients watching
 it read `GET /api/sandboxes/{sid}/git` again; SPEC-108), `{"type":"resync"}`.
 
@@ -1257,5 +1267,7 @@ task; other hooks answer as usual.
   [{secret, len, rolling, digest}]}`: the run's redaction fingerprints (no values).
 - `POST /internal/scrub/report` (task token) `{channel: "bash"|"tool", names}` → 204; audited
   once per run, secret and channel (`vault.agent.redacted`).
-- MCP: `secrets_list` and `browser_fill_secret {tab_id, secret, field?: value|password|username|totp,
-  selector?}`; every MCP result is redacted.
+- MCP: `secrets_list`, `browser_fill_secret {tab_id, secret, field?: value|password|username|totp,
+  selector?}` and `secret_request_hosts {secret, hosts, reason?}` (stores a request a person
+  allows, audited `vault.agent.request`, flags the task as needing a person; binds nothing);
+  every MCP result is redacted.

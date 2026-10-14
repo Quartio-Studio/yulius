@@ -6,7 +6,7 @@
 // multi-select, search) live in the URL so a filtered view can be shared as a link. Search is not a
 // field: "/" opens a Spotlight-style search (spotlight.js, UI-036) that jumps to a task or filters.
 
-import { h, icon, setChildren, iconButton, badge, statusMark, openMenu, loadError, singleFlight, keepFocus, coalesce, prChip, emptyState, skeleton } from '../dom.js';
+import { h, icon, setChildren, iconButton, badge, statusMark, openMenu, loadError, singleFlight, keepFocus, coalesce, prChip, emptyState, bar, skeletonOf } from '../dom.js';
 import { relShort, dateTime, plural } from '../format.js';
 import { taskTime } from '../tasktime.js';
 import { statusInfo, taskInfo, activityLine, allows, taskActions } from '../status.js';
@@ -53,6 +53,26 @@ const detailLine = (task, info) => activityLine(task, info);
 
 /** The pull request cell: its chip (opening GitHub), empty (not "—") when there is none. */
 const prCell = (pr) => h('span', { class: 'tl-pr' }, pr ? prChip(pr) : null);
+
+/** The column names over the groups, also over the loading rows. */
+const columnHeads = () => h('div', { class: 'tl-columns', 'aria-hidden': 'true' }, ['Task', 'Status', 'Branch', 'Changes', 'Pull request', 'By', 'Created', 'For', ''].map((label) => h('span', null, label)));
+
+/**
+ * The list while it loads (SPEC-120): the column names (known already), then a group band and rows
+ * with a cell per column on the rows' grid; `.tl-row` stays real tasks' (the keyboard moves between
+ * their links).
+ */
+function loadingRows(label) {
+  const cells = [80, 60, 70, 50, 60, null, 70, 80, null];
+  return [columnHeads(), skeletonOf(label, [h('div', { class: 'tl-group-head' }, bar('lg')),
+    [55, 70, 45, 62].map((title) => h('div', { class: 'skeleton-tl-row' }, cells.map((width, i) => {
+      if (i === 0) return h('span', { class: 'skeleton-tl-link' }, h('span', { class: 'tl-mark' }, h('span', { class: 'skeleton-tile skeleton-dot' })), bar(title));
+      if (i === 5) return h('span', null, h('span', { class: 'skeleton-tile skeleton-dot' }));
+      // The row's actions are hidden until hover but hold their room; so does this spacer.
+      if (i === 8) return h('span', { class: 'tl-actions' }, h('span', { class: 'tl-action' }));
+      return h('span', null, width ? bar(width) : null);
+    })))])];
+}
 
 /** Tasks of one sandbox: grouped list with filters. */
 export function mountTasksPage(ctx, sandbox) {
@@ -132,7 +152,22 @@ export function mountTasksPage(ctx, sandbox) {
   const searchChip = h('span', { class: 'tl-chip-group', hidden: true },
     h('button', { type: 'button', class: ['chip-btn', 'tl-chip', 'active'], onClick: () => openSearch(searchQuery) }, icon('search', { size: 12 }), h('span', { class: 'chip-label' })),
     iconButton('x', 'Clear search', () => { searchQuery = ''; render(); }, { class: 'tl-chip-clear' }));
-  chips.append(searchChip, authorChip.el, originChip.el);
+  // Outlines of the Author and Origin chips while the tasks load (SPEC-120).
+  const chipOutlines = h('span', { class: 'tl-chips-loading', 'aria-hidden': 'true', hidden: true }, h('span', { class: 'skeleton-chip' }), h('span', { class: 'skeleton-chip' }));
+  chips.append(searchChip, authorChip.el, originChip.el, chipOutlines);
+
+  /**
+   * The toolbar keeps its place while the tasks load (`on`): the tabs' names with a bar for each
+   * count, chip outlines and a summary bar; off (a failed read) it is empty.
+   */
+  function loadingToolbar(on) {
+    if (on) tabs.setAttribute('aria-busy', 'true');
+    else tabs.removeAttribute('aria-busy');
+    setChildren(tabs, on ? [{ id: 'all', name: 'All', icon: 'tasks' }, ...GROUPS].map((tab) => h('span', { class: 'tl-tab', 'aria-hidden': 'true' },
+      h('span', { class: `tl-tab-icon tab-${tab.id}` }, icon(tab.icon, { size: 14 })), tab.name, h('span', { class: 'tl-tab-count' }, bar('xs')))) : null);
+    setChildren(summary, on ? h('span', { 'aria-hidden': 'true' }, bar('md')) : null);
+    chipOutlines.hidden = !on;
+  }
 
   const matchesText = (task, q) => `#${task.number} ${task.title} ${task.branch || ''} ${(task.created_by && task.created_by.login) || ''}`.toLowerCase().includes(q);
   /** "/" — search every task of the sandbox; Enter opens its overview, ⌘↵ its session. */
@@ -173,7 +208,8 @@ export function mountTasksPage(ctx, sandbox) {
       const error = ctx.store.tasksError(sandbox.id);
       setChildren(listHost, error
         ? loadError(`Couldn’t load the tasks of ${sandbox.name}: ${error.message}`, () => ctx.store.loadTasks(sandbox.id).catch(() => {}))
-        : skeleton(`Loading the tasks of ${sandbox.name}…`, 3, { block: true }));
+        : loadingRows(`Loading the tasks of ${sandbox.name}…`));
+      loadingToolbar(!error);
       return;
     }
     const me = myLogin();
@@ -193,6 +229,8 @@ export function mountTasksPage(ctx, sandbox) {
     const byGroup = new Map(GROUPS.map((g) => [g.id, matches.filter((item) => item.group === g.id)]));
     const visible = filters.state === 'all' ? matches : byGroup.get(filters.state);
 
+    tabs.removeAttribute('aria-busy');
+    chipOutlines.hidden = true;
     // Live updates rebuild the tabs and groups; keyboard focus stays where it was (keepFocus).
     keepFocus(tabs, () => setChildren(tabs, [{ id: 'all', name: 'All', icon: 'tasks', size: matches.length }, ...GROUPS.map((g) => ({ ...g, size: byGroup.get(g.id).length }))].map((tab) => {
       const on = filters.state === tab.id;
@@ -252,7 +290,7 @@ export function mountTasksPage(ctx, sandbox) {
     // Column names over the groups (the rows say the same to screen readers in their own words).
     // "Created" is when the task was made; the last column says, in words, how long it has been in
     // its state ("working 1h 20m", "done 3h ago", SPEC-087 TIM-003).
-    const columns = h('div', { class: 'tl-columns', 'aria-hidden': 'true' }, ['Task', 'Status', 'Branch', 'Changes', 'Pull request', 'By', 'Created', 'For', ''].map((label) => h('span', null, label)));
+    const columns = columnHeads();
     if (focusedId) setChildren(listHost, columns, sections);
     else keepFocus(listHost, () => setChildren(listHost, columns, sections));
     if (focusedId) listHost.querySelector(`[data-task-id="${CSS.escape(focusedId)}"] .tl-link`)?.focus({ preventScroll: true });
@@ -389,7 +427,7 @@ export function mountArchivedPage(ctx) {
         } }, 'Restore');
       } },
     ], list, { empty: emptyState({ iconName: 'archive', title: 'No archived tasks', text: 'Archive a finished task from its action menu to put it away; restore it here any time.' }) });
-  });
+  }, { shape: ['table', 6] });
   return { el: frame.el, key: 'archived' };
 }
 

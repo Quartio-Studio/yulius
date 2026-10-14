@@ -3,12 +3,15 @@
 //! signed-in person edits team notes, and each stored edit is announced to the people who may read it.
 //! Personal notes (SPEC-103 NOT-011..013) are each person's own, in every sandbox, and their edits
 //! reach only their owner.
+//! Presence (SPEC-112 NOT-018..019): who has a shared notepad open and where their selection is,
+//! relayed to its readers and stored nowhere, at most 20 updates a second per person and notepad.
 
 use crate::support;
 
 use axum::http::{Method, StatusCode};
 use serde_json::json;
 use support::{TestResult, call, harness, perms, seed_github_user, seed_sandbox};
+use yulius_contracts::api::notes::NoteSelection;
 use yulius_contracts::events::UiEvent;
 
 #[tokio::test]
@@ -556,5 +559,178 @@ async fn personal_notes_are_each_persons_own() -> TestResult {
     )
     .await?;
     assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
+    Ok(())
+}
+
+/// Drains the events published so far.
+fn published(
+    events: &mut tokio::sync::broadcast::Receiver<yulius_app::events::Envelope>,
+) -> Vec<yulius_app::events::Envelope> {
+    std::iter::from_fn(|| events.try_recv().ok()).collect()
+}
+
+#[tokio::test]
+async fn presence_is_relayed_to_readers() -> TestResult {
+    let h = harness()?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    let bob = seed_github_user(&h, "u-bob", "bob").await?;
+    let carol = seed_github_user(&h, "u-carol", "carol").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    h.github.set_perm("bob", "acme/fixture", perms("read"));
+    let mut events = h.app.events.subscribe();
+
+    // Team: relayed to everyone signed in, naming who it is, stored nowhere.
+    let sent = call(
+        &h.router,
+        Method::PUT,
+        "/api/notes/presence",
+        Some(json!({"revision": 3, "selection": {"anchor": 5, "head": 2}, "hello": true, "client": "tab1"})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(sent.status, StatusCode::NO_CONTENT, "{:?}", sent.body);
+    let envelope = events.try_recv()?;
+    assert!(envelope.sandbox.is_none() && envelope.user.is_none() && !envelope.admin_only);
+    assert_eq!(
+        envelope.event,
+        UiEvent::NotePresence {
+            scope: "team".into(),
+            sandbox_id: None,
+            user_id: "u-alice".into(),
+            client: "tab1".into(),
+            name: "alice".into(),
+            revision: 3,
+            selection: Some(NoteSelection { anchor: 5, head: 2 }),
+            hello: true,
+        }
+    );
+    let note = call(&h.router, Method::GET, "/api/notes", None, &alice).await?;
+    assert_eq!(note.body["revision"], 0, "presence stores nothing");
+
+    // A sandbox's: read access is enough, and only its viewers get it.
+    let left = call(
+        &h.router,
+        Method::PUT,
+        "/api/sandboxes/s1/notes/presence",
+        Some(json!({"revision": 0, "selection": null})),
+        &bob,
+    )
+    .await?;
+    assert_eq!(left.status, StatusCode::NO_CONTENT, "{:?}", left.body);
+    let envelope = events.try_recv()?;
+    assert_eq!(
+        envelope
+            .sandbox
+            .as_ref()
+            .map(ToString::to_string)
+            .as_deref(),
+        Some("s1")
+    );
+    assert_eq!(
+        envelope.event,
+        UiEvent::NotePresence {
+            scope: "sandbox".into(),
+            sandbox_id: Some("s1".into()),
+            user_id: "u-bob".into(),
+            client: String::new(),
+            name: "bob".into(),
+            revision: 0,
+            selection: None,
+            hello: false,
+        }
+    );
+
+    // Refused, and nothing relayed: no access, unknown fields, offsets out of bounds, signed out,
+    // and "Me", which nobody else reads.
+    let hidden = call(
+        &h.router,
+        Method::PUT,
+        "/api/sandboxes/s1/notes/presence",
+        Some(json!({"revision": 0, "selection": null})),
+        &carol,
+    )
+    .await?;
+    assert_eq!(hidden.status, StatusCode::NOT_FOUND);
+    for body in [
+        json!({"revision": 0, "selection": null, "colour": "red"}),
+        json!({"revision": 0, "selection": {"anchor": 1, "head": 2, "x": 1}}),
+        json!({"revision": 0, "selection": {"anchor": 0, "head": 1_048_577}}),
+        json!({"revision": 0, "selection": null, "client": "a".repeat(33)}),
+        json!({"revision": 0, "selection": null, "client": "tab one"}),
+        json!({"selection": null}),
+    ] {
+        let refused = call(
+            &h.router,
+            Method::PUT,
+            "/api/notes/presence",
+            Some(body.clone()),
+            &alice,
+        )
+        .await?;
+        assert_eq!(refused.status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    }
+    let anonymous = call(
+        &h.router,
+        Method::PUT,
+        "/api/notes/presence",
+        Some(json!({"revision": 0, "selection": null})),
+        &support::Creds::default(),
+    )
+    .await?;
+    assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
+    let personal = call(
+        &h.router,
+        Method::PUT,
+        "/api/me/notes/presence",
+        Some(json!({"revision": 0, "selection": null})),
+        &alice,
+    )
+    .await?;
+    assert!(personal.status.is_client_error(), "{:?}", personal.status);
+    assert!(published(&mut events).is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn presence_is_rate_limited() -> TestResult {
+    let h = harness()?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+    let mut events = h.app.events.subscribe();
+    let send = |path: &'static str| {
+        call(
+            &h.router,
+            Method::PUT,
+            path,
+            Some(json!({"revision": 1, "selection": {"anchor": 0, "head": 0}})),
+            &alice,
+        )
+    };
+
+    for _ in 0..20 {
+        assert_eq!(
+            send("/api/notes/presence").await?.status,
+            StatusCode::NO_CONTENT
+        );
+    }
+    let refused = send("/api/notes/presence").await?;
+    assert_eq!(refused.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(published(&mut events).len(), 20, "the 21st is not relayed");
+
+    // Each notepad counts on its own, and the next second starts afresh.
+    assert_eq!(
+        send("/api/sandboxes/s1/notes/presence").await?.status,
+        StatusCode::NO_CONTENT
+    );
+    h.clock
+        .0
+        .fetch_add(1_000, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        send("/api/notes/presence").await?.status,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(published(&mut events).len(), 2);
     Ok(())
 }

@@ -329,8 +329,17 @@ fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
     vec![
         ToolDescriptor {
             name: "secrets_list".into(),
-            description: "List the agent secrets this project may use: names, descriptions, the hosts each is bound to and how it is added to requests. You never receive values: Yulius' proxy adds a secret to HTTP requests for its bound hosts (call them normally; in code use the environment variable NAME, which holds a placeholder), browser_fill_secret types it into a sign-in page, and any value that would appear in output shows as [secret:NAME].".into(),
+            description: "List the agent secrets this project may use: names, descriptions, the hosts each is bound to (and requested_hosts waiting for a person to allow, see secret_request_hosts) and how it is added to requests. You never receive values: Yulius' proxy adds a secret to HTTP requests for its bound hosts (call them normally; in code use the environment variable NAME, which holds a placeholder), browser_fill_secret types it into a sign-in page, and any value that would appear in output shows as [secret:NAME].".into(),
             input_schema: schema(json!({}), &[]),
+        },
+        ToolDescriptor {
+            name: "secret_request_hosts".into(),
+            description: "Ask for the hosts an agent secret should be sent to or typed into (SPEC-121). A person adds a secret with only a name, a value and a description; you find the service's API or sign-in host from the description and the service's documentation (e.g. api.vidoc.com, *.vidoc.com for subdomains) and request it here. Nothing is bound until a person who manages the secret allows it on the Secrets page: print the returned link for them, go on with other work, and use the secret once secrets_list shows the host bound.".into(),
+            input_schema: schema(json!({
+                "secret": {"type": "string", "description": "Secret NAME from secrets_list"},
+                "hosts": {"type": "array", "items": {"type": "string"}, "description": "Host names like api.example.com, *.example.com or api.example.com:8443"},
+                "reason": {"type": "string", "description": "What you need it for (short), recorded in the secrets activity"}
+            }), &["secret", "hosts"]),
         },
         ToolDescriptor {
             name: "browser_fill_secret".into(),
@@ -512,6 +521,7 @@ impl App {
             }
             "secrets_list" => self.tool_secrets_list(ctx).await,
             "browser_fill_secret" => self.tool_browser_fill_secret(ctx, &args).await,
+            "secret_request_hosts" => self.tool_secret_request_hosts(ctx, &args).await,
             other => Err(AppError::Invalid(format!("unknown tool: {other}"))),
         })
     }

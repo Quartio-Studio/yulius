@@ -87,6 +87,9 @@ watching, steering and unblocking.
 - **Notes**: in the tools rail, a notepad per sandbox and one for the whole team, shared and saved
   while people type; a teammate's edit shows up live, and two edits at once end in a choice. A
   third, **Me**, is each person's own: nobody else sees it, and it is the same in every sandbox.
+  The tabs go in any order (Team first until moved). Selections are drawn rounded and glide, and
+  teammates who have a shared notepad open show as a caret with their name and their selection
+  in their own colour.
 - **Editor, terminals, Git view, automations, workflow catalog** in one web UI, whose menus fit
   the window and filter as people type when they are long; the start menu shows five tasks at a
   time and says how many more it scrolls to. Messages are
@@ -98,7 +101,9 @@ watching, steering and unblocking.
   secrets are used by agents, who never see them. Reading a value needs your own two-factor code
   (set up once, mandatory); an administrator resets it for someone who lost their authenticator.
   The people who manage an agent secret can read it too. A shown value stays masked until its eye
-  button is pressed; it copies without being shown.
+  button is pressed; it copies without being shown. An agent secret is added with a name, a value
+  and a description: agents find the service's host and ask for it, and a person allows it with
+  one click (SPEC-121).
 - **Updates**: Yulius updates itself from `main` without losing running work.
 
 ## Principles

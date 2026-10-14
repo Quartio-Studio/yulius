@@ -9,7 +9,7 @@
 // for instance administrators (#111).
 
 import { enc } from '../api.js';
-import { h, icon, setChildren, toast, iconButton, placeholder, statusMark, field, openModal, keepFocus, coalesce, loadError } from '../dom.js';
+import { h, icon, setChildren, toast, iconButton, statusMark, field, openModal, keepFocus, coalesce, loadError, bar, skeletonOf } from '../dom.js';
 import { relShort, dateTime, plural } from '../format.js';
 import { allows, taskInfo } from '../status.js';
 import { href } from '../router.js';
@@ -67,6 +67,40 @@ function prChip(pr) {
     `PR #${pr.number}`, check ? h('span', { class: `tone-${check[1]}` }, icon(check[0], { size: 12 })) : null);
 }
 
+/** The board's columns for a delivery profile. */
+function boardColumns(profile) {
+  const int = profile.integration_branch || 'integration';
+  const prod = profile.production_branch || 'production';
+  return [
+    { id: 'built', name: 'Being built', sub: 'no pull request yet' },
+    { id: 'review', name: 'In review', sub: `pull request into ${int}` },
+    profile.auto_promote ? null : { id: 'waiting', name: `On ${int}, not live`, sub: 'merged, waiting for release' },
+    { id: 'live', name: 'Live', sub: `on ${prod}` },
+  ].filter(Boolean);
+}
+
+/**
+ * The page while delivery loads (SPEC-120), drawn with its own layout: the two status cards, the
+ * Blocked rows, the board with the profile's columns of task cards and the Activity rows.
+ */
+function loadingShape(profile) {
+  const statusCard = () => h('div', { class: 'dl-card' },
+    h('div', { class: 'card-title' }, bar(45)), h('div', { class: 'dl-big' }, bar(75)), h('div', { class: 'small' }, bar(55)));
+  const section = (title, content) => h('div', { class: 'dl-section' }, h('div', { class: 'dl-section-title' }, bar(title)), content);
+  const taskCard = (i) => h('div', { class: 'dl-card-task' },
+    h('div', { class: 'dl-card-title' }, bar([80, 60][i])), h('div', { class: 'dl-card-line small' }, bar(55)), h('div', { class: 'dl-card-meta xs' }, bar(35)));
+  const columns = boardColumns(profile);
+  return skeletonOf('Loading delivery…', h('div', { class: 'stack' },
+    h('div', { class: 'dl-strip' }, statusCard(), statusCard()),
+    section('md', h('div', { class: 'dl-needs' }, [0, 1].map((i) => h('div', { class: 'dl-need' },
+      h('span', { class: 'dl-need-text' }, bar([45, 60][i])), h('span', { class: 'skeleton-button' }))))),
+    section('xl', h('div', { class: 'dl-board', style: { '--dl-cols': String(columns.length) } }, columns.map(() => h('div', { class: 'dl-col' },
+      h('div', { class: 'dl-col-head' }, h('div', { class: 'dl-col-name' }, bar(60)), h('div', { class: 'xs' }, bar(80))),
+      taskCard(0), taskCard(1))))),
+    section('md', h('div', { class: 'dl-activity' }, [0, 1, 2].map((i) => h('div', { class: 'dl-event' },
+      h('span', { class: 'dl-event-time' }, bar(100)), h('span', { class: 'dl-event-text' }, bar([55, 70, 40][i]))))))));
+}
+
 // Each task's delivery, kept across visits to the page (PERF-09): read again only when its row in
 // the overview or the sandbox's latest environment run changed, after 5 minutes, or after an action.
 const DELIVERY_TTL_MS = 5 * 60_000;
@@ -83,7 +117,7 @@ export function mountGitPage(ctx, sandbox) {
     admin ? h('button', { type: 'button', class: 'btn', onClick: () => openProfileEditor(ctx, sb()) }, icon('gear', { size: 14 }), 'Delivery profile') : null,
   ] });
   const intro = h('div', { class: 'dl-intro' });
-  const body = h('div', { class: 'stack dl' }, placeholder('Loading delivery…', 'loading'));
+  const body = h('div', { class: 'stack dl' }, loadingShape(sb().profile || {}));
   frame.body.append(intro, body);
   let model = null;
   let showAllActivity = false;
@@ -280,14 +314,7 @@ export function mountGitPage(ctx, sandbox) {
 
   // ---- Board: where each task is on the way to production
   function board(profile, items, by) {
-    const int = profile.integration_branch || 'integration';
-    const prod = profile.production_branch || 'production';
-    const columns = [
-      { id: 'built', name: 'Being built', sub: 'no pull request yet' },
-      { id: 'review', name: 'In review', sub: `pull request into ${int}` },
-      profile.auto_promote ? null : { id: 'waiting', name: `On ${int}, not live`, sub: 'merged, waiting for release' },
-      { id: 'live', name: 'Live', sub: `on ${prod}` },
-    ].filter(Boolean);
+    const columns = boardColumns(profile);
     return h('section', { class: 'dl-section', 'aria-labelledby': 'dl-board' },
       h('h2', { class: 'dl-section-title', id: 'dl-board' }, icon('workflow', { size: 14 }), 'Where every task is'),
       h('div', { class: 'dl-board', style: { '--dl-cols': String(columns.length) } }, columns.map((column) => {

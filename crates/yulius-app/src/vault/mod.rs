@@ -10,6 +10,7 @@
 //! with the row's id and section as associated data; plaintexts are zeroed when dropped.
 
 mod agents;
+mod requests;
 mod runtime;
 mod team;
 mod terminal;

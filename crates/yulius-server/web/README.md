@@ -94,8 +94,9 @@ and component in the current theme and computes contrast as you change things.
 1. **`assets/brand.js`** — product `name`, `tagline` and `mark`: SVG path data with its `markViewBox`
    and `markStyle` (`'fill'` for a solid logo such as the current one from
    `assets/brand/logo-lockup.svg`, `'stroke'` for a line drawing). The mark's colour is the
-   `--brand-mark` token (monochrome by default) and the wordmark's case and tracking are
-   `--wordmark-case` / `--wordmark-tracking`.
+   `--brand-mark` token (monochrome by default). The wordmark is set like the composer's quote
+   (ADR-0100): `--font-display` at 400 and `--fs-xl`, with its case and tracking in
+   `--wordmark-case` / `--wordmark-tracking` (`none` and `0`: the name as written).
    The sidebar wordmark, sign-in/setup screens, browser tab title, favicon and every sentence that
    names the product follow (`BRAND.name`; the check rejects the name written anywhere else).
 2. **`assets/tokens.css`, Layer 1** — the brand ramp `--brand-200 … --brand-800` and `--brand-ink`
@@ -151,7 +152,7 @@ not part of the app's start-up.
 ### Brand typeface
 
 Fonts are self-hosted (no CDNs). The brand's are Instrument Sans (UI text), Tenor Sans (titles and
-the wordmark, for its Roman capital proportions) and IBM Plex Mono (code, terminals, the editor):
+the wordmark, for its Roman proportions) and IBM Plex Mono (code, terminals, the editor):
 `.woff2` files from Fontsource 5.3.0 in `assets/fonts/` (Latin and Latin Extended, one per weight,
 with their SIL Open Font License texts), declared at the end of `tokens.css`. To change one, put
 its `.woff2` files in `assets/fonts/`, replace its `@font-face` rules, and put the family first in `--font` (UI text),
@@ -211,7 +212,10 @@ One pattern per kind of state (SPEC-001 UI-050): `emptyState` for every empty li
 that fills it), `loadError` for a failed load said in place (`loader(container, 'the users', …)` in
 `pages/common.js` names what failed: "Couldn’t load the users: …"), `skeleton` while loading (shimmering
 fields, never a spinner with "Loading…"; `placeholder(text, 'loading')` returns it; a spinner marks only an
-action under way, ADR-0073), and
+action under way, ADR-0073) in the shape of what loads (ADR-0097: `placeholder(text, 'loading', shape)` and
+`loader(…, { shape })` draw `items`, `item-section`, `table`, `cards`, `form` or `editor` with the page's own
+classes; a page with a layout of its own passes a function drawing it with `bar()`s (Sessions, CI, the
+Dashboard) or wraps one in `skeletonOf()`, as the Git page and the task lists do), and
 `notFound` (`pages/common.js`) for a missing page, sandbox, task or item: a heading and the way
 back. Page headers come from `pageFrame`: a title, a subtitle that says what the page is for, and
 actions; `createButton` is the primary "add" button with its "+". "Needs you" is `taskInfo`'s

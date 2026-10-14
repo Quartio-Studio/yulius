@@ -243,7 +243,7 @@ function mountTeam(ctx, host, actions) {
     })));
   }
 
-  const reload = loader(list, 'the team secrets', () => ctx.api.get('/api/team-secrets'), render);
+  const reload = loader(list, 'the team secrets', () => ctx.api.get('/api/team-secrets'), render, { shape: 'items' });
   const reloadActivity = loader(activity, 'the secrets activity', () => ctx.api.get('/api/secrets/activity?limit=50'), (entries) => {
     if (!entries.length) return h('p', { class: 'muted small' }, 'Nothing yet.');
     return h('ul', { class: 'plain-list activity-list' }, entries.map((e) => h('li', { class: 'small' },
@@ -301,61 +301,109 @@ const ACTIONS = {
   'vault.agent.use': 'used',
   'vault.agent.fill': 'typed',
   'vault.agent.redacted': 'had redacted',
+  'vault.agent.request': 'asked for hosts of',
+  'vault.agent.allow': 'allowed hosts of',
+  'vault.agent.dismiss': 'dismissed hosts of',
 };
 
 // ---------------------------------------------------------------- agent secrets
 
+/**
+ * The add dialog asks for a name, a value and a description (SPEC-121): agents find the hosts and
+ * how to send it, and a person allows the hosts they ask for. An instance administrator picks the
+ * scope under More options. Editing keeps the hosts, and the request style of an older secret
+ * that has one.
+ */
 function agentForm(ctx, secret) {
-  const instanceAdmin = ctx.isInstanceAdmin();
-  const scope = h('select', { class: 'select', disabled: Boolean(secret) || !instanceAdmin },
-    h('option', { value: 'sandbox' }, 'This sandbox'),
-    h('option', { value: 'instance' }, 'Every sandbox'));
-  if (secret) scope.value = secret.scope;
-  const name = h('input', { class: 'input mono', 'aria-label': 'Name', value: secret ? secret.name : '', placeholder: 'STRIPE_API_KEY', autocomplete: 'off', autofocus: true });
+  const name = h('input', { class: 'input mono', 'aria-label': 'Name', value: secret ? secret.name : '', placeholder: 'VIDOC_API_KEY', autocomplete: 'off', autofocus: true });
   const value = h('input', { class: 'input mono', type: 'password', 'aria-label': 'Value', autocomplete: 'new-password', placeholder: secret ? 'Unchanged' : '' });
-  const notes = h('textarea', { class: 'textarea', rows: 2, 'aria-label': 'Notes', placeholder: 'Stripe test-mode key for the checkout' });
+  const notes = h('textarea', { class: 'textarea', rows: 2, 'aria-label': 'Description', placeholder: 'API key for Vidoc, the video platform' });
   notes.value = secret ? secret.description : '';
-  const hosts = h('input', { class: 'input mono', 'aria-label': 'Hosts', value: secret ? secret.hosts.join(', ') : '', placeholder: 'api.stripe.com', autocomplete: 'off' });
-  const injection = h('select', { class: 'select' },
-    h('option', { value: 'bearer' }, 'Authorization: Bearer <value>'),
-    h('option', { value: 'basic' }, 'Authorization: Basic <user name:value>'),
-    h('option', { value: 'header' }, 'A header of its own'),
-    h('option', { value: 'none' }, 'No header (website login, placeholders)'));
-  injection.value = secret ? secret.injection : 'bearer';
-  const header = h('input', { class: 'input mono', value: secret && secret.header_name ? secret.header_name : '', placeholder: 'X-Api-Key' });
-  const headerField = field('Header name', header);
-  const username = h('input', { class: 'input', autocomplete: 'off', placeholder: secret && secret.has_username ? 'Unchanged' : '' });
-  const usernameField = field('User name', username);
-  const sync = () => {
-    headerField.hidden = injection.value !== 'header';
-    usernameField.hidden = injection.value !== 'basic';
-  };
-  injection.addEventListener('change', sync);
-  sync();
-  const body = h('div', { class: 'stack' },
+  const parts = [
     field('Name', name, 'Agents refer to it by this name; their code reads $NAME, which holds a placeholder.'),
     field('Value', value, secret ? 'Leave empty to keep it.' : 'At least 8 characters. Agents use it without seeing it; people who manage it read it after their two-factor code.'),
-    field('Notes', notes, 'Agents read these to know when and how to use it (a login’s user name goes here). Never the value.'),
-    field('Scope', scope, instanceAdmin ? null : 'Secrets for every sandbox are added by instance administrators.'),
-    field('Hosts', hosts, 'The only destinations it is sent to or typed into, comma-separated (*.example.com for subdomains).'),
-    field('Added to requests as', injection),
-    headerField,
-    usernameField,
-  );
-  const values = () => {
-    const out = {
-      name: name.value.trim(),
-      description: notes.value.trim(),
-      hosts: hosts.value.split(/[\s,]+/).filter(Boolean),
-      injection: injection.value,
-      header_name: injection.value === 'header' ? header.value.trim() : null,
+    field('Description', notes, 'Which service it is for (a login’s user name goes here, never the value). Agents find the service’s address from it and ask you to allow it.'),
+  ];
+  const form = { name, value };
+  if (!secret && ctx.isInstanceAdmin()) {
+    form.scope = h('select', { class: 'select' },
+      h('option', { value: 'sandbox' }, 'This sandbox'),
+      h('option', { value: 'instance' }, 'Every sandbox'));
+    parts.push(h('details', null, h('summary', { class: 'muted small' }, 'More options'),
+      h('div', { class: 'stack space-top' }, field('Scope', form.scope))));
+  }
+  if (secret) {
+    form.hosts = h('input', { class: 'input mono', 'aria-label': 'Hosts', value: secret.hosts.join(', '), placeholder: 'api.example.com', autocomplete: 'off' });
+    parts.push(field('Hosts', form.hosts, 'The only destinations it is sent to or typed into, comma-separated (*.example.com for subdomains). Agents ask for them; empty sends it nowhere.'));
+  }
+  if (secret && secret.injection !== 'none') {
+    form.injection = h('select', { class: 'select' },
+      h('option', { value: 'bearer' }, 'Authorization: Bearer <value>'),
+      h('option', { value: 'basic' }, 'Authorization: Basic <user name:value>'),
+      h('option', { value: 'header' }, 'A header of its own'),
+      h('option', { value: 'none' }, 'Nothing: agents send the placeholder'));
+    form.injection.value = secret.injection;
+    form.header = h('input', { class: 'input mono', value: secret.header_name || '', placeholder: 'X-Api-Key' });
+    form.username = h('input', { class: 'input', autocomplete: 'off', placeholder: secret.has_username ? 'Unchanged' : '' });
+    const headerField = field('Header name', form.header);
+    const usernameField = field('User name', form.username);
+    const sync = () => {
+      headerField.hidden = form.injection.value !== 'header';
+      usernameField.hidden = form.injection.value !== 'basic';
     };
-    if (!secret) out.scope = scope.value;
-    if (injection.value === 'basic' && (username.value.trim() || !secret)) out.username = username.value.trim() || null;
+    form.injection.addEventListener('change', sync);
+    sync();
+    parts.push(field('Added to requests as', form.injection), headerField, usernameField);
+  }
+  form.body = h('div', { class: 'stack' }, ...parts);
+  form.values = () => {
+    const out = { name: name.value.trim(), description: notes.value.trim() };
+    if (form.scope) out.scope = form.scope.value;
+    if (form.hosts) out.hosts = form.hosts.value.split(/[\s,]+/).filter(Boolean);
+    if (form.injection) {
+      out.injection = form.injection.value;
+      out.header_name = out.injection === 'header' ? form.header.value.trim() : null;
+      if (out.injection === 'basic' && form.username.value.trim()) out.username = form.username.value.trim();
+    }
     if (value.value) out.value = value.value;
     return out;
   };
-  return { body, values, name, hosts, value, header, username };
+  return form;
+}
+
+/** A host as people read it: a wildcard says it covers any subdomain. */
+function hostText(name) {
+  return name.startsWith('*.') ? `${name} (any subdomain of ${name.slice(2)})` : name;
+}
+
+/** Where a secret goes: its bound hosts, or that it goes nowhere yet; and what an agent asks for. */
+function agentHosts(ctx, secret, reload) {
+  const parts = [];
+  if (secret.hosts.length) parts.push(h('div', { class: 'chips' }, secret.hosts.map((name) => iconBadge('globe', name, '', 'Bound host'))));
+  else if (!secret.requested_hosts.length) parts.push(h('span', { class: 'muted small' }, 'Not sent anywhere yet: agents ask for its hosts and you allow them here.'));
+  if (secret.requested_hosts.length) {
+    // The answer names the hosts shown here: the server refuses it if an agent asked for more
+    // meanwhile, so nothing is allowed unseen (SPEC-121).
+    const shown = [...secret.requested_hosts];
+    const answer = async (allow) => {
+      buttons.forEach((b) => { b.disabled = true; });
+      try {
+        const saved = await ctx.api.post(`/api/agent-secrets/${enc(secret.id)}/request`, { allow, hosts: shown });
+        toast(allow ? `Allowed. Agents can use ${saved.name} on ${shown.join(', ')}.` : 'Dismissed.', { kind: 'ok' });
+      } catch (error) { errorToast(error, allow ? 'Couldn’t allow' : 'Couldn’t dismiss'); }
+      reload();
+    };
+    const asked = shown.join(', ');
+    const buttons = secret.can_manage ? [
+      smallButton('Allow', `Allow ${asked} for ${secret.name}`, () => answer(true), { class: 'btn-primary' }),
+      smallButton('Dismiss', `Dismiss the hosts asked for ${secret.name}`, () => answer(false)),
+    ] : [];
+    parts.push(h('div', { class: 'row-wrap' },
+      h('span', { class: 'small' }, secret.requested_by ? `Task ${secret.requested_by} asks to send it to` : 'An agent asks to send it to'),
+      h('div', { class: 'chips' }, shown.map((name) => iconBadge('globe', hostText(name), 'warn', 'Requested host'))),
+      buttons.length ? h('span', { class: 'row-wrap' }, buttons) : null));
+  }
+  return parts;
 }
 
 function mountAgents(ctx, sandbox, host, actions) {
@@ -370,12 +418,12 @@ function mountAgents(ctx, sandbox, host, actions) {
   setChildren(host,
     h('p', { class: 'muted small' }, `Agents in ${sandbox.name} use this sandbox’s secrets and those for every sandbox.`),
     h('div', { class: 'banner banner-info' }, icon('shield'), h('div', { class: 'banner-text small' },
-      `Agents use these without seeing them: ${BRAND.name} adds a secret to HTTPS requests for its hosts and types it into sign-in pages of those hosts. Anything that would show a value to an agent — command output, files, web pages, tool results — shows `,
+      `Agents use these without seeing them: ${BRAND.name} adds a secret to HTTPS requests for its hosts and types it into sign-in pages of those hosts. Agents find the hosts and ask; you allow them here. Anything that would show a value to an agent — command output, files, web pages, tool results — shows `,
       h('code', null, '[secret:NAME]'), ' instead.')),
     list);
 
   function render(secrets) {
-    if (secrets.length === 0) return emptyState({ iconName: 'key', title: 'No agent secrets yet', text: 'Add an API key or a login an agent needs; bind it to the hosts it belongs to.', action: write ? createButton('Add agent secret', () => edit(null)) : null });
+    if (secrets.length === 0) return emptyState({ iconName: 'key', title: 'No agent secrets yet', text: 'Add an API key or a login an agent needs: its name, value and what it is for. Agents find where it goes and ask you to allow it.', action: write ? createButton('Add agent secret', () => edit(null)) : null });
     return h('div', { class: 'item-list' }, secrets.map((secret) => itemCard({
       iconName: 'key',
       title: h('span', { class: 'mono' }, secret.name),
@@ -385,8 +433,8 @@ function mountAgents(ctx, sandbox, host, actions) {
       ].filter(Boolean),
       description: secret.description || h('span', { class: 'muted' }, 'No description'),
       extra: h('div', { class: 'stack-tight' },
-        h('div', { class: 'chips' }, secret.hosts.map((name) => iconBadge('globe', name, '', 'Bound host'))),
-        h('span', { class: 'muted small' }, `${secret.injection_text} · ${secret.last_used_at ? `used ${relLong(secret.last_used_at)}` : 'not used yet'} · changed ${relLong(secret.value_updated_at)}`)),
+        ...agentHosts(ctx, secret, reload),
+        h('span', { class: 'muted small' }, [secret.injection !== 'none' ? secret.injection_text : null, secret.last_used_at ? `used ${relLong(secret.last_used_at)}` : 'not used yet', `changed ${relLong(secret.value_updated_at)}`].filter(Boolean).join(' · '))),
       controls: [
         secret.can_manage ? smallButton('Show', `Show ${secret.name}`, async () => {
           try {
@@ -400,7 +448,7 @@ function mountAgents(ctx, sandbox, host, actions) {
     })));
   }
 
-  const reload = loader(list, 'the agent secrets', () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/agent-secrets`), render);
+  const reload = loader(list, 'the agent secrets', () => ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/agent-secrets`), render, { shape: 'items' });
 
   function edit(secret) {
     const form = agentForm(ctx, secret);
@@ -409,11 +457,10 @@ function mountAgents(ctx, sandbox, host, actions) {
       { label: secret ? 'Save' : 'Add', kind: 'primary', submit: true, run: async () => {
         const values = form.values();
         if (!NAME_RE.test(values.name)) return invalid(form.name, 'Capital letters, digits and _, starting with a letter.');
-        if (values.hosts.length === 0) return invalid(form.hosts, 'Bind it to at least one host.');
         if (!secret && !values.value) return invalid(form.value, 'Enter the value.');
         if (values.value && [...values.value].length < 8) return invalid(form.value, 'At least 8 characters: shorter values cannot be recognised and hidden.');
         if (values.injection === 'header' && !values.header_name) return invalid(form.header, 'Name the header.');
-        if (values.injection === 'basic' && !secret && !values.username) return invalid(form.username, 'Basic credentials need a user name.');
+        if (values.injection === 'basic' && !secret.has_username && !values.username) return invalid(form.username, 'Basic credentials need a user name.');
         if (secret) await ctx.api.patch(`/api/agent-secrets/${enc(secret.id)}`, values);
         else await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/agent-secrets`, values);
         toast(secret ? 'Saved.' : 'Agent secret added. New agent sessions get its placeholder.', { kind: 'ok' });
