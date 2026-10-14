@@ -79,7 +79,7 @@ session, so nothing a person types is mixed into it.
 - [x] The goal condition names the task's attached files
 - [x] A goal task starts with its /goal as the launch prompt, nothing typed
 - [x] A person's keys wait while Yulius types an image task's first message
-- [ ] ADR, architecture and the earlier specs say how a task starts
+- [x] ADR, architecture and the earlier specs say how a task starts
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
