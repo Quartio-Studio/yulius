@@ -147,22 +147,21 @@ impl App {
             .ok_or_else(|| {
                 AppError::Conflict("someone else changed these notes; load them again".into())
             })?;
-        let (sandbox_id, wire_sandbox) = match &scope {
-            Scope::Team => (None, None),
-            Scope::Sandbox(sid) => (Some(sid.clone()), Some(sid.to_string())),
-            // Announced to its owner alone (SPEC-103 NOT-013).
-            Scope::Me(_) => return Ok(view(&scope, Some(stored))),
-        };
-        self.events.publish(
-            sandbox_id,
-            false,
-            UiEvent::NoteUpdated {
-                scope: scope.wire().to_owned(),
-                sandbox_id: wire_sandbox,
-                revision: stored.revision,
-                updated_by: stored.updated_by.clone(),
+        let event = UiEvent::NoteUpdated {
+            scope: scope.wire().to_owned(),
+            sandbox_id: match &scope {
+                Scope::Sandbox(sid) => Some(sid.to_string()),
+                Scope::Team | Scope::Me(_) => None,
             },
-        );
+            revision: stored.revision,
+            updated_by: stored.updated_by.clone(),
+        };
+        match &scope {
+            Scope::Team => self.events.publish(None, false, event),
+            Scope::Sandbox(sid) => self.events.publish(Some(sid.clone()), false, event),
+            // Its owner's other tabs and devices, and nobody else (SPEC-103 NOT-013).
+            Scope::Me(user) => self.events.publish_to_user(user.clone(), event),
+        }
         Ok(view(&scope, Some(stored)))
     }
 }
