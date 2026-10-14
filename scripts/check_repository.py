@@ -191,11 +191,12 @@ VENDORED = ("crates/yulius-server/web/assets/vendor/",)
 
 def conflict_marker_errors(root, names):
     """A merge that commits unresolved conflict markers fails here, in docs and web assets too,
-    where no compiler notices them (#364). Vendored and binary files are not read."""
+    where no compiler notices them (#364). Vendored and binary files are not read, nor symbolic
+    links, whose target is checked under its own name. Git lists an unmerged file once per stage."""
     errors = []
-    for name in names:
+    for name in dict.fromkeys(names):
         path = root / name
-        if name.startswith(VENDORED) or not path.is_file():
+        if name.startswith(VENDORED) or path.is_symlink() or not path.is_file():
             continue
         data = path.read_bytes()
         if b"\0" in data:

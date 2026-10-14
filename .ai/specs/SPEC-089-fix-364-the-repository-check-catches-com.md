@@ -1,11 +1,11 @@
 ---
 yulius-task: 5913c266-de69-48a1-a8cf-6d2ee4e9b31b
-status: in-progress
+status: done
 ---
 
 # SPEC-089: the repository check catches committed conflict markers
 
-Status: in progress
+Status: implemented
 Date: 2026-10-14
 Owner: task #74
 Scope authorization: issue #364, "The repository check does not catch committed merge conflict
@@ -37,7 +37,8 @@ naming each file and line, instead of passing every gate until a reviewer happen
 | --- | --- | --- |
 | CMK-001 | The repository check fails on a listed file with a line that is a Git conflict marker: seven `<`, `\|` or `>` followed by a space or the end of the line, or exactly seven `=`. A trailing carriage return is ignored. Each error names the file and the 1-based line. | `ConflictMarkerTests.test_each_marker_fails_with_file_and_line`, `test_crlf_marker_fails` |
 | CMK-002 | Lines that only resemble markers pass: a marker not at the start of the line, a run of eight or more of the character, seven `=` followed by more text. | `ConflictMarkerTests.test_lookalikes_pass` |
-| CMK-003 | Vendored files (`crates/yulius-server/web/assets/vendor/`) and binary files (any NUL byte) are not read for markers; a file listed but gone from the disk is skipped. | `ConflictMarkerTests.test_vendored_binary_and_missing_files_are_skipped` |
+| CMK-003 | Vendored files (`crates/yulius-server/web/assets/vendor/`), binary files (any NUL byte) and symbolic links (their target is checked under its own name; a link into the vendored directory does not bypass it) are not read for markers; a file listed but gone from the disk, or a directory, is skipped. | `ConflictMarkerTests.test_vendored_binary_and_missing_files_are_skipped` |
+| CMK-005 | A file Git lists several times (once per stage while a merge is unresolved) is reported once. | `ConflictMarkerTests.test_a_file_listed_once_per_merge_stage_is_reported_once` |
 | CMK-004 | The shipped repository passes the check. | `python3 scripts/check_repository.py` |
 
 ## Plan
@@ -45,7 +46,7 @@ naming each file and line, instead of passing every gate until a reviewer happen
 - [x] Spec SPEC-089 written and valid
 - [x] Repository check fails on committed conflict markers, with regression tests
 - [x] Docs and changes log describe the new check; full gate green
-- [ ] Independent review of the exact head approved, findings fixed
+- [x] Independent review of the exact head approved, findings fixed
 
 ## Acceptance criteria
 
@@ -70,7 +71,7 @@ naming each file and line, instead of passing every gate until a reviewer happen
 - **Exact markers, not a looser pattern.** Git writes seven characters and a label (or none for
   the separator); `conflict-marker-size` is not set in this repository. Matching exactly seven
   keeps Markdown rules, setext underlines and ASCII art of other lengths legal. A Markdown setext
-  heading underlined with exactly seven `=` would fail; it is rare and the fix (any other length) is
+  heading underlined with exactly seven `=`, or a table row of exactly seven `|`, would fail; both are rare and the fix (any other length) is
   trivial, while missing a real separator is the defect being fixed.
 - **The diff3 base marker counts too.** `merge.conflictStyle = diff3`/`zdiff3` adds a seven-`|`
   line; agents and people may use either style.
@@ -80,3 +81,24 @@ naming each file and line, instead of passing every gate until a reviewer happen
 - **In the repository check, not a pre-commit hook.** Hooks are local and skippable; the check runs
   in Yulius CI on every pull request head, which is what blocks a merge. No ADR: this extends an
   existing gate without a new contract.
+
+## Evidence
+
+- `python3 -m unittest discover -s scripts -p 'test_*.py'`: 39 tests OK, five in
+  `ConflictMarkerTests`. Before the implementation the module failed to import
+  `conflict_marker_errors`; the review round's two new cases (symbolic link into the vendored
+  directory, a file listed once per merge stage) failed before their fix.
+- Mutation checks (the reviewer's and mine): dropping the CR strip, `fullmatch`, the vendored
+  skip, the diff3 alternative or the NUL skip each fails a `ConflictMarkerTests` case.
+- Manual negative run: markers appended to the tracked `docs/product.md` made
+  `python3 scripts/check_repository.py` exit 1 with `docs/product.md:93`, `:95` and `:97`; the
+  file was restored. The reviewer reproduced it on `docs/api.md`.
+- `python3 scripts/check_repository.py`: passed ("no conflict markers"), 1262 files listed, no
+  hits, vendored ones included; the new check adds about 0.1 s.
+- `scripts/dev check` and `scripts/dev lint` (fmt, clippy `-D warnings`): exit 0. The reviewer
+  ran `scripts/dev test`: 1502 passed, 16 skipped, doctests OK (no Rust change here).
+- Independent review (fresh session, `om-code-review`) of `bd300afa`: approved with two minors
+  (the binary test did not prove the skip; triplicate errors while a merge is unresolved) and two
+  nits (symbolic links followed; the seven-`|` lookalike undocumented), all fixed test-first above.
+- Not testable here: Yulius CI on the pull request head is the final run of the `quality` and
+  `e2e` jobs.

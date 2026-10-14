@@ -318,9 +318,16 @@ class ConflictMarkerTests(unittest.TestCase):
             vendored = "crates/yulius-server/web/assets/vendor/lib.js"
             (root / vendored).parent.mkdir(parents=True)
             (root / vendored).write_text(f"{START} HEAD\n")
-            (root / "image.png").write_bytes(f"\0{SEPARATOR}\n".encode())
+            (root / "image.png").write_bytes(f"\0\n{SEPARATOR}\n".encode())
             (root / "sub").mkdir()
-            self.assertEqual(conflict_marker_errors(root, [vendored, "image.png", "gone.md", "sub"]), [])
+            (root / "link.js").symlink_to(root / vendored)
+            self.assertEqual(conflict_marker_errors(root, [vendored, "image.png", "gone.md", "sub", "link.js"]), [])
+
+    def test_a_file_listed_once_per_merge_stage_is_reported_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "f.md").write_text(f"{START} HEAD\n")
+            self.assertEqual(len(conflict_marker_errors(root, ["f.md", "f.md", "f.md"])), 1)
 
 
 class ModuleTests(unittest.TestCase):
