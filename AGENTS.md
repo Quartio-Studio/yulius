@@ -65,8 +65,13 @@ scripts/dev lint
 scripts/dev test
 scripts/dev deps
 scripts/dev ci
+scripts/dev security
 ```
 
+Every change: before delivery run `scripts/dev security`, which scans the branch's commits with
+Vidoc through the agent secret `VIDOC_API_KEY` and fails on open critical or high findings
+([ADR-0104](docs/decisions/0104-agents-scan-their-branch-with-vidoc-before-delivery.md)); exit 2
+(no usable key) is unrun, not passed.
 Web UI changes: also run the end-to-end suite, `cd e2e && npm ci --ignore-scripts && npx e2e run`
 (Node 24.8+, test-only; see [e2e/README.md](e2e/README.md)).
 

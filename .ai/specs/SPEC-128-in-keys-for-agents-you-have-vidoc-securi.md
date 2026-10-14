@@ -103,7 +103,7 @@ the request for the bound host `api.vidoc.dev`.
 ## Decisions
 
 - ADR-0104: the Vidoc scan is an agent-run gate, not a Yulius CI job, because CI jobs hold no
-  secrets by design; making CI use agent secrets is a separate change (issue filed).
+  secrets by design; making CI use agent secrets is a separate change (issue #466).
 - The scan driver is Python standard library, like the other gate scripts: no new dependency, and
   `urllib` honours the proxy and CA variables of agent sessions.
 - The CLI is pinned through a lockfile (integrity hashes) rather than `npx pkg@version`, which pins
