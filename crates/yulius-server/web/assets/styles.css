@@ -2198,10 +2198,40 @@ button.task-group-head:hover { color: var(--text); }
 /* Block flow, so the lines beside the corner's web (a float) make room for it. */
 .ss-entries { margin: 0; padding: 0; list-style: none; }
 .ss-entry + .ss-entry { margin-top: 12px; }
-.ss-tui > .ss-more, .ss-tui > .ss-locked { margin-top: 16px; }
-.ss-web { float: right; width: 84px; height: 102px; margin: -16px -32px 8px 16px; pointer-events: none; } /* 3 px pixels, in the well's corner */
-.ss-web-thread { fill: var(--session-web); }
+.ss-tui > .ss-more, .ss-tui > .ss-locked { position: relative; margin-top: 16px; }
+/* The web floats in the well's corner and sticks there while the page scrolls (SPEC-101): the first
+   lines wrap beside it, later ones paint over it (everything after it is positioned), and while it
+   is stuck under them (.ss-web-stuck, from pages/sessions.js) it fades to a colour they read on at AA. */
+.ss-web { position: sticky; top: 0; float: right; width: 84px; height: 102px; margin: -16px -32px 8px 16px; pointer-events: none; } /* 3 px pixels, in the well's corner */
+.ss-web-thread, .ss-web-silk { fill: var(--session-web); }
 .ss-web-spider { fill: var(--session-dim); }
+.ss-web-stuck :is(.ss-web-thread, .ss-web-silk, .ss-web-spider) { fill: var(--session-web-stuck); }
+.ss-web-mark { height: 0; margin-top: -16px; } /* at the well's top, where the web sticks, above its padding */
+/* Every 8 s the spider climbs 6 pixels up its thread, one pixel a step, hangs there and drops back,
+   its legs switching frames on each step (SPEC-101); the thread shortens with it, from its top. */
+.ss-web-spider { animation: ss-spider-climb var(--duration-spider) steps(6, end) infinite; }
+.ss-web-silk { transform-box: fill-box; transform-origin: top; animation: ss-spider-silk var(--duration-spider) steps(6, end) infinite; }
+.ss-web-legs-a { animation: ss-spider-legs-a var(--duration-spider) steps(1, end) infinite; }
+.ss-web-legs-b { visibility: hidden; animation: ss-spider-legs-b var(--duration-spider) steps(1, end) infinite; }
+@keyframes ss-spider-climb { 0%, 50% { transform: none; } 62%, 80% { transform: translateY(-6px); } 92%, 100% { transform: none; } }
+@keyframes ss-spider-silk { 0%, 50% { transform: none; } 62%, 80% { transform: scaleY(var(--ss-silk-top)); } 92%, 100% { transform: none; } }
+@keyframes ss-spider-legs-a {
+  0%, 54%, 58%, 62%, 84%, 88%, 92%, 100% { visibility: visible; }
+  52%, 56%, 60%, 82%, 86%, 90% { visibility: hidden; }
+}
+@keyframes ss-spider-legs-b {
+  0%, 54%, 58%, 62%, 84%, 88%, 92%, 100% { visibility: hidden; }
+  52%, 56%, 60%, 82%, 86%, 90% { visibility: visible; }
+}
+/* Now and then a cockroach runs across the well (SPEC-101; pages/sessions.js runCockroach moves it).
+   The well clips it at its sides: clip, not hidden, so the web's sticky position keeps the page's scroll. */
+.ss-tui { overflow-x: clip; }
+.ss-roach { position: absolute; top: 0; left: 0; width: 48px; height: 21px; pointer-events: none; fill: var(--session-roach); } /* 3 px pixels */
+.ss-roach-legs-a { animation: ss-roach-legs-a var(--duration-scurry) steps(1, end) infinite; }
+.ss-roach-legs-b { visibility: hidden; animation: ss-roach-legs-b var(--duration-scurry) steps(1, end) infinite; }
+@keyframes ss-roach-legs-a { 0%, 100% { visibility: visible; } 50% { visibility: hidden; } }
+@keyframes ss-roach-legs-b { 0%, 100% { visibility: hidden; } 50% { visibility: visible; } }
+@media (prefers-reduced-motion: reduce) { .ss-web-spider, .ss-web-silk, .ss-web-legs, .ss-roach-legs { animation: none; } }
 .ss-locked { display: flex; align-items: center; gap: 1ch; padding: 6px 1ch; border: 1px solid var(--session-border); border-radius: var(--radius); color: var(--session-dim); cursor: not-allowed; }
 .ss-locked > .icon { flex: none; }
 /* content-visibility clips paint at the entry's edge: what highlights it (focus, the search target,
@@ -2254,6 +2284,8 @@ button.task-group-head:hover { color: var(--text); }
   .ss-inner > .ss-body > :not(.ss-tui) { margin: 0 12px 12px; }
   .ss-tui { padding: 12px 12px 24px; font-size: var(--fs-sm); line-height: var(--lh-sm); }
   .ss-web { width: 56px; height: 68px; margin: -12px -12px 8px 12px; } /* 2 px pixels */
+  .ss-web-mark { margin-top: -12px; }
+  .ss-roach { width: 32px; height: 14px; } /* 2 px pixels */
   .ss-has-when .ss-prompt { padding-right: 1ch; }
   .ss-when { position: static; align-self: flex-end; padding: 0; }
   .ss-summary { margin-left: 0; }
