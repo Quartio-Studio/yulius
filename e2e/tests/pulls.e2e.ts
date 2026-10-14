@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { failOnPageErrors, mock } from './support.ts';
+import { failOnPageErrors, mock, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -19,6 +19,14 @@ function storedPulls(browser: Browser): Promise<Array<[string, { number: number 
     const key = Object.keys(localStorage).find((k) => k.startsWith('yulius.pulls.') && k.endsWith('.sb_studio'));
     return key ? JSON.parse(localStorage.getItem(key) as string) : null;
   });
+}
+
+/** Replaces the stored pull requests of the studio sandbox with `rows` (any JSON). */
+function storePulls(browser: Browser, rows: unknown): Promise<void> {
+  return browser.evaluate((value) => {
+    const key = Object.keys(localStorage).find((k) => k.startsWith('yulius.pulls.') && k.endsWith('.sb_studio')) as string;
+    localStorage.setItem(key, JSON.stringify(value));
+  }, rows);
 }
 
 /** The sidebar's chips once the Git overview answered, as their texts ("#41"). */
@@ -58,24 +66,63 @@ test('the fresh read replaces the pull requests remembered from before', async (
   expect((await storedPulls(browser))!.some(([, pr]) => pr.number === 999)).toBe(false);
 });
 
-test('a malformed stored entry is ignored and the overview fills the rows', async ({ app, browser }) => {
-  await app.open(mock('/s/studio'));
-  const seen = await chipsAfterRead(browser);
-  await browser.evaluate(() => {
-    const key = Object.keys(localStorage).find((k) => k.startsWith('yulius.pulls.') && k.endsWith('.sb_studio')) as string;
-    localStorage.setItem(key, '{"not":"rows"}');
-  });
+for (const [what, value] of [
+  ['an object', { not: 'rows' }],
+  ['rows of the wrong shape', [['t', null], [1, { number: 5, state: 'open' }], ['t2', { number: 'x', state: 'open' }], ['t3', { number: 7 }]]],
+] as const) {
+  test(`a stored value that is ${what} is ignored and the overview fills the rows`, async ({ app, browser }) => {
+    await app.open(mock('/s/studio'));
+    const seen = await chipsAfterRead(browser);
+    await storePulls(browser, value);
 
-  await app.open(mock('/s/studio', `&hold=${GIT}`));
+    await app.open(mock('/s/studio', `&hold=${GIT}`));
+    await expect(browser.locator('.task-list .task-row').first()).toBeVisible();
+    await expect(chips(browser)).toHaveCount(0);
+    await release(browser);
+    await expect(chips(browser)).toHaveText(seen);
+  });
+}
+
+test('a sandbox no view watches does not use the remembered pull requests', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  await chipsAfterRead(browser);
+  // A failing pull request remembered for #12, which has none: in another sandbox nobody reads
+  // studio's overview, so a notification about #12 must not say what that old read said.
+  const id = await browser.evaluate(() => (window as unknown as { __yuliusMock: { tasks: Array<{ id: string; sandbox_id: string; number: number }> } }).__yuliusMock.tasks.find((t) => t.sandbox_id === 'sb_studio' && t.number === 12)!.id);
+  const rows = (await storedPulls(browser))!;
+  await storePulls(browser, [...rows, [id, { number: 999, url: 'https://github.com/x/y/pull/999', title: 'Old', state: 'open', base: 'dev', head: 'feat/old', checks: 'failure' }]]);
+
+  // Only the notification this change brings counts: the studio page may have stored one about #12.
+  await browser.evaluate(() => { for (const k of Object.keys(localStorage)) if (k.startsWith('yulius.notifications.')) localStorage.removeItem(k); });
+
+  // A new page load (another query, not only another hash): nothing read in memory yet.
+  await app.open(mock('/s/product', '&page=2'));
   await expect(browser.locator('.task-list .task-row').first()).toBeVisible();
-  await expect(chips(browser)).toHaveCount(0);
-  await release(browser);
-  await expect(chips(browser)).toHaveText(seen);
+  await touchTask(browser, 'sb_studio', 12, { status: 'running', activity: 'waiting' });
+  const detail = () => browser.evaluate(() => {
+    const key = Object.keys(localStorage).find((k) => k.startsWith('yulius.notifications.') && k !== 'yulius.notifications.filter');
+    const list = key ? JSON.parse(localStorage.getItem(key) as string) : [];
+    const found = (Array.isArray(list) ? list : []).find((n: { title: string }) => n.title.startsWith('#12 '));
+    return found ? found.detail as string : null;
+  });
+  await expect.poll(detail).not.toBeNull();
+  expect(await detail()).not.toContain('#999');
+});
+
+test('a session that expires removes the stored pull requests', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await chipsAfterRead(browser);
+  expect(await storedPulls(browser)).not.toBeNull();
+  await browser.evaluate(() => { (window as unknown as { __yuliusMock: { signedIn: boolean } }).__yuliusMock.signedIn = false; });
+  await screen.getByRole('link', /^Git/).first().click();
+  await expect(screen.getByText('You were signed out. Please sign in again.')).toBeVisible();
+  expect(await storedPulls(browser)).toBeNull();
 });
 
 test('signing out removes the stored pull requests', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
   await chipsAfterRead(browser);
+  expect(await storedPulls(browser)).not.toBeNull();
   await screen.getByRole('button', /account menu$/).click();
   await screen.getByRole('menuitem', 'Sign out').click();
   await expect(browser).toHaveURL(/#\/signin/);
