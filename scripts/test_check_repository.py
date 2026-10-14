@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import re
 import unittest
-from check_repository import STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, decision_errors, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, integration_test_errors, link_errors, manifest_errors, skill_deployment_errors, skill_errors, style_errors
+from check_repository import STYLESHEET, TOKENS, ROOT, INDEX, BRAND, brand_errors, conflict_marker_errors, decision_errors, module_errors, preload_errors, startup_modules, brand_name_errors, inline_style_errors, control_height_errors, contrast_errors, copy_errors, contrast_ratio, theme_tokens, _resolve, dependency_errors, integration_test_errors, link_errors, manifest_errors, skill_deployment_errors, skill_errors, style_errors
 
 
 def package(name, layer, dependencies=()):
@@ -280,6 +280,47 @@ class BypassTests(unittest.TestCase):
         css = (ROOT / TOKENS).read_text().replace('[data-theme="light"]', "[data-theme=light]")
         self.assertIn("light", theme_tokens(css))
 
+
+
+START, BASE, SEPARATOR, END = "<" * 7, "|" * 7, "=" * 7, ">" * 7
+
+
+class ConflictMarkerTests(unittest.TestCase):
+    """Markers are built here so this file never holds a marker line itself (#364)."""
+
+    def test_each_marker_fails_with_file_and_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "docs").mkdir()
+            (root / "docs/api.md").write_text(f"# API\n{START} HEAD\nours\n{BASE} base\nbase\n{SEPARATOR}\ntheirs\n{END} origin/dev\n")
+            (root / "clean.md").write_text("# API\nours\n")
+            errors = conflict_marker_errors(root, ["docs/api.md", "clean.md"])
+            self.assertEqual([e.split(": ")[0] for e in errors], ["docs/api.md:2", "docs/api.md:4", "docs/api.md:6", "docs/api.md:8"])
+            self.assertTrue(all("unresolved merge conflict marker" in e for e in errors))
+            (root / "bare.js").write_text(f"{START}\n{END}\n")
+            self.assertEqual(len(conflict_marker_errors(root, ["bare.js"])), 2)
+
+    def test_crlf_marker_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a.toml").write_bytes(f"a = 1\r\n{SEPARATOR}\r\nb = 2\r\n".encode())
+            self.assertEqual([e.split(": ")[0] for e in conflict_marker_errors(root, ["a.toml"])], ["a.toml:2"])
+
+    def test_lookalikes_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "a.md").write_text(f"text {START} HEAD\n {SEPARATOR}\n{'=' * 8}\n{'<' * 8} x\n{SEPARATOR} heading\n{END}x\n")
+            self.assertEqual(conflict_marker_errors(root, ["a.md"]), [])
+
+    def test_vendored_binary_and_missing_files_are_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vendored = "crates/yulius-server/web/assets/vendor/lib.js"
+            (root / vendored).parent.mkdir(parents=True)
+            (root / vendored).write_text(f"{START} HEAD\n")
+            (root / "image.png").write_bytes(f"\0{SEPARATOR}\n".encode())
+            (root / "sub").mkdir()
+            self.assertEqual(conflict_marker_errors(root, [vendored, "image.png", "gone.md", "sub"]), [])
 
 
 class ModuleTests(unittest.TestCase):
