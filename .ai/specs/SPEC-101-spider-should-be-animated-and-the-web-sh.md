@@ -1,11 +1,11 @@
 ---
 yulius-task: d9335b0e-efd8-4e66-8baa-b8097fa80616
-status: in-progress
+status: done
 ---
 
 # SPEC-101: the session's spider moves, its web stays in view, and a cockroach runs by
 
-Status: in progress
+Status: implemented
 Date: 2026-10-14
 Owner: Yulius task #86
 Scope authorization: user request (task #86): "spider should be animated and the web should be
@@ -53,8 +53,8 @@ the way of reading, selecting or using the keyboard.
 - [x] The corner's web sticks to the top of the view while the transcript scrolls
 - [x] The spider climbs its thread and wiggles its legs, still under reduced motion
 - [x] Now and then a pixel-art cockroach runs across the session, never under reduced motion
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -103,3 +103,34 @@ the way of reading, selecting or using the keyboard.
   well's top. The observer reads its latest entry. Right-to-left runs are tested.
 - The well clips horizontally (`overflow-x: clip`), not `hidden`: `clip` makes no scroll
   container, so the web's sticky position still follows the page's scroll.
+
+## Evidence
+
+- Red first, `e2e/tests/sessions.e2e.ts` (mock mode). Each test failed before its change, for the
+  stated reason:
+  - The sticky test: the web scrolled away, its top 47 px above the view.
+  - The spider test: there was no `.ss-web-silk` (no animations).
+  - The three cockroach tests, run against the previous assets: `cockroachDelay is not a function`,
+    and no timer was set in the session view.
+  - Review round 1: the faded-colour test (still `--session-web`) and the lowest run (421 > 420).
+  - Review round 2: the web was stuck but not yet faded 3 px past the well's top.
+- `scripts/dev ci` at 2d288bf1 (origin/dev dd0f8bb4 merged): exit 0. nextest ran 1520 tests:
+  1520 passed, 16 skipped. Earlier, at 79ccf930: exit 0, 1520 passed. The first run had failed on
+  the repository check: animation durations must be `--duration*` tokens, fixed with
+  `--duration-spider` and `--duration-scurry`.
+- `python3 scripts/check_repository.py`: passes, including the new `--session-web-stuck` pairs. At
+  first it caught the light theme's `--session-ok` at 4.11:1 on the stuck colour, which was
+  lightened to `#e6e2da`.
+- The full e2e suite at 2d288bf1: 292 passed, 1 skipped (42 files). `sessions.e2e.ts`: 20 of 20,
+  axe clean.
+- Looked at by hand in Chromium (Playwright screenshots of the mock): the spider at rest, mid-climb
+  (second leg frame) and at the top; the web stuck and faded after scrolling; the cockroach in
+  the dark and light themes and at 390 px.
+- Independent review in fresh sessions (`om-code-review`):
+  - Round 1 at cb80760f: approve pending the gate, with 2 minors and 3 nits. All were fixed
+    test-first in 158afc69.
+  - Round 2 at d2931614: APPROVE, with 2 minors and 2 nits, fixed in 2d288bf1.
+- Not covered: a real server with real sessions; the view and its assets are the same, only the
+  mock backend serves them in tests. The harness cannot emulate `prefers-reduced-motion`, so
+  reduced motion is tested through the stylesheet rule and a stubbed `matchMedia`. A reviewer
+  also checked it with Playwright's real `reducedMotion: 'reduce'`.
