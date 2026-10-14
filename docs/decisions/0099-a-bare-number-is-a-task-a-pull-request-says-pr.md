@@ -46,6 +46,7 @@ in their chips. In any one row the two notations looked the same.
   time, which is still in the row's tooltip and in the Tasks page. Without the container rules,
   titles shrank to one letter there.
 - **Accessible names start differently.** A sidebar row's link name now reads "<state> Task #N
-  <title>". Tests that match row names by their beginning include the number.
+  <title>", or "<state> Task #N PR #M, pull request, open … <title>" on a row with a pull request.
+  Tests that match row names by their beginning include the number.
 - **Future chips must follow the convention.** Any new place that shows a pull request number
   uses `prChip` or writes `PR #N`, and a bare `#N` stays reserved for tasks.

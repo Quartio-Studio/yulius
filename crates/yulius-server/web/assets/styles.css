@@ -429,7 +429,7 @@ button.task-group-head:hover { color: var(--text); }
 /* With the menu's button shown (and Archive beside it), the title ends before them; the age gives
    way entirely and the title may shrink below its 3 em (SPEC-122). */
 @media (min-width: 768px) {
-  .task-row:is(:hover, :focus-within) .task-link { padding-right: calc(10px + var(--control-sm)); }
+  .task-row:is(:hover, :focus-within) .task-link { padding-right: calc(12px + var(--control-sm)); }
   .task-row:is(:hover, :focus-within) .task-title { min-width: 0; }
   .task-row.can-archive:is(:hover, :focus-within) .task-link { padding-right: calc(12px + 2 * var(--control-sm)); }
   .task-row.can-archive:is(:hover, :focus-within) .task-age { display: none; }

@@ -65,6 +65,8 @@ details (`prLine`) link the number.
 - [x] Read the product context and related work, then write and validate the spec
 - [x] Sidebar rows show the task number before the title
 - [x] Pull request chips read "PR #N" everywhere, so a bare #N always means a task
+- [x] Review round 1 findings fixed test-first: Git board chip, phone drawer, hover, tooltip, screen reader name
+- [x] Review round 2 findings fixed test-first: hover on non-archivable rows, shells tooltip, label in name
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
@@ -116,5 +118,10 @@ the sidebar link's name now starts "Needs you in the browser Task #10 …".
   the time where it cannot fit, which is more predictable than an ellipsis ("do…"), and keep it
   in the row's tooltip. The thresholds come from measured widths: a row with a chip and the
   longest times needs about 335 px of content, and one without needs about 260 px.
+- **On hover the time is only hidden, not removed, on rows that cannot be archived.** The menu's
+  button covers the row's right end, and the link's padding keeps the title clear of it. Review
+  round 3 suggested `display: none` for the time on every hovered row, which would give the
+  title the time's width while the pointer is on it. That gain is cosmetic and would reflow every
+  hovered row, so it was left out after three rounds.
 - **Muted plain text for the number, not a second pill.** Two pills side by side would compete,
   and the muted `#N` before a title matches the Git board and the step strip.
