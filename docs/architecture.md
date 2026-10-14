@@ -760,6 +760,26 @@ sequenceDiagram
     A->>S: PUT notes/presence {selection: null} (hidden, another tab, page gone)
 ```
 
+The Editor shows the same presence for files
+([SPEC-127](../.ai/specs/SPEC-127-the-editor-gets-the-notepad-s-smooth-sel.md),
+[decision 0103](decisions/0103-editor-presence-mirrors-monaco-and-reaches-writers-only.md)): the
+browser loop is shared (`presence.js`), `App::file_presence` checks the path like the files API
+and shares the notepads' limiter, and the event goes through a third envelope audience,
+`Envelope.writers_only`, which `WS /api/events` delivers only to people with write access to the
+sandbox (cached and re-checked like sandbox visibility). The drawing copies what Monaco renders:
+its selection boxes and teammates' decorations become the notepads' gliding shapes in a layer
+inside Monaco's scrolled content (`editorlayer.js`).
+
+```mermaid
+flowchart LR
+    A[Alice's Editor<br/>presence.js] -->|PUT files/presence<br/>root, path, sha256, selection| S[App::file_presence<br/>file_target + limiter]
+    S -->|publish_to_writers| BUS[(event bus<br/>writers_only)]
+    BUS -->|WS /api/events<br/>can_work_in| B[Bob's Editor<br/>writer]
+    BUS -.->|dropped| R[Reader of the sandbox]
+    B --> M[Monaco decoration<br/>+ caret position]
+    M --> L[editorlayer.js<br/>rounded gliding shapes]
+```
+
 ```mermaid
 sequenceDiagram
     participant A as Notepad (notes.js)

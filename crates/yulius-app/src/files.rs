@@ -12,13 +12,15 @@
 //!   when the file changed since the editor read it (agents edit the same files) or, for a new
 //!   file, when it already exists;
 //! - each user's editor view (open files, unsaved text) lives only in their browser; nothing
-//!   of it is stored or shared.
+//!   of it is stored, and only where their selection is in a file is relayed to the sandbox's
+//!   other writers (SPEC-127).
 
 use std::path::{Component, Path, PathBuf};
 
 use yulius_contracts::api::files::{
-    CreateEntry, DirListing, FileContent, FileEntry, FileWritten, WriteFile,
+    CreateEntry, DirListing, FileContent, FileEntry, FilePresence, FileWritten, WriteFile,
 };
+use yulius_contracts::events::UiEvent;
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::permission::Action;
 
@@ -26,11 +28,14 @@ use crate::auth::AuthContext;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::SandboxRecord;
+use crate::notes::{check_presence, presence_name};
 
 /// Largest file the editor opens or writes.
 pub const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
 /// Entries returned per directory listing.
 pub const MAX_ENTRIES: usize = 2000;
+/// Longest path a presence update may name (SPEC-127).
+pub const MAX_PRESENCE_PATH: usize = 4096;
 /// Bytes inspected for NUL when telling text from binary.
 const SNIFF_BYTES: usize = 8192;
 
@@ -486,6 +491,77 @@ impl App {
             std::fs::remove_file(&target.path)
         };
         result.map_err(|e| io_error(&e))
+    }
+}
+
+impl App {
+    /// `PUT /api/sandboxes/{sid}/files/presence`: relays the caller's selection in a file to the
+    /// people who may read the sandbox's files (SPEC-127 EDT-008..009), with the notepads' limiter.
+    ///
+    /// # Errors
+    /// Access errors as reading the file, `Invalid` for a bad path, `sha256`, `client` or an
+    /// offset past [`MAX_FILE_BYTES`], `Capacity` past the presence limit.
+    pub async fn file_presence(
+        &self,
+        ctx: &AuthContext,
+        sandbox: &str,
+        input: &FilePresence,
+    ) -> AppResult<()> {
+        let root = match input.root.as_deref() {
+            None | Some("" | "sandbox") => "sandbox",
+            Some(other) => other,
+        };
+        if input.path.len() > MAX_PRESENCE_PATH {
+            return Err(AppError::Invalid(format!(
+                "a path is at most {MAX_PRESENCE_PATH} bytes"
+            )));
+        }
+        let target = self
+            .file_target(ctx, sandbox, Some(root), &input.path, false)
+            .await?;
+        // A folder is not a file; a link is not followed to tell (it may lead outside the folder).
+        let folder = std::fs::symlink_metadata(&target.path).is_ok_and(|meta| meta.is_dir());
+        if target.relative.is_empty() || folder {
+            return Err(AppError::Invalid("presence names a file".into()));
+        }
+        // Someone is in a file that is there; leaving one may come after it was deleted.
+        if input.selection.is_some() && !Self::existing(&target)?.is_file() {
+            return Err(AppError::Invalid("presence names a file".into()));
+        }
+        if !(input.sha256.is_empty()
+            || (input.sha256.len() == 64
+                && input
+                    .sha256
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))))
+        {
+            return Err(AppError::Invalid(
+                "sha256 is 64 lowercase hex digits".into(),
+            ));
+        }
+        // A UTF-16 offset never exceeds the UTF-8 length of the text.
+        let max_offset = u32::try_from(MAX_FILE_BYTES).unwrap_or(u32::MAX);
+        check_presence(input.selection, max_offset, &input.client)?;
+        let sid = SandboxId::parse(sandbox).map_err(|_| AppError::NotFound)?;
+        self.count_presence(&format!(
+            "{}|file:{sid}:{root}:{}",
+            ctx.user.id, target.relative
+        ))?;
+        self.events.publish_to_writers(
+            sid.clone(),
+            UiEvent::FilePresence {
+                sandbox_id: sid.to_string(),
+                root: root.to_owned(),
+                path: target.relative,
+                user_id: ctx.user.id.to_string(),
+                client: input.client.clone(),
+                name: presence_name(ctx),
+                sha256: input.sha256.clone(),
+                selection: input.selection,
+                hello: input.hello,
+            },
+        );
+        Ok(())
     }
 }
 

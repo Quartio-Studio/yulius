@@ -2131,10 +2131,10 @@ a.dl-task:hover { text-decoration: underline; }
 .notes-tabs .term-tab { padding: 0 12px; border-top: 0; border-bottom: 0; border-left: 0; background: none; font: inherit; }
 .notes-tabs .term-tab.active { background: var(--term-bg); }
 /* Tabs in any order (SPEC-112): the dragged tab rides above, the others slide aside, it settles. */
-.notes-tabs.reordering { cursor: grabbing; user-select: none; }
-.notes-tabs.reordering .term-tab { transition: transform var(--duration-fast) var(--ease); }
-.notes-tabs .term-tab.dragging { position: relative; z-index: var(--z-raised); transition: none; background: var(--surface-2); box-shadow: var(--shadow); cursor: grabbing; }
-.notes-tabs .term-tab.settling { position: relative; z-index: var(--z-raised); transition: transform var(--duration-fast) var(--ease); }
+.notes-tabs.reordering, .ed-tabs.reordering { cursor: grabbing; user-select: none; }
+.notes-tabs.reordering .term-tab, .ed-tabs.reordering .ed-tab { transition: transform var(--duration-fast) var(--ease); }
+.notes-tabs .term-tab.dragging, .ed-tabs .ed-tab.dragging { position: relative; z-index: var(--z-raised); transition: none; background: var(--surface-2); box-shadow: var(--shadow); cursor: grabbing; }
+.notes-tabs .term-tab.settling, .ed-tabs .ed-tab.settling { position: relative; z-index: var(--z-raised); transition: transform var(--duration-fast) var(--ease); }
 /* The grip says a tab drags (SPEC-136): faint at rest, the tab's colour when it is hovered, chosen
    or dragged. Only a mouse or pen drags (touch scrolls the strip), so a device with neither does not
    see it, whatever its primary pointer. */
@@ -2178,10 +2178,18 @@ a.dl-task:hover { text-decoration: underline; }
 .tl-name { position: absolute; left: 0; bottom: 100%; max-width: 16ch; overflow: hidden; text-overflow: ellipsis; padding: 0 4px;
   border-radius: var(--radius-xs) var(--radius-xs) var(--radius-xs) 0; background: var(--tl-colour); color: var(--peer-ink); font-size: var(--fs-xs); font-weight: 600; line-height: var(--lh-xs); white-space: nowrap; }
 .tl-caret.tl-below .tl-name { bottom: auto; top: 100%; border-radius: 0 var(--radius-xs) var(--radius-xs) var(--radius-xs); }
+.tl-caret.tl-off { opacity: 0; }
+/* The Editor (SPEC-127): Monaco's selection boxes and teammates' decorations are see-through and
+   copied into the same shapes, in a layer that scrolls with Monaco's text, behind it. */
+.ed-layer { position: absolute; top: 0; left: 0; width: 0; height: 0; overflow: visible; pointer-events: none; }
+.ed-host .monaco-editor .view-overlays .selected-text,
+.ed-host .monaco-editor .view-overlays .ed-peer-range { background: transparent; }
 /* Forced colours paint author backgrounds away: the browser's own selection comes back. */
 @media (forced-colors: active) {
   .notes-text.drawn-selection::selection { background: Highlight; color: HighlightText; }
   .text-layer { display: none; }
+  .ed-layer { display: none; }
+  .ed-host .monaco-editor .view-overlays .selected-text { background: Highlight; }
 }
 .notes-text[readonly] { color: var(--text-2); }
 .notes-meta { flex: none; margin: 0; padding: 4px 16px; min-height: calc(var(--lh-sm) + 8px); border-top: 1px solid var(--border); color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }

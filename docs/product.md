@@ -96,6 +96,10 @@ watching, steering and unblocking.
   clicked or dragged. Selections are drawn rounded and glide, and
   teammates who have a shared notepad open show as a caret with their name and their selection
   in their own colour.
+- **Editor**: Monaco over the sandbox's files for people with write access. Like Notes, its
+  selection is drawn rounded and glides, people who have the same file open see each other's
+  caret, name and selection in their Notes colour (awareness only: unsaved text stays each
+  person's own), and its tabs go in any order.
 - **Editor, terminals, Git view, automations, workflow catalog** in one web UI, whose menus fit
   the window and filter as people type when they are long; the start menu shows five tasks at a
   time and says how many more it scrolls to. Messages are

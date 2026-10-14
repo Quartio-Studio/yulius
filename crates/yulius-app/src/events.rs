@@ -13,6 +13,9 @@ pub struct Envelope {
     pub admin_only: bool,
     /// Only this person may see it (`None` = anyone the other fields allow; SPEC-103).
     pub user: Option<UserId>,
+    /// Only people with write access to `sandbox` may see it: what the editor's files show
+    /// (SPEC-127). Without a sandbox nobody does.
+    pub writers_only: bool,
     /// The event.
     pub event: UiEvent,
 }
@@ -37,6 +40,18 @@ impl EventBus {
             sandbox,
             admin_only,
             user: None,
+            writers_only: false,
+            event,
+        });
+    }
+
+    /// Publishes an event of `sandbox` that only its writers' streams receive (never blocks).
+    pub fn publish_to_writers(&self, sandbox: SandboxId, event: UiEvent) {
+        let _ = self.tx.send(Envelope {
+            sandbox: Some(sandbox),
+            admin_only: false,
+            user: None,
+            writers_only: true,
             event,
         });
     }
@@ -47,6 +62,7 @@ impl EventBus {
             sandbox: None,
             admin_only: false,
             user: Some(user),
+            writers_only: false,
             event,
         });
     }
