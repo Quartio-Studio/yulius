@@ -10,7 +10,7 @@ use serde::Deserialize;
 use yulius_app::model::Secret;
 use yulius_app::vault::Revealed;
 use yulius_contracts::api::secrets::{
-    AgentSecretInput, AgentSecretPatch, AgentSecretView, HostRequestAnswer, ReauthPassword,
+    AgentSecretInput, AgentSecretPatch, AgentSecretView, EnvFilesAnswer, HostRequestAnswer, ReauthPassword,
     ReauthStatus, RevealRequest, TeamSecretInput, TeamSecretPatch, TeamSecretView, UnlockRequest,
     VaultActivity,
 };
@@ -44,6 +44,7 @@ pub fn public() -> Router<AppState> {
         )
         .route("/api/agent-secrets/{id}/reveal", post(agent_reveal))
         .route("/api/agent-secrets/{id}/request", post(agent_answer))
+        .route("/api/agent-secrets/{id}/env", post(agent_env_answer))
 }
 
 /// Internal (loopback, task token) routes of the vault.
@@ -240,6 +241,15 @@ async fn agent_answer(
     Json(answer): Json<HostRequestAnswer>,
 ) -> ApiResult<Json<AgentSecretView>> {
     Ok(Json(app.answer_host_request(&ctx, &id, &answer).await?))
+}
+
+async fn agent_env_answer(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(id): Path<String>,
+    Json(answer): Json<EnvFilesAnswer>,
+) -> ApiResult<Json<AgentSecretView>> {
+    Ok(Json(app.answer_env_files(&ctx, &id, &answer).await?))
 }
 
 async fn agent_delete(

@@ -173,6 +173,8 @@ impl App {
             last_used_at: None,
             requested_hosts: Vec::new(),
             requested_by: None,
+            env_files: crate::ports::vault::EnvFiles::No,
+            env_requested_by: None,
         };
         self.deps.store.vault_insert(&record).await?;
         self.vault_audit(
