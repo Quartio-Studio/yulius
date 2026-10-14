@@ -43,7 +43,6 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Secrets page ("Task #N asks to copy its value into the project's git-ignored .env": Allow,
   Dismiss, later Revoke). The briefing, `secrets_list` and `infra-bootstrap` name this default.
   This prepares Yulius CD (task #113).
-  panel, so its presence leaves and the browser stream stops.
 - Agents scan every change with Vidoc before delivery (SPEC-128, ADR-0104, task #109).
   `scripts/dev security` runs the Vidoc CLI pinned in `tools/vidoc` on the current branch. Vidoc
   scans the files that the branch changed since `dev`, and the command fails when the branch has

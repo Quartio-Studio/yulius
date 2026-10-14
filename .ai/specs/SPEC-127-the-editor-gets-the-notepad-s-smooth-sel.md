@@ -218,10 +218,13 @@ sequenceDiagram
   that chunk held back until last, the old loader still opened a clean editor 3 times out of 3,
   since `editor.main` waits for it through `index-*.js` and the language chunks touch no services
   as they run. The loader change was reverted; #394 stays open with this sighting. The presence
-  tests themselves are not the cause (the errors come from Monaco's idle-time contributions).
+  tests are likely not the cause: every frame of the logged stack is inside the vendored Monaco,
+  in `_instantiateSome`, where an editor's contributions are created when the page is idle (the
+  stack is on #394).
+
 ## Evidence
 
-Run on the branch merged with `origin/dev` (2026-10-14):
+Run on the branch merged with `origin/dev` (2026-10-15):
 
 - `scripts/dev ci` at the delivered head (fmt, clippy `-D warnings`, nextest, doctests,
   cargo-deny, cargo-shear, rustdoc, repository check): see the last line of this section.
