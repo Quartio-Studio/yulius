@@ -9,6 +9,8 @@ and the branch must have no open critical or high finding. Exit codes: 0 passed,
 run (no key or a rejected one, no Node, a detached HEAD, uncommitted files, no base).
 """
 from collections import deque
+import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -29,6 +31,18 @@ MIN_NODE = 20
 # A whole scan takes 10 to 15 minutes (Vidoc documentation); past this the CLI is killed.
 CLI_TIMEOUT_S = 45 * 60
 HTTP_TIMEOUT_S = 30
+GIT_TIMEOUT_S = 60
+NPM_TIMEOUT_S = 10 * 60
+INSTALL_STAMP = ".yulius-lock-sha256"
+# Changed files of these kinds are scanned by Vidoc: "nothing to scan" with one of them is wrong.
+SOURCE_SUFFIXES = {".rs", ".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".go", ".java",
+                   ".rb", ".php"}
+CLI_FINDING = re.compile(r"^\s*\[(Critical|High)\] ", re.MULTILINE)
+# How the CLI itself checks it can reach origin before asking it for the default branch; when the
+# check fails it quietly compares with origin/main.
+CLI_REMOTE_CHECK = ("-c", "credential.interactive=never", "-c", "core.askPass=", "-c",
+                    "core.sshCommand=ssh -oBatchMode=yes -oStrictHostKeyChecking=yes",
+                    "ls-remote", "origin", "HEAD")
 MAX_ANSWER_BYTES = 8 * 1024 * 1024
 OUTPUT_LINES = 2000
 NOTHING_TO_SCAN = "No scannable files matched the selected scope"
@@ -46,6 +60,7 @@ CLI_ENV = {
     "PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ",
     "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
     "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "NODE_USE_ENV_PROXY", "YULIUS_URL", "YULIUS_TASK_TOKEN",
+    "SSH_AUTH_SOCK", "XDG_CONFIG_HOME",
 }
 
 
@@ -68,6 +83,8 @@ def settings(env):
     token = (env.get("VIDOC_TOKEN") or "").strip() or (env.get("VIDOC_API_KEY") or "").strip()
     if not token:
         raise Usage(f"No Vidoc API key: set VIDOC_TOKEN or VIDOC_API_KEY. {HOW_TO_ADD_KEY}")
+    if any(c.isspace() or not c.isprintable() for c in token):
+        raise Usage("the Vidoc API key contains whitespace or control characters")
     api = (env.get("VIDOC_API_URL") or DEFAULT_API).strip().rstrip("/")
     parts = urllib.parse.urlsplit(api)
     if parts.scheme != "https" or not parts.hostname or parts.path or parts.query or parts.fragment:
@@ -79,6 +96,15 @@ def node_major(version):
     """The major version in `node --version` output (`v24.21.0`), or None."""
     match = re.match(r"\s*v(\d+)\.", version)
     return int(match.group(1)) if match else None
+
+
+def require_node(which, version_of):
+    """Refuses (exit 2) without npm and Node 20+; `version_of(node)` is `node --version`."""
+    node = which("node")
+    version = version_of(node) if node else ""
+    if not which("npm") or (node_major(version) or 0) < MIN_NODE:
+        raise Usage(f"the Vidoc CLI needs Node {MIN_NODE}+ and npm on PATH "
+                    f"(found {version.strip() or 'no node'}{'' if which('npm') else ', no npm'})")
 
 
 def parse_scan_id(output):
@@ -95,19 +121,31 @@ def cli_env(env, token, api, log):
     return out
 
 
+def _lock_digest(tool):
+    return hashlib.sha256((tool / "package-lock.json").read_bytes()).hexdigest()
+
+
 def needs_install(tool):
-    """Whether `tool/node_modules` lacks the CLI version pinned in `tool/package.json`."""
+    """Whether `tool/node_modules` is not an install of the current `tool/package-lock.json` with
+    the CLI version pinned in `tool/package.json`."""
     pin = json.loads((tool / "package.json").read_text())["dependencies"][CLI_PACKAGE]
-    installed = tool / "node_modules" / CLI_PACKAGE / "package.json"
+    modules = tool / "node_modules"
     try:
-        return json.loads(installed.read_text()).get("version") != pin
+        return (json.loads((modules / CLI_PACKAGE / "package.json").read_text()).get("version") != pin
+                or not (modules / ".bin" / "vidoc").exists()
+                or (modules / INSTALL_STAMP).read_text().strip() != _lock_digest(tool))
     except (OSError, ValueError):
         return True
 
 
-def check_repository(git):
+def mark_installed(tool):
+    (tool / "node_modules" / INSTALL_STAMP).write_text(_lock_digest(tool) + "\n")
+
+
+def check_repository(git, cli_environment):
     """The branch, the base the CLI will compare with and the files changed since, once the tree is
-    something the CLI scans faithfully. `git(*args) -> (exit code, stdout)`."""
+    something the CLI scans faithfully. `git(*args, env=None) -> (exit code, stdout)`; the
+    reachability check runs as the CLI's does, in the CLI's environment."""
     code, branch = git("symbolic-ref", "--quiet", "--short", "HEAD")
     if code != 0 or not branch.strip():
         raise Usage("HEAD is detached: Vidoc names the scan after the branch; check out a branch")
@@ -115,7 +153,17 @@ def check_repository(git):
     if code != 0 or status.strip():
         raise Usage("the working tree has uncommitted or untracked files: Vidoc uploads and scans "
                     "the working tree, not the commits; commit or remove them first")
-    code, shown = git("remote", "show", "origin")
+    code, remotes = git("remote")
+    if code != 0 or (remotes.split() or [""])[0] != "origin":
+        raise Usage("the CLI reads the first remote as the repository; it must be origin")
+    check_env = {k: v for k, v in cli_environment.items()
+                 if k not in ("GIT_ASKPASS", "SSH_ASKPASS", "ASKPASS")}
+    check_env["GIT_TERMINAL_PROMPT"] = "0"
+    code, _ = git(*CLI_REMOTE_CHECK, env=check_env)
+    if code != 0:
+        raise Usage("the CLI cannot reach origin with its environment (`git ls-remote origin HEAD` "
+                    "failed); it would compare with origin/main instead of the default branch")
+    code, shown = git("remote", "show", "origin", env=check_env)
     head = re.search(r"^\s*HEAD branch:\s*(\S+)\s*$", shown, re.MULTILINE) if code == 0 else None
     if head is None or head.group(1) == "(unknown)":
         raise Usage("cannot read origin's default branch (`git remote show origin` needs access to "
@@ -155,21 +203,28 @@ def finding_line(issue):
 def gate(env, git, api, cli, log, out):
     """Runs the scan with `cli(env) -> (exit code, output)` and judges it through `api.get`."""
     token, url = settings(env)
-    branch, base, changed = check_repository(git)
+    environment = cli_env(env, token, url, log)
+    branch, base, changed = check_repository(git, environment)
     try:
         api.get("/v1/codebase")
     except HttpError as err:
         if err.status in (401, 403):
             raise Usage(f"Vidoc rejected the key ({err}): the host api.vidoc.dev may not be bound "
                         f"to the secret yet, or the key expired. {HOW_TO_ADD_KEY}") from err
+        if err.status == 0 or err.status >= 500:
+            raise Usage(f"Vidoc API {url} cannot be reached: {err}") from err
         raise Failed(f"Vidoc API {url} is not usable: {err}") from err
     print(f"Vidoc: scanning {branch}: {len(changed)} changed file(s) since {base}.", file=out, flush=True)
-    code, output = cli(cli_env(env, token, url, log))
+    code, output = cli(environment)
     if code != 0:
         raise Failed(f"vidoc ci failed with exit code {code}; its log is {log}")
     scan_id = parse_scan_id(output)
     if scan_id is None:
         if NOTHING_TO_SCAN in output:
+            sources = [path for path in changed if Path(path).suffix in SOURCE_SUFFIXES]
+            if sources:
+                raise Failed(f"vidoc ci found nothing to scan, but the branch changed source files "
+                             f"since {base} ({', '.join(sources[:5])}): the CLI chose another base")
             print(f"Vidoc: nothing to scan on {branch}: none of its {len(changed)} changed file(s) "
                   f"since {base} is a file Vidoc scans.", file=out)
             return 0
@@ -184,6 +239,10 @@ def gate(env, git, api, cli, log, out):
     issues = page.get("issues") if isinstance(page, dict) else None
     if type(total) is not int or total < 0 or not isinstance(issues, list):
         raise Failed(f"Vidoc answered an unexpected issue list for scan {scan_id}")
+    cli_findings = len(CLI_FINDING.findall(output))
+    if not total and cli_findings:
+        raise Failed(f"vidoc ci printed {cli_findings} critical or high issue(s) but the API reports "
+                     f"none for {branch}: the verdict cannot be trusted")
     if total:
         print(f"Vidoc found {total} open critical or high issue(s) on {branch} (scan {scan_id}):", file=out)
         for issue in issues:
@@ -220,6 +279,9 @@ class Api:
             raise HttpError(err.code, _message(err.read(4096))) from err
         except (urllib.error.URLError, OSError) as err:
             raise HttpError(0, f"{url}: {getattr(err, 'reason', err)}") from err
+        except (ValueError, http.client.HTTPException) as err:
+            # The message can quote the header, that is the key.
+            raise HttpError(0, f"the request to {url} could not be sent ({type(err).__name__})") from None
         if len(body) > MAX_ANSWER_BYTES:
             raise HttpError(0, f"{url}: the answer is larger than {MAX_ANSWER_BYTES} bytes")
         try:
@@ -241,29 +303,35 @@ def run_cli(argv, cwd, timeout_s):
     into one). Returns (exit code, the kept output)."""
 
     def runner(env):
-        process = subprocess.Popen([*argv, "ci"], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-                                   errors="replace", start_new_session=True)
-        kept, marks, lock = deque(maxlen=OUTPUT_LINES), [], threading.Lock()
-
-        def pump():
-            for line in process.stdout:
-                sys.stdout.write(line)
-                sys.stdout.flush()
-                with lock:
-                    kept.append(line)
-                    if SCAN_STARTED.search(line) or NOTHING_TO_SCAN in line:
-                        marks.append(line)
-
-        reader = threading.Thread(target=pump, daemon=True)
-        reader.start()
+        kept, marks, lock = deque(maxlen=OUTPUT_LINES), deque(maxlen=OUTPUT_LINES), threading.Lock()
+        process = None
         try:
+            process = subprocess.Popen([*argv, "ci"], cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                       errors="replace", start_new_session=True)
+
+            def pump():
+                for line in process.stdout:
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+                    with lock:
+                        kept.append(line)
+                        if (SCAN_STARTED.search(line) or NOTHING_TO_SCAN in line
+                                or CLI_FINDING.search(line)):
+                            marks.append(line)
+
+            reader = threading.Thread(target=pump, daemon=True)
+            reader.start()
             code = process.wait(timeout=timeout_s)
         except subprocess.TimeoutExpired:
             raise Failed(f"vidoc ci ran longer than {timeout_s // 60} minutes and was killed") from None
         finally:
-            if process.returncode is None:
-                os.killpg(process.pid, signal.SIGKILL)
+            # Whatever ended the wait, nothing of the CLI's group outlives the gate.
+            if process is not None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
                 process.wait()
         reader.join(timeout=10)
         with lock:
@@ -273,8 +341,13 @@ def run_cli(argv, cwd, timeout_s):
 
 
 def git_in(root):
-    def git(*args):
-        result = subprocess.run(["git", *args], cwd=root, capture_output=True, text=True)
+    def git(*args, env=None):
+        env = env if env is not None else {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+        try:
+            result = subprocess.run(["git", *args], cwd=root, env=env, capture_output=True,
+                                    text=True, timeout=GIT_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            return 124, ""
         return result.returncode, result.stdout
     return git
 
@@ -283,21 +356,26 @@ def _interrupted(signum, _frame):
     raise Failed(f"interrupted by signal {signum}")
 
 
+def install_signal_handlers():
+    """SIGTERM and SIGHUP end the gate like a failure, so the CLI's group is killed on the way."""
+    for signum in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(signum, _interrupted)
+
+
 def main():
     root = Path(__file__).resolve().parent.parent
     tool = root / "tools" / "vidoc"
     env = dict(os.environ)
-    for signum in (signal.SIGTERM, signal.SIGHUP):
-        signal.signal(signum, _interrupted)
+    install_signal_handlers()
     log = None
     try:
         token, url = settings(env)
-        node = shutil.which("node")
-        version = subprocess.run([node, "--version"], capture_output=True, text=True).stdout if node else ""
-        if not shutil.which("npm") or (node_major(version) or 0) < MIN_NODE:
-            raise Usage(f"the Vidoc CLI needs Node {MIN_NODE}+ and npm on PATH (found {version.strip() or 'none'})")
+        require_node(shutil.which, lambda node: subprocess.run(
+            [node, "--version"], capture_output=True, text=True, timeout=GIT_TIMEOUT_S).stdout)
         if needs_install(tool):
-            subprocess.run(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"], cwd=tool, check=True)
+            subprocess.run(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"], cwd=tool,
+                           check=True, timeout=NPM_TIMEOUT_S)
+            mark_installed(tool)
         handle, name = tempfile.mkstemp(prefix="vidoc-", suffix=".log")
         os.close(handle)
         log = Path(name)
@@ -306,7 +384,7 @@ def main():
     except Usage as err:
         print(f"Security scan not run: {err}", file=sys.stderr)
         code = 2
-    except (Failed, subprocess.CalledProcessError) as err:
+    except (Failed, subprocess.CalledProcessError, subprocess.TimeoutExpired) as err:
         print(f"Security scan failed: {err}", file=sys.stderr)
         return 1
     if log is not None and code != 1:

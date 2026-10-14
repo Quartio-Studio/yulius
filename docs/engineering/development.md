@@ -76,10 +76,12 @@ to origin, the CLI would compare with `origin/main`. A scan takes 10 to 15 minut
 with a tool timeout of 45 minutes or more, or in the background. Exit codes:
 
 - 0: passed, or the branch changed nothing that Vidoc scans.
-- 1: open critical or high findings (each one is printed), a failed or foreign scan, or an
-  unexpected API answer.
-- 2: not run. The causes: no key, or the key was rejected; no Node 20+ or npm; a detached HEAD;
-  uncommitted or untracked files; origin's default branch or the merge base cannot be found.
+- 1: failed. The causes: open critical or high findings (each one is printed); a failed or foreign
+  scan; an unexpected API answer; CLI findings the API does not report; "nothing to scan" on a
+  branch that changed source files; a CLI error, a timeout or a signal; a failed `npm ci`.
+- 2: not run. The causes: no key, a malformed key, or a rejected one; Vidoc unreachable; no Node
+  20+ or npm; a detached HEAD; uncommitted or untracked files; a first remote other than `origin`,
+  or origin unreachable the way the CLI checks it; no default branch or no merge base.
 
 Agents run the gate for every change before delivery. They fix findings test-first. A false
 positive is ignored in Vidoc, with the reason, only after the independent reviewer agrees, and it

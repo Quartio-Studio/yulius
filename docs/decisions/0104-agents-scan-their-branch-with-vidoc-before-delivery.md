@@ -52,5 +52,8 @@ Yulius CI do not run the gate.
   once per task, before the review, and again only when the code changed after a finding.
 - The gate needs `api.vidoc.dev` bound to `VIDOC_API_KEY` and Node 20 or later. Without them it
   says why it did not run.
+- The CLI uploads the branch's code to Vidoc Cloud and sends its own logs to Sentry. The gate
+  gives it an allowlisted environment, which keeps GitHub and model tokens away from it, but that
+  is not containment: the CLI runs as the agent.
 - Vidoc keys expire (default one month). An expired key gives exit 2 with "Invalid or expired
   token", and a person has to replace the value on the Secrets page.

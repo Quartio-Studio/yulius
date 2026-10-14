@@ -35,7 +35,8 @@ the request for the bound host `api.vidoc.dev`.
     found issues or the scan failed; 1 only on errors. It reads `VIDOC_TOKEN` and `VIDOC_API_URL`,
     prints `Scan started with ID: <uuid>`, and prints "No scannable files matched the selected
     scope in the current directory." when the branch changed nothing it scans. It writes
-    `vidoc.log` in the current folder unless `VIDOC_LOG_FILE` is set. Its `rg` comes from
+    `vidoc.log` (by default next to its configuration file, `~/.vidoc`) unless `VIDOC_LOG_FILE` is
+    set, and it sends its own logs to Sentry. Its `rg` comes from
     `@vscode/ripgrep`'s per-platform optional packages; no package of the tree has an install script.
   - "Fail a pipeline on issues": check `GET /v1/scan-workflows/:id/status` is `completed` for the
     expected branch, then `GET /v1/issues?codebaseId&branch&status=open&severity=critical,high`
@@ -55,14 +56,18 @@ the request for the bound host `api.vidoc.dev`.
   default `https://api.vidoc.dev`, which must be an `https://` URL without a path. Without a key
   the command exits 2 and says how to provide one; it never prints the key.
 - SEC-003: Before uploading anything, one authenticated read (`GET /v1/codebase`) proves the key
-  works; a 401 exits 2 naming the likely causes (host not bound to the agent secret, key expired).
+  works; a 401 exits 2 naming the likely causes (host not bound to the agent secret, key expired),
+  and an unreachable API (no answer or 5xx) exits 2 as well. A key with whitespace or control
+  characters exits 2 without being echoed.
 - SEC-004: The CLI is the version pinned with integrity hashes in `tools/vidoc/package-lock.json`,
   installed with `npm ci --ignore-scripts` into the ignored `tools/vidoc/node_modules` only when the installed
   version differs from the pin.
 - SEC-005: The scan runs only on a named branch whose working tree is clean (untracked files
   included), because the CLI uploads the working tree and scans the changed files as they are on
-  disk. `git remote show origin` must name the default branch (without it, the CLI falls back to
-  `origin/main`), and the branch must have a merge base with it. Each refusal exits 2. The CLI runs
+  disk. The first remote must be `origin`. The CLI's own reachability check (`git ls-remote origin
+  HEAD` with its flags, in the CLI's environment) must pass, and `git remote show origin` must name
+  the default branch: without either, the CLI falls back to `origin/main`. The branch must also have
+  a merge base with the default branch. Each refusal exits 2. The CLI runs
   with `CI=true`, its log outside the working tree, and an allowlisted environment: system basics,
   the proxy and its CA, `GIT_*`, and the `YULIUS_URL`/`YULIUS_TASK_TOKEN` that Yulius's Git
   credential helper needs. It does not get GitHub tokens (PR comments) or `DEBUG` (files in the
@@ -72,11 +77,15 @@ the request for the bound host `api.vidoc.dev`.
   it reported nothing to scan, which passes and says so), when the scan is not `completed` or
   belongs to another branch, when an API answer is not the documented shape, and when the branch
   has any open critical or high finding; each finding is printed with severity, name, path, line
-  and link. Otherwise it passes (exit 0) naming the scan.
+  and link. It also fails when the CLI printed critical or high issues that the API does not
+  report, and when the CLI found nothing to scan although the branch changed source files. Otherwise
+  it passes (exit 0) naming the scan.
 - SEC-007: Agents' verification (skill `yulius-verify`, AGENTS.md commands, the development guide)
   runs `scripts/dev security` for every change before delivery and treats a failure like any
   failed gate; when the key is missing or not yet usable it is reported as unrun, not passed.
-- SEC-008: `scripts/dev security` keeps the gate's exit code (2 stays distinct from 1). API requests
+- SEC-008: `scripts/dev security` keeps the gate's exit code (2 stays distinct from 1); on Unix it
+  replaces itself with the gate, so a signal sent to it reaches the gate. Git, npm and node calls
+  have timeouts. API requests
   never follow redirects, because urllib would resend the key header to the new location.
 
 ## Plan
@@ -125,5 +134,9 @@ the request for the bound host `api.vidoc.dev`.
   SEC-005. The task token reaches the CLI only because the Git credential helper needs it. The CLI
   runs as the agent and could read the agent's environment anyway, so the allowlist keeps the
   CLI's behaviour predictable but does not contain it.
+- Review round 2 added the CLI's exact reachability check, the cross-checks of the verdict (CLI
+  findings against the API, "nothing to scan" against changed source files), the refusal of a
+  malformed key, `exec` in xtask, timeouts, and a lockfile stamp so that a changed lockfile
+  reinstalls the CLI.
 - "Nothing to scan" passes: a branch that changes only files Vidoc does not scan (docs) has nothing
   to review, and failing it would make the gate useless for such changes.
