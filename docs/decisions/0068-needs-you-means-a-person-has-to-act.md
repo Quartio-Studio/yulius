@@ -9,6 +9,11 @@ DSK-102's `yulius wait` shell reads in the sidebar. Specified in
 [SPEC-085](../../.ai/specs/SPEC-085-status-truth.md). Point 2's tone is amended by
 [0080](0080-a-wait-for-yulius-shows-a-still-muted-branch.md): the wait reads muted and still.
 
+Amended by [SPEC-130](../../.ai/specs/SPEC-130-458-got-achieved-but-wasn-t-marked-as-do.md) (task
+#117, #474): point 1 also holds when the plan is complete and the pull request is tested or merged.
+A wait keeps the task Working until it returns, and only an achieved goal reads Done while a wait
+runs (task #109 read Done while it waited for its armed merge).
+
 ## Context
 
 A replay of two days of the sandbox's transcripts against the sidebar's rule showed that "Needs

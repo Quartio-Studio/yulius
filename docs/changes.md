@@ -11,6 +11,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   confirmation; while an update runs it reads "Updating", and otherwise it is a quiet "Version
   and updates" icon leading to the instance page. Dismissing the tab-row pill no longer hides the
   way to update, and the account menu lists "Version and updates" too.
+- The Vidoc security gate can be turned off and on (SPEC-131, ADR-0107, task #119). `enabled` in
+  `.config/vidoc.toml` is committed as `true`; with `false`, `scripts/dev security` exits 0 at once
+  and says nothing was scanned, and agents report the scan as disabled. Only a committed `false`
+  counts: an uncommitted one exits 2. A missing file means on; a malformed one exits 2.
+- Done means done (SPEC-130, task #117, #473, #474). The process probe could keep a task whose
+  goal was achieved reading Working for good: a server the agent started as `(server &)` left
+  an orphaned subshell with Claude Code's wrapper command line, which the sandbox's init adopted.
+  Task #108 read Working until it was closed. Such orphans are no longer counted; only the
+  agent's own shells are. The opposite case is fixed too: a task whose agent waits in
+  `yulius wait` for its armed merge no longer reads Done because its plan is complete and its
+  checks are green. It reads "Waiting for checks or merge" until the merge, in the sidebar and
+  on the server.
 - A task that has not started can change how it starts (SPEC-126, ADR-0102, task #115). A chained
   or prepared task's view has a start chip ("When I decide", "After #12", "When #12 done",
   "At …") that opens New task's start menu: it can be chained after a task or a rule, prepared,
