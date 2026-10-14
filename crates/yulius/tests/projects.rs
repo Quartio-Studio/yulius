@@ -551,6 +551,168 @@ async fn onboarding_becomes_ready_when_the_preparation_task_lands() -> TestResul
     Ok(())
 }
 
+/// A product sandbox imported in the browser, so its onboarding task exists and it is
+/// `preparing`, with that task stopped (it waited for a subscription here).
+async fn preparing_with_a_stopped_task(
+    w: &World,
+) -> Result<(support::Creds, SandboxId, TaskId), Error> {
+    let (alice_user, _) = w.user("alice", false).await?;
+    let alice = w.browser(&alice_user).await?;
+    w.remote(
+        OWNER,
+        "product",
+        &[("README.md", "# Product\n")],
+        &["quartio"],
+    )?;
+    w.grant("alice", "product", "admin");
+    let product = import(w, &alice, "Quartio-Studio/product").await?.body;
+    let sid = SandboxId::parse(text(&product["id"]))?;
+    let record = w.h.store.sandbox(&sid).await?.ok_or("sandbox")?;
+    assert_eq!(record.onboarding_state, "preparing");
+    let task = record.onboarding_task_id.ok_or("prep task")?;
+    let stopped = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/tasks/{task}/stop"),
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(stopped.status, StatusCode::OK, "{:?}", stopped.body);
+    Ok((alice, sid, task))
+}
+
+async fn onboarding_of(w: &World, sid: &SandboxId, creds: &support::Creds) -> Result<Value, Error> {
+    let view = call(
+        &w.h.router,
+        Method::GET,
+        &format!("/api/sandboxes/{sid}"),
+        None,
+        creds,
+    )
+    .await?;
+    assert_eq!(view.status, StatusCode::OK, "{:?}", view.body);
+    Ok(view.body["onboarding"].clone())
+}
+
+/// SPEC-106 OTR-003 (#425): deleting the onboarding task of a preparing sandbox left it
+/// `preparing` with no task for good. It returns to `pending`, and Start onboarding creates and
+/// starts a new onboarding task.
+#[tokio::test]
+async fn a_preparing_sandbox_whose_onboarding_task_is_gone_returns_to_pending() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice, sid, task) = preparing_with_a_stopped_task(&w).await?;
+    let deleted = call(
+        &w.h.router,
+        Method::DELETE,
+        &format!("/api/tasks/{task}"),
+        None,
+        &alice,
+    )
+    .await?;
+    assert!(deleted.status.is_success(), "{:?}", deleted.body);
+    assert_eq!(onboarding_of(&w, &sid, &alice).await?, "pending");
+    let started = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{sid}/onboarding/approve"),
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(started.status, StatusCode::OK, "{:?}", started.body);
+    assert_eq!(started.body["onboarding"], "preparing");
+    let record = w.h.store.sandbox(&sid).await?.ok_or("sandbox")?;
+    let again = record.onboarding_task_id.ok_or("a new onboarding task")?;
+    assert_ne!(again, task);
+    let again = w.h.store.task(&again).await?.ok_or("task")?;
+    assert_eq!(again.origin, TaskOrigin::Onboarding);
+    assert!(again.archived_at.is_none());
+    Ok(())
+}
+
+/// SPEC-106 OTR-004 (#425): an archived onboarding task left the page's task list, which read
+/// it as missing. While onboarding blocks the sandbox, archiving it is refused with the way out,
+/// and it stays listed.
+#[tokio::test]
+async fn the_onboarding_task_is_not_archived_while_onboarding_blocks() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice, sid, task) = preparing_with_a_stopped_task(&w).await?;
+    let archived = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/tasks/{task}/archive"),
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(archived.status, StatusCode::CONFLICT, "{:?}", archived.body);
+    assert!(
+        archived
+            .body
+            .to_string()
+            .contains("delete it to start onboarding again"),
+        "{:?}",
+        archived.body
+    );
+    let listed = call(
+        &w.h.router,
+        Method::GET,
+        &format!("/api/sandboxes/{sid}/tasks?archived=false"),
+        None,
+        &alice,
+    )
+    .await?;
+    let ids: Vec<&str> = listed
+        .body
+        .as_array()
+        .ok_or("list")?
+        .iter()
+        .map(|t| text(&t["id"]))
+        .collect();
+    assert!(ids.contains(&task.as_str()), "{ids:?}");
+    assert_eq!(onboarding_of(&w, &sid, &alice).await?, "preparing");
+    Ok(())
+}
+
+/// SPEC-106 OTR-005 (#425): sandboxes stuck before the fix (studio) heal at server start: one
+/// left `preparing` without its task returns to `pending`, an archived onboarding task is listed
+/// again, and settled sandboxes are left alone.
+#[tokio::test]
+async fn stuck_onboarding_heals_at_server_start() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice, sid, task) = preparing_with_a_stopped_task(&w).await?;
+    // Archived behind the server's back, as before the fix.
+    w.h.store
+        .update_task(
+            &task,
+            &TaskFieldUpdate {
+                archived_at: Some(Some(Timestamp(9))),
+                ..TaskFieldUpdate::default()
+            },
+            Timestamp(9),
+        )
+        .await?;
+    assert_eq!(w.h.app.heal_onboarding().await?, 1);
+    let healed = w.h.store.task(&task).await?.ok_or("task")?;
+    assert!(healed.archived_at.is_none());
+    assert_eq!(onboarding_of(&w, &sid, &alice).await?, "preparing");
+    // Its task deleted behind the server's back: the store clears the link only.
+    w.h.store.delete_task(&task).await?;
+    assert_eq!(
+        w.h.store
+            .sandbox(&sid)
+            .await?
+            .ok_or("sandbox")?
+            .onboarding_state,
+        "preparing"
+    );
+    assert_eq!(w.h.app.heal_onboarding().await?, 1);
+    assert_eq!(onboarding_of(&w, &sid, &alice).await?, "pending");
+    assert_eq!(w.h.app.heal_onboarding().await?, 0, "nothing left to heal");
+    Ok(())
+}
+
 #[tokio::test]
 async fn create_from_template_pushes_a_validating_scaffold_with_rulesets() -> TestResult {
     let w = World::new("org").await?;

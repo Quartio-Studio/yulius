@@ -75,8 +75,8 @@ Root causes, each reproduced with Claude Code 2.1.292 and the code on `dev`:
 | OTR-001 | `ensure_claude_config` trusts the worktree and, when the worktree is a linked git worktree (its `.git` is a `gitdir:` file), the main repository too: the parent of the common git directory when it is named `.git`, else the common directory (a bare repository). An unreadable or malformed `.git` file trusts the worktree alone, as before. | `claude_config` unit tests |
 | OTR-002 | While Claude Code shows its folder-trust prompt, the goal is not typed. The keys a person types to answer it are not a draft. Once the prompt is gone and the TUI is ready, the goal is typed as usual. The wait is bounded by the opening timeout (5 min). A prompt still shown then flags the task and types nothing. | `first_message::a_trust_prompt_answered_before_the_goal_keeps_the_goal` |
 | OTR-003 | A `pending` or `preparing` sandbox whose onboarding task does not exist (deleted, or never recorded) is moved to `pending`, so the page offers Start onboarding again, which creates a new onboarding task. Recorded in the audit log as `system`. | `projects::a_preparing_sandbox_whose_onboarding_task_is_gone_returns_to_pending` |
-| OTR-004 | A blocking sandbox's onboarding task that is archived is restored to the task list. | `projects::an_archived_onboarding_task_comes_back_while_onboarding_blocks` |
-| OTR-005 | These repairs (OTR-003, OTR-004) run at server start for every sandbox, and right after a task is deleted or archived. That is how sandboxes already stuck this way (studio) heal with the deploy. | the two tests above, plus `projects::stuck_onboarding_heals_at_server_start` |
+| OTR-004 | Archiving the onboarding task of a blocking sandbox is refused (409). The message names the ways out: continue the task, or delete it to start onboarding again. An onboarding task archived before this change is restored to the task list (OTR-005). | `projects::the_onboarding_task_is_not_archived_while_onboarding_blocks` |
+| OTR-005 | The repairs (OTR-003, and restoring an archived onboarding task) run at server start for every sandbox, right after a task is deleted, and on every onboarding refresh. That is how sandboxes already stuck this way (studio) heal with the deploy. | `projects::stuck_onboarding_heals_at_server_start` |
 
 ## Plan
 
@@ -96,6 +96,7 @@ Root causes, each reproduced with Claude Code 2.1.292 and the code on `dev`:
   flagged.
 - A `preparing` sandbox whose onboarding task was deleted reads `pending` after the delete. Its
   Start onboarding creates and starts a new onboarding task.
+- Archiving the onboarding task of a preparing sandbox answers 409, and the task stays listed.
 - After a server start, a sandbox left `preparing` without its task reads `pending`, and one with
   an archived onboarding task lists it again.
 
@@ -106,8 +107,8 @@ Root causes, each reproduced with Claude Code 2.1.292 and the code on `dev`:
 - Supervisor (fake agent in ptyhost): a new fake-agent `--trust-prompt` draws a trust prompt and
   takes one answer before its SessionStart hook. The test answers it as a person and expects the
   goal, with no flag. It fails before the fix (the task is flagged "Someone typed …").
-- Integration (`crates/yulius/tests/projects.rs`): delete and archive of the onboarding task of a
-  preparing sandbox, and a store left stuck healed by the startup sweep.
+- Integration (`crates/yulius/tests/projects.rs`): deleting and archiving the onboarding task of
+  a preparing sandbox, and a store left stuck being healed by the startup sweep.
 - Live, by hand: Claude Code 2.1.292 in a pty with the generated config (see Evidence).
 - Full gate: `scripts/dev ci`.
 

@@ -524,6 +524,10 @@ impl App {
     /// worktree or in the sandbox clone. Other states are returned unchanged.
     /// Cheap for settled sandboxes (one store read); call it on task close and on reads.
     ///
+    /// It also repairs what would block the sandbox for good (SPEC-106): a `preparing` sandbox
+    /// whose onboarding task is gone (deleted) returns to `pending`, so Start onboarding creates
+    /// a new one; an archived onboarding task is listed again.
+    ///
     /// # Errors
     /// `NotFound` for unknown sandboxes, store failures.
     pub async fn refresh_onboarding(&self, sandbox: &SandboxId) -> AppResult<String> {
@@ -535,12 +539,31 @@ impl App {
         if !state.blocks_tasks() {
             return Ok(record.onboarding_state);
         }
-        let Some(task_id) = record.onboarding_task_id.clone() else {
+        let task = match &record.onboarding_task_id {
+            Some(id) => store.task(id).await?,
+            None => None,
+        };
+        let Some(task) = task else {
+            if state == OnboardingState::Preparing {
+                self.set_onboarding_state(&record, OnboardingState::Pending, "system")
+                    .await?;
+                return Ok(OnboardingState::Pending.as_str().to_owned());
+            }
             return Ok(record.onboarding_state);
         };
-        let Some(task) = store.task(&task_id).await? else {
-            return Ok(record.onboarding_state);
-        };
+        if task.archived_at.is_some() {
+            store
+                .update_task(
+                    &task.id,
+                    &TaskFieldUpdate {
+                        archived_at: Some(None),
+                        ..TaskFieldUpdate::default()
+                    },
+                    self.now(),
+                )
+                .await?;
+            self.publish_task(&task.id).await;
+        }
         let resting = task.status.is_resting();
         let started = !resting || !store.attempts(&task.id).await?.is_empty();
         if !started {
@@ -577,6 +600,61 @@ impl App {
             self.set_onboarding_state(&record, next, "system").await?;
         }
         Ok(next.as_str().to_owned())
+    }
+
+    /// Repairs, at server start, every sandbox whose onboarding was left stuck before SPEC-106
+    /// (OTR-005): see [`App::refresh_onboarding`]. Returns how many it changed.
+    ///
+    /// # Errors
+    /// Store failures.
+    pub async fn heal_onboarding(&self) -> AppResult<u32> {
+        let store = &self.deps.store;
+        let mut healed = 0;
+        for record in store.sandboxes().await? {
+            if !OnboardingState::parse(&record.onboarding_state)
+                .is_some_and(OnboardingState::blocks_tasks)
+            {
+                continue;
+            }
+            let archived = match &record.onboarding_task_id {
+                Some(id) => store
+                    .task(id)
+                    .await?
+                    .is_some_and(|t| t.archived_at.is_some()),
+                None => false,
+            };
+            let state = self.refresh_onboarding(&record.id).await?;
+            if archived || state != record.onboarding_state {
+                tracing::info!(sandbox = %record.id, state, "healed a stuck onboarding");
+                healed += 1;
+            }
+        }
+        Ok(healed)
+    }
+
+    /// Refuses archiving the onboarding task while its sandbox waits for it: archived, it left
+    /// the page's task list and the sandbox looked stuck (SPEC-106 OTR-004).
+    ///
+    /// # Errors
+    /// `Conflict` for the onboarding task of a blocking sandbox; store failures.
+    pub(crate) async fn ensure_archive_allowed(&self, task: &TaskRecord) -> AppResult<()> {
+        if task.origin != TaskOrigin::Onboarding {
+            return Ok(());
+        }
+        let Some(record) = self.deps.store.sandbox(&task.sandbox_id).await? else {
+            return Ok(());
+        };
+        let waits_for_it = record.onboarding_task_id.as_ref() == Some(&task.id)
+            && OnboardingState::parse(&record.onboarding_state)
+                .is_some_and(OnboardingState::blocks_tasks);
+        if waits_for_it {
+            return Err(AppError::Conflict(
+                "the project waits for this onboarding task, so it stays in the list: continue \
+                 it, or delete it to start onboarding again"
+                    .into(),
+            ));
+        }
+        Ok(())
     }
 
     /// `POST /api/sandboxes/{sid}/onboarding/skip` (admin): unblocks ordinary tasks — the ones
