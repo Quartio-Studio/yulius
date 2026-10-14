@@ -91,7 +91,9 @@ is killed, its cleanup never runs, so remove what it left at the path it printed
 home is shared with other tasks' running proofs, so remove theirs only when they started over six \
 hours ago (`find \"$HOME\" -maxdepth 1 -name '.ci-proof.*' -mmin +360 -exec chmod -R u+w {} \\; \
 -exec rm -rf {} \\;`), then run `git worktree prune`. A monorepo's jobs \
-may run only its affected project's checks. End with a summary of what works and how it was \
+may run only its affected project's checks. You and every CI job run as root (uid 0 in the \
+sandbox's own user namespace), so file permissions never stop a read: a test that expects \
+`chmod 000` to make a file unreadable must skip when the current user can still read it. End with a summary of what works and how it was \
 verified; a check that still cannot run is a problem to report there, never a reason to skip it \
 silently.";
 
@@ -333,10 +335,13 @@ pub fn onboarding_prompt(repo: &str, profile: &Profile, report: &ProjectReport) 
          10. Hooks: when the repository's instructions describe a hooks setup (for example \
          `git config core.hooksPath .githooks`), apply it in your worktree before committing. \
          Never bypass hooks with --no-verify.\n\
-         11. Commit on your task branch and mark every step done as you finish it: Yulius opens \
-         the pull request into {integration} by itself once every step is done, and pushes later \
-         commits to it. Do not open it yourself, and never push to {integration} or \
-         {production}. Change documentation, configuration and CI only, not application code.\n\
+         11. Commit on your task branch and mark every step done as you finish it. Then get \
+         the independent review of the exact head and call `delivery_merge` with that head: \
+         Yulius pushes your branch, opens the pull request into {integration} (or pushes later \
+         commits to it) and merges it once its checks pass. Then start `yulius wait` with \
+         run_in_background and end your turn. Do not open it yourself or push it by hand, and \
+         never push to {integration} or {production}. Change documentation, configuration and \
+         CI only, not application code; a test changes only to run correctly on Yulius CI.\n\
          12. Before finishing, make sure every problem listed above is resolved.",
         preset = profile.preset,
         problems = problems.join("\n"),
@@ -363,10 +368,13 @@ pub fn environment_prompt(repo: &str, profile: &Profile) -> String {
          3. {GATE_SETUP}\n\
          4. Change only what the environment and the gate need (yulius.toml [commands] and \
          [[ci.jobs]], the checks' configuration, a missing setup note in the docs), never \
-         application code. When you changed something, commit it on \
-         your task branch and mark every step done: Yulius opens the pull request into \
-         {integration} by itself. Do not open it yourself, and never push to {integration} or \
-         {production}. When nothing needed to change, just mark the steps done."
+         application code. When you changed something, commit it on your task branch, mark \
+         every step done, get the independent review of the exact head and call \
+         `delivery_merge` with that head: Yulius pushes your branch, opens the pull request into \
+         {integration} and merges it once its checks pass. Then start `yulius wait` with \
+         run_in_background and end your turn. Do not open it yourself, and never push to \
+         {integration} or {production}. When nothing needed to change, just mark the steps \
+         done."
     )
 }
 
@@ -1203,7 +1211,7 @@ mod tests {
         assert!(!prompt.contains("Ask the user"), "onboarding is autonomous");
         assert!(prompt.contains("delete .github/workflows/"));
         // F 2026-10-11: the agent never needs the GitHub CLI and never stops on a permission.
-        assert!(prompt.contains("Yulius opens the pull request"));
+        assert!(prompt.contains("Yulius pushes your branch, opens the pull request"));
         assert!(prompt.contains("Do not open it yourself"));
         assert!(prompt.contains("Workflows permission"));
         // F 2026-10-11: the preparation agent had no Rust toolchain afterwards.
@@ -1298,6 +1306,41 @@ mod tests {
             assert!(
                 skill.contains(wording),
                 "infra-bootstrap misses {wording:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// SPEC-116 OBG-004, OBG-005 (task #101): the onboarding agent learns that it and CI run as
+    /// root (studio's `chmod 000` test passed only for non-root users), and delivers like every
+    /// task — review, `delivery_merge`, `yulius wait` — instead of waiting for a pull request
+    /// that a goal held open never let Yulius open (studio PR #59, pushed by hand).
+    #[test]
+    fn prompts_deliver_like_every_task_and_name_the_root_sandbox() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let (report, _) = validate_checkout(dir.path());
+        let profile =
+            crate::projects::profile_view(&yulius_domain::delivery::DeliveryProfile::studio());
+        for prompt in [
+            onboarding_prompt("Quartio-Studio/studio", &profile, &report),
+            environment_prompt("Quartio-Studio/studio", &profile),
+        ] {
+            for wording in [
+                "run as root",
+                "chmod 000",
+                "skip when the current user can still read",
+                "independent review of the exact head",
+                "call `delivery_merge` with that head",
+                "opens the pull request into quartio",
+                "merges it once its checks pass",
+                "start `yulius wait` with run_in_background and end your turn",
+                "Do not open it yourself",
+            ] {
+                assert!(prompt.contains(wording), "missing {wording:?}");
+            }
+            assert!(
+                !prompt.contains("by itself once every step is done"),
+                "the pull request does not appear while the agent keeps working"
             );
         }
         Ok(())
