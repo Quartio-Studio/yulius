@@ -234,8 +234,8 @@
   --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
   --selection: color-mix(in srgb, var(--accent) 35%, transparent); /* selected text, in the brand */
   --brand-mark: var(--text);   /* the logo mark: monochrome, like the brand's own lockup */
-  --wordmark-case: uppercase;  /* the wordmark as set in the lockup: capitals, open tracking, set in --font at 600 (the thin display face looked spindly beside the mark) */
-  --wordmark-tracking: 0.18em;
+  --wordmark-case: none;       /* the wordmark as the composer's quote is set (ADR-0100): the name as written, in --font-display at 400 and --fs-xl */
+  --wordmark-tracking: 0;
   --accent-border: color-mix(in srgb, var(--accent) 40%, transparent);
   --accent-border-strong: color-mix(in srgb, var(--accent) 60%, transparent);
   --accent-track: color-mix(in srgb, var(--series-1) 20%, transparent);
