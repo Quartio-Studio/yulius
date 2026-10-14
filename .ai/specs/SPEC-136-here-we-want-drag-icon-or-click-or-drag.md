@@ -1,11 +1,11 @@
 ---
 yulius-task: 181be5d5-d438-443e-a01d-b78165270733
-status: in-progress
+status: done
 ---
 
 # SPEC-136: the Notes tabs show that they can be dragged
 
-Status: in progress
+Status: implemented
 Date: 2026-10-14
 Owner: Yulius task #122
 Scope authorization: user request: "here we want drag icon or click-or-drag if exists"
@@ -50,8 +50,8 @@ finds the reordering without being told.
 
 - [x] Read the product context and related work, then write and validate the spec
 - [x] Notes tabs show a drag grip and a click-or-drag hint
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Design
 
@@ -94,5 +94,27 @@ tab grows by 12 px (the grip and its gap, less the padding).
   true. Kept: NOT-024 is checked as a stylesheet rule (the harness cannot emulate a device without
   a fine pointer), the tooltip may show after a drag lands (as in the workflow editor), and the
   plain cursor over the label.
+- Confirmation review (fresh session, approve `9608231b`, nits only), kept: the dragged colour is
+  also reached through `:hover` while the pointer rides the tab (the `grabbing` cursor is the part
+  proven on its own); `not (any-pointer: fine)` is Media Queries 4 syntax, which older engines
+  ignore, so they show the grip (safe); the padding reset beside the hidden grip is not asserted.
 - No ADR: this applies an existing pattern (the workflow editor's grip) to one more strip; it is
   recorded here.
+
+## Evidence
+
+Run on the branch merged with `origin/dev` (2026-10-15):
+
+- The new e2e "the tabs show a grip and say they can be clicked or dragged" failed before the
+  change (no grip, no title) and again before the round-1 fix (the old title and media rule), then
+  passed.
+- `cd e2e && npx e2e run tests/notes.e2e.ts`: 35 of 35 passed (also rerun by both reviewers).
+- `cd e2e && npx e2e run --workers 2`: 49 files passed, 1 skipped; 400 tests passed, 1 skipped.
+- `scripts/dev ci` (fmt, clippy, nextest, doctests, cargo-deny, cargo-shear, rustdoc, repository
+  check): exit 0, 1670 tests passed, 16 skipped; advisories, bans, licenses and sources ok.
+- `scripts/dev security`: exit 2, not run. Vidoc answers HTTP 401 (Invalid or expired token)
+  with the bound `VIDOC_API_KEY`; tracked in #470 (comment added). It is not a pass.
+- Seen in the Yulius browser (mock, dark theme, 1280 × 800): the six-dot grip before Team, This
+  sandbox and Me, faint on the tabs at rest and in the text colour on the chosen one.
+- Not covered: a real touch-only device (the media rule is checked as CSS), browsers other than
+  Chromium.
