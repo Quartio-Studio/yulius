@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- A task waiting for its checks or merge shows a still, muted branch (SPEC-100, ADR-0080, task #85,
+  #393). The "Waiting for checks or merge" state took Working's tone so that it notified nobody,
+  and that tone turned its git-branch icon green and spun it like the Working ring. It now takes
+  the muted tone of Queued, Chained and Paused; it stays under Working and still notifies nobody.
 - Loading shows shimmering fields everywhere, never a spinner with "Loading…" (SPEC-092, ADR-0073,
   task #77). `placeholder(text, 'loading')` is the skeleton, so the Git page, dialogs, Sessions,
   the editor pages and every `loader()` list draw bars where the content will appear, with what

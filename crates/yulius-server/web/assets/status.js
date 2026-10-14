@@ -77,10 +77,11 @@ export const WAITS_LINE = 'Waits for its checks or merge; goes on by itself';
 
 /**
  * An idle agent that waits in `yulius wait` for its checks, its delivery or an armed merge goes on
- * by itself when Yulius has news: it is not the person's turn (SPEC-085 STT-002). Its tone is
- * Working's, so nobody is notified of it.
+ * by itself when Yulius has news: it is not the person's turn (SPEC-085 STT-002), so nobody is
+ * notified of it. Its branch stands still in the muted tone of the other waits (SPEC-100): the
+ * Working tone turns its icon like the ring and colours it green.
  */
-const WAITING_ON_YULIUS = { glyph: '⧗', icon: 'branch', tone: 'working', label: 'Waiting for checks or merge', group: 'working', waits: true, detail: WAITS_LINE };
+const WAITING_ON_YULIUS = { glyph: '⧗', icon: 'branch', tone: 'queued', label: 'Waiting for checks or merge', group: 'working', waits: true, detail: WAITS_LINE };
 
 /**
  * Whether the idle agent goes on by itself (SPEC-085 STT-003): its background work wakes it, or
