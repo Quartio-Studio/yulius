@@ -66,11 +66,12 @@ The Notes panel feels like a shared document:
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Notes tabs reorder by drag, keyboard and menu, Team first by default
-- [ ] A notepad draws its own rounded, gliding selection
-- [ ] The server relays notepad presence to its readers, rate-limited
-- [ ] Teammates' carets, names and selections show in the notepad
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Notes tabs reorder by drag, keyboard and menu, Team first by default
+- [x] A notepad draws its own rounded, gliding selection
+- [x] The server relays notepad presence to its readers, rate-limited
+- [x] Teammates' carets, names and selections show in the notepad
+- [x] Independent review in a fresh session, findings fixed test-first
+- [ ] Confirmation review of the fixed head approves it
 - [ ] Every gate green, docs and the changes log updated
 
 ## Design
