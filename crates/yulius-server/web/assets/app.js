@@ -201,6 +201,7 @@ function createApp(root, transport) {
       for (const key of Object.keys(window.localStorage)) if (key.startsWith('yulius.notifications.')) window.localStorage.removeItem(key);
     } catch { /* storage unavailable: nothing kept */ }
     forgetDrafts(); // unfinished prompts too (SPEC-026)
+    store.forgetPulls(); // and the pull requests kept for the next page load (SPEC-104)
     forgetUnsavedNotes(); // and notes not yet saved (SPEC-041)
     navigate('/signin', { replace: true });
     renderSignIn();
