@@ -4,7 +4,7 @@
 import { svgEl } from './dom.js';
 
 /**
- * A trend line of `values` (oldest first; null is a period without a value, drawn as a gap).
+ * A trend line of `values` (oldest first; null is a period without a value).
  * With `label` ("Tokens, last 7 days") it is an image whose text alternative names its first,
  * highest and last values formatted with `format` (TUS-010), also shown on hover; without one it
  * is decorative (a chart nearby has the values). Null when fewer than two values are known.
@@ -15,20 +15,17 @@ export function sparkline(values, { label = null, format = String } = {}) {
   const w = 120;
   const hgt = 28;
   const max = Math.max(...known, 1e-9);
-  let line = '';
-  let gap = true;
-  values.forEach((v, i) => {
-    if (!Number.isFinite(v)) { gap = true; return; }
-    const x = (i / (values.length - 1)) * w;
-    const y = hgt - 2 - (Math.max(0, v) / max) * (hgt - 4);
-    line += `${gap ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
-    gap = false;
-  });
-  const whole = known.length === values.length;
+  // A period without a value (no tasks that day, too few readings) is skipped: the line joins the
+  // periods around it, so a lone value between two gaps still shows.
+  const line = values.map((v, i) => (Number.isFinite(v) ? [(i / (values.length - 1)) * w, hgt - 2 - (Math.max(0, v) / max) * (hgt - 4)] : null))
+    .filter(Boolean).map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`).join('');
+  const first = values.findIndex((v) => Number.isFinite(v));
+  const last = values.length - 1 - [...values].reverse().findIndex((v) => Number.isFinite(v));
+  const x = (i) => ((i / (values.length - 1)) * w).toFixed(1);
   const said = label ? `${label}: first ${format(known[0])}, highest ${format(Math.max(...known))}, last ${format(known[known.length - 1])}` : null;
   return svgEl('svg', { class: 'spark', viewBox: `0 0 ${w} ${hgt}`, preserveAspectRatio: 'none', ...(said ? { role: 'img', 'aria-label': said } : { 'aria-hidden': 'true' }) },
     said ? svgEl('title', null, said) : null,
-    whole ? svgEl('path', { class: 'spark-area', d: `${line}L${w},${hgt}L0,${hgt}Z` }) : null,
+    svgEl('path', { class: 'spark-area', d: `${line}L${x(last)},${hgt}L${x(first)},${hgt}Z` }),
     svgEl('path', { class: 'spark-line', d: line }));
 }
 

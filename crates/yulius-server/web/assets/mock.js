@@ -2426,7 +2426,11 @@ route('GET', '/api/analytics/summary', ({ db, query }) => {
     const date = new Date(from + i * DAY).toISOString().slice(0, 10);
     const weekday = new Date(date).getUTCDay();
     const base = weekday === 0 || weekday === 6 ? 0 : 3;
-    perDay.push({ date, count: (hashString(date + query.get('sandbox')) % 5) + base });
+    const count = (hashString(date + query.get('sandbox')) % 5) + base;
+    // The cohort's runs and switches that day (SPEC-110): about 31 min of agent work a task.
+    const vary = (hashString(`${date}w`) % 7) / 10 + 0.7;
+    perDay.push({ date, count, active_ms: count ? Math.round(count * 31 * MIN * vary) : null, median_active_ms: count ? Math.round(26 * MIN * vary) : null,
+      input: count ? Math.round(count * 340e3 * vary) : null, output: count ? Math.round(count * 43e3 * vary) : null, switches: Math.round(count * 0.15 * vary * 2) });
   }
   const total = perDay.reduce((a, d) => a + d.count, 0);
   const scale = total / 120;
