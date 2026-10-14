@@ -4,6 +4,8 @@
 
 Accepted. Specified in [SPEC-096](../../.ai/specs/SPEC-096-onboarding-should-be-mandatory-and-shoul.md).
 It narrows [ADR-0038](0038-onboarding-starts-in-the-browser.md): onboarding still starts only in the browser.
+Amended by [0090](0090-start-onboarding-opens-its-session.md): while `preparing` the page opens the
+onboarding task instead of offering Follow onboarding.
 
 ## Context
 
