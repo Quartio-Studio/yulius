@@ -557,7 +557,9 @@ fn discipline(input: &BriefingInput<'_>) -> String {
          5. Decide like a senior engineer: compare options, choose and justify yourself (do not \
          ask the user to choose), and record each lasting decision {decisions}. Keep the \
          architecture document {architecture} (with at least one Mermaid diagram), the product \
-         summary and AGENTS.md true in the same change. No secrets in the repository.\n\
+         summary and AGENTS.md true in the same change. No secrets in the repository: keys go \
+         in the ignored `.env` (names in `.env.example`), agent secrets via \
+         `secret_copy_to_env`.\n\
          6. Finish with evidence: run every project gate. With a spec, check every Plan item, \
          add an Evidence section (commands run and results) and set `status: done`. Add a short \
          entry at the {end} of {changes}.\n\n",
@@ -1358,6 +1360,24 @@ mod tests {
         ] {
             assert!(text.contains(needle), "missing {needle}");
         }
+    }
+
+    /// SPEC-129 R8 (task #111): keys live in the git-ignored `.env`, named in `.env.example`, and
+    /// agent secrets reach it only through `secret_copy_to_env`.
+    #[test]
+    fn the_discipline_names_the_default_place_for_keys() -> TestResult {
+        let profile = DeliveryProfile::standard();
+        let layout = DocsLayout::default();
+        let text = build_briefing(&base(&profile, &layout)?, DEFAULT_BUDGET_BYTES);
+        let discipline = text
+            .split("## Discipline")
+            .nth(1)
+            .and_then(|rest| rest.split("\n## ").next())
+            .ok_or("discipline")?;
+        for needle in ["`.env`", "`.env.example`", "`secret_copy_to_env`"] {
+            assert!(discipline.contains(needle), "{needle}: {discipline}");
+        }
+        Ok(())
     }
 
     #[test]

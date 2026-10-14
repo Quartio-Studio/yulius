@@ -406,6 +406,34 @@ function agentHosts(ctx, secret, reload) {
   return parts;
 }
 
+/** Whether agents may copy a secret into the project's git-ignored .env files (SPEC-129). */
+function agentEnvFiles(ctx, secret, reload) {
+  if (secret.env_files !== 'asked' && secret.env_files !== 'allowed') return [];
+  const answer = async (allow) => {
+    buttons.forEach((b) => { b.disabled = true; });
+    try {
+      // The answer names what is shown here: the server refuses it if it changed meanwhile.
+      await ctx.api.post(`/api/agent-secrets/${enc(secret.id)}/env`, { allow, env_files: secret.env_files, env_requested_by: secret.env_requested_by });
+      toast(allow ? `Allowed. Agents can copy ${secret.name} into .env files.` : (secret.env_files === 'allowed' ? 'Revoked. Copies already written stay until someone removes them or rotates the value.' : 'Dismissed.'), { kind: 'ok' });
+    } catch (error) { errorToast(error, allow ? 'Couldn’t allow' : 'Couldn’t change it'); }
+    reload();
+  };
+  const asked = secret.env_files === 'asked';
+  const buttons = !secret.can_manage ? [] : asked ? [
+    smallButton('Allow', `Allow copying ${secret.name} into .env files`, () => answer(true), { class: 'btn-primary' }),
+    smallButton('Dismiss', `Dismiss copying ${secret.name} into .env files`, () => answer(false)),
+  ] : [smallButton('Revoke', `Stop agents copying ${secret.name} into .env files`, () => answer(false))];
+  // One answer covers every task, and for a secret of every sandbox every sandbox.
+  const where = secret.scope === 'instance' ? 'every sandbox' : 'this sandbox';
+  const text = asked
+    ? `${secret.env_requested_by ? `Task ${secret.env_requested_by} asks` : 'An agent asks'} to copy its value into the project’s git-ignored .env, for code that runs outside ${BRAND.name}. Allowing lets every task in ${where} copy it.`
+    : `Agents in ${where} may copy its value into git-ignored .env files`;
+  return [h('div', { class: 'row-wrap' },
+    iconBadge('file', '.env', asked ? 'warn' : '', asked ? 'Requested .env copy' : 'Allowed .env copies'),
+    h('span', { class: 'small' }, text),
+    buttons.length ? h('span', { class: 'row-wrap' }, buttons) : null)];
+}
+
 function mountAgents(ctx, sandbox, host, actions) {
   if (!sandbox) {
     setChildren(actions);
@@ -434,6 +462,7 @@ function mountAgents(ctx, sandbox, host, actions) {
       description: secret.description || h('span', { class: 'muted' }, 'No description'),
       extra: h('div', { class: 'stack-tight' },
         ...agentHosts(ctx, secret, reload),
+        ...agentEnvFiles(ctx, secret, reload),
         h('span', { class: 'muted small' }, [secret.injection !== 'none' ? secret.injection_text : null, secret.last_used_at ? `used ${relLong(secret.last_used_at)}` : 'not used yet', `changed ${relLong(secret.value_updated_at)}`].filter(Boolean).join(' · '))),
       controls: [
         secret.can_manage ? smallButton('Show', `Show ${secret.name}`, async () => {
