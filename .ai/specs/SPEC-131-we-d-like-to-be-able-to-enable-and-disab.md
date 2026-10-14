@@ -1,11 +1,11 @@
 ---
 yulius-task: e9bc9491-0759-4a95-920c-9b9d8cc67501
-status: in-progress
+status: done
 ---
 
 # SPEC-131: a committed switch turns the Vidoc gate on or off
 
-Status: in-progress
+Status: done
 Date: 2026-10-14
 Owner: Yulius task #119
 Scope authorization: the person's request (task #119): "we'd like to be able to enable and
@@ -37,8 +37,8 @@ network or a scan, and agents report the scan as disabled, not as passed.
 - VSW-001: `.config/vidoc.toml` holds one key, `enabled`, a boolean. The committed value is `true`.
 - VSW-002: With `enabled = false`, `scripts/dev security` prints
   `Security scan disabled: .config/vidoc.toml sets enabled = false; nothing was scanned.` and exits
-  0 before it reads the key, checks Node, installs the CLI or calls the API. Its only Git call
-  checks that the switch is committed (clean in `git status` and off in `HEAD`): an uncommitted
+  0 before it reads the key, checks Node, installs the CLI or calls the API. It calls Git only
+  to check that the switch is committed (clean in `git status` and off in `HEAD`): an uncommitted
   `enabled = false` exits 2.
 - VSW-003: With `enabled = true`, or without the file, the gate behaves exactly as in SPEC-128.
 - VSW-004: A file that is not valid TOML, an `enabled` that is not a boolean, a missing `enabled`
@@ -51,8 +51,8 @@ network or a scan, and agents report the scan as disabled, not as passed.
 - [x] Read the product context and related work, then write and validate the spec
 - [x] A committed switch in .config/vidoc.toml turns the Vidoc gate on or off, on by default
 - [x] Agents' docs, the verify skill and ADR-0107 explain the switch
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -96,3 +96,24 @@ network or a scan, and agents report the scan as disabled, not as passed.
   file hides an off switch from `git status`. The off path now also reads the switch from `HEAD`
   (`git cat-file blob HEAD:.config/vidoc.toml`) and exits 2 unless it says off, and the tests'
   temporary repositories ignore the caller's `GIT_*` variables.
+- Review round 3 (fresh session) approved 04836e61 with nits only: the spec's and ADR's wording
+  were fixed. A `HEAD` blob that is not UTF-8 behind `--skip-worktree` ends the gate with a
+  traceback (exit 1): it still fails closed, so it stays as is. That was the third and last round.
+
+## Evidence
+
+- `python3 -m unittest discover -s scripts -p 'test_*.py'`: 91 tests OK, 52 of them in
+  `scripts/test_vidoc_scan.py` (9 in `Switch`: the committed file is on; on, off and missing;
+  six malformed files; `committed_switch()` with a fake Git; a real repository with an uncommitted
+  and a `--skip-worktree` off switch, both exit 2; `main()` disabled exits 0 without a key, enabled
+  exits 2 without one, malformed exits 2).
+- `python3 scripts/check_repository.py`: passed (unique decision numbers, skills in sync).
+- `scripts/dev ci` (doctor, check, lint, test, deps, rustdoc) after `scripts/bootstrap.py`: exit 0,
+  nextest 1639 passed, 16 skipped. No Rust changed after it; Yulius CI runs on the delivered head.
+- `scripts/dev security` with the switch temporarily off (not committed, before the committed-switch
+  rule): `Security scan disabled: .config/vidoc.toml sets enabled = false; nothing was scanned.`,
+  exit 0, through xtask.
+- `scripts/dev security` with the committed switch on: exit 2, "Vidoc rejected the key (HTTP 401:
+  Invalid or expired token)": the switch let the gate run, and the scan itself is unrun because
+  `api.vidoc.dev` is not yet allowed for `VIDOC_API_KEY` (#470).
+- Reviews: three fresh read-only sessions, each approving; every minor fixed test-first.

@@ -20,10 +20,10 @@ pause it.
 `enabled = false`, it prints `Security scan disabled: .config/vidoc.toml sets enabled = false;
 nothing was scanned.` and exits 0, before it reads the key, checks Node or calls Vidoc. It only
 asks Git whether the switch is committed (clean in `git status`, off in `HEAD`): an uncommitted
-`enabled = false` exits 2, so the scan is
-turned off by a reviewed commit, not by an edit in an agent's tree. Agents report a disabled run as
-disabled, never as passed. Without the file the gate is on. A file that is not valid TOML, a
-missing `enabled`, an `enabled` that is not a boolean, or any other key exits 2 (not run).
+`enabled = false` exits 2, so the scan is turned off by a reviewed commit, not by an edit in an
+agent's tree. Agents report a disabled run as disabled, never as passed. Without the file the
+gate is on. A file that is not valid TOML, a missing `enabled`, an `enabled` that is not a
+boolean, or any other key exits 2 (not run).
 
 ## Alternatives
 

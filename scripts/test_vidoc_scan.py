@@ -113,6 +113,10 @@ def run(api=None, cli=None, git=None, env=None):
 class Switch(unittest.TestCase):
     """SPEC-131: `.config/vidoc.toml` turns the gate on or off; it ships on."""
 
+    # Git of the temporary repositories only, whatever GIT_* variables the suite runs under.
+    git_env = {**{k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
+               "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+
     def root_with(self, text=None):
         root = Path(tempfile.mkdtemp(prefix="vidoc-switch-"))
         self.addCleanup(shutil.rmtree, root)
@@ -144,10 +148,6 @@ class Switch(unittest.TestCase):
             with unittest.mock.patch.dict(os.environ, self.git_env, clear=True):
                 code = vidoc_scan.main(root=root, env={"PATH": os.environ.get("PATH", "")})
         return code, out.getvalue(), err.getvalue()
-
-    # Git of the temporary repositories only, whatever GIT_* variables the suite runs under.
-    git_env = {**{k: v for k, v in os.environ.items() if not k.startswith("GIT_")},
-               "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
 
     def committed(self, text):
         root = self.root_with(text)
