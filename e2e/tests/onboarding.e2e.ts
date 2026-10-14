@@ -76,6 +76,15 @@ test('Start onboarding runs it, Follow onboarding opens it, and the task box com
   await expect(running).toBeVisible();
   await expect(running).toContainText('An agent is setting up this sandbox');
   await expect(running.getByRole('button', 'Start onboarding')).toHaveCount(0);
+  // The keyboard moves on to Follow onboarding, and keeps it as the task's events arrive.
+  const follow = running.getByRole('link', 'Follow onboarding');
+  await expect(follow).toBeFocused();
+  await browser.evaluate(() => {
+    const db = (window as any).__yuliusMock;
+    db.touchTask(db.sandboxes.find((s: { slug: string }) => s.slug === 'website').id, 1, { title: 'Prepare this repository (installing)' });
+  });
+  await expect(browser.locator('.sidebar')).toContainText('installing');
+  await expect(follow).toBeFocused();
   await expect(screen.getByRole('button', 'Skip for now')).toHaveCount(0);
   await expect(screen.getByRole('textbox', 'Task prompt')).toBeHidden();
   const centred = await offCentre(browser);
