@@ -296,13 +296,22 @@ async fn import_links_owner_repositories_with_profiles_ports_and_onboarding() ->
     // F 2026-10-11: a validating project still gets its environment set up by an onboarding
     // task (not the full preparation).
     assert_ne!(ready["onboarding"], "not_needed", "{ready}");
-    // A token import (the CLI, a script) waits for Start onboarding in the browser (SPEC-051).
+    // A token import (the CLI, a script) waits for Start onboarding in the browser (SPEC-051),
+    // with no task until then (SPEC-097).
     assert_eq!(ready["onboarding"], "pending", "{ready}");
-    let ready_record =
-        w.h.store
-            .sandbox(&SandboxId::parse(text(&ready["id"]))?)
-            .await?
-            .ok_or("ready sandbox")?;
+    let ready_id = SandboxId::parse(text(&ready["id"]))?;
+    let ready_record = w.h.store.sandbox(&ready_id).await?.ok_or("ready sandbox")?;
+    assert_eq!(ready_record.onboarding_task_id, None);
+    let started = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{ready_id}/onboarding/approve"),
+        None,
+        &alice_browser,
+    )
+    .await?;
+    assert_eq!(started.status, StatusCode::OK, "{:?}", started.body);
+    let ready_record = w.h.store.sandbox(&ready_id).await?.ok_or("ready sandbox")?;
     let env_task =
         w.h.store
             .task(&ready_record.onboarding_task_id.ok_or("environment task")?)
@@ -806,22 +815,9 @@ async fn a_finished_preparation_turn_makes_the_sandbox_ready_and_starts_waiting_
     w.grant("alice", "product", "admin");
     let product = import(&w, &alice, "Quartio-Studio/product").await?.body;
     let sid = SandboxId::parse(text(&product["id"]))?;
-    let task_id =
-        w.h.store
-            .sandbox(&sid)
-            .await?
-            .ok_or("sandbox")?
-            .onboarding_task_id
-            .ok_or("prep task")?;
-    let prep = w.h.store.task(&task_id).await?.ok_or("prep")?;
-    // Documentation, configuration and CI only: no spec, so Yulius opens its pull request once
-    // its plan is done (F 2026-10-11).
-    assert!(
-        !w.h.app.spec_required(&prep).await?,
-        "preparation needs no spec"
-    );
 
-    // "Start in parallel" during preparation: the task waits after the preparation task.
+    // "Start in parallel" during preparation: the task waits after the preparation task, created
+    // then (a token import creates none, SPEC-097).
     let waiting = call(
         &w.h.router,
         Method::POST,
@@ -832,8 +828,22 @@ async fn a_finished_preparation_turn_makes_the_sandbox_ready_and_starts_waiting_
     .await?;
     assert_eq!(waiting.status, StatusCode::CREATED, "{:?}", waiting.body);
     assert_eq!(waiting.body["status"], "chained");
-    assert_eq!(waiting.body["after"]["number"], prep.number);
     let waiting_id = TaskId::parse(text(&waiting.body["id"]))?;
+    let task_id =
+        w.h.store
+            .sandbox(&sid)
+            .await?
+            .ok_or("sandbox")?
+            .onboarding_task_id
+            .ok_or("prep task")?;
+    let prep = w.h.store.task(&task_id).await?.ok_or("prep")?;
+    assert_eq!(waiting.body["after"]["number"], prep.number);
+    // Documentation, configuration and CI only: no spec, so Yulius opens its pull request once
+    // its plan is done (F 2026-10-11).
+    assert!(
+        !w.h.app.spec_required(&prep).await?,
+        "preparation needs no spec"
+    );
 
     // The agent wrote the docs in its worktree and waits at its prompt, plan still open.
     w.h.store

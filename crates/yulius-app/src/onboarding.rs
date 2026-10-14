@@ -419,11 +419,12 @@ impl App {
     }
 
     /// Creates the preparation meta-task of an imported sandbox: resting (not started) and kept
-    /// in the active task list so it can be approved.
+    /// in the active task list. Called only when onboarding starts or a task waits for it, so a
+    /// sandbox nobody has started onboarding has no task (SPEC-097).
     ///
     /// # Errors
     /// Store failures.
-    pub(crate) async fn create_onboarding_task(
+    async fn create_onboarding_task(
         self: &Arc<Self>,
         sandbox: &SandboxRecord,
         user: &UserRecord,
@@ -616,7 +617,7 @@ impl App {
     /// `Conflict` when the sandbox waits for preparation without a preparation task;
     /// `NotFound` for unknown sandboxes.
     pub async fn onboarding_wait(
-        &self,
+        self: &Arc<Self>,
         sandbox: &SandboxId,
         origin: TaskOrigin,
     ) -> AppResult<Option<TaskRecord>> {
@@ -632,6 +633,17 @@ impl App {
         let task = match &record.onboarding_task_id {
             Some(id) => store.task(id).await?,
             None => None,
+        };
+        // Nobody started onboarding yet, so it has no task; the new task waits after one created
+        // now, resting (SPEC-097 OBT-003).
+        let task = match task {
+            None if OnboardingState::parse(&record.onboarding_state)
+                == Some(OnboardingState::Pending) =>
+            {
+                // Boxed: creating that task goes through task creation, which called this.
+                Some(Box::pin(self.onboarding_task(sandbox)).await?)
+            }
+            task => task,
         };
         task.map(Some).ok_or_else(|| {
             AppError::Conflict(
@@ -684,32 +696,7 @@ impl App {
         if OnboardingState::parse(&record.onboarding_state) != Some(OnboardingState::Pending) {
             return Ok(false);
         }
-        let existing = match &record.onboarding_task_id {
-            Some(id) => store.task(id).await?,
-            None => None,
-        };
-        let task = match existing {
-            Some(task) => task,
-            None => {
-                let root = self.sandbox_repo(&record.id);
-                let (report, _) = blocking(move || Ok(validate_checkout(&root))).await?;
-                let creator = store
-                    .user(&record.created_by)
-                    .await?
-                    .ok_or(AppError::NotFound)?;
-                let task = self
-                    .create_onboarding_task(&record, &creator, &report)
-                    .await?;
-                store
-                    .set_onboarding(
-                        &record.id,
-                        OnboardingState::Pending.as_str(),
-                        Some(&task.id),
-                    )
-                    .await?;
-                task
-            }
-        };
+        let task = self.onboarding_task(sandbox).await?;
         if task.status.is_resting() {
             self.start_run(&task.id, RunStart::Resume { prompt: None }, None)
                 .await?;
@@ -718,6 +705,40 @@ impl App {
         self.set_onboarding_state(&record, OnboardingState::Preparing, actor)
             .await?;
         Ok(true)
+    }
+
+    /// The onboarding task of a `pending` sandbox, created (resting) by its sandbox's creator
+    /// when it has none yet: the repository's preparation, or its environment alone when it
+    /// already follows the format.
+    ///
+    /// # Errors
+    /// `NotFound` when the creator is gone; store failures.
+    async fn onboarding_task(self: &Arc<Self>, sandbox: &SandboxId) -> AppResult<TaskRecord> {
+        let _serial = self.onboarding_task_lock.lock().await;
+        let store = &self.deps.store;
+        let record = store.sandbox(sandbox).await?.ok_or(AppError::NotFound)?;
+        if let Some(id) = &record.onboarding_task_id
+            && let Some(task) = store.task(id).await?
+        {
+            return Ok(task);
+        }
+        let root = self.sandbox_repo(&record.id);
+        let (report, _) = blocking(move || Ok(validate_checkout(&root))).await?;
+        let creator = store
+            .user(&record.created_by)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        let task = self
+            .create_onboarding_task(&record, &creator, &report)
+            .await?;
+        store
+            .set_onboarding(
+                &record.id,
+                OnboardingState::Pending.as_str(),
+                Some(&task.id),
+            )
+            .await?;
+        Ok(task)
     }
 
     /// The onboarding state of a sandbox and what is still pending, in words (for `yulius

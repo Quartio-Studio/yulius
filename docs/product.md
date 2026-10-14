@@ -19,8 +19,8 @@ watching, steering and unblocking.
 - **Projects and sandboxes**: import a GitHub repository (or onboard it from a local machine's
   Claude sessions with `yulius onboard`); each gets a contained sandbox with its own system
   layer, home, shells per user, browser and editor. The CLI only uploads: the onboarding task that
-  adapts the repository to the Yulius standards starts when someone clicks Start onboarding on the
-  sandbox page.
+  adapts the repository to the Yulius standards is created and started when someone clicks Start
+  onboarding on the sandbox page.
 - **Superagent** (formerly the Agent, and before that the Cockpit): every user's own plain Claude
   Code session per sandbox, in the right tool panel beside any page (top-bar Superagent button,
   first in the tools rail), for quick work

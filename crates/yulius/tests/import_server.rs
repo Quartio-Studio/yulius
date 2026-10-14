@@ -439,7 +439,12 @@ async fn onboarding_starts_only_from_the_browser() -> TestResult {
 async fn start_onboarding_creates_the_task_a_cli_upload_left_out() -> TestResult {
     let w = World::new("org").await?;
     let (alice_user, alice) = w.user("alice", false).await?;
-    let remote = w.remote(OWNER, "shop", &[("README.md", "# Shop\n")], &[])?;
+    let remote = w.remote(
+        OWNER,
+        "shop",
+        &[("README.md", "# Shop\n"), ("src/app.txt", "v1\n")],
+        &[],
+    )?;
     w.grant("alice", "shop", "admin");
     let offer = laptop_offer(&w, &remote)?;
     let created = create_job(&w, &alice, offer.body()?).await?;
@@ -576,10 +581,9 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
     );
     let stored = w.h.store.sandbox(&sandbox.id).await?.ok_or("sandbox")?;
     assert_eq!(stored.onboarding_state, "pending");
-    let prep = stored.onboarding_task_id.clone().ok_or("onboarding task")?;
-    assert!(
-        w.h.store.attempts(&prep).await?.is_empty(),
-        "the onboarding task has not run"
+    assert_eq!(
+        stored.onboarding_task_id, None,
+        "no onboarding task until someone starts onboarding (SPEC-097)"
     );
     assert_eq!(result.body["onboarding_status"]["ready"], false);
     let summary = result.body["onboarding_status"]["summary"]

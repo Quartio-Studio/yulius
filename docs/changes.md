@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- `yulius onboard` no longer leaves a "Closed · 0/6 steps" onboarding task behind (SPEC-097,
+  ADR-0077). Linking a repository creates no task: the onboarding task is created when someone
+  clicks Start onboarding in the browser, or when a new task has to wait after it. Sandboxes
+  already waiting keep their task.
 - Runs recorded before SPEC-087 get their metrics from their transcripts (SPEC-091, ADR-0072).
   The upgrade queues every run recorded so far (migration 23, `metrics_recounts`). On the first
   start, once reconciliation is done, Yulius counts each ended run's own window of its transcript

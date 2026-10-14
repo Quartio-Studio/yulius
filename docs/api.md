@@ -82,11 +82,11 @@ repository of the instance owner (`invalid` otherwise) and `admin` or `maintain`
 clones the repository, picks the profile (`yulius.toml` `[delivery]`, else `product`/`studio` for
 `Quartio-Studio/product`/`studio`, else `standard`) and validates the documentation format: a
 failing project gets a preparation task (`origin: "onboarding"`) that starts at once (`onboarding:
-"preparing"`; through `yulius onboard` the sandbox stays `pending` until someone clicks Start
-onboarding on the sandbox page, SPEC-051). While
+"preparing"`; through `yulius onboard` the sandbox stays `pending`, with no preparation task yet, until someone
+clicks Start onboarding on the sandbox page, SPEC-051, SPEC-097). While
 `pending`/`preparing` no other task starts, but none is refused: creating or chaining a task (also an
 automation run or a held prompt's Start in parallel / Run after) returns it `chained` after the
-preparation task, and it starts by itself once the sandbox is `ready` or `skipped`
+preparation task (created then, resting, when the sandbox has none yet), and it starts by itself once the sandbox is `ready` or `skipped`
 (`POST /api/tasks/{tid}/start-now` starts one at once); continuing a task and continuing an
 imported session are 409 (U-08, IMP-010). Create mode
 (instance admins) creates a private repository, pushes the template scaffold to `main` and `dev`,
