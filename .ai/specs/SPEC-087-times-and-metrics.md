@@ -110,7 +110,9 @@ Measured on the instance on 2026-10-13 (database, the sandbox's transcripts, the
   work is decided where Yulius probes it and publishes the task, and an unknown count changes
   nothing, so the brief moment between a turn's end and its background count does not end it.
 - **Historic rows stay.** Runs saved before this change keep their figures; recomputing them from
-  transcripts would rewrite the production database.
+  transcripts would rewrite the production database. (Since reversed by
+  [SPEC-091](SPEC-091-recompute-the-metrics-of-runs-recorded-b.md): they are recounted once from
+  their transcripts after the upgrade, each outcome recorded.)
 
 ## Evidence
 

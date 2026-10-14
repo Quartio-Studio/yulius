@@ -911,6 +911,18 @@ impl HarnessPort for RecordingHarness {
     ) -> AppResult<Box<dyn TranscriptWatch>> {
         self.inner.watch(harness, path, from)
     }
+    fn recount(
+        &self,
+        harness: yulius_domain::harness::Harness,
+        sandbox_home: &Path,
+        worktree: &Path,
+        session_id: &str,
+        from: WatchFrom,
+        until: Option<yulius_domain::time::Timestamp>,
+    ) -> AppResult<Option<yulius_app::ports::harness::UsageSnapshot>> {
+        self.inner
+            .recount(harness, sandbox_home, worktree, session_id, from, until)
+    }
     fn login_argv(&self, harness: yulius_domain::harness::Harness) -> Vec<String> {
         self.inner.login_argv(harness)
     }

@@ -533,6 +533,20 @@ pub fn exit_event(exit: &RunExit, session_end: Option<&str>) -> TaskEvent {
     }
 }
 
+/// The stored figures of a run's transcript snapshot: no turn and no active time are unknown,
+/// not zero (SPEC-087; the live saves and the recount of old runs, SPEC-091).
+pub(crate) fn metrics_of(snapshot: UsageSnapshot) -> MetricsRecord {
+    MetricsRecord {
+        model: snapshot.model,
+        input_tokens: snapshot.tokens.input,
+        output_tokens: snapshot.tokens.output,
+        cache_read: snapshot.tokens.cache_read,
+        cache_write: snapshot.tokens.cache_write,
+        turns: u32::try_from(snapshot.turns).ok().filter(|t| *t > 0),
+        active_ms: snapshot.active_ms.filter(|ms| *ms > 0),
+    }
+}
+
 impl App {
     /// Runtime for a task, created on demand.
     pub fn runtime(&self, task: &TaskId) -> Arc<TaskRuntime> {
@@ -2011,15 +2025,7 @@ impl App {
     /// replaces them with less (SPEC-087 MET-002).
     async fn save_metrics(&self, task_id: &TaskId, attempt_id: &AttemptId, runtime: &TaskRuntime) {
         let snapshot = runtime.usage.lock().map(|u| u.clone()).unwrap_or_default();
-        let metrics = MetricsRecord {
-            model: snapshot.model,
-            input_tokens: snapshot.tokens.input,
-            output_tokens: snapshot.tokens.output,
-            cache_read: snapshot.tokens.cache_read,
-            cache_write: snapshot.tokens.cache_write,
-            turns: u32::try_from(snapshot.turns).ok().filter(|t| *t > 0),
-            active_ms: snapshot.active_ms.filter(|ms| *ms > 0),
-        };
+        let metrics = metrics_of(snapshot);
         let _ = self
             .deps
             .store

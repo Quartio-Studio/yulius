@@ -23,6 +23,16 @@ impl App {
         tokio::spawn(async move {
             if let Err(err) = app.reconcile().await {
                 tracing::error!(error = %err, "session reconciliation failed");
+            } else {
+                // Runs recorded before SPEC-087 get their transcripts' figures, once the runs
+                // that did not survive the restart have ended (SPEC-091 RCT-004); nothing waits
+                // for it. Without reconciliation a lost run would read as live: the next start.
+                let recount = Arc::clone(&app);
+                tokio::spawn(async move {
+                    if let Err(err) = recount.recount_old_metrics().await {
+                        tracing::warn!(error = %err, "the metrics recount could not start");
+                    }
+                });
             }
             // Merges armed before the restart stay armed (DLV-205).
             app.restore_armed_merges().await;

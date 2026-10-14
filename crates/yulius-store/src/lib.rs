@@ -63,6 +63,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0020_record_numbers.sql"),
     include_str!("migrations/0021_task_state_times.sql"),
     include_str!("migrations/0022_ci_job_needs.sql"),
+    include_str!("migrations/0023_metrics_recounts.sql"),
 ];
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send + 'static>;
@@ -160,6 +161,30 @@ impl SqliteStore {
         })
         .await
     }
+}
+
+/// Creates the database file `path` at schema `version`, as a Yulius of that version left it,
+/// for upgrade tests (the next [`SqliteStore::open`] applies the later migrations).
+///
+/// # Errors
+/// Fails when the file cannot be written or `version` is past the latest.
+#[cfg(feature = "test-support")]
+pub fn create_at_version(path: &Path, version: usize) -> Result<(), OpenError> {
+    let mut conn = Connection::open(path)?;
+    let tx = conn.transaction()?;
+    for sql in MIGRATIONS.get(..version).ok_or(OpenError::TooNew {
+        found: i64::try_from(version).unwrap_or(i64::MAX),
+        supported: i64::try_from(MIGRATIONS.len()).unwrap_or(i64::MAX),
+    })? {
+        tx.execute_batch(sql)?;
+    }
+    tx.pragma_update(
+        None,
+        "user_version",
+        i64::try_from(version).unwrap_or(i64::MAX),
+    )?;
+    tx.commit()?;
+    Ok(())
 }
 
 fn prepare(conn: &mut Connection) -> Result<(), OpenError> {
@@ -345,6 +370,181 @@ mod tests {
             .ok_or("task")?;
         assert_eq!(task.owner.as_str(), "u1");
         assert_eq!(store.control_request(&task.id).await?, None);
+        Ok(())
+    }
+    /// A store at version 22 with runs: the upgrade queues each of them for one recount of its
+    /// metrics (SPEC-091 RCT-003); a run started after it is not queued.
+    fn version_twenty_two_with_runs(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let conn = rusqlite::Connection::open(path)?;
+        for sql in &MIGRATIONS[..22] {
+            conn.execute_batch(sql)?;
+        }
+        conn.pragma_update(None, "user_version", 22)?;
+        conn.execute_batch(
+            "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u1', 'U', 0, 0, 1);
+             INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+             INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, created_by, created_at, updated_at) VALUES
+               ('t1', 's1', 1, 'T', 'p', 'claude', 'closed', 'ui', 'u1', 1, 1),
+               ('t2', 's1', 2, 'T', 'p', 'claude', 'running', 'ui', 'u1', 2, 2);
+             INSERT INTO attempts (id, task_id, seq, harness, launch_kind, state, run_dir, token_hash, host_token, started_at, ended_at) VALUES
+               ('a2', 't1', 2, 'claude', 'resume', 'exited', '/r/a2', 'h2', x'00', 300, 400),
+               ('a1', 't1', 1, 'claude', 'new', 'exited', '/r/a1', 'h1', x'00', 100, 200),
+               ('a3', 't2', 1, 'claude', 'new', 'live', '/r/a3', 'h3', x'00', 500, NULL);
+             INSERT INTO metrics (attempt_id, task_id, model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms, updated_at) VALUES
+               ('a1', 't1', 'claude-old', 5, 50, 0, 0, 7, 0, 200);",
+        )?;
+        Ok(())
+    }
+
+    /// A recount's outcome, figures before and after, and when.
+    type RecountRow = (Option<String>, Option<String>, Option<String>, Option<i64>);
+
+    fn recount_row(path: &Path, attempt: &str) -> Result<RecountRow, Box<dyn std::error::Error>> {
+        let conn = rusqlite::Connection::open(path)?;
+        Ok(conn.query_row(
+            "SELECT outcome, before, after, done_at FROM metrics_recounts WHERE attempt_id = ?1",
+            [attempt],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )?)
+    }
+
+    #[tokio::test]
+    async fn metrics_recounts_queue_the_runs_recorded_before_the_upgrade_once()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_app::model::RecountOutcome;
+        use yulius_app::ports::store::TaskStore as _;
+        use yulius_domain::ids::{AttemptId, TaskId};
+        use yulius_domain::time::Timestamp;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v22.db");
+        version_twenty_two_with_runs(&path)?;
+        let store = SqliteStore::open(&path)?;
+        let queued = store.queued_metrics_recounts().await?;
+        assert_eq!(
+            queued.iter().map(AttemptId::as_str).collect::<Vec<_>>(),
+            ["a1", "a2", "a3"],
+            "every run recorded before the upgrade, oldest first"
+        );
+        rusqlite::Connection::open(&path)?.execute_batch(
+            "INSERT INTO attempts (id, task_id, seq, harness, launch_kind, state, run_dir, token_hash, host_token, started_at) VALUES
+               ('a4', 't1', 3, 'claude', 'resume', 'exited', '/r/a4', 'h4', x'00', 900);",
+        )?;
+        assert_eq!(
+            store.queued_metrics_recounts().await?.len(),
+            3,
+            "a later run is not"
+        );
+        assert!(
+            store
+                .finish_metrics_recount(
+                    &AttemptId::parse("a3")?,
+                    RecountOutcome::Live,
+                    None,
+                    Timestamp(950)
+                )
+                .await?
+        );
+        assert!(
+            !store
+                .finish_metrics_recount(
+                    &AttemptId::parse("a3")?,
+                    RecountOutcome::Gone,
+                    None,
+                    Timestamp(960)
+                )
+                .await?,
+            "a recorded run is never recounted"
+        );
+        assert_eq!(
+            recount_row(&path, "a3")?,
+            (Some("live".into()), None, None, Some(950))
+        );
+        assert_eq!(store.queued_metrics_recounts().await?.len(), 2);
+        drop(store);
+        // Reopening migrates nothing again.
+        let store = SqliteStore::open(&path)?;
+        assert_eq!(store.queued_metrics_recounts().await?.len(), 2);
+        assert!(store.delete_task(&TaskId::parse("t1")?).await?);
+        assert!(
+            store.queued_metrics_recounts().await?.is_empty(),
+            "a deleted task's runs go with it"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_recount_replaces_the_figures_and_records_both()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use yulius_app::model::{MetricsRecord, RecountOutcome};
+        use yulius_app::ports::store::TaskStore as _;
+        use yulius_domain::ids::{AttemptId, TaskId};
+        use yulius_domain::time::Timestamp;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v22.db");
+        version_twenty_two_with_runs(&path)?;
+        let store = SqliteStore::open(&path)?;
+        // The upgrade's start ends a run lost while Yulius was down and saves its empty figures
+        // before the recount: "before" is still what the upgrade found.
+        rusqlite::Connection::open(&path)?.execute_batch(
+            "UPDATE metrics SET input_tokens = NULL, output_tokens = NULL, turns = NULL WHERE attempt_id = 'a1'",
+        )?;
+        let counted = MetricsRecord {
+            model: None,
+            input_tokens: Some(85),
+            output_tokens: Some(1_510),
+            cache_read: Some(9),
+            cache_write: Some(1),
+            turns: Some(3),
+            active_ms: Some(220_200),
+        };
+        assert!(
+            store
+                .finish_metrics_recount(
+                    &AttemptId::parse("a1")?,
+                    RecountOutcome::Recomputed,
+                    Some(&counted),
+                    Timestamp(1_000)
+                )
+                .await?
+        );
+        let stored = store.task_metrics(&TaskId::parse("t1")?).await?;
+        assert_eq!(
+            stored,
+            vec![MetricsRecord {
+                model: Some("claude-old".into()),
+                ..counted.clone()
+            }],
+            "the transcript's figures; a model it does not name keeps the stored one"
+        );
+        let (outcome, before, after, at) = recount_row(&path, "a1")?;
+        assert_eq!((outcome.as_deref(), at), (Some("recomputed"), Some(1_000)));
+        let before: serde_json::Value = serde_json::from_str(&before.ok_or("before")?)?;
+        let after: serde_json::Value = serde_json::from_str(&after.ok_or("after")?)?;
+        assert_eq!(
+            before,
+            serde_json::json!({"model": "claude-old", "input_tokens": 5, "output_tokens": 50,
+                "cache_read": 0, "cache_write": 0, "turns": 7, "active_ms": 0})
+        );
+        assert_eq!(
+            after,
+            serde_json::json!({"model": "claude-old", "input_tokens": 85, "output_tokens": 1510,
+                "cache_read": 9, "cache_write": 1, "turns": 3, "active_ms": 220200})
+        );
+        // A run with no row yet gets one; its "before" is nothing.
+        assert!(
+            store
+                .finish_metrics_recount(
+                    &AttemptId::parse("a2")?,
+                    RecountOutcome::Recomputed,
+                    Some(&counted),
+                    Timestamp(1_001)
+                )
+                .await?
+        );
+        let (_, before, after, _) = recount_row(&path, "a2")?;
+        assert_eq!(before, None);
+        assert!(after.is_some_and(|a| a.contains("\"model\":null")));
+        assert_eq!(store.task_metrics(&TaskId::parse("t1")?).await?.len(), 2);
         Ok(())
     }
 

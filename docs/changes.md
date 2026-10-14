@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- Runs recorded before SPEC-087 get their metrics from their transcripts (SPEC-091, ADR-0072).
+  The upgrade queues every run recorded so far (migration 23, `metrics_recounts`). On the first
+  start, once reconciliation is done, Yulius counts each ended run's own window of its transcript
+  in the background: from its start to its end or the next run of its session, its sub-agents
+  included. It uses the live watch's rules, so turns are Claude Code's turn records and active time
+  is the union of turn spans. Runs whose transcript is gone keep their figures. Each run's outcome
+  and the figures it replaced are recorded, and one `metrics.recounted` audit entry sums the round.
+  It runs once: later starts change nothing.
 - A task's squash commit names the change, not its spec (SPEC-069 BPL-008): the pull request's
   default title takes the type and scope of the branch's most significant commit (feat, then fix,
   and so on) instead of its oldest, and before Yulius merges it renews a title it gave from the

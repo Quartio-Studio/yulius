@@ -57,3 +57,5 @@ agents did (measured on the instance, 2026-10-13):
 - Reading a resumed session's transcript up to the run's start costs a scan of the file once per
   watch (bounded per poll as before).
 - Rows saved before this change keep their figures; the dashboard is right for runs from now on.
+  [ADR-0072](0072-recount-old-runs-from-their-transcripts-once.md) recounts them once from their
+  transcripts.
