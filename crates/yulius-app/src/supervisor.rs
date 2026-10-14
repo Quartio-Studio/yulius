@@ -117,9 +117,14 @@ pub struct TaskRuntime {
     /// Claude Code's SessionStart hook arrived for the current attempt: its prompt box reads
     /// input (typing before it is lost or left unsubmitted, F 2026-10-12).
     pub(crate) session_started: AtomicBool,
-    /// The goal-mode session opened with a first message (its attached files, SPEC-025) whose
-    /// turn has not ended yet: its goal is typed after that turn's Stop hook.
+    /// The goal-mode session opened with a first message (a resumed session's continuation)
+    /// whose turn has not ended yet: its goal is typed after that turn's Stop hook.
     pub opening_turn: AtomicBool,
+    /// Yulius types the run's first message (SPEC-030): from the spawn until its Enter, a
+    /// person's keys are not written into it (SPEC-117 ONE-006).
+    pub(crate) typing_opening: AtomicBool,
+    /// A person was told their keys wait for the first message (once per first message).
+    pub(crate) typing_opening_said: AtomicBool,
     /// A merge `delivery_merge` armed while the checks still ran (SPEC-011), Yulius's decisions
     /// of it in progress and how the last one ended (SPEC-028 MSR-003), under one lock so
     /// `yulius wait` reads them together (SPEC-064 WAI-003).
@@ -235,6 +240,8 @@ impl TaskRuntime {
             goal_submitted: AtomicBool::new(false),
             session_started: AtomicBool::new(false),
             opening_turn: AtomicBool::new(false),
+            typing_opening: AtomicBool::new(false),
+            typing_opening_said: AtomicBool::new(false),
             armed: Mutex::new(crate::agent_wait::ArmedSlot::default()),
             push_problem: Mutex::new(None),
             last_stop_ms: AtomicI64::new(0),
@@ -1193,6 +1200,11 @@ impl App {
         runtime
             .opening_turn
             .store(opens_with_turn, Ordering::SeqCst);
+        // Before the spawn too: a person's keys never reach a first message Yulius types.
+        runtime
+            .typing_opening
+            .store(typed_opening.is_some(), Ordering::SeqCst);
+        runtime.typing_opening_said.store(false, Ordering::SeqCst);
         // So is the new session's SessionStart: its hook can be answered before the run is
         // attached and watched, and must not be forgotten then (#243).
         runtime.session_started.store(false, Ordering::SeqCst);
@@ -1301,6 +1313,13 @@ impl App {
                         ));
                         app.flag_task(&task_id).await;
                     }
+                }
+                // A run that is gone leaves the flag to the task's next start, which sets it
+                // for its own first message (this one may already be that run's).
+                if app.attempt_live(&task_id, &attempt_id).await {
+                    app.runtime(&task_id)
+                        .typing_opening
+                        .store(false, Ordering::SeqCst);
                 }
             });
         }
@@ -1525,6 +1544,16 @@ impl App {
                 tracing::warn!(session = %session_id, error = %err, "the transcript step back did not finish");
             }
         }
+    }
+
+    /// Whether a person's keys are kept from the task's session now: Yulius types its first
+    /// message, and Claude Code's folder-trust dialog, which only a person answers, is not
+    /// shown (SPEC-117 ONE-006).
+    pub(crate) fn keys_wait_for_opening(&self, task_id: &TaskId) -> bool {
+        let runtime = self.runtime(task_id);
+        runtime.typing_opening.load(Ordering::SeqCst)
+            && (runtime.session_started.load(Ordering::SeqCst)
+                || !trust_prompt_shown(&runtime.hub.screen_text()))
     }
 
     pub(crate) async fn attempt_live(&self, task_id: &TaskId, attempt_id: &AttemptId) -> bool {

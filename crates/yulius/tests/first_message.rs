@@ -460,6 +460,76 @@ fn trust_words_after_the_session_started_are_no_trust_prompt() -> TestResult {
     Ok(())
 }
 
+/// SPEC-117 ONE-006, AC-ONE-3: keys a person types while Yulius types a prompt task's first
+/// message with an image are not written into it, and the person is told to type once it is sent;
+/// after it, typing reaches the session again. Without a SessionStart hook the session reads input
+/// 10 s after its start (half of `goal_ready_ms`), so the keys surely come before the message.
+#[test]
+fn keys_typed_while_yulius_types_the_first_message_wait() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            no_session_start: true,
+            ..hooked()
+        };
+        let (app, _) = start_with(&data, &fake, agent, 0, probe, |config| {
+            config.goal_ready_ms = 20_000;
+        })
+        .await?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = new_task(
+            &app,
+            &sandbox,
+            &user,
+            "Make it blue\n\n@/srv/shot.png",
+            TaskMode::Prompt,
+        )
+        .await?;
+        wait_for("the session", Duration::from_secs(60), || async {
+            screen(&app, &id).contains("FAKE-AGENT READY")
+        })
+        .await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        let attach = app
+            .terminal_open(&ctx, id.as_str(), Some((120, 40)))
+            .await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        app.terminal_input(&ctx, &attach, b"my draft", false)
+            .await?;
+        app.terminal_input(&ctx, &attach, b" more", false).await?;
+        wait_for("the first message", Duration::from_secs(60), || async {
+            screen(&app, &id).contains("ECHO: [Image #1] Make it blue")
+        })
+        .await?;
+        let shown = screen(&app, &id);
+        assert!(!shown.contains("my draft"), "{shown}");
+        assert!(!shown.contains("more"), "{shown}");
+        let said = notices(&mut watch);
+        let told = said
+            .iter()
+            .filter(|n| n.contains("Yulius is typing this task's first message"))
+            .count();
+        assert_eq!(told, 1, "{said:?}");
+        // Sent: the person types into the session again.
+        app.terminal_input(&ctx, &attach, b"after\r", false).await?;
+        wait_for("the person's message", Duration::from_secs(30), || async {
+            screen(&app, &id).contains("ECHO: after")
+        })
+        .await?;
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-068 OPN-002, AC-OPN-1 (#266): the server restarts while the first message of a task with
 /// an image is being typed (the image pasted, no Enter yet). The new server reattaches the run
 /// and flags the task with a notice; nothing is submitted for it.

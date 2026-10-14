@@ -2,6 +2,7 @@
 //! (SPEC-002 §7.7, AC-TSK-6, ACC-008; the size policy is [`crate::hub::control`]).
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use yulius_domain::ids::TaskId;
@@ -179,6 +180,20 @@ impl App {
         // forwarded wheel turn is not typing: it must not move control, and with it the size, to
         // that viewer (#78). Nor are the focus and mouse reports and query answers xterm sends
         // by itself (SPEC-068).
+        if !scroll && is_typing(data) && self.keys_wait_for_opening(&attach.task_id) {
+            // Yulius types the task's first message: the keys would be mixed into it (SPEC-117
+            // ONE-006). They are dropped, not replayed: an Esc or Ctrl+C would cut its turn.
+            if !attach
+                .runtime
+                .typing_opening_said
+                .swap(true, Ordering::SeqCst)
+            {
+                attach.runtime.hub.notice(
+                    "Yulius is typing this task's first message. Type once it is sent.".to_owned(),
+                );
+            }
+            return Ok(());
+        }
         if !scroll && is_typing(data) {
             let change = attach.runtime.hub.claim(attach.viewer_id);
             // The keystroke matters more than the size: a failed resize never drops it.
