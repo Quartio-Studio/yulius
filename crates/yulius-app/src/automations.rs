@@ -924,13 +924,21 @@ impl App {
         let run = self
             .process_slot(&record, slot, true, start.as_ref())
             .await?;
-        let detail = match caller_detail {
-            Some(caller) => {
+        // A choice other than the stored one is named, since nothing else records it.
+        let other = start.filter(|s| s != &record.start).map(|s| match s {
+            AutomationStart::Now => "now".to_owned(),
+            AutomationStart::Supertask => "supertask".to_owned(),
+            AutomationStart::After(id) => format!("after {id}"),
+            AutomationStart::Rule(rule) => format!("when {rule}"),
+        });
+        let detail = match (caller_detail, other) {
+            (Some(caller), _) => {
                 let mut detail = caller.clone();
                 detail["state"] = json!(run.state.as_str());
                 detail.to_string()
             }
-            None => run.state.as_str().to_owned(),
+            (None, Some(other)) => json!({"state": run.state.as_str(), "start": other}).to_string(),
+            (None, None) => run.state.as_str().to_owned(),
         };
         self.deps
             .store
@@ -1084,6 +1092,8 @@ impl App {
     ) -> AppResult<AutomationRunRecord> {
         let store = &self.deps.store;
         if let Some(existing) = store.automation_run(&automation.id, slot).await? {
+            // A run of this slot already exists (a race, or one left by a crash): it completes
+            // with the stored choice, without `start` (ADR-0074).
             return if existing.state == RunState::Scheduled {
                 self.resolve_pending(automation, slot).await
             } else {

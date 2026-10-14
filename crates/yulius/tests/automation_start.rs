@@ -536,11 +536,35 @@ async fn run_now_starts_its_task_with_the_choice_it_is_given() -> TestResult {
     }
     assert!(h.store.runs(&id, 10).await?.is_empty(), "no run recorded");
 
-    // A supertask for this run; the stored choice stays start now.
+    // Someone who may only read the project is refused before the choice is checked.
+    let bob = user_with_token(&h, "u-bob", "bob", false).await?;
+    h.github
+        .set_perm("bob", "Quartio-Studio/studio", perms("read"));
+    let r = run_with(
+        &h,
+        &bob,
+        &id,
+        json!({"supertask": true, "start_rule": "#1 done"}),
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{}", r.body);
+    assert!(h.store.runs(&id, 10).await?.is_empty(), "no run recorded");
+
+    // A supertask for this run; the stored choice stays start now, and the audit says which
+    // choice the run used.
     h.clock.0.store(BASE + 1_000, Ordering::SeqCst);
     let r = run_with(&h, &alice, &id, json!({"supertask": true})).await?;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
     assert_eq!(r.body["state"], "task_created", "{}", r.body);
+    let audit = h.store.automation_audit(&id, 1).await?;
+    let detail: Value = serde_json::from_str(audit[0].detail.as_deref().unwrap_or("null"))?;
+    assert_eq!(
+        (audit[0].action.as_str(), &detail),
+        (
+            "automation.run_now",
+            &json!({"state": "task_created", "start": "supertask"})
+        )
+    );
     let task = task_of(&h, &r.body).await?;
     assert_eq!((task.status, task.supertask), (TaskStatus::Queued, true));
     assert_eq!(
@@ -571,9 +595,11 @@ async fn run_now_starts_its_task_with_the_choice_it_is_given() -> TestResult {
     );
     close(&h, &task, BASE + 6_000).await?;
 
-    // Without a body: the stored choice, start now.
+    // Without a body: the stored choice, start now, audited as before.
     h.clock.0.store(BASE + 7_000, Ordering::SeqCst);
     let run = run_now(&h, &alice, &id).await?;
+    let audit = h.store.automation_audit(&id, 1).await?;
+    assert_eq!(audit[0].detail.as_deref(), Some("task_created"));
     let task = task_of(&h, &run).await?;
     assert_eq!((task.status, task.supertask), (TaskStatus::Queued, false));
     assert!(h.store.chain(&task.id).await?.is_none());
