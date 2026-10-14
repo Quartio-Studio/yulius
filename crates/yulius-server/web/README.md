@@ -268,8 +268,9 @@ accounts with usage (some unknown), Git data and delivery stages, environment ru
 CI runs with job logs and repository hygiene (`studio` has jobs and runs, `product` has no CI and
 leftover GitHub Actions workflows), workflows, skills, automations, MCP servers, analytics, the
 superadmin recovery code (mock code `123456`) and the GitHub App connection. Importing a repository creates a
-sandbox whose onboarding is `pending` with a resting preparation task carrying the server's plan
-(`mobile-app` already follows the format, so its task only sets up the environment): its new-task
+sandbox whose onboarding is `pending` with no task until Start onboarding (or a new task that
+waits for it) creates the preparation task (SPEC-097); `GET …/onboarding/plan` gives the server's
+plan (`mobile-app` already follows the format, so its task only sets up the environment): its new-task
 page shows only the onboarding message with Start onboarding, and the mock marks it ready 9 s
 later (a test sets `__yuliusMock.manualOnboarding` and calls `finishOnboarding(slug)` instead).
 `&onboarding=preparing` starts with `product` being onboarded. Uploads report progress in steps, a dropped file lands in the editor's in-memory

@@ -351,6 +351,22 @@ async fn onboarding_starts_only_from_the_browser() -> TestResult {
     let sandbox = w.h.store.sandboxes().await?.remove(0);
     assert_eq!(sandbox.onboarding_state, "pending");
     let approve = format!("/api/sandboxes/{}/onboarding/approve", sandbox.id);
+    let tasks = format!("/api/sandboxes/{}/tasks", sandbox.id);
+    // SPEC-097 OBT-001: nothing started, so no task: not even a resting one that shows as Closed.
+    assert_eq!(sandbox.onboarding_task_id, None);
+    let listed = call(&w.h.router, Method::GET, &tasks, None, &alice).await?;
+    assert_eq!(listed.body, json!([]), "the upload creates no task");
+    // OBT-004: what onboarding will do is readable without a task, and reading it creates none.
+    let plan_url = format!("/api/sandboxes/{}/onboarding/plan", sandbox.id);
+    let plan = call(&w.h.router, Method::GET, &plan_url, None, &alice).await?;
+    assert_eq!(plan.status, StatusCode::OK, "{:?}", plan.body);
+    assert_eq!(plan.body["title"], "Prepare this repository for Yulius");
+    assert_eq!(plan.body["task_number"], Value::Null);
+    let steps = plan.body["steps"].as_array().ok_or("steps")?;
+    assert_eq!(steps.len(), 6, "{steps:?}");
+    assert!(text(&steps[1]).contains("toolchains"), "{steps:?}");
+    let listed = call(&w.h.router, Method::GET, &tasks, None, &alice).await?;
+    assert_eq!(listed.body, json!([]), "reading the plan creates no task");
 
     let cli = call(&w.h.router, Method::POST, &approve, None, &alice).await?;
     assert_eq!(cli.status, StatusCode::FORBIDDEN, "{:?}", cli.body);
@@ -364,6 +380,28 @@ async fn onboarding_starts_only_from_the_browser() -> TestResult {
         unchanged.onboarding_state, "pending",
         "a CLI token changes nothing"
     );
+    assert_eq!(unchanged.onboarding_task_id, None, "and creates no task");
+    let listed = call(&w.h.router, Method::GET, &tasks, None, &alice).await?;
+    assert_eq!(listed.body, json!([]));
+
+    // OBT-003: a new task still waits after the onboarding task, created then and resting.
+    let waiting = call(
+        &w.h.router,
+        Method::POST,
+        &tasks,
+        Some(json!({"prompt": "add a cart", "harness": "claude"})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(waiting.status, StatusCode::CREATED, "{:?}", waiting.body);
+    assert_eq!(waiting.body["status"], "chained");
+    assert_eq!(waiting.body["after"]["number"], 1);
+    // Once the task exists the plan is its own, with its number.
+    let task_plan = call(&w.h.router, Method::GET, &plan_url, None, &alice).await?;
+    assert_eq!(task_plan.body["task_number"], 1, "{:?}", task_plan.body);
+    assert_eq!(task_plan.body["steps"], plan.body["steps"]);
+    let unchanged = w.h.store.sandbox(&sandbox.id).await?.ok_or("sandbox")?;
+    assert_eq!(unchanged.onboarding_state, "pending");
 
     // Nor can a CLI token continue the resting onboarding task itself.
     let prep = unchanged
@@ -402,6 +440,52 @@ async fn onboarding_starts_only_from_the_browser() -> TestResult {
     let started = call(&w.h.router, Method::POST, &approve, None, &browser).await?;
     assert_eq!(started.status, StatusCode::OK, "{:?}", started.body);
     assert_eq!(started.body["onboarding"], "preparing");
+    let preparing = w.h.store.sandbox(&sandbox.id).await?.ok_or("sandbox")?;
+    assert_eq!(
+        preparing.onboarding_task_id.as_ref(),
+        Some(&prep),
+        "Start onboarding starts the task the new task waits after"
+    );
+    Ok(())
+}
+
+/// SPEC-097 OBT-002: with no onboarding task yet, Start onboarding creates and starts it.
+#[tokio::test]
+async fn start_onboarding_creates_the_task_a_cli_upload_left_out() -> TestResult {
+    let w = World::new("org").await?;
+    let (alice_user, alice) = w.user("alice", false).await?;
+    let remote = w.remote(
+        OWNER,
+        "shop",
+        &[("README.md", "# Shop\n"), ("src/app.txt", "v1\n")],
+        &[],
+    )?;
+    w.grant("alice", "shop", "admin");
+    let offer = laptop_offer(&w, &remote)?;
+    let created = create_job(&w, &alice, offer.body()?).await?;
+    assert_eq!(created.status, StatusCode::OK, "{:?}", created.body);
+    let sandbox = w.h.store.sandboxes().await?.remove(0);
+    assert_eq!(sandbox.onboarding_task_id, None);
+
+    let browser = w.browser(&alice_user).await?;
+    let approve = format!("/api/sandboxes/{}/onboarding/approve", sandbox.id);
+    let started = call(&w.h.router, Method::POST, &approve, None, &browser).await?;
+    assert_eq!(started.status, StatusCode::OK, "{:?}", started.body);
+    assert_eq!(started.body["onboarding"], "preparing");
+    let listed = call(
+        &w.h.router,
+        Method::GET,
+        &format!("/api/sandboxes/{}/tasks", sandbox.id),
+        None,
+        &alice,
+    )
+    .await?;
+    let listed = listed.body.as_array().ok_or("tasks")?.clone();
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0]["origin"], "onboarding");
+    assert_eq!(listed[0]["title"], "Prepare this repository for Yulius");
+    assert_eq!(listed[0]["archived"], false);
+    assert_ne!(listed[0]["status"], "closed", "it started: {listed:?}");
     Ok(())
 }
 
@@ -512,10 +596,9 @@ async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
     );
     let stored = w.h.store.sandbox(&sandbox.id).await?.ok_or("sandbox")?;
     assert_eq!(stored.onboarding_state, "pending");
-    let prep = stored.onboarding_task_id.clone().ok_or("onboarding task")?;
-    assert!(
-        w.h.store.attempts(&prep).await?.is_empty(),
-        "the onboarding task has not run"
+    assert_eq!(
+        stored.onboarding_task_id, None,
+        "no onboarding task until someone starts onboarding (SPEC-097)"
     );
     assert_eq!(result.body["onboarding_status"]["ready"], false);
     let summary = result.body["onboarding_status"]["summary"]
@@ -924,5 +1007,51 @@ async fn assert_imported_resume(
     let removed_or_other = w.h.store.sandbox(sandbox).await?.ok_or("sandbox")?;
     let prep = removed_or_other.onboarding_task_id.ok_or("prep task")?;
     assert_eq!(app.prepare_imported_resume(&prep).await?, None);
+    Ok(())
+}
+
+/// SPEC-097 OBT-003: tasks created at once in a `pending` sandbox wait after one onboarding task.
+#[tokio::test]
+async fn simultaneous_new_tasks_create_one_onboarding_task() -> TestResult {
+    let w = World::new("org").await?;
+    let (_, alice) = w.user("alice", false).await?;
+    let remote = w.remote(
+        OWNER,
+        "shop",
+        &[("README.md", "# Shop\n"), ("src/app.txt", "v1\n")],
+        &[],
+    )?;
+    w.grant("alice", "shop", "admin");
+    let offer = laptop_offer(&w, &remote)?;
+    let created = create_job(&w, &alice, offer.body()?).await?;
+    assert_eq!(created.status, StatusCode::OK, "{:?}", created.body);
+    let sandbox = w.h.store.sandboxes().await?.remove(0);
+    let tasks = format!("/api/sandboxes/{}/tasks", sandbox.id);
+    let new_task = |prompt: &'static str| {
+        call(
+            &w.h.router,
+            Method::POST,
+            &tasks,
+            Some(json!({"prompt": prompt, "harness": "claude"})),
+            &alice,
+        )
+    };
+    let (first, second) = tokio::join!(new_task("add a cart"), new_task("add a wishlist"));
+    let (first, second) = (first?, second?);
+    assert_eq!(first.status, StatusCode::CREATED, "{:?}", first.body);
+    assert_eq!(second.status, StatusCode::CREATED, "{:?}", second.body);
+    assert_eq!(
+        first.body["after"]["number"],
+        second.body["after"]["number"]
+    );
+    let listed = call(&w.h.router, Method::GET, &tasks, None, &alice).await?;
+    let onboarding = listed
+        .body
+        .as_array()
+        .ok_or("tasks")?
+        .iter()
+        .filter(|task| task["origin"] == "onboarding")
+        .count();
+    assert_eq!(onboarding, 1, "{:?}", listed.body);
     Ok(())
 }
