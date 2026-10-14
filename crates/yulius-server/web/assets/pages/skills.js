@@ -77,7 +77,7 @@ export function mountSkillsPage(ctx, sandbox, route) {
           : emptyState({ iconName: 'book', title: 'No custom skills yet', text: 'A skill is instructions Claude Code loads when they are relevant. Create one here, or add it to the repository under .agents/skills or .claude/skills.', action: write ? createButton('New skill', () => newSkill()) : null })));
     if (route.query.get('source') === 'instance') requestAnimationFrame(() => view.querySelector('#skills-custom-section')?.scrollIntoView({ block: 'start' }));
     return view;
-  });
+  }, { shape: 'item-section' });
 
   return { el: frame.el, key: `skills:${sandbox.id}:${route.query.get('source') || ''}` };
 }

@@ -72,7 +72,7 @@ export function mountDashboardPage(ctx, sandbox, route) {
       ctx.api.get('/api/capacity').catch(() => null),
     ]);
     return { now: now || {}, before, days, capacity };
-  }, ({ now, before, days: n, capacity }) => renderSummary(now, before, n, capacity));
+  }, ({ now, before, days: n, capacity }) => renderSummary(now, before, n, capacity), { shape: 'cards' });
   // Live while open (#31): tokens and runs of tasks in progress change; refresh in place while
   // the tab is visible.
   const live = setInterval(() => {

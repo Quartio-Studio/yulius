@@ -992,11 +992,57 @@ export function badge(text, tone = '', title) {
 
 /**
  * Empty / error placeholders. A `loading` one is the skeleton (SPEC-092): shimmering fields with
- * `text` said to assistive technology, padded like the placeholder it stands for.
+ * `text` said to assistive technology, padded like the placeholder it stands for, or drawn in the
+ * `shape` of what loads (SPEC-120, see loadingShape).
  */
-export function placeholder(text, kind = 'empty') {
-  if (kind === 'loading') return skeleton(text, 3, { block: true });
+export function placeholder(text, kind = 'empty', shape = 'lines') {
+  if (kind === 'loading') return shape === 'lines' ? skeleton(text, 3, { block: true }) : loadingShape(text, shape);
   return h('div', { class: ['placeholder', `placeholder-${kind}`] }, text);
+}
+
+/** A shimmering bar `width` long, as tall as a line of text where it stands (SPEC-120). */
+export function bar(width = '60%') {
+  return h('span', { class: 'skeleton-bar', style: { width } });
+}
+
+// Loading shapes (SPEC-120): the final layout's own boxes (item cards, a table, cards, fields) with
+// bars where its text goes, so the page's CSS sizes both and the content lands where they were.
+const SHAPES = {
+  items: (count = 3) => h('div', { class: 'item-list' }, Array.from({ length: count }, (_, i) => h('div', { class: 'item-card' },
+    h('span', { class: 'item-icon skeleton-tile' }),
+    h('div', { class: 'item-main' },
+      h('div', { class: 'item-name' }, bar(['30%', '40%', '24%'][i % 3])),
+      h('div', { class: 'item-desc' }, bar(['72%', '56%', '64%'][i % 3])),
+      h('div', { class: 'item-meta' }, bar('40%')))))),
+  // Item cards under a section heading (Workflows, Skills).
+  'item-section': (count = 3) => h('div', { class: 'stack-sm' }, h('div', { class: 'page-section-title' }, bar('8em')), SHAPES.items(count)),
+  table: (columns = 4, rows = 4) => h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
+    h('thead', null, h('tr', null, Array.from({ length: columns }, () => h('th', null, bar('5em'))))),
+    h('tbody', null, Array.from({ length: rows }, (_, r) => h('tr', null,
+      Array.from({ length: columns }, (_, c) => h('td', null, bar(`${[70, 50, 60, 40][(r + c) % 4]}%`)))))))),
+  cards: (count = 2) => h('div', { class: 'grid-2' }, Array.from({ length: count }, () => h('div', { class: 'card skeleton-card' },
+    h('div', { class: 'item-name' }, bar('40%')), bar('80%'), bar('64%'), bar('48%')))),
+  form: (count = 3) => h('div', { class: 'stack' }, Array.from({ length: count }, () => h('div', { class: 'stack-sm' },
+    h('div', { class: 'page-section-title' }, bar('8em')),
+    h('div', { class: 'skeleton-field' })))),
+};
+
+/**
+ * The skeleton in the shape of what loads (SPEC-120): `shape` is a name of SHAPES ('items',
+ * 'item-section', 'table', 'cards', 'form') or [name, ...its sizes], such as ['table', 6] for six columns.
+ */
+export function loadingShape(label, shape) {
+  const [name, ...sizes] = Array.isArray(shape) ? shape : [shape];
+  return skeletonOf(label, SHAPES[name](...sizes));
+}
+
+/**
+ * Wraps a drawn loading shape as the one loading state: the drawing is decoration (`aria-hidden`),
+ * `label` is said through `role="status"`, as skeleton() does.
+ */
+export function skeletonOf(label, drawn) {
+  return h('div', { class: 'skeleton skeleton-shaped', role: 'status' },
+    h('div', { class: 'skeleton-shape', 'aria-hidden': 'true' }, drawn), h('span', { class: 'sr-only' }, label));
 }
 
 /**

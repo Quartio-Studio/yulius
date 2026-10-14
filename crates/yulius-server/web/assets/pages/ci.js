@@ -59,7 +59,7 @@ export function mountCiPage(ctx, sandbox, route) {
   const reload = loader(runsHost, 'the CI runs', () => ctx.api.get(`${base}/ci`), (overview) => {
     schedule(overview);
     return renderOverview(overview);
-  });
+  }, { shape: 'items' });
 
   let last = { runs: [] };
   /** Refreshes quietly: every few seconds while a run is active, else now and then. */

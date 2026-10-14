@@ -1149,6 +1149,18 @@ a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
 .skeleton-line:nth-child(1) { width: 72%; }
 .skeleton-line:nth-child(2) { width: 54%; }
 .skeleton-line:nth-child(3) { width: 36%; }
+/* Loading shapes (SPEC-120): the final layout's own boxes; a bar is one line of the text it
+   replaces (1lh tall, the pill centred in it), a tile an icon's square. */
+.skeleton-shaped { display: block; padding: 0; }
+.skeleton-bar { display: flex; align-items: center; max-width: 100%; height: 1lh; }
+.skeleton-bar::before, .skeleton-tile, .skeleton-field {
+  background: var(--surface-3) linear-gradient(90deg, transparent, var(--overlay-active), transparent) no-repeat; background-size: 50% 100%;
+  animation: shimmer var(--duration-pulse) linear infinite;
+}
+.skeleton-bar::before { content: ""; flex: 1; height: min(12px, 0.7lh); border-radius: var(--radius-full); }
+.skeleton-tile { border-color: transparent; }
+.skeleton-card { display: flex; flex-direction: column; gap: 8px; padding: 16px; }
+.skeleton-field { height: var(--control-xl); border-radius: var(--radius-lg); }
 .intake-slot { display: flex; flex-direction: column; }
 .intake-status {
   display: flex; align-items: center; gap: 12px; padding: 12px 16px; border: 1px solid var(--border); border-radius: var(--radius-lg);

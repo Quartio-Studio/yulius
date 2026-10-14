@@ -69,7 +69,7 @@ export function mountSessionsPage(ctx, sandbox) {
   const kinds = filterTabs({ label: 'Kind of session', options: KIND_OPTIONS, value: state.kind, onChange: (value) => { state.kind = value; sync(); reload(); } });
   const people = h('select', { class: 'select select-sm ss-people', 'aria-label': 'Person', onChange: () => { state.author = people.value; sync(); reload(); } });
   const summary = h('span', { class: 'ss-summary muted small', 'aria-live': 'polite' });
-  const list = h('div', { class: 'ss-list' }, placeholder('Loading sessions…', 'loading'));
+  const list = h('div', { class: 'ss-list' }, placeholder('Loading sessions…', 'loading', 'items'));
   frame.body.append(h('div', { class: 'ss-toolbar' }, h('label', { class: 'ss-search-wrap' }, icon('search', { size: 14 }), search), kinds.el, people, summary), list);
 
   let alive = true;

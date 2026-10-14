@@ -387,7 +387,7 @@ export function mountArchivedPage(ctx) {
         } }, 'Restore');
       } },
     ], list, { empty: emptyState({ iconName: 'archive', title: 'No archived tasks', text: 'Archive a finished task from its action menu to put it away; restore it here any time.' }) });
-  });
+  }, { shape: ['table', 6] });
   return { el: frame.el, key: 'archived' };
 }
 
