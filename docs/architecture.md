@@ -225,8 +225,9 @@ terminal before the goal keeps their draft: no goal is typed and the task needs 
 keystrokes count as typing; focus and mouse reports and terminal answers do not). Each
 launch trusts the worktree and its main repository in the Claude config. Claude Code 2.1.292 looks
 a worktree's trust up there when `.claude/settings.json` pre-approves tools. If a trust prompt
-still shows, Yulius types nothing into it, and the keys a person answers it with are no draft: the
-goal follows once it is gone
+still shows before SessionStart, Yulius types nothing into it, and the keys a person answers it
+with are no draft: the goal follows once it is gone, and a prompt left unanswered for 5 minutes
+flags the task
 ([SPEC-106](../.ai/specs/SPEC-106-onboarding-another-repo-got-fucked-up-by.md),
 [decision 0086](decisions/0086-a-lost-onboarding-task-returns-the-sandbox-to-pending.md)). A typed
 first message is pending (`opening-pending` in the run directory) until its `UserPromptSubmit`: a
