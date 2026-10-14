@@ -57,6 +57,10 @@ pub struct AppConfig {
     /// How long a person gets to answer Claude Code's folder-trust prompt before the task is
     /// flagged ([`crate::supervisor::TRUST_ANSWER_TIMEOUT`], SPEC-106 OTR-002). Tests shorten it.
     pub trust_answer_ms: u64,
+    /// How long Claude Code gets to record a goal given as the launch prompt once its session
+    /// reads input, before the task is flagged (the sum of the typed goal's submit waits,
+    /// SPEC-117 ONE-001). Tests shorten it.
+    pub launch_goal_ms: u64,
     /// Extra host paths visible read-only inside containment (for example agent CLI install
     /// directories outside `/usr` and `/opt`).
     pub contained_readonly: Vec<PathBuf>,
@@ -115,6 +119,7 @@ impl AppConfig {
                 .unwrap_or(90_000),
             trust_answer_ms: u64::try_from(crate::supervisor::TRUST_ANSWER_TIMEOUT.as_millis())
                 .unwrap_or(300_000),
+            launch_goal_ms: crate::supervisor::launch_goal_bound_ms(),
             agent_cpus: None,
             contained_readonly: Vec::new(),
             allowed_origins: Vec::new(),

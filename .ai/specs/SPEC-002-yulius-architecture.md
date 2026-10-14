@@ -1841,7 +1841,8 @@ a folder-trust prompt whose default answer is "No, exit". Before each launch Yul
 Claude's own keys. For a linked worktree it also trusts the main repository (read from the
 worktree's `.git` file and `commondir`), where Claude Code 2.1.292 looks a worktree's trust up when
 `.claude/settings.json` pre-approves tools (SPEC-106, measured 2026-10-14). A trust prompt that
-appears all the same is left to a person: the goal is typed after it is answered. It also sets
+appears all the same is left to a person: a launch-prompt goal runs once it is answered, a typed
+one is typed after it (SPEC-117). It also sets
 `diffSidebarOpen: false` there and `"open": false` in existing stores of the built-in diff plugin (`<CLAUDE_CONFIG_DIR>/plugins/store`), so Claude Code's diff side
 panel does not open by itself beside the transcript in a wide task terminal (SPEC-024).
 Enabled skills are copied into `<CLAUDE_CONFIG_DIR>/skills` at each launch.

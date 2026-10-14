@@ -5,7 +5,9 @@
 Accepted. Specified in
 [SPEC-068](../../.ai/specs/SPEC-068-fix-252-266-only-real-typing-counts-as-t.md); amends
 [0026](0026-attached-images-are-pasted.md) (its two #266 gaps) and SPEC-025's known limit on
-drafts (#252).
+drafts (#252). Amended by [0095](0095-a-goal-task-starts-with-its-goal-as-the-launch-prompt.md):
+a goal task no longer types a first message, so no goal is typed after a held one; a draft is left
+alone only in resumed goal sessions.
 
 ## Context
 
