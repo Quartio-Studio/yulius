@@ -65,10 +65,11 @@ test('deep links open directly; the All sandboxes tab and the keyboard shortcut 
   await browser.keyboard.press('Escape');
 });
 
-test('with no sandbox the home screen offers to import or create one', async ({ app, browser, screen }) => {
+test('with no sandbox the home screen offers a playground, then to import or create one', async ({ app, browser, screen }) => {
   await app.open(mock('/', '&sandboxes=0'));
 
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('No sandboxes yet');
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Try Yulius on your own code');
+  await expect(screen.getByRole('group', 'Project folder')).toBeVisible();
   await expect(screen.getByRole('button', 'Import repository')).toBeEnabled();
   await expect(screen.getByRole('button', 'Create from template')).toBeEnabled();
   expect(await axeViolations(browser)).toEqual([]);

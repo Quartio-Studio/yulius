@@ -2,8 +2,9 @@
 // prompt, the attached files and the choices on its edge) waits here while they visit other
 // pages or reload, and is cleared when the task starts.
 //
-// A draft is `{ text, mode, workflowId, afterTaskId, startRule, supertask, attached, starting }`; `mode` and
-// `workflowId` are null until chosen (the composer's defaults apply); `starting` (this page only)
+// A draft is `{ text, mode, workflowId, afterTaskId, startRule, supertask, prepare, attached, starting }`; `mode` and
+// `workflowId` are null until chosen (the composer's defaults apply); `prepare` is null, or
+// `{ at }` for a prepared task (SPEC-105: `at` an ISO time, or null for "when I decide"); `starting` (this page only)
 // is true while its task is being created, so a composer opened meanwhile does not start it again. Each attachment is
 // `{ path, name, type, at, thumb?, file? }`: the file was uploaded at once (SPEC-014), so only its
 // server path is needed to start the task; `file` (this page only) draws its thumbnail, `thumb` (a
@@ -35,7 +36,7 @@ const timers = new Map();
 const listeners = new Map();
 
 function emptyDraft() {
-  return { text: '', mode: null, workflowId: null, afterTaskId: '', startRule: null, supertask: false, attached: [], starting: false };
+  return { text: '', mode: null, workflowId: null, afterTaskId: '', startRule: null, supertask: false, prepare: null, attached: [], starting: false };
 }
 
 const keyOf = (userId, sandboxId) => `${PREFIX}${userId || 'anonymous'}.${sandboxId}`;
@@ -152,6 +153,7 @@ function store(key) {
       afterTaskId: draft.afterTaskId,
       startRule: draft.startRule,
       supertask: draft.supertask,
+      prepare: draft.prepare,
       attached: draft.attached.map((item) => ({
         path: item.path, name: item.name, type: item.type, at: item.at,
         thumb: withThumbs && item.thumb && thumbs++ < MAX_THUMBS ? item.thumb : undefined,
@@ -182,8 +184,14 @@ function restore(key) {
     }));
   return {
     text: text(stored.text), mode: choice(stored.mode), workflowId: choice(stored.workflowId),
-    afterTaskId: text(stored.afterTaskId), startRule: rule(stored.startRule), supertask: stored.supertask === true, attached,
+    afterTaskId: text(stored.afterTaskId), startRule: rule(stored.startRule), supertask: stored.supertask === true, prepare: prepare(stored.prepare), attached,
   };
+}
+
+/** A stored prepared choice (SPEC-105): `{ at }` with an ISO time or null; null otherwise. */
+function prepare(value) {
+  if (!value || typeof value !== 'object') return null;
+  return { at: typeof value.at === 'string' && Number.isFinite(Date.parse(value.at)) ? value.at : null };
 }
 
 /** A stored start rule (SPEC-022: `{ join, conditions: [{ number, state }] }`) when well formed. */

@@ -336,6 +336,8 @@ function summary(task) {
     // A supertask, and what a queued task waits for because of one (SPEC-071).
     supertask: Boolean(task.supertask),
     held_by: task.status === 'queued' ? [...(task.heldBy || [])] : [],
+    // A prepared task's time (SPEC-105).
+    start_at: task.status === 'prepared' ? task.start_at || null : null,
     // Background shells an idle agent left running (TSK-014).
     background_shells: task.status === 'running' ? task.background_shells ?? null : null,
     background_shells_since: task.status === 'running' && task.background_shells ? task.background_shells_since ?? null : null,
@@ -463,10 +465,10 @@ function advanceEnvironment(db, sandbox, envName) {
 }
 
 /** Waiting states in which a task that never started takes queued messages (SPEC-052). */
-const WAITING = new Set(['queued', 'chained', 'waiting_capacity']);
+const WAITING = new Set(['queued', 'chained', 'prepared', 'waiting_capacity']);
 
 /** Whether a task ever had a run: in the mock, every task past waiting in a queue or a chain. */
-const hasStarted = (task) => task.started ?? !['queued', 'chained'].includes(task.status);
+const hasStarted = (task) => task.started ?? !['queued', 'chained', 'prepared'].includes(task.status);
 
 function detail(db, task) {
   const live = LIVE.has(task.status);
@@ -664,6 +666,59 @@ route('GET', '/api/templates', () => [
   { id: 'python-data', name: 'Python data project', description: 'Python package summarizing CSV data with unittest tests; standard library only.' },
   { id: 'rust-service', name: 'Rust service', description: 'Rust HTTP service on std::net with unit tests; no dependencies.' },
 ]);
+/** A playground as the server answers it (SPEC-099): no GitHub owner, its Git on the server. */
+function addPlayground(db, rawName) {
+  let slug = String(rawName || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'project';
+  const base = slug;
+  for (let n = 2; db.sandboxes.some((s) => s.slug === slug); n += 1) slug = `${base}-${n}`;
+  db.nextId += 1;
+  const sandbox = {
+    id: `sb_${db.nextId}`, slug, name: slug, playground: true,
+    repo: { owner: '', name: slug, url: '' },
+    access: 'admin', default_branch: 'main', profile: clone(PRESETS.standard), onboarding: 'not_needed',
+    port_base: 20000 + db.sandboxes.length * 20, port_count: 20, counts: { running: 0, needs_attention: 0, queued: 0 },
+  };
+  db.sandboxes.push(sandbox);
+  recount(db);
+  resync(db);
+  return sandbox;
+}
+
+/** The entry names of a gzip tar (PAX `path` records applied), as the server reads a folder. */
+async function tarNames(blob) {
+  const data = new Uint8Array(await new Response(blob.stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
+  const text = (from, length) => new TextDecoder().decode(data.subarray(from, from + length)).replace(/\0.*$/s, '');
+  const names = [];
+  let pax = null;
+  for (let at = 0; at + 512 <= data.length;) {
+    if (data.subarray(at, at + 512).every((b) => b === 0)) break;
+    const size = parseInt(text(at + 124, 12), 8) || 0;
+    const type = text(at + 156, 1);
+    const body = at + 512;
+    if (type === 'x') {
+      const record = text(body, size);
+      const match = /\d+ path=([^\n]*)\n/.exec(record);
+      pax = match ? match[1] : null;
+    } else {
+      names.push(pax || text(at, 100));
+      pax = null;
+    }
+    at = body + Math.ceil(size / 512) * 512;
+  }
+  return names;
+}
+
+// A folder packed by the browser becomes a playground (SPEC-099); the mock keeps the names it got
+// (`__yuliusMock.playgroundUploads`) so tests see what the browser sent.
+route('POST', '/api/playgrounds', async ({ db, body, query }) => {
+  if (!body.blob) fail(422, 'invalid', 'the request body is the packed folder');
+  let names;
+  try { names = await tarNames(body.blob); } catch { fail(422, 'invalid', 'unreadable folder archive: not a gzip tar'); }
+  if (!names.some((name) => name.startsWith('files/'))) fail(422, 'invalid', 'the folder holds no files to start a playground with');
+  (db.playgroundUploads = db.playgroundUploads || []).push({ name: query.get('name'), names });
+  return json(201, addPlayground(db, query.get('name')));
+});
+
 /** The onboarding task's title and plan, as `onboarding.rs` creates them (`ONBOARDING_TITLE`, `onboarding_steps`; `ENVIRONMENT_TITLE`, `environment_steps`). */
 const ONBOARDING_KINDS = {
   prepare: {
@@ -688,6 +743,11 @@ const ONBOARDING_KINDS = {
 };
 route('POST', '/api/sandboxes', ({ db, body }) => {
   let repoName;
+  if (body.mode === 'playground') {
+    if (!/[A-Za-z0-9]/.test(body.name || '')) fail(422, 'invalid', 'a playground needs a name');
+    if (!['empty', 'web', 'python-data', 'rust-service'].includes(body.template)) fail(422, 'invalid', `unknown template ${body.template}`);
+    return json(201, addPlayground(db, body.name));
+  }
   if (body.mode === 'import') {
     if (!body.repo || !body.repo.includes('/')) fail(422, 'invalid', 'repo must be owner/name');
     const [owner, name] = body.repo.split('/');
@@ -700,7 +760,7 @@ route('POST', '/api/sandboxes', ({ db, body }) => {
     if (!/^[A-Za-z0-9._-]{1,100}$/.test(body.name || '')) fail(422, 'invalid', 'Invalid repository name.');
     repoName = body.name;
   } else {
-    fail(422, 'invalid', 'mode must be import or create');
+    fail(422, 'invalid', 'mode must be import, create or playground');
   }
   db.nextId += 1;
   const sandbox = {
@@ -851,6 +911,10 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   // A start rule (SPEC-017): the mock checks the shape the server checks, and anchors the chain
   // on the first task the rule names.
   if (body.supertask && (body.after_task_id || (body.start_rule && body.start_rule.trim()))) fail(422, 'invalid', 'a supertask starts after the running tasks: it cannot also run after a task or a rule');
+  // A prepared task (SPEC-105) waits for Start now or its time, with the server's window.
+  const prepared = body.prepared === true || Boolean(body.start_at);
+  if (prepared && (body.after_task_id || body.supertask || (body.start_rule && body.start_rule.trim()))) fail(422, 'invalid', 'a prepared task starts when you decide or at its time: it cannot also run after a task, by a rule or as a supertask');
+  const startAt = body.start_at ? mockStartAt(body.start_at) : null;
   let rule = null;
   if (body.start_rule && body.start_rule.trim()) {
     if (body.after_task_id) fail(422, 'invalid', 'give a task to run after or a start rule, not both');
@@ -866,7 +930,9 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
     : sandbox.onboarding === 'preparing' ? db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding') : null);
   const before = rule ? db.tasks.find((x) => x.sandbox_id === sandbox.id && x.number === Number(rule.match(/#(\d+)/)[1])) : body.after_task_id ? db.tasks.find((x) => x.id === body.after_task_id && x.sandbox_id === sandbox.id) : null;
   if (body.after_task_id && (!before || !(LIVE.has(before.status) || before.status === 'chained'))) fail(422, 'invalid', 'the task to run after does not exist or has ended');
-  const waitsFor = before || preparation();
+  // A prepared task waits for onboarding when it is started instead (SPEC-105): it creates no
+  // preparation task, as on the server.
+  const waitsFor = prepared ? null : before || preparation();
   const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === sandbox.id).map((t) => t.number)) + 1;
   const title = body.title || body.prompt.trim().split('\n')[0].slice(0, 60);
   const wf = choice ? choice.workflow : db.workflows.find((w) => w.id === body.workflow_id);
@@ -881,8 +947,10 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
     delivery: null, mode: choice ? choice.mode : body.mode || 'goal', auto: choice ? choice.auto : null,
     supertask: body.supertask === true,
   };
+  if (prepared) Object.assign(task, { status: 'prepared', start_at: startAt });
   db.tasks.push(task);
   recount(db);
+  if (prepared) return json(201, summary(task));
   if (waitsFor) {
     chainAfter(task, waitsFor, rule);
     emit(db, { type: 'task.updated', task: summary(waitsFor) });
@@ -955,12 +1023,27 @@ route('POST', `/api/sandboxes/${ID}/intake/proposal`, async ({ db, p, body }) =>
 route('POST', `/api/tasks/${ID}/start-now`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
-  if (task.status !== 'chained') fail(409, 'conflict', `the task is ${task.status}, not waiting in a chain`);
+  if (task.status !== 'chained' && task.status !== 'prepared') fail(409, 'conflict', `the task is ${task.status}, not waiting in a chain or prepared`);
   touch(db, task, { status: 'queued' });
   later(() => touch(db, task, { status: 'starting' }), 700);
   later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1800);
   return summary(task);
 });
+route('PUT', `/api/tasks/${ID}/schedule`, ({ db, p, body }) => {
+  const task = taskOf(db, p[0]);
+  needTaskWrite(db, task);
+  if (task.status !== 'prepared') fail(409, 'conflict', `the task is ${task.status}, not prepared`);
+  touch(db, task, { start_at: body.start_at ? mockStartAt(body.start_at) : null });
+  return summary(task);
+});
+/** A prepared task's start time (SPEC-105) checked like the server: at most a minute past, 366 days ahead. */
+function mockStartAt(text) {
+  const at = Date.parse(text);
+  if (!Number.isFinite(at)) fail(422, 'invalid', '`start_at` must be an RFC 3339 time, e.g. 2026-10-15T09:00:00Z');
+  if (at - Date.now() < -60e3) fail(422, 'invalid', 'that start time has passed: pick a later one, or start the task now');
+  if (at - Date.now() > 366 * 86400e3) fail(422, 'invalid', 'a task can be scheduled at most 366 days ahead');
+  return new Date(at).toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
 route('POST', `/api/tasks/${ID}/queued-messages`, ({ db, p, body }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
@@ -1040,7 +1123,7 @@ route('GET', `/api/tasks/${ID}/prompt/attachments/${ID}`, ({ db, p }) => {
 route('POST', `/api/tasks/${ID}/stop`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
-  if (task.status === 'chained') { touch(db, task, { status: 'stopped_cancelled' }); return summary(task); }
+  if (task.status === 'chained' || task.status === 'prepared') { touch(db, task, { status: 'stopped_cancelled' }); return summary(task); }
   if (!LIVE.has(task.status)) fail(409, 'conflict', 'The task is not running.');
   touch(db, task, { status: 'stopping', activity: null });
   later(() => touch(db, task, { status: 'stopped_cancelled', account_label: null }), 1400);

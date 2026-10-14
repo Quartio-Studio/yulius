@@ -16,12 +16,19 @@ watching, steering and unblocking.
 
 ## What it does
 
-- **Projects and sandboxes**: import a GitHub repository (or onboard it from a local machine's
-  Claude sessions with `yulius onboard`); each gets a contained sandbox with its own system
-  layer, home, shells per user, browser and editor. The CLI only uploads: the onboarding task that
-  adapts the repository to the Yulius standards is created and started when someone clicks Start
-  onboarding on the sandbox page. Onboarding is mandatory: until it has finished, the sandbox's
-  new-task page shows only what it will do and its button, no task input.
+- **Projects and sandboxes**: import a GitHub repository, start a playground without GitHub, or
+  onboard a repository from a local machine's Claude sessions with `yulius onboard`; each gets a
+  contained sandbox with its own system layer, home, shells per user, browser and editor. The CLI
+  only uploads: the onboarding task that adapts the repository to the Yulius standards is created
+  and started when someone clicks Start onboarding on the sandbox page. Onboarding is mandatory:
+  until it has finished, the sandbox's new-task page shows only what it will do and its button,
+  no task input. A playground needs none.
+- **Playgrounds**: a team tries Yulius on its own code before it connects GitHub. On a fresh
+  instance Home offers it first: drop a project folder (a repository keeps its branches and
+  history) or start from a template, and tasks start a minute later. Its Git stays on the server
+  and nothing is pushed anywhere; its tasks merge into its own `dev` with `delivery_merge` (no
+  pull request, no Yulius CI). It is its maker's and the superadmin's. Connecting GitHub is
+  optional and can wait (SPEC-099).
 - **Superagent** (formerly the Agent, and before that the Cockpit): every user's own plain Claude
   Code session per sandbox, in the right tool panel beside any page (top-bar Superagent button,
   first in the tools rail), for quick work
@@ -50,6 +57,9 @@ watching, steering and unblocking.
   A **supertask** (the composer's start menu, for broad work such as security hardening) waits
   for the running tasks of its project, then runs alone: the project's other tasks wait for it,
   also those queued or chained before it, and say so.
+  A task can also be **prepared**: written now and started later, when the person presses Start
+  now ("When I decide") or by itself at a date and time they pick ("At a time…"). Until then it
+  holds no session, can be rescheduled or cancelled, and sits with the queued tasks.
   A half-written task (its prompt, attached files and choices) waits in the composer while
   people look elsewhere, also across a reload, until it starts.
   A task is its owner's: it acts on GitHub with their credentials, so only they change it. Others

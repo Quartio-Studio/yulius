@@ -73,6 +73,14 @@ impl ToolTaskWindow {
     }
 }
 
+fn flag_arg(args: &Value, key: &str) -> AppResult<bool> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(flag)) => Ok(*flag),
+        Some(_) => Err(AppError::Invalid(format!("`{key}` must be true or false"))),
+    }
+}
+
 fn opt_str(args: &Value, key: &str) -> AppResult<Option<String>> {
     match args.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -164,15 +172,9 @@ impl App {
             mode: opt_str(args, "mode")?,
             after_task_id,
             start_rule: opt_str(args, "start_rule")?,
-            supertask: match args.get("supertask") {
-                None | Some(Value::Null) => false,
-                Some(Value::Bool(flag)) => *flag,
-                Some(_) => {
-                    return Err(AppError::Invalid(
-                        "`supertask` must be true or false".into(),
-                    ));
-                }
-            },
+            supertask: flag_arg(args, "supertask")?,
+            prepared: flag_arg(args, "prepared")?,
+            start_at: opt_str(args, "start_at")?,
         };
         let user = self.manage_authority(caller).await?;
         let now = self.now().0;

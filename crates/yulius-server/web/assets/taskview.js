@@ -4,16 +4,16 @@
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, errorToast, skeleton, openMenu, statusMark, singleFlight, keepFocus } from './dom.js';
 import { openRuleEditor, ruleText } from './ruleeditor.js';
-import { openStartMenu, renderStartChip, startKind, SUPERTASK_HELP } from './startchoice.js';
+import { openStartMenu, renderStartChip, startKind, SUPERTASK_HELP, WHEN_I_DECIDE_HELP } from './startchoice.js';
 import { createTerminalView } from './terminal.js';
-import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, pausedLine, resetAround, shellsLine, heldBy, supertaskLine } from './status.js';
+import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, pausedLine, resetAround, shellsLine, heldBy, supertaskLine, preparedLine } from './status.js';
 import { heldPromptCard, splitCard, looksSeveral, intakeStatus, SPLIT_MIN_WORDS } from './intake.js';
 import { attachMarkdownInput } from './mdinput.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
-import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask, requestControl, dropControlRequest, handOverTask } from './actions.js';
+import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask, requestControl, dropControlRequest, handOverTask, openScheduleDialog, rescheduleTask } from './actions.js';
 import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments, openAttachment } from './filedrop.js';
-import { relLong, dateTime } from './format.js';
+import { relLong, dateTime, whenLabel } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
 import { findModel, findEffort, modelMenuItems, effortMenuItems, MODEL_PREF_KEY, EFFORT_PREF_KEY } from './models.js';
@@ -27,7 +27,7 @@ const STEP_MARK = { done: '✓', in_progress: '▸', pending: '·', skipped: '�
 const STEP_LABEL = { done: 'Done', in_progress: 'In progress', pending: 'To do', blocked: 'Blocked', skipped: 'Skipped' };
 const STRIP_KEY = 'yulius.stepsOpen';
 // Waiting states in which a task that never started takes queued messages (SPEC-052).
-const WAITING = new Set(['queued', 'chained', 'waiting_capacity']);
+const WAITING = new Set(['queued', 'chained', 'prepared', 'waiting_capacity']);
 // States only a task with a run is in.
 const RAN = new Set(['running', 'switching', 'stopping']);
 
@@ -63,6 +63,7 @@ function emptyTerminalMessage(task) {
       if (after && after.rule) return { title: 'Queued by a rule', text: `It starts by itself when ${after.rule}.` };
       return { title: after ? `Queued after #${after.number}` : 'Queued after another task', text: after ? `It starts by itself when #${after.number} is done.` : 'It starts by itself when that task is done.' };
     }
+    case 'prepared': return { title: task.start_at ? 'Scheduled' : 'Prepared', text: preparedLine(task) };
     default: return null;
   }
 }
@@ -196,6 +197,13 @@ export function mountTaskView(ctx, sandbox, task) {
       content = [icon(after && after.blocked ? 'st-attention' : 'clock', { size: 16 }), h('span', { class: 'attention-text' }, label),
         can.startNow ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => startNow(ctx, current) }, 'Start now') : null,
         can.stop ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => stopTask(ctx, current) }, 'Cancel') : null];
+    } else if (current.status === 'prepared') {
+      // Written now, started later (SPEC-105): Start now, a time, or Cancel.
+      content = [icon(current.start_at ? 'clock' : 'st-prepared', { size: 16 }), h('span', { class: 'attention-text' },
+        h('strong', null, current.start_at ? 'Scheduled. ' : 'Prepared. '), preparedLine(current)),
+      can.startNow ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => startNow(ctx, current) }, 'Start now') : null,
+      can.schedule ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => rescheduleTask(ctx, current) }, current.start_at ? 'Change time…' : 'Schedule…') : null,
+      can.stop ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => stopTask(ctx, current) }, 'Cancel') : null];
     } else if (current.status === 'queued' && heldBy(current).length) {
       // Held by a supertask (SPEC-071): it starts by itself; Cancel is the way out.
       const held = heldBy(current);
@@ -536,6 +544,9 @@ export function mountComposer(ctx, sandbox) {
   let startRule = draft.startRule;
   // Or run as a supertask (SPEC-071): after the project's running tasks, then alone.
   let supertask = Boolean(draft.supertask);
+  // Or prepare it (SPEC-105): `{ at: null }` waits until the person starts it ("When I decide"),
+  // `{ at: iso }` starts by itself then; null starts as chosen above.
+  let prepare = draft.prepare || null;
   let split = null; // the split card while it shows (TSK-011)
   let modelId = findModel(readJson(MODEL_PREF_KEY, null)) ? readJson(MODEL_PREF_KEY, null) : null;
   let effortId = findEffort(readJson(EFFORT_PREF_KEY, null)) ? readJson(EFFORT_PREF_KEY, null) : null;
@@ -657,8 +668,16 @@ export function mountComposer(ctx, sandbox) {
     const after = (tasks || []).find((t) => t.id === afterTaskId);
     if (afterTaskId && tasks && !after) afterTaskId = ''; // gone (a kept draft waits for the list)
     const rule = startRule ? ruleText(startRule) : '';
-    renderStartChip(afterChip, { kind: startKind({ supertask, afterTaskId: after && after.id, rule }), number: after && after.number, rule, prefix: 'Run after: ' });
-    afterChip.title = supertask ? SUPERTASK_HELP : rule ? `Starts by itself when ${rule}` : after ? `Runs after #${after.number} ${after.title} is done` : 'Starts right away; or pick a task to run after, or give a rule';
+    // A kept time that has passed (a draft from yesterday) waits for the person instead: sending
+    // it would be refused, and starting it now was not asked for (SPEC-105).
+    if (prepare && prepare.at && Date.parse(prepare.at) < Date.now() - 60e3) prepare = { at: null };
+    const kind = startKind({ supertask, afterTaskId: after && after.id, rule, prepare });
+    renderStartChip(afterChip, { kind, number: after && after.number, rule, at: prepare && prepare.at, prefix: 'Run after: ' });
+    const at = prepare && prepare.at ? whenLabel(prepare.at) : '';
+    afterChip.title = prepare ? (at ? `Starts by itself ${at}` : WHEN_I_DECIDE_HELP) : supertask ? SUPERTASK_HELP : rule ? `Starts by itself when ${rule}` : after ? `Runs after #${after.number} ${after.title} is done` : 'Starts right away; or pick a task to run after, or give a rule';
+    // The send button says what it does: a prepared task is not started (SPEC-105).
+    startButton.setAttribute('aria-label', startAction());
+    startButton.title = write ? `${startAction()} (${SUBMIT_KEYS})` : 'Requires write access';
     const found = findModel(modelId);
     setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
     modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Model: default, Opus 5.5';
@@ -668,8 +687,8 @@ export function mountComposer(ctx, sandbox) {
     const effort = findEffort(effortId);
     setChildren(effortChip, h('span', { class: 'sr-only' }, 'Effort: '), h('span', { class: 'chip-label' }, effort ? effort.name : 'Default effort'), icon('down', { size: 12 }));
     // Every choice shown here is the draft's (DRF-003).
-    if (draft.mode !== mode || draft.workflowId !== workflowId || draft.afterTaskId !== afterTaskId || draft.startRule !== startRule || draft.supertask !== supertask) {
-      Object.assign(draft, { mode, workflowId, afterTaskId, startRule, supertask });
+    if (draft.mode !== mode || draft.workflowId !== workflowId || draft.afterTaskId !== afterTaskId || draft.startRule !== startRule || draft.supertask !== supertask || draft.prepare !== prepare) {
+      Object.assign(draft, { mode, workflowId, afterTaskId, startRule, supertask, prepare });
       remember();
     }
   }
@@ -694,16 +713,19 @@ export function mountComposer(ctx, sandbox) {
 
   function openAfterMenu(anchor) {
     openStartMenu(anchor, ctx, sandbox, {
-      kind: startKind({ supertask, afterTaskId, rule: startRule }),
+      kind: startKind({ supertask, afterTaskId, rule: startRule, prepare }),
       afterTaskId,
+      at: prepare && prepare.at,
       onPick: ({ kind, task }) => {
         afterTaskId = kind === 'after' ? task.id : '';
         startRule = null;
         supertask = kind === 'supertask';
+        prepare = kind === 'prepared' ? { at: null } : null;
         renderChips();
         prompt.focus();
       },
       onRule: openRuleDialog,
+      onTime: openTimeDialog,
     });
   }
 
@@ -715,6 +737,28 @@ export function mountComposer(ctx, sandbox) {
       onUse: (rule) => {
         startRule = rule;
         afterTaskId = '';
+        supertask = false;
+        prepare = null;
+        renderChips();
+        prompt.focus();
+      },
+    });
+  }
+
+  /** What the send button does with the start choice (SPEC-105). */
+  function startAction() {
+    if (!prepare) return 'Start task';
+    return prepare.at ? 'Schedule task' : 'Prepare task';
+  }
+
+  /** At a time… (SPEC-105): the task is prepared and starts by itself then. */
+  function openTimeDialog() {
+    openScheduleDialog({
+      value: prepare && prepare.at,
+      onUse: (at) => {
+        prepare = { at };
+        afterTaskId = '';
+        startRule = null;
         supertask = false;
         renderChips();
         prompt.focus();
@@ -821,7 +865,7 @@ export function mountComposer(ctx, sandbox) {
     setChildren(banner, items);
     startButton.disabled = !write;
     prompt.disabled = !write;
-    startButton.title = !write ? 'Requires write access' : '';
+    startButton.title = !write ? 'Requires write access' : `${startAction()} (${SUBMIT_KEYS})`;
     // Onboarding landed while the page was open: the task box is ready for typing, unless the
     // person is busy elsewhere on the page.
     if (wasGated && !preparing && el.isConnected) {
@@ -944,6 +988,7 @@ export function mountComposer(ctx, sandbox) {
     afterTaskId = '';
     startRule = null;
     supertask = false;
+    prepare = null;
     clearDraft(userId, sandbox.id); // redraws the tray (onDraftChange)
     fit();
     ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`);
@@ -960,7 +1005,7 @@ export function mountComposer(ctx, sandbox) {
   // frozen. The prompt stays as it is (read-only) while it is being read.
   let status = null;
   let showTimer = 0;
-  const autoStage = () => (mode === AUTO || workflowId === AUTO ? 'Choosing mode and workflow…' : 'Starting the task…');
+  const autoStage = () => (mode === AUTO || workflowId === AUTO ? 'Choosing mode and workflow…' : prepare ? 'Preparing the task…' : 'Starting the task…');
   function working(text) {
     draft.starting = true;
     startButton.disabled = true;
@@ -1032,9 +1077,10 @@ export function mountComposer(ctx, sandbox) {
     if (draft.starting) { toast('This task is already starting.', { kind: 'info' }); return; }
     try {
       // A request mixing separate workstreams gets the split card first; a chosen "Run after"
-      // already decided how the work is scheduled, and a supertask is one broad task by intent.
+      // already decided how the work is scheduled, and a supertask or a prepared task is one task
+      // by intent.
       // The check never blocks for long (≤ 4 s).
-      if (!afterTaskId && !startRule && !supertask && text.split(/\s+/).filter(Boolean).length >= SPLIT_MIN_WORDS) {
+      if (!afterTaskId && !startRule && !supertask && !prepare && text.split(/\s+/).filter(Boolean).length >= SPLIT_MIN_WORDS) {
         working('Reading your request…');
         if (await looksSeveral(ctx, sandbox, text)) {
           showSplit(text);
@@ -1046,6 +1092,8 @@ export function mountComposer(ctx, sandbox) {
       if (afterTaskId) body.after_task_id = afterTaskId;
       if (startRule) body.start_rule = ruleText(startRule);
       if (supertask) body.supertask = true;
+      if (prepare && prepare.at) body.start_at = prepare.at;
+      else if (prepare) body.prepared = true;
       opened(await createTask(body));
     } catch (error) {
       errorToast(error, 'Couldn’t start the task');

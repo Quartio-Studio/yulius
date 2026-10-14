@@ -27,7 +27,7 @@ const SHADOWS = [['None', 'L0 canvas · L1 cards (border only)', 'none'], ['--sh
 const STATUSES = [
   { status: 'running', activity: 'needs_attention' }, { status: 'running', activity: 'waiting' }, { status: 'running', activity: 'working' }, { status: 'running', activity: 'done' },
   { status: 'running', activity: 'done', background_shells: 1 }, { status: 'running', activity: 'waiting', yulius_wait: true },
-  { status: 'queued' }, { status: 'starting' }, { status: 'waiting_capacity' }, { status: 'chained', after: { number: 4 } }, { status: 'chained', after: { number: 4, blocked: '#4 stopped' } },
+  { status: 'queued' }, { status: 'starting' }, { status: 'waiting_capacity' }, { status: 'chained', after: { number: 4 } }, { status: 'prepared' }, { status: 'prepared', start_at: new Date(Date.now() + 86400e3).toISOString() }, { status: 'chained', after: { number: 4, blocked: '#4 stopped' } },
   { status: 'switching' }, { status: 'stopping' },
   { status: 'closed' }, { status: 'stopped_cancelled' }, { status: 'stopped_crashed' }, { status: 'failed_spawn_error' },
 ];

@@ -139,6 +139,7 @@ impl App {
                         t.status,
                         yulius_domain::task::TaskStatus::Queued
                             | yulius_domain::task::TaskStatus::Chained
+                            | yulius_domain::task::TaskStatus::Prepared
                     )
             }
             "recent" => !t.status.is_live(),

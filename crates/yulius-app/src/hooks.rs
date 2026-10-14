@@ -374,7 +374,11 @@ impl App {
             .collect();
         let decisions = repo.decision_files();
         let input = BriefingInput {
-            project_name: format!("{}/{}", sandbox.repo_owner, sandbox.repo_name),
+            project_name: if sandbox.is_playground() {
+                format!("{} (playground)", sandbox.repo_name)
+            } else {
+                format!("{}/{}", sandbox.repo_owner, sandbox.repo_name)
+            },
             harness,
             task: TaskBrief {
                 id: task.id.clone(),
@@ -400,10 +404,18 @@ impl App {
             repo_instructions: repo.instructions.clone(),
             foundations: repo.foundations.clone(),
             now: self.now(),
+            playground: sandbox.is_playground(),
         };
         let workflow = self.workflow_instructions(task).await.map(|text| {
             let clipped: String = text.chars().take(3_000).collect();
-            format!("\n\n## Workflow instructions\n\n{clipped}\n")
+            // The workflows describe GitHub delivery; a playground has only the local merge.
+            let note = if sandbox.is_playground() {
+                "\nIn this playground, delivery is `delivery_merge` alone: no pull request, CI, \
+                 deploy or promotion.\n"
+            } else {
+                ""
+            };
+            format!("\n\n## Workflow instructions\n\n{clipped}\n{note}")
         });
         let chain = self.chain_briefing(task).await;
         let budget = DEFAULT_BUDGET_BYTES
@@ -838,6 +850,14 @@ impl App {
             .sandbox(&ctx.task.sandbox_id)
             .await?
             .ok_or(AppError::NotFound)?;
+        // A playground has no GitHub repository: nothing is issued (SPEC-099 PLY-002).
+        if sandbox.is_playground() {
+            return Err(AppError::Forbidden(
+                "this sandbox is a playground: its Git stays on this server and needs no GitHub \
+                 credential"
+                    .into(),
+            ));
+        }
         if let Some(path) = path {
             let wanted = path
                 .trim_matches('/')
@@ -866,6 +886,7 @@ impl App {
         &self,
         sandbox: &crate::model::SandboxRecord,
     ) -> AppResult<crate::model::Secret> {
+        crate::playground::refuse_in_playground(sandbox, "A GitHub token")?;
         let installation = self
             .deps
             .store

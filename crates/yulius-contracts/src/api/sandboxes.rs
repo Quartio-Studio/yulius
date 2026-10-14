@@ -11,8 +11,11 @@ pub struct Sandbox {
     pub slug: String,
     /// Display name (repository name).
     pub name: String,
-    /// GitHub repository.
+    /// GitHub repository (a playground's owner and URL are empty).
     pub repo: RepoRef,
+    /// A playground (SPEC-099): its Git stays on this server, nothing goes to GitHub.
+    #[serde(default)]
+    pub playground: bool,
     /// The caller's access level: `read`, `write` or `admin`.
     pub access: String,
     /// Repository default branch.
@@ -126,6 +129,13 @@ pub enum CreateSandbox {
         /// Repository description.
         #[serde(default)]
         description: String,
+    },
+    /// Start a playground from a template (SPEC-099): no GitHub, its Git stays on this server.
+    Playground {
+        /// Name (its slug is derived from it).
+        name: String,
+        /// Template id.
+        template: String,
     },
 }
 

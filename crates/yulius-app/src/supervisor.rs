@@ -1253,6 +1253,7 @@ impl App {
                 })
                 .map(|e| e.name.clone())
                 .collect(),
+            playground: sandbox.is_playground(),
         };
         let author = match self.deps.store.user(&task.created_by).await {
             Ok(Some(user)) => user.github_login.unwrap_or(user.display_name),
@@ -2297,6 +2298,7 @@ impl App {
         let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
         if task.status == TaskStatus::Queued
             || task.status == TaskStatus::Chained
+            || task.status == TaskStatus::Prepared
             || task.status == TaskStatus::WaitingCapacity
                 && store.live_attempt(task_id).await?.is_none()
         {
