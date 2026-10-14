@@ -25,8 +25,9 @@ const TAB_KEY = 'yulius.notesTab';
 const ORDER_KEY = 'yulius.notesOrder';
 /** The tabs' order until the person moves one: Team first (SPEC-112 NOT-015). */
 export const DEFAULT_ORDER = ['team', 'sandbox', 'me'];
-/** What a tab says under the pointer: the grip before its name shows it drags (SPEC-136). */
-const TAB_HINT = 'Click to open, drag to reorder (Alt+← / Alt+→)';
+/** What a tab says under the pointer: the grip before its name shows it drags (SPEC-136). The keys
+ *  are announced once, through `aria-keyshortcuts`, not again in this description. */
+const TAB_HINT = 'Click to open, drag to reorder';
 /** How far a pressed tab moves before it is dragged rather than clicked. */
 const DRAG_THRESHOLD_PX = 4;
 /** Unsaved text per user and notepad, in sessionStorage (this browser tab only). */

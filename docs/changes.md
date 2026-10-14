@@ -8,8 +8,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - The Notes tabs show that they drag (SPEC-136, task #122). Each tab has a six-dot grip before its
   name, the one the workflow editor's steps use, faint at rest and brighter on the chosen or
-  hovered tab, and its tooltip reads "Click to open, drag to reorder (Alt+← / Alt+→)". Touch
-  screens, which move tabs from the menu, do not show the grip.
+  hovered tab, and its tooltip reads "Click to open, drag to reorder". A device with no mouse or
+  pen, which moves tabs from the menu, does not show the grip.
 - Done means done (SPEC-130, task #117, #473, #474). The process probe could keep a task whose
   goal was achieved reading Working for good: a server the agent started as `(server &)` left
   an orphaned subshell with Claude Code's wrapper command line, which the sandbox's init adopted.

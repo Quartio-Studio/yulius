@@ -2126,12 +2126,13 @@ a.dl-task:hover { text-decoration: underline; }
 .notes-tabs .term-tab.dragging { position: relative; z-index: var(--z-raised); transition: none; background: var(--surface-2); box-shadow: var(--shadow); cursor: grabbing; }
 .notes-tabs .term-tab.settling { position: relative; z-index: var(--z-raised); transition: transform var(--duration-fast) var(--ease); }
 /* The grip says a tab drags (SPEC-136): faint at rest, the tab's colour when it is hovered, chosen
-   or dragged; touch scrolls the strip instead, so a coarse pointer does not see it. */
+   or dragged. Only a mouse or pen drags (touch scrolls the strip), so a device with neither does not
+   see it, whatever its primary pointer. */
 .notes-tabs .term-tab { padding-left: 8px; gap: 4px; }
 .notes-tab-grip { display: inline-flex; color: var(--text-faint); cursor: grab; }
 .notes-tabs .term-tab:hover .notes-tab-grip, .notes-tabs .term-tab.active .notes-tab-grip, .notes-tabs .term-tab.dragging .notes-tab-grip { color: currentColor; }
 .notes-tabs.reordering .notes-tab-grip { cursor: grabbing; }
-@media (pointer: coarse) {
+@media not (any-pointer: fine) {
   .notes-tab-grip { display: none; }
   .notes-tabs .term-tab { padding-left: 12px; }
 }

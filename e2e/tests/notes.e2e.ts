@@ -574,7 +574,8 @@ test('Team comes first and opens first; the tabs move by drag, keyboard and menu
 test('the tabs show a grip and say they can be clicked or dragged', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
   await openNotes(screen, null);
-  // SPEC-136 NOT-022/023: a decorative grip before each name, a title naming click, drag and keys.
+  // SPEC-136 NOT-022/023: a decorative grip before each name, a title naming click and drag (the keys
+  // are announced once, through aria-keyshortcuts).
   const tabs = await browser.evaluate(() => [...document.querySelectorAll<HTMLElement>('[role="tablist"][aria-label="Notes"] [role="tab"]')].map((tab) => {
     const grip = tab.querySelector<HTMLElement>('.notes-tab-grip');
     const box = grip?.getBoundingClientRect();
@@ -585,21 +586,37 @@ test('the tabs show a grip and say they can be clicked or dragged', async ({ app
     };
   }));
   const grip = { hidden: 'true', first: true, svg: true, cursor: 'grab', shown: true };
-  const title = 'Click to open, drag to reorder (Alt+← / Alt+→)';
+  const title = 'Click to open, drag to reorder';
   expect(tabs).toEqual([{ text: 'Team', title, grip }, { text: 'This sandbox', title, grip }, { text: 'Me', title, grip }]);
   await expect(screen.getByRole('tab', 'This sandbox')).toBeVisible();
 
-  // The grip is fainter on a tab at rest than on the chosen one.
-  const colours = await browser.evaluate(() => ['notes-tab-team', 'notes-tab-me'].map((id) => getComputedStyle(document.querySelector(`#${id} .notes-tab-grip`) as HTMLElement).color));
-  expect(colours[0]).not.toEqual(colours[1]);
+  // The grip is faint on a tab at rest and takes the tab's colour when it is chosen, hovered or dragged.
+  const gripColour = (id: string) => browser.evaluate((key) => {
+    const tab = document.getElementById(key) as HTMLElement;
+    return { grip: getComputedStyle(tab.querySelector('.notes-tab-grip') as HTMLElement).color, tab: getComputedStyle(tab).color, cursor: getComputedStyle(tab.querySelector('.notes-tab-grip') as HTMLElement).cursor };
+  }, id);
+  const chosen = await gripColour('notes-tab-team');
+  expect(chosen.grip).toEqual(chosen.tab);
+  const resting = await gripColour('notes-tab-me');
+  expect(resting.grip).not.toEqual(resting.tab);
   expect(await axeViolations(browser)).toEqual([]);
+  const me = await screen.getByRole('tab', 'Me').boundingBox();
+  if (!me) throw new Error('tabs not laid out');
+  await browser.mouse.move(me.x + me.width / 2, me.y + me.height / 2);
+  await expect.poll(async () => { const now = await gripColour('notes-tab-me'); return now.grip === now.tab; }).toBe(true);
+  await browser.mouse.down();
+  await browser.mouse.move(me.x + me.width / 2 - 20, me.y + me.height / 2);
+  const dragged = await gripColour('notes-tab-me');
+  expect(dragged).toEqual({ grip: dragged.tab, tab: dragged.tab, cursor: 'grabbing' });
+  await browser.keyboard.press('Escape');
+  await browser.mouse.up();
 
-  // NOT-024: touch cannot drag a tab, so a coarse pointer does not show the grip.
+  // NOT-024: touch cannot drag a tab, so a device without a fine pointer (mouse, pen) does not show the grip.
   const coarse = await browser.evaluate(() => {
     const found: string[] = [];
     const visit = (list: CSSRuleList, inside: boolean) => {
       for (const rule of [...list]) {
-        if (rule instanceof CSSMediaRule) visit(rule.cssRules, inside || rule.conditionText.includes('pointer: coarse'));
+        if (rule instanceof CSSMediaRule) visit(rule.cssRules, inside || rule.conditionText.replace(/\s+/g, ' ').includes('not (any-pointer: fine)'));
         else if (inside && rule instanceof CSSStyleRule) found.push(rule.cssText);
       }
     };
