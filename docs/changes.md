@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- The superadmin updates Yulius from the sidebar (SPEC-133, ADR-0108, task #121). A button beside
+  the account button reads "Update" when main has moved on, and one click opens the update's
+  confirmation; while an update runs it reads "Updating", and otherwise it is a quiet "Version
+  and updates" icon leading to the instance page. Dismissing the tab-row pill no longer hides the
+  way to update, and the account menu lists "Version and updates" too.
 - Agents scan every change with Vidoc before delivery (SPEC-128, ADR-0104, task #109).
   `scripts/dev security` runs the Vidoc CLI pinned in `tools/vidoc` on the current branch. Vidoc
   scans the files that the branch changed since `dev`, and the command fails when the branch has

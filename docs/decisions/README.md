@@ -107,3 +107,4 @@ number differs from the file name, and a record this index does not list.
 - [0097](0097-loading-fields-take-the-shape-of-what-loads.md): Loading fields take the shape of what loads, drawn with the page's own layout classes
 - [0100](0100-the-wordmark-is-set-like-the-composer-quote.md): The wordmark is set like the composer's quote: Tenor Sans at 400 and the quote's size, the name as written, untracked
 - [0104](0104-agents-scan-their-branch-with-vidoc-before-delivery.md): Agents scan their branch with Vidoc (`scripts/dev security`) before delivery; Yulius CI does not, as its jobs hold no secret
+- [0108](0108-the-superadmin-updates-from-the-sidebar-foot.md): The superadmin's Update button sits beside the account button in the sidebar foot; one click opens the update's confirmation

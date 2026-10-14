@@ -104,7 +104,8 @@ watching, steering and unblocking.
   button is pressed; it copies without being shown. An agent secret is added with a name, a value
   and a description: agents find the service's host and ask for it, and a person allows it with
   one click (SPEC-121).
-- **Updates**: Yulius updates itself from `main` without losing running work.
+- **Updates**: Yulius updates itself from `main` without losing running work. The superadmin
+  starts an update from the Update button beside their account button in the sidebar (SPEC-133).
 
 ## Principles
 
