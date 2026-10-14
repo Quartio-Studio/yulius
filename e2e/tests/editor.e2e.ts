@@ -363,3 +363,66 @@ test('a teammate in a file follows the person’s unsaved typing, hides at anoth
   await teammateInFile(browser, { path: 'README.md', user_id: 'usr_alice', name: 'alice', sha256: sha, selection: null });
   await expect.poll(() => peersIn(browser, 'me')).toEqual([]);
 });
+
+/** The Editor's open files, in the strip's order. */
+const editorTabs = (browser: Browser) => browser.evaluate(() => [...document.querySelectorAll('.ed-tabs [role="tab"]')].map((tab) => (tab as HTMLElement).dataset.path ?? ''));
+
+// SPEC-127 EDT-011, AC-127-2: the open files' tabs move by drag, keyboard and menu.
+test('the editor’s file tabs move by drag, Alt+arrows and the menu', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  const tree = screen.getByRole('tree', 'Files');
+  for (const name of ['README.md', 'AGENTS.md']) {
+    await tree.getByRole('treeitem', name).click();
+    await expect(screen.getByRole('tab', new RegExp(`^${name.replace('.', '\\.')}`))).toHaveAttribute('aria-selected', 'true');
+  }
+  await tree.getByRole('treeitem', /src$/).click();
+  await tree.getByRole('treeitem', /api$/).click();
+  await tree.getByRole('treeitem', 'checkout.rs').click();
+  await expect.poll(() => editorTabs(browser)).toEqual(['README.md', 'AGENTS.md', 'src/api/checkout.rs']);
+
+  // Drag checkout.rs before README.md: the press does not choose it, the open file stays.
+  await screen.getByRole('tab', /^AGENTS\.md/).click();
+  const from = await screen.getByRole('tab', /^checkout\.rs/).boundingBox();
+  const to = await screen.getByRole('tab', /^README\.md/).boundingBox();
+  if (!from || !to) throw new Error('tabs not laid out');
+  await browser.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+  await browser.mouse.down();
+  for (const x of [from.x - 10, to.x + to.width, to.x + to.width / 2, to.x + 4]) await browser.mouse.move(x, from.y + from.height / 2);
+  await browser.mouse.up();
+  await expect.poll(() => editorTabs(browser)).toEqual(['src/api/checkout.rs', 'README.md', 'AGENTS.md']);
+  await expect(screen.getByRole('tab', /^AGENTS\.md/)).toHaveAttribute('aria-selected', 'true');
+
+  // Alt+→ / Alt+← move the focused tab one place, the keyboard goes with it; the ends stop it.
+  await screen.getByRole('tab', /^AGENTS\.md/).focus();
+  await expect(screen.getByRole('tab', /^AGENTS\.md/)).toHaveAttribute('aria-keyshortcuts', 'Delete Backspace Alt+ArrowLeft Alt+ArrowRight');
+  await browser.keyboard.press('Alt+ArrowLeft');
+  expect(await editorTabs(browser)).toEqual(['src/api/checkout.rs', 'AGENTS.md', 'README.md']);
+  await expect(screen.getByRole('tab', /^AGENTS\.md/)).toBeFocused();
+  await browser.keyboard.press('Alt+ArrowLeft');
+  await browser.keyboard.press('Alt+ArrowLeft');
+  expect(await editorTabs(browser)).toEqual(['AGENTS.md', 'src/api/checkout.rs', 'README.md']);
+  await browser.keyboard.press('Alt+ArrowRight');
+  expect(await editorTabs(browser)).toEqual(['src/api/checkout.rs', 'AGENTS.md', 'README.md']);
+  // Nothing was typed into the file or closed.
+  await expect(screen.getByRole('tab', /^AGENTS\.md$/)).toHaveAttribute('aria-selected', 'true');
+
+  // The tab's menu moves it without dragging (WCAG 2.5.7) and closes it.
+  await browser.evaluate(() => {
+    const tab = document.querySelector('.ed-tab[data-path="README.md"]') as HTMLElement;
+    const box = tab.getBoundingClientRect();
+    tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: box.left + 8, clientY: box.bottom }));
+  });
+  await expect(screen.getByRole('menuitem', 'Move right')).toHaveAttribute('aria-disabled', 'true');
+  await screen.getByRole('menuitem', 'Move left').click();
+  expect(await editorTabs(browser)).toEqual(['src/api/checkout.rs', 'README.md', 'AGENTS.md']);
+  expect(await axeViolations(browser)).toEqual([]);
+  await browser.evaluate(() => {
+    const tab = document.querySelector('.ed-tab[data-path="src/api/checkout.rs"]') as HTMLElement;
+    const box = tab.getBoundingClientRect();
+    tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: box.left + 8, clientY: box.bottom }));
+  });
+  await screen.getByRole('menuitem', 'Close').click();
+  expect(await editorTabs(browser)).toEqual(['README.md', 'AGENTS.md']);
+});

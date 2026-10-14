@@ -18,6 +18,7 @@ import { relLong } from './format.js';
 import { attachMarkdownInput } from './mdinput.js';
 import { allows } from './status.js';
 import { createPresence, PRESENCE_SWEEP_MS } from './presence.js';
+import { createTabDrag, movedBy } from './tabdrag.js';
 import { createTextLayer, mapPosition, textEdit } from './textlayer.js';
 import { readJson, writeJson } from './store.js';
 
@@ -25,8 +26,6 @@ const TAB_KEY = 'yulius.notesTab';
 const ORDER_KEY = 'yulius.notesOrder';
 /** The tabs' order until the person moves one: Team first (SPEC-112 NOT-015). */
 export const DEFAULT_ORDER = ['team', 'sandbox', 'me'];
-/** How far a pressed tab moves before it is dragged rather than clicked. */
-const DRAG_THRESHOLD_PX = 4;
 /** Unsaved text per user and notepad, in sessionStorage (this browser tab only). */
 const UNSAVED_PREFIX = 'yulius.notes.unsaved.';
 /** Quiet time after the last keystroke before a save (NOT-002). */
@@ -113,8 +112,8 @@ export function createNotesView(ctx, sandbox) {
   let pads = tabOrder(readJson(ORDER_KEY, null)).map((key) => all.find((pad) => pad.key === key));
   let current = pads.find((pad) => pad.key === readJson(TAB_KEY, pads[0].key)) || pads[0];
   let shown = false;
-  let drag = null; // the pressed tab: {pad, tab, startX, moved, tabs, pointerId, lefts, widths, order}
-  let dragged = false; // the click that ends a drag chooses nothing
+  // Dragging a tab along the strip (tabdrag.js), shared with the Editor's tabs.
+  const drag = createTabDrag(tablist, { keyOf: (tab) => tab.dataset.key, commit: (order) => reorder(order) });
 
   /** Draws the strip; the keyboard stays in it, on `focusPad` when given, else on the chosen tab. */
   function renderTabs(focusPad = null) {
@@ -125,7 +124,7 @@ export function createNotesView(ctx, sandbox) {
         type: 'button', class: ['term-tab', selected && 'active'], role: 'tab', id: `notes-tab-${pad.key}`,
         'aria-selected': String(selected), 'aria-controls': `notes-pane-${pad.key}`, tabindex: selected ? '0' : '-1',
         'aria-keyshortcuts': 'Alt+ArrowLeft Alt+ArrowRight', dataset: { key: pad.key },
-        onClick: () => { if (dragged) { dragged = false; return; } select(pad, { focusTab: true }); },
+        onClick: () => { if (drag.clickConsumed()) return; select(pad, { focusTab: true }); },
       }, pad.label);
       tab.addEventListener('keydown', (event) => {
         const index = pads.indexOf(pad);
@@ -149,7 +148,7 @@ export function createNotesView(ctx, sandbox) {
           { label: 'Move right', icon: 'right', disabled: index === pads.length - 1, onSelect: () => move(pad, 1) },
         ]);
       });
-      tab.addEventListener('pointerdown', (event) => pressTab(event, pad, tab));
+      tab.addEventListener('pointerdown', (event) => drag.press(event, tab));
       return tab;
     });
     setChildren(tablist, tabs);
@@ -166,115 +165,8 @@ export function createNotesView(ctx, sandbox) {
 
   /** Moves `pad` one place left (-1) or right (1); the keyboard goes with it. */
   function move(pad, step) {
-    const order = pads.map((p) => p.key);
-    const from = order.indexOf(pad.key);
-    const to = from + step;
-    if (to < 0 || to >= order.length) return;
-    order.splice(from, 1);
-    order.splice(to, 0, pad.key);
-    reorder(order, tablist.contains(document.activeElement) ? pad : null);
-  }
-
-  // ---- dragging a tab (mouse or pen; touch scrolls the strip and moves tabs from the menu): past
-  // a few pixels the tab follows the pointer, the tabs it passes slide aside, and on release it
-  // settles into its place from where it was let go.
-  function pressTab(event, pad, tab) {
-    if (event.button !== 0 || event.pointerType === 'touch' || drag) return;
-    const tabs = [...tablist.children];
-    drag = {
-      pad, tab, startX: event.clientX, moved: false, tabs, pointerId: event.pointerId,
-      lefts: tabs.map((t) => t.offsetLeft), widths: tabs.map((t) => t.offsetWidth), order: pads.map((p) => p.key),
-    };
-    window.addEventListener('pointermove', dragMove);
-    window.addEventListener('pointerup', dragEnd);
-    window.addEventListener('pointercancel', dragCancel);
-    window.addEventListener('keydown', dragKey, true);
-  }
-
-  /** Where `state`'s tab lands moved by `dx`: the order it makes and how far each tab shifts. */
-  function dragLayout(state, dx) {
-    const from = pads.indexOf(state.pad);
-    const centre = state.lefts[from] + state.widths[from] / 2 + dx;
-    const others = pads.filter((p) => p !== state.pad);
-    const slot = others.filter((p) => { const i = pads.indexOf(p); return state.lefts[i] + state.widths[i] / 2 < centre; }).length;
-    const placed = [...others];
-    placed.splice(slot, 0, state.pad);
-    let left = state.lefts[0];
-    const shifts = new Map();
-    for (const p of placed) {
-      const i = pads.indexOf(p);
-      shifts.set(p, left - state.lefts[i]);
-      left += state.widths[i];
-    }
-    return { order: placed.map((p) => p.key), shifts };
-  }
-
-  function dragMove(event) {
-    if (!drag || event.pointerId !== drag.pointerId) return;
-    const dx = event.clientX - drag.startX;
-    if (!drag.moved) {
-      if (Math.abs(dx) < DRAG_THRESHOLD_PX) return;
-      drag.moved = true;
-      tablist.classList.add('reordering');
-      drag.tab.classList.add('dragging');
-    }
-    const { shifts } = dragLayout(drag, dx);
-    drag.tabs.forEach((tab, i) => {
-      tab.style.transform = `translateX(${pads[i] === drag.pad ? dx : shifts.get(pads[i])}px)`;
-    });
-  }
-
-  function dragDone() {
-    window.removeEventListener('pointermove', dragMove);
-    window.removeEventListener('pointerup', dragEnd);
-    window.removeEventListener('pointercancel', dragCancel);
-    window.removeEventListener('keydown', dragKey, true);
-    tablist.classList.remove('reordering');
-    const state = drag;
-    drag = null;
-    return state;
-  }
-
-  function dragEnd(event) {
-    if (!drag || event.pointerId !== drag.pointerId) return;
-    const state = dragDone();
-    if (!state.moved) return;
-    dragged = true; // the click after this release
-    setTimeout(() => { dragged = false; }, 0); // a release outside the tab clicks nothing
-    const dx = event.clientX - state.startX;
-    const { order } = dragLayout(state, dx);
-    const from = state.lefts[state.order.indexOf(state.pad.key)] + dx;
-    const tabs = reorder(order);
-    const tab = tabs[order.indexOf(state.pad.key)];
-    // From where it was let go into its place (FLIP).
-    tab.classList.add('dragging');
-    tab.style.transform = `translateX(${from - tab.offsetLeft}px)`;
-    tab.getBoundingClientRect();
-    tab.classList.remove('dragging');
-    tab.classList.add('settling');
-    tab.style.transform = '';
-    tab.addEventListener('transitionend', () => tab.classList.remove('settling'), { once: true });
-  }
-
-  function dragCancel() {
-    const state = dragDone();
-    if (state) for (const tab of state.tabs) { tab.style.transform = ''; tab.classList.remove('dragging'); }
-  }
-
-  function dragKey(event) {
-    if (event.key !== 'Escape' || !drag || !drag.moved) return;
-    event.preventDefault();
-    event.stopPropagation();
-    dragCancel();
-    // The release that follows clicks nothing (it may land back on the pressed tab).
-    dragged = true;
-    const released = () => {
-      window.removeEventListener('pointerup', released, true);
-      window.removeEventListener('pointercancel', released, true);
-      setTimeout(() => { dragged = false; }, 0);
-    };
-    window.addEventListener('pointerup', released, true);
-    window.addEventListener('pointercancel', released, true);
+    const order = movedBy(pads.map((p) => p.key), pad.key, step);
+    if (order) reorder(order, tablist.contains(document.activeElement) ? pad : null);
   }
 
   function select(pad, { focusTab = false } = {}) {
@@ -355,7 +247,7 @@ export function createNotesView(ctx, sandbox) {
       for (const pad of pads) pad.setShown(false);
     },
     destroy() {
-      dragCancel();
+      drag.cancel();
       clearInterval(sweep);
       for (const pad of pads) pad.destroy();
       offs.forEach((off) => off());

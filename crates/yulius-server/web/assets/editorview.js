@@ -24,6 +24,7 @@ import { createSplitter, layoutPrefs } from './splitter.js';
 import { createEditorLayer } from './editorlayer.js';
 import { createPresence, PRESENCE_SWEEP_MS } from './presence.js';
 import { mapPosition, textEdit } from './textlayer.js';
+import { createTabDrag, movedBy } from './tabdrag.js';
 
 const MONACO_BASE = '/assets/vendor/monaco/vs';
 const LANGUAGE_SERVICES = new Set(['javascript', 'typescript', 'json', 'css', 'scss', 'less', 'html']);
@@ -717,18 +718,52 @@ export function createEditorView(ctx, sandbox, getTask) {
     return undefined;
   }
 
+  /** Puts the open files' tabs in `order` (paths); answers the strip's tabs as drawn again. */
+  function reorderTabs(order) {
+    tabs.sort((a, b) => order.indexOf(a.path) - order.indexOf(b.path));
+    renderTabs();
+    return [...tabbar.querySelectorAll('[role="tab"]')];
+  }
+
+  /** Moves `tab` one place left (-1) or right (1) (EDT-011); the keyboard goes with it. */
+  function moveTab(tab, step) {
+    const order = movedBy(tabs.map((t) => t.path), tab.path, step);
+    if (order) reorderTabs(order);
+  }
+
+  // Dragging a tab along the strip, as in Notes (tabdrag.js).
+  const tabDrag = createTabDrag(tabbar, { keyOf: (el) => el.dataset.path, commit: reorderTabs });
+
   function renderTabs() {
     const focused = tabbar.contains(document.activeElement) ? document.activeElement.dataset.path : null;
-    const items = tabs.map((tab) => {
+    const items = tabs.map((tab, index) => {
       const name = tab.path.split('/').pop();
-      const button = h('div', { class: ['ed-tab', tab === active && 'active'], role: 'tab', tabindex: tab === active ? '0' : '-1', dataset: { path: tab.path }, title: tab.path, 'aria-selected': String(tab === active), 'aria-keyshortcuts': 'Delete Backspace' },
+      const button = h('div', { class: ['ed-tab', tab === active && 'active'], role: 'tab', tabindex: tab === active ? '0' : '-1', dataset: { path: tab.path }, title: tab.path, 'aria-selected': String(tab === active), 'aria-keyshortcuts': 'Delete Backspace Alt+ArrowLeft Alt+ArrowRight' },
         h('span', { class: 'ed-tab-name' }, name),
         tab.dirty ? h('span', { class: 'sr-only' }, ', modified') : null,
         // Not a button: see closableTabKeys. Delete or Backspace closes the focused tab.
         h('span', { class: 'ed-tab-close', 'aria-hidden': 'true', title: `Close ${name}`, onClick: (event) => { event.stopPropagation(); closeTab(tab); } }, tab.dirty ? '●' : '×'));
-      button.addEventListener('click', () => activate(tab));
+      button.addEventListener('click', () => { if (!tabDrag.clickConsumed()) activate(tab); });
       button.addEventListener('auxclick', (event) => { if (event.button === 1) closeTab(tab); });
-      button.addEventListener('keydown', (event) => closableTabKeys(event, { select: () => activate(tab), close: () => closeTab(tab, false, { fromKeyboard: true }) }));
+      button.addEventListener('keydown', (event) => {
+        if (event.altKey && !event.ctrlKey && !event.metaKey && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+          event.preventDefault();
+          moveTab(tab, event.key === 'ArrowLeft' ? -1 : 1);
+          return;
+        }
+        closableTabKeys(event, { select: () => activate(tab), close: () => closeTab(tab, false, { fromKeyboard: true }) });
+      });
+      // Moving a tab without dragging (WCAG 2.5.7), as the notes and sandbox tabs do.
+      button.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        openMenu({ x: event.clientX, y: event.clientY }, [
+          { label: 'Move left', icon: 'left', disabled: index === 0, onSelect: () => moveTab(tab, -1) },
+          { label: 'Move right', icon: 'right', disabled: index === tabs.length - 1, onSelect: () => moveTab(tab, 1) },
+          { separator: true },
+          { label: 'Close', onSelect: () => closeTab(tab) },
+        ]);
+      });
+      button.addEventListener('pointerdown', (event) => { if (!event.target.closest('.ed-tab-close')) tabDrag.press(event, button); });
       return button;
     });
     if (items.length && !tabs.includes(active)) items[0].tabIndex = 0;
@@ -799,6 +834,7 @@ export function createEditorView(ctx, sandbox, getTask) {
     // Called when the panel host drops this view (another sandbox): free Monaco's editor and
     // models, so other sandboxes' files neither leak nor feed suggestions.
     destroy() {
+      tabDrag.cancel();
       for (const tab of tabs) tab.presence.destroy({ going: false });
       clearInterval(sweep);
       offs.forEach((off) => off());
