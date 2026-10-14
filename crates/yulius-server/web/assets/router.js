@@ -3,6 +3,7 @@
 // ?mock=1 so a plain static file server can reload deep links.
 
 const listeners = new Set();
+const quietListeners = new Set();
 let hashMode = false;
 let lastKey = null;
 
@@ -105,6 +106,15 @@ export function onRoute(fn) {
   return () => listeners.delete(fn);
 }
 
+/**
+ * Subscribe to quiet address changes (`replaceQuietly`) with the route they now name; returns an
+ * unsubscribe function. The view in place already shows it: nothing is mounted again.
+ */
+export function onQuietReplace(fn) {
+  quietListeners.add(fn);
+  return () => quietListeners.delete(fn);
+}
+
 /** Current {path, query} independent of the routing mode. */
 export function currentLocation() {
   if (hashMode) {
@@ -131,6 +141,8 @@ export function replaceQuietly(path) {
   const loc = currentLocation();
   lastKey = loc.full;
   remember(loc);
+  const route = matchRoute(loc.path, loc.query);
+  for (const fn of quietListeners) fn(route);
 }
 
 /** Navigate to an app path, e.g. navigate('/s/studio/t/12'). */

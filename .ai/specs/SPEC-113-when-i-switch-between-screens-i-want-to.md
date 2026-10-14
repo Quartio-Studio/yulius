@@ -112,3 +112,12 @@ the editor's open files with unsaved text, the terminals).
 - Not tested end to end: the 3-sandbox bound (the mock has 3 sandboxes), and the editor's 409
   choices while suspended (the mock cannot hold a save); both are guarded in code (`textOf`,
   `refreshFromDisk` on kept text).
+- Review round 2 (fresh session): approve with minor findings, fixed test-first before delivery:
+  the new skill's Leave question went to the plain address ("leaving a new skill unsaved …"); a
+  page whose filter is only in the address (MCP, Dashboard, Secrets, CI's run) kept showing it after
+  the plain link to the page in view, since `replaceQuietly` left the centre view's key stale — the
+  router now tells the app (`onQuietReplace`) and the key follows the address ("the link to the page
+  in view resets …"); a file opened in the background now renders its tab, so its test proves the
+  suspended path; a suspended `activate` keeps the cursor; deleting a session keeps the list's
+  search. Kept views hold the sandbox object they were made with (a renamed sandbox shows its old
+  name in a kept view until it is rebuilt): cosmetic, the server enforces access.

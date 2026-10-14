@@ -7,7 +7,7 @@
 // actions.js (task actions, dialogs), pages/*.js (pages), mock.js (?mock=1 backend).
 
 import { createApi, realTransport, enc } from './api.js';
-import { initRouter, onRoute, navigate, currentLocation, refreshRoute, parseAppLink, href, forgetPlaces, bindPlaces } from './router.js';
+import { initRouter, onRoute, navigate, currentLocation, refreshRoute, parseAppLink, href, forgetPlaces, bindPlaces, onQuietReplace } from './router.js';
 import { createStore, readJson, writeJson } from './store.js';
 import { applyTheme, PHONE } from './theme.js';
 import { BRAND } from './brand.js';
@@ -637,6 +637,14 @@ function createApp(root, transport) {
     setCenter(key, () => ({ el: h('div', { class: 'page' }, h('div', { class: 'page-inner' },
       loadError(`Couldn’t load your sandboxes: ${error.message}`, () => store.loadSandboxes().then(() => refreshRoute(), () => {})))) }));
   }
+
+  // A page that kept its state in the address (a filter, an open run) is that address's view now: a
+  // link to the page's plain address mounts it again instead of keeping the filtered view (SPEC-113).
+  onQuietReplace((route) => {
+    if (route.name !== 'page' || !centerView || !currentSandbox) return;
+    const base = `${route.page}:${currentSandbox.id}`;
+    if (String(centerView.key).startsWith(`${base}:`)) centerView.key = `${base}:${route.query.toString()}`;
+  });
 
   onRoute((route) => {
     handleRoute(route).catch((error) => {

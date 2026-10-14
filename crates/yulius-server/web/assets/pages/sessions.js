@@ -7,7 +7,7 @@
 
 import { enc } from '../api.js';
 import { h, icon, setChildren, placeholder, emptyState, filterTabs, badge, toast, errorToast, confirmDialog, openModal, loadError, coalesce } from '../dom.js';
-import { href, navigate, replaceQuietly, currentLocation } from '../router.js';
+import { href, navigate, replaceQuietly, currentLocation, placeFor } from '../router.js';
 import { relLong, dateTime, bytes, plural } from '../format.js';
 import { pageFrame, notFound } from './common.js';
 import { BRAND } from '../brand.js';
@@ -602,7 +602,7 @@ export function mountSessionView(ctx, sandbox, id, route) {
     try {
       await ctx.api.del(`/api/sessions/${enc(id)}`);
       toast('Session deleted.', { kind: 'ok' });
-      navigate(back);
+      navigate(placeFor(back, 'page')); // the list's search stays (SPEC-113)
     } catch (error) {
       errorToast(error, 'Couldn’t delete the session');
     }

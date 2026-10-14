@@ -460,7 +460,7 @@ export function createEditorView(ctx, sandbox, getTask) {
     const tab = { path, model: null, sha: file.sha256, dirty: false, viewState: null, saving: false };
     tabs.push(tab);
     // Opened while another sandbox came to the front: it shows when this one is back.
-    if (suspended) { tab.text = file.content; active = tab; return; }
+    if (suspended) { tab.text = file.content; active = tab; renderTabs(); return; }
     attach(tab, file.content);
     activate(tab);
   }
@@ -504,7 +504,9 @@ export function createEditorView(ctx, sandbox, getTask) {
 
   /** `focus: false` keeps keyboard focus where it is (closing a tab from the strip, #80). */
   function activate(tab, { focus = true } = {}) {
-    if (active && editor) active.viewState = editor.saveViewState();
+    // Suspended: it shows when the sandbox is back (resume), with the cursor it had.
+    if (suspended) { active = tab; renderTabs(); return; }
+    if (active && active.model && editor) active.viewState = editor.saveViewState();
     active = tab;
     editor.setModel(tab.model);
     if (tab.viewState) editor.restoreViewState(tab.viewState);

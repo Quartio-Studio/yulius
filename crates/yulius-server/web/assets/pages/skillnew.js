@@ -6,7 +6,7 @@
 
 import { enc } from '../api.js';
 import { h, icon, setChildren, confirmDialog, toast, invalid } from '../dom.js';
-import { href, navigate } from '../router.js';
+import { href, navigate, linkTarget } from '../router.js';
 import { allows } from '../status.js';
 import { createMarkdownEditor } from '../mdeditor.js';
 
@@ -116,7 +116,7 @@ export function mountSkillCreator(ctx, sandbox) {
     if (!link || !dirty() || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
-    if (await confirmDialog({ title: 'Leave without creating?', message: 'The new skill is not saved.', confirmLabel: 'Leave', danger: true })) { created = true; navigate(link.dataset.route); }
+    if (await confirmDialog({ title: 'Leave without creating?', message: 'The new skill is not saved.', confirmLabel: 'Leave', danger: true })) { created = true; navigate(linkTarget(link)); }
   };
   window.addEventListener('beforeunload', onBeforeUnload);
   document.addEventListener('click', onLink, true);
