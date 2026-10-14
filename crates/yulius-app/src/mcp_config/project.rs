@@ -237,7 +237,7 @@ impl<'a> Reference<'a> {
 
 /// The servers of `repo`'s `.mcp.json`; `None` when it is missing, not a regular file of the
 /// repository (a link out of it, a FIFO, a directory), unreadable or invalid. It is read with the
-/// rules for agent-written files the server reads outside containment ([`read_repo_doc`]), at most
+/// rules for agent-written files the server reads outside containment (`hooks::read_repo_doc`), at most
 /// 256 KiB.
 #[must_use]
 pub fn read_project_mcp(repo: &Path, agent_secrets: &BTreeSet<String>) -> Option<ProjectMcp> {
