@@ -1509,25 +1509,21 @@ mod tests {
         };
         assert_eq!(sandbox_root, work);
         assert_eq!(writable, [cache]);
-        for dir in ["/usr", "/etc", "/opt"] {
-            assert!(readonly.contains(&PathBuf::from(dir)), "{dir} read-only");
-        }
+        assert_eq!(readonly, [PathBuf::from("/usr/local/bin/yulius")]);
+        assert_eq!(
+            joined.host_system.as_deref(),
+            Some(resolver),
+            "the host's system, not the layer, with the sandbox's resolver"
+        );
+        assert!(joined.extra_readonly.is_empty());
         assert_eq!(
             joined.system_root,
-            PathBuf::from("/"),
-            "the host's system, not the layer"
+            PathBuf::from("/data/sandboxes/s1/system/root"),
+            "kept for validation; the process host does not bind it in host mode"
         );
-        for dir in ["/var", "/root", "/home"] {
-            assert!(
-                joined.private_dirs.contains(&PathBuf::from(dir)),
-                "{dir} empty"
-            );
-        }
         assert_eq!(joined.net_ns, 2, "the sandbox's network: no host loopback");
         assert_eq!(joined.cgroup.as_deref(), Some(Path::new("/cg/ci")));
-        assert_eq!(binds.len(), 1);
-        assert_eq!(binds[0].dest, PathBuf::from("/etc/resolv.conf"));
-        assert!(!binds[0].writable);
+        assert!(binds.is_empty());
         let everything = format!("{readonly:?} {writable:?} {binds:?} {sandbox_root:?}");
         assert!(!everything.contains("/data/sandboxes"), "{everything}");
     }

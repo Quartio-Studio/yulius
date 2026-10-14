@@ -1,4 +1,5 @@
-//! Bubblewrap argument construction (SPEC-002 ADR-03). Pure: no filesystem access.
+//! Bubblewrap argument construction (SPEC-002 ADR-03). Pure, except that the host's resolver
+//! link is resolved (`resolver_dir`, `resolver_target`).
 
 use std::path::Path;
 
@@ -21,11 +22,12 @@ const HOST_EMPTY_DIRS: [&str; 6] = ["/var", "/root", "/home", "/srv", "/mnt", "/
 
 /// Where the host's resolver file really is (`/etc/resolv.conf` is a link into `/run` on
 /// Ubuntu): a host-system run's own resolver is bound there, so the link resolves to it.
-fn resolver_target(resolv_conf: &Path) -> String {
-    std::fs::canonicalize(resolv_conf).map_or_else(
-        |_| resolv_conf.to_string_lossy().into_owned(),
-        |p| p.to_string_lossy().into_owned(),
-    )
+/// `None` when the host has no resolver file (or a dangling link): nothing is bound, as a bind onto
+/// a missing file in the read-only `/etc` would fail the run.
+fn resolver_target(resolv_conf: &Path) -> Option<String> {
+    std::fs::canonicalize(resolv_conf)
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
 }
 
 /// The directory holding the real resolver file when `resolv_conf` is a symbolic link out of the
@@ -208,6 +210,19 @@ fn joined_argv(
         for dir in HOST_EMPTY_DIRS {
             argv.extend(["--tmpfs".into(), dir.to_owned()]);
         }
+        // What programs expect of an empty `/var`.
+        argv.extend(
+            [
+                "--symlink",
+                "../run",
+                "/var/run",
+                "--perms",
+                "1777",
+                "--dir",
+                "/var/tmp",
+            ]
+            .map(str::to_owned),
+        );
     } else {
         let root = join.system_root.trim_end_matches('/');
         for dir in SYSTEM_LAYER_DIRS {
@@ -235,12 +250,10 @@ fn joined_argv(
         let option = if bind.writable { "--bind" } else { "--ro-bind" };
         argv.extend([option.to_owned(), bind.source.clone(), bind.dest.clone()]);
     }
-    if let Some(resolver) = &join.host_system {
-        argv.extend([
-            "--ro-bind".into(),
-            resolver.clone(),
-            resolver_target(Path::new(RESOLV_CONF)),
-        ]);
+    if let Some(resolver) = &join.host_system
+        && let Some(target) = resolver_target(Path::new(RESOLV_CONF))
+    {
+        argv.extend(["--ro-bind".into(), resolver.clone(), target]);
     }
     argv.extend(["--setenv".into(), "HOME".into(), c.home.clone()]);
     argv.extend(["--chdir".into(), cwd.to_owned()]);
@@ -510,8 +523,11 @@ mod tests {
         let resolver = argv
             .windows(3)
             .position(|w| w[0] == "--ro-bind" && w[1] == "/data/runs/cd-r/work/resolv.conf");
+        // Bound where the host's resolver really is, when the host has one.
+        let host_has_resolver = std::fs::canonicalize("/etc/resolv.conf").is_ok();
+        assert_eq!(resolver.is_some(), host_has_resolver, "{argv:?}");
         assert!(
-            resolver.is_some() && resolver > work,
+            resolver.is_none() || resolver > work,
             "the resolver comes last: {argv:?}"
         );
         assert!(
