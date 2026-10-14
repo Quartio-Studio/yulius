@@ -15,7 +15,7 @@ use crate::{SqliteStore, bad_column, db, to_i64, to_u32};
 
 const COLS: &str = "id, section, sandbox_id, name, description, hosts, injection, header_name, \
      fields, kek_id, wrapped_key, ciphertext, created_by, created_at, updated_by, updated_at, \
-     value_updated_at, last_used_at";
+     value_updated_at, last_used_at, requested_hosts, requested_by";
 
 fn json_list(row: &Row<'_>, column: &str) -> rusqlite::Result<Vec<String>> {
     let text: String = row.get(column)?;
@@ -49,6 +49,8 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<VaultSecretRecord> {
         updated_at: Timestamp(row.get("updated_at")?),
         value_updated_at: Timestamp(row.get("value_updated_at")?),
         last_used_at: row.get::<_, Option<i64>>("last_used_at")?.map(Timestamp),
+        requested_hosts: json_list(row, "requested_hosts")?,
+        requested_by: row.get("requested_by")?,
     })
 }
 
@@ -100,7 +102,7 @@ impl VaultStore for SqliteStore {
             tx.execute(
                 &format!(
                     "INSERT INTO vault_secrets ({COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, \
-                     ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)"
+                     ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)"
                 ),
                 params![
                     r.id,
@@ -121,6 +123,8 @@ impl VaultStore for SqliteStore {
                     r.updated_at.0,
                     r.value_updated_at.0,
                     r.last_used_at.map(|t| t.0),
+                    to_json(&r.requested_hosts),
+                    r.requested_by,
                 ],
             )
             .map_err(db)?;
@@ -216,6 +220,32 @@ impl VaultStore for SqliteStore {
             let mut stmt = c.prepare(&sql).map_err(db)?;
             let rows = stmt.query_map([sandbox], from_row).map_err(db)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(db)
+        })
+        .await
+    }
+
+    async fn vault_set_request(
+        &self,
+        id: &str,
+        from: &[String],
+        to: &[String],
+        by: Option<&str>,
+    ) -> AppResult<bool> {
+        let (id, from, to, by) = (
+            id.to_owned(),
+            to_json(from),
+            to_json(to),
+            by.map(str::to_owned),
+        );
+        self.call(move |c| {
+            let changed = c
+                .execute(
+                    "UPDATE vault_secrets SET requested_hosts = ?3, requested_by = ?4 \
+                     WHERE id = ?1 AND section = 'agent' AND requested_hosts = ?2",
+                    params![id, from, to, by],
+                )
+                .map_err(db)?;
+            Ok(changed == 1)
         })
         .await
     }
@@ -524,6 +554,8 @@ mod tests {
             updated_at: Timestamp(1),
             value_updated_at: Timestamp(1),
             last_used_at: None,
+            requested_hosts: Vec::new(),
+            requested_by: None,
         }
     }
 

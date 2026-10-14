@@ -142,8 +142,13 @@ pub struct AgentSecretView {
     pub description: String,
     /// `sandbox` or `instance` (every sandbox).
     pub scope: String,
-    /// The hosts it is sent to (proxy) or typed into (browser).
+    /// The hosts it is sent to (proxy) or typed into (browser); empty until a person binds or
+    /// allows some (SPEC-121).
     pub hosts: Vec<String>,
+    /// Hosts an agent proposed, waiting for a person who manages it to allow or dismiss them.
+    pub requested_hosts: Vec<String>,
+    /// The task that asked last (`#107`).
+    pub requested_by: Option<String>,
     /// `none`, `bearer`, `basic` or `header`.
     pub injection: String,
     /// Header of the `header` injection.
@@ -224,6 +229,14 @@ pub struct AgentSecretPatch {
     /// New value.
     #[serde(default)]
     pub value: Option<String>,
+}
+
+/// `POST /api/agent-secrets/{id}/request` body: answers the hosts an agent asked for (SPEC-121).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostRequestAnswer {
+    /// `true`: the requested hosts join the secret's bindings; `false`: they are dismissed.
+    pub allow: bool,
 }
 
 /// One vault audit entry.

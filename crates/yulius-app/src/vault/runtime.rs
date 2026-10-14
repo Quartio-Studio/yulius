@@ -455,6 +455,7 @@ impl App {
                     "description": r.description,
                     "scope": if r.sandbox_id.is_some() { "this project" } else { "every project" },
                     "hosts": r.hosts,
+                    "requested_hosts": r.requested_hosts,
                     "adds": injection_of(r).describe(),
                     "placeholder": format!("{PLACEHOLDER_PREFIX}{}", r.name),
                     "fields": r.fields,
@@ -464,8 +465,9 @@ impl App {
         Ok(json!({
             "secrets": secrets,
             "how_to_use": [
+                "A secret with no hosts (or not the one you need) is sent nowhere yet: work out the service's API or sign-in host from its description and the service's documentation, then ask for it with secret_request_hosts; a person allows it. Hosts in requested_hosts already wait for them.",
                 "HTTP APIs: call the bound host normally (for example curl https://<host>/...). Yulius' proxy adds the credential to requests for that host only; you never send or see it.",
-                "Code and CLIs that need a key: use the environment variable NAME (it holds the placeholder yulius-secret-NAME) or the placeholder itself in a header or query; the proxy replaces it for the bound hosts only. Secrets added after this session started have no variable yet: write the placeholder.",
+                "Code and CLIs that need a key: use the environment variable NAME (it holds the placeholder yulius-secret-NAME) or the placeholder itself in the header, Basic credentials or query the service expects (for example Authorization: Bearer $NAME, X-Api-Key: $NAME, curl -u user:$NAME); the proxy replaces it for the bound hosts only. Secrets added after this session started have no variable yet: write the placeholder.",
                 "Several secrets on one host and one header: choose with the request header X-Yulius-Secret: NAME.",
                 "Website sign-in in the project browser: browser_fill_secret types the value into a field of a page on a bound host; a login's user name is in the description (older secrets may also store a user name or a two-factor seed: field username or totp).",
                 "You never receive values: anything that would show one (command output, files, tool results, web pages) shows [secret:NAME] instead. Do not try to print, copy or move secret values."

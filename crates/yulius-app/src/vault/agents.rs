@@ -84,7 +84,7 @@ fn meta(name: &str, hosts: &[String], kind: Option<&str>, header: Option<&str>) 
 }
 
 impl App {
-    async fn require_manage_agent(
+    pub(super) async fn require_manage_agent(
         &self,
         ctx: &AuthContext,
         sandbox: Option<&SandboxId>,
@@ -106,7 +106,7 @@ impl App {
         }
     }
 
-    async fn agent_view(
+    pub(super) async fn agent_view(
         &self,
         record: &VaultSecretRecord,
         manage: bool,
@@ -124,6 +124,8 @@ impl App {
                 "instance".into()
             },
             hosts: record.hosts.clone(),
+            requested_hosts: record.requested_hosts.clone(),
+            requested_by: record.requested_by.clone(),
             injection: injection.kind().into(),
             header_name: record.header_name.clone(),
             injection_text: injection.describe(),
@@ -226,6 +228,8 @@ impl App {
             updated_at: now,
             value_updated_at: now,
             last_used_at: None,
+            requested_hosts: Vec::new(),
+            requested_by: None,
         };
         self.deps.store.vault_insert(&record).await?;
         self.vault.bump();
@@ -248,7 +252,11 @@ impl App {
         self.agent_view(&record, true).await
     }
 
-    async fn agent_record(&self, ctx: &AuthContext, id: &str) -> AppResult<VaultSecretRecord> {
+    pub(super) async fn agent_record(
+        &self,
+        ctx: &AuthContext,
+        id: &str,
+    ) -> AppResult<VaultSecretRecord> {
         let record = self
             .deps
             .store
