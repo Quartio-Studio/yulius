@@ -976,17 +976,20 @@ const PR_CHECKS = {
 };
 
 /**
- * A pull request chip: branch icon, number and checks. A link to GitHub, or (`link: false`) a plain
- * chip that can sit inside another link, such as a sidebar row.
+ * A pull request chip: "PR #N" and checks. A link to GitHub, or (`link: false`) a plain chip that
+ * can sit inside another link, such as a sidebar row. The word, not an icon, tells it from a task's
+ * bare #N (SPEC-122).
  */
 export function prChip(pr, { link = true } = {}) {
   const merged = pr.state === 'merged';
   const checks = merged || pr.state === 'closed' ? null : PR_CHECKS[pr.checks];
   const label = `Pull request #${pr.number} · ${pr.state}${checks ? ` · ${checks[2]}` : ''}`;
-  const parts = [icon('branch', { size: 12 }), `#${pr.number}`, checks ? h('span', { class: `tone-${checks[1]}` }, icon(checks[0], { size: 12 })) : null];
+  // The name starts with what the chip shows (WCAG 2.5.3), then says what it is.
+  const name = `PR #${pr.number}, pull request, ${pr.state}${checks ? `, ${checks[2]}` : ''}`;
+  const parts = [`PR #${pr.number}`, checks ? h('span', { class: `tone-${checks[1]}` }, icon(checks[0], { size: 12 })) : null];
   const cls = ['tl-pr-chip', merged && 'merged', pr.state === 'closed' && 'closed'];
-  if (link) return h('a', { class: cls, href: pr.url, target: '_blank', rel: 'noopener noreferrer', title: label, 'aria-label': label }, parts);
-  return h('span', { class: cls, title: label }, parts, h('span', { class: 'sr-only' }, ` pull request, ${pr.state}${checks ? `, ${checks[2]}` : ''}`));
+  if (link) return h('a', { class: cls, href: pr.url, target: '_blank', rel: 'noopener noreferrer', title: label, 'aria-label': name }, parts);
+  return h('span', { class: cls, title: label }, parts, h('span', { class: 'sr-only' }, name.slice(`PR #${pr.number}`.length)));
 }
 
 /** Small colored badge. */

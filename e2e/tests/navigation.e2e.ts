@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, mock, touchTask } from './support.ts';
 
 failOnPageErrors();
 
@@ -133,4 +133,141 @@ test('another sandbox opens from the sandbox tabs', async ({ app, browser, scree
 
   await expect(browser).toHaveURL(/#\/s\/product$/);
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('New task');
+});
+
+// Task #108 (SPEC-122): "We need tasks id somewhere here and not only PRs id because we use them
+// quickly. But it should be communicated what id is for what". The screenshot's sidebar showed
+// only pull request numbers.
+test('sidebar rows show the task number apart from the pull request number', async ({ app, browser, screen }) => {
+  // The chips come from the Git overview, read after the tasks: held, the rows show no chip yet.
+  await app.open(mock('/s/studio/tasks', '&hold=/api/sandboxes/sb_studio/git'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Tasks');
+  const inRow = (title: string, selector: string) => browser.locator(`.task-list .task-row:has-text("${title}") ${selector}`);
+
+  // TID-1, TID-2: the task's own number, said as a task's, before the chip and the title. It
+  // shows before the pull request is known.
+  await expect(inRow('Improve the code', '.task-num')).toHaveText('Task #13');
+  await expect(inRow('Improve the code', '.tl-pr-chip')).toHaveCount(0);
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+  await expect(inRow('Improve the code', '.tl-pr-chip')).toHaveText(/^PR #520/);
+  await expect(inRow('Improve the code', '.task-num')).toHaveAttribute('title', 'Task #13');
+  await expect(inRow('Improve the code', '.task-num .sr-only')).toHaveText('Task ');
+  await expect(inRow('Checkout API', '.task-num')).toHaveText('Task #12');
+  const order = await browser.evaluate(() => {
+    const row = [...document.querySelectorAll('.task-list .task-row')].find((el) => el.textContent!.includes('Improve the code'))!;
+    return ['.task-num', '.tl-pr-chip', '.task-title'].map((s) => Math.round(row.querySelector(s)!.getBoundingClientRect().left));
+  });
+  expect(order).toEqual([...order].sort((a, b) => a - b));
+  expect(new Set(order).size).toBe(3);
+  // Every row has its number, whatever its group.
+  const rows = await browser.locator('.task-list .task-row').count();
+  await expect(browser.locator('.task-list .task-row .task-num')).toHaveCount(rows);
+
+  // TID-4: whatever the sidebar's width, rows stay one line and nothing spills out of a row; the
+  // number and a shown chip or time are whole and every title keeps a few letters. What gives way
+  // is the time, then (narrowest) the chip, which the row's tooltip still names.
+  const rowsNow = () => browser.evaluate(() => [...document.querySelectorAll('.task-list .task-link')].map((link) => {
+    const shown = (s: string) => { const el = link.querySelector(s) as HTMLElement | null; return Boolean(el && el.offsetWidth > 0); };
+    const cut = (s: string) => { const el = link.querySelector(s); return el ? el.scrollWidth > el.clientWidth + 1 : false; };
+    const box = link.getBoundingClientRect();
+    const right = Math.max(...[...link.children].map((el) => el.getBoundingClientRect().right));
+    return {
+      text: link.querySelector('.task-title')!.textContent,
+      height: Math.round(box.height),
+      spills: right > box.right - parseFloat(getComputedStyle(link).paddingRight) + 1,
+      cut: cut('.task-num') || cut('.tl-pr-chip') || cut('.task-age'),
+      title: Math.round(link.querySelector('.task-title')!.getBoundingClientRect().width),
+      chip: shown('.tl-pr-chip'),
+      age: shown('.task-age'),
+      tooltip: (link as HTMLElement).title,
+    };
+  }));
+  type Row = Awaited<ReturnType<typeof rowsNow>>[number];
+  const broken = (rows: Row[]) => rows.filter((r) => r.height !== rows[0].height || r.spills || r.cut || r.title < 36);
+  const splitter = screen.getByRole('separator', 'Resize sidebar');
+  const at = async (width: number) => {
+    await splitter.press('Home');
+    for (let w = 200; w < width; w += 64) await splitter.press('Shift+ArrowRight');
+    await expect(splitter).toHaveAttribute('aria-valuenow', String(Math.min(width, 480)));
+    return rowsNow();
+  };
+
+  const wide = await at(456);
+  expect(broken(wide)).toEqual([]);
+  expect(wide.filter((r) => !r.age)).toEqual([]);
+  expect(wide.filter((r) => r.chip).map((r) => r.text)).toContain('Improve the code');
+
+  const usual = await at(328);
+  expect(broken(usual)).toEqual([]);
+  expect(usual.filter((r) => r.chip).map((r) => r.text)).toContain('Improve the code');
+
+  const narrowest = await at(200);
+  expect(broken(narrowest)).toEqual([]);
+  expect(narrowest.filter((r) => r.chip)).toEqual([]);
+  expect(narrowest.find((r) => r.text === 'Improve the code')!.tooltip).toContain('PR #520');
+  // The tooltip names the pull request once, even when the state already does ("Done · PR #520").
+  expect(narrowest.find((r) => r.text === 'Improve the code')!.tooltip.match(/PR #520/g)).toHaveLength(1);
+
+  // Review round 1: hovering a row shows Archive and the menu, and the title ends before them.
+  await at(264);
+  await splitter.press('ArrowRight');
+  await splitter.press('ArrowRight');
+  await expect(splitter).toHaveAttribute('aria-valuenow', '296');
+  await browser.locator('.task-row:has-text("Improve the code")').hover();
+  const overlap = await browser.evaluate(() => {
+    const row = [...document.querySelectorAll('.task-list .task-row')].find((el) => el.textContent!.includes('Improve the code'))!;
+    const link = row.querySelector('.task-link')!;
+    const right = Math.max(...[...link.children].map((el) => el.getBoundingClientRect().right));
+    return right - row.querySelector('.task-quick-archive')!.getBoundingClientRect().left;
+  });
+  expect(overlap).toBeLessThanOrEqual(0);
+  // Review round 2: a row that cannot be archived shows only the menu, and its title ends before it.
+  await at(264);
+  await browser.locator('.task-row:has-text("Checkout API")').hover();
+  const covered = await browser.evaluate(() => {
+    const row = [...document.querySelectorAll('.task-list .task-row')].find((el) => el.textContent!.includes('Checkout API'))!;
+    const link = row.querySelector('.task-link')!;
+    const right = Math.max(...[...link.children].map((el) => el.getBoundingClientRect().right));
+    return right - row.querySelector('.task-kebab')!.getBoundingClientRect().left;
+  });
+  expect(covered).toBeLessThanOrEqual(0);
+
+  // A finished task whose shells still run reads "Working" without its pull request: the tooltip
+  // names it (and the narrowest sidebar shows no chip).
+  await touchTask(browser, 'sb_studio', 13, { background_shells: 1, background_shells_since: new Date().toISOString() });
+  await expect.poll(() => browser.evaluate(() => (document.querySelector('.task-list .task-row:has(.task-num[title="Task #13"]) .task-link') as HTMLElement).title)).toMatch(/^Task #13 Improve the code — .* · PR #520 · /);
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+// SPEC-122 TID-5: the Tasks page lists tasks by number too, as the sidebar does.
+test('the Tasks page rows show the task number before the title', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Tasks');
+  await expect(browser.locator('#main .tl-row:has-text("Improve the code") .task-num')).toHaveText('Task #13');
+  await expect(browser.locator('#main .tl-row:has-text("Improve the code") .tl-link')).toHaveAttribute('title', /^Task #13 Improve the code/);
+  const rows = await browser.locator('#main .tl-row').count();
+  await expect(browser.locator('#main .tl-row .tl-link .task-num')).toHaveCount(rows);
+});
+
+// Review round 1 of SPEC-122: on a phone the drawer's rows keep 48 px for the menu button.
+test('the navigation drawer rows fit a 320 px phone with task and pull request numbers', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 320, height: 700 });
+  await app.open(mock('/s/studio/tasks'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Tasks');
+  const menu = screen.getByRole('button', 'Open navigation');
+  await menu.click();
+  await expect(menu).toHaveAttribute('aria-expanded', 'true');
+  await expect(browser.locator('.task-list .task-row:has-text("Improve the code") .task-num')).toBeVisible();
+  // The chip comes with the Git overview, after the rows: measure once it is there.
+  await expect(browser.locator('.task-list .task-row:has-text("Improve the code") .tl-pr-chip')).toHaveCount(1);
+  const rows = await browser.evaluate(() => [...document.querySelectorAll('.task-list .task-link')].map((link) => {
+    const box = link.getBoundingClientRect();
+    const right = Math.max(...[...link.children].map((el) => el.getBoundingClientRect().right));
+    return {
+      text: link.querySelector('.task-title')!.textContent,
+      spills: right > box.right - parseFloat(getComputedStyle(link).paddingRight) + 1,
+      title: Math.round(link.querySelector('.task-title')!.getBoundingClientRect().width),
+    };
+  }));
+  expect(rows.filter((r) => r.spills || r.title < 36)).toEqual([]);
 });

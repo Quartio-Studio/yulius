@@ -100,9 +100,11 @@ number differs from the file name, and a record this index does not list.
 - [0095](0095-a-goal-task-starts-with-its-goal-as-the-launch-prompt.md): A goal task starts with its `/goal` as the launch prompt: one message, nothing typed; a person's keys wait while a prompt task's images are typed
 - [0096](0096-terminal-input-rides-a-write-grant.md): Terminal input rides a per-viewer write grant tied to the store's access epoch; the access re-check runs beside the stream
 - [0094](0094-onboarding-installs-the-gate-in-its-own-pull-request.md): Onboarding installs the gate (lint, format, dead-code check, CI per project) in its own pull request, baselining existing findings
+- [0099](0099-a-bare-number-is-a-task-a-pull-request-says-pr.md): A bare #N is a task (sidebar and Tasks rows show it); a pull request's chip says "PR #N"
 - [0098](0098-agents-propose-secret-hosts-people-allow-them.md): Agents propose an agent secret's hosts and people allow them; a new secret is a name, a value and a description
 - [0093](0093-a-shown-secret-value-stays-masked.md): A shown secret value stays masked until its eye is pressed; a quick copy shows on hover
 - [0092](0092-screens-remember-where-they-were-left.md): Screens remember where they were left: places in the router per browser tab, tool views kept for the 3 sandboxes used last
 - [0097](0097-loading-fields-take-the-shape-of-what-loads.md): Loading fields take the shape of what loads, drawn with the page's own layout classes
 - [0100](0100-the-wordmark-is-set-like-the-composer-quote.md): The wordmark is set like the composer's quote: Tenor Sans at 400 and the quote's size, the name as written, untracked
 - [0103](0103-editor-presence-mirrors-monaco-and-reaches-writers-only.md): Editor presence mirrors Monaco's own selection boxes into gliding shapes and reaches the sandbox's writers only
+- [0104](0104-agents-scan-their-branch-with-vidoc-before-delivery.md): Agents scan their branch with Vidoc (`scripts/dev security`) before delivery; Yulius CI does not, as its jobs hold no secret
