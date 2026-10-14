@@ -89,8 +89,9 @@ never as passed. Turn it off or on in a reviewed pull request that says why; an 
   scan; an unexpected API answer; a CLI error, a timeout or a signal; a failed `npm ci`.
 - 2: not run. The causes: a malformed or uncommitted `.config/vidoc.toml` switch; no key, a
   malformed key, or a rejected one; Vidoc unreachable or out of quota (402, 429) before the scan;
-  "nothing to scan" although the branch changed source files; no Node 20+ or npm; a detached HEAD; uncommitted or untracked files; a first remote other than `origin`,
-  or origin unreachable the way the CLI checks it; no default branch or no merge base.
+  "nothing to scan" although the branch changed source files; no Node 20+ or npm; a detached
+  HEAD; uncommitted or untracked files; a first remote other than `origin`, or origin unreachable
+  the way the CLI checks it; no default branch or no merge base.
 
 Vidoc never indexes `bin/`, `vendor/`, `target/`, `build/`, `dist/`, `out/` and similar directories,
 so `crates/yulius-ptyhost/src/bin/` and vendored web assets are outside the scan. Agents run the
