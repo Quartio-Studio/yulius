@@ -7,6 +7,11 @@
 // the same files) is not overwritten silently. Word wrap (EDT-005) is one switch for every open
 // file — the toolbar button or ⌥Z / Alt+Z as in VS Code — off by default and kept per user in
 // this browser.
+//
+// Like the notepads (SPEC-127): the selection is drawn rounded and gliding (editorlayer.js), the
+// people who have the same file open see each other's caret, name and selection in their colour
+// (presence.js, relayed to the sandbox's writers and stored nowhere; no co-editing), and the tabs
+// go in any order (drag, Alt+←/→, the tab's menu).
 
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, openMenu, openModal, field, closableTabKeys, skeleton } from './dom.js';
@@ -17,6 +22,8 @@ import { SAVE_KEYS, WRAP_KEYS, WRAP_ARIA } from './shortcuts.js';
 import { attachEditorDrop } from './filedrop.js';
 import { createSplitter, layoutPrefs } from './splitter.js';
 import { createEditorLayer } from './editorlayer.js';
+import { createPresence, PRESENCE_SWEEP_MS } from './presence.js';
+import { mapPosition, textEdit } from './textlayer.js';
 
 const MONACO_BASE = '/assets/vendor/monaco/vs';
 const LANGUAGE_SERVICES = new Set(['javascript', 'typescript', 'json', 'css', 'scss', 'less', 'html']);
@@ -185,9 +192,11 @@ export function createEditorView(ctx, sandbox, getTask) {
   let editor = null;
   let layer = null; // the drawn selections (SPEC-127 EDT-007)
   let started = false;
-  const tabs = []; // {path, model, sha, dirty, viewState, external}; text instead of model while suspended
+  // {path, root, model, sha, saved, dirty, viewState, presence}; text instead of model while suspended
+  const tabs = [];
   let active = null;
   let suspended = false; // another sandbox is in front: no Monaco models (SPEC-113)
+  let shown = false; // the Editor is the tool in front
   const expanded = new Map(); // dir path → entries | null (loading)
 
   const folder = h('select', { class: 'select select-sm', 'aria-label': 'Folder' });
@@ -416,6 +425,81 @@ export function createEditorView(ctx, sandbox, getTask) {
     loadDir(parent);
   }
 
+  // ---------------------------------------------------------------- presence (SPEC-127 EDT-010)
+  // Each open file has its presence; only the one in front is shown, while the Editor is shown,
+  // its sandbox is in front and the page is visible. Offsets travel in the file's text as saved
+  // (`saved`, at `sha`), mapped through the unsaved typing on each side; someone at another `sha`
+  // is hidden until both have the same saved text.
+  const myId = me.id || null;
+
+  /** Where this person is in `tab`'s saved text, or `null` while it is not the file in front. */
+  function ownSelection(tab) {
+    if (!editor || tab !== active || !tab.model || editor.getModel() !== tab.model) return null;
+    const selection = editor.getSelection();
+    if (!selection) return null;
+    const anchor = tab.model.getOffsetAt({ lineNumber: selection.selectionStartLineNumber, column: selection.selectionStartColumn });
+    const head = tab.model.getOffsetAt({ lineNumber: selection.positionLineNumber, column: selection.positionColumn });
+    const edit = textEdit(tab.model.getValue(), tab.saved);
+    return { anchor: mapPosition(anchor, edit), head: mapPosition(head, edit) };
+  }
+
+  /** The others in `tab`, drawn when it is the file in front: those at its `sha`, mapped through the typing. */
+  function drawPeers(tab) {
+    if (!layer || tab !== active || !tab.model || editor.getModel() !== tab.model) return;
+    const list = [];
+    if (tab.presence.present) {
+      const text = tab.model.getValue();
+      const edit = textEdit(tab.saved, text);
+      for (const [id, peer] of tab.presence.peers) {
+        if (peer.revision !== tab.sha) continue;
+        const clamp = (offset) => Math.min(mapPosition(offset, edit), text.length);
+        const anchor = clamp(peer.selection.anchor);
+        const head = clamp(peer.selection.head);
+        list.push({ id, colourOf: peer.userId, name: peer.name, start: Math.min(anchor, head), end: Math.max(anchor, head), head });
+      }
+    }
+    layer.setPeers(list);
+  }
+
+  function withPresence(tab) {
+    tab.presence = createPresence({
+      put: ({ revision, ...body }, options) => api.put(`/api/sandboxes/${sid}/files/presence`, { root: tab.root, path: tab.path, sha256: revision, ...body }, options),
+      state: () => ({ revision: tab.sha || '', selection: ownSelection(tab) }),
+      draw: () => drawPeers(tab),
+      myId,
+    });
+    return tab;
+  }
+
+  /** Shows the file in front to the others and takes every other file away (`going`: the page goes). */
+  function syncPresence({ going = false } = {}) {
+    const visible = shown && !suspended && document.visibilityState !== 'hidden';
+    for (const tab of tabs) tab.presence.setShown(visible && tab === active && Boolean(tab.model), { going });
+  }
+
+  /** The text or its saved version moved: redraw the others and tell them. */
+  function presenceMoved(tab) {
+    if (!tab || !tab.presence) return;
+    drawPeers(tab);
+    tab.presence.soon();
+  }
+
+  const offs = [
+    ctx.store.on('file-presence', (event) => {
+      if (event.sandbox_id !== sandbox.id) return;
+      // A file's saved version is its `sha256`, the revision its offsets are in.
+      for (const tab of tabs) if (tab.root === event.root && tab.path === event.path) tab.presence.peer({ ...event, revision: event.sha256 });
+    }),
+    ctx.store.on('resync', () => { for (const tab of tabs) tab.presence.lost(); }),
+  ];
+  // People who went quiet fade out; the file in front says it is still there now and then.
+  const sweep = setInterval(() => { for (const tab of tabs) tab.presence.tick(); }, PRESENCE_SWEEP_MS);
+  // A hidden page has left its file for the others (with a request that outlives a closing page).
+  const onVisibility = () => syncPresence({ going: document.visibilityState === 'hidden' });
+  const onPageHide = () => { for (const tab of tabs) tab.presence.setShown(false, { going: true }); };
+  document.addEventListener('visibilitychange', onVisibility);
+  window.addEventListener('pagehide', onPageHide);
+
   // ---------------------------------------------------------------- files and tabs
   async function ensureEditor() {
     if (editor) return true;
@@ -445,6 +529,7 @@ export function createEditorView(ctx, sandbox, getTask) {
     layer = createEditorLayer(monaco, editor);
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => { if (active) save(active); });
     editor.onDidChangeCursorPosition(() => renderStatus());
+    editor.onDidChangeCursorSelection(() => { if (active && active.presence) active.presence.soon(); });
     return true;
   }
 
@@ -463,7 +548,7 @@ export function createEditorView(ctx, sandbox, getTask) {
       toast(file.too_large ? `${path} is too large for the editor (${Math.round(file.size / 1024)} KB).` : `${path} is a binary file.`, { kind: 'info' });
       return;
     }
-    const tab = { path, model: null, sha: file.sha256, dirty: false, viewState: null, saving: false };
+    const tab = withPresence({ path, root, model: null, sha: file.sha256, saved: file.content, dirty: false, viewState: null, saving: false });
     tabs.push(tab);
     // Opened while another sandbox came to the front: it shows when this one is back.
     if (suspended) { tab.text = file.content; active = tab; renderTabs(); return; }
@@ -477,7 +562,10 @@ export function createEditorView(ctx, sandbox, getTask) {
   /** Gives `tab` a Monaco model holding `text`; the person's edits mark it modified. */
   function attach(tab, text) {
     tab.model = monaco.editor.createModel(text, languageFor(monaco, tab.path));
+    // Monaco keeps one kind of line end: the saved text is compared in its terms.
+    if (tab.saved === text) tab.saved = tab.model.getValue();
     tab.model.onDidChangeContent(() => {
+      presenceMoved(tab);
       if (tab.ignoreChange) return;
       if (!tab.dirty) { tab.dirty = true; renderTabs(); renderStatus(); }
     });
@@ -516,6 +604,7 @@ export function createEditorView(ctx, sandbox, getTask) {
     active = tab;
     editor.setModel(tab.model);
     if (tab.viewState) editor.restoreViewState(tab.viewState);
+    syncPresence();
     if (focus) editor.focus();
     empty.hidden = true;
     host.hidden = false;
@@ -533,6 +622,7 @@ export function createEditorView(ctx, sandbox, getTask) {
       if (file.content != null && file.sha256 !== tab.sha && !tab.dirty && !tab.model) {
         // Suspended meanwhile (another sandbox in front): the kept text takes the disk's version.
         tab.text = file.content;
+        tab.saved = file.content;
         tab.sha = file.sha256;
         return;
       }
@@ -542,6 +632,8 @@ export function createEditorView(ctx, sandbox, getTask) {
         tab.model.setValue(file.content);
         tab.ignoreChange = false;
         tab.sha = file.sha256;
+        tab.saved = tab.model.getValue();
+        presenceMoved(tab);
         if (view) editor.restoreViewState(view);
         toast(`${tab.path} changed on disk and was reloaded.`, { kind: 'info' });
       }
@@ -557,6 +649,7 @@ export function createEditorView(ctx, sandbox, getTask) {
     const index = tabs.indexOf(tab);
     if (index < 0) return;
     tabs.splice(index, 1);
+    tab.presence.destroy({ going: false });
     if (tab.model) tab.model.dispose();
     if (active === tab) {
       active = null;
@@ -571,6 +664,7 @@ export function createEditorView(ctx, sandbox, getTask) {
   }
 
   function closeAll() {
+    for (const tab of tabs) tab.presence.destroy({ going: false });
     for (const tab of tabs) if (tab.model) tab.model.dispose();
     tabs.length = 0;
     active = null;
@@ -591,9 +685,12 @@ export function createEditorView(ctx, sandbox, getTask) {
         const current = await api.get(`/api/sandboxes/${sid}/files/content?${query(tab.path)}`).catch(() => null);
         baseSha = current ? current.sha256 : null;
       }
-      const written = await api.put(`/api/sandboxes/${sid}/files/content`, { root, path: tab.path, content: textOf(tab), base_sha256: baseSha });
+      const content = textOf(tab);
+      const written = await api.put(`/api/sandboxes/${sid}/files/content`, { root, path: tab.path, content, base_sha256: baseSha });
       tab.sha = written.sha256;
+      tab.saved = content;
       tab.dirty = false;
+      presenceMoved(tab);
       toast(`Saved ${tab.path}`, { kind: 'ok' });
     } catch (error) {
       if (error.status === 409) {
@@ -658,10 +755,16 @@ export function createEditorView(ctx, sandbox, getTask) {
     headExtra: () => [folder, wrapButton],
     /** `opts.file`: {root, path, line, col} to open (a terminal's file link). */
     show(opts = {}) {
+      shown = true;
+      syncPresence();
       if (!started) { started = true; if (!(opts && opts.file && opts.file.root !== root)) loadDir(''); }
       if (editor) editor.layout();
       explorerSplitter.sync();
       if (opts && opts.file) openAt(opts.file);
+    },
+    hide() {
+      shown = false;
+      syncPresence();
     },
     taskChanged: folderOptions,
     /** Open files with unsaved changes: the panel host never drops this view for its bound. */
@@ -671,6 +774,7 @@ export function createEditorView(ctx, sandbox, getTask) {
     suspend() {
       if (suspended) return;
       suspended = true;
+      syncPresence();
       if (active && active.model && editor) active.viewState = editor.saveViewState();
       if (editor) editor.setModel(null);
       for (const tab of tabs) {
@@ -695,6 +799,11 @@ export function createEditorView(ctx, sandbox, getTask) {
     // Called when the panel host drops this view (another sandbox): free Monaco's editor and
     // models, so other sandboxes' files neither leak nor feed suggestions.
     destroy() {
+      for (const tab of tabs) tab.presence.destroy({ going: false });
+      clearInterval(sweep);
+      offs.forEach((off) => off());
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pagehide', onPageHide);
       if (sizeWatch) sizeWatch.disconnect();
       if (layer) layer.destroy();
       layer = null;

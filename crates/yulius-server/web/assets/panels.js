@@ -192,7 +192,13 @@ export function createPanelHost(ctx) {
       views.set(key, view);
       body.append(view.wrapper);
     }
-    for (const [otherKey, other] of views) other.wrapper.hidden = otherKey !== key;
+    for (const [otherKey, other] of views) {
+      const hiding = otherKey !== key && !other.wrapper.hidden;
+      other.wrapper.hidden = otherKey !== key;
+      // Another tool in front: the one it replaces is hidden as when the panel closes (its presence
+      // leaves, its stream stops; SPEC-127).
+      if (hiding && other.hide) other.hide();
+    }
     const label = KINDS.find(([name]) => name === k)[2];
     title.textContent = label;
     setChildren(headExtra, view.headExtra ? view.headExtra() : null);

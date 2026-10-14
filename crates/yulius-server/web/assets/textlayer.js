@@ -100,6 +100,7 @@ export function createMarks(content) {
       const caret = h('div', { class: 'tl-caret tl-still' }, name);
       const group = h('div', { class: 'tl-group tl-peer tl-leaving' }, caret);
       group.style.setProperty('--tl-colour', peerColour(peer.colourOf || peer.id));
+      group.dataset.user = String(peer.colourOf || peer.id);
       shapes.set(group, []);
       content.append(group);
       marks = { group, caret, name, fresh: true };
