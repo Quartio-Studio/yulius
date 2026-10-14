@@ -1,8 +1,9 @@
 //! A task's original prompt (SPEC-043, ADR-0033): the text it started with and the files attached
 //! to it, read on demand by whoever may see the task.
 //!
-//! The prompt is stored as the composer sent it: the text, then one `@path` line per attached
-//! file ([`Request::parse`] splits them, as the session start does). A line can name any path on
+//! The prompt is stored as the composer sent it: the text with each attached file where it sits
+//! as an `@'path'` mention, or (older prompts) the text, then one `@path` line per attached file
+//! ([`Request::parse`] splits them in order, as the session start does; SPEC-124). A line can name any path on
 //! the host, so a file is only ever served from the task's own attachment folders: its creator's
 //! composer drafts (`attachments/drafts/<user>/`) and the task's terminal attachments
 //! (`attachments/tasks/<task>/`), named exactly as an upload reports them (no `..`, no other
@@ -23,9 +24,9 @@ use std::time::Duration;
 use tokio::io::AsyncReadExt as _;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::Instant;
-use yulius_contracts::api::tasks::{PromptAttachment, TaskPrompt};
+use yulius_contracts::api::tasks::{PromptAttachment, PromptPart, TaskPrompt};
 use yulius_domain::permission::Action;
-use yulius_domain::request::{Request, is_image};
+use yulius_domain::request::{Part, Request, is_image};
 
 use crate::auth::AuthContext;
 use crate::context::App;
@@ -101,9 +102,18 @@ impl App {
                 available: available.get(i).copied().unwrap_or(false),
             })
             .collect();
+        let parts = request
+            .parts
+            .into_iter()
+            .map(|part| match part {
+                Part::Text(text) => PromptPart::Text { text },
+                Part::File(attachment) => PromptPart::Attachment { attachment },
+            })
+            .collect();
         Ok(TaskPrompt {
             text: request.text,
             attachments,
+            parts,
         })
     }
 

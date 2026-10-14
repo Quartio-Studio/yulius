@@ -15,6 +15,7 @@
 // failpost=<path> (POSTs of that path answer 500).
 
 import { counter, taskInfo } from './status.js';
+import { parsePrompt } from './promptparts.js';
 
 const MIN = 60e3;
 const HOUR = 60 * MIN;
@@ -948,7 +949,7 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   // preparation task, as on the server.
   const waitsFor = prepared ? null : before || preparation();
   const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === sandbox.id).map((t) => t.number)) + 1;
-  const title = body.title || body.prompt.trim().split('\n')[0].slice(0, 60);
+  const title = body.title || (parsePrompt(body.prompt).text.split('\n')[0] || 'Untitled task').trim().slice(0, 60);
   const wf = choice ? choice.workflow : db.workflows.find((w) => w.id === body.workflow_id);
   const id = `tsk_${sandbox.id.slice(3)}_${number}`;
   const task = {
@@ -1107,14 +1108,10 @@ route('GET', `/api/tasks/${ID}`, async ({ db, p }) => {
   db.heldDetailAnswered = true;
   return answer;
 });
-// The prompt a task started with (SPEC-043): `@path` lines are its attached files, served only
-// from the task's own attachment folders, named directly (SPEC-080).
-function promptParts(task) {
-  const lines = String(task.prompt ?? task.title).split('\n');
-  const paths = lines.map((line) => line.trim().match(/^@'?(\/[^']+)'?$/)).filter(Boolean).map((m) => m[1]);
-  const text = lines.filter((line) => !/^@'?\//.test(line.trim())).join('\n').trim();
-  return { text, paths };
-}
+// The prompt a task started with (SPEC-043): its `@'path'` mentions and `@path` lines are its
+// attached files, in order (SPEC-124), served only from the task's own attachment folders, named
+// directly (SPEC-080).
+const promptParts = (task) => parsePrompt(task.prompt ?? task.title);
 function promptFileServed(task, path) {
   const base = `${MOCK_SANDBOXES}/${task.sandbox_id}/attachments`;
   const owned = [`${base}/drafts/usr_${task.created_by.login}`, `${base}/tasks/${task.id}`];
@@ -1124,8 +1121,12 @@ function promptFileServed(task, path) {
 }
 route('GET', `/api/tasks/${ID}/prompt`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
-  const { text, paths } = promptParts(task);
-  return { text, attachments: paths.map((path) => ({ name: path.split('/').pop(), image: /\.(png|jpe?g|gif|webp)$/i.test(path), available: promptFileServed(task, path) })) };
+  const { text, paths, parts } = promptParts(task);
+  return {
+    text,
+    attachments: paths.map((path) => ({ name: path.split('/').pop(), image: /\.(png|jpe?g|gif|webp)$/i.test(path), available: promptFileServed(task, path) })),
+    parts: parts.map((part) => ('file' in part ? { attachment: part.file } : { text: part.text })),
+  };
 });
 route('GET', `/api/tasks/${ID}/prompt/attachments/${ID}`, ({ db, p }) => {
   const task = taskOf(db, p[0]);

@@ -11,6 +11,7 @@ import { relLong, whenLabel, localInputValue, fromLocalInput } from './format.js
 import { BRAND } from './brand.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { openAttachment } from './filedrop.js';
+import { inlineCount } from './promptparts.js';
 import { folderDropZone } from './playground.js';
 
 // ---------------------------------------------------------------- task menu
@@ -475,9 +476,10 @@ export function openDeliveryDialog(ctx, task) {
 }
 
 /**
- * The prompt a task started with (SPEC-043): its text formatted as written, then the files
- * attached to it. An image shows as a thumbnail that opens full size, another file downloads, a
- * file that is gone (drafts are removed after a week) is named. Read when the dialog opens.
+ * The prompt a task started with (SPEC-043): its text formatted as written, each file attached
+ * inside the text shown where it sits (SPEC-124), the files after all the text listed below it.
+ * An image shows as a thumbnail that opens full size, another file downloads, a file that is gone
+ * (drafts are removed after a week) is named. Read when the dialog opens.
  */
 export function openPromptDialog(ctx, task) {
   const controller = new AbortController();
@@ -508,9 +510,11 @@ export function openPromptDialog(ctx, task) {
   const fileUrl = (index) => `/api/tasks/${enc(task.id)}/prompt/attachments/${index}`;
   // An attached file can be as large as an upload (25 MiB by default): longer than a JSON read.
   const FILE_TIMEOUT_MS = 120000;
-  const fileItem = (file, index) => {
+  /** A file's face: `tag` is `li` in the list below the text, `span` inside it. */
+  const fileItem = (file, index, tag = 'li') => {
+    const inline = tag !== 'li';
     if (!file.available) {
-      return h('li', { class: 'prompt-file gone' }, icon('file', { size: 16 }), h('span', { class: 'prompt-file-name' }, file.name), h('span', { class: 'muted xs' }, 'No longer on the server'));
+      return h(tag, { class: ['prompt-file gone', inline && 'inline'] }, icon('file', { size: 16 }), h('span', { class: 'prompt-file-name' }, file.name), h('span', { class: 'muted xs' }, 'No longer on the server'));
     }
     if (!file.image) {
       const download = async () => {
@@ -525,13 +529,13 @@ export function openPromptDialog(ctx, task) {
           if (error.code !== 'aborted') errorToast(error, `Couldn’t download ${file.name}`);
         }
       };
-      return h('li', { class: 'prompt-file' }, h('button', { type: 'button', class: 'btn btn-ghost btn-sm', 'aria-label': `Download ${file.name}`, onClick: download },
+      return h(tag, { class: ['prompt-file', inline && 'inline'] }, h('button', { type: 'button', class: 'btn btn-ghost btn-sm', 'aria-label': `Download ${file.name}`, onClick: download },
         icon('download', { size: 16 }), h('span', { class: 'prompt-file-name' }, file.name)));
     }
     const img = h('img', { alt: file.name });
-    const item = h('li', { class: 'prompt-file image' },
+    const item = h(tag, { class: ['prompt-file image', inline && 'inline'] },
       h('button', { type: 'button', class: 'prompt-thumb', 'aria-label': `Open ${file.name}`, onClick: () => img.src && openAttachment({ name: file.name }, { image: img.src }) }, img),
-      h('span', { class: 'prompt-file-name' }, file.name));
+      inline ? null : h('span', { class: 'prompt-file-name' }, file.name));
     ctx.api.get(fileUrl(index), { as: 'blob', signal: controller.signal, timeoutMs: FILE_TIMEOUT_MS }).then((blob) => {
       const url = URL.createObjectURL(blob);
       urls.push(url);
@@ -551,13 +555,50 @@ export function openPromptDialog(ctx, task) {
     }
     text = prompt.text || '';
     const files = Array.isArray(prompt.attachments) ? prompt.attachments : [];
-    if (text) editor = createMarkdownEditor({ markdown: text, readOnly: true, frontmatter: false });
+    // The prompt in order (SPEC-124); a server without `parts` gives the text, then its files.
+    const parts = Array.isArray(prompt.parts) ? prompt.parts
+      : [...(text ? [{ text }] : []), ...files.map((_, attachment) => ({ attachment }))];
+    const asParts = parts.map((part) => (Number.isInteger(part.attachment) ? { file: part.attachment } : { text: String(part.text ?? '') }));
+    const inside = inlineCount(asParts);
+    // Each file inside the text stands as a marker the Markdown leaves alone, then takes its place.
+    const markdown = asParts.slice(0, inside).map((part) => ('file' in part ? `${FILE_MARK}${part.file}${FILE_MARK_END}` : part.text)).join('');
+    if (markdown.trim()) {
+      editor = createMarkdownEditor({ markdown, readOnly: true, frontmatter: false });
+      placeFiles(editor.el, (n) => (files[n] ? fileItem(files[n], n, 'span') : null));
+    }
+    const below = [...new Set(asParts.slice(inside).filter((part) => 'file' in part && files[part.file]).map((part) => part.file))];
     setChildren(modal.body, h('div', { class: 'stack' },
       editor ? h('div', { class: 'prompt-text' }, editor.el) : h('p', { class: 'muted' }, 'No text: only files were attached.'),
-      files.length ? h('ul', { class: 'prompt-files', 'aria-label': 'Attached files' }, files.map(fileItem)) : null));
+      below.length ? h('ul', { class: 'prompt-files', 'aria-label': 'Attached files' }, below.map((n) => fileItem(files[n], n))) : null));
     modal.setActions(text ? [copy, { label: 'Close' }] : [{ label: 'Close' }]);
   })();
   return modal;
+}
+
+/** Private-use characters around a file's number in the text handed to the Markdown editor. */
+const FILE_MARK = '\uE000';
+const FILE_MARK_END = '\uE001';
+
+/** Replaces each file marker in `root`'s text with `face(n)` (left as it is when that is null). */
+function placeFiles(root, face) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const found = [];
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) if (node.data.includes(FILE_MARK)) found.push(node);
+  const mark = new RegExp(`${FILE_MARK}(\\d+)${FILE_MARK_END}`, 'g');
+  for (const node of found) {
+    const pieces = [];
+    let last = 0;
+    for (const match of node.data.matchAll(mark)) {
+      const el = face(Number(match[1]));
+      if (!el) continue;
+      if (match.index > last) pieces.push(document.createTextNode(node.data.slice(last, match.index)));
+      pieces.push(el);
+      last = match.index + match[0].length;
+    }
+    if (!pieces.length) continue;
+    if (last < node.data.length) pieces.push(document.createTextNode(node.data.slice(last)));
+    node.replaceWith(...pieces);
+  }
 }
 
 const RUN_POLL_MS = 2000;
