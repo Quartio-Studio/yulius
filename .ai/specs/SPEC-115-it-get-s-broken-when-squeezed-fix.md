@@ -59,7 +59,7 @@ targets on phones. No other `@media` width rule in `styles.css` lays out a `.dl-
 
 - [x] Reproduce: a mock Git page beside the Editor panel, with the narrowest column measured.
 - [x] Regression test in `e2e/tests/responsive.e2e.ts` that fails on the current CSS (95 px).
-- [ ] Move the Git page's layout breakpoints from `@media` to `@container page`.
+- [x] Move the Git page's layout breakpoints from `@media` to `@container page`.
 - [ ] Gates: the e2e suite and `scripts/dev ci`. Independent review.
 
 ## Acceptance criteria
@@ -80,6 +80,11 @@ check covers phones (GIT-SQ-3 and the button heights).
   ADR: it applies an existing decision to one more page.
 - Fixed breakpoints rather than `repeat(auto-fit, minmax(…))`. The board has at most four
   columns, and auto-fit would leave a 3 + 1 split that reads as a broken board.
+- Windows from 561 to 767 px (a tablet, a large phone) now follow the page's width too. A page
+  of that size shows two board columns of about 300 px, the summary cards side by side, and
+  Blocked rows with their buttons inline, where the window query stacked everything. That is
+  deliberate: the 180 px floor holds, and the same page width looks the same with or without a
+  panel.
 - 900 px: four columns of a 900 px page (32 px side padding, 12 px gaps) are about 200 px each,
   enough for "On dev, not live" on two lines. 560 px matches the existing page breakpoint for list
   rows (UX2-05).

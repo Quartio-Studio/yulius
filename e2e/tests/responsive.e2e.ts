@@ -17,6 +17,7 @@ function layoutProblems(browser: Browser) {
       '.page-head > *', '.page-actions > *', '.toolbar > *', '.tl-toolbar button', '.tl-summary', '.ss-toolbar > *',
       '.tl-columns > span', '.tl-row > *', '.tl-link > *', '.item-title > *', '.item-controls > *',
       '.home-card-head > *', '.home-count', '.home-card-actions > *',
+      '.dl-need > *', '.dl-need .btn', '.dl-env > *', '.dl-strip > *', '.dl-board > *', '.dl-col-head > *',
       '.wf-head .gt-title-row > *', '.stepstrip-main > *', '.stepstrip-toggle > *', '.step-label > *', '.panel-head > *', '.panel-head .row > *',
     ].join(', ');
     const describe = (el: Element) => `${el.tagName.toLowerCase()}.${[...el.classList].slice(0, 2).join('.')} "${(el.getAttribute('aria-label') || el.textContent || '').trim().slice(0, 24)}"`;
@@ -103,7 +104,7 @@ test('the Tasks page with a tool panel open wraps its state tabs instead of over
 const gitRoom = (browser: Browser) => browser.evaluate(() => {
   const widths = [...document.querySelectorAll('#main .dl-col, #main .dl-strip > .dl-card')]
     .map((el) => Math.round(el.getBoundingClientRect().width));
-  return { count: widths.length, narrowest: Math.min(...widths) };
+  return { count: widths.length, narrowest: widths.length ? Math.min(...widths) : 0 };
 });
 
 test('the Git page beside a tool panel keeps its board columns and summary cards wide enough to read', async ({ app, browser, screen }) => {
@@ -121,6 +122,7 @@ test('the Git page beside a tool panel keeps its board columns and summary cards
       await browser.setViewport({ width, height: 900 });
       await expect.poll(() => layoutProblems(browser)).toEqual({ overlaps: [], sideways: false });
       await expect.poll(async () => (await gitRoom(browser)).narrowest).toBeGreaterThanOrEqual(180);
+      expect((await gitRoom(browser)).count).toBeGreaterThan(2);
     }
   }
 });
