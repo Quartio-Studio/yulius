@@ -497,7 +497,7 @@ let menuIds = 0;
 /**
  * Show a menu at an anchor element or {x, y} point.
  * items: [{label, onSelect, disabled, danger, hint, description, checked, icon, header, separator, href}]
- * `description` adds a second line; `checked` (true/false) makes the item a choice with a check mark;
+ * `description` adds a second line, shown whole; `checked` (true/false) makes the item a choice with a check mark;
  * `keepOpen` keeps the menu open after selecting (multi-select filters), flipping the check in place.
  * A menu of MENU_FILTER_MIN items or more opens with a filter box above them.
  */
@@ -525,7 +525,7 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
     // A disabled item says why on its second line, not only in a mouse tooltip.
     const description = item.description || (item.disabled && item.title ? item.title : null);
     const label = description
-      ? h('span', { class: 'menu-text' }, h('span', { class: 'menu-label' }, item.label), h('span', { class: 'menu-desc', title: description }, description))
+      ? h('span', { class: 'menu-text' }, h('span', { class: 'menu-label' }, item.label), h('span', { class: 'menu-desc' }, description))
       : h('span', { class: 'menu-label' }, item.label);
     const check = choice ? h('span', { class: 'menu-check' }, item.checked ? icon('check', { size: 14 }) : null) : null;
     const select = () => {
