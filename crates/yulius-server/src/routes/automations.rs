@@ -3,7 +3,9 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use yulius_contracts::api::automations::{Automation, AutomationRunView, AutomationTemplate};
+use yulius_contracts::api::automations::{
+    Automation, AutomationRunView, AutomationTemplate, RunAutomation,
+};
 
 use crate::AppState;
 use crate::auth::Auth;
@@ -51,8 +53,12 @@ pub async fn run_now(
     State(app): State<AppState>,
     Auth(ctx): Auth,
     Path(id): Path<String>,
+    body: Option<Json<RunAutomation>>,
 ) -> ApiResult<Json<AutomationRunView>> {
-    Ok(Json(app.run_automation_now(&ctx, &id).await?))
+    let start = body.map(|Json(b)| b);
+    Ok(Json(
+        app.run_automation_now(&ctx, &id, start.as_ref()).await?,
+    ))
 }
 
 pub async fn runs(

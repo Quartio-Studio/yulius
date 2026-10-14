@@ -873,6 +873,16 @@ summary.gt-tree-row::-webkit-details-marker { display: none; }
 
 /* Automations → an automation (UI-039): the schedule is clicked — days, a time, every hour. */
 .au-when { color: var(--text-2); }
+/* The start chip sits in the action bar (SPEC-093): as tall as its buttons. */
+.chip-btn.au-start { height: var(--control-md); }
+.chip-btn.au-start:disabled { opacity: 0.5; cursor: not-allowed; background: transparent; color: var(--text-2); }
+/* On a phone the name takes the row and the start chip, Run now and Save stay together below Delete. */
+.au-break { display: none; }
+@media (max-width: 767px) {
+  .au-page .wf-head .gt-title-row { row-gap: 6px; }
+  .au-page .wf-titles { flex-basis: 100%; margin-bottom: 6px; }
+  .au-break { display: block; flex-basis: 100%; height: 0; }
+}
 .au-when-rows { display: flex; flex-direction: column; gap: 12px; }
 .au-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .au-row > .wf-label { width: 80px; flex: none; }

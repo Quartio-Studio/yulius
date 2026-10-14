@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- The automation editor's start choice is a chip in its action bar, before Run now (SPEC-093,
+  ADR-0074, task #78). It looks and works like New task's start chip and opens the same menu, now
+  one shared module: Start now, Supertask, the filterable "After a task is done" list and "When a
+  rule is true…". The Start row in "The task" is gone, and the chip's tooltip says what the choice
+  means. Run now starts its task the way the chip shows, saved or not: `POST
+  /api/automations/{id}/run` takes an optional start choice for that run only, checked like a
+  save. On a phone the bar wraps below the name, and readers see the chip disabled.
 - A repository's `.mcp.json` no longer stops the Superagent on Claude Code's "N new MCP servers
   found in this project" dialog (SPEC-095, ADR-0078, #391). Before each task run and Superagent
   start, Yulius adds the file's servers that the sandbox lacks to its MCP servers, so every task
