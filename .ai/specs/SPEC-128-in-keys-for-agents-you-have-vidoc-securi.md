@@ -1,11 +1,11 @@
 ---
 yulius-task: 361857ec-0024-49b5-8de6-1ddd4f8c8ce1
-status: in-progress
+status: done
 ---
 
 # SPEC-128: agents scan their branch with Vidoc before delivery
 
-Status: in-progress
+Status: done
 Date: 2026-10-14
 Owner: Yulius task #109
 Scope authorization: the person's request (task #109): "In keys for agents you have vidoc security
@@ -80,8 +80,9 @@ the request for the bound host `api.vidoc.dev`.
   has any open critical or high finding; each finding is printed with severity, name, path, line
   and link (the API's line is 0-based; the CLI prints it plus one, and so does the gate). When the
   CLI found nothing to scan although the branch changed (not deleted) source files outside the
-  directories the CLI never indexes, the gate exits 2: the scan cannot be trusted. Otherwise it
-  passes (exit 0) naming the scan.
+  directories the CLI never indexes, the gate exits 2: the scan cannot be trusted. A zero from the
+  severity filter must agree with the unfiltered open issues' `stats.severityCounts` (no critical
+  or high), or the gate fails. Otherwise it passes (exit 0) naming the scan.
 - SEC-007: Agents' verification (skill `yulius-verify`, AGENTS.md commands, the development guide)
   runs `scripts/dev security` for every change before delivery and treats a failure like any
   failed gate; when the key is missing or not yet usable it is reported as unrun, not passed.
@@ -95,9 +96,9 @@ the request for the bound host `api.vidoc.dev`.
 - [x] Read the product context and related work, then write and validate the spec
 - [x] scripts/dev security runs a pinned Vidoc CLI scan of the branch and fails on open critical or high findings
 - [x] Agents' verification runs the Vidoc scan before delivery, recorded in docs and an ADR
-- [ ] A live Vidoc scan of this branch recorded as evidence
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] A live Vidoc scan of this branch recorded as evidence (skipped: the host is not allowed yet, #470)
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -149,5 +150,34 @@ the request for the bound host `api.vidoc.dev`.
   the base, closing the pipe) were fixed with tests, and a final review checked only that delta.
 - Vidoc never scans files under `bin/` or `vendor/` (its built-in ignore list), so
   `crates/yulius-ptyhost/src/bin/` and the vendored web assets are outside this gate.
+- The final review approved a3197726 and noted that the verdict rested on the severity filter
+  alone. A second, unfiltered read of the open issues now cross-checks a zero by severity counts.
+  This check cannot misfire on fixed findings, because both reads ask for open issues only.
+- The live scan waits for a person to allow `api.vidoc.dev`. Delivery does not wait for it: the
+  behaviour is proven with a fake CLI and API and with real Git, and #470 records the first live
+  run.
 - "Nothing to scan" passes: a branch that changes only files Vidoc does not scan (docs) has nothing
   to review, and failing it would make the gate useless for such changes.
+
+## Evidence
+
+- `python3 -m unittest discover -s scripts -p 'test_*.py'`: 82 tests OK, of which 43 are in
+  `scripts/test_vidoc_scan.py` (settings, Node/npm, repository refusals, the CLI environment,
+  install stamp, verdicts, cross-checks, key never printed, refused redirects, an unsendable key,
+  process-group kill on timeout and SIGTERM with a grandchild).
+- `rustup run 1.99.0 cargo test --locked -p xtask`: 4 passed. `security` is listed, and a missing
+  key exits 2 through the binary. `cargo clippy -p xtask --all-targets -D warnings`: clean.
+- `scripts/dev ci` (doctor, check, lint, test, deps, rustdoc) on 6aa3dccb: exit 0, nextest 1639
+  passed, 16 skipped. It is rerun on the delivered head before the merge.
+- `scripts/dev security` on this branch, real Git and the real proxy: exit 2, "Vidoc rejected the
+  key (HTTP 401: Invalid or expired token): the host api.vidoc.dev may not be bound...". Every
+  repository check passed before that: the branch, a clean tree, `origin` first, the CLI's
+  `ls-remote` in its environment, `HEAD branch: dev`, the fetch and the merge base. On a dirty tree
+  it exits 2 with "uncommitted or untracked files". The pinned CLI installs with
+  `npm ci --ignore-scripts` (5 packages, `vidoc version` gives 0.1.25 with its bundled `rg`).
+- Not run: a live Vidoc scan. `api.vidoc.dev` was requested for `VIDOC_API_KEY` on 2026-10-14
+  and waits for a person on the Secrets page. #470 records the first live run, the line base and
+  the severity filter. Yulius CI does not run the gate (#466).
+- Reviews: four fresh read-only sessions. Rounds 1 to 3 requested changes (2+2+2 major, all
+  fixed test-first). The final review of a3197726 approved, and its minors were then fixed with
+  tests.

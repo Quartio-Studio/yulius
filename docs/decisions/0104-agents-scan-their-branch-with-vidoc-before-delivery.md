@@ -55,5 +55,7 @@ Yulius CI do not run the gate.
 - The CLI uploads the branch's code to Vidoc Cloud and sends its own logs to Sentry. The gate
   gives it an allowlisted environment, which keeps GitHub and model tokens away from it, but that
   is not containment: the CLI runs as the agent.
+- Vidoc never indexes `bin/`, `vendor/`, `target/` and similar directories, so
+  `crates/yulius-ptyhost/src/bin/` and the vendored web assets are outside the scan.
 - Vidoc keys expire (default one month). An expired key gives exit 2 with "Invalid or expired
   token", and a person has to replace the value on the Secrets page.

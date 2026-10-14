@@ -207,7 +207,7 @@ def finding_line(issue):
     if isinstance(issue.get("issue"), dict):
         issue = issue["issue"]
     where = issue.get("path") or "?"
-    if isinstance(issue.get("line"), int):
+    if type(issue.get("line")) is int:
         # 0-based in the API: the CLI prints it plus one.
         where = f"{where}:{issue['line'] + 1}"
     return f"  [{issue.get('severity')}] {issue.get('name')} - {where} {issue.get('url') or ''}".rstrip()
@@ -225,7 +225,7 @@ def gate(env, git, api, cli, log, out):
             raise Usage(f"Vidoc rejected the key ({err}): the host api.vidoc.dev may not be bound "
                         f"to the secret yet, or the key expired. {HOW_TO_ADD_KEY}") from err
         if err.status in (0, 402, 429) or err.status >= 500:
-            raise Usage(f"Vidoc API {url} cannot be reached: {err}") from err
+            raise Usage(f"Vidoc API {url} cannot be reached or is out of quota: {err}") from err
         raise Failed(f"Vidoc API {url} is not usable: {err}") from err
     print(f"Vidoc: scanning {branch}: {len(changed)} changed file(s) since {base}.", file=out, flush=True)
     code, output = cli(environment)
@@ -247,12 +247,23 @@ def gate(env, git, api, cli, log, out):
         codebase = check_scan(api.get(f"/v1/scan-workflows/{scan_id}/status"), scan_id, branch)
         page = api.get("/v1/issues", {"codebaseId": codebase, "branch": branch, "status": "open",
                                       "severity": "critical,high", "limit": "100"})
+        total = page.get("total") if isinstance(page, dict) else None
+        issues = page.get("issues") if isinstance(page, dict) else None
+        if type(total) is not int or total < 0 or not isinstance(issues, list):
+            raise Failed(f"Vidoc answered an unexpected issue list for scan {scan_id}")
+        if not total:
+            # A zero must not rest on the severity filter alone: the same open issues, unfiltered,
+            # counted by severity (`stats.severityCounts`) must agree.
+            every = api.get("/v1/issues", {"codebaseId": codebase, "branch": branch,
+                                           "status": "open", "limit": "1"})
+            counts = (every.get("stats") or {}).get("severityCounts") if isinstance(every, dict) else None
+            if isinstance(counts, dict) and any(
+                    isinstance(counts.get(level), int) and counts[level] > 0
+                    for level in ("critical", "high")):
+                raise Failed(f"Vidoc counts open critical or high issues on {branch} that the "
+                             f"severity filter did not return: the verdict cannot be trusted")
     except HttpError as err:
         raise Failed(f"reading the result of Vidoc scan {scan_id} failed: {err}") from err
-    total = page.get("total") if isinstance(page, dict) else None
-    issues = page.get("issues") if isinstance(page, dict) else None
-    if type(total) is not int or total < 0 or not isinstance(issues, list):
-        raise Failed(f"Vidoc answered an unexpected issue list for scan {scan_id}")
     if total:
         print(f"Vidoc found {total} open critical or high issue(s) on {branch} (scan {scan_id}):", file=out)
         for issue in issues:

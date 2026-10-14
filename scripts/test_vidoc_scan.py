@@ -49,6 +49,8 @@ class FakeApi:
     def get(self, path, params=None):
         self.requests.append((path, params))
         answer = self.answers[path]
+        if callable(answer):
+            answer = answer(params)
         if isinstance(answer, Exception):
             raise answer
         return answer
@@ -267,10 +269,11 @@ class Gate(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn(SCAN_ID, out)
         self.assertEqual(cli.env["VIDOC_TOKEN"], TOKEN)
-        path, params = api.requests[-1]
-        self.assertEqual(path, "/v1/issues")
-        self.assertEqual(params, {"codebaseId": CODEBASE, "branch": BRANCH, "status": "open",
-                                  "severity": "critical,high", "limit": "100"})
+        issue_reads = [params for path, params in api.requests if path == "/v1/issues"]
+        self.assertEqual(issue_reads, [
+            {"codebaseId": CODEBASE, "branch": BRANCH, "status": "open",
+             "severity": "critical,high", "limit": "100"},
+            {"codebaseId": CODEBASE, "branch": BRANCH, "status": "open", "limit": "1"}])
 
     def test_findings_fail_and_are_printed(self):
         code, out = run(api_for(issues=issues_page([ISSUE])))
@@ -284,6 +287,18 @@ class Gate(unittest.TestCase):
         code, out = run(api_for(issues=issues_page([{"issue": ISSUE}])))
         self.assertEqual(code, 1)
         self.assertIn("[high] Command injection in hook runner", out)
+
+    def test_open_critical_or_high_counted_without_the_severity_filter_fail_a_zero_total(self):
+        def answer(params):
+            if "severity" in params:
+                return issues_page()
+            page = issues_page(total=3)
+            page["stats"] = {"severityCounts": {"critical": 0, "high": 1, "medium": 2}}
+            return page
+        api = api_for()
+        api.answers["/v1/issues"] = answer
+        with self.assertRaises(Failed):
+            run(api)
 
     def test_more_findings_than_one_page_still_fail_with_the_total(self):
         code, out = run(api_for(issues=issues_page([ISSUE], total=130)))

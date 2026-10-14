@@ -79,7 +79,7 @@ with a tool timeout of 45 minutes or more, or in the background. Exit codes:
 - 1: failed. The causes: open critical or high findings (each one is printed); a failed or foreign
   scan; an unexpected API answer; a CLI error, a timeout or a signal; a failed `npm ci`.
 - 2: not run. The causes: no key, a malformed key, or a rejected one; Vidoc unreachable or out of
-  quota (402, 429); "nothing to scan" although the branch changed source files; no Node
+  quota (402, 429) before the scan; "nothing to scan" although the branch changed source files; no Node
   20+ or npm; a detached HEAD; uncommitted or untracked files; a first remote other than `origin`,
   or origin unreachable the way the CLI checks it; no default branch or no merge base.
 
