@@ -673,7 +673,7 @@ async fn mcp_tool(
         router,
         Method::POST,
         "/mcp",
-        Some(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": args}})),
+        Some(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": args, "_meta": {"yulius/structured": true}}})),
         &Creds {
             bearer: Some(token.into()),
             ..Creds::default()
@@ -685,10 +685,12 @@ async fn mcp_tool(
         .as_str()
         .ok_or("text")?;
     let is_error = r.body["result"]["isError"].as_bool().unwrap_or(true);
-    Ok((
-        serde_json::from_str(text).unwrap_or(Value::String(text.to_owned())),
-        is_error,
-    ))
+    // The tool's record (asked for with `_meta`), or the text of an error.
+    let record = r.body["result"]
+        .get("structuredContent")
+        .cloned()
+        .unwrap_or_else(|| Value::String(text.to_owned()));
+    Ok((record, is_error))
 }
 
 #[tokio::test]

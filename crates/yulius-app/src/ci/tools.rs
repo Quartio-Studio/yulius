@@ -7,7 +7,7 @@ use std::path::Path;
 use serde_json::{Value, json};
 use yulius_contracts::api::ci::{HygieneCleanup, HygieneTarget};
 use yulius_domain::ci::actions::{MAX_WORKFLOW_BYTES, summarize_workflow};
-use yulius_domain::ci::{self as dom, CiRef};
+use yulius_domain::ci::{self as dom};
 use yulius_domain::spec_format::{MAX_CONFIG_BYTES, parse_yulius_toml};
 
 use super::{MAX_WORKFLOW_FILES, WORKFLOWS_DIR, run_view};
@@ -25,7 +25,8 @@ const TOOL_RUNS: u32 = 10;
 /// only CI; no GitHub Actions).
 pub const CI_SETUP_STEPS: &[&str] = &[
     "Read every workflow below (and the files themselves) and list what each job checks: its run steps, matrix and the tools its `uses:` steps install.",
-    "Write the checks as `[[ci.jobs]]` entries in yulius.toml (name, command, optional matrix = \"a b c\" passed as $YULIUS_CI_MATRIX); one job per independent check so they run in parallel; prefer the repository's own scripts. A single command may instead be `[commands] gate`.",
+    "Write the checks as `[[ci.jobs]]` entries in yulius.toml (name, command, optional matrix = \"a b c\" passed as $YULIUS_CI_MATRIX, optional cpus = N and memory_gb = N when a job needs more or less than an equal share of the machine); one job per independent check so they run in parallel; prefer the repository's own scripts. A single command may instead be `[commands] gate`.",
+    "Size builds and test runners to the budget Yulius gives each job and agent session, not to the machine: they read $YULIUS_CPUS and $YULIUS_MEMORY_MB, and `[resources.env]` in yulius.toml sets the tools' own variables from them (for example CARGO_BUILD_JOBS = \"{cpus}\", PYTEST_XDIST_AUTO_NUM_WORKERS = \"{cpus}\", MAKEFLAGS = \"-j{cpus}\").",
     "Make each command work on the Yulius machine: no GitHub expressions (${{ }}), secrets or services from Actions; tools a `uses:` step installed must be installed by the command or be on the machine; caches go under $HOME or $YULIUS_CI_CACHE, which persist between runs.",
     "Delete .github/workflows/ entirely (git rm -r .github/workflows) in the same commit, so no GitHub Actions run any more.",
     "Commit and let the pull request open: Yulius tests it with the CI it adds (bootstrap). Check the result with ci_status and fix failures until it passes; merging makes it the project's CI.",
@@ -77,7 +78,8 @@ impl App {
         let mut runs = Vec::new();
         for run in self.deps.store.ci_runs(&sandbox.id, TOOL_RUNS).await? {
             let jobs = self.deps.store.ci_jobs(&run.id, false).await?;
-            let mine = pr.is_some_and(|n| run.reference == CiRef::PullRequest(n));
+            // Its pull request's runs and the merge trains it is in (SPEC-084).
+            let mine = pr.is_some_and(|n| run.reference.covers(n));
             let mut value =
                 serde_json::to_value(run_view(&run, &jobs, false)).map_err(AppError::internal)?;
             value["this_task"] = Value::Bool(mine);

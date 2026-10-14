@@ -5,7 +5,7 @@ use rusqlite::{OptionalExtension, Row, params};
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::{
     AttemptRecord, ControlRequest, FeedbackRecord, LaunchKind, MetricsRecord,
-    ProviderSessionRecord, SwitchDecisionRecord, TaskMode, TaskOrigin, TaskRecord,
+    ProviderSessionRecord, SwitchDecisionRecord, TaskMode, TaskOrigin, TaskRecord, TaskTimes,
 };
 use yulius_app::ports::store::{AttemptUpdate, TaskFieldUpdate, TaskStore};
 use yulius_domain::harness::Harness;
@@ -201,6 +201,14 @@ impl TaskStore for SqliteStore {
                 ],
             )
             .map_err(db)?;
+            // A new task is in its first state since it was created (SPEC-087 TIM-001).
+            tx.execute(
+                "UPDATE tasks SET state_at = created_at, working_since = CASE \
+                 WHEN status IN ('starting', 'running', 'switching', 'waiting_capacity') \
+                 AND (activity IS NULL OR activity = 'working') THEN created_at END WHERE id = ?1",
+                [t.id.as_str()],
+            )
+            .map_err(db)?;
             let stored = tx
                 .query_row(&format!("SELECT {TASK_COLS} FROM tasks WHERE id = ?1"), [t.id.as_str()], task_from_row)
                 .map_err(db)?;
@@ -285,6 +293,10 @@ impl TaskStore for SqliteStore {
             let n = c
                 .execute(
                     "UPDATE tasks SET status = ?1, activity = ?2, updated_at = ?3, \
+                     state_at = CASE WHEN status IS NOT ?1 OR activity IS NOT ?2 THEN ?3 ELSE state_at END, \
+                     working_since = CASE WHEN ?1 IN ('starting', 'switching', 'waiting_capacity') \
+                       OR (?1 = 'running' AND (?2 IS NULL OR ?2 = 'working')) THEN COALESCE(working_since, ?3) \
+                       WHEN ?1 = 'running' AND ?2 != 'needs_attention' THEN working_since ELSE NULL END, \
                      closed_at = CASE WHEN ?4 IS NOT NULL THEN ?4 ELSE closed_at END, \
                      queued_at = CASE WHEN ?5 IS NOT NULL THEN ?5 WHEN ?1 = 'queued' THEN queued_at ELSE NULL END, \
                      gate_blocks = CASE WHEN ?1 = 'running' THEN gate_blocks ELSE 0 END \
@@ -314,7 +326,11 @@ impl TaskStore for SqliteStore {
         let id = id.as_str().to_owned();
         self.call(move |c| {
             c.execute(
-                "UPDATE tasks SET activity = ?1, updated_at = ?2 WHERE id = ?3",
+                "UPDATE tasks SET activity = ?1, updated_at = ?2, \
+                 state_at = CASE WHEN activity IS NOT ?1 THEN ?2 ELSE state_at END, \
+                 working_since = CASE WHEN ?1 = 'needs_attention' THEN NULL \
+                   WHEN ?1 = 'working' OR ?1 IS NULL THEN COALESCE(working_since, ?2) \
+                   ELSE working_since END WHERE id = ?3",
                 params![activity.map(Activity::as_str), at.0, id],
             )
             .map_err(db)?;
@@ -337,6 +353,7 @@ impl TaskStore for SqliteStore {
                 "DELETE FROM switch_decisions WHERE task_id = ?1",
                 "DELETE FROM capacity_pauses WHERE task_id = ?1",
                 "DELETE FROM scope_claims WHERE task_id = ?1",
+                "DELETE FROM record_numbers WHERE task_id = ?1",
                 "DELETE FROM feedback WHERE task_id = ?1",
                 "DELETE FROM delivery WHERE task_id = ?1",
                 "DELETE FROM provider_sessions WHERE task_id = ?1",
@@ -357,6 +374,38 @@ impl TaskStore for SqliteStore {
                 .map_err(db)?;
             tx.commit().map_err(db)?;
             Ok(deleted > 0)
+        })
+        .await
+    }
+
+    async fn task_times(&self, task: &TaskId) -> AppResult<Option<TaskTimes>> {
+        let id = task.as_str().to_owned();
+        self.call(move |c| {
+            c.query_row(
+                "SELECT state_at, working_since FROM tasks WHERE id = ?1",
+                [id.as_str()],
+                |r| {
+                    Ok(TaskTimes {
+                        state_at: Timestamp(r.get(0)?),
+                        working_since: r.get::<_, Option<i64>>(1)?.map(Timestamp),
+                    })
+                },
+            )
+            .optional()
+            .map_err(db)
+        })
+        .await
+    }
+
+    async fn set_working_since(&self, task: &TaskId, since: Option<Timestamp>) -> AppResult<()> {
+        let id = task.as_str().to_owned();
+        self.call(move |c| {
+            c.execute(
+                "UPDATE tasks SET working_since = ?1 WHERE id = ?2",
+                params![since.map(|t| t.0), id],
+            )
+            .map_err(db)?;
+            Ok(())
         })
         .await
     }

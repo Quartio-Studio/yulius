@@ -26,7 +26,9 @@ use yulius_app::model::{
     AccountRecord, AccountStatus, SandboxRecord, TaskMode, TaskOrigin, TaskRecord, UserRecord,
 };
 use yulius_app::ports::harness::HarnessPort;
-use yulius_app::ports::session::{AttachedRun, LaunchPlan, RunInspection, SessionHost, SpawnedRun};
+use yulius_app::ports::session::{
+    AttachedRun, BackgroundProbe, LaunchPlan, RunInspection, SessionHost, SpawnedRun,
+};
 use yulius_app::ports::store::TaskStore;
 use yulius_contracts::events::UiEvent;
 use yulius_domain::harness::{Harness, Provider};
@@ -445,6 +447,281 @@ fn an_achieved_goal_with_no_shell_left_makes_the_task_done() -> TestResult {
     Ok(())
 }
 
+/// SPEC-085 STT-001 (task #60 on 2026-10-13: Done, then Working for 19 minutes until it was
+/// stopped): Claude Code compacts an idle session before its prompt cache expires. The records
+/// it writes (the summary the session continues from, the files it reads again, its SessionStart
+/// hook and notice) are no prompt: the Done task stays Done and never reads Working.
+#[test]
+fn an_idle_compaction_leaves_a_done_task_done() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            idle_compact_ms: Some(6_000),
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Fix the status").await?;
+        wait_for("Done", Duration::from_secs(90), || async {
+            shown(&app, &id).await.ok() == Some((Some("done".into()), Some(0)))
+        })
+        .await?;
+        if screen_contains(&app, &id, "COMPACTED WHILE IDLE").await {
+            return Err("the compaction came before Done: the test proves nothing".into());
+        }
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let mut events = app.events.subscribe();
+        let collector = tokio::spawn({
+            let (seen, id) = (Arc::clone(&seen), id.as_str().to_owned());
+            async move {
+                loop {
+                    match events.recv().await {
+                        Ok(envelope) => {
+                            if let UiEvent::TaskUpdated { task } = envelope.event
+                                && task.id == id
+                            {
+                                let mut seen = seen.lock().unwrap_or_else(|e| e.into_inner());
+                                seen.push(task.activity.unwrap_or_default());
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            }
+        });
+        wait_for("the idle compaction", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "COMPACTED WHILE IDLE")
+        })
+        .await?;
+        // Its records were written before it said so: two more watcher rounds read them.
+        let runtime = app.runtime(&id);
+        let rounds = runtime.transcript_rounds();
+        wait_for("the compaction read", Duration::from_secs(20), || async {
+            runtime.transcript_rounds() >= rounds + 2
+        })
+        .await?;
+        assert_eq!(activity(&app, &id).await, Some(Activity::Done));
+        collector.abort();
+        let seen = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        assert!(
+            seen.iter().all(|a| a == "done"),
+            "the compaction never made the task Working: {seen:?}"
+        );
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-085 STT-005: a person types `/compact` into the idle session of a Done task. Claude Code
+/// writes the command as typed, compacts and writes its records (no turn, no Stop hook): the task
+/// stays Done throughout and after. A prompt typed right after is work as always.
+#[test]
+fn a_typed_compaction_leaves_a_done_task_done() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Fix the status").await?;
+        wait_for("Done", Duration::from_secs(90), || async {
+            shown(&app, &id).await.ok() == Some((Some("done".into()), Some(0)))
+        })
+        .await?;
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let mut events = app.events.subscribe();
+        let collector = tokio::spawn({
+            let (seen, id) = (Arc::clone(&seen), id.as_str().to_owned());
+            async move {
+                loop {
+                    match events.recv().await {
+                        Ok(envelope) => {
+                            if let UiEvent::TaskUpdated { task } = envelope.event
+                                && task.id == id
+                            {
+                                let mut seen = seen.lock().unwrap_or_else(|e| e.into_inner());
+                                seen.push(task.activity.unwrap_or_default());
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            }
+        });
+        let seen_now = || seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        app.send_input(&id, b"/compact keep the plan\r").await?;
+        wait_for("the compaction", Duration::from_secs(20), || {
+            screen_contains(&app, &id, "COMPACTED: keep the plan")
+        })
+        .await?;
+        // Its records were written before it said so: two more watcher rounds read them.
+        let runtime = app.runtime(&id);
+        let rounds = runtime.transcript_rounds();
+        wait_for("the compaction read", Duration::from_secs(20), || async {
+            runtime.transcript_rounds() >= rounds + 2
+        })
+        .await?;
+        assert_eq!(activity(&app, &id).await, Some(Activity::Done));
+        assert!(
+            seen_now().iter().all(|a| a == "done"),
+            "the compaction never made the task Working: {:?}",
+            seen_now()
+        );
+
+        // A prompt typed right after is work: Working, then (the goal no longer counts) Your turn.
+        app.send_input(&id, b"also rename the module\r").await?;
+        wait_for("the prompt's turn", Duration::from_secs(20), || {
+            screen_contains(&app, &id, "ECHO: also rename the module")
+        })
+        .await?;
+        wait_for("Your turn", Duration::from_secs(20), || async {
+            activity(&app, &id).await == Some(Activity::Waiting)
+        })
+        .await?;
+        wait_for("the Working update", Duration::from_secs(10), || async {
+            seen_now().iter().any(|a| a == "working")
+        })
+        .await?;
+        collector.abort();
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// The real session host whose probe also finds `waits` shells that only run `yulius wait`
+/// (what `yulius_ptyhost::shells::count_background` tells apart on a real process tree).
+struct WaitingHost {
+    inner: PtySessionHost,
+    waits: Arc<std::sync::atomic::AtomicU32>,
+}
+
+#[async_trait::async_trait]
+impl SessionHost for WaitingHost {
+    async fn spawn(
+        &self,
+        run_dir: &Path,
+        attempt_id: &str,
+        task_id: &str,
+        plan: &LaunchPlan,
+        token: &[u8; 32],
+        size: (u16, u16),
+    ) -> AppResult<SpawnedRun> {
+        self.inner
+            .spawn(run_dir, attempt_id, task_id, plan, token, size)
+            .await
+    }
+
+    async fn attach(&self, run_dir: &Path, token: &[u8; 32]) -> AppResult<AttachedRun> {
+        self.inner.attach(run_dir, token).await
+    }
+
+    fn inspect(&self, run_dir: &Path) -> RunInspection {
+        self.inner.inspect(run_dir)
+    }
+
+    fn terminate(&self, run_dir: &Path) -> AppResult<()> {
+        self.inner.terminate(run_dir)
+    }
+
+    fn background_shells(&self, child_pid: u32) -> Option<u32> {
+        self.inner.background_shells(child_pid)
+    }
+
+    fn background_probe(&self, child_pid: u32) -> Option<BackgroundProbe> {
+        self.inner
+            .background_probe(child_pid)
+            .map(|found| BackgroundProbe {
+                waits: self.waits.load(std::sync::atomic::Ordering::SeqCst),
+                ..found
+            })
+    }
+}
+
+/// SPEC-085 STT-002 ("needs you was too often": 173 idle periods of 37 tasks read Your turn while
+/// their agent waited in `yulius wait` for its checks or merge): the probe's waiting shells reach
+/// the task's view and the sandbox's counts. The waiting task is not counted as needing a person
+/// and is still no background work; once the wait ended, Your turn needs the person again.
+#[test]
+fn an_agent_waiting_for_yulius_does_not_need_a_person() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            goal_verdict: Some("failed"),
+            ..FakeAgentOptions::default()
+        };
+        let waits = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let exe = PathBuf::from(env!("CARGO_BIN_EXE_yulius"));
+        let host = Arc::new(WaitingHost {
+            inner: PtySessionHost::new(exe),
+            waits: Arc::clone(&waits),
+        });
+        let (app, _) = start_on(&data, &fake, agent, 0, Some(host), None, false, None).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let ctx = yulius_app::auth::AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        let needs_you = || async {
+            app.list_sandboxes(&ctx)
+                .await
+                .ok()
+                .and_then(|sandboxes| sandboxes.into_iter().find(|s| s.id == sandbox.as_str()))
+                .map(|s| s.counts.needs_attention)
+        };
+        let id = goal_task(&app, &sandbox, &user, "Merge on green").await?;
+        let view = || async {
+            let summary = app.task_summary(&task(&app, &id).await?).await?;
+            Ok::<_, BoxError>((
+                summary.activity,
+                summary.background_shells,
+                summary.yulius_wait,
+            ))
+        };
+        wait_for("Your turn", Duration::from_secs(90), || async {
+            view().await.ok() == Some((Some("waiting".into()), Some(0), false))
+        })
+        .await?;
+        assert_eq!(needs_you().await, Some(1), "Your turn needs the person");
+
+        // The agent waits for its checks: the next probe finds it.
+        waits.store(1, std::sync::atomic::Ordering::SeqCst);
+        wait_for("the wait in the view", Duration::from_secs(20), || async {
+            view().await.ok() == Some((Some("waiting".into()), Some(0), true))
+        })
+        .await?;
+        assert_eq!(needs_you().await, Some(0), "nobody has to act");
+
+        // The wait returned and the agent stopped: Your turn again.
+        waits.store(0, std::sync::atomic::Ordering::SeqCst);
+        wait_for("the wait over", Duration::from_secs(20), || async {
+            view().await.ok() == Some((Some("waiting".into()), Some(0), false))
+        })
+        .await?;
+        assert_eq!(needs_you().await, Some(1));
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// TSK-010: a goal typed into a TUI that drops the first submit is typed again until Claude
 /// Code takes it, so the task starts instead of showing the goal unsubmitted.
 #[test]
@@ -456,9 +733,7 @@ fn a_goal_the_tui_dropped_is_submitted_again() -> TestResult {
         let agent = FakeAgentOptions {
             transcript: true,
             hooks: true,
-            // Like Claude Code: the goal is typed once the TUI is ready, not after the hookless
-            // fallback (#243). The dropped submit costs the first two submit waits (13 s).
-            session_start: true,
+            // The dropped submit costs the first two submit waits (13 s).
             drop_lines: Some(1),
             ..FakeAgentOptions::default()
         };
@@ -492,7 +767,6 @@ fn a_session_start_before_the_run_is_watched_still_types_the_goal_at_once() -> T
         let agent = FakeAgentOptions {
             transcript: true,
             hooks: true,
-            session_start: true,
             ..FakeAgentOptions::default()
         };
         let (app, _) = start_with(&data, &fake, agent, 0, true).await?;
@@ -520,7 +794,6 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
         let agent = FakeAgentOptions {
             transcript: true,
             hooks: true,
-            session_start: true,
             // The turn on the typed first message (the attached image) is silent for longer
             // than the quiet time after which a goal is otherwise typed (SPEC-030 PIMG-003).
             echo_turn_ms: Some(4_000),
@@ -594,6 +867,12 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
 /// SPEC-052 AC-QMS-3: a message queued while the task waited reaches the agent with its request
 /// when it starts: in the request file and the goal of a goal task, in the first message of a
 /// prompt task.
+///
+/// The wait is real (SPEC-082 TST-002): another task holds the only session slot, so the
+/// session limit queues the task and nothing can start it before its message is in; the
+/// holder's stop then frees the slot and the queue starts it. Before, the test moved a task to
+/// `queued` itself while slots were free: any pass of the queue (the previous task's stop or
+/// Done, SES-101) could start it first, and the message was refused about one run in four.
 #[test]
 fn a_message_queued_before_the_start_reaches_the_agent() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -603,43 +882,51 @@ fn a_message_queued_before_the_start_reaches_the_agent() -> TestResult {
         let agent = FakeAgentOptions {
             transcript: true,
             hooks: true,
-            session_start: true,
             ..FakeAgentOptions::default()
         };
-        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (app, _) = start_on(&data, &fake, agent, 0, None, None, false, Some(1)).await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let ctx = yulius_app::auth::AuthContext {
             user: app.deps.store.user(&user).await?.ok_or("user")?,
             csrf_token: None,
             session_hash: None,
         };
+        let new_task = |mode: TaskMode, prompt: &str| NewTask {
+            sandbox: sandbox.clone(),
+            created_by: user.clone(),
+            prompt: prompt.into(),
+            harness: Harness::ClaudeCode,
+            title: Some("Header".into()),
+            workflow_id: None,
+            steps: Vec::new(),
+            model: None,
+            effort: None,
+            origin: TaskOrigin::Ui,
+            automation_run: None,
+            start: true,
+            mode,
+            supertask: false,
+        };
         for mode in [TaskMode::Goal, TaskMode::Prompt] {
+            // A prompt task holds the only slot: after its turn it waits for its person and is
+            // never Done, so it keeps the slot until it is stopped (SES-101).
+            let holder = app
+                .create_task_internal(new_task(TaskMode::Prompt, "Hold the slot"))
+                .await?
+                .id;
+            wait_for("the holder's session", Duration::from_secs(60), || async {
+                first_launch(&app, &holder).await.is_ok()
+                    && task(&app, &holder)
+                        .await
+                        .is_ok_and(|t| t.status == TaskStatus::Running)
+            })
+            .await?;
             let record = app
-                .create_task_internal(NewTask {
-                    sandbox: sandbox.clone(),
-                    created_by: user.clone(),
-                    prompt: "Make the header red".into(),
-                    harness: Harness::ClaudeCode,
-                    title: Some("Header".into()),
-                    workflow_id: None,
-                    steps: Vec::new(),
-                    model: None,
-                    effort: None,
-                    origin: TaskOrigin::Ui,
-                    automation_run: None,
-                    start: false,
-                    mode,
-                    supertask: false,
-                })
+                .create_task_internal(new_task(mode, "Make the header red"))
                 .await?;
             let id = record.id;
-            // Waiting for a session slot, never started.
-            assert!(
-                app.deps
-                    .store
-                    .transition_task(&id, None, TaskStatus::Queued, None, app.now())
-                    .await?
-            );
+            // At the session limit the task waits, whatever its start at creation did meanwhile.
+            assert_eq!(task(&app, &id).await?.status, TaskStatus::Queued);
             app.queue_task_message(
                 &ctx,
                 id.as_str(),
@@ -648,21 +935,11 @@ fn a_message_queued_before_the_start_reaches_the_agent() -> TestResult {
                 },
             )
             .await?;
-            // The previous task's stop frees a session slot, so the queue may start this one first;
-            // then this start finds it running, which is the same outcome.
-            let started = app
-                .start_run(
-                    &id,
-                    yulius_app::supervisor::RunStart::Fresh { prompt: None },
-                    None,
-                )
-                .await;
-            match started {
-                Ok(()) => {}
-                Err(yulius_app::error::AppError::Conflict(_))
-                    if task(&app, &id).await?.status.is_live() => {}
-                Err(err) => return Err(err.into()),
-            }
+            // A pass of the queue changes nothing while the slot is held.
+            app.drain_queue_now().await;
+            assert_eq!(task(&app, &id).await?.status, TaskStatus::Queued);
+            // The holder's stop frees the slot: the queue starts the task.
+            stop(&app, &holder).await?;
             match mode {
                 // A goal task's request file carries the message, and a short request is
                 // quoted in the goal itself, the message with it.
@@ -691,8 +968,13 @@ fn a_message_queued_before_the_start_reaches_the_agent() -> TestResult {
                     assert!(screen[goal..].contains("Blue, not red."), "{screen}");
                 }
                 TaskMode::Prompt => {
+                    // Its session runs (the launch file is written before the spawn; a stop
+                    // during the start waits for the whole escalation).
                     wait_for("the first launch", Duration::from_secs(60), || async {
                         first_launch(&app, &id).await.is_ok()
+                            && task(&app, &id)
+                                .await
+                                .is_ok_and(|t| t.status == TaskStatus::Running)
                     })
                     .await?;
                     let launch = first_launch(&app, &id).await?;
@@ -733,7 +1015,6 @@ fn the_goal_is_typed_after_the_turn_on_the_attached_files() -> TestResult {
         let agent = FakeAgentOptions {
             transcript: true,
             hooks: true,
-            session_start: true,
             // Silent for longer than the quiet time after which a goal is otherwise typed.
             opening_turn_ms: Some(6_000),
             ..FakeAgentOptions::default()
@@ -790,7 +1071,6 @@ fn the_goal_is_typed_after_the_turn_continued_past_a_limit() -> TestResult {
         let agent = FakeAgentOptions {
             transcript: true,
             hooks: true,
-            session_start: true,
             // The goal turn is the first, the next message hits the limit.
             limit_after: Some(2),
             // The continued turn: silent for longer than the quiet time after which a goal is
@@ -890,7 +1170,6 @@ fn a_continuation_with_hooks_ends_the_limit_pause_and_its_stop_is_answered() -> 
         let agent = FakeAgentOptions {
             transcript: true,
             hooks: true,
-            session_start: true,
             limit_after: Some(1),
             limit_continues_ms: Some(5_000),
             limit_continues_answer_only: true,
@@ -966,7 +1245,6 @@ fn an_attached_image_is_pasted_into_the_first_message() -> TestResult {
         let agent = FakeAgentOptions {
             transcript: true,
             hooks: true,
-            session_start: true,
             ..FakeAgentOptions::default()
         };
         let (app, _) = start(&data, &fake, agent, 0).await?;

@@ -127,7 +127,7 @@ impl App {
     /// have not passed; every refusal of the delivery path (`merge_task_pr`).
     pub async fn tool_delivery_merge(&self, ctx: &AgentContext, args: &Value) -> AppResult<Value> {
         let reviewed = str_arg(args, "reviewed_head")?;
-        let summary: String = args
+        let mut summary: String = args
             .get("review_summary")
             .and_then(Value::as_str)
             .unwrap_or("")
@@ -151,10 +151,20 @@ impl App {
             .map(|c| c.sha)
             .ok_or_else(|| AppError::Conflict("the task branch has no commit".into()))?;
         if !same_commit(reviewed, &head) {
-            return Err(AppError::Conflict(format!(
-                "the independent review covered {reviewed}, but the branch is at {head}; review \
-                 the new head in a fresh session first"
-            )));
+            // Git's own merges of the integration branch keep the review (SPEC-083 REV-001).
+            if !self
+                .review_covers(&ctx.task, std::path::Path::new(worktree), reviewed, &head)
+                .await
+            {
+                return Err(AppError::Conflict(format!(
+                    "the independent review covered {reviewed}, but the branch is at {head}, \
+                     which adds more than clean merges of the integration branch; review the new \
+                     head in a fresh session first"
+                )));
+            }
+            summary.push_str(&format!(
+                " [reviewed at {reviewed}; since then only clean merges of the integration branch]"
+            ));
         }
         // The agent hears this call's own answer: an earlier armed merge's outcome is old news.
         self.forget_merge_outcome(&ctx.task);

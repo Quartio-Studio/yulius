@@ -125,6 +125,11 @@ fn git(dir: &Path, args: &[&str]) -> TestResult {
 
 /// Bare origin with one commit on `main`, cloned as the sandbox repository.
 fn seed_repo(data: &Path, sandbox: &SandboxId) -> TestResult {
+    seed_repo_with(data, sandbox, &[])
+}
+
+/// [`seed_repo`] with `files` (path, contents) committed next to the README.
+fn seed_repo_with(data: &Path, sandbox: &SandboxId, files: &[(&str, &str)]) -> TestResult {
     let origin = data.join("origin.git");
     std::fs::create_dir_all(&origin)?;
     git(&origin, &["init", "--bare", "-q", "-b", "main"])?;
@@ -132,7 +137,10 @@ fn seed_repo(data: &Path, sandbox: &SandboxId) -> TestResult {
     std::fs::create_dir_all(&seed)?;
     git(&seed, &["init", "-q", "-b", "main"])?;
     std::fs::write(seed.join("README.md"), "# fixture\n")?;
-    git(&seed, &["add", "README.md"])?;
+    for (path, contents) in files {
+        std::fs::write(seed.join(path), contents)?;
+    }
+    git(&seed, &["add", "-A"])?;
     git(&seed, &["commit", "-q", "-m", "init"])?;
     git(
         &seed,
@@ -480,8 +488,67 @@ async fn add_account(app: &App, id: &str) -> Result<AccountId, Box<dyn std::erro
     Ok(account)
 }
 
+/// SPEC-082 RES-004, RES-005: an agent session is told its CPU and memory budget in
+/// `YULIUS_CPUS` and `YULIUS_MEMORY_MB`, and in the variables the repository's `[resources.env]`
+/// derives from it. Yulius no longer sets a Rust variable of its own for every repository.
+#[test]
+fn an_agent_session_is_told_its_budget_in_the_repositorys_terms() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let dir = tempfile::Builder::new().prefix("yl").tempdir_in("/tmp")?;
+    let data = dir.path().canonicalize()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            report_env: [
+                "YULIUS_CPUS",
+                "YULIUS_MEMORY_MB",
+                "MAKEFLAGS",
+                "CARGO_BUILD_JOBS",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+            ..FakeAgentOptions::default()
+        };
+        let app = build_tuned(&data, Some(&fake), agent, |c| c.agent_cpus = Some(3))?;
+        let (sandbox, user) = seed_records(&app).await?;
+        seed_repo_with(
+            &data,
+            &sandbox,
+            &[("yulius.toml", "[resources.env]\nMAKEFLAGS = \"-j{cpus}\"\n")],
+        )?;
+        let budget = app.agent_budget();
+        assert_eq!(budget.cpus, app.capacity().cpus.min(3));
+        let id = new_task(&app, &sandbox, &user, "Budget").await?;
+        wait_for("the environment", Duration::from_secs(60), || {
+            screen_contains(&app, &id, "ENV CARGO_BUILD_JOBS=")
+        })
+        .await?;
+        let screen = app.runtime(&id).hub.screen_text();
+        let cpus = budget.cpus.to_string();
+        let memory = budget.memory_mb.to_string();
+        for line in [
+            format!("ENV YULIUS_CPUS=set len={}", cpus.len()),
+            format!("ENV YULIUS_MEMORY_MB=set len={}", memory.len()),
+            format!("ENV MAKEFLAGS=set len={}", cpus.len() + 2),
+            "ENV CARGO_BUILD_JOBS=unset".to_owned(),
+        ] {
+            assert!(screen.contains(&line), "{line}: {screen}");
+        }
+        app.stop_task_now(&id).await?;
+        wait_for("the stop", Duration::from_secs(30), || async {
+            task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
+        })
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// AC-TSK-9: a goal-mode task gets its prompt as `/goal <prompt>` typed into the session once
-/// the TUI is ready, not as a first message.
+/// the TUI is ready, not as a first message. This agent runs no hooks (an old CLI), so the goal
+/// follows the hookless fallback: half the readiness bound, shortened here from 90 s to 8 s so
+/// the test does not sleep 45 s (SPEC-082 TST-001).
 #[test]
 fn goal_mode_types_the_goal_once_the_session_is_ready() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -489,7 +556,9 @@ fn goal_mode_types_the_goal_once_the_session_is_ready() -> TestResult {
     let data = dir.path().canonicalize()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let app = build(&data, &fake)?;
+        let app = build_tuned(&data, Some(&fake), FakeAgentOptions::default(), |c| {
+            c.goal_ready_ms = 8_000;
+        })?;
         let (sandbox, user) = seed_records(&app).await?;
         seed_repo(&data, &sandbox)?;
         let record = app
@@ -929,6 +998,17 @@ fn task_worktrees_guard_protected_branches_and_status_changes_reach_the_ui() -> 
         let record = task(&app, &id).await?;
         let worktree = PathBuf::from(record.worktree_path.ok_or("worktree")?);
         let branch = record.branch.ok_or("branch")?;
+        // SPEC-083 MRG-001: the start kept the union merge of the logs every task appends to.
+        let attributes = std::fs::read_to_string(
+            data.join("sandboxes")
+                .join(sandbox.as_str())
+                .join("repo/.git/info/attributes"),
+        )?;
+        assert!(
+            attributes.contains("/docs/changes.md merge=union")
+                && attributes.contains("/docs/decisions/README.md merge=union"),
+            "{attributes}"
+        );
         let agent_git = |args: &[&str]| {
             Command::new("git")
                 .args(args)

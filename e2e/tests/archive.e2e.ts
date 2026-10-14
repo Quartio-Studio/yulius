@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock, mockReady } from './support.ts';
+import { axeViolations, failOnPageErrors, mock, mockReady, terminalShown } from './support.ts';
 
 failOnPageErrors();
 
@@ -44,6 +44,7 @@ test('a row’s quick Archive button archives its task, with Undo', async ({ app
   await expect(quick).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
 
+  await terminalShown(browser);
   await quick.focus();
   await browser.keyboard.press('Enter');
   await expect(screen.getByText('Task #13 archived.')).toBeVisible();
@@ -86,7 +87,9 @@ test('Archive all archives every Done task in one click, with one Undo', async (
   await expect(screen.getByRole('region', 'Stopped').getByRole('button', 'Archive all')).toHaveCount(0);
   expect(await axeViolations(browser)).toEqual([]);
 
-  // From the keyboard: once the group is gone, the keyboard stays in the task list.
+  // From the keyboard: once the group is gone, the keyboard stays in the task list. The task's
+  // terminal takes the keyboard when it shows: the keyboard moves on after that.
+  await terminalShown(browser);
   await done.getByRole('button', 'Archive all').focus();
   await browser.keyboard.press('Enter');
   await expect(screen.getByText('Archived 2 Done tasks.')).toBeVisible();
@@ -102,6 +105,9 @@ test('Archive all archives every Done task in one click, with one Undo', async (
 test('Archive all keeps what it archived when one fails and says how many failed', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12', '&failpost=/api/tasks/tsk_studio_11/archive'));
   const done = screen.getByRole('region', 'Done');
+  // Both Done tasks are listed: a task is Done once its pull request has been read, which can
+  // come after the first list (SPEC-082 TST-003; before, Archive all could find one task only).
+  await expect(done.getByRole('link')).toHaveCount(2);
   await done.getByRole('button', 'Archive all').click();
 
   await expect(screen.getByText(/Couldn’t archive 1 of 2 tasks: The mock server failed on purpose/)).toBeVisible();
@@ -117,6 +123,8 @@ test('Archive all stays focused and disabled while it runs; a row cannot archive
   const done = screen.getByRole('region', 'Done');
   await expect(done.getByRole('link')).toHaveCount(2);
   const release = await holdArchives(browser);
+  // The task's terminal takes the keyboard when it shows: the keyboard moves on after that.
+  await terminalShown(browser);
 
   const all = done.getByRole('button', 'Archive all');
   await all.focus();
@@ -159,6 +167,8 @@ test('read access shows neither the quick Archive nor Archive all', async ({ app
 test('the keyboard stays on its control when the sidebar list is rebuilt', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   await mockReady(browser);
+  // The task's terminal takes the keyboard when it shows: the keyboard moves on after that.
+  await terminalShown(browser);
   // The Stopped toggle keeps the keyboard: Enter folds it, Enter again unfolds it, no task opens.
   const stopped = screen.getByRole('region', 'Stopped').getByRole('button', /Stopped/);
   await stopped.focus();

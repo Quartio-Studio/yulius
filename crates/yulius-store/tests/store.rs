@@ -180,6 +180,89 @@ async fn task_numbers_and_status_cas() -> R {
     Ok(())
 }
 
+/// SPEC-087 TIM-001, TIM-002: a task's state time moves only when its status or activity
+/// changes, not when the same value is set again (every prompt sets Working) nor when anything
+/// else changes. Its working stretch starts when it starts working and goes on through idle
+/// turns; a person needed, a queue or an end closes it.
+#[tokio::test]
+async fn the_state_time_moves_only_when_the_state_changes() -> R {
+    use yulius_app::model::TaskTimes;
+    use yulius_app::ports::store::TaskFieldUpdate;
+    use yulius_domain::task::Activity;
+    let store = SqliteStore::open_in_memory()?;
+    let (sid, uid) = seed(&store).await?;
+    let t = store.insert_task(&task("t1", &sid, &uid)?).await?;
+    let times = |at: i64, working: Option<i64>| {
+        Some(TaskTimes {
+            state_at: Timestamp(at),
+            working_since: working.map(Timestamp),
+        })
+    };
+    let running = |activity, at| {
+        store.transition_task(
+            &t.id,
+            None,
+            TaskStatus::Running,
+            Some(activity),
+            Timestamp(at),
+        )
+    };
+    assert_eq!(store.task_times(&t.id).await?, times(10, Some(10)));
+    running(Activity::Working, 20).await?;
+    store
+        .set_activity(&t.id, Some(Activity::Working), Timestamp(30))
+        .await?;
+    running(Activity::Working, 35).await?;
+    store
+        .update_task(
+            &t.id,
+            &TaskFieldUpdate {
+                title: Some("renamed".into()),
+                ..TaskFieldUpdate::default()
+            },
+            Timestamp(40),
+        )
+        .await?;
+    assert_eq!(store.task_times(&t.id).await?, times(20, Some(10)));
+    assert_eq!(
+        store.task(&t.id).await?.ok_or("task")?.updated_at,
+        Timestamp(40),
+        "the last change of anything moves on"
+    );
+    // An idle turn keeps the stretch (the app ends it once no background work is left).
+    store
+        .set_activity(&t.id, Some(Activity::Waiting), Timestamp(50))
+        .await?;
+    store
+        .set_activity(&t.id, Some(Activity::Working), Timestamp(55))
+        .await?;
+    assert_eq!(store.task_times(&t.id).await?, times(55, Some(10)));
+    // A person needed ends it; the next work starts another.
+    store
+        .set_activity(&t.id, Some(Activity::NeedsAttention), Timestamp(60))
+        .await?;
+    assert_eq!(store.task_times(&t.id).await?, times(60, None));
+    running(Activity::Working, 70).await?;
+    assert_eq!(store.task_times(&t.id).await?, times(70, Some(70)));
+    store.set_working_since(&t.id, None).await?;
+    store
+        .transition_task(&t.id, None, TaskStatus::Switching, None, Timestamp(75))
+        .await?;
+    assert_eq!(store.task_times(&t.id).await?, times(75, Some(75)));
+    store
+        .transition_task(
+            &t.id,
+            None,
+            TaskStatus::Stopped(yulius_domain::task::StopReason::Cancelled),
+            None,
+            Timestamp(80),
+        )
+        .await?;
+    assert_eq!(store.task_times(&t.id).await?, times(80, None));
+    assert_eq!(store.task_times(&TaskId::parse("missing")?).await?, None);
+    Ok(())
+}
+
 /// SPEC-070: one person at a time asks for control, and control passes only from the owner the
 /// decision saw to the person whose request still waits.
 #[tokio::test]
@@ -853,5 +936,82 @@ async fn a_prompt_grows_only_while_the_task_has_not_started_and_within_the_bound
             .await?
     );
     assert_eq!(store.task(&t.id).await?.ok_or("task")?.prompt, "p+ł");
+    Ok(())
+}
+
+/// SPEC-083 NUM-002: a record number is reserved once per sandbox, directory and prefix; the
+/// reservations survive a reopen, oldest first, and go with their task when it is deleted.
+#[tokio::test]
+async fn record_numbers_are_reserved_once_and_go_with_their_task() -> R {
+    use yulius_app::model::RecordReservation;
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("y.db");
+    let reserve = |task: &str,
+                   prefix: &str,
+                   number: u64,
+                   at: i64|
+     -> Result<RecordReservation, Box<dyn std::error::Error>> {
+        Ok(RecordReservation {
+            sandbox_id: SandboxId::parse("s1")?,
+            dir: "docs/decisions".into(),
+            prefix: prefix.into(),
+            number,
+            task_id: TaskId::parse(task)?,
+            reserved_at: Timestamp(at),
+        })
+    };
+    {
+        let store = SqliteStore::open(&path)?;
+        let (sid, uid) = seed(&store).await?;
+        store.insert_task(&task("t1", &sid, &uid)?).await?;
+        store.insert_task(&task("t2", &sid, &uid)?).await?;
+        assert!(
+            store
+                .reserve_record_number(&reserve("t1", "", 66, 5)?)
+                .await?
+        );
+        assert!(
+            !store
+                .reserve_record_number(&reserve("t2", "", 66, 6)?)
+                .await?,
+            "a number is given out once"
+        );
+        assert!(
+            store
+                .reserve_record_number(&reserve("t2", "", 67, 6)?)
+                .await?
+        );
+        assert!(
+            store
+                .reserve_record_number(&reserve("t2", "ADR-", 66, 7)?)
+                .await?,
+            "another prefix is another series"
+        );
+    }
+    let store = SqliteStore::open(&path)?;
+    let sid = SandboxId::parse("s1")?;
+    let held: Vec<(String, String, u64)> = store
+        .record_reservations(&sid, "docs/decisions")
+        .await?
+        .into_iter()
+        .map(|r| (r.task_id.as_str().to_owned(), r.prefix, r.number))
+        .collect();
+    assert_eq!(
+        held,
+        vec![
+            ("t1".into(), String::new(), 66),
+            ("t2".into(), String::new(), 67),
+            ("t2".into(), "ADR-".into(), 66),
+        ]
+    );
+    assert!(store.record_reservations(&sid, "docs").await?.is_empty());
+    assert!(store.delete_task(&TaskId::parse("t2")?).await?);
+    assert_eq!(
+        store
+            .record_reservations(&sid, "docs/decisions")
+            .await?
+            .len(),
+        1
+    );
     Ok(())
 }

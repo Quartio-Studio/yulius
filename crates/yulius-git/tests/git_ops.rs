@@ -7,8 +7,8 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use yulius_git::{
-    Author, BundleSpec, DiffStat, Git, GitError, ImportRef, MergeInto, RemovalRefusal,
-    WorktreeRemoval, validate_branch_name,
+    Author, BundleSpec, DiffStat, Git, GitError, ImportRef, MergeInto, RemovalRefusal, TrainInput,
+    TrainLanding, TrainStep, WorktreeRemoval, validate_branch_name,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -936,5 +936,278 @@ fn keep_and_revert_keeps_all_work_and_resets_the_worktree() -> TestResult {
             .keep_and_revert(&worktree, "x", &["nowhere".to_owned()], "m", &author()),
         Err(GitError::InvalidInput { .. })
     ));
+    Ok(())
+}
+
+/// Lands `head` on `branch` of `repo` as a host's squash merge of an up-to-date pull request: a
+/// new commit with the head's tree and the branch as its only parent.
+fn squash_land(
+    fx: &Fixture,
+    repo: &Path,
+    branch: &str,
+    head: &str,
+) -> Result<String, Box<dyn Error>> {
+    let tree = fx.git.tree_of(repo, head)?.ok_or("tree")?;
+    let parent = fx.git.rev_parse(repo, branch)?;
+    let commit = fx.raw(repo, &["commit-tree", &tree, "-p", &parent, "-m", "squash"])?;
+    fx.raw(
+        repo,
+        &[
+            "update-ref",
+            &format!("refs/heads/{branch}"),
+            &commit,
+            &parent,
+        ],
+    )?;
+    Ok(commit)
+}
+
+#[test]
+fn a_merge_train_predicts_the_trees_of_merging_one_by_one() -> TestResult {
+    // SPEC-084 TRN-002: the train merges the integration branch into each head as DLV-203 does
+    // (merge drivers apply: entries at the top of a union-merged changes log), lands each as a
+    // squash, and leaves out a head that conflicts with the ones before it. Merging the heads
+    // one by one afterwards gives exactly the trees it predicted.
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    fs::write(repo.join(".gitattributes"), "changes.md merge=union\n")?;
+    fs::write(repo.join("changes.md"), "# Changes\n\n- first\n")?;
+    fs::write(repo.join("shared.txt"), "base\n")?;
+    fx.git.commit_all(&repo, "changes log", &author())?;
+    fx.raw(&repo, &["branch", "dev", "main"])?;
+    let mut worktrees = Vec::new();
+    for (n, extra) in [(1, "shared.txt"), (2, "two.txt"), (3, "shared.txt")] {
+        let worktree = fx.path(&format!("feature{n}"));
+        fx.git
+            .worktree_add(&repo, &worktree, &format!("feat/{n}"), "dev")?;
+        fx.git
+            .set_local_identity(&worktree, "Agent", "agent@example.invalid")?;
+        fs::write(
+            worktree.join("changes.md"),
+            format!("# Changes\n\n- entry {n}\n- first\n"),
+        )?;
+        fs::write(worktree.join(extra), format!("from {n}\n"))?;
+        fx.git
+            .commit_all(&worktree, &format!("feature {n}"), &author())?;
+        worktrees.push(worktree);
+    }
+    let heads: Vec<String> = worktrees
+        .iter()
+        .map(|w| fx.git.rev_parse(w, "HEAD"))
+        .collect::<Result<_, _>>()?;
+    let owned = fx.path("ci");
+    fs::create_dir(&owned)?;
+    let scratch = owned.join("train");
+    let build = fx.git.build_train(
+        &repo,
+        &scratch,
+        &owned,
+        &TrainInput {
+            base: "dev",
+            heads: &heads,
+            landing: TrainLanding::Squash,
+            author: &author(),
+        },
+    )?;
+    assert_eq!(build.base, fx.git.rev_parse(&repo, "dev")?);
+    let [
+        TrainStep::Clean { tree: first },
+        TrainStep::Clean { tree: second },
+        third,
+    ] = build.steps.as_slice()
+    else {
+        return Err(format!("unexpected steps: {:?}", build.steps).into());
+    };
+    assert_eq!(third, &TrainStep::Conflict(vec!["shared.txt".to_owned()]));
+    assert_eq!(fx.git.tree_of(&repo, &build.head)?.as_ref(), Some(second));
+    assert_eq!(
+        fx.git.rev_parse(&scratch, "HEAD")?,
+        build.head,
+        "kept reachable"
+    );
+
+    // One by one, as Yulius and the host do it: bring up to date, then squash.
+    assert_eq!(
+        fx.git.merge_into(&worktrees[0], "dev")?,
+        MergeInto::UpToDate
+    );
+    squash_land(&fx, &repo, "dev", &heads[0])?;
+    assert_eq!(fx.git.tree_of(&repo, "dev")?.as_ref(), Some(first));
+    let MergeInto::Merged(second_head) = fx.git.merge_into(&worktrees[1], "dev")? else {
+        return Err("expected a merge".into());
+    };
+    assert_eq!(fx.git.tree_of(&repo, &second_head)?.as_ref(), Some(second));
+    squash_land(&fx, &repo, "dev", &second_head)?;
+    assert_eq!(fx.git.tree_of(&repo, "dev")?.as_ref(), Some(second));
+    let log = fx.raw(&repo, &["show", "dev:changes.md"])?;
+    assert!(
+        log.contains("- entry 1") && log.contains("- entry 2") && !log.contains("- entry 3"),
+        "{log}"
+    );
+    // The third conflicts with the integration branch now, as the train said.
+    assert_eq!(
+        fx.git.merge_into(&worktrees[2], "dev")?,
+        MergeInto::Conflict(vec!["shared.txt".to_owned()])
+    );
+
+    // A merge-commit landing has both parents; the scratch worktree is reused.
+    let again = fx.git.build_train(
+        &repo,
+        &scratch,
+        &owned,
+        &TrainInput {
+            base: &build.base,
+            heads: &heads[..2],
+            landing: TrainLanding::MergeCommit,
+            author: &author(),
+        },
+    )?;
+    let parents = fx.raw(&repo, &["show", "--no-patch", "--format=%P", &again.head])?;
+    assert_eq!(parents.split_whitespace().count(), 2, "{parents}");
+    assert_eq!(fx.git.tree_of(&repo, &again.head)?.as_ref(), Some(second));
+    Ok(())
+}
+
+#[test]
+fn merge_attributes_in_info_reach_every_worktree() -> TestResult {
+    // SPEC-083 MRG-001: the logs every task appends to merge by union in a repository that does
+    // not commit a `.gitattributes` for them, in its linked worktrees too.
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    fs::write(repo.join("changes.md"), "# Changes\n\n- first\n")?;
+    fx.git.commit_all(&repo, "changes log", &author())?;
+    let feature = fx.path("feature");
+    fx.git.worktree_add(&repo, &feature, "feat/x", "main")?;
+    fx.git
+        .set_local_identity(&feature, "Agent", "agent@example.invalid")?;
+    fs::write(
+        feature.join("changes.md"),
+        "# Changes\n\n- feature\n- first\n",
+    )?;
+    fx.git.commit_all(&feature, "feature entry", &author())?;
+    fs::write(repo.join("changes.md"), "# Changes\n\n- other\n- first\n")?;
+    fx.git.commit_all(&repo, "other entry", &author())?;
+    assert_eq!(
+        fx.git.merge_tree(&feature, "HEAD", "main")?,
+        None,
+        "without the attribute the logs conflict"
+    );
+
+    let info = repo.join(".git/info/attributes");
+    fs::write(&info, "*.png binary\n")?;
+    let lines = vec!["/changes.md merge=union".to_owned()];
+    assert!(fx.git.set_managed_attributes(&feature, &lines)?);
+    assert!(!fx.git.set_managed_attributes(&repo, &lines)?, "unchanged");
+    let text = fs::read_to_string(&info)?;
+    assert!(text.starts_with("*.png binary\n"), "{text}");
+    assert!(text.contains("/changes.md merge=union"), "{text}");
+
+    assert!(fx.git.merge_tree(&feature, "HEAD", "main")?.is_some());
+    let merged = fx.git.merge_into(&feature, "main")?;
+    assert!(matches!(merged, MergeInto::Merged(_)), "{merged:?}");
+    let log = fs::read_to_string(feature.join("changes.md"))?;
+    assert!(
+        log.contains("- feature") && log.contains("- other"),
+        "{log}"
+    );
+
+    assert!(fx.git.set_managed_attributes(&repo, &[])?, "removed");
+    assert_eq!(fs::read_to_string(&info)?, "*.png binary\n");
+    assert!(
+        fx.git
+            .set_managed_attributes(&repo, &["a\nb".to_owned()])
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn only_clean_merges_of_the_integration_branch_keep_a_review() -> TestResult {
+    // SPEC-083 REV-001: a head that is the reviewed head plus Git's own merges of commits the
+    // integration branch contains keeps the review; anything else needs a new one.
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    let start = fx.git.rev_parse(&repo, "main")?;
+    let feature = fx.path("feature");
+    fx.git.worktree_add(&repo, &feature, "feat/x", "main")?;
+    fx.git
+        .set_local_identity(&feature, "Agent", "agent@example.invalid")?;
+    fs::write(feature.join("feature.txt"), "feature\n")?;
+    fx.git.commit_all(&feature, "feature", &author())?;
+    let reviewed = fx.git.rev_parse(&feature, "HEAD")?;
+    let covers = |head: &str| {
+        fx.git
+            .only_clean_merges_since(&feature, &reviewed[..9], head, "main", 8)
+    };
+    assert!(covers(&reviewed)?, "the reviewed head itself");
+
+    // Two clean merges of main in a row.
+    for round in 0..2 {
+        fs::write(repo.join(format!("main{round}.txt")), "main\n")?;
+        fx.git.commit_all(&repo, "main moves", &author())?;
+        assert!(matches!(
+            fx.git.merge_into(&feature, "main")?,
+            MergeInto::Merged(_)
+        ));
+    }
+    let merged = fx.git.rev_parse(&feature, "HEAD")?;
+    assert!(covers(&merged)?);
+    assert!(
+        !fx.git
+            .only_clean_merges_since(&feature, &reviewed, &merged, "main", 1)?,
+        "limit"
+    );
+    assert!(
+        !fx.git
+            .only_clean_merges_since(&feature, "0123456789", &merged, "main", 8)?
+    );
+
+    // New work after the merge.
+    fs::write(feature.join("feature.txt"), "feature v2\n")?;
+    fx.git.commit_all(&feature, "more", &author())?;
+    let worked = fx.git.rev_parse(&feature, "HEAD")?;
+    assert!(!covers(&worked)?);
+    fx.raw(&feature, &["reset", "--quiet", "--hard", &merged])?;
+
+    // A change slipped into a merge commit.
+    fs::write(repo.join("main2.txt"), "main\n")?;
+    fx.git.commit_all(&repo, "main moves", &author())?;
+    fx.raw(
+        &feature,
+        &["merge", "--quiet", "--no-ff", "--no-commit", "main"],
+    )?;
+    fs::write(feature.join("feature.txt"), "slipped in\n")?;
+    fx.raw(&feature, &["commit", "--quiet", "-am", "merge main"])?;
+    let evil = fx.git.rev_parse(&feature, "HEAD")?;
+    assert!(!covers(&evil)?);
+    fx.raw(&feature, &["reset", "--quiet", "--hard", &merged])?;
+
+    // A conflict resolved by hand.
+    fs::write(feature.join("a.txt"), "feature\n")?;
+    fx.git.commit_all(&feature, "feature a", &author())?;
+    let reviewed_a = fx.git.rev_parse(&feature, "HEAD")?;
+    fs::write(repo.join("a.txt"), "main\n")?;
+    fx.git.commit_all(&repo, "main a", &author())?;
+    assert!(fx.raw(&feature, &["merge", "--quiet", "main"]).is_err());
+    fs::write(feature.join("a.txt"), "both\n")?;
+    fx.raw(&feature, &["commit", "--quiet", "-am", "resolved"])?;
+    let resolved = fx.git.rev_parse(&feature, "HEAD")?;
+    assert!(
+        !fx.git
+            .only_clean_merges_since(&feature, &reviewed_a, &resolved, "main", 8)?
+    );
+
+    // A merge of work the integration branch does not contain.
+    fx.raw(&feature, &["reset", "--quiet", "--hard", &reviewed_a])?;
+    let other = fx.path("other");
+    fx.git.worktree_add(&repo, &other, "feat/other", &start)?;
+    fs::write(other.join("other.txt"), "other\n")?;
+    fx.git.commit_all(&other, "other work", &author())?;
+    fx.raw(&feature, &["merge", "--quiet", "--no-edit", "feat/other"])?;
+    let foreign = fx.git.rev_parse(&feature, "HEAD")?;
+    assert!(
+        !fx.git
+            .only_clean_merges_since(&feature, &reviewed_a, &foreign, "main", 8)?
+    );
     Ok(())
 }

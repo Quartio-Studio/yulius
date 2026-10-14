@@ -7,6 +7,7 @@ use yulius::wiring::harness::HarnessAdapter;
 use yulius_app::error::AppResult;
 use yulius_app::ports::harness::{
     CockpitLaunch, HarnessLaunch, HarnessPlan, HarnessPort, OutputMasker, TranscriptWatch,
+    WatchFrom,
 };
 use yulius_app::ports::session::LaunchPlan;
 use yulius_domain::harness::Harness;
@@ -52,14 +53,20 @@ pub struct FakeAgentOptions {
     pub goal_continue_dies: bool,
     /// Delay the goal turn by this many milliseconds (`--goal-delay-ms`).
     pub goal_delay_ms: Option<u64>,
+    /// The idle session compacts itself this many milliseconds after the goal turn, like Claude
+    /// Code before its prompt cache expires (`--idle-compact-ms`).
+    pub idle_compact_ms: Option<u64>,
     /// Lose the first typed lines like a TUI that drops a submit (`--drop-lines`).
     pub drop_lines: Option<u32>,
     /// Handle Ctrl+C and SIGTERM like Claude Code (`--interrupts`).
     pub interrupts: bool,
     /// Run the status line command with the rate limits in this file (`--rate-limits-file`).
     pub rate_limits_file: Option<PathBuf>,
-    /// Run Claude Code's SessionStart hook at start, like the real CLI (`--session-start`).
-    pub session_start: bool,
+    /// With `hooks`, leave out Claude Code's SessionStart hook at start, like a CLI too old to
+    /// have it. Every supported Claude Code runs it before its prompt box reads, so the fake
+    /// does too by default (`--session-start`); without it a goal is typed only after the
+    /// hookless fallback, which made every goal test wait 45 s (SPEC-082 TST-001).
+    pub no_session_start: bool,
     /// Run a turn of this many milliseconds first when the launch has a first message
     /// (`--opening-turn-ms`).
     pub opening_turn_ms: Option<u64>,
@@ -187,6 +194,9 @@ impl HarnessPort for FakeAgentHarness {
         if let Some(ms) = self.options.goal_delay_ms {
             argv.extend(["--goal-delay-ms".into(), ms.to_string()]);
         }
+        if let Some(ms) = self.options.idle_compact_ms {
+            argv.extend(["--idle-compact-ms".into(), ms.to_string()]);
+        }
         if let Some(n) = self.options.drop_lines {
             argv.extend(["--drop-lines".into(), n.to_string()]);
         }
@@ -199,7 +209,7 @@ impl HarnessPort for FakeAgentHarness {
                 file.to_string_lossy().into_owned(),
             ]);
         }
-        if self.options.session_start {
+        if self.options.hooks && !self.options.no_session_start {
             argv.push("--session-start".into());
         }
         // A continued resume (CLAUDE_CODE_RESUME_INTERRUPTED_TURN) opens with the turn Claude
@@ -265,9 +275,9 @@ impl HarnessPort for FakeAgentHarness {
         &self,
         harness: Harness,
         path: &Path,
-        from_start: bool,
+        from: WatchFrom,
     ) -> AppResult<Box<dyn TranscriptWatch>> {
-        self.inner.watch(harness, path, from_start)
+        self.inner.watch(harness, path, from)
     }
     fn login_argv(&self, harness: Harness) -> Vec<String> {
         self.inner.login_argv(harness)

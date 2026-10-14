@@ -51,8 +51,17 @@ pub struct TaskSummary {
     pub control_request: Option<ControlRequestView>,
     /// Creation time.
     pub created_at: String,
-    /// Last change.
+    /// Last change of anything (title, owner, archive, status …).
     pub updated_at: String,
+    /// Since when the task is in its current state: the last change of its status or activity
+    /// (SPEC-087 TIM-001). Absent from an older server.
+    #[serde(default)]
+    pub state_since: Option<String>,
+    /// The start of its current working stretch, in which it has not waited for a person: kept
+    /// through its idle turns while background work wakes it, and through subscription switches
+    /// (TIM-002). Null while it waits for a person, is queued or has ended.
+    #[serde(default)]
+    pub working_since: Option<String>,
     /// Step progress.
     pub steps: StepProgress,
     /// Archived flag.
@@ -75,6 +84,11 @@ pub struct TaskSummary {
     /// ends shows its age). Null when none run or not known.
     #[serde(default)]
     pub background_shells_since: Option<String>,
+    /// While the agent is idle: it waits in `yulius wait` for its checks, its delivery or an
+    /// armed merge (not counted in `background_shells`, SPEC-050 DSK-102). It goes on by itself
+    /// when Yulius has news, so the task is not the person's turn (SPEC-085 STT-002).
+    #[serde(default)]
+    pub yulius_wait: bool,
     /// The task this one runs after (SPEC-001 TSK-012): while `chained` it waits for it; the
     /// link stays after the task started.
     #[serde(default)]

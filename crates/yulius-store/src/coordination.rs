@@ -1,14 +1,16 @@
-//! Steps, messages and scope claims.
+//! Steps, messages, scope claims and record numbers.
 
 use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};
 use yulius_app::error::{AppError, AppResult};
-use yulius_app::model::{InboxEntry, MessageRecord, ScopeClaimRecord, StepRecord, StepTiming};
+use yulius_app::model::{
+    InboxEntry, MessageRecord, RecordReservation, ScopeClaimRecord, StepRecord, StepTiming,
+};
 use yulius_app::ports::store::CoordinationStore;
 use yulius_domain::ids::{MessageId, SandboxId, StepId, TaskId, UserId};
 use yulius_domain::time::Timestamp;
 
-use crate::{SqliteStore, bad_column, db, to_u32};
+use crate::{SqliteStore, bad_column, db, to_i64, to_u32, to_u64};
 
 fn step_from_row(row: &Row<'_>) -> rusqlite::Result<StepRecord> {
     let id: String = row.get("id")?;
@@ -346,6 +348,49 @@ impl CoordinationStore for SqliteStore {
                 )
                 .map_err(db)?;
             Ok(u32::try_from(n).unwrap_or(u32::MAX))
+        })
+        .await
+    }
+
+    async fn reserve_record_number(&self, reservation: &RecordReservation) -> AppResult<bool> {
+        let r = reservation.clone();
+        self.call(move |c| {
+            let inserted = c
+                .execute(
+                    "INSERT INTO record_numbers (sandbox_id, dir, prefix, number, task_id, reserved_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT (sandbox_id, dir, prefix, number) DO NOTHING",
+                    params![r.sandbox_id.as_str(), r.dir, r.prefix, to_i64(r.number), r.task_id.as_str(), r.reserved_at.0],
+                )
+                .map_err(db)?;
+            Ok(inserted == 1)
+        })
+        .await
+    }
+
+    async fn record_reservations(
+        &self,
+        sandbox: &SandboxId,
+        dir: &str,
+    ) -> AppResult<Vec<RecordReservation>> {
+        let (s, d) = (sandbox.as_str().to_owned(), dir.to_owned());
+        self.call(move |c| {
+            let mut stmt = c
+                .prepare("SELECT sandbox_id, dir, prefix, number, task_id, reserved_at FROM record_numbers WHERE sandbox_id = ?1 AND dir = ?2 ORDER BY reserved_at, number")
+                .map_err(db)?;
+            let rows = stmt
+                .query_map(params![s, d], |r| {
+                    let sb: String = r.get(0)?;
+                    let t: String = r.get(4)?;
+                    Ok(RecordReservation {
+                        sandbox_id: SandboxId::parse(&sb).map_err(|_| bad_column("sandbox id", &sb))?,
+                        dir: r.get(1)?,
+                        prefix: r.get(2)?,
+                        number: to_u64(r.get(3)?),
+                        task_id: TaskId::parse(&t).map_err(|_| bad_column("task id", &t))?,
+                        reserved_at: Timestamp(r.get(5)?),
+                    })
+                })
+                .map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)
         })
         .await
     }

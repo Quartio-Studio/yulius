@@ -16,7 +16,7 @@ use yulius_contracts::api::analytics::{
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, SandboxId, TaskId};
 use yulius_domain::permission::Action;
-use yulius_domain::task::TaskStatus;
+use yulius_domain::task::{Activity, TaskStatus};
 use yulius_domain::time::Timestamp;
 
 use crate::auth::{AuthContext, civil_from_days, rfc3339};
@@ -60,12 +60,25 @@ pub struct AnalyticsTask {
     pub harness: Harness,
     /// Status.
     pub status: TaskStatus,
+    /// Activity while running.
+    pub activity: Option<Activity>,
     /// Origin.
     pub origin: TaskOrigin,
     /// Created.
     pub created_at: Timestamp,
     /// Closed.
     pub closed_at: Option<Timestamp>,
+}
+
+/// The key a task counts under in `by_status`: its status, or `done` for a running task whose
+/// goal is achieved (TSK-014), which is finished although its session stays open.
+#[must_use]
+pub fn outcome_key(status: TaskStatus, activity: Option<Activity>) -> &'static str {
+    if status == TaskStatus::Running && activity == Some(Activity::Done) {
+        "done"
+    } else {
+        status.as_str()
+    }
 }
 
 /// One attempt with its metrics.
@@ -285,7 +298,7 @@ pub fn summarize(
         if t.status == TaskStatus::Closed {
             tasks.closed = tasks.closed.saturating_add(1);
         }
-        bump(&mut tasks.by_status, t.status.as_str());
+        bump(&mut tasks.by_status, outcome_key(t.status, t.activity));
         bump(&mut tasks.by_harness, t.harness.as_str());
         bump(&mut tasks.by_origin, t.origin.as_str());
         *per_day.entry(day_of(t.created_at)).or_default() += 1;
@@ -304,6 +317,7 @@ pub fn summarize(
     let mut by_harness: BTreeMap<String, Acc> = BTreeMap::new();
     let mut by_account: BTreeMap<Option<String>, (Option<String>, Acc)> = BTreeMap::new();
     let mut wall_by_task: HashMap<TaskId, u64> = HashMap::new();
+    let mut active_by_task: HashMap<TaskId, u64> = HashMap::new();
     let mut total_wall: u64 = 0;
     let mut total_active: Option<u64> = None;
     for run in &data.runs {
@@ -326,13 +340,17 @@ pub fn summarize(
         total_wall = total_wall.saturating_add(wall);
         let task_wall = wall_by_task.entry(run.task_id.clone()).or_default();
         *task_wall = task_wall.saturating_add(wall);
-        add_known(
-            &mut total_active,
-            run.metrics.as_ref().and_then(|m| m.active_ms),
-        );
+        let active = run.metrics.as_ref().and_then(|m| m.active_ms);
+        add_known(&mut total_active, active);
+        if let Some(active) = active {
+            let task_active = active_by_task.entry(run.task_id.clone()).or_default();
+            *task_active = task_active.saturating_add(active);
+        }
     }
     let mut walls: Vec<u64> = wall_by_task.into_values().collect();
     let (median, p90) = median_p90(&mut walls);
+    let mut actives: Vec<u64> = active_by_task.into_values().collect();
+    let (median_active, p90_active) = median_p90(&mut actives);
     let (switches, _) = switch_counts(data);
     let mut feedback = FeedbackCounts::default();
     for f in &data.feedback {
@@ -357,6 +375,8 @@ pub fn summarize(
             p90,
             total_wall,
             total_active,
+            median_active,
+            p90_active,
         },
         tokens: all.totals(),
         tokens_by_model: by_model
@@ -697,6 +717,61 @@ mod tests {
         assert_eq!(s.tokens.input, None, "never zero-filled");
         assert_eq!(s.duration_ms.total_wall, 3_000);
         assert_eq!(s.duration_ms.total_active, None);
+        assert_eq!(s.duration_ms.median_active, None, "unknown is not zero");
+        Ok(())
+    }
+
+    /// SPEC-087 MET-005: the work per task is the median of the tasks' active time (their runs'
+    /// sum), apart from how long their sessions stayed open; a task whose runs reported none is
+    /// not counted as zero. A running task whose goal is achieved counts as done.
+    #[test]
+    fn work_per_task_is_the_median_of_the_tasks_active_time()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let run = |task: &str,
+                   open_ms: i64,
+                   active: Option<u64>|
+         -> Result<AnalyticsRun, Box<dyn std::error::Error>> {
+            Ok(AnalyticsRun {
+                task_id: id(task)?,
+                seq: 1,
+                harness: Harness::ClaudeCode,
+                account_id: None,
+                account_label: None,
+                started_at: Timestamp(0),
+                ended_at: Some(Timestamp(open_ms)),
+                metrics: Some(MetricsRecord {
+                    active_ms: active,
+                    ..MetricsRecord::default()
+                }),
+            })
+        };
+        let data = AnalyticsData {
+            runs: vec![
+                run("t1", 8 * 3_600_000, Some(600_000))?,
+                run("t1", 3_600_000, Some(300_000))?,
+                run("t2", 3_600_000, Some(1_200_000))?,
+                run("t3", 3_600_000, None)?,
+            ],
+            ..AnalyticsData::default()
+        };
+        let s = summarize(&data, AnalyticsRange::default(), None, Timestamp(0));
+        assert_eq!(s.duration_ms.median_active, Some(1_050_000));
+        assert_eq!(s.duration_ms.p90_active, Some(1_200_000));
+        assert_eq!(s.duration_ms.total_active, Some(2_100_000));
+        assert_eq!(
+            s.duration_ms.median,
+            Some(3_600_000),
+            "sessions open, idle or not"
+        );
+        assert_eq!(
+            outcome_key(TaskStatus::Running, Some(Activity::Done)),
+            "done"
+        );
+        assert_eq!(
+            outcome_key(TaskStatus::Running, Some(Activity::Waiting)),
+            "running"
+        );
+        assert_eq!(outcome_key(TaskStatus::Closed, None), "closed");
         Ok(())
     }
 }

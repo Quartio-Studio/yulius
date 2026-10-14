@@ -34,7 +34,7 @@ use crate::model::{
     AccountRecord, AccountStatus, AttemptRecord, LaunchKind, MetricsRecord, PauseKind,
     ProviderSessionRecord, SandboxRecord, Secret, SwitchDecisionRecord, TaskMode, TaskRecord,
 };
-use crate::ports::harness::{HarnessLaunch, Observation, SessionMode, UsageSnapshot};
+use crate::ports::harness::{HarnessLaunch, Observation, SessionMode, UsageSnapshot, WatchFrom};
 use crate::ports::session::{Containment, RunEvent, RunExit, RunInspection, RunWriter};
 use crate::ports::store::{AttemptUpdate, TaskFieldUpdate};
 use crate::usage_json;
@@ -98,10 +98,9 @@ pub struct TaskRuntime {
     /// (SPEC-072 LRS-002). A person's switch then resumes past the limit even without a `limit`
     /// pause (an automatic switch after the limit was refused).
     pub(crate) at_limit: AtomicBool,
-    /// When the current turn started (ms, 0 = no turn in progress), for active agent time.
+    /// When the current turn started (ms, 0 = no turn in progress). Active agent time comes
+    /// from the transcript (SPEC-087 MET-001), not from this.
     turn_started_ms: AtomicI64,
-    /// Active agent time of the current attempt: its finished turns (ms).
-    active_ms: AtomicI64,
     /// The head Yulius last tried to open a pull request for by itself (#35), so a failed try is
     /// not repeated every turn.
     pub(crate) auto_pr_head: Mutex<Option<String>>,
@@ -133,6 +132,9 @@ pub struct TaskRuntime {
     pub(crate) last_stop_ms: AtomicI64,
     /// Background shells the agent left running, as last probed (-1 = not known).
     pub(crate) background_shells: AtomicI64,
+    /// Background shells of the idle agent that only run `yulius wait`, as last probed (-1 = not
+    /// known): it waits for Yulius and goes on by itself (SPEC-085 STT-002).
+    pub(crate) background_waits: AtomicI64,
     /// Since when (ms) the idle agent's background shells have been running (0 = none).
     pub(crate) shells_since_ms: AtomicI64,
     /// Background agents Claude Code still waited for when the last turn ended (its
@@ -226,7 +228,6 @@ impl TaskRuntime {
             limit_resets_at: AtomicI64::new(0),
             at_limit: AtomicBool::new(false),
             turn_started_ms: AtomicI64::new(0),
-            active_ms: AtomicI64::new(0),
             auto_pr_head: Mutex::new(None),
             typed_at_ms: AtomicI64::new(0),
             typed_by: Mutex::new(None),
@@ -238,6 +239,7 @@ impl TaskRuntime {
             push_problem: Mutex::new(None),
             last_stop_ms: AtomicI64::new(0),
             background_shells: AtomicI64::new(-1),
+            background_waits: AtomicI64::new(-1),
             shells_since_ms: AtomicI64::new(0),
             background_agents: AtomicU32::new(0),
             notice_attention_ms: AtomicI64::new(0),
@@ -274,38 +276,27 @@ impl TaskRuntime {
         self.watcher_alive.load(Ordering::SeqCst)
     }
 
+    /// How many rounds the transcript watcher has begun: once two more began, the lines written
+    /// before were read and applied (what tests and the Stop hook wait on, SPEC-079 BGW-004).
+    pub fn transcript_rounds(&self) -> u64 {
+        self.watch_polls.load(Ordering::SeqCst)
+    }
+
     /// Whether a turn is known to be in progress (one started and none ended since).
     pub(crate) fn turn_in_progress(&self) -> bool {
         self.turn_started_ms.load(Ordering::SeqCst) > 0
     }
 
-    /// A turn started now unless one is already in progress (active agent time).
+    /// A turn started now unless one is already in progress.
     pub(crate) fn start_turn(&self, now: Timestamp) {
         let _ = self
             .turn_started_ms
             .compare_exchange(0, now.0, Ordering::SeqCst, Ordering::SeqCst);
     }
 
-    /// Ends the turn in progress, if any, adding its time to the attempt's active time.
-    pub(crate) fn end_turn(&self, now: Timestamp) {
-        let started = self.turn_started_ms.swap(0, Ordering::SeqCst);
-        if started > 0 {
-            self.active_ms
-                .fetch_add(now.0.saturating_sub(started).max(0), Ordering::SeqCst);
-        }
-    }
-
-    /// Active agent time so far: finished turns plus the one in progress.
-    fn active_ms_at(&self, now: Timestamp) -> i64 {
-        let started = self.turn_started_ms.load(Ordering::SeqCst);
-        let running = if started > 0 {
-            now.0.saturating_sub(started).max(0)
-        } else {
-            0
-        };
-        self.active_ms
-            .load(Ordering::SeqCst)
-            .saturating_add(running)
+    /// Ends the turn in progress, if any.
+    pub(crate) fn end_turn(&self, _now: Timestamp) {
+        self.turn_started_ms.store(0, Ordering::SeqCst);
     }
 }
 
@@ -450,8 +441,9 @@ pub(crate) fn git_credential_env(exe: &Path) -> Vec<(String, String)> {
 /// Quiet time after the TUI's first output before the goal is typed.
 const GOAL_QUIET: Duration = Duration::from_millis(1500);
 /// Upper bound for waiting until the TUI is ready for the goal (its SessionStart hook and quiet
-/// output); a busy host starts Claude Code slowly.
-const GOAL_READY_TIMEOUT: Duration = Duration::from_secs(90);
+/// output); a busy host starts Claude Code slowly. A TUI without hooks gets half of it. The
+/// default of [`crate::context::AppConfig::goal_ready_ms`].
+pub const GOAL_READY_TIMEOUT: Duration = Duration::from_secs(90);
 /// Upper bound for waiting until the turn on a goal session's first message ended; after it the
 /// goal is typed anyway (Claude Code queues it behind a running turn).
 const GOAL_OPENING_TIMEOUT: Duration = Duration::from_secs(300);
@@ -487,14 +479,6 @@ fn opening_pastes(images: Vec<String>, text: &str) -> Vec<(Vec<u8>, Option<Strin
         pastes.push((paste(&format!("{text}\n")), None));
     }
     pastes
-}
-
-/// Rust build jobs of one agent: a third of the host's CPUs, at least 2.
-fn agent_build_jobs() -> usize {
-    std::thread::available_parallelism()
-        .map_or(2, std::num::NonZeroUsize::get)
-        .div_ceil(3)
-        .max(2)
 }
 
 /// Branch name for a task: `feat/<number>-<slug>`.
@@ -914,6 +898,8 @@ impl App {
             self.prepare_imported_resume(&task.id).await?;
         }
         let worktree = self.ensure_worktree(&sandbox, task).await?;
+        // The logs every task appends to merge by union in this repository (SPEC-083 MRG-001).
+        self.keep_union_merges(&worktree).await;
         // The spec path is given out once, so parallel tasks never pick the same number.
         if let Ok(Some(fresh)) = store.task(&task.id).await {
             self.allocate_spec_path(&fresh, &worktree).await;
@@ -1047,7 +1033,7 @@ impl App {
         launch
             .secret_env
             .push(("YULIUS_TASK_TOKEN".into(), task_token.clone()));
-        launch.env.extend(self.base_env(&sandbox, &home));
+        launch.env.extend(self.base_env(&sandbox, &home, &worktree));
         // Agent secrets: placeholders, the Bash redaction wrapper and the egress proxy
         // (SPEC-002 ADR-20). A vault that cannot be read fails the start, never a run without
         // redaction.
@@ -1352,9 +1338,10 @@ impl App {
     }
 
     /// Waits until the attempt's TUI reads input: Claude Code's SessionStart hook arrived and
-    /// [`GOAL_QUIET`] passed without new output (or at most [`GOAL_READY_TIMEOUT`] after
-    /// `started`); with `after_opening`, also until the turn on a first message ended (its Stop
-    /// hook, at most [`GOAL_OPENING_TIMEOUT`]). `false` once the attempt is no longer live.
+    /// [`GOAL_QUIET`] passed without new output (or at most the configured
+    /// [`GOAL_READY_TIMEOUT`] after `started`, half of it without a SessionStart hook); with
+    /// `after_opening`, also until the turn on a first message ended (its Stop hook, at most
+    /// [`GOAL_OPENING_TIMEOUT`]). `false` once the attempt is no longer live.
     async fn wait_input_ready(
         &self,
         task_id: &TaskId,
@@ -1363,6 +1350,7 @@ impl App {
         after_opening: bool,
     ) -> bool {
         let runtime = self.runtime(task_id);
+        let ready_timeout = Duration::from_millis(self.config.goal_ready_ms);
         let mut last = runtime.hub.output_seq();
         let mut quiet_since = tokio::time::Instant::now();
         loop {
@@ -1377,7 +1365,7 @@ impl App {
             }
             // Without hooks (an old CLI) the first output is the only sign of life.
             let hooked = runtime.session_started.load(Ordering::SeqCst)
-                || started.elapsed() >= GOAL_READY_TIMEOUT / 2;
+                || started.elapsed() >= ready_timeout / 2;
             // A turn on the first message (the attached files) runs: quiet output is no sign
             // its end came, its Stop hook is (SPEC-025).
             let opening = after_opening && runtime.opening_turn.load(Ordering::SeqCst);
@@ -1385,7 +1373,7 @@ impl App {
             let limit = if opening {
                 GOAL_OPENING_TIMEOUT
             } else {
-                GOAL_READY_TIMEOUT
+                ready_timeout
             };
             if ready || started.elapsed() >= limit {
                 return true;
@@ -1592,7 +1580,12 @@ impl App {
             .map_err(AppError::internal)
     }
 
-    fn base_env(&self, sandbox: &SandboxRecord, home: &Path) -> Vec<(String, String)> {
+    fn base_env(
+        &self,
+        sandbox: &SandboxRecord,
+        home: &Path,
+        worktree: &Path,
+    ) -> Vec<(String, String)> {
         let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into());
         let home_text = home.to_string_lossy().into_owned();
         let mut env = vec![
@@ -1609,11 +1602,12 @@ impl App {
             ("YULIUS_PORT_COUNT".into(), sandbox.port_count.to_string()),
             ("PORT".into(), sandbox.port_base.to_string()),
             ("YULIUS_SANDBOX".into(), sandbox.slug.clone()),
-            // Parallel tasks share the sandbox's memory: each Rust build uses a third of the
-            // CPUs (at least 2), so several tasks linking at once do not run it out (OOM kills
-            // of 2026-10-12).
-            ("CARGO_BUILD_JOBS".into(), agent_build_jobs().to_string()),
         ];
+        // Parallel tasks share the sandbox: each plans for its budget (a third of the sandbox by
+        // default), in YULIUS_CPUS and the repository's own variables (SPEC-082 RES-005). It
+        // replaces the CARGO_BUILD_JOBS Yulius set for every repository (OOM kills of
+        // 2026-10-12): a Rust repository maps it in its yulius.toml.
+        env.extend(self.agent_resource_env(worktree));
         env.extend(git_credential_env(&self.config.yulius_exe));
         env
     }
@@ -2012,10 +2006,11 @@ impl App {
     }
 
     /// Stores a run's metrics: while it goes (live, #31) and once more when it ends. The store
-    /// upserts by attempt, so the last save wins and nothing is counted twice.
+    /// upserts by attempt, so the last save wins and nothing is counted twice. Every figure comes
+    /// from the run's transcript, which a restart reads again, so a save after a restart never
+    /// replaces them with less (SPEC-087 MET-002).
     async fn save_metrics(&self, task_id: &TaskId, attempt_id: &AttemptId, runtime: &TaskRuntime) {
         let snapshot = runtime.usage.lock().map(|u| u.clone()).unwrap_or_default();
-        let active = runtime.active_ms_at(self.now());
         let metrics = MetricsRecord {
             model: snapshot.model,
             input_tokens: snapshot.tokens.input,
@@ -2023,7 +2018,7 @@ impl App {
             cache_read: snapshot.tokens.cache_read,
             cache_write: snapshot.tokens.cache_write,
             turns: u32::try_from(snapshot.turns).ok().filter(|t| *t > 0),
-            active_ms: u64::try_from(active).ok().filter(|ms| *ms > 0),
+            active_ms: snapshot.active_ms.filter(|ms| *ms > 0),
         };
         let _ = self
             .deps
@@ -2921,11 +2916,11 @@ impl App {
             *u = UsageSnapshot::default();
         }
         runtime.turn_started_ms.store(0, Ordering::SeqCst);
-        runtime.active_ms.store(0, Ordering::SeqCst);
         // A new attempt (or the same one after a restart) learns the goal from its transcript.
         runtime.goal_achieved.store(false, Ordering::SeqCst);
         runtime.goal_submitted.store(false, Ordering::SeqCst);
         runtime.background_shells.store(-1, Ordering::SeqCst);
+        runtime.background_waits.store(-1, Ordering::SeqCst);
         runtime.background_agents.store(0, Ordering::SeqCst);
         runtime.notice_attention_ms.store(0, Ordering::SeqCst);
         runtime.turn_record_ms.store(0, Ordering::SeqCst);
@@ -3029,15 +3024,15 @@ impl App {
                     self.transcript_path(&sandbox, &worktree, attempt.harness, id, None)
                 && path.exists()
             {
-                watch = self
-                    .deps
-                    .harness
-                    .watch(
-                        attempt.harness,
-                        &path,
-                        attempt.launch_kind == LaunchKind::New,
-                    )
-                    .ok();
+                // A resumed session's transcript holds its earlier runs' lines: the run reads its
+                // own, from its start, whether it is watched from its launch or reattached after a
+                // restart (SPEC-087 MET-002). Reading from the end when the watch opened lost the
+                // lines written before it, and after a restart all of the run's figures.
+                let from = match attempt.launch_kind {
+                    LaunchKind::New => WatchFrom::Start,
+                    LaunchKind::Resume => WatchFrom::Since(attempt.started_at),
+                };
+                watch = self.deps.harness.watch(attempt.harness, &path, from).ok();
                 catching_up = replay && watch.is_some();
                 replay &= watch.is_none();
                 facts = TranscriptFacts::default();
@@ -3099,10 +3094,10 @@ impl App {
                 }
             }
             // Live metrics (#31): the dashboard counts a run while it goes, saved after each turn
-            // and at most every 30 s while something changes.
+            // and at most every 30 s while something changes (a turn in progress grows its
+            // active time with each line).
             let now = self.now();
-            let working = runtime.turn_started_ms.load(Ordering::SeqCst) > 0;
-            if (saved.as_ref() != Some(&usage) || working)
+            if saved.as_ref() != Some(&usage)
                 && (turn_ended || now.millis_since(saved_at) >= LIVE_METRICS_MS)
             {
                 self.save_metrics(&task_id, &attempt.id, &runtime).await;

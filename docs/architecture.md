@@ -147,6 +147,18 @@ stateDiagram-v2
     GaveUp --> Clear: a successful reply
 ```
 
+## Parallel tasks at merge
+
+Tasks working at once must not collide where their parallel work meets
+([SPEC-083](../.ai/specs/SPEC-083-merge-conflicts-with-many-agents.md),
+[decision 0066](decisions/0066-parallel-tasks-stop-colliding-at-merge.md)). Numbered files
+(decision records, specs, migrations) get their number from Yulius (`record_number`): past the
+integration branch, every live task's checkout and every reservation in `record_numbers`. The logs
+every task appends to (the changes log, the decision index) merge by union in every repository,
+from Yulius's block in the clone's `info/attributes`; Yulius merges the integration branch
+locally before GitHub merges (SPEC-050 DLV-203), so GitHub never sees those conflicts. A review
+carries over Git's own merges of the integration branch, checked with `git merge-tree`.
+
 ## Agent feedback
 
 Yulius has no messages for now ([SPEC-028](../.ai/specs/SPEC-028-delete-message-mechanism-for-now-until-w.md),

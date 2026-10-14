@@ -13,9 +13,9 @@ use crate::error::AppResult;
 use crate::model::{
     AccountRecord, AccountStatus, ApiTokenRecord, AttemptRecord, CachedAccess, ControlRequest,
     DeviceGrantBounds, DeviceGrantInsert, DeviceGrantRecord, FeedbackRecord, GitHubTokenRecord,
-    InboxEntry, InstanceRecord, MessageRecord, MetricsRecord, ProviderSessionRecord, SandboxRecord,
-    ScopeClaimRecord, Sealed, StepRecord, SwitchDecisionRecord, TaskRecord, UserRecord,
-    WebSessionRecord,
+    InboxEntry, InstanceRecord, MessageRecord, MetricsRecord, ProviderSessionRecord,
+    RecordReservation, SandboxRecord, ScopeClaimRecord, Sealed, StepRecord, SwitchDecisionRecord,
+    TaskRecord, TaskTimes, UserRecord, WebSessionRecord,
 };
 
 /// Instance singleton and setup.
@@ -263,8 +263,9 @@ pub trait TaskStore: Send + Sync {
     async fn tasks(&self, sandbox: &SandboxId, archived: bool) -> AppResult<Vec<TaskRecord>>;
     /// Tasks in any of the given statuses (all sandboxes).
     async fn tasks_with_status(&self, statuses: &[TaskStatus]) -> AppResult<Vec<TaskRecord>>;
-    /// CAS status change; `expected = None` means any. Sets `updated_at`, and `closed_at`/
-    /// `queued_at` as appropriate.
+    /// CAS status change; `expected = None` means any. Sets `updated_at`, `closed_at`/
+    /// `queued_at` as appropriate, and the state's time when the status or activity changes
+    /// (SPEC-087 TIM-001).
     async fn transition_task(
         &self,
         id: &TaskId,
@@ -273,13 +274,18 @@ pub trait TaskStore: Send + Sync {
         activity: Option<Activity>,
         at: Timestamp,
     ) -> AppResult<bool>;
-    /// Sets activity while running.
+    /// Sets activity while running; the state's time moves only when it changes (SPEC-087).
     async fn set_activity(
         &self,
         id: &TaskId,
         activity: Option<Activity>,
         at: Timestamp,
     ) -> AppResult<()>;
+    /// Since when `task` is in its current state and working (SPEC-087 TIM-001), if it exists.
+    async fn task_times(&self, task: &TaskId) -> AppResult<Option<TaskTimes>>;
+    /// Records the start of `task`'s working stretch, or its end with `None` (SPEC-087
+    /// TIM-002). The task's other times stay.
+    async fn set_working_since(&self, task: &TaskId, since: Option<Timestamp>) -> AppResult<()>;
     /// The request for control of `task` that waits for its owner (SPEC-070), if any.
     async fn control_request(&self, task: &TaskId) -> AppResult<Option<ControlRequest>>;
     /// Records `by`'s request for control of `task` unless another person's request waits (one
@@ -439,7 +445,7 @@ pub trait AccountStore: Send + Sync {
     -> AppResult<Vec<crate::model::AccountTokens>>;
 }
 
-/// Steps, messages and scope claims.
+/// Steps, messages, scope claims and record numbers.
 #[async_trait]
 pub trait CoordinationStore: Send + Sync {
     /// Replaces the step list of a task (records events for status changes).
@@ -493,6 +499,15 @@ pub trait CoordinationStore: Send + Sync {
         pattern: Option<&str>,
         at: Timestamp,
     ) -> AppResult<u32>;
+    /// Reserves a record number (SPEC-083); `false` when that number of that directory and
+    /// prefix is already reserved.
+    async fn reserve_record_number(&self, reservation: &RecordReservation) -> AppResult<bool>;
+    /// The record numbers reserved in a sandbox's directory `dir`, oldest first.
+    async fn record_reservations(
+        &self,
+        sandbox: &SandboxId,
+        dir: &str,
+    ) -> AppResult<Vec<RecordReservation>>;
 }
 
 /// Append-only audit log.

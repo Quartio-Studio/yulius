@@ -9,7 +9,8 @@ use async_trait::async_trait;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::Secret;
 use yulius_app::ports::git::{
-    BranchInfo, CommitInfo, DiffStat, GitPort, MergeIntegration, ReviewChanges, WorktreeInfo,
+    BranchInfo, CommitInfo, DiffStat, GitPort, MergeIntegration, ReviewChanges, TrainBuild,
+    TrainLanding, TrainStep, WorktreeInfo,
 };
 use yulius_contracts::api::git::{ChangedFile, DiffHunk, DiffLine, TaskCommit};
 use yulius_git::{
@@ -392,6 +393,78 @@ impl GitPort for GitAdapter {
             yulius_git::MergeInto::Merged(head) => MergeIntegration::Merged(head),
             yulius_git::MergeInto::Conflict(files) => MergeIntegration::Conflict(files),
         })
+    }
+
+    async fn build_train(
+        &self,
+        repo: &Path,
+        scratch: &Path,
+        owned_root: &Path,
+        base: &str,
+        heads: &[String],
+        landing: TrainLanding,
+    ) -> AppResult<TrainBuild> {
+        let (git, repo, scratch, root, base, heads) = (
+            self.git(),
+            repo.to_path_buf(),
+            scratch.to_path_buf(),
+            owned_root.to_path_buf(),
+            base.to_owned(),
+            heads.to_vec(),
+        );
+        let landing = match landing {
+            TrainLanding::Squash => yulius_git::TrainLanding::Squash,
+            TrainLanding::MergeCommit => yulius_git::TrainLanding::MergeCommit,
+        };
+        let built = blocking(move || {
+            git.build_train(
+                &repo,
+                &scratch,
+                &root,
+                &yulius_git::TrainInput {
+                    base: &base,
+                    heads: &heads,
+                    landing,
+                    author: &Author::new("Yulius merge train", "merge-train@yulius.invalid"),
+                },
+            )
+        })
+        .await?;
+        Ok(TrainBuild {
+            base: built.base,
+            base_tree: built.base_tree,
+            steps: built
+                .steps
+                .into_iter()
+                .map(|step| match step {
+                    yulius_git::TrainStep::Clean { tree } => TrainStep::Clean { tree },
+                    yulius_git::TrainStep::Conflict(files) => TrainStep::Conflict(files),
+                })
+                .collect(),
+            head: built.head,
+        })
+    }
+
+    async fn only_clean_merges_since(
+        &self,
+        worktree: &Path,
+        reviewed: &str,
+        head: &str,
+        integration: &str,
+        limit: usize,
+    ) -> AppResult<bool> {
+        let (git, worktree) = (self.git(), worktree.to_path_buf());
+        let (reviewed, head, integration) =
+            (reviewed.to_owned(), head.to_owned(), integration.to_owned());
+        blocking(move || {
+            git.only_clean_merges_since(&worktree, &reviewed, &head, &integration, limit)
+        })
+        .await
+    }
+
+    async fn set_merge_attributes(&self, repo: &Path, lines: &[String]) -> AppResult<bool> {
+        let (git, repo, lines) = (self.git(), repo.to_path_buf(), lines.to_vec());
+        blocking(move || git.set_managed_attributes(&repo, &lines)).await
     }
 
     async fn import_bundle(

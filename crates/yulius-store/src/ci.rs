@@ -7,6 +7,7 @@ use yulius_app::error::{AppError, AppResult};
 use yulius_app::ports::store_ext::CiStore;
 use yulius_domain::ci::{CiRef, GateSource, RunState};
 use yulius_domain::ids::SandboxId;
+use yulius_domain::resources::Need;
 use yulius_domain::time::Timestamp;
 
 use crate::{SqliteStore, bad_column, db, to_u32};
@@ -14,7 +15,7 @@ use crate::{SqliteStore, bad_column, db, to_u32};
 const RUN_COLS: &str = "id, sandbox_id, reference, sha, source, state, reason, requested_by, \
     status_for, status_note, status_attempts, queued_at, started_at, ended_at";
 const JOB_COLS: &str = "id, run_id, ordinal, name, job_key, command, matrix, state, reason, \
-    exit_code, started_at, ended_at";
+    exit_code, started_at, ended_at, cpus, memory_mb";
 
 fn state(text: &str) -> rusqlite::Result<RunState> {
     RunState::parse(text).ok_or_else(|| bad_column("CI state", text))
@@ -65,6 +66,14 @@ fn job_from_row(row: &Row<'_>, with_output: bool) -> rusqlite::Result<CiJobRecor
         },
         started_at: row.get::<_, Option<i64>>("started_at")?.map(Timestamp),
         ended_at: row.get::<_, Option<i64>>("ended_at")?.map(Timestamp),
+        need: Need {
+            cpus: row
+                .get::<_, Option<i64>>("cpus")?
+                .and_then(|n| u32::try_from(n).ok()),
+            memory_mb: row
+                .get::<_, Option<i64>>("memory_mb")?
+                .and_then(|n| u64::try_from(n).ok()),
+        },
     })
 }
 
@@ -128,7 +137,7 @@ impl CiStore for SqliteStore {
                 tx.execute(
                     &format!(
                         "INSERT INTO ci_jobs ({JOB_COLS}, output) VALUES ({})",
-                        placeholders(1, 13)
+                        placeholders(1, 15)
                     ),
                     params![
                         job.id,
@@ -143,6 +152,8 @@ impl CiStore for SqliteStore {
                         job.exit_code,
                         job.started_at.map(|t| t.0),
                         job.ended_at.map(|t| t.0),
+                        job.need.cpus.map(i64::from),
+                        job.need.memory_mb.and_then(|m| i64::try_from(m).ok()),
                         job.output,
                     ],
                 )
@@ -454,17 +465,23 @@ mod tests {
             output: String::new(),
             started_at: None,
             ended_at: None,
+            need: Need::default(),
         }
     }
 
     #[tokio::test]
     async fn runs_jobs_transitions_and_one_running_run_per_sandbox() -> TestResult {
         let store = SqliteStore::open_in_memory()?;
+        // What a job declares is kept with it (SPEC-082 RES-002).
+        let declared = CiJobRecord {
+            need: Need {
+                cpus: Some(6),
+                memory_mb: Some(16 * 1024),
+            },
+            ..job("j2", "r1", 1)
+        };
         store
-            .insert_ci_run(
-                &run("r1", "a", 1)?,
-                &[job("j1", "r1", 0), job("j2", "r1", 1)],
-            )
+            .insert_ci_run(&run("r1", "a", 1)?, &[job("j1", "r1", 0), declared])
             .await?;
         store
             .insert_ci_run(&run("r2", "b", 2)?, &[job("j3", "r2", 0)])
@@ -506,6 +523,9 @@ mod tests {
         assert_eq!(jobs[0].state, RunState::Passed);
         assert_eq!(jobs[0].output, "ok\n");
         assert_eq!(jobs[0].exit_code, Some(0));
+        assert_eq!(jobs[0].need, Need::default());
+        assert_eq!(jobs[1].need.cpus, Some(6));
+        assert_eq!(jobs[1].need.memory_mb, Some(16 * 1024));
         assert!(store.ci_jobs("r1", false).await?[0].output.is_empty());
         let active = store.active_ci_runs().await?;
         assert_eq!(

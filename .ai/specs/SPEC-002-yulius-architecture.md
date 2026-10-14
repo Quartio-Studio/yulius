@@ -1422,7 +1422,7 @@ Hence the shared, ownership-shifted **base** under a kernel overlay with a per-s
      - **Into the sandbox:** the internal listener's port (MCP, hooks, Git credentials, the secrets proxy of ADR-20; `YULIUS_URL` unchanged), plus operator-configured `YULIUS_SANDBOX_FORWARD` ports.
      - **Out to the host's loopback:** the sandbox's dev-server ports (PRJ-010), bound on the host only while something listens on them inside (the holder polls `/proc/net/tcp*` every second). Connections reach servers bound to `127.0.0.1` or `::1` inside, so previews, the welcome page's port list and the sandbox browser keep working.
 5. **Limits.**
-   - **cgroups.** With `Delegate=yes` and `DelegateSubgroup=server` on the unit, the server keeps its own processes in `server/`, moves processes left from before delegation to `legacy/`, and gives each sandbox `sandboxes/<sid>/` with `memory.max`, `cpu.max` and `pids.max`. The holder, `slirp4netns` and every run of the sandbox are in it. Defaults: half the RAM, all CPUs but two, 8192 tasks. With the `cpu` controller, the group is split by CPU weight ([SPEC-053](SPEC-053-ci-e2e-timeouts-under-agent-load-give-ci.md), [ADR-0039](../../docs/decisions/0039-ci-jobs-get-the-cpu-first.md)): `system/` (holder, `slirp4netns`, weight 100), `agents/` (runs, shells, browsers, weight 100) and `ci/` (CI jobs, weight 400). The limits stay on the sandbox.
+   - **cgroups.** With `Delegate=yes` and `DelegateSubgroup=server` on the unit, the server keeps its own processes in `server/`, moves processes left from before delegation to `legacy/`, and gives each sandbox `sandboxes/<sid>/` with `memory.max`, `cpu.max` and `pids.max`. The holder, `slirp4netns` and every run of the sandbox are in it. Defaults: the RAM but an eighth (MEM-101), no CPU quota ([SPEC-082](SPEC-082-test-timeouts-and-cpu-memory-budgets.md) RES-006), 8192 tasks. With the `cpu` controller, the group is split by CPU weight ([SPEC-053](SPEC-053-ci-e2e-timeouts-under-agent-load-give-ci.md), [ADR-0039](../../docs/decisions/0039-ci-jobs-get-the-cpu-first.md)): `system/` (holder, `slirp4netns`, weight 100), `agents/` (runs, shells, browsers, weight 100) and `ci/` (CI jobs, weight 400). The limits stay on the sandbox.
    - **Disk.** ext4 project quotas need the filesystem unmounted, so disk is a **soft quota**: the sandbox directory plus its upper layer, measured in the background (bounded walk). Over `YULIUS_SANDBOX_DISK_GB` (default 100), new runs are refused with the figures (after a fresh measurement when the reading is older than a minute, and after Yulius pruned the build caches of tasks that do not work, SPEC-008); live runs continue.
 6. **Seccomp** (x86-64; other architectures: none, logged).
    - **Refused with `EPERM`:** kernel modules, kexec, `bpf`, `perf_event_open`, `userfaultfd`, keyrings, `io_uring_*`, `open_by_handle_at`, mount APIs, `pivot_root`, swap, reboot, `syslog`, `acct`, `quotactl`, `iopl`/`ioperm`, x32 calls.
@@ -1558,6 +1558,7 @@ Schema version 1 (tables; columns abbreviated):
 | `messages` | id, sandbox_id, from_task (null = Yulius), to_task (null = to people), kind, subject, body, created_at. History only: nothing writes or shows messages since SPEC-028 |
 | `message_receipts` | message_id, task_id, delivered_at, read_at |
 | `scope_claims` | id, task_id, pattern, note, created_at, released_at |
+| `record_numbers` | sandbox_id, dir, prefix, number (primary key of the four), task_id, reserved_at: numbers given out for numbered files (SPEC-083, schema version 20) |
 | `workflows` | id, sandbox_id (null = instance), name, description, steps (json), instructions, gates (json) |
 | `automations` | id, sandbox_id, name, cron, timezone, prompt, workflow_id, harness, enabled, created_by, created_via (ui/agent), supertask, after_task_id, start_rule (SPEC-078, schema version 19) |
 | `automation_runs` | automation_id, scheduled_for (unique pair), state, task_id, error |
@@ -1894,6 +1895,7 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | `task_create` | Create and start a task as New task does, origin `agent`, for the task's creator or the Cockpit's owner; at most 20 per project and rolling hour (SPEC-037 MGT-001..003) |
 | ~~`message_send`, `messages_inbox`~~ | Withdrawn (SPEC-028, ADR-0023): no message tools. |
 | `scope_claim`, `scope_release`, `scopes_list` | Advisory path-glob claims with conflict report (COM-003) |
+| `record_number` | The next free number of a directory's numbered files (ADRs, specs, migrations), past the integration branch, every live task and every reservation, reserved for the task (SPEC-083 NUM-001..003) |
 | `steps_set`, `step_update`, `steps_get` | Step manager (STP-001/002, STP-006..008): plan bounds, effort, WIP limit, no reopening by agents, weighted `percent` and `nudges` in every result (ADR-19) |
 | `spec_check` | Run the format validator on the task spec and docs (DSC-003); `required` per the spec policy (DSC-013) and `plan_nudges` |
 | `task_stop`, `task_archive`, `task_delete` | The UI's stop, archive and delete of another task of the project, for the person the caller acts for, audited with the caller; never the caller's own task (SPEC-066 MGT-008..010) |
@@ -1904,16 +1906,19 @@ accepted: 2025-06-18, 2025-03-26. Body ≤ 1 MiB; tool results ≤ 256 KiB.
 | `delivery_status` | Read-only PR/checks/profile status (GIT-001); no merge tool (GIT-002) |
 | `sessions_search`, `session_read` | Sessions as docs (SES-005): full-text search over the task and imported sessions of the agent's sandbox (its own sessions excluded; ≤ 20 sessions, ≤ 3 passages each) and a bounded read of one session by id or task number (≤ 200 entries, ≤ 100 000 characters, `next_from`); never another sandbox's |
 | `secrets_list`, `browser_fill_secret` | Agent secrets: names, descriptions and bindings; typing a value, user name or TOTP code into a page of a bound host (VLT-004/005, ADR-20) |
-| `ci_status`, `ci_rerun` | The CI in force and recent runs (this task's pull request first), one run's job outputs (tails of 16 KiB), run a commit again (DLV-006) |
+| `ci_status`, `ci_rerun` | The CI in force and recent runs (this task's pull request first), one run with the output tails (16 KiB) of its failed or errored jobs, or of the job named by `job`, run a commit again (DLV-006, SPEC-086) |
 | `ci_setup` | Onboarding off GitHub Actions: the worktree's workflows summarized, its `[[ci.jobs]]`, the steps (DLV-006) |
 | `repo_hygiene`, `repo_cleanup` | Stale branches and worktrees; removal of safe items, `force` for unmerged branches without a pull request (DLV-007) |
 | `delivery_status` | PR/checks/profile status and next actions (GIT-001) |
 | `issue_create` | A GitHub issue meeting the Definition of Ready (one `type:`, one `priority:`, at least one `area:` label; an `## Acceptance criteria` checklist), as the task creator or the App; labels created when missing (DLV-008) |
-| `delivery_merge`, `delivery_deploy`, `delivery_promote` | Agents deliver their own work (DLV-008, ADR-19): the person paths (`merge_task_pr`, `start_environment_run`, `promote_sandbox`) run with the task creator's authority, plus an independent review of the exact head and passed checks for a merge (`reviewed_head`), command-verified environments only for a deploy; each action is also audited as `task:<n>` |
+| `delivery_merge`, `delivery_deploy`, `delivery_promote` | Agents deliver their own work (DLV-008, ADR-19): the person paths (`merge_task_pr`, `start_environment_run`, `promote_sandbox`) run with the task creator's authority, plus an independent review of the exact head (or of an earlier one the branch moved past only through clean merges of the integration branch, SPEC-083 REV-001) and passed checks for a merge (`reviewed_head`), command-verified environments only for a deploy; each action is also audited as `task:<n>` |
 
 Every tool the briefing announces (`YULIUS_TOOLS`) is served; a unit test fails otherwise (#50).
-Every tool result (and error) is redacted of the sandbox's agent secrets before it is returned
-(VLT-007).
+A tool builds a record and answers with short text rendered from it (`yulius-app::mcp_text`,
+SPEC-086, ADR-0069): what changed, what is next and what the agent passes back, never JSON; a
+`tools/call` with `_meta: {"yulius/structured": true}` also gets the record as
+`structuredContent`. Every tool result (and error, and record) is redacted of the sandbox's agent
+secrets before it is returned (VLT-007).
 `scope_claim` takes one glob or up to 20, a task holds at most 50; claims of tasks that are no
 longer live are ignored, a repeated claim is kept once, and an overlap with another task's claim is returned to the claiming agent only (no message, SPEC-012).
 `scope_release` takes `pattern`, `patterns` or nothing (all) and refuses anything else. `spec_check` returns the Stop gate's verdict and fix-it message for

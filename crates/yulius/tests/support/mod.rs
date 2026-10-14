@@ -70,6 +70,13 @@ pub struct FakeGitHub {
     /// When set, reading checks waits for it (a slow GitHub); `checks_entered` says a read began.
     pub checks_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
     pub checks_entered: tokio::sync::Notify,
+    /// A ruleset like Yulius's own on its integration branch (SPEC-084): a merge needs the
+    /// `yulius/ci` status at success on the head and the base in the head (strict "up to date");
+    /// a pull request whose head lacks its base reads `behind`.
+    pub strict: std::sync::atomic::AtomicBool,
+    /// The next this many reads of pull requests show the heads as they were: GitHub has not
+    /// caught up with a push yet.
+    pub stale_reads: Mutex<u32>,
 }
 
 impl FakeGitHub {
@@ -343,6 +350,22 @@ impl GitHubPort for FakeGitHub {
         let remote = self
             .remote()
             .ok_or_else(|| AppError::Upstream("no remote".into()))?;
+        if self.strict.load(Ordering::SeqCst) {
+            let base = remote.branch_sha(&pull.base).unwrap_or_default();
+            if remote.contains(&base, &pull.head_sha) != Some(true) {
+                return Err(AppError::Conflict(
+                    "Head branch is not up to date with the base branch".into(),
+                ));
+            }
+            let status = self.statuses().into_iter().rev().find(|(sha, status)| {
+                *sha == pull.head_sha && status.context == yulius_domain::ci::STATUS_CONTEXT
+            });
+            if status.is_none_or(|(_, status)| status.state != "success") {
+                return Err(AppError::Conflict(
+                    "Required status check \"yulius/ci\" is expected".into(),
+                ));
+            }
+        }
         let sha = remote
             .merge(
                 &pull.base,
@@ -781,6 +804,12 @@ pub trait FakeRemote: Send + Sync {
         let _ = branch;
         Ok(false)
     }
+    /// Whether commit `ancestor` is in `descendant`'s history; `None` when this remote cannot
+    /// tell (the strict ruleset is then not checked).
+    fn contains(&self, ancestor: &str, descendant: &str) -> Option<bool> {
+        let _ = (ancestor, descendant);
+        None
+    }
 }
 
 impl FakeGitHub {
@@ -813,13 +842,27 @@ impl FakeGitHub {
             })
             .unwrap_or_default()
     }
-    /// Open pull requests follow their head branch, as on GitHub.
+    /// Open pull requests follow their head branch, as on GitHub (unless [`Self::stale_reads`]
+    /// says GitHub has not caught up yet); under [`Self::strict`] they read `behind` while their
+    /// head lacks their base.
     fn refresh_heads(&self) {
         let Some(remote) = self.remote() else { return };
+        let stale = self.stale_reads.lock().is_ok_and(|mut left| {
+            let stale = *left > 0;
+            *left = left.saturating_sub(1);
+            stale
+        });
+        let strict = self.strict.load(Ordering::SeqCst);
         if let Ok(mut pulls) = self.pulls.lock() {
             for pull in pulls.iter_mut().filter(|p| p.state == "open") {
+                if stale {
+                    continue;
+                }
                 if let Some(sha) = remote.branch_sha(&pull.head) {
                     pull.head_sha = sha;
+                }
+                if strict && let Some(base) = remote.branch_sha(&pull.base) {
+                    pull.behind = remote.contains(&base, &pull.head_sha) == Some(false);
                 }
             }
         }
@@ -1376,7 +1419,8 @@ pub async fn seed_live_attempt(
     Ok(())
 }
 
-/// Calls an MCP tool with a task token; returns the `tools/call` result object.
+/// Calls an MCP tool with a task token; returns the `tools/call` result object, with the tool's
+/// record as `structuredContent` (SPEC-086 TOL-005): what an agent reads is its text.
 pub async fn mcp_tool(
     h: &Harness,
     token: &str,
@@ -1389,7 +1433,7 @@ pub async fn mcp_tool(
         "/mcp",
         Some(
             serde_json::json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": {"name": name, "arguments": args}}),
+            "params": {"name": name, "arguments": args, "_meta": {"yulius/structured": true}}}),
         ),
         &Creds {
             bearer: Some(token.into()),
@@ -1403,8 +1447,15 @@ pub async fn mcp_tool(
     Ok(r.body["result"].clone())
 }
 
-/// The first text item of a tool result parsed as JSON (or as a string when it is not JSON).
+/// A tool result's record (`structuredContent`), or its text when it has none (an error).
 pub fn tool_text(result: &serde_json::Value) -> serde_json::Value {
-    let text = result["content"][0]["text"].as_str().unwrap_or_default();
-    serde_json::from_str(text).unwrap_or_else(|_| serde_json::Value::String(text.to_owned()))
+    if let Some(record) = result.get("structuredContent") {
+        return record.clone();
+    }
+    serde_json::Value::String(
+        result["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+    )
 }

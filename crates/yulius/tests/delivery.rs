@@ -231,6 +231,32 @@ impl GitPort for RealGit {
             .await
     }
 
+    /// The production adapter (SPEC-083): record numbers, review carry-over, merge attributes.
+    async fn list_dir(&self, repo: &Path, rev: &str, dir: &str) -> AppResult<Vec<String>> {
+        yulius::wiring::git::GitAdapter::new("git")
+            .list_dir(repo, rev, dir)
+            .await
+    }
+
+    async fn only_clean_merges_since(
+        &self,
+        worktree: &Path,
+        reviewed: &str,
+        head: &str,
+        integration: &str,
+        limit: usize,
+    ) -> AppResult<bool> {
+        yulius::wiring::git::GitAdapter::new("git")
+            .only_clean_merges_since(worktree, reviewed, head, integration, limit)
+            .await
+    }
+
+    async fn set_merge_attributes(&self, repo: &Path, lines: &[String]) -> AppResult<bool> {
+        yulius::wiring::git::GitAdapter::new("git")
+            .set_merge_attributes(repo, lines)
+            .await
+    }
+
     async fn diff_stat(&self, repo: &Path, base: &str, head: &str) -> AppResult<DiffStat> {
         let text = self
             .run(repo, &["diff", "--shortstat", &format!("{base}...{head}")])
@@ -1691,14 +1717,22 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
         json!({"name": "delivery_status", "arguments": {}}),
     )
     .await?;
+    // The agent reads a few lines (SPEC-086 TOL-004): the stage, the pull request, what people
+    // do next and the profile.
     let text = status.body["result"]["content"][0]["text"]
         .as_str()
         .ok_or("text")?;
-    let status: Value = serde_json::from_str(text)?;
-    assert_eq!(status["stage"], "pr_open", "{status}");
-    assert_eq!(status["pull_request"]["number"], 1);
-    assert_eq!(status["profile"]["preset"], "studio");
-    assert_eq!(status["next_actions_for_people"], json!(["merge"]));
+    assert!(
+        text.starts_with("Stage: pr_open.\nPull request #1 open"),
+        "{text}"
+    );
+    assert!(text.contains("\nNext for people: merge.\n"), "{text}");
+    assert!(text.contains("\nProfile studio: "), "{text}");
+    assert!(
+        status.body["result"].get("structuredContent").is_none(),
+        "Claude Code would show the record instead of the text: {}",
+        status.body
+    );
     let tool_text = |r: &Resp| {
         r.body["result"]["content"][0]["text"]
             .as_str()
@@ -1737,8 +1771,7 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
     .await?;
     assert_eq!(pending.body["result"]["isError"], false, "{}", pending.body);
     assert!(
-        tool_text(&pending).contains("\"armed\": true")
-            || tool_text(&pending).contains("\"armed\":true"),
+        tool_text(&pending).contains("armed: true"),
         "{}",
         pending.body
     );
@@ -2132,6 +2165,339 @@ async fn a_docs_only_task_needs_no_spec_to_deliver() -> TestResult {
     assert!(f.h.app.spec_required(&task).await?, "code changed");
     f.h.app.auto_open_pr(&t2).await;
     assert_eq!(pulls_opened(), 1, "a code change without a spec waits");
+    Ok(())
+}
+
+// ---------------------------------------------------------------- merge conflicts (SPEC-083)
+
+/// A live run of `task` whose agent calls the internal endpoints with the returned credentials.
+async fn live_agent(f: &Fixture, task: &str, token: &str) -> BoxResult<Creds> {
+    f.h.store
+        .insert_attempt(&AttemptRecord {
+            id: AttemptId::parse(&format!("a-{task}"))?,
+            task_id: TaskId::parse(task)?,
+            seq: 1,
+            harness: Harness::ClaudeCode,
+            account_id: None,
+            provider_session_id: None,
+            launch_kind: LaunchKind::New,
+            state: AttemptState::Live,
+            run_dir: "/tmp/none".into(),
+            token_hash: f.h.app.deps.crypto.sha256_hex(token.as_bytes()),
+            host_token: Sealed(vec![0]),
+            ptyhost_pid: None,
+            child_pid: None,
+            started_at: Timestamp(1),
+            ended_at: None,
+            exit_code: None,
+            exit_reason: None,
+        })
+        .await?;
+    Ok(Creds {
+        bearer: Some(token.into()),
+        ..Creds::default()
+    })
+}
+
+/// The internal router the agents call (MCP, `yulius wait`).
+fn internal(f: &Fixture) -> axum::Router {
+    yulius_server::internal_router(f.h.app.clone())
+        .layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 1))))
+}
+
+/// One MCP tool call of an agent: its result (`isError`, `content`, and the tool's record as
+/// `structuredContent`).
+async fn agent_tool(f: &Fixture, agent: &Creds, name: &str, arguments: Value) -> BoxResult<Value> {
+    let r = call(
+        &internal(f),
+        Method::POST,
+        "/mcp",
+        Some(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": name, "arguments": arguments,
+                "_meta": {"yulius/structured": true}}})),
+        agent,
+    )
+    .await?;
+    Ok(r.body["result"].clone())
+}
+
+/// The record a successful tool call answered.
+fn answer(result: &Value) -> BoxResult<Value> {
+    assert_eq!(result["isError"], false, "{result}");
+    if let Some(record) = result.get("structuredContent") {
+        return Ok(record.clone());
+    }
+    Ok(serde_json::from_str(
+        result["content"][0]["text"].as_str().unwrap_or("null"),
+    )?)
+}
+
+/// `delivery_merge` of `head`, reviewed, by `agent`: its answer.
+async fn arm_merge(f: &Fixture, agent: &Creds, head: &str) -> BoxResult<Value> {
+    answer(
+        &agent_tool(
+            f,
+            agent,
+            "delivery_merge",
+            json!({"reviewed_head": head, "review_summary": "approve"}),
+        )
+        .await?,
+    )
+}
+
+/// `yulius wait` of `agent` at `head`: the state now.
+async fn wait_state(f: &Fixture, agent: &Creds, head: &str) -> BoxResult<Value> {
+    let r = call(
+        &internal(f),
+        Method::POST,
+        "/internal/agent/wait",
+        Some(json!({"head": head, "since": Value::Null, "timeout_secs": 3})),
+        agent,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    Ok(r.body)
+}
+
+/// `record_number` of `agent`: the number it gave out.
+async fn record_number(f: &Fixture, agent: &Creds, args: Value) -> BoxResult<Value> {
+    answer(&agent_tool(f, agent, "record_number", args).await?)
+}
+
+/// SPEC-083 NUM-001 to NUM-003 (81 decision records renamed in 36 of 74 sessions, F 2026-10-13):
+/// `record_number` gives each task a number past the files on the integration branch, in every
+/// live task's checkout (uncommitted ones too) and every number given out before; asked again
+/// before the file exists, it gives the same number back.
+#[tokio::test]
+async fn parallel_tasks_get_their_own_record_numbers() -> TestResult {
+    let f = fixture(&DeliveryProfile::studio()).await?;
+    advance_base(
+        &f,
+        "quartio",
+        "docs/decisions/0001-first.md",
+        "# 0001. First\n",
+    )?;
+    advance_base(
+        &f,
+        "quartio",
+        "docs/decisions/0002-second.md",
+        "# 0002. Second\n",
+    )?;
+    let wt1 = f
+        .add_task("t1", "Ownership", "feat/1-ownership", "quartio")
+        .await?;
+    let wt2 = f
+        .add_task("t2", "Counts", "feat/2-counts", "quartio")
+        .await?;
+    let one = live_agent(&f, "t1", "tok-1").await?;
+    let two = live_agent(&f, "t2", "tok-2").await?;
+    // Task 2 counted the files itself and has not committed its record yet.
+    std::fs::write(
+        wt2.join("docs/decisions/0003-counts.md"),
+        "# 0003. Counts\n",
+    )?;
+    // A record merged after both tasks started.
+    advance_base(
+        &f,
+        "quartio",
+        "docs/decisions/0004-merged.md",
+        "# 0004. Merged\n",
+    )?;
+
+    let first = record_number(&f, &one, json!({"dir": "docs/decisions/"})).await?;
+    assert_eq!(first["number"], "0005", "{first}");
+    assert_eq!(first["file"], "docs/decisions/0005-<slug>.md");
+    assert_eq!(first["again"], false);
+    let again = record_number(&f, &one, json!({"dir": "docs/decisions"})).await?;
+    assert_eq!(
+        (again["number"].as_str(), again["again"].as_bool()),
+        (Some("0005"), Some(true)),
+        "asked again before the file exists: {again}"
+    );
+    let second = record_number(&f, &two, json!({"dir": "docs/decisions"})).await?;
+    assert_eq!(
+        second["number"], "0006",
+        "past task 1's reservation: {second}"
+    );
+    // Task 1 wrote its record; its next one gets the next free number.
+    std::fs::write(
+        wt1.join("docs/decisions/0005-ownership.md"),
+        "# 0005. Ownership\n",
+    )?;
+    let next = record_number(&f, &one, json!({"dir": "docs/decisions"})).await?;
+    assert_eq!(next["number"], "0007", "{next}");
+
+    // Another series in a directory, and directories with none or outside the repository.
+    advance_base(&f, "quartio", "docs/notes/SPEC-009-search.md", "spec\n")?;
+    advance_base(&f, "quartio", "docs/notes/0100-misc.md", "note\n")?;
+    let spec = record_number(&f, &two, json!({"dir": "docs/notes", "prefix": "SPEC-"})).await?;
+    assert_eq!(spec["number"], "SPEC-010", "{spec}");
+    for (args, why) in [
+        (json!({"dir": "src"}), "no numbered files"),
+        (json!({"dir": "../x"}), "outside the repository"),
+        (json!({}), "no directory"),
+        (
+            json!({"dir": "docs/notes", "prefix": "ADR-"}),
+            "no such series",
+        ),
+    ] {
+        let refused = agent_tool(&f, &two, "record_number", args).await?;
+        assert_eq!(refused["isError"], true, "{why}: {refused}");
+    }
+    Ok(())
+}
+
+/// SPEC-083 NUM-004: a task's spec number is given out like any record number, so it never takes
+/// a number another task reserved (SPEC-020 SPC-001 counted only its own checkout and the spec
+/// paths of other tasks).
+#[tokio::test]
+async fn a_spec_number_is_never_one_another_task_reserved() -> TestResult {
+    let f = fixture(&DeliveryProfile::studio()).await?;
+    advance_base(&f, "quartio", "docs/specs/SPEC-001-shop.md", "spec\n")?;
+    f.add_task("t1", "Ownership", "feat/1-ownership", "quartio")
+        .await?;
+    let wt2 = f
+        .add_task("t2", "Counts", "feat/2-counts", "quartio")
+        .await?;
+    let one = live_agent(&f, "t1", "tok-1").await?;
+    let reserved = record_number(&f, &one, json!({"dir": "docs/specs", "prefix": "SPEC-"})).await?;
+    assert_eq!(reserved["number"], "SPEC-002");
+    let t2 = f.h.store.task(&TaskId::parse("t2")?).await?.ok_or("t2")?;
+    f.h.app.allocate_spec_path(&t2, &wt2).await;
+    let t2 = f.h.store.task(&t2.id).await?.ok_or("t2")?;
+    assert_eq!(
+        t2.spec_path.as_deref(),
+        Some("docs/specs/SPEC-003-counts.md")
+    );
+    Ok(())
+}
+
+/// SPEC-083 REV-001 (33 of 57 merges spent a review round on dev merges or renumbering,
+/// F 2026-10-13): the review of a head carries over Git's own merges of the integration branch
+/// into it; new work after it needs a new review.
+#[tokio::test]
+async fn a_review_carries_over_clean_merges_of_the_integration_branch() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let f = &t.f;
+    advance_base(f, "quartio", "other.txt", "merged meanwhile")?;
+    git(&t.wt, &["fetch", "--quiet", "origin"])?;
+    git(&t.wt, &["merge", "--quiet", "--no-edit", "origin/quartio"])?;
+    let merged = git(&t.wt, &["rev-parse", "HEAD"])?;
+    assert_ne!(merged, t.head);
+    let armed = t.merge_at(&t.head).await?;
+    assert_eq!(
+        armed["isError"], false,
+        "the review of {} carries over: {armed}",
+        t.head
+    );
+    let state = t.wait_at(&merged).await?;
+    assert_eq!(state["merge_armed"], true, "{state}");
+
+    let refused_text = |r: &Value| {
+        r["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("review the new head"))
+    };
+    commit_file(&t.wt, "landing.txt", "v2", "Landing v2")?;
+    let refused = t.merge_at(&t.head).await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert!(refused_text(&refused), "new work needs a review: {refused}");
+
+    // Unreviewed work merged as if it were the integration branch (a moved remote-tracking ref)
+    // does not count: what the integration branch holds is fetched.
+    git(&t.wt, &["reset", "--quiet", "--hard", &merged])?;
+    git(
+        &t.wt,
+        &["checkout", "--quiet", "-b", "side", "origin/quartio"],
+    )?;
+    commit_file(&t.wt, "side.txt", "unreviewed", "Side work")?;
+    let side = git(&t.wt, &["rev-parse", "HEAD"])?;
+    git(&t.wt, &["checkout", "--quiet", "feat/1-landing"])?;
+    git(&t.wt, &["update-ref", "refs/remotes/origin/quartio", &side])?;
+    git(&t.wt, &["merge", "--quiet", "--no-edit", "origin/quartio"])?;
+    let sneaked = t.merge_at(&t.head).await?;
+    assert_eq!(sneaked["isError"], true, "{sneaked}");
+    assert!(refused_text(&sneaked), "{sneaked}");
+    Ok(())
+}
+
+/// SPEC-083 MRG-001: in a repository that commits no `.gitattributes`, the changes log every task
+/// adds an entry to conflicts when Yulius brings an armed branch up to date (DLV-203), and its
+/// merge is put on hold for the agent. Once Yulius keeps the union merge for the shared logs (at
+/// every task start), the same update merges both entries.
+#[tokio::test]
+async fn the_changes_log_merges_by_union_in_any_repository() -> TestResult {
+    let f = fixture(&DeliveryProfile::studio()).await?;
+    let log = "# Changes\n\n## 2026-10-13\n\n- First change.\n";
+    advance_base(&f, "quartio", "docs/changes.md", log)?;
+    let wt = f
+        .add_task("t1", "Landing page", "feat/1-landing", "quartio")
+        .await?;
+    git(&wt, &["config", "user.name", "Bob"])?;
+    git(&wt, &["config", "user.email", "bob@yulius.test"])?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    commit_file(
+        &wt,
+        "docs/changes.md",
+        &log.replace(
+            "## 2026-10-13\n\n",
+            "## 2026-10-13\n\n- The landing page.\n",
+        ),
+        "Landing",
+    )?;
+    let opened = f
+        .req(Method::POST, "/api/tasks/t1/delivery/pr", None, &f.bob)
+        .await?;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    f.h.github.set_checks(&head, ChecksState::Pending);
+    let agent = live_agent(&f, "t1", "tok-1").await?;
+    f.h.store
+        .transition_task(
+            &TaskId::parse("t1")?,
+            None,
+            TaskStatus::Running,
+            Some(Activity::Waiting),
+            f.h.app.now(),
+        )
+        .await?;
+    // Another task's entry merged at the top of the same section.
+    advance_base(
+        &f,
+        "quartio",
+        "docs/changes.md",
+        &log.replace("## 2026-10-13\n\n", "## 2026-10-13\n\n- Search.\n"),
+    )?;
+    let sandbox = SandboxId::parse("s1")?;
+
+    // Without the attribute: on hold, the worktree left as it was.
+    assert_eq!(arm_merge(&f, &agent, &head).await?["armed"], true);
+    f.h.app.merge_armed(&sandbox).await;
+    assert_eq!(git(&wt, &["rev-parse", "HEAD"])?, head, "aborted");
+    let held = wait_state(&f, &agent, &head).await?;
+    assert!(
+        held["merge_outcome"]
+            .as_str()
+            .is_some_and(|o| o.contains("on hold") && o.contains("`docs/changes.md`")),
+        "{held}"
+    );
+
+    // Kept by Yulius: the same update merges both entries and the merge stays armed.
+    f.h.app.keep_union_merges(&wt).await;
+    assert_eq!(arm_merge(&f, &agent, &head).await?["armed"], true);
+    f.h.app.merge_armed(&sandbox).await;
+    let moved = git(&wt, &["rev-parse", "HEAD"])?;
+    assert_ne!(moved, head, "Yulius merged the base in");
+    let merged_log = std::fs::read_to_string(wt.join("docs/changes.md"))?;
+    assert!(
+        merged_log.contains("- The landing page.") && merged_log.contains("- Search."),
+        "{merged_log}"
+    );
+    assert_eq!(wait_state(&f, &agent, &moved).await?["merge_armed"], true);
+    assert!(
+        !wt.join(".gitattributes").exists(),
+        "nothing committed to the repository"
+    );
     Ok(())
 }
 

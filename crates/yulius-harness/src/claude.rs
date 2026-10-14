@@ -17,6 +17,7 @@
 
 use serde_json::{Map, Value};
 use yulius_domain::task::GoalOutcome;
+use yulius_domain::time::Timestamp;
 use yulius_domain::usage::TokenUsage;
 
 use crate::json::{bool_of, obj_of, owned_str, parse_object, shorten, str_of, u64_of};
@@ -85,6 +86,21 @@ const COMPACT_ERROR_TEXT: &str = "Error during compaction";
 /// The error output of a local command (`/compact`) in a transcript record.
 const LOCAL_COMMAND_STDERR: &str = "<local-command-stderr>";
 
+/// How the user records begin that Claude Code writes for itself, not as a prompt the model
+/// answers (SPEC-085 STT-001): a slash command's echo, a local command's caveat and output, and
+/// the shell mode's input and output (`!cmd`). A command that runs the model (`/goal`) is followed
+/// by the model's own work, which shows the turn.
+const OWN_RECORD_TAGS: [&str; 8] = [
+    "<command-name>",
+    "<command-message>",
+    "<local-command-caveat>",
+    "<local-command-stdout>",
+    LOCAL_COMMAND_STDERR,
+    "<bash-input>",
+    "<bash-stdout>",
+    "<bash-stderr>",
+];
+
 /// The longest a Monitor stream lives (Claude Code caps `timeoutMs` at 30 minutes; this bound
 /// leaves room), and how long one lives when its record does not say.
 const MONITOR_MAX_MS: u64 = 60 * 60 * 1000;
@@ -110,6 +126,16 @@ pub fn observe_line(line: &str) -> Vec<Observed> {
         Some(_) => Vec::new(),
         None => vec![Observed::Malformed],
     }
+}
+
+/// When a transcript line was recorded (its top-level `timestamp`), if it says. Records Claude
+/// Code writes about the session itself (`last-prompt`, `mode`, …) carry no time.
+#[must_use]
+pub fn record_time(line: &str) -> Option<Timestamp> {
+    parse_object(line)
+        .as_ref()
+        .and_then(|record| str_of(record, "timestamp"))
+        .and_then(parse_rfc3339)
 }
 
 /// The session goal's state from a `goal_status` attachment (see the module docs).
@@ -154,6 +180,8 @@ fn observe_system(record: &Map<String, Value>) -> Vec<Observed> {
         Some("turn_duration") => vec![Observed::TurnEnded {
             background_agents: u64_of(record, "pendingBackgroundAgentCount")
                 .and_then(|n| u32::try_from(n).ok()),
+            at: str_of(record, "timestamp").and_then(parse_rfc3339),
+            duration_ms: u64_of(record, "durationMs"),
         }],
         Some("compact_boundary") => vec![Observed::Compacted],
         _ if str_of(record, "content").is_some_and(|c| c.contains(COMPACT_ERROR_TEXT)) => {
@@ -199,6 +227,17 @@ fn observe_user(record: &Map<String, Value>) -> Vec<Observed> {
     }
     let at = str_of(record, "timestamp").and_then(parse_rfc3339);
     let text = message_text(message);
+    let session = owned_str(record, "sessionId").map(|session_id| Observed::SessionMeta {
+        session_id,
+        cwd: owned_str(record, "cwd"),
+        model: None,
+        version: owned_str(record, "version"),
+    });
+    // A record Claude Code writes for itself starts no turn: an idle compaction's summary made a
+    // finished task read Working for good (SPEC-085 STT-001).
+    if own_record(record, &text) {
+        return session.into_iter().collect();
+    }
     let turn = if is_interrupt(message) {
         Observed::TurnInterrupted { at }
     } else {
@@ -209,16 +248,21 @@ fn observe_user(record: &Map<String, Value>) -> Vec<Observed> {
     };
     // A wake-up prompt says which background work ended.
     let mut out = background_ended(&text);
-    if let Some(session_id) = owned_str(record, "sessionId") {
-        out.push(Observed::SessionMeta {
-            session_id,
-            cwd: owned_str(record, "cwd"),
-            model: None,
-            version: owned_str(record, "version"),
-        });
-    }
+    out.extend(session);
     out.push(turn);
     out
+}
+
+/// A user record with text that Claude Code wrote for itself, not a prompt for the model
+/// (SPEC-085 STT-001): the summary a compaction continues from (`isCompactSummary`, shown in the
+/// transcript only), a command's echo and output ([`OWN_RECORD_TAGS`]), or the compaction command
+/// as typed (`/compact`, written before the compaction runs; no turn follows it, STT-005).
+fn own_record(record: &Map<String, Value>, text: &str) -> bool {
+    let text = text.trim_start();
+    bool_of(record, "isCompactSummary")
+        || bool_of(record, "isVisibleInTranscriptOnly")
+        || OWN_RECORD_TAGS.iter().any(|tag| text.starts_with(tag))
+        || yulius_domain::harness::is_compact_command(text)
 }
 
 /// A tool result that started background work the session is woken by (SPEC-079 BGW-002): a
@@ -404,7 +448,7 @@ fn message_text(message: &Map<String, Value>) -> String {
 }
 
 /// A limit observation with the time its record was written.
-fn recorded_at(limit: Observed, when: Option<yulius_domain::time::Timestamp>) -> Observed {
+fn recorded_at(limit: Observed, when: Option<Timestamp>) -> Observed {
     match limit {
         Observed::LimitReached {
             resets_at,
@@ -661,9 +705,13 @@ mod tests {
             .is_empty()
         );
         assert_eq!(
-            observe_line(r#"{"type":"system","subtype":"turn_duration","durationMs":5}"#),
+            observe_line(
+                r#"{"type":"system","subtype":"turn_duration","durationMs":5,"timestamp":"2026-10-10T05:38:01.385Z"}"#
+            ),
             vec![Observed::TurnEnded {
-                background_agents: None
+                background_agents: None,
+                at: Some(Timestamp(1_791_610_681_385)),
+                duration_ms: Some(5),
             }]
         );
         assert!(observe_line(r#"{"type":"system","subtype":"away_summary"}"#).is_empty());
@@ -693,26 +741,34 @@ mod tests {
         assert_eq!(
             end(r#","pendingBackgroundAgentCount":1"#),
             vec![Observed::TurnEnded {
-                background_agents: Some(1)
+                background_agents: Some(1),
+                at: None,
+                duration_ms: Some(94_387),
             }]
         );
         assert_eq!(
             end(r#","pendingBackgroundAgentCount":0"#),
             vec![Observed::TurnEnded {
-                background_agents: Some(0)
+                background_agents: Some(0),
+                at: None,
+                duration_ms: Some(94_387),
             }]
         );
         assert_eq!(
             end(""),
             vec![Observed::TurnEnded {
-                background_agents: None
+                background_agents: None,
+                at: None,
+                duration_ms: Some(94_387),
             }],
             "an older CLI does not say"
         );
         assert_eq!(
             end(r#","pendingBackgroundAgentCount":"x""#),
             vec![Observed::TurnEnded {
-                background_agents: None
+                background_agents: None,
+                at: None,
+                duration_ms: Some(94_387),
             }]
         );
         assert!(
@@ -988,5 +1044,113 @@ mod tests {
                 .any(|o| matches!(o, Observed::UserTurn { .. }))
         );
         assert!(!observed.contains(&Observed::CompactFailed));
+    }
+
+    /// SPEC-085 STT-001: the user records Claude Code 2.1.292 writes for itself start no turn.
+    /// Shapes from the sandbox transcripts of 2026-10-12/13 (texts shortened, ids made up): task
+    /// #60's idle compaction ("Compacted while idle, before the prompt cache expired", 19:42 UTC,
+    /// an hour after its goal was achieved), whose summary record made the Done task read Working
+    /// until it was stopped; and the records of `/goal` and `/compact`. Each still names the
+    /// session; a typed prompt and a wake-up still start a turn.
+    #[test]
+    fn records_claude_code_writes_for_itself_start_no_turn() {
+        let at = Some(Timestamp(1_791_610_681_385));
+        let session = Observed::SessionMeta {
+            session_id: "f77c8148".into(),
+            cwd: Some("/w".into()),
+            model: None,
+            version: Some("2.1.292".into()),
+        };
+        let user = |content: serde_json::Value, extra: serde_json::Value| {
+            let mut record = serde_json::json!({"parentUuid": "p", "isSidechain": false,
+                "promptId": "a4e3a8bf", "type": "user",
+                "message": {"role": "user", "content": content}, "uuid": "u",
+                "timestamp": "2026-10-10T05:38:01.385Z", "userType": "external",
+                "entrypoint": "cli", "cwd": "/w", "sessionId": "f77c8148", "version": "2.1.292",
+                "gitBranch": "feat/60-x"});
+            if let (Some(record), Some(extra)) = (record.as_object_mut(), extra.as_object()) {
+                record.extend(extra.clone());
+            }
+            observe_line(&record.to_string())
+        };
+        let none = serde_json::json!({});
+        // The idle compaction: its boundary, the summary it continues from, the files it reads
+        // again, its SessionStart hook and its notice.
+        let boundary = r#"{"parentUuid":null,"logicalParentUuid":"l","isSidechain":false,"type":"system","subtype":"compact_boundary","content":"Conversation compacted","isMeta":false,"timestamp":"2026-10-13T19:42:51.383Z","uuid":"b","level":"info","compactMetadata":{"trigger":"auto","preTokens":400160,"durationMs":47527,"postTokens":8602},"sessionId":"f77c8148","version":"2.1.292"}"#;
+        assert_eq!(observe_line(boundary), vec![Observed::Compacted]);
+        let summary = user(
+            serde_json::json!(
+                "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation."
+            ),
+            serde_json::json!({"isVisibleInTranscriptOnly": true, "isCompactSummary": true,
+                "turnPosition": {"promptIndex": 1, "turnIndex": 14}}),
+        );
+        assert_eq!(summary, vec![session.clone()], "the summary is no prompt");
+        for attachment in [
+            r#"{"isSidechain":false,"type":"attachment","timestamp":"2026-10-13T19:42:51.681Z","attachment":{"type":"file","filename":"/tmp/x/tasks/b.output","content":{"type":"text","file":{"filePath":"/tmp/x/tasks/b.output","content":"Waiting: checks running","numLines":6,"startLine":1,"totalLines":6}}}}"#,
+            r#"{"isSidechain":false,"type":"attachment","timestamp":"2026-10-13T19:42:51.681Z","attachment":{"type":"compact_file_reference","filename":"/w/crates/yulius-app/src/finish.rs","displayPath":"crates/yulius-app/src/finish.rs"}}"#,
+            r#"{"isSidechain":false,"type":"attachment","timestamp":"2026-10-13T19:42:51.794Z","attachment":{"type":"hook_success","hookName":"SessionStart:compact","hookEvent":"SessionStart","content":"","exitCode":0}}"#,
+            r#"{"isSidechain":false,"type":"system","subtype":"informational","content":"Compacted while idle, before the prompt cache expired","isMeta":false,"timestamp":"2026-10-13T19:42:51.851Z","level":"notice"}"#,
+        ] {
+            assert_eq!(
+                observe_line(attachment),
+                Vec::<Observed>::new(),
+                "{attachment}"
+            );
+        }
+        // `/goal` and `/compact`: the command's echo and its output. The model's own work after
+        // `/goal` shows its turn.
+        let echo = user(
+            serde_json::json!(
+                "<command-name>/goal</command-name>\n            <command-message>goal</command-message>\n            <command-args>Everything requested is done.</command-args>"
+            ),
+            none.clone(),
+        );
+        assert_eq!(echo, vec![session.clone()]);
+        let goal_set = user(
+            serde_json::json!(
+                "<local-command-stdout>Goal set: Everything requested is done.</local-command-stdout>"
+            ),
+            serde_json::json!({"turnOrigin": "human"}),
+        );
+        assert_eq!(goal_set, vec![session.clone()]);
+        let compacted = user(
+            serde_json::json!(
+                "<local-command-stdout>\u{1b}[2mCompacted (ctrl+o to see full summary)\u{1b}[22m</local-command-stdout>"
+            ),
+            none.clone(),
+        );
+        assert_eq!(compacted, vec![session.clone()]);
+        // STT-005: `/compact` as typed, the line Claude Code writes before it compacts (task #8,
+        // 2026-10-12 04:22:29; no `origin`, unlike a typed prompt). No turn follows it.
+        for typed in ["/compact", "/compact keep the plan and the failing test"] {
+            assert_eq!(
+                user(serde_json::json!(typed), none.clone()),
+                vec![session.clone()],
+                "{typed}"
+            );
+        }
+        let shell = user(
+            serde_json::json!([{"type": "text", "text": "<bash-input>git status</bash-input>"}]),
+            none.clone(),
+        );
+        assert_eq!(shell, vec![session.clone()]);
+        // A typed prompt, and Claude Code's wake-up, start a turn.
+        let typed = user(
+            serde_json::json!("close the issues once it merges"),
+            serde_json::json!({"origin": {"kind": "human"}, "promptSource": "typed",
+                "turnOrigin": "human"}),
+        );
+        assert_eq!(
+            typed,
+            vec![session.clone(), Observed::UserTurn { at, wake: false }]
+        );
+        let wake = user(
+            serde_json::json!(
+                "<task-notification>\n<summary>Goal check-in: background work still running</summary>\n</task-notification>"
+            ),
+            serde_json::json!({"origin": {"kind": "task-notification"}, "promptSource": "system"}),
+        );
+        assert_eq!(wake, vec![session, Observed::UserTurn { at, wake: true }]);
     }
 }

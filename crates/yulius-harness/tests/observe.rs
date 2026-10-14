@@ -209,10 +209,8 @@ fn claude_goal_mode_records() {
         relevant,
         vec![
             &goal(GoalOutcome::Set),
-            &Observed::UserTurn {
-                at: Some(Timestamp(1_791_610_681_385)),
-                wake: false
-            },
+            // The `/goal` command's echo starts no turn: the model's work after it does
+            // (SPEC-085 STT-001).
             &Observed::TurnComplete {
                 duration_ms: None,
                 at: Some(Timestamp(1_791_610_700_000))
@@ -224,7 +222,9 @@ fn claude_goal_mode_records() {
             },
             &goal(GoalOutcome::Met),
             &Observed::TurnEnded {
-                background_agents: None
+                background_agents: None,
+                at: Some(Timestamp(1_791_610_732_580)),
+                duration_ms: Some(51_000),
             },
             &Observed::BackgroundEnded { id: "b1".into() },
             &goal(GoalOutcome::Failed),

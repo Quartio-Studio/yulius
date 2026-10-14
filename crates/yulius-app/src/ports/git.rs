@@ -186,6 +186,43 @@ pub trait GitPort: Send + Sync {
         let _ = (worktree, integration, token);
         unsupported("merging the integration branch")
     }
+    /// Builds a merge train (SPEC-084 TRN-002) in the scratch worktree `scratch` inside
+    /// `owned_root`: from `base`, each of `heads` in order is brought up to date as
+    /// [`GitPort::merge_integration`] would (merge drivers apply) and lands as `landing` makes
+    /// it land; a head that conflicts is left out. Nothing is pushed. Adapters without it
+    /// refuse, and Yulius merges one by one.
+    async fn build_train(
+        &self,
+        repo: &Path,
+        scratch: &Path,
+        owned_root: &Path,
+        base: &str,
+        heads: &[String],
+        landing: TrainLanding,
+    ) -> AppResult<TrainBuild> {
+        let _ = (repo, scratch, owned_root, base, heads, landing);
+        unsupported("merge trains")
+    }
+    /// Whether `head` is `reviewed` plus only Git's own merges of commits `integration` (a
+    /// remote-tracking ref) contains, at most `limit` of them: no conflict resolved by hand, no
+    /// other change (SPEC-083 REV-001).
+    async fn only_clean_merges_since(
+        &self,
+        worktree: &Path,
+        reviewed: &str,
+        head: &str,
+        integration: &str,
+        limit: usize,
+    ) -> AppResult<bool> {
+        let _ = (worktree, reviewed, head, integration, limit);
+        unsupported("comparing a head with its review")
+    }
+    /// Keeps Yulius's block of merge attributes in `repo`'s `info/attributes`, read by all its
+    /// worktrees, at exactly `lines` (SPEC-083 MRG-001). Returns whether the file changed.
+    async fn set_merge_attributes(&self, repo: &Path, lines: &[String]) -> AppResult<bool> {
+        let _ = (repo, lines);
+        unsupported("setting merge attributes")
+    }
     /// Pushes `local_branch` to `remote_branch` on origin using `token`.
     async fn push(
         &self,
@@ -273,6 +310,40 @@ pub trait GitPort: Send + Sync {
         bundle: &Path,
         prefix: &str,
     ) -> AppResult<Vec<String>>;
+}
+
+/// How a pull request lands on the integration branch (the profile's merge method).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrainLanding {
+    /// A squash: one commit with the head's tree on top of the integration branch.
+    Squash,
+    /// A merge commit of the integration branch and the head.
+    MergeCommit,
+}
+
+/// One pull request of a built merge train.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrainStep {
+    /// It merged cleanly: the integration branch's tree once it has landed.
+    Clean {
+        /// That tree.
+        tree: String,
+    },
+    /// Bringing it up to date conflicts in these paths: it is left out.
+    Conflict(Vec<String>),
+}
+
+/// What [`GitPort::build_train`] built.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrainBuild {
+    /// The integration branch commit it starts from.
+    pub base: String,
+    /// Its tree.
+    pub base_tree: String,
+    /// One step per head, in order.
+    pub steps: Vec<TrainStep>,
+    /// The integration branch once every clean head landed: the commit CI tests.
+    pub head: String,
 }
 
 /// What [`GitPort::merge_integration`] did.

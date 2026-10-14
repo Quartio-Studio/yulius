@@ -46,6 +46,11 @@ pub struct ServeArgs {
     /// Maximum concurrently live agent sessions.
     #[arg(long, env = "YULIUS_MAX_SESSIONS", default_value_t = 8)]
     pub max_live_sessions: u32,
+    /// CPUs an agent session, terminal or Cockpit plans for (`YULIUS_CPUS` in its environment;
+    /// SPEC-082). Default: a third of a sandbox's CPUs, at least 2.
+    #[arg(long, env = "YULIUS_AGENT_CPUS",
+          value_parser = clap::value_parser!(u32).range(1..=1024))]
+    pub agent_cpus: Option<u32>,
     /// Run sandboxes inside bubblewrap containment (Linux).
     #[arg(long, env = "YULIUS_CONTAINED", default_value_t = false)]
     pub contained: bool,
@@ -413,6 +418,7 @@ pub fn build_app(args: &ServeArgs) -> Result<Arc<App>, String> {
     let internal_url = format!("http://{}", args.internal_bind);
     let mut config = AppConfig::new(args.data_dir.clone(), &args.public_url, &internal_url, exe);
     config.max_live_sessions = args.max_live_sessions;
+    config.agent_cpus = args.agent_cpus;
     config.contained = args.contained;
     config.upload_max_bytes = args.upload_max_mb * 1024 * 1024;
     config.ci = yulius_app::ci::CiSettings {

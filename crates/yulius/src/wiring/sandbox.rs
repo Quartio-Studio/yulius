@@ -10,7 +10,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use clap::Args;
 use yulius_app::error::{AppError, AppResult};
-use yulius_app::ports::isolation::{DiskUsage, SandboxIsolation, SandboxJoin, SandboxRef};
+use yulius_app::ports::isolation::{
+    DiskUsage, SandboxIsolation, SandboxJoin, SandboxLimits, SandboxRef,
+};
 use yulius_domain::ids::SandboxId;
 use yulius_sandbox::cgroup::Limits;
 use yulius_sandbox::manager::{
@@ -50,7 +52,7 @@ pub struct IsolationArgs {
     /// Memory limit per sandbox in GiB (default: the host's memory but an eighth, at least 4 GiB).
     #[arg(long = "sandbox-memory-gb", env = "YULIUS_SANDBOX_MEMORY_GB")]
     pub memory_gb: Option<u64>,
-    /// CPU limit per sandbox in CPUs (default: all but two).
+    /// CPU limit per sandbox in CPUs (`cpu.max`; default: none, the CPU is shared by weight).
     #[arg(long = "sandbox-cpus", env = "YULIUS_SANDBOX_CPUS")]
     pub cpus: Option<u32>,
     /// Task (process and thread) limit per sandbox.
@@ -174,9 +176,7 @@ pub fn resolve(
         .ok()
         .and_then(|t| yulius_sandbox::cgroup::mem_total(&t))
         .unwrap_or(8 << 30);
-    let cpus =
-        std::thread::available_parallelism().map_or(4, |n| u32::try_from(n.get()).unwrap_or(4));
-    let defaults = Limits::defaults(total, cpus);
+    let defaults = Limits::defaults(total);
     let limits = Limits {
         memory_max: args.memory_gb.map(|g| g << 30).or(defaults.memory_max),
         cpus: args.cpus.or(defaults.cpus),
@@ -320,6 +320,18 @@ impl SandboxIsolation for NamespaceIsolation {
         let manager = Arc::clone(&self.manager);
         let sandbox = sandbox.as_str().to_owned();
         tokio::spawn(async move { manager.release(&sandbox).await });
+    }
+
+    /// The limits apply only through the cgroup delegation (SPEC-082 RES-001).
+    fn limits(&self) -> SandboxLimits {
+        let config = self.manager.config();
+        if config.delegation.is_none() {
+            return SandboxLimits::default();
+        }
+        SandboxLimits {
+            cpus: config.limits.cpus,
+            memory_bytes: config.limits.memory_max,
+        }
     }
 }
 

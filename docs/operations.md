@@ -86,6 +86,9 @@ Environment=YULIUS_BROWSER_DISPLAY=auto
 # per job, seconds between checks.
 Environment=YULIUS_CI_MAX_JOBS=4
 Environment=YULIUS_CI_LANES=2
+# CPUs an agent session, terminal or Cockpit plans for (YULIUS_CPUS; default a third of a
+# sandbox's, at least 2). CI jobs get what they declare in yulius.toml (SPEC-082).
+#Environment=YULIUS_AGENT_CPUS=4
 Environment=YULIUS_CI_JOB_TIMEOUT_MIN=30
 Environment=YULIUS_CI_POLL_SECS=60
 # Sandbox isolation (SPEC-002 ADR-22): auto (default), namespaces or legacy; see "Sandbox
@@ -429,7 +432,7 @@ systemctl restart yulius
 | `YULIUS_ISOLATION` | `auto` | `auto`: the holder when its prerequisites hold, else the previous containment (and a failing holder never blocks work); `namespaces`: refuse runs without it; `legacy`: the previous containment. |
 | `YULIUS_SANDBOX_EGRESS` | `direct` | `none`: no egress, only the relayed endpoints (the internal listener, which also serves the secrets proxy, and `YULIUS_SANDBOX_FORWARD`). |
 | `YULIUS_SANDBOX_MEMORY_GB` | the RAM but an eighth (at least 4 GiB kept for the host) | `memory.max` per sandbox. One sandbox runs all its agents and CI jobs: size it to the sessions, not to half the host. |
-| `YULIUS_SANDBOX_CPUS` | all CPUs but two | `cpu.max` per sandbox. |
+| `YULIUS_SANDBOX_CPUS` | none | `cpu.max` per sandbox. Without it the CPU is shared by weight: a quota of all CPUs but two throttled the sandbox in half of its busy periods while the two CPUs it left idled (SPEC-082). The sandbox's capacity for budgets is this limit, else the host's CPUs. |
 | `YULIUS_SANDBOX_PIDS` | 8192 | `pids.max` per sandbox. |
 | `YULIUS_SANDBOX_DISK_GB` | 100 | Soft quota: the sandbox directory plus its installed packages, measured every 10 minutes (again when a refusal would rest on a reading older than a minute); from 90 % Yulius prunes the build caches of idle tasks, ended tasks' caches and closed or cancelled tasks' worktrees always (every 5 minutes), see [SPEC-008](../.ai/specs/SPEC-008-sandbox-disk.md); above it, new sessions are refused (live ones continue). `0` turns it off. Persistent CI job checkouts are pruned the same way while no CI run executes, and one job's cache beyond a quarter of the quota at once. A project declares its own caches in `yulius.toml`: `[disk]` `caches = "target build/cache"`. |
 | `YULIUS_SANDBOX_FORWARD` | — | Extra host loopback ports reachable inside every sandbox at the same port (for example a loopback MCP server), comma-separated. |
@@ -612,8 +615,15 @@ involved.
   concurrent run.
 - Budget the disk: a Rust workspace's `target/` per job and lane.
 - Removing `ci/` (with no run active) resets a sandbox's caches. The next run rebuilds them.
-- Size `YULIUS_CI_MAX_JOBS` to the cores left after the agents. Each job gets
+- CI jobs share the sandbox's CPUs and memory by budget (SPEC-082): a job starts once the CPUs
+  and memory it declares (`cpus`, `memory_gb` in `[[ci.jobs]]`, else an equal share among its
+  run's jobs) are free, so the jobs of all lanes never ask for more than the sandbox has. Each
+  is told its budget in `YULIUS_CPUS` and `YULIUS_MEMORY_MB` and the repository's
+  `[resources.env]`. `YULIUS_CI_MAX_JOBS` still bounds the number of jobs. Each job gets
   `YULIUS_CI_JOB_TIMEOUT_MIN`.
+- Agent sessions, terminals and the Cockpit plan for `YULIUS_AGENT_CPUS` CPUs (default a third
+  of the sandbox's, at least 2) and the memory in proportion: three of them testing at once fill
+  the sandbox.
 - `YULIUS_CI_LANES` (default 2) runs of one sandbox execute at once. Each lane past the first
   keeps its own job checkouts and caches (`ci/jobs/<job>@<lane>`), so budget its disk too.
 
