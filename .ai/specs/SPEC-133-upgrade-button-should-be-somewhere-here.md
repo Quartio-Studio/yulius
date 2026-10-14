@@ -118,9 +118,15 @@ Run on the merged head 283eba38 (branch + `origin/dev` b18c548d), 2026-10-14:
   the phone drawer, instance administrators and members; axe finds no WCAG A/AA violation.
 - Screenshots in mock mode (offer, quiet, 200 px) checked by eye: the accent "Update" pill and the
   quiet icon sit right of the account name, which ellipsizes at 200 px.
-- `scripts/dev security`: exit 2, not run. Vidoc answers 401 "Invalid or expired token" although
-  `api.vidoc.dev` is bound to `VIDOC_API_KEY`; noted on #470 (the stored key needs replacing).
+- `scripts/dev security`: exit 2, **unrun, not passed**. Vidoc answers 401 "Invalid or expired
+  token" although `api.vidoc.dev` is bound to `VIDOC_API_KEY`; noted on #470 (the stored key needs
+  replacing, which only a person can do). Decision after the third review round: deliver with the
+  scan reported as unrun. ADR-0104 makes an unrunnable gate (an expired key named among its causes)
+  something the agent reports as unrun, not a hold on delivery, and Yulius CI does not run it
+  (#466). The change is client-side UI (JS, CSS), e2e tests and docs, with no new endpoint, input
+  handling or dependency; the existing `POST /api/admin/update` is called exactly as before.
 - Independent review (`om-code-review`, fresh sessions): round 1 approved 81198dc4 with six minor
-  findings and nits, all fixed; round 2 approved 283eba38 with no findings.
+  findings and nits, all fixed; round 2 approved 283eba38 with one optional nit (the order of checks in the
+  administrators test), left as is; round 3 raised only the unrun scan, decided above.
 - Not verifiable here: a real update through the root helper on a server (the mock walks the
   phases); the server API is unchanged.
