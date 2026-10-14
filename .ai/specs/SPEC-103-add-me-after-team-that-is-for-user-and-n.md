@@ -35,7 +35,7 @@ handles conflicts exactly like the other two notepads.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| NOT-010 | The Notes panel shows three tabs in order: "This sandbox", "Team", "Me". "Me" holds a text box labelled "My notes", always editable, and the remembered tab includes it. | e2e `notes.e2e.ts` |
+| NOT-010 | The Notes panel shows three tabs in order: "This sandbox", "Team", "Me" (since SPEC-112 NOT-015: Team, This sandbox, Me until the person moves them). "Me" holds a text box labelled "My notes", always editable, and the remembered tab includes it. | e2e `notes.e2e.ts` |
 | NOT-011 | Personal notes: one notepad per person, stored under `user:<user id>`. `GET/PUT /api/me/notes` read and save the caller's own notepad with the SPEC-041 contract (`scope: "me"`, revision, 409, 256 KiB, 2 MiB body limit). There is no route to anyone else's notepad, administrators included; signed out answers 401. | Rust `notes::personal_notes_are_each_persons_own` |
 | NOT-012 | Sandbox-agnostic: the same personal notepad shows in every sandbox and does not depend on any sandbox access. | Rust `notes::personal_notes_are_each_persons_own` (a person with no sandbox); e2e |
 | NOT-013 | A stored personal edit publishes `note.updated {scope: "me", sandbox_id: null, ...}` only to the owner's event streams (other people's streams never get it, the superadmin's included), so the owner's other tabs and devices reload an idle notepad. | Rust `notes::an_edit_is_announced_to_viewers`, `notes::a_personal_edit_reaches_only_its_owner` |

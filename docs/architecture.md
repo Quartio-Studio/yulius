@@ -673,6 +673,27 @@ text and the revision it started from; the store writes it only when that revisi
 current, and every stored edit is announced on the event stream: a personal note's event is
 addressed to its owner (`Envelope.user`), and `WS /api/events` drops it for everyone else.
 
+The tabs go in any order, Team first by default (`yulius.notesOrder` in the browser). Each notepad
+draws its selections itself (`textlayer.js`: rounded shapes under the transparent text box,
+measured on a hidden mirror) and shows the teammates who have it open
+([SPEC-112](../.ai/specs/SPEC-112-i-want-to-be-able-to-move-those-3-bars-t.md),
+[decision 0091](decisions/0091-notepad-presence-is-relayed-not-stored.md)): a browser sends its
+selection in the saved text's offsets, `App::note_presence` relays it as `note.presence` to the
+notepad's readers (20 a second per person and notepad at most) and stores nothing.
+
+```mermaid
+sequenceDiagram
+    participant A as Alice's notepad
+    participant S as Server (App::note_presence)
+    participant B as Bob's notepad
+    A->>S: PUT notes/presence {revision, selection, hello, client} (≤ 1 per 100 ms, every 15 s)
+    S-->>B: note.presence (team: everyone; sandbox: its viewers)
+    B->>S: PUT notes/presence (answers a hello)
+    S-->>A: note.presence
+    Note over A,B: offsets mapped through each side's unsaved typing; another revision hides
+    A->>S: PUT notes/presence {selection: null} (hidden, another tab, page gone)
+```
+
 ```mermaid
 sequenceDiagram
     participant A as Notepad (notes.js)
