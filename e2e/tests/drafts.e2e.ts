@@ -296,3 +296,48 @@ test('a picked start rule comes back after a reload; a malformed stored one is d
   await expect.poll(() => promptText(browser)).toBe('Wait for the others');
   await expect(screen.getByRole('button', /Run after: Start now/)).toBeVisible();
 });
+
+/** Studio's stored draft: its text and the names of its files. */
+const storedDraft = (browser: Browser) => browser.evaluate(() => {
+  const key = Object.keys(localStorage).find((k) => k.startsWith('yulius.draft.') && k.endsWith('.sb_studio'));
+  const draft = key ? JSON.parse(localStorage.getItem(key) || '{}') : {};
+  return { text: draft.text ?? '', files: (draft.attached || []).map((item: { name: string }) => item.name) };
+});
+
+// SPEC-124 review: the composer that started an upload is gone when it ends; the file still joins
+// the draft, which keeps what was typed.
+test('an upload that ends after leaving joins the stored draft, kept across a reload', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await mockReady(browser);
+  await browser.evaluate(() => {
+    const w = window as unknown as Holding;
+    w.__yuliusMock.holdUpload = new Promise<void>((resolve) => { w.__release = resolve; });
+  });
+  await screen.getByRole('textbox', 'Task prompt').fill('Words');
+  await drop(browser, [['late.pdf', 'pdf', 'application/pdf']]);
+  await browser.locator('.composer-crumbs a').click();
+  await expect(browser).toHaveURL(/#\/s\/studio\/tasks$/);
+  await browser.evaluate(() => (window as unknown as Holding).__release!());
+  await expect.poll(() => storedDraft(browser)).toEqual({ text: 'Words', files: ['late.pdf'] });
+  await browser.locator('.btn-newtask').click();
+  await expect.poll(() => attachmentNames(browser)).toEqual(['late.pdf']);
+});
+
+test('text typed in a returned composer while an upload ends is kept with the file', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await mockReady(browser);
+  await browser.evaluate(() => {
+    const w = window as unknown as Holding;
+    w.__yuliusMock.holdUpload = new Promise<void>((resolve) => { w.__release = resolve; });
+  });
+  await screen.getByRole('textbox', 'Task prompt').fill('Words');
+  await drop(browser, [['late.pdf', 'pdf', 'application/pdf']]);
+  await leaveAndReturn(browser, screen);
+  await screen.getByRole('textbox', 'Task prompt').press('End');
+  await browser.keyboard.type(' more typed');
+  await browser.evaluate(() => (window as unknown as Holding).__release!());
+  await expect.poll(() => attachmentNames(browser)).toEqual(['late.pdf']);
+  await expect.poll(() => storedDraft(browser)).toMatchObject({ files: ['late.pdf'] });
+  await browser.reload();
+  await expect.poll(() => promptText(browser)).toBe('Words more typed\n[late.pdf]');
+});

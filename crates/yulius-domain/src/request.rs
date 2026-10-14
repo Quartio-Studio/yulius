@@ -197,6 +197,10 @@ impl Request {
         for part in &self.parts {
             match image(part) {
                 Some(path) => {
+                    // A mention just before keeps a space: the pasted path never joins it.
+                    if matches!(run.last(), Some(Part::File(_))) {
+                        run.push(Part::Text(" ".into()));
+                    }
                     flush(&mut run, &mut pastes);
                     pastes.push(Paste::Image(path.clone()));
                 }
@@ -676,6 +680,33 @@ mod tests {
                     Paste::Image("/srv/b.png".into()),
                 ],
             }
+        );
+    }
+
+    /// SPEC-124 review: a mention right before a pasted image keeps a space, so the pasted
+    /// path never joins the mention.
+    #[test]
+    fn a_mention_before_an_image_keeps_a_space() {
+        let request = Request::parse("See @'/srv/n.txt'@'/srv/a.png' here");
+        assert_eq!(
+            request.opening(),
+            Opening::Typed {
+                pastes: vec![
+                    Paste::Text("See @\"/srv/n.txt\" ".into()),
+                    Paste::Image("/srv/a.png".into()),
+                    Paste::Text("here".into()),
+                ],
+            }
+        );
+    }
+
+    /// SPEC-124 INL-007: an older prompt written without the composer's blank line keeps its
+    /// files where they are, on the lines after the text (it once got a blank line added).
+    #[test]
+    fn an_older_prompt_without_a_blank_line_keeps_its_lines() {
+        assert_eq!(
+            Request::parse("Look\n@/srv/a.txt").first_message(),
+            "Look\n@\"/srv/a.txt\""
         );
     }
 

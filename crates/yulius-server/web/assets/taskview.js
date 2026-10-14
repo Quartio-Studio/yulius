@@ -13,7 +13,7 @@ import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
 import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask, requestControl, dropControlRequest, handOverTask, openScheduleDialog, rescheduleTask } from './actions.js';
 import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments, openAttachment } from './filedrop.js';
-import { createPromptInput, ATOM, FILE_MARK, FILE_MARK_END, placeFiles } from './promptinput.js';
+import { createPromptInput, ATOM, FILE_MARK, FILE_MARK_END, placeFiles, withoutMarks } from './promptinput.js';
 import { relLong, dateTime, whenLabel } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
@@ -558,6 +558,8 @@ export function mountComposer(ctx, sandbox) {
     face: (path) => { const item = known.get(path); return item ? { name: item.name, image: imageOf(item) } : null; },
     known: (path) => known.has(path),
     onChange: () => {
+      // A composer gone (an upload that ended after the person left) no longer speaks for the draft.
+      if (destroyed) return;
       draft.text = prompt.value;
       keepAttached();
       remember();
@@ -824,7 +826,7 @@ export function mountComposer(ctx, sandbox) {
       // Each file shows where it sits in the formatted text (SPEC-124).
       const { plain, paths } = prompt.model();
       let n = 0;
-      const markdown = plain.replace(new RegExp(ATOM, 'g'), () => `${FILE_MARK}${n++}${FILE_MARK_END}`);
+      const markdown = withoutMarks(plain).replace(new RegExp(ATOM, 'g'), () => `${FILE_MARK}${n++}${FILE_MARK_END}`);
       preview = createMarkdownEditor({ markdown, readOnly: true, frontmatter: false });
       // Each file shows where it sits in the formatted text (SPEC-124), and opens from there.
       placeFiles(preview.el, (i) => {

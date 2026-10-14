@@ -22,7 +22,7 @@ import { IS_MAC } from './shortcuts.js';
 import { mentionOf, splitMentions } from './promptparts.js';
 
 /** One atom in the model's text. */
-export const ATOM = '￼';
+export const ATOM = '\uFFFC';
 /** Steps the undo history keeps. */
 const HISTORY_MAX = 100;
 /** Typing within this long of the last typing joins its undo step (within a word). */
@@ -48,7 +48,8 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
   el.contentEditable = 'true';
   let readOnly = false;
   let disabled = false;
-  let dragged = null; // the atom being dragged, while it is
+  let dragged = null; // the file being dragged, while it is
+  let moving = null; // `[start, end]` of this box's own selection or file being dragged
   let pendingCount = 0;
   const history = { states: [], index: -1, kind: '', at: 0 };
 
@@ -216,12 +217,13 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
 
   /**
    * Replaces model offsets `start`–`end` with `text` (U+FFFC for each of `atoms`), the caret then
-   * at `caret` (after the insert by default; `[a, b]` selects): one undo step.
+   * at `caret` (after the insert by default; `[a, b]` selects): one undo step. What would pass the
+   * length cap is cut, but files never are (`files`: the insert is uploaded files).
    */
-  function replace(start, end, text, atoms = [], caret = null) {
+  function replace(start, end, text, atoms = [], caret = null, { files = false } = {}) {
     const { plain, atoms: all } = scan();
     const room = maxLength - (plain.length - (end - start));
-    if (text.length > room) {
+    if (!files && text.length > room) {
       text = text.slice(0, Math.max(0, room));
       atoms = atoms.slice(0, countAtoms(text));
     }
@@ -231,7 +233,37 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
     const [a, b] = Array.isArray(caret) ? caret : [caret ?? start + text.length, caret ?? start + text.length];
     select(a, b);
     record('edit');
-    onChange();
+    if (el.isConnected) onChange();
+  }
+
+  /**
+   * Placeholder `id` becomes `files` (none: it goes), in the box and in every step of the history
+   * that holds it, so it is never a step of its own and undo never shows it again. False when the
+   * box no longer holds it.
+   */
+  function swapPending(id, files) {
+    const swap = (state) => {
+      const i = state.atoms.findIndex((atom) => atom.pending === id);
+      if (i === -1) return null;
+      let pos = -1;
+      for (let seen = 0; seen <= i; seen += 1) pos = state.plain.indexOf(ATOM, pos + 1);
+      state.plain = state.plain.slice(0, pos) + ATOM.repeat(files.length) + state.plain.slice(pos + 1);
+      state.atoms = [...state.atoms.slice(0, i), ...files, ...state.atoms.slice(i + 1)];
+      const shift = (o) => (o > pos ? o + files.length - 1 : o);
+      state.start = shift(state.start);
+      state.end = shift(state.end);
+      return pos;
+    };
+    for (const state of history.states) swap(state);
+    const focused = document.activeElement === el;
+    const { plain, atoms } = scan();
+    const [start, end] = focused ? selection() : [plain.length, plain.length];
+    const live = { plain, atoms, start, end };
+    if (swap(live) === null) return false;
+    draw(live.plain, live.atoms);
+    if (focused) select(live.start, live.end);
+    if (el.isConnected) onChange();
+    return true;
   }
 
   /** The model for pasted text: a mention of a file of this prompt becomes that file again. */
@@ -247,7 +279,7 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
   /** `plain` from `start` to `end` as text: each file its mention. */
   function asText(plain, atoms, start = 0, end = plain.length) {
     let index = countAtoms(plain.slice(0, start));
-    return plain.slice(start, end).replace(/￼/g, () => {
+    return plain.slice(start, end).replace(/\uFFFC/g, () => {
       const atom = atoms[index++];
       return atom && atom.path ? mentionOf(atom.path) : '';
     });
@@ -392,36 +424,48 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
     return at ?? plain.length;
   }
 
+  // A file, or the selection, dragged inside the box moves; text dragged in from elsewhere is
+  // inserted as plain text.
   el.addEventListener('dragstart', (event) => {
+    if (!editable()) { event.preventDefault(); return; }
     const atom = event.target instanceof Element ? event.target.closest('.pi-atom') : null;
-    if (!atom || !el.contains(atom) || !editable() || !atom.dataset.path) { if (atom) event.preventDefault(); return; }
-    dragged = atom;
-    atom.classList.add('pi-dragging');
-    event.dataTransfer.effectAllowed = 'move';
-    event.dataTransfer.setData('text/plain', mentionOf(atom.dataset.path));
+    const { plain, atoms } = scan();
+    if (atom && el.contains(atom)) {
+      const { offsets: [at] } = scan([[atom, 0]]);
+      if (!atom.dataset.path || at === null) { event.preventDefault(); return; }
+      dragged = atom;
+      atom.classList.add('pi-dragging');
+      moving = [at, at + 1];
+    } else {
+      const [start, end] = selection();
+      if (start === end) return;
+      moving = [start, end];
+    }
+    event.dataTransfer.effectAllowed = 'copyMove';
+    event.dataTransfer.setData('text/plain', asText(plain, atoms, moving[0], moving[1]));
   });
-  el.addEventListener('dragend', () => {
+  const dragDone = () => {
     if (dragged) dragged.classList.remove('pi-dragging');
     dragged = null;
-  });
+    moving = null;
+  };
+  el.addEventListener('dragend', dragDone);
   el.addEventListener('dragover', (event) => {
-    if (!dragged && !(event.dataTransfer && [...event.dataTransfer.types].includes('text/plain'))) return;
+    if (!moving && !(event.dataTransfer && [...event.dataTransfer.types].includes('text/plain'))) return;
     event.preventDefault();
     if (!editable()) { event.dataTransfer.dropEffect = 'none'; return; }
-    event.dataTransfer.dropEffect = dragged ? 'move' : 'copy';
+    event.dataTransfer.dropEffect = moving ? 'move' : 'copy';
     showPoint(event.clientX, event.clientY);
   });
   el.addEventListener('drop', (event) => {
-    if (!dragged && !(event.dataTransfer && [...event.dataTransfer.types].includes('text/plain'))) return;
+    if (!moving && !(event.dataTransfer && [...event.dataTransfer.types].includes('text/plain'))) return;
     event.preventDefault();
-    if (!editable()) return;
+    if (!editable()) { dragDone(); return; }
     const target = offsetAtPoint(event.clientX, event.clientY);
-    if (dragged) {
-      const { offsets: [from] } = scan([[dragged, 0]]);
-      dragged.classList.remove('pi-dragging');
-      dragged = null;
-      if (from === null) return;
-      move(from, target);
+    if (moving) {
+      const [start, end] = moving;
+      dragDone();
+      move(start, end, target);
       return;
     }
     // Text dragged in from elsewhere: plain text at the drop point.
@@ -430,20 +474,23 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
     if (plain) replace(target, target, plain, atoms);
   });
 
-  /** Moves the file at model offset `from` to offset `to` (as offsets before the move): one undo step. */
-  function move(from, to) {
-    if (to === from || to === from + 1) return;
+  /**
+   * Moves model offsets `start`–`end` (a file, or a selection with its files) to offset `to` (as
+   * offsets before the move), selected there: one undo step.
+   */
+  function move(start, end, to) {
+    if (to >= start && to <= end) return;
     const { plain, atoms } = scan();
-    if (plain[from] !== ATOM) return;
-    const index = countAtoms(plain.slice(0, from));
-    const atom = atoms[index];
-    const rest = plain.slice(0, from) + plain.slice(from + 1);
-    const others = [...atoms.slice(0, index), ...atoms.slice(index + 1)];
-    const at = to > from ? to - 1 : to;
-    const before = countAtoms(rest.slice(0, at));
-    draw(rest.slice(0, at) + ATOM + rest.slice(at), [...others.slice(0, before), atom, ...others.slice(before)]);
+    const before = countAtoms(plain.slice(0, start));
+    const count = countAtoms(plain.slice(start, end));
+    const piece = plain.slice(start, end);
+    const rest = plain.slice(0, start) + plain.slice(end);
+    const others = [...atoms.slice(0, before), ...atoms.slice(before + count)];
+    const at = to > end ? to - piece.length : to;
+    const into = countAtoms(rest.slice(0, at));
+    draw(rest.slice(0, at) + piece + rest.slice(at), [...others.slice(0, into), ...atoms.slice(before, before + count), ...others.slice(into)]);
     el.focus({ preventScroll: true });
-    select(at + 1);
+    select(at, at + piece.length);
     record('move');
     onChange();
   }
@@ -504,7 +551,7 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
       const { plain, atoms } = scan();
       let index = 0;
       const files = [];
-      const shown = plain.replace(/￼/g, () => { const atom = atoms[index++]; if (!atom.path) return ''; files.push(atom.path); return ATOM; });
+      const shown = plain.replace(/\uFFFC/g, () => { const atom = atoms[index++]; if (!atom.path) return ''; files.push(atom.path); return ATOM; });
       return { plain: shown, paths: files };
     },
     get readOnly() { return readOnly; },
@@ -526,42 +573,16 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
       const [start, end] = event && Number.isFinite(event.clientX) && (event.clientX || event.clientY)
         ? [offsetAtPoint(event.clientX, event.clientY), offsetAtPoint(event.clientX, event.clientY)]
         : selection();
-      replace(start, end, ATOM, [{ pending: id }]);
-      const where = () => {
-        const node = el.querySelector(`.pi-pending[data-pending="${id}"]`);
-        return node ? scan([[node, 0]]).offsets[0] : null;
-      };
+      replace(start, end, ATOM, [{ pending: id }], null, { files: true });
       return {
+        /** The files take the placeholder's place (after the text when it was taken out). */
         insert(paths) {
-          const at = where();
-          const start = at ?? scan().plain.length;
-          const end = at === null ? start : start + 1;
-          const focused = document.activeElement === el;
-          const [s0, e0] = focused ? selection() : [null, null];
-          replace(start, end, ATOM.repeat(paths.length), paths.map((path) => ({ path })));
-          // The caret stays where the person is typing, unless it was on the placeholder.
-          if (focused && s0 !== null && !(s0 >= start && s0 <= end)) {
-            const shift = (o) => (o > start ? o + paths.length - (end - start) : o);
-            select(shift(s0), shift(e0));
-          }
+          const files = paths.map((path) => ({ path }));
+          if (swapPending(id, files)) return;
+          const { plain } = scan();
+          replace(plain.length, plain.length, ATOM.repeat(files.length), files, null, { files: true });
         },
-        cancel() {
-          const at = where();
-          if (at === null) return;
-          const { plain, atoms } = scan();
-          const index = countAtoms(plain.slice(0, at));
-          draw(plain.slice(0, at) + plain.slice(at + 1), [...atoms.slice(0, index), ...atoms.slice(index + 1)]);
-          // Not a step of its own: the placeholder leaves the history it is in.
-          for (const state of history.states) {
-            const i = state.atoms.findIndex((atom) => atom.pending === id);
-            if (i === -1) continue;
-            let seen = -1;
-            const pos = [...state.plain].findIndex((c) => c === ATOM && (seen += 1) === i);
-            state.plain = state.plain.slice(0, pos) + state.plain.slice(pos + 1);
-            state.atoms.splice(i, 1);
-          }
-          onChange();
-        },
+        cancel() { swapPending(id, []); },
       };
     },
     /** Shows the caret where something dropped at this point lands. */
@@ -571,7 +592,7 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
       if (!paths.length) return;
       const { plain } = scan();
       const gap = plain && !/\s$/.test(plain) ? '\n' : '';
-      replace(plain.length, plain.length, gap + ATOM.repeat(paths.length), paths.map((path) => ({ path })));
+      replace(plain.length, plain.length, gap + ATOM.repeat(paths.length), paths.map((path) => ({ path })), null, { files: true });
     },
     /** Draws the files again (a thumbnail became available), the caret kept. */
     refresh() {
@@ -592,8 +613,11 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
 }
 
 /** Private-use characters around a file's number in text handed to the Markdown editor. */
-export const FILE_MARK = '';
-export const FILE_MARK_END = '';
+export const FILE_MARK = '\uE000';
+export const FILE_MARK_END = '\uE001';
+
+/** `text` without the marker characters, so text cannot place a file of its own. */
+export const withoutMarks = (text) => String(text).replace(/[\uE000\uE001]/g, '');
 
 /** Replaces each file marker in `root`'s text with `face(n)` (left as it is when that is null). */
 export function placeFiles(root, face) {

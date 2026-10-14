@@ -12,7 +12,7 @@ import { BRAND } from './brand.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { openAttachment } from './filedrop.js';
 import { inlineCount } from './promptparts.js';
-import { FILE_MARK, FILE_MARK_END, placeFiles } from './promptinput.js';
+import { FILE_MARK, FILE_MARK_END, placeFiles, withoutMarks } from './promptinput.js';
 import { folderDropZone } from './playground.js';
 
 // ---------------------------------------------------------------- task menu
@@ -562,7 +562,8 @@ export function openPromptDialog(ctx, task) {
     const asParts = parts.map((part) => (Number.isInteger(part.attachment) ? { file: part.attachment } : { text: String(part.text ?? '') }));
     const inside = inlineCount(asParts);
     // Each file inside the text stands as a marker the Markdown leaves alone, then takes its place.
-    const markdown = asParts.slice(0, inside).map((part) => ('file' in part ? `${FILE_MARK}${part.file}${FILE_MARK_END}` : part.text)).join('');
+    // The text's own marker characters are dropped, so only a file of the prompt is placed.
+    const markdown = asParts.slice(0, inside).map((part) => ('file' in part ? `${FILE_MARK}${part.file}${FILE_MARK_END}` : withoutMarks(part.text))).join('');
     if (markdown.trim()) {
       editor = createMarkdownEditor({ markdown, readOnly: true, frontmatter: false });
       placeFiles(editor.el, (n) => (files[n] ? fileItem(files[n], n, 'span') : null));

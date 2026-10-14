@@ -169,3 +169,64 @@ test('a file dropped on the prompt lands at the drop point, and the prompt fits 
   });
   expect(fits).toEqual({ page: true, atoms: true });
 });
+
+// SPEC-124 review: an upload's placeholder never comes back through undo; the insert is one step.
+test('undo right after a paste, or after typing while it uploaded, never shows the placeholder again', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await screen.getByRole('textbox', 'Task prompt').click();
+  await browser.keyboard.type('One ');
+  await pasteImage(browser, 'a.png');
+  await expect(browser.locator('.composer-prompt .pi-image img')).toHaveCount(1);
+  await browser.keyboard.press('ControlOrMeta+z');
+  await expect(browser.locator('.composer-prompt .pi-atom')).toHaveCount(0);
+  await browser.keyboard.press('ControlOrMeta+Shift+z');
+  await expect(browser.locator('.composer-prompt .pi-image img')).toHaveCount(1);
+  await expect(browser.locator('.composer-prompt .pi-pending')).toHaveCount(0);
+
+  // Typed while the next one uploads: undoing the typing keeps the file, never the placeholder.
+  await browser.evaluate(() => {
+    const w = window as unknown as Window & { __yuliusMock: { holdUpload?: Promise<void> }; __release?: () => void };
+    w.__yuliusMock.holdUpload = new Promise<void>((resolve) => { w.__release = resolve; });
+  });
+  await pasteImage(browser, 'b.png');
+  await expect(browser.locator('.composer-prompt .pi-pending')).toHaveCount(1);
+  await browser.keyboard.type(' two three');
+  await browser.evaluate(() => (window as unknown as { __release: () => void }).__release());
+  await expect(browser.locator('.composer-prompt .pi-image img')).toHaveCount(2);
+  expect(await promptText(browser)).toBe('One [a.png][b.png] two three');
+  // Undo walks the typing back word by word to the inserted file, never to a placeholder…
+  for (let i = 0; i < 6 && (await promptText(browser)) !== 'One [a.png][b.png]'; i += 1) {
+    await browser.keyboard.press('ControlOrMeta+z');
+    await expect(browser.locator('.composer-prompt .pi-pending')).toHaveCount(0);
+  }
+  expect(await promptText(browser)).toBe('One [a.png][b.png]');
+  // …and one more step takes the file.
+  await browser.keyboard.press('ControlOrMeta+z');
+  await expect(browser.locator('.composer-prompt .pi-pending')).toHaveCount(0);
+  expect(await promptText(browser)).toBe('One [a.png]');
+});
+
+test('a selection dragged inside the prompt moves, it is not copied', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await screen.getByRole('textbox', 'Task prompt').fill('alpha beta gamma');
+  await browser.evaluate(() => {
+    const input = document.querySelector('.composer-prompt')!;
+    const text = input.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(text, 5);
+    range.setEnd(text, 10);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    const end = document.createRange();
+    end.setStart(text, 15);
+    end.setEnd(text, 16);
+    const box = end.getBoundingClientRect();
+    const at = { clientX: box.right, clientY: box.top + box.height / 2 };
+    const data = new DataTransfer();
+    text.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer: data }));
+    input.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: data, ...at }));
+    input.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: data, ...at }));
+    input.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: data }));
+  });
+  expect(await promptText(browser)).toBe('alpha gamma beta');
+});
