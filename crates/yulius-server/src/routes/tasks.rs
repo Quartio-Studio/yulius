@@ -239,6 +239,15 @@ pub async fn schedule(
     Ok(Json(app.schedule_task(&ctx, &tid, &req).await?))
 }
 
+pub async fn change_start(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(tid): Path<String>,
+    Json(req): Json<yulius_contracts::api::tasks::ChangeStart>,
+) -> ApiResult<Json<TaskSummary>> {
+    Ok(Json(app.change_task_start(&ctx, &tid, &req).await?))
+}
+
 pub async fn queue_message(
     State(app): State<AppState>,
     Auth(ctx): Auth,

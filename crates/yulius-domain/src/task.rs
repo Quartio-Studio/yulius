@@ -141,6 +141,12 @@ pub enum TaskEvent {
     ChainReleased,
     /// A prepared task's time came, or a person started it now (SPEC-105).
     PreparedReleased,
+    /// Before its first run a person changed how a waiting task starts: it now waits for a task
+    /// or a rule (SPEC-126).
+    ChainChosen,
+    /// Before its first run a person changed how a waiting task starts: it now waits for them or
+    /// a time (SPEC-126).
+    PreparedChosen,
 }
 
 /// An event that is not valid in the current state.
@@ -194,6 +200,8 @@ impl TaskStatus {
                 S::Stopped(StopReason::Cancelled)
             }
             (S::Chained, E::ChainReleased) | (S::Prepared, E::PreparedReleased) => S::Queued,
+            (S::Chained | S::Prepared, E::ChainChosen) => S::Chained,
+            (S::Chained | S::Prepared, E::PreparedChosen) => S::Prepared,
             (S::Starting, E::Spawned) => S::Running,
             (S::Starting, E::StartFailed(reason)) => S::Failed(reason),
             (S::Starting | S::Running | S::Switching, E::CancelRequested) => S::Stopping,
@@ -698,6 +706,28 @@ mod tests {
         assert!(TaskStatus::Queued.apply(TaskEvent::ChainReleased).is_err());
         assert!(!TaskStatus::Chained.is_live());
         assert!(!TaskStatus::Chained.is_resting());
+        Ok(())
+    }
+
+    #[test]
+    fn a_waiting_task_changes_how_it_starts() -> Result<(), TransitionError> {
+        // SPEC-126 CHS-001: chained and prepared tasks swap waits; started ones keep theirs.
+        for from in [TaskStatus::Chained, TaskStatus::Prepared] {
+            assert_eq!(from.apply(TaskEvent::ChainChosen)?, TaskStatus::Chained);
+            assert_eq!(from.apply(TaskEvent::PreparedChosen)?, TaskStatus::Prepared);
+        }
+        for from in [
+            TaskStatus::Queued,
+            TaskStatus::WaitingCapacity,
+            TaskStatus::Starting,
+            TaskStatus::Running,
+            TaskStatus::Closed,
+            TaskStatus::Stopped(StopReason::Cancelled),
+        ] {
+            for event in [TaskEvent::ChainChosen, TaskEvent::PreparedChosen] {
+                assert!(from.apply(event).is_err(), "{from:?} {event:?}");
+            }
+        }
         Ok(())
     }
 
