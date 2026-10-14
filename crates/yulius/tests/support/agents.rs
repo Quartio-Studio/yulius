@@ -34,6 +34,10 @@ pub struct FakeAgentOptions {
     /// The goal turn ends with a background agent pending that finishes after this many seconds
     /// and wakes the session (`--goal-agent`).
     pub goal_agent: Option<u64>,
+    /// The background agent first stops with background work of its own still running (its
+    /// notification says its result may be interim) and notifies its end this many seconds
+    /// later (`--goal-agent-interim`).
+    pub goal_agent_interim: Option<u64>,
     /// The goal turn starts a Monitor stream that expires after this many seconds and never
     /// reports (`--goal-monitor`), or ends after half of them (`goal_monitor_ends`).
     pub goal_monitor: Option<u64>,
@@ -172,6 +176,9 @@ impl HarnessPort for FakeAgentHarness {
         }
         if let Some(seconds) = self.options.goal_agent {
             argv.extend(["--goal-agent".into(), seconds.to_string()]);
+        }
+        if let Some(seconds) = self.options.goal_agent_interim {
+            argv.extend(["--goal-agent-interim".into(), seconds.to_string()]);
         }
         if let Some(seconds) = self.options.goal_monitor {
             argv.extend(["--goal-monitor".into(), seconds.to_string()]);

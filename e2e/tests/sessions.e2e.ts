@@ -220,6 +220,60 @@ test('a slash command, its output, a ! command and an interruption read as the T
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+// #347 (SPEC-090): the TUI does not print `isMeta` context. A long note (a skill's body) folds to one
+// faint line that opens on demand; short notes people act on (the Stop hook's goal) stay as written.
+test('a long injected note folds to one line, a short one stays readable (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/sessions'));
+  const folds = await browser.evaluate(async () => {
+    const url = '/assets/pages/sessions.js';
+    const { foldsNote } = await import(url);
+    const lines = (n: number) => Array.from({ length: n }, (_, i) => `line ${i}`).join('\n');
+    return {
+      goal: foldsNote('A session-scoped Stop hook is now active with condition: "Ship it". Briefly acknowledge the goal, then immediately start working toward it.'),
+      feedback: foldsNote('Stop hook feedback:\nYou have 1 new Yulius notice.\nRead it.\nThen go on.'),
+      eight: foldsNote(lines(8)),
+      nine: foldsNote(lines(9)),
+      atBound: foldsNote('x'.repeat(2000)),
+      overBound: foldsNote('x'.repeat(2001)),
+      trailing: foldsNote(`${lines(8)}\n\n\n`),
+    };
+  });
+  expect(folds).toEqual({ goal: false, feedback: false, eight: false, nine: true, atBound: false, overBound: true, trailing: false });
+});
+
+test('a skill body shows as one folded line that opens on demand; the Stop hook goal stays shown', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/sessions/ses_task_4'));
+  const transcript = screen.getByRole('list', 'Transcript');
+  await expect(transcript).toContainText('A session-scoped Stop hook is now active with condition: "Payment webhook ships on green CI".');
+  const note = browser.locator('.ss-tui details.ss-note');
+  const line = browser.locator('.ss-tui details.ss-note > summary');
+  const body = browser.locator('.ss-tui details.ss-note > .ss-note-text');
+  await expect(note).toHaveCount(1);
+  // Its size in UTF-8 bytes (1,621; the text is 1,539 UTF-16 units, which would read 1.5 KiB).
+  await expect(line).toHaveText(/⎿\s*Context added \(1\.6 KiB\)$/);
+  await expect(note).not.toHaveAttribute('open', '');
+  await expect(body).toBeHidden();
+  await expect(transcript).not.toContainText('Base directory for this skill');
+  expect(await axeViolations(browser)).toEqual([]);
+
+  await line.focus();
+  await browser.keyboard.press('Enter');
+  await expect(note).toHaveAttribute('open', '');
+  await expect(body).toBeVisible();
+  await expect(body).toContainText('Base directory for this skill: /home/dev/.claude/skills/retry-policy');
+  await expect(body).toContainText('- Rule 36: back off before attempt 37.');
+  await expect(body).toHaveAttribute('role', 'region');
+  await expect(body).toHaveAttribute('aria-label', 'Added context');
+  // Opened, it scrolls within a bounded height and the keyboard reaches it with a visible ring.
+  await browser.keyboard.press('Tab');
+  const ring = await browser.evaluate(() => {
+    const text = document.activeElement as HTMLElement;
+    return { reached: text.matches('.ss-note-text:focus-visible'), scrolls: text.scrollHeight > text.clientHeight, bounded: text.clientHeight <= 480, inset: getComputedStyle(text).boxShadow.includes('inset') };
+  });
+  expect(ring).toEqual({ reached: true, scrolls: true, bounded: true, inset: true });
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
 // "the contrast and the saturation should be lower to communicate that this session is old and this
 // is a session not a task" — still at least WCAG AA for text, in both themes.
 test('a session is faded in both themes: less contrast and saturation than a live terminal, still AA', async ({ app, browser }) => {
@@ -388,7 +442,9 @@ test('a long diff that scrolls shows its keyboard focus', async ({ app, browser 
   expect(ring).toEqual({ scrolls: true, hunk: true, inset: true, clipped: false });
   // A scroller is a named region (as the Git page's diffs); short blocks are no tab stops (review round 5).
   await expect(browser.locator('.ss-tui .ss-diff-hunk[role="region"][aria-label="Changed lines of src/webhooks/fixtures.ts"]')).toHaveCount(1);
-  await expect(browser.locator('.ss-tui [tabindex="0"]')).toHaveCount(1);
+  // The other scroller is the folded skill body (SPEC-090).
+  await expect(browser.locator('.ss-tui [tabindex="0"]')).toHaveCount(2);
+  await expect(browser.locator('.ss-tui .ss-note-text[tabindex="0"]')).toHaveCount(1);
 });
 
 test('a search match opens the transcript at its line', async ({ app, browser, screen }) => {

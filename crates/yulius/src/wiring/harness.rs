@@ -392,6 +392,9 @@ impl TranscriptWatch for Watch {
                     Observed::BackgroundEnded { id } => {
                         out.push(Observation::BackgroundEnded { id });
                     }
+                    Observed::BackgroundResumable { id } => {
+                        out.push(Observation::BackgroundResumable { id });
+                    }
                     Observed::ContextFull => out.push(Observation::ContextFull),
                     Observed::Compacted => out.push(Observation::Compacted),
                     Observed::CompactFailed => out.push(Observation::CompactFailed),

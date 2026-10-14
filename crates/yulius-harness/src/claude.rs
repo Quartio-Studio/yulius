@@ -112,6 +112,17 @@ const MONITOR_STARTED: &str = "Monitor started (task ";
 /// The longest task id taken from a notification or a tool result.
 const MAX_TASK_ID: usize = 128;
 
+/// How the `<note>` of a background agent's notification says, in Claude Code 2.1.292's words
+/// (lower case, single spaces), that the agent stopped with background work of its own still
+/// running: "This agent stopped with background work of its own still running. It may resume on
+/// its own when that work completes or reports, and the same task-id notifies again if it does;
+/// the result below may be interim." Its final note says it stopped "with no live background
+/// children of its own" and matches neither (SPEC-079 BGW-006).
+const RESUMABLE_NOTE_MARKS: [&str; 2] = [
+    "stopped with background work of its own still running",
+    "the result below may be interim",
+];
+
 /// Normalizes one Claude Code transcript line.
 #[must_use]
 pub fn observe_line(line: &str) -> Vec<Observed> {
@@ -148,7 +159,7 @@ fn observe_attachment(record: &Map<String, Value>) -> Vec<Observed> {
     }
     // A notification delivered while the agent works (SPEC-079 BGW-002).
     if str_of(attachment, "type") == Some("queued_command") {
-        return str_of(attachment, "prompt").map_or_else(Vec::new, background_ended);
+        return str_of(attachment, "prompt").map_or_else(Vec::new, background_notified);
     }
     if str_of(attachment, "type") != Some("goal_status") {
         return Vec::new();
@@ -247,7 +258,7 @@ fn observe_user(record: &Map<String, Value>) -> Vec<Observed> {
         }
     };
     // A wake-up prompt says which background work ended.
-    let mut out = background_ended(&text);
+    let mut out = background_notified(&text);
     out.extend(session);
     out.push(turn);
     out
@@ -317,10 +328,11 @@ fn tool_result_text(message: &Map<String, Value>) -> String {
     out
 }
 
-/// The background work the `<task-notification>` blocks of `text` say ended: those with a
-/// `<status>` (completed, failed, stopped) and a Monitor's expiry event. A Monitor's other events
-/// leave it running.
-fn background_ended(text: &str) -> Vec<Observed> {
+/// What the `<task-notification>` blocks of `text` say of background work: a block with a
+/// `<status>` (completed, failed, stopped) or a Monitor's expiry event ends it, unless its note
+/// says the agent stopped with background work of its own still running, which resumes by itself
+/// (SPEC-079 BGW-006). A Monitor's other events leave it running.
+fn background_notified(text: &str) -> Vec<Observed> {
     const OPEN: &str = "<task-notification>";
     const CLOSE: &str = "</task-notification>";
     let mut out = Vec::new();
@@ -334,13 +346,39 @@ fn background_ended(text: &str) -> Vec<Observed> {
             .and_then(|(_, tail)| tail.split_once("</task-id>"))
             .map(|(id, _)| id.trim())
             .filter(|id| !id.is_empty() && id.len() <= MAX_TASK_ID);
-        if let Some(id) = id
-            && (block.contains("<status>") || block.contains("[Monitor expired"))
-        {
-            out.push(Observed::BackgroundEnded { id: id.to_owned() });
+        let Some(id) = id.map(str::to_owned) else {
+            continue;
+        };
+        let status = block.contains("<status>");
+        if status && stopped_with_own_work(block) {
+            out.push(Observed::BackgroundResumable { id });
+        } else if status || block.contains("[Monitor expired") {
+            out.push(Observed::BackgroundEnded { id });
         }
     }
     out
+}
+
+/// Whether a notification block's `<note>` says the agent stopped with background work of its own
+/// still running ([`RESUMABLE_NOTE_MARKS`], any case and line breaks). Only notes before the
+/// `<result>` count: the result is the agent's own text, which may quote anything.
+fn stopped_with_own_work(block: &str) -> bool {
+    let mut head = block.split_once("<result>").map_or(block, |(head, _)| head);
+    while let Some((note, tail)) = head
+        .split_once("<note>")
+        .and_then(|(_, tail)| tail.split_once("</note>"))
+    {
+        let note = note
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        if RESUMABLE_NOTE_MARKS.iter().any(|mark| note.contains(mark)) {
+            return true;
+        }
+        head = tail;
+    }
+    false
 }
 
 /// A user line that only says the person interrupted the turn ([`INTERRUPT_MARKERS`]).
@@ -918,6 +956,110 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    /// SPEC-079 BGW-006, task #74 (Claude Code 2.1.292, 2026-10-14; paths and ids shortened): a
+    /// background agent that stopped with background work of its own still running notifies
+    /// `completed` with a note that its result may be interim. That does not end it: the turn
+    /// record after it no longer counts it, and the same task id notifies again once it stopped
+    /// with no background work left, which ends it.
+    #[test]
+    fn an_agent_that_stopped_with_its_own_work_running_has_not_ended() {
+        const INTERIM: &str = "This agent stopped with background work of its own still running. It may resume on its own when that work completes or reports, and the same task-id notifies again if it does; the result below may be interim.";
+        const FINAL: &str = "A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.";
+        let id = "a994b4d8b2183ec8e";
+        let notification = |note: &str, result: &str| {
+            format!(
+                "<task-notification>\n<task-id>{id}</task-id>\n<tool-use-id>toolu_01W</tool-use-id>\n<output-file>/tmp/claude-0/s/tasks/{id}.output</output-file>\n<status>completed</status>\n<summary>Agent \"Independent code review of diff\" finished</summary>\n<note>{note}</note>\n<result>{result}</result>\n<usage><subagent_tokens>59121</subagent_tokens><tool_uses>24</tool_uses><duration_ms>154887</duration_ms></usage>\n</task-notification>"
+            )
+        };
+        let wake_up = |text: String, timestamp: &str| {
+            observe_line(
+                &serde_json::json!({"parentUuid": "p", "isSidechain": false, "promptId": "q",
+                    "type": "user", "message": {"role": "user", "content": text}, "uuid": "u",
+                    "timestamp": timestamp, "permissionMode": "bypassPermissions",
+                    "origin": {"kind": "task-notification", "producer": "session-task",
+                        "runId": "r"},
+                    "promptSource": "system", "turnOrigin": "task_notification",
+                    "queueSkipAttachments": true, "userType": "external", "entrypoint": "cli",
+                    "cwd": "/w", "sessionId": "s1", "version": "2.1.292"})
+                .to_string(),
+            )
+        };
+        let session = Observed::SessionMeta {
+            session_id: "s1".into(),
+            cwd: Some("/w".into()),
+            model: None,
+            version: Some("2.1.292".into()),
+        };
+        let resumable = |id: &str| Observed::BackgroundResumable { id: id.into() };
+        let ended = |id: &str| Observed::BackgroundEnded { id: id.into() };
+        // 00:34:53: the interim result wakes the session.
+        let interim = notification(
+            INTERIM,
+            "The Rust test suite is still running. I'll write the report when it finishes.",
+        );
+        assert_eq!(
+            wake_up(interim.clone(), "2026-10-14T00:34:53.331Z"),
+            vec![
+                resumable(id),
+                session.clone(),
+                Observed::UserTurn {
+                    at: Some(Timestamp(1_791_938_093_331)),
+                    wake: true
+                }
+            ]
+        );
+        // 00:34:55: the turn record after it says no agent is pending.
+        assert_eq!(
+            observe_line(
+                r#"{"parentUuid":"p","isSidechain":false,"type":"system","subtype":"turn_duration","durationMs":453250,"messageCount":155,"timestamp":"2026-10-14T00:34:55.411Z","uuid":"u","isMeta":false,"userType":"external","entrypoint":"cli","cwd":"/w","sessionId":"s1","version":"2.1.292"}"#
+            ),
+            vec![Observed::TurnEnded {
+                background_agents: None,
+                at: Some(Timestamp(1_791_938_095_411)),
+                duration_ms: Some(453_250),
+            }]
+        );
+        // 00:39:49: the final notification of the same task id ends it.
+        assert_eq!(
+            wake_up(
+                notification(FINAL, "# Code review\n\n**Approve.**"),
+                "2026-10-14T00:39:49.419Z"
+            ),
+            vec![
+                ended(id),
+                session,
+                Observed::UserTurn {
+                    at: Some(Timestamp(1_791_938_389_419)),
+                    wake: true
+                }
+            ]
+        );
+        // Delivered while the agent works (a queued command), the same.
+        let queued = observe_line(
+            &serde_json::json!({"type": "attachment", "isSidechain": false,
+                "attachment": {"type": "queued_command", "commandMode": "task-notification",
+                "prompt": interim}})
+            .to_string(),
+        );
+        assert_eq!(queued, vec![resumable(id)]);
+        // Claude Code's wording, whatever its case and line breaks.
+        let reflowed = notification(&INTERIM.to_uppercase().replace(". ", ".\n  "), "Waiting.");
+        assert_eq!(background_notified(&reflowed), vec![resumable(id)]);
+        // Only the note counts: the agent's own result quoting it, another note or none ends it
+        // as before.
+        let quoted = notification(FINAL, INTERIM);
+        let restarted = notification(
+            "No completion record was found for it in the previous session. It may have been stopped, or it may have been running when the previous Claude Code process exited.",
+            "",
+        );
+        let plain = format!(
+            "<task-notification>\n<task-id>{id}</task-id>\n<status>completed</status>\n<result><note>{INTERIM}</note></result>\n</task-notification>"
+        );
+        for text in [quoted, restarted, plain] {
+            assert_eq!(background_notified(&text), vec![ended(id)], "{text}");
+        }
     }
 
     /// Esc or Ctrl+C during a turn (Claude Code 2.1.292, shape seen on the deployed instance):
