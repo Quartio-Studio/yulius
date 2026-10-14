@@ -1,11 +1,11 @@
 ---
 yulius-task: 2326c46c-23b2-4adc-8c3a-3e245f15d44f
-status: in-progress
+status: done
 ---
 
 # SPEC-093: the automation's start choice sits beside Run now and Save
 
-Status: in progress
+Status: implemented
 Date: 2026-10-14
 Owner: Yulius task #78
 Scope authorization: user request (task #78), with a screenshot of the editor's action bar
@@ -52,13 +52,13 @@ the chip shows.
 ## Plan
 
 - [x] Spec SPEC-093 written and validated
-- [ ] Run now runs with the start choice the editor shows (API body, tested)
-- [ ] New task's start menu shared as one module
-- [ ] The start chip in the automation action bar replaces the Start row
-- [ ] The action bar wraps on a phone and is disabled read-only (e2e)
-- [ ] SPEC-078, API doc, ADR and changes describe the chip
-- [ ] Independent review in a fresh session, findings fixed
-- [ ] Every gate green, merged into dev
+- [x] Run now runs with the start choice the editor shows (API body, tested)
+- [x] New task's start menu shared as one module
+- [x] The start chip in the automation action bar replaces the Start row
+- [x] The action bar wraps on a phone and is disabled read-only (e2e)
+- [x] SPEC-078, API doc, ADR and changes describe the chip
+- [x] Independent review in a fresh session, findings fixed
+- [x] Every gate green, merged into dev
 
 ## Acceptance criteria
 
@@ -121,4 +121,33 @@ the chip shows.
 
 ## Evidence
 
-To be filled in when the work is done.
+- `scripts/dev ci` on f0bc30b4: exit 0. Repository contracts, fmt, clippy, deny, shear, nextest
+  **1521 tests passed** (16 skipped), doctests, docs.
+- Full e2e suite (`E2E_TELEMETRY_DISABLED=1 npx e2e run`) on f0bc30b4: exit 0, **284 passed**,
+  1 skipped (42 files).
+- New tests, each red before its change:
+  - `crates/yulius/tests/automation_start.rs`
+    `run_now_starts_its_task_with_the_choice_it_is_given` (AC-AUT-23):
+    - invalid bodies answer 422 and record no run; a reader gets 403;
+    - supertask, rule and after-task bodies start the run's task that way and store nothing;
+    - no body uses the stored choice;
+    - the stored choice sent back is not re-checked;
+    - the audit names another choice.
+  - `e2e/tests/automations.e2e.ts`:
+    - the chip between Delete and Run now, with no Start row and the help as its tooltip; New
+      task's menu (no WCAG violations); each of the four choices saved and read back when the
+      editor opens again (AC-AUT-20..22);
+    - Run now with an unsaved Supertask (AC-AUT-23);
+    - Run now and the chip off until the automation loads (review);
+    - a reader's disabled chip (AC-AUT-24).
+  - `e2e/tests/responsive.e2e.ts`: the automation editor at 768 and 390 px, with no overlapping
+    header controls and no sideways scroll (AC-AUT-24).
+- The New task suites that use the shared start menu (`intake`, `drafts`, `supertask`, `menus`)
+  pass unchanged.
+- Checked by eye on the mock UI in the Yulius browser:
+  - desktop: Delete, Start now ▾, Run now, Save, and the menu open;
+  - at 390 px: the name on its own row, then Delete, then the chip, Run now and Save on one line.
+- `spec_check` valid; `python3 scripts/check_repository.py` passed.
+- Not testable here: a real browser reload against `yulius serve`. The mock's data lives in
+  memory, so "survives reload" is checked by opening the editor again, and storage through the
+  API.
