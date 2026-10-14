@@ -2200,13 +2200,11 @@ button.task-group-head:hover { color: var(--text); }
 .ss-entry + .ss-entry { margin-top: 12px; }
 .ss-tui > .ss-more, .ss-tui > .ss-locked { position: relative; margin-top: 16px; }
 /* The web floats in the well's corner and sticks there while the page scrolls (SPEC-101): the first
-   lines wrap beside it, later ones paint over it (everything after it is positioned), and while it
-   is stuck under them (.ss-web-stuck, from pages/sessions.js) it fades to a colour they read on at AA. */
+   lines wrap beside it, later ones paint over it (everything after it is positioned). It keeps its
+   colours when stuck (SPEC-109). */
 .ss-web { position: sticky; top: 0; float: right; width: 84px; height: 102px; margin: -16px -32px 8px 16px; pointer-events: none; } /* 3 px pixels, in the well's corner */
 .ss-web-thread, .ss-web-silk { fill: var(--session-web); }
 .ss-web-spider { fill: var(--session-dim); }
-.ss-web-stuck :is(.ss-web-thread, .ss-web-silk, .ss-web-spider) { fill: var(--session-web-stuck); }
-.ss-web-mark { height: 0; margin-top: -16px; } /* at the well's top, where the web sticks, above its padding */
 /* Every 8 s the spider climbs 6 pixels up its thread, one pixel a step, hangs there and drops back,
    its legs switching frames on each step (SPEC-101); the thread shortens with it, from its top. */
 .ss-web-spider { animation: ss-spider-climb var(--duration-spider) steps(6, end) infinite; }
@@ -2284,7 +2282,6 @@ button.task-group-head:hover { color: var(--text); }
   .ss-inner > .ss-body > :not(.ss-tui) { margin: 0 12px 12px; }
   .ss-tui { padding: 12px 12px 24px; font-size: var(--fs-sm); line-height: var(--lh-sm); }
   .ss-web { width: 56px; height: 68px; margin: -12px -12px 8px 12px; } /* 2 px pixels */
-  .ss-web-mark { margin-top: -12px; }
   .ss-roach { width: 32px; height: 14px; } /* 2 px pixels */
   .ss-has-when .ss-prompt { padding-right: 1ch; }
   .ss-when { position: static; align-self: flex-end; padding: 0; }

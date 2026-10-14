@@ -4,7 +4,9 @@
 
 Accepted. Specified in [SPEC-101](../../.ai/specs/SPEC-101-spider-should-be-animated-and-the-web-sh.md).
 It extends [0059](0059-a-session-is-printed-as-the-tui-in-html.md)'s spider-web corner of the
-read-only session view (SPEC-001 UI-049).
+read-only session view (SPEC-001 UI-049). Its stuck colour (`--session-web-stuck`, the observer and
+the mark) is superseded by [0088](0088-the-session-web-keeps-its-colours-when-stuck.md): the web
+keeps its colours when stuck.
 
 ## Context
 
