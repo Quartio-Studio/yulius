@@ -1,11 +1,11 @@
 ---
 yulius-task: 47754f02-0d19-40e6-a6fd-ea0b2efd46d1
-status: in-progress
+status: done
 ---
 
 # SPEC-123: The wordmark is set like the composer's quote
 
-Status: in progress
+Status: implemented
 Date: 2026-10-14
 Owner: Yulius task #110
 Scope authorization: task #110 ("Text in the logo should use exactly this font - first letter big,
@@ -57,11 +57,11 @@ task touches the sidebar brand.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Regression test: the sidebar and sign-in wordmarks are set like the quote
-- [ ] Wordmark set in the quote's face: Tenor Sans 400, mixed case, no tracking, 22/28 px
-- [ ] Brand docs, ADR-0100 and SPEC-001 say how the wordmark is set
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Regression test: the sidebar and sign-in wordmarks are set like the quote
+- [x] Wordmark set in the quote's face: Tenor Sans 400, mixed case, no tracking, 22/28 px
+- [x] Brand docs, ADR-0100 and SPEC-001 say how the wordmark is set
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -101,4 +101,23 @@ New `e2e/tests/wordmark.e2e.ts` (WM-1 to WM-3, WM-5):
 
 ## Evidence
 
-To be filled in when the work is done.
+- Before the change (`6a594250`, the test alone): `npx e2e run tests/wordmark.e2e.ts` fails both
+  type tests. The sidebar wordmark computed `"Instrument Sans"`, 600, 17px / 24px, letter-spacing
+  3.06px, `uppercase`. The sign-in wordmark computed the same at 22px / 28px with 3.96px spacing.
+  The quote computes `"Tenor Sans"`, 400, 22px / 28px, `normal`, `none`. The fit test passes
+  before and after, as a guard.
+- With the change (`5b85343a`): the same file passes, 3 of 3.
+- Screenshots (Playwright, 2x, dark theme): the sidebar reads "Yulius" in Tenor Sans beside the
+  mark at 1440 px and in the 200 px sidebar at 1000 px. The sign-in card reads "Yulius" in the
+  same face as the composer's quote.
+- Review round 1 (fresh session, `om-code-review`, head `8771aabf`): approved with one minor
+  finding. The brand lab's four Roma proposals still tracked the wordmark 0.32em. A new test,
+  "the brand lab keeps the wordmark set like the quote in every Roma proposal", failed with
+  `letterSpacing: 7.04px` against `normal`, then passed with the proposals set to `0`
+  (`6cb29575`). The nits are fixed too: the spec's test-plan wording, a stricter loaded-face
+  check, and docs that no longer call the face "capital".
+- `scripts/dev ci` (after `python3 scripts/bootstrap.py`): exit 0, including the repository
+  check, nextest (1621 passed, 16 skipped), doctests, `cargo deny`, `cargo shear` and `cargo doc`.
+- Full e2e suite (`npx e2e run`, at `6cb29575`): 47 files passed and 1 skipped; 370 tests passed
+  and 1 skipped (`agent.e2e.ts`, which needs a model).
+- `origin/dev` merged before the review: already up to date at `d6559508`.
