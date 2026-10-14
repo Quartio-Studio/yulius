@@ -24,9 +24,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::sync::Notify;
-use yulius_contracts::api::admin::{CapacityAccount, CapacityView};
+use yulius_contracts::api::admin::{CapacityAccount, CapacityView, PoolTokensView, TokenSpendView};
 use yulius_contracts::hooks::{RateLimitWindow, RateLimits};
-use yulius_domain::capacity::{ForecastInput, PoolMember, Span, WeeklySample};
+use yulius_domain::capacity::{
+    ForecastInput, PoolMember, PoolTokens, Span, TokenRun, TokenSpend, WeeklySample,
+};
 use yulius_domain::ids::{AccountId, TaskId};
 use yulius_domain::rotation::{self, Decision, RotationInput, Trigger};
 use yulius_domain::task::{Activity, TaskEvent, TaskStatus};
@@ -709,6 +711,15 @@ impl App {
         // A subscription is held by working tasks only (SPEC-057 SUB-001).
         let live = self.working_attempts().await?;
         let views = self.account_views().await?;
+        // One read of the week's runs: their lifetimes for the forecast, their tokens for the
+        // pool's token use (SPEC-110).
+        let token_runs: Vec<TokenRun> = store
+            .token_runs(now.plus_millis(-WEEK_MS))
+            .await?
+            .into_iter()
+            .map(token_run)
+            .collect();
+        let pool = yulius_domain::capacity::pool_tokens(&token_runs, now, 7);
         let mut accounts = Vec::with_capacity(records.len());
         let mut members = Vec::new();
         let mut five_hour_left: Option<f64> = None;
@@ -752,12 +763,7 @@ impl App {
                 resets_at: s.resets_at,
             })
             .collect();
-        let runs: Vec<Span> = store
-            .attempt_spans(since)
-            .await?
-            .into_iter()
-            .map(|(start, end)| Span { start, end })
-            .collect();
+        let runs: Vec<Span> = token_runs.iter().map(|r| r.span).collect();
         let pause_records = store.pauses_since(since).await?;
         let span = |p: &PauseRecord| Span {
             start: p.started_at,
@@ -806,6 +812,8 @@ impl App {
             five_hour_left,
             burn_24h: forecast.burn_24h,
             burn_7d: forecast.burn_7d,
+            burn_per_day: forecast.burn_per_day.clone(),
+            paused_hours_per_day: forecast.paused_hours_per_day.clone(),
             runs_out_at: forecast.runs_out_at.map(rfc3339),
             paused_hours_7d: forecast.paused_hours_7d,
             active_hours_7d: forecast.active_hours_7d,
@@ -815,7 +823,66 @@ impl App {
             paused_tasks,
             resumes_at: resumes_at.map(rfc3339),
             accounts,
+            tokens: pool_view(&pool),
         })
+    }
+}
+
+fn token_run(r: crate::model::TokenRunRecord) -> TokenRun {
+    let m = r.metrics.unwrap_or_default();
+    TokenRun {
+        span: Span {
+            start: r.started_at,
+            end: r.ended_at,
+        },
+        model: m.model,
+        input: m.input_tokens,
+        output: m.output_tokens,
+        cache_read: m.cache_read,
+        cache_write: m.cache_write,
+    }
+}
+
+fn round_tokens(v: f64) -> u64 {
+    if v.is_finite() && v > 0.0 {
+        v.round() as u64
+    } else {
+        0
+    }
+}
+
+fn spend_view(s: &TokenSpend) -> TokenSpendView {
+    TokenSpendView {
+        input: round_tokens(s.input),
+        output: round_tokens(s.output),
+        cache_read: round_tokens(s.cache_read),
+        cache_write: round_tokens(s.cache_write),
+        cost_usd: s.cost(),
+    }
+}
+
+/// The wire form: whole tokens per period, and a 7-day total that is the sum of its periods.
+fn pool_view(pool: &PoolTokens) -> PoolTokensView {
+    let per_day: Vec<TokenSpendView> = pool.per_day.iter().map(spend_view).collect();
+    let all = pool.per_day.iter().fold(TokenSpend::default(), |mut a, d| {
+        a.cost_usd += d.cost_usd;
+        a.priced |= d.priced;
+        a.unpriced |= d.unpriced;
+        a
+    });
+    let sum = |f: fn(&TokenSpendView) -> u64| per_day.iter().map(f).sum::<u64>();
+    PoolTokensView {
+        last_24h: per_day.last().cloned().unwrap_or_default(),
+        last_7d: TokenSpendView {
+            input: sum(|d| d.input),
+            output: sum(|d| d.output),
+            cache_read: sum(|d| d.cache_read),
+            cache_write: sum(|d| d.cache_write),
+            cost_usd: all.cost(),
+        },
+        per_day,
+        unknown_usage_runs: pool.unknown_usage_runs,
+        unpriced_runs: pool.unpriced_runs,
     }
 }
 

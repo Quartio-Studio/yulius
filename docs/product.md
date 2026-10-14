@@ -65,7 +65,9 @@ watching, steering and unblocking.
   A task is its owner's: it acts on GitHub with their credentials, so only they change it. Others
   see it read-only and can ask the owner for control; once handed over, it acts as the new owner.
 - **Subscription pool**: Claude accounts are used as one self-managing pool; tasks are
-  subscription-agnostic, switches and pauses are invisible to agents.
+  subscription-agnostic, switches and pauses are invisible to agents. Its Capacity card says what
+  is left, how fast it burns, the tokens it used and what they would cost at Claude API list
+  prices, with a 7-day chart for each.
 - **Delivery discipline**: spec when it matters, effort-weighted steps, independent review,
   merge on green into `dev`, promotion to `main`, deploy and verify, cleanup. Profiles live in
   `yulius.toml`, with the branch policy (typed branches, conventional titles, `dev` → `main`

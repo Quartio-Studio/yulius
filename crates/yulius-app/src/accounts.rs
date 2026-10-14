@@ -295,7 +295,36 @@ fn totals_view(tokens: Option<&crate::model::AccountTokens>) -> TokenTotalsView 
         output: t.output,
         cache_read: t.cache_read,
         cache_write: t.cache_write,
+        cost_usd: None,
     })
+}
+
+/// What the runs started on `account` since `since` would cost at Claude API list prices
+/// (SPEC-110 TUS-004): the runs that reported usage and whose model has a price; `None` when
+/// none did.
+fn account_cost(
+    runs: &[crate::model::TokenRunRecord],
+    account: &AccountId,
+    since: Timestamp,
+) -> Option<f64> {
+    runs.iter()
+        .filter(|r| r.account_id.as_ref() == Some(account) && r.started_at >= since)
+        .filter_map(|r| {
+            let m = r.metrics.as_ref()?;
+            let used = [m.input_tokens, m.output_tokens, m.cache_read, m.cache_write];
+            if used.iter().all(Option::is_none) {
+                return None;
+            }
+            let price = yulius_domain::pricing::price_of(m.model.as_deref()?)?;
+            Some(yulius_domain::pricing::cost_usd(
+                price,
+                m.input_tokens,
+                m.output_tokens,
+                m.cache_read,
+                m.cache_write,
+            ))
+        })
+        .reduce(|a, b| a + b)
 }
 
 /// One day in milliseconds.
@@ -485,6 +514,7 @@ impl App {
         }
         let day = store.account_tokens(now.plus_millis(-DAY_MS)).await?;
         let week = store.account_tokens(now.plus_millis(-7 * DAY_MS)).await?;
+        let runs = store.token_runs(now.plus_millis(-7 * DAY_MS)).await?;
         let find = |list: &[crate::model::AccountTokens], id: &str| {
             list.iter().find(|t| t.account_id == id).cloned()
         };
@@ -494,8 +524,15 @@ impl App {
             .iter()
             .map(|a| {
                 let mut view = account_view(a, &live);
-                view.tokens_24h = Some(totals_view(find(&day, a.id.as_str()).as_ref()));
-                view.tokens_7d = Some(totals_view(find(&week, a.id.as_str()).as_ref()));
+                let cost = |days: i64| account_cost(&runs, &a.id, now.plus_millis(-days * DAY_MS));
+                view.tokens_24h = Some(TokenTotalsView {
+                    cost_usd: cost(1),
+                    ..totals_view(find(&day, a.id.as_str()).as_ref())
+                });
+                view.tokens_7d = Some(TokenTotalsView {
+                    cost_usd: cost(7),
+                    ..totals_view(find(&week, a.id.as_str()).as_ref())
+                });
                 view
             })
             .collect())
@@ -1299,6 +1336,46 @@ impl App {
 mod tests {
     use super::*;
     use yulius_domain::time::Timestamp;
+
+    /// SPEC-110 TUS-004: a subscription's cost is of its runs started in the window that reported
+    /// usage and whose model has a price; none such is `None`, never $0.
+    #[test]
+    fn a_subscriptions_cost_counts_only_priced_runs_with_usage()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let a = AccountId::parse("a")?;
+        let run = |account: &str,
+                   at: i64,
+                   model: &str,
+                   tokens: Option<u64>|
+         -> Result<crate::model::TokenRunRecord, Box<dyn std::error::Error>> {
+            Ok(crate::model::TokenRunRecord {
+                account_id: Some(AccountId::parse(account)?),
+                started_at: Timestamp(at),
+                ended_at: None,
+                metrics: Some(crate::model::MetricsRecord {
+                    model: Some(model.into()),
+                    input_tokens: tokens,
+                    output_tokens: tokens,
+                    ..crate::model::MetricsRecord::default()
+                }),
+            })
+        };
+        let runs = vec![
+            run("a", 100, "claude-opus-5-5", Some(1_000_000))?, // $4 + $20
+            run("a", 50, "claude-opus-5-5", Some(1_000_000))?,  // before the window
+            run("b", 100, "claude-opus-5-5", Some(1_000_000))?, // another subscription
+        ];
+        assert_eq!(account_cost(&runs, &a, Timestamp(60)), Some(24.0));
+        let silent = vec![run("a", 100, "claude-opus-5-5", None)?];
+        assert_eq!(
+            account_cost(&silent, &a, Timestamp(60)),
+            None,
+            "no usage is not $0"
+        );
+        let unpriced = vec![run("a", 100, "mystery-model", Some(5))?];
+        assert_eq!(account_cost(&unpriced, &a, Timestamp(60)), None);
+        Ok(())
+    }
 
     #[test]
     fn raw_output_keeps_the_newest_bytes() {

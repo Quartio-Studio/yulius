@@ -1,5 +1,5 @@
 //! Deterministic Yulius domain: identifiers, permissions, task and attempt state machines,
-//! subscription pool policy and capacity forecast, documentation-format validation, the default
+//! subscription pool policy, capacity forecast and API prices, documentation-format validation, the default
 //! workflow file format, schedules, delivery profiles, instance updates, the secrets vault's
 //! rules, Yulius-run CI, numbered records and secret redaction of transcripts.
 //!
@@ -21,6 +21,7 @@ pub mod ids;
 pub mod intake;
 pub mod numbering;
 pub mod permission;
+pub mod pricing;
 pub mod redact;
 pub mod request;
 pub mod resources;
