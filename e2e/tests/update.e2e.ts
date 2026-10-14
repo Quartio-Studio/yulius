@@ -77,6 +77,37 @@ test('without the update helper the button opens the instance page', async ({ ap
   expect(await browser.locator('[role="dialog"]').count()).toBe(0);
 });
 
+test('with nothing on offer the button and the account menu lead to the instance page', async ({ app, browser, screen }) => {
+  await app.open(mock('/'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+  const quiet = footButton(browser, 'Version and updates');
+  await expect(quiet).toBeVisible();
+  await expect(quiet).toHaveText('');
+  await quiet.click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Instance');
+
+  await browser.evaluate(() => { window.location.hash = '#/'; });
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+  await screen.getByRole('button', /account menu$/).click();
+  await screen.getByRole('menuitem', 'Version and updates').click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Instance');
+});
+
+test('at its narrowest the sidebar keeps the account name and the Update button', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&update=1'));
+  await screen.getByRole('separator', 'Resize sidebar').press('Home');
+  await expect.poll(() => browser.evaluate(() => Math.round(document.querySelector('.sidebar')!.getBoundingClientRect().width))).toBe(200);
+  const fit = await browser.evaluate(() => {
+    const foot = document.querySelector('.sidebar-foot')!.getBoundingClientRect();
+    const button = document.querySelector('.sidebar-foot .update-btn')!.getBoundingClientRect();
+    const name = document.querySelector('.sidebar-foot .user-name')!.getBoundingClientRect();
+    return { inside: button.left >= foot.left && button.right <= foot.right, name: name.width > 8 };
+  });
+  expect(fit).toEqual({ inside: true, name: true });
+  await expect(footButton(browser, 'Update Yulius to 9c1e7d3')).toHaveText('Update');
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
 test('a rolled-back update is said plainly', async ({ app, browser, screen }) => {
   await app.open(mock('/admin/instance', '&update=fail'));
   await screen.getByRole('button', 'Update now…').click();
@@ -91,6 +122,11 @@ test('members see no offer and no instance page', async ({ app, browser, screen 
   await app.open(mock('/', '&update=1&role=member'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
   expect(await browser.evaluate(() => document.body.innerText)).not.toMatch(/Update available/);
+  // No Update button and no menu entry: updates are the superadmin's (UPB-001, UPB-007).
+  expect(await browser.locator('.sidebar-foot .update-btn:not([hidden])').count()).toBe(0);
+  await screen.getByRole('button', /account menu$/).click();
+  await expect(screen.getByRole('menuitem', 'Sign out')).toBeVisible();
+  expect(await browser.evaluate(() => document.body.innerText)).not.toMatch(/Version and updates/);
   await app.open(mock('/admin/instance', '&update=1&role=member'));
   await expect(screen.getByText(/Only the superadmin manages updates/)).toBeVisible();
 });
