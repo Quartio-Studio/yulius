@@ -254,6 +254,8 @@ fn requests_are_parsed_strictly() {
         ("commit", json!("0123456789ABCDEF0123456789ABCDEF01234567")),
         ("token", json!("ghs_x\nX-Injected: 1")),
         ("token", json!("ghs x")),
+        ("token", json!("")),
+        ("token", json!("ghs_a:b")),
         ("requested_at", json!(now - REQUEST_TTL_MS - 1)),
         ("requested_at", json!(now + 120_000)),
         ("extra", json!("unknown fields are refused")),
@@ -466,12 +468,13 @@ exit 0"#,
         ),
     )?;
     env.args.git = env.bin("git");
+    let token = stateless_installation_token(520);
     let request = HelperRequest {
         version: VERSION,
         id: "run-0009-build".into(),
         action: HelperAction::Build,
         commit: env.b.clone(),
-        token: Some("ghs_SyntheticToken123".into()),
+        token: Some(token.clone()),
         requested_at: now_ms(),
     };
     env.raw_request(&serde_json::to_vec(&request)?)?;
@@ -483,13 +486,12 @@ exit 0"#,
         .filter(|l| l.starts_with("ARGS"))
         .collect::<Vec<_>>();
     assert!(calls.iter().any(|l| l.contains(" fetch ")), "{text}");
-    assert!(calls.iter().all(|l| !l.contains("ghs_SyntheticToken123")));
+    assert!(calls.iter().all(|l| !l.contains(&token)));
     assert!(
         !text.contains("LEAK"),
         "only the fetch gets the header: {text}"
     );
-    let basic =
-        base64::engine::general_purpose::STANDARD.encode("x-access-token:ghs_SyntheticToken123");
+    let basic = base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{token}"));
     assert!(
         text.contains(&format!(
             "HEADER http.extraHeader Authorization: Basic {basic}"
@@ -498,7 +500,7 @@ exit 0"#,
     );
     let status: HelperStatus =
         serde_json::from_slice(&std::fs::read(env.args.state_dir.join(STATUS_FILE))?)?;
-    assert!(!format!("{status:?}").contains("ghs_SyntheticToken123"));
+    assert!(!format!("{status:?}").contains(&token));
     Ok(())
 }
 

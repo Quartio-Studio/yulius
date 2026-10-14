@@ -1,11 +1,11 @@
 ---
 yulius-task: f5d3d8ad-96de-495e-bfe2-254c87d8590d
-status: in-progress
+status: done
 ---
 
 # SPEC-107: the update helper accepts GitHub's stateless installation tokens
 
-Status: in progress
+Status: implemented
 Date: 2026-10-14
 Owner: Yulius task #92
 Scope authorization: task request "fix" with a screenshot of the Updates page: "The last update
@@ -42,7 +42,7 @@ accepts the App's installation token and fetches `main` with it, as before.
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
 - [x] Fix the cause until the regression test and every gate pass
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -54,7 +54,8 @@ accepts the App's installation token and fetches `main` with it, as before.
 
 - Regression: `update_helper::tests::stateless_installation_tokens_are_accepted` (failed before the
   fix with "a 520-byte installation token is refused").
-- Existing: the whole `update_helper::tests` module, then the full gate (`scripts/dev ci`).
+- Existing: the whole `update_helper::tests` module (`the_read_token_reaches_git_as_a_header_only`
+  now sends a 520-byte stateless token through `git()`; the empty and `:` tokens are refused), then the full gate (`scripts/dev ci`).
 - Not testable here: a real update on the production instance (needs the root helper, systemd and
   a GitHub App token); the next "Update now" there is the live check.
 
@@ -86,3 +87,6 @@ any printable token, so neither is affected.
   `clippy -D warnings`, nextest 1580 passed / 16 skipped, doctests, `cargo deny`, `cargo shear`,
   `cargo doc`.
 - No web UI change, so the e2e suite does not apply.
+- Independent review (fresh session, `om-code-review`) of 35363065: approve, no blocker or major.
+  Its two minor findings were taken: the header-only test now uses a 520-byte stateless token, and
+  R2's empty and `:` tokens are in the refused cases. 13 passed after that.
