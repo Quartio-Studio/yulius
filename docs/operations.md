@@ -12,7 +12,7 @@ been performed or verified** as part of the implementation work.
 | Linux x86_64 or arm64, systemd | the service | macOS works for development (runs are "not contained"). |
 | `git` ≥ 2.40 | sandboxes, worktrees, delivery | on `PATH` of the service. |
 | Claude Code (`claude`) | Claude tasks and Claude account login | verified with 2.1.292. |
-| GitHub CLI (`gh`) | `gh` in every sandbox, logged in as the person (their shells) or the task's creator (agents) | `apt-get install gh` on the host; sandboxes copy the host system, so rebuild the base afterwards (`yulius sandbox-base build`). `yulius doctor` warns without it. |
+| GitHub CLI (`gh`) ≥ 2.82.1 | `gh` in every sandbox, logged in as the person (their shells) or the task's creator (agents) | install it on the host from [GitHub's package repository](https://github.com/cli/cli/blob/trunk/docs/install_linux.md), not the distribution's package: Ubuntu 24.04 ships 2.45, and since GitHub retired Projects (classic) `gh pr edit` and `gh issue view --comments` fail with a GraphQL error before 2.82.1. Sandboxes copy the host system, so rebuild the base afterwards (`yulius sandbox-base build`). `yulius doctor` warns without it or below 2.82.1. |
 | bubblewrap (`bwrap`) | containment (`--contained`) | strongly recommended in production; without it runs are marked "not contained". |
 | `uidmap` (`newuidmap`, `newgidmap`) and a subordinate id range for the service user | sandbox isolation (SPEC-002 ADR-22): `apt` in sandboxes, private networks | `/etc/subuid` and `/etc/subgid` lines of at least 65,536 ids (see [Sandbox isolation](#sandbox-isolation)). |
 | `slirp4netns` | sandbox egress (isolation) | `apt install slirp4netns`. |
