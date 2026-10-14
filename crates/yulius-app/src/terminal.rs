@@ -186,10 +186,6 @@ impl App {
         if data.len() > 64 * 1024 {
             return Err(AppError::Invalid("input frame too large".into()));
         }
-        // The viewer who types controls the terminal and its size, at once (TSK-006). A
-        // forwarded wheel turn is not typing: it must not move control, and with it the size, to
-        // that viewer (#78). Nor are the focus and mouse reports and query answers xterm sends
-        // by itself (SPEC-068).
         if !scroll && is_typing(data) && self.keys_wait_for_opening(&attach.task_id) {
             // Yulius types the task's first message: the keys would be mixed into it (SPEC-117
             // ONE-006). They are dropped, not replayed: an Esc or Ctrl+C would cut its turn.
@@ -204,6 +200,10 @@ impl App {
             }
             return Ok(());
         }
+        // The viewer who types controls the terminal and its size, at once (TSK-006). A
+        // forwarded wheel turn is not typing: it must not move control, and with it the size, to
+        // that viewer (#78). Nor are the focus and mouse reports and query answers xterm sends
+        // by itself (SPEC-068).
         if !scroll && is_typing(data) {
             let change = attach.runtime.hub.claim(attach.viewer_id);
             // The keystroke matters more than the size: a failed resize never drops it.
