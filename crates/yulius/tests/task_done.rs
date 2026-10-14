@@ -394,9 +394,12 @@ fn an_achieved_goal_with_no_shell_left_makes_the_task_done() -> TestResult {
             screen_contains(&app, &id, "Goal achieved")
         })
         .await?;
-        // SPEC-025 ATT-003: without attached files the session starts with no first message.
+        // SPEC-117 ONE-001: the session's only first message is its goal, the launch prompt.
         let launch = first_launch(&app, &id).await?;
-        assert!(launch.contains("prompt: None"), "{launch}");
+        assert!(
+            launch.contains("prompt: Some(\"/goal Tidy the parser and verify it | Done = "),
+            "{launch}"
+        );
         wait_for("Done", Duration::from_secs(20), || async {
             activity(&app, &id).await == Some(Activity::Done)
         })
@@ -783,8 +786,9 @@ fn a_session_start_before_the_run_is_watched_still_types_the_goal_at_once() -> T
     Ok(())
 }
 
-/// SPEC-011: a goal task starts from its request file (the request, its attached files and the
-/// definition of done) and a `/goal` that names it, typed once the session started.
+/// SPEC-011, SPEC-117 ONE-001/ONE-002: a goal task starts from its request file (the request, its
+/// attached files and the definition of done) and a `/goal` that names it and its attached
+/// files, given as the launch prompt: one first message, nothing typed into the session.
 #[test]
 fn a_goal_task_starts_from_its_request_file() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -794,9 +798,6 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
         let agent = FakeAgentOptions {
             transcript: true,
             hooks: true,
-            // The turn on the typed first message (the attached image) is silent for longer
-            // than the quiet time after which a goal is otherwise typed (SPEC-030 PIMG-003).
-            echo_turn_ms: Some(4_000),
             ..FakeAgentOptions::default()
         };
         let (app, _) = start(&data, &fake, agent, 0).await?;
@@ -805,7 +806,7 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
             .create_task_internal(NewTask {
                 sandbox: sandbox.clone(),
                 created_by: user.clone(),
-                prompt: "Make the header blue\n\n@/srv/shots/header.png".into(),
+                prompt: "Make the header blue\n\n@/srv/shots/header.png\n@/srv/notes.txt".into(),
                 harness: Harness::ClaudeCode,
                 title: Some("Blue header".into()),
                 workflow_id: None,
@@ -835,29 +836,31 @@ fn a_goal_task_starts_from_its_request_file() -> TestResult {
             "{request}"
         );
         assert!(request.contains("\n- /srv/shots/header.png"), "{request}");
-        // SPEC-030 PIMG-002: an attached image is pasted into the session's first message, so
-        // Claude Code attaches it natively (`[Image #1]`), not mentioned in the command line;
-        // the goal is still typed after that message's turn.
-        let launch = first_launch(&app, &id).await?;
-        assert!(launch.contains("prompt: None"), "{launch}");
-        let screen = app.runtime(&id).hub.screen_text();
-        let pasted = screen
-            .find("ECHO: [Image #1] The files attached to this task.")
-            .ok_or_else(|| screen.clone())?;
-        let typed = screen.find("/goal ").ok_or_else(|| screen.clone())?;
-        assert!(
-            pasted < typed,
-            "the goal was typed during the turn on the first message:\n{screen}"
-        );
-        assert!(!screen.contains("STOP BLOCKED"), "{screen}");
-        assert_eq!(screen.matches("GOAL SET").count(), 1, "{screen}");
         assert!(request.contains("## Definition of done"), "{request}");
-        // The goal names the file (a request with attached files is never inlined).
-        assert!(
-            screen_contains(&app, &id, "Everything requested in").await,
-            "{}",
-            app.runtime(&id).hub.screen_text()
+        // The launch prompt is the goal: it names the request file and the attached files.
+        let launch = first_launch(&app, &id).await?;
+        let goal = format!(
+            "prompt: Some(\"/goal Everything requested in {} is done. Attached files (open each \
+             with the Read tool; it shows images): /srv/shots/header.png, /srv/notes.txt. Done = ",
+            file.to_string_lossy()
         );
+        assert!(launch.contains(&goal), "{launch}");
+        // Nothing was typed before the goal: no first message, no `/goal`.
+        let screen = app.runtime(&id).hub.screen_text();
+        let set = screen.find("GOAL SET").ok_or_else(|| screen.clone())?;
+        assert!(!screen[..set].contains("ECHO:"), "{screen}");
+        assert!(!screen[..set].contains("/goal"), "{screen}");
+        // Nor after it: the goal turn's own echo is the only answer, and the goal is set once.
+        wait_for("the goal turn's answer", Duration::from_secs(30), || {
+            screen_contains(&app, &id, "ECHO: /goal Everything requested in")
+        })
+        .await?;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let screen = app.runtime(&id).hub.screen_text();
+        assert_eq!(screen.matches("ECHO:").count(), 1, "{screen}");
+        assert_eq!(screen.matches("GOAL SET").count(), 1, "{screen}");
+        assert!(!screen.contains("[Image #1]"), "{screen}");
+        assert!(!screen.contains("STOP BLOCKED"), "{screen}");
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
@@ -963,9 +966,9 @@ fn a_message_queued_before_the_start_reaches_the_agent() -> TestResult {
                         request.contains(" UTC):**\n\nBlue, not red.\n"),
                         "{request}"
                     );
-                    let screen = app.runtime(&id).hub.screen_text();
-                    let goal = screen.find("/goal ").ok_or_else(|| screen.clone())?;
-                    assert!(screen[goal..].contains("Blue, not red."), "{screen}");
+                    let launch = first_launch(&app, &id).await?;
+                    let goal = launch.find("/goal ").ok_or_else(|| launch.clone())?;
+                    assert!(launch[goal..].contains("Blue, not red."), "{launch}");
                 }
                 TaskMode::Prompt => {
                     // Its session runs (the launch file is written before the spawn; a stop
@@ -999,61 +1002,6 @@ fn a_message_queued_before_the_start_reaches_the_agent() -> TestResult {
             stop(&app, &id).await?;
         }
         Ok::<(), BoxError>(())
-    })?;
-    rt.shutdown_timeout(Duration::from_secs(5));
-    Ok(())
-}
-
-/// SPEC-025 ATT-003: a goal task with attached files opens with a turn on them (its first message);
-/// the goal is typed once that turn ended (its Stop hook), not into the middle of it, and once.
-#[test]
-fn the_goal_is_typed_after_the_turn_on_the_attached_files() -> TestResult {
-    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
-    let (_dir, data) = data_dir()?;
-    let rt = runtime()?;
-    rt.block_on(async {
-        let agent = FakeAgentOptions {
-            transcript: true,
-            hooks: true,
-            // Silent for longer than the quiet time after which a goal is otherwise typed.
-            opening_turn_ms: Some(6_000),
-            ..FakeAgentOptions::default()
-        };
-        let (app, _) = start(&data, &fake, agent, 0).await?;
-        let (sandbox, user) = seed(&app, &data).await?;
-        let id = app
-            .create_task_internal(NewTask {
-                sandbox: sandbox.clone(),
-                created_by: user.clone(),
-                // Not an image: mentioned in the command-line prompt (SPEC-025, SPEC-030).
-                prompt: "Make the header blue\n\n@/srv/notes.txt".into(),
-                harness: Harness::ClaudeCode,
-                title: Some("Blue header".into()),
-                workflow_id: None,
-                steps: Vec::new(),
-                model: None,
-                effort: None,
-                origin: TaskOrigin::Ui,
-                automation_run: None,
-                start: true,
-                mode: TaskMode::Goal,
-                supertask: false,
-            })
-            .await?
-            .id;
-        wait_for("the goal to start", Duration::from_secs(90), || {
-            screen_contains(&app, &id, "GOAL SET")
-        })
-        .await?;
-        let screen = app.runtime(&id).hub.screen_text();
-        let done = screen.find("DONE opening").ok_or_else(|| screen.clone())?;
-        let typed = screen.find("/goal ").ok_or_else(|| screen.clone())?;
-        assert!(
-            done < typed,
-            "the goal was typed during the opening turn:\n{screen}"
-        );
-        assert_eq!(screen.matches("GOAL SET").count(), 1, "{screen}");
-        stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
     Ok(())

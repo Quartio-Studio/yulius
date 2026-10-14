@@ -13,10 +13,6 @@
 /// characters; half of it leaves room for a lower cap again).
 pub const GOAL_MAX_CHARS: usize = 2000;
 
-/// How a goal-mode session's first message (its attached files) begins.
-const ATTACHMENTS_INTRO: &str = "The files attached to this task. Its goal follows in the next \
-                                 message; until then, only look at them.";
-
 /// Longest request text quoted inside the goal condition; a longer one is only named by its file.
 const INLINE_REQUEST_MAX_CHARS: usize = 150;
 
@@ -34,7 +30,7 @@ pub struct DoneDefinition {
     pub playground: bool,
 }
 
-/// How a session's first message reaches Claude Code (SPEC-030).
+/// How a prompt-mode session's first message reaches Claude Code (SPEC-030).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Opening {
     /// The CLI prompt argument (the attached files, none an image, are `@path` mentions).
@@ -92,8 +88,8 @@ impl Request {
         Self { text, attachments }
     }
 
-    /// The first message of a session that is not in goal mode: the text, then a mention of
-    /// each attached file.
+    /// The first message of a prompt-mode session: the text, then a mention of each attached
+    /// file.
     #[must_use]
     pub fn first_message(&self) -> String {
         if self.attachments.is_empty() {
@@ -106,38 +102,24 @@ impl Request {
         format!("{}\n\n{mentions}", self.text)
     }
 
-    /// A fresh session's first message: in goal mode only when files are attached (its `/goal`
-    /// follows), else the request. With an attached image it is typed, so the image is pasted.
+    /// A fresh prompt-mode session's first message, the request. With an attached image it is
+    /// typed, so the image is pasted. (A goal-mode session's first message is its `/goal`,
+    /// [`goal_condition`].)
     #[must_use]
-    pub fn opening(&self, goal_mode: bool) -> Option<Opening> {
+    pub fn opening(&self) -> Opening {
         let (images, others): (Vec<String>, Vec<String>) =
             self.attachments.iter().cloned().partition(|p| is_image(p));
         if images.is_empty() {
-            return if goal_mode {
-                self.attachments_message().map(Opening::Prompt)
-            } else {
-                Some(Opening::Prompt(self.first_message()))
-            };
+            return Opening::Prompt(self.first_message());
         }
         let rest = Self {
             text: self.text.clone(),
             attachments: others,
         };
-        let text = if goal_mode {
-            rest.attachments_message()
-                .unwrap_or_else(|| ATTACHMENTS_INTRO.to_owned())
-        } else {
-            rest.first_message()
-        };
-        Some(Opening::Typed { images, text })
-    }
-
-    /// The first message of a goal-mode session, before Yulius types its `/goal`: the attached
-    /// files, mentioned so Claude Code attaches them. `None` without attached files.
-    #[must_use]
-    pub fn attachments_message(&self) -> Option<String> {
-        (!self.attachments.is_empty())
-            .then(|| format!("{ATTACHMENTS_INTRO}\n\n{}", mentions(&self.attachments)))
+        Opening::Typed {
+            images,
+            text: rest.first_message(),
+        }
     }
 }
 
@@ -484,24 +466,6 @@ mod tests {
     }
 
     #[test]
-    fn a_goal_session_first_gets_the_attached_files_when_there_are_any() {
-        assert_eq!(Request::parse("Only text").attachments_message(), None);
-        let message = Request::parse("Make it blue\n@/srv/a.png\n@/srv/b.txt")
-            .attachments_message()
-            .unwrap_or_default();
-        assert!(
-            message.starts_with(
-                "The files attached to this task. Its goal follows in the next message"
-            ),
-            "{message}"
-        );
-        assert!(
-            message.ends_with("\n\n@\"/srv/a.png\"\n@\"/srv/b.txt\""),
-            "{message}"
-        );
-    }
-
-    #[test]
     fn images_are_the_files_claude_code_pastes_as_images() {
         for image in ["/s/a.png", "/s/b.JPG", "/s/c.jpeg", "/s/d.gif", "/s/e.WebP"] {
             assert!(is_image(image), "{image}");
@@ -515,17 +479,12 @@ mod tests {
     fn without_images_the_first_message_stays_the_command_line_prompt() {
         let request = Request::parse("Look\n@/srv/notes.txt");
         assert_eq!(
-            request.opening(false),
-            Some(Opening::Prompt("Look\n\n@\"/srv/notes.txt\"".into()))
+            request.opening(),
+            Opening::Prompt("Look\n\n@\"/srv/notes.txt\"".into())
         );
         assert_eq!(
-            request.opening(true),
-            request.attachments_message().map(Opening::Prompt)
-        );
-        assert_eq!(Request::parse("Only text").opening(true), None);
-        assert_eq!(
-            Request::parse("Only text").opening(false),
-            Some(Opening::Prompt("Only text".into()))
+            Request::parse("Only text").opening(),
+            Opening::Prompt("Only text".into())
         );
     }
 
@@ -535,39 +494,26 @@ mod tests {
         // is attached natively (`[Image #1]`).
         let request = Request::parse("Make it blue\n@/srv/a.png\n@'/srv/my shot.JPG'\n@/srv/b.txt");
         assert_eq!(
-            request.opening(false),
-            Some(Opening::Typed {
+            request.opening(),
+            Opening::Typed {
                 images: vec!["/srv/a.png".into(), "/srv/my shot.JPG".into()],
                 text: "Make it blue\n\n@\"/srv/b.txt\"".into(),
-            })
+            }
         );
-        let Some(Opening::Typed { images, text }) = request.opening(true) else {
-            panic!("a goal task with images types its first message");
-        };
-        assert_eq!(images, ["/srv/a.png", "/srv/my shot.JPG"]);
-        assert!(
-            text.starts_with("The files attached to this task. Its goal follows"),
-            "{text}"
-        );
-        assert!(text.ends_with("\n\n@\"/srv/b.txt\""), "{text}");
         // Only images: nothing to mention, the text is the request (or empty).
         assert_eq!(
-            Request::parse("@/srv/a.png").opening(false),
-            Some(Opening::Typed {
+            Request::parse("@/srv/a.png").opening(),
+            Opening::Typed {
                 images: vec!["/srv/a.png".into()],
                 text: String::new(),
-            })
+            }
         );
-        let Some(Opening::Typed { text, .. }) = Request::parse("@/srv/a.png").opening(true) else {
-            panic!("a goal task with an image types its first message");
-        };
-        assert!(!text.contains('@'), "{text}");
     }
 
     #[test]
     fn a_typed_first_message_carries_no_control_character() {
         let request = Request::parse("Look\u{1b}[201~ here\n@/srv/a.png\n@/srv/b\u{1b}.png");
-        let Some(Opening::Typed { images, text }) = request.opening(false) else {
+        let Opening::Typed { images, text } = request.opening() else {
             panic!("an image is attached");
         };
         assert_eq!(images, ["/srv/a.png"]);

@@ -226,8 +226,17 @@ impl HarnessPort for FakeAgentHarness {
         }
         // A continued resume (CLAUDE_CODE_RESUME_INTERRUPTED_TURN) opens with the turn Claude
         // Code redoes, like a first message (SPEC-034).
+        // A `/goal` launch prompt sets the goal and runs the goal's own turn, as Claude Code
+        // does (SPEC-117): no opening turn before it.
+        let goal_prompt = matches!(
+            &launch.mode,
+            yulius_app::ports::harness::SessionMode::New { prompt: Some(prompt), .. }
+                if prompt.starts_with("/goal ")
+        );
         let first_message = match &launch.mode {
-            yulius_app::ports::harness::SessionMode::New { prompt, .. } => prompt.is_some(),
+            yulius_app::ports::harness::SessionMode::New { prompt, .. } => {
+                prompt.is_some() && !goal_prompt
+            }
             yulius_app::ports::harness::SessionMode::Resume {
                 prompt,
                 continue_interrupted,
@@ -258,8 +267,10 @@ impl HarnessPort for FakeAgentHarness {
                 prompt: Some(prompt),
                 ..
             },
-        ) = (self.options.answers_first_message, &launch.mode)
-        {
+        ) = (
+            self.options.answers_first_message || goal_prompt,
+            &launch.mode,
+        ) {
             argv.extend(["--prompt".into(), prompt.clone()]);
         }
         plan.plan.argv = argv;

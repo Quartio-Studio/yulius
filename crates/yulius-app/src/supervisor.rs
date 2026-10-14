@@ -493,10 +493,24 @@ fn trust_prompt_shown(screen: &str) -> bool {
     TRUST_PROMPT_TEXTS.iter().any(|text| screen.contains(text))
 }
 
+/// The Claude Code command that sets a session's goal, followed by its condition.
+const GOAL_COMMAND: &str = "/goal ";
+
 /// Upper bound for waiting until the TUI took one paste of a typed first message (SPEC-030).
 const PASTE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Quiet time after a paste changed the screen before the next one is written.
 const PASTE_QUIET: Duration = Duration::from_millis(500);
+
+/// Whether a launch's prompt sets the session goal itself: a fresh goal session's, or a held
+/// `/goal` continued in another session. No `/goal` is typed after it (SPEC-117 ONE-003).
+fn sets_goal(mode: &SessionMode) -> bool {
+    matches!(
+        mode,
+        SessionMode::New { prompt: Some(prompt), .. }
+            | SessionMode::Resume { prompt: Some(prompt), .. }
+            if prompt.starts_with(GOAL_COMMAND)
+    )
+}
 
 /// The pastes that type a first message with attached images (SPEC-030), each a bracketed paste
 /// (xterm `ESC [200~ … ESC [201~`) with what the screen shows once Claude Code took it: each
@@ -973,12 +987,15 @@ impl App {
         std::fs::create_dir_all(&home).map_err(AppError::internal)?;
         self.prepare_run_extras(&sandbox, &home).await;
 
-        // Goal mode (TSK-010): the prompt is set as the session goal through `/goal` once the
-        // TUI is ready; Claude's goal is per session, so a resumed session gets it again.
+        // Goal mode (TSK-010): the request is the session goal, set through `/goal`. A fresh
+        // session gets it as its launch prompt (SPEC-117); Claude's goal is per session, so a
+        // resumed session gets it typed again once its TUI is ready.
         let goal_mode = task.mode == TaskMode::Goal;
-        // A first message with attached images is typed into the TUI, not given on the command
-        // line: Claude Code attaches only a pasted image natively (SPEC-030).
+        // A prompt-mode first message with attached images is typed into the TUI, not given on
+        // the command line: Claude Code attaches only a pasted image natively (SPEC-030).
         let mut typed_opening = None;
+        // The task's request file could not be written, so a fresh goal session has no goal.
+        let mut request_unwritten = false;
         // Decide new / resume.
         let (mode, launch_kind) = match (&start, &previous) {
             (RunStart::Resume { prompt }, Some(prev)) => (
@@ -1004,21 +1021,30 @@ impl App {
                     RunStart::Resume { prompt } | RunStart::Fresh { prompt } => prompt.clone(),
                     RunStart::AfterLimit => None,
                 };
-                // In goal mode the task starts with its `/goal` (the request and the definition
-                // of done, SPEC-011), after a first message with its attached files when it has
-                // any; otherwise the request is the first message. Images are pasted into it and
-                // other files mentioned, so Claude Code attaches them natively (SPEC-025,
-                // SPEC-030).
+                // In goal mode the task starts with its `/goal` as the launch prompt: the request
+                // file, the attached files and the definition of done in one first message, with
+                // nothing typed (SPEC-011, SPEC-117). Otherwise the request is the first message:
+                // images are pasted into it and other files mentioned, so Claude Code attaches
+                // them natively (SPEC-025, SPEC-030).
                 use yulius_domain::request::{Opening, Request};
                 let prompt = match prompt {
                     Some(prompt) => Some(prompt),
-                    None => match Request::parse(&task.prompt).opening(goal_mode) {
-                        Some(Opening::Prompt(prompt)) => Some(prompt),
-                        Some(Opening::Typed { images, text }) => {
+                    None if goal_mode => {
+                        match self.write_task_request(&sandbox, &task, &home).await {
+                            Ok(condition) => Some(format!("{GOAL_COMMAND}{condition}")),
+                            Err(err) => {
+                                tracing::error!(task = %task.id, error = %err, "could not write the task request");
+                                request_unwritten = true;
+                                None
+                            }
+                        }
+                    }
+                    None => match Request::parse(&task.prompt).opening() {
+                        Opening::Prompt(prompt) => Some(prompt),
+                        Opening::Typed { images, text } => {
                             typed_opening = Some((images, text));
                             None
                         }
-                        None => None,
                     },
                 };
                 (
@@ -1030,8 +1056,10 @@ impl App {
                 )
             }
         };
+        let goal_in_prompt = sets_goal(&mode);
         // A continued turn opens the run like a first message: the goal is set after its Stop.
         let opens_with_turn = goal_mode
+            && !goal_in_prompt
             && (typed_opening.is_some()
                 || matches!(
                     &mode,
@@ -1233,16 +1261,16 @@ impl App {
         self.attach_run(&task.id, &attempt, &host_token).await?;
         runtime.hub.state_changed();
         self.publish_task(&task.id).await;
-        if goal_mode {
+        if goal_in_prompt {
+            // Nothing to type; a folder-trust dialog in front of the goal is still said.
+            self.spawn_trust_watch(&task.id, &attempt_id);
+        } else if request_unwritten {
+            self.goal_not_taken(&task.id, "Yulius could not write the task's request file")
+                .await;
+        } else if goal_mode {
             match self.write_task_request(&sandbox, &task, &home).await {
                 Ok(condition) => {
-                    self.spawn_goal(
-                        &task.id,
-                        &attempt_id,
-                        typed_opening,
-                        &condition,
-                        typed_before,
-                    );
+                    self.spawn_goal(&task.id, &attempt_id, &condition, typed_before);
                 }
                 Err(err) => {
                     tracing::error!(task = %task.id, error = %err, "could not write the task request");
@@ -1350,37 +1378,6 @@ impl App {
             .attempts(task_id)
             .await
             .is_ok_and(|attempts| attempts.last().is_some_and(|a| opening_pending(&a.run_dir)))
-    }
-
-    /// A goal task's first message was submitted (a hold keeps it) when the server restarted:
-    /// the old server's goal typing died with it, so the goal is typed again after the turn on
-    /// that message (SPEC-068 OPN-002). The session read input already.
-    async fn goal_after_restart(self: &Arc<Self>, attempt: &AttemptRecord) {
-        let store = &self.deps.store;
-        let Ok(Some(task)) = store.task(&attempt.task_id).await else {
-            return;
-        };
-        if task.mode != TaskMode::Goal {
-            return;
-        }
-        let Ok(Some(sandbox)) = store.sandbox(&task.sandbox_id).await else {
-            return;
-        };
-        let runtime = self.runtime(&task.id);
-        runtime.session_started.store(true, Ordering::SeqCst);
-        runtime.opening_turn.store(true, Ordering::SeqCst);
-        let typed_before = runtime.typed_at_ms.load(Ordering::SeqCst);
-        let home = self.sandbox_home(&sandbox.id);
-        match self.write_task_request(&sandbox, &task, &home).await {
-            Ok(condition) => {
-                self.spawn_goal(&task.id, &attempt.id, None, &condition, typed_before);
-            }
-            Err(err) => {
-                tracing::error!(task = %task.id, error = %err, "could not write the task request");
-                self.goal_not_taken(&task.id, "Yulius could not write the task's request file")
-                    .await;
-            }
-        }
     }
 
     /// A restart cut the typing of the run's first message (SPEC-068 OPN-002): the task needs a
@@ -1588,9 +1585,32 @@ impl App {
         }
     }
 
-    /// Types `/goal <condition>` into the attempt once its TUI reads input: after a typed first
-    /// message with attached images (SPEC-030), Claude Code's SessionStart hook, the turn on a
-    /// first message ended and quiet output ([`Self::wait_input_ready`]). The submit is confirmed
+    /// Watches a session that got its goal as its launch prompt until its TUI reads input: a
+    /// folder-trust dialog shown meanwhile is said in the terminal, and one still unanswered
+    /// after [`crate::context::AppConfig::trust_answer_ms`] flags the task (SPEC-117 ONE-005,
+    /// SPEC-106 OTR-002). Claude Code runs the goal once the dialog is answered.
+    fn spawn_trust_watch(self: &Arc<Self>, task_id: &TaskId, attempt_id: &AttemptId) {
+        let app = Arc::clone(self);
+        let (task_id, attempt_id) = (task_id.clone(), attempt_id.clone());
+        tokio::spawn(async move {
+            let mut typed_before = 0;
+            let started = tokio::time::Instant::now();
+            if let InputReady::TrustUnanswered = app
+                .wait_input_ready(&task_id, &attempt_id, started, false, &mut typed_before)
+                .await
+            {
+                app.runtime(&task_id).hub.notice(format!(
+                    "{TRUST_UNANSWERED}; the task starts by itself once it is answered."
+                ));
+                app.flag_task(&task_id).await;
+            }
+        });
+    }
+
+    /// Types `/goal <condition>` into a resumed session once its TUI reads input: after Claude
+    /// Code's SessionStart hook, the turn on its first message ended and quiet output
+    /// ([`Self::wait_input_ready`]). A fresh session gets its goal as its launch prompt instead
+    /// (SPEC-117). The submit is confirmed
     /// by what Claude Code records about the goal and retried with growing waits; a goal never
     /// taken flags the task. A person who typed into the session since `typed_before` (the
     /// typing time when the run was attached) keeps their draft: no goal is typed and the task is
@@ -1599,34 +1619,20 @@ impl App {
         self: &Arc<Self>,
         task_id: &TaskId,
         attempt_id: &AttemptId,
-        opening: Option<(Vec<String>, String)>,
         condition: &str,
         typed_before: i64,
     ) {
         let app = Arc::clone(self);
         let (task_id, attempt_id) = (task_id.clone(), attempt_id.clone());
-        let command = format!("/goal {condition}");
+        let command = format!("{GOAL_COMMAND}{condition}");
         tokio::spawn(async move {
             let runtime = app.runtime(&task_id);
             let live = || app.attempt_live(&task_id, &attempt_id);
-            let mut started = tokio::time::Instant::now();
+            let started = tokio::time::Instant::now();
             let mut typed_before = typed_before;
             let unanswered = || async {
                 app.goal_not_taken(&task_id, TRUST_UNANSWERED).await;
             };
-            if let Some(opening) = opening {
-                match app
-                    .wait_input_ready(&task_id, &attempt_id, started, false, &mut typed_before)
-                    .await
-                {
-                    InputReady::Ready => {}
-                    InputReady::Gone => return,
-                    InputReady::TrustUnanswered => return unanswered().await,
-                }
-                app.type_opening(&task_id, &attempt_id, opening).await;
-                // Its turn starts now, however long a trust prompt waited before it.
-                started = tokio::time::Instant::now();
-            }
             match app
                 .wait_input_ready(&task_id, &attempt_id, started, true, &mut typed_before)
                 .await
@@ -2929,12 +2935,10 @@ impl App {
                 // The old server was typing the run's first message (or about to): how much of
                 // it reached the prompt box is unknown, so a person finishes it (SPEC-068
                 // OPN-002). A submitted one that a hold keeps goes on when the hold ends.
-                if opening_unsubmitted(&attempt.run_dir) {
-                    if matches!(store.open_pause(&attempt.task_id).await, Ok(None)) {
-                        self.opening_never_sent(&attempt.task_id).await;
-                    }
-                } else if opening_pending(&attempt.run_dir) {
-                    self.goal_after_restart(&attempt).await;
+                if opening_unsubmitted(&attempt.run_dir)
+                    && matches!(store.open_pause(&attempt.task_id).await, Ok(None))
+                {
+                    self.opening_never_sent(&attempt.task_id).await;
                 }
                 continue;
             }
@@ -3422,6 +3426,35 @@ mod tests {
         assert!(!super::trust_prompt_shown(
             "\u{276f} Try \"refactor <filepath>\""
         ));
+    }
+
+    /// SPEC-117 ONE-003: a launch prompt that is a `/goal` sets the goal; any other prompt, or
+    /// none, leaves it to be typed.
+    #[test]
+    fn only_a_goal_launch_prompt_sets_the_goal() {
+        use super::{SessionMode, sets_goal};
+        let new = |prompt: Option<&str>| SessionMode::New {
+            session_id: None,
+            prompt: prompt.map(str::to_owned),
+        };
+        let resume = |prompt: Option<&str>| SessionMode::Resume {
+            session_id: "s".into(),
+            prompt: prompt.map(str::to_owned),
+            continue_interrupted: false,
+        };
+        assert!(sets_goal(&new(Some(
+            "/goal Everything requested in /t/1.md is done."
+        ))));
+        assert!(sets_goal(&resume(Some("/goal Make it blue"))));
+        for mode in [
+            new(None),
+            new(Some("Make it blue")),
+            new(Some("/goalkeeper")),
+            resume(None),
+            resume(Some("Continue the task exactly where you left off.")),
+        ] {
+            assert!(!sets_goal(&mode), "{mode:?}");
+        }
     }
 
     #[test]

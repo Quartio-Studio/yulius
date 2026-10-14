@@ -1,6 +1,7 @@
-//! A session's first message and a person's typing (SPEC-068): only keystrokes count as typing,
-//! so a goal task leaves a person's draft alone; a first message Yulius types with images is
-//! never lost by a server restart or carried without its images after a capacity hold.
+//! A session's first message and a person's typing (SPEC-068, SPEC-117): only keystrokes count as
+//! typing, so a continued goal session leaves a person's draft alone; a goal task's `/goal` waits
+//! behind a folder-trust dialog; a first message Yulius types with images is never lost by a
+//! server restart or carried without its images after a capacity hold.
 //!
 //! End to end: supervisor → detached `yulius ptyhost` → fake agent running Claude Code's hooks
 //! through the real `yulius hook` client against the internal listener; real worktrees; a
@@ -196,23 +197,18 @@ fn data_dir() -> Result<(tempfile::TempDir, PathBuf), BoxError> {
     Ok((dir, data))
 }
 
-/// A goal task with an attached text file, so it opens with a turn of 12 s (SPEC-025), and a
-/// writer's terminal on it once that turn runs.
-async fn goal_in_its_opening_turn(
+/// A goal task that got its goal (its launch prompt, SPEC-117), then moved by a person to
+/// another subscription: the new session opens with a turn on "Continue the task …" of 12 s
+/// (`--opening-turn-ms`), after which its goal is typed again (ONE-007). Returns the task, its
+/// creator's context and a writer's terminal on the new session during that turn.
+async fn goal_in_a_continued_turn(
     app: &Arc<App>,
     data: &Path,
 ) -> Result<(TaskId, AuthContext, yulius_app::terminal::TerminalAttach), BoxError> {
-    let (sandbox, user) = seed(app, data, &["a-first"]).await?;
-    let id = new_task(
-        app,
-        &sandbox,
-        &user,
-        "Make the header blue\n\n@/srv/notes.txt",
-        TaskMode::Goal,
-    )
-    .await?;
-    wait_for("the opening turn", Duration::from_secs(60), || async {
-        screen(app, &id).contains("WORKING")
+    let (sandbox, user) = seed(app, data, &["a-first", "b-second"]).await?;
+    let id = new_task(app, &sandbox, &user, "Make the header blue", TaskMode::Goal).await?;
+    wait_for("the first goal", Duration::from_secs(60), || async {
+        screen(app, &id).contains("GOAL SET")
     })
     .await?;
     let ctx = AuthContext {
@@ -220,6 +216,23 @@ async fn goal_in_its_opening_turn(
         csrf_token: None,
         session_hash: None,
     };
+    app.switch_task(
+        &ctx,
+        id.as_str(),
+        &ContinueTask {
+            account_id: Some("b-second".into()),
+        },
+    )
+    .await?;
+    // The new run's screen replaced the first one's: its opening turn runs, no goal yet.
+    wait_for("the continued turn", Duration::from_secs(60), || async {
+        let attempts = app.deps.store.attempts(&id).await.unwrap_or_default();
+        attempts.len() == 2
+            && attempts[1].state == AttemptState::Live
+            && screen(app, &id).contains("WORKING")
+            && !screen(app, &id).contains("GOAL SET")
+    })
+    .await?;
     let attach = app
         .terminal_open(&ctx, id.as_str(), Some((120, 40)))
         .await?;
@@ -234,9 +247,9 @@ fn opening_turn() -> FakeAgentOptions {
     }
 }
 
-/// SPEC-068 TYP-002, AC-TYP-2: clicking into and out of the terminal during the opening turn
-/// (focus and mouse reports through `terminal_input`) is not typing: the goal is still set,
-/// once, after that turn.
+/// SPEC-068 TYP-002, AC-TYP-2: clicking into and out of the terminal during a continued goal
+/// session's opening turn (focus and mouse reports through `terminal_input`) is not typing: the
+/// goal is still set, once, after that turn.
 #[test]
 fn focus_and_mouse_reports_do_not_keep_the_goal_out() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -245,7 +258,7 @@ fn focus_and_mouse_reports_do_not_keep_the_goal_out() -> TestResult {
     rt.block_on(async {
         let probe = Arc::new(ScriptedUsage::default());
         let (app, _) = start(&data, &fake, opening_turn(), 0, probe).await?;
-        let (id, ctx, attach) = goal_in_its_opening_turn(&app, &data).await?;
+        let (id, ctx, attach) = goal_in_a_continued_turn(&app, &data).await?;
         for report in [
             b"\x1b[I".as_slice(),
             b"\x1b[<0;10;5M",
@@ -269,8 +282,8 @@ fn focus_and_mouse_reports_do_not_keep_the_goal_out() -> TestResult {
     Ok(())
 }
 
-/// SPEC-068 TYP-003, AC-TYP-3 (#252): a person's draft typed during the opening turn of a goal
-/// task with attached files does not get `/goal` appended; the task is flagged and told why.
+/// SPEC-068 TYP-003, AC-TYP-3 (#252): a person's draft typed during a continued goal session's
+/// opening turn does not get `/goal` appended; the task is flagged and told why.
 #[test]
 fn a_draft_typed_during_the_opening_turn_is_left_alone() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
@@ -279,23 +292,10 @@ fn a_draft_typed_during_the_opening_turn_is_left_alone() -> TestResult {
     rt.block_on(async {
         let probe = Arc::new(ScriptedUsage::default());
         let (app, _) = start(&data, &fake, opening_turn(), 0, probe).await?;
-        let (id, ctx, attach) = goal_in_its_opening_turn(&app, &data).await?;
+        let (id, ctx, attach) = goal_in_a_continued_turn(&app, &data).await?;
         let mut watch = app.runtime(&id).hub.watch();
         app.terminal_input(&ctx, &attach, b"my own draft", false)
             .await?;
-        wait_for(
-            "the opening turn's end",
-            Duration::from_secs(30),
-            || async { screen(&app, &id).contains("DONE opening") },
-        )
-        .await?;
-        let shown = screen(&app, &id);
-        let draft = shown.find("my own draft").ok_or_else(|| shown.clone())?;
-        let done = shown.find("DONE opening").ok_or_else(|| shown.clone())?;
-        assert!(
-            draft < done,
-            "the draft came after the opening turn:\n{shown}"
-        );
         wait_for("the flag", Duration::from_secs(60), || async {
             activity(&app, &id).await == Some(Activity::NeedsAttention)
         })
@@ -438,7 +438,7 @@ fn trust_words_after_the_session_started_are_no_trust_prompt() -> TestResult {
     rt.block_on(async {
         let probe = Arc::new(ScriptedUsage::default());
         let (app, _) = start(&data, &fake, opening_turn(), 0, probe).await?;
-        let (id, ctx, attach) = goal_in_its_opening_turn(&app, &data).await?;
+        let (id, ctx, attach) = goal_in_a_continued_turn(&app, &data).await?;
         let mut watch = app.runtime(&id).hub.watch();
         app.terminal_input(&ctx, &attach, b"Yes, I trust this folder", false)
             .await?;
@@ -518,12 +518,11 @@ fn a_first_message_cut_by_a_restart_flags_the_task() -> TestResult {
     Ok(())
 }
 
-/// Phase one of a restart during an instance update: a task with an image (`mode`) whose first
+/// Phase one of a restart during an instance update: a prompt task with an image whose first
 /// message's submit reached Yulius, which held it for the update. Returns the data directory's
 /// guard and path, the internal port and the task; the first server is gone.
 fn first_message_held_by_an_update(
     fake: &Path,
-    mode: TaskMode,
 ) -> Result<(tempfile::TempDir, PathBuf, u16, TaskId), BoxError> {
     let (dir, data) = data_dir()?;
     let first = runtime()?;
@@ -536,7 +535,7 @@ fn first_message_held_by_an_update(
             &sandbox,
             &user,
             "Make it blue\n\n@/srv/shot.png",
-            mode,
+            TaskMode::Prompt,
         )
         .await?;
         wait_for("the run", Duration::from_secs(30), || async {
@@ -580,7 +579,7 @@ fn first_message_held_by_an_update(
 #[test]
 fn a_first_message_held_by_an_update_is_not_flagged_after_the_restart() -> TestResult {
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
-    let (_dir, data, port, id) = first_message_held_by_an_update(&fake, TaskMode::Prompt)?;
+    let (_dir, data, port, id) = first_message_held_by_an_update(&fake)?;
     let rt = runtime()?;
     rt.block_on(async {
         let probe = Arc::new(ScriptedUsage::default());
@@ -594,37 +593,6 @@ fn a_first_message_held_by_an_update_is_not_flagged_after_the_restart() -> TestR
         assert_ne!(activity(&app, &id).await, Some(Activity::NeedsAttention));
         let said = notices(&mut watch);
         assert!(!said.iter().any(|n| n.contains("never sent")), "{said:?}");
-        stop(&app, &id).await
-    })?;
-    rt.shutdown_timeout(Duration::from_secs(5));
-    Ok(())
-}
-
-/// SPEC-068 OPN-002: the same for a goal task. The goal, which the old server would have typed
-/// after the turn on the first message, is typed by the new one once that turn ended, once.
-#[test]
-fn a_goal_task_held_by_an_update_still_gets_its_goal_after_the_restart() -> TestResult {
-    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
-    let (_dir, data, port, id) = first_message_held_by_an_update(&fake, TaskMode::Goal)?;
-    let rt = runtime()?;
-    rt.block_on(async {
-        let probe = Arc::new(ScriptedUsage::default());
-        let (app, _) = start(&data, &fake, hooked(), port, probe).await?;
-        app.reconcile().await?;
-        wait_for("the goal", Duration::from_secs(90), || async {
-            screen(&app, &id).contains("GOAL SET")
-        })
-        .await?;
-        let shown = screen(&app, &id);
-        let opening = shown
-            .find("ECHO: [Image #1]")
-            .ok_or_else(|| shown.clone())?;
-        let goal = shown.find("/goal ").ok_or_else(|| shown.clone())?;
-        assert!(
-            opening < goal,
-            "the goal came before the first message:\n{shown}"
-        );
-        assert_eq!(shown.matches("GOAL SET").count(), 1, "{shown}");
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));
