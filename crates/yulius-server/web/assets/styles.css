@@ -875,7 +875,7 @@ summary.gt-tree-row::-webkit-details-marker { display: none; }
 .au-when { color: var(--text-2); }
 /* The start chip sits in the action bar (SPEC-093): as tall as its buttons. */
 .chip-btn.au-start { height: var(--control-md); }
-.chip-btn.au-start:disabled { opacity: 0.5; cursor: not-allowed; }
+.chip-btn.au-start:disabled { opacity: 0.5; cursor: not-allowed; background: transparent; color: var(--text-2); }
 /* On a phone the name takes the row and the start chip, Run now and Save stay together below Delete. */
 .au-break { display: none; }
 @media (max-width: 767px) {

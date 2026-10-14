@@ -116,9 +116,10 @@ export function mountAutomationEditor(ctx, sandbox, id) {
   const nameInput = h('input', { class: 'wf-name', placeholder: 'Name the automation', 'aria-label': 'Automation name', maxlength: 100, onInput: (e) => { state.name = e.target.value; changed(); } });
   const when = h('span', { class: 'wf-desc au-when' });
   const save = h('button', { type: 'button', class: 'btn btn-primary', disabled: !write, onClick: () => doSave() }, creating ? 'Create automation' : 'Save');
-  // How each task starts (SPEC-093): New task's start chip, before Run now.
-  const startChip = h('button', { type: 'button', class: 'chip-btn au-start', 'aria-haspopup': 'menu', disabled: !write, onClick: () => openStart() });
-  const runNow = creating ? null : h('button', { type: 'button', class: 'btn au-run', disabled: !write, title: write ? 'Create a task from it now' : 'Requires write access', onClick: () => doRunNow() }, icon('send', { size: 14 }), 'Run now');
+  // How each task starts (SPEC-093): New task's start chip, before Run now. Both stay off until
+  // the automation is read, so Run now never sends a choice the page has not shown.
+  const startChip = h('button', { type: 'button', class: 'chip-btn au-start', 'aria-haspopup': 'menu', disabled: true, onClick: () => openStart() });
+  const runNow = creating ? null : h('button', { type: 'button', class: 'btn au-run', disabled: true, title: write ? 'Create a task from it now' : 'Requires write access', onClick: () => doRunNow() }, icon('send', { size: 14 }), 'Run now');
   const del = creating ? null : h('button', { type: 'button', class: 'btn btn-quiet-danger', disabled: !write, onClick: () => doDelete() }, icon('trash', { size: 14 }), 'Delete');
   const body = h('div', { class: 'au-body' }, placeholder('Loading…', 'loading'));
   const head = h('header', { class: 'gt-head wf-head' },
@@ -349,6 +350,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
     event.stopPropagation();
     if (await confirmDialog({ title: 'Leave without saving?', message: 'Your changes to this automation are not saved.', confirmLabel: 'Leave', danger: true })) { saved = snapshot(); navigate(link.dataset.route); }
   };
+  renderStart();
   window.addEventListener('beforeunload', onBeforeUnload);
   document.addEventListener('click', onLink, true);
   el.addEventListener('keydown', (event) => {
@@ -374,6 +376,8 @@ export function mountAutomationEditor(ctx, sandbox, id) {
         showZone = state.offset !== -new Date().getTimezoneOffset();
       }
       nameInput.readOnly = !write;
+      startChip.disabled = !write;
+      if (runNow) runNow.disabled = !write;
       if (creating) { useRecipe(RECIPES[0]); saved = JSON.stringify({ ...state, name: '' }); } else { saved = snapshot(); render(); loadRuns(); }
     } catch (error) {
       if (alive) setChildren(body, loadError(`Couldn’t load the automation: ${error.message}`, load));

@@ -1767,7 +1767,11 @@ function automationStart(db, sandbox, body) {
   }
   return { supertask: Boolean(body.supertask), after_task_id: after, after_task_number: task ? task.number : null, start_rule: canonical };
 }
-route('GET', `/api/sandboxes/${ID}/automations`, ({ db, p }) => db.automations.filter((a) => a.sandbox === p[0]).map(({ sandbox: _s, ...a }) => a));
+// A test can hold the list (`__yuliusMock.holdAutomations = promise`) to look at a loading editor.
+route('GET', `/api/sandboxes/${ID}/automations`, async ({ db, p }) => {
+  if (db.holdAutomations) await db.holdAutomations;
+  return db.automations.filter((a) => a.sandbox === p[0]).map(({ sandbox: _s, ...a }) => a);
+});
 route('POST', `/api/sandboxes/${ID}/automations`, ({ db, p, body }) => {
   need(sandboxOf(db, p[0]), 'write');
   if (Math.abs(Number(body.utc_offset_minutes) || 0) > 1080) fail(422, 'invalid', 'utc_offset_minutes must be within ±1080');
@@ -1793,6 +1797,7 @@ route('DELETE', `/api/automations/${ID}`, ({ db, p }) => { db.automations = db.a
 route('POST', `/api/automations/${ID}/run`, ({ db, p, body }) => {
   const a = db.automations.find((x) => x.id === p[0]);
   if (!a) fail(404, 'not_found', 'not found');
+  need(sandboxOf(db, a.sandbox), 'write');
   const stored = { supertask: Boolean(a.supertask), after_task_id: a.after_task_id || null, start_rule: a.start_rule || null };
   const same = !body || (Boolean(body.supertask) === stored.supertask && (body.after_task_id || null) === stored.after_task_id && (body.start_rule || null) === stored.start_rule);
   const start = same ? stored : automationStart(db, a.sandbox, body);

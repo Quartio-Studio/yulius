@@ -506,8 +506,6 @@ export function autoChoiceLabel(task) {
   };
 }
 
-/** What a supertask is, in the start menu and on its chip (SPEC-071). */
-
 /**
  * New-task composer (J3, UI-021, F 2026-10-10): a rounded prompt box whose bottom edge holds the
  * task's choices — mode and workflow (Auto by default: Jev decides), run after, model and effort

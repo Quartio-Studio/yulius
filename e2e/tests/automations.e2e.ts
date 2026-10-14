@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, mock, mockReady } from './support.ts';
 
 failOnPageErrors();
 
@@ -137,6 +137,22 @@ test('Run now starts its task the way the chip shows, saved or not (AC-AUT-23)',
   expect(made).toEqual({ supertask: true, status: 'queued' });
   expect(await startOf(browser, 'aut_2')).toEqual({ supertask: false, after: null, rule: null });
   await expect(screen.getByRole('button', 'Save')).toBeEnabled();
+});
+
+test('Run now and the start chip wait until the automation has loaded (SPEC-093 review)', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/automations'));
+  await mockReady(browser);
+  // The automation is read late: until then Run now would run with a choice the page has not read.
+  await browser.evaluate(() => {
+    const m = (window as unknown as { __yuliusMock: { holdAutomations?: Promise<void>; releaseAutomations?: () => void } }).__yuliusMock;
+    m.holdAutomations = new Promise((resolve) => { m.releaseAutomations = resolve; });
+    location.hash = '#/s/studio/automations/aut_2';
+  });
+  await expect(screen.getByRole('button', 'Start: Start now')).toBeDisabled();
+  await expect(screen.getByRole('button', 'Run now')).toBeDisabled();
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { releaseAutomations: () => void } }).__yuliusMock.releaseAutomations());
+  await expect(screen.getByRole('button', 'Run now')).toBeEnabled();
+  await expect(screen.getByRole('button', 'Start: Start now')).toBeEnabled();
 });
 
 test('a reader sees the start chip, disabled, in the action bar (AC-AUT-24)', async ({ app, screen }) => {
