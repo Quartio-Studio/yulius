@@ -10,8 +10,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   "After a task is done" lists its tasks in a box five rows tall that scrolls the rest, so Start
   now, Supertask and "When a rule is true…" stay in view however many tasks a project has. The box
   fades at the edge it continues past and a "↓ N more" line under it counts the tasks below (a
-  click scrolls a page); the picked task opens in view, and the arrows and the filter work inside
-  the box. The automation editor's "After a task…" menu does the same. `openMenu` takes such a
+  click scrolls a page); the picked task opens in view (and focused when the menu has no filter
+  focused), and the arrows and the filter work inside the box. The automation editor's "After a task…" menu does the same. `openMenu` takes such a
   group as `{ header, items }`.
 - A task waiting for its checks or merge shows a still, muted branch (SPEC-100, ADR-0080, task #85,
   #393). The "Waiting for checks or merge" state took Working's tone so that it notified nobody,

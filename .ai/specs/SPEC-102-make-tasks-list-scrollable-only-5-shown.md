@@ -1,11 +1,11 @@
 ---
 yulius-task: 01fea79c-7fd0-4cfa-96e5-6fdb8f3bf3f3
-status: in-progress
+status: done
 ---
 
 # SPEC-102: the "Run after" tasks show five at a time and say there is more
 
-Status: in progress
+Status: done
 Date: 2026-10-14
 Owner: task #87
 Scope authorization: the person's request (task #87): "Make tasks list scrollable, only 5 shown
@@ -41,17 +41,17 @@ scrolling.
 | --- | --- | --- |
 | MSG-001 | A menu item `{ header, items }` is a group: its header, then its items in a box of their own (`role="group"`, named by the header) that shows at most 5 rows (`MENU_GROUP_ROWS`) and scrolls the rest. A group of 5 items or fewer shows all of them, with no scrolling and no cue. | `menus.e2e.ts` "the start menu shows five tasks …", "a group of five tasks or fewer …" |
 | MSG-002 | While a group has rows out of sight it shows it without being scrolled: rows fade out at the edge they continue past (bottom, top or both), and a line under the box says how many rows are below ("↓ 8 more"); the line keeps its place but is blank once nothing is below (it hides only while a filter leaves no rows to scroll), so the menu does not jump. Clicking the line scrolls the box down by a page. The line is decoration for pointer users (`aria-hidden`): menu semantics already give the item count. | `menus.e2e.ts` "the start menu shows five tasks …", "scrolling to the end of the tasks …" |
-| MSG-003 | The checked item of a group is in view when the menu opens, even past the fifth row; a menu without a filter whose first row is in such a group focuses the checked row, so the focused row is never out of sight. | `menus.e2e.ts` "the picked task is in view …", "a group menu without a filter focuses its checked row …" |
+| MSG-003 | The checked item of a group is in view when the menu opens, even past the fifth row; a menu that would focus a row of such a group first (no filter box, or a touch screen) focuses the checked row, so the focused row is never out of sight. | `menus.e2e.ts` "the picked task is in view …", "a group menu without a filter focuses its checked row …" |
 | MSG-004 | Keyboard focus moved onto a group row (arrows, Home/End, a letter) scrolls the box so the row is wholly inside it, clear of the fade; the filter still shows only matching rows in the box (headers hidden), and the "more" line counts only the matching rows below. | `menus.e2e.ts` "arrows scroll the task box …", "the filter narrows the task box …" |
 | MSG-005 | The composer's start menu and the automation editor's "After a task…" menu list their tasks as such a group; every live task stays offered (MNU-006), the rows below the box ("When a rule is true…") stay visible without scrolling the whole menu on a window that fits the shortened menu, and an open menu still has no WCAG A/AA violations (MNU-007). | `menus.e2e.ts` "the start menu shows five tasks …", "the automation editor's … menu shows its tasks five at a time too", "in a short window the whole menu still scrolls …" |
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] The start menu shows five tasks in a scrolling box with a fade and a "more" line
-- [ ] The picked task, the keyboard and the filter work inside the task box, in both task menus
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Read the product context and related work, then write and validate the spec
+- [x] The start menu shows five tasks in a scrolling box with a fade and a "more" line
+- [x] The picked task, the keyboard and the filter work inside the task box, in both task menus
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -100,3 +100,25 @@ scrolling.
 ## Open questions
 
 None.
+
+## Evidence
+
+- Test first: the three SPEC-102 tests of the first slice failed on the old code (no group in the
+  menu), the picked-task test failed before MSG-003 ("expected [#14 … #10] to contain #7 Search
+  indexing"), and the review's regression tests failed before their fixes (focus on T1 out of view,
+  the filtered "more" line hidden at the end, the wheel stopping at the box). All pass after.
+- `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run tests/menus.e2e.ts`: 29 passed (the SPEC-038 and
+  SPEC-094 tests among them; the #288 test now checks the task box, and a new one the whole list).
+- `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run`: 296 passed, 1 skipped (`agent.e2e.ts`, needs a
+  model key), 43 files.
+- `scripts/dev ci`: exit 0; repository contracts passed (UI design tokens: the fade's mask stops are
+  `--mask-solid` and `--mask-faint` in `tokens.css`); nextest 1520 passed, 16 skipped.
+- Screenshots (mock, 1280 × 800): the start menu with nine tasks shows #14 … #10, the fifth row
+  faded, "↓ 4 more" under the box and "When a rule is true…" in view; with `tasks=many`, scrolled,
+  both edges fade and the line reads "32 more".
+- Independent review (fresh session, `om-code-review`): round 1 requested changes (two majors: a
+  focused row out of view, a weakened #288 test; minors: the filtered line jumping, overscroll
+  containment, spec evidence); all fixed test-first; round 2 approved `fb193a7e`.
+- Not tested here: macOS overlay scrollbars and real touch devices (the fade and the "more" line
+  are the cues that do not depend on them).
+

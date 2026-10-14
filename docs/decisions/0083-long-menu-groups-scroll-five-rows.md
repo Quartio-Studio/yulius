@@ -22,8 +22,9 @@ show five tasks and scroll the rest, with it clearly visible that there is somet
   edge they continue past, and a line under it reads "↓ N more" (the rows below), blank but in
   place at the end so the menu does not jump. A click on the line scrolls a page down. The
   scrollbar is thin and kept (`scrollbar-gutter: stable`) where the platform draws one.
-- The checked row of a group is in view when the menu opens; the keyboard and the filter work on
-  the group's rows as on any other (the box keeps its cap while filtering).
+- The checked row of a group is in view when the menu opens, and takes the focus when the menu
+  would otherwise focus the group's first row (no filter box, or a touch screen); the keyboard and
+  the filter work on the group's rows as on any other (the box keeps its cap while filtering).
 - The composer's start menu and the automation editor's "After a task…" menu list their tasks as
   such a group.
 
