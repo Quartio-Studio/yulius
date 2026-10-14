@@ -245,6 +245,9 @@ Run on the branch merged with `origin/dev` (2026-10-15):
   the presence tests × 8 at load 30: 88 of 88.
 - `scripts/dev security` (Vidoc): not run, exit 2. The key bound to `api.vidoc.dev` is refused
   (HTTP 401) from this session; reported on #470.
+- Final run at `62e678d0` (the reverted head; after it only documentation changed):
+  `scripts/dev ci` exit 0, 1676 tests passed, 16 skipped, advisories, bans, licenses and sources
+  ok; `npx e2e run --workers 4` exit 0, 50 files, 405 tests passed, 1 skipped (needs a model).
 - Not covered: two real browsers against a real server (the relay is covered in Rust over a real
   WebSocket, the browsers against the mock), browsers other than Chromium, forced colours (CSS
   rule only), the drawn selection seen by eye (the Yulius browser cannot make a selection).
