@@ -1,11 +1,11 @@
 ---
 yulius-task: a02a056c-9223-46de-9f91-36dab6bff0bf
-status: in-progress
+status: done
 ---
 
 # SPEC-133: the superadmin's Update button sits in the sidebar foot
 
-Status: in-progress
+Status: done
 Date: 2026-10-14
 Owner: Yulius task #121
 Scope authorization: the person's request (task #121): "Upgrade button should be somewhere here
@@ -62,10 +62,10 @@ state the button stays there, quiet, and opens the instance page (version, Check
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] The superadmin's sidebar foot offers Update and starts an offered update after one confirmation, proven end to end
-- [ ] The button stays reachable when up to date or updating, members never see it, and the account menu lists Version and updates
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] The superadmin's sidebar foot offers Update and starts an offered update after one confirmation, proven end to end
+- [x] The button stays reachable when up to date or updating, members never see it, and the account menu lists Version and updates
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -99,3 +99,28 @@ server change, so no Rust test.
   dialog already explains what happens; the commit list stays one click away on the instance page.
 - **Always present for the superadmin**, quiet when there is nothing to do, so the version and
   Check now are never more than one click away either.
+
+## Evidence
+
+Run on the merged head 283eba38 (branch + `origin/dev` b18c548d), 2026-10-14:
+
+- `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run tests/update.e2e.ts` before the code: the two
+  new button tests failed with "locator matched no nodes" (no button in `.sidebar-foot`); before
+  the menu entry the quiet-state test failed on the missing "Version and updates" menu item;
+  before the review fix the helper-missing title assertion failed. Each passed after its change.
+- `scripts/dev ci`: exit 0. Repository contracts passed (UI design tokens included: the first run
+  caught a 10 px padding, fixed to the 4 px scale); nextest 1666 tests run, 1666 passed,
+  16 skipped; cargo deny, cargo shear and cargo doc passed.
+- `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run`: exit 0, 49 files passed and 1 skipped, 404
+  tests passed and 1 skipped (`agent.e2e.ts` needs a model key). `update.e2e.ts` holds 12 tests:
+  the offered button and its one-click confirmation (cancel and confirm), the dismissed pill, the
+  running state, the missing helper, the quiet state, the account-menu entry, the 200 px sidebar,
+  the phone drawer, instance administrators and members; axe finds no WCAG A/AA violation.
+- Screenshots in mock mode (offer, quiet, 200 px) checked by eye: the accent "Update" pill and the
+  quiet icon sit right of the account name, which ellipsizes at 200 px.
+- `scripts/dev security`: exit 2, not run. Vidoc answers 401 "Invalid or expired token" although
+  `api.vidoc.dev` is bound to `VIDOC_API_KEY`; noted on #470 (the stored key needs replacing).
+- Independent review (`om-code-review`, fresh sessions): round 1 approved 81198dc4 with six minor
+  findings and nits, all fixed; round 2 approved 283eba38 with no findings.
+- Not verifiable here: a real update through the root helper on a server (the mock walks the
+  phases); the server API is unchanged.
