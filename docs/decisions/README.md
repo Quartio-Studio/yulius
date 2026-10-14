@@ -45,7 +45,7 @@ number differs from the file name, and a record this index does not list.
 - [0035](0035-queued-messages-join-the-request.md): Messages queued into a waiting task join its request
 - [0036](0036-agent-in-the-right-panel.md): The Cockpit is shown as the Agent, a tool in the right panel
 - [0037](0037-dead-code-tools.md): Dead code is cleaned with each language's established tool; Yulius's gate uses cargo-shear
-- [0038](0038-onboarding-starts-in-the-browser.md): Onboarding starts in the browser, never from the CLI
+- [0038](0038-onboarding-starts-in-the-browser.md): Onboarding starts in the browser, never from the CLI (amended by 0077)
 - [0039](0039-ci-jobs-get-the-cpu-first.md): CI jobs get the CPU first through a weighted cgroup
 - [0040](0040-done-tasks-release-their-subscription.md): Done tasks release their subscription
 - [0045](0045-ci-waits-for-disk-under-the-shared-quota.md): CI waits for disk under the sandbox's shared quota
@@ -84,6 +84,7 @@ number differs from the file name, and a record this index does not list.
 - [0079](0079-the-terminal-mouse-is-the-programs.md): The terminal's mouse is the program's when it asks for it (Shift or Option selects), with no mouse chip
 - [0073](0073-loading-shows-shimmering-fields.md): Loading shows shimmering fields everywhere; a spinner marks only an action under way
 - [0075](0075-menu-descriptions-wrap.md): Menu descriptions wrap onto as many lines as they need instead of being cut
+- [0077](0077-onboarding-task-is-created-when-needed.md): A sandbox's onboarding task is created when onboarding starts, not at import
 - [0080](0080-a-wait-for-yulius-shows-a-still-muted-branch.md): A wait for Yulius shows a still, muted branch, not Working's turning green
 - [0084](0084-personal-notes-in-the-notes-table.md): Personal notes ("Me") live in the notes table, and their events reach only their owner
 - [0083](0083-long-menu-groups-scroll-five-rows.md): A long menu group (the start menu's tasks) shows five rows and says there is more

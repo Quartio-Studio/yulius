@@ -72,8 +72,9 @@ grants per client and 1000 per instance; past either it answers 429.
 | POST | `/api/sandboxes` | admin on repo (superadmin: a repository the App can access) / owner | `{"mode":"import","repo":"owner/name"}` or `{"mode":"create","name","template","description"}` → 201 `Sandbox` (an import from the browser starts onboarding at once; with a bearer token it stays `pending`, SPEC-051) |
 | GET | `/api/sandboxes/{sid}` | read | → `Sandbox` |
 | PATCH | `/api/sandboxes/{sid}` | admin | `{"profile": Profile}` → `Sandbox` |
+| GET | `/api/sandboxes/{sid}/onboarding/plan` | read | → `{"title", "steps": [..], "task_number"}`: what onboarding does, its task's title and steps, or while that task does not exist yet (a `pending` sandbox, SPEC-097) the ones it would be created with (`task_number: null`); reads only |
 | POST | `/api/sandboxes/{sid}/onboarding/skip` | admin | → `Sandbox` (`pending`/`preparing` → `skipped`); an operator's recovery path for an onboarding that cannot finish: the web UI offers no skip (ADR-0076) |
-| POST | `/api/sandboxes/{sid}/onboarding/approve` | write, browser session | Start onboarding → `Sandbox`; starts the onboarding task (`pending` → `preparing`; a missing one is created); idempotent while `preparing`; 403 for a bearer token (the CLI only uploads, SPEC-051); 409 when nothing awaits preparation or the task cannot start |
+| POST | `/api/sandboxes/{sid}/onboarding/approve` | write, browser session | Start onboarding → `Sandbox`; creates the onboarding task if it has none and starts it (`pending` → `preparing`); idempotent while `preparing`; 403 for a bearer token (the CLI only uploads, SPEC-051); 409 when nothing awaits preparation or the task cannot start |
 | DELETE | `/api/sandboxes/{sid}` | admin | → 204; stops live/queued tasks; GitHub repository, clone and task records kept |
 
 `GET /api/github/repositories` lists the App installation's repositories of the instance owner
@@ -82,11 +83,11 @@ repository of the instance owner (`invalid` otherwise) and `admin` or `maintain`
 clones the repository, picks the profile (`yulius.toml` `[delivery]`, else `product`/`studio` for
 `Quartio-Studio/product`/`studio`, else `standard`) and validates the documentation format: a
 failing project gets a preparation task (`origin: "onboarding"`) that starts at once (`onboarding:
-"preparing"`; through `yulius onboard` the sandbox stays `pending` until someone clicks Start
-onboarding on the sandbox page, SPEC-051). While
+"preparing"`; through `yulius onboard` the sandbox stays `pending`, with no preparation task yet, until someone
+clicks Start onboarding on the sandbox page, SPEC-051, SPEC-097). While
 `pending`/`preparing` no other task starts, but none is refused: creating or chaining a task (also an
 automation run or a held prompt's Start in parallel / Run after) returns it `chained` after the
-preparation task, and it starts by itself once the sandbox is `ready` or `skipped`
+preparation task (created then, resting, when the sandbox has none yet), and it starts by itself once the sandbox is `ready` or `skipped`
 (`POST /api/tasks/{tid}/start-now` starts one at once); continuing a task and continuing an
 imported session are 409 (U-08, IMP-010). The web UI's new-task page shows no task input
 meanwhile, only what onboarding will do and its button (SPEC-096). Create mode

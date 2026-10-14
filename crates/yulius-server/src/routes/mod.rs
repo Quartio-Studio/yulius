@@ -77,6 +77,10 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/sandboxes", get(sandboxes::list))
         .route("/api/sandboxes/{sid}", get(sandboxes::get_one))
         .route(
+            "/api/sandboxes/{sid}/onboarding/plan",
+            get(projects::onboarding_plan),
+        )
+        .route(
             "/api/sandboxes/{sid}/tasks",
             get(tasks::list).post(tasks::create),
         )
