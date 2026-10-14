@@ -93,7 +93,8 @@ test('a file inside the prompt shows in place, files after the text below it', a
   await mockReady(browser);
   const drafts = '/srv/yulius/sandboxes/sb_studio/attachments/drafts/usr_mkarp';
   await touchTask(browser, 'sb_studio', 12, {
-    prompt: `This part @'${drafts}/inline.png' looks wrong,\nwhile here it is fine.\n\n@${drafts}/after.png`,
+    // The text's own private-use marker characters never place a file (SPEC-124 review).
+    prompt: `This part @'${drafts}/inline.png' looks wrong,\nwhile here\uE0000\uE001 it is fine.\n\n@${drafts}/after.png`,
   });
 
   await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
@@ -101,13 +102,15 @@ test('a file inside the prompt shows in place, files after the text below it', a
   const dialog = screen.getByRole('dialog', 'Original prompt · #12');
   const text = browser.locator('.prompt-modal .prompt-text');
   await expect(text.getByRole('img', { name: 'inline.png' })).toBeVisible();
+  await expect(text.getByRole('img', { name: 'inline.png' })).toHaveCount(1);
   // In its place: between the words around it.
   const shown = await browser.evaluate(() => {
     const copy = document.querySelector('.prompt-modal .prompt-text')!.cloneNode(true) as HTMLElement;
     for (const img of copy.querySelectorAll('img')) img.replaceWith(`[${img.getAttribute('alt')}]`);
     return copy.textContent;
   });
-  expect(shown).toMatch(/This part\s*\[inline\.png\]\s*looks wrong,\s*while here it is fine\./);
+  // The forged marker left its digit as text and placed no file.
+  expect(shown).toMatch(/This part\s*\[inline\.png\]\s*looks wrong,\s*while here0 it is fine\./);
   expect(shown).not.toContain('@');
   // The file after the text is listed below it, not inside it.
   const files = dialog.getByRole('list', 'Attached files');

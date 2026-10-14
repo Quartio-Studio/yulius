@@ -552,7 +552,9 @@ fn keys_typed_while_yulius_types_the_first_message_wait() -> TestResult {
             {
                 let shown = screen(&app, &id);
                 // The image is pasted where it sits: after the text (SPEC-124).
-                shown.contains("ECHO: Make it blue") && shown.contains("[Image #1]")
+                shown
+                    .find("ECHO: Make it blue")
+                    .is_some_and(|text| shown.find("[Image #1]").is_some_and(|image| image > text))
             }
         })
         .await?;
@@ -620,7 +622,9 @@ fn a_trust_prompt_before_a_typed_first_message_takes_the_answer() -> TestResult 
             {
                 let shown = screen(&app, &id);
                 // The image is pasted where it sits: after the text (SPEC-124).
-                shown.contains("ECHO: Make it blue") && shown.contains("[Image #1]")
+                shown
+                    .find("ECHO: Make it blue")
+                    .is_some_and(|text| shown.find("[Image #1]").is_some_and(|image| image > text))
             }
         })
         .await?;
@@ -772,7 +776,9 @@ fn a_first_message_held_by_an_update_is_not_flagged_after_the_restart() -> TestR
             {
                 let shown = screen(&app, &id);
                 // The image is pasted where it sits: after the text (SPEC-124).
-                shown.contains("ECHO: Make it blue") && shown.contains("[Image #1]")
+                shown
+                    .find("ECHO: Make it blue")
+                    .is_some_and(|text| shown.find("[Image #1]").is_some_and(|image| image > text))
             }
         })
         .await?;
@@ -900,7 +906,9 @@ async fn typed_again_on_b_second(app: &Arc<App>, id: &TaskId) -> TestResult {
         {
             let shown = screen(app, id);
             // The image is pasted where it sits: after the text (SPEC-124).
-            shown.contains("ECHO: Make it blue") && shown.contains("[Image #1]")
+            shown
+                .find("ECHO: Make it blue")
+                .is_some_and(|text| shown.find("[Image #1]").is_some_and(|image| image > text))
         }
     })
     .await?;

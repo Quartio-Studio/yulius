@@ -124,8 +124,9 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
     return Boolean(end) && end.nodeName === 'BR' && nodes.every((n) => (n.nodeType === 3 && !n.data.includes(ATOM)) || (n.nodeType === 1 && isAtom(n)));
   }
 
-  /** Draws the model. */
+  /** Draws the model; a drag from this box under way is forgotten (its offsets would be stale). */
   function draw(plain, atoms) {
+    if (moving) dragDone();
     const nodes = [];
     plain.split(ATOM).forEach((text, i) => {
       if (i > 0) nodes.push(atomEl(atoms[i - 1]));
@@ -292,6 +293,11 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
   el.addEventListener('beforeinput', (event) => {
     if (!editable()) { event.preventDefault(); return; }
     const type = event.inputType;
+    // Typing stops at the length cap, as a textarea's maxlength does (over a selection it replaces).
+    if (type.startsWith('insert') && type !== 'insertParagraph' && type !== 'insertLineBreak' && event.data) {
+      const [start, end] = selection();
+      if (scan().plain.length - (end - start) + event.data.length > maxLength) { event.preventDefault(); return; }
+    }
     if (type === 'historyUndo' || type === 'historyRedo') {
       event.preventDefault();
       if (type === 'historyUndo') undo(); else redo();
@@ -443,12 +449,14 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
     }
     event.dataTransfer.effectAllowed = 'copyMove';
     event.dataTransfer.setData('text/plain', asText(plain, atoms, moving[0], moving[1]));
+    // However the drag ends, even off the box or after a redraw replaced the dragged node.
+    document.addEventListener('dragend', dragDone, { capture: true, once: true });
   });
-  const dragDone = () => {
+  function dragDone() {
     if (dragged) dragged.classList.remove('pi-dragging');
     dragged = null;
     moving = null;
-  };
+  }
   el.addEventListener('dragend', dragDone);
   el.addEventListener('dragover', (event) => {
     if (!moving && !(event.dataTransfer && [...event.dataTransfer.types].includes('text/plain'))) return;
@@ -582,7 +590,15 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
           const { plain } = scan();
           replace(plain.length, plain.length, ATOM.repeat(files.length), files, null, { files: true });
         },
-        cancel() { swapPending(id, []); },
+        cancel() {
+          if (!swapPending(id, [])) return;
+          // The placeholder's step is now a copy of the one before it: not a step to undo.
+          const same = (a, b) => a.plain === b.plain && sameAtoms(a.atoms, b.atoms);
+          const states = history.states;
+          const kept = states.filter((state, i) => i === 0 || !same(state, states[i - 1]));
+          history.index -= states.slice(0, history.index + 1).filter((state, i) => i > 0 && same(state, states[i - 1])).length;
+          history.states = kept;
+        },
       };
     },
     /** Shows the caret where something dropped at this point lands. */

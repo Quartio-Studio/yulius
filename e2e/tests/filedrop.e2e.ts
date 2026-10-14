@@ -175,7 +175,8 @@ test('files dropped or pasted on the new-task prompt sit in its text, at the car
   // SPEC-025 ATT-001: a file opens from the prompt's preview; an image previews in a dialog that
   // Esc closes.
   await screen.getByRole('button', 'Preview').click();
-  await screen.getByRole('button', 'Open screen-shot.png').click();
+  // The keyboard way: Enter on the file's button opens it (it does not leave the Preview).
+  await screen.getByRole('button', 'Open screen-shot.png').press('Enter');
   await expect(screen.getByRole('dialog', 'screen-shot.png').getByRole('img', 'screen-shot.png')).toBeVisible();
   await browser.locator('dialog.modal').press('Escape');
   await expect(browser.locator('dialog.modal')).toHaveCount(0);

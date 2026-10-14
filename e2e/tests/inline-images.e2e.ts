@@ -230,3 +230,16 @@ test('a selection dragged inside the prompt moves, it is not copied', async ({ a
   });
   expect(await promptText(browser)).toBe('alpha gamma beta');
 });
+
+// SPEC-124 review: the prompt's length cap stops typing and pastes, never an uploaded file.
+test('at the length cap typing stops, and a pasted image still lands', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  const prompt = screen.getByRole('textbox', 'Task prompt');
+  await prompt.fill('x'.repeat(100000));
+  await prompt.press('End');
+  await browser.keyboard.type('yz');
+  await expect.poll(async () => (await promptText(browser)).length).toBe(100000);
+  await pasteImage(browser, 'capped.png');
+  await expect(browser.locator('.composer-prompt .pi-image img')).toHaveCount(1);
+  await expect(browser.locator('.composer-prompt .pi-pending')).toHaveCount(0);
+});

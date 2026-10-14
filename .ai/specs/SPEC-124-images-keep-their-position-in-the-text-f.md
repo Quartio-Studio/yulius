@@ -181,7 +181,13 @@ Run on this branch (Linux, Chromium 153 headless, Claude Code behaviour through 
   composer wiping the draft, a dragged selection copying, a mention glued to a following image, and
   forged file markers. Recorded in Decisions instead of fixed: the older-prompt wording and the
   quadratic parse bound. Opening a file is reachable from the Preview by keyboard (INL-003).
-- Review round 2 (fresh session) reviews this head; `delivery_merge` names the approved commit.
+- Review round 2 (fresh session) approved `6640b84e` (no blocker or major). Its minors were fixed
+  test-first after merging dev: Enter on a Preview file now opens it (it closed the Preview),
+  a drag's saved range is dropped on any redraw and when the drag ends anywhere, a failed upload
+  leaves no empty undo step, typing stops at the length cap while an uploaded file still lands,
+  forged markers and the cap have e2e tests, and the `first_message` waits check that the image
+  comes after the text.
+- Review round 3 (fresh session) confirms the final head; `delivery_merge` names that commit.
 
 Not tested here: a real Claude Code TUI receiving an interleaved typed message (the fake agent
 models Claude Code 2.1.292's paste handling), and browsers other than Chromium.
