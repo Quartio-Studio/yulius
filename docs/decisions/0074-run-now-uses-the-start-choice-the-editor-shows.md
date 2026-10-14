@@ -26,8 +26,8 @@ expects that run to start the way the chip shows, saved or not. Until now `POST
 - Without a body the run uses the stored choice. Scheduled runs, catch-up runs and the
   `automation_run_now` tool behave as before.
 - The editor always sends the choice its chip shows, and keeps Run now and the chip off until it
-  has read the automation, so it never sends a default it has not shown. New task and the editor share one start menu
-  module (`startchoice.js`).
+  has read the automation, so it never sends a default it has not shown. New task and the editor
+  share one start menu module (`startchoice.js`).
 
 ## Alternatives
 
