@@ -1,11 +1,11 @@
 ---
 yulius-task: 166d22db-c7e8-40d6-8464-e8eca6340316
-status: in-progress
+status: done
 ---
 
 # SPEC-095: a repository's .mcp.json servers join Yulius's MCP section, and the Superagent never asks about them
 
-Status: in progress
+Status: implemented
 Date: 2026-10-14
 Owner: Yulius task #80
 Scope authorization: task request: "while onboarding other project, I got something like this in
@@ -77,11 +77,11 @@ there does. The Superagent opens straight on its prompt.
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
-- [ ] A repository's .mcp.json servers join the sandbox's MCP section before every run
-- [ ] The Superagent starts without asking about the project's MCP servers
-- [ ] ADR, architecture, product and changes updated; every gate green
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Write the fix spec and the regression test that fails
+- [x] A repository's .mcp.json servers join the sandbox's MCP section before every run
+- [x] The Superagent starts without asking about the project's MCP servers
+- [x] ADR, architecture, product and changes updated; every gate green
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -125,3 +125,24 @@ there does. The Superagent opens straight on its prompt.
   repository's `.mcp.json` feeds Yulius's MCP section (added when missing, never overwritten), and
   the Superagent rejects the file's servers through `--settings`. Alternatives: approving them in
   the Superagent, `--strict-mcp-config` for the Superagent, importing only once at onboarding.
+
+## Evidence
+
+- Reproduced on Claude Code 2.1.292 in a pseudo-terminal with a clean environment: a two-server
+  `.mcp.json` shows "2 new MCP servers found in this project"; `--settings` with
+  `disabledMcpjsonServers` naming both starts without it, `enableAllProjectMcpServers: false` does
+  not (table in Context).
+- Regression tests first (commit 3167cb3a): `pool_supervision::a_repository_mcp_json_reaches_the_run_through_yulius`
+  failed on dev (the run had only `yulius`), `cockpit::a_cockpit_takes_the_repository_mcp_servers_into_yulius_without_asking`
+  failed (no `--settings`), and the harness test did not compile (no field). After the fix the run
+  test first failed to spawn ("name also present in the non-secret env"), which exposed PMC-006.
+- Live check (Claude Code 2.1.292, `claude mcp list` with the server approved): a stdio MCP server
+  inherits `HTTPS_PROXY`, `NODE_USE_ENV_PROXY` and `NODE_EXTRA_CA_CERTS` and gets
+  `APIFY_TOKEN=yulius-secret-APIFY_TOKEN` expanded from `${YULIUS_MCP_PROBE_APIFY_TOKEN}`.
+- Independent review in a fresh session, three rounds: round 1 asked for changes (clear secret
+  values for file-defined servers, the file read through links and FIFOs, variable names over 128
+  characters, minors); fixed with regression tests; approved at 3f9d29ef.
+- `scripts/dev ci` at 3f9d29ef: exit 0; nextest 1,532 passed, 16 skipped; doctests, lint, deny,
+  shear and `cargo doc -D warnings` green.
+- Not tested here: a real Superagent session on the instance and a real MCP server reaching its
+  host through the egress proxy (no credentials or proxy in this environment).
