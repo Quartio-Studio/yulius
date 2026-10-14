@@ -1841,6 +1841,7 @@ a.dl-task:hover { text-decoration: underline; }
 .bp-copied { position: absolute; z-index: var(--z-float); right: 10px; bottom: 10px; padding: 4px 12px; border-radius: var(--radius-full); background: var(--surface-2); color: var(--text); font-size: var(--fs-sm); line-height: var(--lh-sm); pointer-events: none; }
 .bp-copied[hidden] { display: none; }
 .bp-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: var(--muted); background: var(--surface); text-align: center; padding: 16px; }
+.bp-overlay:has(> .skeleton) { align-items: flex-start; justify-content: flex-start; padding: 0; }
 /* Shown instead of the app when it is framed (BRW-008). */
 .framed-notice { max-width: 560px; margin: 0 auto; padding: 48px 24px; color: var(--text); }
 .framed-notice h1 { font: 600 var(--fs-lg)/var(--lh-lg) var(--font); }
@@ -1891,6 +1892,7 @@ a.dl-task:hover { text-decoration: underline; }
 .home-count-attention .icon, .home-count-attention strong { color: var(--warn-fg); }
 .home-count-running .icon { color: var(--ok); }
 .home-activity { color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.home-activity .skeleton-line { width: 10em; max-width: 100%; height: 10px; }
 .home-card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; }
 
 /* ---------------------------------------------------------------- phone (< 768 px, §6.4) */
@@ -1979,6 +1981,10 @@ a.dl-task:hover { text-decoration: underline; }
 .ed-tree { flex: 1; min-height: 0; overflow: auto; padding: 4px 0; font-size: var(--fs); line-height: var(--lh); }
 .ed-row { display: flex; align-items: center; gap: 4px; height: var(--control-sm); padding-right: 8px; white-space: nowrap; cursor: pointer; user-select: none; }
 .ed-row:hover { background: var(--overlay-hover); }
+.ed-row-loading { cursor: default; }
+.ed-row-loading:hover { background: none; }
+.ed-row-loading .skeleton { flex: 1; }
+.ed-row-loading .skeleton-line { width: 8em; max-width: 100%; height: 10px; }
 .ed-row.active { background: var(--accent-soft); color: var(--text); }
 .ed-row:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 .ed-twisty { width: 12px; flex: none; color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); }
@@ -2004,6 +2010,10 @@ a.dl-task:hover { text-decoration: underline; }
 .notes-panes { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--term-bg); }
 .notes-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .notes-pane[hidden] { display: none; }
+.notes-box { flex: 1; min-height: 0; display: flex; position: relative; }
+/* Before the first read (SPEC-092): fields over the box instead of its placeholder. */
+.notes-box > .skeleton { position: absolute; inset: 0 0 auto; pointer-events: none; }
+.notes-loading .notes-text::placeholder { color: transparent; }
 .notes-text { flex: 1; min-height: 0; width: 100%; resize: none; padding: 12px 16px; border: 0; background: transparent; color: var(--text); font: inherit; font-size: var(--fs); line-height: var(--lh); }
 .notes-text:focus-visible { outline: none; box-shadow: inset 2px 0 0 var(--accent); }
 .notes-text[readonly] { color: var(--text-2); }

@@ -253,7 +253,8 @@ N×M until this one types or clicks into the terminal), `update=1` (a newer `mai
 now walks through its phases in about six seconds) or `update=fail` (the same, rolled back),
 `helper=0` (no update helper), `jev=config` (a Jev key file is configured), `fail=<path>` (GET
 requests of that exact API path answer 500, to see a view say what failed to load), `hold=<path>` (GET
-requests of that path wait until `__yuliusMock.release()`, to see a view while it loads) or `failpost=<path>`
+requests of that path wait until `__yuliusMock.release()`, to see a view while it loads; `hold=frames` holds
+the browser panel's picture) or `failpost=<path>`
 (POST requests of that path answer 500, to see an action say it failed).
 
 The mock mirrors the real response shapes (it is the UI's offline test bed and

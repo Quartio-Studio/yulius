@@ -48,7 +48,7 @@ test('the Git page shows shimmering fields, not a spinner, while delivery loads'
   await expect(fields).toHaveCount(0);
 });
 
-const release = (browser: Browser) => browser.evaluate(() => (window as unknown as { __yuliusMock: { release?: () => void } }).__yuliusMock.release?.());
+const release = (browser: Browser) => browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
 
 test('task lists and the status popover load as shimmering fields', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/tasks', '&hold=/api/sandboxes/sb_studio/tasks'));
@@ -69,4 +69,53 @@ test('task lists and the status popover load as shimmering fields', async ({ app
   await release(browser);
   await expect(browser.locator('.status-pop .skeleton')).toHaveCount(0);
   await expect(pop).toBeVisible();
+});
+
+test('a home card, the editor tree and a notepad load as shimmering fields', async ({ app, browser, screen }) => {
+  // A home card's last activity waits for its sandbox's tasks.
+  await app.open(mock('/', '&hold=/api/sandboxes/sb_studio/tasks'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+  const activity = browser.locator('.home-card[data-id="sb_studio"] .home-activity .skeleton[role="status"]');
+  await expect(activity).toHaveText('Loading activity…');
+  expect(await visibleLoadingText(browser)).toEqual([]);
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(activity).toHaveCount(0);
+
+  // The editor's file tree, while a folder is listed.
+  await app.open(mock('/s/studio/t/12', '&hold=/api/sandboxes/sb_studio/files'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  const tree = screen.getByRole('tree', 'Files');
+  // A tree's children may only be its items: the row's bars are decoration and the tree is busy.
+  await expect(browser.locator('.ed-tree[aria-busy="true"] .ed-row-loading .skeleton')).toBeVisible();
+  expect(await visibleLoadingText(browser, 'body')).toEqual([]);
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(tree.getByRole('treeitem', 'README.md')).toBeVisible();
+  await expect(browser.locator('.ed-tree .skeleton')).toHaveCount(0);
+
+  // A notepad before its first read: fields over the empty box, no "Loading…" save state.
+  await app.open(mock('/s/studio/t/12', '&hold=/api/sandboxes/sb_studio/notes'));
+  // The tools rail stays shown from the editor above.
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Notes').click();
+  const pad = browser.locator('.notes-pane:not([hidden]) .skeleton[role="status"]');
+  await expect(pad).toHaveText('Loading the notes…');
+  expect(await visibleLoadingText(browser, 'body')).toEqual([]);
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(pad).toHaveCount(0);
+  await expect(screen.getByRole('textbox', 'Sandbox notes')).not.toHaveAttribute('readonly', '');
+});
+
+test('the browser panel covers a page still loading with shimmering fields', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&hold=frames'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', /^Browser/).click();
+  const cover = browser.locator('.bp-overlay .skeleton[role="status"]');
+  await expect(cover).toHaveText('Loading page…');
+  expect(await visibleLoadingText(browser, 'body')).toEqual([]);
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(browser.locator('.bp-overlay')).toBeHidden();
 });

@@ -289,6 +289,9 @@ function seed(params) {
   }
   // `tasks=0`: sandboxes without any task yet (the composer then offers no start rule, SPEC-022).
   if (params.get('tasks') === '0') db.tasks = [];
+  // `hold=<path>`: its GET requests wait until `__yuliusMock.release()`, which may come first;
+  // `hold=frames` keeps the sandbox Chrome's picture back instead.
+  if (db.holdPath) db.held = new Promise((resolve) => { db.release = () => { db.released = true; resolve(); }; });
   // `tasks=many`: 30 more queued tasks in studio, a long "Run after" menu (SPEC-038).
   if (params.get('tasks') === 'many') {
     for (let number = 15; number < 45; number += 1) db.tasks.push(t('sb_studio', number, `Queued idea ${number}`, 'claude', 'queued', null, { noSteps: true }));
@@ -2705,12 +2708,8 @@ async function handleFetch(db, url, init = {}) {
   }
   if (!PUBLIC.includes(u.pathname) && !db.signedIn) return json(401, { error: { code: 'unauthenticated', message: 'Sign in first.' } });
   if (db.failPath && method === 'GET' && u.pathname === db.failPath) return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
-  // `hold=<path>` keeps GET requests of that path waiting until `__yuliusMock.release()`, to look
-  // at a view while it loads (SPEC-092).
-  if (db.holdPath && method === 'GET' && u.pathname === db.holdPath) {
-    db.held ||= new Promise((resolve) => { db.release = resolve; });
-    await db.held;
-  }
+  // `hold=<path>` keeps GET requests of that path waiting, to look at a view while it loads (SPEC-092).
+  if (db.held && method === 'GET' && u.pathname === db.holdPath) await db.held;
   // Tests count archive requests (`__yuliusMock.archiveRequests`), also those failed on purpose.
   if (method === 'POST' && /^\/api\/tasks\/[^/]+\/archive$/.test(u.pathname)) db.archiveRequests = (db.archiveRequests || 0) + 1;
   if (db.failPostPath && method === 'POST' && u.pathname === db.failPostPath) return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
@@ -3539,6 +3538,7 @@ class BrowserSession {
   }
 
   async drawFrame() {
+    if (this.db.holdPath === 'frames' && !this.db.released) { this.db.held.then(() => this.render()); return; }
     const tab = this.tabs.find((t) => t.active);
     if (!tab || this.viewers.size === 0) return;
     const { width, height } = this.size;
