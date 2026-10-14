@@ -14,6 +14,7 @@ import { readJson, writeJson } from './store.js';
 import { NEW_TASK_KEYS, NEW_TASK_ARIA, HOME_KEYS, HOME_ARIA } from './shortcuts.js';
 import { createSplitter, layoutPrefs } from './splitter.js';
 import { isPhone } from './theme.js';
+import { INSTANCE_ROUTE } from './updates.js';
 
 /** Sidebar widths (UI-044): its range, and what it leaves the panel and the centre (as panels.js). */
 const SIDEBAR = { min: 200, max: 480, panelMin: 300, centerMin: 360 };
@@ -228,6 +229,8 @@ function openUserMenu(ctx, anchor) {
     items.push({ label: 'Users', icon: 'users', onSelect: () => ctx.navigate('/admin/users') });
     items.push({ label: 'Subscriptions', icon: 'user', onSelect: () => ctx.navigate('/admin/accounts') });
     if (superadmin) items.push({ label: 'GitHub connection', icon: 'github', onSelect: () => ctx.navigate('/admin/github') });
+    // The instance page: the version and its updates, also beside this button (SPEC-133 UPB-007).
+    if (superadmin) items.push({ label: 'Version and updates', icon: 'download', onSelect: () => ctx.navigate(INSTANCE_ROUTE) });
     items.push(
       // One name per scope (#147): "Every sandbox" (the instance) and "This sandbox".
       { label: 'MCP for every sandbox', icon: 'plug', disabled: !sandbox, title: sandbox ? null : 'Open a sandbox first', onSelect: () => ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/mcp?scope=instance`) },

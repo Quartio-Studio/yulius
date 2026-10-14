@@ -5,7 +5,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use serde::Deserialize;
 use yulius_contracts::api::files::{
-    CreateEntry, DirListing, FileContent, FileEntry, FileWritten, WriteFile,
+    CreateEntry, DirListing, FileContent, FileEntry, FilePresence, FileWritten, WriteFile,
 };
 
 use crate::AppState;
@@ -73,5 +73,16 @@ pub async fn delete(
 ) -> ApiResult<StatusCode> {
     app.file_delete(&ctx, &sid, q.root.as_deref(), &q.path)
         .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Who has a file open and where (SPEC-127): relayed to the sandbox's writers, stored nowhere.
+pub async fn presence(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+    Json(req): Json<FilePresence>,
+) -> ApiResult<StatusCode> {
+    app.file_presence(&ctx, &sid, &req).await?;
     Ok(StatusCode::NO_CONTENT)
 }

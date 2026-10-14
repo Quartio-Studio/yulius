@@ -549,7 +549,13 @@ fn keys_typed_while_yulius_types_the_first_message_wait() -> TestResult {
             .await?;
         app.terminal_input(&ctx, &attach, b" more", false).await?;
         wait_for("the first message", Duration::from_secs(60), || async {
-            screen(&app, &id).contains("ECHO: [Image #1] Make it blue")
+            {
+                let shown = screen(&app, &id);
+                // The image is pasted where it sits: after the text (SPEC-124).
+                shown
+                    .find("ECHO: Make it blue")
+                    .is_some_and(|text| shown.find("[Image #1]").is_some_and(|image| image > text))
+            }
         })
         .await?;
         let shown = screen(&app, &id);
@@ -613,7 +619,13 @@ fn a_trust_prompt_before_a_typed_first_message_takes_the_answer() -> TestResult 
             .await?;
         app.terminal_input(&ctx, &attach, b"2\r", false).await?;
         wait_for("the first message", Duration::from_secs(60), || async {
-            screen(&app, &id).contains("ECHO: [Image #1] Make it blue")
+            {
+                let shown = screen(&app, &id);
+                // The image is pasted where it sits: after the text (SPEC-124).
+                shown
+                    .find("ECHO: Make it blue")
+                    .is_some_and(|text| shown.find("[Image #1]").is_some_and(|image| image > text))
+            }
         })
         .await?;
         let shown = screen(&app, &id);
@@ -761,7 +773,13 @@ fn a_first_message_held_by_an_update_is_not_flagged_after_the_restart() -> TestR
         let mut watch = app.runtime(&id).hub.watch();
         app.reconcile().await?;
         wait_for("the first message", Duration::from_secs(60), || async {
-            screen(&app, &id).contains("ECHO: [Image #1] Make it blue")
+            {
+                let shown = screen(&app, &id);
+                // The image is pasted where it sits: after the text (SPEC-124).
+                shown
+                    .find("ECHO: Make it blue")
+                    .is_some_and(|text| shown.find("[Image #1]").is_some_and(|image| image > text))
+            }
         })
         .await?;
         assert_ne!(activity(&app, &id).await, Some(Activity::NeedsAttention));
@@ -885,7 +903,13 @@ async fn typed_again_on_b_second(app: &Arc<App>, id: &TaskId) -> TestResult {
     })
     .await?;
     wait_for("the first message", Duration::from_secs(60), || async {
-        screen(app, id).contains("ECHO: [Image #1] Make it blue")
+        {
+            let shown = screen(app, id);
+            // The image is pasted where it sits: after the text (SPEC-124).
+            shown
+                .find("ECHO: Make it blue")
+                .is_some_and(|text| shown.find("[Image #1]").is_some_and(|image| image > text))
+        }
     })
     .await?;
     let attempts = app.deps.store.attempts(id).await?;

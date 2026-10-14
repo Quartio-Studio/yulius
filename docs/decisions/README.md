@@ -99,6 +99,7 @@ number differs from the file name, and a record this index does not list.
 - [0086](0086-a-lost-onboarding-task-returns-the-sandbox-to-pending.md): A lost onboarding task returns the sandbox to pending; a worktree's main repository is trusted too
 - [0095](0095-a-goal-task-starts-with-its-goal-as-the-launch-prompt.md): A goal task starts with its `/goal` as the launch prompt: one message, nothing typed; a person's keys wait while a prompt task's images are typed
 - [0096](0096-terminal-input-rides-a-write-grant.md): Terminal input rides a per-viewer write grant tied to the store's access epoch; the access re-check runs beside the stream
+- [0101](0101-attached-files-keep-their-place-in-the-prompt.md): Attached files keep their place in the prompt: an inline `@'path'` mention, kept in order to the request file, the first message and the original prompt view; the composer holds files inside its text
 - [0094](0094-onboarding-installs-the-gate-in-its-own-pull-request.md): Onboarding installs the gate (lint, format, dead-code check, CI per project) in its own pull request, baselining existing findings
 - [0099](0099-a-bare-number-is-a-task-a-pull-request-says-pr.md): A bare #N is a task (sidebar and Tasks rows show it); a pull request's chip says "PR #N"
 - [0098](0098-agents-propose-secret-hosts-people-allow-them.md): Agents propose an agent secret's hosts and people allow them; a new secret is a name, a value and a description
@@ -107,6 +108,7 @@ number differs from the file name, and a record this index does not list.
 - [0102](0102-a-waiting-task-changes-how-it-starts.md): A waiting task (chained or prepared) changes how it starts in one guarded store step; a chain release compares the chain it evaluated
 - [0097](0097-loading-fields-take-the-shape-of-what-loads.md): Loading fields take the shape of what loads, drawn with the page's own layout classes
 - [0100](0100-the-wordmark-is-set-like-the-composer-quote.md): The wordmark is set like the composer's quote: Tenor Sans at 400 and the quote's size, the name as written, untracked
+- [0103](0103-editor-presence-mirrors-monaco-and-reaches-writers-only.md): Editor presence mirrors Monaco's own selection boxes into gliding shapes and reaches the sandbox's writers only
 - [0104](0104-agents-scan-their-branch-with-vidoc-before-delivery.md): Agents scan their branch with Vidoc (`scripts/dev security`) before delivery; Yulius CI does not, as its jobs hold no secret (amended by 0107)
 - [0107](0107-a-committed-switch-turns-the-vidoc-gate-on-or-off.md): A committed switch, `enabled` in `.config/vidoc.toml`, turns the Vidoc gate on (as shipped) or off; a disabled gate exits 0 and says so (amends 0104)
 - [0105](0105-agents-copy-allowed-secrets-into-an-ignored-env.md): Keys live in a git-ignored `.env` beside a tracked `.env.example`; agents copy an agent secret there with `secret_copy_to_env` only after a person allows it
@@ -114,4 +116,5 @@ number differs from the file name, and a record this index does not list.
 - [0109](0109-cd-runs-verified-commits-out-of-the-agents-reach.md): CD (deployment) runs the repository's `[cd.dev]`/`[cd.prod]` scripts from verified protected-branch commits, out of the agents' reach (dev in the sandbox, production outside it), with secrets allowed per environment; a merge never deploys
 - [0110](0110-only-a-person-deploys-production.md): Only a person with administrator access deploys production, typing the project's slug; agents never promote
 - [0111](0111-agents-ask-a-person-with-needs-you.md): Agents ask a person to act with one tool, `needs_you`; the task stays in Needs you until a person writes to it or the agent resolves it
+- [0108](0108-the-superadmin-updates-from-the-sidebar-foot.md): The superadmin's Update button sits beside the account button in the sidebar foot; one click opens the update's confirmation
 - [0106](0106-the-superagent-is-opened-from-the-tools-rail-only.md): The Superagent is opened from the tools rail, not a top-bar button

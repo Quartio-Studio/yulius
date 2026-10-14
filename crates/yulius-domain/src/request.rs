@@ -8,6 +8,9 @@
 //! opens with its Read tool, since a `/goal` carries no image block. In prompt mode the attached
 //! files reach the first message natively: an image pasted into the TUI (`[Image #N]`, SPEC-030,
 //! ADR-0026), another file mentioned as `@path` (SPEC-025, ADR-0022).
+//!
+//! A file keeps its place in the text (SPEC-124, ADR-0101): the composer writes it there as a
+//! quoted mention `@'/path'`, and the request file and the first message carry it at that place.
 
 /// Longest goal condition Yulius gives (Claude Code 2.1.292 caps goal conditions at 4000
 /// characters; half of it leaves room for a lower cap again).
@@ -35,15 +38,23 @@ pub struct DoneDefinition {
 pub enum Opening {
     /// The CLI prompt argument (the attached files, none an image, are `@path` mentions).
     Prompt(String),
-    /// Typed into the TUI: each image's path pasted on its own (Claude Code attaches a pasted
-    /// image natively, as `[Image #N]`; a mention would be a Read tool call), then the text
-    /// pasted (empty when there is none), then Enter.
+    /// Typed into the TUI: the message pasted in order, each image's path pasted on its own
+    /// where it sits in the text (Claude Code attaches a pasted image natively, as `[Image #N]`
+    /// at the cursor; a mention would be a Read tool call), the other files mentioned in the
+    /// text; then Enter (SPEC-124).
     Typed {
-        /// Absolute paths of the attached images, in order.
-        images: Vec<String>,
-        /// The rest of the message, the other files mentioned.
-        text: String,
+        /// The pastes, in order; never two text pastes in a row, never an empty one.
+        pastes: Vec<Paste>,
     },
+}
+
+/// One paste of a typed first message (SPEC-124).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Paste {
+    /// Text, with the attached files that are not images mentioned in it.
+    Text(String),
+    /// The absolute path of an attached image.
+    Image(String),
 }
 
 /// Whether Claude Code takes a pasted path as an image (Claude Code 2.1.292:
@@ -56,122 +67,262 @@ pub fn is_image(path: &str) -> bool {
         .any(|ext| lower.ends_with(ext))
 }
 
+/// One piece of a request, in the order it was written (SPEC-124).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Part {
+    /// Text as written, without control characters (tabs and newlines kept).
+    Text(String),
+    /// Attached file `n` of [`Request::attachments`], at this place in the text.
+    File(usize),
+}
+
 /// A task's request split into its text and the files attached to it.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Request {
-    /// What the user wrote, without the attachment lines.
+    /// What the user wrote, without the attached files (a space left doubled by a file taken out
+    /// of a line becomes one).
     pub text: String,
     /// Absolute paths of the attached files, in order.
     pub attachments: Vec<String>,
+    /// The request in order: text and each attached file where it sits. Blank text at either end
+    /// is left out.
+    pub parts: Vec<Part>,
 }
 
 impl Request {
-    /// Splits a prompt: every line that is only an `@path` mention (the composer adds one per
-    /// attached file, shell-quoted when the path has spaces) is an attachment; the rest is text.
+    /// Splits a prompt (SPEC-124 INL-006). A quoted mention `@'/path'` anywhere in a line (the
+    /// composer writes each file where it sits in the text, always quoted) is a file at that
+    /// place; a line that is only an `@path` or `@'path'` mention (the composer once added one
+    /// per file after the text, shell-quoted when the path has spaces) is a file at that line.
+    /// The rest is text.
     #[must_use]
     pub fn parse(prompt: &str) -> Self {
-        let mut text = Vec::new();
+        let mut parts = Vec::new();
         let mut attachments = Vec::new();
-        for line in prompt.lines() {
-            match attachment_path(line.trim()) {
-                Some(path) => attachments.push(path),
-                None => text.push(line),
+        let mut lines = Vec::new();
+        for (i, line) in prompt.lines().enumerate() {
+            if i > 0 {
+                push_text(&mut parts, "\n");
             }
+            if let Some(path) = attachment_path(line.trim()) {
+                parts.push(Part::File(attachments.len()));
+                attachments.push(path);
+                continue;
+            }
+            // The line without its files; a space doubled by a file taken out becomes one.
+            let mut kept = String::new();
+            let keep = |kept: &mut String, piece: &str, after_file: bool| {
+                let doubled = after_file
+                    && kept.ends_with(char::is_whitespace)
+                    && piece.starts_with(char::is_whitespace);
+                let skip = if doubled {
+                    piece.chars().next().map_or(0, char::len_utf8)
+                } else {
+                    0
+                };
+                kept.push_str(&piece[skip..]);
+            };
+            let mut rest = line;
+            let mut after_file = false;
+            while let Some(at) = rest.find("@'") {
+                let (before, mention) = rest.split_at(at);
+                if let Some((path, used)) = quoted_path(&mention[2..]) {
+                    push_text(&mut parts, before);
+                    keep(&mut kept, before, after_file);
+                    parts.push(Part::File(attachments.len()));
+                    attachments.push(path);
+                    after_file = true;
+                    rest = &mention[2 + used..];
+                } else {
+                    push_text(&mut parts, &rest[..at + 2]);
+                    keep(&mut kept, &rest[..at + 2], after_file);
+                    after_file = false;
+                    rest = &mention[2..];
+                }
+            }
+            push_text(&mut parts, rest);
+            keep(&mut kept, rest, after_file);
+            lines.push(kept);
         }
+        // Blank text at either end is not part of the request.
+        if let Some(Part::Text(first)) = parts.first_mut() {
+            *first = first.trim_start().to_owned();
+        }
+        if let Some(Part::Text(last)) = parts.last_mut() {
+            *last = last.trim_end().to_owned();
+        }
+        parts.retain(|part| !matches!(part, Part::Text(text) if text.is_empty()));
         // The text becomes a command-line argument: no escape sequence or NUL reaches it.
-        let text: String = text
-            .join("\n")
-            .chars()
-            .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
-            .collect();
-        let text = text.trim().to_owned();
-        Self { text, attachments }
+        let text = without_controls(&lines.join("\n")).trim().to_owned();
+        Self {
+            text,
+            attachments,
+            parts,
+        }
     }
 
-    /// The first message of a prompt-mode session: the text, then a mention of each attached
-    /// file.
+    /// The first message of a prompt-mode session: the text with each attached file mentioned
+    /// where it sits (SPEC-124 INL-007).
     #[must_use]
     pub fn first_message(&self) -> String {
-        if self.attachments.is_empty() {
-            return self.text.clone();
-        }
-        let mentions = mentions(&self.attachments);
-        if self.text.is_empty() {
-            return mentions;
-        }
-        format!("{}\n\n{mentions}", self.text)
+        self.render(&self.parts, mention)
     }
 
     /// A fresh prompt-mode session's first message, the request. With an attached image it is
-    /// typed, so the image is pasted. (A goal-mode session's first message is its `/goal`,
-    /// [`goal_condition`].)
+    /// typed, so each image is pasted where it sits. (A goal-mode session's first message is its
+    /// `/goal`, [`goal_condition`].)
     #[must_use]
     pub fn opening(&self) -> Opening {
-        let (images, others): (Vec<String>, Vec<String>) =
-            self.attachments.iter().cloned().partition(|p| is_image(p));
-        if images.is_empty() {
+        let image = |part: &Part| match part {
+            Part::File(n) => self.attachments.get(*n).filter(|p| is_image(p)),
+            Part::Text(_) => None,
+        };
+        if !self.parts.iter().any(|part| image(part).is_some()) {
             return Opening::Prompt(self.first_message());
         }
-        let rest = Self {
-            text: self.text.clone(),
-            attachments: others,
+        let mut pastes = Vec::new();
+        let mut run = Vec::new();
+        let flush = |run: &mut Vec<Part>, pastes: &mut Vec<Paste>| {
+            let text = self.render(run, mention);
+            // Claude Code puts a space after a pasted image's `[Image #N]`: not a second one.
+            let text = match pastes.last() {
+                Some(Paste::Image(_)) => text.strip_prefix(' ').unwrap_or(&text),
+                _ => &text,
+            };
+            if !text.is_empty() {
+                pastes.push(Paste::Text(text.to_owned()));
+            }
+            run.clear();
         };
-        Opening::Typed {
-            images,
-            text: rest.first_message(),
+        for part in &self.parts {
+            match image(part) {
+                Some(path) => {
+                    // A mention just before keeps a space: the pasted path never joins it.
+                    if matches!(run.last(), Some(Part::File(_))) {
+                        run.push(Part::Text(" ".into()));
+                    }
+                    flush(&mut run, &mut pastes);
+                    pastes.push(Paste::Image(path.clone()));
+                }
+                None => run.push(part.clone()),
+            }
         }
+        flush(&mut run, &mut pastes);
+        Opening::Typed { pastes }
+    }
+
+    /// The request text with each file inside it written by `file`, up to the last text: files
+    /// after all the text are left to a list of their own, as before SPEC-124.
+    fn inline_text(&self, file: impl Fn(usize, &str) -> String) -> String {
+        let end = self
+            .parts
+            .iter()
+            .rposition(|part| matches!(part, Part::Text(text) if !text.trim().is_empty()))
+            .map_or(0, |i| i + 1);
+        self.render_with(&self.parts[..end], file)
+            .trim_end()
+            .to_owned()
+    }
+
+    /// `parts` as text, each file written by `file` (from its path).
+    fn render(&self, parts: &[Part], file: impl Fn(&str) -> String) -> String {
+        self.render_with(parts, |_, path| file(path))
+    }
+
+    /// `parts` as text, each file written by `file` (from its number and path), kept off the
+    /// word before it and a word after it by a space (an `@` mention needs one before it).
+    fn render_with(&self, parts: &[Part], file: impl Fn(usize, &str) -> String) -> String {
+        let mut out = String::new();
+        for (i, part) in parts.iter().enumerate() {
+            match part {
+                Part::Text(text) => out.push_str(text),
+                Part::File(n) => {
+                    let Some(path) = self.attachments.get(*n) else {
+                        continue;
+                    };
+                    if out.ends_with(|c: char| !c.is_whitespace()) {
+                        out.push(' ');
+                    }
+                    out.push_str(&file(*n, path));
+                    if let Some(Part::Text(next)) = parts.get(i + 1)
+                        && next.starts_with(char::is_alphanumeric)
+                    {
+                        out.push(' ');
+                    }
+                }
+            }
+        }
+        out
     }
 }
 
-/// One mention per line, always quoted (`@"/a/b.png"`: Claude Code reads an unquoted mention
-/// only up to its last letter or digit), which Claude Code attaches itself. A path no mention can
-/// carry (a double quote, or `#`, which starts a line range) is listed to open with the Read
-/// tool instead.
-fn mentions(paths: &[String]) -> String {
-    let (mentionable, unmentionable): (Vec<&String>, Vec<&String>) =
-        paths.iter().partition(|p| !p.contains(['"', '#']));
-    let mut lines: Vec<String> = mentionable.iter().map(|p| format!("@\"{p}\"")).collect();
-    if !unmentionable.is_empty() {
-        let mut list = String::from("Open with the Read tool:");
-        for path in unmentionable {
-            list.push_str("\n- ");
-            list.push_str(path);
-        }
-        lines.push(list);
+/// Appends text to the parts, joined to text just before it, without control characters.
+fn push_text(parts: &mut Vec<Part>, text: &str) {
+    let text = without_controls(text);
+    if text.is_empty() {
+        return;
     }
-    lines.join("\n")
+    if let Some(Part::Text(last)) = parts.last_mut() {
+        last.push_str(&text);
+    } else {
+        parts.push(Part::Text(text));
+    }
+}
+
+/// `text` without control characters but tabs and newlines.
+fn without_controls(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+        .collect()
+}
+
+/// An attached file mentioned for Claude Code, always quoted (`@"/a/b.png"`: Claude Code reads
+/// an unquoted mention only up to its last letter or digit), which it attaches itself. A path no
+/// mention can carry (a double quote, or `#`, which starts a line range) is named for the Read
+/// tool instead.
+fn mention(path: &str) -> String {
+    if path.contains(['"', '#']) {
+        format!("[open with the Read tool: {path}]")
+    } else {
+        format!("@\"{path}\"")
+    }
 }
 
 /// The path of an `@path` attachment line (`@/a/b.png` or `@'/a/b c.png'`), if the line is one.
 fn attachment_path(line: &str) -> Option<String> {
     let rest = line.strip_prefix('@')?;
-    let path = if let Some(quoted) = rest.strip_prefix('\'') {
-        // POSIX single quotes; `'\''` closes, adds a quote and reopens.
-        let mut out = String::new();
-        let mut chars = quoted.chars().peekable();
-        loop {
-            match chars.next()? {
-                '\'' => {
-                    if chars.peek().is_none() {
-                        break;
-                    }
-                    let escape: String = chars.by_ref().take(3).collect();
-                    if escape != "\\''" {
-                        return None;
-                    }
-                    out.push('\'');
-                }
-                c => out.push(c),
+    if let Some(quoted) = rest.strip_prefix('\'') {
+        return quoted_path(quoted).and_then(|(path, used)| (used == quoted.len()).then_some(path));
+    }
+    if rest.chars().any(char::is_whitespace) {
+        return None;
+    }
+    valid_path(rest.to_owned())
+}
+
+/// The path of a POSIX single-quoted mention after its opening quote (`'\''` closes, adds a
+/// quote and reopens), with the bytes it takes, closing quote included.
+fn quoted_path(quoted: &str) -> Option<(String, usize)> {
+    let mut path = String::new();
+    let mut rest = quoted;
+    loop {
+        let end = rest.find('\'')?;
+        path.push_str(&rest[..end]);
+        rest = &rest[end + 1..];
+        match rest.strip_prefix("\\''") {
+            Some(after) => {
+                path.push('\'');
+                rest = after;
             }
+            None => break,
         }
-        out
-    } else {
-        if rest.chars().any(char::is_whitespace) {
-            return None;
-        }
-        rest.to_owned()
-    };
-    // A control character (an escape sequence, NUL) never reaches the agent's prompt as a path.
+    }
+    valid_path(path).map(|path| (path, quoted.len() - rest.len()))
+}
+
+/// `path` when it is absolute and holds no control character (an escape sequence or a NUL never
+/// reaches the agent's prompt as a path).
+fn valid_path(path: String) -> Option<String> {
     (path.starts_with('/') && path.len() > 1 && !path.chars().any(char::is_control)).then_some(path)
 }
 
@@ -309,10 +460,13 @@ pub fn request_markdown(
         "# Task #{number}: {}\n\nRequested by {author}.\n\n## Request\n\n",
         one_line(title)
     );
-    if request.text.is_empty() {
+    // Each file inside the text is written where it sits, by its number in the list below
+    // (SPEC-124 INL-007).
+    let text = request.inline_text(|n, path| format!("[file {}: {path}]", n + 1));
+    if text.is_empty() {
         out.push_str("(no text: see the attached files)\n");
     } else {
-        out.push_str(&request.text);
+        out.push_str(&text);
         out.push('\n');
     }
     if !request.attachments.is_empty() {
@@ -424,11 +578,169 @@ mod tests {
         assert_eq!(text.text.lines().count(), 4);
     }
 
+    /// SPEC-124 INL-006: a quoted mention inside a line is a file at that place; a whole-line
+    /// mention is a file at that line; the text is what remains, without doubled spaces.
+    #[test]
+    fn a_mention_inside_the_text_is_a_file_at_its_place() {
+        let request = Request::parse(
+            "This part @'/srv/a.png' looks wrong,\nwhile here@'/srv/my b.png'.\n@/srv/c.txt",
+        );
+        assert_eq!(
+            request.attachments,
+            ["/srv/a.png", "/srv/my b.png", "/srv/c.txt"]
+        );
+        assert_eq!(
+            request.parts,
+            [
+                Part::Text("This part ".into()),
+                Part::File(0),
+                Part::Text(" looks wrong,\nwhile here".into()),
+                Part::File(1),
+                Part::Text(".\n".into()),
+                Part::File(2),
+            ]
+        );
+        assert_eq!(request.text, "This part looks wrong,\nwhile here.");
+        // An escaped quote inside the path, and a file first.
+        let quoted = Request::parse("@'/srv/it'\\''s.png' first");
+        assert_eq!(quoted.attachments, ["/srv/it's.png"]);
+        assert_eq!(quoted.parts, [Part::File(0), Part::Text(" first".into())]);
+        assert_eq!(quoted.text, "first");
+        // Not a file: a relative path, an unclosed quote, an unquoted mention inside a line, a
+        // control character in the path. They stay text.
+        for text in [
+            "see @'srv/a.png' now",
+            "see @'/srv/a.png now",
+            "see @/srv/a.png now",
+            "see @'/srv/a\u{1b}.png' now",
+        ] {
+            let request = Request::parse(text);
+            assert!(request.attachments.is_empty(), "{text}: {request:?}");
+            assert_eq!(request.parts.len(), 1, "{text}: {request:?}");
+        }
+    }
+
+    /// SPEC-124 INL-006: an older prompt (files after the text) parses into the same order.
+    #[test]
+    fn an_older_prompt_has_its_files_after_the_text() {
+        let request = Request::parse("Fix the header\n\n@/srv/a/b.png\n@'/srv/a/my shot.png'\n");
+        assert_eq!(request.text, "Fix the header");
+        assert_eq!(
+            request.parts,
+            [
+                Part::Text("Fix the header\n\n".into()),
+                Part::File(0),
+                Part::Text("\n".into()),
+                Part::File(1),
+            ]
+        );
+        assert_eq!(
+            Request::parse("  Just text \n").parts,
+            [Part::Text("Just text".into())]
+        );
+        assert!(Request::parse(" \n ").parts.is_empty());
+    }
+
+    /// SPEC-124 INL-007: prompt mode mentions each file where it sits, a space keeping a mention
+    /// off the word before or after it.
+    #[test]
+    fn the_first_message_mentions_each_file_in_place() {
+        let request = Request::parse("This part@'/srv/a.png'looks wrong, see @'/srv/b.txt'.");
+        assert_eq!(
+            request.first_message(),
+            "This part @\"/srv/a.png\" looks wrong, see @\"/srv/b.txt\"."
+        );
+        // An older prompt's message is what it was.
+        assert_eq!(
+            Request::parse("Look\n\n@/srv/a.txt\n@'/srv/my b.txt'").first_message(),
+            "Look\n\n@\"/srv/a.txt\"\n@\"/srv/my b.txt\""
+        );
+        // A path no mention can carry is named in place for the Read tool.
+        assert_eq!(
+            Request::parse("Look @'/srv/issue#3.png' here").first_message(),
+            "Look [open with the Read tool: /srv/issue#3.png] here"
+        );
+    }
+
+    /// SPEC-124 INL-007: a typed first message is pasted in order: text, each image where it
+    /// sits, the rest; other files mentioned in the text.
+    #[test]
+    fn a_typed_first_message_pastes_each_image_where_it_sits() {
+        let request = Request::parse(
+            "This part @'/srv/a.png' looks wrong, see @'/srv/n.txt'\nwhile here @'/srv/b.png'",
+        );
+        assert_eq!(
+            request.opening(),
+            Opening::Typed {
+                pastes: vec![
+                    Paste::Text("This part ".into()),
+                    Paste::Image("/srv/a.png".into()),
+                    // Claude Code adds the space after an image itself.
+                    Paste::Text("looks wrong, see @\"/srv/n.txt\"\nwhile here ".into()),
+                    Paste::Image("/srv/b.png".into()),
+                ],
+            }
+        );
+    }
+
+    /// SPEC-124 review: a mention right before a pasted image keeps a space, so the pasted
+    /// path never joins the mention.
+    #[test]
+    fn a_mention_before_an_image_keeps_a_space() {
+        let request = Request::parse("See @'/srv/n.txt'@'/srv/a.png' here");
+        assert_eq!(
+            request.opening(),
+            Opening::Typed {
+                pastes: vec![
+                    Paste::Text("See @\"/srv/n.txt\" ".into()),
+                    Paste::Image("/srv/a.png".into()),
+                    Paste::Text("here".into()),
+                ],
+            }
+        );
+    }
+
+    /// SPEC-124 INL-007: an older prompt written without the composer's blank line keeps its
+    /// files where they are, on the lines after the text (it once got a blank line added).
+    #[test]
+    fn an_older_prompt_without_a_blank_line_keeps_its_lines() {
+        assert_eq!(
+            Request::parse("Look\n@/srv/a.txt").first_message(),
+            "Look\n@\"/srv/a.txt\""
+        );
+    }
+
+    /// SPEC-124 INL-007: the request file writes each file inside the text where it sits, by its
+    /// number in the attached files list; files after all the text are only listed, as before.
+    #[test]
+    fn the_request_file_marks_each_file_in_place() {
+        let request = Request::parse("This part @'/srv/a.png' looks wrong.\n\n@/srv/b.png");
+        let file = request_markdown(5, "x", "a", &request, &done(&[]));
+        assert!(
+            file.contains(
+                "## Request\n\nThis part [file 1: /srv/a.png] looks wrong.\n\n## Attached files"
+            ),
+            "{file}"
+        );
+        assert!(file.contains("\n- /srv/a.png\n- /srv/b.png\n"), "{file}");
+        let older = request_markdown(
+            5,
+            "x",
+            "a",
+            &Request::parse("Look\n\n@/srv/b.png"),
+            &done(&[]),
+        );
+        assert!(
+            older.contains("## Request\n\nLook\n\n## Attached files"),
+            "{older}"
+        );
+    }
+
     #[test]
     fn the_first_message_mentions_the_files_so_claude_code_attaches_them() {
         // Always quoted: Claude Code reads an unquoted mention only up to its last letter or
         // digit (`notes.`, `c++` would lose their ends).
-        let request = Request::parse("Look\n@/srv/a.png\n@'/srv/my shot.png'\n@/srv/c++");
+        let request = Request::parse("Look\n\n@/srv/a.png\n@'/srv/my shot.png'\n@/srv/c++");
         assert_eq!(
             request.first_message(),
             "Look\n\n@\"/srv/a.png\"\n@\"/srv/my shot.png\"\n@\"/srv/c++\""
@@ -443,7 +755,9 @@ mod tests {
         let odd = Request::parse("Look\n@/srv/say\"hi\".png\n@/srv/issue#3.png").first_message();
         assert!(!odd.contains('@'), "{odd}");
         assert!(
-            odd.ends_with("Open with the Read tool:\n- /srv/say\"hi\".png\n- /srv/issue#3.png"),
+            odd.ends_with(
+                "[open with the Read tool: /srv/say\"hi\".png]\n[open with the Read tool: /srv/issue#3.png]"
+            ),
             "{odd}"
         );
     }
@@ -473,7 +787,7 @@ mod tests {
 
     #[test]
     fn without_images_the_first_message_stays_the_command_line_prompt() {
-        let request = Request::parse("Look\n@/srv/notes.txt");
+        let request = Request::parse("Look\n\n@/srv/notes.txt");
         assert_eq!(
             request.opening(),
             Opening::Prompt("Look\n\n@\"/srv/notes.txt\"".into())
@@ -488,20 +802,25 @@ mod tests {
     fn images_are_pasted_and_other_files_mentioned_in_a_typed_first_message() {
         // SPEC-030: an `@` mention reaches the model as a Read tool call; a pasted image path
         // is attached natively (`[Image #1]`).
+        // An older prompt's images follow its text, where they are (SPEC-124 INL-007).
         let request = Request::parse("Make it blue\n@/srv/a.png\n@'/srv/my shot.JPG'\n@/srv/b.txt");
         assert_eq!(
             request.opening(),
             Opening::Typed {
-                images: vec!["/srv/a.png".into(), "/srv/my shot.JPG".into()],
-                text: "Make it blue\n\n@\"/srv/b.txt\"".into(),
+                pastes: vec![
+                    Paste::Text("Make it blue\n".into()),
+                    Paste::Image("/srv/a.png".into()),
+                    Paste::Text("\n".into()),
+                    Paste::Image("/srv/my shot.JPG".into()),
+                    Paste::Text("\n@\"/srv/b.txt\"".into()),
+                ],
             }
         );
-        // Only images: nothing to mention, the text is the request (or empty).
+        // Only images: nothing but their pastes.
         assert_eq!(
             Request::parse("@/srv/a.png").opening(),
             Opening::Typed {
-                images: vec!["/srv/a.png".into()],
-                text: String::new(),
+                pastes: vec![Paste::Image("/srv/a.png".into())],
             }
         );
     }
@@ -509,11 +828,21 @@ mod tests {
     #[test]
     fn a_typed_first_message_carries_no_control_character() {
         let request = Request::parse("Look\u{1b}[201~ here\n@/srv/a.png\n@/srv/b\u{1b}.png");
-        let Opening::Typed { images, text } = request.opening() else {
+        let Opening::Typed { pastes } = request.opening() else {
             panic!("an image is attached");
         };
-        assert_eq!(images, ["/srv/a.png"]);
-        assert!(!text.contains('\u{1b}'), "{text:?}");
+        assert_eq!(
+            pastes
+                .iter()
+                .filter(|p| matches!(p, Paste::Image(_)))
+                .collect::<Vec<_>>(),
+            [&Paste::Image("/srv/a.png".into())]
+        );
+        for paste in &pastes {
+            if let Paste::Text(text) = paste {
+                assert!(!text.contains('\u{1b}'), "{text:?}");
+            }
+        }
     }
 
     #[test]

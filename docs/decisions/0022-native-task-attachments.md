@@ -7,7 +7,7 @@ an image reaches the model as a Read tool call, not as a pasted image). Specifie
 [SPEC-025](../../.ai/specs/SPEC-025-uploaded-attachements-should-be-clickabl.md); replaces the
 "open each one with the Read tool" list of SPEC-014. For goal tasks superseded by
 [0095](0095-a-goal-task-starts-with-its-goal-as-the-launch-prompt.md): the `/goal` launch prompt
-names the attached files.
+names the attached files. Since [0101](0101-attached-files-keep-their-place-in-the-prompt.md) each file is mentioned where it sits in the text.
 
 ## Context
 

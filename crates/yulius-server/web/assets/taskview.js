@@ -13,6 +13,7 @@ import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
 import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask, requestControl, dropControlRequest, handOverTask, openScheduleDialog, rescheduleTask } from './actions.js';
 import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments, openAttachment } from './filedrop.js';
+import { createPromptInput, ATOM, FILE_MARK, FILE_MARK_END, placeFiles, withoutMarks } from './promptinput.js';
 import { relLong, dateTime, whenLabel } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
@@ -545,8 +546,61 @@ export function mountComposer(ctx, sandbox) {
   const userId = ctx.store.state.me && ctx.store.state.me.user ? ctx.store.state.me.user.id : null;
   const draft = draftFor(userId, sandbox.id);
   const remember = (options) => saveDraft(userId, sandbox.id, options);
-  const prompt = h('textarea', { class: 'composer-prompt', rows: 4, placeholder: 'Describe what you want to build, fix or find out. Lists and Markdown work.', 'aria-label': 'Task prompt', 'aria-keyshortcuts': SUBMIT_ARIA, maxlength: 100000 });
-  prompt.value = draft.text;
+  // Files added to the prompt sit inside its text (SPEC-124): an image as a thumbnail drawn from
+  // its file (an object URL of this view), or from its stored thumbnail after a reload; another
+  // file as a chip with its name. `known` holds every file this view has seen, so one deleted
+  // and brought back (undo, a cut and paste) is the same file; the draft keeps the ones in the
+  // text. A file opened in a tab has its own URL (`tabUrls`).
+  const known = new Map();
+  const urls = new Map();
+  const tabUrls = new Map();
+  const learn = () => { for (const item of draft.attached) known.set(item.path, item); };
+  learn();
+  const imageOf = (item) => {
+    if (item.file && /^image\//.test(item.type || item.file.type || '')) {
+      if (!urls.has(item.path)) urls.set(item.path, URL.createObjectURL(item.file));
+      return urls.get(item.path);
+    }
+    return item.thumb || null;
+  };
+  const prompt = createPromptInput({
+    label: 'Task prompt',
+    placeholder: 'Describe what you want to build, fix or find out. Paste or drop images where they belong. Lists and Markdown work.',
+    keyshortcuts: SUBMIT_ARIA,
+    face: (path) => { const item = known.get(path); return item ? { name: item.name, image: imageOf(item) } : null; },
+    known: (path) => known.has(path),
+    onChange: () => {
+      // A composer gone (an upload that ended after the person left) no longer speaks for the draft.
+      if (destroyed) return;
+      draft.text = prompt.value;
+      keepAttached();
+      remember();
+      // Editing the prompt withdraws a split proposal made for the old text.
+      if (split) clearSplit();
+    },
+    onSubmit: () => start(),
+    onOpen: (path) => openFile(path),
+  });
+  /** Opens a file of the prompt: an image previews, another file opens in a tab or downloads. */
+  function openFile(path) {
+    const item = known.get(path);
+    if (!item) return;
+    const image = imageOf(item);
+    if (!image && !item.file) return;
+    openAttachment(item, { image, url: (blob) => {
+      if (!tabUrls.has(path)) tabUrls.set(path, URL.createObjectURL(blob));
+      return tabUrls.get(path);
+    } });
+  }
+  prompt.setValue(draft.text, draft.attached.map((item) => item.path));
+  /** The draft keeps the files its text holds, in order. */
+  function keepAttached() {
+    const paths = [...new Set(prompt.paths())];
+    const next = paths.map((path) => known.get(path)).filter(Boolean);
+    if (next.length !== draft.attached.length || next.some((item, i) => item !== draft.attached[i])) draft.attached = next;
+  }
+  keepAttached();
+  draft.text = prompt.value;
   // A rendered, read-only view of the prompt (Preview), made on demand.
   const previewEl = h('div', { class: 'composer-preview', role: 'region', hidden: true, tabindex: 0, 'aria-label': 'Prompt preview' });
   let preview = null;
@@ -608,44 +662,11 @@ export function mountComposer(ctx, sandbox) {
       h('a', { class: 'composer-repo-link', href: sandbox.repo.url, target: '_blank', rel: 'noopener noreferrer', title: `Open ${sandbox.repo.owner}/${sandbox.repo.name} on GitHub` },
         icon('github', { size: 18 }), h('span', null, `${sandbox.repo.owner} / ${sandbox.repo.name}`)),
       h('span', { class: 'composer-branch', title: `New tasks branch from ${baseBranch}` }, icon('branch', { size: 16 }), h('span', null, baseBranch))) : null);
-  // Files added to the prompt wait in the draft, shown as thumbnails that open the file; their
-  // paths join the text at start. An image's thumbnail is drawn from its file (an object URL of
-  // this view); a file opened in a tab has its own (`tabUrls`). A draft restored after a reload
-  // keeps no file: an image previews its stored thumbnail, another file cannot be opened.
-  const urls = new Map();
-  const tabUrls = new Map();
-  const tray = h('ul', { class: 'composer-attachments', 'aria-label': 'Attached files', hidden: true });
-  /** The items this view made an object URL for: a thumbnail or a file opened in a tab. */
-  const withUrls = () => [...new Set([...urls.keys(), ...tabUrls.keys()])];
-  function renderTray() {
-    forgetUrls(withUrls().filter((item) => !draft.attached.includes(item)));
-    for (const item of draft.attached) if (!urls.has(item) && item.file && /^image\//.test(item.type)) urls.set(item, URL.createObjectURL(item.file));
-    tray.hidden = !draft.attached.length;
-    setChildren(tray, draft.attached.map((item) => {
-      const image = urls.get(item) || item.thumb;
-      const face = [image ? h('img', { src: image, alt: '' }) : icon('file', { size: 20 }), h('span', { class: 'composer-attachment-name' }, item.name)];
-      const open = image || item.file
-        ? h('button', { type: 'button', class: 'composer-attachment-open', 'aria-label': `Open ${item.name}`, onClick: () => openAttachment(item, { image, url: (blob) => {
-          if (!tabUrls.has(item)) tabUrls.set(item, URL.createObjectURL(blob));
-          return tabUrls.get(item);
-        } }) }, ...face)
-        : h('span', { class: 'composer-attachment-open', title: `${item.name}: attach it again to open it here` }, ...face);
-      return h('li', { class: 'composer-attachment', title: item.name },
-        open,
-        iconButton('x', `Remove ${item.name}`, () => { dropAttached([item]); renderTray(); }, { class: 'composer-attachment-remove' }));
-    }));
-  }
-  function forgetUrls(items) {
-    for (const map of [urls, tabUrls]) for (const item of items) if (map.has(item)) { URL.revokeObjectURL(map.get(item)); map.delete(item); }
-  }
-  function dropAttached(items) {
-    forgetUrls(items);
-    draft.attached = draft.attached.filter((item) => !items.includes(item));
-    remember();
+  function forgetUrls() {
+    for (const map of [urls, tabUrls]) { for (const url of map.values()) URL.revokeObjectURL(url); map.clear(); }
   }
   setChildren(box,
-    tray,
-    prompt,
+    prompt.el,
     previewEl,
     h('div', { class: 'composer-tools' }, modeChip, workflowChip, afterChip, h('div', { class: 'composer-right' }, previewButton, modelChip, effortChip, startButton)));
   // While the sandbox awaits onboarding, a centred message takes the card's place (SPEC-096).
@@ -663,11 +684,29 @@ export function mountComposer(ctx, sandbox) {
       intakeSlot);
   const el = h('div', { class: 'composer' }, repoBar, card, gate, gateNews);
   // Files dropped (or an image pasted) on the prompt reach the new task's agent by path.
-  attachPromptDrop(ctx, { box, prompt, label: 'Drop to add to the prompt', upload: draftAttachments(ctx, sandbox.id), onAttach: (items) => {
-    // An upload that ends after the person left still joins the draft (DRF-002), and shows in the
-    // composer open then (onDraftChange below).
+  attachPromptDrop(ctx, { box, prompt, label: 'Drop to add to the prompt', upload: draftAttachments(ctx, sandbox.id), onAttach: (items, place) => {
+    // At the place kept when they came, in this composer; an upload that ends after the person
+    // left still joins the draft (DRF-002), after the text of the composer open then.
+    const here = place && !destroyed;
+    if (here) arriving = new Set(items.map((item) => item.path));
     attachToDraft(userId, sandbox.id, draft, items);
+    arriving = null;
+    if (here && items.every((item) => known.has(item.path))) place.insert(items.map((item) => item.path));
   } });
+  // Files being put in their place right now: not appended as late ones.
+  let arriving = null;
+  /** The draft changed elsewhere: files it gained follow the text, a cleared draft empties it. */
+  function draftChanged() {
+    learn();
+    if (!draft.text && !draft.attached.length) {
+      if (prompt.value) prompt.setValue('');
+      return;
+    }
+    const shown = new Set(prompt.paths());
+    const late = draft.attached.map((item) => item.path).filter((path) => !shown.has(path) && !(arriving && arriving.has(path)));
+    if (late.length) prompt.append(late);
+    else prompt.refresh(); // a thumbnail came
+  }
 
   function renderChips() {
     const m = MODES.find((x) => x.id === mode);
@@ -790,29 +829,30 @@ export function mountComposer(ctx, sandbox) {
     openMenu(anchor, effortMenuItems(effortId, (id) => { effortId = id; writeJson(EFFORT_PREF_KEY, id); renderChips(); prompt.focus(); }));
   }
 
-  // The box grows with the prompt up to half the screen, then scrolls.
-  const fit = () => {
-    prompt.style.height = 'auto';
-    prompt.style.height = `${prompt.scrollHeight}px`;
-  };
-  prompt.addEventListener('input', () => {
-    draft.text = prompt.value;
-    remember();
-    fit();
-    // Editing the prompt withdraws a split proposal made for the old text.
-    if (split) clearSplit();
-  });
-  // Enter adds a line (and continues lists), ⌘/Ctrl+Enter starts; IME composition is left alone.
-  destroyers.push(attachMarkdownInput(prompt, { onSubmit: () => start() }));
 
   // Preview: the prompt formatted, read-only, in the box's place; Edit (or a click) goes back.
   function setPreview(on) {
     if (on && !prompt.value.trim()) { toast('Nothing to preview yet.', { kind: 'info' }); return; }
     if (preview) { preview.destroy(); preview = null; }
     if (on) {
-      preview = createMarkdownEditor({ markdown: prompt.value, readOnly: true, frontmatter: false });
+      // Each file shows where it sits in the formatted text (SPEC-124).
+      const { plain, paths } = prompt.model();
+      let n = 0;
+      const markdown = withoutMarks(plain).replace(new RegExp(ATOM, 'g'), () => `${FILE_MARK}${n++}${FILE_MARK_END}`);
+      preview = createMarkdownEditor({ markdown, readOnly: true, frontmatter: false });
+      // Each file shows where it sits in the formatted text (SPEC-124), and opens from there.
+      placeFiles(preview.el, (i) => {
+        const item = known.get(paths[i]);
+        if (!item) return null;
+        const image = imageOf(item);
+        const face = image ? h('img', { class: 'pi-preview-image', src: image, alt: item.name })
+          : [icon('file', { size: 14 }), h('span', { class: 'pi-file-name' }, item.name)];
+        return image || item.file
+          ? h('button', { type: 'button', class: ['pi-preview-file', !image && 'pi-atom pi-file'], 'aria-label': `Open ${item.name}`, onClick: () => openFile(item.path) }, face)
+          : h('span', { class: 'pi-atom pi-file', title: `${item.name}: attach it again to open it here` }, face);
+      });
       setChildren(previewEl, preview.el);
-      previewEl.style.minHeight = `${prompt.offsetHeight}px`;
+      previewEl.style.minHeight = `${prompt.el.offsetHeight}px`;
     } else {
       setChildren(previewEl, null);
     }
@@ -821,11 +861,13 @@ export function mountComposer(ctx, sandbox) {
     box.classList.toggle('previewing', on);
     previewButton.setAttribute('aria-pressed', String(on));
     previewButton.title = on ? 'Back to editing the prompt' : 'Preview: the prompt formatted';
-    if (!on) { prompt.focus(); fit(); }
+    if (!on) prompt.focus();
   }
   previewButton.addEventListener('click', () => setPreview(prompt.hidden === false));
   previewEl.addEventListener('dblclick', () => setPreview(false));
   previewEl.addEventListener('keydown', (event) => {
+    // Enter on a file's button opens the file; only the Preview's own Enter goes back.
+    if (event.key === 'Enter' && !event.metaKey && !event.ctrlKey && event.target !== previewEl) return;
     if (event.key === 'Escape' || (event.key === 'Enter' && !event.metaKey && !event.ctrlKey)) { event.preventDefault(); setPreview(false); }
     if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); start(); }
   });
@@ -893,7 +935,6 @@ export function mountComposer(ctx, sandbox) {
     // Onboarding landed while the page was open: the task box is ready for typing, unless the
     // person is busy elsewhere on the page.
     if (wasGated && !preparing && el.isConnected) {
-      fit();
       const idle = document.activeElement === document.body || el.contains(document.activeElement) || !document.activeElement;
       if (idle && !prompt.disabled && !isPhone()) prompt.focus();
     }
@@ -1017,9 +1058,12 @@ export function mountComposer(ctx, sandbox) {
     if (target) target.focus();
   }
 
-  /** The request body of a new task with the composer's choices (`auto`: Jev decides, TSK-015). */
+  /**
+   * The request body of a new task with the composer's choices (`auto`: Jev decides, TSK-015);
+   * `text` is the prompt as sent, its files in it.
+   */
   function bodyFor(text, title) {
-    const body = { prompt: withAttachments(text, draft.attached), mode };
+    const body = { prompt: text, mode };
     if (title) body.title = title;
     if (workflowId) body.workflow_id = workflowId;
     const found = findModel(modelId);
@@ -1038,15 +1082,14 @@ export function mountComposer(ctx, sandbox) {
   }
 
   function opened(task) {
-    prompt.value = '';
+    prompt.setValue('');
     mode = AUTO;
     workflowId = AUTO;
     afterTaskId = '';
     startRule = null;
     supertask = false;
     prepare = null;
-    clearDraft(userId, sandbox.id); // redraws the tray (onDraftChange)
-    fit();
+    clearDraft(userId, sandbox.id);
     ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`);
   }
 
@@ -1100,14 +1143,18 @@ export function mountComposer(ctx, sandbox) {
     }
   }
 
-  /** The gentle split card (TSK-011), below the box: parallel tasks, a chain, or one task. */
-  function showSplit(text) {
+  /**
+   * The gentle split card (TSK-011), below the box: parallel tasks, a chain, or one task. `text`
+   * is the request's words (its files left out), `value` the prompt as sent; split tasks each get
+   * the files after their text.
+   */
+  function showSplit(text, value) {
     split = splitCard(ctx, sandbox, text, {
       create: (list, chain) => busyRun(chain ? `Creating a chain of ${list.length} tasks…` : `Creating ${list.length} tasks…`, async () => {
         let first = null;
         let previous = null;
         for (const item of list) {
-          const body = bodyFor(item.prompt, item.title);
+          const body = bodyFor(withAttachments(item.prompt, draft.attached), item.title);
           if (chain && previous) body.after_task_id = previous.id;
           const task = await createTask(body);
           first = first || task;
@@ -1116,7 +1163,7 @@ export function mountComposer(ctx, sandbox) {
         toast(chain ? `Created a chain of ${list.length} tasks: each starts when the one before is done.` : `Created ${list.length} tasks.`, { kind: 'ok' });
         opened(first);
       }),
-      keep: () => busyRun(autoStage(), async () => opened(await createTask(bodyFor(text)))),
+      keep: () => busyRun(autoStage(), async () => opened(await createTask(bodyFor(value)))),
       close: () => clearSplit(),
     });
     setChildren(intakeSlot, split.el);
@@ -1126,7 +1173,8 @@ export function mountComposer(ctx, sandbox) {
 
   // One task per press: two presses must not start two sessions (singleFlight).
   const start = singleFlight(async () => {
-    const text = prompt.value.trim();
+    const text = prompt.text().trim();
+    const value = prompt.value.trim();
     if (!text) { if (prompt.hidden) setPreview(false); prompt.focus(); toast('Write a prompt first.', { kind: 'warn' }); return; }
     if (split || prompt.disabled) return; // the card is open (its buttons decide), or starting is blocked
     // Started from this composer before the person left and came back: not twice.
@@ -1139,12 +1187,12 @@ export function mountComposer(ctx, sandbox) {
       if (!afterTaskId && !startRule && !supertask && !prepare && text.split(/\s+/).filter(Boolean).length >= SPLIT_MIN_WORDS) {
         working('Reading your request…');
         if (await looksSeveral(ctx, sandbox, text)) {
-          showSplit(text);
+          showSplit(text, value);
           return;
         }
       }
       working(autoStage());
-      const body = bodyFor(text);
+      const body = bodyFor(value);
       if (afterTaskId) body.after_task_id = afterTaskId;
       if (startRule) body.start_rule = ruleText(startRule);
       if (supertask) body.supertask = true;
@@ -1162,12 +1210,11 @@ export function mountComposer(ctx, sandbox) {
 
 
   renderChips();
-  renderTray();
 
   destroyers.push(ctx.store.on('sandboxes', renderBanner));
   // A kept "Run after" shows once the sandbox's tasks are read.
   destroyers.push(ctx.store.on('tasks', (sid) => { if (sid === sandbox.id) { renderBanner(); if (afterTaskId) renderChips(); } }));
-  destroyers.push(onDraftChange(userId, sandbox.id, renderTray));
+  destroyers.push(onDraftChange(userId, sandbox.id, draftChanged));
   const onStarts = () => { if (!destroyed) renderBanner(); };
   onboardingStartsChanged.addEventListener('change', onStarts);
   destroyers.push(() => onboardingStartsChanged.removeEventListener('change', onStarts));
@@ -1177,7 +1224,6 @@ export function mountComposer(ctx, sandbox) {
     el,
     key: `composer:${sandbox.id}`,
     start() {
-      fit(); // a kept draft's text sizes the box once it is on the page
       // While onboarding comes first the keyboard lands on its action (SPEC-096).
       if (!isPhone()) {
         if (card.hidden) focusGate();
@@ -1185,6 +1231,6 @@ export function mountComposer(ctx, sandbox) {
       }
       if (!stopSmoke) stopSmoke = brandSmoke(niche); // the brand's smoke, when its niche shows (brandfx.js)
     },
-    destroy() { destroyed = true; forgetUrls(withUrls()); remember({ now: true }); destroyers.forEach((off) => off()); if (stopSmoke) stopSmoke(); clearTimeout(showTimer); clearSplit(); if (preview) preview.destroy(); },
+    destroy() { destroyed = true; forgetUrls(); remember({ now: true }); destroyers.forEach((off) => off()); if (stopSmoke) stopSmoke(); clearTimeout(showTimer); clearSplit(); if (preview) preview.destroy(); },
   };
 }

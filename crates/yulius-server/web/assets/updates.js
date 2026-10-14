@@ -3,15 +3,19 @@
 // "Reload" once this page runs older code than the server; superadmins also see "Update
 // available" (dismissible per commit) and a failed or rolled-back update. Built from
 // GET /api/update, refreshed on the `update.updated` event and, while an update runs, every few
-// seconds (the event stream drops during the restart).
+// seconds (the event stream drops during the restart). The superadmin's Update button sits beside
+// the account button in the sidebar foot, whatever the pill shows (SPEC-133).
 
-import { h, icon, setChildren } from './dom.js';
+import { h, icon, setChildren, toast, errorToast, confirmDialog } from './dom.js';
 import { readJson, writeJson } from './store.js';
 import { BRAND } from './brand.js';
 
 const DISMISSED_KEY = 'yulius.update.dismissed';
 /** While an update runs: how often the view is read again. */
 const POLL_MS = 3000;
+
+/** The states of a run that has ended (the instance page shows its outcome). */
+export const UPDATE_OUTCOMES = new Set(['succeeded', 'failed', 'rolled_back', 'cancelled']);
 
 /** The route of the instance page (updates and the Jev key). */
 export const INSTANCE_ROUTE = '/admin/instance';
@@ -29,6 +33,80 @@ export function phaseText(phase, run) {
     case 'resuming': return 'Updated. Resuming tasks…';
     default: return '';
   }
+}
+
+/**
+ * Asks the superadmin to confirm the offered update, then starts it (the instance page's "Update
+ * now…" and the sidebar's Update button). Resolves once it started, was refused or was cancelled.
+ */
+export async function confirmAndStartUpdate(ctx, available) {
+  const ok = await confirmDialog({
+    title: `Update ${BRAND.name} to ${available.short}?`,
+    message: h('div', { class: 'stack-sm' },
+      h('p', null, available.summary),
+      h('ol', { class: 'update-confirm-steps' },
+        h('li', null, 'The new version is built on this server. Tasks keep working; this takes several minutes.'),
+        h('li', null, 'Each task then pauses at its next step, and the server restarts (about a minute). The agents don’t notice; terminals stay open.'),
+        h('li', null, 'Tasks continue one by one. If the new version fails its check, the previous version and its database come back.'))),
+    confirmLabel: `Update to ${available.short}`,
+  });
+  if (!ok) return;
+  try {
+    await ctx.api.post('/api/admin/update', { commit: available.commit, confirm: true });
+    toast('Update started. Tasks keep working while it builds.', { kind: 'ok' });
+    await ctx.updates.refresh();
+  } catch (error) {
+    errorToast(error, 'Couldn’t start the update');
+  }
+}
+
+/**
+ * The superadmin's Update button for the sidebar foot (SPEC-133 UPB-001..UPB-006): "Update" when
+ * main moved on (one click to the confirmation), "Updating" while one runs, otherwise a quiet
+ * "Version and updates". Everyone else gets a hidden element.
+ */
+export function createUpdateButton(ctx, updates) {
+  const el = h('button', { type: 'button', class: 'update-btn', hidden: true, onClick: () => activate() });
+  let view = updates.view();
+
+  function state() {
+    if (!view) return 'idle';
+    if (view.phase || (view.run && !UPDATE_OUTCOMES.has(view.run.state))) return 'running';
+    return view.available ? 'offer' : 'idle';
+  }
+
+  function render() {
+    if (!ctx.isSuperadmin()) { el.hidden = true; setChildren(el); return; }
+    const now = state();
+    el.hidden = false;
+    el.className = `update-btn update-btn-${now}`;
+    if (now === 'offer') {
+      const available = view.available;
+      el.setAttribute('aria-label', `Update ${BRAND.name} to ${available.short}`);
+      el.title = view.helper_installed === false
+        ? 'Update available, but it needs the update helper on this server: see the instance page'
+        : `Update available: ${available.summary}`;
+      setChildren(el, icon('download', { size: 14 }), h('span', { class: 'update-btn-text' }, 'Update'));
+    } else if (now === 'running') {
+      const text = phaseText(view.phase, view.run) || `Updating ${BRAND.name}`;
+      el.setAttribute('aria-label', `Updating: ${text}`);
+      el.title = text;
+      setChildren(el, h('span', { class: 'spinner', 'aria-hidden': 'true' }), h('span', { class: 'update-btn-text' }, 'Updating'));
+    } else {
+      el.setAttribute('aria-label', 'Version and updates');
+      el.title = 'Version and updates';
+      setChildren(el, icon('download', { size: 16 }));
+    }
+  }
+
+  function activate() {
+    if (state() === 'offer' && view.helper_installed !== false) confirmAndStartUpdate(ctx, view.available);
+    else ctx.navigate(INSTANCE_ROUTE);
+  }
+
+  const off = updates.onChange((fresh) => { view = fresh; render(); });
+  render();
+  return { el, render, destroy: off };
 }
 
 /** The banner and the view, shared with the instance page (ctx.updates). */

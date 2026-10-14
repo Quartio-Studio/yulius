@@ -2,8 +2,11 @@
 //!
 //! `root` selects the folder: absent or `sandbox` is the sandbox repository, `task:<task id>`
 //! a task worktree of that sandbox. `path` is relative to the root (`""` is the root itself).
+//! Who has a file open in the editor is relayed, not stored (SPEC-127).
 
 use serde::{Deserialize, Serialize};
+
+use crate::api::notes::NoteSelection;
 
 /// One directory entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,4 +104,46 @@ pub struct UploadedFile {
     pub sha256: String,
     /// An existing file was replaced (editor uploads with `overwrite=true`).
     pub replaced: bool,
+}
+
+/// `PUT /api/sandboxes/{sid}/files/presence` body (SPEC-127 EDT-008): the caller's selection in
+/// the file's text as saved at `sha256`, or `null` when they left the file. Relayed to the
+/// sandbox's writers as `file.presence` and stored nowhere.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FilePresence {
+    /// `sandbox` (default) or `task:<task id>`, as in the other file requests.
+    #[serde(default)]
+    pub root: Option<String>,
+    /// The file, relative to the root.
+    pub path: String,
+    /// SHA-256 hex of the saved text the offsets are in (empty: not read yet).
+    #[serde(default)]
+    pub sha256: String,
+    /// The selection in UTF-16 offsets, or `null`: gone from the file.
+    pub selection: Option<NoteSelection>,
+    /// The file was just shown: the others answer with their own presence.
+    #[serde(default)]
+    pub hello: bool,
+    /// The browser tab (at most 32 letters and digits), so one person's tabs are told apart.
+    #[serde(default)]
+    pub client: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_presence_refuses_unknown_fields_and_needs_a_path() {
+        let left = serde_json::from_str::<FilePresence>(r#"{"path":"a.rs","selection":null}"#);
+        assert!(
+            left.is_ok_and(|left| left.root.is_none() && left.sha256.is_empty() && !left.hello)
+        );
+        assert!(serde_json::from_str::<FilePresence>(r#"{"selection":null}"#).is_err());
+        assert!(
+            serde_json::from_str::<FilePresence>(r#"{"path":"a","selection":null,"revision":1}"#)
+                .is_err()
+        );
+    }
 }

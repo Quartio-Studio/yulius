@@ -225,16 +225,23 @@ sequenceDiagram
 A task's agent is a native Claude Code session, and its first message is in before a person can
 type into it ([SPEC-117](../.ai/specs/SPEC-117-creating-tasks-work-in-a-very-very-weird.md),
 [decision 0095](decisions/0095-a-goal-task-starts-with-its-goal-as-the-launch-prompt.md)). Files
-attached on the new-task composer are uploaded to the sandbox's drafts folder. A goal task (the
+attached on the new-task composer are uploaded to the sandbox's drafts folder, and each sits in
+the prompt's text where it was pasted or dropped: the prompt is stored with it there as the
+mention `@'<path>'` (an older prompt has its files after the text, a line `@path` each), and
+`Request::parse` keeps that order everywhere the prompt goes
+([SPEC-124](../.ai/specs/SPEC-124-images-keep-their-position-in-the-text-f.md),
+[decision 0101](decisions/0101-attached-files-keep-their-place-in-the-prompt.md)). A goal task (the
 default) is launched with `/goal <condition>` as Claude Code's prompt argument: one message, nothing
 typed; Claude Code's record of the goal confirms it, and a goal not taken flags the task. The
 condition names the request file in the sandbox home, which keeps the whole request, and the
 attached files, which the agent opens with its Read tool (a `/goal` carries no image
-block). A prompt task's first message is its request. Without an image it is the CLI prompt
-argument, each file mentioned there (`@path`). With an image the session starts with no prompt
-and Yulius types the message into the TUI. Each image's path is pasted on its own, and Claude Code
-shows it as `[Image #N]` and sends an image block; the text follows with the other files
-mentioned, then Enter (an `@` mention of an image would only be a Read tool call). Until that
+block); the request file writes each file inside the text where it sits (`[file N: <path>]`). A
+prompt task's first message is its request. Without an image it is the CLI prompt argument, each
+file mentioned where it sits (`@"<path>"`). With an image the session starts with no prompt and
+Yulius types the message into the TUI, in order: the text, each image's path pasted on its own
+where it sits (Claude Code shows `[Image #N]` at the cursor and sends an image block), the other
+files mentioned in the text, then Enter (an `@` mention of an image would only be a Read tool
+call). Until that
 Enter a person's keys are not written into the session; the first one is answered with a notice.
 A resumed goal session (Continue, a switch) gets its `/goal` typed after its continuation turn; a
 person who typed into it before keeps their draft: no goal is typed and the task needs attention
@@ -268,9 +275,9 @@ sequenceDiagram
     participant S as Yulius server
     participant C as Claude Code (PTY)
     UI->>S: upload each file (drafts folder)
-    UI->>S: create task (prompt + @path lines)
+    UI->>S: create task (prompt, each file in place as @'path')
     alt goal mode
-        S->>S: write the request file (request, attached files, definition of done)
+        S->>S: write the request file (request with [file N: path] in place, attached files, definition of done)
         S->>C: launch with prompt /goal <condition naming the request file and attached files>
         opt Claude Code shows its folder-trust prompt
             S-->>UI: notice: answer it in the terminal (flagged if unanswered)
@@ -278,16 +285,20 @@ sequenceDiagram
         end
         C-->>C: sets the goal and runs its turn
     else prompt mode, no attached image
-        S->>C: launch with prompt: the request + @path mentions
+        S->>C: launch with prompt: the request, each file mentioned in place
         C-->>C: attaches each mentioned file
     else prompt mode, attached images
         S->>C: launch with no prompt (a person's keys now wait)
         C->>S: SessionStart hook, then quiet output
-        loop each image
-            S->>C: bracketed paste of its path
-            C-->>S: screen shows [Image #N]
+        loop each piece, in order
+            alt an image
+                S->>C: bracketed paste of its path
+                C-->>S: screen shows [Image #N] at the cursor
+            else text (other files mentioned in it)
+                S->>C: bracketed paste of the text
+            end
         end
-        S->>C: bracketed paste of the text (+ @path mentions of other files), Enter
+        S->>C: Enter
         C->>S: UserPromptSubmit: the first message is no longer pending
     end
 ```
@@ -681,6 +692,7 @@ continues past with a "↓ N more" line under it ([decision 0083](decisions/0083
 
 ```mermaid
 flowchart LR
+  PI["promptinput.js (files inside the text)"] -->|"value with @'path' in place"| C
   C["Composer (taskview.js)"] -->|"edit, attach"| D["drafts.js (per user and sandbox)"]
   C -->|"upload"| U["POST /api/sandboxes/:id/attachments"]
   D -->|"debounced, on leave or hide"| LS[("localStorage yulius.draft.*")]
@@ -792,6 +804,26 @@ sequenceDiagram
     S-->>A: note.presence
     Note over A,B: offsets mapped through each side's unsaved typing; another revision hides
     A->>S: PUT notes/presence {selection: null} (hidden, another tab, page gone)
+```
+
+The Editor shows the same presence for files
+([SPEC-127](../.ai/specs/SPEC-127-the-editor-gets-the-notepad-s-smooth-sel.md),
+[decision 0103](decisions/0103-editor-presence-mirrors-monaco-and-reaches-writers-only.md)): the
+browser loop is shared (`presence.js`), `App::file_presence` checks the path like the files API
+and shares the notepads' limiter, and the event goes through a third envelope audience,
+`Envelope.writers_only`, which `WS /api/events` delivers only to people with write access to the
+sandbox (cached and re-checked like sandbox visibility). The drawing copies what Monaco renders:
+its selection boxes and teammates' decorations become the notepads' gliding shapes in a layer
+inside Monaco's scrolled content (`editorlayer.js`).
+
+```mermaid
+flowchart LR
+    A[Alice's Editor<br/>presence.js] -->|PUT files/presence<br/>root, path, sha256, selection| S[App::file_presence<br/>file_target + limiter]
+    S -->|publish_to_writers| BUS[(event bus<br/>writers_only)]
+    BUS -->|WS /api/events<br/>can_work_in| B[Bob's Editor<br/>writer]
+    BUS -.->|dropped| R[Reader of the sandbox]
+    B --> M[Monaco decoration<br/>+ caret position]
+    M --> L[editorlayer.js<br/>rounded gliding shapes]
 ```
 
 ```mermaid

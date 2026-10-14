@@ -37,7 +37,7 @@ import { mountDashboardPage } from './pages/dashboard.js';
 import { mountUsersPage, mountAccountsPage, mountGithubPage } from './pages/admin.js';
 import { mountSettingsPage } from './pages/settings.js';
 import { mountInstancePage } from './pages/instance.js';
-import { createUpdateBanner } from './updates.js';
+import { createUpdateBanner, createUpdateButton } from './updates.js';
 import { mountSecretsPage } from './pages/secrets.js';
 import { mountDesignPage } from './pages/design.js';
 import { mountHomePage } from './pages/home.js';
@@ -262,6 +262,9 @@ function createApp(root, transport) {
     const tabRight = tabRow.el.querySelector('.tabrow-right');
     if (tabRight) tabRight.prepend(updates.el);
     else root.append(updates.el);
+    // The superadmin's Update button, beside the account button (SPEC-133).
+    const sidebarFoot = sidebar.el.querySelector('.sidebar-foot');
+    if (sidebarFoot) sidebarFoot.append(createUpdateButton(ctx, updates).el);
     new MutationObserver(syncDrawer).observe(appEl, { attributes: true, attributeFilter: ['class'] });
     syncDrawer();
     ctx.openNewTask = (sandbox) => openNewTask(sandbox);

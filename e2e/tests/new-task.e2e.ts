@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, mock, promptText, selectPromptText } from './support.ts';
 
 failOnPageErrors();
 
@@ -22,7 +22,7 @@ test('the new-task shortcut opens the composer; Enter adds a line and ⌘/Ctrl+E
   await prompt.fill('Add a health check endpoint');
   await prompt.press('Enter');
   // Enter is a new line now, never a start.
-  await expect(prompt).toHaveValue('Add a health check endpoint\n');
+  await expect.poll(() => promptText(browser)).toBe('Add a health check endpoint\n');
   await expect(browser).toHaveURL(/#\/s\/studio$/);
   // The hint shows the keyboard way to start, not Shift+Enter.
   await expect(browser.locator('.composer-hint')).toHaveText(/to start/);
@@ -60,32 +60,29 @@ test('lists continue on Enter, end on an empty item, indent with Tab; ⌘/Ctrl+B
   await browser.keyboard.type('- [ ] a task');
   await browser.keyboard.press('Enter');
   await browser.keyboard.type('next');
-  await expect(prompt).toHaveValue('Plan:\n- one\n- two\n  - nested\n1. first\n2. second\n- [ ] a task\n- [ ] next');
+  await expect.poll(() => promptText(browser)).toBe('Plan:\n- one\n- two\n  - nested\n1. first\n2. second\n- [ ] a task\n- [ ] next');
   // Shift+Tab outdents; on a top-level item it leaves the text box as usual.
   await browser.keyboard.press('Tab');
-  await expect(prompt).toHaveValue('Plan:\n- one\n- two\n  - nested\n1. first\n2. second\n- [ ] a task\n  - [ ] next');
+  await expect.poll(() => promptText(browser)).toBe('Plan:\n- one\n- two\n  - nested\n1. first\n2. second\n- [ ] a task\n  - [ ] next');
   await browser.keyboard.press('Shift+Tab');
-  await expect(prompt).toHaveValue('Plan:\n- one\n- two\n  - nested\n1. first\n2. second\n- [ ] a task\n- [ ] next');
+  await expect.poll(() => promptText(browser)).toBe('Plan:\n- one\n- two\n  - nested\n1. first\n2. second\n- [ ] a task\n- [ ] next');
   await expect(browser).toHaveURL(/#\/s\/studio$/);
 
   await prompt.fill('make it bold and calm');
-  await browser.evaluate(() => {
-    const box = document.querySelector('textarea.composer-prompt') as HTMLTextAreaElement;
-    box.setSelectionRange(8, 12);
-  });
+  await selectPromptText(browser, 8, 12);
   await browser.keyboard.press('ControlOrMeta+b');
-  await expect(prompt).toHaveValue('make it **bold** and calm');
+  await expect.poll(() => promptText(browser)).toBe('make it **bold** and calm');
   await browser.keyboard.press('ControlOrMeta+b');
-  await expect(prompt).toHaveValue('make it bold and calm');
+  await expect.poll(() => promptText(browser)).toBe('make it bold and calm');
   await browser.keyboard.press('ControlOrMeta+i');
-  await expect(prompt).toHaveValue('make it *bold* and calm');
+  await expect.poll(() => promptText(browser)).toBe('make it *bold* and calm');
 
   // A code fence closes below the caret.
   await prompt.fill('');
   await browser.keyboard.type('```sh');
   await browser.keyboard.press('Enter');
   await browser.keyboard.type('cargo test');
-  await expect(prompt).toHaveValue('```sh\ncargo test\n```');
+  await expect.poll(() => promptText(browser)).toBe('```sh\ncargo test\n```');
 
   // Preview shows the prompt formatted, read-only; Edit goes back.
   await prompt.fill('- **one**\n- two');

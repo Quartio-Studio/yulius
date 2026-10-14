@@ -484,10 +484,11 @@ export function attachTerminalDrop(ctx, view, { label, upload }) {
 }
 
 /**
- * Drop files onto the new-task prompt, or paste an image into it: each file is uploaded with
- * `upload(file, options)` (draftAttachments) and handed to `onAttach([{path, name, file}])`, which
- * shows it beside the prompt (images as thumbnails) instead of typing its path into the text; the
- * composer adds the paths when the task starts. `box` is the zone, `prompt` its textarea.
+ * Drop files onto the new-task prompt, or paste an image into it (SPEC-124): the place they land
+ * is kept at once (`prompt.begin(event)`: the caret, or the drop's point, shown while the files
+ * are dragged over the prompt), each file is uploaded with `upload(file, options)`
+ * (draftAttachments), and `onAttach([{path, name, file}], place)` puts them there, inside the
+ * text. `box` is the zone, `prompt` the prompt input (promptinput.js).
  */
 export function attachPromptDrop(ctx, { box, prompt, label, upload, onAttach }) {
   return attachPathDrop(ctx, {
@@ -495,19 +496,21 @@ export function attachPromptDrop(ctx, { box, prompt, label, upload, onAttach }) 
     overlayHost: () => box,
     label,
     upload,
-    canWrite: () => !prompt.readOnly,
+    canWrite: () => !prompt.readOnly && !prompt.disabled,
     unwritable: 'The prompt is being read; the files were not added.',
-    insert(stored) {
-      onAttach(stored);
-      prompt.focus();
+    begin: (event) => prompt.begin(event),
+    onOver: (event) => prompt.showPoint(event.clientX, event.clientY),
+    insert(stored, place) {
+      onAttach(stored, place);
     },
   });
 }
 
 /**
  * The prompt text a task starts with: `text`, then each attached file as an `@path` mention, one
- * per line. Claude Code attaches a mentioned file itself, an image as an image, so the agent
- * sees it without having to find and read it.
+ * per line (the files of a split task, SPEC-124 keeps the others in place). Claude Code attaches
+ * a mentioned file itself, an image as an image, so the agent sees it without having to find and
+ * read it.
  */
 export function withAttachments(text, attached) {
   if (!attached.length) return text;
@@ -545,8 +548,12 @@ export function draftAttachments(ctx, sandboxId) {
   return (file, options) => ctx.api.post(`/api/sandboxes/${enc(sandboxId)}/attachments?name=${encodeURIComponent(file.name)}`, file, options);
 }
 
-/** The shared drop/paste flow: upload the files, then `insert(paths)` where the user types. */
-function attachPathDrop(ctx, { zone, overlayHost, label, upload, canWrite, unwritable, insert }) {
+/**
+ * The shared drop/paste flow: upload the files, then `insert(paths)` where the user types. With
+ * `begin(event)`, the place is kept when the files come (a drop's event, or null for a paste) and
+ * handed to `insert` as its second argument; a place no file reached is cancelled.
+ */
+function attachPathDrop(ctx, { zone, overlayHost, label, upload, canWrite, unwritable, insert, begin, onOver }) {
   const status = createStatus({ floating: true, label: 'Upload progress' });
   let queue = Promise.resolve();
   const place = () => {
@@ -554,7 +561,7 @@ function attachPathDrop(ctx, { zone, overlayHost, label, upload, canWrite, unwri
     if (status.el.parentElement !== host) host.append(status.el);
   };
 
-  async function run(carried) {
+  async function run(carried, spot) {
     place();
     const { files, truncated, folders } = await collect(carried, { folders: false, max: MAX_TERMINAL_FILES });
     status.begin('Preparing…');
@@ -571,24 +578,28 @@ function attachPathDrop(ctx, { zone, overlayHost, label, upload, canWrite, unwri
     if (!canWrite()) {
       if (stored.length) status.error(unwritable);
     } else if (stored.length) {
-      insert(stored.map(({ job, result }) => ({ path: result.path, name: result.name, file: job.file })));
+      insert(stored.map(({ job, result }) => ({ path: result.path, name: result.name, file: job.file })), spot);
     }
     status.end(stored.length === 1 && jobs.length === 1 ? `Added ${stored[0].result.name}` : `Added ${counted(stored.length, jobs.length)}`);
   }
 
-  const enqueue = (carried) => {
-    queue = queue.then(() => run(carried)).catch((error) => {
+  const enqueue = (carried, spot = null) => {
+    let used = false;
+    const kept = spot && { insert: (paths) => { used = true; spot.insert(paths); } };
+    queue = queue.then(() => run(carried, kept)).catch((error) => {
       status.error(failure(error));
       status.end('The upload stopped.');
-    });
+    }).finally(() => { if (spot && !used) spot.cancel(); });
   };
+  const keep = (event) => (begin ? begin(event) : null);
   const readOnly = () => (canWrite() ? null : 'Read-only: files cannot be added here');
 
   dropZone(zone, {
     overlayHost,
     label: () => label,
     refused: readOnly,
-    onDrop: (_event, carried) => enqueue(carried),
+    onOver,
+    onDrop: (event, carried) => enqueue(carried, keep(event)),
   });
   // Images and copied files pasted into the terminal; text pastes are left to the terminal.
   zone.addEventListener('paste', (event) => {
@@ -603,7 +614,7 @@ function attachPathDrop(ctx, { zone, overlayHost, label, upload, canWrite, unwri
       status.end('Nothing was sent.');
       return;
     }
-    enqueue({ entries: [], files });
+    enqueue({ entries: [], files }, keep(null));
   }, true);
   return { status };
 }

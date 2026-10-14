@@ -18,6 +18,7 @@ use tokio::sync::{broadcast, oneshot};
 use yulius_contracts::events::UiEvent;
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::{AccountId, AttemptId, SandboxId, TaskId};
+use yulius_domain::request::Paste;
 use yulius_domain::rotation::{self, AccountView, Decision, Trigger};
 use yulius_domain::task::{
     Activity, AttemptState, FailReason, STOP_INTERRUPT_GRACE_MS, StopReason, TaskEvent, TaskStatus,
@@ -527,20 +528,26 @@ fn sets_goal(mode: &SessionMode) -> bool {
 }
 
 /// The pastes that type a first message with attached images (SPEC-030), each a bracketed paste
-/// (xterm `ESC [200~ … ESC [201~`) with what the screen shows once Claude Code took it: each
-/// image's path (`[Image #N]`), then the text. The text ends with a newline, so the cursor is
-/// never on a mention: Claude Code's file autocomplete would take the Enter (measured).
-fn opening_pastes(images: Vec<String>, text: &str) -> Vec<(Vec<u8>, Option<String>)> {
+/// (xterm `ESC [200~ … ESC [201~`) with what the screen shows once Claude Code took it: in the
+/// message's order (SPEC-124), each image's path (`[Image #N]`, at the cursor) and the text
+/// around it. Text that ends the message ends with a newline, so the cursor is never on a
+/// mention: Claude Code's file autocomplete would take the Enter (measured).
+fn opening_pastes(pastes: Vec<Paste>) -> Vec<(Vec<u8>, Option<String>)> {
     let paste = |content: &str| format!("\x1b[200~{content}\x1b[201~").into_bytes();
-    let mut pastes: Vec<(Vec<u8>, Option<String>)> = images
-        .iter()
-        .enumerate()
-        .map(|(i, path)| (paste(path), Some(format!("[Image #{}]", i + 1))))
-        .collect();
-    if !text.is_empty() {
-        pastes.push((paste(&format!("{text}\n")), None));
-    }
+    let last = pastes.len().saturating_sub(1);
+    let mut images = 0;
     pastes
+        .into_iter()
+        .enumerate()
+        .map(|(i, item)| match item {
+            Paste::Image(path) => {
+                images += 1;
+                (paste(&path), Some(format!("[Image #{images}]")))
+            }
+            Paste::Text(text) if i == last => (paste(&format!("{text}\n")), None),
+            Paste::Text(text) => (paste(&text), None),
+        })
+        .collect()
 }
 
 /// Branch name for a task: `feat/<number>-<slug>`.
@@ -1055,8 +1062,8 @@ impl App {
                     }
                     None => match Request::parse(&task.prompt).opening() {
                         Opening::Prompt(prompt) => Some(prompt),
-                        Opening::Typed { images, text } => {
-                            typed_opening = Some((images, text));
+                        Opening::Typed { pastes } => {
+                            typed_opening = Some(pastes);
                             None
                         }
                     },
@@ -1570,20 +1577,16 @@ impl App {
         )
     }
 
-    /// Types a session's first message that carries images (SPEC-030): each image's path as a
-    /// bracketed paste of its own, then the text as one paste, then Enter. Each paste is taken
+    /// Types a session's first message that carries images (SPEC-030): in order, each image's
+    /// path as a bracketed paste of its own where it sits, the text around them as pastes of their
+    /// own (SPEC-124), then Enter. Each paste is taken
     /// before the next is written (pastes written in one burst lose the image): the screen shows
     /// its `[Image #N]`, or the output changed and settled. Typed once, never retried, so the
     /// request is never sent twice. Typing stops once the attempt is no longer live: input goes
     /// to the task's current run, which would then be another session.
-    async fn type_opening(
-        &self,
-        task_id: &TaskId,
-        attempt_id: &AttemptId,
-        (images, text): (Vec<String>, String),
-    ) {
+    async fn type_opening(&self, task_id: &TaskId, attempt_id: &AttemptId, pastes: Vec<Paste>) {
         let runtime = self.runtime(task_id);
-        for (paste, shown) in opening_pastes(images, &text) {
+        for (paste, shown) in opening_pastes(pastes) {
             if !self.attempt_live(task_id, attempt_id).await {
                 return;
             }
@@ -3542,11 +3545,15 @@ mod tests {
     }
 
     #[test]
-    fn a_typed_first_message_pastes_each_image_then_the_text_ending_in_a_newline() {
-        let pastes = super::opening_pastes(
-            vec!["/s/a.png".into(), "/s/my b.png".into()],
-            "Look\n\n@\"/s/c.txt\"",
-        );
+    fn a_typed_first_message_pastes_each_image_where_it_sits_the_last_text_ending_in_a_newline() {
+        use yulius_domain::request::Paste;
+        let pastes = super::opening_pastes(vec![
+            Paste::Text("Look at ".into()),
+            Paste::Image("/s/a.png".into()),
+            Paste::Text(" and ".into()),
+            Paste::Image("/s/my b.png".into()),
+            Paste::Text(" @\"/s/c.txt\"".into()),
+        ]);
         let shown: Vec<(String, Option<String>)> = pastes
             .into_iter()
             .map(|(bytes, shown)| (String::from_utf8_lossy(&bytes).into_owned(), shown))
@@ -3554,18 +3561,23 @@ mod tests {
         assert_eq!(
             shown,
             [
+                ("\x1b[200~Look at \x1b[201~".to_owned(), None),
                 (
                     "\x1b[200~/s/a.png\x1b[201~".to_owned(),
                     Some("[Image #1]".to_owned())
                 ),
+                ("\x1b[200~ and \x1b[201~".to_owned(), None),
                 (
                     "\x1b[200~/s/my b.png\x1b[201~".to_owned(),
                     Some("[Image #2]".to_owned())
                 ),
-                ("\x1b[200~Look\n\n@\"/s/c.txt\"\n\x1b[201~".to_owned(), None),
+                ("\x1b[200~ @\"/s/c.txt\"\n\x1b[201~".to_owned(), None),
             ]
         );
-        assert_eq!(super::opening_pastes(vec!["/s/a.png".into()], "").len(), 1);
+        // A message that ends with an image ends with its paste.
+        let only = super::opening_pastes(vec![Paste::Image("/s/a.png".into())]);
+        assert_eq!(only.len(), 1);
+        assert_eq!(only[0].1.as_deref(), Some("[Image #1]"));
     }
     #[test]
     fn final_screen_round_trips() -> Result<(), Box<dyn std::error::Error>> {

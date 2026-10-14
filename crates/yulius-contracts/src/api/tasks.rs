@@ -437,6 +437,24 @@ pub struct TaskPrompt {
     pub text: String,
     /// The attached files, in order; `GET /api/tasks/{tid}/prompt/attachments/{n}` serves one.
     pub attachments: Vec<PromptAttachment>,
+    /// The prompt in order: its text and each attached file where it sits (SPEC-124).
+    pub parts: Vec<PromptPart>,
+}
+
+/// One piece of a task's prompt, in order (SPEC-124): `{"text"}` or `{"attachment": n}`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PromptPart {
+    /// Text as written.
+    Text {
+        /// The text.
+        text: String,
+    },
+    /// Attached file `n` of [`TaskPrompt::attachments`], at this place.
+    Attachment {
+        /// Its index in the attachments.
+        attachment: usize,
+    },
 }
 
 /// A file attached to a task's prompt (SPEC-043).
