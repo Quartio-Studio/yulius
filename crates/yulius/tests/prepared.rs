@@ -13,7 +13,7 @@ use support::{
     Creds, Harness, TestResult, add_sandbox, call, harness_configured, mcp_tool, perms,
     seed_live_attempt, seed_task, tool_text, user_with_token,
 };
-use yulius_app::ports::store::TaskStore;
+use yulius_app::ports::store::{SandboxStore, TaskStore};
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::task::TaskStatus;
 
@@ -219,5 +219,237 @@ async fn a_sandbox_holds_a_bounded_number_of_prepared_tasks() -> TestResult {
     )
     .await?;
     assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS, "{:?}", r.body);
+    Ok(())
+}
+
+async fn act(
+    h: &Harness,
+    creds: &Creds,
+    method: Method,
+    path: String,
+    body: Option<Value>,
+) -> Result<support::Resp, Error> {
+    call(&h.router, method, &path, body, creds).await
+}
+
+/// AC-PRP-2: Start now starts a prepared task whatever its time, Cancel ends one, Delete removes
+/// one; Start now on a task that already left `prepared` is 409; someone who may only read
+/// changes nothing.
+#[tokio::test]
+async fn a_person_starts_cancels_or_deletes_a_prepared_task() -> TestResult {
+    let (h, alice, bob) = world().await?;
+    let later = created(
+        &h,
+        &alice,
+        json!({"prompt": "Later", "start_at": rfc3339(now(&h) + HOUR)}),
+    )
+    .await?;
+    let cancel = created(
+        &h,
+        &alice,
+        json!({"prompt": "Not needed", "prepared": true}),
+    )
+    .await?;
+    let gone = created(&h, &alice, json!({"prompt": "Delete me", "prepared": true})).await?;
+
+    for path in [
+        format!("/api/tasks/{later}/start-now"),
+        format!("/api/tasks/{cancel}/stop"),
+    ] {
+        let r = act(&h, &bob, Method::POST, path.clone(), None).await?;
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{path}: {:?}", r.body);
+    }
+    assert_eq!(status(&h, &later).await?, TaskStatus::Prepared);
+
+    let r = act(
+        &h,
+        &alice,
+        Method::POST,
+        format!("/api/tasks/{later}/start-now"),
+        None,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_ne!(r.body["status"], "prepared", "{:?}", r.body);
+    assert_eq!(r.body["start_at"], Value::Null, "{:?}", r.body);
+    assert_ne!(status(&h, &later).await?, TaskStatus::Prepared);
+    let again = act(
+        &h,
+        &alice,
+        Method::POST,
+        format!("/api/tasks/{later}/start-now"),
+        None,
+    )
+    .await?;
+    assert_eq!(again.status, StatusCode::CONFLICT, "{:?}", again.body);
+
+    let r = act(
+        &h,
+        &alice,
+        Method::POST,
+        format!("/api/tasks/{cancel}/stop"),
+        None,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(r.body["status"], "stopped_cancelled", "{:?}", r.body);
+
+    let r = act(
+        &h,
+        &alice,
+        Method::DELETE,
+        format!("/api/tasks/{gone}"),
+        None,
+    )
+    .await?;
+    assert!(r.status.is_success(), "{:?}", r.body);
+    assert!(h.store.task(&TaskId::parse(&gone)?).await?.is_none());
+    Ok(())
+}
+
+/// AC-PRP-3: a scheduled task stays prepared before its time and starts on the tick past it; a
+/// prepared task without a time never starts by itself; while onboarding blocks the sandbox's
+/// tasks a due task waits, and Start now says why.
+#[tokio::test]
+async fn a_scheduled_task_starts_by_itself_at_its_time() -> TestResult {
+    let (h, alice, _) = world().await?;
+    let at = now(&h) + HOUR;
+    let scheduled = created(
+        &h,
+        &alice,
+        json!({"prompt": "At ten", "start_at": rfc3339(at)}),
+    )
+    .await?;
+    let manual = created(
+        &h,
+        &alice,
+        json!({"prompt": "When I decide", "prepared": true}),
+    )
+    .await?;
+
+    h.clock.0.store(at - 1_000, Ordering::SeqCst);
+    h.app.release_due_prepared().await;
+    assert_eq!(status(&h, &scheduled).await?, TaskStatus::Prepared);
+
+    h.clock.0.store(at, Ordering::SeqCst);
+    h.app.release_due_prepared().await;
+    assert_ne!(status(&h, &scheduled).await?, TaskStatus::Prepared);
+    assert_eq!(
+        summary(&h, &alice, &scheduled).await?["start_at"],
+        Value::Null
+    );
+
+    h.clock.0.store(at + 400 * 24 * HOUR, Ordering::SeqCst);
+    h.app.release_due_prepared().await;
+    assert_eq!(status(&h, &manual).await?, TaskStatus::Prepared);
+
+    // Onboarding blocks the sandbox: a due task waits for it.
+    let soon = now(&h) + 60_000;
+    let waiting = created(
+        &h,
+        &alice,
+        json!({"prompt": "After onboarding", "start_at": rfc3339(soon)}),
+    )
+    .await?;
+    let sid = SandboxId::parse("s1")?;
+    h.store.set_onboarding(&sid, "pending", None).await?;
+    h.clock.0.store(soon + 1_000, Ordering::SeqCst);
+    h.app.release_due_prepared().await;
+    assert_eq!(status(&h, &waiting).await?, TaskStatus::Prepared);
+    let r = act(
+        &h,
+        &alice,
+        Method::POST,
+        format!("/api/tasks/{manual}/start-now"),
+        None,
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{:?}", r.body);
+    assert_eq!(status(&h, &manual).await?, TaskStatus::Prepared);
+    h.store.set_onboarding(&sid, "ready", None).await?;
+    h.app.release_due_prepared().await;
+    assert_ne!(status(&h, &waiting).await?, TaskStatus::Prepared);
+    Ok(())
+}
+
+/// AC-PRP-4: the schedule moves, clears to "when I decide", starts a task at once when the new
+/// time is due, refuses a time outside the window and a task that is not prepared.
+#[tokio::test]
+async fn a_prepared_task_is_rescheduled() -> TestResult {
+    let (h, alice, bob) = world().await?;
+    let id = created(&h, &alice, json!({"prompt": "Move me", "prepared": true})).await?;
+    let path = format!("/api/tasks/{id}/schedule");
+    let at = now(&h) + 2 * HOUR;
+
+    let r = act(
+        &h,
+        &bob,
+        Method::PUT,
+        path.clone(),
+        Some(json!({"start_at": rfc3339(at)})),
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::FORBIDDEN, "{:?}", r.body);
+
+    let r = act(
+        &h,
+        &alice,
+        Method::PUT,
+        path.clone(),
+        Some(json!({"start_at": rfc3339(at)})),
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(r.body["start_at"], json!(rfc3339(at)), "{:?}", r.body);
+    assert_eq!(r.body["status"], "prepared");
+
+    let r = act(
+        &h,
+        &alice,
+        Method::PUT,
+        path.clone(),
+        Some(json!({"start_at": rfc3339(now(&h) - 5 * 60_000)})),
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::UNPROCESSABLE_ENTITY, "{:?}", r.body);
+    assert_eq!(
+        summary(&h, &alice, &id).await?["start_at"],
+        json!(rfc3339(at))
+    );
+
+    let r = act(
+        &h,
+        &alice,
+        Method::PUT,
+        path.clone(),
+        Some(json!({"start_at": null})),
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_eq!(r.body["start_at"], Value::Null, "{:?}", r.body);
+    h.clock.0.store(at + HOUR, Ordering::SeqCst);
+    h.app.release_due_prepared().await;
+    assert_eq!(status(&h, &id).await?, TaskStatus::Prepared);
+
+    // A time that is already due starts it on the call.
+    let r = act(
+        &h,
+        &alice,
+        Method::PUT,
+        path.clone(),
+        Some(json!({"start_at": rfc3339(now(&h))})),
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{:?}", r.body);
+    assert_ne!(status(&h, &id).await?, TaskStatus::Prepared);
+    let r = act(
+        &h,
+        &alice,
+        Method::PUT,
+        path,
+        Some(json!({"start_at": rfc3339(now(&h) + HOUR)})),
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::CONFLICT, "{:?}", r.body);
     Ok(())
 }
