@@ -83,7 +83,7 @@ fn hidden_format(c: char) -> bool {
     matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2069}' | '\u{feff}')
 }
 
-fn reason(text: Option<&str>) -> String {
+pub(super) fn reason(text: Option<&str>) -> String {
     text.unwrap_or_default()
         .chars()
         .filter(|c| !hidden_format(*c))
@@ -95,6 +95,15 @@ fn reason(text: Option<&str>) -> String {
 }
 
 impl App {
+    /// The Secrets page of a sandbox, at its agent secrets (printed for the person who answers).
+    pub(super) fn agent_secrets_link(&self, slug: &str) -> String {
+        format!(
+            "{}/s/{}/secrets?section=agents",
+            self.config.public_url,
+            percent_encode(slug, false)
+        )
+    }
+
     /// `secret_request_hosts`: stores the hosts an agent proposes for an agent secret of its
     /// project as a request (never a binding), audits it and flags the task as needing a person.
     pub(crate) async fn tool_secret_request_hosts(
@@ -127,11 +136,7 @@ impl App {
             .sandbox(&ctx.task.sandbox_id)
             .await?
             .ok_or(AppError::NotFound)?;
-        let link = format!(
-            "{}/s/{}/secrets?section=agents",
-            self.config.public_url,
-            percent_encode(&sandbox.slug, false)
-        );
+        let link = self.agent_secrets_link(&sandbox.slug);
         if merged.fresh.is_empty() {
             return Ok(json!({
                 "requested": [],
@@ -279,7 +284,12 @@ fn same_hosts(a: &[HostPattern], b: &[HostPattern]) -> bool {
 
 /// Who asks: `#N`, with the sandbox for a secret of every sandbox (shown on every sandbox's
 /// page); added to the earlier askers of a request that still waits.
-fn requester(earlier: Option<&str>, waiting: bool, number: u32, slug: Option<&str>) -> String {
+pub(super) fn requester(
+    earlier: Option<&str>,
+    waiting: bool,
+    number: u32,
+    slug: Option<&str>,
+) -> String {
     let me = match slug {
         Some(slug) => format!("#{number} in {slug}"),
         None => format!("#{number}"),

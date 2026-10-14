@@ -943,7 +943,8 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   const preparation = () => (sandbox.onboarding === 'pending' ? preparationTask(db, sandbox)
     : sandbox.onboarding === 'preparing' ? db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding') : null);
   const before = rule ? db.tasks.find((x) => x.sandbox_id === sandbox.id && x.number === Number(rule.match(/#(\d+)/)[1])) : body.after_task_id ? db.tasks.find((x) => x.id === body.after_task_id && x.sandbox_id === sandbox.id) : null;
-  if (body.after_task_id && (!before || !(LIVE.has(before.status) || before.status === 'chained'))) fail(422, 'invalid', 'the task to run after does not exist or has ended');
+  // A waiting task may be run after, prepared ones too (SPEC-105 PRP-005).
+  if (body.after_task_id && (!before || !(LIVE.has(before.status) || before.status === 'chained' || before.status === 'prepared'))) fail(422, 'invalid', 'the task to run after does not exist or has ended');
   // A prepared task waits for onboarding when it is started instead (SPEC-105): it creates no
   // preparation task, as on the server.
   const waitsFor = prepared ? null : before || preparation();
@@ -1048,6 +1049,65 @@ route('PUT', `/api/tasks/${ID}/schedule`, ({ db, p, body }) => {
   needTaskWrite(db, task);
   if (task.status !== 'prepared') fail(409, 'conflict', `the task is ${task.status}, not prepared`);
   touch(db, task, { start_at: body.start_at ? mockStartAt(body.start_at) : null });
+  return summary(task);
+});
+// How a task that waits to start starts instead (SPEC-126): New task's choices and checks, a wait
+// on itself refused; a started task keeps its start.
+route('PUT', `/api/tasks/${ID}/start`, ({ db, p, body }) => {
+  const task = taskOf(db, p[0]);
+  needTaskWrite(db, task);
+  if (task.status !== 'chained' && task.status !== 'prepared') fail(409, 'conflict', `the task has started (it is ${task.status}): only a task waiting to start changes how it starts`);
+  const rule = body.start_rule && body.start_rule.trim() ? body.start_rule.trim().replace(/\s+/g, ' ') : null;
+  if (body.after_task_id && rule) fail(422, 'invalid', 'give a task to run after or a start rule, not both');
+  if (body.supertask && (body.after_task_id || rule)) fail(422, 'invalid', 'a supertask starts after the running tasks: it cannot also run after a task or a rule');
+  const prepared = body.prepared === true || Boolean(body.start_at);
+  if (prepared && (body.after_task_id || body.supertask || rule)) fail(422, 'invalid', 'a prepared task starts when you decide or at its time: it cannot also run after a task, by a rule or as a supertask');
+  const startAt = body.start_at ? mockStartAt(body.start_at) : null;
+  const tasks = db.tasks.filter((x) => x.sandbox_id === task.sandbox_id);
+  const numbersOf = (text) => [...text.matchAll(/#(\d+)/g)].map((m) => Number(m[1]));
+  let before = null;
+  if (rule) {
+    if (!/^[#\w\s()!&|]+$/.test(rule) || !/#\d/.test(rule)) fail(422, 'invalid', 'the rule must name tasks like #12');
+    const missing = numbersOf(rule).find((n) => !tasks.some((x) => x.number === n));
+    if (missing) fail(422, 'invalid', `the rule names #${missing}, which does not exist in this sandbox`);
+    before = tasks.find((x) => x.number === numbersOf(rule)[0]);
+  } else if (body.after_task_id) {
+    before = tasks.find((x) => x.id === body.after_task_id);
+    if (!before || !(LIVE.has(before.status) || before.status === 'chained' || before.status === 'prepared')) fail(422, 'invalid', 'the task to run after does not exist or has ended');
+  }
+  if (before) {
+    // Through the predecessors and rules of the chained tasks it would wait for.
+    const pending = rule ? numbersOf(rule).map((n) => tasks.find((x) => x.number === n)) : [before];
+    const seen = new Set();
+    while (pending.length) {
+      const next = pending.pop();
+      if (!next || seen.has(next.id)) continue;
+      if (next.id === task.id) fail(422, 'invalid', `#${task.number} cannot wait for itself: what it would wait for already waits for it`);
+      seen.add(next.id);
+      const link = next.status === 'chained' && next.afterLink;
+      if (link) pending.push(...(link.rule ? numbersOf(link.rule).map((n) => tasks.find((x) => x.number === n)) : [tasks.find((x) => x.id === link.task_id)]));
+    }
+  }
+  // A chained task started now keeps its chain, as Start now does; otherwise the old
+  // predecessor no longer lists it.
+  const keeps = !before && !prepared && task.status === 'chained';
+  const old = !keeps && task.afterLink && db.tasks.find((x) => x.id === task.afterLink.task_id);
+  if (old) {
+    old.nextLinks = (old.nextLinks || []).filter((l) => l.task_id !== task.id);
+    emit(db, { type: 'task.updated', task: summary(old) });
+  }
+  if (!keeps) task.afterLink = null;
+  if (before) {
+    chainAfter(task, before, rule);
+    touch(db, task, { status: 'chained', start_at: null, supertask: false });
+    emit(db, { type: 'task.updated', task: summary(before) });
+  } else if (prepared) {
+    touch(db, task, { status: 'prepared', start_at: startAt, supertask: false });
+  } else {
+    touch(db, task, { status: 'queued', start_at: null, supertask: body.supertask === true });
+    later(() => touch(db, task, { status: 'starting' }), 700);
+    later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1800);
+  }
   return summary(task);
 });
 /** A prepared task's start time (SPEC-105) checked like the server: at most a minute past, 366 days ahead. */
@@ -2012,9 +2072,9 @@ function vaultOf(db) {
       unlockAt: 0,
       twoFactor: 'missing',
       team: [{ id: 'ts_gmail', title: 'Shared Gmail', value: 'mock-not-a-real-password', notes: 'User name: team@example.test\nRecovery codes: mock', created_by: 'mkarp', updated_by: 'mkarp', updated_at: iso(3 * DAY), value_updated_at: iso(3 * DAY) }],
-      agent: [{ id: 'as_stripe', sandbox: 'sb_studio', scope: 'sandbox', name: 'STRIPE_KEY', description: 'Stripe test-mode key for the checkout', hosts: ['api.stripe.com'], injection: 'bearer', header_name: null, username: null, value: 'mock-agent-value-1', created_by: 'mkarp', updated_at: iso(DAY), value_updated_at: iso(DAY), last_used_at: iso(2 * HOUR), requested_hosts: [], requested_by: null },
+      agent: [{ id: 'as_stripe', sandbox: 'sb_studio', scope: 'sandbox', name: 'STRIPE_KEY', description: 'Stripe test-mode key for the checkout', hosts: ['api.stripe.com'], injection: 'bearer', header_name: null, username: null, value: 'mock-agent-value-1', created_by: 'mkarp', updated_at: iso(DAY), value_updated_at: iso(DAY), last_used_at: iso(2 * HOUR), requested_hosts: [], requested_by: null, env_files: 'asked', env_requested_by: '#111' },
         // SPEC-121: added with a name, a value and a description; an agent asked for its host.
-        { id: 'as_vidoc', sandbox: 'sb_studio', scope: 'sandbox', name: 'VIDOC_API_KEY', description: 'API key for Vidoc', hosts: [], injection: 'none', header_name: null, username: null, value: 'mock-agent-value-2', created_by: 'mkarp', updated_at: iso(HOUR), value_updated_at: iso(HOUR), last_used_at: null, requested_hosts: ['api.vidoc.test'], requested_by: '#107' }],
+        { id: 'as_vidoc', sandbox: 'sb_studio', scope: 'sandbox', name: 'VIDOC_API_KEY', description: 'API key for Vidoc', hosts: [], injection: 'none', header_name: null, username: null, value: 'mock-agent-value-2', created_by: 'mkarp', updated_at: iso(HOUR), value_updated_at: iso(HOUR), last_used_at: null, requested_hosts: ['api.vidoc.test'], requested_by: '#107', env_files: 'no', env_requested_by: null }],
       activity: [{ at: iso(HOUR), actor: 'mkarp', action: 'vault.team.reveal', secret_id: 'ts_gmail', detail: 'Shared Gmail (value)' }],
     };
   }
@@ -2029,7 +2089,7 @@ function teamView(s) {
 
 function agentView(db, s, sandbox) {
   const manage = s.scope === 'instance' ? Boolean(db.me.user.is_instance_admin || db.me.user.is_superadmin) : RANK[sandbox.access] >= RANK.write;
-  return { id: s.id, name: s.name, description: s.description, scope: s.scope, hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, can_manage: manage };
+  return { id: s.id, name: s.name, description: s.description, scope: s.scope, hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, env_files: s.env_files || 'no', env_requested_by: s.env_requested_by || null, injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, can_manage: manage };
 }
 
 function reauthStatus(db) {
@@ -2174,6 +2234,19 @@ route('POST', `/api/agent-secrets/${ID}/request`, ({ db, p, body }) => {
   secret.requested_hosts = [];
   secret.requested_by = null;
   audit(db, body.allow ? 'vault.agent.allow' : 'vault.agent.dismiss', secret.id, `${secret.name} → ${asked.join(', ')}`);
+  return agentView(db, secret, sandbox);
+});
+route('POST', `/api/agent-secrets/${ID}/env`, ({ db, p, body }) => {
+  const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
+  const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
+  if (!agentView(db, secret, sandbox).can_manage) fail(403, 'forbidden', 'only people who manage this secret answer its requests');
+  const state = secret.env_files || 'no';
+  if (body.env_files !== state || (body.env_requested_by || null) !== (secret.env_requested_by || null)) fail(409, 'conflict', 'the secret changed since you looked: reload and answer again');
+  if (state === 'no') fail(409, 'conflict', 'no agent asks to copy this secret into .env files');
+  if (state === 'allowed' && body.allow) return agentView(db, secret, sandbox);
+  audit(db, body.allow ? 'vault.agent.env_allow' : state === 'asked' ? 'vault.agent.env_dismiss' : 'vault.agent.env_revoke', secret.id, `${secret.name} → .env files`);
+  secret.env_files = body.allow ? 'allowed' : 'no';
+  secret.env_requested_by = null;
   return agentView(db, secret, sandbox);
 });
 route('DELETE', `/api/agent-secrets/${ID}`, ({ db, p }) => {
