@@ -41,7 +41,11 @@ rule, and a chain whose predecessor ended otherwise needs a person.
 
 ## Consequences
 
-- A scheduled task starts up to a minute after its time.
+- A scheduled task starts up to a minute after its time. The tick releases it in one statement
+  that checks its status and its stored time together, so a time moved or cleared while the tick
+  runs wins; a person's request starts only the task it is about.
+- The 32-task bound is counted before the insert, as the chain bound is: concurrent creations can
+  pass it by a few, which keeps it a bound on growth, not an exact limit.
 - Code that lists waiting states (queued messages, the disk controller's idle owners,
   `tasks_list`'s active scope, chain candidates) names `prepared` too.
 - Automations cannot create prepared tasks yet; editing a prepared task's prompt goes through

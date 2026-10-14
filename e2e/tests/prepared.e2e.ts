@@ -90,3 +90,16 @@ test('At a time… schedules a task; its time can change or give way to When I d
   await screen.getByRole('dialog', `Cancel task #${number}?`).getByRole('button', 'Cancel task').click();
   await expect(browser.locator('.strip-status')).toHaveText('Stopped');
 });
+
+test('a kept draft whose time has passed waits for you instead; the send button says what it does', async ({ app, browser, screen }) => {
+  // Stored before the page opens (#269): an open composer would replace a draft written under it.
+  await browser.addInitScript(() => {
+    localStorage.setItem('yulius.draft.usr_1.sb_studio', JSON.stringify({
+      text: 'Kept from yesterday', prepare: { at: new Date(Date.now() - 24 * 3600e3).toISOString() },
+    }));
+  });
+  await app.open(mock('/s/studio'));
+  await expect(screen.getByRole('textbox', 'Task prompt')).toHaveValue('Kept from yesterday');
+  await expect(screen.getByRole('button', /Run after: When I decide/)).toBeVisible();
+  await expect(screen.getByRole('button', 'Prepare task')).toHaveAttribute('title', /^Prepare task \(/);
+});

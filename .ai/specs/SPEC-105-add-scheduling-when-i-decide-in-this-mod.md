@@ -65,8 +65,11 @@ cancelled.
   prepared with that time; with a time 2 minutes ago, 367 days ahead, or together with
   `after_task_id`, `start_rule` or `supertask` it is 422 and creates nothing; the 33rd prepared
   task of a sandbox is 429.
-- AC-PRP-2: Start now on a prepared task starts its run (fake agent); `/stop` on another makes it
-  `stopped_cancelled`; Start now on a running task is 409.
+- AC-PRP-2: Start now on a prepared task releases it to the normal start (`prepared → queued`,
+  then `start_run`, as Start now on a chained task does); `/stop` on another makes it
+  `stopped_cancelled`; Start now on a task that left `prepared` is 409; a reader, and a writer who
+  does not own the task (SPEC-070), change nothing (403). Creating or rescheduling one task never
+  starts another due one: that is the tick's.
 - AC-PRP-3: a task scheduled at T stays prepared before T and is running after the tick past T
   (injected clock); a prepared task without a time stays prepared across ticks.
 - AC-PRP-4: `PUT …/schedule` moves the time, `null` clears it (`start_at: null`); on a running
@@ -82,7 +85,8 @@ cancelled.
 - Unit (`yulius-domain`): `Prepared` transitions (released → queued, cancel → stopped, nothing
   else), wire name round trip, group `Queued`, disk owner idle.
 - Store: schedule set, read, cleared, due list joined with `prepared`.
-- Integration (`crates/yulius/tests/prepared.rs`, fake agent, injected clock): AC-PRP-1..5.
+- Integration (`crates/yulius/tests/prepared.rs`, in-memory harness, injected clock): AC-PRP-1..5.
+  Real processes after `queued` are the existing start path's (`supervision.rs`).
 - End to end (`e2e/tests/prepared.e2e.ts`, mock server): AC-PRP-6.
 
 ## Decisions

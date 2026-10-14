@@ -259,6 +259,8 @@ TaskSummary = {
   "archived": false, "account_label": "Claude #2|null",
   "mode": "goal|prompt",
   "resumes_at": "2026-10-09T08:20:00Z|null",
+  "supertask": false, "held_by": [3, 5],
+  "start_at": "2026-10-15T09:00:00Z|null",
   "after": ChainLink|null, "next": [ChainLink],
   "held_prompt": {"id","class":"new_scope|drops_scope|redirect","excerpt","percent","typed_by|null","created_at"}|null,
   "background_shells": "0|1|…|null",

@@ -668,13 +668,16 @@ export function mountComposer(ctx, sandbox) {
     const after = (tasks || []).find((t) => t.id === afterTaskId);
     if (afterTaskId && tasks && !after) afterTaskId = ''; // gone (a kept draft waits for the list)
     const rule = startRule ? ruleText(startRule) : '';
+    // A kept time that has passed (a draft from yesterday) waits for the person instead: sending
+    // it would be refused, and starting it now was not asked for (SPEC-105).
+    if (prepare && prepare.at && Date.parse(prepare.at) < Date.now() - 60e3) prepare = { at: null };
     const kind = startKind({ supertask, afterTaskId: after && after.id, rule, prepare });
     renderStartChip(afterChip, { kind, number: after && after.number, rule, at: prepare && prepare.at, prefix: 'Run after: ' });
     const at = prepare && prepare.at ? whenLabel(prepare.at) : '';
     afterChip.title = prepare ? (at ? `Starts by itself ${at}` : WHEN_I_DECIDE_HELP) : supertask ? SUPERTASK_HELP : rule ? `Starts by itself when ${rule}` : after ? `Runs after #${after.number} ${after.title} is done` : 'Starts right away; or pick a task to run after, or give a rule';
     // The send button says what it does: a prepared task is not started (SPEC-105).
-    const action = prepare ? (at ? 'Schedule task' : 'Prepare task') : 'Start task';
-    startButton.setAttribute('aria-label', action);
+    startButton.setAttribute('aria-label', startAction());
+    startButton.title = write ? `${startAction()} (${SUBMIT_KEYS})` : 'Requires write access';
     const found = findModel(modelId);
     setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
     modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Model: default, Opus 5.5';
@@ -740,6 +743,12 @@ export function mountComposer(ctx, sandbox) {
         prompt.focus();
       },
     });
+  }
+
+  /** What the send button does with the start choice (SPEC-105). */
+  function startAction() {
+    if (!prepare) return 'Start task';
+    return prepare.at ? 'Schedule task' : 'Prepare task';
   }
 
   /** At a time… (SPEC-105): the task is prepared and starts by itself then. */
@@ -856,7 +865,7 @@ export function mountComposer(ctx, sandbox) {
     setChildren(banner, items);
     startButton.disabled = !write;
     prompt.disabled = !write;
-    startButton.title = !write ? 'Requires write access' : '';
+    startButton.title = !write ? 'Requires write access' : `${startAction()} (${SUBMIT_KEYS})`;
     // Onboarding landed while the page was open: the task box is ready for typing, unless the
     // person is busy elsewhere on the page.
     if (wasGated && !preparing && el.isConnected) {
