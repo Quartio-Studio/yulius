@@ -65,6 +65,22 @@ pub struct Automation {
     pub last_run: Option<AutomationRunView>,
 }
 
+/// Body of `POST /api/automations/{id}/run` (SPEC-093 AUT-023): the start choice of this run
+/// only, as the editor shows it, checked like [`Automation`]'s; nothing is stored. Without a body
+/// the run uses the automation's stored choice.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunAutomation {
+    /// The task is a supertask.
+    #[serde(default)]
+    pub supertask: bool,
+    /// The task runs after this task of the project.
+    #[serde(default)]
+    pub after_task_id: Option<String>,
+    /// The task starts when this rule is true.
+    #[serde(default)]
+    pub start_rule: Option<String>,
+}
+
 fn default_harness() -> String {
     "claude".into()
 }

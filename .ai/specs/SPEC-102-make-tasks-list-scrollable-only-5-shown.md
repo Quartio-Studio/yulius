@@ -26,7 +26,9 @@ scrolling.
 - The composer's start menu (`openAfterMenu`, `taskview.js`) lists every live task of the sandbox
   under the header "After a task is done", one line each with its status (SPEC-038 MNU-006, no cut
   at 20 since the filter finds one). The automation editor's "After a task…" menu
-  (`pages/automationedit.js`) lists the same candidates under the same header.
+  (`pages/automationedit.js`) listed the same candidates under the same header; since SPEC-093
+  both pages open one shared start menu, `openStartMenu` (`startchoice.js`), which this change
+  makes list its tasks as a group.
 - SPEC-038 MNU-001 keeps a menu inside the window: the whole list (`.menu-list`) scrolls once the
   window is too short. With thirteen tasks the menu is ~1150 px tall, so on most windows the whole
   menu scrolls, and "When a rule is true…" sits below every task.
@@ -43,7 +45,7 @@ scrolling.
 | MSG-002 | While a group has rows out of sight it shows it without being scrolled: rows fade out at the edge they continue past (bottom, top or both), and a line under the box says how many rows are below ("↓ 8 more"); the line keeps its place but is blank once nothing is below (it hides only while a filter leaves no rows to scroll), so the menu does not jump. Clicking the line scrolls the box down by a page. The line is decoration for pointer users (`aria-hidden`): menu semantics already give the item count. | `menus.e2e.ts` "the start menu shows five tasks …", "scrolling to the end of the tasks …" |
 | MSG-003 | The checked item of a group is in view when the menu opens, even past the fifth row; a menu that would focus a row of such a group first (no filter box, or a touch screen) focuses the checked row, so the focused row is never out of sight. | `menus.e2e.ts` "the picked task is in view …", "a group menu without a filter focuses its checked row …" |
 | MSG-004 | Keyboard focus moved onto a group row (arrows, Home/End, a letter) scrolls the box so the row is wholly inside it, clear of the fade; the filter still shows only matching rows in the box (headers hidden), and the "more" line counts only the matching rows below. | `menus.e2e.ts` "arrows scroll the task box …", "the filter narrows the task box …" |
-| MSG-005 | The composer's start menu and the automation editor's "After a task…" menu list their tasks as such a group; every live task stays offered (MNU-006), the rows below the box ("When a rule is true…") stay visible without scrolling the whole menu on a window that fits the shortened menu, and an open menu still has no WCAG A/AA violations (MNU-007). | `menus.e2e.ts` "the start menu shows five tasks …", "the automation editor's … menu shows its tasks five at a time too", "in a short window the whole menu still scrolls …" |
+| MSG-005 | The composer's start menu and the automation editor's start menu list their tasks as such a group; every live task stays offered (MNU-006), the rows below the box ("When a rule is true…") stay visible without scrolling the whole menu on a window that fits the shortened menu, and an open menu still has no WCAG A/AA violations (MNU-007). | `menus.e2e.ts` "the start menu shows five tasks …", "the automation editor's … menu shows its tasks five at a time too", "in a short window the whole menu still scrolls …" |
 
 ## Plan
 
@@ -72,7 +74,7 @@ scrolling.
 - e2e (`menus.e2e.ts`): the requests' cases above, measured in the page (rows inside the box's
   rectangle, `scrollHeight > clientHeight`, the fade class, the "more" line's text); the axe check
   on the open start menu; the existing placement, filter and scroll tests unchanged.
-- e2e (`menus.e2e.ts`): the automation editor's "After a task…" menu has the same group; a menu
+- e2e (`menus.e2e.ts`): the automation editor's start menu has the same group; a menu
   without a filter focuses its checked row (unit, in the page); a window too short even for the
   shortened menu still scrolls the whole list, keeps its place on resize, and the wheel passes
   from the box's end to the list.

@@ -25,8 +25,8 @@ show five tasks and scroll the rest, with it clearly visible that there is somet
 - The checked row of a group is in view when the menu opens, and takes the focus when the menu
   would otherwise focus the group's first row (no filter box, or a touch screen); the keyboard and
   the filter work on the group's rows as on any other (the box keeps its cap while filtering).
-- The composer's start menu and the automation editor's "After a task…" menu list their tasks as
-  such a group.
+- The start menu (`openStartMenu`, shared by the composer and the automation editor since SPEC-093)
+  lists its tasks as such a group.
 
 ## Alternatives
 
