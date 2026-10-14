@@ -70,10 +70,11 @@ pub enum UiEvent {
         phase: Option<String>,
     },
     /// A notepad was saved (SPEC-041): open notepads with nothing unsaved fetch the note again.
-    /// A sandbox note's event reaches only the people who can view that sandbox.
+    /// A sandbox note's event reaches only the people who can view that sandbox, a personal
+    /// note's only its owner (SPEC-103).
     #[serde(rename = "note.updated")]
     NoteUpdated {
-        /// `team` or `sandbox`.
+        /// `team`, `sandbox` or `me`.
         scope: String,
         /// The sandbox of a sandbox note.
         sandbox_id: Option<String>,

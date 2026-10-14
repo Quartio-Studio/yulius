@@ -71,6 +71,8 @@ async fn pump(app: AppState, ctx: AuthContext, mut socket: WebSocket) {
                     Err(RecvError::Closed) => break,
                 };
                 if envelope.admin_only && !is_admin { continue; }
+                // A person's own event (their notepad, SPEC-103) reaches no one else.
+                if envelope.user.as_ref().is_some_and(|user| *user != ctx.user.id) { continue; }
                 if let Some(sandbox) = &envelope.sandbox {
                     let key = sandbox.to_string();
                     let allowed = match visible.get(&key) {
