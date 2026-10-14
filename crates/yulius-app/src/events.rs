@@ -2,7 +2,7 @@
 
 use tokio::sync::broadcast;
 use yulius_contracts::events::UiEvent;
-use yulius_domain::ids::SandboxId;
+use yulius_domain::ids::{SandboxId, UserId};
 
 /// An event plus its visibility scope.
 #[derive(Debug, Clone)]
@@ -11,6 +11,8 @@ pub struct Envelope {
     pub sandbox: Option<SandboxId>,
     /// Only instance administrators may see it.
     pub admin_only: bool,
+    /// Only this person may see it (`None` = anyone the other fields allow; SPEC-103).
+    pub user: Option<UserId>,
     /// The event.
     pub event: UiEvent,
 }
@@ -34,6 +36,17 @@ impl EventBus {
         let _ = self.tx.send(Envelope {
             sandbox,
             admin_only,
+            user: None,
+            event,
+        });
+    }
+
+    /// Publishes an instance-wide event that only `user`'s streams receive (never blocks).
+    pub fn publish_to_user(&self, user: UserId, event: UiEvent) {
+        let _ = self.tx.send(Envelope {
+            sandbox: None,
+            admin_only: false,
+            user: Some(user),
             event,
         });
     }

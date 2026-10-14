@@ -57,11 +57,18 @@ test('a pending sandbox shows only what onboarding will do and Start onboarding,
   await browser.evaluate(() => { location.hash = '#/'; });
   await expect(screen.getByText('Needs onboarding').first()).toBeVisible();
 
+  // SPEC-097 (task #82): nothing has started, so there is no task, not even a Closed one.
+  await browser.evaluate(() => { location.hash = '#/s/website/tasks'; });
+  await expect(browser.locator('.tl .empty-state')).toBeVisible();
+  await expect(screen.getByText('Prepare this repository for Yulius')).toHaveCount(0);
+
   await browser.evaluate(() => { location.hash = '#/s/website'; });
   const gate = screen.getByRole('region', 'Onboard website first');
   await expect(gate).toBeVisible();
   await expect(gate).toContainText('one task an agent runs before any other');
-  await expect(gate.getByRole('link', '#1 Prepare this repository for Yulius')).toBeVisible();
+  // The task does not exist until Start onboarding (SPEC-097): its title, not a link to it.
+  await expect(gate).toContainText('Prepare this repository for Yulius');
+  await expect(gate.getByRole('link')).toHaveCount(0);
   // Its plan, step by step, as the server wrote it for this repository.
   const plan = gate.getByRole('list');
   await expect(plan.getByRole('listitem')).toHaveCount(6);
@@ -101,7 +108,7 @@ test('a repository already in the Yulius format is told only what its onboarding
   await importRepository({ app, browser, screen }, 'mobile-app');
   await browser.evaluate(() => { location.hash = '#/s/mobile-app'; });
   const gate = screen.getByRole('region', 'Onboard mobile-app first');
-  await expect(gate.getByRole('link', '#1 Set up this sandbox\'s environment')).toBeVisible();
+  await expect(gate).toContainText('Set up this sandbox\'s environment');
   const plan = gate.getByRole('list');
   await expect(plan.getByRole('listitem')).toHaveCount(3);
   await expect(plan).toContainText('Record the working commands in yulius.toml [commands]');
@@ -121,6 +128,8 @@ test('Start onboarding runs it, Follow onboarding opens it, and the task box com
   // The keyboard moves on to Follow onboarding, and keeps it as the task's events arrive.
   const follow = running.getByRole('link', 'Follow onboarding');
   await expect(follow).toBeFocused();
+  // Start onboarding created the task, so it now has a number (SPEC-097).
+  await expect(follow).toHaveAttribute('href', /\/s\/website\/t\/1$/);
   await touchOnboarding(browser, { title: 'Prepare this repository for Yulius (installing)' });
   await expect(browser.locator('.sidebar')).toContainText('installing');
   await expect(follow).toBeFocused();

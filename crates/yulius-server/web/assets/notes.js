@@ -1,8 +1,9 @@
 // Notes (SPEC-041): the rail's notepads, one for this sandbox and one for the team, shared by
-// everyone who may read them and saved by themselves while people type. A save sends the whole
-// text with the revision it started from; the server refuses a stale one (409), so a teammate's
-// edit is never overwritten silently: the person picks Keep mine or Use theirs. A teammate's save
-// (`note.updated`) reloads a notepad that has nothing unsaved.
+// everyone who may read them, and the person's own ("Me", SPEC-103), which only they see and
+// which is the same in every sandbox. All of them save by themselves while people type. A save
+// sends the whole text with the revision it started from; the server refuses a stale one (409),
+// so a teammate's edit is never overwritten silently: the person picks Keep mine or Use theirs.
+// A teammate's save (`note.updated`) reloads a notepad that has nothing unsaved.
 //
 // Typed text is not lost on the way (review round 1): a notepad is read-only until it is loaded;
 // a hidden page saves at once with a request that outlives it (`keepalive`) and keeps the unsaved
@@ -72,6 +73,21 @@ export function createNotesView(ctx, sandbox) {
       onState: () => renderStatus(),
       isMine,
     }),
+    notepad(ctx, {
+      key: 'me',
+      label: 'Me',
+      textLabel: 'My notes',
+      path: '/api/me/notes',
+      unsavedKey: `${UNSAVED_PREFIX}${userId}.me`,
+      // The server sends a personal note's event to its owner alone.
+      matches: (event) => event.scope === 'me',
+      readOnly: false,
+      placeholder: 'Only you see these notes, the same in every sandbox…',
+      onState: () => renderStatus(),
+      isMine,
+      // Nobody else saves it, whatever name an older save carries (a renamed GitHub login).
+      personal: true,
+    }),
   ];
   let current = pads.find((pad) => pad.key === readJson(TAB_KEY, 'sandbox')) || pads[0];
   let shown = false;
@@ -125,7 +141,7 @@ export function createNotesView(ctx, sandbox) {
     ctx.store.on('resync', () => { for (const pad of pads) pad.announced(null); }),
   ];
   // A hidden page (another tab, a closed laptop, a reload) saves what is typed at once.
-  // Both notepads share the browser's allowance for requests that outlive the page (64 KiB).
+  // The notepads share the browser's allowance for requests that outlive the page (64 KiB).
   const leave = () => {
     const budget = { left: KEEPALIVE_MAX_BYTES };
     for (const pad of pads) pad.flush({ leaving: true, budget });
@@ -168,7 +184,7 @@ export function createNotesView(ctx, sandbox) {
 }
 
 /** One notepad: its text box, what the server holds, and the save loop. */
-function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOnly, placeholder, onState, isMine }) {
+function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOnly, placeholder, onState, isMine, personal = false }) {
   const hintId = `notes-readonly-${key}`;
   const textarea = h('textarea', { class: 'notes-text', 'aria-label': textLabel, 'aria-describedby': readOnly ? hintId : null, placeholder, spellcheck: 'true', readOnly: true });
   const banner = h('div', { class: 'notes-banner', hidden: true });
@@ -435,11 +451,17 @@ function notepad(ctx, { key, label, textLabel, path, unsavedKey, matches, readOn
     banner.hidden = !conflict;
     if (!conflict) { setChildren(banner, null); banner.removeAttribute('role'); return; }
     banner.setAttribute('role', 'alert');
+    // The person's own other tab or device (always so for "Me", SPEC-103) is not a teammate.
+    const own = personal || isMine(conflict);
+    const who = own
+      ? 'You changed these notes in another tab or on another device'
+      : `${conflict.updated_by || 'Someone'} changed these notes`;
     setChildren(banner,
-      h('p', null, `${conflict.updated_by || 'Someone'} changed these notes while you were typing. Your text is not saved yet.`),
+      h('p', null, `${who} while you were typing. Your text is not saved yet.`),
       h('div', { class: 'row' },
         h('button', { type: 'button', class: 'btn btn-primary btn-sm', onClick: keepMine }, 'Keep mine'),
-        h('button', { type: 'button', class: 'btn btn-sm', onClick: useTheirs }, 'Use theirs')));
+        h('button', { type: 'button', class: 'btn btn-sm', onClick: useTheirs },
+          own ? 'Use that version' : 'Use theirs')));
   }
 
   function keepMine() {

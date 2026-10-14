@@ -11,6 +11,16 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   between Working and Done meanwhile. The browser keeps what the last overview read said, per user
   and sandbox. It shows that until the page's own read replaces it, and drops it if that read
   fails. Sign-out or an expired session removes it.
+- Notes has a third tab, **Me**, after Team (SPEC-103, ADR-0084, task #88): each person's own
+  notepad, which nobody else can read (`GET/PUT /api/me/notes` always answer the caller's own) and
+  which is the same in every sandbox. It saves and resolves conflicts like the other notepads, and
+  an edit from the person's other tab or device shows up live: the event stream now addresses an
+  event to one person (`Envelope.user`) and drops it for everyone else.
+- `yulius onboard` no longer leaves a "Closed · 0/6 steps" onboarding task behind (SPEC-097,
+  ADR-0077). Linking a repository creates no task: the onboarding task is created when someone
+  clicks Start onboarding in the browser, or when a new task has to wait after it. Sandboxes
+  already waiting keep their task. The onboarding page still lists what onboarding will do, now
+  from `GET /api/sandboxes/{sid}/onboarding/plan`.
 - The start menu's tasks show five at a time and say there is more (SPEC-102, ADR-0083, task #87).
   "After a task is done" lists its tasks in a box five rows tall that scrolls the rest, so Start
   now, Supertask and "When a rule is true…" stay in view however many tasks a project has. The box
