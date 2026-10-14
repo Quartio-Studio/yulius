@@ -1,11 +1,11 @@
 ---
 yulius-task: da6c0cac-674c-45da-89f1-36accddda52c
-status: in-progress
+status: done
 ---
 
 # SPEC-096: onboarding comes first: the new-task page shows only what it will do and its button
 
-Status: in progress
+Status: implemented
 Date: 2026-10-14
 Owner: Yulius task #81
 Scope authorization: task request: "onboarding should be mandatory and should show no task input
@@ -59,11 +59,11 @@ that it is running and links to its task. The task box appears by itself once th
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] A pending sandbox's page shows only the centred onboarding message and its Start button
-- [ ] A preparing sandbox shows that onboarding runs and follows it; the composer returns when ready
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Read the product context and related work, then write and validate the spec
+- [x] A pending sandbox's page shows only the centred onboarding message and its Start button
+- [x] A preparing sandbox shows that onboarding runs and follows it; the composer returns when ready
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -113,3 +113,32 @@ that it is running and links to its task. The task box appears by itself once th
 - **The superadmin's recovery-code reminder waits while gated.** It is part of the composer card.
   Showing it beside the gate would break "just a message with a button", and it returns once the
   sandbox is ready. Other sandboxes still show it.
+
+## Evidence
+
+- Fail first: the rewritten `e2e/tests/onboarding.e2e.ts` failed 2 of 2 on the old page (no
+  onboarding region; the composer and Skip for now showed). After the review, its five tests
+  failed on the previous UI code: 3 of 3 for the task's plan, environment kind and preparing
+  wordings; then 1 for "tasks not known" (it said "missing"). With the change: 5 of 5 pass.
+- Mutation: with the gate rebuilt on every event (`if (true) setChildren…`), the focus check after
+  a task event fails (`toBeFocused`); with the key and focus restore it passes.
+- `python3 scripts/bootstrap.py && scripts/dev ci` at 8525519b (web-only changes since): exit 0;
+  nextest 1,520 passed, 16 skipped; repository contracts passed (UI design tokens included).
+- Full e2e suite, `E2E_TELEMETRY_DISABLED=1 npx e2e run`, at 7864bd08: 41 files passed, 1 skipped;
+  283 tests passed, 1 skipped. An earlier full run at a8bead64 found one regression
+  (`agent-panel.e2e.ts`: a second `role="status"` on the composer); fixed in 7864bd08 with a
+  plain polite live region.
+- After merging `origin/dev` (#392, #396, #398): `scripts/check_repository.py` passed;
+  onboarding, new-task, loading, agent-panel and drafts suites 47 of 47.
+- Seen in headless Chromium on the mock (1440×900 and 390×844): "Onboard website first" with
+  the six-step plan, the pull-request sentence and Start onboarding, centred, with no task input;
+  after Start, "Onboarding website" with Follow onboarding.
+- Independent review (fresh session, `om-code-review`), three rounds: REQUEST CHANGES at 31a2fb7f
+  (blocker: 72px off the spacing scale; major: fixed copy wrong for the environment-only kind;
+  minors: a 9 s timer race in the test, preparing sub-states, stale SPEC-051/ADR-0038, shortcut
+  focus), all fixed test-first in 8525519b; APPROVE at 8525519b with one minor (tasks not yet
+  read read as "missing"), fixed test-first in a8bead64; APPROVE at a8bead64 and at 7864bd08.
+  Accepted nits: a brief "stopped" wording between the task closing and the sandbox turning ready,
+  and focus moving from the "#1" link to Start onboarding when the pending text is rebuilt.
+- No server change: tasks created through the API still wait after onboarding (U-08), covered by
+  the existing Rust tests in the gate above.
