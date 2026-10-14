@@ -622,8 +622,8 @@ fn mcp_servers_reach_every_run_on_every_subscription() -> TestResult {
             transcript: true,
             report_env: vec![
                 "YULIUS_MCP_QUARTIO_TOKEN".into(),
-                "APIFY_TOKEN".into(),
-                "LINEAR_KEY".into(),
+                "YULIUS_MCP_APIFY_APIFY_TOKEN".into(),
+                "YULIUS_MCP_LINEAR_LINEAR_KEY".into(),
             ],
             ..FakeAgentOptions::default()
         };
@@ -651,7 +651,7 @@ fn mcp_servers_reach_every_run_on_every_subscription() -> TestResult {
         wait_for("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
-            async move { screen(&app, &id).contains("ENV LINEAR_KEY=") }
+            async move { screen(&app, &id).contains("ENV YULIUS_MCP_LINEAR_LINEAR_KEY=") }
         })
         .await?;
         let first = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
@@ -670,11 +670,14 @@ fn mcp_servers_reach_every_run_on_every_subscription() -> TestResult {
             "Bearer ${YULIUS_MCP_QUARTIO_TOKEN}"
         );
         assert_eq!(servers["apify"]["command"], "npx");
-        assert_eq!(servers["apify"]["env"]["APIFY_TOKEN"], "${APIFY_TOKEN}");
+        assert_eq!(
+            servers["apify"]["env"]["APIFY_TOKEN"],
+            "${YULIUS_MCP_APIFY_APIFY_TOKEN}"
+        );
         for secret in [QUARTIO_TOKEN, APIFY_TOKEN] {
             assert!(!text.contains(secret), "the MCP file holds no secret value");
         }
-        for name in ["YULIUS_MCP_QUARTIO_TOKEN", "APIFY_TOKEN"] {
+        for name in ["YULIUS_MCP_QUARTIO_TOKEN", "YULIUS_MCP_APIFY_APIFY_TOKEN"] {
             assert!(secrets.iter().any(|n| n == name), "{name} in {secrets:?}");
         }
         let shown = screen(&app, &id);
@@ -686,10 +689,16 @@ fn mcp_servers_reach_every_run_on_every_subscription() -> TestResult {
             "{shown}"
         );
         assert!(
-            shown.contains(&format!("ENV APIFY_TOKEN=set len={}", APIFY_TOKEN.len())),
+            shown.contains(&format!(
+                "ENV YULIUS_MCP_APIFY_APIFY_TOKEN=set len={}",
+                APIFY_TOKEN.len()
+            )),
             "{shown}"
         );
-        assert!(shown.contains("ENV LINEAR_KEY=unset"), "{shown}");
+        assert!(
+            shown.contains("ENV YULIUS_MCP_LINEAR_LINEAR_KEY=unset"),
+            "{shown}"
+        );
 
         // A server added while the task runs; then the task moves to b-second.
         let mut linear = mcp_input("linear", "stdio");
@@ -724,20 +733,30 @@ fn mcp_servers_reach_every_run_on_every_subscription() -> TestResult {
         let mut names: Vec<&str> = servers.keys().map(String::as_str).collect();
         names.sort_unstable();
         assert_eq!(names, ["apify", "linear", "quartio", "yulius"]);
-        assert_eq!(servers["linear"]["env"]["LINEAR_KEY"], "${LINEAR_KEY}");
+        assert_eq!(
+            servers["linear"]["env"]["LINEAR_KEY"],
+            "${YULIUS_MCP_LINEAR_LINEAR_KEY}"
+        );
         assert_eq!(
             servers["quartio"]["headers"]["Authorization"],
             "Bearer ${YULIUS_MCP_QUARTIO_TOKEN}"
         );
         assert!(!text.contains(LINEAR_KEY) && !text.contains(APIFY_TOKEN));
-        for name in ["YULIUS_MCP_QUARTIO_TOKEN", "APIFY_TOKEN", "LINEAR_KEY"] {
+        for name in [
+            "YULIUS_MCP_QUARTIO_TOKEN",
+            "YULIUS_MCP_APIFY_APIFY_TOKEN",
+            "YULIUS_MCP_LINEAR_LINEAR_KEY",
+        ] {
             assert!(secrets.iter().any(|n| n == name), "{name} in {secrets:?}");
         }
         wait_for("the new run's environment", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move {
-                screen(&app, &id).contains(&format!("ENV LINEAR_KEY=set len={}", LINEAR_KEY.len()))
+                screen(&app, &id).contains(&format!(
+                    "ENV YULIUS_MCP_LINEAR_LINEAR_KEY=set len={}",
+                    LINEAR_KEY.len()
+                ))
             }
         })
         .await?;
@@ -753,7 +772,6 @@ fn mcp_servers_reach_every_run_on_every_subscription() -> TestResult {
 /// server configured in Yulius. One already configured (here turned off) is left as it is.
 #[test]
 fn a_repository_mcp_json_reaches_the_run_through_yulius() -> TestResult {
-    use yulius_app::ports::store_ext::McpStore as _;
     const APIFY_TOKEN: &str = "synthetic-apify-token-95";
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
@@ -761,7 +779,10 @@ fn a_repository_mcp_json_reaches_the_run_through_yulius() -> TestResult {
     rt.block_on(async {
         let agent = FakeAgentOptions {
             transcript: true,
-            report_env: vec!["APIFY_TOKEN".into(), "LINEAR_KEY".into()],
+            report_env: vec![
+                "YULIUS_MCP_APIFY_APIFY_TOKEN".into(),
+                "YULIUS_MCP_LINEAR_LINEAR_KEY".into(),
+            ],
             ..FakeAgentOptions::default()
         };
         let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent)?;
@@ -804,7 +825,7 @@ fn a_repository_mcp_json_reaches_the_run_through_yulius() -> TestResult {
         wait_for("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
-            async move { screen(&app, &id).contains("ENV LINEAR_KEY=") }
+            async move { screen(&app, &id).contains("ENV YULIUS_MCP_LINEAR_LINEAR_KEY=") }
         })
         .await?;
         let run = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
@@ -814,7 +835,10 @@ fn a_repository_mcp_json_reaches_the_run_through_yulius() -> TestResult {
         names.sort_unstable();
         assert_eq!(names, ["apify", "pipedream-gmail", "yulius"], "{text}");
         assert_eq!(servers["apify"]["command"], "npx");
-        assert_eq!(servers["apify"]["env"]["APIFY_TOKEN"], "${APIFY_TOKEN}");
+        assert_eq!(
+            servers["apify"]["env"]["APIFY_TOKEN"],
+            "${YULIUS_MCP_APIFY_APIFY_TOKEN}"
+        );
         assert_eq!(
             servers["pipedream-gmail"]["url"],
             "https://mcp.pipedream.test/gmail"
@@ -824,10 +848,16 @@ fn a_repository_mcp_json_reaches_the_run_through_yulius() -> TestResult {
         assert!(!text.contains(APIFY_TOKEN));
         let shown = screen(&app, &id);
         assert!(
-            shown.contains(&format!("ENV APIFY_TOKEN=set len={}", APIFY_TOKEN.len())),
+            shown.contains(&format!(
+                "ENV YULIUS_MCP_APIFY_APIFY_TOKEN=set len={}",
+                APIFY_TOKEN.len()
+            )),
             "{shown}"
         );
-        assert!(shown.contains("ENV LINEAR_KEY=unset"), "{shown}");
+        assert!(
+            shown.contains("ENV YULIUS_MCP_LINEAR_LINEAR_KEY=unset"),
+            "{shown}"
+        );
         let stored = app.deps.store.mcp_servers(&sandbox).await?;
         let mut listed: Vec<(&str, bool)> = stored
             .iter()

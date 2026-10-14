@@ -23,7 +23,7 @@ fn servers() -> Vec<McpServerSpec> {
             transport: McpTransport::Stdio {
                 command: "npx".into(),
                 args: vec!["-y".into(), "@apify/actors-mcp-server".into()],
-                env_names: vec!["APIFY_TOKEN".into()],
+                env_vars: vec![("APIFY_TOKEN".into(), "YULIUS_MCP_APIFY_APIFY_TOKEN".into())],
             },
         },
         McpServerSpec {
@@ -180,7 +180,7 @@ fn claude_new_session_argv_snapshot_and_files() -> TestResult {
                 "type": "stdio",
                 "command": "npx",
                 "args": ["-y", "@apify/actors-mcp-server"],
-                "env": { "APIFY_TOKEN": "${APIFY_TOKEN}" }
+                "env": { "APIFY_TOKEN": "${YULIUS_MCP_APIFY_APIFY_TOKEN}" }
             },
             "quartio": {
                 "type": "http",
@@ -383,8 +383,17 @@ fn invalid_requests_are_rejected_without_echoing_values() {
         transport: McpTransport::Stdio {
             command: "x".into(),
             args: vec![],
-            env_names: vec!["BAD-NAME".into()],
+            env_vars: vec![("BAD-NAME".into(), "YULIUS_MCP_X_BAD".into())],
         },
+    };
+    assert_eq!(
+        plan_launch(&bad_env),
+        Err(LaunchError::Invalid("mcp env name"))
+    );
+    bad_env.mcp_servers[0].transport = McpTransport::Stdio {
+        command: "x".into(),
+        args: vec![],
+        env_vars: vec![("TOKEN".into(), "BAD VAR".into())],
     };
     assert_eq!(
         plan_launch(&bad_env),
