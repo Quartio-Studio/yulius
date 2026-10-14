@@ -45,7 +45,7 @@ depends on domain and contracts. `scripts/check_repository.py` enforces this.
 | adapter | `yulius-store`, `yulius-ptyhost`, `yulius-sandbox`, `yulius-harness`, `yulius-github`, `yulius-git`, `yulius-browser`, `yulius-egress`, `yulius-import` |
 | interface | `yulius-server` (axum routes, embedded web UI in `web/`) |
 | composition | `yulius` (configuration, wiring, subcommands) |
-| tooling | `tools/` (fake agent, xtask, the pinned Vidoc CLI for `scripts/dev security`) |
+| tooling | `tools/` (fake agent, xtask, the pinned Vidoc CLI for `scripts/dev security`, switched on or off in `.config/vidoc.toml`) |
 
 ## CPU
 
@@ -661,6 +661,13 @@ is counted from three sources:
 - background shells, from the process probe;
 - background agents, from the turn record;
 - Monitor streams and agents launched in the turn that ends, from the transcript.
+
+The probe counts only the agent's own shells. In the sandbox, an orphaned subshell that the PID
+namespace's init adopted is not one, even though it still carries Claude Code's wrapper command
+line (a server started as `(server &)`)
+([SPEC-130](../.ai/specs/SPEC-130-458-got-achieved-but-wasn-t-marked-as-do.md)). An idle agent
+that waits in `yulius wait` goes on by itself. Its task reads Working ("Waiting for checks or
+merge"), even with a complete plan and a tested pull request; only an achieved goal makes it Done.
 
 While a goal is open, a clean Stop reads idle only after the goal verdict (or the turn record, or
 20 s). A proactive switch waits for any of this background work
