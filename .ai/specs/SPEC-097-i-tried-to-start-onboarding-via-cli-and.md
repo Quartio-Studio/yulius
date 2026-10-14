@@ -96,8 +96,13 @@ empty instead of showing a "Closed · 0/6 steps" task that never ran.
   commented out (two onboarding tasks, numbers 1 and 2), and passes with it.
 - e2e `npx e2e run tests/onboarding.e2e.ts`: fails against the previous mock ("expect.toBeVisible
   failed" on the empty task list), passes (2/2) with the updated mock.
-- `scripts/dev ci` at 2f84fbbf: exit 0, 1521 tests passed, 16 skipped; rerun after the review fixes
-  (below).
+- `scripts/dev ci` at 2f84fbbf: exit 0, 1521 tests passed, 16 skipped.
+- After the review fixes, `scripts/dev ci`: 1520 of 1522 passed; the two failures are
+  `task_done::a_background_shell_keeps_the_task_working_until_it_ends` ("timed out waiting for one
+  background shell") and `task_done::a_done_task_can_be_archived` (90 s), at host load average
+  about 31. Both use a `not_needed` sandbox this change does not reach, and pass alone 3 runs out of
+  3 (31/31). Filed as flaky issue #404, not retried into green. The scoped onboarding, import,
+  projects, automations and sessions tests pass (30/30); e2e `npx e2e run`: 281 passed, 1 skipped.
 - Independent review in a fresh session (om-code-review) of e6bbeeef: APPROVE, no blocker or major;
   minor findings 1-4 fixed (skip lock and `pending` guard, concurrency test, mock and its e2e,
   SPEC-051 and ADR-0038 text), 5 and nits recorded above.
