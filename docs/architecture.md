@@ -45,7 +45,7 @@ depends on domain and contracts. `scripts/check_repository.py` enforces this.
 | adapter | `yulius-store`, `yulius-ptyhost`, `yulius-sandbox`, `yulius-harness`, `yulius-github`, `yulius-git`, `yulius-browser`, `yulius-egress`, `yulius-import` |
 | interface | `yulius-server` (axum routes, embedded web UI in `web/`) |
 | composition | `yulius` (configuration, wiring, subcommands) |
-| tooling | `tools/` (fake agent, xtask, the pinned Vidoc CLI for `scripts/dev security`) |
+| tooling | `tools/` (fake agent, xtask, the pinned Vidoc CLI for `scripts/dev security`, switched on or off in `.config/vidoc.toml`) |
 
 ## CPU
 
