@@ -151,6 +151,7 @@ function seed(params) {
     // fail=<path> answers 500 to GET requests of that exact path, to show how a view says a load
     // failed (in place, naming what failed, with Try again; #147).
     failPath: params.get('fail') || null,
+    holdPath: params.get('hold') || null,
     // failpost=<path> does the same to POST requests, to show how an action says it failed.
     failPostPath: params.get('failpost') || null,
 
@@ -286,8 +287,13 @@ function seed(params) {
     db.sandboxes = [];
     db.tasks = [];
   }
+  // `onboarding=preparing`: `product` is being onboarded (SPEC-096); its onboarding task is #1.
+  if (params.get('onboarding') === 'preparing') db.sandboxes.find((s) => s.id === 'sb_product').onboarding = 'preparing';
   // `tasks=0`: sandboxes without any task yet (the composer then offers no start rule, SPEC-022).
   if (params.get('tasks') === '0') db.tasks = [];
+  // `hold=<path>`: its GET requests wait until `__yuliusMock.release()`, which may come first;
+  // `hold=frames` keeps the sandbox Chrome's picture back instead.
+  if (db.holdPath) db.held = new Promise((resolve) => { db.release = () => { db.released = true; resolve(); }; });
   // `tasks=many`: 30 more queued tasks in studio, a long "Run after" menu (SPEC-038).
   if (params.get('tasks') === 'many') {
     for (let number = 15; number < 45; number += 1) db.tasks.push(t('sb_studio', number, `Queued idea ${number}`, 'claude', 'queued', null, { noSteps: true }));
@@ -658,6 +664,28 @@ route('GET', '/api/templates', () => [
   { id: 'python-data', name: 'Python data project', description: 'Python package summarizing CSV data with unittest tests; standard library only.' },
   { id: 'rust-service', name: 'Rust service', description: 'Rust HTTP service on std::net with unit tests; no dependencies.' },
 ]);
+/** The onboarding task's title and plan, as `onboarding.rs` creates them (`ONBOARDING_TITLE`, `onboarding_steps`; `ENVIRONMENT_TITLE`, `environment_steps`). */
+const ONBOARDING_KINDS = {
+  prepare: {
+    title: 'Prepare this repository for Yulius',
+    steps: [
+      "Read the repository's instructions and conventions",
+      'Install the toolchains and run the repository\'s own checks',
+      'Reverse-engineer the product, architecture and decisions into the docs',
+      'Map existing documents and commands in yulius.toml',
+      'Move GitHub Actions into Yulius CI and delete them',
+      'Add the missing documents and check the format',
+    ],
+  },
+  environment: {
+    title: "Set up this sandbox's environment",
+    steps: [
+      "Read the repository's instructions and conventions",
+      'Install the toolchains and run the repository\'s own checks',
+      'Record the working commands in yulius.toml [commands]',
+    ],
+  },
+};
 route('POST', '/api/sandboxes', ({ db, body }) => {
   let repoName;
   if (body.mode === 'import') {
@@ -690,11 +718,14 @@ route('POST', '/api/sandboxes', ({ db, body }) => {
   db.sandboxes.push(sandbox);
   if (body.mode === 'import') {
     const id = `tsk_${sandbox.id.slice(3)}_1`;
+    // The server's two kinds (onboarding.rs): `mobile-app` already follows the format, so its
+    // onboarding only sets up the environment; any other repository gets the whole preparation.
+    const kind = ONBOARDING_KINDS[repoName === 'mobile-app' ? 'environment' : 'prepare'];
     db.tasks.push({
-      id, sandbox_id: sandbox.id, number: 1, title: 'Prepare repository for Yulius', harness: 'claude', status: 'closed', activity: null,
+      id, sandbox_id: sandbox.id, number: 1, title: kind.title, harness: 'claude', status: 'closed', activity: null,
       branch: null, origin: 'onboarding', created_by: { login: db.me.user.login }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
       archived: false, account_label: null,
-      stepsList: ['Assess the documentation format', 'Add AGENTS.md and docs/specs', 'Open PR'].map((title, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title, status: 'pending', note: '', updated_by: null, updated_at: null })),
+      stepsList: kind.steps.map((title, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title, status: 'pending', note: '', updated_by: null, updated_at: null })),
       model: 'claude-opus-4', effort: 'high', delivery: null, prompt: 'Adapt this repository to the Yulius documentation format.',
     });
   }
@@ -731,6 +762,18 @@ route('POST', `/api/sandboxes/${ID}/onboarding/skip`, ({ db, p }) => {
   resync(db);
   return sandbox;
 });
+/** The onboarding task finished and the repository passes the format check: the sandbox is ready. */
+function finishOnboarding(db, sandbox) {
+  if (sandbox.onboarding !== 'preparing') return;
+  const task = db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding');
+  if (task) {
+    task.stepsList = task.stepsList.map((s) => ({ ...s, status: 'done', updated_by: 'task #1 (claude)', updated_at: new Date().toISOString() }));
+    touch(db, task, { status: 'closed', activity: null, account_label: null });
+  }
+  sandbox.onboarding = 'ready';
+  releaseWaiting(db, sandbox);
+  resync(db);
+}
 route('POST', `/api/sandboxes/${ID}/onboarding/approve`, ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'write');
@@ -740,13 +783,8 @@ route('POST', `/api/sandboxes/${ID}/onboarding/approve`, ({ db, p }) => {
   if (task) {
     touch(db, task, { status: 'starting', branch: 'yulius/prepare-repository' });
     later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1200);
-    later(() => {
-      task.stepsList = task.stepsList.map((s) => ({ ...s, status: 'done', updated_by: 'task #1 (claude)', updated_at: new Date().toISOString() }));
-      touch(db, task, { status: 'closed', activity: null, account_label: null });
-      sandbox.onboarding = 'ready';
-      releaseWaiting(db, sandbox);
-      resync(db);
-    }, 9000);
+    // A test that sets `__yuliusMock.manualOnboarding` ends it itself (`finishOnboarding(slug)`).
+    if (!db.manualOnboarding) later(() => finishOnboarding(db, sandbox), 9000);
   }
   resync(db);
   return sandbox;
@@ -2702,6 +2740,8 @@ async function handleFetch(db, url, init = {}) {
   } else if (init.body) {
     try { body = JSON.parse(init.body); } catch { return json(422, { error: { code: 'invalid', message: 'Malformed JSON' } }); }
   }
+  // `hold=<path>` keeps GET requests of that path waiting, to look at a view while it loads (SPEC-092).
+  if (db.held && method === 'GET' && u.pathname === db.holdPath) await db.held;
   if (!PUBLIC.includes(u.pathname) && !db.signedIn) return json(401, { error: { code: 'unauthenticated', message: 'Sign in first.' } });
   if (db.failPath && method === 'GET' && u.pathname === db.failPath) return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
   // Tests count archive requests (`__yuliusMock.archiveRequests`), also those failed on purpose.
@@ -3532,6 +3572,10 @@ class BrowserSession {
   }
 
   async drawFrame() {
+    if (this.db.holdPath === 'frames' && !this.db.released) {
+      if (!this.heldFrame) this.heldFrame = this.db.held.then(() => this.render());
+      return;
+    }
     const tab = this.tabs.find((t) => t.active);
     if (!tab || this.viewers.size === 0) return;
     const { width, height } = this.size;
@@ -3692,6 +3736,7 @@ export function createMockTransport(params) {
   const db = seed(params);
   window.__yuliusMock = db; // debugging aid in the browser console (mock mode only)
   // Tests change a task as the server would announce it (`touchTask('sb_studio', 12, {…})`).
+  db.finishOnboarding = (slug) => finishOnboarding(db, db.sandboxes.find((s) => s.slug === slug));
   db.touchTask = (sandboxId, number, changes) => touch(db, db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number), changes);
   // Simulate an outage and its end: __yuliusMock.goOffline() / .goOnline().
   db.goOffline = () => {
