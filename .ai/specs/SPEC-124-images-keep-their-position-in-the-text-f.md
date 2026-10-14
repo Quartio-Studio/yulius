@@ -1,11 +1,11 @@
 ---
 yulius-task: 0226e2f8-0442-4493-9482-9199d48af1e4
-status: in-progress
+status: done
 ---
 
 # SPEC-124: Images keep their position in the text, from paste to the agent
 
-Status: in-progress
+Status: done
 Date: 2026-10-14
 Owner: task #105
 Scope authorization: the person's request (task #105): images pasted or dropped in the task
@@ -69,14 +69,14 @@ first message the agent gets, and the original prompt view.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] The stored request keeps each file at its place in the text, and the agent's request file and first message carry it there
-- [ ] A typed first message pastes each image where it sits in the text
-- [ ] The original prompt view shows each file in place, older prompts as before
-- [ ] The composer holds files inline: paste or drop at the caret, delete and undo like a character
-- [ ] Files move inside the composer by drag and by cut and paste, and the composer stays usable when squeezed
-- [ ] ADR, architecture, API docs, earlier specs and the changes log say how positions travel
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green and the change delivered to dev
+- [x] The stored request keeps each file at its place in the text, and the agent's request file and first message carry it there
+- [x] A typed first message pastes each image where it sits in the text
+- [x] The original prompt view shows each file in place, older prompts as before
+- [x] The composer holds files inline: paste or drop at the caret, delete and undo like a character
+- [x] Files move inside the composer by drag and by cut and paste, and the composer stays usable when squeezed
+- [x] ADR, architecture, API docs, earlier specs and the changes log say how positions travel
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green and the change delivered to dev
 
 ## Design
 
@@ -150,3 +150,38 @@ the keys go to the history. Formatting commands are refused (plain text only).
 - **Accepted, not fixed**: a hand-crafted line of many unterminated `@'` mentions parses in time
   quadratic in its length. It is bounded by the 64 KiB prompt limit and comes only from the
   prompt's own author.
+
+## Evidence
+
+Run on this branch (Linux, Chromium 153 headless, Claude Code behaviour through the fake agent):
+
+- `scripts/dev ci` at `2336fd1a`: doctor, repository contracts, check, fmt and Clippy
+  (`-D warnings`), nextest 1643 passed (16 skipped), doctests, cargo-deny, cargo-shear, exit 0.
+- `cd e2e && npx e2e run` at `2336fd1a`: 380 passed, 1 skipped (49 files), among them
+  `inline-images.e2e.ts`, which covers the done criterion of task #105. It types text, pastes an
+  image in the middle, types more, deletes it with one Backspace and brings it back with undo,
+  moves it by cut and paste, and starts the task. The task's prompt has
+  `…the header@'<path>/shot.png' is fine.`, and the original prompt view shows the image between
+  "header" and "is fine". The suite also covers a drag move as one undo step, drops at a point at
+  360 px with no horizontal scroll, drafts across a reload, an older draft's files after its text,
+  undo never bringing back an upload placeholder, and a dragged selection moving. `drafts.e2e.ts`
+  covers a late upload after the composer is gone, checked in storage and after a reload.
+- Rust: the `request.rs` unit tests (inline, whole-line and older mentions, escapes, control
+  characters, `text`, in-place mentions with spacing, request file markers, typed pastes in order,
+  a space before an image) and `supervisor.rs` `opening_pastes`. `task_done.rs`
+  `an_image_in_the_text_is_pasted_where_it_sits` shows the fake agent echoing
+  `This part [Image #1] looks wrong, see @"/srv/notes.txt"` as one message. `task_prompt.rs`
+  `the_original_prompt_keeps_each_file_at_its_place` covers the API's `parts`. The
+  `first_message.rs` tests pass with the image after the text.
+- Screenshots of the composer at 1200 px and 360 px (scratch test, not committed): the image sits
+  in the line, a long file name truncates inside the box, and the upload status shows above the
+  box.
+- Review round 1 (fresh session) found 1 blocker, 2 majors, 4 minors and 3 nits. Fixed test-first:
+  the gate's `first_message` expectations, undo bringing back the upload placeholder, a gone
+  composer wiping the draft, a dragged selection copying, a mention glued to a following image, and
+  forged file markers. Recorded in Decisions instead of fixed: the older-prompt wording and the
+  quadratic parse bound. Opening a file is reachable from the Preview by keyboard (INL-003).
+- Review round 2 (fresh session) reviews this head; `delivery_merge` names the approved commit.
+
+Not tested here: a real Claude Code TUI receiving an interleaved typed message (the fake agent
+models Claude Code 2.1.292's paste handling), and browsers other than Chromium.
