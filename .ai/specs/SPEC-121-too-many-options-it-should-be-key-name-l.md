@@ -1,11 +1,11 @@
 ---
 yulius-task: f9003039-e5b7-49f3-b6af-fa45d54d5498
-status: in-progress
+status: done
 ---
 
 # SPEC-121: an agent secret is a name, a value and a description; agents find its hosts
 
-Status: in-progress
+Status: done
 Date: 2026-10-14
 Owner: Yulius task #107
 Scope authorization: the person's request (task #107) with a screenshot of the "Add agent secret"
@@ -49,7 +49,7 @@ leaving for an attacker's server, an agent **proposes** hosts and a person who m
 | ASH-001 | The "Add agent secret" dialog shows Name, Value and Description only. An instance administrator also finds Scope under a closed "More options". No hosts, no injection, no header or user name. | e2e |
 | ASH-002 | The API creates an agent secret without hosts and without an injection (`none`) when they are absent; an unbound secret is sent to and typed into nowhere (proxy and `browser_fill_secret`), and is still redacted everywhere. | integration |
 | ASH-003 | MCP tool `secret_request_hosts {secret, hosts, reason?}`: an agent proposes hosts (validated like bindings, at most 16 with the bound ones) for a secret of its project; hosts already bound are reported as bound; new ones are stored as the secret's request with the task number, audited (`vault.agent.request`), and the task is flagged as needing a person. The agent never binds anything by itself. | integration |
-| ASH-004 | People who manage the secret allow (`POST /api/agent-secrets/{id}/request {allow: true}`) — the requested hosts join its bindings — or dismiss it (`allow: false`); audited (`vault.agent.allow` / `vault.agent.dismiss`); others get 403/404. | integration |
+| ASH-004 | People who manage the secret allow (`POST /api/agent-secrets/{id}/request {allow: true, hosts}`) — the requested hosts join its bindings — or dismiss it (`allow: false`); `hosts` must be exactly the hosts waiting (409 otherwise, so nothing is allowed unseen); bindings and request change in one compare-and-set update; audited (`vault.agent.allow` / `vault.agent.dismiss`); others get 403/404. | integration |
 | ASH-005 | The Secrets page shows an unbound secret as "Not sent anywhere yet", and a request as "Task #N asks to send it to …" with Allow and Dismiss buttons for its managers. The Edit dialog keeps Hosts (people may still bind or unbind directly) and keeps an existing secret's injection controls only when it has one. | e2e |
 | ASH-006 | `secrets_list` shows each secret's requested hosts and tells agents to find the host from the description and the service's docs, request it, and send the placeholder in the header the service wants. | integration |
 | ASH-007 | SPEC-001 (VLT-004/006/011), SPEC-002, the product summary, the architecture document, an ADR and `docs/changes.md` describe it. | review |
@@ -57,12 +57,12 @@ leaving for an attacker's server, an agent **proposes** hosts and a person who m
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Agent secrets can be created without hosts or an injection, and an unbound one goes nowhere
-- [ ] Agents request hosts with secret_request_hosts and people allow or dismiss them
-- [ ] The add dialog asks for a name, a value and a description, and the list shows and answers requests
-- [ ] Specs, product, architecture, decision record and changes describe agent-found hosts
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Agent secrets can be created without hosts or an injection, and an unbound one goes nowhere
+- [x] Agents request hosts with secret_request_hosts and people allow or dismiss them
+- [x] The add dialog asks for a name, a value and a description, and the list shows and answers requests
+- [x] Specs, product, architecture, decision record and changes describe agent-found hosts
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -108,3 +108,31 @@ leaving for an attacker's server, an agent **proposes** hosts and a person who m
   `vault_secrets`; a request replaces nothing already bound and merges with an open request.
 - **The request flags the task `needs_attention`** like `browser_request_user_action`; the
   persistent signal is the request on the Secrets page.
+- **Review round 1** (fresh reviewer, REQUEST CHANGES): Allow approved whatever waited when the
+  click arrived, so a host an agent added while the page was open would be allowed unseen (B1);
+  Allow rewrote the whole row from a stale read (M1). Fixed test-first: the answer carries the
+  hosts the person saw (409 when they differ), and `vault_answer_request` changes the bindings and
+  the request in one compare-and-set UPDATE that never touches the value. Askers keep their
+  sandbox for instance-wide secrets, reasons lose bidi characters, wildcards read "any subdomain".
+  Round 2: APPROVE. Remaining nits accepted: the mock does not strip `https://` from answered
+  hosts (the UI only echoes stored ones), and the audit write follows the commit as on every vault
+  path.
+
+## Evidence
+
+- `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(a_secret_without_hosts) |
+  test(agents_type_secrets_only))'` failed first (422 for a secret without hosts), then passed.
+- `agents_request_hosts_and_people_allow_them` failed first (`requested_hosts` missing), then
+  passed; `an_answer_covers_only_the_hosts_the_person_saw` and the store's
+  `requests_are_answered_only_as_seen` failed first (no `vault_answer_request`), then passed.
+- `npx e2e run tests/secrets.e2e.ts`: the new dialog and request tests failed first (six labels,
+  no request), then 9 passed.
+- `scripts/dev ci` on fe2970d4: exit 0 (fmt, clippy, 1629 tests passed / 16 skipped, cargo-deny
+  advisories, bans, licenses and sources ok, docs).
+- `npx e2e run` (all suites): 365 passed, 1 skipped; 1 failure in `notes.e2e.ts` (mock read before
+  it loaded, under load from the parallel gate) passed 3/3 alone; unrelated to this change,
+  filed as issue #455.
+- Looked at the Secrets page in the mock UI at 484 px: the three-field dialog with More options,
+  and a request card with Allow and Dismiss.
+- Not tested here: a live Claude Code session using `secret_request_hosts` end to end (no paid
+  run), and the proxy against a real third-party API.
