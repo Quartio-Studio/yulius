@@ -20,7 +20,10 @@ watching, steering and unblocking.
   onboard a repository from a local machine's Claude sessions with `yulius onboard`; each gets a
   contained sandbox with its own system layer, home, shells per user, browser and editor. The CLI
   only uploads: the onboarding task that adapts the repository to the Yulius standards is created
-  and started when someone clicks Start onboarding on the sandbox page. Onboarding is mandatory:
+  and started when someone clicks Start onboarding on the sandbox page. It also lays the
+  project's gate in its own pull request: tests, lint and format, a dead-code and
+  unused-dependency check, and a Yulius CI job for every project, with existing findings
+  baselined. The first task therefore starts in the discipline. Onboarding is mandatory:
   until it has finished, the sandbox's new-task page shows only what it will do and its button,
   no task input. A playground needs none.
 - **Playgrounds**: a team tries Yulius on its own code before it connects GitHub. On a fresh

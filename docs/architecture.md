@@ -198,13 +198,18 @@ base against the branch policy of `yulius.toml` `[branch_policy]` at the integra
 a violation is refused with the rule in words, also for promotion pull requests
 ([SPEC-069](../.ai/specs/SPEC-069-fix-223-yulius-s-merge-gate-enforces-the.md),
 [decision 0051](decisions/0051-the-merge-gate-enforces-the-branch-policy.md)).
+`delivery_merge` first delivers the head the way the end of a clean turn does
+(`try_auto_open_pr`): it pushes the branch and opens the pull request, or pushes new commits to
+it. A head it cannot deliver yet (open step, invalid spec, uncommitted work) is refused with the
+reason. A goal task whose evaluator keeps every turn going therefore still gets its pull request
+([SPEC-116](../.ai/specs/SPEC-116-linter-dead-code-should-be-installed-on.md) DMG-001).
 
 ```mermaid
 sequenceDiagram
     participant A as Agent (Claude Code)
     participant W as yulius wait (background shell)
     participant Y as Yulius (internal API)
-    A->>Y: delivery_merge (branch policy checked; checks still running: armed)
+    A->>Y: delivery_merge (head pushed and pull request opened if missing; policy checked; checks running: armed)
     A->>W: start, end the turn
     W->>Y: POST /internal/agent/wait (long poll)
     Y-->>W: checks ended / stage moved / armed merge decided (merged, refused, dropped)
@@ -298,6 +303,16 @@ stateDiagram-v2
     pending --> skipped: admin skip
     preparing --> skipped: admin skip
 ```
+
+The onboarding task leaves the project ready for the discipline. In its own pull request it lays
+the gate: a test command, lint and format, and a dead-code and unused-dependency check, wired into
+`[commands]` and `[[ci.jobs]]` with a CI job for every project of a monorepo. Existing findings
+go into a committed baseline instead of application-code changes. It delivers through the review
+and `delivery_merge` like every task
+([SPEC-116](../.ai/specs/SPEC-116-linter-dead-code-should-be-installed-on.md),
+[decision 0094](decisions/0094-onboarding-installs-the-gate-in-its-own-pull-request.md)). The
+briefing quotes the newest end of the changes log: a log whose ISO dates run oldest first is
+quoted from its end, and its new entries go there.
 
 ### Supertasks
 
