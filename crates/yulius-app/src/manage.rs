@@ -345,7 +345,7 @@ impl App {
         let ctx = self.manage_context(caller).await?;
         let record = self.agent_automation(caller, args).await?;
         let run = self
-            .run_automation_now_as(&ctx, &record.id, &caller.actor, Some(&caller.detail))
+            .run_automation_now_as(&ctx, &record.id, None, &caller.actor, Some(&caller.detail))
             .await?;
         Ok(json!({"run": run}))
     }

@@ -3,10 +3,11 @@
 
 import { enc } from './api.js';
 import { h, icon, iconButton, setChildren, toast, errorToast, skeleton, openMenu, statusMark, singleFlight, keepFocus } from './dom.js';
-import { openRuleEditor, ruleChoices, ruleText } from './ruleeditor.js';
+import { openRuleEditor, ruleText } from './ruleeditor.js';
+import { openStartMenu, renderStartChip, startKind, SUPERTASK_HELP, WHEN_I_DECIDE_HELP } from './startchoice.js';
 import { createTerminalView } from './terminal.js';
-import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, statusInfo, pausedLine, resetAround, shellsLine, heldBy, supertaskLine, preparedLine } from './status.js';
-import { heldPromptCard, splitCard, looksSeveral, chainCandidates, intakeStatus, SPLIT_MIN_WORDS } from './intake.js';
+import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, pausedLine, resetAround, shellsLine, heldBy, supertaskLine, preparedLine } from './status.js';
+import { heldPromptCard, splitCard, looksSeveral, intakeStatus, SPLIT_MIN_WORDS } from './intake.js';
 import { attachMarkdownInput } from './mdinput.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
@@ -513,12 +514,6 @@ export function autoChoiceLabel(task) {
   };
 }
 
-/** What "When I decide" does, in the start menu and on its chip (SPEC-105). */
-const WHEN_I_DECIDE_HELP = 'The task waits, prepared, until you press Start now';
-
-/** What a supertask is, in the start menu and on its chip (SPEC-071). */
-const SUPERTASK_HELP = 'Waits for this project’s running tasks, then runs alone while the project’s other tasks wait. For broad work such as security hardening.';
-
 /**
  * New-task composer (J3, UI-021, F 2026-10-10): a rounded prompt box whose bottom edge holds the
  * task's choices — mode and workflow (Auto by default: Jev decides), run after, model and effort
@@ -673,11 +668,9 @@ export function mountComposer(ctx, sandbox) {
     const after = (tasks || []).find((t) => t.id === afterTaskId);
     if (afterTaskId && tasks && !after) afterTaskId = ''; // gone (a kept draft waits for the list)
     const rule = startRule ? ruleText(startRule) : '';
-    const ruleLabel = rule.length > 28 ? `${rule.slice(0, 27)}…` : rule;
+    const kind = startKind({ supertask, afterTaskId: after && after.id, rule, prepare });
+    renderStartChip(afterChip, { kind, number: after && after.number, rule, at: prepare && prepare.at, prefix: 'Run after: ' });
     const at = prepare && prepare.at ? whenLabel(prepare.at) : '';
-    const startIcon = prepare ? (at ? 'clock' : 'st-prepared') : supertask ? 'shield' : 'branch';
-    const startLabel = prepare ? (at ? `At ${at}` : 'When I decide') : supertask ? 'Supertask' : rule ? `When ${ruleLabel}` : after ? `After #${after.number}` : 'Start now';
-    setChildren(afterChip, icon(startIcon, { size: 14 }), h('span', { class: 'sr-only' }, 'Run after: '), h('span', { class: 'chip-label' }, startLabel), icon('down', { size: 12 }));
     afterChip.title = prepare ? (at ? `Starts by itself ${at}` : WHEN_I_DECIDE_HELP) : supertask ? SUPERTASK_HELP : rule ? `Starts by itself when ${rule}` : after ? `Runs after #${after.number} ${after.title} is done` : 'Starts right away; or pick a task to run after, or give a rule';
     // The send button says what it does: a prepared task is not started (SPEC-105).
     const action = prepare ? (at ? 'Schedule task' : 'Prepare task') : 'Start task';
@@ -716,22 +709,21 @@ export function mountComposer(ctx, sandbox) {
   }
 
   function openAfterMenu(anchor) {
-    const candidates = chainCandidates(ctx, sandbox);
-    openMenu(anchor, [
-      { label: 'Start now', icon: 'up', description: 'The task starts as soon as a session slot is free', checked: !afterTaskId && !startRule && !supertask && !prepare, onSelect: () => { afterTaskId = ''; startRule = null; supertask = false; prepare = null; renderChips(); prompt.focus(); } },
-      { label: 'Supertask', icon: 'shield', description: SUPERTASK_HELP, checked: supertask, onSelect: () => { afterTaskId = ''; startRule = null; supertask = true; prepare = null; renderChips(); prompt.focus(); } },
-      // Written now, started later (SPEC-105).
-      { label: 'When I decide', icon: 'st-prepared', description: WHEN_I_DECIDE_HELP, checked: Boolean(prepare && !prepare.at), onSelect: () => { afterTaskId = ''; startRule = null; supertask = false; prepare = { at: null }; renderChips(); prompt.focus(); } },
-      { label: 'At a time…', icon: 'clock', description: prepare && prepare.at ? `Starts by itself ${whenLabel(prepare.at)}` : 'Starts by itself at the date and time you pick', checked: Boolean(prepare && prepare.at), onSelect: openTimeDialog },
-      // One line per task under one heading, every live one: the menu's filter finds it (SPEC-038).
-      ...(candidates.length ? [{ separator: true }, { header: 'After a task is done' }] : []),
-      ...candidates.map((t) => ({ label: `#${t.number} ${t.title}`, hint: statusInfo(t).label, title: `Starts by itself when #${t.number} is done`, checked: t.id === afterTaskId, onSelect: () => { afterTaskId = t.id; startRule = null; supertask = false; prepare = null; renderChips(); prompt.focus(); } })),
-      // A rule names tasks of this sandbox, so a sandbox without any offers none (SPEC-022).
-      ...(ruleChoices(ctx.store.tasksOf(sandbox.id)).length ? [
-        { separator: true },
-        { label: 'When a rule is true…', icon: 'branch', description: 'Pick tasks and whether they are done, merged or ended', checked: Boolean(startRule), onSelect: openRuleDialog },
-      ] : []),
-    ]);
+    openStartMenu(anchor, ctx, sandbox, {
+      kind: startKind({ supertask, afterTaskId, rule: startRule, prepare }),
+      afterTaskId,
+      at: prepare && prepare.at,
+      onPick: ({ kind, task }) => {
+        afterTaskId = kind === 'after' ? task.id : '';
+        startRule = null;
+        supertask = kind === 'supertask';
+        prepare = kind === 'prepared' ? { at: null } : null;
+        renderChips();
+        prompt.focus();
+      },
+      onRule: openRuleDialog,
+      onTime: openTimeDialog,
+    });
   }
 
   /** A start rule (SPEC-017) picked as conditions (SPEC-022); the server checks it. */

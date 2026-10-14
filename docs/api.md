@@ -641,7 +641,7 @@ read-only in the UI.
 | PUT/DELETE | `/api/workflows/{id}` | write (instance: admin) | PUT replaces name, description, steps, instructions, gates → `Workflow`; DELETE → 204. A default workflow (`builtin`) → 409 `conflict` ("duplicate it to customise"). |
 | GET/POST | `/api/sandboxes/{sid}/automations` | read/write | `Automation`; POST → 201 |
 | PUT/DELETE | `/api/automations/{id}` | write | PUT replaces the editable fields → `Automation`; DELETE → 204 (removes run history; tasks stay) |
-| POST | `/api/automations/{id}/run` | write | creates one run now (also when disabled) → `AutomationRun` |
+| POST | `/api/automations/{id}/run` | write | creates one run now (also when disabled) → `AutomationRun`; an optional body `RunAutomation` is this run's start choice (checked like `Automation`'s, 422 when invalid, not stored; SPEC-093), none uses the stored one |
 | GET | `/api/automations/{id}/runs` | read | `[AutomationRun]`, newest first (at most 100) |
 | GET | `/api/sandboxes/{sid}/automation-templates` | read | `[AutomationTemplate]`, the ready-made automations (SPEC-042) |
 | POST | `/api/sandboxes/{sid}/automation-templates/{id}/enable` | write | creates the automation from the template, enabled → 201 `Automation`; when the sandbox already has an automation of that name, enables it unchanged → 200 `Automation`; unknown template → 404 |
@@ -657,6 +657,7 @@ Automation = {"id","name","cron":"0 9 * * *","utc_offset_minutes":120,"prompt","
               "harness":"claude","enabled":true,"supertask":false,"after_task_id":"…|null",
               "after_task_number":12|null,"start_rule":"#12 done|null","created_via":"ui|agent",
               "next_run_at":"…|null","last_run":AutomationRun|null}
+RunAutomation = {"supertask":false,"after_task_id":"…|null","start_rule":"#12 done|null"}
 AutomationTemplate = {"id":"docs-up-to-date","name","description","cron","utc_offset_minutes","prompt",
                       "workflow_id|null","automation_id|null"}
 AutomationRun = {"scheduled_for","state":"scheduled|task_created|skipped_previous_active|skipped_disabled|failed",
