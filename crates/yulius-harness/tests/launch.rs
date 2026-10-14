@@ -472,6 +472,7 @@ fn a_cockpit_is_plain_claude_code_with_the_token_only_in_its_environment() -> Te
         continue_interrupted: false,
         credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
         yulius: None,
+        project_mcp_servers: Vec::new(),
     };
     let plan = plan_cockpit(&request)?;
     // No Yulius settings (hooks, status line), MCP, prompt or approval bypass (SPEC-021
@@ -581,6 +582,7 @@ fn a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment() -
             url: "http://127.0.0.1:8081/".into(),
             token: Secret::new("ck_SYNTHETIC".into()),
         }),
+        project_mcp_servers: Vec::new(),
     };
     let plan = plan_cockpit(&request)?;
     // SPEC-037 MGT-004: the Yulius MCP server inline, its bearer read from the environment; the
@@ -635,5 +637,44 @@ fn a_cockpit_reaches_the_yulius_tools_with_its_token_only_in_its_environment() -
             "{url} {token:?}"
         );
     }
+    Ok(())
+}
+
+/// SPEC-095 PMC-004: the servers of the repository's `.mcp.json` are Yulius's to attach, so the
+/// Cockpit starts with Claude Code rejecting each of them instead of asking the person; the names
+/// travel as JSON in one argv element. Without such servers nothing changes.
+#[test]
+fn a_cockpit_rejects_the_repository_mcp_servers_instead_of_asking() -> TestResult {
+    let request = CockpitRequest {
+        cwd: PathBuf::from("/data/sandboxes/s1/repo"),
+        config_dir: PathBuf::from("/home/alice/.claude"),
+        resume: None,
+        continue_interrupted: false,
+        credential: Credential::ClaudeOauthToken(Secret::new(CLAUDE_TOKEN.into())),
+        yulius: None,
+        project_mcp_servers: vec![
+            "supabase".into(),
+            "pipedream-gmail".into(),
+            "it's \"odd\"; $(x)".into(),
+        ],
+    };
+    let plan = plan_cockpit(&request)?;
+    let at = plan
+        .argv
+        .iter()
+        .position(|a| a == "--settings")
+        .ok_or("--settings")?;
+    let settings: serde_json::Value = serde_json::from_str(&plan.argv[at + 1])?;
+    assert_eq!(
+        settings,
+        serde_json::json!({ "disabledMcpjsonServers": [
+            "supabase", "pipedream-gmail", "it's \"odd\"; $(x)"
+        ] })
+    );
+    assert_eq!(
+        &plan.argv[at + 2..],
+        ["--model", "claude-opus-5-5", "--effort", "high"]
+    );
+    assert!(!plan.argv.iter().any(|a| a == "--strict-mcp-config"));
     Ok(())
 }

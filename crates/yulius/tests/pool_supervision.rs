@@ -748,6 +748,107 @@ fn mcp_servers_reach_every_run_on_every_subscription() -> TestResult {
     Ok(())
 }
 
+/// SPEC-095 PMC-001/002/005: the servers of the repository's `.mcp.json` join the sandbox's MCP
+/// servers before the run, with `${VAR}` read as the agent secret VAR, and reach the run like any
+/// server configured in Yulius. One already configured (here turned off) is left as it is.
+#[test]
+fn a_repository_mcp_json_reaches_the_run_through_yulius() -> TestResult {
+    use yulius_app::ports::store_ext::McpStore as _;
+    const APIFY_TOKEN: &str = "synthetic-apify-token-95";
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            report_env: vec!["APIFY_TOKEN".into(), "LINEAR_KEY".into()],
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        std::fs::write(
+            data.join("sandboxes")
+                .join(sandbox.as_str())
+                .join("repo/.mcp.json"),
+            r#"{"mcpServers": {
+                "apify": {"command": "npx", "args": ["-y", "@apify/actors-mcp-server"],
+                          "env": {"APIFY_TOKEN": "${APIFY_TOKEN}"}},
+                "pipedream-gmail": {"type": "http", "url": "https://mcp.pipedream.test/gmail",
+                                    "headers": {"Authorization": "Bearer ${PIPEDREAM_TOKEN}"}},
+                "Linear": {"type": "stdio", "command": "linear-mcp",
+                           "env": {"LINEAR_KEY": "from-the-file"}}
+            }}"#,
+        )?;
+        let mut linear = mcp_input("linear", "stdio");
+        linear.enabled = Some(false);
+        app.create_mcp_server(&ctx, sandbox.as_str(), &linear)
+            .await?;
+        app.create_agent_secret(
+            &ctx,
+            sandbox.as_str(),
+            &yulius_contracts::api::secrets::AgentSecretInput {
+                name: "APIFY_TOKEN".into(),
+                hosts: vec!["api.apify.test".into()],
+                value: APIFY_TOKEN.into(),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        let id = new_task(&app, &sandbox, &user, "Tools").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("ENV LINEAR_KEY=") }
+        })
+        .await?;
+        let run = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        let (mcp, text, _) = run_mcp(&run.run_dir)?;
+        let servers = mcp["mcpServers"].as_object().ok_or("mcpServers")?;
+        let mut names: Vec<&str> = servers.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["apify", "pipedream-gmail", "yulius"], "{text}");
+        assert_eq!(servers["apify"]["command"], "npx");
+        assert_eq!(servers["apify"]["env"]["APIFY_TOKEN"], "${APIFY_TOKEN}");
+        assert_eq!(
+            servers["pipedream-gmail"]["url"],
+            "https://mcp.pipedream.test/gmail"
+        );
+        // No agent secret answers to PIPEDREAM_TOKEN: the server comes without the header.
+        assert!(servers["pipedream-gmail"]["headers"].is_null(), "{text}");
+        assert!(!text.contains(APIFY_TOKEN));
+        let shown = screen(&app, &id);
+        assert!(
+            shown.contains(&format!("ENV APIFY_TOKEN=set len={}", APIFY_TOKEN.len())),
+            "{shown}"
+        );
+        assert!(shown.contains("ENV LINEAR_KEY=unset"), "{shown}");
+        let stored = app.deps.store.mcp_servers(&sandbox).await?;
+        let mut listed: Vec<(&str, bool)> = stored
+            .iter()
+            .map(|s| (s.name.as_str(), s.enabled))
+            .collect();
+        listed.sort_unstable();
+        assert_eq!(
+            listed,
+            [
+                ("apify", true),
+                ("linear", false),
+                ("pipedream-gmail", true)
+            ]
+        );
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// AC-ROT-10: a pause survives a Yulius restart — the new server reattaches the paused run,
 /// keeps it paused, and resumes it in place once capacity returns.
 #[test]

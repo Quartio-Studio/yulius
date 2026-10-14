@@ -43,8 +43,8 @@ const ORIGIN: &str = "https://yulius.test";
 const WAIT: Duration = Duration::from_secs(20);
 const TOKEN: &str = "synthetic-oauth-token";
 
-/// Prints its arguments (the MCP config and allowed tools, too long for a line, go to files in
-/// its config dir) and environment, then stays as an interactive shell.
+/// Prints its arguments (the MCP config, allowed tools and settings, too long for a line, go to
+/// files in its config dir) and environment, then stays as an interactive shell.
 const FAKE_CLAUDE: &str = "#!/bin/sh\n\
 if [ \"$1\" = --resume ] && [ -f \"$CLAUDE_CONFIG_DIR/fail-resume\" ]; then exit 3; fi\n\
 if [ \"$1\" = --resume ] && [ -f \"$CLAUDE_CONFIG_DIR/kill-resume\" ]; then kill -KILL $$; fi\n\
@@ -53,7 +53,8 @@ for a in \"$@\"; do\n\
   case \"$prev\" in\n\
     --mcp-config) printf %s \"$a\" > \"$CLAUDE_CONFIG_DIR/launch-mcp-config\" ;;\n\
     --allowedTools) printf %s \"$a\" > \"$CLAUDE_CONFIG_DIR/launch-allowed-tools\" ;;\n\
-    *) case \"$a\" in --mcp-config|--allowedTools) ;; *) args=\"$args $a\" ;; esac ;;\n\
+    --settings) printf %s \"$a\" > \"$CLAUDE_CONFIG_DIR/launch-settings\" ;;\n\
+    *) case \"$a\" in --mcp-config|--allowedTools|--settings) ;; *) args=\"$args $a\" ;; esac ;;\n\
   esac\n\
   prev=$a\n\
 done\n\
@@ -603,6 +604,84 @@ async fn a_resume_that_fails_at_once_starts_fresh_the_next_time() -> TestResult 
 }
 
 /// The run directories of shells and Cockpits on disk.
+/// SPEC-095 PMC-001/003/004: a repository with a `.mcp.json` (as the onboarded project with
+/// supabase, apify and pipedream-gmail): its servers join the sandbox's MCP servers, and the
+/// Cockpit starts with Claude Code rejecting every one of them, so it never asks the person. An
+/// invalid `.mcp.json` still starts the Cockpit, as before.
+#[tokio::test]
+async fn a_cockpit_takes_the_repository_mcp_servers_into_yulius_without_asking() -> TestResult {
+    use yulius_app::ports::store_ext::McpStore as _;
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    let repo = f.data.join("sandboxes/s1/repo");
+    std::fs::write(
+        repo.join(".mcp.json"),
+        r#"{"mcpServers": {
+            "supabase": {"command": "npx",
+                         "args": ["-y", "@supabase/mcp-server-supabase@latest"],
+                         "env": {"SUPABASE_ACCESS_TOKEN": "${SUPABASE_ACCESS_TOKEN}"}},
+            "apify": {"type": "stdio", "command": "npx", "args": ["-y", "@apify/actors-mcp-server"]},
+            "pipedream-gmail": {"type": "http", "url": "https://remote.mcp.pipedream.test/gmail"},
+            "legacy": {"type": "sse", "url": "https://legacy.test/sse"}
+        }}"#,
+    )?;
+
+    let opened = open_cockpit(&f, &f.alice).await?;
+    assert_eq!(opened.status, StatusCode::OK, "{:?}", opened.body);
+    let id = opened.body["id"].as_str().ok_or("id")?.to_owned();
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    assert_eq!(
+        printed(&screen, "cockpit-args")?,
+        "[--model claude-opus-5-5 --effort high]"
+    );
+    let config = PathBuf::from(printed(&screen, "config")?);
+    let settings: Value = serde_json::from_slice(&std::fs::read(config.join("launch-settings"))?)?;
+    let mut rejected: Vec<&str> = settings["disabledMcpjsonServers"]
+        .as_array()
+        .ok_or("disabledMcpjsonServers")?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    rejected.sort_unstable();
+    assert_eq!(rejected, ["apify", "legacy", "pipedream-gmail", "supabase"]);
+    let stored = f.h.store.mcp_servers(&sid()).await?;
+    let mut names: Vec<(&str, &str)> = stored
+        .iter()
+        .map(|s| (s.name.as_str(), s.transport.as_str()))
+        .collect();
+    names.sort_unstable();
+    assert_eq!(
+        names,
+        [
+            ("apify", "stdio"),
+            ("pipedream-gmail", "http"),
+            ("supabase", "stdio")
+        ],
+        "the sse server is skipped"
+    );
+    assert!(
+        stored
+            .iter()
+            .all(|s| s.sandbox_id == Some(sid()) && s.enabled),
+        "{stored:?}"
+    );
+
+    // An invalid file: carol's Cockpit starts as before, with nothing to reject.
+    std::fs::write(repo.join(".mcp.json"), "{ not json")?;
+    let opened = open_cockpit(&f, &f.carol).await?;
+    assert_eq!(opened.status, StatusCode::OK, "{:?}", opened.body);
+    let id = opened.body["id"].as_str().ok_or("id")?.to_owned();
+    let mut socket = attach(served.addr, &id, &f.carol).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    let config = PathBuf::from(printed(&screen, "config")?);
+    assert!(!config.join("launch-settings").exists());
+    assert_eq!(f.h.store.mcp_servers(&sid()).await?.len(), 3);
+    Ok(())
+}
+
 fn run_dirs(f: &Fixture) -> usize {
     std::fs::read_dir(f.data.join("shells"))
         .map(|entries| entries.count())
