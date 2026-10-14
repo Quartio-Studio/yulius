@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- Screens keep their state when you switch away and back (SPEC-113, ADR-0092, task #98, #435).
+  Studio's tab used to open New task after a visit to another sandbox, whatever was open there.
+  Now a sandbox tab, Home's card and the phone picker return to the screen last shown in that
+  sandbox, with its filters; the sidebar's pages and the Tasks and Git back links return to the
+  page's filters (the tab or link of where you are still opens it plain). Each sandbox reopens
+  the tool it had (or none), and its Superagent, Browser, Editor (with unsaved text) and Shell
+  survive the switch for the 3 sandboxes used last. MCP's scope and the Dashboard's period are
+  now in the address too.
 - Token use, its API-price cost and a chart for every figure (SPEC-110, ADR-0089, task #95). The
   Capacity card (Subscriptions page and the Dashboard) adds "Tokens (7 days)" and "API cost (7
   days)": what the pool used and what it would have cost at Claude API list prices (input, output,
