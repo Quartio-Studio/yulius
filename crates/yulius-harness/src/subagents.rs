@@ -33,35 +33,69 @@ pub fn subagent_dir(transcript: &Path) -> PathBuf {
 
 /// Keeps a transcript's lines from the first one recorded at or after a time: a resumed
 /// session's file holds its earlier runs' lines before the current run's. Lines without a time
-/// before that one are dropped too; once a line is kept, every later line is.
+/// before that one are dropped too; once a line is kept, every later line is, up to the window's
+/// end when it has one: the first line recorded at or after it and every line after that are
+/// dropped (a later run's, SPEC-091 RCT-001).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LinesSince {
     since: Option<Timestamp>,
+    until: Option<Timestamp>,
+    ended: bool,
 }
 
 impl LinesSince {
     /// Keeps the lines from the first one at or after `since`; every line with `None`.
     #[must_use]
     pub fn new(since: Option<Timestamp>) -> Self {
-        Self { since }
+        Self::between(since, None)
+    }
+
+    /// Keeps the lines from the first one at or after `since` (the first line with `None`) to
+    /// the last one before the first line at or after `until` (to the end with `None`).
+    #[must_use]
+    pub fn between(since: Option<Timestamp>, until: Option<Timestamp>) -> Self {
+        Self {
+            since,
+            until,
+            ended: false,
+        }
     }
 
     /// Whether `line` is kept.
     pub fn keep(&mut self, line: &str) -> bool {
+        if self.ended {
+            return false;
+        }
+        if self.since.is_none() && self.until.is_none() {
+            return true;
+        }
+        let at = claude::record_time(line);
+        if let (Some(until), Some(at)) = (self.until, at)
+            && at >= until
+        {
+            self.ended = true;
+            return false;
+        }
         let Some(since) = self.since else {
             return true;
         };
-        if claude::record_time(line).is_some_and(|at| at >= since) {
+        if at.is_some_and(|at| at >= since) {
             self.since = None;
             return true;
         }
         false
     }
 
-    /// Whether lines are still being dropped.
+    /// Whether lines are still being dropped before the window.
     #[must_use]
     pub fn waiting(&self) -> bool {
         self.since.is_some()
+    }
+
+    /// Whether the window's end was read: no later line is kept.
+    #[must_use]
+    pub fn ended(&self) -> bool {
+        self.ended
     }
 }
 
@@ -70,6 +104,7 @@ impl LinesSince {
 pub struct SubagentTails {
     dir: PathBuf,
     since: Option<Timestamp>,
+    until: Option<Timestamp>,
     tails: BTreeMap<PathBuf, (TranscriptTail, LinesSince)>,
 }
 
@@ -78,9 +113,16 @@ impl SubagentTails {
     /// `since` (`None`: all of them).
     #[must_use]
     pub fn new(transcript: &Path, since: Option<Timestamp>) -> Self {
+        Self::between(transcript, since, None)
+    }
+
+    /// Follows them over a run's window: [`LinesSince::between`] `since` and `until` in each file.
+    #[must_use]
+    pub fn between(transcript: &Path, since: Option<Timestamp>, until: Option<Timestamp>) -> Self {
         Self {
             dir: subagent_dir(transcript),
             since,
+            until,
             tails: BTreeMap::new(),
         }
     }
@@ -101,6 +143,14 @@ impl SubagentTails {
             }
         }
         Ok(lines)
+    }
+
+    /// Whether the last poll read every followed file to its end or its window's end.
+    #[must_use]
+    pub fn at_end(&self) -> bool {
+        self.tails
+            .values()
+            .all(|(tail, window)| tail.at_end() || window.ended())
     }
 
     /// Number of sub-agent transcripts followed.
@@ -136,7 +186,8 @@ impl SubagentTails {
                 break;
             }
             let tail = TranscriptTail::open(&path, SUBAGENT_LINE_BYTES)?;
-            self.tails.insert(path, (tail, LinesSince::new(self.since)));
+            self.tails
+                .insert(path, (tail, LinesSince::between(self.since, self.until)));
         }
         Ok(())
     }
@@ -166,6 +217,58 @@ mod tests {
         assert!(since.keep(&line("2026-10-10T05:37:00.000Z", "late")));
         assert!(!since.waiting());
         assert!(LinesSince::new(None).keep("not even JSON"));
+    }
+
+    #[test]
+    fn a_window_ends_at_the_first_line_at_or_after_its_end() {
+        let mut window = LinesSince::between(
+            Some(Timestamp(1_791_610_681_000)),
+            Some(Timestamp(1_791_610_690_000)),
+        );
+        assert!(!window.keep(&line("2026-10-10T05:38:00.000Z", "before")));
+        assert!(window.keep(&line("2026-10-10T05:38:01.000Z", "first")));
+        assert!(
+            window.keep(r#"{"type":"mode"}"#),
+            "no time inside the window"
+        );
+        assert!(window.keep(&line("2026-10-10T05:38:09.999Z", "last")));
+        assert!(!window.ended());
+        assert!(!window.keep(&line("2026-10-10T05:38:10.000Z", "next run")));
+        assert!(window.ended());
+        assert!(
+            !window.keep(&line("2026-10-10T05:38:05.000Z", "late")),
+            "nothing after the end, whatever its time"
+        );
+        assert!(!window.keep(r#"{"type":"mode"}"#));
+        let mut open = LinesSince::between(None, Some(Timestamp(1_791_610_690_000)));
+        assert!(open.keep("not even JSON"), "from the first line");
+        assert!(!open.keep(&line("2026-10-10T05:38:11.000Z", "after")));
+    }
+
+    #[test]
+    fn sub_agent_files_are_read_over_the_run_s_window() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let transcript = dir.path().join("s1.jsonl");
+        let sub = subagent_dir(&transcript);
+        fs::create_dir_all(&sub)?;
+        fs::write(
+            sub.join("agent-a.jsonl"),
+            format!(
+                "{}\n{}\n",
+                line("2026-10-10T05:38:02.000Z", "a1"),
+                line("2026-10-10T05:38:20.000Z", "later-run")
+            ),
+        )?;
+        let mut tails = SubagentTails::between(
+            &transcript,
+            Some(Timestamp(1_791_610_681_000)),
+            Some(Timestamp(1_791_610_690_000)),
+        );
+        let lines = tails.poll()?;
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("\"a1\""));
+        assert!(tails.at_end());
+        Ok(())
     }
 
     #[test]
