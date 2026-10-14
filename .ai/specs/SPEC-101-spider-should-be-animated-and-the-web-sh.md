@@ -50,7 +50,7 @@ the way of reading, selecting or using the keyboard.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] The corner's web sticks to the top of the view while the transcript scrolls
+- [x] The corner's web sticks to the top of the view while the transcript scrolls
 - [ ] The spider climbs its thread and wiggles its legs, still under reduced motion
 - [ ] Now and then a pixel-art cockroach runs across the session, never under reduced motion
 - [ ] Independent review in a fresh session, findings fixed test-first

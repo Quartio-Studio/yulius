@@ -2150,7 +2150,9 @@ button.task-group-head:hover { color: var(--text); }
 .ss-entries { margin: 0; padding: 0; list-style: none; }
 .ss-entry + .ss-entry { margin-top: 12px; }
 .ss-tui > .ss-more, .ss-tui > .ss-locked { margin-top: 16px; }
-.ss-web { float: right; width: 84px; height: 102px; margin: -16px -32px 8px 16px; pointer-events: none; } /* 3 px pixels, in the well's corner */
+/* The web floats in the well's corner and sticks there while the page scrolls (SPEC-101): the first
+   lines wrap beside it, later ones (positioned entries, after it) paint over its dim threads. */
+.ss-web { position: sticky; top: 0; float: right; width: 84px; height: 102px; margin: -16px -32px 8px 16px; pointer-events: none; } /* 3 px pixels, in the well's corner */
 .ss-web-thread { fill: var(--session-web); }
 .ss-web-spider { fill: var(--session-dim); }
 .ss-locked { display: flex; align-items: center; gap: 1ch; padding: 6px 1ch; border: 1px solid var(--session-border); border-radius: var(--radius); color: var(--session-dim); cursor: not-allowed; }

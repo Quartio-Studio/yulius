@@ -354,6 +354,30 @@ test('a session ends with a locked prompt box and has a spider web in its corner
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+// Task #86 (SPEC-101): "the web should be sticky (should stick to the top while scrolling)". Scrolled
+// down, the web stays in the top-right corner of what is visible of the well.
+test('the spider web sticks to the top of the view while the session scrolls', async ({ app, browser }) => {
+  await browser.setViewport({ width: 1280, height: 420 });
+  await app.open(mock('/s/studio/sessions/ses_imp_checkout'));
+  await expect(browser.locator('.ss-tui .ss-locked')).toBeVisible();
+  const place = () => browser.evaluate(() => {
+    const page = document.querySelector<HTMLElement>('.ss-page')!;
+    const well = document.querySelector('.ss-tui')!.getBoundingClientRect();
+    const box = document.querySelector('.ss-tui > svg.ss-web')!.getBoundingClientRect();
+    const view = page.getBoundingClientRect().top + page.clientTop;
+    return { scrollable: page.scrollHeight - page.clientHeight, top: Math.round(box.top - Math.max(view, well.top)), right: Math.round(well.right - box.right), inWell: box.bottom <= well.bottom + 1 };
+  });
+  const before = await place();
+  expect(before.scrollable).toBeGreaterThan(200);
+  expect(before.top).toBeLessThanOrEqual(2);
+  await browser.evaluate(() => { document.querySelector<HTMLElement>('.ss-page')!.scrollTop = 200; });
+  await expect.poll(async () => (await place()).top).toBeLessThanOrEqual(2);
+  const after = await place();
+  expect(after.top).toBeGreaterThanOrEqual(-2);
+  expect(after.right).toBeLessThanOrEqual(2);
+  expect(after.inWell).toBe(true);
+});
+
 // F 2026-10-13 (SPEC-086): "Sessions are beautiful but should be always 100% width and not only
 // when minimised. Even left and right margin of the session window and border radius should be
 // thrown out to make it look similar to the original session." The well spans the content area
