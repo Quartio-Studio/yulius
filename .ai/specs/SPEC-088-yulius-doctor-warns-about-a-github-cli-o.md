@@ -41,8 +41,8 @@ matters and where to get a current one, before agents in every sandbox hit the f
 ## Plan
 
 - [x] Spec SPEC-088 written and validated
-- [ ] yulius doctor warns about a gh older than 2.82.1, with tests
-- [ ] Operations doc and changes describe the minimum gh
+- [x] yulius doctor warns about a gh older than 2.82.1, with tests
+- [x] Operations doc and changes describe the minimum gh
 - [ ] Independent review in a fresh session, findings fixed
 - [ ] Every gate green with dev merged
 

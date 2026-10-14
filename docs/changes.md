@@ -4,6 +4,13 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-14
+
+- `yulius doctor` warns when the host's GitHub CLI is older than 2.82.1 (SPEC-088): since GitHub
+  retired Projects (classic), `gh pr edit` and `gh issue view --comments` fail on older versions
+  in every sandbox. Unrecognised version lines stay OK. The warning and `docs/operations.md`
+  point to GitHub's package repository instead of `apt-get install gh`.
+
 ## 2026-10-13
 
 - Tests no longer time out under load, and every process plans for its share of the machine
