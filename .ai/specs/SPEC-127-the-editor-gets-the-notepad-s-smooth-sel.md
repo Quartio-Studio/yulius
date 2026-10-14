@@ -1,11 +1,11 @@
 ---
 yulius-task: 6a8eb15e-ac03-4205-a095-a91e8fd76242
-status: in-progress
+status: done
 ---
 
 # SPEC-127: the Editor gets the notepad's smooth selection and teammates' presence
 
-Status: in progress
+Status: implemented
 Date: 2026-10-14
 Owner: Yulius task #114
 Scope authorization: user request (task #114): "Task #97 (SPEC-112) gave the Notes panel a smooth,
@@ -89,8 +89,8 @@ No live co-editing: unsaved text stays each person's own, and saving works as to
 - [x] Teammates' carets, names and selections show in the Editor (two-user e2e)
 - [x] The Editor's file tabs reorder by drag, keyboard and menu
 - [x] Docs, ADR and the changes log updated
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, merged into dev on green CI
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, merged into dev on green CI
 
 ## Design
 
@@ -218,3 +218,33 @@ sequenceDiagram
   collected its services without them. The editor now loads that chunk before `editor.main`
   (e2e "Monaco's services chunk arriving last…" holds it back on purpose, failing before). Fixed
   here because this task's tests open Monaco more often; it closes #394.
+
+## Evidence
+
+Run on the branch merged with `origin/dev` (2026-10-14):
+
+- `scripts/dev ci` at `715928e5` (fmt, clippy `-D warnings`, nextest, doctests, cargo-deny,
+  cargo-shear, rustdoc, repository check): exit 0, 1645 tests passed, 16 skipped; advisories,
+  bans, licenses and sources ok. No Rust changed after it.
+- File presence in Rust: `files::presence_is_relayed_to_writers_only` (the envelope; a reader's
+  stream never gets it, failing with the filter turned off; a demoted writer's stream stops after
+  its re-check; the task worktree root), `files::presence_is_refused_when_malformed`,
+  `files::presence_is_rate_limited`, `files::presence_counters_are_bounded_per_person`, unit
+  `one_person_keeps_only_so_many_counters_busy`; the `notes::` tests pass unchanged.
+- `cd e2e && npx e2e run --workers 4` at `5a494e0d`: 48 files, 401 tests passed, 1 skipped
+  (needs a model). Editor tests: the drawn selection on Monaco's boxes (wrap on and off,
+  scrolled, blurred); two signed-in people (a second window as `bob`) see each other in their
+  colour and lose each other on switching file, closing it and closing the Editor; mapping over
+  typing, another saved version, own echo, hello and axe; leaving with an update on its way, on a
+  folder switch and as the page goes; tab order by drag, Alt+arrows and the menu; a redraw during
+  a drag; Monaco's services chunk arriving last (#394).
+- Repeated under load: `editor.e2e.ts` and `notes.e2e.ts` × 4 at load average about 40 with 10
+  workers, 175 of 176; the one failure was a Monaco worker script the shared Python test server
+  did not serve (its listen backlog is 5, ten workers share it), not seen at 4 workers. Earlier,
+  the presence tests × 8 at load 30: 88 of 88.
+- `scripts/dev security` (Vidoc): not run, exit 2. The key bound to `api.vidoc.dev` is refused
+  (HTTP 401) from this session; reported on #470.
+- Not covered: two real browsers against a real server (the relay is covered in Rust over a real
+  WebSocket, the browsers against the mock), browsers other than Chromium, forced colours (CSS
+  rule only), the drawn selection seen by eye (the Yulius browser cannot make a selection).
+
