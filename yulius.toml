@@ -48,4 +48,4 @@ command = "cd e2e && npm ci --ignore-scripts && npx e2e-web install chromium && 
 
 # Build caches beyond the recognised ones (SPEC-008): pruned for tasks that do not work.
 [disk]
-caches = "e2e/node_modules"
+caches = "e2e/node_modules tools/vidoc/node_modules"

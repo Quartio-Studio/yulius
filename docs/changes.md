@@ -14,6 +14,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Secrets page ("Task #N asks to copy its value into the project's git-ignored .env": Allow,
   Dismiss, later Revoke). The briefing, `secrets_list` and `infra-bootstrap` name this default.
   This prepares Yulius CD (task #113).
+- Agents scan every change with Vidoc before delivery (SPEC-128, ADR-0104, task #109).
+  `scripts/dev security` runs the Vidoc CLI pinned in `tools/vidoc` on the current branch. Vidoc
+  scans the files that the branch changed since `dev`, and the command fails when the branch has
+  an open critical or high finding, printing each one. The key is the agent secret
+  `VIDOC_API_KEY`: the egress proxy adds it for `api.vidoc.dev`, so agents never see it. The
+  command refuses to run, with exit 2, on a tree with uncommitted files (the CLI scans the working
+  tree, not the commits) and without a usable key. The verification skill and AGENTS.md make the
+  scan part of every change's checks. Yulius CI does not run it yet, because CI jobs hold no secret
+  (#466).
 - Task numbers show in the sidebar and on the Tasks page, and pull request chips say "PR"
   (SPEC-122, ADR-0099, task #108). Each row reads `#108` (heard as "Task #108") before its
   title, and the chip reads `PR #450` everywhere, so a bare `#N` is always a task. In a narrow
