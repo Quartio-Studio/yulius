@@ -1,0 +1,105 @@
+---
+yulius-task: b86510d8-8ed4-4539-8dd1-c5e05b866c74
+status: in-progress
+---
+
+# SPEC-091: runs recorded before SPEC-087 get their metrics from their transcripts, once
+
+Status: in progress
+Date: 2026-10-14
+Owner: task #76
+Scope authorization: the person's request (task #76): "Make Yulius recompute, once and
+idempotently, the stored metrics of every ended run recorded before that change from its
+transcript where the transcript still exists (for example as an upkeep or startup job), leaving
+runs whose transcript is gone as they are, and recording what was recomputed. Prove it with tests
+built from real transcript shapes."
+
+## Goal
+
+The dashboard's history is true for the runs recorded before SPEC-087 too: every ended run whose
+transcript still exists stores the tokens, turns and active time its own transcript lines give,
+by the same rules as a run recorded today (SPEC-087 MET-001 to MET-004). It happens once per
+instance, by itself after the upgrade, and each run's outcome — and the figures it replaced — is
+recorded.
+
+## Context
+
+- SPEC-087 (#376, deployed to production 2026-10-14 00:18 UTC) computes a run's metrics from its
+  transcript lines only, and left the rows saved before it as they were ("Historic rows stay",
+  SPEC-087 Decisions). In production 41 of 109 runs store 0 active time, 17 of 104 no tokens
+  although their transcripts show work, sub-agent tokens were never counted, and turns were
+  over-counted (1,991 stored against 882 real).
+- The figures come from `UsageAccumulator` (`yulius-harness/src/observe.rs`) over the run's lines:
+  `LinesSince` keeps a resumed run's lines from its start, `SubagentTails` adds the sub-agent
+  transcripts' usage (`yulius-harness/src/subagents.rs`). The live watcher (`wiring/harness.rs`
+  `Watch`) reads a new session's transcript from its start and a resumed one from the run's start
+  (`WatchFrom`), to its end while the run lives.
+- A run's transcript is `<sandbox home>/.claude/projects/<worktree slug>/<session>.jsonl`
+  (`HarnessPort::claude_transcript`); the task's `worktree_path` stays recorded after the worktree
+  is removed, and the transcript stays in the sandbox home until the sandbox goes.
+- Store migrations run in order at open, each in a transaction (`yulius-store/src/lib.rs`);
+  `App::start_background` runs reconciliation once after start.
+
+## Requirements
+
+| ID | Requirement | Evidence |
+| --- | --- | --- |
+| RCT-001 | A run's lines are a window of its session's transcript: from its start (a new session's run: the first line; a resumed run: the first line recorded at or after its start, as MET-002) to its end, the first line recorded at or after the earlier of its end and the next start of a run of the same task on the same session, which is not the run's. Its sub-agent transcripts count over the same window, their usage only (MET-004 bounds). | `subagents::tests::a_window_ends_at_the_first_line_at_or_after_its_end`; `recount::tests::each_run_of_a_resumed_session_counts_its_own_window` |
+| RCT-002 | Recounting a run reads its window to the end of the file with the same accumulator as the live watch, so it gives the figures the live watch of that run gives today: tokens with sub-agents, Claude Code's turn records as turns, active time as the union of turn spans. A missing transcript is reported as missing, not as zero. | `recount::tests::each_run_of_a_resumed_session_counts_its_own_window`, `a_missing_transcript_is_not_zero`; fixture `claude/resumed.jsonl` (real Claude Code 2.1.292 shapes) |
+| RCT-003 | Upgrading the store queues every run recorded so far for one recount (migration 23, `metrics_recounts`); runs started after it are never queued. | `store::metrics_recounts_queue_the_runs_recorded_before_the_upgrade_once` |
+| RCT-004 | After start, once reconciliation has ended the runs that did not survive the restart, Yulius recounts each queued run and records its outcome, the figures it replaced and the ones it stored, and when: `recomputed` (figures replaced), `no_transcript` (no session, worktree or transcript: the row stays as it was), `no_lines` (the transcript holds nothing of the run: the row stays), `live` (the run still runs: its watch already reads its transcript by MET-002), `gone` (the run was deleted). A recorded run is never recounted, so a restart after it changes nothing; a crash before a run is recorded recounts it again, with the same result. A model the transcript does not name keeps the stored one. One audit entry sums the round. | `metrics_recount::old_runs_get_their_transcripts_figures_once`; `store::a_recount_replaces_the_figures_and_records_both` |
+| RCT-005 | The recount never blocks the server: it runs in the background, reads files off the async workers, and a failure of one run is logged and leaves that run queued for the next start. | `metrics_recount::old_runs_get_their_transcripts_figures_once` (the server serves while it runs; code review) |
+
+## Plan
+
+- [x] Spec, ADR and plan for recounting old runs
+- [ ] A run's own window of a transcript is counted by the live rules
+- [ ] The store queues old runs once and records each recount
+- [ ] Yulius recounts queued runs after start and records the outcome
+- [ ] Docs, review fixes and gates green
+
+## Acceptance criteria
+
+- On a store upgraded from version 22 with ended runs whose transcripts exist, the first start
+  replaces each run's stored figures with its transcript's, records `recomputed` with both, and
+  a run whose transcript is gone keeps its row and is recorded `no_transcript`.
+- A second start recounts nothing and changes no figure.
+- The fixture of a resumed session with a sub-agent, goal continuations, an interrupt and a turn
+  that waited for background agents gives each run exactly its own figures.
+- `scripts/dev ci` passes.
+
+## Test plan
+
+- Unit (`yulius-harness`): the window's end in `LinesSince`/`SubagentTails`; `recount` over the
+  fixture for both runs of a resumed session and a missing file.
+- Store (`yulius-store`): migration 23 queues runs recorded before it, not after; finishing a
+  recount upserts the figures, keeps a stored model the recount lacks and records before/after;
+  deleting a task deletes its recount rows.
+- Integration (`yulius` crate, `metrics_recount`): a real store upgraded with old rows and a real
+  harness adapter over transcripts on disk: figures replaced, a missing transcript kept, a live run
+  left, a second round a no-op.
+
+## Decisions
+
+- **Queue in the migration, recount in the background.** The migration knows exactly which runs
+  existed before the upgrade and records it in the same transaction; the recount needs the
+  filesystem and the harness, which the store must not touch, and must not delay start. ADR
+  [0072](../../docs/decisions/0072-recount-old-runs-from-their-transcripts-once.md).
+- **Every run recorded before the upgrade is queued, not only those before 2026-10-14 00:18.**
+  The deploy time of SPEC-087 differs per instance and is recorded nowhere. Recounting a run
+  SPEC-087 already counted gives the figures it has (the same accumulator over the same lines), so
+  queuing them costs a file read and is correct, while a timestamp cut-off would be wrong on every
+  other instance.
+- **A run's window ends at its end.** The live watch stops when its run ends; a later run of the
+  same session (or a person's terminal on it) writes to the same file afterwards. Ending at the
+  earlier of the run's end and the next run's start partitions the session's lines between its
+  runs like the live watches do (MET-002), so no line counts twice.
+- **Nothing replaces figures with nothing.** A missing transcript or one without a line of the run
+  leaves the stored row: the request keeps runs without a transcript as they are, and an empty
+  window is more likely a moved file than a run without work.
+- **The record is a table, plus one audit entry.** Each run's before and after figures make the
+  change checkable and reversible by hand; the audit entry says when the round ran and what it did.
+
+## Open questions
+
+None.
