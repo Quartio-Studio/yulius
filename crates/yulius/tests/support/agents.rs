@@ -87,6 +87,8 @@ pub struct FakeAgentOptions {
     pub compact_hangs: bool,
     /// The agent answers a launch's first message like a typed one (`--prompt`).
     pub answers_first_message: bool,
+    /// Open on Claude Code's folder-trust dialog, answered by the first line (`--trust-prompt`).
+    pub trust_prompt: bool,
 }
 
 /// See the module docs.
@@ -215,6 +217,9 @@ impl HarnessPort for FakeAgentHarness {
                 "--rate-limits-file".into(),
                 file.to_string_lossy().into_owned(),
             ]);
+        }
+        if self.options.trust_prompt {
+            argv.push("--trust-prompt".into());
         }
         if self.options.hooks && !self.options.no_session_start {
             argv.push("--session-start".into());

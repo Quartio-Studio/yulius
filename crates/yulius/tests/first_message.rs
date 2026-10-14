@@ -299,6 +299,67 @@ fn a_draft_typed_during_the_opening_turn_is_left_alone() -> TestResult {
     Ok(())
 }
 
+/// SPEC-106 OTR-002 (#425): Claude Code opens on its folder-trust prompt and a person answers it
+/// before the goal. Yulius types nothing into the prompt, the answer is not a draft, and the goal
+/// is set once the prompt is gone, with no flag.
+#[test]
+fn a_trust_prompt_answered_before_the_goal_keeps_the_goal() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let probe = Arc::new(ScriptedUsage::default());
+        let agent = FakeAgentOptions {
+            trust_prompt: true,
+            ..hooked()
+        };
+        let (app, _) = start(&data, &fake, agent, 0, probe).await?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let id = new_task(
+            &app,
+            &sandbox,
+            &user,
+            "Make the header blue",
+            TaskMode::Goal,
+        )
+        .await?;
+        let mut watch = app.runtime(&id).hub.watch();
+        wait_for("the trust prompt", Duration::from_secs(60), || async {
+            screen(&app, &id).contains("Yes, I trust this folder")
+        })
+        .await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        let attach = app
+            .terminal_open(&ctx, id.as_str(), Some((120, 40)))
+            .await?;
+        // Longer than the goal's quiet time: a Yulius that typed into the prompt would have now.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        app.terminal_input(&ctx, &attach, b"2\r", false).await?;
+        wait_for("the goal", Duration::from_secs(90), || async {
+            screen(&app, &id).contains("GOAL SET")
+        })
+        .await?;
+        let shown = screen(&app, &id);
+        let answer = shown
+            .lines()
+            .find(|line| line.starts_with("TRUST ANSWERED:"))
+            .map(str::trim_end);
+        assert_eq!(answer, Some("TRUST ANSWERED: 2"), "{shown}");
+        assert_eq!(shown.matches("GOAL SET").count(), 1, "{shown}");
+        assert_ne!(activity(&app, &id).await, Some(Activity::NeedsAttention));
+        let said = notices(&mut watch);
+        assert!(!said.iter().any(|n| n.contains("no goal yet")), "{said:?}");
+        app.terminal_leave(&attach).await;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-068 OPN-002, AC-OPN-1 (#266): the server restarts while the first message of a task with
 /// an image is being typed (the image pasted, no Enter yet). The new server reattaches the run
 /// and flags the task with a notice; nothing is submitted for it.
