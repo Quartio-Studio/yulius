@@ -449,6 +449,84 @@ async fn two_viewers_share_the_terminal_and_only_writers_type() -> TestResult {
     Ok(())
 }
 
+/// SPEC-118 KEY-001, KEY-004, KEY-005 (task #103: "things should be written instantly"): once a
+/// writer's access is confirmed, its keystrokes, resizes and presence reach the agent and the echo
+/// comes back while every permission check hangs — GitHub stops answering and the permission cache
+/// has expired, so the 300 ms re-check that starts meanwhile never finishes: the viewer's loop does
+/// not wait for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn keystrokes_and_echo_never_wait_for_a_permission_check() -> TestResult {
+    let Fixture {
+        h, writer, sandbox, ..
+    } = fixture(FakeAgentOptions::default()).await?;
+    let created = call(
+        &h.router,
+        axum::http::Method::POST,
+        &format!("/api/sandboxes/{sandbox}/tasks"),
+        Some(json!({"prompt": "Typing latency check", "harness": "claude"})),
+        &writer,
+    )
+    .await?;
+    assert_eq!(created.status, 201, "{:?}", created.body);
+    let tid = created.body["id"].as_str().ok_or("task id")?.to_owned();
+    let served = serve(h.router.clone()).await?;
+    let mut w = ws_connect(
+        served.addr,
+        &format!("/api/tasks/{tid}/terminal?cols=90&rows=30"),
+        &writer,
+        ORIGIN,
+    )
+    .await?;
+    let mut wv = Viewer::default();
+    read_until(&mut w, &mut wv, "the banner", |v| {
+        v.screen.contains("FAKE-AGENT READY")
+    })
+    .await?;
+    send(
+        &mut w,
+        json!({"type": "input", "data": "warm up\r", "seq": 1}),
+    )
+    .await?;
+    read_until(&mut w, &mut wv, "the first echo", |v| {
+        v.screen.contains("ECHO: warm up")
+    })
+    .await?;
+
+    h.github
+        .hang_permissions
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    h.clock
+        .0
+        .fetch_add(6 * 60 * 1000, std::sync::atomic::Ordering::SeqCst);
+    for i in 0..4u64 {
+        send(&mut w, json!({"type": "active"})).await?;
+        send(&mut w, json!({"type": "resize", "cols": 90, "rows": 30})).await?;
+        let text = format!("key {i}");
+        send(
+            &mut w,
+            json!({"type": "input", "data": format!("{text}\r"), "seq": i + 2}),
+        )
+        .await?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !wv.screen.contains(&format!("ECHO: {text}")) {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match tokio::time::timeout(left, w.next()).await {
+                Ok(Some(Ok(message))) => wv.absorb(message),
+                Ok(other) => return Err(format!("socket ended while typing: {other:?}").into()),
+                Err(_) => {
+                    return Err(format!(
+                        "{text:?} was not echoed within 5 s while permission checks hang"
+                    )
+                    .into());
+                }
+            }
+        }
+        // Typing goes on after the 300 ms re-check has started (and hangs).
+        tokio::time::sleep(Duration::from_millis(350)).await;
+    }
+    Ok(())
+}
+
 async fn send(socket: &mut Socket, message: Value) -> TestResult {
     socket
         .send(Message::Text(message.to_string().into()))

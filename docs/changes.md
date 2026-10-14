@@ -12,6 +12,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   whatever header or query the service wants. They work out the service's host and ask for it
   with `secret_request_hosts`. The Secrets page shows "Task #N asks to send it to …" with Allow
   and Dismiss, and nothing is sent anywhere before a person allows it.
+- Typing in a task terminal or a shell shows up as fast as the agent echoes it (SPEC-118,
+  ADR-0096, task #103). A keystroke used to wait for three database reads, plus a GitHub call
+  whenever the permission cache had expired. The 60 s access re-check also froze the terminal's
+  output while it ran. Now each viewer holds a write grant, checked again only when something that
+  decides access changes, and the re-check runs beside the stream. A hand-over still refuses the
+  previous owner's next keystroke.
 - Onboarding leaves the project ready to work in the discipline (SPEC-116, ADR-0094, task #101).
   Studio's onboarding left its linter, dead-code check and per-project CI as issues #57 and #58.
   Both onboarding prompts now lay the gate in the onboarding pull request itself:

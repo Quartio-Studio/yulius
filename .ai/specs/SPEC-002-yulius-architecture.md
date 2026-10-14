@@ -2017,7 +2017,12 @@ waits (≤ 400 ms, until 40 ms without output) for the agent's redraw, so the te
 the viewer's size (F 2026-10-09); the same size again (hello, reconnect) resizes nothing. Per
 viewer queue 512 frames / 8 MiB; overflow closes with code 4008; client reconnects with backoff
 (0.5 s → 10 s). Input requires write permission and is applied in arrival order; each input frame
-carries a client sequence for duplicate suppression after reconnect. At most 16 viewers per task.
+carries a client sequence for duplicate suppression after reconnect. Write permission is the
+viewer's grant (SPEC-118, ADR-0096). It is confirmed at open and checked again before the next frame
+only when the store's access epoch moved (owner, sandbox, user, session or GitHub level changed).
+It is re-confirmed in the background after 30 s. While the epoch is unchanged a keystroke waits
+for neither the database nor GitHub, and the 60 s access re-check runs beside the viewer's loop,
+never pausing its output. At most 16 viewers per task.
 Accepted TCP connections set `TCP_NODELAY`, so a keystroke's echo — one small frame — is sent at once
 instead of waiting behind Nagle's algorithm for the proxy's delayed ACK (F 2026-10-09, #29).
 

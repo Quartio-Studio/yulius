@@ -422,6 +422,15 @@ Server → client:
   to …"}`, `{"type":"exit","status":"closed","code":0}`, `{"type":"error","code","message"}`.
 - Close code 4008: viewer lagged; reconnect with `last_seq`.
 
+Write access is confirmed when the terminal opens and then held as the viewer's grant
+([decision 0096](decisions/0096-terminal-input-rides-a-write-grant.md)): `input`, `resize`,
+`active` and `take_control` go to the terminal without a permission lookup. When something that
+decides access changes (a hand-over, a removed sandbox, a disabled user, a changed GitHub level), the
+next one is checked first and refused with `forbidden` when access is gone. A grant older than 30 s
+is re-confirmed in the background. Access is re-checked every 60 s beside the stream, which keeps
+flowing meanwhile: losing view access closes with 4003, and losing write access sends a `state`
+with `"can_write":false`.
+
 The account-login terminal (`/api/admin/accounts/login/{lid}/terminal`) and sandbox shells
 (`/api/shells/{id}/terminal`) use the same protocol; for them `active` and `idle` change nothing
 and `take_control` moves nothing (a login terminal's size is fixed; a shell follows the last

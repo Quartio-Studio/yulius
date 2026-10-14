@@ -96,6 +96,7 @@ number differs from the file name, and a record this index does not list.
 - [0089](0089-api-price-estimates-from-a-built-in-table.md): Token cost is estimated from a built-in table of Claude API list prices
 - [0087](0087-pull-request-changes-are-announced.md): A change of a sandbox's pull requests is announced, and browsers read them again
 - [0086](0086-a-lost-onboarding-task-returns-the-sandbox-to-pending.md): A lost onboarding task returns the sandbox to pending; a worktree's main repository is trusted too
+- [0096](0096-terminal-input-rides-a-write-grant.md): Terminal input rides a per-viewer write grant tied to the store's access epoch; the access re-check runs beside the stream
 - [0094](0094-onboarding-installs-the-gate-in-its-own-pull-request.md): Onboarding installs the gate (lint, format, dead-code check, CI per project) in its own pull request, baselining existing findings
 - [0098](0098-agents-propose-secret-hosts-people-allow-them.md): Agents propose an agent secret's hosts and people allow them; a new secret is a name, a value and a description
 - [0093](0093-a-shown-secret-value-stays-masked.md): A shown secret value stays masked until its eye is pressed; a quick copy shows on hover
