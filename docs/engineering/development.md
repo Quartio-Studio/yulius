@@ -37,6 +37,7 @@ Python's standard-library `tomllib` means Python 3.10 and older are unsupported.
 | `scripts/dev test` | nextest workspace tests with zero retries; doctests for eligible library targets |
 | `scripts/dev deps` | cargo-deny advisories/licenses/bans/sources and cargo-shear (unused crate and workspace dependencies) |
 | `scripts/dev ci` | doctor, check, lint, test, deps, then rustdoc with warnings denied |
+| `scripts/dev security` | Vidoc scan of the files the branch's commits changed since `dev` (pinned CLI in `tools/vidoc`); fails unless the scan completed for this branch with no open critical or high finding. Needs a key and the network; not part of `ci` |
 
 Use `scripts/dev check`, `scripts/dev lint` or `scripts/dev test` during iteration.
 The `yulius` crate's integration tests are modules of one test binary, `tests/main.rs`
@@ -59,6 +60,37 @@ applicable and automatically runs doctests when library targets are added.
 If a network failure prevents that, report it as unverified rather than suppressing
 advisories. The JUnit report is under `target/nextest/ci/junit.xml`. Rustdoc output
 is under `target/doc`. Build artifacts and local tools are ignored by Git.
+
+## Security scan
+
+`scripts/dev security` ([SPEC-128](../../.ai/specs/SPEC-128-in-keys-for-agents-you-have-vidoc-securi.md),
+[ADR-0104](../decisions/0104-agents-scan-their-branch-with-vidoc-before-delivery.md)) runs
+[Vidoc](https://docs.vidocsecurity.com/cli/ci-cd)'s `vidoc ci` on the current branch and then
+reads the verdict from the API. It needs Node 20+ and an API key in `VIDOC_TOKEN` or
+`VIDOC_API_KEY` (`VIDOC_API_URL` defaults to `https://api.vidoc.dev`). In agent sessions,
+`VIDOC_API_KEY` is the project's agent secret: a placeholder that the egress proxy replaces for
+`api.vidoc.dev` once a person has allowed that host. The CLI uploads the working tree, untracked
+files included, and scans the changed files as they are on disk, so the gate refuses a tree that is
+not clean. It also checks that `git remote show origin` names the default branch: without access
+to origin, the CLI would compare with `origin/main`. A scan takes 10 to 15 minutes, so run the gate
+with a tool timeout of 45 minutes or more, or in the background. Exit codes:
+
+- 0: passed, or the branch changed nothing that Vidoc scans.
+- 1: failed. The causes: open critical or high findings (each one is printed); a failed or foreign
+  scan; an unexpected API answer; a CLI error, a timeout or a signal; a failed `npm ci`.
+- 2: not run. The causes: no key, a malformed key, or a rejected one; Vidoc unreachable or out of
+  quota (402, 429) before the scan; "nothing to scan" although the branch changed source files; no Node
+  20+ or npm; a detached HEAD; uncommitted or untracked files; a first remote other than `origin`,
+  or origin unreachable the way the CLI checks it; no default branch or no merge base.
+
+Vidoc never indexes `bin/`, `vendor/`, `target/`, `build/`, `dist/`, `out/` and similar directories,
+so `crates/yulius-ptyhost/src/bin/` and vendored web assets are outside the scan. Agents run the
+gate for every change before delivery. They fix findings test-first. A false
+positive is ignored in Vidoc, with the reason, only after the independent reviewer agrees, and it
+is listed in the spec's Evidence. Yulius CI does not run the gate, because its jobs hold no secret
+([#466](https://github.com/Quartio-Studio/yulius/issues/466)). To update the CLI, change the pin in
+`tools/vidoc/package.json`, run `npm install --package-lock-only` there, and check that the
+`Scan started with ID:` line still appears in its output.
 
 ## Dead code
 
