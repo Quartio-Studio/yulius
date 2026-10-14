@@ -8,7 +8,7 @@ import { statusInfo } from './status.js';
 import { chainCandidates } from './intake.js';
 import { ruleChoices } from './ruleeditor.js';
 
-export const SUPERTASK_HELP = 'Waits for this project’s running tasks, then runs alone: its other tasks wait for it. For broad work like security hardening';
+export const SUPERTASK_HELP = 'Waits for this project’s running tasks, then runs alone while the project’s other tasks wait. For broad work such as security hardening.';
 
 /** The kind of a start choice: 'supertask', 'rule', 'after' or 'now'. */
 export function startKind({ supertask, afterTaskId, rule }) {

@@ -151,6 +151,7 @@ function seed(params) {
     // fail=<path> answers 500 to GET requests of that exact path, to show how a view says a load
     // failed (in place, naming what failed, with Try again; #147).
     failPath: params.get('fail') || null,
+    holdPath: params.get('hold') || null,
     // failpost=<path> does the same to POST requests, to show how an action says it failed.
     failPostPath: params.get('failpost') || null,
 
@@ -288,6 +289,9 @@ function seed(params) {
   }
   // `tasks=0`: sandboxes without any task yet (the composer then offers no start rule, SPEC-022).
   if (params.get('tasks') === '0') db.tasks = [];
+  // `hold=<path>`: its GET requests wait until `__yuliusMock.release()`, which may come first;
+  // `hold=frames` keeps the sandbox Chrome's picture back instead.
+  if (db.holdPath) db.held = new Promise((resolve) => { db.release = () => { db.released = true; resolve(); }; });
   // `tasks=many`: 30 more queued tasks in studio, a long "Run after" menu (SPEC-038).
   if (params.get('tasks') === 'many') {
     for (let number = 15; number < 45; number += 1) db.tasks.push(t('sb_studio', number, `Queued idea ${number}`, 'claude', 'queued', null, { noSteps: true }));
@@ -2732,6 +2736,8 @@ async function handleFetch(db, url, init = {}) {
   } else if (init.body) {
     try { body = JSON.parse(init.body); } catch { return json(422, { error: { code: 'invalid', message: 'Malformed JSON' } }); }
   }
+  // `hold=<path>` keeps GET requests of that path waiting, to look at a view while it loads (SPEC-092).
+  if (db.held && method === 'GET' && u.pathname === db.holdPath) await db.held;
   if (!PUBLIC.includes(u.pathname) && !db.signedIn) return json(401, { error: { code: 'unauthenticated', message: 'Sign in first.' } });
   if (db.failPath && method === 'GET' && u.pathname === db.failPath) return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
   // Tests count archive requests (`__yuliusMock.archiveRequests`), also those failed on purpose.
@@ -3562,6 +3568,10 @@ class BrowserSession {
   }
 
   async drawFrame() {
+    if (this.db.holdPath === 'frames' && !this.db.released) {
+      if (!this.heldFrame) this.heldFrame = this.db.held.then(() => this.render());
+      return;
+    }
     const tab = this.tabs.find((t) => t.active);
     if (!tab || this.viewers.size === 0) return;
     const { width, height } = this.size;

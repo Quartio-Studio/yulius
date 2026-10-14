@@ -79,3 +79,6 @@ number differs from the file name, and a record this index does not list.
 - [0072](0072-recount-old-runs-from-their-transcripts-once.md): Runs recorded before SPEC-087 are recounted from their transcripts once, after the upgrade
 - [0071](0071-long-injected-context-folds-in-the-session-view.md): Long injected context folds to one line in the session view; short notes stay readable
 - [0074](0074-run-now-uses-the-start-choice-the-editor-shows.md): Run now uses the start choice the editor shows, for that run only
+- [0073](0073-loading-shows-shimmering-fields.md): Loading shows shimmering fields everywhere; a spinner marks only an action under way
+- [0075](0075-menu-descriptions-wrap.md): Menu descriptions wrap onto as many lines as they need instead of being cut
+- [0080](0080-a-wait-for-yulius-shows-a-still-muted-branch.md): A wait for Yulius shows a still, muted branch, not Working's turning green

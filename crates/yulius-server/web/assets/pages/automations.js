@@ -129,7 +129,7 @@ export function mountAutomationsPage(ctx, sandbox) {
   }
 
   function history(a) {
-    const modal = openModal({ title: `Runs · ${a.name}`, wide: true, body: placeholder('Loading…', 'loading'), actions: [{ label: 'Close' }] });
+    const modal = openModal({ title: `Runs · ${a.name}`, wide: true, body: placeholder('Loading the runs…', 'loading'), actions: [{ label: 'Close' }] });
     ctx.api.get(`/api/automations/${enc(a.id)}/runs`).then((runs) => {
       setChildren(modal.body, dataTable([
         { label: 'Scheduled for', render: (r) => dateTime(r.scheduled_for) },

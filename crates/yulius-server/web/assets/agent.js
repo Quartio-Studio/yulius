@@ -5,7 +5,7 @@
 // to delete it: /clear starts over inside it.
 
 import { enc } from './api.js';
-import { h, icon, setChildren, emptyState, loadError } from './dom.js';
+import { h, icon, setChildren, emptyState, loadError, skeleton } from './dom.js';
 import { createTerminalView } from './terminal.js';
 import { allows } from './status.js';
 import { href } from './router.js';
@@ -46,7 +46,7 @@ export function createAgentView(ctx, sandbox) {
     const from = document.activeElement;
     opening = true;
     drop();
-    setChildren(body, h('div', { class: 'placeholder placeholder-loading', role: 'status' }, 'Starting your Superagent…'));
+    setChildren(body, skeleton('Starting your Superagent…', 3, { block: true }));
     let shell;
     try {
       shell = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/cockpit`);

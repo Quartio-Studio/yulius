@@ -6,7 +6,7 @@
 // multi-select, search) live in the URL so a filtered view can be shared as a link. Search is not a
 // field: "/" opens a Spotlight-style search (spotlight.js, UI-036) that jumps to a task or filters.
 
-import { h, icon, setChildren, iconButton, badge, statusMark, openMenu, loadError, singleFlight, keepFocus, coalesce, prChip, emptyState } from '../dom.js';
+import { h, icon, setChildren, iconButton, badge, statusMark, openMenu, loadError, singleFlight, keepFocus, coalesce, prChip, emptyState, skeleton } from '../dom.js';
 import { relShort, dateTime, plural } from '../format.js';
 import { taskTime } from '../tasktime.js';
 import { statusInfo, taskInfo, activityLine, allows, taskActions } from '../status.js';
@@ -173,7 +173,7 @@ export function mountTasksPage(ctx, sandbox) {
       const error = ctx.store.tasksError(sandbox.id);
       setChildren(listHost, error
         ? loadError(`Couldn’t load the tasks of ${sandbox.name}: ${error.message}`, () => ctx.store.loadTasks(sandbox.id).catch(() => {}))
-        : h('div', { class: 'placeholder placeholder-loading' }, 'Loading…'));
+        : skeleton(`Loading the tasks of ${sandbox.name}…`, 3, { block: true }));
       return;
     }
     const me = myLogin();

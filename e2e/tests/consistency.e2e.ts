@@ -26,7 +26,7 @@ const tabCount = (browser: Browser, name: string) =>
 /** The sidebar's "Needs you" count (0 without the group), once its tasks are listed. */
 const sidebarNeeds = (browser: Browser) =>
   browser.evaluate(() => {
-    if (!document.querySelector('.task-list .task-group, .task-list .placeholder:not(.placeholder-loading)')) return null;
+    if (!document.querySelector('.task-list .task-group, .task-list .placeholder')) return null;
     return Number(document.querySelector('.task-group.group-needs .task-group-count')?.textContent || 0);
   });
 
@@ -73,7 +73,7 @@ const tabWorking = (browser: Browser, name: string) =>
 /** The sidebar's "Working" count (0 without the group), once its tasks are listed. */
 const sidebarWorking = (browser: Browser) =>
   browser.evaluate(() => {
-    if (!document.querySelector('.task-list .task-group, .task-list .placeholder:not(.placeholder-loading)')) return null;
+    if (!document.querySelector('.task-list .task-group, .task-list .placeholder')) return null;
     return Number(document.querySelector('.task-group.group-working .task-group-count')?.textContent || 0);
   });
 
