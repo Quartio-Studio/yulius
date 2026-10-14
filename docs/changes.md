@@ -14,6 +14,19 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   (`@'<path>'`). The agent gets it there: in the request file, in the CLI prompt, or pasted where
   it sits in a typed first message, still one message. The original prompt view shows it inside
   the text. Older prompts and drafts keep working; their files show after the text.
+- The name beside the logo is set like the quote above the composer (SPEC-123, ADR-0100, task
+  #110). It used to read "YULIUS" in bold, widely spaced capitals of the interface face. Now it
+  reads "Yulius" in Tenor Sans 400 at the quote's 22 px with no extra spacing, in the sidebar and
+  on the sign-in and setup screens.
+- An agent secret is a name, a value and a description (SPEC-121, ADR-0098, task #107). The add
+  dialog no longer asks for hosts or for how the secret is added to requests. Instance
+  administrators find the scope under More options. Agents send the `$NAME` placeholder in
+  whatever header or query the service wants. They work out the service's host and ask for it
+  with `secret_request_hosts`. The Secrets page shows "Task #N asks to send it to …" with Allow
+  and Dismiss, and nothing is sent anywhere before a person allows it. Allow names the hosts the
+  person saw, so a host an agent asks for meanwhile is never allowed unseen. API change:
+  `POST /api/sandboxes/{sid}/agent-secrets` now defaults to no hosts and `injection: "none"`
+  (it was `bearer`).
 - A task starts with one message, before anyone can type (SPEC-117, ADR-0095, task #102). A goal
   task used to open as an empty session. Yulius then typed a first message with the attached
   images and, after its turn, a second one with `/goal`, and a person could type into the session

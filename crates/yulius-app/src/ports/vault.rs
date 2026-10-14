@@ -73,6 +73,11 @@ pub struct VaultSecretRecord {
     pub value_updated_at: Timestamp,
     /// When an agent last used it.
     pub last_used_at: Option<Timestamp>,
+    /// Agent: hosts an agent proposed, waiting for a person to allow them (SPEC-121). Never
+    /// used to send the secret; written only by [`VaultStore::vault_set_request`].
+    pub requested_hosts: Vec<String>,
+    /// Agent: the task that asked last (`#107`).
+    pub requested_by: Option<String>,
 }
 
 /// A person's two-factor seed (SPEC-040).
@@ -114,7 +119,8 @@ pub struct VaultAuditEntry {
 pub trait VaultStore: Send + Sync {
     /// Inserts a secret; `Conflict` for an agent name taken in the same scope.
     async fn vault_insert(&self, record: &VaultSecretRecord) -> AppResult<()>;
-    /// Replaces every mutable column of the secret `record.id`; `false` when it is gone.
+    /// Replaces every mutable column of the secret `record.id` but its host request; `false` when
+    /// it is gone.
     async fn vault_update(&self, record: &VaultSecretRecord) -> AppResult<bool>;
     /// Deletes a secret; `false` when it is gone.
     async fn vault_delete(&self, id: &str) -> AppResult<bool>;
@@ -125,6 +131,27 @@ pub trait VaultStore: Send + Sync {
     /// Agent secrets that apply to `sandbox` (its own and the instance-wide ones), or every
     /// agent secret when `None`.
     async fn vault_agent(&self, sandbox: Option<&SandboxId>) -> AppResult<Vec<VaultSecretRecord>>;
+    /// Replaces an agent secret's host request when it still is `from` (compare and set, so an
+    /// answer never drops a newer request); `false` when it changed or the secret is gone.
+    async fn vault_set_request(
+        &self,
+        id: &str,
+        from: &[String],
+        to: &[String],
+        by: Option<&str>,
+    ) -> AppResult<bool>;
+    /// Answers an agent secret's host request in one step: `hosts` replace its bindings and the
+    /// request is cleared, only while the request still is `request` and the bindings still are
+    /// `bound` (what the person saw); `false` otherwise. Nothing else in the row changes.
+    async fn vault_answer_request(
+        &self,
+        id: &str,
+        request: &[String],
+        bound: &[String],
+        hosts: &[String],
+        by: &str,
+        at: Timestamp,
+    ) -> AppResult<bool>;
     /// Records an agent's use.
     async fn vault_touch_used(&self, id: &str, at: Timestamp) -> AppResult<()>;
     /// Records a re-authentication of a browser session.
