@@ -50,10 +50,10 @@ history means something carries a small chart like Tasks has.
 | TUS-001 | `yulius_domain::pricing` holds the Claude API list price (input, 5-minute cache write, cache read, output; USD per million tokens) of every Claude model on the pricing page, matched on the model id without a date suffix (`-YYYYMMDD`) or a bracketed variant (`[1m]`). An unknown model has no price, never a zero one. | unit tests `pricing::` |
 | TUS-002 | A run's estimated cost is input × input price + cache writes × 5-minute write price + cache reads × read price + output × output price; unknown token figures add nothing. | unit tests `pricing::` |
 | TUS-003 | `CapacityView.tokens` gives the pool's token use over the last 7 days in seven rolling 24-hour buckets ending now (oldest first) and in total and for the last 24 hours: input, output, cache read, cache write, estimated cost, runs without usage and runs of a model without a price. A run counts in a bucket in proportion to the part of its lifetime (start to end, or now) inside it. | domain unit tests `capacity::`, `capacity_view` test |
-| TUS-004 | Each `CapacityAccount` carries its own 7-day tokens and estimated cost (`tokens_7d`). | `capacity_view` test |
+| TUS-004 | Each subscription's existing token totals (`GET /api/admin/accounts` `tokens_24h`, `tokens_7d`: runs started in the window, ROT-009) carry `cost_usd`, the estimated cost of its runs whose model has a price; `null` when none has one. | `subscription_pool.rs` capacity test |
 | TUS-005 | `CapacityView` carries the burn rate of each of the seven buckets (`burn_per_day`, points per hour, `null` without enough readings) and the task-hours paused in each (`paused_hours_per_day`). | domain unit tests, `capacity_view` test |
 | TUS-006 | The Capacity card adds two tiles, "Tokens (7 days)" (input + output, with in, out and cache and the last 24 hours below) and "API cost (7 days)" ("≈ $1,234", "at Claude API list prices", the unpriced runs said), each with a 7-day chart; Burn rate and Paused get a 7-day chart too. A cost no run could be priced for shows "—". | `subscriptions.e2e.ts` |
-| TUS-007 | Each subscription in the pool lists shows its 7-day tokens and estimated cost in its foot. | `subscriptions.e2e.ts` |
+| TUS-007 | The Subscriptions page's "Observed by Yulius" rows of each subscription end with "≈ $X at API prices" when known. | `subscriptions.e2e.ts` |
 | TUS-008 | Each `AnalyticsSummary.tasks_per_day` day also carries the agent working time (`active_ms`), the median agent work of the tasks created that day (`median_active_ms`), input and output tokens and the switches made; a run counts on the UTC day it started, a switch on the day it was made. | `analytics::` unit tests |
 | TUS-009 | The Dashboard's Agent work per task, Agent working time, Tokens and Subscription switches figures each show a chart of the range's days like Tasks. Feedback gets none: a day's share of a handful of ratings is noise. | `times.e2e.ts` |
 | TUS-010 | Every chart has a text alternative naming the figure, the period and its first, highest and last values; it never stands alone for a number the tile does not also show. | `subscriptions.e2e.ts`, `times.e2e.ts` (axe clean) |
@@ -61,10 +61,10 @@ history means something carries a small chart like Tasks has.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Claude API prices and the cost of a run, in the domain
-- [ ] The pool's tokens and cost per 24 hours and per subscription in `GET /api/capacity`
-- [ ] Burn rate and paused hours per 24 hours in `GET /api/capacity`
-- [ ] Tokens, cost and their charts in the Capacity card and the subscriptions
+- [x] Claude API prices and the cost of a run, in the domain
+- [x] The pool's tokens and cost per 24 hours and per subscription in `GET /api/capacity`
+- [x] Burn rate and paused hours per 24 hours in `GET /api/capacity`
+- [x] Tokens, cost and their charts in the Capacity card and the subscriptions
 - [ ] Daily agent time, tokens and switches in the analytics summary
 - [ ] Charts beside the Dashboard's key figures
 - [ ] Independent review in a fresh session, findings fixed test-first
@@ -87,7 +87,7 @@ history means something carries a small chart like Tasks has.
   unknown usage, unpriced model), per-bucket burn and paused hours.
 - `yulius-app` analytics unit test: per-day active time, median, tokens and switches.
 - Integration test through `App::capacity_view` with a seeded store (runs, metrics, accounts).
-- Store test for the new runs-with-metrics query.
+- The new runs-with-metrics query through the `capacity_view` and accounts-list integration test.
 - e2e (mock): Capacity tiles and charts, account foot, Dashboard charts, axe.
 
 ## Decisions
@@ -103,6 +103,9 @@ history means something carries a small chart like Tasks has.
 - **Cache writes at the 5-minute rate.** The stored total does not say which cache duration was
   written; the 5-minute rate is the API default, and the tile says "list prices", an estimate.
   Haiku 5.5 is priced at its rates up to 100 000 prompt tokens for the same reason.
+- **Per-subscription cost extends the existing token rows.** The Subscriptions page already lists
+  each subscription's tokens of the last 24 hours and 7 days (runs started in the window); its cost
+  joins those rows instead of a second, differently counted figure in `GET /api/capacity`.
 - **Prices as a table in the domain** (ADR-0089), not fetched: Yulius must not call out for a
   figure, and prices change rarely; the table records its source and date.
 - **Size.** About 450 changed lines outside tests, a little over the 400 guide, kept in one pull
