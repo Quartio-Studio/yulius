@@ -1,11 +1,11 @@
 ---
 yulius-task: 94cdc9fe-a521-45b0-a7b7-b35b1e4225c8
-status: in-progress
+status: done
 ---
 
 # SPEC-099: playgrounds — try Yulius on your own code before connecting GitHub
 
-Status: in progress
+Status: implemented
 Date: 2026-10-14
 Owner: task #84
 Scope authorization: the person's request (task #84): "On onboarding, we want a mode to play
@@ -71,7 +71,7 @@ creating the organisation's repositories. Until then the playground is the one w
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Review round 2: origin outside the sandbox, bounded archives, quota and promotion fixed test-first
 - [x] Review round 3 (final) on the merged head, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -151,3 +151,27 @@ creating the organisation's repositories. Until then the playground is the one w
   removed playground's files. Earlier list: `yulius onboard --playground` for a CLI checkout; moving a playground to
   a GitHub repository once GitHub is connected; Yulius CI on a playground's heads; teammates in a
   playground without GitHub.
+
+## Evidence
+
+Run on the branch head after merging `dev` (2026-10-14):
+
+- `scripts/dev ci`: exit 0. Repository contracts passed; nextest `1565 tests run: 1565 passed, 16
+  skipped`; clippy with `-D warnings`, rustdoc, doctests, cargo-deny and cargo-shear clean.
+- `cd e2e && npx e2e run`: `Test Files 43 passed | 1 skipped`, `Tests 308 passed | 1 skipped` (the
+  skipped one needs a model key). `playground.e2e.ts` failed three of four tests against the
+  assets before the UI change and passes with it.
+- `cargo test -p yulius --test main playground::`: 23 passed, covering PLY-001 to PLY-008, among
+  them the review regressions. `a_closed_tab_during_setup_leaves_no_stray_directory` failed 3 runs
+  out of 3 without the spawned setup. `an_uploaded_alternate_never_reads_another_repository`
+  reproduced the leak before the fix.
+- `cargo test -p yulius-app --lib playground` (6), `cargo test -p yulius-git --test git_ops
+  a_squash`, and the domain tests `a_playground_done_definition_merges_locally` and
+  `a_playgrounds_briefing_merges_locally`: all pass.
+- Independent review: three rounds in fresh sessions. Every finding was fixed test-first, except
+  the two decided in Decisions (round 3).
+- Not tested here: a real browser folder picker or drag-and-drop of a whole directory (the e2e
+  drop uses loose files; packing is unit-tested in the page), and a real Claude Code agent
+  calling `delivery_merge` in a playground (the MCP tool is exercised through the internal
+  router).
+
