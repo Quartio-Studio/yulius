@@ -418,6 +418,16 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   // horizontal swipes stay with the browser (#78).
   const programHasMouse = () => term.modes.mouseTrackingMode !== 'none';
   term.attachCustomWheelEventHandler((event) => !(programHasMouse() && (event.ctrlKey || !event.deltaY)));
+  // Another viewer's grid is centred in this box, and xterm would report a press in the margin
+  // beside it at the grid's edge: that press only takes the size (SPEC-098 MSE-005).
+  host.addEventListener('mousedown', (event) => {
+    if (!programHasMouse()) return;
+    const grid = (host.querySelector('.xterm-screen') || host).getBoundingClientRect();
+    if (event.clientX >= grid.left && event.clientX < grid.right && event.clientY >= grid.top && event.clientY < grid.bottom) return;
+    event.preventDefault();
+    event.stopPropagation();
+    term.focus();
+  }, true);
   term.onBinary((data) => send(data));
 
   function proposed() {

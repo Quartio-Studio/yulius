@@ -103,6 +103,23 @@ async function clickAt(browser: Browser, point: { x: number; y: number }): Promi
   await browser.mouse.up();
 }
 
+/**
+ * Records the input frames that reach the program's side from now on (the mock refuses a
+ * read-only viewer's input, as the server does, so the screen alone would not show input that was
+ * sent); the returned function reads them.
+ */
+async function recordInput(browser: Browser): Promise<() => Promise<string[]>> {
+  await browser.evaluate(() => {
+    const sent: string[] = [];
+    (window as unknown as { __sent: string[] }).__sent = sent;
+    for (const [, session] of (window as unknown as { __yuliusMock: { sessions: Map<string, { receive(ws: unknown, data: string): void }> } }).__yuliusMock.sessions) {
+      const receive = session.receive.bind(session);
+      session.receive = (ws, data) => { const frame = JSON.parse(data); if (frame.type === 'input') sent.push(frame.data); receive(ws, data); };
+    }
+  });
+  return () => browser.evaluate(() => (window as unknown as { __sent: string[] }).__sent);
+}
+
 /** Whether the task terminal shows a selection (xterm draws it as boxes over the rows). */
 const selected = (browser: Browser) => browser.evaluate(() => document.querySelectorAll('.taskview .xterm-selection > div').length > 0);
 
@@ -403,26 +420,20 @@ test('the program has the mouse, as in a native terminal; Shift (Option on macOS
   await expect(rows(browser)).not.toHaveText(expanded);
 });
 
-test('a read-only viewer’s click does not reach the program', async ({ app, browser, screen }) => {
+test('a read-only viewer’s mouse selects text and does not reach the program', async ({ app, browser, screen }) => {
   await app.open(mock('/s/sandbox-3/t/1'));
   await expect(screen.getByText('Read-only (GitHub: read)')).toBeVisible();
   await expect(rows(browser)).toHaveText(/Searched for 2 patterns/);
-  // What reaches the program's side (the mock refuses a read-only viewer's input, as the server
-  // does, so the screen alone would not show a click that was sent).
-  await browser.evaluate(() => {
-    const sent: string[] = [];
-    (window as unknown as { __sent: string[] }).__sent = sent;
-    for (const [, session] of (window as unknown as { __yuliusMock: { sessions: Map<string, { receive(ws: unknown, data: string): void }> } }).__yuliusMock.sessions) {
-      const receive = session.receive.bind(session);
-      session.receive = (ws, data) => { if (JSON.parse(data).type === 'input') sent.push(data); receive(ws, data); };
-    }
-  });
+  const sent = await recordInput(browser);
   const point = await spot(browser, 'Searched for 2 patterns');
   expect(point, 'the group is on the screen').not.toBeNull();
   await clickAt(browser, point!);
   await settle();
   await expect(rows(browser)).not.toHaveText(/loyalty_points/);
-  expect(await browser.evaluate(() => (window as unknown as { __sent: string[] }).__sent)).toEqual([]);
+  // A read-only viewer cannot send anything, so its plain drag selects text (SPEC-098 MSE-004).
+  await selectRow(browser, 'Searched for 2 patterns');
+  await expect.poll(() => selected(browser), { message: 'a plain drag selects' }).toBe(true);
+  expect(await sent()).toEqual([]);
 });
 
 test('a click beside another viewer’s grid takes the size but does not reach the program', async ({ app, browser, screen }) => {
@@ -440,10 +451,13 @@ test('a click beside another viewer’s grid takes the size but does not reach t
     return { left: box.left, width: grid.left - box.left };
   });
   expect(margin.width, 'the grid has a margin at its left').toBeGreaterThan(8);
+  const sent = await recordInput(browser);
   await clickAt(browser, { x: margin.left + margin.width / 2, y: point!.y });
   await expect(screen.getByText('Sized by another viewer')).toBeHidden();
   await settle();
   await expect(rows(browser)).not.toHaveText(/loyalty_points/);
+  // xterm would report a press beside the grid at its first column (SPEC-098 MSE-005).
+  expect(await sent(), 'no mouse report').toEqual([]);
 });
 
 test('file paths in the task terminal open the editor at the file and line', async ({ app, browser, screen }) => {

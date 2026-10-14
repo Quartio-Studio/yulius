@@ -39,6 +39,9 @@ test("someone else's task is read-only, and its owner can hand it over", async (
 
 test('the owner is asked for control and hands the task over', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
+  // xterm marks a terminal whose mouse it reports to the program (SPEC-098): the owner's is.
+  const programMouse = () => browser.evaluate(() => Boolean(document.querySelector('.taskview .xterm.enable-mouse-events')));
+  await expect.poll(programMouse, { message: 'the writer hands the program its mouse' }).toBe(true);
   await touch(browser, 'sb_studio', 12, { controlRequest: { by: { login: 'anna-q' }, at: new Date().toISOString() } });
   await expect(screen.getByText('@anna-q asks to take control of this task:')).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
@@ -48,6 +51,8 @@ test('the owner is asked for control and hands the task over', async ({ app, bro
   await expect(screen.getByRole('button', 'Request control')).toBeVisible();
   // The terminal asks again: mkarp now watches it.
   await expect(screen.getByText('Read-only: @anna-q owns this task')).toBeVisible();
+  // A watcher cannot send anything: its mouse selects text again.
+  await expect.poll(programMouse, { message: 'the watcher keeps the mouse for selection' }).toBe(false);
 });
 
 test('the owner declines a request for control', async ({ app, browser, screen }) => {
