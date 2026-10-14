@@ -92,3 +92,4 @@ number differs from the file name, and a record this index does not list.
 - [0084](0084-personal-notes-in-the-notes-table.md): Personal notes ("Me") live in the notes table, and their events reach only their owner
 - [0088](0088-the-session-web-keeps-its-colours-when-stuck.md): The session's web keeps its colours when stuck and hangs exactly in the well's corner (supersedes 0082's stuck colour)
 - [0083](0083-long-menu-groups-scroll-five-rows.md): A long menu group (the start menu's tasks) shows five rows and says there is more
+- [0086](0086-a-lost-onboarding-task-returns-the-sandbox-to-pending.md): A lost onboarding task returns the sandbox to pending; a worktree's main repository is trusted too
