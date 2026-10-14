@@ -78,6 +78,7 @@ number differs from the file name, and a record this index does not list.
 - [0069](0069-mcp-tools-answer-with-short-text.md): Yulius's MCP tools answer with short text; the record only when a client asks
 - [0072](0072-recount-old-runs-from-their-transcripts-once.md): Runs recorded before SPEC-087 are recounted from their transcripts once, after the upgrade
 - [0071](0071-long-injected-context-folds-in-the-session-view.md): Long injected context folds to one line in the session view; short notes stay readable
+- [0074](0074-run-now-uses-the-start-choice-the-editor-shows.md): Run now uses the start choice the editor shows, for that run only
 - [0078](0078-repository-mcp-json-feeds-the-mcp-section.md): A repository's .mcp.json feeds the sandbox's MCP servers; the Superagent rejects the file's servers
 - [0076](0076-onboarding-is-mandatory-in-the-ui.md): Onboarding is mandatory in the UI: the new-task page shows only what it will do and its button; skipping is an operator's recovery
 - [0079](0079-the-terminal-mouse-is-the-programs.md): The terminal's mouse is the program's when it asks for it (Shift or Option selects), with no mouse chip
