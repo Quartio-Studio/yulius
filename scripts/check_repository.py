@@ -185,6 +185,29 @@ def decision_errors(directory):
     return errors
 
 
+CONFLICT_MARKER = re.compile(r"(?:<{7}|\|{7}|>{7})(?: .*)?|={7}")
+VENDORED = ("crates/yulius-server/web/assets/vendor/",)
+
+
+def conflict_marker_errors(root, names):
+    """A merge that commits unresolved conflict markers fails here, in docs and web assets too,
+    where no compiler notices them (#364). Vendored and binary files are not read, nor symbolic
+    links, whose target is checked under its own name. Git lists an unmerged file once per stage."""
+    errors = []
+    for name in dict.fromkeys(names):
+        path = root / name
+        if name.startswith(VENDORED) or path.is_symlink() or not path.is_file():
+            continue
+        data = path.read_bytes()
+        if b"\0" in data:
+            continue
+        for number, line in enumerate(data.decode(errors="replace").split("\n"), 1):
+            line = line.removesuffix("\r")
+            if CONFLICT_MARKER.fullmatch(line):
+                errors.append(f"{name}:{number}: unresolved merge conflict marker {line[:7]}; resolve the merge")
+    return errors
+
+
 SPACING_SCALE = {0, 2, 4, 6, 8, 12, 16, 20, 24, 32, 40, 48}
 WEIGHTS = {"400", "500", "600", "inherit", "normal"}
 TOKENS = "crates/yulius-server/web/assets/tokens.css"
@@ -611,11 +634,12 @@ def check_ui():
 
 def check():
     errors = []
-    names = output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"]).split("\0")
-    for name in filter(None, names):
+    names = list(filter(None, output(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"]).split("\0")))
+    for name in names:
         path = ROOT / name
         if path.is_file() and path.suffix == ".md":
             errors.extend(link_errors(path, ROOT))
+    errors.extend(conflict_marker_errors(ROOT, names))
     skills = list((ROOT / ".apm/skills").glob("*/SKILL.md"))
     if not skills:
         errors.append("No repository skills found")
@@ -635,7 +659,7 @@ def check():
     errors.extend(integration_test_errors(packages))
     if errors:
         raise ValueError("\n".join(errors))
-    print(f"Repository contracts passed: {len(packages)} crates, {len(skills)} skills, local Markdown links, unique decision numbers, UI design tokens, one product test binary")
+    print(f"Repository contracts passed: {len(packages)} crates, {len(skills)} skills, local Markdown links, no conflict markers, unique decision numbers, UI design tokens, one product test binary")
 
 
 if __name__ == "__main__":
