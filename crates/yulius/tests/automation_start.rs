@@ -479,6 +479,117 @@ async fn each_run_starts_its_task_with_the_start_choice() -> TestResult {
     Ok(())
 }
 
+/// Run now with a start choice in its body (SPEC-093 AUT-023, AC-AUT-23).
+async fn run_with(
+    h: &Harness,
+    creds: &Creds,
+    automation: &str,
+    body: Value,
+) -> Result<support::Resp, Error> {
+    send(
+        h,
+        creds,
+        Method::POST,
+        &format!("/api/automations/{automation}/run"),
+        body,
+    )
+    .await
+}
+
+/// The task a run created.
+async fn task_of(h: &Harness, run: &Value) -> Result<TaskRecord, Error> {
+    let id = TaskId::parse(run["task_id"].as_str().ok_or("no task for the run")?)?;
+    Ok(h.store.task(&id).await?.ok_or("task")?)
+}
+
+/// Closes `task` so the automation's next run is not skipped as previous-active.
+async fn close(h: &Harness, task: &TaskRecord, at: i64) -> Result<(), Error> {
+    h.store
+        .transition_task(&task.id, None, TaskStatus::Closed, None, Timestamp(at))
+        .await?;
+    Ok(())
+}
+
+/// AC-AUT-23 (SPEC-093): Run now creates its task with the start choice it is given, for that
+/// run only, checked like a save; without a body it uses the stored choice.
+#[tokio::test]
+async fn run_now_starts_its_task_with_the_choice_it_is_given() -> TestResult {
+    let (h, alice) = world().await?;
+    h.clock.0.store(BASE, Ordering::SeqCst);
+    let id = create(&h, &alice, &json!({})).await?;
+
+    // Invalid choices answer 422 and record no run.
+    for body in [
+        json!({"supertask": true, "start_rule": "#1 done"}),
+        json!({"after_task_id": "t-one", "start_rule": "#1 done"}),
+        json!({"after_task_id": "t-foreign"}),
+        json!({"start_rule": "#9 done"}),
+        json!({"start_rule": "#1 maybe"}),
+    ] {
+        let r = run_with(&h, &alice, &id, body.clone()).await?;
+        assert_eq!(
+            r.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{body}: {}",
+            r.body
+        );
+    }
+    assert!(h.store.runs(&id, 10).await?.is_empty(), "no run recorded");
+
+    // A supertask for this run; the stored choice stays start now.
+    h.clock.0.store(BASE + 1_000, Ordering::SeqCst);
+    let r = run_with(&h, &alice, &id, json!({"supertask": true})).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["state"], "task_created", "{}", r.body);
+    let task = task_of(&h, &r.body).await?;
+    assert_eq!((task.status, task.supertask), (TaskStatus::Queued, true));
+    assert_eq!(
+        choice(&stored(&h, &alice, &id).await?),
+        (json!(false), Value::Null, Value::Null, Value::Null)
+    );
+    close(&h, &task, BASE + 2_000).await?;
+
+    // A rule for this run.
+    h.clock.0.store(BASE + 3_000, Ordering::SeqCst);
+    let r = run_with(&h, &alice, &id, json!({"start_rule": "#1  merged"})).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let task = task_of(&h, &r.body).await?;
+    assert_eq!(task.status, TaskStatus::Chained);
+    let chain = h.store.chain(&task.id).await?.ok_or("chain")?;
+    assert_eq!(chain.rule.as_deref(), Some("#1 merged"));
+    close(&h, &task, BASE + 4_000).await?;
+
+    // After a task for this run.
+    h.clock.0.store(BASE + 5_000, Ordering::SeqCst);
+    let r = run_with(&h, &alice, &id, json!({"after_task_id": "t-one"})).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let task = task_of(&h, &r.body).await?;
+    let chain = h.store.chain(&task.id).await?.ok_or("chain")?;
+    assert_eq!(
+        chain.after_task_id.as_ref().map(TaskId::as_str),
+        Some("t-one")
+    );
+    close(&h, &task, BASE + 6_000).await?;
+
+    // Without a body: the stored choice, start now.
+    h.clock.0.store(BASE + 7_000, Ordering::SeqCst);
+    let run = run_now(&h, &alice, &id).await?;
+    let task = task_of(&h, &run).await?;
+    assert_eq!((task.status, task.supertask), (TaskStatus::Queued, false));
+    assert!(h.store.chain(&task.id).await?.is_none());
+    close(&h, &task, BASE + 8_000).await?;
+
+    // The stored choice sent back is not checked again: a deleted predecessor fails the run, as
+    // a scheduled run does, instead of refusing the request.
+    let gone = seed_task(&h, "t-gone", "s1", "u-alice", TaskStatus::Running, None).await?;
+    let orphan = create(&h, &alice, &json!({"after_task_id": "t-gone"})).await?;
+    assert!(h.store.delete_task(&gone.id).await?);
+    let r = run_with(&h, &alice, &orphan, json!({"after_task_id": "t-gone"})).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["state"], "failed", "{}", r.body);
+    Ok(())
+}
+
 /// AC-AUT-17: agents set the start choice with `automation_create` and `automation_update`; in an
 /// update any of the three replaces the choice; invalid choices change nothing.
 #[tokio::test]

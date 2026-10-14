@@ -22,7 +22,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use yulius_contracts::api::automations::{Automation, AutomationRunView, AutomationTemplate};
+use yulius_contracts::api::automations::{
+    Automation, AutomationRunView, AutomationTemplate, RunAutomation,
+};
 use yulius_contracts::events::UiEvent;
 use yulius_domain::cron::{MAX_UTC_OFFSET_MINUTES, Schedule};
 use yulius_domain::harness::Harness;
@@ -869,36 +871,59 @@ impl App {
     }
 
     /// `POST /api/automations/{id}/run`: one run now (also for disabled automations; the
-    /// previous-active rule still applies).
+    /// previous-active rule still applies). `start` is this run's start choice, as the editor
+    /// shows it (SPEC-093 AUT-023), checked like a saved one and not stored; `None` runs with the
+    /// stored choice.
     ///
     /// # Errors
-    /// Access errors and store failures.
+    /// Access errors, an invalid start choice and store failures.
     pub async fn run_automation_now(
         self: &Arc<Self>,
         ctx: &AuthContext,
         id: &str,
+        start: Option<&RunAutomation>,
     ) -> AppResult<AutomationRunView> {
         let actor = self.login_of(&ctx.user.id).await;
-        self.run_automation_now_as(ctx, id, &actor, None).await
+        self.run_automation_now_as(ctx, id, start, &actor, None)
+            .await
     }
 
     /// [`App::run_automation_now`] audited as `actor`; a management tool passes its caller and
     /// the caller's audit detail (SPEC-066 MGT-010).
     ///
     /// # Errors
-    /// Access errors and store failures.
+    /// Access errors, an invalid start choice and store failures.
     pub(crate) async fn run_automation_now_as(
         self: &Arc<Self>,
         ctx: &AuthContext,
         id: &str,
+        start: Option<&RunAutomation>,
         actor: &str,
         caller_detail: Option<&Value>,
     ) -> AppResult<AutomationRunView> {
         let record = self
             .automation_for_change(ctx, id, Action::Configure)
             .await?;
+        // The stored choice sent back is kept unchecked, as an update keeps it (AUT-014).
+        let start = match start {
+            None => None,
+            Some(given) => {
+                let given = start_input(
+                    given.supertask,
+                    given.after_task_id.as_deref(),
+                    given.start_rule.as_deref(),
+                )?;
+                Some(if given.matches(&record.start) {
+                    record.start.clone()
+                } else {
+                    self.resolve_start(&record.sandbox_id, given).await?
+                })
+            }
+        };
         let slot = self.now();
-        let run = self.process_slot(&record, slot, true).await?;
+        let run = self
+            .process_slot(&record, slot, true, start.as_ref())
+            .await?;
         let detail = match caller_detail {
             Some(caller) => {
                 let mut detail = caller.clone();
@@ -974,7 +999,7 @@ impl App {
             if let Some(slot) =
                 schedule.catch_up(automation.anchor(), now, automation.utc_offset_minutes)
             {
-                match self.process_slot(&automation, slot, false).await {
+                match self.process_slot(&automation, slot, false, None).await {
                     Ok(run) => report.count(&run),
                     Err(err) => {
                         tracing::warn!(error = %err, automation = %automation.id, "catch-up run failed");
@@ -1010,7 +1035,7 @@ impl App {
             );
             match due.as_slice() {
                 [] => {}
-                [slot] => match self.process_slot(&automation, *slot, false).await {
+                [slot] => match self.process_slot(&automation, *slot, false, None).await {
                     Ok(run) => {
                         report.count(&run);
                         store
@@ -1048,12 +1073,14 @@ impl App {
             .filter(|t| Self::is_active_status(t.status)))
     }
 
-    /// Handles one slot: dedupe on the run row, skip rules, then task creation.
+    /// Handles one slot: dedupe on the run row, skip rules, then task creation; `start` replaces
+    /// the stored start choice for this run (Run now, SPEC-093).
     async fn process_slot(
         self: &Arc<Self>,
         automation: &AutomationRecord,
         slot: Timestamp,
         manual: bool,
+        start: Option<&AutomationStart>,
     ) -> AppResult<AutomationRunRecord> {
         let store = &self.deps.store;
         if let Some(existing) = store.automation_run(&automation.id, slot).await? {
@@ -1063,10 +1090,13 @@ impl App {
                 Ok(existing)
             };
         }
-        let fresh = store
+        let mut fresh = store
             .automation(&automation.id)
             .await?
             .ok_or(AppError::NotFound)?;
+        if let Some(start) = start {
+            fresh.start = start.clone();
+        }
         let skip = if !manual && !fresh.enabled {
             Some((
                 RunState::SkippedDisabled,
