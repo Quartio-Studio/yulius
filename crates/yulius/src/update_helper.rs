@@ -130,8 +130,9 @@ fn valid_id(id: &str) -> bool {
     (8..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
-/// Longest request token.
-const MAX_TOKEN_BYTES: usize = 255;
+/// Longest request token: GitHub's stateless installation tokens (`ghs_<APPID>_<JWT>`, since
+/// 2026-10-02) are about 520 bytes and vary with their claims.
+const MAX_TOKEN_BYTES: usize = 4096;
 
 /// Whether `token` can be sent in an HTTP header: 1–[`MAX_TOKEN_BYTES`] of `[A-Za-z0-9_.-]`.
 fn valid_token(token: &str) -> bool {

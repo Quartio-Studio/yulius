@@ -41,7 +41,7 @@ accepts the App's installation token and fetches `main` with it, as before.
 
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
+- [x] Fix the cause until the regression test and every gate pass
 - [ ] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
@@ -75,3 +75,14 @@ accepts the App's installation token and fetches `main` with it, as before.
 Anything that assumed the old 40-character token shape: the redactors (#424). Storage keeps
 tokens as unbounded strings (SQLite `TEXT`, Rust `String`), and the Git credential helper accepts
 any printable token, so neither is affected.
+
+## Evidence
+
+- Before the fix (commit f43b9b26): `cargo test -p yulius --lib update_helper::tests::` → 12 passed,
+  1 failed: `stateless_installation_tokens_are_accepted` panicked "a 520-byte installation token is
+  refused".
+- After the fix: the same command → 13 passed, 0 failed.
+- `scripts/dev ci` → exit 0: repository check, script tests, `cargo check`, `fmt --check`,
+  `clippy -D warnings`, nextest 1580 passed / 16 skipped, doctests, `cargo deny`, `cargo shear`,
+  `cargo doc`.
+- No web UI change, so the e2e suite does not apply.
