@@ -246,16 +246,21 @@ export function createStore(api) {
   const pullsKey = (sandboxId) => (state.me && state.me.user && state.me.user.id ? `${PULLS_PREFIX}${state.me.user.id}.${sandboxId}` : null);
   const isPullRow = (row) => Array.isArray(row) && typeof row[0] === 'string' && row[1] !== null && typeof row[1] === 'object'
     && Number.isInteger(row[1].number) && typeof row[1].state === 'string';
+  const seeded = new Set(); // sandbox ids whose pull requests came from storage, not a read yet
   function pullsOf(sandboxId) {
     if (!state.pulls.has(sandboxId) && pullWatch.has(sandboxId)) {
       const key = pullsKey(sandboxId);
-      if (key) state.pulls.set(sandboxId, new Map(readJson(key, []).filter(isPullRow)));
+      if (key) {
+        state.pulls.set(sandboxId, new Map(readJson(key, []).filter(isPullRow)));
+        seeded.add(sandboxId);
+      }
     }
     return state.pulls.get(sandboxId) || new Map();
   }
   /** Sign-out or an expired session: the pull requests (titles included) do not stay in this browser. */
   function forgetPulls() {
     state.pulls.clear();
+    seeded.clear();
     try {
       for (const key of Object.keys(window.localStorage)) if (key.startsWith(PULLS_PREFIX)) window.localStorage.removeItem(key);
     } catch { /* storage unavailable: nothing kept */ }
@@ -268,6 +273,7 @@ export function createStore(api) {
       const rows = Array.isArray(git.tasks) ? git.tasks : [];
       const pulls = rows.filter((t) => t.pr).map((t) => [t.task_id, t.pr]);
       state.pulls.set(sandboxId, new Map(pulls));
+      seeded.delete(sandboxId);
       const key = pullsKey(sandboxId);
       if (key) writeJson(key, pulls);
       // The server counts "needs you" from what this read saw (a tested or failing pull request),
@@ -276,7 +282,15 @@ export function createStore(api) {
       scheduleCountsRefresh();
       state.gitRows.set(sandboxId, new Map(rows.map((t) => [t.task_id, t])));
       emit('pulls', sandboxId);
-    } catch { /* the chips stay as they were; the lists work without them */ }
+    } catch {
+      // The chips of an earlier read on this page stay; stored ones of any age do not pass for
+      // current when this page could not read (SPEC-104), shown already or not (an empty entry
+      // keeps pullsOf from reading them later): the lists work without them.
+      if (seeded.delete(sandboxId) || !state.pulls.has(sandboxId)) {
+        state.pulls.set(sandboxId, new Map());
+        emit('pulls', sandboxId);
+      }
+    }
   }
   function watchPulls(sandboxId) {
     let entry = pullWatch.get(sandboxId);

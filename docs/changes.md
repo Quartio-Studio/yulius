@@ -9,8 +9,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - After a reload, the sidebar shows pull request chips at once (SPEC-104, task #89, #414). Before,
   they appeared seconds later, when the sandbox's Git overview answered, and rows could move
   between Working and Done meanwhile. The browser keeps what the last overview read said, per user
-  and sandbox. It shows that until the page's own read replaces it. Sign-out or an expired
-  session removes it.
+  and sandbox. It shows that until the page's own read replaces it, and drops it if that read
+  fails. Sign-out or an expired session removes it.
 - The automation editor's start choice is a chip in its action bar, before Run now (SPEC-093,
   ADR-0074, task #78). It looks and works like New task's start chip and opens the same menu, now
   one shared module: Start now, Supertask, the filterable "After a task is done" list and "When a

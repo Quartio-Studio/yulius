@@ -43,9 +43,9 @@ last saw for the sandbox at once, and the fresh Git overview read replaces them 
 | --- | --- | --- |
 | PRC-001 | Every successful overview read stores the sandbox's task → pull request pairs in this browser under `yulius.pulls.<user id>.<sandbox id>`. | `pulls.e2e.ts` "the fresh read replaces …" |
 | PRC-002 | Until the first overview read of a page load answers, `pullsOf(sandbox)` returns the stored pairs of the signed-in user for a sandbox a view watches (its read is on its way), so the sidebar shows them at once. A sandbox no view watches (a notification about another sandbox) gets nothing stored, as before: no read would replace it. | "after a reload the sidebar shows the pull requests at once …", "a sandbox no view watches …" |
-| PRC-003 | The fresh read replaces the stored pairs, in memory and in storage. | "the fresh read replaces …" |
+| PRC-003 | The fresh read replaces the stored pairs, in memory and in storage. When the page's first read of the sandbox fails, the stored pairs are dropped from view (shown already or not) instead of passing for current; a later successful read fills them. | "the fresh read replaces …", "a failed first read drops …" |
 | PRC-004 | A stored value of the wrong shape (not a list, or rows without a task id, a whole number or a state), or unavailable storage, is ignored: the rows wait for the overview as before. | "a stored value that is … is ignored …" |
-| PRC-005 | Signing out or an expired session removes every stored `yulius.pulls.` entry and the ones in memory: pull request titles are the user's data. A read answering after that finds no user and stores nothing. | "signing out removes …", "a session that expires removes …" |
+| PRC-005 | Signing out or an expired session (noticed by a request, or at page load) removes every stored `yulius.pulls.` entry and the ones in memory: pull request titles are the user's data. A read answering after that finds no user and stores nothing. | "signing out removes …", "a session that expires removes …", "a session found expired when the page loads …" |
 
 ## Plan
 
@@ -63,13 +63,17 @@ last saw for the sandbox at once, and the fresh Git overview read replaces them 
 - A malformed stored value shows no chips and no page error; after the read the chips show.
 - With a failing pull request remembered for studio's #12, a page load of `/s/product` and a
   change to #12 bring a notification that does not mention it.
-- After sign-out, and after the session expires, no `yulius.pulls.` key is left.
+- With the overview failing (`fail=/api/sandboxes/sb_studio/git`), a remembered chip is not shown.
+- After sign-out, and after the session expires (during use or found at page load), no
+  `yulius.pulls.` key is left.
 
 ## Test plan
 
 - `e2e/tests/pulls.e2e.ts` (mock, Chromium), the cases above. The first fails before the fix
   (no chips while the overview is held); after the independent review, the unwatched sandbox and
-  the expired session cases were added and failed before their fix.
+  the expired session cases were added and failed before their fix; after the second, the failed
+  first read and the expiry found at load (both failed before their fix), and the wrong-shape rows
+  now name real tasks (the case fails with the row filter removed).
 - Full gate: `scripts/dev ci` and the whole e2e suite.
 
 ## Decisions
@@ -88,4 +92,5 @@ last saw for the sandbox at once, and the fresh Git overview read replaces them 
   is on its way to replace it. Another tab that signs out while this one writes a read back is
   covered when this tab's next request finds the session gone (it tears down and forgets).
 - **No age limit on a remembered value**: a watched sandbox's read always runs at once and
-  replaces it, so its age only matters for those seconds.
+  replaces it, so its age only matters for those seconds; when that read fails the remembered
+  value is dropped (second review), so an old one never stays on screen.

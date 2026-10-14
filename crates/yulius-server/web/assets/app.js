@@ -122,8 +122,11 @@ function createApp(root, transport) {
       const me = await meRead;
       await signedIn(me);
     } catch (error) {
-      if (error.status === 401) renderSignIn();
-      else fatal(error);
+      if (error.status === 401) {
+        // A session found expired at load: what it kept for the next page load goes (SPEC-104).
+        store.forgetPulls();
+        renderSignIn();
+      } else fatal(error);
     }
   }
 
