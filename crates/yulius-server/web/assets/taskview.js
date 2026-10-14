@@ -695,9 +695,12 @@ export function mountComposer(ctx, sandbox) {
     openMenu(anchor, [
       { label: 'Start now', icon: 'up', description: 'The task starts as soon as a session slot is free', checked: !afterTaskId && !startRule && !supertask, onSelect: () => { afterTaskId = ''; startRule = null; supertask = false; renderChips(); prompt.focus(); } },
       { label: 'Supertask', icon: 'shield', description: SUPERTASK_HELP, checked: supertask, onSelect: () => { afterTaskId = ''; startRule = null; supertask = true; renderChips(); prompt.focus(); } },
-      // One line per task under one heading, every live one: the menu's filter finds it (SPEC-038).
-      ...(candidates.length ? [{ separator: true }, { header: 'After a task is done' }] : []),
-      ...candidates.map((t) => ({ label: `#${t.number} ${t.title}`, hint: statusInfo(t).label, title: `Starts by itself when #${t.number} is done`, checked: t.id === afterTaskId, onSelect: () => { afterTaskId = t.id; startRule = null; supertask = false; renderChips(); prompt.focus(); } })),
+      // One line per task under one heading, every live one: the menu's filter finds it (SPEC-038);
+      // five show and the rest scroll in the group's box (SPEC-102).
+      ...(candidates.length ? [{ separator: true }, {
+        header: 'After a task is done',
+        items: candidates.map((t) => ({ label: `#${t.number} ${t.title}`, hint: statusInfo(t).label, title: `Starts by itself when #${t.number} is done`, checked: t.id === afterTaskId, onSelect: () => { afterTaskId = t.id; startRule = null; supertask = false; renderChips(); prompt.focus(); } })),
+      }] : []),
       // A rule names tasks of this sandbox, so a sandbox without any offers none (SPEC-022).
       ...(ruleChoices(ctx.store.tasksOf(sandbox.id)).length ? [
         { separator: true },

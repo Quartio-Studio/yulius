@@ -480,6 +480,9 @@ export function closeMenu() {
 /** A menu with this many items to choose from gets a filter box (SPEC-038 MNU-003). */
 export const MENU_FILTER_MIN = 8;
 
+/** A group shows this many rows and scrolls the rest (SPEC-102 MSG-001). */
+export const MENU_GROUP_ROWS = 5;
+
 /**
  * Whether a menu item holds every word of `query` in what it shows: its label, its second line (a
  * description, or a disabled item's reason) and its hint. Not a tooltip: "Starts by itself when
@@ -499,6 +502,8 @@ let menuIds = 0;
  * items: [{label, onSelect, disabled, danger, hint, description, checked, icon, header, separator, href}]
  * `description` adds a second line, shown whole; `checked` (true/false) makes the item a choice with a check mark;
  * `keepOpen` keeps the menu open after selecting (multi-select filters), flipping the check in place.
+ * `{header, items}` is a group: the header, then its items in a box that shows MENU_GROUP_ROWS of
+ * them and scrolls the rest, saying so with fading edges and a "N more" line (SPEC-102).
  * A menu of MENU_FILTER_MIN items or more opens with a filter box above them.
  */
 export function openMenu(anchor, items, { align = 'start' } = {}) {
@@ -509,7 +514,8 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
   // filter is the list's sibling: a role="menu" may own only menu items.
   menuIds += 1;
   const list = h('div', { class: 'menu-list', role: 'menu', id: `menu-list-${menuIds}` });
-  const choices = items.filter((item) => item && !item.separator && !item.header);
+  const isGroup = (item) => Boolean(item && item.header && Array.isArray(item.items));
+  const choices = items.flatMap((item) => (isGroup(item) ? item.items : [item])).filter((item) => item && !item.separator && !item.header);
   const filter = choices.length >= MENU_FILTER_MIN
     ? h('input', { type: 'search', class: 'input menu-filter', placeholder: 'Filter', 'aria-label': 'Filter', 'aria-controls': list.id, autocomplete: 'off', spellcheck: 'false' })
     : null;
@@ -517,10 +523,9 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
   const menu = h('div', { class: 'menu' }, filter, list, empty);
   const rows = [];
   const dividers = [];
-  for (const item of items) {
-    if (!item) continue;
-    if (item.separator) { dividers.push(list.appendChild(h('div', { class: 'menu-sep', role: 'separator' }))); continue; }
-    if (item.header) { dividers.push(list.appendChild(h('div', { class: 'menu-header' }, item.header))); continue; }
+  const groups = [];
+  const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const addRow = (item, parent) => {
     const choice = typeof item.checked === 'boolean';
     // A disabled item says why on its second line, not only in a mouse tooltip.
     const description = item.description || (item.disabled && item.title ? item.title : null);
@@ -547,8 +552,48 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
       check,
       item.icon ? h('span', { class: 'menu-icon' }, icon(item.icon, { size: 15 })) : null,
       label, item.hint ? h('span', { class: 'menu-hint' }, item.hint) : null);
-    list.append(el);
+    parent.append(el);
     rows.push({ item, el });
+    return el;
+  };
+  for (const item of items) {
+    if (!item) continue;
+    if (item.separator) { dividers.push(list.appendChild(h('div', { class: 'menu-sep', role: 'separator' }))); continue; }
+    if (isGroup(item)) {
+      // The header names the group; its items scroll in a box of their own, so the choices after
+      // the group stay in view however long it is.
+      menuIds += 1;
+      const headerId = `menu-header-${menuIds}`;
+      dividers.push(list.appendChild(h('div', { class: 'menu-header', id: headerId }, item.header)));
+      const box = h('div', { class: 'menu-scroll' });
+      const members = item.items.filter(Boolean);
+      const group = { box, more: null, els: members.map((sub) => addRow(sub, box)) };
+      if (members.length > MENU_GROUP_ROWS) {
+        box.classList.add('capped');
+        // Decoration for pointers: a menu's items are already counted for a screen reader. A
+        // pressed mouse keeps the focus where it is.
+        group.more = h('div', { class: 'menu-more', 'aria-hidden': 'true', onMousedown: (event) => event.preventDefault(), onClick: () => box.scrollBy({ top: box.clientHeight, behavior: reduceMotion ? 'auto' : 'smooth' }) });
+        box.addEventListener('scroll', () => cue(group), { passive: true });
+        groups.push(group);
+      }
+      list.append(h('div', { class: 'menu-group', role: 'group', 'aria-labelledby': headerId }, box, group.more));
+      continue;
+    }
+    if (item.header) { dividers.push(list.appendChild(h('div', { class: 'menu-header' }, item.header))); continue; }
+    addRow(item, list);
+  }
+  /**
+   * Shows whether a capped group has rows out of sight: its edges fade where it continues, and the
+   * line under it counts the rows below (SPEC-102 MSG-002). While filtering, a blank line hides.
+   */
+  function cue(group) {
+    const { box, more, els } = group;
+    box.classList.toggle('more-above', box.scrollTop > 1);
+    box.classList.toggle('more-below', box.scrollTop + box.clientHeight < box.scrollHeight - 1);
+    const edge = box.getBoundingClientRect().bottom;
+    const below = els.filter((el) => !el.hidden && el.getBoundingClientRect().bottom > edge + 1).length;
+    setChildren(more, below ? [icon('down', { size: 12 }), h('span', null, `${below} more`)] : null);
+    more.hidden = !below && Boolean(filter && filter.value.trim());
   }
   /** Shows the items matching the filter; headers and separators only while it is empty. */
   const applyFilter = () => {
@@ -561,9 +606,16 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
     for (const divider of dividers) divider.hidden = query !== '';
     empty.textContent = shown ? '' : 'No matches';
     list.scrollTop = 0;
+    for (const group of groups) { group.box.scrollTop = 0; cue(group); }
   };
   if (filter) filter.addEventListener('input', applyFilter);
   document.body.append(menu);
+  // A capped group is as tall as its first rows as drawn, whatever their height (SPEC-102 MSG-001).
+  for (const { box, els } of groups) {
+    const first = els[0].getBoundingClientRect();
+    const last = els[MENU_GROUP_ROWS - 1].getBoundingClientRect();
+    box.style.maxHeight = `${last.bottom - first.top}px`;
+  }
   /**
    * Below the anchor, or above it when it fits only there or has more room; never past a window
    * edge, the items scroll instead (SPEC-038 MNU-001). Run again when the window gets shorter.
@@ -572,6 +624,7 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
     // Placing again keeps the list where the person scrolled it; only the filter scrolls it back
     // to the top (SPEC-056 WUI-104).
     const scroll = list.scrollTop;
+    const groupScrolls = groups.map((group) => group.box.scrollTop);
     menu.classList.remove('menu-from-top');
     menu.style.top = '';
     menu.style.bottom = '';
@@ -588,6 +641,7 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
     if (filtered) {
       for (const { el } of rows) el.hidden = false;
       for (const divider of dividers) divider.hidden = false;
+      for (const group of groups) group.more.hidden = false;
       empty.textContent = '';
     }
     const mh = menu.offsetHeight;
@@ -612,6 +666,7 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
     if (left + mw > window.innerWidth - 8) left = window.innerWidth - mw - 8;
     menu.style.left = `${Math.max(8, left)}px`;
     list.scrollTop = scroll;
+    groups.forEach((group, i) => { group.box.scrollTop = groupScrolls[i]; cue(group); });
   };
   place();
   const onDoc = (event) => { if (!menu.contains(event.target)) closeMenu(); };

@@ -258,10 +258,10 @@ export function mountAutomationEditor(ctx, sandbox, id) {
   function openAfterMenu(anchor) {
     const candidates = chainCandidates(ctx, sandbox);
     if (!candidates.length) { toast('No task of this project is running or waiting to run after.', { kind: 'info' }); return; }
-    openMenu(anchor, [
-      { header: 'After a task is done' },
-      ...candidates.map((t) => ({ label: `#${t.number} ${t.title}`, checked: t.id === state.after_task_id, onSelect: () => setStart({ after_task_id: t.id, after_task_number: t.number }) })),
-    ]);
+    openMenu(anchor, [{
+      header: 'After a task is done',
+      items: candidates.map((t) => ({ label: `#${t.number} ${t.title}`, checked: t.id === state.after_task_id, onSelect: () => setStart({ after_task_id: t.id, after_task_number: t.number }) })),
+    }]);
   }
   function openRuleDialog() {
     if (!ruleChoices(ctx.store.tasksOf(sandbox.id)).length) { toast('This project has no task a rule could name yet.', { kind: 'info' }); return; }
