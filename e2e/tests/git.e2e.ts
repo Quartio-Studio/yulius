@@ -77,7 +77,7 @@ test('pull request chips read "PR #N" wherever they show', async ({ app, browser
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Tasks');
   await expect(browser.locator('.task-list .tl-pr-chip').first()).toBeVisible();
   const sidebar = await chipText('.task-list .tl-pr-chip');
-  expect(sidebar.find((t) => t.includes('520'))).toMatch(/^PR #520\b/);
+  expect(sidebar.find((t) => t.includes('520'))).toMatch(/^PR #520(?!\d)/);
   await expect(browser.locator('#main .tl-pr-chip').first()).toBeVisible();
   for (const text of await chipText('#main .tl-pr-chip')) expect(text).toMatch(/^PR #\d+$/);
   // The word replaces the branch icon (only a checks icon may follow it); the tooltip still names
@@ -85,6 +85,20 @@ test('pull request chips read "PR #N" wherever they show', async ({ app, browser
   expect(await browser.evaluate(() => [...document.querySelectorAll('.tl-pr-chip')].filter((el) => el.firstElementChild?.tagName === 'svg').length)).toBe(0);
   await expect(browser.locator('#main a.tl-pr-chip').first()).toHaveAttribute('title', /^Pull request #\d+/);
 
+  // The sidebar row's chip is heard as a pull request, not as "PR".
+  await expect(screen.getByRole('link', /Task #13 .*Pull request #520, open/)).toBeVisible();
+
   await app.open(mock('/s/studio/t/13'));
   await expect(screen.getByRole('button', /^Pull request #520/)).toHaveText('PR #520');
+
+  // Review round 1: the Git board's cards carry their own chip, under the task's #N.
+  await app.open(mock('/s/studio/git'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Git');
+  await expect(browser.locator('.dl-card-task .tl-pr-chip').first()).toBeVisible();
+  for (const text of await chipText('#main .tl-pr-chip')) expect(text).toMatch(/^PR #\d+$/);
+  expect(await browser.evaluate(() => [...document.querySelectorAll('.tl-pr-chip')].filter((el) => el.firstElementChild?.tagName === 'svg').length)).toBe(0);
+  // And the delivery details name the pull request as one.
+  await browser.locator('.dl-deliver').first().click();
+  const dialog = screen.getByRole('dialog', /^Delivery · #/);
+  await expect(dialog.getByRole('link', /^PR #\d+$/).first()).toBeVisible();
 });

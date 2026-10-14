@@ -358,7 +358,7 @@ export function prLine(pr) {
   const checks = CHECKS[pr.checks] || [pr.checks || 'checks unknown', 'warn'];
   const state = { open: 'accent', merged: 'violet', closed: '' }[pr.state] || '';
   return h('span', { class: 'row-wrap' },
-    h('a', { href: pr.url, target: '_blank', rel: 'noopener noreferrer' }, `#${pr.number}`),
+    h('a', { href: pr.url, target: '_blank', rel: 'noopener noreferrer' }, `PR #${pr.number}`),
     h('span', { class: 'ellipsis' }, pr.title),
     badge(pr.state, state),
     badge(checks[0], checks[1], pr.checks === 'unknown' ? UNKNOWN_CHECKS : null),

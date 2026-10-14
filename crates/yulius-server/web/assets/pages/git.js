@@ -56,14 +56,14 @@ function columnOf(delivery, profile) {
   return 'built';
 }
 
-/** Pull request chip: number and checks in Claude's colours (merged violet). */
+/** Pull request chip: "PR #N" (a bare #N is a task, SPEC-122) and checks in Claude's colours (merged violet). */
 function prChip(pr) {
   if (!pr) return null;
   const check = pr.state === 'open' ? CHECK_ICON[pr.checks] : null;
   const label = `Pull request #${pr.number} · ${pr.state}${pr.state === 'open' && CHECK_TEXT[pr.checks] ? ` · ${CHECK_TEXT[pr.checks]}` : ''}`;
   const title = pr.state === 'open' && pr.checks === 'unknown' ? `${label}. ${UNKNOWN_CHECKS}` : label;
   return h('a', { class: ['tl-pr-chip', pr.state === 'merged' && 'merged', pr.state === 'closed' && 'closed'], href: pr.url, target: '_blank', rel: 'noopener noreferrer', title, 'aria-label': label },
-    icon('branch', { size: 12 }), `#${pr.number}`, check ? h('span', { class: `tone-${check[1]}` }, icon(check[0], { size: 12 })) : null);
+    `PR #${pr.number}`, check ? h('span', { class: `tone-${check[1]}` }, icon(check[0], { size: 12 })) : null);
 }
 
 // Each task's delivery, kept across visits to the page (PERF-09): read again only when its row in

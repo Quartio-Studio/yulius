@@ -34,8 +34,9 @@ title: the Git board (`git.js`), the Git review page (`gittask.js`), the task vi
 chips, so the one number the sidebar shows looks like a task number.
 
 **Where pull request chips are.** `prChip` draws them in the sidebar, the Tasks page, the task
-overview (`taskinfo.js`) and the Git review page. The task view's delivery strip draws its own
-copy in `actions.js` `deliveryStrip`.
+overview (`taskinfo.js`) and the Git review page. The task view's delivery strip
+(`actions.js` `deliveryStrip`) and the Git board (`git.js`) draw their own copies. The delivery
+details (`prLine`) link the number.
 
 ## Requirements
 
@@ -46,13 +47,16 @@ copy in `actions.js` `deliveryStrip`.
   "Task #N", not a bare number.
 - TID-3: Every pull request chip reads `PR #N` (the word "PR" replaces the branch icon), with
   its checks icon and its state colours as before: in the sidebar, the Tasks page, the task
-  overview, the Git review page and the task view's delivery strip. Its tooltip and accessible
-  name keep saying "Pull request #N".
+  overview, the Git board's cards, the Git review page, the task view's delivery strip and its
+  delivery details. Its tooltip and accessible name keep saying "Pull request #N", also inside a
+  sidebar row's link.
 - TID-4: The sidebar's rows stay one line at any sidebar width (200 to 480 px). Nothing spills
   out of a row, the number and any chip or time shown are whole, and every title keeps at least
   3 em. When space runs short, the time gives way first: below a 360 px task list on rows with a
-  pull request, below 280 px on every row. Below 250 px the chip goes too. The row's tooltip
-  still names the task, its pull request (`PR #N`) and the time.
+  pull request, below 280 px on every row. Below 250 px the chip goes too. On a phone the
+  row's right side keeps 48 px for the menu button, so each threshold is 36 px wider. On hover,
+  where Archive and the menu show, the title may shrink below 3 em and stays clear of them. The
+  row's tooltip still names the task, its pull request (`PR #N`, once) and the time.
 - TID-5: The Tasks page's rows show the task's number the same way, before the title.
 
 ## Plan

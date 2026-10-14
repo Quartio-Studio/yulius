@@ -987,7 +987,9 @@ export function prChip(pr, { link = true } = {}) {
   const parts = [`PR #${pr.number}`, checks ? h('span', { class: `tone-${checks[1]}` }, icon(checks[0], { size: 12 })) : null];
   const cls = ['tl-pr-chip', merged && 'merged', pr.state === 'closed' && 'closed'];
   if (link) return h('a', { class: cls, href: pr.url, target: '_blank', rel: 'noopener noreferrer', title: label, 'aria-label': label }, parts);
-  return h('span', { class: cls, title: label }, parts, h('span', { class: 'sr-only' }, `, ${pr.state}${checks ? `, ${checks[2]}` : ''}`));
+  // Heard as "Pull request #N, open, …" inside the row's link, not as "PR".
+  return h('span', { class: cls, title: label }, h('span', { class: 'tl-pr-parts', 'aria-hidden': 'true' }, parts),
+    h('span', { class: 'sr-only' }, `Pull request #${pr.number}, ${pr.state}${checks ? `, ${checks[2]}` : ''}`));
 }
 
 /** Small colored badge. */

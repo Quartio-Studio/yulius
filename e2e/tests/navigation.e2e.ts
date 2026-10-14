@@ -169,7 +169,7 @@ test('sidebar rows show the task number apart from the pull request number', asy
     return {
       text: link.querySelector('.task-title')!.textContent,
       height: Math.round(box.height),
-      spills: right > box.right - 12 + 1,
+      spills: right > box.right - parseFloat(getComputedStyle(link).paddingRight) + 1,
       cut: cut('.task-num') || cut('.tl-pr-chip') || cut('.task-age'),
       title: Math.round(link.querySelector('.task-title')!.getBoundingClientRect().width),
       chip: shown('.tl-pr-chip'),
@@ -200,6 +200,22 @@ test('sidebar rows show the task number apart from the pull request number', asy
   expect(broken(narrowest)).toEqual([]);
   expect(narrowest.filter((r) => r.chip)).toEqual([]);
   expect(narrowest.find((r) => r.text === 'Improve the code')!.tooltip).toContain('PR #520');
+  // The tooltip names the pull request once, even when the state already does ("Done · PR #520").
+  expect(narrowest.find((r) => r.text === 'Improve the code')!.tooltip.match(/PR #520/g)).toHaveLength(1);
+
+  // Review round 1: hovering a row shows Archive and the menu, and the title ends before them.
+  await at(264);
+  await splitter.press('ArrowRight');
+  await splitter.press('ArrowRight');
+  await expect(splitter).toHaveAttribute('aria-valuenow', '296');
+  await browser.locator('.task-row:has-text("Improve the code")').hover();
+  const overlap = await browser.evaluate(() => {
+    const row = [...document.querySelectorAll('.task-list .task-row')].find((el) => el.textContent!.includes('Improve the code'))!;
+    const link = row.querySelector('.task-link')!;
+    const right = Math.max(...[...link.children].map((el) => el.getBoundingClientRect().right));
+    return right - row.querySelector('.task-quick-archive')!.getBoundingClientRect().left;
+  });
+  expect(overlap).toBeLessThanOrEqual(0);
   expect(await axeViolations(browser)).toEqual([]);
 });
 
@@ -210,4 +226,25 @@ test('the Tasks page rows show the task number before the title', async ({ app, 
   await expect(browser.locator('#main .tl-row:has-text("Improve the code") .task-num')).toHaveText('Task #13');
   const rows = await browser.locator('#main .tl-row').count();
   await expect(browser.locator('#main .tl-row .tl-link .task-num')).toHaveCount(rows);
+});
+
+// Review round 1 of SPEC-122: on a phone the drawer's rows keep 48 px for the menu button.
+test('the navigation drawer rows fit a 320 px phone with task and pull request numbers', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 320, height: 700 });
+  await app.open(mock('/s/studio/tasks'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Tasks');
+  const menu = screen.getByRole('button', 'Open navigation');
+  await menu.click();
+  await expect(menu).toHaveAttribute('aria-expanded', 'true');
+  await expect(browser.locator('.task-list .task-row:has-text("Improve the code") .task-num')).toBeVisible();
+  const rows = await browser.evaluate(() => [...document.querySelectorAll('.task-list .task-link')].map((link) => {
+    const box = link.getBoundingClientRect();
+    const right = Math.max(...[...link.children].map((el) => el.getBoundingClientRect().right));
+    return {
+      text: link.querySelector('.task-title')!.textContent,
+      spills: right > box.right - parseFloat(getComputedStyle(link).paddingRight) + 1,
+      title: Math.round(link.querySelector('.task-title')!.getBoundingClientRect().width),
+    };
+  }));
+  expect(rows.filter((r) => r.spills || r.title < 36)).toEqual([]);
 });

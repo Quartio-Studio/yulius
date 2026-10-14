@@ -779,7 +779,7 @@ export function createSidebar(ctx) {
     row.el.classList.toggle('active', active);
     row.el.dataset.group = info.group;
     row.el.dataset.tone = info.tone;
-    row.link.title = `Task #${task.number} ${task.title} — ${info.label}${info.detail ? `: ${info.detail}` : ''}${row.pr ? ` · PR #${row.pr.number}` : ''}${task.branch ? ` · ${task.branch}` : ''} · ${row.time.text}`;
+    row.link.title = `Task #${task.number} ${task.title} — ${info.label}${info.detail ? `: ${info.detail}` : ''}${row.pr && !info.pr ? ` · PR #${row.pr.number}` : ''}${task.branch ? ` · ${task.branch}` : ''} · ${row.time.text}`;
     setChildren(row.mark, statusMark(info, 16));
     setChildren(row.num, h('span', { class: 'sr-only' }, 'Task '), `#${task.number}`);
     row.num.title = `Task #${task.number}`;

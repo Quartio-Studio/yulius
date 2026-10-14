@@ -403,6 +403,7 @@ button.task-group-head:hover { color: var(--text); }
 .task-chips { display: inline-flex; flex: none; gap: 4px; }
 .task-chips:empty { display: none; }
 .task-chips .tl-pr-chip { padding: 0 6px; }
+.tl-pr-parts { display: inline-flex; align-items: center; gap: 4px; }
 .task-title { flex: 1; min-width: 3em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-md); line-height: var(--lh-md); }
 .task-group.group-ended .task-row:not(:hover):not(.active) .task-link { color: var(--muted); }
 .task-age { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); font-variant-numeric: tabular-nums; }
@@ -416,6 +417,12 @@ button.task-group-head:hover { color: var(--text); }
 @container tasks (width < 360px) { .task-link:has(.tl-pr-chip) .task-age { display: none; } }
 @container tasks (width < 280px) { .task-age { display: none; } }
 @container tasks (width < 250px) { .task-chips { display: none; } }
+/* A phone's row keeps 48 px on its right for the menu button: the same order, 36 px sooner. */
+@media (max-width: 767px) {
+  @container tasks (width < 396px) { .task-link:has(.tl-pr-chip) .task-age { display: none; } }
+  @container tasks (width < 316px) { .task-age { display: none; } }
+  @container tasks (width < 286px) { .task-chips { display: none; } }
+}
 /* Quick Archive (SPEC-062): left of the menu's button, shown with it. */
 .task-quick-archive { position: absolute; right: calc(8px + var(--control-sm)); top: 4px; width: var(--control-sm); height: var(--control-sm); visibility: hidden; background: var(--surface-3); }
 .task-quick-archive[hidden] { display: none; }
@@ -424,6 +431,7 @@ button.task-group-head:hover { color: var(--text); }
 @media (min-width: 768px) {
   .task-row.can-archive:is(:hover, :focus-within) .task-link { padding-right: calc(12px + 2 * var(--control-sm)); }
   .task-row.can-archive:is(:hover, :focus-within) .task-age { display: none; }
+  .task-row.can-archive:is(:hover, :focus-within) .task-title { min-width: 0; }
 }
 .sidebar-foot { padding: 6px; border-top: 1px solid var(--border); }
 .sidebar-foot .user-btn { gap: 12px; padding: 0 12px; border-radius: var(--radius-lg); font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 500; }
