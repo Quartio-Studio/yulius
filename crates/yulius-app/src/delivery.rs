@@ -1009,6 +1009,17 @@ impl Observed {
     }
 }
 
+/// What one automatic delivery of a task's head did ([`App::try_auto_open_pr`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AutoDelivery {
+    /// Nothing to do: nothing new, or nothing Yulius delivers by itself.
+    Unchanged,
+    /// The head is not ready to be delivered, and why (also noted for `yulius wait`).
+    Blocked(String),
+    /// Pushed and the pull request opened or updated, as said to the agent.
+    Delivered(String),
+}
+
 impl App {
     async fn dlv_sandbox_of(&self, task: &TaskRecord) -> AppResult<SandboxRecord> {
         self.deps
@@ -2216,8 +2227,8 @@ impl App {
     /// retried for the same head.
     pub async fn auto_open_pr(&self, task_id: &TaskId) {
         match self.try_auto_open_pr(task_id).await {
-            Ok(Some(done)) => self.runtime(task_id).hub.notice(done),
-            Ok(None) => {}
+            Ok(AutoDelivery::Delivered(done)) => self.runtime(task_id).hub.notice(done),
+            Ok(AutoDelivery::Unchanged | AutoDelivery::Blocked(_)) => {}
             Err(err) => {
                 tracing::warn!(task = %task_id, error = %err, "automatic pull request failed");
                 self.runtime(task_id).hub.notice(format!(
@@ -2312,19 +2323,20 @@ impl App {
     }
 
     /// What Yulius did for a ready task: opened its pull request, or pushed commits made since
-    /// to the open one (#68). `None` while the task is not ready (no branch or worktree, an
-    /// invalid spec, an open step, uncommitted work, no commits ahead of the integration branch)
-    /// or nothing is new.
-    async fn try_auto_open_pr(&self, task_id: &TaskId) -> AppResult<Option<String>> {
+    /// to the open one (#68). [`AutoDelivery::Blocked`] says why a head with commits to deliver
+    /// is not ready (an invalid spec, an open step, uncommitted work);
+    /// [`AutoDelivery::Unchanged`] covers everything else (no branch or worktree, no commits
+    /// ahead of the integration branch, a later stage, nothing new).
+    pub(crate) async fn try_auto_open_pr(&self, task_id: &TaskId) -> AppResult<AutoDelivery> {
         let store = &self.deps.store;
         let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
         let (Some(branch), Some(worktree)) = (task.branch.clone(), task.worktree_path.clone())
         else {
-            return Ok(None);
+            return Ok(AutoDelivery::Unchanged);
         };
         // A playground has no pull requests: its agent merges with `delivery_merge` (SPEC-099).
         if self.dlv_sandbox_of(&task).await?.is_playground() {
-            return Ok(None);
+            return Ok(AutoDelivery::Unchanged);
         }
         // Cheap checks first: most turns end with steps still open, and they need no GitHub call.
         let steps = store.steps(&task.id).await?;
@@ -2337,24 +2349,20 @@ impl App {
                 .await?
                 .is_some_and(|r| !matches!(r.stage, DeliveryStage::None | DeliveryStage::PrOpen))
         {
-            return Ok(None);
+            return Ok(AutoDelivery::Unchanged);
         }
         if let Some(step) = open_step {
-            self.note_undelivered(
-                &task,
-                &worktree,
-                &format!(
-                    "step \"{}\" is {}: finish it, or resolve it with `step_update` and a note",
-                    step.title, step.status
-                ),
-            )
-            .await;
-            return Ok(None);
+            let reason = format!(
+                "step \"{}\" is {}: finish it, or resolve it with `step_update` and a note",
+                step.title, step.status
+            );
+            self.note_undelivered(&task, &worktree, &reason).await;
+            return Ok(AutoDelivery::Blocked(reason));
         }
         let sandbox = self.dlv_sandbox_of(&task).await?;
         let profile = delivery_profile(&sandbox);
         if branch == profile.integration_branch || branch == profile.production_branch {
-            return Ok(None);
+            return Ok(AutoDelivery::Unchanged);
         }
         // The task's owner pushes and authors the pull request (their GitHub account, as if
         // they had pressed Deliver…, F 2026-10-11); without a usable token the App does.
@@ -2362,6 +2370,15 @@ impl App {
         let observed = self
             .dlv_observe(&sandbox, &task, &profile, Some(&token))
             .await?;
+        // Nothing new to deliver: the open pull request has this head already. `delivery_merge`
+        // asks on every call, and a delivered head is not "undelivered" (SPEC-116 DMG-001).
+        if let (Some(head), Some(pull)) = (
+            observed.worktree_head.as_deref(),
+            observed.pr.as_ref().filter(|p| is_open(p)),
+        ) && pull.head_sha == head
+        {
+            return Ok(AutoDelivery::Unchanged);
+        }
         // A task that needs a spec needs its plan too; research, docs and chores may have none.
         let not_ready = if !observed.spec.valid {
             Some(format!(
@@ -2379,19 +2396,19 @@ impl App {
         };
         if let Some(reason) = not_ready {
             self.note_undelivered(&task, &worktree, &reason).await;
-            return Ok(None);
+            return Ok(AutoDelivery::Blocked(reason));
         }
         let Some(head) = observed.worktree_head.clone() else {
-            return Ok(None);
+            return Ok(AutoDelivery::Unchanged);
         };
         // The pull request exists: push what was committed since, as the briefing promises,
         // so it does not stay on an old head while the task shows Done (#68).
         if observed.record.stage == DeliveryStage::PrOpen || observed.pr.is_some() {
             let Some(pull) = observed.pr.as_ref().filter(|p| is_open(p)) else {
-                return Ok(None);
+                return Ok(AutoDelivery::Unchanged);
             };
             if pull.head_sha == head || !self.claim_auto_head(task_id, &head)? {
-                return Ok(None);
+                return Ok(AutoDelivery::Unchanged);
             }
             let pushed = self
                 .deps
@@ -2404,7 +2421,7 @@ impl App {
                 return Err(err);
             }
             self.clear_push_problem(task_id);
-            return Ok(Some(format!(
+            return Ok(AutoDelivery::Delivered(format!(
                 "Yulius pushed your new commits to pull request #{}.",
                 pull.number
             )));
@@ -2419,7 +2436,7 @@ impl App {
             )
             .await?;
         if ahead == 0 || !self.claim_auto_head(task_id, &head)? {
-            return Ok(None);
+            return Ok(AutoDelivery::Unchanged);
         }
         let opened = match dlv::apply(
             &observed.record.stage,
@@ -2439,7 +2456,7 @@ impl App {
         match opened {
             Ok(number) => {
                 self.clear_push_problem(task_id);
-                Ok(Some(format!(
+                Ok(AutoDelivery::Delivered(format!(
                     "Yulius opened pull request #{number} into {}: the task is ready for review.",
                     profile.integration_branch
                 )))

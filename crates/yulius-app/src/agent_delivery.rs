@@ -24,7 +24,7 @@ use yulius_contracts::api::git::RunEnvironment;
 use crate::auth::AuthContext;
 use crate::context::App;
 use crate::coordination::AgentContext;
-use crate::delivery::MergeFailure;
+use crate::delivery::{AutoDelivery, MergeFailure};
 use crate::error::{AppError, AppResult};
 use crate::model::SandboxRecord;
 
@@ -192,6 +192,18 @@ impl App {
             )
             .await;
             return Ok(json!({"merged": true, "delivery": view}));
+        }
+        // Deliver the head first, as the end of a clean turn would: a goal task's evaluator may
+        // keep every turn going, and without its pull request the merge would wait for nothing
+        // (SPEC-116 DMG-001, task #101).
+        match self.try_auto_open_pr(&ctx.task.id).await? {
+            AutoDelivery::Blocked(reason) => {
+                return Err(AppError::Conflict(format!(
+                    "Yulius cannot deliver this head yet: {reason}"
+                )));
+            }
+            AutoDelivery::Delivered(done) => self.runtime(&ctx.task.id).hub.notice(done),
+            AutoDelivery::Unchanged => {}
         }
         let before = self.task_delivery(&auth, &task_id).await?;
         let checks = before.pr.as_ref().map_or("none", |p| p.checks.as_str());
