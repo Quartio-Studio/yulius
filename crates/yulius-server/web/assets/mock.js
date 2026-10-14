@@ -520,6 +520,14 @@ function emit(db, event) {
   for (const socket of db.eventSockets) socket.push(data);
 }
 
+/**
+ * A sandbox's pull requests may have changed (a delivery stage moved, a CI run was queued or
+ * ended): the server says so and watching browsers read the Git overview again (SPEC-108).
+ */
+function announcePulls(db, sandboxId) {
+  emit(db, { type: 'pulls.updated', sandbox_id: sandboxId });
+}
+
 /** Sandbox changes: the server publishes `resync` (sandbox views differ per user). */
 function resync(db) {
   emit(db, { type: 'resync' });
@@ -1227,7 +1235,7 @@ route('GET', `/api/sandboxes/${ID}/git`, async ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
   const tasks = db.tasks.filter((t) => t.sandbox_id === sandbox.id && !t.archived && t.branch);
   const pull = pullOf;
-  return {
+  const overview = {
     integration_branch: sandbox.profile.integration_branch, production_branch: sandbox.profile.production_branch, default_branch: sandbox.default_branch,
     tasks: tasks.map((t) => ({ task_id: t.id, title: t.title, branch: t.branch, ahead: (t.number * 3) % 11 + 1, behind: t.number % 3, files_changed: (t.number * 7) % 23 + 1, insertions: (t.number * 131) % 900 + 12, deletions: (t.number * 37) % 200, pr: pull(t) })),
     recent_commits: [
@@ -1241,6 +1249,10 @@ route('GET', `/api/sandboxes/${ID}/git`, async ({ db, p }) => {
     notes: sandbox.id === 'sb_three' ? ['Pull requests can\u2019t be listed: GitHub rate limit exceeded; lists may be incomplete.'] : [],
     checks_access: checksAccess(db, sandbox),
   };
+  // `__yuliusMock.holdGitReads = true`: each read waits on its own until `releaseGit()`, answering
+  // what it saw when it started, as a server read that began before a change (SPEC-108).
+  if (db.holdGitReads) await new Promise((resolve) => db.gitHolds.push(resolve));
+  return overview;
 });
 route('GET', `/api/tasks/${ID}/delivery`, ({ db, p }) => delivery(db, taskOf(db, p[0])));
 // The server has no task changes API yet (GET /api/tasks/{tid}/changes and /commits are proposed in
@@ -1257,7 +1269,8 @@ route('POST', `/api/tasks/${ID}/delivery/pr`, ({ db, p, body }) => {
   const sandbox = sandboxOf(db, task.sandbox_id);
   const number = 300 + db.nextId;
   task.delivery = { stage: 'pr_open', environment: null, pr: { number, url: `${sandbox.repo.url}/pull/${number}`, title: body.title || task.title, state: 'open', base: sandbox.profile.integration_branch, head: task.branch, checks: 'pending' } };
-  later(() => { if (task.delivery && task.delivery.pr) task.delivery.pr.checks = 'success'; }, 4000);
+  later(() => { if (task.delivery && task.delivery.pr) { task.delivery.pr.checks = 'success'; announcePulls(db, task.sandbox_id); } }, 4000);
+  announcePulls(db, task.sandbox_id);
   return delivery(db, task);
 });
 route('POST', `/api/tasks/${ID}/delivery/merge`, ({ db, p }) => {
@@ -1276,6 +1289,7 @@ route('POST', `/api/tasks/${ID}/delivery/merge`, ({ db, p }) => {
     task.delivery.stage = production.length ? 'promoted' : 'production_done';
   }
   touch(db, task);
+  announcePulls(db, task.sandbox_id);
   return { ...delivery(db, task), notes };
 });
 route('POST', `/api/sandboxes/${ID}/delivery/promote`, ({ db, p }) => {
@@ -1297,6 +1311,7 @@ route('POST', `/api/sandboxes/${ID}/delivery/promote`, ({ db, p }) => {
     task.delivery = { ...task.delivery, stage: production.length ? 'promoted' : 'production_done', environment: null };
     touch(db, task);
   }
+  announcePulls(db, sandbox.id);
   return { result: 'promoted', sha: 'e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3' };
 });
 
@@ -2862,6 +2877,8 @@ route('DELETE', `/api/sessions/${ID}`, ({ db, p }) => {
 const PUBLIC = ['/api/setup/status', '/api/setup', '/api/auth/password', '/api/auth/mock-github'];
 
 async function handleFetch(db, url, init = {}) {
+  // Counted as the page asks, before the simulated latency (SPEC-108 tests).
+  if ((init.method || 'GET') === 'GET' && /^\/api\/sandboxes\/[^/]+\/git$/.test(new URL(url, ORIGIN).pathname)) db.gitRequests += 1;
   await delay(50 + Math.random() * 150);
   if (db.offline) throw new TypeError('Failed to fetch'); // simulated outage (__yuliusMock.goOffline())
   const u = new URL(url, ORIGIN);
@@ -3872,6 +3889,21 @@ export function createMockTransport(params) {
   // Tests change a task as the server would announce it (`touchTask('sb_studio', 12, {…})`).
   db.finishOnboarding = (slug) => finishOnboarding(db, db.sandboxes.find((s) => s.slug === slug));
   db.touchTask = (sandboxId, number, changes) => touch(db, db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number), changes);
+  // A pull request changed on the server (`changePull('sb_studio', 520, { state: 'merged' })`):
+  // announced like the server does, unless `announce` is false (a change Yulius did not see).
+  db.changePull = (sandboxId, number, changes, announce = true) => {
+    const task = db.tasks.find((t) => t.sandbox_id === sandboxId && t.delivery && t.delivery.pr && t.delivery.pr.number === number);
+    Object.assign(task.delivery.pr, changes);
+    if (changes.state === 'merged') task.delivery.stage = 'merged_integration';
+    recount(db);
+    if (announce) announcePulls(db, sandboxId);
+  };
+  db.announcePulls = (sandboxId) => announcePulls(db, sandboxId);
+  db.gitHolds = [];
+  db.gitReads = () => db.gitHolds.length;
+  db.gitRequests = 0; // Git overview reads the page asked for
+  // Releases the held Git overview reads, the newest first (an older read answering last).
+  db.releaseGit = () => { for (const resolve of db.gitHolds.splice(0).reverse()) resolve(); };
   // Simulate an outage and its end: __yuliusMock.goOffline() / .goOnline().
   db.goOffline = () => {
     db.offline = true;
@@ -3911,6 +3943,8 @@ export function createMockTransport(params) {
   notesOf(db);
   return {
     kind: 'mock',
+    // `pullgap=<ms>`: the store's least time between announced pull request reads (SPEC-108).
+    pullGapMs: params.has('pullgap') ? Number(params.get('pullgap')) : undefined,
     // Like window.fetch, an aborted signal (a timeout, a view that went away) rejects the request.
     fetch: (url, init = {}) => {
       if (init.keepalive) db.keepaliveRequests.push(url);

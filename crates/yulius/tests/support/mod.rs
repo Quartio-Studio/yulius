@@ -1486,3 +1486,61 @@ pub fn tool_text(result: &serde_json::Value) -> serde_json::Value {
             .to_owned(),
     )
 }
+
+/// Counts `pulls.updated` events for `sandbox` (SPEC-108) on an event bus subscription, checking
+/// that each reaches only that sandbox's viewers.
+pub struct PullAnnouncements {
+    events: tokio::sync::broadcast::Receiver<yulius_app::events::Envelope>,
+    sandbox: String,
+}
+
+impl PullAnnouncements {
+    /// Subscribes to `app`'s events now.
+    pub fn new(app: &App, sandbox: &str) -> Self {
+        Self {
+            events: app.events.subscribe(),
+            sandbox: sandbox.to_owned(),
+        }
+    }
+
+    fn count(&self, envelope: &yulius_app::events::Envelope) -> usize {
+        let yulius_contracts::events::UiEvent::PullsUpdated { sandbox_id } = &envelope.event else {
+            return 0;
+        };
+        assert_eq!(sandbox_id, &self.sandbox);
+        assert_eq!(
+            envelope
+                .sandbox
+                .as_ref()
+                .map(ToString::to_string)
+                .as_deref(),
+            Some(self.sandbox.as_str()),
+            "only the sandbox's viewers receive it"
+        );
+        assert!(!envelope.admin_only);
+        1
+    }
+
+    /// The announcements already delivered since the last call.
+    pub fn take(&mut self) -> usize {
+        let mut count = 0;
+        while let Ok(envelope) = self.events.try_recv() {
+            count += self.count(&envelope);
+        }
+        count
+    }
+
+    /// Waits until `want` announcements arrived (or `within` passed); returns how many did.
+    pub async fn wait_for(&mut self, want: usize, within: std::time::Duration) -> usize {
+        let deadline = tokio::time::Instant::now() + within;
+        let mut count = 0;
+        while count < want {
+            match tokio::time::timeout_at(deadline, self.events.recv()).await {
+                Ok(Ok(envelope)) => count += self.count(&envelope),
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
+                _ => break,
+            }
+        }
+        count
+    }
+}

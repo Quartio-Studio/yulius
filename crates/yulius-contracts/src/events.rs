@@ -83,6 +83,13 @@ pub enum UiEvent {
         /// Who saved it.
         updated_by: String,
     },
+    /// The sandbox's pull requests may have changed (a delivery stage moved, a Yulius CI run was
+    /// queued, started or ended): watching clients read the Git overview again (SPEC-108).
+    #[serde(rename = "pulls.updated")]
+    PullsUpdated {
+        /// Sandbox id.
+        sandbox_id: String,
+    },
     /// Events were lost; refetch.
     #[serde(rename = "resync")]
     Resync,
