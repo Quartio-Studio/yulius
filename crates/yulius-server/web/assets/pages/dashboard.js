@@ -13,6 +13,7 @@ import { pageFrame, loader } from './common.js';
 import { modelLabel } from '../models.js';
 import { accountUsage, capacityPanel } from '../layout.js';
 import { sparkline } from '../charts.js';
+import { replaceQuietly } from '../router.js';
 
 const RANGES = [[7, '7 days'], [30, '30 days'], [90, '90 days']];
 const DAY = 86400000;
@@ -28,15 +29,18 @@ const isoDay = (date) => date.toISOString().slice(0, 10);
 const parseDay = (day) => new Date(`${day}T00:00:00Z`);
 
 /** Mount the Dashboard page. */
-export function mountDashboardPage(ctx, sandbox) {
-  let days = 30;
+export function mountDashboardPage(ctx, sandbox, route) {
+  // The period is kept in the address, so it comes back with the page (SPEC-113 KST-007).
+  const asked = Number(route && route.query.get('days'));
+  let days = RANGES.some(([value]) => value === asked) ? asked : 30;
+  const base = `/s/${encodeURIComponent(sandbox.slug)}/dashboard`;
   const rangeLabel = h('span', { class: 'db-range' });
   const exportButton = h('button', { type: 'button', class: 'btn btn-sm', 'aria-haspopup': 'menu', onClick: () => openMenu(exportButton, [
     { label: 'Tasks as CSV', description: 'One row per task, for spreadsheets', onSelect: () => download('csv') },
     { label: 'Tasks as JSON', description: 'The same rows as JSON', onSelect: () => download('json') },
   ], { align: 'end' }) }, icon('download', { size: 14 }), 'Export');
   const range = h('div', { class: 'seg db-seg', role: 'radiogroup', 'aria-label': 'Date range' }, RANGES.map(([value, label]) => h('label', null,
-    h('input', { type: 'radio', name: 'dash-range', value: String(value), checked: value === days, onChange: () => { days = value; reload(); } }), label)));
+    h('input', { type: 'radio', name: 'dash-range', value: String(value), checked: value === days, onChange: () => { days = value; replaceQuietly(days === 30 ? base : `${base}?days=${days}`); reload(); } }), label)));
   // The subtitle says what the page is for (#147); the dates of the chosen range sit with the range.
   const frame = pageFrame({ title: 'Dashboard', sub: 'what the tasks of this sandbox did, and what it took', actions: [rangeLabel, range, exportButton, iconButton('refresh', 'Refresh', () => reload())] });
   const host = h('div', { class: 'db' });

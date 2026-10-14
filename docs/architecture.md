@@ -504,6 +504,17 @@ it open ([decision 0087](decisions/0087-pull-request-changes-are-announced.md)).
 Sign-out removes the notification history, the drafts and the pull requests; an expired session
 removes the pull requests too.
 
+Screens keep their state when the person moves away and back
+([decision 0092](decisions/0092-screens-remember-where-they-were-left.md), SPEC-113). The router
+(`router.js`) remembers, in `sessionStorage` for this browser tab, the last address shown inside
+each sandbox and on each sandbox page, including the filters pages keep in their query with
+`replaceQuietly`; links marked `data-restore` (sandbox tabs, Home's cards, the sidebar's pages, the
+Tasks and Git back links) go back there, and a link to where the person already is opens the plain
+path. The tool panel (`panels.js`) keeps each sandbox's open tool, and the Superagent, Browser,
+Editor and Shell views of the 3 sandboxes used last stay alive, hidden; the editor of a sandbox in
+the background keeps its files' text without Monaco models. Sign-out and an expired session forget
+the places.
+
 Every drop-down menu is built by `openMenu` (`dom.js`). It stays inside the window, scrolling its
 items, and a menu of 8 or more items opens with a filter box
 ([decision 0030](decisions/0030-menus-filter-when-long.md)). A group of items under a header (the
@@ -524,6 +535,10 @@ flowchart LR
   LP -->|"after a reload, until the read answers"| P
   SO -->|"forget"| LP
   EX["Session expired"] -->|"forget"| LP
+  R["router.js emit / replaceQuietly"] -->|"each address in a sandbox"| PL[("sessionStorage yulius.places")]
+  PL -->|"data-restore links: tabs, Home cards, sidebar pages"| R
+  SO -->|"forget"| PL
+  EX -->|"forget"| PL
 ```
 
 ## Task status

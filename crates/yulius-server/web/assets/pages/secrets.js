@@ -127,13 +127,37 @@ function confirmIdentity(ctx, status, why) {
   return modal.result.then((v) => v === true);
 }
 
-/** Shows a revealed value and notes. */
+/** The dots a masked value shows: a fixed run, so they do not tell the value's length. */
+const MASK = '••••••••••••';
+
+/**
+ * A revealed value, masked until its eye button is pressed (SPEC-114). While masked the value is
+ * not in the page at all, so a selection, find-in-page or an extension cannot read it. Hovering
+ * the box (or focus in it) shows a quick copy after the eye, which `copy` serves.
+ */
+function maskedValue(value, copy) {
+  const text = h('code', { class: 'mono secret-value' });
+  const eye = h('button', { type: 'button', class: 'btn-icon secret-eye', 'aria-label': 'Show value', 'aria-pressed': 'false', onClick: () => draw(eye.getAttribute('aria-pressed') !== 'true') });
+  function draw(shown) {
+    eye.setAttribute('aria-pressed', String(shown));
+    eye.title = shown ? 'Hide value' : 'Show value';
+    setChildren(eye, icon(shown ? 'eye-off' : 'eye'));
+    text.classList.toggle('secret-masked', !shown);
+    if (shown) setChildren(text, value);
+    else setChildren(text, h('span', { 'aria-hidden': 'true' }, MASK), h('span', { class: 'sr-only' }, 'Value hidden'));
+  }
+  draw(false);
+  return h('div', { class: 'secret-box' }, text, eye, iconButton('copy', 'Copy', copy, { class: 'secret-quick-copy' }));
+}
+
+/** Shows a revealed value (masked until its eye is pressed) and notes. */
 function showRevealed(title, revealed) {
   const rows = [];
   if (revealed.value) {
+    const copy = () => copyValue(revealed.value, 'Value').catch((e) => errorToast(e, 'Couldn’t copy'));
     rows.push(field('Value', h('div', { class: 'row-wrap' },
-      h('code', { class: 'mono secret-value' }, revealed.value),
-      smallButton('Copy', 'Copy value', () => copyValue(revealed.value, 'Value').catch((e) => errorToast(e, 'Couldn’t copy'))))));
+      maskedValue(revealed.value, copy),
+      smallButton('Copy', 'Copy value', copy))));
   }
   if (revealed.notes) rows.push(field('Notes', h('pre', { class: 'mono secret-notes' }, revealed.notes)));
   if (rows.length === 0) rows.push(h('p', { class: 'muted' }, 'This secret stores no value or notes.'));
