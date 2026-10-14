@@ -1,11 +1,11 @@
 ---
 yulius-task: 6ab5b465-1674-4e17-a8c7-19a85ab4de56
-status: in-progress
+status: done
 ---
 
 # SPEC-100: a task waiting for Yulius shows a still, muted branch
 
-Status: in-progress
+Status: done
 Date: 2026-10-14
 Owner: task #85
 Scope authorization: the person's request (task #85): "A werid bug happened, git icon started
@@ -46,8 +46,8 @@ the Working ring. It stays in the Working group and still notifies nobody.
 
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Fix the cause until the regression test and every gate pass
+- [x] Independent review in a fresh session, findings fixed test-first
 
 ## Acceptance criteria
 
@@ -75,3 +75,21 @@ the Working ring. It stays in the Working group and still notifies nobody.
   green, the colour of Working and Done, so the row still reads as busy or finished); a new tone
   (more CSS for the same look); the Working ring (it hides that the agent waits for Yulius, which
   STT-002 shows on purpose).
+
+## Evidence
+
+- **Red first.** `npx e2e run tests/task-done.e2e.ts` with the test alone (commit ef3cf12d): 12
+  passed, 1 failed, "an agent waiting for Yulius shows a still, muted branch": `expected "spin" to
+  be "none"`. With the fix (f83881e9): 13 passed.
+- **Gates.** `scripts/dev ci` exit 0: repository contracts, unit scripts, `cargo check`, `fmt`,
+  `clippy -D warnings`, `nextest` 1520 passed (16 skipped), doctests. The whole e2e suite
+  (`E2E_TELEMETRY_DISABLED=1 npx e2e run`): 41 files passed, 1 skipped; 282 tests passed, 1
+  skipped. After merging `origin/dev` (#396, which touched `styles.css`): `task-done.e2e.ts` and
+  `loading.e2e.ts` 18 passed.
+- **Review.** An independent read-only session (`om-code-review`) approved f83881e9. It checked
+  every consumer of `info.tone` (notifications, dashboard outcome, strip status, Tasks page, task
+  time), the mock's stable Working row the test compares with, and other states pairing an icon
+  with a turning tone (none). Its minor finding (SPEC-085's Design line still said tone `working`)
+  and a label nit in STT-003 were fixed in 2545aee0.
+- **Not tested here.** The live sidebar of a real `yulius wait` task; the mock drives the same
+  `statusInfo` and `statusMark` code.
