@@ -15,6 +15,7 @@ use yulius_domain::ids::{SandboxId, TaskId};
 
 use crate::auth::AuthContext;
 use crate::context::App;
+use crate::delivery::MergeFailure;
 use crate::error::AppResult;
 use crate::model::TaskRecord;
 
@@ -521,7 +522,10 @@ impl App {
                     short(&armed.head)
                 ))
             }
-            Err(err) => Verdict::Decided(format!(
+            // GitHub could not take the pull request's new title for now: armed until the next
+            // pass (SPEC-069 BPL-008).
+            Err(MergeFailure::Later(_)) => Verdict::Keep(armed),
+            Err(MergeFailure::Refused(err)) => Verdict::Decided(format!(
                 "The merge you armed was refused: the checks of pull request #{number} \
                  passed at {}, but {}. Fix that (`delivery_status` says what is missing) \
                  and call `delivery_merge` again.",

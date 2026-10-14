@@ -14,6 +14,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   is the union of turn spans. Runs whose transcript is gone keep their figures. Each run's outcome
   and the figures it replaced are recorded, and one `metrics.recounted` audit entry sums the round.
   It runs once: later starts change nothing.
+- A task's squash commit names the change, not its spec (SPEC-069 BPL-008): the pull request's
+  default title takes the type and scope of the branch's most significant commit (feat, then fix,
+  and so on) instead of its oldest, and before Yulius merges it renews a title it gave from the
+  final commits, so #381's `docs(spec)` would have read `fix(check)`; a title a person or agent
+  wrote is kept. A GitHub outage only delays the merge (it stays armed); a title GitHub refuses
+  stops it, and `yulius wait` says how to set one.
 - A background agent that stops while its own background work still runs no longer ends in
   Yulius's eyes (SPEC-079 BGW-006, task #74). Claude Code's note says its result may be interim
   and the same task id notifies again. The task stays Working until that final notification, or
