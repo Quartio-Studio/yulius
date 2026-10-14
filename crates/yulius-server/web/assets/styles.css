@@ -1068,7 +1068,7 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 .held-text { margin: 0; }
 .held-steps { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
 .held-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.taskview-term:has(.held-slot:not([hidden])) .term-notice, .taskview-term:has(.held-slot:not([hidden])) .term-mouse-toggle { top: 64px; }
+.taskview-term:has(.held-slot:not([hidden])) .term-notice { top: 64px; }
 /* The chain on both tasks (TSK-012). */
 .chain-chip { border: 1px solid var(--border); color: var(--text-2); text-decoration: none; }
 a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
@@ -1303,6 +1303,15 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
 .composer-repo-link span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-branch { display: inline-flex; flex: none; align-items: center; gap: 6px; height: var(--control-lg); padding: 0 12px; border: 1px solid var(--border-strong); border-radius: var(--radius); color: var(--text-2); font-family: var(--font-mono); font-size: var(--fs-md); line-height: var(--lh-md); }
 @media (max-width: 767px) { .composer-top { position: static; align-self: stretch; flex-wrap: wrap; margin-bottom: 16px; } }
+/* Onboarding comes first (SPEC-096): only its message and button, centred in the page. */
+/* Symmetric, clear of the top bar (16px from the top, one large control high). */
+.composer.gated { padding: calc(var(--control-lg) + 32px) 16px; }
+.onboarding-gate { width: min(560px, 100%); margin-block: auto; display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; }
+.onboarding-gate-title { margin: 0; color: var(--text); font-family: var(--font-display); font-size: var(--fs-xl); line-height: var(--lh-xl); font-weight: 500; text-wrap: balance; }
+.onboarding-gate p { margin: 0; color: var(--text-2); }
+.onboarding-gate-steps { display: flex; flex-direction: column; gap: 6px; margin: 0; padding-left: 20px; color: var(--text-2); text-align: left; }
+.onboarding-gate .btn { margin-top: 8px; }
+@media (max-width: 767px) { .composer.gated { padding: 16px; } }
 /* The prompt box (UI-021): a rounded chat box with the task's choices along its bottom edge. */
 .composer-box {
   display: flex; flex-direction: column; border: 1px solid var(--border-control); border-radius: var(--radius-xl);
@@ -1986,10 +1995,6 @@ a.dl-task:hover { text-decoration: underline; }
   .grid-2 { grid-template-columns: minmax(0, 1fr); }
   .table .hide-phone { display: none; }
 }
-
-/* Terminal mouse hand-over (shown only when the program asked for the mouse). */
-.term-mouse-toggle { background: var(--surface-2); box-shadow: var(--shadow-sm); font-size: var(--fs-xs); line-height: var(--lh-xs); opacity: 0; transition: opacity var(--duration-fast) var(--ease); }
-.term:hover .term-mouse-toggle, .term-mouse-toggle:focus-visible { opacity: 1; }
 
 /* Harness change waiting for approval (ROT-012). */
 

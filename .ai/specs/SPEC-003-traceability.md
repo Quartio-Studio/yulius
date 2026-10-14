@@ -258,6 +258,7 @@ Claude-only decision of the next day, and where each item landed. Later follow-u
 | 85 | (2026-10-12, `F 2026-10-12`, task #26, a screenshot of the tools rail pointing at Messages) "delete message mechanism for now until we make the infra very good". | COM-005 and AC-COM-2 withdrawn; DLV-008, UI-017, UI-020, AC-UI-21, AC-UI-36 (SPEC-028, ADR-0023) |
 | 86 | (2026-10-12, `F 2026-10-12`, task #39, a screenshot of the "Add team secret" dialog: Title, Address, User name, Password, Notes, Two-factor seed) "It should be only value title notes. 2FA should be per wallet and should be mandatory. The same for the agents but without 2FA for agents ofc. But for human to read them, 2FA should also be mandatory (but they should be able to read actually)". | VLT-001, VLT-002, VLT-006 changed, VLT-003 withdrawn, AC-VLT-1/2/5 (SPEC-040, ADR-0042) |
 | 87 | (2026-10-14, task #77, a screenshot of the Git page with a spinner and "Loading delivery…") "Instead of loading we want floating loading fields in all places". | UI-050 changed (SPEC-092, ADR-0073) |
+| 88 | (2026-10-14, task #83, a screenshot of the terminal's "Mouse: select text · send to app" chip) "this is weird af, delete it. default should be sending things to the terminal". | UI-019 (changed), AC-UI-11 (SPEC-098, ADR-0079) |
 
 ## Changelog
 

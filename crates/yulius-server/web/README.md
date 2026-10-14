@@ -69,7 +69,7 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/pages/*.js` | Pages: auth (setup, sign-in), tasks (+ archived, device approval), task overview (`taskinfo.js`), git and a task's review (`gittask.js`), CI (`ci.js`: runs, job logs, repository hygiene), workflows, skills, automations, MCP and their editors (`workflowedit.js`, `skilledit.js`, `skillnew.js`, `automationedit.js`, `mcpedit.js`), dashboard, admin (users, accounts, GitHub, instance), settings, design. |
 | `assets/spotlight.js` | The search dialog (Tasks page `/`): results with ↑/↓, Enter opens, ⌘/Ctrl+Enter goes to the task. |
 | `assets/intake.js` | Task intake in the composer: the split proposal card and held prompts (SPEC-002 ADR-16). |
-| `assets/termkeys.js`, `assets/termlinks.js`, `assets/mousefilter.js` | Terminal key table per platform (copy, paste, interrupt), links in terminal output (web links and file paths to the editor), mouse-report filtering (wheel turns and plain clicks still reach a full-screen program). |
+| `assets/termkeys.js`, `assets/termlinks.js`, `assets/mousefilter.js` | Terminal key table per platform (copy, paste, interrupt), links in terminal output (web links and file paths to the editor), mouse-report filtering for read-only viewers (a writer's mouse is the program's when it asks for it, ADR-0079). |
 | `assets/updates.js` | Instance updates (OPS-006..009, ADR-18): the calm banner (an update running for everyone; "Update available" and a failed update for the superadmin; "Reload" once the server runs newer code) and the superadmin's notification, from `GET /api/update` and `update.updated`; polls while an update runs. |
 | `assets/jevkey.js` | The Jev key (ADM-001/002): the setup wizard's optional last step and the instance page's card (set, replace, test, remove, save a configured key here); the key is never shown back. |
 | `assets/pages/instance.js` | Settings → Instance (superadmin): the build, the update on offer with its commits, Update now with its confirmation, the progress (build → pause tasks → restart → resume) and the outcome; the Jev key card. |
@@ -268,8 +268,11 @@ accounts with usage (some unknown), Git data and delivery stages, environment ru
 CI runs with job logs and repository hygiene (`studio` has jobs and runs, `product` has no CI and
 leftover GitHub Actions workflows), workflows, skills, automations, MCP servers, analytics, the
 superadmin recovery code (mock code `123456`) and the GitHub App connection. Importing a repository creates a
-sandbox whose onboarding is `pending` with a resting preparation task (Start onboarding /
-Skip). Uploads report progress in steps, a dropped file lands in the editor's in-memory
+sandbox whose onboarding is `pending` with a resting preparation task carrying the server's plan
+(`mobile-app` already follows the format, so its task only sets up the environment): its new-task
+page shows only the onboarding message with Start onboarding, and the mock marks it ready 9 s
+later (a test sets `__yuliusMock.manualOnboarding` and calls `finishOnboarding(slug)` instead).
+`&onboarding=preparing` starts with `product` being onboarded. Uploads report progress in steps, a dropped file lands in the editor's in-memory
 repository and attachments get server-like paths and names. Task terminals print TUI-like ANSI output (with file references in every form the terminal links
 to the editor, and some it must not), echo input and answer on Enter; type
 `/exit` to close a task, `/lag` to force a 4008 reconnect, `/help` for the list. The

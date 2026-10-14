@@ -303,12 +303,24 @@ the audit actor, never on the caller's own task
 ([SPEC-066](../.ai/specs/SPEC-066-fix-275-293-cockpit-and-agents-manage-ta.md),
 [decision 0049](decisions/0049-management-tools-cover-the-task-and-automation-lifecycle.md)).
 
+A repository's `.mcp.json` would make Claude Code ask about each of its servers when the
+Superagent starts. Before every task run and Superagent start, `App::import_project_mcp` adds
+the file's servers that the sandbox lacks to its MCP servers, so task runs get them like any
+other server. The Superagent starts with `--settings` naming every one of them in
+`disabledMcpjsonServers`, so it never asks
+([SPEC-095](../.ai/specs/SPEC-095-while-onboarding-other-project-i-got-som.md),
+[decision 0078](decisions/0078-repository-mcp-json-feeds-the-mcp-section.md)). An MCP server's
+secret values reach a run in `YULIUS_MCP_<SERVER>_<VAR>` variables, never under the server's own
+variable name, which may hold an agent secret's placeholder.
+
 ```mermaid
 flowchart LR
   UI["Right panel: Superagent"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
   APP -->|"pool_account"| POOL[("Subscriptions")]
   W["Cockpit watch: newest conversation"] -->|"usage limit after the start: record_limit, start again (switched)"| APP
-  APP -->|"plan_cockpit"| HP["Harness: claude [--resume id] --mcp-config yulius"]
+  APP -->|"plan_cockpit"| HP["Harness: claude [--resume id] --mcp-config yulius [--settings: .mcp.json servers rejected]"]
+  APP -->|"import_project_mcp (also before task runs)"| MS[("Sandbox MCP servers")]
+  REPO[".mcp.json in the repository"] --> APP
   APP --> SH["Shell runtime (user space, repository)"]
   UI -->|"WS /api/shells/id/terminal"| SH
   SH -->|"Bearer ck_… (YULIUS_COCKPIT_TOKEN)"| MCP["/mcp: management tools"]
