@@ -43,6 +43,7 @@ use crate::identity::UserSpace;
 use crate::model::{SandboxRecord, Sealed};
 use crate::ports::Clock;
 use crate::ports::session::{LaunchPlan, RunEvent, RunExit, RunInspection, RunReader, RunWriter};
+use crate::write_grant::WriteGrant;
 
 /// Prefix of a Cockpit's Yulius MCP bearer (SPEC-037).
 pub const COCKPIT_TOKEN_PREFIX: &str = "ck_";
@@ -291,6 +292,8 @@ pub struct ShellAttach {
     pub subscription: Subscription,
     runtime: Arc<ShellRuntime>,
     clock: Arc<dyn Clock>,
+    /// Confirmed write access, so a keystroke does not wait for a check (SPEC-118).
+    grant: Arc<WriteGrant>,
 }
 
 impl ShellAttach {
@@ -983,6 +986,9 @@ impl App {
         shell_id: &str,
         size: Option<(u16, u16)>,
     ) -> AppResult<ShellAttach> {
+        // Read before the checks below: a change of access while they run checks the first input.
+        let epoch = self.deps.store.access_epoch();
+        let checked_at = self.now().0;
         let runtime = self
             .shell(shell_id)
             .filter(|shell| shell.creator == ctx.user.id)
@@ -1002,23 +1008,64 @@ impl App {
             let _ = Self::resize_shell(&runtime, cols, rows).await;
         }
         let subscription = runtime.hub.subscribe();
+        // The checks above are `shell_allowed`'s: they confirm this viewer's grant.
+        let grant = Arc::new(WriteGrant::default());
+        grant.settle(epoch, checked_at, true);
         Ok(ShellAttach {
             shell_id: runtime.id.clone(),
             subscription,
             runtime,
             clock: Arc::clone(&self.deps.clock),
+            grant,
         })
     }
 
-    /// Whether the viewer may still use the shell (re-checked on input and periodically).
-    pub async fn shell_still_allowed(&self, ctx: &AuthContext, attach: &ShellAttach) -> bool {
+    /// The periodic re-check of a shell's viewer, to run beside its loop (it may wait for the
+    /// database and GitHub; SPEC-118 KEY-005): `None` while the viewer may still use the shell,
+    /// else why not.
+    pub fn shell_recheck(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        attach: &ShellAttach,
+    ) -> impl std::future::Future<Output = Option<&'static str>> + Send + 'static {
+        let (app, ctx, runtime) = (Arc::clone(self), ctx.clone(), Arc::clone(&attach.runtime));
+        async move {
+            if !app.still_signed_in(&ctx).await {
+                Some("signed out")
+            } else if !app.shell_allowed(&ctx, &runtime).await {
+                Some("access revoked")
+            } else {
+                None
+            }
+        }
+    }
+
+    /// Whether the viewer may still use the shell (checked periodically, and before input when
+    /// access changed: [`Self::shell_may_write`]).
+    async fn shell_allowed(&self, ctx: &AuthContext, runtime: &ShellRuntime) -> bool {
         ctx.user.disabled_at.is_none()
-            && !attach.runtime.closing.load(Ordering::SeqCst)
+            && !runtime.closing.load(Ordering::SeqCst)
             && self
-                .require(&ctx.user, &attach.runtime.sandbox, Action::Work)
+                .require(&ctx.user, &runtime.sandbox, Action::Work)
                 .await
                 .is_ok()
-            && self.owns_shell_task(ctx, &attach.runtime).await
+            && self.owns_shell_task(ctx, runtime).await
+    }
+
+    /// Whether the viewer may type into the shell now: a closing shell never; otherwise its grant
+    /// holds while nothing that decides access changed, so a keystroke waits for neither the
+    /// database nor GitHub (SPEC-118 KEY-001).
+    async fn shell_may_write(self: &Arc<Self>, ctx: &AuthContext, attach: &ShellAttach) -> bool {
+        if ctx.user.disabled_at.is_some() || attach.runtime.closing.load(Ordering::SeqCst) {
+            return false;
+        }
+        let (ctx, runtime) = (ctx.clone(), Arc::clone(&attach.runtime));
+        // The full check also reads the user and the session again (the viewer's `ctx` is a copy
+        // from when the socket opened).
+        self.write_granted(&attach.grant, move |app| async move {
+            app.still_signed_in(&ctx).await && app.shell_allowed(&ctx, &runtime).await
+        })
+        .await
     }
 
     /// Whether a shell in a task's worktree is still its creator's to use: they must own the
@@ -1041,7 +1088,7 @@ impl App {
     /// `Forbidden` after access was revoked, `Invalid` for oversized frames, `Conflict` once
     /// the shell ended.
     pub async fn shell_input(
-        &self,
+        self: &Arc<Self>,
         ctx: &AuthContext,
         attach: &ShellAttach,
         data: &[u8],
@@ -1049,7 +1096,7 @@ impl App {
         if data.len() > MAX_SHELL_INPUT_BYTES {
             return Err(AppError::Invalid("input frame too large".into()));
         }
-        if !self.shell_still_allowed(ctx, attach).await {
+        if !self.shell_may_write(ctx, attach).await {
             return Err(AppError::Forbidden("write access is required".into()));
         }
         match attach.runtime.writer.lock().await.as_mut() {
@@ -1064,13 +1111,13 @@ impl App {
     /// # Errors
     /// As [`Self::shell_input`].
     pub async fn shell_resize(
-        &self,
+        self: &Arc<Self>,
         ctx: &AuthContext,
         attach: &ShellAttach,
         cols: u16,
         rows: u16,
     ) -> AppResult<()> {
-        if !self.shell_still_allowed(ctx, attach).await {
+        if !self.shell_may_write(ctx, attach).await {
             return Err(AppError::Forbidden("write access is required".into()));
         }
         Self::resize_shell(&attach.runtime, cols, rows).await

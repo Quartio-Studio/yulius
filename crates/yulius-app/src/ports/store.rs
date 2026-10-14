@@ -172,6 +172,12 @@ pub trait PermissionStore: Send + Sync {
     ) -> AppResult<()>;
     /// Drops a user's cache (sign-in, disable).
     async fn clear_access(&self, user: &UserId) -> AppResult<()>;
+    /// A counter that grows with every write that can change who may type into a terminal: a
+    /// task's owner (hand-over, take-over, delete), a sandbox's removal, a user's flags or GitHub
+    /// link, a revoked session or token, a cached GitHub level that changed, a cleared cache.
+    /// Read in memory, without the database: a terminal viewer's write grant holds while it is
+    /// unchanged (SPEC-118 KEY-002).
+    fn access_epoch(&self) -> u64;
 }
 
 /// Sandboxes.

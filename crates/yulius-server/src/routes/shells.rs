@@ -12,6 +12,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use tokio::sync::broadcast::error::RecvError;
+use tokio::task::JoinHandle;
 use yulius_app::auth::{AuthContext, rfc3339};
 use yulius_app::error::AppError;
 use yulius_app::hub::HubFrame;
@@ -27,8 +28,6 @@ use crate::AppState;
 use crate::auth::Auth;
 use crate::error::ApiResult;
 
-/// Permission re-check interval for open viewers (ACC-008).
-const RECHECK: Duration = Duration::from_secs(60);
 /// Close code: access revoked.
 const CLOSE_REVOKED: u16 = 4003;
 
@@ -173,8 +172,12 @@ async fn pump(app: AppState, ctx: AuthContext, mut attach: ShellAttach, mut sock
     }
     let mut last_seq = attach.subscription.seq;
     let mut last_input_seq: Option<u64> = None;
-    let mut recheck = tokio::time::interval(RECHECK);
+    let mut recheck =
+        tokio::time::interval(Duration::from_millis(app.config.viewer_recheck_ms.max(100)));
+    // A re-check that took longer than the interval delays the next one; no burst follows it.
+    recheck.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     recheck.tick().await;
+    let mut pending: Option<JoinHandle<Option<&'static str>>> = None;
     loop {
         tokio::select! {
             frame = attach.subscription.rx.recv() => {
@@ -237,16 +240,30 @@ async fn pump(app: AppState, ctx: AuthContext, mut attach: ShellAttach, mut sock
                     break;
                 }
             }
-            _ = recheck.tick() => {
-                if !app.still_signed_in(&ctx).await {
-                    close(&mut socket, CLOSE_REVOKED, "signed out").await;
-                    break;
-                }
-                if !app.shell_still_allowed(&ctx, &attach).await {
-                    close(&mut socket, CLOSE_REVOKED, "access revoked").await;
+            // The re-check runs beside this loop, at most one at a time: output and input keep
+            // flowing while it waits for the database or GitHub (SPEC-118 KEY-005).
+            _ = recheck.tick(), if pending.is_none() => {
+                pending = Some(tokio::spawn(app.shell_recheck(&ctx, &attach)));
+            }
+            found = verdict(&mut pending), if pending.is_some() => {
+                pending = None;
+                if let Some(reason) = found {
+                    close(&mut socket, CLOSE_REVOKED, reason).await;
                     break;
                 }
             }
         }
+    }
+    if let Some(handle) = pending {
+        handle.abort();
+    }
+}
+
+/// The pending re-check's verdict (`Some(reason)` to close); never ready without one.
+async fn verdict(pending: &mut Option<JoinHandle<Option<&'static str>>>) -> Option<&'static str> {
+    match pending.as_mut() {
+        // A re-check that failed proves nothing: the viewer is closed, as without access.
+        Some(handle) => handle.await.unwrap_or(Some("access re-check failed")),
+        None => std::future::pending().await,
     }
 }
