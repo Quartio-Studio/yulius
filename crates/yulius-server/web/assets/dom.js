@@ -143,6 +143,8 @@ const ICONS = {
   grid: [[4, 4], [13.5, 4], [4, 13.5], [13.5, 13.5]].map(([x, y]) => ['rect', { x, y, width: 6.5, height: 6.5, rx: 1.6 }]),
   // The composer's Preview (the prompt formatted).
   eye: [['path', { d: 'M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z' }], ['circle', { cx: 12, cy: 12, r: 3 }]],
+  // A secret value shown (SPEC-114): the eye struck through hides it again.
+  'eye-off': [['path', { d: 'M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z' }], ['circle', { cx: 12, cy: 12, r: 3 }], ['path', { d: 'M4 4l16 16' }]],
 };
 
 /** Every icon name (the /design page shows them all). */
