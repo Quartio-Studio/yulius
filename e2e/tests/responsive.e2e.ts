@@ -17,6 +17,7 @@ function layoutProblems(browser: Browser) {
       '.page-head > *', '.page-actions > *', '.toolbar > *', '.tl-toolbar button', '.tl-summary', '.ss-toolbar > *',
       '.tl-columns > span', '.tl-row > *', '.tl-link > *', '.item-title > *', '.item-controls > *',
       '.home-card-head > *', '.home-count', '.home-card-actions > *',
+      '.dl-need > *', '.dl-need .btn', '.dl-env > *', '.dl-strip > *', '.dl-board > *', '.dl-col-head > *',
       '.wf-head .gt-title-row > *', '.stepstrip-main > *', '.stepstrip-toggle > *', '.step-label > *', '.panel-head > *', '.panel-head .row > *',
     ].join(', ');
     const describe = (el: Element) => `${el.tagName.toLowerCase()}.${[...el.classList].slice(0, 2).join('.')} "${(el.getAttribute('aria-label') || el.textContent || '').trim().slice(0, 24)}"`;
@@ -95,6 +96,35 @@ test('the Tasks page with a tool panel open wraps its state tabs instead of over
   await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
   await expect.poll(() => layoutProblems(browser)).toEqual({ overlaps: [], sideways: false });
   await expect(screen.getByRole('radio', /^Closed/)).toBeVisible();
+});
+
+// Task #100 (SPEC-115): the Git page beside a tool panel kept four board columns and two summary
+// cards side by side, because they gave way to the window's width, not the page's. A column a few
+// letters wide broke task titles letter by letter. Each column and card now keeps room for words.
+const gitRoom = (browser: Browser) => browser.evaluate(() => {
+  const widths = [...document.querySelectorAll('#main .dl-col, #main .dl-strip > .dl-card')]
+    .map((el) => Math.round(el.getBoundingClientRect().width));
+  return { count: widths.length, narrowest: widths.length ? Math.min(...widths) : 0 };
+});
+
+test('the Git page beside a tool panel keeps its board columns and summary cards wide enough to read', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/git'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Git');
+  // Without a panel a wide window still shows the board's columns side by side, in one row.
+  await expect.poll(() => browser.evaluate(() => new Set([...document.querySelectorAll('#main .dl-col')]
+    .map((el) => Math.round(el.getBoundingClientRect().top))).size)).toBe(1);
+  await expect.poll(async () => (await gitRoom(browser)).count).toBeGreaterThan(2);
+  await screen.getByRole('button', /^Show tools/).click();
+  for (const tool of ['Editor', 'Shell']) {
+    await screen.getByRole('navigation', 'Tools').getByRole('button', new RegExp(`^${tool}`)).click();
+    await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
+    for (const width of [1920, 1440, 1024]) {
+      await browser.setViewport({ width, height: 900 });
+      await expect.poll(() => layoutProblems(browser)).toEqual({ overlaps: [], sideways: false });
+      await expect.poll(async () => (await gitRoom(browser)).narrowest).toBeGreaterThanOrEqual(180);
+      expect((await gitRoom(browser)).count).toBeGreaterThan(2);
+    }
+  }
 });
 
 // A task beside a tool panel: the step strip's parts gave way to nothing, so "Step 3/7" ran under the
