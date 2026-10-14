@@ -10,6 +10,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   Yulius's eyes (SPEC-079 BGW-006, task #74). Claude Code's note says its result may be interim
   and the same task id notifies again. The task stays Working until that final notification, or
   an hour without it, and a switch waits for it; before, the task read "Your turn" in between.
+- The session view folds long injected context as Claude Code's TUI hides it (SPEC-090, ADR-0071,
+  #347): a meta note over 8 lines or 2,000 characters, such as a skill's body, is one faint
+  `⎿ Context added (6.2 KiB)` line that opens on demand. Shorter notes people act on, such as the
+  Stop hook's goal and feedback, stay as written; `session_read` is unchanged.
 - `yulius doctor` warns when the host's GitHub CLI is older than 2.82.1 (SPEC-088): since GitHub
   retired Projects (classic), `gh pr edit` and `gh issue view --comments` fail on older versions,
   on the host and in every sandbox. Unrecognised version lines stay OK. The warning and `docs/operations.md`
