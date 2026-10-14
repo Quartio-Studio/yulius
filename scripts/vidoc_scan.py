@@ -34,10 +34,17 @@ HTTP_TIMEOUT_S = 30
 GIT_TIMEOUT_S = 60
 NPM_TIMEOUT_S = 10 * 60
 INSTALL_STAMP = ".yulius-lock-sha256"
-# Changed files of these kinds are scanned by Vidoc: "nothing to scan" with one of them is wrong.
+# Changed files of these kinds are scanned by Vidoc unless they sit in a directory the CLI never
+# indexes (its built-in ignore list, CLI 0.1.25): "nothing to scan" with one is a CLI we misread.
 SOURCE_SUFFIXES = {".rs", ".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".go", ".java",
                    ".rb", ".php"}
-CLI_FINDING = re.compile(r"^\s*\[(Critical|High)\] ", re.MULTILINE)
+CLI_SKIPPED_DIRS = {
+    ".git", ".svn", ".vscode", ".idea", ".vs", "venv", ".venv", "env", ".env", "node_modules",
+    "dist", "build", "Build", "target", "out", "bin", ".pytest_cache", ".vscode-test", ".continue",
+    "__pycache__", "site-packages", ".gradle", ".mvn", ".cache", "gems", "vendor", ".next", ".nuxt",
+    ".turbo", ".nx", ".yarn", ".pnpm-store", ".parcel-cache", ".mypy_cache", ".ruff_cache", ".tox",
+    ".coverage", ".nyc_output", ".jest", ".storybook",
+}
 # How the CLI itself checks it can reach origin before asking it for the default branch; when the
 # check fails it quietly compares with origin/main.
 CLI_REMOTE_CHECK = ("-c", "credential.interactive=never", "-c", "core.askPass=", "-c",
@@ -168,11 +175,16 @@ def check_repository(git, cli_environment):
     if head is None or head.group(1) == "(unknown)":
         raise Usage("cannot read origin's default branch (`git remote show origin` needs access to "
                     "origin); the CLI would compare with origin/main instead")
-    base = f"origin/{head.group(1)}"
+    default = head.group(1)
+    base = f"origin/{default}"
+    # The CLI fetches the default branch before its merge base; so do we, to agree on the base.
+    code, _ = git("fetch", "--no-tags", "origin", default, env=check_env)
+    if code != 0:
+        raise Usage(f"fetching {base} failed")
     code, merge_base = git("merge-base", "HEAD", base)
     if code != 0 or not merge_base.strip():
         raise Usage(f"the branch has no merge base with {base}: fetch it (no shallow clone)")
-    _, changed = git("diff", "--name-only", f"{merge_base.strip()}..HEAD")
+    _, changed = git("diff", "--name-only", "--diff-filter=d", f"{merge_base.strip()}..HEAD")
     return branch.strip(), base, [line for line in changed.splitlines() if line.strip()]
 
 
@@ -195,8 +207,9 @@ def finding_line(issue):
     if isinstance(issue.get("issue"), dict):
         issue = issue["issue"]
     where = issue.get("path") or "?"
-    if issue.get("line") is not None:
-        where = f"{where}:{issue['line']}"
+    if isinstance(issue.get("line"), int):
+        # 0-based in the API: the CLI prints it plus one.
+        where = f"{where}:{issue['line'] + 1}"
     return f"  [{issue.get('severity')}] {issue.get('name')} - {where} {issue.get('url') or ''}".rstrip()
 
 
@@ -211,7 +224,7 @@ def gate(env, git, api, cli, log, out):
         if err.status in (401, 403):
             raise Usage(f"Vidoc rejected the key ({err}): the host api.vidoc.dev may not be bound "
                         f"to the secret yet, or the key expired. {HOW_TO_ADD_KEY}") from err
-        if err.status == 0 or err.status >= 500:
+        if err.status in (0, 402, 429) or err.status >= 500:
             raise Usage(f"Vidoc API {url} cannot be reached: {err}") from err
         raise Failed(f"Vidoc API {url} is not usable: {err}") from err
     print(f"Vidoc: scanning {branch}: {len(changed)} changed file(s) since {base}.", file=out, flush=True)
@@ -221,10 +234,11 @@ def gate(env, git, api, cli, log, out):
     scan_id = parse_scan_id(output)
     if scan_id is None:
         if NOTHING_TO_SCAN in output:
-            sources = [path for path in changed if Path(path).suffix in SOURCE_SUFFIXES]
+            sources = [path for path in changed if Path(path).suffix in SOURCE_SUFFIXES
+                       and not CLI_SKIPPED_DIRS & set(Path(path).parts[:-1])]
             if sources:
-                raise Failed(f"vidoc ci found nothing to scan, but the branch changed source files "
-                             f"since {base} ({', '.join(sources[:5])}): the CLI chose another base")
+                raise Usage(f"vidoc ci found nothing to scan, but the branch changed source files "
+                            f"since {base} ({', '.join(sources[:5])}): the scan cannot be trusted")
             print(f"Vidoc: nothing to scan on {branch}: none of its {len(changed)} changed file(s) "
                   f"since {base} is a file Vidoc scans.", file=out)
             return 0
@@ -239,10 +253,6 @@ def gate(env, git, api, cli, log, out):
     issues = page.get("issues") if isinstance(page, dict) else None
     if type(total) is not int or total < 0 or not isinstance(issues, list):
         raise Failed(f"Vidoc answered an unexpected issue list for scan {scan_id}")
-    cli_findings = len(CLI_FINDING.findall(output))
-    if not total and cli_findings:
-        raise Failed(f"vidoc ci printed {cli_findings} critical or high issue(s) but the API reports "
-                     f"none for {branch}: the verdict cannot be trusted")
     if total:
         print(f"Vidoc found {total} open critical or high issue(s) on {branch} (scan {scan_id}):", file=out)
         for issue in issues:
@@ -316,8 +326,7 @@ def run_cli(argv, cwd, timeout_s):
                     sys.stdout.flush()
                     with lock:
                         kept.append(line)
-                        if (SCAN_STARTED.search(line) or NOTHING_TO_SCAN in line
-                                or CLI_FINDING.search(line)):
+                        if SCAN_STARTED.search(line) or NOTHING_TO_SCAN in line:
                             marks.append(line)
 
             reader = threading.Thread(target=pump, daemon=True)
@@ -334,6 +343,8 @@ def run_cli(argv, cwd, timeout_s):
                     pass
                 process.wait()
         reader.join(timeout=10)
+        if not reader.is_alive():
+            process.stdout.close()
         with lock:
             return code, "".join(marks) + "".join(kept)
 

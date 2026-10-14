@@ -73,6 +73,7 @@ class FakeGit:
             "remote": (0, "origin\n"),
             "show": (0, "* remote origin\n  Fetch URL: https://github.com/o/r.git\n  HEAD branch: dev\n"),
             "ls-remote": (0, "6f2177e7e7259c81f7454baead867cc121577166\tHEAD\n"),
+            "fetch": (0, ""),
             "merge-base": (0, MERGE_BASE + "\n"),
             "diff": (0, "scripts/vidoc_scan.py\ndocs/changes.md\n"),
         }
@@ -275,7 +276,8 @@ class Gate(unittest.TestCase):
         code, out = run(api_for(issues=issues_page([ISSUE])))
         self.assertEqual(code, 1)
         self.assertIn("[high] Command injection in hook runner", out)
-        self.assertIn("crates/yulius-app/src/hooks.rs:42", out)
+        # The API's line is 0-based: the CLI prints line + 1.
+        self.assertIn("crates/yulius-app/src/hooks.rs:43", out)
         self.assertIn(ISSUE["url"], out)
 
     def test_findings_wrapped_like_the_cli_endpoint_are_printed_too(self):
@@ -316,18 +318,35 @@ class Gate(unittest.TestCase):
         with self.assertRaises(Failed):
             run(cli=FakeCli(output="Scan did not complete successfully\n"))
 
-    def test_cli_findings_the_api_does_not_report_fail(self):
+    def test_a_fixed_finding_the_cli_still_lists_does_not_fail_an_open_total_of_zero(self):
         output = f"Scan started with ID: {SCAN_ID}\n[High] SQL injection - src/a.rs:3 [Validated]\n"
-        with self.assertRaises(Failed):
-            run(cli=FakeCli(output=output))
+        code, _ = run(cli=FakeCli(output=output))
+        self.assertEqual(code, 0)
 
-    def test_nothing_to_scan_with_changed_source_files_fails(self):
+    def test_nothing_to_scan_with_changed_source_files_is_not_run(self):
         output = "No scannable files matched the selected scope in the current directory.\n"
-        with self.assertRaises(Failed):
+        with self.assertRaises(Usage):
             run(cli=FakeCli(output=output), git=FakeGit(diff=(0, "crates/a/src/lib.rs\n")))
 
-    def test_vidoc_unreachable_before_the_scan_is_not_run(self):
-        for status in [0, 503]:
+    def test_nothing_to_scan_passes_when_sources_changed_only_where_the_cli_never_looks(self):
+        output = "No scannable files matched the selected scope in the current directory.\n"
+        changed = "crates/yulius-ptyhost/src/bin/yulius-ptyhost.rs\nweb/assets/vendor/monaco/x.js\n"
+        git = FakeGit(diff=(0, changed))
+        code, _ = run(cli=FakeCli(output=output), git=git)
+        self.assertEqual(code, 0)
+        diff = [c for c in git.calls if c[0] == "diff"][0]
+        self.assertIn("--diff-filter=d", diff)
+
+    def test_the_base_is_fetched_before_its_merge_base_like_the_cli_does(self):
+        git = FakeGit()
+        run(git=git)
+        self.assertLess(git.calls.index(("fetch", "--no-tags", "origin", "dev")),
+                        git.calls.index(("merge-base", "HEAD", "origin/dev")))
+        with self.assertRaises(Usage):
+            run(git=FakeGit(fetch=(128, "")))
+
+    def test_vidoc_unreachable_or_out_of_quota_before_the_scan_is_not_run(self):
+        for status in [0, 402, 429, 503]:
             api = api_for()
             api.answers["/v1/codebase"] = vidoc_scan.HttpError(status, "down")
             with self.subTest(status=status), self.assertRaises(Usage):

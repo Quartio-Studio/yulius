@@ -57,17 +57,18 @@ the request for the bound host `api.vidoc.dev`.
   the command exits 2 and says how to provide one; it never prints the key.
 - SEC-003: Before uploading anything, one authenticated read (`GET /v1/codebase`) proves the key
   works; a 401 exits 2 naming the likely causes (host not bound to the agent secret, key expired),
-  and an unreachable API (no answer or 5xx) exits 2 as well. A key with whitespace or control
+  and an unreachable or exhausted API (no answer, 402, 429 or 5xx) exits 2 as well. A key with whitespace or control
   characters exits 2 without being echoed.
 - SEC-004: The CLI is the version pinned with integrity hashes in `tools/vidoc/package-lock.json`,
-  installed with `npm ci --ignore-scripts` into the ignored `tools/vidoc/node_modules` only when the installed
-  version differs from the pin.
+  installed with `npm ci --ignore-scripts` into the ignored `tools/vidoc/node_modules` only when the
+  installed version differs from the pin or the lockfile changed since the last install (a stamp of
+  its SHA-256).
 - SEC-005: The scan runs only on a named branch whose working tree is clean (untracked files
   included), because the CLI uploads the working tree and scans the changed files as they are on
   disk. The first remote must be `origin`. The CLI's own reachability check (`git ls-remote origin
   HEAD` with its flags, in the CLI's environment) must pass, and `git remote show origin` must name
   the default branch: without either, the CLI falls back to `origin/main`. The branch must also have
-  a merge base with the default branch. Each refusal exits 2. The CLI runs
+  a merge base with the default branch, fetched first as the CLI fetches it. Each refusal exits 2. The CLI runs
   with `CI=true`, its log outside the working tree, and an allowlisted environment: system basics,
   the proxy and its CA, `GIT_*`, and the `YULIUS_URL`/`YULIUS_TASK_TOKEN` that Yulius's Git
   credential helper needs. It does not get GitHub tokens (PR comments) or `DEBUG` (files in the
@@ -77,9 +78,10 @@ the request for the bound host `api.vidoc.dev`.
   it reported nothing to scan, which passes and says so), when the scan is not `completed` or
   belongs to another branch, when an API answer is not the documented shape, and when the branch
   has any open critical or high finding; each finding is printed with severity, name, path, line
-  and link. It also fails when the CLI printed critical or high issues that the API does not
-  report, and when the CLI found nothing to scan although the branch changed source files. Otherwise
-  it passes (exit 0) naming the scan.
+  and link (the API's line is 0-based; the CLI prints it plus one, and so does the gate). When the
+  CLI found nothing to scan although the branch changed (not deleted) source files outside the
+  directories the CLI never indexes, the gate exits 2: the scan cannot be trusted. Otherwise it
+  passes (exit 0) naming the scan.
 - SEC-007: Agents' verification (skill `yulius-verify`, AGENTS.md commands, the development guide)
   runs `scripts/dev security` for every change before delivery and treats a failure like any
   failed gate; when the key is missing or not yet usable it is reported as unrun, not passed.
@@ -138,5 +140,14 @@ the request for the bound host `api.vidoc.dev`.
   findings against the API, "nothing to scan" against changed source files), the refusal of a
   malformed key, `exec` in xtask, timeouts, and a lockfile stamp so that a changed lockfile
   reinstalls the CLI.
+- Review round 3 found that two round-2 cross-checks failed good branches. The CLI lists fixed
+  (and ignored) findings too, so comparing its list with the API's open total would fail every
+  branch after a fix; that check is dropped, and the live run confirms the severity filter
+  instead. "Nothing to scan" against changed sources now skips deletions and the CLI's ignored
+  directories (`bin/`, `vendor/`, `target/`, ...), and a remaining mismatch exits 2 rather than 1.
+  This was the third and last review round: the remaining minors (line base, quota codes, fetching
+  the base, closing the pipe) were fixed with tests, and a final review checked only that delta.
+- Vidoc never scans files under `bin/` or `vendor/` (its built-in ignore list), so
+  `crates/yulius-ptyhost/src/bin/` and the vendored web assets are outside this gate.
 - "Nothing to scan" passes: a branch that changes only files Vidoc does not scan (docs) has nothing
   to review, and failing it would make the gate useless for such changes.
