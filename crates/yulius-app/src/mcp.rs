@@ -199,7 +199,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "delivery_status".into(),
-            description: "Delivery state of this task: pull request, checks, spec validity, open steps, the project's delivery profile and the next actions. Deliver with delivery_merge, delivery_deploy and delivery_promote.".into(),
+            description: "Delivery state of this task: pull request, checks, spec validity, open steps, the project's delivery profile and the next actions. Deliver with delivery_merge; deploys are CD runs (cd_status, cd_deploy).".into(),
             input_schema: schema(json!({}), &[]),
         },
         ToolDescriptor {
@@ -243,13 +243,30 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "delivery_deploy".into(),
-            description: "Run the next environment of the delivery profile (for example dev after a merge, production after a promotion): its deploy command runs and its verification decides. Only environments with a command and verify = \"command\"; one a person must verify is refused. Follow the run with delivery_status.".into(),
+            description: "Run the next integration environment of the delivery profile's [[delivery.environments]] (projects without CD tables): its deploy command runs and its verification decides. Only environments with a command and verify = \"command\" after the integration stage; a production environment or one a person must verify is refused. Follow the run with delivery_status. Projects with [cd.dev] deploy with cd_deploy.".into(),
             input_schema: schema(json!({"environment": {"type": "string", "description": "Environment name from the delivery profile"}}), &["environment"]),
         },
         ToolDescriptor {
-            name: "delivery_promote".into(),
-            description: "Only when the task asks for a release to production (a person decides that, in its own task): promote the integration branch to production once every merged task's integration environments are done. With merge-commit promotion the first call opens the promotion pull request and a later call, after its checks passed, merges it; fast-forward promotes at once.".into(),
-            input_schema: schema(json!({}), &[]),
+            name: "cd_status".into(),
+            description: "This project's CD (deployment, SPEC-134): dev and production as yulius.toml defines them on their protected branches ([cd.dev] from the integration branch, [cd.prod] from what production deploys), each one's state (not defined, empty or ready), its deploy and verify commands, the secrets it needs and whether a person allowed them, what is deployed, and the recent runs. With run_id, one run with the end of its output. Improve CD by changing yulius.toml and scripts/cd/ in a pull request; a task branch never changes what a deploy runs.".into(),
+            input_schema: schema(json!({
+                "run_id": {"type": "string", "description": "A run id from the list, to read its output"}
+            }), &[]),
+        },
+        ToolDescriptor {
+            name: "cd_deploy".into(),
+            description: "Deploy dev: Yulius runs [cd.dev]'s deploy then verify commands from the integration branch head, inside the sandbox, with the secrets it names (a person must allow each outside the proxy; one not allowed yet is asked for and nothing runs). Only when your task asks for a dev deploy (merges do not deploy). Production is never yours: only a person deploys it, on the CD page; ask one with needs_you. Start `yulius wait` in the background to wait for the run's end.".into(),
+            input_schema: schema(json!({"environment": {"type": "string", "enum": ["dev"], "description": "dev"}}), &["environment"]),
+        },
+        ToolDescriptor {
+            name: "needs_you".into(),
+            description: "Ask a person to do something only a person can (add a credential to the vault on the Secrets page, allow a secret, deploy production, decide on a paid plan): the task shows \"Needs you: <action>\" and people are notified, until a person writes to the task or you call it again with resolved: true (for example once cd_status shows the secret). Say exactly what to do and where; go on with other work meanwhile. Not for questions you can decide yourself.".into(),
+            input_schema: schema(json!({
+                "action": {"type": "string", "description": "What the person should do, imperative, one line (at most 200 characters), e.g. 'Add DEV_SSH_KEY on the Secrets page'"},
+                "why": {"type": "string", "description": "Why it is needed (at most 500 characters)"},
+                "link": {"type": "string", "description": "Where to do it: a Yulius page URL"},
+                "resolved": {"type": "boolean", "description": "true: your request is done (no action needed)"}
+            }), &[]),
         },
         ToolDescriptor {
             name: "issue_create".into(),
@@ -513,7 +530,9 @@ impl App {
             "repo_cleanup" => self.tool_repo_cleanup(ctx, &args).await,
             "delivery_merge" => self.tool_delivery_merge(ctx, &args).await,
             "delivery_deploy" => self.tool_delivery_deploy(ctx, &args).await,
-            "delivery_promote" => self.tool_delivery_promote(ctx).await,
+            "cd_status" => self.tool_cd_status(ctx, &args).await,
+            "cd_deploy" => self.tool_cd_deploy(ctx, &args).await,
+            "needs_you" => self.tool_needs_you(ctx, &args).await,
             "issue_create" => self.tool_issue_create(ctx, &args).await,
             "browser_tabs" => self.tool_browser_tabs(ctx, &args).await,
             "browser_open" => self.tool_browser_open(ctx, &args).await,

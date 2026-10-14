@@ -150,17 +150,23 @@ impl App {
         .group())
     }
 
-    /// Tasks with a pending request to act in the sandbox's browser (BRW-004), read from its
-    /// tabs; none while the browser does not run (its requests went with it).
+    /// Tasks with a pending request for a person to act: in the sandbox's browser (BRW-004),
+    /// read from its tabs (none while the browser does not run: its requests went with it), or
+    /// through `needs_you` (SPEC-134 CDT-004).
     async fn browser_requests(&self, sandbox: &SandboxId) -> HashSet<String> {
-        match self.deps.browser.running(sandbox).await {
+        let mut requested: HashSet<String> = match self.deps.browser.running(sandbox).await {
             Some(session) => session
                 .tabs()
                 .into_iter()
                 .filter_map(|tab| tab.action_requested.and_then(|request| request.task_id))
                 .collect(),
             None => HashSet::new(),
+        };
+        match self.deps.store.needs_you_tasks(sandbox).await {
+            Ok(tasks) => requested.extend(tasks.into_iter().map(|id| id.to_string())),
+            Err(err) => tracing::warn!(error = %err, "reading needs_you requests failed"),
         }
+        requested
     }
 
     /// Sandboxes visible to the caller.

@@ -1696,10 +1696,12 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
         "delivery_status",
         "delivery_merge",
         "delivery_deploy",
-        "delivery_promote",
+        "cd_deploy",
     ] {
         assert!(names.contains(&tool.to_owned()), "{tool}");
     }
+    // Agents never promote: production is a person's (ADR-0110).
+    assert!(!names.iter().any(|n| n.contains("promote")), "{names:?}");
     let delivery_tools = names
         .iter()
         .filter(|n| {
@@ -1710,7 +1712,7 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
         .count();
     assert_eq!(
         delivery_tools, 3,
-        "no other way to merge, deploy or promote: {names:?}"
+        "no other way to merge or deploy: {names:?}"
     );
     let status = rpc(
         "tools/call",
@@ -1776,7 +1778,7 @@ async fn agents_merge_only_through_gated_tools() -> TestResult {
         pending.body
     );
     assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
-    // A person-verified or unknown environment is never run by an agent.
+    // A person-verified, production or unknown environment is never run by an agent.
     let deploy = rpc(
         "tools/call",
         json!({"name": "delivery_deploy", "arguments": {"environment": "rollout"}}),

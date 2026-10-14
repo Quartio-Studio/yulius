@@ -487,6 +487,24 @@ pub trait CdStore: Send + Sync {
     async fn prune_cd_runs(&self, keep: u32, before: Timestamp) -> AppResult<u64>;
 }
 
+/// What a task's agent asked a person to do (SPEC-134 CDT-004, column `tasks.needs_you`).
+#[async_trait]
+pub trait NeedsYouStore: Send + Sync {
+    /// The open request of a task.
+    async fn task_needs_you(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<crate::needs_you::NeedsYouRecord>>;
+    /// Records (`Some`) or ends (`None`) the request; `true` when something changed.
+    async fn set_task_needs_you(
+        &self,
+        task: &TaskId,
+        request: Option<&crate::needs_you::NeedsYouRecord>,
+    ) -> AppResult<bool>;
+    /// Tasks of a sandbox with an open request.
+    async fn needs_you_tasks(&self, sandbox: &SandboxId) -> AppResult<Vec<TaskId>>;
+}
+
 /// Notepads (SPEC-041): one row per scope (`team`, `sandbox:<sid>`).
 #[async_trait]
 pub trait NoteStore: Send + Sync {
@@ -520,6 +538,7 @@ pub trait ExtensionStores:
     + crate::ports::vault::VaultStore
     + CiStore
     + CdStore
+    + NeedsYouStore
     + crate::ports::session_docs::SessionDocStore
     + NoteStore
 {
@@ -539,6 +558,8 @@ impl<T> ExtensionStores for T where
         + crate::ports::vault::VaultStore
         + CiStore
         + CdStore
+        + NeedsYouStore
+        + NeedsYouStore
         + crate::ports::session_docs::SessionDocStore
         + NoteStore
 {

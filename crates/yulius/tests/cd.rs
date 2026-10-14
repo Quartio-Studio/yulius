@@ -521,3 +521,318 @@ async fn a_run_left_by_a_restart_is_an_error() -> TestResult {
     assert_eq!(f.h.app.reconcile_cd_runs().await?, 0);
     Ok(())
 }
+
+/// AC4 (CDA-002): production is a person's with administrator access who typed the project's
+/// slug; the deploy promotes the integration branch (the promotion pull request, merged at once
+/// when its checks passed) and runs the scripts at the new production head.
+#[tokio::test]
+async fn production_is_deployed_by_an_administrator_who_types_the_slug() -> TestResult {
+    let f = fixture(&full_cd()).await?;
+    let dev = f.push("dev", &[("feature.txt", Some("new\n"))])?;
+    let main_before = f.head("main")?;
+    let writer = f.deploy(&f.alice, "prod", Some("app")).await?;
+    assert_eq!(writer.status, StatusCode::FORBIDDEN, "{}", writer.body);
+    for typed in [None, Some("ap"), Some("yes")] {
+        let refused = f.deploy(&f.bob, "prod", typed).await?;
+        assert_eq!(
+            refused.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{}",
+            refused.body
+        );
+        assert!(
+            refused.body.to_string().contains("'app'"),
+            "{}",
+            refused.body
+        );
+    }
+    assert_eq!(
+        f.head("main")?,
+        main_before,
+        "nothing was promoted by a refusal"
+    );
+
+    let started = f.deploy(&f.bob, "prod", Some(" app ")).await?;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    let main = f.head("main")?;
+    assert_ne!(main, main_before, "promoted");
+    assert!(git(&f.origin, &["merge-base", "--is-ancestor", &dev, &main]).is_ok());
+    assert_eq!(started.body["commit"], main);
+    assert_eq!(started.body["branch"], "main");
+    assert!(
+        started.body["note"]
+            .as_str()
+            .is_some_and(|n| n.contains("promoted 'dev' to 'main'")),
+        "{}",
+        started.body
+    );
+    let run = f
+        .ended(started.body["run_id"].as_str().ok_or("id")?)
+        .await?;
+    let output = run["output"].as_str().unwrap_or_default();
+    assert_eq!(run["state"], "passed", "{output}");
+    assert!(
+        output.contains(&format!("deploying prod main {main}")),
+        "{output}"
+    );
+    assert!(output.contains("verified"), "{output}");
+    assert_eq!(run["requested_by"], "bob");
+    let overview = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/cd",
+        None,
+        &f.bob,
+    )
+    .await?;
+    assert_eq!(overview.body["can_deploy_prod"], true);
+    assert_eq!(overview.body["environments"][1]["deployed"], main);
+
+    // Deployed again with nothing new: no promotion, the same head.
+    let again = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.body);
+    assert!(
+        again.body["note"]
+            .as_str()
+            .is_some_and(|n| n.contains("nothing to promote"))
+    );
+    f.ended(again.body["run_id"].as_str().ok_or("id")?).await?;
+    Ok(())
+}
+
+const TOKEN: &str = "cd-task-token-s1-0123456789abcdef";
+
+/// AC2, AC4, AC6 (CDA-001/003, CDT-001..004): an agent reads CD, asks a person through
+/// `needs_you`, deploys dev (its secret asked for first), waits for the run with `yulius wait`,
+/// and is refused production whatever it passes.
+#[tokio::test]
+async fn agents_deploy_dev_ask_a_person_and_never_deploy_production() -> TestResult {
+    use yulius_domain::task::TaskStatus;
+    let f = fixture(&full_cd()).await?;
+    support::seed_task(&f.h, "t1", "s1", "u-alice", TaskStatus::Running, None).await?;
+    support::seed_live_attempt(&f.h, "t1", TOKEN).await?;
+    let agent = Creds {
+        bearer: Some(TOKEN.into()),
+        ..Creds::default()
+    };
+    let tool = |name: &'static str, args: Value| support::mcp_tool(&f.h, TOKEN, name, args);
+
+    let status = tool("cd_status", json!({})).await?;
+    let text = support::tool_text(&status);
+    let shown = text["text"].as_str().unwrap_or_default();
+    assert!(shown.contains("dev ([cd.dev] from dev): ready"), "{shown}");
+    assert!(shown.contains("secrets: DEV_TOKEN not allowed"), "{shown}");
+    assert!(
+        shown.contains("production is deployed by a person"),
+        "{shown}"
+    );
+
+    // Production is never an agent's: refused before anything is read, and audited.
+    for env in ["prod", "production"] {
+        let refused = tool("cd_deploy", json!({"environment": env})).await?;
+        assert_eq!(refused["isError"], true, "{refused}");
+        assert!(
+            refused
+                .to_string()
+                .contains("only a person deploys production")
+        );
+    }
+    let main_before = f.head("main")?;
+
+    // The agent asks a person explicitly; the task is in Needs you until it resolves it.
+    let link = format!("{}/s/app/secrets?section=agents", f.h.app.config.public_url);
+    let outside = tool(
+        "needs_you",
+        json!({"action": "Allow DEV_TOKEN", "link": "https://evil.test/x"}),
+    )
+    .await?;
+    assert_eq!(
+        outside["isError"], true,
+        "links stay inside Yulius: {outside}"
+    );
+    let needs = tool(
+        "needs_you",
+        json!({"action": "Allow DEV_TOKEN for CD on the Secrets page", "why": "dev deploys need it", "link": link}),
+    )
+    .await?;
+    assert_eq!(needs["isError"], false, "{needs}");
+    let task = call(&f.h.router, Method::GET, "/api/tasks/t1", None, &f.alice).await?;
+    let summary = if task.body["task"].is_object() {
+        &task.body["task"]
+    } else {
+        &task.body
+    };
+    assert_eq!(
+        summary["needs_you"]["action"], "Allow DEV_TOKEN for CD on the Secrets page",
+        "{}",
+        task.body
+    );
+    let sandbox = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(
+        sandbox.body["counts"]["needs_attention"], 1,
+        "{}",
+        sandbox.body
+    );
+    let resolved = tool("needs_you", json!({"resolved": true})).await?;
+    assert_eq!(support::tool_text(&resolved)["resolved"], true);
+    let sandbox = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(
+        sandbox.body["counts"]["needs_attention"], 0,
+        "{}",
+        sandbox.body
+    );
+
+    // The secret is not allowed yet: nothing runs, it is asked for, the task needs a person.
+    let asked = tool("cd_deploy", json!({"environment": "dev"})).await?;
+    assert_eq!(asked["isError"], true, "{asked}");
+    assert!(
+        asked
+            .to_string()
+            .contains("allows using it outside the proxy"),
+        "{asked}"
+    );
+    let secret = f.h.store.vault_get(&f.secret).await?.ok_or("secret")?;
+    assert_eq!(secret.env_files, EnvFiles::Asked);
+    assert_eq!(secret.env_requested_by.as_deref(), Some("#1"));
+
+    // Allowed: the agent deploys dev, and `yulius wait` follows the run to its end.
+    f.allow_secret().await?;
+    let head = f.head("dev")?;
+    let started = tool("cd_deploy", json!({"environment": "dev"})).await?;
+    assert_eq!(started["isError"], false, "{started}");
+    let run = support::tool_text(&started)["run"].clone();
+    let id = run["run_id"].as_str().ok_or("id")?.to_owned();
+    assert_eq!(run["requested_by"], "task #1");
+    let ended = f.ended(&id).await?;
+    assert_eq!(ended["state"], "passed", "{ended}");
+    let wait = call(
+        &f.h.internal,
+        Method::POST,
+        "/internal/agent/wait",
+        Some(json!({"head": head, "since": Value::Null, "timeout_secs": 1})),
+        &agent,
+    )
+    .await?;
+    assert_eq!(wait.status, StatusCode::OK, "{}", wait.body);
+    assert_eq!(wait.body["cd_run"], id.as_str());
+    assert_eq!(wait.body["cd_state"], "passed");
+    let read = tool("cd_status", json!({"run_id": id})).await?;
+    assert!(
+        support::tool_text(&read)["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("verified") && !t.contains(VALUE)),
+        "{read}"
+    );
+    assert_eq!(f.head("main")?, main_before, "an agent never promotes");
+    // Nor through a production environment of the delivery profile (ADR-0110).
+    let profile = call(
+        &f.h.router,
+        Method::PATCH,
+        "/api/sandboxes/s1",
+        Some(json!({"profile": {
+            "preset": "custom", "integration_branch": "dev", "production_branch": "main",
+            "merge": "squash", "promote": "merge_commit", "auto_promote": false,
+            "require_checks": true,
+            "environments": [{"name": "live", "after": "production", "command": "true", "verify": "command"}]
+        }})),
+        &f.bob,
+    )
+    .await?;
+    assert_eq!(profile.status, StatusCode::OK, "{}", profile.body);
+    let live = tool("delivery_deploy", json!({"environment": "live"})).await?;
+    assert_eq!(live["isError"], true, "{live}");
+    assert!(
+        live.to_string()
+            .contains("only a person deploys production"),
+        "{live}"
+    );
+    let promote = tool("delivery_promote", json!({})).await?;
+    assert_eq!(promote["isError"], true, "no such tool any more: {promote}");
+
+    use yulius_app::ports::store_ext::AutomationStore as _;
+    for (target, action) in [
+        ("app/prod", "cd.refused"),
+        ("app/dev", "cd.deploy"),
+        ("t1", "task.needs_you"),
+    ] {
+        let entries = f.h.store.automation_audit(target, 20).await?;
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.action == action && e.actor == "task:1"),
+            "{target} {action}: {entries:?}"
+        );
+    }
+    Ok(())
+}
+
+/// CDT-004: a prompt typed into the task ends its request: a person answered.
+#[tokio::test]
+async fn a_typed_prompt_ends_a_needs_you_request() -> TestResult {
+    use yulius_domain::task::TaskStatus;
+    let f = fixture(&full_cd()).await?;
+    support::seed_task(&f.h, "t1", "s1", "u-alice", TaskStatus::Running, None).await?;
+    support::seed_live_attempt(&f.h, "t1", TOKEN).await?;
+    let needs = support::mcp_tool(
+        &f.h,
+        TOKEN,
+        "needs_you",
+        json!({"action": "Add DEV_SSH_KEY on the Secrets page"}),
+    )
+    .await?;
+    assert_eq!(needs["isError"], false, "{needs}");
+    let agent = Creds {
+        bearer: Some(TOKEN.into()),
+        ..Creds::default()
+    };
+    let sandbox = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(
+        sandbox.body["counts"]["needs_attention"], 1,
+        "{}",
+        sandbox.body
+    );
+    let prompt = call(
+        &f.h.internal,
+        Method::POST,
+        "/hooks/claude/UserPromptSubmit",
+        Some(json!({"prompt": "Done, I added it", "hook_event_name": "UserPromptSubmit"})),
+        &agent,
+    )
+    .await?;
+    assert!(prompt.status.is_success(), "{}", prompt.body);
+    let sandbox = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(
+        sandbox.body["counts"]["needs_attention"], 0,
+        "{}",
+        sandbox.body
+    );
+    Ok(())
+}

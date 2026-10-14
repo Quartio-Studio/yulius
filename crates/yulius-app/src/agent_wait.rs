@@ -201,6 +201,16 @@ pub struct WaitState {
     /// Informative: a change shows in the wait's progress but does not end it.
     #[serde(default)]
     pub merge_train: Option<String>,
+    /// The latest CD run this task's agent started (SPEC-134 CDT-003): its id.
+    #[serde(default)]
+    pub cd_run: Option<String>,
+    /// Its state (`running`, `passed`, `failed`, `error`, `cancelled`); the wait ends when it
+    /// ends.
+    #[serde(default)]
+    pub cd_state: Option<String>,
+    /// Its environment and why it ended without passing, when it says.
+    #[serde(default)]
+    pub cd_detail: Option<String>,
 }
 
 impl WaitState {
@@ -674,7 +684,14 @@ impl App {
             .and_then(|problem| problem.clone())
             .filter(|(at, _)| !head.is_empty() && (at.starts_with(&head) || head.starts_with(at)))
             .map(|(_, text)| text);
+        let cd = self.cd_runs_of_task(task).await?.into_iter().next();
         Ok(WaitState {
+            cd_run: cd.as_ref().map(|run| run.id.clone()),
+            cd_state: cd.as_ref().map(|run| run.state.as_str().to_owned()),
+            cd_detail: cd.map(|run| match run.reason {
+                Some(reason) => format!("{}: {reason}", run.environment.label()),
+                None => run.environment.label().to_owned(),
+            }),
             head,
             checks,
             checks_detail,

@@ -977,3 +977,165 @@ impl App {
             .collect())
     }
 }
+
+/// One environment as `cd_status` prints it.
+fn environment_text(out: &mut String, env: &CdEnvironment) {
+    let state = match env.state.as_str() {
+        "ready" => "ready",
+        "empty" => "empty (defined, nothing to deploy yet)",
+        _ => "not defined",
+    };
+    out.push_str(&format!(
+        "{} ({}): {state}",
+        env.label,
+        if env.name == "dev" {
+            format!("[cd.dev] from {}", env.branch)
+        } else {
+            format!("[cd.prod], deploys {}", env.branch)
+        }
+    ));
+    if let Some(about) = &env.about {
+        out.push_str(&format!(" · {about}"));
+    }
+    out.push('\n');
+    if let Some(problem) = &env.problem {
+        out.push_str(&format!("  problem: {problem}\n"));
+    }
+    if env.promote {
+        out.push_str("  promotes the integration branch first (a person's deploy)\n");
+    }
+    for (what, command) in [("deploy", &env.deploy), ("verify", &env.verify)] {
+        if let Some(command) = command {
+            out.push_str(&format!("  {what}: {command}\n"));
+        }
+    }
+    if !env.secrets.is_empty() {
+        let secrets: Vec<String> = env
+            .secrets
+            .iter()
+            .map(|s| format!("{} {}", s.name, s.state.replace('_', " ")))
+            .collect();
+        out.push_str(&format!("  secrets: {}\n", secrets.join(", ")));
+    }
+    match (&env.deployed, &env.head) {
+        (Some(deployed), Some(head)) if deployed == head => {
+            out.push_str(&format!(
+                "  deployed: {} (the branch head)\n",
+                short_sha(deployed)
+            ));
+        }
+        (Some(deployed), head) => out.push_str(&format!(
+            "  deployed: {}; head {}\n",
+            short_sha(deployed),
+            head.as_deref().map_or("unknown", short_sha)
+        )),
+        (None, _) => out.push_str("  deployed: never\n"),
+    }
+    if let Some(run) = &env.last_run {
+        out.push_str(&format!("  last run: {}\n", run_line(run)));
+    }
+}
+
+fn short_sha(sha: &str) -> &str {
+    sha.get(..7).unwrap_or(sha)
+}
+
+fn run_line(run: &CdRun) -> String {
+    let mut line = format!(
+        "{} {} {} at {} by {} ({})",
+        run.run_id,
+        run.environment,
+        run.state,
+        short_sha(&run.commit),
+        run.requested_by,
+        run.started_at
+    );
+    if let Some(reason) = &run.reason {
+        line.push_str(&format!(": {reason}"));
+    }
+    line
+}
+
+impl App {
+    /// `cd_status`: the project's CD and recent runs, or one run with the end of its output.
+    ///
+    /// # Errors
+    /// `NotFound` for another project's or an unknown run.
+    pub(crate) async fn tool_cd_status(
+        &self,
+        ctx: &AgentContext,
+        args: &serde_json::Value,
+    ) -> AppResult<serde_json::Value> {
+        let sandbox = self
+            .deps
+            .store
+            .sandbox(&ctx.task.sandbox_id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+        crate::playground::refuse_in_playground(&sandbox, "CD")?;
+        if let Some(id) = args.get("run_id").and_then(serde_json::Value::as_str) {
+            let run = self
+                .deps
+                .store
+                .cd_run(id, true)
+                .await?
+                .filter(|run| run.sandbox_id == sandbox.id)
+                .ok_or(AppError::NotFound)?;
+            let view = self.cd_run_view(&run, true).await;
+            let output = view.output.clone().unwrap_or_default();
+            let tail = crate::delivery::tail_bytes(&output, 6 * 1024);
+            let mut text = format!("Run {}\n", run_line(&view));
+            for (what, command) in [("deploy", &view.deploy), ("verify", &view.verify)] {
+                if let Some(command) = command {
+                    text.push_str(&format!("{what}: {command}\n"));
+                }
+            }
+            text.push_str(&format!("Output (end):\n{tail}"));
+            return Ok(serde_json::json!({"text": text, "run": view}));
+        }
+        let overview = self.cd_overview_of(&sandbox, AccessLevel::Write).await?;
+        let mut text = String::from("CD (deployment):\n");
+        for env in &overview.environments {
+            environment_text(&mut text, env);
+        }
+        if overview.runs.is_empty() {
+            text.push_str("No runs yet.\n");
+        } else {
+            text.push_str("Recent runs:\n");
+            for run in overview.runs.iter().take(5) {
+                text.push_str(&format!("- {}\n", run_line(run)));
+            }
+        }
+        text.push_str(&format!(
+            "You may deploy dev (cd_deploy); production is deployed by a person on {}/s/{}/cd.",
+            self.config.public_url, sandbox.slug
+        ));
+        Ok(serde_json::json!({"text": text, "cd": overview}))
+    }
+
+    /// `cd_deploy`: starts a dev run for the task's agent.
+    ///
+    /// # Errors
+    /// `Invalid` arguments; production is `Forbidden`; every refusal of [`App::cd_deploy`].
+    pub(crate) async fn tool_cd_deploy(
+        self: &Arc<Self>,
+        ctx: &AgentContext,
+        args: &serde_json::Value,
+    ) -> AppResult<serde_json::Value> {
+        let name = args
+            .get("environment")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| AppError::Invalid("environment is required (dev)".into()))?;
+        let env =
+            CdEnv::parse(name).ok_or_else(|| AppError::Invalid("the environment is dev".into()))?;
+        let run = self.cd_deploy_for_task(ctx, env).await?;
+        let view = self.cd_run_view(&run, false).await;
+        let text = format!(
+            "Deploying dev: run {} of {} at {}. Start `yulius wait` in the background: it returns when the run ends; then read it with cd_status {{run_id}}.",
+            run.id,
+            run.branch,
+            short_sha(&run.sha)
+        );
+        Ok(serde_json::json!({"text": text, "run": view}))
+    }
+}

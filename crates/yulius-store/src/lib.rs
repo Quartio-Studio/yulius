@@ -18,6 +18,7 @@ mod imports;
 mod instance;
 mod intake;
 mod mcp;
+mod needs_you;
 mod notes;
 mod sandboxes;
 mod session_docs;

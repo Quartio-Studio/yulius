@@ -882,9 +882,9 @@ async fn a_playgrounds_agent_gets_no_github_token_or_tool() -> TestResult {
     let issue = agent_tool(&h, "tok-t1", "issue_create", json!({"title": "x", "body": "Summary.\n\n## Acceptance criteria\n- [ ] It works", "labels": ["type: bug", "priority: low", "area: x"]})).await?;
     assert_eq!(issue["isError"], true, "{issue}");
     assert!(issue.to_string().contains("playground"), "{issue}");
-    let promote = agent_tool(&h, "tok-t1", "delivery_promote", json!({})).await?;
-    assert_eq!(promote["isError"], true, "{promote}");
-    assert!(promote.to_string().contains("playground"), "{promote}");
+    let deploy = agent_tool(&h, "tok-t1", "cd_deploy", json!({"environment": "dev"})).await?;
+    assert_eq!(deploy["isError"], true, "{deploy}");
+    assert!(deploy.to_string().contains("playground"), "{deploy}");
     let sid = made.body["id"].as_str().ok_or("id")?;
     let promoted = call(
         &h.router,

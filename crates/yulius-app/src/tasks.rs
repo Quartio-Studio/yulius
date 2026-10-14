@@ -162,6 +162,7 @@ impl App {
             after,
             next,
             held_prompt: self.held_prompt_view(&task.id).await,
+            needs_you: self.needs_you_view(&task.id).await,
             auto: self.auto_choice_view(&task.id).await,
             supertask: task.supertask,
             start_at: self.prepared_start_at(task).await.map(rfc3339),

@@ -264,6 +264,9 @@ export function taskInfo(task, actionRequests, pr) {
   const info = statusInfo(task);
   // A prompt typed into the session was held before it reached the agent (TSK-013).
   if (task.held_prompt && info.group !== 'ended') return { ...info, icon: 'st-attention', tone: 'attention', label: 'Prompt held · your choice', group: 'needs', held: task.held_prompt };
+  // The agent asked a person to do something only a person can (`needs_you`, SPEC-134): it stays
+  // here until someone writes to the task or the agent resolves it, whatever the agent does meanwhile.
+  if (task.needs_you && info.group !== 'ended') return { ...info, icon: 'st-attention', tone: 'attention', label: `Needs you: ${task.needs_you.action}`, group: 'needs', detail: task.needs_you.why || undefined, needsYou: task.needs_you };
   const map = actionRequests && actionRequests.get(task.sandbox_id);
   if (map && info.group !== 'ended') {
     for (const [tabId, request] of map) {

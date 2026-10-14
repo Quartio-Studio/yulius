@@ -762,7 +762,7 @@ fn clip_bytes(text: &str, max: usize) -> &str {
     &text[..cut]
 }
 
-fn tail_bytes(text: &str, max: usize) -> &str {
+pub(crate) fn tail_bytes(text: &str, max: usize) -> &str {
     if text.len() <= max {
         return text;
     }
@@ -3367,34 +3367,6 @@ impl App {
         .await
     }
 
-    /// [`App::promote_sandbox`] for `task`'s agent (`delivery_promote`) under its owner's
-    /// authority `ctx`: GitHub sees the owner promote, or the App when the owner has no
-    /// usable GitHub token (F 2026-10-11).
-    ///
-    /// # Errors
-    /// As [`App::promote_sandbox`], without the refusal for an account with no GitHub identity.
-    pub(crate) async fn promote_sandbox_for_task(
-        &self,
-        ctx: &AuthContext,
-        task: &TaskRecord,
-    ) -> AppResult<PromoteResult> {
-        let sandbox = self
-            .dlv_require_sandbox(ctx, task.sandbox_id.as_str(), Action::Work)
-            .await?;
-        crate::playground::refuse_in_playground(&sandbox, "Promotion")?;
-        let profile = delivery_profile(&sandbox);
-        let token = self.task_github_token(task, &sandbox).await?;
-        self.dlv_promote(
-            &sandbox,
-            &profile,
-            Initiator::User,
-            &ctx.user,
-            &token,
-            false,
-        )
-        .await
-    }
-
     // ---------------------------------------------------------------- environments
 
     /// Tasks for which `action` applies now. When none does but some task in the
@@ -4101,7 +4073,7 @@ impl App {
             "notes": view.notes,
             "checks_access": view.checks_access.as_ref().map(|a| &a.message),
             "profile": profile_to_contract(&profile),
-            "policy": "You deliver your own work (DLV-008): Yulius opens the pull request when your work is ready; merge it on green with delivery_merge after an independent review of its head, run each command-verified environment with delivery_deploy, and promote with delivery_promote. The same checks a person's action needs apply; environments a person must verify stay with people.",
+            "policy": "You deliver your own work (DLV-008): Yulius opens the pull request when your work is ready; merge it on green with delivery_merge after an independent review of its head, and run each command-verified integration environment with delivery_deploy. The same checks a person's action needs apply. Production (promotion and its deploys) is always a person's (ADR-0110): ask one with needs_you; CD runs are cd_status and cd_deploy.",
         }))
     }
 }
