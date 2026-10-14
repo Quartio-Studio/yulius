@@ -122,7 +122,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
   const startChip = h('button', { type: 'button', class: 'chip-btn au-start', 'aria-haspopup': 'menu', disabled: true, onClick: () => openStart() });
   const runNow = creating ? null : h('button', { type: 'button', class: 'btn au-run', disabled: true, title: write ? 'Create a task from it now' : 'Requires write access', onClick: () => doRunNow() }, icon('send', { size: 14 }), 'Run now');
   const del = creating ? null : h('button', { type: 'button', class: 'btn btn-quiet-danger', disabled: !write, onClick: () => doDelete() }, icon('trash', { size: 14 }), 'Delete');
-  const body = h('div', { class: 'au-body' }, placeholder('Loading the automation…', 'loading'));
+  const body = h('div', { class: 'au-body' }, placeholder('Loading the automation…', 'loading', 'form'));
   const head = h('header', { class: 'gt-head wf-head' },
     h('a', { class: 'gt-back', href: href(base), dataset: { route: base, restore: 'page' } }, icon('back', { size: 14 }), 'Automations'),
     h('div', { class: 'gt-title-row' }, h('div', { class: 'wf-titles' }, nameInput, when), del, del ? h('span', { class: 'au-break', 'aria-hidden': 'true' }) : null, startChip, runNow, save),
@@ -259,7 +259,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
   }
 
   // ---- history (existing automations)
-  const runsHost = h('div', null, placeholder('Loading runs…', 'loading'));
+  const runsHost = h('div', null, placeholder('Loading runs…', 'loading', ['table', 4]));
   const taskLink = (taskId) => {
     const task = taskId ? ctx.store.findTask(taskId) : null;
     if (!task) return taskId ? h('span', { class: 'muted' }, 'a task') : '—';
