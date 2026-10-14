@@ -82,7 +82,7 @@ number differs from the file name, and a record this index does not list.
 - [0078](0078-repository-mcp-json-feeds-the-mcp-section.md): A repository's .mcp.json feeds the sandbox's MCP servers; the Superagent rejects the file's servers
 - [0076](0076-onboarding-is-mandatory-in-the-ui.md): Onboarding is mandatory in the UI: the new-task page shows only what it will do and its button; skipping is an operator's recovery (amended by 0090)
 - [0079](0079-the-terminal-mouse-is-the-programs.md): The terminal's mouse is the program's when it asks for it (Shift or Option selects), with no mouse chip
-- [0073](0073-loading-shows-shimmering-fields.md): Loading shows shimmering fields everywhere; a spinner marks only an action under way
+- [0073](0073-loading-shows-shimmering-fields.md): Loading shows shimmering fields everywhere; a spinner marks only an action under way (shape superseded by 0097)
 - [0075](0075-menu-descriptions-wrap.md): Menu descriptions wrap onto as many lines as they need instead of being cut
 - [0082](0082-the-session-web-sticks-and-its-creatures-move.md): The session's web sticks in its corner, its spider climbs in CSS, and a cockroach runs by from a timer
 - [0081](0081-a-playground-keeps-its-git-on-the-server.md): A playground keeps its Git on the server: a bare `origin` of its own and local squash merges
@@ -97,3 +97,4 @@ number differs from the file name, and a record this index does not list.
 - [0087](0087-pull-request-changes-are-announced.md): A change of a sandbox's pull requests is announced, and browsers read them again
 - [0086](0086-a-lost-onboarding-task-returns-the-sandbox-to-pending.md): A lost onboarding task returns the sandbox to pending; a worktree's main repository is trusted too
 - [0092](0092-screens-remember-where-they-were-left.md): Screens remember where they were left: places in the router per browser tab, tool views kept for the 3 sandboxes used last
+- [0097](0097-loading-fields-take-the-shape-of-what-loads.md): Loading fields take the shape of what loads, drawn with the page's own layout classes
