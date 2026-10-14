@@ -14,6 +14,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   is the union of turn spans. Runs whose transcript is gone keep their figures. Each run's outcome
   and the figures it replaced are recorded, and one `metrics.recounted` audit entry sums the round.
   It runs once: later starts change nothing.
+- The repository check fails on committed merge conflict markers (SPEC-089, #364): a line that is
+  a Git conflict marker in any tracked or new file, vendored assets and binaries aside, fails
+  `scripts/dev check` and Yulius CI with its file and line, where before markers in docs and web
+  assets passed every gate.
 
 ## 2026-10-13
 
