@@ -147,6 +147,31 @@ stateDiagram-v2
     GaveUp --> Clear: a successful reply
 ```
 
+## Playgrounds
+
+A playground lets a team try Yulius on its own code before it connects GitHub
+([SPEC-099](../.ai/specs/SPEC-099-on-onboarding-we-want-a-mode-to-play-aro.md),
+[decision 0081](decisions/0081-a-playground-keeps-its-git-on-the-server.md)). Its `origin` is a
+bare repository on the server outside the sandbox (`<data>/playgrounds/<id>.git`), so the
+clone, worktrees and merges use the same `origin/<branch>` refs as a GitHub sandbox while nothing
+leaves the server, and the sandbox's processes never reach a repository whose hooks the server's
+Git would run; the server fetches and pushes it by that path, never by the clone's configured URL.
+The record marks it with an empty repository owner. The browser packs a chosen folder into a gzip tar (`files/` the
+working tree, `git/` the history part of `.git`); the server takes only `HEAD`, `packed-refs`,
+`shallow`, `objects/` and `refs/` of it, copies the branches and tags into the new `origin` with the
+hardened Git, and commits the working files on top. `delivery_merge` squashes a task branch onto
+the integration branch there (`git merge-tree` and `commit-tree`, pushed without forcing). CI
+sync, hygiene, the automatic pull request and reconciliation skip playgrounds.
+
+```mermaid
+flowchart LR
+  B["Browser: folder → tar.gz"] -->|"POST /api/playgrounds"| S["Server: unpack files/ and the history of git/"]
+  S -->|"init --bare, copy refs, commit the files"| O[("data/playgrounds/id.git (outside the sandbox)")]
+  O -->|"clone; fetch by path"| R["sandbox/repo"]
+  R -->|"worktree from origin/dev"| T["Task worktree (agent, contained)"]
+  T -->|"delivery_merge: Yulius squashes, pushes by path"| O
+```
+
 ## Parallel tasks at merge
 
 Tasks working at once must not collide where their parallel work meets
@@ -266,6 +291,25 @@ flowchart LR
     D --> G
 ```
 
+### Prepared tasks
+
+A task can wait as `prepared` before its first run (`yulius-app/src/prepared.rs`,
+[SPEC-105](../.ai/specs/SPEC-105-add-scheduling-when-i-decide-in-this-mod.md),
+[decision 0085](decisions/0085-a-prepared-task-waits-for-a-person-or-its-time.md)). Without a time
+it waits for a person's Start now; with one (a row in `task_schedules`) the background tick
+releases it once the time has come and the sandbox's onboarding no longer blocks tasks. Released,
+it goes `prepared → queued` by compare-and-set and starts through `start_run` like a new task.
+
+```mermaid
+flowchart LR
+    C[New task: When I decide / At a time] --> P[prepared]
+    P -->|Start now| Q[queued]
+    P -->|tick: time due, onboarding done| Q
+    P -->|PUT schedule| P
+    P -->|Cancel| S[stopped cancelled]
+    Q --> R[start_run: supertask hold, session limit, capacity]
+```
+
 ## Superagent (the Cockpit)
 
 Every user has one plain Claude Code session per sandbox, shown as the **Superagent**
@@ -303,12 +347,24 @@ the audit actor, never on the caller's own task
 ([SPEC-066](../.ai/specs/SPEC-066-fix-275-293-cockpit-and-agents-manage-ta.md),
 [decision 0049](decisions/0049-management-tools-cover-the-task-and-automation-lifecycle.md)).
 
+A repository's `.mcp.json` would make Claude Code ask about each of its servers when the
+Superagent starts. Before every task run and Superagent start, `App::import_project_mcp` adds
+the file's servers that the sandbox lacks to its MCP servers, so task runs get them like any
+other server. The Superagent starts with `--settings` naming every one of them in
+`disabledMcpjsonServers`, so it never asks
+([SPEC-095](../.ai/specs/SPEC-095-while-onboarding-other-project-i-got-som.md),
+[decision 0078](decisions/0078-repository-mcp-json-feeds-the-mcp-section.md)). An MCP server's
+secret values reach a run in `YULIUS_MCP_<SERVER>_<VAR>` variables, never under the server's own
+variable name, which may hold an agent secret's placeholder.
+
 ```mermaid
 flowchart LR
   UI["Right panel: Superagent"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
   APP -->|"pool_account"| POOL[("Subscriptions")]
   W["Cockpit watch: newest conversation"] -->|"usage limit after the start: record_limit, start again (switched)"| APP
-  APP -->|"plan_cockpit"| HP["Harness: claude [--resume id] --mcp-config yulius"]
+  APP -->|"plan_cockpit"| HP["Harness: claude [--resume id] --mcp-config yulius [--settings: .mcp.json servers rejected]"]
+  APP -->|"import_project_mcp (also before task runs)"| MS[("Sandbox MCP servers")]
+  REPO[".mcp.json in the repository"] --> APP
   APP --> SH["Shell runtime (user space, repository)"]
   UI -->|"WS /api/shells/id/terminal"| SH
   SH -->|"Bearer ck_… (YULIUS_COCKPIT_TOKEN)"| MCP["/mcp: management tools"]
@@ -366,11 +422,15 @@ chip ([SPEC-078](../.ai/specs/SPEC-078-we-d-like-to-be-able-to-set-the-automati.
 [decision 0062](decisions/0062-an-automation-starts-its-tasks-like-new-task.md)). A run creates
 its task through the same `create_task_ruled` as New task. A task to run after that has ended
 turns into the rule `#N done`, so a recurring automation keeps working once its predecessor is
-finished.
+finished. The editor shows the choice as New task's start chip in its action bar, and Run now
+sends the choice the chip shows for that run only
+([SPEC-093](../.ai/specs/SPEC-093-automation-editor-the-start-choice-sits.md),
+[decision 0074](decisions/0074-run-now-uses-the-start-choice-the-editor-shows.md)); without it a
+run uses the stored choice.
 
 ```mermaid
 flowchart LR
-  RUN["Scheduler or Run now: one slot"] --> START{"automation.start"}
+  RUN["Scheduler or Run now: one slot"] --> START{"automation.start, or Run now's body"}
   START -->|"Now"| Q["queued"]
   START -->|"Supertask"| ST["queued supertask (SPEC-071)"]
   START -->|"After #N, not ended"| CH["chained after #N"]
@@ -382,13 +442,19 @@ flowchart LR
 
 The web UI is plain ES modules. Server state comes from the API and the UI event stream
 (`store.js`); what only one person's browser needs stays in `localStorage`: preferences (theme,
-column widths, model and effort), the notification history, and the new-task composer's drafts
-([decision 0021](decisions/0021-composer-drafts-in-the-browser.md)). Sign-out removes the
-notification history and the drafts.
+column widths, model and effort), the notification history, the new-task composer's drafts
+([decision 0021](decisions/0021-composer-drafts-in-the-browser.md)), and each sandbox's pull
+requests as the last Git overview read said them (`yulius.pulls.<user>.<sandbox>`), shown at once
+after a reload, for a sandbox a view watches, until the page's own read replaces them (dropped if
+that read fails; SPEC-104).
+Sign-out removes the notification history, the drafts and the pull requests; an expired session
+removes the pull requests too.
 
 Every drop-down menu is built by `openMenu` (`dom.js`). It stays inside the window, scrolling its
 items, and a menu of 8 or more items opens with a filter box
-([decision 0030](decisions/0030-menus-filter-when-long.md)).
+([decision 0030](decisions/0030-menus-filter-when-long.md)). A group of items under a header (the
+start menu's tasks) shows five rows and scrolls the rest in a box of its own, fading at the edge it
+continues past with a "↓ N more" line under it ([decision 0083](decisions/0083-long-menu-groups-scroll-five-rows.md)).
 
 ```mermaid
 flowchart LR
@@ -398,6 +464,11 @@ flowchart LR
   LS -->|"after a reload"| D
   C -->|"task started: clear"| D
   SO["Sign-out"] -->|"forget"| LS
+  G["GET /api/sandboxes/:id/git"] -->|"every read"| P["store.js loadPulls / pullsOf()"]
+  P -->|"write"| LP[("localStorage yulius.pulls.*")]
+  LP -->|"after a reload, until the read answers"| P
+  SO -->|"forget"| LP
+  EX["Session expired"] -->|"forget"| LP
 ```
 
 ## Task status
@@ -459,9 +530,13 @@ outcome recorded")]
 
 The tools rail's Notes hold a notepad per sandbox and one for the team, shared and saved while
 people type ([SPEC-041](../.ai/specs/SPEC-041-here-we-want-auto-saved-notes-sandbox-wi.md),
-[decision 0032](decisions/0032-shared-notes-with-revisions.md)). A save carries the whole text and
-the revision it started from; the store writes it only when that revision is still current, and
-every stored edit is announced on the event stream.
+[decision 0032](decisions/0032-shared-notes-with-revisions.md)), and one per person, "Me"
+(`/api/me/notes`, row `user:<user id>`;
+[SPEC-103](../.ai/specs/SPEC-103-add-me-after-team-that-is-for-user-and-n.md),
+[decision 0084](decisions/0084-personal-notes-in-the-notes-table.md)). A save carries the whole
+text and the revision it started from; the store writes it only when that revision is still
+current, and every stored edit is announced on the event stream: a personal note's event is
+addressed to its owner (`Envelope.user`), and `WS /api/events` drops it for everyone else.
 
 ```mermaid
 sequenceDiagram
@@ -474,7 +549,7 @@ sequenceDiagram
     alt still at n
         D-->>S: revision n + 1
         S-->>A: Note
-        S-->>B: note.updated (sandbox viewers / everyone for team)
+        S-->>B: note.updated (sandbox viewers / everyone for team / the owner for Me)
         B->>S: GET notes (nothing unsaved)
     else someone saved meanwhile
         S-->>A: 409 conflict

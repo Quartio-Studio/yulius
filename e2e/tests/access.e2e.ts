@@ -25,7 +25,7 @@ test('the superadmin without a GitHub link sees every sandbox and no GitHub gate
 test('an instance admin without a GitHub link sees no sandbox and is asked to sign in with GitHub', async ({ app, screen }) => {
   await app.open(mock('/', '&role=admin&github_linked=0'));
 
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('No sandboxes yet');
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Try Yulius on your own code');
   await expect(screen.getByText(GITHUB_GATE)).toBeVisible();
   await expect(screen.getByRole('link', 'Sign in with GitHub')).toBeVisible();
 });

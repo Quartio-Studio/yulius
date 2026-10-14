@@ -16,11 +16,19 @@ watching, steering and unblocking.
 
 ## What it does
 
-- **Projects and sandboxes**: import a GitHub repository (or onboard it from a local machine's
-  Claude sessions with `yulius onboard`); each gets a contained sandbox with its own system
-  layer, home, shells per user, browser and editor. The CLI only uploads: the onboarding task that
-  adapts the repository to the Yulius standards starts when someone clicks Start onboarding on the
-  sandbox page.
+- **Projects and sandboxes**: import a GitHub repository, start a playground without GitHub, or
+  onboard a repository from a local machine's Claude sessions with `yulius onboard`; each gets a
+  contained sandbox with its own system layer, home, shells per user, browser and editor. The CLI
+  only uploads: the onboarding task that adapts the repository to the Yulius standards is created
+  and started when someone clicks Start onboarding on the sandbox page. Onboarding is mandatory:
+  until it has finished, the sandbox's new-task page shows only what it will do and its button,
+  no task input. A playground needs none.
+- **Playgrounds**: a team tries Yulius on its own code before it connects GitHub. On a fresh
+  instance Home offers it first: drop a project folder (a repository keeps its branches and
+  history) or start from a template, and tasks start a minute later. Its Git stays on the server
+  and nothing is pushed anywhere; its tasks merge into its own `dev` with `delivery_merge` (no
+  pull request, no Yulius CI). It is its maker's and the superadmin's. Connecting GitHub is
+  optional and can wait (SPEC-099).
 - **Superagent** (formerly the Agent, and before that the Cockpit): every user's own plain Claude
   Code session per sandbox, in the right tool panel beside any page (top-bar Superagent button,
   first in the tools rail), for quick work
@@ -33,6 +41,11 @@ watching, steering and unblocking.
   can do the same for their task's owner, except to their own task. When a usage limit cuts its
   turn, it moves to a subscription with capacity and goes on with the turn, as a task does; the
   panel follows it.
+- **MCP servers**: configured once for the instance or a sandbox (MCP page) and attached to every
+  task run on every subscription, their secrets taken from the agent secrets. A repository's
+  `.mcp.json` servers join its sandbox's list by themselves, with `${VAR}` becoming the agent
+  secret VAR's placeholder (the egress proxy swaps the value in on its bound hosts), and the
+  Superagent never asks about them.
 - **Sidebar**: the sandbox pages used every day (Tasks, Git, CI (tests), Secrets, Dashboard; the Superagent is on the right),
   then "More" for Sessions, Workflows, Skills, Automations and MCP, then the active tasks.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions
@@ -44,6 +57,9 @@ watching, steering and unblocking.
   A **supertask** (the composer's start menu, for broad work such as security hardening) waits
   for the running tasks of its project, then runs alone: the project's other tasks wait for it,
   also those queued or chained before it, and say so.
+  A task can also be **prepared**: written now and started later, when the person presses Start
+  now ("When I decide") or by itself at a date and time they pick ("At a time…"). Until then it
+  holds no session, can be rescheduled or cancelled, and sits with the queued tasks.
   A half-written task (its prompt, attached files and choices) waits in the composer while
   people look elsewhere, also across a reload, until it starts.
   A task is its owner's: it acts on GitHub with their credentials, so only they change it. Others
@@ -61,11 +77,14 @@ watching, steering and unblocking.
   click on the Automations page: "Keep the docs up to date" and "Work through open issues" (the
   core team's issues verified in parallel, a Fix task for each actionable one, no new issues),
   nightly at 03:00 CEST. An automation's tasks start like New task's: now, as a supertask, after
-  another task or when a rule is true.
+  another task or when a rule is true, picked with New task's start chip beside Run now and Save;
+  Run now starts its task the way the chip shows.
 - **Notes**: in the tools rail, a notepad per sandbox and one for the whole team, shared and saved
-  while people type; a teammate's edit shows up live, and two edits at once end in a choice.
+  while people type; a teammate's edit shows up live, and two edits at once end in a choice. A
+  third, **Me**, is each person's own: nobody else sees it, and it is the same in every sandbox.
 - **Editor, terminals, Git view, automations, workflow catalog** in one web UI, whose menus fit
-  the window and filter as people type when they are long. Messages are
+  the window and filter as people type when they are long; the start menu shows five tasks at a
+  time and says how many more it scrolls to. Messages are
   withdrawn for now (SPEC-028): agents learn about checks, delivery and armed merges from
   `yulius wait`, `ci_status` and `delivery_status`.
 - **Agent primitives as code**: Yulius's own skills are APM packages with a lockfile, deployed to

@@ -71,11 +71,16 @@ impl App {
             repo: RepoRef {
                 owner: record.repo_owner.clone(),
                 name: record.repo_name.clone(),
-                url: format!(
-                    "https://github.com/{}/{}",
-                    record.repo_owner, record.repo_name
-                ),
+                url: if record.is_playground() {
+                    String::new()
+                } else {
+                    format!(
+                        "https://github.com/{}/{}",
+                        record.repo_owner, record.repo_name
+                    )
+                },
             },
+            playground: record.is_playground(),
             access: access.as_str().to_owned(),
             default_branch: record.default_branch.clone(),
             profile: serde_json::from_str(&record.profile_json)

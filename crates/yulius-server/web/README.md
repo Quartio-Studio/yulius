@@ -36,7 +36,7 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/app.js` | Entry point: boot (setup → sign-in → workspace), route dispatch, composition of the layout, link handling. |
 | `assets/api.js` | HTTP client (`X-Yulius-CSRF` on every non-GET, `{"error":{code,message}}` → `ApiError`, 30 s timeout) and the transport abstraction. |
 | `assets/router.js` | Routes and links; history API paths, hash paths in mock mode; recognizes Yulius links. |
-| `assets/store.js` | State store (sandboxes, tasks per sandbox, browser action requests) and the `/api/events` client. |
+| `assets/store.js` | State store (sandboxes, tasks per sandbox, browser action requests, pull requests per sandbox from the Git overview) and the `/api/events` client. The pull requests the last overview read said are kept per user in `localStorage` (`yulius.pulls.<user>.<sandbox>`) and shown at once after a reload, for a sandbox a view watches, until the page's own read replaces them (dropped if it fails; SPEC-104); removed at sign-out and when the session expires. |
 | `assets/termsocket.js` | WebSocket protocol code: binary frame parsing, `ReconnectingSocket` (backoff 0.5–10 s, bounded attempts, 4008 → immediate resync), `TerminalSocket`. |
 | `assets/terminal.js` | Terminal views on demand: returns the view at once and loads `terminal-core.js`, xterm, `xterm.css` and the terminal typeface together with the first terminal (or on idle after sign-in, `preloadTerminal()`). |
 | `assets/terminal-core.js` | xterm view: fit/resize, controller handover, read-only banner, floating reconnect notices, exit banners, web links and OSC 8 links. It appears once at its final size and font: fitted before connecting (`?cols=&rows=`), hidden under a placeholder until the first state and screen are drawn (F 2026-10-09). |
@@ -45,7 +45,7 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/pages/home.js` | Home (UI-045), the default view at `/`: every sandbox as a card (repository, running / needs you / queued, last activity from its tasks, Open and New task), Import and Create; with no sandbox, the first steps and the GitHub notes. |
 | `assets/notifications.js` | Notification center (UI-020, UI-028): the bell, its panel with the All / Unread filter, and entries derived from the event stream; kept per user in `localStorage`, bounded to 100; optional OS notifications while the tab is hidden. |
 | `assets/pages/gittask.js` | Git → a task's review (UI-031): Changes (file tree, unified or split diff, wrap), Commits, Branch and Go to task; reads `/api/tasks/{tid}/changes` and `/commits`. |
-| `assets/pages/sessions.js` | Sessions (UI-049): the sandbox's task and imported Claude Code sessions with kind and person filters and full-text search (matches marked), and one session's read-only transcript printed as Claude Code's TUI (SPEC-075) — `>` prompts and slash commands, `⏺` messages and tool calls with `⎿` results folded to their first lines, edits as diffs, in a faded palette (`--session-*`) with a locked prompt box and a pixel-art spider web, a search match opened at its line; Continue in a new task and Delete for imported sessions; "Add your sessions" explains `yulius onboard`. |
+| `assets/pages/sessions.js` | Sessions (UI-049): the sandbox's task and imported Claude Code sessions with kind and person filters and full-text search (matches marked), and one session's read-only transcript printed as Claude Code's TUI (SPEC-075) — `>` prompts and slash commands, `⏺` messages and tool calls with `⎿` results folded to their first lines, edits as diffs, in a faded palette (`--session-*`) with a locked prompt box and a pixel-art spider web that sticks in the corner while its spider climbs, and a pixel-art cockroach that runs across now and then (SPEC-101; nothing moves under reduced motion), a search match opened at its line; Continue in a new task and Delete for imported sessions; "Add your sessions" explains `yulius onboard`. |
 | `assets/agent.js` | The Agent (SPEC-035, the Cockpit of SPEC-021), a right-panel tool: a notice that it is for quick work (automations, quick questions) with bigger work in a task (New task), then the user's own plain Claude Code session in the sandbox, opened or started on the panel's first show (resuming its last conversation) by `POST /api/sandboxes/{sid}/cockpit` and shown on the shell terminal protocol; Start again after it stops; read users see why it is not available. |
 | `assets/pages/taskinfo.js` | Tasks → a task's overview (UI-032): state, times, plan, changes, usage, details and sessions, with Review changes and Go to task. |
 | `assets/mdeditor.js` | A Notion-like block editor for Markdown (UI-033): formatted blocks, frontmatter as properties, "/" menu, Markdown shortcuts, selection toolbar, source view; untrusted text, no HTML parsing. |
@@ -58,7 +58,7 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/quotes.js` | 40 quotes about building great things (well-documented authors only); one shows at random above the composer. |
 | `assets/models.js` | Models (grouped by provider, each naming its harness) and effort levels the composer offers. |
 | `assets/panels.js` | Right rail and resizable panel: Agent (`agent.js`), Editor, Shell (the user's own terminals in this sandbox as tabs: opens one at once, "+" for more, rename with F2 or a double-click; new ones start in the sandbox repository or the task worktree), Notes (`notes.js`); hosts the browser panel. There are no Messages (SPEC-028). One tool is open at a time (`aria-pressed`); each tool's width is remembered per user (`splitter.js`) and re-fitted when the window narrows or the sidebar widens, so it never pushes the rail out of the window. |
-| `assets/notes.js` | Notes in the tools rail (SPEC-041): the "This sandbox" and "Team" notepads as tabs (the last one remembered per browser), saved 600 ms after typing and on blur, hide or `pagehide` (`PUT …/notes` with the revision the edit started from); a failed save retries with growing pauses; a teammate's `note.updated` reloads an idle notepad; a stale save (409) offers Keep mine / Use theirs; readers see sandbox notes read-only. |
+| `assets/notes.js` | Notes in the tools rail (SPEC-041): the "This sandbox", "Team" and "Me" (the person's own, `/api/me/notes`, SPEC-103) notepads as tabs (the last one remembered per browser), saved 600 ms after typing and on blur, hide or `pagehide` (`PUT …/notes` with the revision the edit started from); a failed save retries with growing pauses; a teammate's `note.updated` reloads an idle notepad; a stale save (409) offers Keep mine / Use theirs; readers see sandbox notes read-only. |
 | `assets/editorview.js` | The built-in editor (EDT-001..005): explorer (its width dragged on its edge and kept per user), tabs and Monaco over the files API; ⌘S / Ctrl+S saves; word wrap is one toolbar toggle (or ⌥Z / Alt+Z, as in VS Code) for every open file, off by default and kept per user in this browser (`localStorage` `yulius.editorWordWrap.<user id>`). |
 | `assets/filedrop.js` | Dropped and pasted files (EDT-006, UI-048): files or folders dropped on the explorer go into the folder under the pointer, on the editor into the open file's folder (text files open); an upload button picks files on phones; a file already there is replaced only after asking. Files dropped on a terminal, or an image pasted into it, are uploaded as attachments and their paths typed in as a paste (xterm's bracketed paste), quoted when needed. Drop overlays, progress and errors; a file dropped elsewhere never makes the browser leave the app. Hook points: `attachEditorDrop` (editorview.js), `attachTerminalDrop` (taskview.js, panels.js); text pastes stay with the terminal. |
 | `assets/browser.js` | Browser panel (ADR-15): the sandbox Chrome's tabs in the strip, address bar, back/forward/reload, the action-request banner, notices for agents acting in another tab, "Open live in a new window" for a sandbox dev server (ADR-14 preview origins). |
@@ -69,8 +69,9 @@ with vendored xterm.js: no framework, no build step and no Node toolchain at run
 | `assets/pages/*.js` | Pages: auth (setup, sign-in), tasks (+ archived, device approval), task overview (`taskinfo.js`), git and a task's review (`gittask.js`), CI (`ci.js`: runs, job logs, repository hygiene), workflows, skills, automations, MCP and their editors (`workflowedit.js`, `skilledit.js`, `skillnew.js`, `automationedit.js`, `mcpedit.js`), dashboard, admin (users, accounts, GitHub, instance), settings, design. |
 | `assets/spotlight.js` | The search dialog (Tasks page `/`): results with ↑/↓, Enter opens, ⌘/Ctrl+Enter goes to the task. |
 | `assets/intake.js` | Task intake in the composer: the split proposal card and held prompts (SPEC-002 ADR-16). |
-| `assets/termkeys.js`, `assets/termlinks.js`, `assets/mousefilter.js` | Terminal key table per platform (copy, paste, interrupt), links in terminal output (web links and file paths to the editor), mouse-report filtering (wheel turns and plain clicks still reach a full-screen program). |
+| `assets/termkeys.js`, `assets/termlinks.js`, `assets/mousefilter.js` | Terminal key table per platform (copy, paste, interrupt), links in terminal output (web links and file paths to the editor), mouse-report filtering for read-only viewers (a writer's mouse is the program's when it asks for it, ADR-0079). |
 | `assets/updates.js` | Instance updates (OPS-006..009, ADR-18): the calm banner (an update running for everyone; "Update available" and a failed update for the superadmin; "Reload" once the server runs newer code) and the superadmin's notification, from `GET /api/update` and `update.updated`; polls while an update runs. |
+| `assets/playground.js` | Playgrounds (SPEC-099): the project-folder drop zone of Home and the Add sandbox dialog (drop a folder or choose one with `webkitdirectory`); packs it in the browser into a gzip tar (ustar with PAX names, `files/` the working tree, `git/` only the history part of `.git`; dependency and build folders stay behind) read lazily from the files and gzipped by `CompressionStream`, uploads it to `POST /api/playgrounds` with progress (packing, uploading, setting up) and says why in place when it fails. |
 | `assets/jevkey.js` | The Jev key (ADM-001/002): the setup wizard's optional last step and the instance page's card (set, replace, test, remove, save a configured key here); the key is never shown back. |
 | `assets/pages/instance.js` | Settings → Instance (superadmin): the build, the update on offer with its commits, Update now with its confirmation, the progress (build → pause tasks → restart → resume) and the outcome; the Jev key card. |
 | `assets/mock.js` | In-memory backend and fake WebSockets used with `?mock=1`. |
@@ -181,6 +182,7 @@ editor re-colour from the same tokens (`theme.js` → `terminalColors()`, the Mo
 | Radii | `--radius-sm` 4, `--radius` 6, `--radius-lg` 10, `--radius-xl` 16, `--radius-full` | Small things; controls; containers; the composer and sign-in card; pills (circles use 50%) |
 | Spacing | 2, 4, 6, 8, 12, 16, 20, 24, 32, 40, 48 px | Padding, margin, gap (a 1 px margin may nudge an icon) |
 | Elevation | `--shadow-sm`, `--shadow`, `--shadow-raised`, `--focus` | L1 cards use borders only; L2 menus/popovers/toasts; L3 modals |
+| Masks | `--mask-solid`, `--mask-faint` (25 %) | `mask-image` stops: only alpha counts, the same in every theme; a fade ends faint, not gone (a menu group's edges, SPEC-102) |
 | Motion | `--duration-fast` 120 ms, `--duration` 200 ms, `--duration-slow` 300 ms, `--ease` | One rule turns all motion off under `prefers-reduced-motion` |
 | Icons | `--icon-stroke` 1.4 px | Same optical stroke at every size (non-scaling) |
 | Layers | `--z-raised`, `--z-sticky`, `--z-float`, `--z-drawer-scrim`, `--z-drawer`, `--z-panel`, `--z-popover`, `--z-menu`, `--z-toast` | Every `z-index`; modal dialogs use the browser's top layer above them |
@@ -202,12 +204,14 @@ JS linter or type checker yet: that would add an npm dependency, which is a proj
 
 Shared building blocks live in `assets/dom.js`: `iconButton`, `toggle`, `badge`, `iconBadge`,
 `statusMark` (task state icon + tone + label), `itemCard` (clickable list card with icon, badges,
-description, controls), `meter`, `openMenu` (icons, descriptions, check marks), `openModal`,
+description, controls), `meter`, `openMenu` (icons, descriptions, check marks, groups that show five rows and scroll the rest), `openModal`,
 `toast`. Prefer them to new one-off markup; anything new should appear on `/design`.
 
 One pattern per kind of state (SPEC-001 UI-050): `emptyState` for every empty list (with the action
 that fills it), `loadError` for a failed load said in place (`loader(container, 'the users', …)` in
-`pages/common.js` names what failed: "Couldn’t load the users: …"), `skeleton` while loading, and
+`pages/common.js` names what failed: "Couldn’t load the users: …"), `skeleton` while loading (shimmering
+fields, never a spinner with "Loading…"; `placeholder(text, 'loading')` returns it; a spinner marks only an
+action under way, ADR-0073), and
 `notFound` (`pages/common.js`) for a missing page, sandbox, task or item: a heading and the way
 back. Page headers come from `pageFrame`: a title, a subtitle that says what the page is for, and
 actions; `createButton` is the primary "add" button with its "+". "Needs you" is `taskInfo`'s
@@ -248,11 +252,14 @@ the real server. Options (combine with `&`): `setup=1` (setup required; token
 `role=superadmin` (the default), `contained=0` (shows "Not isolated"), `github=0` (GitHub App not configured), `github_linked=0`
 (the account has no GitHub link: the superadmin still sees every sandbox, other roles see none and
 the home page asks them to sign in with GitHub), `sandboxes=0` (a fresh instance without sandboxes: the
-home screen's first steps), `tasks=0` (sandboxes without tasks yet: no start rule to offer), `tasks=many` (30 more queued tasks in studio: a long "Run after" menu), `othercols=N&otherrows=M` (another, active viewer sets task terminals to
+home screen's first steps, a playground first; `POST /api/playgrounds` keeps the names of the
+archive it got in `__yuliusMock.playgroundUploads`), `tasks=0` (sandboxes without tasks yet: no start rule to offer), `tasks=many` (30 more queued tasks in studio: a long "Run after" menu), `othercols=N&otherrows=M` (another, active viewer sets task terminals to
 N×M until this one types or clicks into the terminal), `update=1` (a newer `main` is on offer; Update
 now walks through its phases in about six seconds) or `update=fail` (the same, rolled back),
 `helper=0` (no update helper), `jev=config` (a Jev key file is configured), `fail=<path>` (GET
-requests of that exact API path answer 500, to see a view say what failed to load) or `failpost=<path>`
+requests of that exact API path answer 500, to see a view say what failed to load), `hold=<path>` (GET
+requests of that path wait until `__yuliusMock.release()`, to see a view while it loads; `hold=frames` holds
+the browser panel's picture) or `failpost=<path>`
 (POST requests of that path answer 500, to see an action say it failed).
 
 The mock mirrors the real response shapes (it is the UI's offline test bed and
@@ -263,8 +270,12 @@ accounts with usage (some unknown), Git data and delivery stages, environment ru
 CI runs with job logs and repository hygiene (`studio` has jobs and runs, `product` has no CI and
 leftover GitHub Actions workflows), workflows, skills, automations, MCP servers, analytics, the
 superadmin recovery code (mock code `123456`) and the GitHub App connection. Importing a repository creates a
-sandbox whose onboarding is `pending` with a resting preparation task (Start onboarding /
-Skip). Uploads report progress in steps, a dropped file lands in the editor's in-memory
+sandbox whose onboarding is `pending` with no task until Start onboarding (or a new task that
+waits for it) creates the preparation task (SPEC-097); `GET …/onboarding/plan` gives the server's
+plan (`mobile-app` already follows the format, so its task only sets up the environment): its new-task
+page shows only the onboarding message with Start onboarding, and the mock marks it ready 9 s
+later (a test sets `__yuliusMock.manualOnboarding` and calls `finishOnboarding(slug)` instead).
+`&onboarding=preparing` starts with `product` being onboarded. Uploads report progress in steps, a dropped file lands in the editor's in-memory
 repository and attachments get server-like paths and names. Task terminals print TUI-like ANSI output (with file references in every form the terminal links
 to the editor, and some it must not), echo input and answer on Enter; type
 `/exit` to close a task, `/lag` to force a 4008 reconnect, `/help` for the list. The

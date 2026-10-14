@@ -2,17 +2,18 @@
 // and the new-task composer shown when no task is selected (SPEC-001 §6.1, STP-003).
 
 import { enc } from './api.js';
-import { h, icon, iconButton, setChildren, toast, errorToast, confirmDialog, skeleton, openMenu, statusMark, singleFlight, keepFocus } from './dom.js';
-import { openRuleEditor, ruleChoices, ruleText } from './ruleeditor.js';
+import { h, icon, iconButton, setChildren, toast, errorToast, skeleton, openMenu, statusMark, singleFlight, keepFocus } from './dom.js';
+import { openRuleEditor, ruleText } from './ruleeditor.js';
+import { openStartMenu, renderStartChip, startKind, SUPERTASK_HELP, WHEN_I_DECIDE_HELP } from './startchoice.js';
 import { createTerminalView } from './terminal.js';
-import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, statusInfo, pausedLine, resetAround, shellsLine, heldBy, supertaskLine } from './status.js';
-import { heldPromptCard, splitCard, looksSeveral, chainCandidates, intakeStatus, SPLIT_MIN_WORDS } from './intake.js';
+import { taskInfo, isLive, allows, taskActions, otherOwner, endedMessage, pausedLine, resetAround, shellsLine, heldBy, supertaskLine, preparedLine } from './status.js';
+import { heldPromptCard, splitCard, looksSeveral, intakeStatus, SPLIT_MIN_WORDS } from './intake.js';
 import { attachMarkdownInput } from './mdinput.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
-import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask, requestControl, dropControlRequest, handOverTask } from './actions.js';
+import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask, requestControl, dropControlRequest, handOverTask, openScheduleDialog, rescheduleTask } from './actions.js';
 import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments, openAttachment } from './filedrop.js';
-import { relLong, dateTime } from './format.js';
+import { relLong, dateTime, whenLabel } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
 import { findModel, findEffort, modelMenuItems, effortMenuItems, MODEL_PREF_KEY, EFFORT_PREF_KEY } from './models.js';
@@ -26,7 +27,7 @@ const STEP_MARK = { done: '✓', in_progress: '▸', pending: '·', skipped: '�
 const STEP_LABEL = { done: 'Done', in_progress: 'In progress', pending: 'To do', blocked: 'Blocked', skipped: 'Skipped' };
 const STRIP_KEY = 'yulius.stepsOpen';
 // Waiting states in which a task that never started takes queued messages (SPEC-052).
-const WAITING = new Set(['queued', 'chained', 'waiting_capacity']);
+const WAITING = new Set(['queued', 'chained', 'prepared', 'waiting_capacity']);
 // States only a task with a run is in.
 const RAN = new Set(['running', 'switching', 'stopping']);
 
@@ -62,6 +63,7 @@ function emptyTerminalMessage(task) {
       if (after && after.rule) return { title: 'Queued by a rule', text: `It starts by itself when ${after.rule}.` };
       return { title: after ? `Queued after #${after.number}` : 'Queued after another task', text: after ? `It starts by itself when #${after.number} is done.` : 'It starts by itself when that task is done.' };
     }
+    case 'prepared': return { title: task.start_at ? 'Scheduled' : 'Prepared', text: preparedLine(task) };
     default: return null;
   }
 }
@@ -195,6 +197,13 @@ export function mountTaskView(ctx, sandbox, task) {
       content = [icon(after && after.blocked ? 'st-attention' : 'clock', { size: 16 }), h('span', { class: 'attention-text' }, label),
         can.startNow ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => startNow(ctx, current) }, 'Start now') : null,
         can.stop ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => stopTask(ctx, current) }, 'Cancel') : null];
+    } else if (current.status === 'prepared') {
+      // Written now, started later (SPEC-105): Start now, a time, or Cancel.
+      content = [icon(current.start_at ? 'clock' : 'st-prepared', { size: 16 }), h('span', { class: 'attention-text' },
+        h('strong', null, current.start_at ? 'Scheduled. ' : 'Prepared. '), preparedLine(current)),
+      can.startNow ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: () => startNow(ctx, current) }, 'Start now') : null,
+      can.schedule ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => rescheduleTask(ctx, current) }, current.start_at ? 'Change time…' : 'Schedule…') : null,
+      can.stop ? h('button', { type: 'button', class: 'btn btn-sm', onClick: () => stopTask(ctx, current) }, 'Cancel') : null];
     } else if (current.status === 'queued' && heldBy(current).length) {
       // Held by a supertask (SPEC-071): it starts by itself; Cancel is the way out.
       const held = heldBy(current);
@@ -505,9 +514,6 @@ export function autoChoiceLabel(task) {
   };
 }
 
-/** What a supertask is, in the start menu and on its chip (SPEC-071). */
-const SUPERTASK_HELP = 'Waits for this project’s running tasks, then runs alone: its other tasks wait for it. For broad work like security hardening';
-
 /**
  * New-task composer (J3, UI-021, F 2026-10-10): a rounded prompt box whose bottom edge holds the
  * task's choices — mode and workflow (Auto by default: Jev decides), run after, model and effort
@@ -538,6 +544,9 @@ export function mountComposer(ctx, sandbox) {
   let startRule = draft.startRule;
   // Or run as a supertask (SPEC-071): after the project's running tasks, then alone.
   let supertask = Boolean(draft.supertask);
+  // Or prepare it (SPEC-105): `{ at: null }` waits until the person starts it ("When I decide"),
+  // `{ at: iso }` starts by itself then; null starts as chosen above.
+  let prepare = draft.prepare || null;
   let split = null; // the split card while it shows (TSK-011)
   let modelId = findModel(readJson(MODEL_PREF_KEY, null)) ? readJson(MODEL_PREF_KEY, null) : null;
   let effortId = findEffort(readJson(EFFORT_PREF_KEY, null)) ? readJson(EFFORT_PREF_KEY, null) : null;
@@ -623,15 +632,20 @@ export function mountComposer(ctx, sandbox) {
     prompt,
     previewEl,
     h('div', { class: 'composer-tools' }, modeChip, workflowChip, afterChip, h('div', { class: 'composer-right' }, previewButton, modelChip, effortChip, startButton)));
-  const el = h('div', { class: 'composer' }, repoBar,
-    h('div', { class: 'composer-card' },
+  // While the sandbox awaits onboarding, a centred message takes the card's place (SPEC-096).
+  const gate = h('section', { class: 'onboarding-gate', hidden: true, 'aria-labelledby': `onboarding-gate-${sandbox.id}` });
+  // Says what changed when someone else starts onboarding or it lands (the gate's text is rebuilt).
+  // A live region without the status role: the page's own status messages stay the only ones.
+  const gateNews = h('span', { class: 'sr-only', 'aria-live': 'polite', 'aria-atomic': 'true' });
+  const card = h('div', { class: 'composer-card' },
       // A brand's niche for its mark (hidden unless a brand shows it; styles.css "Brand details").
       niche,
       h('figure', { class: 'composer-quote' }, h('blockquote', null, `“${quote.text}”`), h('figcaption', null, `— ${quote.author}`)),
       banner,
       box,
       h('div', { class: 'composer-hint muted xs' }, modeHint, h('span', { class: 'composer-hint-sep', 'aria-hidden': 'true' }, ' · '), hint),
-      intakeSlot));
+      intakeSlot);
+  const el = h('div', { class: 'composer' }, repoBar, card, gate, gateNews);
   // Files dropped (or an image pasted) on the prompt reach the new task's agent by path.
   attachPromptDrop(ctx, { box, prompt, label: 'Drop to add to the prompt', upload: draftAttachments(ctx, sandbox.id), onAttach: (items) => {
     // An upload that ends after the person left still joins the draft (DRF-002), and shows in the
@@ -654,9 +668,16 @@ export function mountComposer(ctx, sandbox) {
     const after = (tasks || []).find((t) => t.id === afterTaskId);
     if (afterTaskId && tasks && !after) afterTaskId = ''; // gone (a kept draft waits for the list)
     const rule = startRule ? ruleText(startRule) : '';
-    const ruleLabel = rule.length > 28 ? `${rule.slice(0, 27)}…` : rule;
-    setChildren(afterChip, icon(supertask ? 'shield' : 'branch', { size: 14 }), h('span', { class: 'sr-only' }, 'Run after: '), h('span', { class: 'chip-label' }, supertask ? 'Supertask' : rule ? `When ${ruleLabel}` : after ? `After #${after.number}` : 'Start now'), icon('down', { size: 12 }));
-    afterChip.title = supertask ? SUPERTASK_HELP : rule ? `Starts by itself when ${rule}` : after ? `Runs after #${after.number} ${after.title} is done` : 'Starts right away; or pick a task to run after, or give a rule';
+    // A kept time that has passed (a draft from yesterday) waits for the person instead: sending
+    // it would be refused, and starting it now was not asked for (SPEC-105).
+    if (prepare && prepare.at && Date.parse(prepare.at) < Date.now() - 60e3) prepare = { at: null };
+    const kind = startKind({ supertask, afterTaskId: after && after.id, rule, prepare });
+    renderStartChip(afterChip, { kind, number: after && after.number, rule, at: prepare && prepare.at, prefix: 'Run after: ' });
+    const at = prepare && prepare.at ? whenLabel(prepare.at) : '';
+    afterChip.title = prepare ? (at ? `Starts by itself ${at}` : WHEN_I_DECIDE_HELP) : supertask ? SUPERTASK_HELP : rule ? `Starts by itself when ${rule}` : after ? `Runs after #${after.number} ${after.title} is done` : 'Starts right away; or pick a task to run after, or give a rule';
+    // The send button says what it does: a prepared task is not started (SPEC-105).
+    startButton.setAttribute('aria-label', startAction());
+    startButton.title = write ? `${startAction()} (${SUBMIT_KEYS})` : 'Requires write access';
     const found = findModel(modelId);
     setChildren(modelChip, h('span', { class: 'sr-only' }, 'Model: '), h('span', { class: 'chip-label' }, found ? found.model.name : 'Default model'), icon('down', { size: 12 }));
     modelChip.title = found ? `${found.provider.name} · ${found.model.name}` : 'Model: default, Opus 5.5';
@@ -666,8 +687,8 @@ export function mountComposer(ctx, sandbox) {
     const effort = findEffort(effortId);
     setChildren(effortChip, h('span', { class: 'sr-only' }, 'Effort: '), h('span', { class: 'chip-label' }, effort ? effort.name : 'Default effort'), icon('down', { size: 12 }));
     // Every choice shown here is the draft's (DRF-003).
-    if (draft.mode !== mode || draft.workflowId !== workflowId || draft.afterTaskId !== afterTaskId || draft.startRule !== startRule || draft.supertask !== supertask) {
-      Object.assign(draft, { mode, workflowId, afterTaskId, startRule, supertask });
+    if (draft.mode !== mode || draft.workflowId !== workflowId || draft.afterTaskId !== afterTaskId || draft.startRule !== startRule || draft.supertask !== supertask || draft.prepare !== prepare) {
+      Object.assign(draft, { mode, workflowId, afterTaskId, startRule, supertask, prepare });
       remember();
     }
   }
@@ -691,19 +712,21 @@ export function mountComposer(ctx, sandbox) {
   }
 
   function openAfterMenu(anchor) {
-    const candidates = chainCandidates(ctx, sandbox);
-    openMenu(anchor, [
-      { label: 'Start now', icon: 'up', description: 'The task starts as soon as a session slot is free', checked: !afterTaskId && !startRule && !supertask, onSelect: () => { afterTaskId = ''; startRule = null; supertask = false; renderChips(); prompt.focus(); } },
-      { label: 'Supertask', icon: 'shield', description: SUPERTASK_HELP, checked: supertask, onSelect: () => { afterTaskId = ''; startRule = null; supertask = true; renderChips(); prompt.focus(); } },
-      // One line per task under one heading, every live one: the menu's filter finds it (SPEC-038).
-      ...(candidates.length ? [{ separator: true }, { header: 'After a task is done' }] : []),
-      ...candidates.map((t) => ({ label: `#${t.number} ${t.title}`, hint: statusInfo(t).label, title: `Starts by itself when #${t.number} is done`, checked: t.id === afterTaskId, onSelect: () => { afterTaskId = t.id; startRule = null; supertask = false; renderChips(); prompt.focus(); } })),
-      // A rule names tasks of this sandbox, so a sandbox without any offers none (SPEC-022).
-      ...(ruleChoices(ctx.store.tasksOf(sandbox.id)).length ? [
-        { separator: true },
-        { label: 'When a rule is true…', icon: 'branch', description: 'Pick tasks and whether they are done, merged or ended', checked: Boolean(startRule), onSelect: openRuleDialog },
-      ] : []),
-    ]);
+    openStartMenu(anchor, ctx, sandbox, {
+      kind: startKind({ supertask, afterTaskId, rule: startRule, prepare }),
+      afterTaskId,
+      at: prepare && prepare.at,
+      onPick: ({ kind, task }) => {
+        afterTaskId = kind === 'after' ? task.id : '';
+        startRule = null;
+        supertask = kind === 'supertask';
+        prepare = kind === 'prepared' ? { at: null } : null;
+        renderChips();
+        prompt.focus();
+      },
+      onRule: openRuleDialog,
+      onTime: openTimeDialog,
+    });
   }
 
   /** A start rule (SPEC-017) picked as conditions (SPEC-022); the server checks it. */
@@ -714,6 +737,28 @@ export function mountComposer(ctx, sandbox) {
       onUse: (rule) => {
         startRule = rule;
         afterTaskId = '';
+        supertask = false;
+        prepare = null;
+        renderChips();
+        prompt.focus();
+      },
+    });
+  }
+
+  /** What the send button does with the start choice (SPEC-105). */
+  function startAction() {
+    if (!prepare) return 'Start task';
+    return prepare.at ? 'Schedule task' : 'Prepare task';
+  }
+
+  /** At a time… (SPEC-105): the task is prepared and starts by itself then. */
+  function openTimeDialog() {
+    openScheduleDialog({
+      value: prepare && prepare.at,
+      onUse: (at) => {
+        prepare = { at };
+        afterTaskId = '';
+        startRule = null;
         supertask = false;
         renderChips();
         prompt.focus();
@@ -776,6 +821,8 @@ export function mountComposer(ctx, sandbox) {
     ctx.api.get('/api/auth/recovery').then((state) => { recovery = state; renderBanner(); }).catch(() => {});
   }
 
+  let gateKey = '';
+  let startedHere = false;
   function renderBanner() {
     const sb = ctx.store.sandboxById(sandbox.id) || sandbox;
     const items = [];
@@ -785,55 +832,133 @@ export function mountComposer(ctx, sandbox) {
         h('span', { class: 'banner-text' }, h('strong', null, recovery.locked ? 'Password recovery is disabled. ' : 'No recovery code yet. '), 'Without a recovery code a forgotten superadmin password cannot be reset.'),
         h('a', { class: 'btn btn-sm', href: href('/admin/users'), dataset: { route: '/admin/users' } }, 'Generate one')));
     }
-    // Onboarding (docs/api.md "Sandboxes"): `pending` waits for a person to click Start
-    // onboarding (write; the CLI never starts it, SPEC-051), `preparing` runs it; admins may skip
-    // either. New tasks are not refused meanwhile: they wait after the onboarding task (U-08).
+    // Onboarding is mandatory (SPEC-096, ADR-0076): while it is `pending` or `preparing` the page
+    // shows only the onboarding message, never the task input; the composer stays built, hidden.
     const preparing = sb.onboarding === 'pending' || sb.onboarding === 'preparing';
-    if (preparing) {
-      const prep = (ctx.store.tasksOf(sb.id) || []).find((t) => t.origin === 'onboarding');
-      const pending = sb.onboarding === 'pending';
-      items.push(h('div', { class: 'banner banner-info' }, icon('refresh'),
-        h('span', { class: 'banner-text' },
-          h('strong', null, pending ? 'This sandbox needs onboarding. ' : 'Preparing this sandbox. '),
-          pending
-            ? `Onboarding sets up the sandbox and adapts the repository to the ${BRAND.name} standards; it starts only when someone starts it here. New tasks wait for it and start by themselves once it lands.`
-            : `A preparation task adapts the imported repository to the ${BRAND.name} format. New tasks wait for it and start by themselves once it lands.`,
-          prep ? [' ', h('a', { href: href(`/s/${encodeURIComponent(sb.slug)}/t/${prep.number}`), dataset: { route: `/s/${encodeURIComponent(sb.slug)}/t/${prep.number}` } }, `Open #${prep.number}`)] : null),
-        pending && allows(sb.access, 'write') ? h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: approveOnboarding }, 'Start onboarding') : null,
-        allows(sb.access, 'admin') ? h('button', { type: 'button', class: 'btn btn-sm', onClick: skipOnboarding }, 'Skip for now') : null));
+    const wasGated = !gate.hidden;
+    // The onboarding task: `undefined` while the sandbox's tasks are not known (not read yet, or
+    // reading them failed), `null` when they are and it is not among them.
+    const list = ctx.store.tasksOf(sb.id);
+    const prep = !preparing ? null : !list || ctx.store.tasksError(sb.id) ? undefined : list.find((t) => t.origin === 'onboarding') || null;
+    if (sb.onboarding === 'pending') loadPlan(prep);
+    // Rebuilt only when what it says changes (task events are frequent), and a rebuild keeps the
+    // keyboard on its action.
+    const shown = sb.onboarding === 'pending'
+      ? [prep && prep.title, plans.get(planKey(prep)), branchOf(sb)]
+      : [prep === undefined ? 'unknown' : prep && phaseOf(prep)];
+    const key = preparing ? JSON.stringify([sb.onboarding, sb.name, sb.slug, sb.access, prep && prep.number, ...shown]) : '';
+    if (key !== gateKey) {
+      const before = gateKey ? JSON.parse(gateKey)[0] : null;
+      const hadFocus = gate.contains(document.activeElement);
+      setChildren(gate, preparing ? onboardingGate(sb, prep) : null);
+      if (hadFocus && preparing) focusGate();
+      // A start from this page has its own toast: the status speaks for someone else's.
+      if (before && before !== (preparing ? sb.onboarding : null)) {
+        gateNews.textContent = sb.onboarding === 'preparing' ? (startedHere ? '' : 'Onboarding started.') : preparing ? '' : 'Onboarding finished: the task box is ready.';
+      }
     }
+    gateKey = key;
+    gate.hidden = !preparing;
+    card.hidden = preparing;
+    el.classList.toggle('gated', preparing);
     if (!write) items.push(h('div', { class: 'banner' }, icon('lock'), h('span', { class: 'banner-text' }, 'Read-only (GitHub: read). You can watch tasks but not start them.')));
     setChildren(banner, items);
     startButton.disabled = !write;
     prompt.disabled = !write;
-    startButton.title = !write ? 'Requires write access' : preparing ? 'Starts once the sandbox preparation finishes' : '';
+    startButton.title = !write ? 'Requires write access' : `${startAction()} (${SUBMIT_KEYS})`;
+    // Onboarding landed while the page was open: the task box is ready for typing, unless the
+    // person is busy elsewhere on the page.
+    if (wasGated && !preparing && el.isConnected) {
+      fit();
+      const idle = document.activeElement === document.body || el.contains(document.activeElement) || !document.activeElement;
+      if (idle && !prompt.disabled && !isPhone()) prompt.focus();
+    }
   }
 
-  async function approveOnboarding() {
+  const branchOf = (sb) => (sb.profile && sb.profile.integration_branch) || baseBranch;
+  /** Where an onboarding task stands, as the gate words it (`onboarding_status` on the server). */
+  const phaseOf = (task) => (task.status === 'waiting_capacity' ? 'capacity' : isLive(task.status) || task.status === 'chained' ? 'running' : 'stopped');
+
+  // What exactly onboarding will do, `{ title, steps }`, whichever kind it is (`onboarding_prompt`
+  // or `environment_prompt`): its task's own plan, or before that task exists (it is created when
+  // onboarding starts, SPEC-097) the plan it will get. Per task id, or `''` while there is no task.
+  // `null` while it loads, `false` when it could not be read.
+  const plans = new Map();
+  const planKey = (task) => (task ? task.id : '');
+  let destroyed = false;
+  function loadPlan(task) {
+    const key = planKey(task);
+    if (plans.has(key)) return;
+    plans.set(key, null);
+    ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/onboarding/plan`)
+      .then((plan) => {
+        const steps = plan && Array.isArray(plan.steps) ? plan.steps.filter(Boolean) : [];
+        plans.set(key, steps.length ? { title: plan.title, steps } : false);
+      })
+      .catch(() => plans.set(key, false))
+      .finally(() => { if (!destroyed) renderBanner(); });
+  }
+
+  /** What onboarding will do and its one action: Start onboarding, or follow it while it runs. */
+  function onboardingGate(sb, prep) {
+    const titleId = `onboarding-gate-${sandbox.id}`;
+    const path = prep ? `/s/${encodeURIComponent(sb.slug)}/t/${prep.number}` : null;
+    const link = (label) => h('a', { class: 'btn btn-primary', href: href(path), dataset: { route: path } }, label);
+    const ready = `The task box appears here by itself once it has finished and the repository passes the ${BRAND.name} format check.`;
+    if (sb.onboarding === 'preparing') {
+      const title = h('h2', { id: titleId, class: 'onboarding-gate-title', tabindex: -1 }, `Onboarding ${sb.name}`);
+      // The server's own reading of a preparing sandbox (`onboarding_status`), in the page's words.
+      if (prep === undefined) return [title, h('p', null, `An agent is setting up this sandbox and adapting the repository to the ${BRAND.name} standards. ${ready}`)];
+      if (!prep) {
+        return [title,
+          h('p', null, 'The onboarding task is missing, so onboarding cannot finish by itself.'),
+          h('p', { class: 'muted' }, allows(sb.access, 'admin')
+            ? `As an administrator you can end the wait through the API: POST /api/sandboxes/${sb.id}/onboarding/skip.`
+            : 'An administrator of this sandbox can end the wait.')];
+      }
+      const phase = phaseOf(prep);
+      const what = phase === 'capacity'
+        ? `#${prep.number} waits for a Claude subscription with capacity and starts by itself.`
+        : phase === 'stopped'
+          ? `#${prep.number} stopped before the repository passed the ${BRAND.name} format check. Open it and continue it.`
+          : `An agent is setting up this sandbox and adapting the repository to the ${BRAND.name} standards in #${prep.number}.`;
+      return [title, h('p', null, what, ' ', ready), link(phase === 'stopped' ? 'Open onboarding' : 'Follow onboarding')];
+    }
+    const plan = plans.get(planKey(prep));
+    const intro = 'Onboarding is one task an agent runs before any other in this sandbox';
+    return [
+      h('h2', { id: titleId, class: 'onboarding-gate-title', tabindex: -1 }, `Onboard ${sb.name} first`),
+      h('p', null, prep
+        ? [`${intro}: `, h('a', { href: href(path), dataset: { route: path } }, `#${prep.number} ${prep.title}`), '. Its plan:']
+        : plan ? `${intro}: ${plan.title}. Its plan:` : `${intro}.`),
+      plan ? h('ol', { class: 'onboarding-gate-steps' }, plan.steps.map((step) => h('li', null, step)))
+        : plan === null ? skeleton('Loading what onboarding will do…', 4) : null,
+      h('p', null, `It changes documentation, configuration and CI only, never application code, and any change reaches ${branchOf(sb)} through a pull request. ${ready}`),
+      allows(sb.access, 'write')
+        ? h('button', { type: 'button', class: 'btn btn-primary', onClick: () => approveOnboarding() }, 'Start onboarding')
+        : h('p', { class: 'muted' }, 'Someone with write access to the repository starts it here.'),
+    ];
+  }
+
+  // One start per press: a double click must not send two approvals (singleFlight).
+  const approveOnboarding = singleFlight(async () => {
     try {
       const updated = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/onboarding/approve`);
-      if (updated && updated.id) ctx.store.upsertSandbox(updated);
+      startedHere = true;
       await ctx.store.loadTasks(sandbox.id).catch(() => null);
+      if (updated && updated.id) ctx.store.upsertSandbox(updated);
       toast('Onboarding started.', { kind: 'ok' });
+      // The button went with the message it was in: the keyboard moves on to following it.
+      focusGate();
     } catch (error) {
       errorToast(error, 'Couldn’t start onboarding');
     }
-  }
+  });
 
-  async function skipOnboarding() {
-    const ok = await confirmDialog({
-      title: 'Skip sandbox preparation?',
-      message: `Tasks may start before the repository follows the ${BRAND.name} documentation format. The preparation task keeps its history.`,
-      confirmLabel: 'Skip for now',
-    });
-    if (!ok) return;
-    try {
-      const updated = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/onboarding/skip`);
-      if (updated && updated.id) ctx.store.upsertSandbox(updated);
-      toast('Preparation skipped. Waiting tasks start now.', { kind: 'ok' });
-    } catch (error) {
-      errorToast(error, 'Couldn’t skip preparation');
-    }
+  /** Puts the keyboard on the gate's action, else its heading. */
+  function focusGate() {
+    const target = gate.querySelector('.btn') || gate.querySelector('h2');
+    if (target) target.focus();
   }
 
   /** The request body of a new task with the composer's choices (`auto`: Jev decides, TSK-015). */
@@ -863,6 +988,7 @@ export function mountComposer(ctx, sandbox) {
     afterTaskId = '';
     startRule = null;
     supertask = false;
+    prepare = null;
     clearDraft(userId, sandbox.id); // redraws the tray (onDraftChange)
     fit();
     ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}/t/${task.number}`);
@@ -879,7 +1005,7 @@ export function mountComposer(ctx, sandbox) {
   // frozen. The prompt stays as it is (read-only) while it is being read.
   let status = null;
   let showTimer = 0;
-  const autoStage = () => (mode === AUTO || workflowId === AUTO ? 'Choosing mode and workflow…' : 'Starting the task…');
+  const autoStage = () => (mode === AUTO || workflowId === AUTO ? 'Choosing mode and workflow…' : prepare ? 'Preparing the task…' : 'Starting the task…');
   function working(text) {
     draft.starting = true;
     startButton.disabled = true;
@@ -951,9 +1077,10 @@ export function mountComposer(ctx, sandbox) {
     if (draft.starting) { toast('This task is already starting.', { kind: 'info' }); return; }
     try {
       // A request mixing separate workstreams gets the split card first; a chosen "Run after"
-      // already decided how the work is scheduled, and a supertask is one broad task by intent.
+      // already decided how the work is scheduled, and a supertask or a prepared task is one task
+      // by intent.
       // The check never blocks for long (≤ 4 s).
-      if (!afterTaskId && !startRule && !supertask && text.split(/\s+/).filter(Boolean).length >= SPLIT_MIN_WORDS) {
+      if (!afterTaskId && !startRule && !supertask && !prepare && text.split(/\s+/).filter(Boolean).length >= SPLIT_MIN_WORDS) {
         working('Reading your request…');
         if (await looksSeveral(ctx, sandbox, text)) {
           showSplit(text);
@@ -965,6 +1092,8 @@ export function mountComposer(ctx, sandbox) {
       if (afterTaskId) body.after_task_id = afterTaskId;
       if (startRule) body.start_rule = ruleText(startRule);
       if (supertask) body.supertask = true;
+      if (prepare && prepare.at) body.start_at = prepare.at;
+      else if (prepare) body.prepared = true;
       opened(await createTask(body));
     } catch (error) {
       errorToast(error, 'Couldn’t start the task');
@@ -990,9 +1119,13 @@ export function mountComposer(ctx, sandbox) {
     key: `composer:${sandbox.id}`,
     start() {
       fit(); // a kept draft's text sizes the box once it is on the page
-      if (!prompt.disabled && !isPhone()) prompt.focus();
+      // While onboarding comes first the keyboard lands on its action (SPEC-096).
+      if (!isPhone()) {
+        if (card.hidden) focusGate();
+        else if (!prompt.disabled) prompt.focus();
+      }
       if (!stopSmoke) stopSmoke = brandSmoke(niche); // the brand's smoke, when its niche shows (brandfx.js)
     },
-    destroy() { forgetUrls(withUrls()); remember({ now: true }); destroyers.forEach((off) => off()); if (stopSmoke) stopSmoke(); clearTimeout(showTimer); clearSplit(); if (preview) preview.destroy(); },
+    destroy() { destroyed = true; forgetUrls(withUrls()); remember({ now: true }); destroyers.forEach((off) => off()); if (stopSmoke) stopSmoke(); clearTimeout(showTimer); clearSplit(); if (preview) preview.destroy(); },
   };
 }

@@ -122,8 +122,11 @@ function createApp(root, transport) {
       const me = await meRead;
       await signedIn(me);
     } catch (error) {
-      if (error.status === 401) renderSignIn();
-      else fatal(error);
+      if (error.status === 401) {
+        // A session found expired at load: what it kept for the next page load goes (SPEC-104).
+        store.forgetPulls();
+        renderSignIn();
+      } else fatal(error);
     }
   }
 
@@ -170,9 +173,10 @@ function createApp(root, transport) {
         ctx.notifications.add({ kind: 'warn', title: 'No recovery code yet', detail: 'A forgotten superadmin password can’t be reset without one.', route: '/admin/users', key: 'notice:recovery', once: true });
       }).catch(() => {});
     }
+    // GitHub is optional (SPEC-099): playgrounds work without it, so it is a quiet notification for
+    // later, never a toast on every sign-in.
     if (user.is_superadmin && me.instance && me.instance.github_configured === false) {
-      ctx.notifications.add({ kind: 'info', title: 'Connect this instance to GitHub', detail: 'Needed to create and import sandboxes.', route: '/admin/github', key: 'notice:github', once: true });
-      toast('Connect this instance to GitHub to create and import sandboxes.', { kind: 'info', timeout: 12000, action: { label: 'Connect GitHub', run: () => navigate('/admin/github') } });
+      ctx.notifications.add({ kind: 'info', title: 'GitHub is optional', detail: 'Playgrounds work without it. Connect GitHub to import or create your organisation’s repositories.', route: '/admin/github', key: 'notice:github', once: true });
     }
     const loc = currentLocation();
     if (next) navigate(next, { replace: true });
@@ -223,6 +227,9 @@ function createApp(root, transport) {
     ctx.updates = null;
     shell = null;
     store.state.me = null;
+    // The pull requests kept for the next page load go with the session, signed out or expired
+    // (SPEC-104); a read answering later finds no user and writes nothing to storage.
+    store.forgetPulls();
     unsubscribers.splice(0).forEach((off) => off());
     document.body.classList.remove('drawer-open');
   }
@@ -716,6 +723,9 @@ function createApp(root, transport) {
     const path = sandbox ? `/s/${encodeURIComponent(sandbox.slug)}` : '/';
     if (currentLocation().path !== path) navigate(path);
     setTimeout(() => {
+      // A sandbox that awaits onboarding shows no prompt: its action takes the keyboard (SPEC-096).
+      const gated = document.querySelector('.onboarding-gate:not([hidden]) .btn');
+      if (gated) { gated.focus(); return; }
       const prompt = document.querySelector('.composer-prompt');
       if (prompt && !prompt.disabled) prompt.focus();
     }, 0);

@@ -1025,6 +1025,8 @@ impl App {
             AttemptId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?;
         let run_dir = self.config.data_dir.join("runs").join(attempt_id.as_str());
         std::fs::create_dir_all(&run_dir).map_err(AppError::internal)?;
+        // The repository's `.mcp.json` servers join the sandbox's first (SPEC-095 PMC-001).
+        self.import_project_mcp(&sandbox).await;
         let plan = self.deps.harness.plan(&HarnessLaunch {
             harness,
             mode,
@@ -1251,6 +1253,7 @@ impl App {
                 })
                 .map(|e| e.name.clone())
                 .collect(),
+            playground: sandbox.is_playground(),
         };
         let author = match self.deps.store.user(&task.created_by).await {
             Ok(Some(user)) => user.github_login.unwrap_or(user.display_name),
@@ -2295,6 +2298,7 @@ impl App {
         let task = store.task(task_id).await?.ok_or(AppError::NotFound)?;
         if task.status == TaskStatus::Queued
             || task.status == TaskStatus::Chained
+            || task.status == TaskStatus::Prepared
             || task.status == TaskStatus::WaitingCapacity
                 && store.live_attempt(task_id).await?.is_none()
         {

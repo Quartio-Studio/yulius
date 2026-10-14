@@ -32,6 +32,9 @@ test('each group says what its time measures, in words (unit, in the page)', asy
       queued: time({ status: 'queued', state_since: before(7 * HOUR) }),
       chained: time({ status: 'chained', state_since: before(2 * HOUR), after: { number: 4 } }),
       paused: time({ status: 'waiting_capacity', state_since: before(5 * MIN) }),
+      // Written and waiting to be started, by a person or at its time (SPEC-105).
+      prepared: time({ status: 'prepared', state_since: before(3 * HOUR) }),
+      scheduled: time({ status: 'prepared', start_at: before(-HOUR), state_since: before(HOUR) }),
       review: time({ status: 'running', activity: 'waiting', state_since: before(3 * MIN) }, { number: 9, state: 'open', checks: 'pending' }),
       stopped: time({ status: 'stopped_cancelled', state_since: before(50 * HOUR) }),
       closed: time({ status: 'closed', state_since: before(5 * HOUR) }),
@@ -51,6 +54,8 @@ test('each group says what its time measures, in words (unit, in the page)', asy
     queued: 'queued 7h',
     chained: 'queued 2h',
     paused: 'paused 5m',
+    prepared: 'prepared 3h',
+    scheduled: 'prepared 1h',
     review: 'in review 3m',
     stopped: 'stopped 2d ago',
     closed: 'closed 5h ago',

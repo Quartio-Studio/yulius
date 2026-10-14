@@ -5,12 +5,13 @@
 // itself, so no action chooses one.
 
 import { enc } from './api.js';
-import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, badge, setChildren, icon, iconButton, placeholder } from './dom.js';
+import { h, openModal, confirmDialog, openMenu, toast, errorToast, field, invalid, badge, setChildren, icon, iconButton, placeholder } from './dom.js';
 import { taskActions, taskInfo, allows, isLive, otherOwner } from './status.js';
-import { relLong } from './format.js';
+import { relLong, whenLabel, localInputValue, fromLocalInput } from './format.js';
 import { BRAND } from './brand.js';
 import { createMarkdownEditor } from './mdeditor.js';
 import { openAttachment } from './filedrop.js';
+import { folderDropZone } from './playground.js';
 
 // ---------------------------------------------------------------- task menu
 
@@ -26,8 +27,9 @@ export function openTaskMenu(ctx, anchor, task) {
   openMenu(anchor, [
     // The same rule as the row it opens from (pull request, held prompt, browser request).
     { header: `#${task.number} · ${taskInfo(task, ctx.store.state.actionRequests, pr).label}` },
-    task.status === 'chained' ? { label: 'Start now', disabled: !can.startNow, title: can.startNow ? null : why, onSelect: () => startNow(ctx, task) } : null,
-    { label: task.status === 'chained' ? 'Cancel' : 'Stop', disabled: !can.stop, title: can.stop ? null : why, onSelect: () => stopTask(ctx, task) },
+    task.status === 'chained' || task.status === 'prepared' ? { label: 'Start now', disabled: !can.startNow, title: can.startNow ? null : why, onSelect: () => startNow(ctx, task) } : null,
+    task.status === 'prepared' ? { label: task.start_at ? 'Change time…' : 'Schedule…', disabled: !can.schedule, title: can.schedule ? null : why, onSelect: () => rescheduleTask(ctx, task) } : null,
+    { label: task.status === 'chained' || task.status === 'prepared' ? 'Cancel' : 'Stop', disabled: !can.stop, title: can.stop ? null : why, onSelect: () => stopTask(ctx, task) },
     { label: 'Continue', disabled: !can.continue, title: can.continue ? null : why, onSelect: () => continueTask(ctx, task) },
     { label: 'See the original prompt', onSelect: () => openPromptDialog(ctx, task) },
     { label: 'Delivery…', onSelect: () => openDeliveryDialog(ctx, task) },
@@ -61,6 +63,59 @@ async function taskPost(ctx, task, verb, request, okMessage) {
   }
 }
 
+/**
+ * When a task starts (SPEC-105): a date and time in the person's time zone, at most 366 days
+ * ahead. `value` is the time picked before (ISO) or null; `onUse(iso)` gets the new time and may
+ * throw to keep the dialog open with the reason. With `onClear`, a "When I decide" button clears
+ * the time instead.
+ */
+export function openScheduleDialog({ value, onUse, onClear }) {
+  const next = new Date();
+  next.setHours(next.getHours() + 1, 0, 0, 0);
+  const id = `schedule-${Math.random().toString(36).slice(2, 8)}`;
+  const hintId = `${id}-hint`;
+  const input = h('input', { id, class: 'input', type: 'datetime-local', value: localInputValue(value || next.toISOString()), min: localInputValue(new Date().toISOString()), required: true, 'aria-describedby': hintId });
+  return openModal({
+    title: 'Start at a time',
+    className: 'schedule-dialog',
+    body: h('div', { class: 'stack' },
+      // A label of its own: a validation message joins the field, not the input's name.
+      h('div', { class: 'field' }, h('label', { class: 'field-label', for: id }, 'Date and time'), input,
+        h('span', { class: 'field-hint', id: hintId }, 'In your time zone. The task starts by itself within a minute of it.'))),
+    actions: [
+      { label: 'Cancel', value: false },
+      onClear ? { label: 'When I decide', run: () => onClear() } : null,
+      { label: 'Use this time', kind: 'primary', run: async () => {
+        const at = fromLocalInput(input.value);
+        const ahead = at ? Date.parse(at) - Date.now() : NaN;
+        if (!at) { invalid(input, 'Pick a date and a time.'); return false; }
+        if (ahead < -60e3) { invalid(input, 'That time has passed: pick a later one.'); return false; }
+        if (ahead > 366 * 86400e3) { invalid(input, 'Pick a time at most 366 days ahead.'); return false; }
+        await onUse(at);
+        return true;
+      } },
+    ].filter(Boolean),
+  });
+}
+
+/** Sets or clears when a prepared task starts by itself (SPEC-105); null: when I decide. */
+export function scheduleTask(ctx, task, at) {
+  return ctx.api.put(`/api/tasks/${enc(task.id)}/schedule`, { start_at: at }).then((updated) => {
+    if (updated && updated.id) ctx.store.upsertTask(updated);
+    toast(at ? `#${task.number} starts ${whenLabel(at)}.` : `#${task.number} waits until you start it.`, { kind: 'ok' });
+    return updated;
+  });
+}
+
+/** Schedule… / Change time… of a prepared task: the dialog, then the server. */
+export function rescheduleTask(ctx, task) {
+  return openScheduleDialog({
+    value: task.start_at,
+    onUse: (at) => scheduleTask(ctx, task, at),
+    onClear: task.start_at ? () => scheduleTask(ctx, task, null) : null,
+  });
+}
+
 /** A task waiting in a chain starts now, whatever its predecessor does (TSK-012). */
 export function startNow(ctx, task) {
   return taskPost(ctx, task, 'start', () => ctx.api.post(`/api/tasks/${enc(task.id)}/start-now`), `Starting #${task.number}…`);
@@ -68,6 +123,16 @@ export function startNow(ctx, task) {
 
 /** Stop a live task (confirmation: stopping interrupts the agent); cancel a chained one. */
 export async function stopTask(ctx, task) {
+  if (task.status === 'prepared') {
+    const cancel = await confirmDialog({
+      title: `Cancel task #${task.number}?`,
+      message: `It is prepared${task.start_at ? ` to start ${whenLabel(task.start_at)}` : ''} and will not start. You can continue it later.`,
+      confirmLabel: 'Cancel task',
+      danger: true,
+    });
+    if (cancel) await taskPost(ctx, task, 'stop', () => ctx.api.post(`/api/tasks/${enc(task.id)}/stop`), `Cancelled #${task.number}`);
+    return;
+  }
   if (task.status === 'chained') {
     const cancel = await confirmDialog({
       title: `Cancel task #${task.number}?`,
@@ -546,16 +611,28 @@ export function openRunViewer(ctx, sandbox, runId, envName) {
 
 const REPO_NAME_RE = /^[A-Za-z0-9._-]{1,100}$/;
 
-/** "+" dialog: import an existing repository or create a new one from a template. */
+/**
+ * "+" dialog: a playground from a folder or a template (no GitHub, SPEC-099), or the instance
+ * owner's repositories on GitHub: import one or create one from a template.
+ */
 export function openSandboxDialog(ctx, mode = 'import') {
-  // Create mode is for instance administrators (docs/api.md "Sandboxes").
+  // Create mode is for instance administrators (docs/api.md "Sandboxes"); without GitHub only a
+  // playground can be made.
   const canCreate = ctx.isInstanceAdmin();
-  const startMode = mode === 'create' && canCreate ? 'create' : 'import';
-  const tabImport = h('input', { type: 'radio', name: 'sb-mode', value: 'import', checked: startMode === 'import' });
-  const tabCreate = h('input', { type: 'radio', name: 'sb-mode', value: 'create', checked: startMode === 'create', disabled: !canCreate });
+  const me = ctx.store.state.me || {};
+  const github = !(me.instance && me.instance.github_configured === false);
+  const startMode = mode === 'playground' || !github ? 'playground' : mode === 'create' && canCreate ? 'create' : 'import';
+  const radio = (value, disabled) => h('input', { type: 'radio', name: 'sb-mode', value, checked: startMode === value, disabled });
+  const tabPlayground = radio('playground', false);
+  const tabImport = radio('import', !github);
+  const tabCreate = radio('create', !github || !canCreate);
   const content = h('div', { class: 'stack' });
+  const createTitle = !github ? 'Connect GitHub first' : canCreate ? null : 'Only instance administrators can create sandboxes from a template';
   const body = h('div', { class: 'stack' },
-    h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Mode' }, h('label', null, tabImport, 'Import repository'), h('label', { title: canCreate ? null : 'Only instance administrators can create sandboxes from a template' }, tabCreate, 'Create from template')),
+    h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Mode' },
+      h('label', null, tabPlayground, 'Playground'),
+      h('label', { title: github ? null : 'Connect GitHub first' }, tabImport, 'Import repository'),
+      h('label', { title: createTitle }, tabCreate, 'Create from template')),
     content);
   let submitButton;
   let selectedRepo = null;
@@ -565,19 +642,23 @@ export function openSandboxDialog(ctx, mode = 'import') {
   const descInput = h('input', { class: 'input', placeholder: 'One sentence about the sandbox (optional)', maxlength: 300 });
   const nameError = h('span', { class: 'field-error' });
   let templateValue = null;
+  // Set once the dialog exists: a folder dropped in it becomes a playground and closes it.
+  let closeDialog = () => {};
 
   const updateSubmit = () => {
     if (!submitButton) return;
     if (tabImport.checked) {
       submitButton.textContent = 'Import';
       submitButton.disabled = !selectedRepo;
-    } else {
-      submitButton.textContent = 'Create';
-      const valid = REPO_NAME_RE.test(nameInput.value.trim());
-      nameError.textContent = nameInput.value && !valid ? 'Use letters, digits, “.”, “-” or “_”.' : '';
-      nameInput.setAttribute('aria-invalid', nameInput.value && !valid ? 'true' : 'false');
-      submitButton.disabled = !valid || !templateValue;
+      return;
     }
+    const playground = tabPlayground.checked;
+    submitButton.textContent = playground ? 'Start playground' : 'Create';
+    // A playground's name only needs a letter or digit: the server makes its slug.
+    const valid = playground ? /[A-Za-z0-9]/.test(nameInput.value) : REPO_NAME_RE.test(nameInput.value.trim());
+    nameError.textContent = nameInput.value && !valid ? (playground ? 'Use at least one letter or digit.' : 'Use letters, digits, “.”, “-” or “_”.') : '';
+    nameInput.setAttribute('aria-invalid', nameInput.value && !valid ? 'true' : 'false');
+    submitButton.disabled = !valid || !templateValue;
   };
 
   const renderImport = async () => {
@@ -593,10 +674,10 @@ export function openSandboxDialog(ctx, mode = 'import') {
         const full = `${r.owner}/${r.name}`;
         // GitHub "maintain" is listed as Yulius `write` but may import; the server decides.
         const disabled = r.already_sandbox || r.access === 'read';
-        const radio = h('input', { type: 'radio', name: 'sb-repo', value: full, disabled, checked: selectedRepo === full });
-        radio.addEventListener('change', () => { selectedRepo = full; updateSubmit(); });
+        const choice = h('input', { type: 'radio', name: 'sb-repo', value: full, disabled, checked: selectedRepo === full });
+        choice.addEventListener('change', () => { selectedRepo = full; updateSubmit(); });
         return h('label', { class: ['list-item', 'choice', disabled && 'disabled'] },
-          radio,
+          choice,
           h('div', { class: 'list-main' }, h('div', { class: 'list-title' }, full, r.private ? badge('private') : badge('public', 'accent'))),
           r.already_sandbox ? badge('already a sandbox', 'ok') : badge(r.access, r.access === 'admin' ? '' : 'warn', r.access === 'admin' ? null : r.access === 'write' ? 'Import needs admin or maintain permission on GitHub' : 'Admin or maintain permission required'));
       }));
@@ -616,32 +697,61 @@ export function openSandboxDialog(ctx, mode = 'import') {
     search.focus();
   };
 
-  const renderCreate = async () => {
+  /** The template list (shared by a playground and a GitHub repository). */
+  const templateField = async () => {
     const templateList = h('div', { class: 'card list' }, placeholder('Loading templates…', 'loading'));
+    const fill = async () => {
+      if (!templates) {
+        try { templates = await ctx.api.get('/api/templates'); } catch (error) { setChildren(templateList, placeholder(error.message, 'error')); return; }
+      }
+      if (!templateValue && templates.length) templateValue = templates[0].id;
+      setChildren(templateList, templates.map((t) => {
+        const choice = h('input', { type: 'radio', name: 'sb-template', value: t.id, checked: t.id === templateValue });
+        choice.addEventListener('change', () => { templateValue = t.id; updateSubmit(); });
+        return h('label', { class: 'list-item choice' }, choice, h('div', { class: 'list-main' }, h('div', { class: 'list-title' }, t.name), h('div', { class: 'list-sub wrap-text' }, t.description)));
+      }));
+      updateSubmit();
+    };
+    return { el: h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Template'), templateList), fill };
+  };
+
+  const renderPlayground = async () => {
+    const templateList = await templateField();
+    const opened = (sandbox) => {
+      ctx.store.upsertSandbox(sandbox);
+      closeDialog();
+      toast(`The playground ${sandbox.name} is ready: start a task in it.`, { kind: 'ok' });
+      ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}`);
+    };
+    setChildren(content,
+      h('p', { class: 'muted small' }, `A playground is for trying ${BRAND.name} on your own code: its Git stays on this server and nothing is pushed to GitHub. Its tasks merge into its own dev branch.`),
+      folderDropZone(ctx, { onCreated: opened }),
+      h('h3', { class: 'field-label' }, 'Or start from a template'),
+      field('Name', nameInput), nameError,
+      templateList.el);
+    await templateList.fill();
+    nameInput.focus();
+  };
+
+  const renderCreate = async () => {
+    const templateList = await templateField();
     setChildren(content,
       field('Repository name', nameInput, 'Created under the instance’s GitHub owner.'), nameError,
       field('Description', descInput),
-      h('div', { class: 'field' }, h('span', { class: 'field-label' }, 'Template'), templateList),
+      templateList.el,
       h('p', { class: 'muted xs' }, `Instance administrators only. ${BRAND.name} creates a private GitHub repository, pushes the template to main and dev, adds rulesets requiring pull requests and opens the new tab.`));
-    if (!templates) {
-      try { templates = await ctx.api.get('/api/templates'); } catch (error) { setChildren(templateList, placeholder(error.message, 'error')); return; }
-    }
-    if (!templateValue && templates.length) templateValue = templates[0].id;
-    setChildren(templateList, templates.map((t) => {
-      const radio = h('input', { type: 'radio', name: 'sb-template', value: t.id, checked: t.id === templateValue });
-      radio.addEventListener('change', () => { templateValue = t.id; updateSubmit(); });
-      return h('label', { class: 'list-item choice' }, radio, h('div', { class: 'list-main' }, h('div', { class: 'list-title' }, t.name), h('div', { class: 'list-sub wrap-text' }, t.description)));
-    }));
-    updateSubmit();
+    await templateList.fill();
     nameInput.focus();
   };
 
   nameInput.addEventListener('input', updateSubmit);
-  const switchMode = () => { (tabImport.checked ? renderImport : renderCreate)(); updateSubmit(); };
-  tabImport.addEventListener('change', switchMode);
-  tabCreate.addEventListener('change', switchMode);
+  const switchMode = () => {
+    (tabImport.checked ? renderImport : tabPlayground.checked ? renderPlayground : renderCreate)();
+    updateSubmit();
+  };
+  for (const tab of [tabPlayground, tabImport, tabCreate]) tab.addEventListener('change', switchMode);
 
-  openModal({
+  const modal = openModal({
     title: 'Add sandbox',
     wide: true,
     body,
@@ -650,15 +760,19 @@ export function openSandboxDialog(ctx, mode = 'import') {
       { label: 'Import', kind: 'primary', ref: (b) => { submitButton = b; }, run: async () => {
         const payload = tabImport.checked
           ? { mode: 'import', repo: selectedRepo }
-          : { mode: 'create', name: nameInput.value.trim(), template: templateValue, description: descInput.value.trim() };
+          : tabPlayground.checked
+            ? { mode: 'playground', name: nameInput.value.trim(), template: templateValue }
+            : { mode: 'create', name: nameInput.value.trim(), template: templateValue, description: descInput.value.trim() };
         const sandbox = await ctx.api.post('/api/sandboxes', payload);
         ctx.store.upsertSandbox(sandbox);
         const preparing = sandbox.onboarding === 'pending' || sandbox.onboarding === 'preparing';
-        toast(`${tabImport.checked ? 'Imported' : 'Created'} ${sandbox.name}${preparing ? ' — it needs preparation before tasks can start' : ''}`, { kind: 'ok' });
+        const verb = tabImport.checked ? 'Imported' : tabPlayground.checked ? 'Started the playground' : 'Created';
+        toast(`${verb} ${sandbox.name}${preparing ? ' — it needs preparation before tasks can start' : ''}`, { kind: 'ok' });
         ctx.navigate(`/s/${encodeURIComponent(sandbox.slug)}`);
       } },
     ],
   });
+  closeDialog = () => modal.close(true);
   switchMode();
 }
 

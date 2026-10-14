@@ -2,7 +2,7 @@
 // the same code the app uses. Change tokens.css or brand.js and this page shows the result in both
 // themes; contrast ratios are computed live with the WCAG formula the repository check uses.
 
-import { h, icon, iconButton, badge, iconBadge, toggle, meter, statusMark, itemCard, ICON_NAMES, setChildren, toast, keepFocus, emptyState, loadError, skeleton, placeholder, filterTabs, prChip } from '../dom.js';
+import { h, icon, iconButton, badge, iconBadge, toggle, meter, statusMark, itemCard, ICON_NAMES, setChildren, toast, keepFocus, emptyState, loadError, skeleton, filterTabs, prChip } from '../dom.js';
 import { statusInfo, taskInfo } from '../status.js';
 import { BRAND } from '../brand.js';
 import { THEME_CHOICES, themeChoice, setThemeChoice, token, onThemeChange } from '../theme.js';
@@ -27,7 +27,7 @@ const SHADOWS = [['None', 'L0 canvas · L1 cards (border only)', 'none'], ['--sh
 const STATUSES = [
   { status: 'running', activity: 'needs_attention' }, { status: 'running', activity: 'waiting' }, { status: 'running', activity: 'working' }, { status: 'running', activity: 'done' },
   { status: 'running', activity: 'done', background_shells: 1 }, { status: 'running', activity: 'waiting', yulius_wait: true },
-  { status: 'queued' }, { status: 'starting' }, { status: 'waiting_capacity' }, { status: 'chained', after: { number: 4 } }, { status: 'chained', after: { number: 4, blocked: '#4 stopped' } },
+  { status: 'queued' }, { status: 'starting' }, { status: 'waiting_capacity' }, { status: 'chained', after: { number: 4 } }, { status: 'prepared' }, { status: 'prepared', start_at: new Date(Date.now() + 86400e3).toISOString() }, { status: 'chained', after: { number: 4, blocked: '#4 stopped' } },
   { status: 'switching' }, { status: 'stopping' },
   { status: 'closed' }, { status: 'stopped_cancelled' }, { status: 'stopped_crashed' }, { status: 'failed_spawn_error' },
 ];
@@ -121,9 +121,9 @@ export function mountDesignPage(ctx) {
         headerSample('Tasks', 'each task is a Claude Code session on its own branch', h('button', { type: 'button', class: 'btn btn-primary', onClick: () => toast('New task') }, icon('plus', { size: 14 }), 'New task', h('span', { class: 'kbd kbd-on-accent' }, NEW_TASK_KEYS)))),
       section('Cards', 'One card title: an optional icon and the title at the item size (Settings, the task overview, Git, Dashboard, CI).',
         h('div', { class: 'card card-pad stack-sm' }, h('h3', { class: 'card-title' }, icon('tasks', { size: 16 }), 'Plan'), h('p', { class: 'muted small' }, 'The card’s content.'))),
-      section('Empty, loading and error states', 'One empty state with the action that fills it; a calm loading state; a failed load said in place with what failed and Try again (never a toast); a missing page with a heading and the way back.',
+      section('Empty, loading and error states', 'One empty state with the action that fills it; shimmering fields while content loads (placeholder(…, \'loading\') and skeleton(), never a spinner with “Loading…”; a spinner marks only an action under way); a failed load said in place with what failed and Try again (never a toast); a missing page with a heading and the way back.',
         emptyState({ iconName: 'workflow', title: 'No custom workflows yet', text: 'Duplicate a default to change it, or start one from Blank.', action: createButton('New workflow', () => toast('New workflow')) }),
-        h('div', { class: 'stack-sm' }, skeleton('Loading the sample…'), placeholder('Loading…', 'loading')),
+        skeleton('Loading the sample…', 3, { block: true }),
         loadError('Couldn’t load the workflows: the server is not reachable', () => toast('Try again')),
         h('div', { class: 'ds-missing' }, notFound({ title: 'Task not found', text: 'There is no task #999 in studio. It may have been deleted.', back: ['Tasks', '/design'], level: 3 }))),
       section('Filters, pull requests and toasts', 'filterTabs(): pills with counts. prChip(): a pull request and its checks. Toasts confirm what happened in one short sentence with a period.',

@@ -1,7 +1,7 @@
 // Task status presentation and permitted actions (SPEC-001 §6.1, §6.3, §7.1; SPEC-002 §6.1).
 
 import { BRAND } from './brand.js';
-import { resetLabel } from './format.js';
+import { resetLabel, whenLabel } from './format.js';
 
 /** Statuses with a live process or pending start. */
 export const LIVE_STATUSES = new Set(['queued', 'starting', 'running', 'switching', 'waiting_capacity', 'stopping']);
@@ -77,10 +77,11 @@ export const WAITS_LINE = 'Waits for its checks or merge; goes on by itself';
 
 /**
  * An idle agent that waits in `yulius wait` for its checks, its delivery or an armed merge goes on
- * by itself when Yulius has news: it is not the person's turn (SPEC-085 STT-002). Its tone is
- * Working's, so nobody is notified of it.
+ * by itself when Yulius has news: it is not the person's turn (SPEC-085 STT-002), so nobody is
+ * notified of it. Its branch stands still in the muted tone of the other waits (SPEC-100): the
+ * Working tone turns its icon like the ring and colours it green.
  */
-const WAITING_ON_YULIUS = { glyph: '⧗', icon: 'branch', tone: 'working', label: 'Waiting for checks or merge', group: 'working', waits: true, detail: WAITS_LINE };
+const WAITING_ON_YULIUS = { glyph: '⧗', icon: 'branch', tone: 'queued', label: 'Waiting for checks or merge', group: 'working', waits: true, detail: WAITS_LINE };
 
 /**
  * Whether the idle agent goes on by itself (SPEC-085 STT-003): its background work wakes it, or
@@ -158,6 +159,12 @@ export function statusInfo(task) {
     if (after && after.rule) return { glyph: '⛓', icon: 'st-chained', tone: 'queued', label: 'Queued by a rule', group: 'working' };
     return { glyph: '⛓', icon: 'st-chained', tone: 'queued', label: after ? (after.rule ? `Queued: when ${after.rule}` : `Queued after #${after.number}`) : 'Queued after another task', group: 'working' };
   }
+  // Written now, started later (SPEC-105): by a person's Start now, or by itself at its time. In
+  // line with the queued tasks, never "Needs you".
+  if (status === 'prepared') {
+    if (task.start_at) return { glyph: '◷', icon: 'clock', tone: 'queued', label: `Scheduled · ${whenLabel(task.start_at)}`, group: 'working' };
+    return { glyph: '◇', icon: 'st-prepared', tone: 'queued', label: 'Prepared', group: 'working' };
+  }
   if (status === 'closed') return { glyph: '✓', icon: 'st-closed', tone: 'closed', label: 'Closed', group: 'ended' };
   if (status === 'stopped_cancelled') return { glyph: '■', icon: 'st-stopped', tone: 'stopped', label: STOP_LABELS[status], group: 'ended' };
   if (status in STOP_LABELS) return { glyph: '▲', icon: 'st-crashed', tone: 'stopped-abnormal', label: STOP_LABELS[status], group: 'ended' };
@@ -218,10 +225,16 @@ export function activityLine(task, info = statusInfo(task)) {
     if (after && after.rule) return `Starts by itself when ${after.rule}`;
     return after ? `Starts by itself when #${after.number} is done` : info.label;
   }
+  if (task.status === 'prepared') return preparedLine(task);
   if (task.status === 'waiting_capacity') return pausedLine(task);
   if (task.status === 'queued' && heldBy(task).length) return supertaskLine(task);
   if (info.group === 'ended' && steps.total) return `${info.label} · ${steps.done || 0}/${steps.total} steps`;
   return info.label;
+}
+
+/** How a prepared task starts, in a sentence (SPEC-105). */
+export function preparedLine(task) {
+  return task.start_at ? `It starts by itself ${whenLabel(task.start_at)}.` : 'It starts when you press Start now.';
 }
 
 /** Why a queued task waits for a supertask, in a sentence (SPEC-071). */
@@ -300,7 +313,7 @@ export function taskInfo(task, actionRequests, pr) {
 export function counter(task, info) {
   if (info.group === 'needs') return 'needs';
   if (info.group !== 'working') return null;
-  return task.status === 'queued' || task.status === 'chained' ? 'queued' : 'working';
+  return task.status === 'queued' || task.status === 'chained' || task.status === 'prepared' ? 'queued' : 'working';
 }
 
 const RANK = { read: 1, write: 2, admin: 3 };
@@ -327,7 +340,9 @@ export function otherOwner(task, me) {
 export function taskActions(task, access, pr, me) {
   const write = allows(access, 'write') && !otherOwner(task, me);
   const live = isLive(task.status);
-  const chained = task.status === 'chained';
+  // A chained or prepared task waits to start (TSK-012, SPEC-105): Start now or Cancel.
+  const prepared = task.status === 'prepared';
+  const chained = task.status === 'chained' || prepared;
   const ended = !live && !chained;
   const finished = live && taskInfo(task, null, pr).group === 'done';
   return {
@@ -335,6 +350,7 @@ export function taskActions(task, access, pr, me) {
     // (SPEC-065).
     stop: write && (live || chained),
     startNow: write && chained,
+    schedule: write && prepared,
     continue: write && ended && !task.archived,
     deliver: write && !task.archived,
     feedback: allows(access, 'read'),

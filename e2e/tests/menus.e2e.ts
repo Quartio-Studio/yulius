@@ -32,21 +32,72 @@ test('a menu stays inside a short window and its items scroll', async ({ app, br
   expect(shown).toBe(true);
 });
 
-test('a description is one line, its full text in the tooltip', async ({ app, browser, screen }) => {
+/** How a menu item's description shows: its text, whether anything of it is cut or clipped, and its lines. */
+const descriptionOf = (browser: any, label: string) => browser.evaluate((label: string) => {
+  const item = [...document.querySelectorAll('.menu-item')].find((el) => el.querySelector('.menu-label')!.textContent === label)!;
+  const desc = item.querySelector('.menu-desc') as HTMLElement;
+  const box = desc.getBoundingClientRect();
+  const list = document.querySelector('.menu-list')!.getBoundingClientRect();
+  const menu = document.querySelector('.menu')!.getBoundingClientRect();
+  return {
+    text: desc.textContent,
+    title: desc.getAttribute('title'),
+    cut: desc.scrollWidth > desc.clientWidth || desc.scrollHeight > desc.clientHeight,
+    insideList: box.left >= list.left - 1 && box.right <= list.right + 1 && box.top >= list.top - 1 && box.bottom <= list.bottom + 1,
+    lines: Math.round(box.height / parseFloat(getComputedStyle(desc).lineHeight)),
+    row: Math.round(item.getBoundingClientRect().height),
+    menu: { left: menu.left, right: menu.right, top: menu.top, bottom: menu.bottom, width: menu.width },
+    window: { width: innerWidth, height: innerHeight },
+  };
+}, label);
+
+test('a description wraps onto as many lines as it needs, a short one takes one, none has a tooltip (SPEC-094)', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
   await screen.getByRole('button', /^Workflow:/).click();
-  const auto = screen.getByRole('menuitemradio', /^Auto workflow/);
-  await expect(auto).toBeVisible();
-  // The tooltip is on the cut text, not the item: a screen reader would hear it twice.
-  const titles = await browser.evaluate(() => {
-    const item = [...document.querySelectorAll('.menu-item')].find((el) => el.textContent!.startsWith('Auto workflow'))!;
-    return { item: item.getAttribute('title'), desc: item.querySelector('.menu-desc')!.getAttribute('title') };
-  });
-  expect(titles.item).toBe(null);
-  expect(titles.desc).toMatch(/features get a spec, research and questions do not/);
-  const height = await browser.evaluate(() => Math.round(document.querySelector('.menu-item.rich')!.getBoundingClientRect().height));
-  expect(height).toBeLessThanOrEqual(44);
+  await expect(screen.getByRole('menuitemradio', /^Auto workflow/)).toBeVisible();
+  // Every item shows its whole description, not only the focused one.
+  await browser.keyboard.press('ArrowDown');
+  await expect(screen.getByRole('menuitemradio', /^No workflow/)).toBeFocused();
+  const long = await descriptionOf(browser, 'Auto workflow');
+  expect(long.text).toBe('Jev picks the workflow that fits, or none: features get a spec, research and questions do not');
+  expect(long.cut).toBe(false);
+  expect(long.insideList).toBe(true);
+  expect(long.lines).toBeGreaterThan(1);
+  // Shown whole, it needs no tooltip (a screen reader would read it twice); nor does the item.
+  expect(long.title).toBe(null);
+  expect(await browser.evaluate(() => document.querySelector('.menu-item.rich')!.getAttribute('title'))).toBe(null);
+  // Compact as before (SPEC-038): a short description is one line in a row of at most 44 px, and
+  // the menu is no wider than 320 px.
+  const short = await descriptionOf(browser, 'No workflow');
+  expect(short.cut).toBe(false);
+  expect(short.lines).toBe(1);
+  expect(short.row).toBeLessThanOrEqual(44);
+  expect(short.menu.width).toBeLessThanOrEqual(320);
 });
+
+for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+  test(`the start menu shows Supertask's whole description, inside a ${viewport.width} px window (SPEC-094)`, async ({ app, browser, screen }) => {
+    await browser.setViewport(viewport);
+    await app.open(mock('/s/studio'));
+    await expect(screen.getByRole('link', /Checkout API/).first()).toBeAttached();
+    await screen.getByRole('button', /Run after: Start now/).click();
+    await expect(screen.getByRole('menuitemradio', /^Supertask/)).toBeVisible();
+    const supertask = await descriptionOf(browser, 'Supertask');
+    expect(supertask.text).toBe('Waits for this project’s running tasks, then runs alone while the project’s other tasks wait. For broad work such as security hardening.');
+    expect(supertask.cut).toBe(false);
+    expect(supertask.insideList).toBe(true);
+    expect(supertask.lines).toBeGreaterThan(1);
+    const start = await descriptionOf(browser, 'Start now');
+    expect(start.cut).toBe(false);
+    // The menu stays inside the window, 8 px from its edges, and no wider than 320 px.
+    const { menu, window } = supertask;
+    expect(menu.left).toBeGreaterThanOrEqual(8);
+    expect(menu.right).toBeLessThanOrEqual(window.width - 8);
+    expect(menu.top).toBeGreaterThanOrEqual(8);
+    expect(menu.bottom).toBeLessThanOrEqual(window.height - 8);
+    expect(menu.width).toBeLessThanOrEqual(320);
+  });
+}
 
 const openRunAfter = async ({ app, screen }: { app: { open: (url: string) => Promise<unknown> }; screen: any }) => {
   await app.open(mock('/s/studio'));
@@ -230,20 +281,6 @@ test('on a touch screen a long menu focuses its first item, not the filter', asy
   await expect(screen.getByRole('menuitemradio', /^Start now/)).toBeFocused();
 });
 
-test('a focused item shows its whole description', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio'));
-  await screen.getByRole('button', /^Workflow:/).click();
-  await screen.getByRole('menuitemradio', /^Auto workflow/).focus();
-  await browser.keyboard.press('ArrowDown');
-  await browser.keyboard.press('ArrowUp');
-  await expect(screen.getByRole('menuitemradio', /^Auto workflow/)).toBeFocused();
-  const lines = await browser.evaluate(() => {
-    const desc = document.activeElement!.querySelector('.menu-desc')!;
-    return Math.round(desc.getBoundingClientRect().height / parseFloat(getComputedStyle(desc).lineHeight));
-  });
-  expect(lines).toBeGreaterThan(1);
-});
-
 test('an anchor taller than the window still gets a usable menu (unit, in the page)', async ({ app, browser }) => {
   await app.open(mock('/s/studio'));
   const box = await browser.evaluate(async () => {
@@ -308,7 +345,7 @@ test('a menu placed again while filtered still fits once the filter is cleared',
 });
 
 // #288: placing a menu again (a height-only resize, e.g. the address bar hiding) keeps its scroll;
-// only editing the filter goes back to the top.
+// only editing the filter goes back to the top. The matching tasks scroll in their box (SPEC-102).
 test('a filtered menu keeps its scroll position when the window height changes', async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 1280, height: 600 });
   await app.open(mock('/s/studio', '&tasks=many'));
@@ -316,8 +353,8 @@ test('a filtered menu keeps its scroll position when the window height changes',
   await screen.getByRole('button', /Run after: Start now/).click();
   await screen.getByRole('searchbox', 'Filter').fill('queued');
   const scrolled = await browser.evaluate(() => {
-    const list = document.querySelector('.menu-list')!;
-    list.scrollTop = 120;
+    const list = document.querySelector('.menu-scroll')!;
+    list.scrollTop = 60;
     return list.scrollTop;
   });
   expect(scrolled).toBeGreaterThan(0);
@@ -325,9 +362,246 @@ test('a filtered menu keeps its scroll position when the window height changes',
   await browser.setViewport({ width: 1280, height: 560 });
   await expect.poll(() => browser.evaluate(() => (window as unknown as { __resized: boolean }).__resized)).toBe(true);
   await expect(screen.getByRole('menu')).toBeVisible();
-  expect(await browser.evaluate(() => document.querySelector('.menu-list')!.scrollTop)).toBe(scrolled);
+  expect(await browser.evaluate(() => document.querySelector('.menu-scroll')!.scrollTop)).toBe(scrolled);
   // Typing in the filter starts from the top again.
   await screen.getByRole('searchbox', 'Filter').press('End');
   await browser.keyboard.type(' ');
-  await expect.poll(() => browser.evaluate(() => document.querySelector('.menu-list')!.scrollTop)).toBe(0);
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.menu-scroll')!.scrollTop)).toBe(0);
+});
+
+// SPEC-102: a menu's task list shows five tasks and says when there is more to scroll.
+
+/** The start menu's task box: rows wholly inside it, whether it scrolls, its fades and its "more" line. */
+const taskBox = (browser: any) => browser.evaluate(() => {
+  const group = document.querySelector('.menu [role="group"]') as HTMLElement | null;
+  if (!group) return null;
+  const box = group.querySelector('.menu-scroll') as HTMLElement;
+  const rect = box.getBoundingClientRect();
+  const rows = [...box.querySelectorAll('.menu-item:not([hidden])')] as HTMLElement[];
+  const inside = rows.filter((el) => { const r = el.getBoundingClientRect(); return r.top >= rect.top - 1 && r.bottom <= rect.bottom + 1; });
+  const more = group.querySelector('.menu-more') as HTMLElement | null;
+  const header = document.getElementById(group.getAttribute('aria-labelledby') || '');
+  return {
+    name: header ? header.textContent : null,
+    rows: rows.length,
+    inside: inside.map((el) => el.querySelector('.menu-label')!.textContent),
+    scrolls: box.scrollHeight > box.clientHeight,
+    above: box.classList.contains('more-above'),
+    below: box.classList.contains('more-below'),
+    more: more ? { text: (more.textContent || '').trim(), height: Math.round(more.getBoundingClientRect().height), hidden: more.hidden, ariaHidden: more.getAttribute('aria-hidden') } : null,
+  };
+});
+
+/** Whether the focused element lies wholly inside the task box. */
+const focusedInBox = (browser: any) => browser.evaluate(() => {
+  const box = document.querySelector('.menu [role="group"] .menu-scroll')!.getBoundingClientRect();
+  const item = (document.activeElement as HTMLElement).getBoundingClientRect();
+  return item.top >= box.top - 1 && item.bottom <= box.bottom + 1;
+});
+
+test('the start menu shows five tasks in a box that scrolls, fading at its bottom, "4 more" under it (SPEC-102)', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1280, height: 800 });
+  await openRunAfter({ app, screen });
+  await expect(screen.getByRole('group', 'After a task is done')).toBeVisible();
+  const state = await taskBox(browser);
+  expect(state).toMatchObject({ name: 'After a task is done', rows: 9, scrolls: true, above: false, below: true });
+  expect(state.inside).toEqual(['#14 Start the preview server', '#13 Improve the code', '#12 Checkout API', '#11 3D model viewer', '#10 AWS login for deploy']);
+  expect(state.more).toMatchObject({ text: '4 more', hidden: false, ariaHidden: 'true' });
+  // The choices below the tasks stay in view: the whole menu does not scroll at this height.
+  const outer = await browser.evaluate(() => {
+    const list = document.querySelector('.menu-list')!;
+    const rule = [...document.querySelectorAll('.menu-item')].find((el) => /When a rule is true/.test(el.textContent || ''))!.getBoundingClientRect();
+    const rect = list.getBoundingClientRect();
+    return { scrolls: list.scrollHeight > list.clientHeight, ruleInside: rule.top >= rect.top && rule.bottom <= rect.bottom };
+  });
+  expect(outer).toEqual({ scrolls: false, ruleInside: true });
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+test('scrolling to the end of the tasks fades the top instead and blanks the "more" line (SPEC-102)', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1280, height: 800 });
+  await app.open(mock('/s/studio', '&tasks=many'));
+  await expect(screen.getByRole('link', /Checkout API/).first()).toBeVisible();
+  await screen.getByRole('button', /Run after: Start now/).click();
+  const top = await taskBox(browser);
+  expect(top).toMatchObject({ rows: 39, below: true, above: false });
+  expect(top.inside).toHaveLength(5);
+  expect(top.more.text).toBe('34 more');
+  // Clicking the line scrolls a page down, keeping the filter focused.
+  await browser.locator('.menu-more').click();
+  await expect.poll(async () => (await taskBox(browser)).above).toBe(true);
+  await expect(screen.getByRole('searchbox', 'Filter')).toBeFocused();
+  await expect(screen.getByRole('menu')).toBeVisible();
+  await browser.evaluate(() => { const box = document.querySelector('.menu-scroll')!; box.scrollTop = box.scrollHeight; });
+  await expect.poll(async () => (await taskBox(browser)).below).toBe(false);
+  const end = await taskBox(browser);
+  expect(end).toMatchObject({ above: true, below: false });
+  // Blank but in place, so the menu does not jump.
+  expect(end.more).toMatchObject({ text: '', hidden: false });
+  expect(end.more.height).toBe(top.more.height);
+});
+
+test('a group of five items or fewer shows them all; a longer one shows five whole rows, however tall (unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/dom.js';
+    const { openMenu, closeMenu, MENU_GROUP_ROWS } = await import(url);
+    const anchor = document.createElement('button');
+    anchor.style.cssText = 'position: fixed; left: 40px; top: 40px';
+    document.body.append(anchor);
+    const read = () => {
+      const box = document.querySelector('.menu-scroll') as HTMLElement;
+      const rect = box.getBoundingClientRect();
+      const rows = [...box.querySelectorAll('.menu-item')];
+      return {
+        scrolls: box.scrollHeight > box.clientHeight,
+        inside: rows.filter((el) => { const r = el.getBoundingClientRect(); return r.top >= rect.top - 1 && r.bottom <= rect.bottom + 1; }).length,
+        more: Boolean(document.querySelector('.menu-more')),
+        below: box.classList.contains('more-below'),
+      };
+    };
+    const few = (n: number, description?: string) => Array.from({ length: n }, (_, i) => ({ label: `Item ${i + 1}`, description, checked: false }));
+    openMenu(anchor, [{ label: 'First' }, { header: 'Group', items: few(5) }]);
+    const five = read();
+    openMenu(anchor, [{ label: 'First' }, { header: 'Group', items: few(7, 'A description long enough to wrap onto a second line inside the menu, at least') }]);
+    const rich = read();
+    closeMenu();
+    anchor.remove();
+    return { rows: MENU_GROUP_ROWS, five, rich };
+  });
+  expect(result.rows).toBe(5);
+  expect(result.five).toEqual({ scrolls: false, inside: 5, more: false, below: false });
+  expect(result.rich).toEqual({ scrolls: true, inside: 5, more: true, below: true });
+});
+
+test('the picked task is in view when the start menu opens again, past the fifth row (SPEC-102)', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1280, height: 800 });
+  await openRunAfter({ app, screen });
+  await screen.getByRole('menuitemradio', /^#7 Search indexing/).click();
+  await expect(screen.getByRole('button', /Run after: After #7/)).toBeVisible();
+  await screen.getByRole('button', /Run after: After #7/).click();
+  await expect(screen.getByRole('menuitemradio', /^#7 Search indexing/)).toHaveAttribute('aria-checked', 'true');
+  const state = await taskBox(browser);
+  expect(state.inside).toContain('#7 Search indexing');
+  expect(state.above).toBe(true);
+});
+
+test('arrows scroll the task box so the focused task is wholly inside it (SPEC-102)', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1280, height: 800 });
+  await openRunAfter({ app, screen });
+  const filter = screen.getByRole('searchbox', 'Filter');
+  await filter.press('ArrowDown');
+  await expect(screen.getByRole('menuitemradio', /^Start now/)).toBeFocused();
+  // Past Supertask, When I decide and At a time… (SPEC-105) to the sixth task.
+  for (let i = 0; i < 9; i += 1) await browser.keyboard.press('ArrowDown');
+  await expect(screen.getByRole('menuitemradio', /^#9 Move to the next account/)).toBeFocused();
+  await expect.poll(() => focusedInBox(browser)).toBe(true);
+  // It stops clear of the bottom fade, the next task peeking under it.
+  const clearance = await browser.evaluate(() => document.querySelector('.menu-scroll')!.getBoundingClientRect().bottom - (document.activeElement as HTMLElement).getBoundingClientRect().bottom);
+  expect(clearance).toBeGreaterThanOrEqual(16);
+  await browser.keyboard.press('ArrowDown');
+  await browser.keyboard.press('ArrowDown');
+  await browser.keyboard.press('ArrowDown');
+  await expect(screen.getByRole('menuitemradio', /^#6 Fix flaky checkout test/)).toBeFocused();
+  await expect.poll(() => focusedInBox(browser)).toBe(true);
+  await expect.poll(async () => (await taskBox(browser)).below).toBe(false);
+  // Back up to the first task: the box scrolls back with it.
+  for (let i = 0; i < 8; i += 1) await browser.keyboard.press('ArrowUp');
+  await expect(screen.getByRole('menuitemradio', /^#14 Start the preview server/)).toBeFocused();
+  await expect.poll(() => focusedInBox(browser)).toBe(true);
+});
+
+test('the filter narrows the task box; with every match in view there is no fade and no "more" line (SPEC-102)', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1280, height: 800 });
+  await openRunAfter({ app, screen });
+  await screen.getByRole('searchbox', 'Filter').fill('checkout');
+  await expect(screen.getByRole('menuitemradio')).toHaveCount(2);
+  const state = await taskBox(browser);
+  expect(state).toMatchObject({ rows: 2, scrolls: false, above: false, below: false });
+  expect(state.inside).toEqual(['#12 Checkout API', '#6 Fix flaky checkout test']);
+  expect(state.more.hidden).toBe(true);
+  // Matches past five still scroll, and the line counts only those below.
+  await screen.getByRole('searchbox', 'Filter').fill('');
+  await screen.getByRole('searchbox', 'Filter').fill('i');
+  const many = await taskBox(browser);
+  const matches = many.rows;
+  expect(matches).toBeGreaterThan(5);
+  expect(many).toMatchObject({ below: true });
+  expect(many.more).toMatchObject({ text: `${matches - 5} more`, hidden: false });
+  expect(await axeViolations(browser)).toEqual([]);
+  // Scrolled to the end of the matches, the line is blank but in place: the menu does not jump.
+  const filterTop = await browser.evaluate(() => document.querySelector('.menu-filter')!.getBoundingClientRect().top);
+  await browser.evaluate(() => { const box = document.querySelector('.menu-scroll')!; box.scrollTop = box.scrollHeight; });
+  await expect.poll(async () => (await taskBox(browser)).below).toBe(false);
+  const end = await taskBox(browser);
+  expect(end.more).toMatchObject({ text: '', hidden: false, height: many.more.height });
+  expect(await browser.evaluate(() => document.querySelector('.menu-filter')!.getBoundingClientRect().top)).toBe(filterTop);
+});
+
+test('the automation editor\'s start menu shows its tasks five at a time too (SPEC-102)', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1280, height: 800 });
+  await app.open(mock('/s/studio/automations/aut_1'));
+  await screen.getByRole('button', /^Start: /).click();
+  await expect(screen.getByRole('group', 'After a task is done')).toBeVisible();
+  const state = await taskBox(browser);
+  expect(state).toMatchObject({ rows: 9, below: true });
+  expect(state.inside).toHaveLength(5);
+  expect(state.more.text).toBe('4 more');
+});
+
+test('a group menu without a filter focuses its checked row, in view, so Enter keeps it (SPEC-102, unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/dom.js';
+    const { openMenu, closeMenu } = await import(url);
+    const anchor = document.createElement('button');
+    anchor.style.cssText = 'position: fixed; left: 40px; top: 40px';
+    document.body.append(anchor);
+    let picked = '';
+    const items = Array.from({ length: 7 }, (_, i) => ({ label: `T${i + 1}`, checked: i === 6, onSelect: () => { picked = `T${i + 1}`; } }));
+    openMenu(anchor, [{ header: 'After a task is done', items }]);
+    const box = document.querySelector('.menu-scroll')!.getBoundingClientRect();
+    const focused = document.activeElement as HTMLElement;
+    const rect = focused.getBoundingClientRect();
+    const state = { filter: Boolean(document.querySelector('.menu-filter')), focused: focused.textContent, inside: rect.top >= box.top - 1 && rect.bottom <= box.bottom + 1 };
+    focused.click();
+    closeMenu();
+    anchor.remove();
+    return { ...state, picked };
+  });
+  expect(result).toEqual({ filter: false, focused: 'T7', inside: true, picked: 'T7' });
+});
+
+// #288 for the whole list: a window too short even for the shortened menu scrolls the list, which
+// keeps its place when the window height changes; the wheel over the task box's end reaches it.
+test('in a short window the whole menu still scrolls and keeps its place; the wheel passes from the task box to it (SPEC-102)', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1280, height: 380 });
+  await openRunAfter({ app, screen });
+  await screen.getByRole('searchbox', 'Filter').fill('e');
+  const scrolled = await browser.evaluate(() => {
+    const list = document.querySelector('.menu-list')!;
+    list.scrollTop = 40;
+    return list.scrollTop;
+  });
+  expect(scrolled).toBeGreaterThan(0);
+  await browser.evaluate(() => { (window as unknown as { __resized: boolean }).__resized = false; addEventListener('resize', () => { (window as unknown as { __resized: boolean }).__resized = true; }); });
+  await browser.setViewport({ width: 1280, height: 360 });
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __resized: boolean }).__resized)).toBe(true);
+  expect(await browser.evaluate(() => document.querySelector('.menu-list')!.scrollTop)).toBe(scrolled);
+  // The wheel over the box, scrolled to its end, goes on to the whole list.
+  await screen.getByRole('searchbox', 'Filter').fill('');
+  // The list shows the box's top at its bottom edge, with more of the list below to scroll to
+  // (the choices above the box push it past a short window's first screen, SPEC-105).
+  const start = await browser.evaluate(() => {
+    const box = document.querySelector('.menu-scroll')!;
+    const list = document.querySelector('.menu-list')!;
+    box.scrollTop = box.scrollHeight;
+    const top = box.getBoundingClientRect().top - list.getBoundingClientRect().top + list.scrollTop;
+    list.scrollTop = Math.max(0, top - list.clientHeight + 60);
+    return list.scrollTop;
+  });
+  const box = await browser.evaluate(() => { const r = document.querySelector('.menu-scroll')!.getBoundingClientRect(); const l = document.querySelector('.menu-list')!.getBoundingClientRect(); return { x: r.left + r.width / 2, y: Math.min(r.top + 30, l.bottom - 20) }; });
+  await browser.mouse.move(box.x, box.y);
+  await browser.mouse.wheel(0, 200);
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.menu-list')!.scrollTop)).toBeGreaterThan(start);
 });

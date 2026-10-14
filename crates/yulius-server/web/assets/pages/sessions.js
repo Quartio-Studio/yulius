@@ -377,16 +377,45 @@ function block(item, results, role) {
 }
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
+const svgEl = (name, attributes, ...children) => {
+  const node = document.createElementNS(SVG_NS, name);
+  for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, String(value));
+  node.append(...children);
+  return node;
+};
+/** Pixel art as SVG rects: each row's runs of set cells (`"x,y"`) as one rect of 1-pixel height. */
+const pixelRuns = (cells, width, height, className) => {
+  const rects = [];
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (!cells.has(`${x},${y}`)) continue;
+      let run = 1;
+      while (cells.has(`${x + run},${y}`)) run += 1;
+      rects.push(svgEl('rect', { class: className, x, y, width: run, height: 1 }));
+      x += run - 1;
+    }
+  }
+  return rects;
+};
+/** A sprite's cells from rows of `#` (set) and `.` (clear). */
+const spriteCells = (rows, x0 = 0, y0 = 0) => {
+  const cells = new Set();
+  rows.forEach((row, dy) => [...row].forEach((c, dx) => { if (c === '#') cells.add(`${x0 + dx},${y0 + dy}`); }));
+  return cells;
+};
+/** How many pixels the spider climbs its thread (`ss-spider-climb` in styles.css climbs as many). */
+const SPIDER_CLIMB = 6;
 
 /**
  * A spider web in pixel art for the well's top-right corner (SPEC-075): threads from the corner,
- * rings between them and a spider hanging from one, as rows of square pixels.
+ * rings between them and a spider hanging from one, as rows of square pixels. The spider and its
+ * thread are groups of their own, so the stylesheet can make it climb (SPEC-101): its thread is
+ * one rect that shortens by `--ss-silk-top`, and its legs are two frames.
  */
 function spiderWeb() {
   const width = 28;
   const height = 34;
   const web = new Set();
-  const spider = new Set();
   const plot = (into, x, y) => { if (x >= 0 && x < width && y >= 0 && y < height) into.add(`${x},${y}`); };
   const line = (into, x0, y0, x1, y1) => { // Bresenham
     const dx = Math.abs(x1 - x0);
@@ -411,27 +440,108 @@ function spiderWeb() {
     for (let i = 0; i + 1 < angles.length; i += 1) line(web, ...at(angles[i], r), ...at(angles[i + 1], r));
   }
   const [hx, hy] = at(angles[2], 15);
-  line(web, hx, hy, hx, 28);
-  ['.#...#.', '..###..', '#######', '..###..', '.#...#.'].forEach((row, dy) => [...row].forEach((c, dx) => { if (c === '#') plot(spider, hx - 3 + dx, 29 + dy); }));
-  const svg = document.createElementNS(SVG_NS, 'svg');
-  for (const [name, value] of Object.entries({ class: 'ss-web', viewBox: `0 0 ${width} ${height}`, 'aria-hidden': 'true', focusable: 'false', 'shape-rendering': 'crispEdges' })) svg.setAttribute(name, value);
-  const pixels = (cells, className) => {
-    for (let y = 0; y < height; y += 1) {
-      for (let x = 0; x < width; x += 1) {
-        if (!cells.has(`${x},${y}`)) continue;
-        let run = 1;
-        while (cells.has(`${x + run},${y}`)) run += 1;
-        const rect = document.createElementNS(SVG_NS, 'rect');
-        for (const [name, value] of Object.entries({ class: className, x, y, width: run, height: 1 })) rect.setAttribute(name, String(value));
-        svg.append(rect);
-        x += run - 1;
-      }
-    }
-  };
-  for (const cell of spider) web.delete(cell);
-  pixels(web, 'ss-web-thread');
-  pixels(spider, 'ss-web-spider');
+  const body = 29; // the spider's top row at rest
+  const sprite = (rows) => spriteCells(rows, hx - 3, body);
+  const spider = sprite(['.......', '..###..', '#######', '..###..', '.......']);
+  const legs = [sprite(['.#...#.', '', '', '', '.#...#.']), sprite(['#.....#', '', '', '', '#.....#'])];
+  for (const cell of [...spider, ...legs[0]]) web.delete(cell);
+  // The thread it hangs by, from below the hub to just above it; it climbs SPIDER_CLIMB pixels.
+  const silk = body - 1 - hy;
+  const pixels = (cells, className) => pixelRuns(cells, width, height, className);
+  const svg = svgEl('svg', { class: 'ss-web', viewBox: `0 0 ${width} ${height}`, 'aria-hidden': 'true', focusable: 'false', 'shape-rendering': 'crispEdges' },
+    ...pixels(web, 'ss-web-thread'),
+    svgEl('rect', { class: 'ss-web-silk', x: hx, y: hy + 1, width: 1, height: silk }),
+    svgEl('g', { class: 'ss-web-spider' }, ...pixels(spider, 'ss-web-body'), svgEl('g', { class: 'ss-web-legs ss-web-legs-a' }, ...pixels(legs[0], 'ss-web-leg')), svgEl('g', { class: 'ss-web-legs ss-web-legs-b' }, ...pixels(legs[1], 'ss-web-leg'))));
+  svg.style.setProperty('--ss-silk-top', String((silk - SPIDER_CLIMB) / silk));
   return svg;
+}
+
+/** A cockroach in pixel art, facing right: a body with its feelers and two frames of legs (SPEC-101). */
+const ROACH = {
+  width: 16,
+  height: 7,
+  body: ['...............#', '..............#.', '..#########.#...', '.#############..', '..#########.#...', '..............#.', '...............#'],
+  legs: [
+    ['..#..#..#.......', '...#..#..#......', '', '', '', '...#..#..#......', '..#..#..#.......'],
+    ['....#..#..#.....', '...#..#..#......', '', '', '', '...#..#..#......', '....#..#..#.....'],
+  ],
+};
+
+const reducedMotion = () => Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
+
+/** How long until the next cockroach (SPEC-101): 20–60 s after a session opens, then 45–150 s apart. */
+export function cockroachDelay(first, random = Math.random) {
+  const [min, max] = first ? [20000, 60000] : [45000, 150000];
+  return min + Math.floor(random() * (max - min));
+}
+
+/**
+ * Send one cockroach across the part of the well one can see, at a random height and in a random
+ * direction, removed once it is out. None runs under reduced motion, in a hidden page or a well that
+ * is not shown (null then).
+ */
+export function runCockroach(well, random = Math.random) {
+  if (reducedMotion() || document.hidden || !well.isConnected) return null;
+  const pixels = (rows, className) => pixelRuns(spriteCells(rows), ROACH.width, ROACH.height, className);
+  const roach = svgEl('svg', { class: 'ss-roach', viewBox: `0 0 ${ROACH.width} ${ROACH.height}`, 'aria-hidden': 'true', focusable: 'false', 'shape-rendering': 'crispEdges' },
+    ...pixels(ROACH.body, 'ss-roach-body'),
+    ...ROACH.legs.map((rows, i) => svgEl('g', { class: `ss-roach-legs ss-roach-legs-${'ab'[i]}` }, ...pixels(rows, 'ss-roach-leg'))));
+  const box = well.getBoundingClientRect();
+  const scroller = well.closest('.page');
+  const view = scroller ? scroller.getBoundingClientRect() : { top: 0, bottom: window.innerHeight };
+  const top = Math.max(box.top, view.top);
+  const bottom = Math.min(box.bottom, view.bottom);
+  well.append(roach);
+  const size = roach.getBoundingClientRect();
+  if (bottom - top < size.height) {
+    roach.remove();
+    return null;
+  }
+  // From the well's padding edge, inside its border.
+  roach.style.top = `${Math.floor(top - box.top - well.clientTop + random() * (bottom - top - size.height))}px`;
+  const rightward = random() >= 0.5;
+  const [from, to] = rightward ? [-size.width, box.width] : [box.width, -size.width];
+  const face = rightward ? '' : ' scaleX(-1)';
+  const run = roach.animate([{ transform: `translateX(${from}px)${face}` }, { transform: `translateX(${to}px)${face}` }], { duration: 2000 + Math.round(random() * 2000), easing: 'linear' });
+  run.finished.then(() => roach.remove(), () => roach.remove());
+  return roach;
+}
+
+/**
+ * Send cockroaches across the well now and then until the returned stop() is called, which also
+ * removes one still running. `timer` stands in for setTimeout and clearTimeout in tests.
+ */
+export function scheduleCockroaches(well, { random = Math.random, timer = { set: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id) } } = {}) {
+  let stopped = false;
+  let handle = null;
+  const next = (first) => {
+    handle = timer.set(() => {
+      if (stopped) return;
+      runCockroach(well, random);
+      next(false);
+    }, cockroachDelay(first, random));
+  };
+  next(true);
+  return () => {
+    stopped = true;
+    timer.clear(handle);
+    for (const roach of well.querySelectorAll('.ss-roach')) roach.remove();
+  };
+}
+
+/**
+ * Mark the well `.ss-web-stuck` while its web is stuck to the top of the scrolled page (`root`), that
+ * is once a mark at the well's top has scrolled above it, so the stylesheet fades the web under the
+ * text (SPEC-101). Returns the stop.
+ */
+function watchStuckWeb(well, mark, root) {
+  if (typeof IntersectionObserver !== 'function') return () => {};
+  const observer = new IntersectionObserver((entries) => {
+    const entry = entries[entries.length - 1]; // the latest, after a fast scroll there and back
+    well.classList.toggle('ss-web-stuck', !entry.isIntersecting && entry.boundingClientRect.top < (entry.rootBounds?.top ?? 0));
+  }, { root });
+  observer.observe(mark);
+  return () => observer.disconnect();
 }
 
 /** Where the TUI's prompt box was: locked, nothing can be typed or sent (not a control). */
@@ -446,6 +556,7 @@ export function mountSessionView(ctx, sandbox, id, route) {
   let next = null;
   let alive = true;
   let loading = false;
+  let stopCockroaches = () => {};
   const results = new Map(); // tool_use_id → result, shown inside its call
 
   const titleEl = h('h1', { class: 'page-title gt-title' }, 'Session');
@@ -553,9 +664,19 @@ export function mountSessionView(ctx, sandbox, id, route) {
       session = page.session;
       next = page.next;
       renderHead();
-      if (first) setChildren(body, earlier, h('div', { class: 'ss-tui' }, spiderWeb(), entriesEl, more, lockedPrompt()));
+      if (first) {
+        const mark = h('div', { class: 'ss-web-mark', 'aria-hidden': 'true' });
+        const tui = h('div', { class: 'ss-tui' }, mark, spiderWeb(), entriesEl, more, lockedPrompt());
+        setChildren(body, earlier, tui);
+        const stopWatching = watchStuckWeb(tui, mark, el);
+        const stopRunning = scheduleCockroaches(tui);
+        stopCockroaches = () => { stopWatching(); stopRunning(); };
+      }
       append(page.entries || []);
-      if (first && !entriesEl.children.length && next === null) setChildren(body, emptyState({ iconName: 'chat', title: 'Nothing to show', text: 'This transcript has no messages yet, or it is no longer on the server.' }));
+      if (first && !entriesEl.children.length && next === null) {
+        stopCockroaches();
+        setChildren(body, emptyState({ iconName: 'chat', title: 'Nothing to show', text: 'This transcript has no messages yet, or it is no longer on the server.' }));
+      }
       if (first && target !== null) {
         const found = entriesEl.querySelector(`#line-${target}`);
         if (found) found.scrollIntoView({ block: 'center' });
@@ -572,5 +693,5 @@ export function mountSessionView(ctx, sandbox, id, route) {
     }
   }
   load(from);
-  return { el, destroy() { alive = false; } };
+  return { el, destroy() { alive = false; stopCockroaches(); } };
 }

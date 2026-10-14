@@ -490,23 +490,24 @@ impl App {
     }
 
     /// `POST /api/tasks/{tid}/start-now`: a waiting chained task starts now, whatever its
-    /// predecessor's state.
+    /// predecessor's state; a prepared one whatever its time (SPEC-105).
     ///
     /// # Errors
-    /// Access errors, `Conflict` when the task is not waiting in a chain.
+    /// Access errors, `Conflict` when the task is neither waiting in a chain nor prepared.
     pub async fn start_chained_now(
         self: &Arc<Self>,
         ctx: &AuthContext,
         id: &str,
     ) -> AppResult<TaskSummary> {
         let task = self.load_task(ctx, id, Action::Work).await?;
-        if task.status != TaskStatus::Chained {
+        if task.status == TaskStatus::Prepared {
+            self.start_prepared_now(&task).await?;
+        } else if task.status != TaskStatus::Chained {
             return Err(AppError::Conflict(format!(
-                "the task is {}, not waiting in a chain",
+                "the task is {}, not waiting in a chain or prepared",
                 task.status.as_str()
             )));
-        }
-        if !self.release_chained(&task).await? {
+        } else if !self.release_chained(&task).await? {
             return Err(AppError::Conflict("task state changed concurrently".into()));
         }
         let task = self

@@ -69,12 +69,23 @@ grants per client and 1000 per instance; past either it answers 429.
 | GET | `/api/sandboxes` | read | → `[Sandbox]` (only visible ones) |
 | GET | `/api/github/repositories` | — | → `[{"owner","name","private","access","already_sandbox"}]` (the superadmin: every owner repository the App installation can access, `admin`; others need a GitHub identity, else 403) |
 | GET | `/api/templates` | — | → `[{"id","name","description"}]` |
-| POST | `/api/sandboxes` | admin on repo (superadmin: a repository the App can access) / owner | `{"mode":"import","repo":"owner/name"}` or `{"mode":"create","name","template","description"}` → 201 `Sandbox` (an import from the browser starts onboarding at once; with a bearer token it stays `pending`, SPEC-051) |
+| POST | `/api/sandboxes` | admin on repo (superadmin: a repository the App can access) / owner; a playground: anyone signed in | `{"mode":"import","repo":"owner/name"}`, `{"mode":"create","name","template","description"}` or `{"mode":"playground","name","template"}` → 201 `Sandbox` (an import from the browser starts onboarding at once; with a bearer token it stays `pending`, SPEC-051; a playground needs no GitHub, SPEC-099) |
+| POST | `/api/playgrounds?name=<name>` | anyone signed in | raw body: a gzip tar of the folder (`files/…` its working tree, `git/…` its `.git`, of which only `HEAD`, `packed-refs`, `shallow`, `objects/` and `refs/` are taken) → 201 `Sandbox` (`playground: true`); 409 for a person who keeps 10 playgrounds (the superadmin is not counted); at most 1 GiB (refused from `Content-Length` before it is read) and the import bounds once unpacked (2 GiB, 200 000 entries); 422 for an empty, unreadable or over-limit archive, nothing kept (SPEC-099) |
 | GET | `/api/sandboxes/{sid}` | read | → `Sandbox` |
 | PATCH | `/api/sandboxes/{sid}` | admin | `{"profile": Profile}` → `Sandbox` |
-| POST | `/api/sandboxes/{sid}/onboarding/skip` | admin | → `Sandbox` (`pending`/`preparing` → `skipped`) |
-| POST | `/api/sandboxes/{sid}/onboarding/approve` | write, browser session | Start onboarding → `Sandbox`; starts the onboarding task (`pending` → `preparing`; a missing one is created); idempotent while `preparing`; 403 for a bearer token (the CLI only uploads, SPEC-051); 409 when nothing awaits preparation or the task cannot start |
+| GET | `/api/sandboxes/{sid}/onboarding/plan` | read | → `{"title", "steps": [..], "task_number"}`: what onboarding does, its task's title and steps, or while that task does not exist yet (a `pending` sandbox, SPEC-097) the ones it would be created with (`task_number: null`); reads only |
+| POST | `/api/sandboxes/{sid}/onboarding/skip` | admin | → `Sandbox` (`pending`/`preparing` → `skipped`); an operator's recovery path for an onboarding that cannot finish: the web UI offers no skip (ADR-0076) |
+| POST | `/api/sandboxes/{sid}/onboarding/approve` | write, browser session | Start onboarding → `Sandbox`; creates the onboarding task if it has none and starts it (`pending` → `preparing`); idempotent while `preparing`; 403 for a bearer token (the CLI only uploads, SPEC-051); 409 when nothing awaits preparation or the task cannot start |
 | DELETE | `/api/sandboxes/{sid}` | admin | → 204; stops live/queued tasks; GitHub repository, clone and task records kept |
+
+A **playground** (SPEC-099) is a sandbox without GitHub: `Sandbox.playground` is true, its `repo`
+has an empty `owner` and `url`, its onboarding is `not_needed`, and only its maker and the
+superadmin see it (admin). Its `origin` is a bare repository on the server outside the sandbox, so
+nothing is pushed anywhere; Yulius CI, pull requests, hygiene's GitHub checks and the automatic pull request skip
+it, and its delivery view and Git page carry one note saying so. Nothing issues a GitHub token for
+it (`/internal/git-credential` answers 403), promotion and `issue_create` answer 409, and since its
+maker may be anyone signed in, it has no deploy: a profile with an environment command is 422 and
+an environment run 409.
 
 `GET /api/github/repositories` lists the App installation's repositories of the instance owner
 that the caller can at least read (needs a GitHub-linked account). Import mode requires a
@@ -82,13 +93,14 @@ repository of the instance owner (`invalid` otherwise) and `admin` or `maintain`
 clones the repository, picks the profile (`yulius.toml` `[delivery]`, else `product`/`studio` for
 `Quartio-Studio/product`/`studio`, else `standard`) and validates the documentation format: a
 failing project gets a preparation task (`origin: "onboarding"`) that starts at once (`onboarding:
-"preparing"`; through `yulius onboard` the sandbox stays `pending` until someone clicks Start
-onboarding on the sandbox page, SPEC-051). While
+"preparing"`; through `yulius onboard` the sandbox stays `pending`, with no preparation task yet, until someone
+clicks Start onboarding on the sandbox page, SPEC-051, SPEC-097). While
 `pending`/`preparing` no other task starts, but none is refused: creating or chaining a task (also an
 automation run or a held prompt's Start in parallel / Run after) returns it `chained` after the
-preparation task, and it starts by itself once the sandbox is `ready` or `skipped`
+preparation task (created then, resting, when the sandbox has none yet), and it starts by itself once the sandbox is `ready` or `skipped`
 (`POST /api/tasks/{tid}/start-now` starts one at once); continuing a task and continuing an
-imported session are 409 (U-08, IMP-010). Create mode
+imported session are 409 (U-08, IMP-010). The web UI's new-task page shows no task input
+meanwhile, only what onboarding will do and its button (SPEC-096). Create mode
 (instance admins) creates a private repository, pushes the template scaffold to `main` and `dev`,
 and adds rulesets requiring pull requests on both.
 
@@ -216,12 +228,13 @@ limited to the agent's sandbox.
 | Method | Path | Level | Body → Response |
 | --- | --- | --- | --- |
 | GET | `/api/sandboxes/{sid}/tasks?archived=false` | read | → `[TaskSummary]` |
-| POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness?":"claude","mode?":"goal|prompt|auto","workflow_id?":"<id>|auto","model?","effort?","title?","after_task_id?","start_rule?","supertask?":false}` → 201 `TaskSummary`; Yulius runs Claude Code only (another `harness` is 422); `mode` defaults to `goal` (TSK-010); without `model` the task runs `claude-opus-5-5` and without `effort` at `high` (none for Haiku; SPEC-023); `auto` lets Jev choose the mode and/or the workflow before the task is created (TSK-015, ≤ 2.5 s; see "Task intake"); an unknown workflow or mode is 422 before Jev is asked; with `after_task_id` (a task of the sandbox that has not ended; 422 otherwise, 429 beyond 32 waiting) the task waits as `chained` until that task is Done (TSK-012); with `start_rule` (a logical sentence such as `#12 done and (#13 done or #14 ended)` over tasks of the sandbox; 422 for a malformed rule, an unknown task or together with `after_task_id`) it waits until the rule is true and needs a person when it can no longer be (TSK-016, SPEC-017); the rule shows as `after.rule`; with `"supertask": true` the task waits `queued` for the project's working tasks, then runs alone while the project's other tasks wait for it (TSK-018, SPEC-071; 422 together with `after_task_id` or `start_rule`). A queued task's `held_by` lists the task numbers a supertask rule makes it wait for (`[]` otherwise), and `supertask` says whether it is one |
+| POST | `/api/sandboxes/{sid}/tasks` | write | `{"prompt","harness?":"claude","mode?":"goal|prompt|auto","workflow_id?":"<id>|auto","model?","effort?","title?","after_task_id?","start_rule?","supertask?":false,"prepared?":false,"start_at?":"<RFC 3339>"}` → 201 `TaskSummary`; Yulius runs Claude Code only (another `harness` is 422); `mode` defaults to `goal` (TSK-010); without `model` the task runs `claude-opus-5-5` and without `effort` at `high` (none for Haiku; SPEC-023); `auto` lets Jev choose the mode and/or the workflow before the task is created (TSK-015, ≤ 2.5 s; see "Task intake"); an unknown workflow or mode is 422 before Jev is asked; with `after_task_id` (a task of the sandbox that has not ended; 422 otherwise, 429 beyond 32 waiting) the task waits as `chained` until that task is Done (TSK-012); with `start_rule` (a logical sentence such as `#12 done and (#13 done or #14 ended)` over tasks of the sandbox; 422 for a malformed rule, an unknown task or together with `after_task_id`) it waits until the rule is true and needs a person when it can no longer be (TSK-016, SPEC-017); the rule shows as `after.rule`; with `"supertask": true` the task waits `queued` for the project's working tasks, then runs alone while the project's other tasks wait for it (TSK-018, SPEC-071; 422 together with `after_task_id` or `start_rule`). With `"prepared": true` the task waits as `prepared` until Start now, and with `start_at` (implies prepared; at most 60 s past and 366 days ahead, else 422) until that time, shown as `start_at` (TSK-019, SPEC-105; 422 together with `after_task_id`, `start_rule` or `supertask`, 429 beyond 32 prepared tasks in the sandbox). A queued task's `held_by` lists the task numbers a supertask rule makes it wait for (`[]` otherwise), and `supertask` says whether it is one |
 | POST | `/api/sandboxes/{sid}/intake/check` | write | `{"prompt"}` → `{"verdict":"one|several","checked":bool}`: whether a new task mixes separate workstreams (TSK-011). `checked` is false — and the verdict `one` — for prompts under 40 words, without a Jev key and when Jev fails or takes over 2.5 s |
 | POST | `/api/sandboxes/{sid}/intake/proposal` | write | `{"prompt"}` → `{"tasks":[{"title","prompt","after_previous":bool}]}`: Claude's smallest split, 2–4 tasks grouped by area carrying their items word for word; `[]` means keep one task. 409 when proposals are not configured or no account is connected, 429 while 2 proposals run, 502 when Claude fails or its proposal is unusable (more than 4 tasks, one per item, an item missing) |
-| POST | `/api/tasks/{tid}/start-now` | write | → `TaskSummary`; a `chained` task starts now whatever its predecessor does (409 otherwise). Cancel it with `/stop` |
+| POST | `/api/tasks/{tid}/start-now` | write | → `TaskSummary`; a `chained` task starts now whatever its predecessor does, a `prepared` one whatever its time (409 otherwise, also while onboarding blocks the sandbox's tasks). Cancel it with `/stop` |
+| PUT | `/api/tasks/{tid}/schedule` | write | `{"start_at":"<RFC 3339>"|null}` → `TaskSummary`; when a `prepared` task starts by itself, or null: when a person starts it (SPEC-105; 422 outside the window of `CreateTask.start_at`, 409 when the task is not prepared). A time already due starts it at once |
 | POST | `/api/tasks/{tid}/held-prompts/{hid}` | write | `{"action":"parallel|after|send|skip_after|revert|dismiss","skip_step_ids?":[…],"confirm?":bool}` → `{"task":TaskSummary,"created":TaskSummary|null,"note"}`; one decision per held prompt (409 for a second). `send` needs a running task; `skip_after` marks the given open steps `skipped`; `revert` needs `"confirm":true` (422 otherwise) — see "Task intake" below |
-| POST | `/api/tasks/{tid}/queued-messages` | write | `{"text"}` → `{"request"}`; adds the message to the request of a task that has never started (`queued`, `chained` or `waiting_capacity`, no run, no provider session) under "**Added by {login} before the task started ({UTC time}):**", so the agent gets it when the task starts (SPEC-052 / SPEC-001 TSK-017, ADR-0035). 409 once the task has started (type into its session instead), or, rarely, when it changed between the check and the update (try again); 422 for an empty message or a request past 64 KiB; publishes `task.updated` |
+| POST | `/api/tasks/{tid}/queued-messages` | write | `{"text"}` → `{"request"}`; adds the message to the request of a task that has never started (`queued`, `chained`, `prepared` or `waiting_capacity`, no run, no provider session) under "**Added by {login} before the task started ({UTC time}):**", so the agent gets it when the task starts (SPEC-052 / SPEC-001 TSK-017, ADR-0035). 409 once the task has started (type into its session instead), or, rarely, when it changed between the check and the update (try again); 422 for an empty message or a request past 64 KiB; publishes `task.updated` |
 | GET | `/api/tasks/{tid}` | read | → `TaskDetail` |
 | GET | `/api/tasks/{tid}/prompt` | read | → `{"text","attachments":[{"name","image":bool,"available":bool}]}`: the prompt the task started with, without its `@path` attachment lines, and its attached files in order (SPEC-043). `available` is false for a file that is gone (composer drafts are removed after a week) or not in the task's own attachment folders (a path mentioned by hand, another task's or user's file); at most 500 are checked |
 | GET | `/api/tasks/{tid}/prompt/attachments/{n}` | read | → the bytes of attachment `n` (from 0) of that list, only when the prompt names it directly in one of the task's own attachment folders (its creator's composer drafts, `attachments/drafts/<user>/`, or the task's terminal attachments, `attachments/tasks/<task>/`), reached without a link, a regular file within the upload limit and, on Linux, opened at its real path as `/proc/self/fd` says (404 otherwise, also out of range or not a number; 429 when none of the 16 read slots frees within 30 s; uploads have their own bound). The body is streamed in chunks of at most 64 KiB with its `Content-Length`, holding its read slot; left unread for 60 s it gives the slot back and closes the file, and the response breaks off at the client's next read (SPEC-080, ADR-0064). An image (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`) is served with its image type, any other file as `application/octet-stream` with `Content-Disposition: attachment`; the content security policy includes `sandbox` (ADR-0033) |
@@ -257,6 +270,8 @@ TaskSummary = {
   "archived": false, "account_label": "Claude #2|null",
   "mode": "goal|prompt",
   "resumes_at": "2026-10-09T08:20:00Z|null",
+  "supertask": false, "held_by": [3, 5],
+  "start_at": "2026-10-15T09:00:00Z|null",
   "after": ChainLink|null, "next": [ChainLink],
   "held_prompt": {"id","class":"new_scope|drops_scope|redirect","excerpt","percent","typed_by|null","created_at"}|null,
   "background_shells": "0|1|…|null",
@@ -319,7 +334,7 @@ turn records. A restart or a resume reads the run's own lines again, so they nev
 Status wire names (from `yulius-domain::task`): `queued`, `starting`, `running`, `switching`,
 `waiting_capacity`, `stopping`, `closed`, `stopped_cancelled`, `stopped_crashed`, `stopped_killed`,
 `stopped_lost`, `stopped_switch_failed`, `stopped_switch_timeout`, `stopped_server_lost`,
-`failed_spawn_error`, `failed_start_timeout`, `failed_precondition`, `chained`.
+`failed_spawn_error`, `failed_start_timeout`, `failed_precondition`, `chained`, `prepared`.
 
 How a session's end moves its task (F 2026-10-10, SPEC-002 §6.1): leaving the session (`/exit`,
 Ctrl+C twice, Ctrl+D, `/logout` — Claude Code's `SessionEnd` reason `prompt_input_exit`/`logout`)
@@ -425,7 +440,7 @@ the agents' delivery workflow and other clients; no page of the web UI calls the
 | GET | `/api/tasks/{tid}/changes` | read | → `TaskChanges`: the task worktree (committed, uncommitted and untracked work; symlinks listed, never followed) against the merge base with `origin/<integration>`; 409 when the worktree is gone |
 | GET | `/api/tasks/{tid}/commits` | read | → `[TaskCommit]`: the task branch's commits not on the integration branch, newest first (at most 100) |
 | POST | `/api/tasks/{tid}/delivery/pr` | write | `{"title?","body?"}` (body optional) → `Delivery` (refused without a valid spec or with uncommitted changes); opened with the caller's GitHub account, the superadmin's by the App |
-| POST | `/api/tasks/{tid}/delivery/merge` | write | → `Delivery` (requires the domain gates: open PR at the checked head, valid spec, no open steps, checks per profile); acts as the caller on GitHub: 403 with a message for the superadmin without a GitHub identity |
+| POST | `/api/tasks/{tid}/delivery/merge` | write | → `Delivery` (requires the domain gates: open PR at the checked head, valid spec, no open steps, checks per profile); acts as the caller on GitHub: 403 with a message for the superadmin without a GitHub identity. In a playground: squashes the task branch onto its integration branch in the playground's own `origin` (valid spec where required, steps resolved, a clean worktree, commits to deliver; 409 naming the files on a conflict), no GitHub identity needed (SPEC-099) |
 | POST | `/api/sandboxes/{sid}/delivery/promote` | write | → `{"result":"promoted|pr_opened","sha"}`; acts as the caller on GitHub: 403 with a message for the superadmin without a GitHub identity |
 | POST | `/api/sandboxes/{sid}/delivery/environments/{env}/runs` | write | `{"confirm":true}` → `EnvironmentRun` (includes `run_id`) |
 | POST | `/api/sandboxes/{sid}/delivery/environments/{env}/confirm` | write | `{"confirm":true}` → `EnvironmentRun` (manual verification) |
@@ -639,7 +654,7 @@ read-only in the UI.
 | PUT/DELETE | `/api/workflows/{id}` | write (instance: admin) | PUT replaces name, description, steps, instructions, gates → `Workflow`; DELETE → 204. A default workflow (`builtin`) → 409 `conflict` ("duplicate it to customise"). |
 | GET/POST | `/api/sandboxes/{sid}/automations` | read/write | `Automation`; POST → 201 |
 | PUT/DELETE | `/api/automations/{id}` | write | PUT replaces the editable fields → `Automation`; DELETE → 204 (removes run history; tasks stay) |
-| POST | `/api/automations/{id}/run` | write | creates one run now (also when disabled) → `AutomationRun` |
+| POST | `/api/automations/{id}/run` | write | creates one run now (also when disabled) → `AutomationRun`; an optional body `RunAutomation` is this run's start choice (checked like `Automation`'s, 422 when invalid, not stored; SPEC-093), none uses the stored one |
 | GET | `/api/automations/{id}/runs` | read | `[AutomationRun]`, newest first (at most 100) |
 | GET | `/api/sandboxes/{sid}/automation-templates` | read | `[AutomationTemplate]`, the ready-made automations (SPEC-042) |
 | POST | `/api/sandboxes/{sid}/automation-templates/{id}/enable` | write | creates the automation from the template, enabled → 201 `Automation`; when the sandbox already has an automation of that name, enables it unchanged → 200 `Automation`; unknown template → 404 |
@@ -655,6 +670,7 @@ Automation = {"id","name","cron":"0 9 * * *","utc_offset_minutes":120,"prompt","
               "harness":"claude","enabled":true,"supertask":false,"after_task_id":"…|null",
               "after_task_number":12|null,"start_rule":"#12 done|null","created_via":"ui|agent",
               "next_run_at":"…|null","last_run":AutomationRun|null}
+RunAutomation = {"supertask":false,"after_task_id":"…|null","start_rule":"#12 done|null"}
 AutomationTemplate = {"id":"docs-up-to-date","name","description","cron","utc_offset_minutes","prompt",
                       "workflow_id|null","automation_id|null"}
 AutomationRun = {"scheduled_for","state":"scheduled|task_created|skipped_previous_active|skipped_disabled|failed",
@@ -917,15 +933,18 @@ resolves to nothing, the run gets the server without that variable or token.
     terminals. Its terminal is `WS /api/shells/{id}/terminal`; files go to
     `POST …/shells/{id}/attachments`. It ends when Claude Code exits or after 24 h without
     viewers, keeps running across a restart, and the next call resumes its conversation.
-- Notes ([SPEC-041](../.ai/specs/SPEC-041-here-we-want-auto-saved-notes-sandbox-wi.md)): one
-  notepad per sandbox and one for the team, saved by the web UI as people type.
-  - `GET /api/sandboxes/{sid}/notes` (read) and `GET /api/notes` (anyone signed in) →
-    `Note {"scope":"sandbox|team","body","revision","updated_at","updated_by"}`; a notepad never
+- Notes ([SPEC-041](../.ai/specs/SPEC-041-here-we-want-auto-saved-notes-sandbox-wi.md),
+  [SPEC-103](../.ai/specs/SPEC-103-add-me-after-team-that-is-for-user-and-n.md)): one notepad per
+  sandbox, one for the team and one per person, saved by the web UI as people type.
+  - `GET /api/sandboxes/{sid}/notes` (read), `GET /api/notes` (anyone signed in) and
+    `GET /api/me/notes` (the caller's own; no route reaches another person's) →
+    `Note {"scope":"sandbox|team|me","body","revision","updated_at","updated_by"}`; a notepad never
     written is `{"body":"","revision":0,"updated_at":null,"updated_by":null}`.
-  - `PUT /api/sandboxes/{sid}/notes` (write) and `PUT /api/notes` (anyone signed in)
-    `{"body","revision"}` → `Note`: `revision` is the revision the edit started from; the text is
-    stored as revision + 1. 409 `conflict` (nothing stored) when the stored revision differs:
-    someone saved meanwhile, so the client loads the note again. 422 over 256 KiB of UTF-8.
+  - `PUT /api/sandboxes/{sid}/notes` (write), `PUT /api/notes` (anyone signed in) and
+    `PUT /api/me/notes` (the caller's own) `{"body","revision"}` → `Note`: `revision` is the
+    revision the edit started from; the text is stored as revision + 1. 409 `conflict` (nothing
+    stored) when the stored revision differs: someone saved meanwhile, so the client loads the
+    note again. 422 over 256 KiB of UTF-8.
     Every stored edit publishes `note.updated`.
 
 ## Administration, analytics, status
@@ -1155,9 +1174,10 @@ after an unlock.
 "tab_id","reason","task_id"}`, `{"type":"automation.run","automation_id","state","task_id"}`,
 `{"type":"account.updated","account":Account}` (instance administrators only),
 `{"type":"update.updated","phase":"building|pausing|restarting|resuming|null"}` (an update was
-found or moved; clients refetch `GET /api/update`), `{"type":"note.updated","scope":"team|sandbox",
-"sandbox_id","revision","updated_by"}` (a notepad was saved; a sandbox note's event reaches only
-that sandbox's viewers), `{"type":"resync"}`.
+found or moved; clients refetch `GET /api/update`),
+`{"type":"note.updated","scope":"team|sandbox|me","sandbox_id","revision","updated_by"}` (a
+notepad was saved; a sandbox note's event reaches only that sandbox's viewers, a personal note's
+only its owner), `{"type":"resync"}`.
 
 Sandbox views depend on the viewer's access level, so after a sandbox change (import, create,
 onboarding transitions, removal) the server publishes `resync` to that sandbox's viewers (or

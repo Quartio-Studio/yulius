@@ -329,6 +329,7 @@ impl App {
         owner: &str,
         name: &str,
     ) -> AppResult<SandboxRecord> {
+        refuse_non_github(owner)?;
         match self.deps.store.sandbox_by_repo(owner, name).await? {
             Some(existing) => {
                 let (record, _) = self.require(&ctx.user, &existing.id, Action::Work).await?;
@@ -365,6 +366,7 @@ impl App {
                 bad.session_id
             )));
         }
+        refuse_non_github(req.owner.trim())?;
         let login = self.login_of(&ctx.user.id).await;
         let new_states = || {
             req.sessions
@@ -1338,7 +1340,7 @@ pub struct SnapshotStats {
 }
 
 /// A repository-relative path made only of normal components, none of them `.git`.
-fn safe_relative(raw: &[u8]) -> Option<PathBuf> {
+pub(crate) fn safe_relative(raw: &[u8]) -> Option<PathBuf> {
     if raw.is_empty() || raw.contains(&0) {
         return None;
     }
@@ -1386,7 +1388,7 @@ fn link_stays_inside(rel: &Path, target: &[u8]) -> bool {
 
 /// Makes sure every parent of `rel` below `root` is a real directory (creating missing ones)
 /// and clears a file or link at the target; `None` when a link, file or directory is in the way.
-fn prepare_target(root: &Path, rel: &Path) -> AppResult<Option<PathBuf>> {
+pub(crate) fn prepare_target(root: &Path, rel: &Path) -> AppResult<Option<PathBuf>> {
     let parts: Vec<&OsStr> = rel.iter().collect();
     let Some((last, parents)) = parts.split_last() else {
         return Ok(None);
@@ -1429,6 +1431,97 @@ fn parents_are_directories(root: &Path, rel: &Path) -> bool {
     true
 }
 
+/// `yulius onboard` imports GitHub repositories: an owner that is none (a playground's empty one,
+/// SPEC-099) is refused before any lookup reaches a playground or GitHub.
+fn refuse_non_github(owner: &str) -> AppResult<()> {
+    if crate::projects::valid_owner(owner) {
+        Ok(())
+    } else {
+        Err(AppError::Invalid(format!(
+            "{owner:?} is not a GitHub owner; `yulius onboard` imports GitHub repositories (a \
+             playground is made in the browser)"
+        )))
+    }
+}
+
+/// Whether a PAX extension record (`<len> <key>=<value>\n`, repeated) sets `size`.
+fn pax_sets_size(record: &[u8]) -> bool {
+    let mut rest = record;
+    while !rest.is_empty() {
+        let Some(space) = rest.iter().position(|b| *b == b' ') else {
+            return false;
+        };
+        let Some(len) = std::str::from_utf8(&rest[..space])
+            .ok()
+            .and_then(|digits| digits.parse::<usize>().ok())
+            .filter(|len| *len > space && *len <= rest.len())
+        else {
+            return false;
+        };
+        let body = &rest[space + 1..len];
+        if body.split(|b| *b == b'=').next() == Some(b"size".as_slice()) {
+            return true;
+        }
+        rest = &rest[len..];
+    }
+    false
+}
+
+/// Longest metadata entry (a GNU long name or link, a PAX record) an uploaded archive may hold:
+/// the tar reader reads one whole, in memory, before the entry it describes.
+const MAX_ARCHIVE_METADATA_BYTES: u64 = 64 * 1024;
+
+/// Checks an uploaded gzip tar before anything of it is used, reading only its headers and its
+/// small metadata entries: at most [`MAX_SNAPSHOT_ENTRIES`] entries, metadata entries of at
+/// most [`MAX_ARCHIVE_METADATA_BYTES`], no PAX `size` override (an entry is as large as its
+/// header says), and declared sizes adding up to at most `max_bytes`, so nothing is decompressed
+/// past it.
+///
+/// # Errors
+/// `Invalid` for an archive over a bound or unreadable.
+pub(crate) fn check_archive(archive: &Path, max_bytes: u64) -> AppResult<()> {
+    let file = File::open(archive).map_err(AppError::internal)?;
+    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(BufReader::new(file)));
+    let invalid = |err: io::Error| AppError::Invalid(format!("unreadable archive: {err}"));
+    let (mut entries, mut declared) = (0_u64, 0_u64);
+    for entry in tar.entries().map_err(invalid)?.raw(true) {
+        let mut entry = entry.map_err(invalid)?;
+        entries += 1;
+        if entries > MAX_SNAPSHOT_ENTRIES.saturating_mul(2) {
+            return Err(AppError::Invalid("the archive has too many entries".into()));
+        }
+        let size = entry.header().size().map_err(invalid)?;
+        let kind = entry.header().entry_type();
+        if kind.is_gnu_longname()
+            || kind.is_gnu_longlink()
+            || kind.is_pax_local_extensions()
+            || kind.is_pax_global_extensions()
+        {
+            if size > MAX_ARCHIVE_METADATA_BYTES {
+                return Err(AppError::Invalid(
+                    "the archive has an oversized metadata entry (a long name or a PAX record)"
+                        .into(),
+                ));
+            }
+            let mut record = Vec::new();
+            entry.read_to_end(&mut record).map_err(invalid)?;
+            let pax = kind.is_pax_local_extensions() || kind.is_pax_global_extensions();
+            if pax && pax_sets_size(&record) {
+                return Err(AppError::Invalid(
+                    "the archive has a PAX size override in a metadata entry".into(),
+                ));
+            }
+        }
+        declared = declared.saturating_add(size);
+        if declared > max_bytes {
+            return Err(AppError::Invalid(
+                "the archive expands beyond the import size limit".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Applies a snapshot archive (contracts layout: `files/…` entries and a `DELETED` list) to
 /// `root`, refusing paths that escape it, `.git` paths, writes through links and links
 /// pointing outside the root.
@@ -1436,6 +1529,7 @@ fn parents_are_directories(root: &Path, rel: &Path) -> bool {
 /// # Errors
 /// Unreadable archives, archives over the import bounds, I/O failures.
 pub fn extract_snapshot(archive: &Path, root: &Path) -> AppResult<SnapshotStats> {
+    check_archive(archive, MAX_IMPORT_TOTAL_BYTES.saturating_mul(2))?;
     let root = fs::canonicalize(root).map_err(AppError::internal)?;
     let file = File::open(archive).map_err(AppError::internal)?;
     let decoder = flate2::read::GzDecoder::new(BufReader::new(file));

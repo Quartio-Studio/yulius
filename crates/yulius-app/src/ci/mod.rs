@@ -568,7 +568,8 @@ impl App {
     /// GitHub or Git failures (the round is retried at the next poll).
     pub async fn ci_sync_sandbox(&self, sandbox: &SandboxRecord) -> AppResult<()> {
         let repo = self.sandbox_repo(&sandbox.id);
-        if sandbox.removed_at.is_some() || !repo.join(".git").exists() {
+        // Yulius CI follows pull requests on GitHub; a playground has neither (SPEC-099).
+        if sandbox.removed_at.is_some() || sandbox.is_playground() || !repo.join(".git").exists() {
             return Ok(());
         }
         let token = self.dlv_installation_token(sandbox).await?;

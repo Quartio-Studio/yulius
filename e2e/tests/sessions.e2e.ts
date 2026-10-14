@@ -354,6 +354,302 @@ test('a session ends with a locked prompt box and has a spider web in its corner
   expect(await axeViolations(browser)).toEqual([]);
 });
 
+// Task #86 (SPEC-101): "the web should be sticky (should stick to the top while scrolling)". Scrolled
+// down, the web stays in the top-right corner of what is visible of the well.
+test('the spider web sticks to the top of the view while the session scrolls', async ({ app, browser }) => {
+  await browser.setViewport({ width: 1280, height: 420 });
+  await app.open(mock('/s/studio/sessions/ses_imp_checkout'));
+  await expect(browser.locator('.ss-tui .ss-locked')).toBeVisible();
+  const place = () => browser.evaluate(() => {
+    const page = document.querySelector<HTMLElement>('.ss-page')!;
+    const well = document.querySelector('.ss-tui')!.getBoundingClientRect();
+    const box = document.querySelector('.ss-tui > svg.ss-web')!.getBoundingClientRect();
+    const view = page.getBoundingClientRect().top + page.clientTop;
+    return { scrollable: page.scrollHeight - page.clientHeight, top: Math.round(box.top - Math.max(view, well.top)), right: Math.round(well.right - box.right), inWell: box.bottom <= well.bottom + 1 };
+  });
+  const before = await place();
+  expect(before.scrollable).toBeGreaterThan(200);
+  expect(before.top).toBeLessThanOrEqual(2);
+  await browser.evaluate(() => { document.querySelector<HTMLElement>('.ss-page')!.scrollTop = 200; });
+  await expect.poll(async () => (await place()).top).toBeLessThanOrEqual(2);
+  const after = await place();
+  expect(after.top).toBeGreaterThanOrEqual(-2);
+  expect(after.right).toBeLessThanOrEqual(2);
+  expect(after.inWell).toBe(true);
+
+  // Stuck, the web lies under the text, so it fades to a colour every text of the well reads on at
+  // AA, spider included; at the top, beside the first lines, it keeps its own colours. Everything
+  // after it in the well paints over it.
+  const colours = (theme: string) => browser.evaluate((name) => {
+    document.documentElement.setAttribute('data-theme', name);
+    const well = document.querySelector('.ss-tui')!;
+    const parse = (c: string) => c.match(/\d+(\.\d+)?/g)!.slice(0, 3).map(Number);
+    const token = (t: string) => {
+      const probe = well.appendChild(document.createElement('span'));
+      probe.style.color = `var(${t})`;
+      const c = getComputedStyle(probe).color;
+      probe.remove();
+      return parse(c);
+    };
+    const lum = (c: number[]) => {
+      const [r, g, b] = c.map((v) => { const x = v / 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const contrast = (a: number[], b: number[]) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+    const fills = ['.ss-web-thread', '.ss-web-silk', '.ss-web-body'].map((sel) => parse(getComputedStyle(well.querySelector(sel)!).fill));
+    const texts = ['--session-fg', '--session-dim', '--session-ok', '--session-err'].map(token);
+    return {
+      web: String(fills[0]) === String(token('--session-web')),
+      lowest: Math.min(...fills.flatMap((f) => texts.map((t) => contrast(t, f)))),
+      over: ['.ss-entries > li', '.ss-more', '.ss-locked'].every((sel) => [...well.querySelectorAll(sel)].every((el) => getComputedStyle(el).position !== 'static')),
+    };
+  }, theme);
+  // It fades as soon as it sticks: the well's top just past the view's.
+  await browser.evaluate(() => {
+    const page = document.querySelector<HTMLElement>('.ss-page')!;
+    page.scrollTop = 0;
+    page.scrollTop = document.querySelector('.ss-tui')!.getBoundingClientRect().top - page.getBoundingClientRect().top - page.clientTop + 3;
+  });
+  await expect.poll(async () => (await colours('dark')).web).toBe(false);
+  await browser.evaluate(() => { document.querySelector<HTMLElement>('.ss-page')!.scrollTop = 200; });
+  for (const theme of ['dark', 'light']) {
+    await expect.poll(async () => (await colours(theme)).web, theme).toBe(false);
+    const stuck = await colours(theme);
+    expect(stuck.lowest, theme).toBeGreaterThanOrEqual(4.5);
+    expect(stuck.over, theme).toBe(true);
+  }
+  await browser.evaluate(() => { document.querySelector<HTMLElement>('.ss-page')!.scrollTop = 0; });
+  await expect.poll(async () => (await colours('dark')).web).toBe(true);
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+// Task #86 (SPEC-101): "spider should be animated". On its loop the spider climbs its thread in
+// pixel steps, the thread shortening with it, its legs switching frames, and drops back; it rests
+// where SPEC-075 drew it, and keeps still for people who asked for reduced motion.
+test('the spider climbs its thread and drops back, and keeps still under reduced motion', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/sessions/ses_imp_checkout'));
+  await expect(browser.locator('.ss-tui .ss-locked')).toBeVisible();
+  // Seek every animation of the spider to a fraction of its loop and measure it in pixels.
+  const at = (fraction: number) => browser.evaluate((f) => {
+    const svg = document.querySelector('.ss-tui > svg.ss-web')!;
+    const spider = svg.querySelector('.ss-web-spider')!;
+    const silk = svg.querySelector('.ss-web-silk')!;
+    const animations = [spider, silk, ...svg.querySelectorAll('.ss-web-legs')].flatMap((el) => el.getAnimations());
+    for (const a of animations) {
+      a.pause();
+      a.currentTime = f * Number(a.effect!.getComputedTiming().duration);
+    }
+    const frame = svg.getBoundingClientRect();
+    const pixel = frame.height / 34;
+    const s = spider.getBoundingClientRect();
+    const t = silk.getBoundingClientRect();
+    const shown = (selector: string) => getComputedStyle(svg.querySelector(selector)!).visibility === 'visible';
+    return {
+      animations: animations.length,
+      spiderTop: Math.round((s.top - frame.top) / pixel),
+      silk: Math.round(t.height / pixel),
+      silkEnd: Math.round((t.top - frame.top) / pixel),
+      legs: shown('.ss-web-legs-a') && !shown('.ss-web-legs-b') ? 'a' : shown('.ss-web-legs-b') && !shown('.ss-web-legs-a') ? 'b' : 'both or none',
+    };
+  }, fraction);
+
+  const rest = await at(0);
+  expect(rest.animations).toBe(4);
+  expect(rest).toMatchObject({ spiderTop: 29, silk: 17, silkEnd: 12, legs: 'a' });
+  expect(await at(0.53)).toMatchObject({ legs: 'b' });
+  expect(await at(0.55)).toMatchObject({ legs: 'a' });
+  expect(await at(0.7)).toMatchObject({ spiderTop: 23, silk: 11, silkEnd: 12, legs: 'a' });
+  expect(await at(0.83)).toMatchObject({ legs: 'b' });
+  expect(await at(0.99)).toMatchObject({ spiderTop: 29, silk: 17, legs: 'a' });
+
+  // The reduced-motion rule stops each of them (the harness cannot emulate the media query).
+  const still = await browser.evaluate(() => {
+    const stopped: string[] = [];
+    const visit = (rules: CSSRuleList, reduced: boolean) => {
+      for (const rule of rules) {
+        if (rule instanceof CSSMediaRule) visit(rule.cssRules, reduced || rule.conditionText.includes('prefers-reduced-motion: reduce'));
+        else if (reduced && rule instanceof CSSStyleRule && rule.style.animationName === 'none') stopped.push(rule.selectorText);
+      }
+    };
+    for (const sheet of document.styleSheets) visit(sheet.cssRules, false);
+    return stopped.join(', ');
+  });
+  for (const part of ['.ss-web-spider', '.ss-web-silk', '.ss-web-legs']) expect(still).toContain(part);
+});
+
+// Task #86 (SPEC-101): "sometimes pixelart cockroach should run through the screen in this view".
+test('a cockroach runs across the visible part of the session now and then (unit, in the page)', async ({ app, browser }) => {
+  await browser.setViewport({ width: 1280, height: 420 });
+  await app.open(mock('/s/studio/sessions/ses_imp_checkout'));
+  await expect(browser.locator('.ss-tui .ss-locked')).toBeVisible();
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/pages/sessions.js';
+    const { cockroachDelay, runCockroach, scheduleCockroaches } = await import(url);
+    const delays = {
+      firstMin: cockroachDelay(true, () => 0),
+      firstMax: cockroachDelay(true, () => 0.999999),
+      laterMin: cockroachDelay(false, () => 0),
+      laterMax: cockroachDelay(false, () => 0.999999),
+    };
+    const page = document.querySelector<HTMLElement>('.ss-page')!;
+    const well = document.querySelector<HTMLElement>('.ss-tui')!;
+    page.scrollTop = 150;
+    const view = page.getBoundingClientRect();
+    const roach = runCockroach(well, () => 0.5) as SVGSVGElement;
+    const [run] = roach.getAnimations();
+    const placed = (fraction: number) => {
+      run.pause();
+      run.currentTime = fraction * Number(run.effect!.getComputedTiming().duration);
+      const box = roach.getBoundingClientRect();
+      const w = well.getBoundingClientRect();
+      return { left: Math.round(box.left - w.left), right: Math.round(w.right - box.right), top: box.top, bottom: box.bottom, overflow: page.scrollWidth - page.clientWidth };
+    };
+    const start = placed(0);
+    const middle = placed(0.5);
+    const end = placed(0.999);
+    const shape = {
+      inWell: roach.parentElement === well,
+      hidden: roach.getAttribute('aria-hidden'),
+      pointer: getComputedStyle(roach).pointerEvents,
+      legs: roach.querySelectorAll('.ss-roach-legs').length,
+      duration: Number(run.effect!.getComputedTiming().duration),
+    };
+    run.finish();
+    await run.finished;
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const removed = !roach.isConnected;
+
+    // It also runs the other way, facing where it goes.
+    const back = runCockroach(well, () => 0.2) as SVGSVGElement;
+    const [backRun] = back.getAnimations();
+    const backAt = (fraction: number) => {
+      backRun.pause();
+      backRun.currentTime = fraction * Number(backRun.effect!.getComputedTiming().duration);
+      const box = back.getBoundingClientRect();
+      const w = well.getBoundingClientRect();
+      return { left: Math.round(box.left - w.left), right: Math.round(w.right - box.right), flipped: getComputedStyle(back).transform.startsWith('matrix(-1') };
+    };
+    const leftward = [backAt(0), backAt(0.5), backAt(0.999)];
+    back.remove();
+    // At the lowest place it can take it is still all in view.
+    const low = runCockroach(well, () => 0.999999) as SVGSVGElement;
+    const lowBottom = low.getBoundingClientRect().bottom;
+    low.remove();
+    // A hidden page sends none.
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    const whileHidden = { roach: runCockroach(well, () => 0.5), shown: well.querySelectorAll('.ss-roach').length };
+    delete (document as unknown as { hidden?: boolean }).hidden;
+
+    // The scheduler on a fake timer: one cockroach per timer, then the next delay, until stopped.
+    const timers: { fn: () => void; ms: number; cleared: boolean }[] = [];
+    const timer = { set: (fn: () => void, ms: number) => timers.push({ fn, ms, cleared: false }) - 1, clear: (id: number) => { if (timers[id]) timers[id].cleared = true; } };
+    const stop = scheduleCockroaches(well, { random: () => 0.5, timer });
+    const scheduled = timers.map((t) => t.ms);
+    timers[0].fn();
+    const ran = well.querySelectorAll('.ss-roach').length;
+    const next = timers.map((t) => t.ms);
+    stop();
+    const afterStop = { cleared: timers[1].cleared, left: well.querySelectorAll('.ss-roach').length };
+    timers[1].fn();
+    const stale = { timers: timers.length, roaches: well.querySelectorAll('.ss-roach').length };
+    return { delays, view: { top: view.top, bottom: view.bottom }, start, middle, end, leftward, shape, removed, lowBottom, whileHidden, scheduled, ran, next, afterStop, stale };
+  });
+  expect(result.delays).toEqual({ firstMin: 20000, firstMax: 59999, laterMin: 45000, laterMax: 149999 });
+  expect(result.shape).toMatchObject({ inWell: true, hidden: 'true', pointer: 'none', legs: 2 });
+  expect(result.shape.duration).toBeGreaterThanOrEqual(2000);
+  expect(result.shape.duration).toBeLessThanOrEqual(4000);
+  // It enters at one side, crosses the well and leaves at the other, in the part one can see.
+  expect(result.start.right).toBeGreaterThan(0);
+  expect(result.start.left).toBeLessThan(0);
+  expect(result.middle.left).toBeGreaterThan(0);
+  expect(result.middle.right).toBeGreaterThan(0);
+  expect(result.end.left).toBeGreaterThan(result.middle.left);
+  expect(result.middle.top).toBeGreaterThanOrEqual(result.view.top);
+  expect(result.middle.bottom).toBeLessThanOrEqual(result.view.bottom);
+  for (const at of [result.start, result.middle, result.end]) expect(at.overflow).toBe(0);
+  expect(result.removed).toBe(true);
+  const [enter, cross, leave] = result.leftward;
+  expect(enter.left).toBeGreaterThan(0);
+  expect(enter.right).toBeLessThan(0);
+  expect(cross.left).toBeGreaterThan(0);
+  expect(cross.right).toBeGreaterThan(0);
+  expect(leave.left).toBeLessThan(cross.left);
+  expect(result.leftward.every((at) => at.flipped)).toBe(true);
+  expect(result.lowBottom).toBeLessThanOrEqual(result.view.bottom);
+  expect(result.whileHidden).toEqual({ roach: null, shown: 0 });
+  expect(result.scheduled).toEqual([40000]);
+  expect(result.ran).toBe(1);
+  expect(result.next).toEqual([40000, 97500]);
+  expect(result.afterStop).toEqual({ cleared: true, left: 0 });
+  expect(result.stale).toEqual({ timers: 2, roaches: 0 });
+});
+
+// The session view schedules them itself and stops when it is left; nothing runs for people who
+// asked for reduced motion (the harness cannot emulate the media query, so matchMedia is stubbed).
+const recordTimers = (reduce: boolean) => {
+  const w = window as unknown as { roachTimers: { ms: number; fn: () => void; cleared: boolean; id: number }[] };
+  w.roachTimers = [];
+  const set = window.setTimeout.bind(window);
+  const clear = window.clearTimeout.bind(window);
+  window.setTimeout = ((fn: () => void, ms?: number, ...rest: unknown[]) => {
+    const id = set(fn, ms, ...rest);
+    // The app keeps other long timers (a request's timeout); only those set in the session view count.
+    if ((ms ?? 0) >= 20000 && new Error().stack?.split('\n')[2]?.includes('/pages/sessions.js')) w.roachTimers.push({ ms: ms ?? 0, fn, cleared: false, id: Number(id) });
+    return id;
+  }) as typeof window.setTimeout;
+  window.clearTimeout = ((id?: number) => {
+    for (const t of w.roachTimers) if (t.id === id) t.cleared = true;
+    clear(id);
+  }) as typeof window.clearTimeout;
+  if (reduce) {
+    const media = window.matchMedia.bind(window);
+    window.matchMedia = (query: string) => (query.includes('prefers-reduced-motion') ? ({ ...media(query), matches: true, media: query } as MediaQueryList) : media(query));
+  }
+};
+
+test('the session view sends cockroaches now and then and stops when it is left', async ({ app, browser, screen }) => {
+  await browser.addInitScript(recordTimers, false);
+  await app.open(mock('/s/studio/sessions/ses_imp_checkout'));
+  await expect(browser.locator('.ss-tui .ss-locked')).toBeVisible();
+  const timers = () => browser.evaluate(() => (window as unknown as { roachTimers: { ms: number; cleared: boolean }[] }).roachTimers.map((t) => ({ ms: t.ms, cleared: t.cleared })));
+  await expect.poll(async () => (await timers()).length).toBe(1);
+  const [first] = await timers();
+  expect(first.ms).toBeGreaterThanOrEqual(20000);
+  expect(first.ms).toBeLessThan(60000);
+  // Its time comes: a cockroach runs and the next one is scheduled further apart.
+  // Run the first by hand, its real timer cleared so that it cannot fire as well.
+  await browser.evaluate(() => {
+    const [first] = (window as unknown as { roachTimers: { fn: () => void; id: number }[] }).roachTimers;
+    window.clearTimeout(first.id);
+    first.fn();
+  });
+  await expect(browser.locator('.ss-tui > svg.ss-roach')).toHaveCount(1);
+  const [, second] = await timers();
+  expect(second.ms).toBeGreaterThanOrEqual(45000);
+  expect(second.ms).toBeLessThan(150000);
+  expect(await axeViolations(browser)).toEqual([]);
+  // Leaving the session stops the next one.
+  await screen.getByRole('link', 'Sessions').first().click();
+  await expect(browser).toHaveURL(/#\/s\/studio\/sessions$/);
+  await expect.poll(async () => (await timers())[1].cleared).toBe(true);
+});
+
+test('no cockroach runs under reduced motion', async ({ app, browser }) => {
+  await browser.addInitScript(recordTimers, true);
+  await app.open(mock('/s/studio/sessions/ses_imp_checkout'));
+  await expect(browser.locator('.ss-tui .ss-locked')).toBeVisible();
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { roachTimers: unknown[] }).roachTimers.length)).toBeGreaterThan(0);
+  const ran = await browser.evaluate(async () => {
+    const [first] = (window as unknown as { roachTimers: { fn: () => void; id: number }[] }).roachTimers;
+    window.clearTimeout(first.id);
+    first.fn();
+    const url = '/assets/pages/sessions.js';
+    const { runCockroach } = await import(url);
+    return { direct: runCockroach(document.querySelector('.ss-tui')), shown: document.querySelectorAll('.ss-roach').length };
+  });
+  expect(ran).toEqual({ direct: null, shown: 0 });
+});
+
 // F 2026-10-13 (SPEC-086): "Sessions are beautiful but should be always 100% width and not only
 // when minimised. Even left and right margin of the session window and border radius should be
 // thrown out to make it look similar to the original session." The well spans the content area

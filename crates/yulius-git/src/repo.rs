@@ -68,6 +68,52 @@ impl Git {
         Ok(())
     }
 
+    /// Fetches every branch of the repository at the absolute `source` into `repo`'s
+    /// `refs/remotes/origin/*`, pruning the ones gone: `origin` by its known path, never by the
+    /// URL in `repo`'s configuration, which a sandbox may rewrite (a playground, SPEC-099).
+    pub fn fetch_branches_from(&self, repo: &Path, source: &Path) -> Result<(), GitError> {
+        require_absolute("source repository", source)?;
+        self.run_ok(
+            Invocation::new(self, "fetch", Some(repo))
+                .args([
+                    "fetch",
+                    "--quiet",
+                    "--prune",
+                    "--no-recurse-submodules",
+                    "--no-tags",
+                    "--",
+                ])
+                .arg(source)
+                .arg("+refs/heads/*:refs/remotes/origin/*")
+                .timeout(self.network_timeout),
+        )?;
+        Ok(())
+    }
+
+    /// Copies every branch and tag of the repository at the absolute `source` into `repo` under
+    /// the same names (a playground's new `origin` from an uploaded `.git`, SPEC-099). Only refs
+    /// and the objects they reach travel; `source`'s configuration and hooks are never read for
+    /// anything but the transfer, which runs with the fixed hardening.
+    pub fn copy_refs(&self, repo: &Path, source: &Path) -> Result<(), GitError> {
+        require_absolute("source repository", source)?;
+        self.run_ok(
+            Invocation::new(self, "fetch", Some(repo))
+                .args([
+                    "fetch",
+                    "--quiet",
+                    "--no-recurse-submodules",
+                    "--no-tags",
+                    // A shallow history stays shallow instead of being refused.
+                    "--update-shallow",
+                    "--",
+                ])
+                .arg(source)
+                .args(["refs/heads/*:refs/heads/*", "refs/tags/*:refs/tags/*"])
+                .timeout(self.network_timeout),
+        )?;
+        Ok(())
+    }
+
     /// The remote default branch (`refs/remotes/origin/HEAD`), falling back to the branch
     /// `HEAD` points at (correct for a fresh clone).
     pub fn default_branch(&self, repo: &Path) -> Result<String, GitError> {

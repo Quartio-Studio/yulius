@@ -427,6 +427,10 @@ impl App {
                 self.create_repository(ctx, name.trim(), template, description)
                     .await?
             }
+            CreateSandbox::Playground { name, template } => {
+                self.playground_from_template(&ctx.user, name, template)
+                    .await?
+            }
         };
         let level = self
             .access_level(&ctx.user, &record)
@@ -437,10 +441,10 @@ impl App {
 
     /// Links an existing repository of the instance owner as a new sandbox (import mode,
     /// IMP-002): requires `admin` or `maintain` on GitHub (the superadmin: a repository the App
-    /// installation can access, ACC-012); clones it, chooses the profile, validates the
-    /// documentation format and creates the onboarding task when it fails. With
-    /// `start_preparation` that task starts at once; through `yulius onboard` it waits for a
-    /// person to click Start onboarding on the sandbox page (SPEC-051).
+    /// installation can access, ACC-012); clones it and chooses the profile. The sandbox starts
+    /// `pending`: with `start_preparation` its onboarding task is created and started at once;
+    /// through `yulius onboard` nothing is created until a person clicks Start onboarding on the
+    /// sandbox page (SPEC-051, SPEC-097).
     ///
     /// # Errors
     /// See [`App::create_sandbox`].
@@ -460,7 +464,7 @@ impl App {
         }
         let repo = self.import_permission(user, owner, name).await?;
         let record = self.link_repository(user, owner, name, repo).await?;
-        if start_preparation && record.onboarding_task_id.is_some() {
+        if start_preparation {
             let actor = self.login_of(&user.id).await;
             if let Err(err) = self.start_onboarding(&record.id, &actor).await {
                 tracing::warn!(sandbox = %record.id, error = %err, "the preparation task did not start");
@@ -566,7 +570,7 @@ impl App {
         let prepared = self
             .clone_and_inspect(&owner, &name, &repo_dir, &install_token)
             .await;
-        let (default_branch, report, yulius_toml) = match prepared {
+        let (default_branch, yulius_toml) = match prepared {
             Ok(found) => found,
             Err(err) => {
                 remove_tree(dir).await;
@@ -579,9 +583,10 @@ impl App {
             default_branch
         };
         let profile = import_profile(&owner, &name, yulius_toml.as_deref());
-        // Every imported repository gets an onboarding task: the full preparation when its docs
-        // do not follow the format yet, the development environment alone when they do
-        // (F 2026-10-11: "on onboarding every environmental things should be installed").
+        // Every imported repository is onboarded: the full preparation when its docs do not follow
+        // the format yet, the development environment alone when they do (F 2026-10-11: "on
+        // onboarding every environmental things should be installed"). Its task is created once
+        // onboarding starts or a task waits for it, never as a resting one (SPEC-097).
         let onboarding = "pending";
         let record = SandboxRecord {
             id: id.clone(),
@@ -600,28 +605,13 @@ impl App {
             created_at: self.now(),
             removed_at: None,
         };
-        let mut record = match self.insert_sandbox_unique(record).await {
+        let record = match self.insert_sandbox_unique(record).await {
             Ok(record) => record,
             Err(err) => {
                 remove_tree(dir).await;
                 return Err(err);
             }
         };
-        {
-            // The sandbox exists now; a failed meta-task creation leaves it pending (an admin
-            // can skip) instead of reporting the whole import as failed.
-            match self.create_onboarding_task(&record, user, &report).await {
-                Ok(task) => {
-                    store
-                        .set_onboarding(&record.id, "pending", Some(&task.id))
-                        .await?;
-                    record.onboarding_task_id = Some(task.id);
-                }
-                Err(err) => {
-                    tracing::warn!(error = %err, sandbox = %record.id, "could not create the preparation task");
-                }
-            }
-        }
         store
             .audit(
                 self.now(),
@@ -635,19 +625,14 @@ impl App {
         Ok(record)
     }
 
-    /// Clones a repository and reads what import needs: default branch, documentation report
-    /// and `yulius.toml` text.
+    /// Clones a repository and reads what import needs: default branch and `yulius.toml` text.
     async fn clone_and_inspect(
         &self,
         owner: &str,
         name: &str,
         repo_dir: &Path,
         token: &Secret,
-    ) -> AppResult<(
-        String,
-        yulius_domain::spec_format::ProjectReport,
-        Option<String>,
-    )> {
+    ) -> AppResult<(String, Option<String>)> {
         if let Some(parent) = repo_dir.parent() {
             let parent = parent.to_path_buf();
             blocking(move || std::fs::create_dir_all(&parent).map_err(AppError::internal)).await?;
@@ -664,16 +649,19 @@ impl App {
             }
         };
         let root = repo_dir.to_path_buf();
-        let (report, yulius_toml) =
+        let (_, yulius_toml) =
             blocking(move || Ok(crate::onboarding::validate_checkout(&root))).await?;
-        Ok((default_branch, report, yulius_toml))
+        Ok((default_branch, yulius_toml))
     }
 
     /// Inserts a new sandbox, allocating a unique slug and the next free port range; retries
     /// with `name-2`, `name-3`, … on conflicts (slugs stay reserved by removed sandboxes, except
     /// for the same repository added again: it gets its name back and the removed sandbox's slug
     /// becomes `name-removed-<ms>`, F 2026-10-11).
-    async fn insert_sandbox_unique(&self, mut record: SandboxRecord) -> AppResult<SandboxRecord> {
+    pub(crate) async fn insert_sandbox_unique(
+        &self,
+        mut record: SandboxRecord,
+    ) -> AppResult<SandboxRecord> {
         let store = &self.deps.store;
         let base = slug_base(&record.repo_name);
         store
@@ -687,6 +675,10 @@ impl App {
             };
             if store.sandbox_by_slug(&slug).await?.is_some() {
                 continue;
+            }
+            // A playground's repository name is its slug, unique like it (SPEC-099).
+            if record.is_playground() {
+                record.repo_name.clone_from(&slug);
             }
             record.slug = slug;
             record.port_base = store
@@ -792,7 +784,7 @@ impl App {
             .push_scaffold(
                 &id,
                 &Scaffold {
-                    owner: &repo_owner,
+                    url: &clone_url(&repo_owner, &repo_name),
                     name: &repo_name,
                     files: &files,
                     template,
@@ -876,14 +868,14 @@ impl App {
     /// Clones the new (empty) repository into a scratch directory, commits the scaffold on the
     /// production branch, pushes it there and to the integration branch, then deletes the
     /// scratch clone.
-    async fn push_scaffold(
+    pub(crate) async fn push_scaffold(
         &self,
         id: &SandboxId,
         scaffold: &Scaffold<'_>,
         token: &Secret,
     ) -> AppResult<()> {
         let Scaffold {
-            owner,
+            url,
             name,
             files,
             template,
@@ -895,10 +887,7 @@ impl App {
             let parent = parent.to_path_buf();
             blocking(move || std::fs::create_dir_all(&parent).map_err(AppError::internal)).await?;
         }
-        self.deps
-            .git
-            .sync_clone(&clone_url(owner, name), &scratch, token)
-            .await?;
+        self.deps.git.sync_clone(url, &scratch, token).await?;
         let production = profile.production_branch.clone();
         let files = files.to_vec();
         let root = scratch.clone();
@@ -1093,17 +1082,22 @@ impl App {
 
 /// What to push as the first commit of a new repository.
 #[derive(Clone, Copy)]
-struct Scaffold<'a> {
-    owner: &'a str,
-    name: &'a str,
-    files: &'a [(String, String)],
-    template: TemplateKind,
-    profile: &'a DeliveryProfile,
-    user: &'a UserRecord,
+pub(crate) struct Scaffold<'a> {
+    /// Where the scaffold is pushed: the new GitHub repository, or a playground's `origin`.
+    pub(crate) url: &'a str,
+    pub(crate) name: &'a str,
+    pub(crate) files: &'a [(String, String)],
+    pub(crate) template: TemplateKind,
+    pub(crate) profile: &'a DeliveryProfile,
+    pub(crate) user: &'a UserRecord,
 }
 
 /// Points the unborn `HEAD` of a fresh clone at `branch` and writes the scaffold files.
-fn write_scaffold(root: &Path, branch: &str, files: &[(String, String)]) -> AppResult<()> {
+pub(crate) fn write_scaffold(
+    root: &Path,
+    branch: &str,
+    files: &[(String, String)],
+) -> AppResult<()> {
     let git_dir = root.join(".git");
     if !git_dir.is_dir() {
         return Err(AppError::Internal(

@@ -46,6 +46,8 @@ impl App {
                 app.drain_queue().await;
                 // Chained tasks start once their predecessor is Done (TSK-012).
                 app.advance_all_chains().await;
+                // Prepared tasks start at their time (SPEC-105 PRP-003).
+                app.release_due_prepared().await;
                 // Expired and consumed CLI device grants (#169).
                 if let Err(err) = app.purge_device_grants().await {
                     tracing::warn!(error = %err, "device grants could not be purged");

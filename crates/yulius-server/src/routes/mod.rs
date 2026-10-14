@@ -77,11 +77,16 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
         .route("/api/sandboxes", get(sandboxes::list))
         .route("/api/sandboxes/{sid}", get(sandboxes::get_one))
         .route(
+            "/api/sandboxes/{sid}/onboarding/plan",
+            get(projects::onboarding_plan),
+        )
+        .route(
             "/api/sandboxes/{sid}/tasks",
             get(tasks::list).post(tasks::create),
         )
         .route("/api/tasks/{tid}/stop", post(tasks::stop))
         .route("/api/tasks/{tid}/start-now", post(tasks::start_now))
+        .route("/api/tasks/{tid}/schedule", put(tasks::schedule))
         .route(
             "/api/tasks/{tid}/queued-messages",
             post(tasks::queue_message),
@@ -301,8 +306,17 @@ pub fn public(_app: Arc<App>) -> Router<AppState> {
                 .put(notes::save_sandbox)
                 .layer(DefaultBodyLimit::max(2 << 20)),
         )
+        // The caller's own notepad, the same in every sandbox (SPEC-103).
+        .route(
+            "/api/me/notes",
+            get(notes::me)
+                .put(notes::save_me)
+                .layer(DefaultBodyLimit::max(2 << 20)),
+        )
         // Dropped files (EDT-006, UI-048): raw streamed bodies, bounded by the upload limit.
         .route("/api/sandboxes/{sid}/files/upload", put(uploads::file))
+        // A folder packed by the browser becomes a playground (SPEC-099).
+        .route("/api/playgrounds", post(uploads::playground))
         .route(
             "/api/tasks/{tid}/attachments",
             post(uploads::task_attachment),

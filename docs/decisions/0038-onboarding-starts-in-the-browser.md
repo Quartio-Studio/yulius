@@ -4,7 +4,10 @@
 
 Accepted. Specified in [SPEC-051](../../.ai/specs/SPEC-051-onboarding-existing-project-using-cli-sh.md).
 Replaces the "no approval step" of the `yulius onboard` path (SPEC-001 IMP-010, F 2026-10-10);
-adding a repository in the web UI is unchanged.
+adding a repository in the web UI is unchanged. Narrowed by [ADR-0076](0076-onboarding-is-mandatory-in-the-ui.md):
+the page offers no Skip for now; skipping is an admin's recovery path through the API. Amended by
+[ADR-0077](0077-onboarding-task-is-created-when-needed.md): a `pending` sandbox has no resting
+onboarding task; it is created when onboarding starts or a task waits for it.
 
 ## Context
 
@@ -19,7 +22,8 @@ client could call it, including the CLI's bearer token from `yulius login`.
 ## Decision
 
 - Applying an upload no longer starts the onboarding task: the sandbox stays `pending` with its
-  resting task, and new tasks wait after it as before (IMP-010).
+  resting task, and new tasks wait after it as before (IMP-010). Since ADR-0077 that task is
+  created only when onboarding starts or a new task waits for it.
 - The approve endpoint is the **Start onboarding** button and accepts only a browser session (a
   cookie session, which carries a CSRF token). A bearer token gets 403 before the sandbox is read.
 - Every other way to start it follows the same rule: continuing a `pending` sandbox's onboarding

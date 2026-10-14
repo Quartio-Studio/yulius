@@ -6,7 +6,8 @@ Accepted. Extends [0044](0044-task-status-follows-claude-codes-own-records.md),
 [0061](0061-sandbox-counts-are-the-sidebar-groups.md) and
 [0063](0063-background-work-and-goal-verdict-from-the-transcript.md); changes how SPEC-050
 DSK-102's `yulius wait` shell reads in the sidebar. Specified in
-[SPEC-085](../../.ai/specs/SPEC-085-status-truth.md).
+[SPEC-085](../../.ai/specs/SPEC-085-status-truth.md). Point 2's tone is amended by
+[0080](0080-a-wait-for-yulius-shows-a-still-muted-branch.md): the wait reads muted and still.
 
 ## Context
 

@@ -151,6 +151,7 @@ function seed(params) {
     // fail=<path> answers 500 to GET requests of that exact path, to show how a view says a load
     // failed (in place, naming what failed, with Try again; #147).
     failPath: params.get('fail') || null,
+    holdPath: params.get('hold') || null,
     // failpost=<path> does the same to POST requests, to show how an action says it failed.
     failPostPath: params.get('failpost') || null,
 
@@ -286,8 +287,13 @@ function seed(params) {
     db.sandboxes = [];
     db.tasks = [];
   }
+  // `onboarding=preparing`: `product` is being onboarded (SPEC-096); its onboarding task is #1.
+  if (params.get('onboarding') === 'preparing') db.sandboxes.find((s) => s.id === 'sb_product').onboarding = 'preparing';
   // `tasks=0`: sandboxes without any task yet (the composer then offers no start rule, SPEC-022).
   if (params.get('tasks') === '0') db.tasks = [];
+  // `hold=<path>`: its GET requests wait until `__yuliusMock.release()`, which may come first;
+  // `hold=frames` keeps the sandbox Chrome's picture back instead.
+  if (db.holdPath) db.held = new Promise((resolve) => { db.release = () => { db.released = true; resolve(); }; });
   // `tasks=many`: 30 more queued tasks in studio, a long "Run after" menu (SPEC-038).
   if (params.get('tasks') === 'many') {
     for (let number = 15; number < 45; number += 1) db.tasks.push(t('sb_studio', number, `Queued idea ${number}`, 'claude', 'queued', null, { noSteps: true }));
@@ -330,6 +336,8 @@ function summary(task) {
     // A supertask, and what a queued task waits for because of one (SPEC-071).
     supertask: Boolean(task.supertask),
     held_by: task.status === 'queued' ? [...(task.heldBy || [])] : [],
+    // A prepared task's time (SPEC-105).
+    start_at: task.status === 'prepared' ? task.start_at || null : null,
     // Background shells an idle agent left running (TSK-014).
     background_shells: task.status === 'running' ? task.background_shells ?? null : null,
     background_shells_since: task.status === 'running' && task.background_shells ? task.background_shells_since ?? null : null,
@@ -457,10 +465,10 @@ function advanceEnvironment(db, sandbox, envName) {
 }
 
 /** Waiting states in which a task that never started takes queued messages (SPEC-052). */
-const WAITING = new Set(['queued', 'chained', 'waiting_capacity']);
+const WAITING = new Set(['queued', 'chained', 'prepared', 'waiting_capacity']);
 
 /** Whether a task ever had a run: in the mock, every task past waiting in a queue or a chain. */
-const hasStarted = (task) => task.started ?? !['queued', 'chained'].includes(task.status);
+const hasStarted = (task) => task.started ?? !['queued', 'chained', 'prepared'].includes(task.status);
 
 function detail(db, task) {
   const live = LIVE.has(task.status);
@@ -658,8 +666,88 @@ route('GET', '/api/templates', () => [
   { id: 'python-data', name: 'Python data project', description: 'Python package summarizing CSV data with unittest tests; standard library only.' },
   { id: 'rust-service', name: 'Rust service', description: 'Rust HTTP service on std::net with unit tests; no dependencies.' },
 ]);
+/** A playground as the server answers it (SPEC-099): no GitHub owner, its Git on the server. */
+function addPlayground(db, rawName) {
+  let slug = String(rawName || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'project';
+  const base = slug;
+  for (let n = 2; db.sandboxes.some((s) => s.slug === slug); n += 1) slug = `${base}-${n}`;
+  db.nextId += 1;
+  const sandbox = {
+    id: `sb_${db.nextId}`, slug, name: slug, playground: true,
+    repo: { owner: '', name: slug, url: '' },
+    access: 'admin', default_branch: 'main', profile: clone(PRESETS.standard), onboarding: 'not_needed',
+    port_base: 20000 + db.sandboxes.length * 20, port_count: 20, counts: { running: 0, needs_attention: 0, queued: 0 },
+  };
+  db.sandboxes.push(sandbox);
+  recount(db);
+  resync(db);
+  return sandbox;
+}
+
+/** The entry names of a gzip tar (PAX `path` records applied), as the server reads a folder. */
+async function tarNames(blob) {
+  const data = new Uint8Array(await new Response(blob.stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
+  const text = (from, length) => new TextDecoder().decode(data.subarray(from, from + length)).replace(/\0.*$/s, '');
+  const names = [];
+  let pax = null;
+  for (let at = 0; at + 512 <= data.length;) {
+    if (data.subarray(at, at + 512).every((b) => b === 0)) break;
+    const size = parseInt(text(at + 124, 12), 8) || 0;
+    const type = text(at + 156, 1);
+    const body = at + 512;
+    if (type === 'x') {
+      const record = text(body, size);
+      const match = /\d+ path=([^\n]*)\n/.exec(record);
+      pax = match ? match[1] : null;
+    } else {
+      names.push(pax || text(at, 100));
+      pax = null;
+    }
+    at = body + Math.ceil(size / 512) * 512;
+  }
+  return names;
+}
+
+// A folder packed by the browser becomes a playground (SPEC-099); the mock keeps the names it got
+// (`__yuliusMock.playgroundUploads`) so tests see what the browser sent.
+route('POST', '/api/playgrounds', async ({ db, body, query }) => {
+  if (!body.blob) fail(422, 'invalid', 'the request body is the packed folder');
+  let names;
+  try { names = await tarNames(body.blob); } catch { fail(422, 'invalid', 'unreadable folder archive: not a gzip tar'); }
+  if (!names.some((name) => name.startsWith('files/'))) fail(422, 'invalid', 'the folder holds no files to start a playground with');
+  (db.playgroundUploads = db.playgroundUploads || []).push({ name: query.get('name'), names });
+  return json(201, addPlayground(db, query.get('name')));
+});
+
+/** The onboarding task's title and plan, as `onboarding.rs` creates them (`ONBOARDING_TITLE`, `onboarding_steps`; `ENVIRONMENT_TITLE`, `environment_steps`). */
+const ONBOARDING_KINDS = {
+  prepare: {
+    title: 'Prepare this repository for Yulius',
+    steps: [
+      "Read the repository's instructions and conventions",
+      'Install the toolchains and run the repository\'s own checks',
+      'Reverse-engineer the product, architecture and decisions into the docs',
+      'Map existing documents and commands in yulius.toml',
+      'Move GitHub Actions into Yulius CI and delete them',
+      'Add the missing documents and check the format',
+    ],
+  },
+  environment: {
+    title: "Set up this sandbox's environment",
+    steps: [
+      "Read the repository's instructions and conventions",
+      'Install the toolchains and run the repository\'s own checks',
+      'Record the working commands in yulius.toml [commands]',
+    ],
+  },
+};
 route('POST', '/api/sandboxes', ({ db, body }) => {
   let repoName;
+  if (body.mode === 'playground') {
+    if (!/[A-Za-z0-9]/.test(body.name || '')) fail(422, 'invalid', 'a playground needs a name');
+    if (!['empty', 'web', 'python-data', 'rust-service'].includes(body.template)) fail(422, 'invalid', `unknown template ${body.template}`);
+    return json(201, addPlayground(db, body.name));
+  }
   if (body.mode === 'import') {
     if (!body.repo || !body.repo.includes('/')) fail(422, 'invalid', 'repo must be owner/name');
     const [owner, name] = body.repo.split('/');
@@ -672,7 +760,7 @@ route('POST', '/api/sandboxes', ({ db, body }) => {
     if (!/^[A-Za-z0-9._-]{1,100}$/.test(body.name || '')) fail(422, 'invalid', 'Invalid repository name.');
     repoName = body.name;
   } else {
-    fail(422, 'invalid', 'mode must be import or create');
+    fail(422, 'invalid', 'mode must be import, create or playground');
   }
   db.nextId += 1;
   const sandbox = {
@@ -680,24 +768,14 @@ route('POST', '/api/sandboxes', ({ db, body }) => {
     repo: { owner: 'Quartio-Studio', name: repoName, url: `https://github.com/Quartio-Studio/${repoName}` },
     access: 'admin', default_branch: 'main',
     profile: clone(PRESETS.standard),
-    // An imported repository that does not follow the documentation format gets a resting
-    // preparation task; created projects start from a conforming template. The real server starts
-    // a browser import's onboarding at once; the mock leaves it `pending`, standing in for a
-    // repository added with `yulius onboard` (SPEC-051), so Start onboarding can be tested.
+    // An imported repository is onboarded; created projects start from a conforming template.
+    // The real server starts a browser import's onboarding at once; the mock leaves it `pending`,
+    // standing in for a repository added with `yulius onboard` (SPEC-051), so Start onboarding can
+    // be tested. Like the server it has no task until onboarding starts (SPEC-097).
     onboarding: body.mode === 'import' ? 'pending' : 'not_needed',
     port_base: 20000 + db.sandboxes.length * 20, port_count: 20, counts: { running: 0, needs_attention: 0, queued: 0 },
   };
   db.sandboxes.push(sandbox);
-  if (body.mode === 'import') {
-    const id = `tsk_${sandbox.id.slice(3)}_1`;
-    db.tasks.push({
-      id, sandbox_id: sandbox.id, number: 1, title: 'Prepare repository for Yulius', harness: 'claude', status: 'closed', activity: null,
-      branch: null, origin: 'onboarding', created_by: { login: db.me.user.login }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-      archived: false, account_label: null,
-      stepsList: ['Assess the documentation format', 'Add AGENTS.md and docs/specs', 'Open PR'].map((title, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title, status: 'pending', note: '', updated_by: null, updated_at: null })),
-      model: 'claude-opus-4', effort: 'high', delivery: null, prompt: 'Adapt this repository to the Yulius documentation format.',
-    });
-  }
   recount(db);
   resync(db);
   return json(201, sandbox);
@@ -712,6 +790,40 @@ route('PATCH', `/api/sandboxes/${ID}`, ({ db, p, body }) => {
   }
   return sandbox;
 });
+/**
+ * The server's two kinds of onboarding (onboarding.rs): `mobile-app` already follows the format, so
+ * its onboarding only sets up the environment; any other repository gets the whole preparation.
+ */
+const onboardingKind = (sandbox) => ONBOARDING_KINDS[sandbox.repo.name === 'mobile-app' ? 'environment' : 'prepare'];
+/** `GET /api/sandboxes/{sid}/onboarding/plan` (SPEC-097): its task's plan, or the one it would get. */
+route('GET', `/api/sandboxes/${ID}/onboarding/plan`, ({ db, p }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  const task = db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding');
+  return task
+    ? { title: task.title, steps: task.stepsList.map((step) => step.title), task_number: task.number }
+    : { ...clone(onboardingKind(sandbox)), task_number: null };
+});
+/**
+ * The preparation task of a sandbox, created resting when it has none yet: like the server, it is
+ * created when onboarding starts or a new task waits after it, never at import (SPEC-097).
+ */
+function preparationTask(db, sandbox) {
+  const found = db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding');
+  if (found) return found;
+  const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === sandbox.id).map((t) => t.number)) + 1;
+  const id = `tsk_${sandbox.id.slice(3)}_${number}`;
+  const kind = onboardingKind(sandbox);
+  const task = {
+    id, sandbox_id: sandbox.id, number, title: kind.title, harness: 'claude', status: 'closed', activity: null,
+    branch: null, origin: 'onboarding', created_by: { login: db.me.user.login }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    archived: false, account_label: null,
+    stepsList: kind.steps.map((title, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title, status: 'pending', note: '', updated_by: null, updated_at: null })),
+    model: 'claude-opus-4', effort: 'high', delivery: null, prompt: 'Adapt this repository to the Yulius documentation format.',
+  };
+  db.tasks.push(task);
+  recount(db);
+  return task;
+}
 /** Starts the tasks that waited for a sandbox's preparation (U-08): it is ready or skipped. */
 function releaseWaiting(db, sandbox) {
   const preparation = db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding');
@@ -731,23 +843,28 @@ route('POST', `/api/sandboxes/${ID}/onboarding/skip`, ({ db, p }) => {
   resync(db);
   return sandbox;
 });
+/** The onboarding task finished and the repository passes the format check: the sandbox is ready. */
+function finishOnboarding(db, sandbox) {
+  if (sandbox.onboarding !== 'preparing') return;
+  const task = db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding');
+  if (task) {
+    task.stepsList = task.stepsList.map((s) => ({ ...s, status: 'done', updated_by: `task #${task.number} (claude)`, updated_at: new Date().toISOString() }));
+    touch(db, task, { status: 'closed', activity: null, account_label: null });
+  }
+  sandbox.onboarding = 'ready';
+  releaseWaiting(db, sandbox);
+  resync(db);
+}
 route('POST', `/api/sandboxes/${ID}/onboarding/approve`, ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'write');
   if (sandbox.onboarding !== 'pending') fail(409, 'conflict', 'nothing awaits approval');
   sandbox.onboarding = 'preparing';
-  const task = db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding');
-  if (task) {
-    touch(db, task, { status: 'starting', branch: 'yulius/prepare-repository' });
-    later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1200);
-    later(() => {
-      task.stepsList = task.stepsList.map((s) => ({ ...s, status: 'done', updated_by: 'task #1 (claude)', updated_at: new Date().toISOString() }));
-      touch(db, task, { status: 'closed', activity: null, account_label: null });
-      sandbox.onboarding = 'ready';
-      releaseWaiting(db, sandbox);
-      resync(db);
-    }, 9000);
-  }
+  const task = preparationTask(db, sandbox);
+  touch(db, task, { status: 'starting', branch: 'yulius/prepare-repository' });
+  later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1200);
+  // A test that sets `__yuliusMock.manualOnboarding` ends it itself (`finishOnboarding(slug)`).
+  if (!db.manualOnboarding) later(() => finishOnboarding(db, sandbox), 9000);
   resync(db);
   return sandbox;
 });
@@ -791,16 +908,13 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   if (db.holdCreate) await db.holdCreate;
   // Auto (TSK-015): the mock's stand-in for Jev answers after a moment, like the server.
   const choice = body.mode === 'auto' || body.workflow_id === 'auto' ? await mockAutoChoice(body, visible) : null;
-  const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === sandbox.id).map((t) => t.number)) + 1;
-  const title = body.title || body.prompt.trim().split('\n')[0].slice(0, 60);
-  const wf = choice ? choice.workflow : db.workflows.find((w) => w.id === body.workflow_id);
-  const id = `tsk_${sandbox.id.slice(3)}_${number}`;
-  // While the sandbox is being prepared a new task waits after the preparation task (U-08).
-  const preparing = sandbox.onboarding === 'pending' || sandbox.onboarding === 'preparing';
-  const preparation = preparing ? db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding') : null;
   // A start rule (SPEC-017): the mock checks the shape the server checks, and anchors the chain
   // on the first task the rule names.
   if (body.supertask && (body.after_task_id || (body.start_rule && body.start_rule.trim()))) fail(422, 'invalid', 'a supertask starts after the running tasks: it cannot also run after a task or a rule');
+  // A prepared task (SPEC-105) waits for Start now or its time, with the server's window.
+  const prepared = body.prepared === true || Boolean(body.start_at);
+  if (prepared && (body.after_task_id || body.supertask || (body.start_rule && body.start_rule.trim()))) fail(422, 'invalid', 'a prepared task starts when you decide or at its time: it cannot also run after a task, by a rule or as a supertask');
+  const startAt = body.start_at ? mockStartAt(body.start_at) : null;
   let rule = null;
   if (body.start_rule && body.start_rule.trim()) {
     if (body.after_task_id) fail(422, 'invalid', 'give a task to run after or a start rule, not both');
@@ -810,10 +924,21 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
     const missing = named.find((n) => !db.tasks.some((x) => x.sandbox_id === sandbox.id && x.number === n));
     if (missing) fail(422, 'invalid', `the rule names #${missing}, which does not exist in this sandbox`);
   }
-  const before = rule ? db.tasks.find((x) => x.sandbox_id === sandbox.id && x.number === Number(rule.match(/#(\d+)/)[1])) : body.after_task_id ? db.tasks.find((x) => x.id === body.after_task_id && x.sandbox_id === sandbox.id) : preparation;
+  // While the sandbox is being prepared a new task waits after the preparation task (U-08),
+  // created then, once the request is valid, when nobody has started onboarding yet (SPEC-097).
+  const preparation = () => (sandbox.onboarding === 'pending' ? preparationTask(db, sandbox)
+    : sandbox.onboarding === 'preparing' ? db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding') : null);
+  const before = rule ? db.tasks.find((x) => x.sandbox_id === sandbox.id && x.number === Number(rule.match(/#(\d+)/)[1])) : body.after_task_id ? db.tasks.find((x) => x.id === body.after_task_id && x.sandbox_id === sandbox.id) : null;
   if (body.after_task_id && (!before || !(LIVE.has(before.status) || before.status === 'chained'))) fail(422, 'invalid', 'the task to run after does not exist or has ended');
+  // A prepared task waits for onboarding when it is started instead (SPEC-105): it creates no
+  // preparation task, as on the server.
+  const waitsFor = prepared ? null : before || preparation();
+  const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === sandbox.id).map((t) => t.number)) + 1;
+  const title = body.title || body.prompt.trim().split('\n')[0].slice(0, 60);
+  const wf = choice ? choice.workflow : db.workflows.find((w) => w.id === body.workflow_id);
+  const id = `tsk_${sandbox.id.slice(3)}_${number}`;
   const task = {
-    id, sandbox_id: sandbox.id, number, title, harness: 'claude', status: before ? 'chained' : 'queued', activity: null,
+    id, sandbox_id: sandbox.id, number, title, harness: 'claude', status: waitsFor ? 'chained' : 'queued', activity: null,
     branch: `feat/${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || `task-${number}`}`,
     origin: 'ui', created_by: { login: db.me.user.login }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     archived: false, account_label: null,
@@ -822,11 +947,13 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
     delivery: null, mode: choice ? choice.mode : body.mode || 'goal', auto: choice ? choice.auto : null,
     supertask: body.supertask === true,
   };
+  if (prepared) Object.assign(task, { status: 'prepared', start_at: startAt });
   db.tasks.push(task);
   recount(db);
-  if (before) {
-    chainAfter(task, before, rule);
-    emit(db, { type: 'task.updated', task: summary(before) });
+  if (prepared) return json(201, summary(task));
+  if (waitsFor) {
+    chainAfter(task, waitsFor, rule);
+    emit(db, { type: 'task.updated', task: summary(waitsFor) });
     return json(201, summary(task));
   }
   // A supertask holds the project's starts, and waits for its working tasks (SPEC-071).
@@ -896,12 +1023,27 @@ route('POST', `/api/sandboxes/${ID}/intake/proposal`, async ({ db, p, body }) =>
 route('POST', `/api/tasks/${ID}/start-now`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
-  if (task.status !== 'chained') fail(409, 'conflict', `the task is ${task.status}, not waiting in a chain`);
+  if (task.status !== 'chained' && task.status !== 'prepared') fail(409, 'conflict', `the task is ${task.status}, not waiting in a chain or prepared`);
   touch(db, task, { status: 'queued' });
   later(() => touch(db, task, { status: 'starting' }), 700);
   later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1800);
   return summary(task);
 });
+route('PUT', `/api/tasks/${ID}/schedule`, ({ db, p, body }) => {
+  const task = taskOf(db, p[0]);
+  needTaskWrite(db, task);
+  if (task.status !== 'prepared') fail(409, 'conflict', `the task is ${task.status}, not prepared`);
+  touch(db, task, { start_at: body.start_at ? mockStartAt(body.start_at) : null });
+  return summary(task);
+});
+/** A prepared task's start time (SPEC-105) checked like the server: at most a minute past, 366 days ahead. */
+function mockStartAt(text) {
+  const at = Date.parse(text);
+  if (!Number.isFinite(at)) fail(422, 'invalid', '`start_at` must be an RFC 3339 time, e.g. 2026-10-15T09:00:00Z');
+  if (at - Date.now() < -60e3) fail(422, 'invalid', 'that start time has passed: pick a later one, or start the task now');
+  if (at - Date.now() > 366 * 86400e3) fail(422, 'invalid', 'a task can be scheduled at most 366 days ahead');
+  return new Date(at).toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
 route('POST', `/api/tasks/${ID}/queued-messages`, ({ db, p, body }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
@@ -981,7 +1123,7 @@ route('GET', `/api/tasks/${ID}/prompt/attachments/${ID}`, ({ db, p }) => {
 route('POST', `/api/tasks/${ID}/stop`, ({ db, p }) => {
   const task = taskOf(db, p[0]);
   needTaskWrite(db, task);
-  if (task.status === 'chained') { touch(db, task, { status: 'stopped_cancelled' }); return summary(task); }
+  if (task.status === 'chained' || task.status === 'prepared') { touch(db, task, { status: 'stopped_cancelled' }); return summary(task); }
   if (!LIVE.has(task.status)) fail(409, 'conflict', 'The task is not running.');
   touch(db, task, { status: 'stopping', activity: null });
   later(() => touch(db, task, { status: 'stopped_cancelled', account_label: null }), 1400);
@@ -1788,18 +1930,44 @@ route('PUT', `/api/automations/${ID}`, ({ db, p, body }) => {
   return out;
 });
 route('DELETE', `/api/automations/${ID}`, ({ db, p }) => { db.automations = db.automations.filter((a) => a.id !== p[0]); return json(204); });
-// Run now: one run, also when disabled; 200 with the AutomationRun.
-route('POST', `/api/automations/${ID}/run`, ({ db, p }) => {
+// Run now: one run, also when disabled; 200 with the AutomationRun. A body is this run's start
+// choice, checked like a save and not stored (SPEC-093); without one, the stored choice.
+route('POST', `/api/automations/${ID}/run`, ({ db, p, body }) => {
   const a = db.automations.find((x) => x.id === p[0]);
   if (!a) fail(404, 'not_found', 'not found');
+  need(sandboxOf(db, a.sandbox), 'write');
+  const stored = { supertask: Boolean(a.supertask), after_task_id: a.after_task_id || null, start_rule: a.start_rule || null };
+  const same = !body || (Boolean(body.supertask) === stored.supertask && (body.after_task_id || null) === stored.after_task_id && (body.start_rule || null) === stored.start_rule);
+  const start = same ? stored : automationStart(db, a.sandbox, body);
   const previous = a.last_run && a.last_run.task_id ? db.tasks.find((t) => t.id === a.last_run.task_id) : null;
   const run = previous && (LIVE.has(previous.status) || previous.status === 'chained')
     ? { scheduled_for: new Date().toISOString(), state: 'skipped_previous_active', task_id: null, error: null }
-    : { scheduled_for: new Date().toISOString(), state: 'task_created', task_id: 'tsk_studio_8', error: null };
+    : { scheduled_for: new Date().toISOString(), state: 'task_created', task_id: automationTask(db, a, start).id, error: null };
   a.last_run = run;
   emit(db, { type: 'automation.run', automation_id: a.id, state: run.state, task_id: run.task_id });
   return run;
 });
+/** The task a run of automation `a` creates, started as `start` says (SPEC-078 AUT-015). */
+function automationTask(db, a, start) {
+  const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === a.sandbox).map((t) => t.number)) + 1;
+  const id = `tsk_${a.sandbox.slice(3)}_${number}`;
+  const rule = start.start_rule;
+  const before = rule ? db.tasks.find((t) => t.sandbox_id === a.sandbox && t.number === Number(rule.match(/#(\d+)/)[1]))
+    : start.after_task_id ? db.tasks.find((t) => t.id === start.after_task_id) : null;
+  const now = new Date().toISOString();
+  const task = {
+    id, sandbox_id: a.sandbox, number, title: a.name, harness: 'claude', status: before ? 'chained' : 'queued', activity: null,
+    branch: `feat/${number}-automation`, origin: 'automation', created_by: { login: db.me.user.login }, created_at: now, updated_at: now,
+    archived: false, account_label: null, stepsList: [], model: 'claude-opus-4', effort: 'default', prompt: a.prompt,
+    delivery: null, mode: 'goal', auto: null, supertask: start.supertask,
+  };
+  db.tasks.push(task);
+  if (before) chainAfter(task, before, rule);
+  else task.heldBy = mockHeldBy(db, task);
+  recount(db);
+  emit(db, { type: 'task.updated', task: summary(task) });
+  return task;
+}
 route('GET', `/api/automations/${ID}/runs`, ({ db, p }) => {
   const a = db.automations.find((x) => x.id === p[0]);
   if (!a) fail(404, 'not_found', 'not found');
@@ -2080,7 +2248,8 @@ route('DELETE', `/api/sandboxes/${ID}/shells/${ID}`, ({ db, p }) => {
   return json(204);
 });
 
-// ---- Notes (SPEC-041): one notepad per sandbox and one for the team; a save names the revision it
+// ---- Notes (SPEC-041): one notepad per sandbox, one for the team and one per person
+// (`me:<user id>`, SPEC-103); a save names the revision it
 // started from and a stale one is refused (409). Kept in sessionStorage so a reload finds them, as
 // it would on the server. Tests edit as a teammate (`editNote`), fail saves (`failNoteSaves`) and
 // loads (`failNoteLoads`), lose a stored save's answer (`loseNoteResponse`) and see which requests
@@ -2100,7 +2269,7 @@ function notesOf(db) {
 function noteView(db, scope) {
   const note = notesOf(db)[scope];
   return {
-    scope: scope === 'team' ? 'team' : 'sandbox',
+    scope: scope === 'team' ? 'team' : scope.startsWith('me:') ? 'me' : 'sandbox',
     body: note ? note.body : '',
     revision: note ? note.revision : 0,
     updated_at: note ? note.updated_at : null,
@@ -2116,7 +2285,8 @@ function putNote(db, scope, body, by, { announce = true } = {}) {
   try { sessionStorage.setItem(NOTES_KEY, JSON.stringify(notes)); } catch { /* memory only */ }
   if (announce) {
     const sandboxId = scope.startsWith('sandbox:') ? scope.slice('sandbox:'.length) : null;
-    emit(db, { type: 'note.updated', scope: sandboxId ? 'sandbox' : 'team', sandbox_id: sandboxId, revision, updated_by: by });
+    // The mock has one person: their own notepad's events reach them (on the server, only them).
+    emit(db, { type: 'note.updated', scope: noteView(db, scope).scope, sandbox_id: sandboxId, revision, updated_by: by });
   }
   return noteView(db, scope);
 }
@@ -2141,6 +2311,8 @@ function loadNote(db, scope) {
 
 route('GET', '/api/notes', ({ db }) => loadNote(db, 'team'));
 route('PUT', '/api/notes', ({ db, body }) => saveNote(db, 'team', body));
+route('GET', '/api/me/notes', ({ db }) => loadNote(db, `me:${db.me.user.id}`));
+route('PUT', '/api/me/notes', ({ db, body }) => saveNote(db, `me:${db.me.user.id}`, body));
 route('GET', `/api/sandboxes/${ID}/notes`, ({ db, p }) => loadNote(db, `sandbox:${sandboxOf(db, p[0]).id}`));
 route('PUT', `/api/sandboxes/${ID}/notes`, ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);
@@ -2702,6 +2874,8 @@ async function handleFetch(db, url, init = {}) {
   } else if (init.body) {
     try { body = JSON.parse(init.body); } catch { return json(422, { error: { code: 'invalid', message: 'Malformed JSON' } }); }
   }
+  // `hold=<path>` keeps GET requests of that path waiting, to look at a view while it loads (SPEC-092).
+  if (db.held && method === 'GET' && u.pathname === db.holdPath) await db.held;
   if (!PUBLIC.includes(u.pathname) && !db.signedIn) return json(401, { error: { code: 'unauthenticated', message: 'Sign in first.' } });
   if (db.failPath && method === 'GET' && u.pathname === db.failPath) return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
   // Tests count archive requests (`__yuliusMock.archiveRequests`), also those failed on purpose.
@@ -3532,6 +3706,10 @@ class BrowserSession {
   }
 
   async drawFrame() {
+    if (this.db.holdPath === 'frames' && !this.db.released) {
+      if (!this.heldFrame) this.heldFrame = this.db.held.then(() => this.render());
+      return;
+    }
     const tab = this.tabs.find((t) => t.active);
     if (!tab || this.viewers.size === 0) return;
     const { width, height } = this.size;
@@ -3692,6 +3870,7 @@ export function createMockTransport(params) {
   const db = seed(params);
   window.__yuliusMock = db; // debugging aid in the browser console (mock mode only)
   // Tests change a task as the server would announce it (`touchTask('sb_studio', 12, {…})`).
+  db.finishOnboarding = (slug) => finishOnboarding(db, db.sandboxes.find((s) => s.slug === slug));
   db.touchTask = (sandboxId, number, changes) => touch(db, db.tasks.find((t) => t.sandbox_id === sandboxId && t.number === number), changes);
   // Simulate an outage and its end: __yuliusMock.goOffline() / .goOnline().
   db.goOffline = () => {

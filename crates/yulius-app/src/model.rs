@@ -211,6 +211,16 @@ pub struct SandboxRecord {
     pub removed_at: Option<Timestamp>,
 }
 
+impl SandboxRecord {
+    /// A playground (SPEC-099, ADR-0081): its `origin` is a bare repository on the server,
+    /// outside the sandbox (`<data>/playgrounds/<id>.git`), and Yulius never calls GitHub for it. Marked by an empty repository owner, which
+    /// a GitHub owner never is.
+    #[must_use]
+    pub fn is_playground(&self) -> bool {
+        self.repo_owner.is_empty()
+    }
+}
+
 /// Where a task came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TaskOrigin {

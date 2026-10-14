@@ -97,6 +97,40 @@ impl Git {
         self.rev_parse(worktree, "HEAD").map(Some)
     }
 
+    /// Makes `worktree` ignore what a browser cannot carry (SPEC-099): file modes
+    /// (`core.fileMode=false` in its own configuration) and links it turned into files (a path
+    /// whose type changed from what is committed is checked out again). Content changes stay.
+    pub fn keep_modes_and_links(&self, worktree: &Path) -> Result<(), GitError> {
+        self.run_ok(Invocation::new(self, "config", Some(worktree)).args([
+            "config",
+            "--local",
+            "core.fileMode",
+            "false",
+        ]))?;
+        let changed = self.run_ok(Invocation::new(self, "diff", Some(worktree)).args([
+            "diff",
+            "--name-only",
+            "--no-ext-diff",
+            "--diff-filter=T",
+            "-z",
+        ]))?;
+        let paths: Vec<&std::ffi::OsStr> = changed
+            .stdout
+            .split(|b| *b == 0)
+            .filter(|p| !p.is_empty())
+            .map(std::os::unix::ffi::OsStrExt::from_bytes)
+            .collect();
+        for chunk in paths.chunks(100) {
+            self.run_ok(
+                Invocation::new(self, "checkout", Some(worktree))
+                    .args(["checkout", "--quiet", "--"])
+                    .args(chunk.iter().copied())
+                    .env("GIT_LITERAL_PATHSPECS", "1"),
+            )?;
+        }
+        Ok(())
+    }
+
     /// Keeps a task worktree's work and reverts the worktree (SPEC-002 ADR-16, "redirect"):
     /// commits any uncommitted work as `author`, creates the branch `keep` at the resulting
     /// commit (refusing when it exists, so nothing is overwritten), then resets the worktree's

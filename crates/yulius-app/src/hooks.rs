@@ -48,8 +48,10 @@ fn repo_path(root: &Path, relative: &str) -> Option<PathBuf> {
 /// resolved path stays under `root`. Directories linked out of the repository are not followed,
 /// and on Linux the opened file's real path is checked again, so a link swapped in after the
 /// check cannot lead outside either (#70). These files are agent-written and read by the server
-/// outside containment for the briefing, `project_context` and the Stop gate.
-fn read_repo_doc(root: &Path, relative: &str) -> Option<String> {
+/// outside containment for the briefing, `project_context`, the Stop gate and the repository's
+/// `.mcp.json` (SPEC-095). The file is opened without blocking, so a FIFO swapped in after the
+/// check cannot hang the server, and read only when it is still a regular file.
+pub(crate) fn read_repo_doc(root: &Path, relative: &str) -> Option<String> {
     use std::io::Read;
     let path = repo_path(root, relative)?;
     let canonical_root = std::fs::canonicalize(root).ok()?;
@@ -60,7 +62,17 @@ fn read_repo_doc(root: &Path, relative: &str) -> Option<String> {
     if !resolved.starts_with(&canonical_root) {
         return None;
     }
-    let file = std::fs::File::open(&resolved).ok()?;
+    let file = {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(nix::libc::O_NONBLOCK)
+            .open(&resolved)
+            .ok()?
+    };
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
     #[cfg(target_os = "linux")]
     {
         use std::os::fd::AsRawFd;
@@ -362,7 +374,11 @@ impl App {
             .collect();
         let decisions = repo.decision_files();
         let input = BriefingInput {
-            project_name: format!("{}/{}", sandbox.repo_owner, sandbox.repo_name),
+            project_name: if sandbox.is_playground() {
+                format!("{} (playground)", sandbox.repo_name)
+            } else {
+                format!("{}/{}", sandbox.repo_owner, sandbox.repo_name)
+            },
             harness,
             task: TaskBrief {
                 id: task.id.clone(),
@@ -388,10 +404,18 @@ impl App {
             repo_instructions: repo.instructions.clone(),
             foundations: repo.foundations.clone(),
             now: self.now(),
+            playground: sandbox.is_playground(),
         };
         let workflow = self.workflow_instructions(task).await.map(|text| {
             let clipped: String = text.chars().take(3_000).collect();
-            format!("\n\n## Workflow instructions\n\n{clipped}\n")
+            // The workflows describe GitHub delivery; a playground has only the local merge.
+            let note = if sandbox.is_playground() {
+                "\nIn this playground, delivery is `delivery_merge` alone: no pull request, CI, \
+                 deploy or promotion.\n"
+            } else {
+                ""
+            };
+            format!("\n\n## Workflow instructions\n\n{clipped}\n{note}")
         });
         let chain = self.chain_briefing(task).await;
         let budget = DEFAULT_BUDGET_BYTES
@@ -826,6 +850,14 @@ impl App {
             .sandbox(&ctx.task.sandbox_id)
             .await?
             .ok_or(AppError::NotFound)?;
+        // A playground has no GitHub repository: nothing is issued (SPEC-099 PLY-002).
+        if sandbox.is_playground() {
+            return Err(AppError::Forbidden(
+                "this sandbox is a playground: its Git stays on this server and needs no GitHub \
+                 credential"
+                    .into(),
+            ));
+        }
         if let Some(path) = path {
             let wanted = path
                 .trim_matches('/')
@@ -854,6 +886,7 @@ impl App {
         &self,
         sandbox: &crate::model::SandboxRecord,
     ) -> AppResult<crate::model::Secret> {
+        crate::playground::refuse_in_playground(sandbox, "A GitHub token")?;
         let installation = self
             .deps
             .store

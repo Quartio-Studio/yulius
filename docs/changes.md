@@ -6,6 +6,101 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- A session's spider web stays in view, its spider moves and a cockroach runs by (SPEC-101,
+  ADR-0082, task #86). The web sticks to the top-right corner while the transcript scrolls. Every
+  8 s the spider climbs its thread in pixel steps, legs switching, and drops back. Now and then (20–60 s
+  after opening, then 45–150 s apart) a pixel-art cockroach runs across the visible part of the
+  session and is gone. Nothing moves under reduced motion, and the cockroach stops when the
+  session is left.
+- Playgrounds: a team tries Yulius on its own code before it connects GitHub (SPEC-099, ADR-0081,
+  task #84). On a fresh instance Home says "Try Yulius on your own code": drop a project folder
+  (a repository keeps its branches, tags and history; its uncommitted work lands as one commit) or
+  start from a template, and the playground opens with tasks startable at once. Its Git stays on the
+  server (a bare repository outside the sandbox, out of its processes' reach), nothing is pushed anywhere, and only the history
+  part of an uploaded `.git` is taken, never its config or hooks. Its tasks merge into its own
+  `dev` with `delivery_merge` (a squash after the spec, steps and clean-worktree gates; no pull
+  request or Yulius CI), and their briefing and definition of done say so. It is its maker's and
+  the superadmin's. Connecting GitHub is optional: the sign-in toast is gone, a notification says
+  playgrounds work without it, and Import and Create follow once it is connected.
+- A task can be prepared now and started later (SPEC-105, ADR-0085, task #90). New task's start
+  menu offers **When I decide**: the task waits with the new status `prepared`, holding no
+  session, until you press Start now in its view or menu. **At a time…** picks a date and time:
+  the task starts by itself then, within a minute (after a restart, at the first minute past it;
+  while onboarding blocks the project, once it is ready). Its row reads "Prepared" or
+  "Scheduled · tomorrow 09:00", sits with the queued tasks, and its view offers Start now,
+  Schedule… or Change time…, and Cancel. The automation editor's shared start menu does not offer
+  them yet (#416). The API takes `prepared` and `start_at` on New task and
+  `task_create`, shows `start_at`, and `PUT /api/tasks/{tid}/schedule` moves or clears the time
+  (schema version 24, `task_schedules`).
+- After a reload, the sidebar shows pull request chips at once (SPEC-104, task #89, #414). Before,
+  they appeared seconds later, when the sandbox's Git overview answered, and rows could move
+  between Working and Done meanwhile. The browser keeps what the last overview read said, per user
+  and sandbox. It shows that until the page's own read replaces it, and drops it if that read
+  fails. Sign-out or an expired session removes it.
+- Notes has a third tab, **Me**, after Team (SPEC-103, ADR-0084, task #88): each person's own
+  notepad, which nobody else can read (`GET/PUT /api/me/notes` always answer the caller's own) and
+  which is the same in every sandbox. It saves and resolves conflicts like the other notepads, and
+  an edit from the person's other tab or device shows up live: the event stream now addresses an
+  event to one person (`Envelope.user`) and drops it for everyone else.
+- `yulius onboard` no longer leaves a "Closed · 0/6 steps" onboarding task behind (SPEC-097,
+  ADR-0077). Linking a repository creates no task: the onboarding task is created when someone
+  clicks Start onboarding in the browser, or when a new task has to wait after it. Sandboxes
+  already waiting keep their task. The onboarding page still lists what onboarding will do, now
+  from `GET /api/sandboxes/{sid}/onboarding/plan`.
+- The start menu's tasks show five at a time and say there is more (SPEC-102, ADR-0083, task #87).
+  "After a task is done" lists its tasks in a box five rows tall that scrolls the rest, so Start
+  now, Supertask and "When a rule is true…" stay in view however many tasks a project has. The box
+  fades at the edge it continues past and a "↓ N more" line under it counts the tasks below (a
+  click scrolls a page); the picked task opens in view (and focused when the menu has no filter
+  focused), and the arrows and the filter work inside the box. The automation editor's start menu does the same. `openMenu` takes such a
+  group as `{ header, items }`.
+- The automation editor's start choice is a chip in its action bar, before Run now (SPEC-093,
+  ADR-0074, task #78). It looks and works like New task's start chip and opens the same menu, now
+  one shared module: Start now, Supertask, the filterable "After a task is done" list and "When a
+  rule is true…". The Start row in "The task" is gone, and the chip's tooltip says what the choice
+  means. Run now starts its task the way the chip shows, saved or not: `POST
+  /api/automations/{id}/run` takes an optional start choice for that run only, checked like a
+  save. On a phone the bar wraps below the name, and readers see the chip disabled.
+- A repository's `.mcp.json` no longer stops the Superagent on Claude Code's "N new MCP servers
+  found in this project" dialog (SPEC-095, ADR-0078, #391). Before each task run and Superagent
+  start, Yulius adds the file's servers that the sandbox lacks to its MCP servers, so every task
+  gets them. Since agents can write the file, a `${VAR}` value becomes the placeholder of the agent
+  secret VAR, which the egress proxy replaces on the secret's bound hosts; the file never gets a
+  clear value. The Superagent starts rejecting the file's servers through `--settings`, including
+  ones a person had approved there (#395 will give it Yulius's servers). A server already
+  configured is left as it is, so one turned off stays off. An MCP server's values now reach a run
+  in `YULIUS_MCP_<SERVER>_<VAR>` variables. Before, one named like an agent secret, such as
+  `APIFY_TOKEN`, clashed with that secret's placeholder, and every run of the sandbox failed to
+  start.
+- Onboarding is mandatory (SPEC-096, ADR-0076, task #81): while a sandbox awaits or runs its
+  onboarding, its new-task page shows no task input. A centred message says what onboarding will
+  do (its task's own plan, which differs for a repository already in the Yulius format), with
+  Start onboarding, or Follow onboarding while it runs (waiting for capacity and a stopped task
+  are said too). The task box shows by itself once the sandbox is ready. The page no longer offers Skip;
+  the admin API keeps it as a recovery path. Tasks created through the API still wait after
+  onboarding.
+- The terminal's mouse is the program's when it asks for it, as in a native terminal (SPEC-098,
+  ADR-0079, task #83). The "Mouse: select text · send to app" chip is gone. In Claude Code's
+  full-screen view, clicks, drags, the wheel and right-clicks reach Claude Code, and Shift-drag
+  (Option-drag on macOS) selects text; the same key brings the Copy and Paste menu. A read-only
+  viewer, who cannot send anything, keeps the mouse for selection. A press beside another viewer's
+  grid reaches no program.
+- A task waiting for its checks or merge shows a still, muted branch (SPEC-100, ADR-0080, task #85,
+  #393). The "Waiting for checks or merge" state took Working's tone so that it notified nobody,
+  and that tone turned its git-branch icon green and spun it like the Working ring. It now takes
+  the muted tone of Queued, Chained and Paused; it stays under Working and still notifies nobody.
+- Loading shows shimmering fields everywhere, never a spinner with "Loading…" (SPEC-092, ADR-0073,
+  task #77). `placeholder(text, 'loading')` is the skeleton, so the Git page, dialogs, Sessions,
+  the editor pages and every `loader()` list draw bars where the content will appear, with what
+  loads said to screen readers. The task lists, the status popover, Instance, the Jev key card,
+  the Superagent's start, the editor tree, home cards, notepads, the browser panel's cover and
+  usage not read yet do the same. Spinners stay for actions under way, connections and working
+  tasks. The mock's `hold=<path>` and `hold=frames` keep a view loading for tests.
+- Menus show an option's whole description (SPEC-094, ADR-0075, task #79). A description wraps
+  onto as many lines as it needs instead of ending in an ellipsis, in every `openMenu` menu; menus
+  keep their width (at most 320 px and the window less 16 px), so a short description stays one
+  line. The start menu's Supertask now reads "Waits for this project’s running tasks, then runs
+  alone while the project’s other tasks wait. For broad work such as security hardening."
 - Runs recorded before SPEC-087 get their metrics from their transcripts (SPEC-091, ADR-0072).
   The upgrade queues every run recorded so far (migration 23, `metrics_recounts`). On the first
   start, once reconciliation is done, Yulius counts each ended run's own window of its transcript
