@@ -254,6 +254,8 @@ fn requests_are_parsed_strictly() {
         ("commit", json!("0123456789ABCDEF0123456789ABCDEF01234567")),
         ("token", json!("ghs_x\nX-Injected: 1")),
         ("token", json!("ghs x")),
+        ("token", json!("")),
+        ("token", json!("ghs_a:b")),
         ("requested_at", json!(now - REQUEST_TTL_MS - 1)),
         ("requested_at", json!(now + 120_000)),
         ("extra", json!("unknown fields are refused")),
@@ -267,6 +269,31 @@ fn requests_are_parsed_strictly() {
     }
     assert!(parse_request(b"not json", now).is_err());
     assert!(parse_request(b"[]", now).is_err());
+}
+
+/// A stateless GitHub App installation token (`ghs_<APPID>_<JWT>`, about 520 characters since
+/// 2026-10-02), synthetic and `len` bytes long.
+fn stateless_installation_token(len: usize) -> String {
+    let head = "ghs_1234567_eyJhbGciOiJSUzI1NiJ9.";
+    let tail = ".c2lnbmF0dXJl-_";
+    format!("{head}{}{tail}", "x".repeat(len - head.len() - tail.len()))
+}
+
+#[test]
+fn stateless_installation_tokens_are_accepted() {
+    use serde_json::json;
+    let now = 1_000_000;
+    for len in [520, 1024, MAX_TOKEN_BYTES] {
+        let token = stateless_installation_token(len);
+        assert!(
+            parse_request(&request_json(&[("token", json!(token))]), now).is_ok(),
+            "a {len}-byte installation token is refused"
+        );
+    }
+    let oversized = stateless_installation_token(MAX_TOKEN_BYTES + 1);
+    assert!(parse_request(&request_json(&[("token", json!(oversized))]), now).is_err());
+    let injected = format!("{}\r\nX-Injected: 1", stateless_installation_token(520));
+    assert!(parse_request(&request_json(&[("token", json!(injected))]), now).is_err());
 }
 
 #[test]
@@ -441,12 +468,13 @@ exit 0"#,
         ),
     )?;
     env.args.git = env.bin("git");
+    let token = stateless_installation_token(520);
     let request = HelperRequest {
         version: VERSION,
         id: "run-0009-build".into(),
         action: HelperAction::Build,
         commit: env.b.clone(),
-        token: Some("ghs_SyntheticToken123".into()),
+        token: Some(token.clone()),
         requested_at: now_ms(),
     };
     env.raw_request(&serde_json::to_vec(&request)?)?;
@@ -458,13 +486,12 @@ exit 0"#,
         .filter(|l| l.starts_with("ARGS"))
         .collect::<Vec<_>>();
     assert!(calls.iter().any(|l| l.contains(" fetch ")), "{text}");
-    assert!(calls.iter().all(|l| !l.contains("ghs_SyntheticToken123")));
+    assert!(calls.iter().all(|l| !l.contains(&token)));
     assert!(
         !text.contains("LEAK"),
         "only the fetch gets the header: {text}"
     );
-    let basic =
-        base64::engine::general_purpose::STANDARD.encode("x-access-token:ghs_SyntheticToken123");
+    let basic = base64::engine::general_purpose::STANDARD.encode(format!("x-access-token:{token}"));
     assert!(
         text.contains(&format!(
             "HEADER http.extraHeader Authorization: Basic {basic}"
@@ -473,7 +500,7 @@ exit 0"#,
     );
     let status: HelperStatus =
         serde_json::from_slice(&std::fs::read(env.args.state_dir.join(STATUS_FILE))?)?;
-    assert!(!format!("{status:?}").contains("ghs_SyntheticToken123"));
+    assert!(!format!("{status:?}").contains(&token));
     Ok(())
 }
 
