@@ -202,7 +202,7 @@ JS linter or type checker yet: that would add an npm dependency, which is a proj
 
 Shared building blocks live in `assets/dom.js`: `iconButton`, `toggle`, `badge`, `iconBadge`,
 `statusMark` (task state icon + tone + label), `itemCard` (clickable list card with icon, badges,
-description, controls), `meter`, `openMenu` (icons, descriptions, check marks), `openModal`,
+description, controls), `meter`, `openMenu` (icons, descriptions, check marks, groups that show five rows and scroll the rest), `openModal`,
 `toast`. Prefer them to new one-off markup; anything new should appear on `/design`.
 
 One pattern per kind of state (SPEC-001 UI-050): `emptyState` for every empty list (with the action

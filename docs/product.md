@@ -65,7 +65,8 @@ watching, steering and unblocking.
 - **Notes**: in the tools rail, a notepad per sandbox and one for the whole team, shared and saved
   while people type; a teammate's edit shows up live, and two edits at once end in a choice.
 - **Editor, terminals, Git view, automations, workflow catalog** in one web UI, whose menus fit
-  the window and filter as people type when they are long. Messages are
+  the window and filter as people type when they are long; the start menu shows five tasks at a
+  time and says how many more it scrolls to. Messages are
   withdrawn for now (SPEC-028): agents learn about checks, delivery and armed merges from
   `yulius wait`, `ci_status` and `delivery_status`.
 - **Agent primitives as code**: Yulius's own skills are APM packages with a lockfile, deployed to
