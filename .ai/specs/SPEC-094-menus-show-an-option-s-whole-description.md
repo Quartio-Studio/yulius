@@ -1,11 +1,11 @@
 ---
 yulius-task: 1af39197-2fe1-4e56-8907-6bd1ebba697b
-status: in-progress
+status: done
 ---
 
 # SPEC-094: menus show an option's whole description
 
-Status: in progress
+Status: done
 Date: 2026-10-14
 Owner: task #79
 Scope authorization: the person's request (task #79): "In the web UI's drop-down menus, an
@@ -51,8 +51,8 @@ wider than today, and a short description still one line.
 ## Plan
 
 - [x] Spec, ADR and plan for whole menu descriptions
-- [ ] Menu descriptions wrap and Supertask's text reads whole, at desktop and phone width
-- [ ] Docs, review fixes and gates green
+- [x] Menu descriptions wrap and Supertask's text reads whole, at desktop and phone width
+- [x] Docs, review fixes and gates green
 
 ## Acceptance criteria
 
@@ -91,3 +91,16 @@ wider than today, and a short description still one line.
 ## Open questions
 
 None.
+
+## Evidence
+
+- Test first: with the new `menus.e2e.ts` tests and the old code, 3 of 20 failed (the Supertask
+  text, then, with the text fixed, the cut description: `scrollWidth > clientWidth` at 1280 and
+  390 px and on the workflow menu). With the fix, 20 of 20 pass.
+- `cd e2e && E2E_TELEMETRY_DISABLED=1 npx e2e run`: 281 passed, 1 skipped (`agent.e2e.ts`, needs
+  a model key), 42 files.
+- `scripts/dev ci`: exit 0; nextest 1520 passed, 16 skipped.
+- Screenshots of the start menu (mock, 1280 × 800 and 390 × 844): the menu is 320 px wide at both,
+  as before; "Start now" one line, Supertask's description on three lines, whole.
+- Independent review (fresh session, `om-code-review`): approved; its minor findings (hints are
+  not cut, test names in the evidence, a helper shadowing `describe`) are fixed.
