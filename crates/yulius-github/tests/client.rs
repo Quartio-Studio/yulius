@@ -529,6 +529,29 @@ async fn pull_request_merge_refuses_stale_head() -> TestResult {
             .is_empty()
     );
 
+    // Retitled before the merge (SPEC-069 BPL-008): only the title changes.
+    let retitled = client
+        .update_pull_title(&token, "acme", "app", pull.number, "feat(login): add login")
+        .await?;
+    assert_eq!(retitled.title, "feat(login): add login");
+    let read = client.get_pull(&token, "acme", "app", pull.number).await?;
+    assert_eq!(
+        (read.title.as_str(), read.state, read.head_sha.as_str()),
+        (
+            "feat(login): add login",
+            PullState::Open,
+            task_commit.as_str()
+        )
+    );
+    for bad in [" ".to_owned(), "x".repeat(257)] {
+        assert!(matches!(
+            client
+                .update_pull_title(&token, "acme", "app", pull.number, &bad)
+                .await,
+            Err(GitHubError::InvalidInput { .. })
+        ));
+    }
+
     // The agent pushes again after review: the reviewed head is stale.
     let newer = fake.add_commit("acme", "app", &[&task_commit]);
     fake.set_branch("acme", "app", "task/login", &newer);

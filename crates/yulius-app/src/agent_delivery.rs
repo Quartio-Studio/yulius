@@ -24,6 +24,7 @@ use yulius_contracts::api::git::RunEnvironment;
 use crate::auth::AuthContext;
 use crate::context::App;
 use crate::coordination::AgentContext;
+use crate::delivery::MergeFailure;
 use crate::error::{AppError, AppResult};
 
 /// Longest review summary kept in the audit.
@@ -239,7 +240,36 @@ impl App {
                 }));
             }
         }
-        let view = self.merge_task_pr_for_task(&auth, &task_id).await?;
+        let view = match self.merge_task_pr_for_task(&auth, &task_id).await {
+            Ok(view) => view,
+            Err(MergeFailure::Refused(err)) => return Err(err),
+            // GitHub could not take the pull request's new title for now (SPEC-069 BPL-008):
+            // armed, so Yulius merges this head on its next pass.
+            Err(MergeFailure::Later(err)) => {
+                self.arm_merge(&ctx.task, &head, &summary);
+                self.agent_audit(
+                    ctx,
+                    "delivery.agent.merge_armed",
+                    &format!("{}#{}", sandbox.slug, ctx.task.number),
+                    &format!(
+                        "armed at head {head} (checks {checks}; {}); reviewed independently",
+                        err.public_message()
+                    ),
+                )
+                .await;
+                return Ok(json!({
+                    "merged": false,
+                    "armed": true,
+                    "checks": checks,
+                    "next": format!(
+                        "{} Yulius merges this exact head by itself on its next pass. Start \
+                         `yulius wait` with run_in_background and end your turn: it says how \
+                         the merge ended; do not call delivery_merge again for this head.",
+                        err.public_message()
+                    ),
+                }));
+            }
+        };
         // Merged now: nothing is left armed for this task.
         self.clear_armed(&ctx.task);
         self.agent_audit(

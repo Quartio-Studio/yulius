@@ -1440,6 +1440,68 @@ fn a_pending_background_agent_keeps_the_task_working_until_it_finishes() -> Test
     Ok(())
 }
 
+/// SPEC-079 BGW-006 (task #74): the goal turn's background agent first stops with background work
+/// of its own still running. Its notification (`completed`, the note that its result may be
+/// interim) wakes the session, and the turn record after it counts no agent. The task stays
+/// Working, the agent counted, until the same agent's final notification; then it is idle with
+/// nothing running.
+#[test]
+fn an_agent_that_stopped_with_its_own_work_running_keeps_the_task_working() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            goal_agent: Some(8),
+            goal_agent_interim: Some(10),
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        let id = goal_task(&app, &sandbox, &user, "Review the merge").await?;
+        wait_for("the interim notification", Duration::from_secs(90), || {
+            screen_contains(&app, &id, "AGENT INTERIM")
+        })
+        .await?;
+        // Until the final notification the task never reads idle with nothing running (Your
+        // turn, or Done), and it reads idle with the agent counted (Working).
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut counted = false;
+        while !screen_contains(&app, &id, "AGENT DONE").await {
+            let (activity, shells) = shown(&app, &id).await?;
+            let idle = matches!(activity.as_deref(), Some("done" | "waiting"));
+            if idle && shells == Some(0) {
+                return Err(
+                    "idle with nothing running before the agent's final notification".into(),
+                );
+            }
+            counted |= idle && shells == Some(1);
+            if Instant::now() > deadline {
+                return Err("timed out waiting for the agent's final notification".into());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(
+            counted,
+            "the stopped agent was counted while the task was idle"
+        );
+        wait_for("nothing running, idle", Duration::from_secs(30), || async {
+            shown(&app, &id)
+                .await
+                .ok()
+                .is_some_and(|(activity, shells)| {
+                    shells == Some(0) && matches!(activity.as_deref(), Some("done" | "waiting"))
+                })
+        })
+        .await?;
+        stop(&app, &id).await
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// SPEC-079 BGW-003 (#265): the goal turn leaves a Monitor stream (no process: only the transcript
 /// says it runs). The task is Working with it counted until the stream ends (its notification wakes
 /// the session) or, when it never reports, until its expiry.

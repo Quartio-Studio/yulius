@@ -1373,6 +1373,19 @@ fn repo_action(state: &mut FakeState, repo: &mut FakeRepo, request: &RepoRequest
                 None => error(404, "Not Found"),
             }
         }
+        ("PATCH", ["pulls", number]) => {
+            let Some(index) = repo
+                .pulls
+                .iter()
+                .position(|p| p.number.to_string() == *number)
+            else {
+                return error(404, "Not Found");
+            };
+            if let Some(title) = body["title"].as_str() {
+                repo.pulls[index].title = title.to_owned();
+            }
+            reply(200, pull_json(state, repo, &repo.pulls[index]))
+        }
         ("PUT", ["pulls", number, "merge"]) => merge(state, repo, number, body),
         ("GET", ["commits", sha, "check-runs"]) => {
             let runs: Vec<Value> = repo
