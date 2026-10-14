@@ -16,6 +16,13 @@ For Rust/tooling changes run `scripts/dev ci`. For isolated prose changes run
 protocol or UI checks only when the change's behavior requires them. Ordinary
 checks must not need model credentials or production infrastructure.
 
+For every change, after committing and before the review, run `scripts/dev security`. Vidoc scans
+the branch through the agent secret `VIDOC_API_KEY` (ADR-0104). If it reports findings, fix them
+test-first. A false positive is ignored in Vidoc with the reason only after the independent
+reviewer agrees, and it is listed in the spec's Evidence. Exit 2 means unrun: if `secrets_list`
+shows no bound host, request `api.vidoc.dev` with `secret_request_hosts` and report the scan as
+unrun, never as passed.
+
 If a command fails, distinguish missing prerequisite/network failure from product
 or test defects. Record the exact failing command and output location. Repair
 within the task scope and rerun affected gates; do not ignore failures, add blind

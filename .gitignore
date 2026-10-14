@@ -35,6 +35,7 @@ __pycache__/
 !.env.example
 *.profraw
 /coverage/
+/tools/vidoc/node_modules/
 
 
 # APM dependencies
