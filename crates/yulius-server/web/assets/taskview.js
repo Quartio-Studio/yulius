@@ -823,6 +823,9 @@ export function mountComposer(ctx, sandbox) {
 
   let gateKey = '';
   let startedHere = false;
+  // Start onboarding was pressed here and its approval has not answered yet (SPEC-111).
+  let starting = false;
+  let opening = false;
   function renderBanner() {
     const sb = ctx.store.sandboxById(sandbox.id) || sandbox;
     const items = [];
@@ -843,9 +846,11 @@ export function mountComposer(ctx, sandbox) {
     if (sb.onboarding === 'pending') loadPlan(prep);
     // Rebuilt only when what it says changes (task events are frequent), and a rebuild keeps the
     // keyboard on its action.
+    // While onboarding runs the page opens its task, where the session is (SPEC-111): no message
+    // stands in between, only a loading state until the task is known.
     const shown = sb.onboarding === 'pending'
-      ? [prep && prep.title, plans.get(planKey(prep)), branchOf(sb)]
-      : [prep === undefined ? 'unknown' : prep && phaseOf(prep)];
+      ? [starting || [prep && prep.title, plans.get(planKey(prep)), branchOf(sb)]]
+      : [prep === undefined ? (ctx.store.tasksError(sb.id) ? 'unknown' : 'loading') : prep ? 'open' : 'missing'];
     const key = preparing ? JSON.stringify([sb.onboarding, sb.name, sb.slug, sb.access, prep && prep.number, ...shown]) : '';
     if (key !== gateKey) {
       const before = gateKey ? JSON.parse(gateKey)[0] : null;
@@ -859,6 +864,8 @@ export function mountComposer(ctx, sandbox) {
     }
     gateKey = key;
     gate.hidden = !preparing;
+    gate.setAttribute('aria-busy', String(Boolean(gate.querySelector('.onboarding-gate-loading'))));
+    if (sb.onboarding === 'preparing' && prep) openOnboarding(sb, prep);
     card.hidden = preparing;
     el.classList.toggle('gated', preparing);
     if (!write) items.push(h('div', { class: 'banner' }, icon('lock'), h('span', { class: 'banner-text' }, 'Read-only (GitHub: read). You can watch tasks but not start them.')));
@@ -876,8 +883,19 @@ export function mountComposer(ctx, sandbox) {
   }
 
   const branchOf = (sb) => (sb.profile && sb.profile.integration_branch) || baseBranch;
-  /** Where an onboarding task stands, as the gate words it (`onboarding_status` on the server). */
-  const phaseOf = (task) => (task.status === 'waiting_capacity' ? 'capacity' : isLive(task.status) || task.status === 'chained' ? 'running' : 'stopped');
+
+  /**
+   * Opens the running onboarding's task in this page's place (SPEC-111), once. Later than the
+   * render that asks for it: the router mounts views synchronously, and this one may be mid-mount.
+   */
+  function openOnboarding(sb, prep) {
+    if (opening) return;
+    opening = true;
+    setTimeout(() => {
+      if (destroyed || !el.isConnected) { opening = false; return; }
+      ctx.navigate(`/s/${encodeURIComponent(sb.slug)}/t/${prep.number}`, { replace: true });
+    }, 0);
+  }
 
   // What exactly onboarding will do, `{ title, steps }`, whichever kind it is (`onboarding_prompt`
   // or `environment_prompt`): its task's own plan, or before that task exists (it is created when
@@ -899,30 +917,34 @@ export function mountComposer(ctx, sandbox) {
       .finally(() => { if (!destroyed) renderBanner(); });
   }
 
-  /** What onboarding will do and its one action: Start onboarding, or follow it while it runs. */
+  /**
+   * What onboarding will do and its one action, Start onboarding; then a loading state until its
+   * task opens (SPEC-111). Only a task that cannot be read or is missing is said in words.
+   */
   function onboardingGate(sb, prep) {
     const titleId = `onboarding-gate-${sandbox.id}`;
     const path = prep ? `/s/${encodeURIComponent(sb.slug)}/t/${prep.number}` : null;
-    const link = (label) => h('a', { class: 'btn btn-primary', href: href(path), dataset: { route: path } }, label);
     const ready = `The task box appears here by itself once it has finished and the repository passes the ${BRAND.name} format check.`;
+    const loading = (title, line) => [
+      h('h2', { id: titleId, class: 'onboarding-gate-title', tabindex: -1 }, title),
+      h('p', null, line),
+      // The region is `aria-busy` and its line says what loads: the bars are drawn only.
+      h('div', { class: 'onboarding-gate-loading' }, skeleton(line, 3, { announce: false })),
+    ];
+    if (sb.onboarding === 'pending' && starting) {
+      return loading(`Starting onboarding ${sb.name}`, 'Yulius is starting the agent’s session; it opens here in a moment.');
+    }
     if (sb.onboarding === 'preparing') {
+      if (prep) return loading(`Opening onboarding ${sb.name}`, `Opening #${prep.number}, where the agent prepares this sandbox.`);
+      if (prep === undefined && !ctx.store.tasksError(sb.id)) return loading(`Opening onboarding ${sb.name}`, 'Opening the onboarding task.');
       const title = h('h2', { id: titleId, class: 'onboarding-gate-title', tabindex: -1 }, `Onboarding ${sb.name}`);
       // The server's own reading of a preparing sandbox (`onboarding_status`), in the page's words.
       if (prep === undefined) return [title, h('p', null, `An agent is setting up this sandbox and adapting the repository to the ${BRAND.name} standards. ${ready}`)];
-      if (!prep) {
-        return [title,
-          h('p', null, 'The onboarding task is missing, so onboarding cannot finish by itself.'),
-          h('p', { class: 'muted' }, allows(sb.access, 'admin')
-            ? `As an administrator you can end the wait through the API: POST /api/sandboxes/${sb.id}/onboarding/skip.`
-            : 'An administrator of this sandbox can end the wait.')];
-      }
-      const phase = phaseOf(prep);
-      const what = phase === 'capacity'
-        ? `#${prep.number} waits for a Claude subscription with capacity and starts by itself.`
-        : phase === 'stopped'
-          ? `#${prep.number} stopped before the repository passed the ${BRAND.name} format check. Open it and continue it.`
-          : `An agent is setting up this sandbox and adapting the repository to the ${BRAND.name} standards in #${prep.number}.`;
-      return [title, h('p', null, what, ' ', ready), link(phase === 'stopped' ? 'Open onboarding' : 'Follow onboarding')];
+      return [title,
+        h('p', null, 'The onboarding task is missing, so onboarding cannot finish by itself.'),
+        h('p', { class: 'muted' }, allows(sb.access, 'admin')
+          ? `As an administrator you can end the wait through the API: POST /api/sandboxes/${sb.id}/onboarding/skip.`
+          : 'An administrator of this sandbox can end the wait.')];
     }
     const plan = plans.get(planKey(prep));
     const intro = 'Onboarding is one task an agent runs before any other in this sandbox';
@@ -941,18 +963,25 @@ export function mountComposer(ctx, sandbox) {
   }
 
   // One start per press: a double click must not send two approvals (singleFlight).
+  // The gate loads at once and nothing in it can be pressed again; the approval answers once the
+  // task's run has started, and the page then opens that task (SPEC-111).
   const approveOnboarding = singleFlight(async () => {
+    starting = true;
+    renderBanner();
     try {
       const updated = await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/onboarding/approve`);
       startedHere = true;
       await ctx.store.loadTasks(sandbox.id).catch(() => null);
       if (updated && updated.id) ctx.store.upsertSandbox(updated);
       toast('Onboarding started.', { kind: 'ok' });
-      // The button went with the message it was in: the keyboard moves on to following it.
-      focusGate();
     } catch (error) {
       errorToast(error, 'Couldn’t start onboarding');
+    } finally {
+      starting = false;
+      if (!destroyed) renderBanner();
     }
+    // Back as it was (a failure), or a task that could not be read: the keyboard stays on the gate.
+    if (!destroyed && !opening) focusGate();
   });
 
   /** Puts the keyboard on the gate's action, else its heading. */

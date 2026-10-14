@@ -4,8 +4,10 @@ import { axeViolations, failOnPageErrors, mock, mockReady } from './support.ts';
 
 failOnPageErrors();
 
-type Mocked = Window & { __yuliusMock: {
+type Mocked = Window & { __release?: () => void; __yuliusMock: {
   manualOnboarding?: boolean;
+  holdApprove?: Promise<void>;
+  failPostPath?: string | null;
   finishOnboarding(slug: string): void;
   touchTask(sandboxId: string, number: number, changes: Record<string, unknown>): void;
   sandboxes: { id: string; slug: string }[];
@@ -116,65 +118,106 @@ test('a repository already in the Yulius format is told only what its onboarding
   await expect(gate).not.toContainText('missing documents');
 });
 
-test('Start onboarding runs it, Follow onboarding opens it, and the task box comes back once it lands', async ({ app, browser, screen }) => {
+// SPEC-111 (task #96): the press loads at once, with nothing left to press, and the page then opens
+// the onboarding task, where its session runs, instead of stopping on Follow onboarding.
+test('Start onboarding loads at once and opens the onboarding session', async ({ app, browser, screen }) => {
+  await importRepository({ app, browser, screen }, 'website');
+  await browser.evaluate(() => { location.hash = '#/s/website'; });
+  // The server creates the task and starts its run before it answers; the mock holds in between.
+  await browser.evaluate(() => {
+    const w = window as unknown as Mocked;
+    w.__yuliusMock.holdApprove = new Promise<void>((resolve) => { w.__release = resolve; });
+  });
+  await screen.getByRole('region', 'Onboard website first').getByRole('button', 'Start onboarding').click();
+
+  const starting = screen.getByRole('region', 'Starting onboarding website');
+  await expect(starting).toBeVisible();
+  await expect(starting).toHaveAttribute('aria-busy', 'true');
+  await expect(starting).toContainText('starting the agent');
+  await expect(starting.getByRole('button')).toHaveCount(0);
+  await expect(starting.getByRole('link')).toHaveCount(0);
+  // The new task's events have arrived; the page still loads instead of offering another press.
+  await expect(browser.locator('.sidebar')).toContainText('Prepare this repository for Yulius');
+  await touchOnboarding(browser, { status: 'running', activity: 'working' });
+  await expect(screen.getByRole('button', 'Start onboarding')).toHaveCount(0);
+  await expect(screen.getByRole('link', 'Follow onboarding')).toHaveCount(0);
+  await expect(starting).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+
+  await browser.evaluate(() => (window as unknown as Mocked).__release!());
+  await expect(browser).toHaveURL(/#\/s\/website\/t\/1$/);
+  await expect(screen.getByRole('link', 'Follow onboarding')).toHaveCount(0);
+});
+
+test('a Start onboarding that fails brings the gate back with its button', async ({ app, browser, screen }) => {
+  await importRepository({ app, browser, screen }, 'website');
+  await browser.evaluate(() => {
+    const db = (window as unknown as Mocked).__yuliusMock;
+    db.failPostPath = `/api/sandboxes/${db.sandboxes.find((s) => s.slug === 'website')!.id}/onboarding/approve`;
+  });
+  await browser.evaluate(() => { location.hash = '#/s/website'; });
+  await screen.getByRole('region', 'Onboard website first').getByRole('button', 'Start onboarding').click();
+  await expect(screen.getByText(/Couldn’t start onboarding: The mock server failed on purpose/)).toBeVisible();
+  const gate = screen.getByRole('region', 'Onboard website first');
+  await expect(gate).toHaveAttribute('aria-busy', 'false');
+  await expect(gate.getByRole('button', 'Start onboarding')).toBeFocused();
+  await expect(browser).toHaveURL(/#\/s\/website$/);
+});
+
+// The person's screenshot of task #96: "Onboarding studio … Follow onboarding" should not exist.
+// Whoever opens a sandbox while its onboarding runs lands on its task, whatever the task's state
+// (running, waiting for capacity, stopped: the task page says each), and Back does not bounce.
+test('opening a sandbox while onboarding runs opens its task, never a Follow onboarding screen', async ({ app, browser, screen }) => {
   await importRepository({ app, browser, screen }, 'website');
   await browser.evaluate(() => { location.hash = '#/s/website'; });
   await screen.getByRole('region', 'Onboard website first').getByRole('button', 'Start onboarding').click();
+  await expect(browser).toHaveURL(/#\/s\/website\/t\/1$/);
+  for (const changes of [{ status: 'running', activity: 'working' }, { status: 'waiting_capacity', activity: null }, { status: 'closed', activity: null }]) {
+    await touchOnboarding(browser, changes);
+    await browser.evaluate(() => { location.hash = '#/s/website/tasks'; });
+    await expect(browser).toHaveURL(/#\/s\/website\/tasks$/);
+    await browser.evaluate(() => { location.hash = '#/s/website'; });
+    await expect(browser).toHaveURL(/#\/s\/website\/t\/1$/);
+    await expect(screen.getByRole('link', 'Follow onboarding')).toHaveCount(0);
+    await expect(screen.getByRole('link', 'Open onboarding')).toHaveCount(0);
+    await expect(screen.getByRole('textbox', 'Task prompt')).toHaveCount(0);
+  }
+  // The sandbox page was replaced in the history: Back returns to the task list.
+  await browser.evaluate(() => history.back());
+  await expect(browser).toHaveURL(/#\/s\/website\/tasks$/);
+});
 
-  const running = screen.getByRole('region', 'Onboarding website');
-  await expect(running).toBeVisible();
-  await expect(running).toContainText('An agent is setting up this sandbox');
-  await expect(running.getByRole('button', 'Start onboarding')).toHaveCount(0);
-  // The keyboard moves on to Follow onboarding, and keeps it as the task's events arrive.
-  const follow = running.getByRole('link', 'Follow onboarding');
-  await expect(follow).toBeFocused();
-  // Start onboarding created the task, so it now has a number (SPEC-097).
-  await expect(follow).toHaveAttribute('href', /\/s\/website\/t\/1$/);
-  await touchOnboarding(browser, { title: 'Prepare this repository for Yulius (installing)' });
-  await expect(browser.locator('.sidebar')).toContainText('installing');
-  await expect(follow).toBeFocused();
-  await expect(screen.getByRole('button', 'Skip for now')).toHaveCount(0);
+test('a sandbox already preparing when the app opens goes to its onboarding task', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/product', '&onboarding=preparing'));
+  await expect(browser).toHaveURL(/#\/s\/product\/t\/1$/);
+  await expect(screen.getByRole('link', 'Follow onboarding')).toHaveCount(0);
+});
+
+// The review of SPEC-096: until the sandbox's task list is read (or when reading it failed), the
+// page cannot know whether the onboarding task exists, so it must not call it missing. Mock
+// `onboarding=preparing` puts `product` in preparation; `fail=` makes its task list fail. When
+// onboarding lands while the page is open, the composer shows by itself, takes the keyboard, and a
+// screen reader hears so.
+test('a preparing sandbox whose tasks cannot be read says onboarding runs, and the task box comes back once it lands', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/product', '&onboarding=preparing&fail=/api/sandboxes/sb_product/tasks'));
+  const gate = screen.getByRole('region', 'Onboarding product');
+  await expect(gate).toContainText('An agent is setting up this sandbox');
+  await expect(gate).not.toContainText('missing');
+  await expect(gate).toHaveAttribute('aria-busy', 'false');
   await expect(screen.getByRole('textbox', 'Task prompt')).toBeHidden();
+  await expect(browser).toHaveURL(/#\/s\/product$/);
   const centred = await offCentre(browser);
   expect(centred.x).toBeLessThanOrEqual(2);
   expect(centred.y).toBeLessThanOrEqual(2);
   expect(await axeViolations(browser)).toEqual([]);
 
-  // What the server reads in a preparing sandbox (`onboarding_status`), in the page's words.
-  await touchOnboarding(browser, { status: 'waiting_capacity', activity: null });
-  await expect(running).toContainText('#1 waits for a Claude subscription with capacity');
-  await touchOnboarding(browser, { status: 'closed', activity: null });
-  await expect(running).toContainText('#1 stopped before the repository passed the Yulius format check');
-  await expect(running.getByRole('link', 'Open onboarding')).toBeVisible();
-  await touchOnboarding(browser, { status: 'running', activity: 'working' });
-  await running.getByRole('link', 'Follow onboarding').click();
-  await expect(browser).toHaveURL(/#\/s\/website\/t\/1$/);
-
-  // Onboarding lands while the page is open: the composer shows by itself, takes the keyboard,
-  // and a screen reader hears so.
-  await browser.evaluate(() => { location.hash = '#/s/website'; });
-  await expect(screen.getByRole('region', 'Onboarding website')).toBeVisible();
-  await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.finishOnboarding('website'));
+  await browser.evaluate(() => (window as unknown as Mocked).__yuliusMock.finishOnboarding('product'));
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await expect(prompt).toBeVisible();
   await expect(prompt).toBeFocused();
   await expect(browser.locator('.composer > [aria-live="polite"]')).toHaveText('Onboarding finished: the task box is ready.');
   await expect(browser.locator('.onboarding-gate')).toBeHidden();
   await expect(browser.locator('.composer-quote')).toBeVisible();
-  await prompt.fill('Install the GitHub CLI');
-  await prompt.press('ControlOrMeta+Enter');
-  await expect(browser).toHaveURL(/#\/s\/website\/t\/2$/);
-});
-
-// The review of SPEC-096: until the sandbox's task list is read (or when reading it failed), the
-// page cannot know whether the onboarding task exists, so it must not call it missing. Mock
-// `onboarding=preparing` puts `product` in preparation; `fail=` makes its task list fail.
-test('a preparing sandbox whose tasks are not known yet does not call its onboarding task missing', async ({ app, screen }) => {
-  await app.open(mock('/s/product', '&onboarding=preparing&fail=/api/sandboxes/sb_product/tasks'));
-  const gate = screen.getByRole('region', 'Onboarding product');
-  await expect(gate).toContainText('An agent is setting up this sandbox');
-  await expect(gate).not.toContainText('missing');
-  await expect(screen.getByRole('textbox', 'Task prompt')).toBeHidden();
 });
 
 test('a preparing sandbox without its onboarding task tells an administrator the way out', async ({ app, screen }) => {

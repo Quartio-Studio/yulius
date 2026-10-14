@@ -863,13 +863,17 @@ function finishOnboarding(db, sandbox) {
   releaseWaiting(db, sandbox);
   resync(db);
 }
-route('POST', `/api/sandboxes/${ID}/onboarding/approve`, ({ db, p }) => {
+route('POST', `/api/sandboxes/${ID}/onboarding/approve`, async ({ db, p }) => {
   const sandbox = sandboxOf(db, p[0]);
   need(sandbox, 'write');
   if (sandbox.onboarding !== 'pending') fail(409, 'conflict', 'nothing awaits approval');
-  sandbox.onboarding = 'preparing';
+  // In the server's order (`start_onboarding`): the task is created and its run started, and only
+  // then is the sandbox `preparing`. A test can hold the start in between
+  // (`__yuliusMock.holdApprove = promise`), while the task's events have already gone out.
   const task = preparationTask(db, sandbox);
   touch(db, task, { status: 'starting', branch: 'yulius/prepare-repository' });
+  if (db.holdApprove) await db.holdApprove;
+  sandbox.onboarding = 'preparing';
   later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1200);
   // A test that sets `__yuliusMock.manualOnboarding` ends it itself (`finishOnboarding(slug)`).
   if (!db.manualOnboarding) later(() => finishOnboarding(db, sandbox), 9000);
