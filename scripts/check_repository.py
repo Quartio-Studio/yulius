@@ -300,6 +300,7 @@ CONTRAST_PAIRS = [
     *((fg, "--session-bg", 4.5) for fg in ("--session-fg", "--session-dim", "--session-ok", "--session-err")),
     *(("--session-fg", bg, 4.5) for bg in ("--session-prompt-bg", "--session-add-bg", "--session-del-bg")),
     ("--session-dim", "--session-prompt-bg", 4.5),
+    *((fg, "--session-web-stuck", 4.5) for fg in ("--session-fg", "--session-dim", "--session-ok", "--session-err")),
 ]
 
 

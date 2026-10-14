@@ -376,6 +376,43 @@ test('the spider web sticks to the top of the view while the session scrolls', a
   expect(after.top).toBeGreaterThanOrEqual(-2);
   expect(after.right).toBeLessThanOrEqual(2);
   expect(after.inWell).toBe(true);
+
+  // Stuck, the web lies under the text, so it fades to a colour every text of the well reads on at
+  // AA, spider included; at the top, beside the first lines, it keeps its own colours. Everything
+  // after it in the well paints over it.
+  const colours = (theme: string) => browser.evaluate((name) => {
+    document.documentElement.setAttribute('data-theme', name);
+    const well = document.querySelector('.ss-tui')!;
+    const parse = (c: string) => c.match(/\d+(\.\d+)?/g)!.slice(0, 3).map(Number);
+    const token = (t: string) => {
+      const probe = well.appendChild(document.createElement('span'));
+      probe.style.color = `var(${t})`;
+      const c = getComputedStyle(probe).color;
+      probe.remove();
+      return parse(c);
+    };
+    const lum = (c: number[]) => {
+      const [r, g, b] = c.map((v) => { const x = v / 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; });
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const contrast = (a: number[], b: number[]) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
+    const fills = ['.ss-web-thread', '.ss-web-silk', '.ss-web-body'].map((sel) => parse(getComputedStyle(well.querySelector(sel)!).fill));
+    const texts = ['--session-fg', '--session-dim', '--session-ok', '--session-err'].map(token);
+    return {
+      web: String(fills[0]) === String(token('--session-web')),
+      lowest: Math.min(...fills.flatMap((f) => texts.map((t) => contrast(t, f)))),
+      over: ['.ss-entries > li', '.ss-more', '.ss-locked'].every((sel) => [...well.querySelectorAll(sel)].every((el) => getComputedStyle(el).position !== 'static')),
+    };
+  }, theme);
+  for (const theme of ['dark', 'light']) {
+    await expect.poll(async () => (await colours(theme)).web, theme).toBe(false);
+    const stuck = await colours(theme);
+    expect(stuck.lowest, theme).toBeGreaterThanOrEqual(4.5);
+    expect(stuck.over, theme).toBe(true);
+  }
+  await browser.evaluate(() => { document.querySelector<HTMLElement>('.ss-page')!.scrollTop = 0; });
+  await expect.poll(async () => (await colours('dark')).web).toBe(true);
+  expect(await axeViolations(browser)).toEqual([]);
 });
 
 // Task #86 (SPEC-101): "spider should be animated". On its loop the spider climbs its thread in
@@ -474,6 +511,15 @@ test('a cockroach runs across the visible part of the session now and then (unit
     await new Promise((resolve) => requestAnimationFrame(resolve));
     const removed = !roach.isConnected;
 
+    // At the lowest place it can take it is still all in view.
+    const low = runCockroach(well, () => 0.999999) as SVGSVGElement;
+    const lowBottom = low.getBoundingClientRect().bottom;
+    low.remove();
+    // A hidden page sends none.
+    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+    const whileHidden = { roach: runCockroach(well, () => 0.5), shown: well.querySelectorAll('.ss-roach').length };
+    delete (document as unknown as { hidden?: boolean }).hidden;
+
     // The scheduler on a fake timer: one cockroach per timer, then the next delay, until stopped.
     const timers: { fn: () => void; ms: number; cleared: boolean }[] = [];
     const timer = { set: (fn: () => void, ms: number) => timers.push({ fn, ms, cleared: false }) - 1, clear: (id: number) => { if (timers[id]) timers[id].cleared = true; } };
@@ -486,7 +532,7 @@ test('a cockroach runs across the visible part of the session now and then (unit
     const afterStop = { cleared: timers[1].cleared, left: well.querySelectorAll('.ss-roach').length };
     timers[1].fn();
     const stale = { timers: timers.length, roaches: well.querySelectorAll('.ss-roach').length };
-    return { delays, view: { top: view.top, bottom: view.bottom }, start, middle, end, shape, removed, scheduled, ran, next, afterStop, stale };
+    return { delays, view: { top: view.top, bottom: view.bottom }, start, middle, end, shape, removed, lowBottom, whileHidden, scheduled, ran, next, afterStop, stale };
   });
   expect(result.delays).toEqual({ firstMin: 20000, firstMax: 59999, laterMin: 45000, laterMax: 149999 });
   expect(result.shape).toMatchObject({ inWell: true, hidden: 'true', pointer: 'none', legs: 2 });
@@ -502,6 +548,8 @@ test('a cockroach runs across the visible part of the session now and then (unit
   expect(result.middle.bottom).toBeLessThanOrEqual(result.view.bottom);
   for (const at of [result.start, result.middle, result.end]) expect(at.overflow).toBe(0);
   expect(result.removed).toBe(true);
+  expect(result.lowBottom).toBeLessThanOrEqual(result.view.bottom);
+  expect(result.whileHidden).toEqual({ roach: null, shown: 0 });
   expect(result.scheduled).toEqual([40000]);
   expect(result.ran).toBe(1);
   expect(result.next).toEqual([40000, 97500]);
@@ -542,7 +590,12 @@ test('the session view sends cockroaches now and then and stops when it is left'
   expect(first.ms).toBeGreaterThanOrEqual(20000);
   expect(first.ms).toBeLessThan(60000);
   // Its time comes: a cockroach runs and the next one is scheduled further apart.
-  await browser.evaluate(() => (window as unknown as { roachTimers: { fn: () => void }[] }).roachTimers[0].fn());
+  // Run the first by hand, its real timer cleared so that it cannot fire as well.
+  await browser.evaluate(() => {
+    const [first] = (window as unknown as { roachTimers: { fn: () => void; id: number }[] }).roachTimers;
+    window.clearTimeout(first.id);
+    first.fn();
+  });
   await expect(browser.locator('.ss-tui > svg.ss-roach')).toHaveCount(1);
   const [, second] = await timers();
   expect(second.ms).toBeGreaterThanOrEqual(45000);

@@ -497,7 +497,8 @@ export function runCockroach(well, random = Math.random) {
     roach.remove();
     return null;
   }
-  roach.style.top = `${Math.round(top - box.top + random() * (bottom - top - size.height))}px`;
+  // From the well's padding edge, inside its border.
+  roach.style.top = `${Math.floor(top - box.top - well.clientTop + random() * (bottom - top - size.height))}px`;
   const rightward = random() >= 0.5;
   const [from, to] = rightward ? [-size.width, box.width] : [box.width, -size.width];
   const face = rightward ? '' : ' scaleX(-1)';
@@ -526,6 +527,20 @@ export function scheduleCockroaches(well, { random = Math.random, timer = { set:
     timer.clear(handle);
     for (const roach of well.querySelectorAll('.ss-roach')) roach.remove();
   };
+}
+
+/**
+ * Mark the well `.ss-web-stuck` while its web is stuck to the top of the scrolled page (`root`), that
+ * is once a mark at the well's top has scrolled above it, so the stylesheet fades the web under the
+ * text (SPEC-101). Returns the stop.
+ */
+function watchStuckWeb(well, mark, root) {
+  if (typeof IntersectionObserver !== 'function') return () => {};
+  const observer = new IntersectionObserver(([entry]) => {
+    well.classList.toggle('ss-web-stuck', !entry.isIntersecting && entry.boundingClientRect.top < (entry.rootBounds?.top ?? 0));
+  }, { root });
+  observer.observe(mark);
+  return () => observer.disconnect();
 }
 
 /** Where the TUI's prompt box was: locked, nothing can be typed or sent (not a control). */
@@ -649,9 +664,12 @@ export function mountSessionView(ctx, sandbox, id, route) {
       next = page.next;
       renderHead();
       if (first) {
-        const tui = h('div', { class: 'ss-tui' }, spiderWeb(), entriesEl, more, lockedPrompt());
+        const mark = h('div', { class: 'ss-web-mark', 'aria-hidden': 'true' });
+        const tui = h('div', { class: 'ss-tui' }, mark, spiderWeb(), entriesEl, more, lockedPrompt());
         setChildren(body, earlier, tui);
-        stopCockroaches = scheduleCockroaches(tui);
+        const stopWatching = watchStuckWeb(tui, mark, el);
+        const stopRunning = scheduleCockroaches(tui);
+        stopCockroaches = () => { stopWatching(); stopRunning(); };
       }
       append(page.entries || []);
       if (first && !entriesEl.children.length && next === null) {
