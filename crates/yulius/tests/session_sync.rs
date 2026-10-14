@@ -231,7 +231,12 @@ async fn viewer(app: &App, ctx: &AuthContext, id: &TaskId) -> Result<TerminalAtt
 }
 
 /// Keys typed by the viewer (the terminal WebSocket's input frames).
-async fn keys(app: &App, ctx: &AuthContext, attach: &TerminalAttach, bytes: &[u8]) -> TestResult {
+async fn keys(
+    app: &Arc<App>,
+    ctx: &AuthContext,
+    attach: &TerminalAttach,
+    bytes: &[u8],
+) -> TestResult {
     app.terminal_input(ctx, attach, bytes, false).await?;
     Ok(())
 }

@@ -1,6 +1,6 @@
 import { test, type Browser, type Screen } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { failOnPageErrors, mock } from './support.ts';
+import { failOnPageErrors, mock, mockReady } from './support.ts';
 
 failOnPageErrors();
 
@@ -79,6 +79,8 @@ test('each sandbox has its own terminals', async ({ app, screen }) => {
 
 /** Two terminals the server already has (as after a reload): only the shown one is attached. */
 async function seedTwoShells(browser: Browser): Promise<void> {
+  // The mock may install after the page's load event (CI run 11f0fcf8 read it undefined).
+  await mockReady(browser);
   await browser.evaluate(() => {
     const db = (window as unknown as { __yuliusMock: { shells: Map<string, object> } }).__yuliusMock;
     for (const [n, name] of [[1, 'Terminal 1'], [2, 'Terminal 2']] as const) {

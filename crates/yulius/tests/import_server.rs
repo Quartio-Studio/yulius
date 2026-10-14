@@ -363,8 +363,13 @@ async fn onboarding_starts_only_from_the_browser() -> TestResult {
     assert_eq!(plan.body["title"], "Prepare this repository for Yulius");
     assert_eq!(plan.body["task_number"], Value::Null);
     let steps = plan.body["steps"].as_array().ok_or("steps")?;
-    assert_eq!(steps.len(), 6, "{steps:?}");
+    assert_eq!(steps.len(), 8, "{steps:?}");
     assert!(text(&steps[1]).contains("toolchains"), "{steps:?}");
+    // SPEC-116 OBG-002: the gate is part of the plan.
+    assert!(
+        steps.iter().any(|step| text(step).contains("dead-code")),
+        "{steps:?}"
+    );
     let listed = call(&w.h.router, Method::GET, &tasks, None, &alice).await?;
     assert_eq!(listed.body, json!([]), "reading the plan creates no task");
 

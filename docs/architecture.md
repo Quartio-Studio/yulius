@@ -198,13 +198,19 @@ base against the branch policy of `yulius.toml` `[branch_policy]` at the integra
 a violation is refused with the rule in words, also for promotion pull requests
 ([SPEC-069](../.ai/specs/SPEC-069-fix-223-yulius-s-merge-gate-enforces-the.md),
 [decision 0051](decisions/0051-the-merge-gate-enforces-the-branch-policy.md)).
+`delivery_merge` first delivers the head the way the end of a clean turn does
+(`try_auto_open_pr`): it pushes the branch and opens the pull request, or pushes new commits to
+it. A head it cannot deliver yet (open step, no plan for a task that needs a spec, invalid spec,
+uncommitted work) is refused with the reason, and a push GitHub refuses answers with the remedy
+(merge the pushed head, never force). A goal task whose evaluator keeps every turn going therefore still gets its pull request
+([SPEC-116](../.ai/specs/SPEC-116-linter-dead-code-should-be-installed-on.md) DMG-001).
 
 ```mermaid
 sequenceDiagram
     participant A as Agent (Claude Code)
     participant W as yulius wait (background shell)
     participant Y as Yulius (internal API)
-    A->>Y: delivery_merge (branch policy checked; checks still running: armed)
+    A->>Y: delivery_merge (head pushed and pull request opened if missing; policy checked; checks running: armed)
     A->>W: start, end the turn
     W->>Y: POST /internal/agent/wait (long poll)
     Y-->>W: checks ended / stage moved / armed merge decided (merged, refused, dropped)
@@ -298,6 +304,16 @@ stateDiagram-v2
     pending --> skipped: admin skip
     preparing --> skipped: admin skip
 ```
+
+The onboarding task leaves the project ready for the discipline. In its own pull request it lays
+the gate: a test command, lint and format, and a dead-code and unused-dependency check, wired into
+`[commands]` and `[[ci.jobs]]` with a CI job for every project of a monorepo. Existing findings
+go into a committed baseline instead of application-code changes. It delivers through the review
+and `delivery_merge` like every task
+([SPEC-116](../.ai/specs/SPEC-116-linter-dead-code-should-be-installed-on.md),
+[decision 0094](decisions/0094-onboarding-installs-the-gate-in-its-own-pull-request.md)). The
+briefing quotes the newest end of the changes log: a log whose ISO dates run oldest first is
+quoted from its end, and its new entries go there.
 
 ### Supertasks
 
@@ -404,6 +420,39 @@ flowchart LR
   MCP -->|"task_create"| NT["App::create_task_as (as New task)"]
   MCP -->|"task_stop / task_archive / task_delete"| TU["The UI's stop, archive, delete (never the caller's own task)"]
   MCP -->|"automation_*, automation_template_enable"| AU["Automations and ready-made ones"]
+```
+
+## Terminal input
+
+A keystroke goes from xterm to the PTY and its echo comes back without waiting for the database or
+GitHub ([SPEC-118](../.ai/specs/SPEC-118-when-i-write-something-in-a-claude-termi.md),
+[decision 0096](decisions/0096-terminal-input-rides-a-write-grant.md)). Each viewer holds a write
+grant, confirmed when it opens the terminal. The store's access epoch grows with every write that
+can change who may type. While the epoch is unchanged, input is written at once. When it moves,
+the next input is checked first. A grant older than 30 s is re-confirmed in the background. The
+viewer's socket loop never awaits a permission check: the 60 s re-check runs in a spawned task, and
+the loop picks up its verdict.
+
+```mermaid
+sequenceDiagram
+  participant X as xterm (browser)
+  participant L as Viewer loop (routes/terminal.rs, routes/shells.rs)
+  participant G as WriteGrant + access epoch
+  participant P as ptyhost (PTY)
+  participant H as Hub
+  X->>L: input frame
+  L->>G: decide(epoch, now)
+  alt grant holds
+    G-->>L: allow (and re-confirm beside it after 30 s)
+  else epoch moved or no grant
+    G->>G: can_work / shell check (database, GitHub)
+    G-->>L: allow or forbidden
+  end
+  L->>P: bytes
+  P-->>H: echo (output chunk)
+  H-->>L: broadcast
+  L-->>X: binary output frame
+  Note over L: every 60 s a spawned re-check, its verdict selected beside input and output
 ```
 
 ## Task ownership

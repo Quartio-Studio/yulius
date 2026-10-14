@@ -38,6 +38,9 @@ test('team secrets are a title, a value and notes, shown after a two-factor code
   await setUpTwoFactor(screen, browser);
   const shown = screen.getByRole('dialog', 'Shared Gmail');
   await expect(shown).toBeVisible();
+  // The value stays masked until the eye is pressed (SPEC-114).
+  expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), TEAM_VALUE)).toBe(false);
+  await shown.getByRole('button', 'Show value').click();
   await expect(shown.getByText(TEAM_VALUE)).toBeVisible();
   await expect(shown.getByText(/Recovery codes/)).toBeVisible();
   await shown.getByRole('button', 'Done').click();
@@ -95,6 +98,9 @@ test('agent secrets are bound to hosts and readable by their managers after a co
   await screen.getByRole('button', 'Show STRIPE_KEY').click();
   await setUpTwoFactor(screen, browser);
   const shown = screen.getByRole('dialog', 'STRIPE_KEY');
+  await expect(shown.getByRole('button', 'Show value')).toHaveAttribute('aria-pressed', 'false');
+  expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), AGENT_VALUE)).toBe(false);
+  await shown.getByRole('button', 'Show value').click();
   await expect(shown.getByText(AGENT_VALUE)).toBeVisible();
   await shown.getByRole('button', 'Done').click();
 
@@ -103,6 +109,95 @@ test('agent secrets are bound to hosts and readable by their managers after a co
   await expect(screen.getByRole('radio', 'Agent secrets')).toHaveAttribute('aria-checked', 'true');
   await screen.getByRole('radio', 'Team secrets').click();
   await expect(screen.getByText('Shared Gmail')).toBeVisible();
+});
+
+// F 2026-10-14 (task #99): "Value in passwords should be hidden by default even after show, and
+// shown after explicitly clicking eye icon. On hover there should be option to copy + the current
+// copy button." (SPEC-114)
+test('a shown value stays masked until the eye is pressed, and copies on hover', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/secrets'));
+  // What the page puts on the clipboard, without a clipboard permission.
+  await browser.evaluate(() => {
+    (window as any).__copied = [];
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (text: string) => { (window as any).__copied.push(text); } } });
+  });
+  const copied = () => browser.evaluate(() => (window as any).__copied.filter((t: string) => t !== ''));
+
+  await screen.getByRole('button', 'Show Shared Gmail').click();
+  await setUpTwoFactor(screen, browser);
+  const shown = screen.getByRole('dialog', 'Shared Gmail');
+  await expect(shown).toBeVisible();
+  // Masked: dots of a fixed length, the value nowhere in the page, a name for screen readers.
+  const eye = shown.getByRole('button', 'Show value');
+  await expect(eye).toHaveAttribute('aria-pressed', 'false');
+  const box = browser.locator('dialog.modal .secret-box');
+  await expect(box).toContainText('••••••••••••');
+  await expect(browser.locator('dialog.modal .secret-box .sr-only')).toHaveText('Value hidden');
+  expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), TEAM_VALUE)).toBe(false);
+  // The notes still show.
+  await expect(shown.getByText(/Recovery codes/)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // The quick copy shows on hover only, and copies the value while it is masked.
+  const quick = browser.locator('dialog.modal .secret-quick-copy');
+  await expect(quick).toBeHidden();
+  await box.hover();
+  await expect(quick).toBeVisible();
+  await expect(quick).toHaveAttribute('aria-label', 'Copy');
+  await quick.click();
+  await expect(screen.getByText(/Value copied/).first()).toBeVisible();
+  expect(await copied()).toEqual([TEAM_VALUE]);
+  expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), TEAM_VALUE)).toBe(false);
+
+  // The eye shows it; pressed again it is masked and gone from the page.
+  await eye.click();
+  await expect(eye).toHaveAttribute('aria-pressed', 'true');
+  await expect(shown.getByText(TEAM_VALUE)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  await eye.click();
+  await expect(eye).toHaveAttribute('aria-pressed', 'false');
+  expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), TEAM_VALUE)).toBe(false);
+
+  // The current Copy button stays and copies too.
+  await shown.getByRole('button', 'Copy value').click();
+  expect(await copied()).toEqual([TEAM_VALUE, TEAM_VALUE]);
+
+  // Keyboard: focus on the eye shows the quick copy, and it is the next stop.
+  await browser.mouse.move(0, 0);
+  await expect(quick).toBeHidden();
+  await eye.focus();
+  await expect(quick).toBeVisible();
+  await browser.keyboard.press('Tab');
+  expect(await browser.evaluate(() => document.activeElement!.getAttribute('aria-label'))).toBe('Copy');
+
+  // The light theme has no violations either, masked and shown.
+  await browser.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
+  expect(await axeViolations(browser)).toEqual([]);
+  await eye.click();
+  expect(await axeViolations(browser)).toEqual([]);
+  await eye.click();
+  await browser.evaluate(() => document.documentElement.removeAttribute('data-theme'));
+
+  // A new Show starts masked again, even after the eye was pressed.
+  await eye.click();
+  await expect(shown.getByText(TEAM_VALUE)).toBeVisible();
+  await shown.getByRole('button', 'Done').click();
+  await expect(shown).toBeHidden();
+  await screen.getByRole('button', 'Show Shared Gmail').click();
+  await expect(screen.getByRole('dialog', 'Shared Gmail').getByRole('button', 'Show value')).toHaveAttribute('aria-pressed', 'false');
+  expect(await browser.evaluate((v: string) => document.body.innerHTML.includes(v), TEAM_VALUE)).toBe(false);
+
+  // At 390 px the box, its buttons and Copy stay inside the dialog, shown or masked.
+  await browser.setViewport({ width: 390, height: 844 });
+  for (const press of [false, true]) {
+    if (press) await screen.getByRole('dialog', 'Shared Gmail').getByRole('button', 'Show value').click();
+    const outside = await browser.evaluate(() => {
+      const dialog = document.querySelector('dialog.modal')!.getBoundingClientRect();
+      const parts = ['.secret-box', '.secret-eye', '.secret-quick-copy', '.secret-box + .btn'].map((s) => document.querySelector(`dialog.modal ${s}`)!.getBoundingClientRect());
+      return parts.filter((r) => r.left < dialog.left || r.right > dialog.right).length;
+    });
+    expect(outside).toBe(0);
+  }
 });
 
 // Review of SPEC-040: an older secret's address, user name and seed live in its notes, so its
