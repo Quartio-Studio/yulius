@@ -398,7 +398,15 @@ async fn presence_is_relayed_to_writers_only() -> TestResult {
     let worktree = h.app.config.data_dir.join("sandboxes/s1/worktrees/t1");
     std::fs::create_dir_all(&worktree)?;
     std::fs::write(worktree.join("task.txt"), "task file\n")?;
-    seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Running, Some(&worktree)).await?;
+    seed_task(
+        &h,
+        "t1",
+        "s1",
+        "u-alice",
+        TaskStatus::Running,
+        Some(&worktree),
+    )
+    .await?;
     let in_task = call(
         &h.router,
         Method::PUT,
