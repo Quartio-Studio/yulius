@@ -312,6 +312,7 @@ impl TaskStore for SqliteStore {
         at: Timestamp,
     ) -> AppResult<bool> {
         let id = id.as_str().to_owned();
+        // `release_scheduled` (intake.rs) repeats this bookkeeping for prepared → queued.
         self.call(move |c| {
             let closed = matches!(next, TaskStatus::Closed).then_some(at.0);
             let queued = matches!(next, TaskStatus::Queued).then_some(at.0);

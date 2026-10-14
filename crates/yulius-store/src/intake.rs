@@ -205,8 +205,8 @@ impl IntakeStore for SqliteStore {
     async fn release_scheduled(&self, task: &TaskId, now: Timestamp) -> AppResult<bool> {
         let task = task.as_str().to_owned();
         self.call(move |conn| {
-            // `transition_task`'s bookkeeping for prepared → queued: a new state, in line from
-            // now, no activity or working stretch.
+            // `transition_task`'s bookkeeping for prepared → queued (keep the two in step): a new
+            // state, in line from now, no activity or working stretch.
             let n = conn
                 .execute(
                     "UPDATE tasks SET status = ?1, activity = NULL, updated_at = ?3, state_at = ?3, \

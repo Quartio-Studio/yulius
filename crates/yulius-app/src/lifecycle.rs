@@ -269,8 +269,12 @@ impl App {
             // The predecessor may already be Done: start at once then.
             self.advance_chains(&before.id).await;
             self.publish_task(&before.id).await;
-        } else if prepared.is_some() {
-            self.release_new_prepared(&task).await;
+        } else if let Some(start_at) = prepared {
+            // A prepared task never starts here; a time within the grace minute starts it now
+            // rather than on the next tick.
+            if start_at.is_some() {
+                self.release_if_due(&task).await;
+            }
         } else if req.start {
             let app = self.clone();
             let id = task.id.clone();

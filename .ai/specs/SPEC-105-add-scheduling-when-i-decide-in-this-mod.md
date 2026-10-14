@@ -1,11 +1,11 @@
 ---
 yulius-task: f44e18c7-f992-4815-adc3-2018aae81a4d
-status: draft
+status: done
 ---
 
 # SPEC-105: prepared tasks start when you decide, or at a time
 
-Status: draft
+Status: implemented
 Date: 2026-10-14
 Owner: Yulius task #90
 Scope authorization: user request (task #90), with a screenshot of the composer's start menu
@@ -50,13 +50,13 @@ cancelled.
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] The domain knows the prepared status and the store keeps a task's start time
-- [ ] A task is created prepared or scheduled through the API and the task_create tool
-- [ ] Prepared tasks start now, on their time, or are rescheduled and cancelled
-- [ ] The composer prepares or schedules a task and the task view starts it
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Read the product context and related work, then write and validate the spec
+- [x] The domain knows the prepared status and the store keeps a task's start time
+- [x] A task is created prepared or scheduled through the API and the task_create tool
+- [x] Prepared tasks start now, on their time, or are rescheduled and cancelled
+- [x] The composer prepares or schedules a task and the task view starts it
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -101,3 +101,34 @@ cancelled.
 - Automations do not get "when I decide" in this change (their own start choice is being
   reworked by task #78): issue #416.
 - Editing a prepared task's prompt is out of scope: queued messages already add to it.
+
+## Evidence
+
+Commands run on this branch (head a73f649c, before the final review nits; the nit commit reran
+the touched tests and clippy):
+
+- `scripts/dev lint`: rustfmt and Clippy (`-D warnings`) clean.
+- `scripts/dev check`: repository contracts passed (16 crates, 7 skills, links, unique decision
+  numbers, one product test binary); 39 script tests OK; `cargo check` of every target.
+- `scripts/dev test`: 1543 tests passed, 16 skipped (nextest), doc tests OK. Among them
+  `prepared::` (6: AC-PRP-1..5, the bound, a request releasing only its own task, a non-owner
+  writer refused), `queued_messages::` (a prepared task takes a message), the store tests
+  `prepared_task_schedules_persist_and_come_due` and
+  `a_scheduled_release_checks_the_time_it_releases_on`, the domain test
+  `prepared_tasks_wait_for_a_person_or_their_time` and the start-time window unit test.
+- `scripts/dev deps`: advisories, bans, licenses and sources ok; cargo-shear clean.
+- `cd e2e && npx e2e run`: 43 files passed, 1 skipped (307 tests passed, 1 skipped), including
+  `prepared.e2e.ts` (3 tests, AC-PRP-6, no WCAG violations), `times.e2e.ts` ("prepared 3h"),
+  and `menus.e2e.ts` (its keyboard and wheel tests count the two new start choices).
+- After the final nits (`release_if_due` called directly, the domain transition checked before
+  the store's conditional release): `prepared::`, `queued_messages::`, `intake::`,
+  `supertask::` (26 passed) and workspace Clippy clean.
+- Mutation check: without the onboarding guard in the tick,
+  `a_scheduled_task_starts_by_itself_at_its_time` fails.
+- Independent review in a fresh session: round 1 approved with minors (fixed test-first: the tick's
+  race with a reschedule, requests releasing other tasks, the row's time word, a passed draft time,
+  owner coverage); round 2 approved with nits (addressed).
+
+Not tested here: a real Claude Code run started by a released prepared task (the in-memory
+harness stops at `start_run`; the start path after `queued` is the existing one, covered by
+`supervision.rs`), and the tick on a live server across a restart.

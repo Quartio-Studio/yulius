@@ -87,12 +87,6 @@ impl App {
         }
     }
 
-    /// A new prepared task whose time is already due (within the grace minute) starts on its
-    /// creation rather than up to a minute later.
-    pub(crate) async fn release_new_prepared(self: &Arc<Self>, task: &TaskRecord) {
-        self.release_if_due(task).await;
-    }
-
     /// Releases every prepared task whose time has come (background tick, PRP-003). A task whose
     /// sandbox's onboarding still blocks tasks waits for a later tick.
     pub async fn release_due_prepared(self: &Arc<Self>) {
@@ -112,7 +106,7 @@ impl App {
 
     /// Releases `task` when its time has come and its sandbox's onboarding no longer blocks
     /// tasks; otherwise leaves it prepared.
-    async fn release_if_due(self: &Arc<Self>, task: &TaskRecord) {
+    pub(crate) async fn release_if_due(self: &Arc<Self>, task: &TaskRecord) {
         if self
             .ensure_tasks_may_start(&task.sandbox_id, task.origin)
             .await
@@ -120,8 +114,11 @@ impl App {
         {
             return;
         }
-        // The time is checked again as the status changes: one moved or cleared after it was
-        // read wins (a reschedule racing the tick).
+        // The domain's transition; the store applies it only while the stored time is due, so a
+        // time moved or cleared after it was read wins (a reschedule racing the tick).
+        if TaskStatus::Prepared.apply(TaskEvent::PreparedReleased) != Ok(TaskStatus::Queued) {
+            return;
+        }
         match self
             .deps
             .store
