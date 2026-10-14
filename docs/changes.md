@@ -9,7 +9,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - The top bar has no Superagent button any more (SPEC-132, ADR-0106, task #120). The Superagent
   is first in the tools rail, right under the tools toggle, so the button beside the toggle was a
   second way to the same panel. The toggle now reads "Show tools (Superagent, browser, editor,
-  shell)", and the Superagent links (`/s/<slug>/superagent`, `/agent`, `/cockpit`) open it as
+  shell, notes)", and the Superagent links (`/s/<slug>/superagent`, `/agent`, `/cockpit`) open it as
   before.
 - Agents scan every change with Vidoc before delivery (SPEC-128, ADR-0104, task #109).
   `scripts/dev security` runs the Vidoc CLI pinned in `tools/vidoc` on the current branch. Vidoc

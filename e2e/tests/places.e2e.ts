@@ -117,6 +117,32 @@ test('each sandbox comes back with its own tool panel and the same Superagent se
   await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
 });
 
+// SPEC-132 review: with the rail hidden, a sandbox coming back to its tool shows the rail for that
+// tool only (KST-005); closing the panel hides the rail again and the hidden choice stays.
+test('a sandbox coming back to its tool shows the hidden rail only while the panel is open', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/agent'));
+  await expect(browser.locator('.agent-term .xterm-rows').first()).toHaveText(/Welcome to Claude Code/);
+  const rail = screen.getByRole('navigation', 'Tools');
+  const panel = screen.getByRole('region', 'Tool panel');
+
+  // product shows the tool in view; closed there, the rail the link showed goes too.
+  await tab(screen, 'product').click();
+  await expect(heading(screen)).toHaveText('New task');
+  await screen.getByRole('button', 'Close panel').click();
+  await expect(panel).toBeHidden();
+  await expect(rail).toBeHidden();
+
+  // studio comes back with its Superagent, and the rail only for it.
+  await tab(screen, 'studio').click();
+  await expect(panel).toBeVisible();
+  await expect(rail.getByRole('button', 'Superagent')).toHaveAttribute('aria-pressed', 'true');
+  await screen.getByRole('button', 'Close panel').click();
+  await expect(rail).toBeHidden();
+  await browser.reload();
+  await expect(screen.getByRole('button', /^Show tools/)).toBeVisible();
+  await expect(rail).toBeHidden();
+});
+
 type WithMonaco = Window & { monaco: { editor: { getModels(): { getValue(): string }[] } } };
 const modelTexts = (browser: Browser) => browser.evaluate(() => (window as unknown as WithMonaco).monaco.editor.getModels().map((m) => m.getValue()));
 

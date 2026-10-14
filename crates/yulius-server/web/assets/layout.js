@@ -61,8 +61,8 @@ export function createTabRow(ctx) {
   const eventDot = h('span', { class: 'ev-dot', title: 'Live updates connected' });
   const eventText = h('span', { class: 'sr-only' }, ', live updates connected');
   const statusButton = h('button', { type: 'button', class: 'btn btn-status', 'aria-expanded': 'false', 'aria-haspopup': 'dialog', title: 'Status: machine and subscription usage' }, eventDot, h('span', { class: 'status-text' }, 'Status'), eventText, icon('down', { size: 12 }));
-  // Shows/hides the right tool rail (Superagent, browser, editor, shell); hidden by default.
-  const toolsButton = iconButton('tools', 'Show tools (Superagent, browser, editor, shell)', () => ctx.toggleRail && ctx.toggleRail(), { class: 'tools-toggle' });
+  // Shows/hides the right tool rail (Superagent, browser, editor, shell, notes); hidden by default.
+  const toolsButton = iconButton('tools', 'Show tools (Superagent, browser, editor, shell, notes)', () => ctx.toggleRail && ctx.toggleRail(), { class: 'tools-toggle' });
   const toolsDot = h('span', { class: 'rail-dot', hidden: true });
   toolsButton.append(toolsDot);
   toolsButton.style.position = 'relative';
@@ -70,7 +70,7 @@ export function createTabRow(ctx) {
   let toolsAttention = false;
   let railVisible = false;
   const labelTools = () => {
-    toolsButton.title = railVisible ? 'Hide tools' : 'Show tools (Superagent, browser, editor, shell)';
+    toolsButton.title = railVisible ? 'Hide tools' : 'Show tools (Superagent, browser, editor, shell, notes)';
     toolsButton.setAttribute('aria-label', `${toolsButton.title}${toolsAttention ? ', an agent needs your action' : ''}`);
   };
   ctx.onToolsAttention = (attention) => { toolsAttention = attention; toolsDot.hidden = !attention; labelTools(); };

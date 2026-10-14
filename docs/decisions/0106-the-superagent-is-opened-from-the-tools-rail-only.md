@@ -16,7 +16,7 @@ it's already right under the button".
 ## Decision
 
 The top bar has no Superagent button. The Superagent is opened from the tools rail: the toggle
-(now "Show tools (Superagent, browser, editor, shell)") shows the rail, and the rail's Superagent
+(now "Show tools (Superagent, browser, editor, shell, notes)") shows the rail, and the rail's Superagent
 opens and closes the panel. The links `/s/<slug>/superagent`, `/agent` and `/cockpit` still open it,
 and a panel opened while the rail is hidden (by a link, or a sandbox returning to its tool) still
 shows the rail only until the panel closes, so the person's Tools choice stays.
