@@ -417,9 +417,13 @@ flowchart LR
 
 The web UI is plain ES modules. Server state comes from the API and the UI event stream
 (`store.js`); what only one person's browser needs stays in `localStorage`: preferences (theme,
-column widths, model and effort), the notification history, and the new-task composer's drafts
-([decision 0021](decisions/0021-composer-drafts-in-the-browser.md)). Sign-out removes the
-notification history and the drafts.
+column widths, model and effort), the notification history, the new-task composer's drafts
+([decision 0021](decisions/0021-composer-drafts-in-the-browser.md)), and each sandbox's pull
+requests as the last Git overview read said them (`yulius.pulls.<user>.<sandbox>`), shown at once
+after a reload, for a sandbox a view watches, until the page's own read replaces them (dropped if
+that read fails; SPEC-104).
+Sign-out removes the notification history, the drafts and the pull requests; an expired session
+removes the pull requests too.
 
 Every drop-down menu is built by `openMenu` (`dom.js`). It stays inside the window, scrolling its
 items, and a menu of 8 or more items opens with a filter box
@@ -435,6 +439,11 @@ flowchart LR
   LS -->|"after a reload"| D
   C -->|"task started: clear"| D
   SO["Sign-out"] -->|"forget"| LS
+  G["GET /api/sandboxes/:id/git"] -->|"every read"| P["store.js loadPulls / pullsOf()"]
+  P -->|"write"| LP[("localStorage yulius.pulls.*")]
+  LP -->|"after a reload, until the read answers"| P
+  SO -->|"forget"| LP
+  EX["Session expired"] -->|"forget"| LP
 ```
 
 ## Task status
