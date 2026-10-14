@@ -11,6 +11,7 @@ pub mod automation_format;
 pub mod branch_policy;
 pub mod briefing;
 pub mod capacity;
+pub mod cd;
 pub mod ci;
 pub mod context_full;
 pub mod cron;
