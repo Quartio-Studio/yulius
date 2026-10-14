@@ -1,11 +1,11 @@
 ---
 yulius-task: d4504776-5edf-4bc2-b91a-5443c1c2e43e
-status: in-progress
+status: done
 ---
 
 # SPEC-126: change how a waiting task starts
 
-Status: in progress
+Status: implemented
 Date: 2026-10-14
 Owner: Yulius task #115
 Scope authorization: user request (task #115): "we'd like to be able to change task running rule,
@@ -57,13 +57,13 @@ A task that has started keeps its start; nothing changes for it.
 
 ## Plan
 
-- [ ] Read the product context and related work, then write and validate the spec
-- [ ] The store replaces a waiting task's start in one transaction and releases only the chain it evaluated
-- [ ] The API changes how a prepared or chained task starts, refusing started tasks, cycles and full bounds
-- [ ] A changed rule judges the tasks that existed when it was written
-- [ ] The task view's start chip changes how a waiting task starts
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Read the product context and related work, then write and validate the spec
+- [x] The store replaces a waiting task's start in one transaction and releases only the chain it evaluated
+- [x] The API changes how a prepared or chained task starts, refusing started tasks, cycles and full bounds
+- [x] A changed rule judges the tasks that existed when it was written
+- [x] The task view's start chip changes how a waiting task starts
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -121,5 +121,41 @@ A task that has started keeps its start; nothing changes for it.
   now keeps its chain as Start now does; creation and change share one validator; the cycle walk
   judges a rule's numbers from its time. The bounds stay counted before the write, as creation
   does (ADR-0085).
+- A chained task changed to Supertask keeps its chain row, as Start now does: it starts from its
+  predecessor's branch with that briefing (review round 2 nit; creation never gives a supertask a
+  chain). Round 2 approved; its other nits (the lock held across the onboarding check, unblock
+  paths unguarded since a stale unblock only clears a block the next pass restores) stay as they
+  are.
 - The UI reuses the composer's start menu and rule editor; the task's own Start now, Change
   time… and Cancel buttons stay as they are.
+
+## Evidence
+
+Commands run on this branch at b10862be (after merging `origin/dev`; the code is the head round 2
+approved, afa91507, plus that clean merge):
+
+- `scripts/dev lint`: rustfmt and Clippy (`-D warnings`) clean.
+- `scripts/dev check`: repository contracts, script tests and `cargo check` of every target passed.
+- `scripts/dev test`: 1649 tests passed, 16 skipped (nextest), doc tests OK. Among them
+  `start_change::` (8: AC-CHS-1..5 and 7, the predecessors' links, two concurrent changes never
+  forming a cycle, which failed before the lock), the store tests
+  `a_waiting_task_start_is_replaced_in_one_step` and `a_chain_release_checks_the_chain_it_evaluated`
+  (release and block guarded by predecessor, rule and time), the domain test
+  `a_waiting_task_changes_how_it_starts`, and the existing `intake::`, `prepared::`,
+  `supertask::` suites unchanged.
+- Failing first: the domain test (no `ChainChosen`), `a_changed_rule_judges_tasks_from_when_it_was_written`
+  (blocked as "can no longer become true" before the chain-time change), and in review round 1
+  `two_changes_at_once_never_make_a_cycle` and the kept chain on Start now.
+- `scripts/dev deps`: advisories, bans, licenses and sources ok; cargo-shear clean.
+- `cd e2e && npx e2e run`: 49 files passed, 1 skipped (393 tests passed, 1 skipped), including
+  `start-change.e2e.ts` (3 tests, AC-CHS-8: no WCAG violations, the task left out of its own menu,
+  a refused change is a toast and changes nothing).
+- Visual check in the Yulius browser at phone width (342 px): the waiting task's bar puts its words
+  on one row and the start chip, Start now and Cancel below; the menu leaves the task itself out.
+- Independent review in a fresh session: round 1 REQUEST CHANGES (stale block of a new chain,
+  supertask flag lost under onboarding, a cycle race, Start now differing between chip and button,
+  test gaps, duplicated validation), fixed test-first; round 2 APPROVE on afa91507 with nits.
+
+Not tested here: a real Claude Code run started by a changed task (the in-memory harness stops at
+`start_run`; the start path after `queued` is the existing one), the audit entry and published
+events (read in review), and the race of CHS-005 through the API (shown at the store level).
