@@ -13,6 +13,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- Images keep their place in the text, from paste to the agent (SPEC-124, ADR-0101, task #105).
+  A pasted or dropped image used to become a thumbnail in a row above the prompt, and the agent
+  got the images after the text, apart from the words about them. Now a file lands at the caret
+  (or the drop point) inside the text, as a thumbnail or a chip. It deletes like a character, with
+  undo, and moves by drag or by cut and paste. The prompt is stored with each file at its place
+  (`@'<path>'`). The agent gets it there: in the request file, in the CLI prompt, or pasted where
+  it sits in a typed first message, still one message. The original prompt view shows it inside
+  the text. Older prompts and drafts keep working; their files show after the text.
 - The top bar has no Superagent button any more (SPEC-132, ADR-0106, task #120). The Superagent
   is first in the tools rail, right under the tools toggle, so the button beside the toggle was a
   second way to the same panel. The toggle now reads "Show tools (Superagent, browser, editor,

@@ -66,6 +66,8 @@ watching, steering and unblocking.
   Until a task starts, how it starts can change: the start chip in a waiting task's view offers
   the same choices as New task (after a task, a rule, When I decide, a time, Start now or
   Supertask); a task that started keeps its start.
+  An image or file pasted or dropped into the prompt sits in its text where it was put, as a
+  thumbnail or chip that moves and deletes like a character, and the agent gets it at that place.
   A half-written task (its prompt, attached files and choices) waits in the composer while
   people look elsewhere, also across a reload, until it starts.
   A task is its owner's: it acts on GitHub with their credentials, so only they change it. Others
