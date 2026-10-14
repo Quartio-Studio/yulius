@@ -2165,7 +2165,8 @@ route('DELETE', `/api/sandboxes/${ID}/shells/${ID}`, ({ db, p }) => {
   return json(204);
 });
 
-// ---- Notes (SPEC-041): one notepad per sandbox and one for the team; a save names the revision it
+// ---- Notes (SPEC-041): one notepad per sandbox, one for the team and one per person
+// (`me:<user id>`, SPEC-103); a save names the revision it
 // started from and a stale one is refused (409). Kept in sessionStorage so a reload finds them, as
 // it would on the server. Tests edit as a teammate (`editNote`), fail saves (`failNoteSaves`) and
 // loads (`failNoteLoads`), lose a stored save's answer (`loseNoteResponse`) and see which requests
@@ -2185,7 +2186,7 @@ function notesOf(db) {
 function noteView(db, scope) {
   const note = notesOf(db)[scope];
   return {
-    scope: scope === 'team' ? 'team' : 'sandbox',
+    scope: scope === 'team' ? 'team' : scope.startsWith('me:') ? 'me' : 'sandbox',
     body: note ? note.body : '',
     revision: note ? note.revision : 0,
     updated_at: note ? note.updated_at : null,
@@ -2201,7 +2202,8 @@ function putNote(db, scope, body, by, { announce = true } = {}) {
   try { sessionStorage.setItem(NOTES_KEY, JSON.stringify(notes)); } catch { /* memory only */ }
   if (announce) {
     const sandboxId = scope.startsWith('sandbox:') ? scope.slice('sandbox:'.length) : null;
-    emit(db, { type: 'note.updated', scope: sandboxId ? 'sandbox' : 'team', sandbox_id: sandboxId, revision, updated_by: by });
+    // The mock has one person: their own notepad's events reach them (on the server, only them).
+    emit(db, { type: 'note.updated', scope: noteView(db, scope).scope, sandbox_id: sandboxId, revision, updated_by: by });
   }
   return noteView(db, scope);
 }
@@ -2226,6 +2228,8 @@ function loadNote(db, scope) {
 
 route('GET', '/api/notes', ({ db }) => loadNote(db, 'team'));
 route('PUT', '/api/notes', ({ db, body }) => saveNote(db, 'team', body));
+route('GET', '/api/me/notes', ({ db }) => loadNote(db, `me:${db.me.user.id}`));
+route('PUT', '/api/me/notes', ({ db, body }) => saveNote(db, `me:${db.me.user.id}`, body));
 route('GET', `/api/sandboxes/${ID}/notes`, ({ db, p }) => loadNote(db, `sandbox:${sandboxOf(db, p[0]).id}`));
 route('PUT', `/api/sandboxes/${ID}/notes`, ({ db, p, body }) => {
   const sandbox = sandboxOf(db, p[0]);

@@ -1,6 +1,8 @@
 //! Auto-saved notes (SPEC-041 NOT-003..007): one notepad per sandbox and one for the team, stored
 //! with revisions; a stale revision is refused, readers read and writers edit sandbox notes, every
 //! signed-in person edits team notes, and each stored edit is announced to the people who may read it.
+//! Personal notes (SPEC-103 NOT-011..013) are each person's own, in every sandbox, and their edits
+//! reach only their owner.
 
 use crate::support;
 
@@ -329,6 +331,39 @@ async fn an_edit_is_announced_to_viewers() -> TestResult {
         }
     );
 
+    assert!(
+        envelope.user.is_none(),
+        "team notes are not addressed to one person"
+    );
+
+    call(
+        &h.router,
+        Method::PUT,
+        "/api/me/notes",
+        Some(json!({"body": "mine", "revision": 0})),
+        &alice,
+    )
+    .await?;
+    let envelope = events.try_recv()?;
+    assert!(
+        envelope.sandbox.is_none(),
+        "personal notes are in no sandbox"
+    );
+    assert_eq!(
+        envelope.user.as_ref().map(ToString::to_string).as_deref(),
+        Some("u-alice"),
+        "a personal note's event is addressed to its owner"
+    );
+    assert_eq!(
+        envelope.event,
+        UiEvent::NoteUpdated {
+            scope: "me".into(),
+            sandbox_id: None,
+            revision: 1,
+            updated_by: "alice".into()
+        }
+    );
+
     // A refused save announces nothing.
     call(
         &h.router,
@@ -339,5 +374,187 @@ async fn an_edit_is_announced_to_viewers() -> TestResult {
     )
     .await?;
     assert!(events.try_recv().is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_personal_edit_reaches_only_its_owner() -> TestResult {
+    use futures::StreamExt as _;
+    use support::{serve, setup_superadmin_creds, superadmin_bearer, ws_connect};
+    use tokio_tungstenite::tungstenite::Message;
+    type Socket = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
+    let h = harness()?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    let bob = seed_github_user(&h, "u-bob", "bob").await?;
+    // The superadmin sees everything else, and still not someone's own notes.
+    setup_superadmin_creds(&h).await?;
+    let admin = superadmin_bearer(&h).await?;
+    let served = serve(h.router.clone()).await?;
+    let origin = h.app.config.public_url.clone();
+    let mut alices = ws_connect(served.addr, "/api/events", &alice, &origin).await?;
+    let mut bobs = ws_connect(served.addr, "/api/events", &bob, &origin).await?;
+    let mut admins = ws_connect(served.addr, "/api/events", &admin, &origin).await?;
+    let mark = |task: &str| {
+        h.app.events.publish(
+            None,
+            false,
+            UiEvent::TaskRemoved {
+                task_id: task.into(),
+            },
+        );
+    };
+    // The text frames up to and including the one naming `marker`.
+    async fn until(socket: &mut Socket, marker: &str) -> Result<Vec<String>, String> {
+        let mut frames = Vec::new();
+        loop {
+            let next = tokio::time::timeout(std::time::Duration::from_secs(10), socket.next())
+                .await
+                .map_err(|_| format!("no {marker} within 10 s: {frames:?}"))?;
+            match next {
+                Some(Ok(Message::Text(text))) => {
+                    let text = text.to_string();
+                    let done = text.contains(marker);
+                    frames.push(text);
+                    if done {
+                        return Ok(frames);
+                    }
+                }
+                Some(Ok(_)) => {}
+                other => return Err(format!("stream ended: {other:?}")),
+            }
+        }
+    }
+
+    // The server subscribes once the upgrade completes: mark until every stream has it.
+    for (round, socket) in [&mut alices, &mut bobs, &mut admins]
+        .into_iter()
+        .enumerate()
+    {
+        let marker = format!("t-ready-{round}");
+        let mut ready = false;
+        for _ in 0..40 {
+            mark(&marker);
+            if let Ok(Some(Ok(Message::Text(text)))) =
+                tokio::time::timeout(std::time::Duration::from_millis(250), socket.next()).await
+                && text.contains(&marker)
+            {
+                ready = true;
+                break;
+            }
+        }
+        assert!(ready, "stream {round} never subscribed");
+    }
+
+    let saved = call(
+        &h.router,
+        Method::PUT,
+        "/api/me/notes",
+        Some(json!({"body": "mine alone", "revision": 0})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(saved.status, StatusCode::OK, "{:?}", saved.body);
+    // Events keep their order, so whatever the save announced arrives before this marker.
+    mark("t-after");
+
+    let owners = until(&mut alices, "t-after").await?;
+    assert!(
+        owners
+            .iter()
+            .any(|f| f.contains(r#""type":"note.updated""#) && f.contains(r#""scope":"me""#)),
+        "the owner's stream: {owners:?}"
+    );
+    for (who, socket) in [("bob", &mut bobs), ("the superadmin", &mut admins)] {
+        let others = until(socket, "t-after").await?;
+        assert!(
+            !others.iter().any(|f| f.contains("note.updated")),
+            "{who}'s stream: {others:?}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn personal_notes_are_each_persons_own() -> TestResult {
+    let h = harness()?;
+    let alice = seed_github_user(&h, "u-alice", "alice").await?;
+    // Bob can see no sandbox at all and still has his own notepad.
+    let bob = seed_github_user(&h, "u-bob", "bob").await?;
+    seed_sandbox(&h, "s1", "fixture", "u-alice").await?;
+    h.github.set_perm("alice", "acme/fixture", perms("write"));
+
+    let empty = call(&h.router, Method::GET, "/api/me/notes", None, &alice).await?;
+    assert_eq!(empty.status, StatusCode::OK, "{:?}", empty.body);
+    assert_eq!(empty.body["scope"], "me");
+    assert_eq!(empty.body["body"], "");
+    assert_eq!(empty.body["revision"], 0);
+
+    let saved = call(
+        &h.router,
+        Method::PUT,
+        "/api/me/notes",
+        Some(json!({"body": "grep instead of read?", "revision": 0})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(saved.status, StatusCode::OK, "{:?}", saved.body);
+    assert_eq!(saved.body["scope"], "me");
+    assert_eq!(saved.body["revision"], 1);
+    assert_eq!(saved.body["updated_by"], "alice");
+
+    // Another person reads only their own notepad and saving it leaves Alice's alone.
+    let other = call(&h.router, Method::GET, "/api/me/notes", None, &bob).await?;
+    assert_eq!(other.status, StatusCode::OK, "{:?}", other.body);
+    assert_eq!(other.body["body"], "");
+    assert_eq!(other.body["revision"], 0);
+    let bobs = call(
+        &h.router,
+        Method::PUT,
+        "/api/me/notes",
+        Some(json!({"body": "Bob's own", "revision": 0})),
+        &bob,
+    )
+    .await?;
+    assert_eq!(bobs.status, StatusCode::OK, "{:?}", bobs.body);
+    let read = call(&h.router, Method::GET, "/api/me/notes", None, &alice).await?;
+    assert_eq!(read.body["body"], "grep instead of read?");
+    assert_eq!(read.body["revision"], 1);
+
+    // Not the team's nor a sandbox's notepad.
+    let team = call(&h.router, Method::GET, "/api/notes", None, &alice).await?;
+    assert_eq!(team.body["revision"], 0);
+    let sandbox = call(
+        &h.router,
+        Method::GET,
+        "/api/sandboxes/s1/notes",
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(sandbox.body["revision"], 0);
+
+    // The same compare-and-set as the shared notepads.
+    let stale = call(
+        &h.router,
+        Method::PUT,
+        "/api/me/notes",
+        Some(json!({"body": "late", "revision": 0})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(stale.status, StatusCode::CONFLICT, "{:?}", stale.body);
+
+    // Signed out: no notes.
+    let anonymous = call(
+        &h.router,
+        Method::GET,
+        "/api/me/notes",
+        None,
+        &support::Creds::default(),
+    )
+    .await?;
+    assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
     Ok(())
 }

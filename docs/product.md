@@ -70,7 +70,8 @@ watching, steering and unblocking.
   another task or when a rule is true, picked with New task's start chip beside Run now and Save;
   Run now starts its task the way the chip shows.
 - **Notes**: in the tools rail, a notepad per sandbox and one for the whole team, shared and saved
-  while people type; a teammate's edit shows up live, and two edits at once end in a choice.
+  while people type; a teammate's edit shows up live, and two edits at once end in a choice. A
+  third, **Me**, is each person's own: nobody else sees it, and it is the same in every sandbox.
 - **Editor, terminals, Git view, automations, workflow catalog** in one web UI, whose menus fit
   the window and filter as people type when they are long; the start menu shows five tasks at a
   time and says how many more it scrolls to. Messages are

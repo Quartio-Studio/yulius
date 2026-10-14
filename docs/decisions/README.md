@@ -87,4 +87,5 @@ number differs from the file name, and a record this index does not list.
 - [0082](0082-the-session-web-sticks-and-its-creatures-move.md): The session's web sticks in its corner, its spider climbs in CSS, and a cockroach runs by from a timer
 - [0077](0077-onboarding-task-is-created-when-needed.md): A sandbox's onboarding task is created when onboarding starts, not at import
 - [0080](0080-a-wait-for-yulius-shows-a-still-muted-branch.md): A wait for Yulius shows a still, muted branch, not Working's turning green
+- [0084](0084-personal-notes-in-the-notes-table.md): Personal notes ("Me") live in the notes table, and their events reach only their owner
 - [0083](0083-long-menu-groups-scroll-five-rows.md): A long menu group (the start menu's tasks) shows five rows and says there is more
