@@ -269,6 +269,31 @@ fn requests_are_parsed_strictly() {
     assert!(parse_request(b"[]", now).is_err());
 }
 
+/// A stateless GitHub App installation token (`ghs_<APPID>_<JWT>`, about 520 characters since
+/// 2026-10-02), synthetic and `len` bytes long.
+fn stateless_installation_token(len: usize) -> String {
+    let head = "ghs_1234567_eyJhbGciOiJSUzI1NiJ9.";
+    let tail = ".c2lnbmF0dXJl-_";
+    format!("{head}{}{tail}", "x".repeat(len - head.len() - tail.len()))
+}
+
+#[test]
+fn stateless_installation_tokens_are_accepted() {
+    use serde_json::json;
+    let now = 1_000_000;
+    for len in [520, 1024, MAX_TOKEN_BYTES] {
+        let token = stateless_installation_token(len);
+        assert!(
+            parse_request(&request_json(&[("token", json!(token))]), now).is_ok(),
+            "a {len}-byte installation token is refused"
+        );
+    }
+    let oversized = stateless_installation_token(MAX_TOKEN_BYTES + 1);
+    assert!(parse_request(&request_json(&[("token", json!(oversized))]), now).is_err());
+    let injected = format!("{}\r\nX-Injected: 1", stateless_installation_token(520));
+    assert!(parse_request(&request_json(&[("token", json!(injected))]), now).is_err());
+}
+
 #[test]
 fn cargo_progress_lines_are_parsed() {
     assert_eq!(
