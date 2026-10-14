@@ -22,7 +22,10 @@ use serde_json::{Map, Value};
 use yulius_contracts::api::mcp::McpServerInput;
 use yulius_domain::vault::{SecretName, placeholder};
 
-use super::{MAX_SERVERS_PER_SCOPE, McpServerRecord, bearer_of, name_key, secret_ref, validate};
+use super::{
+    MAX_SECRET_BYTES, MAX_SERVERS_PER_SCOPE, McpServerRecord, bearer_of, name_key, secret_ref,
+    validate,
+};
 use crate::context::App;
 use crate::error::AppResult;
 use crate::hooks::read_repo_doc;
@@ -151,10 +154,16 @@ fn values(
     for (key, value) in map {
         let value = value.as_str()?;
         match file_value(value, agent_secrets) {
-            Some(value) if !value.is_empty() => {
+            Some(value) if value.is_empty() => {}
+            // What `validate` would refuse for the whole server leaves out only this value.
+            Some(value)
+                if value.len() <= MAX_SECRET_BYTES && !value.contains(['\0', '\r', '\n']) =>
+            {
                 out.insert(key.clone(), value);
             }
-            Some(_) => {}
+            Some(_) => {
+                tracing::warn!(server = %server, key = %key, "a .mcp.json value is not one line of at most 16 KiB; it is left out");
+            }
             None => {
                 tracing::warn!(server = %server, key = %key, "a .mcp.json value names no valid agent secret; it is left out");
             }
@@ -444,6 +453,24 @@ mod tests {
         ] {
             assert_eq!(file_value(value, &none).as_deref(), stored, "{value}");
         }
+    }
+
+    /// One value Yulius cannot store (a default with a line break, one over 16 KiB) is left out;
+    /// the server is still imported.
+    #[test]
+    fn a_value_that_cannot_be_stored_leaves_only_itself_out() {
+        let long = "x".repeat(MAX_SECRET_BYTES + 1);
+        let project = parsed(&format!(
+            r#"{{"mcpServers": {{"a": {{"command": "x",
+                "env": {{"MULTI": "${{M:-a\nb}}", "LONG": "{long}", "OK": "1"}}}}}}}}"#
+        ));
+        let [server] = project.servers.as_slice() else {
+            panic!("{project:?}");
+        };
+        assert_eq!(
+            server.env,
+            Some(BTreeMap::from([("OK".into(), "1".into())]))
+        );
     }
 
     #[test]

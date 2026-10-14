@@ -12,10 +12,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   gets them. Since agents can write the file, a `${VAR}` value becomes the placeholder of the agent
   secret VAR, which the egress proxy replaces on the secret's bound hosts; the file never gets a
   clear value. The Superagent starts rejecting the file's servers through `--settings`, including
-  ones a person had approved there (#395 will give it Yulius's servers). A server already configured is left as it is, so one turned off stays
-  off. An MCP server's values now reach a run in `YULIUS_MCP_<SERVER>_<VAR>` variables. Before, one
-  named like an agent secret, such as `APIFY_TOKEN`, clashed with that secret's placeholder, and
-  every run of the sandbox failed to start.
+  ones a person had approved there (#395 will give it Yulius's servers). A server already
+  configured is left as it is, so one turned off stays off. An MCP server's values now reach a run
+  in `YULIUS_MCP_<SERVER>_<VAR>` variables. Before, one named like an agent secret, such as
+  `APIFY_TOKEN`, clashed with that secret's placeholder, and every run of the sandbox failed to
+  start.
 - Menus show an option's whole description (SPEC-094, ADR-0075, task #79). A description wraps
   onto as many lines as it needs instead of ending in an ellipsis, in every `openMenu` menu; menus
   keep their width (at most 320 px and the window less 16 px), so a short description stays one

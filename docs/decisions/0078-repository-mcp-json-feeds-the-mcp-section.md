@@ -30,7 +30,7 @@ a link could point at another sandbox's file and a FIFO could block the read for
 The import also exposed a clash. A stdio server's value travelled in the run's environment under
 the server's own variable name, such as `APIFY_TOKEN`. An agent secret of that name already puts
 its placeholder there, and the session host refuses the duplicate, so every run in the sandbox
-failed to spawn. The import makes this the normal case, because `${APIFY_TOKEN}` maps to the agent
+failed to spawn. The import makes this the normal case, because `${APIFY_TOKEN}` names the agent
 secret `APIFY_TOKEN`.
 
 ## Decision
@@ -44,7 +44,8 @@ secret `APIFY_TOKEN`.
 - A file-defined server gets what an agent gets, never more. Whole `${VAR}` and `${secret:VAR}`
   values, also after `Bearer `, become the agent secret's placeholder `yulius-secret-VAR`, which
   the egress proxy replaces on the secret's bound hosts only (the vault sets `HTTPS_PROXY`,
-  `NODE_USE_ENV_PROXY` and the CA bundle for every process of the run).
+  `NODE_USE_ENV_PROXY` and the CA bundle for every process of the run; a stdio MCP server inherits
+  them, verified with Claude Code 2.1.292).
   `${VAR:-default}` becomes the placeholder when VAR is an agent secret, else the default. A
   stored value is never a `${secret:…}` reference. Only a person editing the server on the MCP
   page can give it a secret's value directly.
