@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- An agent secret is a name, a value and a description (SPEC-121, ADR-0098, task #107). The add
+  dialog no longer asks for hosts or for how the secret is added to requests. Instance
+  administrators find the scope under More options. Agents send the `$NAME` placeholder in
+  whatever header or query the service wants. They work out the service's host and ask for it
+  with `secret_request_hosts`. The Secrets page shows "Task #N asks to send it to …" with Allow
+  and Dismiss, and nothing is sent anywhere before a person allows it.
 - Onboarding leaves the project ready to work in the discipline (SPEC-116, ADR-0094, task #101).
   Studio's onboarding left its linter, dead-code check and per-project CI as issues #57 and #58.
   Both onboarding prompts now lay the gate in the onboarding pull request itself:
