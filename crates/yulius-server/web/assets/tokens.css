@@ -241,8 +241,8 @@
   --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
   --selection: color-mix(in srgb, var(--accent) 35%, transparent); /* selected text, in the brand */
   --brand-mark: var(--text);   /* the logo mark: monochrome, like the brand's own lockup */
-  --wordmark-case: uppercase;  /* the wordmark as set in the lockup: capitals, open tracking, set in --font at 600 (the thin display face looked spindly beside the mark) */
-  --wordmark-tracking: 0.18em;
+  --wordmark-case: none;       /* the wordmark as the composer's quote is set (ADR-0100): the name as written, in --font-display at 400 and --fs-xl */
+  --wordmark-tracking: 0;
   --accent-border: color-mix(in srgb, var(--accent) 40%, transparent);
   --accent-border-strong: color-mix(in srgb, var(--accent) 60%, transparent);
   --accent-track: color-mix(in srgb, var(--series-1) 20%, transparent);
@@ -340,7 +340,7 @@
 
 /* ---------------------------------------------------------------- Brand typefaces
    Self-hosted only (no font CDNs: the serving contract allows this origin alone): Instrument Sans
-   (interface), Tenor Sans (titles and the wordmark: Roman capital proportions) and IBM Plex Mono
+   (interface), Tenor Sans (titles and the wordmark: Roman proportions) and IBM Plex Mono
    (terminals, the editor, code), all SIL Open Font License 1.1 (assets/fonts/LICENSE.*), from the
    Fontsource 5.3.0 packages; Latin and Latin Extended subsets, one file per weight the UI uses. */
 @font-face { font-family: "Instrument Sans"; src: url("/assets/fonts/instrument-sans-latin-ext-400.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; unicode-range: U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF; }
