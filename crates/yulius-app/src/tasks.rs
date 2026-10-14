@@ -20,10 +20,12 @@ use crate::ports::store::TaskFieldUpdate;
 /// Maximum title length derived from a prompt.
 const TITLE_MAX: usize = 80;
 
-/// Derives a task title from its prompt: first non-empty line, trimmed to 80 characters.
+/// Derives a task title from its prompt: first non-empty line of its text (its attached files
+/// left out, SPEC-124), trimmed to 80 characters.
 #[must_use]
 pub fn title_from_prompt(prompt: &str) -> String {
-    let line = prompt
+    let text = yulius_domain::request::Request::parse(prompt).text;
+    let line = text
         .lines()
         .map(str::trim)
         .find(|l| !l.is_empty())
@@ -594,6 +596,11 @@ mod tests {
         assert_eq!(title_from_prompt("   "), "Untitled task");
         let long = "x".repeat(100);
         assert_eq!(title_from_prompt(&long).chars().count(), TITLE_MAX + 1);
+        // SPEC-124 INL-008: a file in the text, or on a line of its own, is not part of a title.
+        assert_eq!(
+            title_from_prompt("@/srv/a.png\nThis part @'/srv/b.png' looks wrong"),
+            "This part looks wrong"
+        );
     }
 
     #[test]
