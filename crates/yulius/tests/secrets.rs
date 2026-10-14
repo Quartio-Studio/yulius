@@ -901,6 +901,8 @@ async fn older_team_secrets_fold_into_a_value_and_notes() -> TestResult {
             last_used_at: None,
             requested_hosts: Vec::new(),
             requested_by: None,
+            env_files: yulius_app::ports::vault::EnvFiles::No,
+            env_requested_by: None,
         })
         .await?;
     let list = call(&h.router, Method::GET, "/api/team-secrets", None, &admin).await?;
@@ -1146,6 +1148,8 @@ async fn older_agent_secrets_reveal_their_user_name_and_seed() -> TestResult {
             last_used_at: None,
             requested_hosts: Vec::new(),
             requested_by: None,
+            env_files: yulius_app::ports::vault::EnvFiles::No,
+            env_requested_by: None,
         })
         .await?;
     let alice = browser_session(&w.h, "u-alice").await?;

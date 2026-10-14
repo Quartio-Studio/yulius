@@ -63,6 +63,9 @@ watching, steering and unblocking.
   A task can also be **prepared**: written now and started later, when the person presses Start
   now ("When I decide") or by itself at a date and time they pick ("At a time…"). Until then it
   holds no session, can be rescheduled or cancelled, and sits with the queued tasks.
+  Until a task starts, how it starts can change: the start chip in a waiting task's view offers
+  the same choices as New task (after a task, a rule, When I decide, a time, Start now or
+  Supertask); a task that started keeps its start.
   A half-written task (its prompt, attached files and choices) waits in the composer while
   people look elsewhere, also across a reload, until it starts.
   A task is its owner's: it acts on GitHub with their credentials, so only they change it. Others
@@ -103,7 +106,9 @@ watching, steering and unblocking.
   The people who manage an agent secret can read it too. A shown value stays masked until its eye
   button is pressed; it copies without being shown. An agent secret is added with a name, a value
   and a description: agents find the service's host and ask for it, and a person allows it with
-  one click (SPEC-121).
+  one click (SPEC-121). A project's keys live in a git-ignored `.env` beside a tracked
+  `.env.example`; when its code needs a secret's real value, the agent asks Yulius to copy it
+  there, and a person allows that once per secret (SPEC-129).
 - **Updates**: Yulius updates itself from `main` without losing running work.
 
 ## Principles
