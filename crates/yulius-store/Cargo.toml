@@ -11,6 +11,10 @@ publish = false
 [lints]
 workspace = true
 
+[features]
+# `create_at_version` for upgrade tests in other crates.
+test-support = []
+
 [package.metadata.yulius]
 layer = "adapter"
 

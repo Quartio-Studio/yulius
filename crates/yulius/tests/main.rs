@@ -43,6 +43,7 @@ mod local_ci;
 mod manage_tools;
 mod mcp_coordination;
 mod merge_train;
+mod metrics_recount;
 mod notes;
 mod pool_supervision;
 mod preview;

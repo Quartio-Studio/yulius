@@ -751,6 +751,35 @@ pub struct MetricsRecord {
     pub active_ms: Option<u64>,
 }
 
+/// What recounting a run recorded before SPEC-087 from its transcript did (SPEC-091 RCT-004).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecountOutcome {
+    /// Its figures were replaced by its transcript's.
+    Recomputed,
+    /// No session, worktree or transcript: its figures stay as they were.
+    NoTranscript,
+    /// The transcript holds nothing of the run: its figures stay.
+    NoLines,
+    /// The run still runs: its watch reads its transcript from its start (MET-002).
+    Live,
+    /// The run was deleted.
+    Gone,
+}
+
+impl RecountOutcome {
+    /// Stored name.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Recomputed => "recomputed",
+            Self::NoTranscript => "no_transcript",
+            Self::NoLines => "no_lines",
+            Self::Live => "live",
+            Self::Gone => "gone",
+        }
+    }
+}
+
 /// Token totals of one account's runs since a time (ROT-009).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AccountTokens {

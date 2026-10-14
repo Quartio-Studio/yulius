@@ -427,6 +427,34 @@ flowchart LR
     attention -.->|"agent works on"| working
 ```
 
+## Run metrics
+
+A run's tokens, turns and active time are computed from its own transcript lines and its
+sub-agents' transcripts, by one accumulator (`yulius-harness` `observe`), live while it runs and
+again after a restart ([ADR-0070](decisions/0070-run-metrics-come-from-the-transcript.md)). Runs
+recorded before that rule are counted again once: migration 23 queues every run recorded so far,
+and after start, once reconciliation has ended the lost runs, a background job counts each ended
+run's window of its transcript and records the outcome with the figures it replaced
+([ADR-0072](decisions/0072-recount-old-runs-from-their-transcripts-once.md)):
+
+```mermaid
+flowchart LR
+    mig["migration 23:
+queue every run so far"] --> queue[("metrics_recounts")]
+    start["start: reconcile"] --> job["recount_old_metrics
+(background)"]
+    queue --> job
+    job -->|"ended run, transcript exists"| count["harness.recount
+(spawn_blocking): its window
+from its start to its end
+or the next run's start"]
+    count --> put[("metrics: replaced;
+before/after recorded")]
+    job -->|"no transcript / no lines /
+live / gone"| keep[("metrics kept;
+outcome recorded")]
+```
+
 ## Notes
 
 The tools rail's Notes hold a notepad per sandbox and one for the team, shared and saved while

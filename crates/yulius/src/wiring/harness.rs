@@ -17,7 +17,7 @@ use yulius_harness::launch::{
 use yulius_harness::observe::{Observed, UsageAccumulator};
 use yulius_harness::secret::Secret as HSecret;
 use yulius_harness::subagents::{LinesSince, SubagentTails};
-use yulius_harness::{claude, login, paths, skills, tail};
+use yulius_harness::{claude, login, paths, recount, skills, tail};
 
 /// Harness adapter.
 pub struct HarnessAdapter {
@@ -248,6 +248,31 @@ impl HarnessPort for HarnessAdapter {
         }))
     }
 
+    fn recount(
+        &self,
+        harness: Harness,
+        sandbox_home: &Path,
+        worktree: &Path,
+        session_id: &str,
+        from: WatchFrom,
+        until: Option<Timestamp>,
+    ) -> AppResult<Option<UsageSnapshot>> {
+        // The session id came from the agent's hook: one that is not an id (`../x`, `/x`, which
+        // `join` would take as the whole path) names no transcript.
+        if !paths::valid_session_id(session_id) {
+            return Ok(None);
+        }
+        let path = self.claude_transcript(sandbox_home, worktree, session_id);
+        let since = match from {
+            WatchFrom::Start => None,
+            WatchFrom::Since(at) => Some(at),
+        };
+        let counted = match harness {
+            Harness::ClaudeCode => recount::count_run(&path, since, until).map_err(io)?,
+        };
+        Ok(counted.map(|acc| snapshot(&acc)))
+    }
+
     fn login_argv(&self, harness: Harness) -> Vec<String> {
         match harness {
             Harness::ClaudeCode => login::claude_setup_token_argv(),
@@ -273,6 +298,17 @@ impl HarnessPort for HarnessAdapter {
         skills::install_skills(&dirs, claude_dir)
             .map(|_| ())
             .map_err(AppError::internal)
+    }
+}
+
+/// A run's figures as the transcript's lines give them (SPEC-087).
+fn snapshot(acc: &UsageAccumulator) -> UsageSnapshot {
+    UsageSnapshot {
+        tokens: acc.usage(),
+        model: acc.model().map(str::to_owned),
+        turns: acc.turns(),
+        active_ms: acc.active().total_ms(),
+        turn_open_since: acc.active().open_since(),
     }
 }
 
@@ -381,13 +417,7 @@ impl TranscriptWatch for Watch {
     }
 
     fn usage(&self) -> UsageSnapshot {
-        UsageSnapshot {
-            tokens: self.acc.usage(),
-            model: self.acc.model().map(str::to_owned),
-            turns: self.acc.turns(),
-            active_ms: self.acc.active().total_ms(),
-            turn_open_since: self.acc.active().open_since(),
-        }
+        snapshot(&self.acc)
     }
 
     fn caught_up(&self) -> bool {

@@ -295,6 +295,24 @@ pub trait HarnessPort: Send + Sync {
         path: &Path,
         from: WatchFrom,
     ) -> AppResult<Box<dyn TranscriptWatch>>;
+    /// Counts an ended run's figures again from its window of its session transcript (the
+    /// session `session_id` of `worktree` in `sandbox_home`), by the live watch's rules: the lines
+    /// `from` reads, up to the first one recorded at or after `until`, its sub-agents' transcripts
+    /// over the same window (SPEC-091 RCT-001, RCT-002). `None` when the transcript does not
+    /// exist, or `session_id` is not a session id (it came from the agent's hook). Reads whole
+    /// files: call it off the async workers.
+    ///
+    /// # Errors
+    /// I/O failures.
+    fn recount(
+        &self,
+        harness: Harness,
+        sandbox_home: &Path,
+        worktree: &Path,
+        session_id: &str,
+        from: WatchFrom,
+        until: Option<Timestamp>,
+    ) -> AppResult<Option<UsageSnapshot>>;
     /// Login command for a provider account.
     fn login_argv(&self, harness: Harness) -> Vec<String>;
     /// Extracts a Claude OAuth token from login output.
