@@ -1,11 +1,11 @@
 ---
 yulius-task: c6939128-3adf-4c21-8aa2-59c06780af15
-status: in-progress
+status: done
 ---
 
 # SPEC-092: loading shows shimmering fields everywhere, not "Loading…"
 
-Status: in progress
+Status: implemented
 Date: 2026-10-14
 Owner: Yulius task #77
 Scope authorization: task request: "Instead of loading we want floating loading fields in all
@@ -56,7 +56,7 @@ still hear what is loading.
 - [x] Inline loading text in the editor, notes, home cards and browser becomes skeleton fields
 - [x] ADR, design page and UI docs say skeleton for loading, spinner for actions
 - [x] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -90,3 +90,26 @@ still hear what is loading.
   task. The bars stand in for content; an action has no content to stand in for (ADR-0073).
 - Three bars by default, as the existing skeleton. Mimicking each page's exact layout would mean
   a skeleton per page, with drift risk and no gain for a load that takes well under a second.
+
+## Evidence
+
+- Red first: `npx e2e run tests/loading.e2e.ts` failed on the old UI (the Git page had no
+  `.skeleton`; the browser test failed with the old overlay line restored). The reviewer ran
+  the suite against the `origin/dev` UI with only the new `mock.js`: all 4 tests of the first
+  round failed.
+- `cd e2e && npx e2e run tests/loading.e2e.ts`: 5 passed. It covers the Git page held (the
+  reported screen), the sidebar and Tasks lists, the status popover and its usage bar width, a
+  home card under a busy grid, the editor tree, a notepad, the browser cover, the `loader()`
+  label and the recovery card and form, each with axe where the page is complete.
+- Full e2e suite at `934756ef`: 284 passed, 1 failed, 1 skipped. The failure,
+  `terminal.e2e.ts`'s file-path test, was an uncaught Monaco error ("depends on UNKNOWN service
+  ICodeLensCache") at load average 27 on 12 CPUs; alone it passed 4 runs in a row (12/12 each).
+  Filed as #394, unrelated to this change.
+- `scripts/dev ci` (after `python3 scripts/bootstrap.py`): exit 0, 1520 tests run, 1520 passed,
+  16 skipped; cargo-deny and the repository check clean.
+- Source search: `grep -rn "placeholder-loading"` in `crates/yulius-server/web/assets` finds
+  nothing. `grep -rn "Loading"` outside `placeholder(`/`skeleton(` labels finds only comments and
+  the Load more button.
+- Independent review in a fresh session: round 1 approved `4d371055` with 6 minors and 4 nits,
+  all fixed in `934756ef` (labels name what loads, recovery views, a busy home grid, the usage
+  bar width, tree busy state, tests); round 2 approved `934756ef` with no findings.
