@@ -66,14 +66,18 @@ test('the fresh read replaces the pull requests remembered from before', async (
   expect((await storedPulls(browser))!.some(([, pr]) => pr.number === 999)).toBe(false);
 });
 
+// Rows of the wrong shape name the sidebar's own tasks, so a row let through would show a chip.
+const wrongRows = (ids: string[]) => [[ids[0], null], [ids[1], { number: 'x', state: 'open' }], [ids[2], { number: 7 }], [ids[3], 'pr']];
 for (const [what, value] of [
-  ['an object', { not: 'rows' }],
-  ['rows of the wrong shape', [['t', null], [1, { number: 5, state: 'open' }], ['t2', { number: 'x', state: 'open' }], ['t3', { number: 7 }]]],
+  ['an object', () => ({ not: 'rows' })],
+  ['rows of the wrong shape', wrongRows],
 ] as const) {
   test(`a stored value that is ${what} is ignored and the overview fills the rows`, async ({ app, browser }) => {
     await app.open(mock('/s/studio'));
     const seen = await chipsAfterRead(browser);
-    await storePulls(browser, value);
+    const ids = (await storedPulls(browser))!.map(([id]) => id);
+    expect(ids.length).toBeGreaterThanOrEqual(4);
+    await storePulls(browser, value(ids));
 
     await app.open(mock('/s/studio', `&hold=${GIT}`));
     await expect(browser.locator('.task-list .task-row').first()).toBeVisible();
@@ -107,6 +111,27 @@ test('a sandbox no view watches does not use the remembered pull requests', asyn
   });
   await expect.poll(detail).not.toBeNull();
   expect(await detail()).not.toContain('#999');
+});
+
+test('a failed first read drops the remembered pull requests instead of keeping them', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  await chipsAfterRead(browser);
+  const ids = (await storedPulls(browser))!.map(([id]) => id);
+  await storePulls(browser, [[ids[0], { number: 999, url: 'https://github.com/x/y/pull/999', title: 'Old', state: 'open', base: 'dev', head: 'feat/old', checks: 'success' }]]);
+
+  // The overview fails (a deploy restarting the server): an old read must not pass for a current one.
+  await app.open(mock('/s/studio', `&fail=${GIT}`));
+  await expect(browser.locator('.task-list .task-row').first()).toBeVisible();
+  await expect(chips(browser)).toHaveCount(0);
+});
+
+test('a session found expired when the page loads removes the stored pull requests', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await chipsAfterRead(browser);
+  expect(await storedPulls(browser)).not.toBeNull();
+  await app.open(mock('/s/studio', '&signedout=1'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sign in');
+  expect(await storedPulls(browser)).toBeNull();
 });
 
 test('a session that expires removes the stored pull requests', async ({ app, browser, screen }) => {
