@@ -181,6 +181,7 @@ editor re-colour from the same tokens (`theme.js` → `terminalColors()`, the Mo
 | Radii | `--radius-sm` 4, `--radius` 6, `--radius-lg` 10, `--radius-xl` 16, `--radius-full` | Small things; controls; containers; the composer and sign-in card; pills (circles use 50%) |
 | Spacing | 2, 4, 6, 8, 12, 16, 20, 24, 32, 40, 48 px | Padding, margin, gap (a 1 px margin may nudge an icon) |
 | Elevation | `--shadow-sm`, `--shadow`, `--shadow-raised`, `--focus` | L1 cards use borders only; L2 menus/popovers/toasts; L3 modals |
+| Masks | `--mask-solid`, `--mask-faint` (25 %) | `mask-image` stops: only alpha counts, the same in every theme; a fade ends faint, not gone (a menu group's edges, SPEC-102) |
 | Motion | `--duration-fast` 120 ms, `--duration` 200 ms, `--duration-slow` 300 ms, `--ease` | One rule turns all motion off under `prefers-reduced-motion` |
 | Icons | `--icon-stroke` 1.4 px | Same optical stroke at every size (non-scaling) |
 | Layers | `--z-raised`, `--z-sticky`, `--z-float`, `--z-drawer-scrim`, `--z-drawer`, `--z-panel`, `--z-popover`, `--z-menu`, `--z-toast` | Every `z-index`; modal dialogs use the browser's top layer above them |

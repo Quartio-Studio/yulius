@@ -225,10 +225,10 @@ p { margin: 0; }
   scroll-padding-block: var(--menu-fade);
 }
 .menu-scroll { --menu-fade: 20px; }
-.menu-scroll.more-below { mask-image: linear-gradient(to bottom, #000 calc(100% - var(--menu-fade)), rgb(0 0 0 / 0.25)); }
-.menu-scroll.more-above { mask-image: linear-gradient(to top, #000 calc(100% - var(--menu-fade)), rgb(0 0 0 / 0.25)); }
+.menu-scroll.more-below { mask-image: linear-gradient(to bottom, var(--mask-solid) calc(100% - var(--menu-fade)), var(--mask-faint)); }
+.menu-scroll.more-above { mask-image: linear-gradient(to top, var(--mask-solid) calc(100% - var(--menu-fade)), var(--mask-faint)); }
 .menu-scroll.more-above.more-below {
-  mask-image: linear-gradient(to bottom, rgb(0 0 0 / 0.25), #000 var(--menu-fade), #000 calc(100% - var(--menu-fade)), rgb(0 0 0 / 0.25));
+  mask-image: linear-gradient(to bottom, var(--mask-faint), var(--mask-solid) var(--menu-fade), var(--mask-solid) calc(100% - var(--menu-fade)), var(--mask-faint));
 }
 .menu-more {
   display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 12px; border-radius: var(--radius-sm);
