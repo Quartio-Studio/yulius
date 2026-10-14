@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- A pull request's change reaches the sidebar when it happens (SPEC-108, ADR-0087, task #93). Task
+  #56 read Done with PR #340 "checks running" 4.5 minutes after Yulius had merged it: the task's
+  state came live, its pull request only from the Git overview read every minute, never while the
+  tab was hidden. The server now publishes `pulls.updated` to a sandbox's viewers when a delivery
+  stage moves (opened, merged, reconciled with GitHub, by any path) and when a Yulius CI run is
+  queued, starts or ends; the browser reads the overview again at once, or when a hidden tab is
+  shown again. Reads of a sandbox no longer overlap, and a change announced during a read brings
+  one more read after it, so an older read never has the last word.
 - A session's spider web stays in view, its spider moves and a cockroach runs by (SPEC-101,
   ADR-0082, task #86). The web sticks to the top-right corner while the transcript scrolls. Every
   8 s the spider climbs its thread in pixel steps, legs switching, and drops back. Now and then (20–60 s

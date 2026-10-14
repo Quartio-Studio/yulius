@@ -60,11 +60,11 @@ state with a pull request read from minutes before.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| PRL-001 | The event stream carries `pulls.updated { sandbox_id }`, addressed to the sandbox (only people who may view it receive it). It says the sandbox's pull requests may have changed; it carries no pull request data. | `events::tests` round trip; `delivery::pull_request_changes_are_announced_to_the_sandbox` |
+| PRL-001 | The event stream carries `pulls.updated { sandbox_id }`, addressed to the sandbox (only people who may view it receive it). It says the sandbox's pull requests may have changed; it carries no pull request data. | `delivery::pull_request_changes_are_announced_to_the_sandbox`, `local_ci::a_run_announces_its_pull_requests` (the envelope's sandbox) |
 | PRL-002 | The server publishes it whenever a task's delivery stage moves (a pull request opened, merged, closed, reconciled with GitHub, an environment or promotion step), by any path: a person, an agent's tool, an armed merge, a merge train, the reconcile loop, a playground merge. A read that finds the stage unchanged publishes nothing. | `delivery::pull_request_changes_are_announced_to_the_sandbox` |
 | PRL-003 | The server publishes it whenever a Yulius CI run of the sandbox is queued, starts or ends (its commit status is published), except a merge train's run, which is no pull request's head. | `local_ci::a_run_announces_its_pull_requests` |
-| PRL-004 | A browser that watches the sandbox and is in view reads its pull requests again on the event, at most once per burst (events within 1 s make one read). | `pulls.e2e.ts` "a merge Yulius announces reaches the row at once" |
-| PRL-005 | A read never answers with older news than the newest change it was told about: reads of a sandbox do not overlap, and an event during a read makes one more read after it. | `pulls.e2e.ts` "an announcement during a read is read again after it" |
+| PRL-004 | A browser that watches the sandbox and is in view reads its pull requests again on the event, at once. | `pulls.e2e.ts` "a merge Yulius announces reaches the row at once" |
+| PRL-005 | A read never answers with older news than the newest change it was told about: reads of a sandbox do not overlap, and events during a read make one more read after it (a burst makes at most two reads). | `pulls.e2e.ts` "an announcement during a read is read again after it" |
 | PRL-006 | A hidden tab reads nothing on the event (PERF-12 stays), and reads at once when shown again, whatever the 15 s spacing, if an event came while it was hidden. | `pulls.e2e.ts` "a hidden tab catches up when shown" |
 
 ## Plan
@@ -91,13 +91,15 @@ state with a pull request read from minutes before.
 
 ## Test plan
 
-- Rust: `yulius-contracts` event round trip; `delivery.rs` integration test subscribing to the
-  event bus around open, merge, reconcile and an unchanged observe; `local_ci.rs` test around a
-  sync and a settled run. Each fails without the publishing call.
+- Rust: `delivery.rs` integration test subscribing to the event bus around open, merge, reconcile
+  and an unchanged observe; `local_ci.rs` test around a sync and a settled run (with GitHub
+  refusing the commit status). Each fails without the publishing call.
 - e2e (mock, Chromium): `pulls.e2e.ts` cases for PRL-004..006, each failing on the old `store.js`.
-  The mock gets `announcePulls(sandbox)` and `changePull(sandbox, number, changes)`, and its Git
-  overview read is taken before its hold (a held read answers what it saw when it started, like the
-  server's).
+  The mock announces the pull request changes it makes (open, merge, checks passing), gets
+  `announcePulls(sandbox)`, `changePull(sandbox, number, changes)`, per-read holds
+  (`holdGitReads`, `releaseGit()` newest first; a held read answers what it saw when it started)
+  and `gitRequests`, counted as the page asks, the sync point that lets a test prove a read did
+  not happen.
 - Full gate: `scripts/dev ci` and the whole e2e suite.
 
 ## Decisions

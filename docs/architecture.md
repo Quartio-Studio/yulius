@@ -446,7 +446,11 @@ column widths, model and effort), the notification history, the new-task compose
 ([decision 0021](decisions/0021-composer-drafts-in-the-browser.md)), and each sandbox's pull
 requests as the last Git overview read said them (`yulius.pulls.<user>.<sandbox>`), shown at once
 after a reload, for a sandbox a view watches, until the page's own read replaces them (dropped if
-that read fails; SPEC-104).
+that read fails; SPEC-104). The overview is read every minute while the tab is in view, and at once
+when the server announces a change of the sandbox's pull requests (`pulls.updated`: a delivery
+stage moved, a Yulius CI run was queued, started or ended), or when a hidden tab that missed one
+is shown again. Reads of a sandbox never overlap; an announcement during a read brings one more
+read after it ([decision 0087](decisions/0087-pull-request-changes-are-announced.md)).
 Sign-out removes the notification history, the drafts and the pull requests; an expired session
 removes the pull requests too.
 
@@ -465,6 +469,7 @@ flowchart LR
   C -->|"task started: clear"| D
   SO["Sign-out"] -->|"forget"| LS
   G["GET /api/sandboxes/:id/git"] -->|"every read"| P["store.js loadPulls / pullsOf()"]
+  EV["pulls.updated (stage moved, CI run changed)"] -->|"read again"| G
   P -->|"write"| LP[("localStorage yulius.pulls.*")]
   LP -->|"after a reload, until the read answers"| P
   SO -->|"forget"| LP
