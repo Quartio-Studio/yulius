@@ -423,3 +423,270 @@ async fn an_archive_over_the_bounds_is_refused_and_leaves_nothing() -> TestResul
     );
     Ok(())
 }
+
+fn valid_spec(task: &str) -> String {
+    format!(
+        "---\nyulius-task: {task}\nstatus: in-progress\n---\n# Change {task}\n\n\
+         ## Goal\nShip change {task}.\n\n\
+         ## Context\nA playground.\n\n\
+         ## Requirements\n- It lands.\n\n\
+         ## Plan\n- [x] Write the spec\n- [x] Make the change\n\n\
+         ## Acceptance criteria\n- It is merged.\n\n\
+         ## Test plan\n- The playground test.\n\n\
+         ## Decisions\n- None yet.\n"
+    )
+}
+
+/// A running task `id` of the playground `body` (the superadmin's) on its own worktree and branch
+/// `feat/<id>` from `origin/dev`, with its spec, `files` committed and its steps at `steps`.
+async fn playground_task(
+    h: &Harness,
+    body: &Value,
+    id: &str,
+    files: &[(&str, &str)],
+    steps: &[&str],
+) -> BoxResult<PathBuf> {
+    use yulius_app::model::StepRecord;
+    use yulius_app::ports::store::{CoordinationStore, UserStore};
+    use yulius_domain::ids::{StepId, TaskId};
+    let repo = sandbox_dir(h, body).join("repo");
+    let worktree = sandbox_dir(h, body).join("worktrees").join(id);
+    git(&repo, &["fetch", "-q", "origin"])?;
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            &format!("feat/{id}"),
+            worktree.to_str().ok_or("path")?,
+            "origin/dev",
+        ],
+    )?;
+    std::fs::create_dir_all(worktree.join("docs/specs"))?;
+    std::fs::write(worktree.join(format!("docs/specs/{id}.md")), valid_spec(id))?;
+    for (path, text) in files {
+        std::fs::write(worktree.join(path), text)?;
+    }
+    git(&worktree, &["add", "-A"])?;
+    git(&worktree, &["commit", "-q", "-m", &format!("work on {id}")])?;
+    let owner = h.store.superadmin().await?.ok_or("superadmin")?;
+    support::seed_task(
+        h,
+        id,
+        body["id"].as_str().ok_or("id")?,
+        owner.id.as_str(),
+        yulius_domain::task::TaskStatus::Running,
+        Some(&worktree),
+    )
+    .await?;
+    let task = TaskId::parse(id)?;
+    let records = steps
+        .iter()
+        .enumerate()
+        .map(|(i, status)| {
+            Ok(StepRecord {
+                id: StepId::parse(&format!("{id}-step-{i}"))?,
+                task_id: task.clone(),
+                ordinal: u32::try_from(i)?,
+                title: format!("Step {i}"),
+                status: (*status).to_owned(),
+                note: None,
+                updated_by: None,
+                updated_at: None,
+                effort: 1,
+            })
+        })
+        .collect::<BoxResult<Vec<_>>>()?;
+    h.store
+        .replace_steps(&task, &records, "test", yulius_domain::time::Timestamp(2))
+        .await?;
+    Ok(worktree)
+}
+
+async fn merge(h: &Harness, creds: &Creds, task: &str) -> BoxResult<support::Resp> {
+    call(
+        &h.router,
+        Method::POST,
+        &format!("/api/tasks/{task}/delivery/merge"),
+        None,
+        creds,
+    )
+    .await
+}
+
+/// PLY-007: in a playground, the task's merge action and the agent's `delivery_merge` squash
+/// the branch onto the playground's `dev` as one commit with a conventional title, and the task
+/// is merged; no GitHub call.
+#[tokio::test]
+async fn a_playgrounds_task_merges_into_its_local_dev() -> TestResult {
+    use axum::extract::connect_info::MockConnectInfo;
+    let (h, owner) = world().await?;
+    let made = from_template(&h, &owner, "shop").await?;
+    let origin = sandbox_dir(&h, &made.body).join("origin.git");
+    let before = git(&origin, &["rev-parse", "dev"])?.trim().to_owned();
+    playground_task(
+        &h,
+        &made.body,
+        "t1",
+        &[("feature.txt", "one\n")],
+        &["done", "done"],
+    )
+    .await?;
+
+    let merged = merge(&h, &owner, "t1").await?;
+    assert_eq!(merged.status, StatusCode::OK, "{:?}", merged.body);
+    assert_eq!(
+        merged.body["stage"], "merged_integration",
+        "{:?}",
+        merged.body
+    );
+    let dev = git(&origin, &["rev-parse", "dev"])?.trim().to_owned();
+    assert_eq!(
+        git(&origin, &["rev-parse", "dev^"])?.trim(),
+        before,
+        "one commit on dev"
+    );
+    let message = git(&origin, &["log", "-1", "--format=%B", "dev"])?;
+    assert!(message.starts_with("feat: task t1\n"), "{message}");
+    assert!(message.contains("Task #"), "{message}");
+    assert_eq!(file_at(&origin, "dev", "feature.txt")?, "one\n");
+    assert_eq!(
+        git(&origin, &["rev-parse", "main"])?.trim(),
+        before,
+        "main waits for a promotion"
+    );
+    let again = merge(&h, &owner, "t1").await?;
+    assert_eq!(again.status, StatusCode::CONFLICT, "{:?}", again.body);
+
+    // The agent's own tool, under the task owner's authority.
+    let worktree =
+        playground_task(&h, &made.body, "t2", &[("second.txt", "two\n")], &["done"]).await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?.trim().to_owned();
+    support::seed_live_attempt(&h, "t2", "tok-t2").await?;
+    let internal = yulius_server::internal_router(h.app.clone()).layer(MockConnectInfo(
+        std::net::SocketAddr::from(([127, 0, 0, 1], 1)),
+    ));
+    let agent = Creds {
+        bearer: Some("tok-t2".into()),
+        ..Creds::default()
+    };
+    let called = call(
+        &internal,
+        Method::POST,
+        "/mcp",
+        Some(json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "delivery_merge", "arguments": {"reviewed_head": head}}})),
+        &agent,
+    )
+    .await?;
+    assert_eq!(called.body["result"]["isError"], false, "{}", called.body);
+    assert_eq!(git(&origin, &["rev-parse", "dev^"])?.trim(), dev);
+    assert_eq!(file_at(&origin, "dev", "second.txt")?, "two\n");
+    no_github_writes(&h)?;
+    Ok(())
+}
+
+/// PLY-007: an unfinished task is refused with what to do, and nothing lands.
+#[tokio::test]
+async fn an_unfinished_task_is_not_merged() -> TestResult {
+    let (h, owner) = world().await?;
+    let made = from_template(&h, &owner, "shop").await?;
+    let origin = sandbox_dir(&h, &made.body).join("origin.git");
+    let before = git(&origin, &["rev-parse", "dev"])?;
+
+    playground_task(
+        &h,
+        &made.body,
+        "t1",
+        &[("a.txt", "a\n")],
+        &["done", "in_progress"],
+    )
+    .await?;
+    let open = merge(&h, &owner, "t1").await?;
+    assert_eq!(open.status, StatusCode::CONFLICT, "{:?}", open.body);
+    assert!(text(&open).contains("step"), "{:?}", open.body);
+
+    let worktree = playground_task(&h, &made.body, "t2", &[("b.txt", "b\n")], &["done"]).await?;
+    std::fs::write(worktree.join("b.txt"), "changed, not committed\n")?;
+    let dirty = merge(&h, &owner, "t2").await?;
+    assert_eq!(dirty.status, StatusCode::CONFLICT, "{:?}", dirty.body);
+    assert!(text(&dirty).contains("uncommitted"), "{:?}", dirty.body);
+
+    assert_eq!(
+        git(&origin, &["rev-parse", "dev"])?,
+        before,
+        "nothing landed"
+    );
+    Ok(())
+}
+
+fn text(resp: &support::Resp) -> String {
+    resp.body["error"]["message"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// PLY-007: a branch that conflicts with the playground's `dev` is refused naming the files and
+/// the remedy.
+#[tokio::test]
+async fn a_conflicting_branch_is_refused_with_the_files() -> TestResult {
+    let (h, owner) = world().await?;
+    let made = from_template(&h, &owner, "shop").await?;
+    playground_task(&h, &made.body, "t1", &[("README.md", "# one\n")], &["done"]).await?;
+    playground_task(&h, &made.body, "t2", &[("README.md", "# two\n")], &["done"]).await?;
+    assert_eq!(merge(&h, &owner, "t1").await?.status, StatusCode::OK);
+    let refused = merge(&h, &owner, "t2").await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{:?}", refused.body);
+    let message = text(&refused);
+    assert!(message.contains("README.md"), "{message}");
+    assert!(message.contains("git merge origin/dev"), "{message}");
+    Ok(())
+}
+
+/// PLY-008: with a GitHub App configured, a ready playground task still opens no pull request at
+/// the end of its turn, and its delivery view and Git page carry the playground note instead of
+/// a GitHub error.
+#[tokio::test]
+async fn a_playground_never_calls_github() -> TestResult {
+    let (h, owner) = world().await?;
+    support::configure_github_app(&h).await?;
+    let made = from_template(&h, &owner, "shop").await?;
+    playground_task(&h, &made.body, "t1", &[("a.txt", "a\n")], &["done"]).await?;
+    h.app
+        .auto_open_pr(&yulius_domain::ids::TaskId::parse("t1")?)
+        .await;
+    h.app.reconcile_deliveries().await;
+    h.app.ci_sync_all().await;
+    no_github_writes(&h)?;
+
+    let note = "This playground keeps its Git on this server";
+    let delivery = call(
+        &h.router,
+        Method::GET,
+        "/api/tasks/t1/delivery",
+        None,
+        &owner,
+    )
+    .await?;
+    assert_eq!(delivery.status, StatusCode::OK, "{:?}", delivery.body);
+    let notes = delivery.body["notes"].to_string();
+    assert!(notes.contains(note), "{notes}");
+    assert!(!notes.contains("GitHub is not available"), "{notes}");
+    let sid = made.body["id"].as_str().ok_or("id")?;
+    let overview = call(
+        &h.router,
+        Method::GET,
+        &format!("/api/sandboxes/{sid}/git"),
+        None,
+        &owner,
+    )
+    .await?;
+    assert_eq!(overview.status, StatusCode::OK, "{:?}", overview.body);
+    let notes = overview.body["notes"].to_string();
+    assert!(notes.contains(note), "{notes}");
+    assert!(!notes.contains("GitHub"), "{notes}");
+    Ok(())
+}

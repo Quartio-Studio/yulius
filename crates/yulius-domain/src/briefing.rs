@@ -274,6 +274,8 @@ pub struct BriefingInput<'a> {
     pub foundations: Foundations,
     /// Now, for the pace of the steps.
     pub now: Timestamp,
+    /// A playground (SPEC-099): its Git stays on the server; no pull request, CI or deploy.
+    pub playground: bool,
 }
 
 fn floor_boundary(text: &str, max: usize) -> usize {
@@ -491,6 +493,9 @@ fn discipline(input: &BriefingInput<'_>) -> String {
 }
 
 fn git_rules(input: &BriefingInput<'_>) -> String {
+    if input.playground {
+        return playground_git_rules(input);
+    }
     let profile = input.profile;
     let integration = code(&profile.integration_branch, 100);
     let production = code(&profile.production_branch, 100);
@@ -566,6 +571,37 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
     )
 }
 
+/// A playground's Git and delivery (SPEC-099): local Git, the gates run by the agent, and a
+/// squash into the integration branch with `delivery_merge`.
+fn playground_git_rules(input: &BriefingInput<'_>) -> String {
+    let integration = code(&input.profile.integration_branch, 100);
+    let production = code(&input.profile.production_branch, 100);
+    format!(
+        "## Git and delivery\n\n\
+         This sandbox is a playground: someone is trying Yulius on this code before connecting \
+         GitHub. Its Git stays on this server (`origin` is a repository here), and there is no \
+         pull request, no Yulius CI, no deploy and no GitHub issue.\n\
+         You are autonomous: never ask a person for help, a decision or an action, and never end \
+         a turn waiting for one; decide, record why and carry on.\n\
+         Features and fixes take one path: spec → implementation with tests → independent \
+         review → fixes → gates green → merge into {integration} → summary. Work that changes \
+         nothing in the repository ends with its result.\n\
+         - Git (skill `git-hygiene`): work only on {branch}. Never commit or push to \
+         {integration} or {production}, never `--no-verify`, never rewrite commits. Small \
+         conventional commits; nothing unrelated, generated or secret. No `git stash`. Stay \
+         current by merging `origin/{integration}` and rerun the tests after a conflict.\n\
+         - Before delivery, get an independent review in a fresh session (a read-only subagent \
+         given only the diff range, the spec and skill `om-code-review`); fix findings \
+         test-first.\n\
+         - Nothing runs your checks for you: run every project gate yourself. When the work is \
+         ready (spec valid if needed, steps done, all committed) and the review approved the \
+         exact head, `delivery_merge` squashes your branch onto {integration} here as one \
+         commit. If it refuses, do what it says and call it again.\n\
+         - Put follow-up work in your summary.\n\n",
+        branch = code(&input.task.branch, 200),
+    )
+}
+
 fn read_first(input: &BriefingInput<'_>) -> String {
     let layout = input.layout;
     let decisions = match &layout.decisions {
@@ -614,16 +650,30 @@ fn foundations(input: &BriefingInput<'_>) -> String {
 
 /// The tools by name only: each MCP tool's own description says when to use it, and the
 /// briefing has to stay under Claude Code's hook-context limit (F 2026-10-12).
-fn tools() -> String {
+/// A playground leaves out the tools of GitHub, CI and deployment (SPEC-099).
+fn tools(playground: bool) -> String {
+    const NOT_IN_A_PLAYGROUND: [&str; 6] = [
+        "delivery_deploy",
+        "delivery_promote",
+        "issue_create",
+        "ci_status",
+        "ci_rerun",
+        "ci_setup",
+    ];
     let names = YULIUS_TOOLS
         .iter()
+        .filter(|(name, _)| !(playground && NOT_IN_A_PLAYGROUND.contains(name)))
         .map(|(name, _)| format!("`{name}`"))
         .collect::<Vec<_>>()
         .join(", ");
+    let wait = if playground {
+        ""
+    } else {
+        " In the shell, `yulius wait` waits for your checks, your merge or your delivery."
+    };
     format!(
         "## Yulius tools\n\nThe `yulius` MCP server (each tool's description says when to use \
-         it): {names}. In the shell, `yulius wait` waits for your checks, your merge or your \
-         delivery.\n\n"
+         it): {names}.{wait}\n\n"
     )
 }
 
@@ -880,7 +930,7 @@ pub fn build_briefing(input: &BriefingInput<'_>, budget_bytes: usize) -> String 
         Part::Mandatory(discipline(input)),
         Part::Mandatory(git_rules(input)),
         Part::Mandatory(read_first(input)),
-        Part::Mandatory(tools()),
+        Part::Mandatory(tools(input.playground)),
         Part::Mandatory(ports(input)),
         Part::Mandatory(task_header(input)),
         Part::Optional {
@@ -1012,6 +1062,7 @@ mod tests {
             repo_instructions: vec!["AGENTS.md".to_owned(), "CLAUDE.md".to_owned()],
             foundations: Foundations::default(),
             now: Timestamp(1_791_352_800_000),
+            playground: false,
         })
     }
 
@@ -1418,7 +1469,7 @@ mod tests {
 
     #[test]
     fn tool_list_is_unique_and_rendered() {
-        let rendered = tools();
+        let rendered = tools(false);
         for (index, (name, _)) in YULIUS_TOOLS.iter().enumerate() {
             assert!(
                 !YULIUS_TOOLS[..index].iter().any(|(other, _)| other == name),
@@ -1435,5 +1486,34 @@ mod tests {
         for tool in ["delivery_merge", "delivery_deploy", "delivery_promote"] {
             assert!(rendered.contains(&format!("`{tool}`")), "{tool}");
         }
+    }
+
+    /// SPEC-099 PLY-006: a playground's agent learns that its Git stays on the server, that it
+    /// runs the gates itself, and that `delivery_merge` squashes its branch here; no pull request,
+    /// CI, deploy or wait is promised.
+    #[test]
+    fn a_playgrounds_briefing_merges_locally() -> TestResult {
+        let profile = DeliveryProfile::standard();
+        let layout = DocsLayout::default();
+        let input = BriefingInput {
+            playground: true,
+            ..base(&profile, &layout)?
+        };
+        let text = build_briefing(&input, 64 * 1024);
+        assert!(text.contains("This sandbox is a playground"), "{text}");
+        assert!(text.contains("run every project gate yourself"), "{text}");
+        assert!(
+            text.contains("`delivery_merge` squashes your branch onto `dev`"),
+            "{text}"
+        );
+        for absent in [
+            "opens the pull request",
+            "`delivery_deploy`",
+            "`yulius wait`",
+            "`ci_status`",
+        ] {
+            assert!(!text.contains(absent), "{absent} in {text}");
+        }
+        Ok(())
     }
 }

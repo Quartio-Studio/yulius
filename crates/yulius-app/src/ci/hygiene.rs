@@ -110,7 +110,14 @@ impl App {
                 .push("The sandbox repository is not cloned yet.".into());
             return self.keep_report(sandbox, report);
         }
+        // A playground's branches are all local: no GitHub to ask (SPEC-099).
         let token = match self.dlv_installation_token(sandbox).await {
+            _ if sandbox.is_playground() => {
+                report
+                    .notes
+                    .push(crate::playground::PLAYGROUND_NOTE.to_owned());
+                None
+            }
             Ok(token) => Some(token),
             Err(err) => {
                 report.notes.push(format!(
@@ -387,7 +394,11 @@ impl App {
             chosen
         };
         let repo = self.sandbox_repo(&sandbox.id);
-        let token = self.dlv_installation_token(sandbox).await.ok();
+        let token = if sandbox.is_playground() {
+            None
+        } else {
+            self.dlv_installation_token(sandbox).await.ok()
+        };
         let mut removed = Vec::new();
         let mut remote_deleted = false;
         for found in selected.into_iter().take(MAX_CLEANUP_ITEMS) {

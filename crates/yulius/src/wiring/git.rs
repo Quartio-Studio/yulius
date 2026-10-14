@@ -9,8 +9,8 @@ use async_trait::async_trait;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::Secret;
 use yulius_app::ports::git::{
-    BranchInfo, CommitInfo, DiffStat, GitPort, MergeIntegration, ReviewChanges, TrainBuild,
-    TrainLanding, TrainStep, WorktreeInfo,
+    BranchInfo, CommitInfo, DiffStat, GitPort, MergeIntegration, ReviewChanges, SquashLanding,
+    SquashRequest, TrainBuild, TrainLanding, TrainStep, WorktreeInfo,
 };
 use yulius_contracts::api::git::{ChangedFile, DiffHunk, DiffLine, TaskCommit};
 use yulius_git::{
@@ -125,6 +125,40 @@ impl GitPort for GitAdapter {
     async fn copy_refs(&self, repo: &Path, source: &Path) -> AppResult<()> {
         let (git, repo, source) = (self.git(), repo.to_path_buf(), source.to_path_buf());
         blocking(move || git.copy_refs(&repo, &source)).await
+    }
+
+    async fn land_squash(
+        &self,
+        repo: &Path,
+        request: &SquashRequest<'_>,
+    ) -> AppResult<SquashLanding> {
+        let (git, repo) = (self.git(), repo.to_path_buf());
+        let (base, head, message, branch) = (
+            request.base.to_owned(),
+            request.head.to_owned(),
+            request.message.to_owned(),
+            request.branch.to_owned(),
+        );
+        let author = Author::new(request.name, request.email);
+        blocking(move || {
+            git.squash_land(
+                &repo,
+                &yulius_git::SquashInput {
+                    base: &base,
+                    head: &head,
+                    message: &message,
+                    author: &author,
+                    remote: "origin",
+                    branch: &branch,
+                },
+            )
+        })
+        .await
+        .map(|landed| match landed {
+            yulius_git::SquashLanding::Landed(commit) => SquashLanding::Landed(commit),
+            yulius_git::SquashLanding::Unchanged => SquashLanding::Unchanged,
+            yulius_git::SquashLanding::Conflict(files) => SquashLanding::Conflict(files),
+        })
     }
 
     async fn default_branch(&self, repo: &Path) -> AppResult<String> {

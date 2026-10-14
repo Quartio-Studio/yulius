@@ -5,9 +5,39 @@
 use std::path::{Path, PathBuf};
 
 use crate::Git;
+use crate::commit::{Author, MAX_COMMIT_MESSAGE};
 use crate::error::GitError;
 use crate::repo::is_object_id;
 use crate::runner::{Invocation, failure};
+use crate::validate::{validate_branch_name, validate_remote, validate_revision};
+
+/// What [`Git::squash_land`] lands, and where.
+#[derive(Debug, Clone, Copy)]
+pub struct SquashInput<'a> {
+    /// The branch's tip as fetched (e.g. `origin/dev`): the new commit's only parent.
+    pub base: &'a str,
+    /// The head whose changes land.
+    pub head: &'a str,
+    /// The commit message.
+    pub message: &'a str,
+    /// Who makes the commit.
+    pub author: &'a Author,
+    /// The remote pushed to.
+    pub remote: &'a str,
+    /// The remote branch that receives the commit.
+    pub branch: &'a str,
+}
+
+/// What [`Git::squash_land`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SquashLanding {
+    /// One new commit, pushed: its id.
+    Landed(String),
+    /// The head brings nothing the branch does not have; nothing was pushed.
+    Unchanged,
+    /// Git's merge of the head and the branch conflicts in these paths; nothing was pushed.
+    Conflict(Vec<String>),
+}
 
 /// First line of Yulius's block in `info/attributes`.
 pub const ATTRIBUTES_BEGIN: &str = "# >>> yulius: merge attributes (SPEC-083); rewritten by Yulius";
@@ -15,6 +45,107 @@ pub const ATTRIBUTES_BEGIN: &str = "# >>> yulius: merge attributes (SPEC-083); r
 pub const ATTRIBUTES_END: &str = "# <<< yulius";
 
 impl Git {
+    /// Lands the input's `head` on `branch` of `remote` as one commit (a playground's merge, SPEC-099): the
+    /// tree Git's merge of `base` (the branch's tip as fetched, e.g. `origin/dev`) and `head`
+    /// gives, run in `worktree` so the repository's merge drivers apply, committed as `author`
+    /// with `message` and `base` as its only parent, then pushed without forcing (a branch that
+    /// moved meanwhile refuses it). Nothing changes in `worktree`.
+    ///
+    /// # Errors
+    /// Invalid input, unknown revisions, a refused push, or Git failures.
+    pub fn squash_land(
+        &self,
+        worktree: &Path,
+        input: &SquashInput<'_>,
+    ) -> Result<SquashLanding, GitError> {
+        let SquashInput {
+            base,
+            head,
+            message,
+            author,
+            remote,
+            branch,
+        } = *input;
+        validate_revision(base)?;
+        validate_revision(head)?;
+        validate_remote(remote)?;
+        validate_branch_name(branch)?;
+        author.validate()?;
+        if message.trim().is_empty() || message.len() > MAX_COMMIT_MESSAGE || message.contains('\0')
+        {
+            return Err(GitError::InvalidInput {
+                what: "commit message",
+                reason: "empty, too long or containing NUL".into(),
+            });
+        }
+        let (base, head) = (
+            self.rev_parse(worktree, base)?,
+            self.rev_parse(worktree, head)?,
+        );
+        let output = self.run(
+            Invocation::new(self, "merge-tree", Some(worktree))
+                .args([
+                    "merge-tree",
+                    "--write-tree",
+                    "--name-only",
+                    "--no-messages",
+                    "--end-of-options",
+                ])
+                .arg(&base)
+                .arg(&head),
+        )?;
+        let text = output.stdout_text();
+        let mut lines = text.lines();
+        let tree = lines.next().unwrap_or_default().to_owned();
+        match output.status.code() {
+            Some(0) if is_object_id(&tree) => {}
+            Some(1) => {
+                let mut files: Vec<String> = lines
+                    .filter(|line| !line.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+                files.dedup();
+                return Ok(SquashLanding::Conflict(files));
+            }
+            Some(0) => {
+                return Err(GitError::Parse {
+                    command: "merge-tree",
+                    detail: format!("not a tree id: {tree:?}"),
+                });
+            }
+            _ => return Err(failure("merge-tree", &output)),
+        }
+        if self.tree_of(worktree, &base)?.as_deref() == Some(tree.as_str()) {
+            return Ok(SquashLanding::Unchanged);
+        }
+        let committed = self.run_ok(
+            Invocation::new(self, "commit-tree", Some(worktree))
+                .args(["commit-tree", "-p"])
+                .arg(&base)
+                .arg("-m")
+                .arg(message)
+                .arg(&tree)
+                .env("GIT_AUTHOR_NAME", author.name.as_str())
+                .env("GIT_AUTHOR_EMAIL", author.email.as_str())
+                .env("GIT_COMMITTER_NAME", author.name.as_str())
+                .env("GIT_COMMITTER_EMAIL", author.email.as_str()),
+        )?;
+        let commit = committed.stdout_trimmed();
+        if !is_object_id(&commit) {
+            return Err(GitError::Parse {
+                command: "commit-tree",
+                detail: format!("not a commit id: {commit:?}"),
+            });
+        }
+        self.run_ok(
+            Invocation::new(self, "push", Some(worktree))
+                .args(["push", "--quiet", "--", remote])
+                .arg(format!("{commit}:refs/heads/{branch}"))
+                .timeout(self.network_timeout),
+        )?;
+        Ok(SquashLanding::Landed(commit))
+    }
+
     /// The parents of commit `rev`, in order (none for a root commit).
     ///
     /// # Errors

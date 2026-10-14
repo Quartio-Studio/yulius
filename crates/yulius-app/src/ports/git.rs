@@ -315,6 +315,17 @@ pub trait GitPort: Send + Sync {
         let _ = (repo, source);
         unsupported("copying a repository's history")
     }
+    /// Lands the request's head on its branch of `origin` as one commit: the tree Git's merge of
+    /// `base` and `head` gives, with `base` as its only parent, pushed without forcing (SPEC-099:
+    /// a playground's merge).
+    async fn land_squash(
+        &self,
+        repo: &Path,
+        request: &SquashRequest<'_>,
+    ) -> AppResult<SquashLanding> {
+        let _ = (repo, request);
+        unsupported("merging in a playground")
+    }
     /// Imports a bundle's refs under `refs/heads/<prefix>/…`.
     async fn import_bundle(
         &self,
@@ -322,6 +333,34 @@ pub trait GitPort: Send + Sync {
         bundle: &Path,
         prefix: &str,
     ) -> AppResult<Vec<String>>;
+}
+
+/// What [`GitPort::land_squash`] lands on `origin` (a playground's merge, SPEC-099).
+#[derive(Debug, Clone, Copy)]
+pub struct SquashRequest<'a> {
+    /// The integration branch as fetched (`origin/dev`): the commit's only parent.
+    pub base: &'a str,
+    /// The task branch's head.
+    pub head: &'a str,
+    /// The commit message.
+    pub message: &'a str,
+    /// Author and committer name.
+    pub name: &'a str,
+    /// Author and committer email.
+    pub email: &'a str,
+    /// The branch of `origin` that receives the commit.
+    pub branch: &'a str,
+}
+
+/// What [`GitPort::land_squash`] did (a playground's merge, SPEC-099).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SquashLanding {
+    /// One new commit on the branch: its id.
+    Landed(String),
+    /// The head brings nothing new; nothing was pushed.
+    Unchanged,
+    /// Git's merge conflicts in these paths; nothing was pushed.
+    Conflict(Vec<String>),
 }
 
 /// How a pull request lands on the integration branch (the profile's merge method).

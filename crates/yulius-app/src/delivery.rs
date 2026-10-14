@@ -29,6 +29,7 @@
 //! example filter drivers) and tools reading `HOME` remain agent-influenced. Commands are
 //! visible to everyone with read access, so they must not contain secrets.
 
+mod playground;
 pub mod runner;
 
 use std::path::{Component, Path, PathBuf};
@@ -1076,6 +1077,10 @@ impl App {
         sandbox: &SandboxRecord,
         user: Option<&UserRecord>,
     ) -> Result<Secret, String> {
+        // A playground has no GitHub repository: its views say so instead (SPEC-099 PLY-008).
+        if sandbox.is_playground() {
+            return Err(crate::playground::PLAYGROUND_NOTE.to_owned());
+        }
         if let Some(user) = user
             && let Ok(token) = self.user_github_token(user).await
         {
@@ -2268,6 +2273,10 @@ impl App {
         else {
             return Ok(None);
         };
+        // A playground has no pull requests: its agent merges with `delivery_merge` (SPEC-099).
+        if self.dlv_sandbox_of(&task).await?.is_playground() {
+            return Ok(None);
+        }
         // Cheap checks first: most turns end with steps still open, and they need no GitHub call.
         let steps = store.steps(&task.id).await?;
         let open_step = steps
@@ -2587,6 +2596,10 @@ impl App {
     /// `Upstream` GitHub failures.
     pub async fn merge_task_pr(&self, ctx: &AuthContext, task_id: &str) -> AppResult<Delivery> {
         let task = self.load_task(ctx, task_id, Action::Work).await?;
+        // A playground merges here, with no GitHub identity needed (SPEC-099).
+        if self.dlv_sandbox_of(&task).await?.is_playground() {
+            return self.playground_merge(&ctx.user, &task).await;
+        }
         let token = self
             .person_github_token(&ctx.user, "Merging a pull request")
             .await?;
@@ -2610,6 +2623,9 @@ impl App {
     ) -> Result<Delivery, MergeFailure> {
         let task = self.load_task(ctx, task_id, Action::Work).await?;
         let sandbox = self.dlv_sandbox_of(&task).await?;
+        if sandbox.is_playground() {
+            return Ok(self.playground_merge(&ctx.user, &task).await?);
+        }
         let token = self.task_github_token(&task, &sandbox).await?;
         self.dlv_merge(ctx, task, &token).await
     }
