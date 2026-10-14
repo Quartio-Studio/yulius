@@ -86,9 +86,14 @@ matters and where to get a current one, before agents in every sandbox hit the f
   --comments` fail …; install it from GitHub's package repository
   (https://github.com/cli/cli/blob/trunk/docs/install_linux.md), then rebuild the sandbox base`.
 - Review round 1 (fresh read-only session) at f4a314d7: APPROVE, no blockers or majors. Minors
-  fixed test-first: the warning test now also requires `gh issue view --comments` and "here and
-  in every sandbox" (red against "fail in every sandbox", the commands also fail on the host),
-  and the missing-`gh` test requires the base rebuild hint.
+  fixed: the warning says the commands "fail here and in every sandbox" (they also fail on the
+  host), test-first (red against "fail in every sandbox"); the warning test also pins
+  `gh issue view --comments` and the missing-`gh` test the base rebuild hint, text that was
+  already there (these two assertions guard against regressions, they were not red).
+- Review round 2 (fresh read-only session) at 3b6684a7: APPROVE. Fixed: the record above (only
+  the wording assertion was red), "install a current `gh`" instead of an ambiguous "it", and the
+  changes entry says the commands fail on the host too. A `+` sign accepted by the number
+  parser (`gh version +2.45.0`) is left as it is: not a real `gh` output.
 - `scripts/dev ci` at f4a314d7 (dev up to date): exit 0; nextest 1505 run, 1505 passed,
   16 skipped; repository check, check, fmt, clippy, doctests, deny, shear, doc green. After the
   review fixes: `cargo fmt --check`, `cargo clippy -p yulius --all-targets --all-features -D

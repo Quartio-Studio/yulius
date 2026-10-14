@@ -238,8 +238,8 @@ fn github_cli_check(version: Option<&str>) -> Check {
             Level::Warn,
             format!(
                 "{v} is older than {major}.{minor}.{patch}: `gh pr edit` and `gh issue view \
-                 --comments` fail here and in every sandbox; install it from GitHub's package \
-                 repository ({GH_INSTALL_URL}), {rebuild}"
+                 --comments` fail here and in every sandbox; install a current `gh` from GitHub's \
+                 package repository ({GH_INSTALL_URL}), {rebuild}"
             ),
         ),
         Some(v) => check("GitHub CLI", Level::Ok, v),
