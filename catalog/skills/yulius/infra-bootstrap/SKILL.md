@@ -92,6 +92,12 @@ example when it starts deploying for real), and record every change as a decisio
    `command` and `verify = "command"` for a smoke test against the deployed app (health endpoint,
    one real user path). Deploy scripts read secrets from the environment, roll forward safely,
    and print where the app runs.
+   Keys have one default place: a `.env` file Git ignores (`.gitignore` lists `.env`, `.env.*`
+   and `!.env.example`), beside a committed `.env.example` that names every key the code and
+   the deploy scripts read, with no values. Code loads `.env` when its variables are unset. When
+   code that runs outside Yulius' proxy (the deployed app, a deploy script) needs an agent
+   secret's real value, copy it with `secret_copy_to_env` (a person allows each secret once).
+   Never write or edit those lines yourself: you only see `[secret:NAME]`.
 4. **Docs.** `AGENTS.md` (rules, commands, layout and the docs index), a `CLAUDE.md` pointer to
    it, `docs/product.md` (purpose, users, scope, current state), `docs/architecture.md` with a
    Mermaid diagram, ADRs for the choices above, and the first entry of `docs/changes.md`. When

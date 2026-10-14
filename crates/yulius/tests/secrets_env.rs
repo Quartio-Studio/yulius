@@ -348,3 +348,19 @@ async fn copies_are_refused_where_git_could_commit_them() -> TestResult {
     );
     Ok(())
 }
+
+/// SPEC-129 R8, AC6: `secrets_list` says whether each secret may be copied into `.env` files and
+/// that keys live in the git-ignored `.env`, copied with `secret_copy_to_env`.
+#[tokio::test]
+async fn secrets_list_teaches_the_env_default() -> TestResult {
+    let w = world().await?;
+    let listed = support::tool_text(
+        &support::mcp_tool(&w.h, TOKEN, "secrets_list", json!({})).await?,
+    );
+    assert_eq!(listed["secrets"][0]["env_files"], "no", "{listed}");
+    let advice = listed["how_to_use"].to_string();
+    for needle in [".env.example", "secret_copy_to_env", "git-ignored .env"] {
+        assert!(advice.contains(needle), "{needle}: {advice}");
+    }
+    Ok(())
+}
