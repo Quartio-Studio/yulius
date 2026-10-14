@@ -73,6 +73,24 @@ fn map_err(err: GitHubError) -> AppError {
     }
 }
 
+/// [`map_err`] for a write whose refusal must not read as a failure that may pass: GitHub's
+/// 4xx answers (a validation error, a missing permission) leave `Upstream`, which keeps a rate
+/// limit, a 5xx, a timeout, the network and an unreadable answer (SPEC-069 BPL-008).
+fn map_refusal(err: GitHubError) -> AppError {
+    match err {
+        GitHubError::Invalid { .. } | GitHubError::InvalidInput { .. } => {
+            AppError::Invalid(format!("GitHub: {err}"))
+        }
+        GitHubError::Forbidden { .. } => AppError::Forbidden(format!("GitHub: {err}")),
+        GitHubError::Upstream(status)
+            if (400..500).contains(&status) && !matches!(status, 408 | 429) =>
+        {
+            AppError::Invalid(format!("GitHub: {err}"))
+        }
+        other => map_err(other),
+    }
+}
+
 fn gh(secret: &Secret) -> GhSecret {
     GhSecret::new(secret.expose().to_owned())
 }
@@ -420,7 +438,7 @@ impl GitHubPort for GitHubAdapter {
             .update_pull_title(&gh(token), owner, repo_name, number, title)
             .await
             .map(|_| ())
-            .map_err(map_err)
+            .map_err(map_refusal)
     }
 
     async fn list_pulls(
@@ -583,5 +601,38 @@ impl GitHubPort for GitHubAdapter {
         Err(AppError::Upstream(
             "branch lookup via GitHub is not supported; read the fetched clone instead".into(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SPEC-069 BPL-008: only failures that may pass by themselves stay `Upstream`, so a title
+    /// GitHub refused stops the merge and a rate limit or an outage only delays it.
+    #[test]
+    fn a_refused_write_is_told_from_one_that_may_pass() {
+        let message = || "Validation Failed".to_owned();
+        for refused in [
+            GitHubError::Invalid { message: message() },
+            GitHubError::Forbidden { message: message() },
+            GitHubError::Upstream(400),
+            GitHubError::NotFound,
+            GitHubError::Unauthorized,
+        ] {
+            let mapped = map_refusal(refused);
+            assert!(!matches!(mapped, AppError::Upstream(_)), "{mapped:?}");
+        }
+        for passing in [
+            GitHubError::RateLimited { retry_after: None },
+            GitHubError::Upstream(502),
+            GitHubError::Upstream(429),
+            GitHubError::Upstream(408),
+            GitHubError::Transport("timed out".into()),
+            GitHubError::Decode("truncated".into()),
+        ] {
+            let mapped = map_refusal(passing);
+            assert!(matches!(mapped, AppError::Upstream(_)), "{mapped:?}");
+        }
     }
 }

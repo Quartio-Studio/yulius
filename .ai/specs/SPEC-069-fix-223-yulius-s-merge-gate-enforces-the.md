@@ -60,7 +60,7 @@ rules are the standard preset and the default.
 | BPL-005 | Promotion pull requests Yulius opens are titled `release: promote <integration> to <production>`. Merging an existing promotion pull request is refused when its title violates the policy or its head is from another repository; a fork's pull request is never taken for the promotion pull request. | `delivery::standard_flow_merges_on_green_checks_and_promotes_by_pr`, `delivery::the_branch_policy_gates_every_merge` |
 | BPL-006 | Titles and branch names Yulius generates pass the policy: `default_pr_title` uses a type the policy allows (the most significant allowed conventional commit, BPL-008, else the branch's type) and clips the title to the policy's 100 characters; `branch_for` always yields a slug with a letter. | `delivery::tests::generated_titles_pass_the_policy`, `supervisor::tests::branch_names_are_safe_and_bounded` |
 | BPL-007 | `scripts/check_git_policy.py` and its test are removed: the Rust rules are the single source; the docs and `yulius.toml` say the merge gate enforces the policy. | docs diff |
-| BPL-008 | A task pull request's default title names the change: the task's title after the type and scope of the branch's most significant conventional commit (feat > fix > perf > refactor > revert > build, ci > test > docs > style > chore; any other type lowest; the oldest of equals), not of its oldest. Under an enforced policy only its types count and its length applies; without the policy any conventional-looking type counts; a repository without conventional commits keeps the task's title. Before Yulius merges a task pull request (`dlv_merge`: the armed merge, the merge train, `delivery_merge`, the Git page), it recomputes the default from the pull request's final commits and, when the pull request still carries a title Yulius gave it, sets the new one on GitHub (audit `delivery.pr.retitle`) before the policy check and the merge, so the squash commit carries it. A title Yulius gave is the task's title with the type of one of the branch's commits, or with the branch's type (by the rule then or now: commits are only added); any other title, written by a person or an agent, is kept. When GitHub refuses the new title, nothing is merged and the refusal says so. | `delivery::tests::the_default_title_names_the_most_significant_change`, `delivery::tests::a_title_yulius_gave_is_renewed_before_the_merge_and_a_written_one_kept`, `delivery::a_merge_names_the_change_by_its_most_significant_commit`, `client::pull_request_merge_refuses_stale_head` |
+| BPL-008 | A task pull request's default title names the change: the task's title after the type and scope of the branch's most significant conventional commit (feat > fix > perf > refactor > revert > build, ci > test > docs > style > chore; any other type lowest; the oldest of equals), not of its oldest. Under an enforced policy only its types count and its length applies; without the policy any conventional-looking type counts; a repository without conventional commits keeps the task's title. Before Yulius merges a task pull request (`dlv_merge`: the armed merge, the merge train, `delivery_merge`, the Git page), it recomputes the default from the pull request's final commits and, when the pull request still carries a title Yulius gave it, sets the new one on GitHub (audit `delivery.pr.retitle`) before the policy check and the merge, so the squash commit carries it. A title Yulius gave is the task's title with the type of one of the branch's commits, or with the branch's type (by the rule then or now: commits are only added); any other title, written by a person or an agent, is kept. Nothing is merged under a title Yulius could not set. When GitHub cannot take it for now (a rate limit, a 5xx, a timeout, the network), the merge stays armed and the next pass tries again: the armed merge keeps waiting, the merge train waits (within its wait limit), and an agent's `delivery_merge` on green arms the merge. When GitHub refuses it (a 4xx: validation, permission, missing), the merge is refused with the reason and how to set a title (`gh pr edit <n> --title "…"`, which Yulius keeps); `yulius wait` gives the agent that text. | `delivery::tests::the_default_title_names_the_most_significant_change`, `delivery::tests::a_title_yulius_gave_is_renewed_before_the_merge_and_a_written_one_kept`, `delivery::a_merge_names_the_change_by_its_most_significant_commit`, `github_client::tests::a_refused_write_is_told_from_one_that_may_pass`, `client::pull_request_merge_refuses_stale_head` |
 
 ## Design
 
@@ -85,6 +85,12 @@ rules are the standard preset and the default.
   /repos/{owner}/{repo}/pulls/{number}`, `yulius-github` `update_pull_title`) and audits it. It
   runs in `dlv_merge` before `dlv_check_policy`, which checks the new title. Commits that cannot
   be read leave the title as it is.
+- BPL-008 failures: `update_pull_title` answers `Upstream` only for what may pass (the adapter's
+  `map_refusal` turns GitHub's 4xx answers into `Invalid`, `Forbidden`, `NotFound`,
+  `Unauthenticated` or `Conflict`). `dlv_merge` and `merge_task_pr_for_task` return
+  `MergeFailure::Later` for a title that may pass and `MergeFailure::Refused` for everything
+  else; `merge_armed_task` keeps the armed merge on `Later`, `train_member` answers
+  `Step::Wait`, and `tool_delivery_merge` arms the head. The Git page answers the error.
 
 ## Plan
 
@@ -112,8 +118,9 @@ rules are the standard preset and the default.
   `default_pr_title` and `branch_for` tests cover generated names.
 - BPL-008: unit tests over the commits of #381 and #382 and the ranking; an integration test
   where pull requests opened after the spec commit alone merge as `feat(doctor)` (armed merge)
-  and `fix(check)` (Git page) with the squash commit titled so, a title GitHub refuses stops the
-  merge, and a title a person wrote stays.
+  and `fix(check)` (Git page) with the squash commit titled so; a 502 on the first retitle keeps
+  the armed merge, which lands on the next pass; a 502 on `delivery_merge` arms the merge and a
+  422 on the next pass stops it with the reason for `yulius wait`; a title a person wrote stays.
 - Integration (`crates/yulius/tests/delivery.rs`, fake GitHub over a real bare repository): a
   non-conventional title is refused on the Git page route and via `delivery_merge` (before arming),
   an untyped branch is refused, a fixed title merges; `[branch_policy] preset = "none"` at
@@ -141,8 +148,9 @@ rules are the standard preset and the default.
 - BPL-008: the ranking follows how much a type says about the change (features, then fixes, then
   the rest); `revert` sits above build and docs because it undoes a change of any type. A breaking
   mark (`!`) stays with its commit's head and does not change the rank.
-- BPL-008: a title GitHub refuses stops the merge (an armed merge reports it to the agent, who
-  arms again) rather than merging under a title Yulius knows is wrong: history is permanent.
+- BPL-008: Yulius never merges under a title it knows is wrong (history is permanent), and a
+  GitHub outage only delays the merge: it stays armed, as for other failures that pass. Only
+  GitHub's refusal stops it, with what to do.
 - Only `preset` and `types` are configurable: the length limits and the release title follow the
   repository's rules; the parser has no numbers, and no project needs other limits yet.
 
@@ -176,7 +184,10 @@ rules are the standard preset and the default.
   `a_title_yulius_gave_is_renewed_before_the_merge_and_a_written_one_kept` and
   `delivery::a_merge_names_the_change_by_its_most_significant_commit` failed; with the ranking but
   no retitle before the merge, the integration test failed (the pull request still read
-  `docs(spec): yulius doctor warns …` when merged). With both: the 16 `delivery::tests`, the 33
+  `docs(spec): yulius doctor warns …` when merged). With a title GitHub could not take treated
+  as a refusal, the same test failed: the armed merge was dropped after one 502
+  (`merge_armed: false`) instead of landing on the next pass. With all: the 16 `delivery::tests`,
+  `github_client::tests::a_refused_write_is_told_from_one_that_may_pass`, the 33
   `delivery` integration tests, the 34 `yulius-github` tests (`--features fake`) and the
   neighbouring `merge_train`, `local_ci`, `supervision`, `task_ownership`, `skills_mcp`, `intake`,
   `automation_start`, `http_auth`, `ui_contract`, `github_checks`, `mcp_coordination` and

@@ -926,6 +926,44 @@ impl SpecCheck {
     }
 }
 
+/// Why a merge of a task's pull request did not happen. Nothing was merged either way.
+#[derive(Debug)]
+pub(crate) enum MergeFailure {
+    /// GitHub could not take the pull request's new title for now (a rate limit, a 5xx, a
+    /// timeout, the network; SPEC-069 BPL-008): the same merge may succeed on the next pass, so
+    /// an armed merge stays armed.
+    Later(AppError),
+    /// Refused: a delivery rule, GitHub's refusal, or a failure on the way.
+    Refused(AppError),
+}
+
+impl From<AppError> for MergeFailure {
+    fn from(err: AppError) -> Self {
+        Self::Refused(err)
+    }
+}
+
+impl MergeFailure {
+    /// The error to answer with when nothing will try again by itself.
+    pub(crate) fn into_error(self) -> AppError {
+        match self {
+            Self::Later(err) | Self::Refused(err) => err,
+        }
+    }
+}
+
+/// Whether a failure of a GitHub write may pass by itself: [`GitHubPort::update_pull_title`]
+/// answers `Upstream` for a rate limit, a 5xx, a timeout or the network, and another error for
+/// GitHub's refusal (a 4xx).
+///
+/// [`GitHubPort::update_pull_title`]: gh::GitHubPort::update_pull_title
+fn may_pass(err: &AppError) -> bool {
+    matches!(
+        err,
+        AppError::Upstream(_) | AppError::Capacity(_) | AppError::Internal(_)
+    )
+}
+
 /// Everything observed about one task before a delivery decision.
 #[derive(Debug, Clone)]
 struct Observed {
@@ -2548,7 +2586,9 @@ impl App {
         let token = self
             .person_github_token(&ctx.user, "Merging a pull request")
             .await?;
-        self.dlv_merge(ctx, task, &token).await
+        self.dlv_merge(ctx, task, &token)
+            .await
+            .map_err(MergeFailure::into_error)
     }
 
     /// [`App::merge_task_pr`] for the task's agent (`delivery_merge`) under its owner's
@@ -2556,12 +2596,14 @@ impl App {
     /// GitHub token (F 2026-10-11).
     ///
     /// # Errors
-    /// As [`App::merge_task_pr`], without the refusal for an account with no GitHub identity.
+    /// [`MergeFailure::Later`] when GitHub could not take the new title for now (the armed
+    /// merge and the merge train try again on their next pass); [`MergeFailure::Refused`] as
+    /// [`App::merge_task_pr`], without the refusal for an account with no GitHub identity.
     pub(crate) async fn merge_task_pr_for_task(
         &self,
         ctx: &AuthContext,
         task_id: &str,
-    ) -> AppResult<Delivery> {
+    ) -> Result<Delivery, MergeFailure> {
         let task = self.load_task(ctx, task_id, Action::Work).await?;
         let sandbox = self.dlv_sandbox_of(&task).await?;
         let token = self.task_github_token(&task, &sandbox).await?;
@@ -2635,8 +2677,9 @@ impl App {
     /// title a person or an agent wrote, or the commits cannot be read: then as before).
     ///
     /// # Errors
-    /// `Upstream` when GitHub refuses the new title: nothing is merged under a title Yulius
-    /// knows is wrong.
+    /// Nothing is merged under a title Yulius knows is wrong: [`MergeFailure::Later`] when
+    /// GitHub could not take the new title for now, [`MergeFailure::Refused`] (a conflict that
+    /// says why and how to set a title) when GitHub refused it.
     async fn dlv_merge_title(
         &self,
         sandbox: &SandboxRecord,
@@ -2644,7 +2687,7 @@ impl App {
         task: &TaskRecord,
         pull: &GhPull,
         token: &Secret,
-    ) -> AppResult<Option<String>> {
+    ) -> Result<Option<String>, MergeFailure> {
         let (Some(worktree), Some(branch)) =
             (task.worktree_path.as_deref(), task.branch.as_deref())
         else {
@@ -2682,13 +2725,26 @@ impl App {
             )
             .await
             .map_err(|err| {
-                AppError::Upstream(format!(
-                    "pull request #{number} could not be retitled `{title}` before the merge: \
-                     {}. Merge again, or give it a title yourself (`gh pr edit {number} --title \
-                     \"…\"`), which Yulius keeps",
-                    err.public_message(),
-                    number = pull.number,
-                ))
+                let number = pull.number;
+                let reason = err.public_message();
+                if may_pass(&err) {
+                    tracing::warn!(
+                        task = %task.id,
+                        error = %err,
+                        "GitHub could not take a pull request's title for now; the merge waits"
+                    );
+                    MergeFailure::Later(AppError::Upstream(format!(
+                        "GitHub could not take the title `{title}` for pull request #{number} \
+                         before the merge ({reason}); nothing was merged, and Yulius tries again"
+                    )))
+                } else {
+                    MergeFailure::Refused(AppError::Conflict(format!(
+                        "GitHub refused the title `{title}` Yulius gives pull request #{number} \
+                         before merging it ({reason}). Give the pull request a title GitHub \
+                         accepts yourself (`gh pr edit {number} --title \"<type>(<scope>): <the \
+                         change>\"`); Yulius keeps a title you write"
+                    )))
+                }
             })?;
         self.dlv_audit(
             "yulius",
@@ -2709,7 +2765,7 @@ impl App {
         ctx: &AuthContext,
         task: TaskRecord,
         token: &Secret,
-    ) -> AppResult<Delivery> {
+    ) -> Result<Delivery, MergeFailure> {
         let sandbox = self.dlv_sandbox_of(&task).await?;
         let profile = delivery_profile(&sandbox);
         let observed = self
@@ -2743,7 +2799,8 @@ impl App {
                  merge `origin/{base}` into it, push, wait for the checks on the new head, then \
                  merge that head",
                 base = pull.base
-            )));
+            ))
+            .into());
         }
         let merge_sha = self
             .deps

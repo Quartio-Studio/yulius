@@ -52,8 +52,8 @@ pub struct FakeGitHub {
     pub check_states: Mutex<HashMap<String, ChecksReport>>,
     /// When set, reading checks fails with this error (as the adapter maps GitHub errors).
     pub checks_error: Mutex<Option<AppError>>,
-    /// When set, retitling a pull request fails with this error.
-    pub retitle_error: Mutex<Option<AppError>>,
+    /// The next retitles of pull requests fail with these errors, one each, in order.
+    pub retitle_errors: Mutex<Vec<AppError>>,
     /// Repository side of PRs and refs; without it PR heads are unknown.
     pub remote: Mutex<Option<Arc<dyn FakeRemote>>>,
     /// Recorded state-changing calls (`create_pull …`, `merge_pull …`, `fast_forward …`).
@@ -294,13 +294,11 @@ impl GitHubPort for FakeGitHub {
         number: u64,
         title: &str,
     ) -> AppResult<()> {
-        if let Some(err) = self
-            .retitle_error
-            .lock()
-            .map_err(AppError::internal)?
-            .clone()
         {
-            return Err(err);
+            let mut failures = self.retitle_errors.lock().map_err(AppError::internal)?;
+            if !failures.is_empty() {
+                return Err(failures.remove(0));
+            }
         }
         self.pulls
             .lock()

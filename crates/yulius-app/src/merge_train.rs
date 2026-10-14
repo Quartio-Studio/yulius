@@ -46,7 +46,7 @@ use crate::agent_wait::{ArmedMerge, ArmedNow, Deciding, Verdict};
 use crate::auth::AuthContext;
 use crate::ci::{CiJobRecord, CiRunRecord};
 use crate::context::App;
-use crate::delivery::{delivery_profile, past_merge};
+use crate::delivery::{MergeFailure, delivery_profile, past_merge};
 use crate::model::{SandboxRecord, TaskRecord};
 use crate::ports::git::{MergeIntegration, TrainLanding, TrainStep};
 
@@ -766,7 +766,10 @@ impl App {
                 );
                 (Verdict::Decided(text), Step::Merged)
             }
-            Err(err) => keep(
+            // GitHub could not take the pull request's new title for now: the train waits for
+            // the next pass, as for a head GitHub does not show yet (SPEC-069 BPL-008).
+            Err(MergeFailure::Later(_)) => (Verdict::Keep(moved_armed), Step::Wait),
+            Err(MergeFailure::Refused(err)) => keep(
                 moved_armed,
                 format!(
                     "merging #{} was refused: {}",

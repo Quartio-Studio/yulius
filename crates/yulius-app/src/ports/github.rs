@@ -384,6 +384,11 @@ pub trait GitHubPort: Send + Sync {
         number: u64,
     ) -> AppResult<GhPull>;
     /// Sets the title of a pull request (SPEC-069 BPL-008).
+    ///
+    /// # Errors
+    /// `Upstream` only for failures that may pass by themselves (a rate limit, a 5xx, a timeout,
+    /// the network, an unreadable answer); GitHub's refusal (a 4xx) is `Invalid`, `Forbidden`,
+    /// `NotFound`, `Unauthenticated` or `Conflict`.
     async fn update_pull_title(
         &self,
         token: &Secret,
