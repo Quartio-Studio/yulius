@@ -434,7 +434,21 @@ button.task-group-head:hover { color: var(--text); }
   .task-row.can-archive:is(:hover, :focus-within) .task-link { padding-right: calc(12px + 2 * var(--control-sm)); }
   .task-row.can-archive:is(:hover, :focus-within) .task-age { display: none; }
 }
-.sidebar-foot { padding: 6px; border-top: 1px solid var(--border); }
+.sidebar-foot { display: flex; align-items: center; gap: 4px; padding: 6px; border-top: 1px solid var(--border); }
+.sidebar-foot .user-btn { flex: 1 1 auto; }
+/* The superadmin's Update button (SPEC-133): accent while main moved on, quiet otherwise. */
+.update-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px; flex: none;
+  min-width: var(--control-md); height: var(--control-md); padding: 0 8px;
+  border: 1px solid transparent; border-radius: var(--radius-full); background: transparent; color: var(--text-2);
+  font: inherit; font-size: var(--fs-sm); line-height: var(--lh-sm); white-space: nowrap; cursor: pointer;
+}
+.update-btn[hidden] { display: none; }
+.update-btn:hover, .update-btn:focus-visible { background: var(--surface-3); color: var(--text); }
+.update-btn-offer { padding: 0 12px 0 10px; border-color: var(--accent-border); background: var(--accent-soft); color: var(--accent-fg); font-weight: 600; }
+.update-btn-offer:hover, .update-btn-offer:focus-visible { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-fg-strong); }
+.update-btn-running { padding: 0 12px 0 10px; border-color: var(--border-strong); }
+.update-btn .spinner { display: inline-block; width: 12px; height: 12px; flex: none; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin var(--duration-spin) linear infinite; color: var(--accent-fg); }
 .sidebar-foot .user-btn { gap: 12px; padding: 0 12px; border-radius: var(--radius-lg); font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 500; }
 .sidebar-foot .avatar { width: 32px; height: 32px; margin: 0 2px; font-size: var(--fs-sm); line-height: var(--lh-sm); }
 .user-btn {

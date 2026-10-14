@@ -1,4 +1,4 @@
-import { test } from '@e2e-dev/web';
+import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
 import { axeViolations, failOnPageErrors, mock } from './support.ts';
 
@@ -31,6 +31,50 @@ test('an update on offer is announced to the superadmin and runs to the end', as
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
   await expect(screen.getByRole('button', 'Reload')).toBeVisible();
   expect(await axeViolations(browser)).toEqual([]);
+});
+
+// The superadmin's Update button beside the account button (SPEC-133, task #121).
+const footButton = (browser: Browser, name: string | RegExp) => browser.locator('.sidebar-foot').getByRole('button', name);
+
+test('the sidebar foot offers Update and starts it after one confirmation', async ({ app, browser, screen }) => {
+  await app.open(mock('/', '&update=1'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+  // Dismissing the tab-row pill hides the announcement, never the button (UPB-006).
+  await screen.getByRole('button', 'Dismiss until the next update').click();
+  await expect(screen.getByRole('link', /^Update available:/)).toBeHidden();
+  const button = footButton(browser, 'Update Yulius to 9c1e7d3');
+  await expect(button).toBeVisible();
+  await expect(button).toHaveText('Update');
+  await expect(button).toHaveAttribute('title', /^Update available: An update banner/);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // One click: the instance page's confirmation, on the page in view (UPB-003).
+  await button.click();
+  const dialog = screen.getByRole('dialog', 'Update Yulius to 9c1e7d3?');
+  await expect(dialog.getByText(/The agents don’t notice/)).toBeVisible();
+  await dialog.getByRole('button', 'Cancel').click();
+  await expect(dialog).toBeHidden();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+
+  await button.click();
+  await screen.getByRole('dialog', 'Update Yulius to 9c1e7d3?').getByRole('button', 'Update to 9c1e7d3').click();
+  await expect(screen.getByText('Update started. Tasks keep working while it builds.')).toBeVisible();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Sandboxes');
+  // While it runs the button says so and leads to the page with the steps (UPB-004).
+  const running = footButton(browser, /^Updating/);
+  await expect(running).toBeVisible();
+  await running.click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Instance');
+  await expect.poll(() => browser.evaluate(() => document.body.innerText), { timeout: 15000 }).toMatch(/Updated to 9c1e7d3/);
+  await expect(footButton(browser, 'Version and updates')).toBeVisible();
+});
+
+test('without the update helper the button opens the instance page', async ({ app, screen, browser }) => {
+  await app.open(mock('/', '&update=1&helper=0'));
+  await footButton(browser, 'Update Yulius to 9c1e7d3').click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Instance');
+  await expect(screen.getByText(/Updates need the update helper/)).toBeVisible();
+  expect(await browser.locator('[role="dialog"]').count()).toBe(0);
 });
 
 test('a rolled-back update is said plainly', async ({ app, browser, screen }) => {

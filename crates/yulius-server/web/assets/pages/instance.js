@@ -3,11 +3,12 @@
 // (building → pausing tasks → restarting → resuming, with a failure or rollback said plainly),
 // and the Jev key.
 
-import { h, icon, setChildren, toast, errorToast, confirmDialog, badge, skeleton } from '../dom.js';
+import { h, icon, setChildren, errorToast, confirmDialog, badge, skeleton } from '../dom.js';
 import { relLong, dateTime } from '../format.js';
 import { BRAND } from '../brand.js';
 import { pageFrame } from './common.js';
 import { jevSettingsCard } from '../jevkey.js';
+import { confirmAndStartUpdate } from '../updates.js';
 
 const REPO_URL = 'https://github.com/Quartio-Studio/yulius';
 const STEPS = [
@@ -141,7 +142,7 @@ export function mountInstancePage(ctx) {
           commitLink(c.sha), h('span', null, c.title), c.author ? h('span', { class: 'muted xs' }, c.author) : null))),
         available.count > shown.length ? h('p', { class: 'muted xs' }, `and ${available.count - shown.length} more`) : null,
         h('div', { class: 'row' },
-          h('button', { type: 'button', class: 'btn btn-primary', disabled: view.helper_installed === false, onClick: () => start(available) }, icon('download', { size: 14 }), 'Update now…'))));
+          h('button', { type: 'button', class: 'btn btn-primary', disabled: view.helper_installed === false, onClick: () => confirmAndStartUpdate(ctx, available) }, icon('download', { size: 14 }), 'Update now…'))));
     }
     if (run && OUTCOMES.has(run.state)) parts.push(outcome(run));
     setChildren(updatesBody, ...parts);
@@ -158,27 +159,6 @@ export function mountInstancePage(ctx) {
     } finally {
       checkButton.disabled = false;
       checkButton.classList.remove('busy');
-    }
-  }
-
-  async function start(available) {
-    const ok = await confirmDialog({
-      title: `Update ${BRAND.name} to ${available.short}?`,
-      message: h('div', { class: 'stack-sm' },
-        h('p', null, available.summary),
-        h('ol', { class: 'update-confirm-steps' },
-          h('li', null, 'The new version is built on this server. Tasks keep working; this takes several minutes.'),
-          h('li', null, 'Each task then pauses at its next step, and the server restarts (about a minute). The agents don’t notice; terminals stay open.'),
-          h('li', null, 'Tasks continue one by one. If the new version fails its check, the previous version and its database come back.'))),
-      confirmLabel: `Update to ${available.short}`,
-    });
-    if (!ok) return;
-    try {
-      await ctx.api.post('/api/admin/update', { commit: available.commit, confirm: true });
-      toast('Update started. Tasks keep working while it builds.', { kind: 'ok' });
-      await ctx.updates.refresh();
-    } catch (error) {
-      errorToast(error, 'Couldn’t start the update');
     }
   }
 
