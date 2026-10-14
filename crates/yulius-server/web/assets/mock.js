@@ -680,24 +680,14 @@ route('POST', '/api/sandboxes', ({ db, body }) => {
     repo: { owner: 'Quartio-Studio', name: repoName, url: `https://github.com/Quartio-Studio/${repoName}` },
     access: 'admin', default_branch: 'main',
     profile: clone(PRESETS.standard),
-    // An imported repository that does not follow the documentation format gets a resting
-    // preparation task; created projects start from a conforming template. The real server starts
-    // a browser import's onboarding at once; the mock leaves it `pending`, standing in for a
-    // repository added with `yulius onboard` (SPEC-051), so Start onboarding can be tested.
+    // An imported repository is onboarded; created projects start from a conforming template.
+    // The real server starts a browser import's onboarding at once; the mock leaves it `pending`,
+    // standing in for a repository added with `yulius onboard` (SPEC-051), so Start onboarding can
+    // be tested. Like the server it has no task until onboarding starts (SPEC-097).
     onboarding: body.mode === 'import' ? 'pending' : 'not_needed',
     port_base: 20000 + db.sandboxes.length * 20, port_count: 20, counts: { running: 0, needs_attention: 0, queued: 0 },
   };
   db.sandboxes.push(sandbox);
-  if (body.mode === 'import') {
-    const id = `tsk_${sandbox.id.slice(3)}_1`;
-    db.tasks.push({
-      id, sandbox_id: sandbox.id, number: 1, title: 'Prepare repository for Yulius', harness: 'claude', status: 'closed', activity: null,
-      branch: null, origin: 'onboarding', created_by: { login: db.me.user.login }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
-      archived: false, account_label: null,
-      stepsList: ['Assess the documentation format', 'Add AGENTS.md and docs/specs', 'Open PR'].map((title, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title, status: 'pending', note: '', updated_by: null, updated_at: null })),
-      model: 'claude-opus-4', effort: 'high', delivery: null, prompt: 'Adapt this repository to the Yulius documentation format.',
-    });
-  }
   recount(db);
   resync(db);
   return json(201, sandbox);
@@ -712,6 +702,26 @@ route('PATCH', `/api/sandboxes/${ID}`, ({ db, p, body }) => {
   }
   return sandbox;
 });
+/**
+ * The preparation task of a sandbox, created resting when it has none yet: like the server, it is
+ * created when onboarding starts or a new task waits after it, never at import (SPEC-097).
+ */
+function preparationTask(db, sandbox) {
+  const found = db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding');
+  if (found) return found;
+  const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === sandbox.id).map((t) => t.number)) + 1;
+  const id = `tsk_${sandbox.id.slice(3)}_${number}`;
+  const task = {
+    id, sandbox_id: sandbox.id, number, title: 'Prepare repository for Yulius', harness: 'claude', status: 'closed', activity: null,
+    branch: null, origin: 'onboarding', created_by: { login: db.me.user.login }, created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    archived: false, account_label: null,
+    stepsList: ['Assess the documentation format', 'Add AGENTS.md and docs/specs', 'Open PR'].map((title, i) => ({ id: `${id}-s${i + 1}`, ordinal: i + 1, title, status: 'pending', note: '', updated_by: null, updated_at: null })),
+    model: 'claude-opus-4', effort: 'high', delivery: null, prompt: 'Adapt this repository to the Yulius documentation format.',
+  };
+  db.tasks.push(task);
+  recount(db);
+  return task;
+}
 /** Starts the tasks that waited for a sandbox's preparation (U-08): it is ready or skipped. */
 function releaseWaiting(db, sandbox) {
   const preparation = db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding');
@@ -736,18 +746,16 @@ route('POST', `/api/sandboxes/${ID}/onboarding/approve`, ({ db, p }) => {
   need(sandbox, 'write');
   if (sandbox.onboarding !== 'pending') fail(409, 'conflict', 'nothing awaits approval');
   sandbox.onboarding = 'preparing';
-  const task = db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding');
-  if (task) {
-    touch(db, task, { status: 'starting', branch: 'yulius/prepare-repository' });
-    later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1200);
-    later(() => {
-      task.stepsList = task.stepsList.map((s) => ({ ...s, status: 'done', updated_by: 'task #1 (claude)', updated_at: new Date().toISOString() }));
-      touch(db, task, { status: 'closed', activity: null, account_label: null });
-      sandbox.onboarding = 'ready';
-      releaseWaiting(db, sandbox);
-      resync(db);
-    }, 9000);
-  }
+  const task = preparationTask(db, sandbox);
+  touch(db, task, { status: 'starting', branch: 'yulius/prepare-repository' });
+  later(() => touch(db, task, { status: 'running', activity: 'working', account_label: 'Claude #1' }), 1200);
+  later(() => {
+    task.stepsList = task.stepsList.map((s) => ({ ...s, status: 'done', updated_by: `task #${task.number} (claude)`, updated_at: new Date().toISOString() }));
+    touch(db, task, { status: 'closed', activity: null, account_label: null });
+    sandbox.onboarding = 'ready';
+    releaseWaiting(db, sandbox);
+    resync(db);
+  }, 9000);
   resync(db);
   return sandbox;
 });
@@ -791,13 +799,14 @@ route('POST', `/api/sandboxes/${ID}/tasks`, async ({ db, p, body }) => {
   if (db.holdCreate) await db.holdCreate;
   // Auto (TSK-015): the mock's stand-in for Jev answers after a moment, like the server.
   const choice = body.mode === 'auto' || body.workflow_id === 'auto' ? await mockAutoChoice(body, visible) : null;
+  // While the sandbox is being prepared a new task waits after the preparation task (U-08),
+  // created then when nobody has started onboarding yet (SPEC-097).
+  const preparation = sandbox.onboarding === 'pending' ? preparationTask(db, sandbox)
+    : sandbox.onboarding === 'preparing' ? db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding') : null;
   const number = Math.max(0, ...db.tasks.filter((t) => t.sandbox_id === sandbox.id).map((t) => t.number)) + 1;
   const title = body.title || body.prompt.trim().split('\n')[0].slice(0, 60);
   const wf = choice ? choice.workflow : db.workflows.find((w) => w.id === body.workflow_id);
   const id = `tsk_${sandbox.id.slice(3)}_${number}`;
-  // While the sandbox is being prepared a new task waits after the preparation task (U-08).
-  const preparing = sandbox.onboarding === 'pending' || sandbox.onboarding === 'preparing';
-  const preparation = preparing ? db.tasks.find((t) => t.sandbox_id === sandbox.id && t.origin === 'onboarding') : null;
   // A start rule (SPEC-017): the mock checks the shape the server checks, and anchors the chain
   // on the first task the rule names.
   if (body.supertask && (body.after_task_id || (body.start_rule && body.start_rule.trim()))) fail(422, 'invalid', 'a supertask starts after the running tasks: it cannot also run after a task or a rule');

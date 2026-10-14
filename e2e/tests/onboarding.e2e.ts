@@ -50,6 +50,11 @@ test('a pending sandbox waits for Start onboarding in the browser', async ({ app
   await browser.evaluate(() => { location.hash = '#/'; });
   await expect(screen.getByText('Needs onboarding').first()).toBeVisible();
 
+  // SPEC-097 (task #82): nothing has started, so there is no task, not even a Closed one.
+  await browser.evaluate(() => { location.hash = '#/s/website/tasks'; });
+  await expect(browser.locator('.tl .empty-state')).toBeVisible();
+  await expect(screen.getByText('Prepare repository for Yulius')).toHaveCount(0);
+
   await browser.evaluate(() => { location.hash = '#/s/website'; });
   const banner = browser.locator('.banner-info');
   await expect(banner).toContainText('This sandbox needs onboarding.');
@@ -58,4 +63,6 @@ test('a pending sandbox waits for Start onboarding in the browser', async ({ app
   await banner.getByRole('button', 'Start onboarding').click();
   await expect(banner).toContainText('Preparing this sandbox.');
   await expect(banner.getByRole('button', 'Start onboarding')).toHaveCount(0);
+  await browser.evaluate(() => { location.hash = '#/s/website/tasks'; });
+  await expect(screen.getByText('Prepare repository for Yulius').first()).toBeVisible();
 });

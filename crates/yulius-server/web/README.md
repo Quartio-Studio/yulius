@@ -263,8 +263,8 @@ accounts with usage (some unknown), Git data and delivery stages, environment ru
 CI runs with job logs and repository hygiene (`studio` has jobs and runs, `product` has no CI and
 leftover GitHub Actions workflows), workflows, skills, automations, MCP servers, analytics, the
 superadmin recovery code (mock code `123456`) and the GitHub App connection. Importing a repository creates a
-sandbox whose onboarding is `pending` with a resting preparation task (Start onboarding /
-Skip). Uploads report progress in steps, a dropped file lands in the editor's in-memory
+sandbox whose onboarding is `pending`, with no task until Start onboarding (or a new task that
+waits for it) creates the preparation task (Start onboarding / Skip, SPEC-097). Uploads report progress in steps, a dropped file lands in the editor's in-memory
 repository and attachments get server-like paths and names. Task terminals print TUI-like ANSI output (with file references in every form the terminal links
 to the editor, and some it must not), echo input and answer on Enter; type
 `/exit` to close a task, `/lag` to force a 4008 reconnect, `/help` for the list. The
