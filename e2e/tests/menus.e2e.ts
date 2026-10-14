@@ -473,3 +473,67 @@ test('a group of five items or fewer shows them all; a longer one shows five who
   expect(result.five).toEqual({ scrolls: false, inside: 5, more: false, below: false });
   expect(result.rich).toEqual({ scrolls: true, inside: 5, more: true, below: true });
 });
+
+test('the picked task is in view when the start menu opens again, past the fifth row (SPEC-102)', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1280, height: 800 });
+  await openRunAfter({ app, screen });
+  await screen.getByRole('menuitemradio', /^#7 Search indexing/).click();
+  await expect(screen.getByRole('button', /Run after: After #7/)).toBeVisible();
+  await screen.getByRole('button', /Run after: After #7/).click();
+  await expect(screen.getByRole('menuitemradio', /^#7 Search indexing/)).toHaveAttribute('aria-checked', 'true');
+  const state = await taskBox(browser);
+  expect(state.inside).toContain('#7 Search indexing');
+  expect(state.above).toBe(true);
+});
+
+test('arrows scroll the task box so the focused task is wholly inside it (SPEC-102)', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1280, height: 800 });
+  await openRunAfter({ app, screen });
+  const filter = screen.getByRole('searchbox', 'Filter');
+  await filter.press('ArrowDown');
+  await expect(screen.getByRole('menuitemradio', /^Start now/)).toBeFocused();
+  for (let i = 0; i < 7; i += 1) await browser.keyboard.press('ArrowDown');
+  await expect(screen.getByRole('menuitemradio', /^#9 Move to the next account/)).toBeFocused();
+  await expect.poll(() => focusedInBox(browser)).toBe(true);
+  await browser.keyboard.press('ArrowDown');
+  await browser.keyboard.press('ArrowDown');
+  await browser.keyboard.press('ArrowDown');
+  await expect(screen.getByRole('menuitemradio', /^#6 Fix flaky checkout test/)).toBeFocused();
+  await expect.poll(() => focusedInBox(browser)).toBe(true);
+  await expect.poll(async () => (await taskBox(browser)).below).toBe(false);
+  // Back up to the first task: the box scrolls back with it.
+  for (let i = 0; i < 8; i += 1) await browser.keyboard.press('ArrowUp');
+  await expect(screen.getByRole('menuitemradio', /^#14 Start the preview server/)).toBeFocused();
+  await expect.poll(() => focusedInBox(browser)).toBe(true);
+});
+
+test('the filter narrows the task box; with every match in view there is no fade and no "more" line (SPEC-102)', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1280, height: 800 });
+  await openRunAfter({ app, screen });
+  await screen.getByRole('searchbox', 'Filter').fill('checkout');
+  await expect(screen.getByRole('menuitemradio')).toHaveCount(2);
+  const state = await taskBox(browser);
+  expect(state).toMatchObject({ rows: 2, scrolls: false, above: false, below: false });
+  expect(state.inside).toEqual(['#12 Checkout API', '#6 Fix flaky checkout test']);
+  expect(state.more.hidden).toBe(true);
+  // Matches past five still scroll, and the line counts only those below.
+  await screen.getByRole('searchbox', 'Filter').fill('');
+  await screen.getByRole('searchbox', 'Filter').fill('i');
+  const many = await taskBox(browser);
+  const matches = many.rows;
+  expect(matches).toBeGreaterThan(5);
+  expect(many).toMatchObject({ below: true });
+  expect(many.more).toMatchObject({ text: `${matches - 5} more`, hidden: false });
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+test('the automation editor\'s "After a task…" menu shows its tasks five at a time too (SPEC-102)', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1280, height: 800 });
+  await app.open(mock('/s/studio/automations/aut_1'));
+  await screen.getByRole('radiogroup', 'Start').getByRole('radio', /^After a task/).click();
+  await expect(screen.getByRole('group', 'After a task is done')).toBeVisible();
+  const state = await taskBox(browser);
+  expect(state).toMatchObject({ rows: 9, below: true });
+  expect(state.inside).toHaveLength(5);
+  expect(state.more.text).toBe('4 more');
+});

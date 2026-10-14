@@ -610,11 +610,17 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
   };
   if (filter) filter.addEventListener('input', applyFilter);
   document.body.append(menu);
-  // A capped group is as tall as its first rows as drawn, whatever their height (SPEC-102 MSG-001).
+  // A capped group is as tall as its first rows as drawn, whatever their height (SPEC-102 MSG-001),
+  // and opens with its checked row in the middle of it (MSG-003).
   for (const { box, els } of groups) {
     const first = els[0].getBoundingClientRect();
     const last = els[MENU_GROUP_ROWS - 1].getBoundingClientRect();
     box.style.maxHeight = `${last.bottom - first.top}px`;
+    const checked = els.find((el) => el.getAttribute('aria-checked') === 'true');
+    if (checked) {
+      const row = checked.getBoundingClientRect();
+      box.scrollTop = row.top - first.top - (box.clientHeight - row.height) / 2;
+    }
   }
   /**
    * Below the anchor, or above it when it fits only there or has more room; never past a window
