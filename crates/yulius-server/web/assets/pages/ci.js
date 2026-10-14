@@ -178,7 +178,7 @@ export function mountCiPage(ctx, sandbox, route) {
     const output = h('pre', { class: 'code-view run-output', 'aria-live': 'polite', tabindex: '0' }, '');
     const body = h('div', { class: 'stack' }, head, tabs, output);
     const modal = openModal({
-      title: 'CI run', wide: true, body: placeholder('Loading…', 'loading'),
+      title: 'CI run', wide: true, body: placeholder('Loading the CI run…', 'loading'),
       actions: [{ label: 'Close' }],
       onClose: () => { clearTimeout(poll); openRun = null; replaceQuietly(`/s/${encodeURIComponent(sandbox.slug)}/ci`); },
     });
