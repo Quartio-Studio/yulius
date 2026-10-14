@@ -1,7 +1,7 @@
 // Global layout pieces (SPEC-001 §6.1): thin sandbox tab row with the Status panel, and the
 // left sidebar with navigation, the active task list and the user menu at its foot.
 
-import { h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip } from './dom.js';
+import { h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip, skeleton } from './dom.js';
 import { relLong, bytes, duration, dateTime, resetLabel } from './format.js';
 import { taskTime } from './tasktime.js';
 import { taskInfo, taskActions, activityLine, allows } from './status.js';
@@ -263,7 +263,7 @@ function createStatusPanel(ctx, button) {
   }
 
   function open() {
-    el = h('div', { class: 'status-pop', role: 'dialog', 'aria-label': 'Status' }, h('div', { class: 'placeholder placeholder-loading' }, 'Loading status…'));
+    el = h('div', { class: 'status-pop', role: 'dialog', 'aria-label': 'Status' }, skeleton('Loading status…', 3, { block: true }));
     document.body.append(el);
     button.setAttribute('aria-expanded', 'true');
     offFocus = popoverFocus(el, button, close);
@@ -815,7 +815,7 @@ export function createSidebar(ctx) {
       const error = ctx.store.tasksError(sandbox.id);
       setChildren(list, error
         ? loadError(`Couldn’t load tasks: ${error.message}`, () => ctx.store.loadTasks(sandbox.id).catch(() => {}))
-        : h('div', { class: 'placeholder placeholder-loading' }, 'Loading…'));
+        : skeleton('Loading tasks…', 3, { block: true }));
       return;
     }
     // A task the user left normally is done for now: it stays under Tasks (with Continue) but

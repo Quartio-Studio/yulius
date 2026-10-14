@@ -152,7 +152,6 @@ p { margin: 0; }
 
 .placeholder { padding: 32px 16px; text-align: center; color: var(--muted); }
 .placeholder-error { color: var(--danger); }
-.placeholder-loading::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 8px; border-radius: 50%; border: 2px solid var(--muted); border-right-color: transparent; animation: spin var(--duration-spin) linear infinite; vertical-align: -1px; }
 
 .banner { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: var(--radius); border: 1px solid var(--border-strong); background: var(--surface-2); }
 .banner-warn { border-color: var(--warn-border); background: var(--warn-soft); color: var(--warn-fg-strong); }
@@ -1106,6 +1105,9 @@ a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
 /* Calm loading (F 2026-10-10): shimmering bars where content will appear (dom.js skeleton), the
    composer's working line, and a sheen along the prompt box while intake decides. */
 .skeleton { display: flex; flex-direction: column; gap: 8px; padding: 4px 0; }
+/* In place of a page's, a panel's or a dialog's content (SPEC-092): room around it, and bars no
+   longer than a line of text. */
+.skeleton-block { gap: 12px; width: 100%; max-width: 640px; padding: 16px; }
 .skeleton-line {
   display: block; height: 12px; border-radius: var(--radius-full);
   background: var(--surface-3) linear-gradient(90deg, transparent, var(--overlay-active), transparent) no-repeat; background-size: 50% 100%;
