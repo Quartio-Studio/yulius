@@ -201,7 +201,6 @@ function createApp(root, transport) {
       for (const key of Object.keys(window.localStorage)) if (key.startsWith('yulius.notifications.')) window.localStorage.removeItem(key);
     } catch { /* storage unavailable: nothing kept */ }
     forgetDrafts(); // unfinished prompts too (SPEC-026)
-    store.forgetPulls(); // and the pull requests kept for the next page load (SPEC-104)
     forgetUnsavedNotes(); // and notes not yet saved (SPEC-041)
     navigate('/signin', { replace: true });
     renderSignIn();
@@ -224,6 +223,9 @@ function createApp(root, transport) {
     ctx.updates = null;
     shell = null;
     store.state.me = null;
+    // The pull requests kept for the next page load go with the session, signed out or expired
+    // (SPEC-104); a read answering later finds no user and stores nothing.
+    store.forgetPulls();
     unsubscribers.splice(0).forEach((off) => off());
     document.body.classList.remove('drawer-open');
   }

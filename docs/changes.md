@@ -9,7 +9,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - After a reload, the sidebar shows pull request chips at once (SPEC-104, task #89, #414). Before,
   they appeared seconds later, when the sandbox's Git overview answered, and rows could move
   between Working and Done meanwhile. The browser keeps what the last overview read said, per user
-  and sandbox. It shows that until the page's own read replaces it, and sign-out removes it.
+  and sandbox. It shows that until the page's own read replaces it. Sign-out or an expired
+  session removes it.
 - A repository's `.mcp.json` no longer stops the Superagent on Claude Code's "N new MCP servers
   found in this project" dialog (SPEC-095, ADR-0078, #391). Before each task run and Superagent
   start, Yulius adds the file's servers that the sandbox lacks to its MCP servers, so every task

@@ -240,18 +240,20 @@ export function createStore(api) {
   const pollPaused = () => document.hidden || navigator.onLine === false;
   // The overview takes seconds (GitHub and Git for every task), so this browser keeps what the
   // last read said, per user, and a page load shows it at once until its own read replaces it
-  // (SPEC-104). A stored value of the wrong shape is ignored.
+  // (SPEC-104). Only for a watched sandbox, whose read is on its way: elsewhere (a notification
+  // about another sandbox) an old read would stay unreplaced. A stored value of the wrong shape is
+  // ignored.
   const pullsKey = (sandboxId) => (state.me && state.me.user && state.me.user.id ? `${PULLS_PREFIX}${state.me.user.id}.${sandboxId}` : null);
   const isPullRow = (row) => Array.isArray(row) && typeof row[0] === 'string' && row[1] !== null && typeof row[1] === 'object'
     && Number.isInteger(row[1].number) && typeof row[1].state === 'string';
   function pullsOf(sandboxId) {
-    if (!state.pulls.has(sandboxId)) {
+    if (!state.pulls.has(sandboxId) && pullWatch.has(sandboxId)) {
       const key = pullsKey(sandboxId);
       if (key) state.pulls.set(sandboxId, new Map(readJson(key, []).filter(isPullRow)));
     }
     return state.pulls.get(sandboxId) || new Map();
   }
-  /** Sign-out: the pull requests (titles included) do not stay in this browser. */
+  /** Sign-out or an expired session: the pull requests (titles included) do not stay in this browser. */
   function forgetPulls() {
     state.pulls.clear();
     try {

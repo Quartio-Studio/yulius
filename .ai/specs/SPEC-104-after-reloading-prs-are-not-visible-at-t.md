@@ -42,10 +42,10 @@ last saw for the sandbox at once, and the fresh Git overview read replaces them 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | PRC-001 | Every successful overview read stores the sandbox's task → pull request pairs in this browser under `yulius.pulls.<user id>.<sandbox id>`. | `pulls.e2e.ts` "the fresh read replaces …" |
-| PRC-002 | Until the first overview read of a page load answers, `pullsOf(sandbox)` returns the stored pairs of the signed-in user, so the sidebar shows them at once. | "after a reload the sidebar shows the pull requests at once …" |
+| PRC-002 | Until the first overview read of a page load answers, `pullsOf(sandbox)` returns the stored pairs of the signed-in user for a sandbox a view watches (its read is on its way), so the sidebar shows them at once. A sandbox no view watches (a notification about another sandbox) gets nothing stored, as before: no read would replace it. | "after a reload the sidebar shows the pull requests at once …", "a sandbox no view watches …" |
 | PRC-003 | The fresh read replaces the stored pairs, in memory and in storage. | "the fresh read replaces …" |
-| PRC-004 | A stored value of the wrong shape, or unavailable storage, is ignored: the rows wait for the overview as before. | "a malformed stored entry is ignored …" |
-| PRC-005 | Signing out removes every stored `yulius.pulls.` entry: pull request titles are the user's data. | "signing out removes the stored pull requests" |
+| PRC-004 | A stored value of the wrong shape (not a list, or rows without a task id, a whole number or a state), or unavailable storage, is ignored: the rows wait for the overview as before. | "a stored value that is … is ignored …" |
+| PRC-005 | Signing out or an expired session removes every stored `yulius.pulls.` entry and the ones in memory: pull request titles are the user's data. A read answering after that finds no user and stores nothing. | "signing out removes …", "a session that expires removes …" |
 
 ## Plan
 
@@ -61,12 +61,15 @@ last saw for the sandbox at once, and the fresh Git overview read replaces them 
 - A stored pull request number that the overview no longer says shows until the read answers and
   is gone after it, also from storage.
 - A malformed stored value shows no chips and no page error; after the read the chips show.
-- After sign-out no `yulius.pulls.` key is left.
+- With a failing pull request remembered for studio's #12, a page load of `/s/product` and a
+  change to #12 bring a notification that does not mention it.
+- After sign-out, and after the session expires, no `yulius.pulls.` key is left.
 
 ## Test plan
 
-- `e2e/tests/pulls.e2e.ts` (mock, Chromium), the four cases above. The first fails before the fix
-  (no chips while the overview is held).
+- `e2e/tests/pulls.e2e.ts` (mock, Chromium), the cases above. The first fails before the fix
+  (no chips while the overview is held); after the independent review, the unwatched sandbox and
+  the expired session cases were added and failed before their fix.
 - Full gate: `scripts/dev ci` and the whole e2e suite.
 
 ## Decisions
@@ -78,5 +81,11 @@ last saw for the sandbox at once, and the fresh Git overview read replaces them 
   frame for reloads and new tabs alike, with no server change. A remembered chip can be stale for
   the seconds the read takes; the read always runs and replaces it. Reversible: one store
   function. Small and local, so no ADR.
-- **`localStorage`, keyed by user and sandbox, forgotten at sign-out** (as drafts are), over
-  `sessionStorage`, which would not help a new tab.
+- **`localStorage`, keyed by user and sandbox, forgotten at sign-out and session expiry**, over
+  `sessionStorage`, which would not help a new tab. Drafts survive an expiry (they are the
+  person's unsent words); the pull requests are only a head start, so they go with the session.
+- **Seed only a watched sandbox** (review finding): a remembered value is only safe while a read
+  is on its way to replace it. Another tab that signs out while this one writes a read back is
+  covered when this tab's next request finds the session gone (it tears down and forgets).
+- **No age limit on a remembered value**: a watched sandbox's read always runs at once and
+  replaces it, so its age only matters for those seconds.
