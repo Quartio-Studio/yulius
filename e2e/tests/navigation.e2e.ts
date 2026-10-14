@@ -134,3 +134,71 @@ test('another sandbox opens from the sandbox tabs', async ({ app, browser, scree
   await expect(browser).toHaveURL(/#\/s\/product$/);
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('New task');
 });
+
+// Task #108 (SPEC-122): "We need tasks id somewhere here and not only PRs id because we use them
+// quickly. But it should be communicated what id is for what". The screenshot's sidebar showed
+// only pull request numbers.
+test('sidebar rows show the task number apart from the pull request number', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Tasks');
+  const inRow = (title: string, selector: string) => browser.locator(`.task-list .task-row:has-text("${title}") ${selector}`);
+
+  // TID-1, TID-2: the task's own number, said as a task's, before the chip and the title.
+  await expect(inRow('Improve the code', '.task-num')).toHaveText('Task #13');
+  await expect(inRow('Improve the code', '.task-num')).toHaveAttribute('title', 'Task #13');
+  await expect(inRow('Improve the code', '.task-num .sr-only')).toHaveText('Task ');
+  await expect(inRow('Checkout API', '.task-num')).toHaveText('Task #12');
+  const order = await browser.evaluate(() => {
+    const row = [...document.querySelectorAll('.task-list .task-row')].find((el) => el.textContent!.includes('Improve the code'))!;
+    return ['.task-num', '.tl-pr-chip', '.task-title'].map((s) => Math.round(row.querySelector(s)!.getBoundingClientRect().left));
+  });
+  expect(order).toEqual([...order].sort((a, b) => a - b));
+  expect(new Set(order).size).toBe(3);
+  // Every row has its number, whatever its group.
+  const rows = await browser.locator('.task-list .task-row').count();
+  await expect(browser.locator('.task-list .task-row .task-num')).toHaveCount(rows);
+
+  // TID-4: whatever the sidebar's width, rows stay one line and nothing spills out of a row; the
+  // number and a shown chip or time are whole and every title keeps a few letters. What gives way
+  // is the time, then (narrowest) the chip, which the row's tooltip still names.
+  const rowsNow = () => browser.evaluate(() => [...document.querySelectorAll('.task-list .task-link')].map((link) => {
+    const shown = (s: string) => { const el = link.querySelector(s) as HTMLElement | null; return Boolean(el && el.offsetWidth > 0); };
+    const cut = (s: string) => { const el = link.querySelector(s); return el ? el.scrollWidth > el.clientWidth + 1 : false; };
+    const box = link.getBoundingClientRect();
+    const right = Math.max(...[...link.children].map((el) => el.getBoundingClientRect().right));
+    return {
+      text: link.querySelector('.task-title')!.textContent,
+      height: Math.round(box.height),
+      spills: right > box.right - 12 + 1,
+      cut: cut('.task-num') || cut('.tl-pr-chip') || cut('.task-age'),
+      title: Math.round(link.querySelector('.task-title')!.getBoundingClientRect().width),
+      chip: shown('.tl-pr-chip'),
+      age: shown('.task-age'),
+      tooltip: (link as HTMLElement).title,
+    };
+  }));
+  type Row = Awaited<ReturnType<typeof rowsNow>>[number];
+  const broken = (rows: Row[]) => rows.filter((r) => r.height !== rows[0].height || r.spills || r.cut || r.title < 36);
+  const splitter = screen.getByRole('separator', 'Resize sidebar');
+  const at = async (width: number) => {
+    await splitter.press('Home');
+    for (let w = 200; w < width; w += 64) await splitter.press('Shift+ArrowRight');
+    await expect(splitter).toHaveAttribute('aria-valuenow', String(Math.min(width, 480)));
+    return rowsNow();
+  };
+
+  const wide = await at(456);
+  expect(broken(wide)).toEqual([]);
+  expect(wide.filter((r) => !r.age)).toEqual([]);
+  expect(wide.filter((r) => r.chip).map((r) => r.text)).toContain('Improve the code');
+
+  const usual = await at(328);
+  expect(broken(usual)).toEqual([]);
+  expect(usual.filter((r) => r.chip).map((r) => r.text)).toContain('Improve the code');
+
+  const narrowest = await at(200);
+  expect(broken(narrowest)).toEqual([]);
+  expect(narrowest.filter((r) => r.chip)).toEqual([]);
+  expect(narrowest.find((r) => r.text === 'Improve the code')!.tooltip).toContain('PR #520');
+  expect(await axeViolations(browser)).toEqual([]);
+});
