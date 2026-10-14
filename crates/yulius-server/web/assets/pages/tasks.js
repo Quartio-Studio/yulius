@@ -289,6 +289,8 @@ export function mountTasksPage(ctx, sandbox) {
     const row = h('li', { class: ['tl-row', `group-${group}`], dataset: { taskId: task.id, tone: info.tone } },
       h('a', { class: 'tl-link', href: href(path), dataset: { route: path }, title: `#${task.number} ${task.title}${task.branch ? ` · ${task.branch}` : ''}` },
         h('span', { class: 'tl-mark' }, statusMark(info, 16)),
+        // The task's own number, as in the sidebar; its pull request's chip says "PR #N" (SPEC-122).
+        h('span', { class: 'task-num', title: `Task #${task.number}` }, h('span', { class: 'sr-only' }, 'Task '), `#${task.number}`),
         h('span', { class: 'tl-title' }, task.title || `Task #${task.number}`),
         task.origin && task.origin !== 'ui' ? h('span', { class: 'tl-origin' }, ORIGINS[task.origin] || task.origin) : null,
         h('span', { class: 'sr-only' }, `, ${what}`)),

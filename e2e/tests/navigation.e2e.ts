@@ -202,3 +202,12 @@ test('sidebar rows show the task number apart from the pull request number', asy
   expect(narrowest.find((r) => r.text === 'Improve the code')!.tooltip).toContain('PR #520');
   expect(await axeViolations(browser)).toEqual([]);
 });
+
+// SPEC-122 TID-5: the Tasks page lists tasks by number too, as the sidebar does.
+test('the Tasks page rows show the task number before the title', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Tasks');
+  await expect(browser.locator('#main .tl-row:has-text("Improve the code") .task-num')).toHaveText('Task #13');
+  const rows = await browser.locator('#main .tl-row').count();
+  await expect(browser.locator('#main .tl-row .tl-link .task-num')).toHaveCount(rows);
+});

@@ -976,17 +976,18 @@ const PR_CHECKS = {
 };
 
 /**
- * A pull request chip: branch icon, number and checks. A link to GitHub, or (`link: false`) a plain
- * chip that can sit inside another link, such as a sidebar row.
+ * A pull request chip: "PR #N" and checks. A link to GitHub, or (`link: false`) a plain chip that
+ * can sit inside another link, such as a sidebar row. The word, not an icon, tells it from a task's
+ * bare #N (SPEC-122).
  */
 export function prChip(pr, { link = true } = {}) {
   const merged = pr.state === 'merged';
   const checks = merged || pr.state === 'closed' ? null : PR_CHECKS[pr.checks];
   const label = `Pull request #${pr.number} · ${pr.state}${checks ? ` · ${checks[2]}` : ''}`;
-  const parts = [icon('branch', { size: 12 }), `#${pr.number}`, checks ? h('span', { class: `tone-${checks[1]}` }, icon(checks[0], { size: 12 })) : null];
+  const parts = [`PR #${pr.number}`, checks ? h('span', { class: `tone-${checks[1]}` }, icon(checks[0], { size: 12 })) : null];
   const cls = ['tl-pr-chip', merged && 'merged', pr.state === 'closed' && 'closed'];
   if (link) return h('a', { class: cls, href: pr.url, target: '_blank', rel: 'noopener noreferrer', title: label, 'aria-label': label }, parts);
-  return h('span', { class: cls, title: label }, parts, h('span', { class: 'sr-only' }, ` pull request, ${pr.state}${checks ? `, ${checks[2]}` : ''}`));
+  return h('span', { class: cls, title: label }, parts, h('span', { class: 'sr-only' }, `, ${pr.state}${checks ? `, ${checks[2]}` : ''}`));
 }
 
 /** Small colored badge. */

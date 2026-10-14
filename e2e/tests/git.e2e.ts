@@ -68,3 +68,23 @@ test('the Git page shows delivery state without merge, release, deploy or verify
   await expect(screen.getByRole('button', /^Pull request #520/)).toBeVisible();
   await expect(screen.getByRole('button', 'Merge…')).toBeHidden();
 });
+
+// Task #108 (SPEC-122 TID-3): a bare #N is a task's number, so a pull request's chip says "PR".
+test('pull request chips read "PR #N" wherever they show', async ({ app, browser, screen }) => {
+  const chipText = (selector: string) => browser.evaluate((s: string) => [...document.querySelectorAll(s)].map((el) => (el.textContent ?? '').replace(/\s+/g, ' ').trim()), selector);
+
+  await app.open(mock('/s/studio/tasks'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Tasks');
+  await expect(browser.locator('.task-list .tl-pr-chip').first()).toBeVisible();
+  const sidebar = await chipText('.task-list .tl-pr-chip');
+  expect(sidebar.find((t) => t.includes('520'))).toMatch(/^PR #520\b/);
+  await expect(browser.locator('#main .tl-pr-chip').first()).toBeVisible();
+  for (const text of await chipText('#main .tl-pr-chip')) expect(text).toMatch(/^PR #\d+$/);
+  // The word replaces the branch icon (only a checks icon may follow it); the tooltip still names
+  // the pull request in full.
+  expect(await browser.evaluate(() => [...document.querySelectorAll('.tl-pr-chip')].filter((el) => el.firstElementChild?.tagName === 'svg').length)).toBe(0);
+  await expect(browser.locator('#main a.tl-pr-chip').first()).toHaveAttribute('title', /^Pull request #\d+/);
+
+  await app.open(mock('/s/studio/t/13'));
+  await expect(screen.getByRole('button', /^Pull request #520/)).toHaveText('PR #520');
+});
