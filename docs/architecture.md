@@ -303,12 +303,24 @@ the audit actor, never on the caller's own task
 ([SPEC-066](../.ai/specs/SPEC-066-fix-275-293-cockpit-and-agents-manage-ta.md),
 [decision 0049](decisions/0049-management-tools-cover-the-task-and-automation-lifecycle.md)).
 
+A repository's `.mcp.json` would make Claude Code ask about each of its servers when the
+Superagent starts. Before every task run and Superagent start, `App::import_project_mcp` adds
+the file's servers that the sandbox lacks to its MCP servers, so task runs get them like any
+other server. The Superagent starts with `--settings` naming every one of them in
+`disabledMcpjsonServers`, so it never asks
+([SPEC-095](../.ai/specs/SPEC-095-while-onboarding-other-project-i-got-som.md),
+[decision 0078](decisions/0078-repository-mcp-json-feeds-the-mcp-section.md)). An MCP server's
+secret values reach a run in `YULIUS_MCP_<SERVER>_<VAR>` variables, never under the server's own
+variable name, which may hold an agent secret's placeholder.
+
 ```mermaid
 flowchart LR
   UI["Right panel: Superagent"] -->|"POST /api/sandboxes/sid/cockpit"| APP["App::cockpit_open"]
   APP -->|"pool_account"| POOL[("Subscriptions")]
   W["Cockpit watch: newest conversation"] -->|"usage limit after the start: record_limit, start again (switched)"| APP
-  APP -->|"plan_cockpit"| HP["Harness: claude [--resume id] --mcp-config yulius"]
+  APP -->|"plan_cockpit"| HP["Harness: claude [--resume id] --mcp-config yulius [--settings: .mcp.json servers rejected]"]
+  APP -->|"import_project_mcp (also before task runs)"| MS[("Sandbox MCP servers")]
+  REPO[".mcp.json in the repository"] --> APP
   APP --> SH["Shell runtime (user space, repository)"]
   UI -->|"WS /api/shells/id/terminal"| SH
   SH -->|"Bearer ck_… (YULIUS_COCKPIT_TOKEN)"| MCP["/mcp: management tools"]
@@ -366,11 +378,15 @@ chip ([SPEC-078](../.ai/specs/SPEC-078-we-d-like-to-be-able-to-set-the-automati.
 [decision 0062](decisions/0062-an-automation-starts-its-tasks-like-new-task.md)). A run creates
 its task through the same `create_task_ruled` as New task. A task to run after that has ended
 turns into the rule `#N done`, so a recurring automation keeps working once its predecessor is
-finished.
+finished. The editor shows the choice as New task's start chip in its action bar, and Run now
+sends the choice the chip shows for that run only
+([SPEC-093](../.ai/specs/SPEC-093-automation-editor-the-start-choice-sits.md),
+[decision 0074](decisions/0074-run-now-uses-the-start-choice-the-editor-shows.md)); without it a
+run uses the stored choice.
 
 ```mermaid
 flowchart LR
-  RUN["Scheduler or Run now: one slot"] --> START{"automation.start"}
+  RUN["Scheduler or Run now: one slot"] --> START{"automation.start, or Run now's body"}
   START -->|"Now"| Q["queued"]
   START -->|"Supertask"| ST["queued supertask (SPEC-071)"]
   START -->|"After #N, not ended"| CH["chained after #N"]
@@ -388,7 +404,9 @@ notification history and the drafts.
 
 Every drop-down menu is built by `openMenu` (`dom.js`). It stays inside the window, scrolling its
 items, and a menu of 8 or more items opens with a filter box
-([decision 0030](decisions/0030-menus-filter-when-long.md)).
+([decision 0030](decisions/0030-menus-filter-when-long.md)). A group of items under a header (the
+start menu's tasks) shows five rows and scrolls the rest in a box of its own, fading at the edge it
+continues past with a "↓ N more" line under it ([decision 0083](decisions/0083-long-menu-groups-scroll-five-rows.md)).
 
 ```mermaid
 flowchart LR

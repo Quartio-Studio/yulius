@@ -46,48 +46,65 @@ fn io(err: std::io::Error) -> AppError {
     AppError::internal(err)
 }
 
+/// Longest MCP variable name before its numbered suffix: the harness takes names of at most 128
+/// characters, and a server name (64) and a variable (128) could make one of 204.
+const MCP_VAR_BASE_LEN: usize = 120;
+
+/// The run's MCP servers and the secret environment holding their values. Each value travels in a
+/// variable of its own, `YULIUS_MCP_<SERVER>_<VAR>` (`…_TOKEN` for a bearer), never under the
+/// server's own name: that name may be an agent secret's placeholder in the agent's environment, or
+/// another server's variable (SPEC-095). Agent secret names cannot start with `YULIUS_`. A name is
+/// cut to [`MCP_VAR_BASE_LEN`] characters, and names that still meet get a numbered suffix.
+fn mcp_specs(mcp: &[McpAttachment]) -> (Vec<McpServerSpec>, Vec<(String, String)>) {
+    let mut secrets: Vec<(String, String)> = Vec::new();
+    let mut variable = |server: &str, key: &str, value: &str| {
+        let mut base = format!("YULIUS_MCP_{server}_{key}")
+            .to_ascii_uppercase()
+            .replace('-', "_");
+        base.truncate(MCP_VAR_BASE_LEN);
+        let mut var = base.clone();
+        let mut n = 2;
+        while secrets.iter().any(|(k, _)| *k == var) {
+            var = format!("{base}_{n}");
+            n += 1;
+        }
+        secrets.push((var.clone(), value.to_owned()));
+        var
+    };
+    let servers = mcp
+        .iter()
+        .map(|m| match m {
+            McpAttachment::Stdio {
+                name,
+                command,
+                args,
+                env,
+            } => McpServerSpec {
+                name: name.clone(),
+                transport: McpTransport::Stdio {
+                    command: command.clone(),
+                    args: args.clone(),
+                    env_vars: env
+                        .iter()
+                        .map(|(key, value)| (key.clone(), variable(name, key, value)))
+                        .collect(),
+                },
+            },
+            McpAttachment::Http { name, url, bearer } => McpServerSpec {
+                name: name.clone(),
+                transport: McpTransport::Http {
+                    url: url.clone(),
+                    bearer_env: bearer.as_ref().map(|b| variable(name, "TOKEN", b)),
+                },
+            },
+        })
+        .collect();
+    (servers, secrets)
+}
+
 impl HarnessPort for HarnessAdapter {
     fn plan(&self, l: &HarnessLaunch) -> AppResult<HarnessPlan> {
-        let mut extra_secrets = Vec::new();
-        let mcp_servers = l
-            .mcp
-            .iter()
-            .map(|m| match m {
-                McpAttachment::Stdio {
-                    name,
-                    command,
-                    args,
-                    env,
-                } => {
-                    extra_secrets.extend(env.iter().cloned());
-                    McpServerSpec {
-                        name: name.clone(),
-                        transport: McpTransport::Stdio {
-                            command: command.clone(),
-                            args: args.clone(),
-                            env_names: env.iter().map(|(k, _)| k.clone()).collect(),
-                        },
-                    }
-                }
-                McpAttachment::Http { name, url, bearer } => {
-                    let bearer_env = bearer.as_ref().map(|b| {
-                        let var = format!(
-                            "YULIUS_MCP_{}_TOKEN",
-                            name.to_ascii_uppercase().replace('-', "_")
-                        );
-                        extra_secrets.push((var.clone(), b.clone()));
-                        var
-                    });
-                    McpServerSpec {
-                        name: name.clone(),
-                        transport: McpTransport::Http {
-                            url: url.clone(),
-                            bearer_env,
-                        },
-                    }
-                }
-            })
-            .collect();
+        let (mcp_servers, extra_secrets) = mcp_specs(&l.mcp);
         let credential = match l.harness {
             Harness::ClaudeCode => {
                 Credential::ClaudeOauthToken(HSecret::new(l.credential.expose().to_owned()))
@@ -169,6 +186,7 @@ impl HarnessPort for HarnessAdapter {
                 url: url.clone(),
                 token: HSecret::new(token.expose().to_owned()),
             }),
+            project_mcp_servers: l.project_mcp_servers.clone(),
         })
         .map_err(|e| AppError::Invalid(e.to_string()))?;
         // A person answers the prompts, so approvals stay on (no bypass acceptance recorded).
@@ -422,5 +440,93 @@ impl TranscriptWatch for Watch {
 
     fn caught_up(&self) -> bool {
         self.tail.at_end()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_mcp_value_travels_in_a_variable_of_its_own() {
+        let mcp = [
+            McpAttachment::Stdio {
+                name: "apify".into(),
+                command: "npx".into(),
+                args: vec![],
+                env: vec![("APIFY_TOKEN".into(), "v1".into())],
+            },
+            McpAttachment::Stdio {
+                name: "a".into(),
+                command: "x".into(),
+                args: vec![],
+                env: vec![("B_TOKEN".into(), "v2".into())],
+            },
+            McpAttachment::Http {
+                name: "a-b".into(),
+                url: "https://x.test".into(),
+                bearer: Some("v3".into()),
+            },
+        ];
+        let (servers, secrets) = mcp_specs(&mcp);
+        assert_eq!(
+            secrets,
+            [
+                ("YULIUS_MCP_APIFY_APIFY_TOKEN".to_owned(), "v1".to_owned()),
+                ("YULIUS_MCP_A_B_TOKEN".to_owned(), "v2".to_owned()),
+                ("YULIUS_MCP_A_B_TOKEN_2".to_owned(), "v3".to_owned()),
+            ]
+        );
+        assert!(matches!(
+            &servers[0].transport,
+            McpTransport::Stdio { env_vars, .. }
+                if env_vars == &[("APIFY_TOKEN".to_owned(), "YULIUS_MCP_APIFY_APIFY_TOKEN".to_owned())]
+        ));
+        assert!(matches!(
+            &servers[2].transport,
+            McpTransport::Http { bearer_env: Some(var), .. } if var == "YULIUS_MCP_A_B_TOKEN_2"
+        ));
+    }
+
+    /// The longest server name and variable still make names the harness takes, so the run
+    /// starts.
+    #[test]
+    fn mcp_variable_names_stay_within_the_harness_bound() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let name = "s".repeat(64);
+        let key = format!("K{}", "_".repeat(127));
+        let mcp: Vec<McpAttachment> = (0..12)
+            .map(|i| McpAttachment::Stdio {
+                name: format!("{}{i:02}", &name[..62]),
+                command: "x".into(),
+                args: vec![],
+                env: vec![(key.clone(), "v".into())],
+            })
+            .collect();
+        let (servers, secrets) = mcp_specs(&mcp);
+        assert_eq!(secrets.len(), 12);
+        assert!(
+            secrets.iter().all(|(var, _)| var.len() <= 128),
+            "{secrets:?}"
+        );
+        let request = launch::LaunchRequest {
+            harness: Harness::ClaudeCode,
+            mode: LaunchMode::New {
+                session_id: None,
+                prompt: None,
+            },
+            worktree: PathBuf::from("/w"),
+            sandbox_home: PathBuf::from("/h"),
+            run_dir: PathBuf::from("/r"),
+            model: None,
+            effort: None,
+            contained: false,
+            yulius_exe: PathBuf::from("/bin/yulius"),
+            yulius_url: "http://127.0.0.1:1".into(),
+            mcp_servers: servers,
+            credential: Credential::ClaudeOauthToken(HSecret::new("token".into())),
+        };
+        launch::plan_launch(&request)?;
+        Ok(())
     }
 }

@@ -17,7 +17,7 @@ function layoutProblems(browser: Browser) {
       '.page-head > *', '.page-actions > *', '.toolbar > *', '.tl-toolbar button', '.tl-summary', '.ss-toolbar > *',
       '.tl-columns > span', '.tl-row > *', '.tl-link > *', '.item-title > *', '.item-controls > *',
       '.home-card-head > *', '.home-count', '.home-card-actions > *',
-      '.stepstrip-main > *', '.stepstrip-toggle > *', '.step-label > *', '.panel-head > *', '.panel-head .row > *',
+      '.wf-head .gt-title-row > *', '.stepstrip-main > *', '.stepstrip-toggle > *', '.step-label > *', '.panel-head > *', '.panel-head .row > *',
     ].join(', ');
     const describe = (el: Element) => `${el.tagName.toLowerCase()}.${[...el.classList].slice(0, 2).join('.')} "${(el.getAttribute('aria-label') || el.textContent || '').trim().slice(0, 24)}"`;
     const box = (el: Element) => {
@@ -66,6 +66,8 @@ const pages = [
   ['workflows', '/s/studio/workflows', 'Workflows'],
   ['skills', '/s/studio/skills', 'Skills'],
   ['automations', '/s/studio/automations', 'Automations'],
+  // The editor's action bar with its start chip wraps on a phone (SPEC-093 AUT-024).
+  ['automation editor', '/s/studio/automations/aut_1', 'Edit automation'],
   ['MCP', '/s/studio/mcp', 'MCP'],
   ['secrets', '/s/studio/secrets', 'Secrets'],
   ['dashboard', '/s/studio/dashboard', 'Dashboard'],

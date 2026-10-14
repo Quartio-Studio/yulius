@@ -622,8 +622,8 @@ fn mcp_servers_reach_every_run_on_every_subscription() -> TestResult {
             transcript: true,
             report_env: vec![
                 "YULIUS_MCP_QUARTIO_TOKEN".into(),
-                "APIFY_TOKEN".into(),
-                "LINEAR_KEY".into(),
+                "YULIUS_MCP_APIFY_APIFY_TOKEN".into(),
+                "YULIUS_MCP_LINEAR_LINEAR_KEY".into(),
             ],
             ..FakeAgentOptions::default()
         };
@@ -651,7 +651,7 @@ fn mcp_servers_reach_every_run_on_every_subscription() -> TestResult {
         wait_for("the run", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
-            async move { screen(&app, &id).contains("ENV LINEAR_KEY=") }
+            async move { screen(&app, &id).contains("ENV YULIUS_MCP_LINEAR_LINEAR_KEY=") }
         })
         .await?;
         let first = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
@@ -670,11 +670,14 @@ fn mcp_servers_reach_every_run_on_every_subscription() -> TestResult {
             "Bearer ${YULIUS_MCP_QUARTIO_TOKEN}"
         );
         assert_eq!(servers["apify"]["command"], "npx");
-        assert_eq!(servers["apify"]["env"]["APIFY_TOKEN"], "${APIFY_TOKEN}");
+        assert_eq!(
+            servers["apify"]["env"]["APIFY_TOKEN"],
+            "${YULIUS_MCP_APIFY_APIFY_TOKEN}"
+        );
         for secret in [QUARTIO_TOKEN, APIFY_TOKEN] {
             assert!(!text.contains(secret), "the MCP file holds no secret value");
         }
-        for name in ["YULIUS_MCP_QUARTIO_TOKEN", "APIFY_TOKEN"] {
+        for name in ["YULIUS_MCP_QUARTIO_TOKEN", "YULIUS_MCP_APIFY_APIFY_TOKEN"] {
             assert!(secrets.iter().any(|n| n == name), "{name} in {secrets:?}");
         }
         let shown = screen(&app, &id);
@@ -686,10 +689,16 @@ fn mcp_servers_reach_every_run_on_every_subscription() -> TestResult {
             "{shown}"
         );
         assert!(
-            shown.contains(&format!("ENV APIFY_TOKEN=set len={}", APIFY_TOKEN.len())),
+            shown.contains(&format!(
+                "ENV YULIUS_MCP_APIFY_APIFY_TOKEN=set len={}",
+                APIFY_TOKEN.len()
+            )),
             "{shown}"
         );
-        assert!(shown.contains("ENV LINEAR_KEY=unset"), "{shown}");
+        assert!(
+            shown.contains("ENV YULIUS_MCP_LINEAR_LINEAR_KEY=unset"),
+            "{shown}"
+        );
 
         // A server added while the task runs; then the task moves to b-second.
         let mut linear = mcp_input("linear", "stdio");
@@ -724,23 +733,177 @@ fn mcp_servers_reach_every_run_on_every_subscription() -> TestResult {
         let mut names: Vec<&str> = servers.keys().map(String::as_str).collect();
         names.sort_unstable();
         assert_eq!(names, ["apify", "linear", "quartio", "yulius"]);
-        assert_eq!(servers["linear"]["env"]["LINEAR_KEY"], "${LINEAR_KEY}");
+        assert_eq!(
+            servers["linear"]["env"]["LINEAR_KEY"],
+            "${YULIUS_MCP_LINEAR_LINEAR_KEY}"
+        );
         assert_eq!(
             servers["quartio"]["headers"]["Authorization"],
             "Bearer ${YULIUS_MCP_QUARTIO_TOKEN}"
         );
         assert!(!text.contains(LINEAR_KEY) && !text.contains(APIFY_TOKEN));
-        for name in ["YULIUS_MCP_QUARTIO_TOKEN", "APIFY_TOKEN", "LINEAR_KEY"] {
+        for name in [
+            "YULIUS_MCP_QUARTIO_TOKEN",
+            "YULIUS_MCP_APIFY_APIFY_TOKEN",
+            "YULIUS_MCP_LINEAR_LINEAR_KEY",
+        ] {
             assert!(secrets.iter().any(|n| n == name), "{name} in {secrets:?}");
         }
         wait_for("the new run's environment", Duration::from_secs(30), || {
             let app = app.clone();
             let id = id.clone();
             async move {
-                screen(&app, &id).contains(&format!("ENV LINEAR_KEY=set len={}", LINEAR_KEY.len()))
+                screen(&app, &id).contains(&format!(
+                    "ENV YULIUS_MCP_LINEAR_LINEAR_KEY=set len={}",
+                    LINEAR_KEY.len()
+                ))
             }
         })
         .await?;
+        stop(&app, &id).await?;
+        Ok::<_, Box<dyn std::error::Error>>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
+/// SPEC-095 PMC-001/002/005: the servers of the repository's `.mcp.json` join the sandbox's MCP
+/// servers before the run, audited, and reach the run like any server configured in Yulius. One
+/// already configured (here turned off) is left as it is. Agents can write the file, so a variable
+/// it names, even as `${secret:…}`, reaches the server as the agent secret's placeholder, never as
+/// its value: the egress proxy puts the value in on the secret's bound hosts only (ADR-20).
+#[test]
+fn a_repository_mcp_json_reaches_the_run_through_yulius() -> TestResult {
+    const APIFY_TOKEN: &str = "synthetic-apify-token-95-0123456789abcdef";
+    const PLACEHOLDER: &str = "yulius-secret-APIFY_TOKEN";
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = temp()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            report_env: vec![
+                "YULIUS_MCP_APIFY_APIFY_TOKEN".into(),
+                "YULIUS_MCP_LINEAR_LINEAR_KEY".into(),
+            ],
+            ..FakeAgentOptions::default()
+        };
+        let app = build_with(&data, &fake, Arc::new(ScriptedUsage::default()), agent)?;
+        let (sandbox, user) = seed(&app, &data, &["a-first"]).await?;
+        let ctx = AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        std::fs::write(
+            data.join("sandboxes")
+                .join(sandbox.as_str())
+                .join("repo/.mcp.json"),
+            r#"{"mcpServers": {
+                "apify": {"command": "npx", "args": ["-y", "@apify/actors-mcp-server"],
+                          "env": {"APIFY_TOKEN": "${APIFY_TOKEN}"}},
+                "pipedream-gmail": {"type": "http", "url": "https://mcp.pipedream.test/gmail",
+                                    "headers": {"Authorization": "Bearer ${secret:APIFY_TOKEN}"}},
+                "Linear": {"type": "stdio", "command": "linear-mcp",
+                           "env": {"LINEAR_KEY": "from-the-file"}}
+            }}"#,
+        )?;
+        let mut linear = mcp_input("linear", "stdio");
+        linear.enabled = Some(false);
+        app.create_mcp_server(&ctx, sandbox.as_str(), &linear)
+            .await?;
+        app.create_agent_secret(
+            &ctx,
+            sandbox.as_str(),
+            &yulius_contracts::api::secrets::AgentSecretInput {
+                name: "APIFY_TOKEN".into(),
+                hosts: vec!["api.apify.test".into()],
+                value: APIFY_TOKEN.into(),
+                ..Default::default()
+            },
+        )
+        .await?;
+
+        let id = new_task(&app, &sandbox, &user, "Tools").await?;
+        wait_for("the run", Duration::from_secs(30), || {
+            let app = app.clone();
+            let id = id.clone();
+            async move { screen(&app, &id).contains("ENV YULIUS_MCP_LINEAR_LINEAR_KEY=") }
+        })
+        .await?;
+        let run = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        let (mcp, text, _) = run_mcp(&run.run_dir)?;
+        let servers = mcp["mcpServers"].as_object().ok_or("mcpServers")?;
+        let mut names: Vec<&str> = servers.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["apify", "pipedream-gmail", "yulius"], "{text}");
+        assert_eq!(servers["apify"]["command"], "npx");
+        assert_eq!(
+            servers["apify"]["env"]["APIFY_TOKEN"],
+            "${YULIUS_MCP_APIFY_APIFY_TOKEN}"
+        );
+        assert_eq!(
+            servers["pipedream-gmail"]["url"],
+            "https://mcp.pipedream.test/gmail"
+        );
+        assert_eq!(
+            servers["pipedream-gmail"]["headers"]["Authorization"],
+            "Bearer ${YULIUS_MCP_PIPEDREAM_GMAIL_TOKEN}"
+        );
+        assert!(!text.contains(APIFY_TOKEN));
+        let shown = screen(&app, &id);
+        assert!(
+            shown.contains(&format!(
+                "ENV YULIUS_MCP_APIFY_APIFY_TOKEN=set len={}",
+                PLACEHOLDER.len()
+            )),
+            "{shown}"
+        );
+        let record = app.deps.store.sandbox(&sandbox).await?.ok_or("sandbox")?;
+        let attached = format!("{:?}", app.mcp_attachments(&record).await?);
+        assert!(!attached.contains(APIFY_TOKEN), "{attached}");
+        assert!(
+            attached.contains(&format!("(\"APIFY_TOKEN\", \"{PLACEHOLDER}\")")),
+            "{attached}"
+        );
+        assert!(
+            attached.contains(&format!("bearer: Some(\"{PLACEHOLDER}\")")),
+            "{attached}"
+        );
+        assert!(
+            shown.contains("ENV YULIUS_MCP_LINEAR_LINEAR_KEY=unset"),
+            "{shown}"
+        );
+        let stored = app.deps.store.mcp_servers(&sandbox).await?;
+        let mut listed: Vec<(&str, bool)> = stored
+            .iter()
+            .map(|s| (s.name.as_str(), s.enabled))
+            .collect();
+        listed.sort_unstable();
+        assert_eq!(
+            listed,
+            [
+                ("apify", true),
+                ("linear", false),
+                ("pipedream-gmail", true)
+            ]
+        );
+        let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+        let mut audited: Vec<(String, String)> = db
+            .prepare("SELECT actor, detail FROM audit_log WHERE action = 'mcp.imported'")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        audited.sort_unstable();
+        assert_eq!(
+            audited,
+            [
+                ("yulius".to_owned(), "apify (sandbox, stdio)".to_owned()),
+                (
+                    "yulius".to_owned(),
+                    "pipedream-gmail (sandbox, http)".to_owned()
+                ),
+            ]
+        );
         stop(&app, &id).await?;
         Ok::<_, Box<dyn std::error::Error>>(())
     })?;

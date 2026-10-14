@@ -103,6 +103,9 @@ pub struct CockpitLaunch {
     /// The Yulius MCP server it manages the project with (SPEC-037): the internal listener's
     /// URL and the Cockpit's bearer.
     pub yulius: Option<(String, Secret)>,
+    /// Every server name in the repository's `.mcp.json`: Yulius attaches them itself, so Claude
+    /// Code rejects them instead of asking (SPEC-095 PMC-004).
+    pub project_mcp_servers: Vec<String>,
 }
 
 /// A launch plan plus the session id known up front.

@@ -52,7 +52,7 @@ the automation and applies to every task it creates.
 | AUT-015 | Every run of the automation (scheduled, catch-up after a restart, Run now) creates its task with the start choice: start now → `queued`; supertask → a supertask (SPEC-071); rule → `chained` until the rule is true (at once when it already is); after a task → `chained` after it while it has not ended, and once it has ended, `chained` on the rule `#N done`, so a run after a predecessor that was Done (TSK-014; a closed task: plan complete and pull request merged, or open and green) starts at once and one after a predecessor that ended without being Done waits for a person, as a rule that can no longer be true does. A predecessor that no longer exists, or a full chain bound, makes the run `failed` with the reason. | int `automation_start.rs` |
 | AUT-016 | The previous-active rule is unchanged: a created task waiting `chained` or `queued` is active, so the next scheduled runs are skipped until it ends; waiting tasks never pile up. | int `automation_start.rs` |
 | AUT-017 | Agents set the start choice with `automation_create` and `automation_update` (`after_task` as a task number, `start_rule`, `supertask`), with the same checks; in an update, giving any of the three replaces the start choice (the ones not given are cleared). `automations_list` returns it. | int `automation_start.rs` |
-| AUT-018 | The automation builder has a **Start** row under the workflow with the chips Start now, Supertask, After a task… (the project's tasks that have not ended, as New task offers them) and When a rule is true… (the rule editor of New task); the picked task or rule shows on its chip. The header sentence names a choice other than Start now ("· supertask", "· after #12", "· when #12 done"). | e2e `automations.e2e.ts` |
+| AUT-018 | The automation builder offers Start now, Supertask, After a task… (the project's tasks that have not ended, as New task offers them) and When a rule is true… (the rule editor of New task); the picked task or rule shows. The header sentence names a choice other than Start now ("· supertask", "· after #12", "· when #12 done"). Since [SPEC-093](SPEC-093-automation-editor-the-start-choice-sits.md) the choice is New task's start chip in the action bar, before Run now, instead of a Start row under the workflow, and Run now uses the choice it shows. | e2e `automations.e2e.ts` |
 | AUT-019 | SPEC-001 (AUT-013 row), the API doc, an ADR, the architecture document, the product summary and `docs/changes.md` describe the start choice. | review |
 
 ## Plan
@@ -108,7 +108,9 @@ the automation and applies to every task it creates.
   the two read the same; it stays the default and existing automations keep it.
 - **One start choice per automation, not per run.** The request is to set the automation "as a
   normal task"; the choice is part of the recipe, like the workflow. A per-run override (Run now
-  asking how to start) adds a dialog for no reported need.
+  asking how to start) adds a dialog for no reported need. SPEC-093 (task #78) later moved the
+  choice into the action bar, where Run now uses the choice the chip shows even before it is
+  saved: an optional run body, with no dialog (ADR-0074).
 - **A start choice as one enum in the app, three nullable columns in the store, three fields on
   the wire.** The wire mirrors `CreateTask` exactly so the API reads the same for tasks and
   automations; the app's `AutomationStart` makes two choices at once unrepresentable; the store

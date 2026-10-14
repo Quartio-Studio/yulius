@@ -12,6 +12,43 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   after opening, then 45–150 s apart) a pixel-art cockroach runs across the visible part of the
   session and is gone. Nothing moves under reduced motion, and the cockroach stops when the
   session is left.
+- `yulius onboard` no longer leaves a "Closed · 0/6 steps" onboarding task behind (SPEC-097,
+  ADR-0077). Linking a repository creates no task: the onboarding task is created when someone
+  clicks Start onboarding in the browser, or when a new task has to wait after it. Sandboxes
+  already waiting keep their task. The onboarding page still lists what onboarding will do, now
+  from `GET /api/sandboxes/{sid}/onboarding/plan`.
+- The start menu's tasks show five at a time and say there is more (SPEC-102, ADR-0083, task #87).
+  "After a task is done" lists its tasks in a box five rows tall that scrolls the rest, so Start
+  now, Supertask and "When a rule is true…" stay in view however many tasks a project has. The box
+  fades at the edge it continues past and a "↓ N more" line under it counts the tasks below (a
+  click scrolls a page); the picked task opens in view (and focused when the menu has no filter
+  focused), and the arrows and the filter work inside the box. The automation editor's start menu does the same. `openMenu` takes such a
+  group as `{ header, items }`.
+- The automation editor's start choice is a chip in its action bar, before Run now (SPEC-093,
+  ADR-0074, task #78). It looks and works like New task's start chip and opens the same menu, now
+  one shared module: Start now, Supertask, the filterable "After a task is done" list and "When a
+  rule is true…". The Start row in "The task" is gone, and the chip's tooltip says what the choice
+  means. Run now starts its task the way the chip shows, saved or not: `POST
+  /api/automations/{id}/run` takes an optional start choice for that run only, checked like a
+  save. On a phone the bar wraps below the name, and readers see the chip disabled.
+- A repository's `.mcp.json` no longer stops the Superagent on Claude Code's "N new MCP servers
+  found in this project" dialog (SPEC-095, ADR-0078, #391). Before each task run and Superagent
+  start, Yulius adds the file's servers that the sandbox lacks to its MCP servers, so every task
+  gets them. Since agents can write the file, a `${VAR}` value becomes the placeholder of the agent
+  secret VAR, which the egress proxy replaces on the secret's bound hosts; the file never gets a
+  clear value. The Superagent starts rejecting the file's servers through `--settings`, including
+  ones a person had approved there (#395 will give it Yulius's servers). A server already
+  configured is left as it is, so one turned off stays off. An MCP server's values now reach a run
+  in `YULIUS_MCP_<SERVER>_<VAR>` variables. Before, one named like an agent secret, such as
+  `APIFY_TOKEN`, clashed with that secret's placeholder, and every run of the sandbox failed to
+  start.
+- Onboarding is mandatory (SPEC-096, ADR-0076, task #81): while a sandbox awaits or runs its
+  onboarding, its new-task page shows no task input. A centred message says what onboarding will
+  do (its task's own plan, which differs for a repository already in the Yulius format), with
+  Start onboarding, or Follow onboarding while it runs (waiting for capacity and a stopped task
+  are said too). The task box shows by itself once the sandbox is ready. The page no longer offers Skip;
+  the admin API keeps it as a recovery path. Tasks created through the API still wait after
+  onboarding.
 - The terminal's mouse is the program's when it asks for it, as in a native terminal (SPEC-098,
   ADR-0079, task #83). The "Mouse: select text · send to app" chip is gone. In Claude Code's
   full-screen view, clicks, drags, the wheel and right-clicks reach Claude Code, and Shift-drag

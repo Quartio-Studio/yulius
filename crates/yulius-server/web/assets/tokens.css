@@ -264,6 +264,11 @@
   --focus: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent); /* a gap, then the ring: visible on accent fills too */
   --focus-inset: inset 0 0 0 2px var(--accent); /* focus inside a row, menu item or segment */
 
+  /* Masks: only their alpha counts, so they are the same in every theme. A fade ends faint, not
+     gone, so a row under it can still be read (SPEC-102). */
+  --mask-solid: #000;
+  --mask-faint: rgb(0 0 0 / 0.25);
+
   /* Icons: the same 24-unit shapes at any size draw a stroke this thick on screen. */
   --icon-stroke: 1.25px;
 

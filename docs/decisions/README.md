@@ -45,7 +45,7 @@ number differs from the file name, and a record this index does not list.
 - [0035](0035-queued-messages-join-the-request.md): Messages queued into a waiting task join its request
 - [0036](0036-agent-in-the-right-panel.md): The Cockpit is shown as the Agent, a tool in the right panel
 - [0037](0037-dead-code-tools.md): Dead code is cleaned with each language's established tool; Yulius's gate uses cargo-shear
-- [0038](0038-onboarding-starts-in-the-browser.md): Onboarding starts in the browser, never from the CLI
+- [0038](0038-onboarding-starts-in-the-browser.md): Onboarding starts in the browser, never from the CLI (amended by 0077)
 - [0039](0039-ci-jobs-get-the-cpu-first.md): CI jobs get the CPU first through a weighted cgroup
 - [0040](0040-done-tasks-release-their-subscription.md): Done tasks release their subscription
 - [0045](0045-ci-waits-for-disk-under-the-shared-quota.md): CI waits for disk under the sandbox's shared quota
@@ -78,8 +78,13 @@ number differs from the file name, and a record this index does not list.
 - [0069](0069-mcp-tools-answer-with-short-text.md): Yulius's MCP tools answer with short text; the record only when a client asks
 - [0072](0072-recount-old-runs-from-their-transcripts-once.md): Runs recorded before SPEC-087 are recounted from their transcripts once, after the upgrade
 - [0071](0071-long-injected-context-folds-in-the-session-view.md): Long injected context folds to one line in the session view; short notes stay readable
+- [0074](0074-run-now-uses-the-start-choice-the-editor-shows.md): Run now uses the start choice the editor shows, for that run only
+- [0078](0078-repository-mcp-json-feeds-the-mcp-section.md): A repository's .mcp.json feeds the sandbox's MCP servers; the Superagent rejects the file's servers
+- [0076](0076-onboarding-is-mandatory-in-the-ui.md): Onboarding is mandatory in the UI: the new-task page shows only what it will do and its button; skipping is an operator's recovery
 - [0079](0079-the-terminal-mouse-is-the-programs.md): The terminal's mouse is the program's when it asks for it (Shift or Option selects), with no mouse chip
 - [0073](0073-loading-shows-shimmering-fields.md): Loading shows shimmering fields everywhere; a spinner marks only an action under way
 - [0075](0075-menu-descriptions-wrap.md): Menu descriptions wrap onto as many lines as they need instead of being cut
 - [0082](0082-the-session-web-sticks-and-its-creatures-move.md): The session's web sticks in its corner, its spider climbs in CSS, and a cockroach runs by from a timer
+- [0077](0077-onboarding-task-is-created-when-needed.md): A sandbox's onboarding task is created when onboarding starts, not at import
 - [0080](0080-a-wait-for-yulius-shows-a-still-muted-branch.md): A wait for Yulius shows a still, muted branch, not Working's turning green
+- [0083](0083-long-menu-groups-scroll-five-rows.md): A long menu group (the start menu's tasks) shows five rows and says there is more

@@ -172,6 +172,7 @@ fn scoped_routes() -> Vec<(Method, &'static str, Option<Value>)> {
         (Method::PATCH, "/api/sandboxes/{sid}", empty()),
         (Method::DELETE, "/api/sandboxes/{sid}", None),
         (Method::GET, "/api/sandboxes/{sid}/tasks", None),
+        (Method::GET, "/api/sandboxes/{sid}/onboarding/plan", None),
         (
             Method::POST,
             "/api/sandboxes/{sid}/tasks",
