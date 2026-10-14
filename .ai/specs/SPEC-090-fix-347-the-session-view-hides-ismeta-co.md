@@ -1,11 +1,11 @@
 ---
 yulius-task: 47613da5-0c55-4c3d-8d5e-eba53dc65369
-status: in-progress
+status: done
 ---
 
 # SPEC-090: the session view folds long injected context as the TUI hides it
 
-Status: in progress
+Status: implemented
 Date: 2026-10-14
 Owner: Yulius task #75
 Scope authorization: task request: "Fix #347: Session view: hide isMeta context (skill bodies,
@@ -55,9 +55,9 @@ people act on, such as the Stop hook's goal line and its feedback, stay readable
 ## Plan
 
 - [x] Spec, ADR and plan for folding long meta notes
-- [ ] Long meta notes fold to one line in the session view, with e2e tests
-- [ ] Docs, changes log and gates green
-- [ ] Independent review and its fixes
+- [x] Long meta notes fold to one line in the session view, with e2e tests
+- [x] Docs, changes log and gates green
+- [x] Independent review and its fixes
 
 ## Acceptance criteria
 
@@ -91,3 +91,24 @@ people act on, such as the Stop hook's goal line and its feedback, stay readable
   is one click away.
 - The page decides, as for wrappers (ADR-0059): no server or API change, so agents' reads and the
   search index stay as they are.
+
+## Evidence
+
+- Fail first: with the mock's skill body and the new tests in place, `npx e2e run
+  tests/sessions.e2e.ts` failed 2 of 15 (`foldsNote` undefined; no `details.ss-note`). With the
+  change: 15 of 15 passed.
+- The opened note's bound is proven: with `.ss-note-text` dropped from the `max-height` rule the
+  rendered test fails (1 of 15), and passes again with it.
+- `scripts/dev ci` (after `python3 scripts/bootstrap.py`): exit 0; nextest 1,502 tests passed,
+  16 skipped; repository contracts, lint, docs passed.
+- Full e2e suite, `E2E_TELEMETRY_DISABLED=1 npx e2e run`: 41 files passed, 1 skipped; 280 tests
+  passed, 1 skipped; axe checks included.
+- `python3 scripts/check_repository.py` on the final tree: passed.
+- No Rust file changed: the transcript API and `session_read` output are as before (MTF-004).
+- Seen in a headless Chromium on the mock: `⎿ Context added (1.6 KiB)` under the last result,
+  the Stop hook line in full above it; opened, the body indented under it.
+- Independent review (fresh session, `om-code-review`): APPROVE at d7858286 with minors, all
+  fixed in 603f9f7a: the opened note's scroll, bound and focus ring are tested; the size is
+  checked exactly in UTF-8 bytes (the mock has non-ASCII text); the CSS joins the neighbouring
+  rules; the wording says the text the server sent. The server's silent cut of meta texts over
+  16 Ki characters predates this change and is follow-up #380.
