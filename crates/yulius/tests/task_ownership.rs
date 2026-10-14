@@ -193,6 +193,70 @@ async fn a_non_owner_watches_the_terminal_read_only() -> TestResult {
     Ok(())
 }
 
+/// Whether a terminal input was refused for want of write access (not, say, because no run is
+/// attached: this fixture's live attempt has no process).
+fn forbidden(result: &Result<(), yulius_app::error::AppError>) -> bool {
+    matches!(result, Err(yulius_app::error::AppError::Forbidden(_)))
+}
+
+/// SPEC-118 KEY-002: the typist's write grant spares each keystroke the permission lookup, yet a
+/// hand-over refuses the previous owner's very next keystroke.
+#[tokio::test]
+async fn a_hand_over_refuses_the_previous_owners_next_keystroke() -> TestResult {
+    let f = fixture().await?;
+    let (alice, bob) = (auth(&f.h, "u-a").await?, auth(&f.h, "u-b").await?);
+    let typing = f.h.app.terminal_open(&alice, id_of(&f), None).await?;
+    assert!(typing.can_write);
+    let first = f.h.app.terminal_input(&alice, &typing, b"a", false).await;
+    assert!(!forbidden(&first), "{first:?}");
+    assert!(
+        f.h.store
+            .request_control(&f.task.id, &bob.user.id, f.h.app.now())
+            .await?
+    );
+    assert!(
+        f.h.store
+            .pass_control(&f.task.id, &alice.user.id, &bob.user.id, f.h.app.now())
+            .await?
+    );
+    let after = f.h.app.terminal_input(&alice, &typing, b"b", false).await;
+    assert!(forbidden(&after), "{after:?}");
+    Ok(())
+}
+
+/// SPEC-118 KEY-003: a grant older than 30 s is re-confirmed beside the input. A GitHub downgrade
+/// found there (the permission cache expired) refuses the keystrokes after the one that found it.
+#[tokio::test]
+async fn a_downgrade_found_beside_the_input_refuses_the_next_keystroke() -> TestResult {
+    let f = fixture().await?;
+    let alice = auth(&f.h, "u-a").await?;
+    let typing = f.h.app.terminal_open(&alice, id_of(&f), None).await?;
+    let first = f.h.app.terminal_input(&alice, &typing, b"a", false).await;
+    assert!(!forbidden(&first), "{first:?}");
+
+    f.h.github.set_perm("alice", "acme/repo", perms("read"));
+    let before = f.h.store.access_epoch();
+    f.h.clock
+        .0
+        .fetch_add(6 * 60 * 1000, std::sync::atomic::Ordering::SeqCst);
+    let finds = f.h.app.terminal_input(&alice, &typing, b"b", false).await;
+    assert!(
+        !forbidden(&finds),
+        "the keystroke that starts the re-confirmation is not held: {finds:?}"
+    );
+    // The re-confirmation stores the new level from GitHub (the access epoch grows).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while f.h.store.access_epoch() == before {
+        if std::time::Instant::now() > deadline {
+            return Err("the grant was not re-confirmed beside the input".into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let next = f.h.app.terminal_input(&alice, &typing, b"c", false).await;
+    assert!(forbidden(&next), "{next:?}");
+    Ok(())
+}
+
 fn id_of(f: &Fixture) -> &str {
     f.task.id.as_str()
 }
