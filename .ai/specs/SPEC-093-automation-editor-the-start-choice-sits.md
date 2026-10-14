@@ -116,6 +116,14 @@ the chip shows.
   - Accepted: "survives Save and reload" is checked by opening the editor again, because the
     mock's data does not outlive a page reload. Storage itself is tested through the API
     (`an_automation_stores_its_start_choice`).
+- **Review round 2** (fresh-session review of 326ea75, APPROVE with one minor and four nits):
+  - `dev` had reworded the supertask help (SPEC-094) in `taskview.js`, from which this branch
+    moved it. `dev` was merged and its wording is now in `startchoice.js`.
+  - Until the automation is read, the chip's name is just "Start" instead of a default choice.
+    The loading test uses `dev`'s shared mock hold (`&hold=<path>`), and the custom one is gone.
+  - The audit of a Run now that sends the stored choice back names no other choice (tested).
+  - Left as is: the reader test opens a new automation, because the mock has no automation in a
+    read-only sandbox. The rule that disables the chip is the same for both pages.
 - **The chip is a menu, not four radios.** New task's menu already filters long task lists and
   holds the rule entry; four chips in the action bar would not fit a phone.
 
