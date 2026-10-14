@@ -139,12 +139,17 @@ test('another sandbox opens from the sandbox tabs', async ({ app, browser, scree
 // quickly. But it should be communicated what id is for what". The screenshot's sidebar showed
 // only pull request numbers.
 test('sidebar rows show the task number apart from the pull request number', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/tasks'));
+  // The chips come from the Git overview, read after the tasks: held, the rows show no chip yet.
+  await app.open(mock('/s/studio/tasks', '&hold=/api/sandboxes/sb_studio/git'));
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Tasks');
   const inRow = (title: string, selector: string) => browser.locator(`.task-list .task-row:has-text("${title}") ${selector}`);
 
-  // TID-1, TID-2: the task's own number, said as a task's, before the chip and the title.
+  // TID-1, TID-2: the task's own number, said as a task's, before the chip and the title. It
+  // shows before the pull request is known.
   await expect(inRow('Improve the code', '.task-num')).toHaveText('Task #13');
+  await expect(inRow('Improve the code', '.tl-pr-chip')).toHaveCount(0);
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+  await expect(inRow('Improve the code', '.tl-pr-chip')).toHaveText(/^PR #520/);
   await expect(inRow('Improve the code', '.task-num')).toHaveAttribute('title', 'Task #13');
   await expect(inRow('Improve the code', '.task-num .sr-only')).toHaveText('Task ');
   await expect(inRow('Checkout API', '.task-num')).toHaveText('Task #12');
@@ -253,6 +258,8 @@ test('the navigation drawer rows fit a 320 px phone with task and pull request n
   await menu.click();
   await expect(menu).toHaveAttribute('aria-expanded', 'true');
   await expect(browser.locator('.task-list .task-row:has-text("Improve the code") .task-num')).toBeVisible();
+  // The chip comes with the Git overview, after the rows: measure once it is there.
+  await expect(browser.locator('.task-list .task-row:has-text("Improve the code") .tl-pr-chip')).toHaveCount(1);
   const rows = await browser.evaluate(() => [...document.querySelectorAll('.task-list .task-link')].map((link) => {
     const box = link.getBoundingClientRect();
     const right = Math.max(...[...link.children].map((el) => el.getBoundingClientRect().right));

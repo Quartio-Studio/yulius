@@ -166,5 +166,11 @@ the sidebar link's name now starts "Needs you in the browser Task #10 …".
   with `expected {"x":-40} to equal {"x":0}`, and passed once the rows had a number bar.
   `npx e2e run tests/loading-shapes.e2e.ts tests/loading.e2e.ts tests/navigation.e2e.ts tests/git.e2e.ts`:
   25 passed.
+- **A race in the sidebar test, found by CI** (run `9d0f3e24`, `6b967b33`): it measured
+  #13's chip before the Git overview, which brings the chips, had answered (`Cannot read
+  properties of null`). The test now holds that read, checks that the number shows without the
+  chip, then releases the read and waits for `PR #520`. The drawer test waits for the chip too.
+  `npx e2e run tests/navigation.e2e.ts tests/git.e2e.ts` passed three times in a row (12 passed
+  each).
 - **Not testable here:** a real GitHub pull request and screen-reader speech. Both are covered
   by the mock and by accessible-name and axe checks.
