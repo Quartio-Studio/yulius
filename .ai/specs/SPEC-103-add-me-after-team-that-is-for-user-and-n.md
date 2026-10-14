@@ -1,11 +1,11 @@
 ---
 yulius-task: 667152c6-bb66-4f46-bbbb-81f73f3aac29
-status: in-progress
+status: done
 ---
 
 # SPEC-103: a personal "Me" notepad after Team
 
-Status: draft
+Status: implemented
 Date: 2026-10-14
 Owner: Yulius task #88
 Scope authorization: user request: "add "me" after team that is for user and not visible for
@@ -58,7 +58,7 @@ handles conflicts exactly like the other two notepads.
 - [x] A saved personal note is announced only to its owner's sessions
 - [x] The Notes panel shows a Me tab after Team with the person's own notepad
 - [x] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Every gate green, docs and the changes log updated
 
 ## Design
 
@@ -116,3 +116,23 @@ flowchart LR
   WebSocket test now also proves the superadmin's stream never gets someone's personal note (it
   failed with an admin bypass put in the filter on purpose). A conflict with one's own other tab
   no longer names the person as a teammate (NOT-014). Long lines rewrapped.
+
+## Evidence
+
+- Rust: `cargo nextest run -p yulius -E 'binary_id(yulius::main) & test(/^notes::/)'` 7 of 7
+  pass, three runs in a row for the WebSocket tests. Each new test failed first:
+  `personal_notes_are_each_persons_own` with 404 before the route existed;
+  `an_edit_is_announced_to_viewers` and `a_personal_edit_reaches_only_its_owner` before a
+  personal save was announced; the latter again with the event published but the stream not
+  filtering it (Bob received it), and with an admin bypass in the filter (the superadmin received it).
+- e2e: `npx e2e run tests/notes.e2e.ts` 22 of 22 pass; the 3 new tests failed first (no Me tab;
+  then the conflict banner named the person as a teammate).
+- Full e2e suite (`npx e2e run`) at `5826006a`: 42 files passed, 1 skipped (`agent.e2e.ts`, needs
+  a model); 294 tests passed, 1 skipped.
+- `scripts/dev ci` exit 0 at `5826006a` (after merging `origin/dev`): nextest 1534 passed,
+  16 skipped; repository contracts (unique decision numbers, links, UI tokens), lint, deps and
+  docs passed. `python3 scripts/check_repository.py --ui`: UI contracts passed.
+- Independent review in a fresh session: approve, no blocker or major; its minors fixed in
+  `0f9ee27b` and `5826006a` (see Decisions).
+- Not tested here: two real devices of one person against a real server (the mock simulates the
+  other tab), and a real browser looking at the Me tab beside a teammate's session.
