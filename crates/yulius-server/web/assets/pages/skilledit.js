@@ -7,7 +7,7 @@
 
 import { enc } from '../api.js';
 import { h, icon, setChildren, placeholder, loadError, iconBadge, confirmDialog, toast } from '../dom.js';
-import { href, navigate } from '../router.js';
+import { href, navigate, linkTarget } from '../router.js';
 import { allows } from '../status.js';
 import { relLong } from '../format.js';
 import { createMarkdownEditor } from '../mdeditor.js';
@@ -40,7 +40,7 @@ export function mountSkillEditor(ctx, sandbox, name) {
   const pathEl = h('div', { class: 'muted small mono se-path' });
   const note = h('div', { class: 'se-note' });
   const head = h('header', { class: 'gt-head se-head' },
-    h('a', { class: 'gt-back', href: href(base), dataset: { route: base } }, icon('back', { size: 14 }), 'Skills'),
+    h('a', { class: 'gt-back', href: href(base), dataset: { route: base, restore: 'page' } }, icon('back', { size: 14 }), 'Skills'),
     h('div', { class: 'gt-title-row' }, h('h1', { class: 'page-title se-title' }, name), badges, h('span', { class: 'spacer' }), status, sourceToggle, discard, save),
     pathEl, note);
   const body = h('div', { class: 'se-body' }, placeholder('Loading the skill…', 'loading'));
@@ -100,7 +100,7 @@ export function mountSkillEditor(ctx, sandbox, name) {
     const ok = await confirmDialog({ title: 'Leave without saving?', message: `Your changes to ${name} are not saved.`, confirmLabel: 'Leave', danger: true });
     if (!ok) return;
     setDirty(false);
-    navigate(link.dataset.route);
+    navigate(linkTarget(link));
   };
   window.addEventListener('beforeunload', onBeforeUnload);
   document.addEventListener('click', onLink, true);

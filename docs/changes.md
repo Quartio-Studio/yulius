@@ -12,6 +12,19 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   output while it ran. Now each viewer holds a write grant, checked again only when something that
   decides access changes, and the re-check runs beside the stream. A hand-over still refuses the
   previous owner's next keystroke.
+- A shown secret value stays masked until its eye is pressed (SPEC-114, ADR-0093, task #99). The
+  Show dialog of a team or agent secret draws a fixed run of dots and keeps the value out of the
+  page; the eye button in the value box shows it and hides it again, and every dialog opens
+  masked. Hovering the value (or focus in it) shows a copy button in the box, which copies even
+  while masked; the Copy button beside it stays.
+- Screens keep their state when you switch away and back (SPEC-113, ADR-0092, task #98, #435).
+  Studio's tab used to open New task after a visit to another sandbox, whatever was open there.
+  Now a sandbox tab, Home's card and the phone picker return to the screen last shown in that
+  sandbox, with its filters; the sidebar's pages and the Tasks and Git back links return to the
+  page's filters (the tab or link of where you are still opens it plain). Each sandbox reopens
+  the tool it had (or none), and its Superagent, Browser, Editor (with unsaved text) and Shell
+  survive the switch for the 3 sandboxes used last. MCP's scope and the Dashboard's period are
+  now in the address too.
 - Start onboarding goes straight into the onboarding session (SPEC-111, ADR-0090, task #96). The
   press turned nothing visible for seconds while the server started the task's run (the button
   stayed pressable), then stopped on "Onboarding <name>" with Follow onboarding. Now the gate turns

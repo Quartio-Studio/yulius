@@ -6,7 +6,7 @@
 // something starts with "+"; a key hint appears only on the button whose shortcut exists (New task).
 
 import { h, setChildren, placeholder, loadError, keepFocus, emptyState, icon } from '../dom.js';
-import { href } from '../router.js';
+import { href, currentLocation, forgetPlace } from '../router.js';
 
 /** Page frame: title row with actions, then the content area. Returns {el, body, actions}. */
 export function pageFrame({ title, sub, actions = [] }) {
@@ -31,6 +31,8 @@ export function createButton(label, onClick, attrs = {}) {
  * column; app.js puts it in a page, an editor in its own.
  */
 export function notFound({ title, text, back: [label, path], level = 1 }) {
+  // Nothing to come back to: a sandbox's tab opens its composer next time (SPEC-113 KST-004).
+  forgetPlace(currentLocation().full);
   return h('div', { class: 'page-inner not-found' },
     h('div', { class: 'page-head' }, h(`h${level}`, { class: 'page-title' }, title)),
     emptyState({ iconName: 'search', title: text, action: h('a', { class: 'btn', href: href(path), dataset: { route: path } }, icon('back', { size: 14 }), label) }));
