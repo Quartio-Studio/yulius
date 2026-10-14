@@ -12,6 +12,8 @@ use yulius_store::SqliteStore;
 
 const SESSION: &str = "5d2a8c41-3e6f-4b7a-9c0d-1e2f3a4b5c6d";
 const WORKTREE: &str = "/work/demo";
+/// The worktree of a task whose transcript cannot be read until its project directory is fixed.
+const BROKEN: &str = "/work/broken";
 
 fn ms(rfc3339: &str) -> Result<i64, Box<dyn std::error::Error>> {
     Ok(yulius_harness::time::parse_rfc3339(rfc3339)
@@ -24,24 +26,32 @@ fn fixture() -> PathBuf {
 }
 
 /// A store as SPEC-087's version left it (schema 22): two runs of a resumed session with the
-/// old watcher's figures (the first without active time, the second without a row), a run whose
-/// transcript is gone and a live run.
+/// old watcher's figures (the first without active time and ended late, by a restart, after the
+/// second had started; the second without a row), a later run of that session with no line in its
+/// transcript, a run whose transcript is gone, one whose session id is not one, a live run, and a
+/// run whose transcript cannot be read yet.
 fn old_store(db: &Path) -> TestResult {
     drop(SqliteStore::open(db)?);
     let conn = rusqlite::Connection::open(db)?;
     let (r1, e1) = (ms("2026-10-10T09:00:00Z")?, ms("2026-10-10T09:30:00Z")?);
     let (r2, e2) = (ms("2026-10-10T10:00:00Z")?, ms("2026-10-10T10:05:00Z")?);
+    let late = ms("2026-10-10T10:30:00Z")?;
+    let (r3, e3) = (ms("2026-10-10T12:00:00Z")?, ms("2026-10-10T12:10:00Z")?);
     conn.execute_batch(&format!(
         "INSERT INTO users (id, display_name, is_superadmin, is_instance_admin, created_at) VALUES ('u', 'U', 0, 0, 1);
          INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{{}}', 20000, 10, 'u', 'not_needed', 1);
          INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, created_by, owner_id, created_at, updated_at, worktree_path) VALUES
            ('t1', 's1', 1, 'T', 'p', 'claude', 'closed', 'ui', 'u', 'u', 1, 1, '{WORKTREE}'),
-           ('t2', 's1', 2, 'T', 'p', 'claude', 'running', 'ui', 'u', 'u', 2, 2, '/work/other');
+           ('t2', 's1', 2, 'T', 'p', 'claude', 'running', 'ui', 'u', 'u', 2, 2, '/work/other'),
+           ('t3', 's1', 3, 'T', 'p', 'claude', 'closed', 'ui', 'u', 'u', 3, 3, '{BROKEN}');
          INSERT INTO attempts (id, task_id, seq, harness, provider_session_id, launch_kind, state, run_dir, token_hash, host_token, started_at, ended_at) VALUES
-           ('a1', 't1', 1, 'claude', '{SESSION}', 'new', 'exited', '/r/a1', 'h1', x'00', {r1}, {e1}),
+           ('a1', 't1', 1, 'claude', '{SESSION}', 'new', 'exited', '/r/a1', 'h1', x'00', {r1}, {late}),
            ('a2', 't1', 2, 'claude', '{SESSION}', 'resume', 'exited', '/r/a2', 'h2', x'00', {r2}, {e2}),
            ('a3', 't2', 1, 'claude', 'gone-session', 'new', 'exited', '/r/a3', 'h3', x'00', {r1}, {e1}),
-           ('a4', 't2', 2, 'claude', 'live-session', 'new', 'live', '/r/a4', 'h4', x'00', {r2}, NULL);
+           ('a4', 't2', 2, 'claude', 'live-session', 'new', 'live', '/r/a4', 'h4', x'00', {r2}, NULL),
+           ('a5', 't1', 3, 'claude', '{SESSION}', 'resume', 'exited', '/r/a5', 'h5', x'00', {r3}, {e3}),
+           ('a6', 't3', 1, 'claude', '{SESSION}', 'new', 'exited', '/r/a6', 'h6', x'00', {r1}, {e1}),
+           ('a7', 't2', 3, 'claude', '../../escape', 'new', 'exited', '/r/a7', 'h7', x'00', {r1}, {e1});
          INSERT INTO metrics (attempt_id, task_id, model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms, updated_at) VALUES
            ('a1', 't1', 'claude-opus-5-5', 45, 310, 0, 0, 7, NULL, {e1}),
            ('a3', 't2', 'claude-opus-5-5', 1, 77, 0, 0, 2, 1000, {e1});
@@ -51,14 +61,31 @@ fn old_store(db: &Path) -> TestResult {
     Ok(())
 }
 
-/// The transcript and its sub-agents where the harness adapter finds the session of `t1`.
-fn transcripts(h: &support::Harness, data: &Path) -> TestResult {
+fn transcript_of(h: &support::Harness, data: &Path, worktree: &str) -> PathBuf {
     let home = data.join("sandboxes").join("s1").join("home");
-    let transcript = h
-        .app
+    h.app
         .deps
         .harness
-        .claude_transcript(&home, Path::new(WORKTREE), SESSION);
+        .claude_transcript(&home, Path::new(worktree), SESSION)
+}
+
+/// The transcript and its sub-agents where the harness adapter finds the session of `t1`; the
+/// project directory of `t3` is a file, so reading its transcript fails.
+fn transcripts(h: &support::Harness, data: &Path) -> TestResult {
+    let broken = transcript_of(h, data, BROKEN);
+    let project = broken.parent().ok_or("project dir")?;
+    std::fs::create_dir_all(project.parent().ok_or("projects")?)?;
+    std::fs::write(project, "not a directory")?;
+    let transcript = transcript_of(h, data, WORKTREE);
+    // Where the session id "../../escape" of `a7` would lead: never read.
+    let home = data.join("sandboxes").join("s1").join("home");
+    let escaped =
+        h.app
+            .deps
+            .harness
+            .claude_transcript(&home, Path::new("/work/other"), "../../escape");
+    std::fs::create_dir_all(escaped.parent().ok_or("parent")?)?;
+    std::fs::copy(fixture().join("resumed.jsonl"), &escaped)?;
     let sub = transcript.with_extension("").join("subagents");
     std::fs::create_dir_all(&sub)?;
     std::fs::copy(fixture().join("resumed.jsonl"), &transcript)?;
@@ -111,7 +138,7 @@ async fn old_runs_get_their_transcripts_figures_once() -> TestResult {
     let data = dir.path().canonicalize()?;
     let db = data.join("yulius.db");
     old_store(&db)?;
-    // The upgrade queues the four runs recorded before it.
+    // The upgrade queues the seven runs recorded before it.
     let store = SqliteStore::open(&db)?;
     let h = support::harness_with(HarnessOptions {
         dir: Some(dir),
@@ -125,10 +152,11 @@ async fn old_runs_get_their_transcripts_figures_once() -> TestResult {
         (
             tally.recomputed,
             tally.no_transcript,
+            tally.no_lines,
             tally.live,
             tally.failed
         ),
-        (2, 1, 1, 0)
+        (2, 2, 1, 1, 1)
     );
     let (first, saved_at) = stored(&db, "a1")?;
     assert_eq!(
@@ -142,8 +170,8 @@ async fn old_runs_get_their_transcripts_figures_once() -> TestResult {
             turns: Some(3),
             active_ms: Some(220_200),
         },
-        "its own lines and its background agent's: 7 answers were 3 turns, and its active \
-         time was lost"
+        "its own lines and its background agent's, up to the next run's start: 7 answers were 3 \
+         turns, and its active time was lost"
     );
     let (second, _) = stored(&db, "a2")?;
     assert_eq!(
@@ -169,6 +197,9 @@ async fn old_runs_get_their_transcripts_figures_once() -> TestResult {
             ("a2", Some("recomputed")),
             ("a3", Some("no_transcript")),
             ("a4", Some("live")),
+            ("a5", Some("no_lines")),
+            ("a6", None),
+            ("a7", Some("no_transcript")),
         ]
     );
     assert!(
@@ -179,7 +210,13 @@ async fn old_runs_get_their_transcripts_figures_once() -> TestResult {
         "the figures it replaced are recorded: {:?}",
         rows[0].2
     );
-    assert!(rows.iter().all(|(.., at)| at.is_some()));
+    assert!(
+        rows.iter()
+            .all(|(id, outcome, .., at)| at.is_some() == outcome.is_some()
+                && (id != "a6" || at.is_none())),
+        "a run that failed stays queued: {rows:?}"
+    );
+    assert!(stored(&db, "a5").is_err(), "nothing replaces nothing");
     let audit: i64 = rusqlite::Connection::open(&db)?.query_row(
         "SELECT COUNT(*) FROM audit_log WHERE action = 'metrics.recounted'",
         [],
@@ -188,13 +225,38 @@ async fn old_runs_get_their_transcripts_figures_once() -> TestResult {
     assert_eq!(audit, 1);
     assert_eq!(h.store.task_metrics(&TaskId::parse("t1")?).await?.len(), 2);
 
-    // Once: a second round (the next start) recounts nothing and changes no figure.
+    // The next start: the run that failed is counted once its transcript can be read; nothing
+    // else is counted again or changes.
+    let broken = transcript_of(&h, &data, BROKEN);
+    let project = broken.parent().ok_or("project dir")?;
+    std::fs::remove_file(project)?;
+    std::fs::create_dir_all(project)?;
+    std::fs::copy(fixture().join("resumed.jsonl"), &broken)?;
     h.clock
         .0
         .fetch_add(60_000, std::sync::atomic::Ordering::SeqCst);
     let again = h.app.recount_old_metrics().await?;
-    assert!(again.is_empty(), "{again:?}");
+    assert_eq!(
+        again,
+        yulius_app::metrics_recount::RecountTally {
+            recomputed: 1,
+            ..Default::default()
+        }
+    );
+    let (retried, _) = stored(&db, "a6")?;
+    assert_eq!(
+        (retried.output_tokens, retried.turns),
+        (Some(310), Some(3)),
+        "its session's lines to its end, no sub-agent transcript beside it"
+    );
     assert_eq!(stored(&db, "a1")?, (first, saved_at));
-    assert_eq!(recounts(&db)?, rows);
+    let after = recounts(&db)?;
+    assert_eq!(after[..5], rows[..5]);
+    assert_eq!(after[6], rows[6]);
+    assert_eq!(after[5].1.as_deref(), Some("recomputed"));
+
+    // Once: a third round recounts nothing.
+    assert!(h.app.recount_old_metrics().await?.is_empty());
+    assert_eq!(recounts(&db)?, after);
     Ok(())
 }

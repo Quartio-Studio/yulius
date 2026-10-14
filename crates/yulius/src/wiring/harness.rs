@@ -255,6 +255,18 @@ impl HarnessPort for HarnessAdapter {
         from: WatchFrom,
         until: Option<Timestamp>,
     ) -> AppResult<Option<UsageSnapshot>> {
+        // The session id came from the agent's hook: one that is not an id (`../x`) names no
+        // transcript.
+        if path
+            .components()
+            .any(|part| part == std::path::Component::ParentDir)
+            || !path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .is_some_and(paths::valid_session_id)
+        {
+            return Ok(None);
+        }
         let since = match from {
             WatchFrom::Start => None,
             WatchFrom::Since(at) => Some(at),

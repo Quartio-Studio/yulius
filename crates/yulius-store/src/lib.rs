@@ -459,6 +459,11 @@ mod tests {
         let path = dir.path().join("v22.db");
         version_twenty_two_with_runs(&path)?;
         let store = SqliteStore::open(&path)?;
+        // The upgrade's start ends a run lost while Yulius was down and saves its empty figures
+        // before the recount: "before" is still what the upgrade found.
+        rusqlite::Connection::open(&path)?.execute_batch(
+            "UPDATE metrics SET input_tokens = NULL, output_tokens = NULL, turns = NULL WHERE attempt_id = 'a1'",
+        )?;
         let counted = MetricsRecord {
             model: None,
             input_tokens: Some(85),

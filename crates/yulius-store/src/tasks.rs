@@ -946,8 +946,7 @@ impl TaskStore for SqliteStore {
             let Some(task) = task else {
                 return Ok(false);
             };
-            let before = stored_metrics_json(&tx, &a)?;
-            let after = if let Some(m) = m {
+            if let Some(m) = m {
                 tx.execute(
                     "INSERT INTO metrics (attempt_id, task_id, model, input_tokens, output_tokens, cache_read, cache_write, turns, active_ms, updated_at) \
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) ON CONFLICT(attempt_id) DO UPDATE SET model = COALESCE(excluded.model, metrics.model), \
@@ -967,13 +966,11 @@ impl TaskStore for SqliteStore {
                     ],
                 )
                 .map_err(db)?;
-                stored_metrics_json(&tx, &a)?
-            } else {
-                before.clone()
-            };
+            }
+            let after = stored_metrics_json(&tx, &a)?;
             tx.execute(
-                "UPDATE metrics_recounts SET outcome = ?2, before = ?3, after = ?4, done_at = ?5 WHERE attempt_id = ?1",
-                params![a, outcome.as_str(), before, after, at.0],
+                "UPDATE metrics_recounts SET outcome = ?2, after = ?3, done_at = ?4 WHERE attempt_id = ?1",
+                params![a, outcome.as_str(), after, at.0],
             )
             .map_err(db)?;
             tx.commit().map_err(db)?;

@@ -388,8 +388,8 @@ pub trait TaskStore: Send + Sync {
     /// before schema version 23 and not recorded yet, oldest first (SPEC-091 RCT-003).
     async fn queued_metrics_recounts(&self) -> AppResult<Vec<AttemptId>>;
     /// Records a queued run's recount, in one transaction: with `metrics`, the run's stored
-    /// figures are replaced (a model it does not name keeps the stored one); the figures before
-    /// and after are recorded with the outcome. `false` when the run was not queued (already
+    /// figures are replaced (a model it does not name keeps the stored one); the figures after
+    /// are recorded with the outcome (those before were when it was queued). `false` when the run was not queued (already
     /// recorded, or never queued): nothing changes (RCT-004).
     async fn finish_metrics_recount(
         &self,

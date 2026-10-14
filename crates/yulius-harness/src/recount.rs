@@ -18,10 +18,10 @@ use crate::tail::{DEFAULT_MAX_LINE_BYTES, TranscriptTail};
 /// Folds the lines of `transcript` from `since` (the first line when `None`) to `until` (the end
 /// of the file when `None`), with its sub-agents' usage over the same window. `None` when the
 /// transcript does not exist: a run whose transcript is gone has nothing to count, which is not
-/// zero. A sub-agent transcript that cannot be read leaves the session's own figures.
+/// zero.
 ///
 /// # Errors
-/// I/O errors reading the session transcript.
+/// I/O errors reading the session transcript or its sub-agents' (the count would be partial).
 pub fn count_run(
     transcript: &Path,
     since: Option<Timestamp>,
@@ -48,9 +48,9 @@ pub fn count_run(
         }
     }
     let mut side = SubagentTails::between(transcript, since, until);
-    // A sub-agent transcript that cannot be read ends the sub-agents' count there.
-    while let Ok(lines) = side.poll() {
-        for line in lines {
+    // A sub-agent transcript that cannot be read fails the count: partial tokens are not the run's.
+    loop {
+        for line in side.poll()? {
             for observed in claude::observe_line(&line) {
                 acc.observe_side(&observed);
             }
@@ -126,6 +126,25 @@ mod tests {
             (to_the_end.usage().output, to_the_end.turns()),
             (Some(1_399), 2),
             "without an end the terminal's turn would count"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_sub_agent_transcript_that_cannot_be_read_fails_the_count()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let transcript = dir.path().join("s1.jsonl");
+        fs::copy(fixture(), &transcript)?;
+        fs::create_dir_all(dir.path().join("s1"))?;
+        // `subagents` is a file: listing it fails (not "not found"), whoever runs the test.
+        fs::write(
+            crate::subagents::subagent_dir(&transcript),
+            "not a directory",
+        )?;
+        assert!(
+            count_run(&transcript, None, None).is_err(),
+            "partial tokens are not a count: the run stays queued"
         );
         Ok(())
     }
