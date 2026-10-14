@@ -6,6 +6,10 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- The name beside the logo is set like the quote above the composer (SPEC-123, ADR-0100, task
+  #110). It used to read "YULIUS" in bold, widely spaced capitals of the interface face. Now it
+  reads "Yulius" in Tenor Sans 400 at the quote's 22 px with no extra spacing, in the sidebar and
+  on the sign-in and setup screens.
 - The new-task composer squeezed keeps its controls tidy (SPEC-119, task #104, #442). In a
   narrow window or beside a tool panel, Preview, model, effort and Start used to wrap as one block
   pushed to the right, leaving the left half of the row empty. At its narrowest, Start also stuck

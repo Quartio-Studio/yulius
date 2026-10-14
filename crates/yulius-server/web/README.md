@@ -94,8 +94,9 @@ and component in the current theme and computes contrast as you change things.
 1. **`assets/brand.js`** — product `name`, `tagline` and `mark`: SVG path data with its `markViewBox`
    and `markStyle` (`'fill'` for a solid logo such as the current one from
    `assets/brand/logo-lockup.svg`, `'stroke'` for a line drawing). The mark's colour is the
-   `--brand-mark` token (monochrome by default) and the wordmark's case and tracking are
-   `--wordmark-case` / `--wordmark-tracking`.
+   `--brand-mark` token (monochrome by default). The wordmark is set like the composer's quote
+   (ADR-0100): `--font-display` at 400 and `--fs-xl`, with its case and tracking in
+   `--wordmark-case` / `--wordmark-tracking` (`none` and `0`: the name as written).
    The sidebar wordmark, sign-in/setup screens, browser tab title, favicon and every sentence that
    names the product follow (`BRAND.name`; the check rejects the name written anywhere else).
 2. **`assets/tokens.css`, Layer 1** — the brand ramp `--brand-200 … --brand-800` and `--brand-ink`
