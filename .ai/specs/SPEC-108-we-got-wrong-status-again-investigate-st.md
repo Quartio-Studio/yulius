@@ -1,11 +1,11 @@
 ---
 yulius-task: 7ec87fac-9cd8-4d2b-a9a0-7ef749f205d0
-status: in-progress
+status: done
 ---
 
 # SPEC-108: a pull request change reaches the sidebar when it happens
 
-Status: in-progress
+Status: done
 Date: 2026-10-14
 Owner: task #93
 Scope authorization: the person's request (task #93), "we got wrong status again, investigate
@@ -71,12 +71,12 @@ state with a pull request read from minutes before.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] The server announces a delivery stage change of a sandbox's pull request
-- [ ] The server announces a Yulius CI run change of the sandbox
-- [ ] The browser reads the pull requests again on the announcement, after a read in flight
-- [ ] A hidden tab catches up on announcements when it is shown again
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] The server announces a delivery stage change of a sandbox's pull request
+- [x] The server announces a Yulius CI run change of the sandbox
+- [x] The browser reads the pull requests again on the announcement, after a read in flight
+- [x] A hidden tab catches up on announcements when it is shown again
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -133,4 +133,32 @@ state with a pull request read from minutes before.
 
 ## Evidence
 
-To be filled when done.
+- **Root cause, from the transcript of task #56** (`sessions_search`, `session_read`): merge armed
+  10:49:52 UTC, CI passed and Yulius merged PR #340 at 11:00:56 (`980059c`), the turn ended with
+  the goal achieved at 11:02:03; the screenshot (11:05:24) still showed "open · checks running".
+  The server published no event for the merge; `store.js` read pull requests only by its poll.
+- **Red first.**
+  - `delivery::pull_request_changes_are_announced_to_the_sandbox` failed ("opened", 0 announced)
+    before `dlv_transition`; `local_ci::a_run_announces_its_pull_requests` failed before the
+    `ci_publish` announcement, and after review round 1 it fails when only queued and running
+    runs announce (left 2, right 4); `delivery::a_merged_pull_request_github_still_lists_as_open_reads_merged`
+    failed with state "open" before PRL-007.
+  - The new `pulls.e2e.ts` cases failed on the old `store.js` ("checks running" kept; no second
+    read; 3 reads where the gap allows 1; a second read started on a rewatch; a change announced
+    while unwatched lost).
+  - Mutations, each caught by its own test: no read after a read in flight, overlapping reads, a
+    hidden tab reading on an announcement, a shown tab ignoring a missed announcement, a gap of 0.
+- **Gates.**
+  - `scripts/dev ci` at `bb816fec` (the Rust and Rust tests have not changed since): exit 0,
+    1583 tests passed, 16 skipped (fmt, clippy `-D warnings`, deps, repository check, docs).
+  - Full e2e suite (`npx e2e run`, Chromium, mock) at `8a50e1df`: 336 passed, 1 skipped (the
+    model-driven agent test), exit 0. `pulls.e2e.ts`: 16 passed.
+  - `python3 scripts/check_repository.py` at `8a50e1df`: passed.
+- **Review.** Two rounds by a fresh-session reviewer (`om-code-review`). Round 1: request changes
+  (CI test blind to the end announcement; resync hidden; overlap after a rewatch; no read gap;
+  GitHub list lag; spec accuracy), all fixed test-first. Round 2: approve at `bb816fec`, with two
+  minors (the gap's deferred read untested; a change announced while unwatched lost), both fixed
+  test-first in `8a50e1df`.
+- **Not tested here:** a real GitHub and a deployed Yulius with a browser hidden by the operating
+  system (the tests set `document.hidden`); the `ci_retry_statuses` loop announcing nothing (it is
+  private and runs only in the CI loop).
