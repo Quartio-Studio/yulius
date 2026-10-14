@@ -10,6 +10,12 @@ failOnPageErrors();
 
 const tab = (screen: Screen, name: string) => screen.getByRole('navigation', 'Sandboxes').getByRole('link', new RegExp(`^${name}\\b`));
 const heading = (screen: Screen) => screen.getByRole('heading', { level: 1 });
+/** Opens a sandbox tab's menu (right-click). */
+const tabMenu = (browser: Browser, name: string) => browser.evaluate((name) => {
+  const tabEl = [...document.querySelectorAll('.tabrow .tab')].find((el) => el.querySelector('.tab-name')?.textContent === name)!;
+  const box = tabEl.getBoundingClientRect();
+  tabEl.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: box.left + 10, clientY: box.top + 10 }));
+}, name);
 
 test('a sandbox tab returns to the screen left in that sandbox', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
@@ -156,4 +162,109 @@ test('MCP’s scope and the Dashboard’s period come back with the page', async
   await nav.getByRole('link', 'Dashboard').click();
   await expect(browser).toHaveURL(/#\/s\/studio\/dashboard\?days=7$/);
   await expect(screen.getByRole('radiogroup', 'Date range').getByRole('radio', '7 days')).toBeChecked();
+});
+
+// Review round 1 (SPEC-113): a sandbox left with no tool open comes back with none, even when the
+// other sandbox opened one meanwhile.
+test('a sandbox left without a tool comes back without one', async ({ app, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+  await tab(screen, 'product').click();
+  await expect(heading(screen)).toHaveText('New task');
+  await screen.getByRole('button', 'Show Superagent').click();
+  await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
+
+  await tab(screen, 'studio').click();
+  await expect(heading(screen)).toHaveText('#12 Checkout API');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+});
+
+test('the back links of a session and an MCP server return to the list’s filters', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/sessions'));
+  await screen.getByRole('searchbox', 'Search sessions').fill('stripe');
+  await expect(browser).toHaveURL(/#\/s\/studio\/sessions\?q=stripe$/);
+  await screen.getByRole('list', 'Sessions').getByRole('link', /Add Stripe checkout/).first().click();
+  await browser.locator('.gt-back').click();
+  await expect(browser).toHaveURL(/#\/s\/studio\/sessions\?q=stripe$/);
+  await expect(screen.getByRole('searchbox', 'Search sessions')).toHaveValue('stripe');
+
+  await browser.evaluate(() => { window.location.hash = '#/s/studio/mcp?scope=instance'; });
+  await expect(heading(screen)).toHaveText('MCP');
+  await browser.evaluate(() => { window.location.hash = '#/s/studio/mcp/mcp_apify'; });
+  await expect(screen.getByRole('textbox', /name/i).first()).toHaveValue('apify');
+  await browser.locator('.gt-back').click();
+  await expect(browser).toHaveURL(/#\/s\/studio\/mcp\?scope=instance$/);
+});
+
+test('the Tasks back link and the tab menu’s Open return to where each was left', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks'));
+  await screen.getByRole('radiogroup', 'Task state').getByRole('radio', /^Working/).click();
+  await browser.evaluate(() => { window.location.hash = '#/s/studio/tasks/12'; });
+  await browser.locator('.gt-back').click();
+  await expect(browser).toHaveURL(/#\/s\/studio\/tasks\?state=working$/);
+
+  await tab(screen, 'product').click();
+  await expect(heading(screen)).toHaveText('New task');
+  await tabMenu(browser, 'studio');
+  await screen.getByRole('menuitem', 'Open').click();
+  await expect(browser).toHaveURL(/#\/s\/studio\/tasks\?state=working$/);
+});
+
+test('a deleted skill is not remembered as the sandbox’s place', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/skills/no-such-skill'));
+  await expect(heading(screen)).toHaveText('Skill not found');
+  await tab(screen, 'product').click();
+  await expect(heading(screen)).toHaveText('New task');
+  await tab(screen, 'studio').click();
+  await expect(browser).toHaveURL(/#\/s\/studio$/);
+});
+
+test('closing a CI run by leaving the page does not rewrite the new address', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/git'));
+  await expect(heading(screen)).toHaveText('Git');
+  await browser.evaluate(() => { window.location.hash = '#/s/studio/ci?run=ci_s3'; });
+  await expect(screen.getByRole('dialog', 'CI run')).toBeVisible();
+  await browser.evaluate(() => history.back());
+  await expect(heading(screen)).toHaveText('Git');
+  await expect(browser).toHaveURL(/#\/s\/studio\/git$/);
+});
+
+test('a removed sandbox’s tool views go with it', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await screen.getByRole('button', 'Show Superagent').click();
+  await expect(browser.locator('.agent-term .xterm-rows').first()).toHaveText(/Welcome to Claude Code/);
+  await tab(screen, 'product').click();
+  await expect(browser.locator('.panel-view:not([hidden]) > .agent .xterm-rows')).toHaveText(/cwd: .*product/);
+  await expect(browser.locator('.agent')).toHaveCount(2);
+
+  await tabMenu(browser, 'studio');
+  await screen.getByRole('menuitem', /^Remove from/).click();
+  const dialog = screen.getByRole('dialog', /^Remove studio/);
+  await dialog.getByRole('textbox').fill('studio');
+  await dialog.getByRole('button', 'Remove sandbox').click();
+  await expect(tab(screen, 'studio')).toBeHidden();
+  await expect(browser.locator('.agent')).toHaveCount(1);
+});
+
+test('signing out forgets where each sandbox was left', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await expect(heading(screen)).toHaveText('#12 Checkout API');
+  await expect.poll(() => browser.evaluate(() => sessionStorage.getItem('yulius.places'))).toContain('/s/studio/t/12');
+  await screen.getByRole('button', /account menu$/).click();
+  await screen.getByRole('menuitem', 'Sign out').click();
+  await expect(browser).toHaveURL(/#\/signin/);
+  expect(await browser.evaluate(() => sessionStorage.getItem('yulius.places'))).toBeNull();
+});
+
+test('a file opened just before a sandbox switch shows when the sandbox is back', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&hold=/api/sandboxes/sb_studio/files/content'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  await screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md').click();
+  await tab(screen, 'product').click();
+  await expect(heading(screen)).toHaveText('New task');
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+  await tab(screen, 'studio').click();
+  await expect(screen.getByRole('tab', /^README\.md/)).toHaveAttribute('aria-selected', 'true');
+  await expect(screen.getByRole('textbox', 'Editor content')).toBeAttached();
 });
