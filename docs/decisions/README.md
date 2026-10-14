@@ -82,3 +82,4 @@ number differs from the file name, and a record this index does not list.
 - [0073](0073-loading-shows-shimmering-fields.md): Loading shows shimmering fields everywhere; a spinner marks only an action under way
 - [0075](0075-menu-descriptions-wrap.md): Menu descriptions wrap onto as many lines as they need instead of being cut
 - [0080](0080-a-wait-for-yulius-shows-a-still-muted-branch.md): A wait for Yulius shows a still, muted branch, not Working's turning green
+- [0084](0084-personal-notes-in-the-notes-table.md): Personal notes ("Me") live in the notes table, and their events reach only their owner

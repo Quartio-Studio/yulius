@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- Notes has a third tab, **Me**, after Team (SPEC-103, ADR-0084, task #88): each person's own
+  notepad, which nobody else can read (`GET/PUT /api/me/notes` always answer the caller's own) and
+  which is the same in every sandbox. It saves and resolves conflicts like the other notepads, and
+  an edit from the person's other tab or device shows up live: the event stream now addresses an
+  event to one person (`Envelope.user`) and drops it for everyone else.
 - The terminal's mouse is the program's when it asks for it, as in a native terminal (SPEC-098,
   ADR-0079, task #83). The "Mouse: select text · send to app" chip is gone. In Claude Code's
   full-screen view, clicks, drags, the wheel and right-clicks reach Claude Code, and Shift-drag

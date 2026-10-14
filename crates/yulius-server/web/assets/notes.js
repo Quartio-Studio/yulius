@@ -1,5 +1,6 @@
 // Notes (SPEC-041): the rail's notepads, one for this sandbox and one for the team, shared by
-// everyone who may read them and saved by themselves while people type. A save sends the whole
+// everyone who may read them, and the person's own ("Me", SPEC-103), which only they see and which
+// is the same in every sandbox. All of them save by themselves while people type. A save sends the whole
 // text with the revision it started from; the server refuses a stale one (409), so a teammate's
 // edit is never overwritten silently: the person picks Keep mine or Use theirs. A teammate's save
 // (`note.updated`) reloads a notepad that has nothing unsaved.
@@ -72,6 +73,19 @@ export function createNotesView(ctx, sandbox) {
       onState: () => renderStatus(),
       isMine,
     }),
+    notepad(ctx, {
+      key: 'me',
+      label: 'Me',
+      textLabel: 'My notes',
+      path: '/api/me/notes',
+      unsavedKey: `${UNSAVED_PREFIX}${userId}.me`,
+      // The server sends a personal note's event to its owner alone.
+      matches: (event) => event.scope === 'me',
+      readOnly: false,
+      placeholder: 'Only you see these notes, the same in every sandbox…',
+      onState: () => renderStatus(),
+      isMine,
+    }),
   ];
   let current = pads.find((pad) => pad.key === readJson(TAB_KEY, 'sandbox')) || pads[0];
   let shown = false;
@@ -125,7 +139,7 @@ export function createNotesView(ctx, sandbox) {
     ctx.store.on('resync', () => { for (const pad of pads) pad.announced(null); }),
   ];
   // A hidden page (another tab, a closed laptop, a reload) saves what is typed at once.
-  // Both notepads share the browser's allowance for requests that outlive the page (64 KiB).
+  // The notepads share the browser's allowance for requests that outlive the page (64 KiB).
   const leave = () => {
     const budget = { left: KEEPALIVE_MAX_BYTES };
     for (const pad of pads) pad.flush({ leaving: true, budget });

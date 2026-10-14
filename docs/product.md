@@ -63,7 +63,8 @@ watching, steering and unblocking.
   nightly at 03:00 CEST. An automation's tasks start like New task's: now, as a supertask, after
   another task or when a rule is true.
 - **Notes**: in the tools rail, a notepad per sandbox and one for the whole team, shared and saved
-  while people type; a teammate's edit shows up live, and two edits at once end in a choice.
+  while people type; a teammate's edit shows up live, and two edits at once end in a choice. A
+  third, **Me**, is each person's own: nobody else sees it, and it is the same in every sandbox.
 - **Editor, terminals, Git view, automations, workflow catalog** in one web UI, whose menus fit
   the window and filter as people type when they are long. Messages are
   withdrawn for now (SPEC-028): agents learn about checks, delivery and armed merges from

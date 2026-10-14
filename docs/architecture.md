@@ -459,9 +459,12 @@ outcome recorded")]
 
 The tools rail's Notes hold a notepad per sandbox and one for the team, shared and saved while
 people type ([SPEC-041](../.ai/specs/SPEC-041-here-we-want-auto-saved-notes-sandbox-wi.md),
-[decision 0032](decisions/0032-shared-notes-with-revisions.md)). A save carries the whole text and
+[decision 0032](decisions/0032-shared-notes-with-revisions.md)), and one per person, "Me"
+(`/api/me/notes`, row `user:<user id>`; [SPEC-103](../.ai/specs/SPEC-103-add-me-after-team-that-is-for-user-and-n.md),
+[decision 0084](decisions/0084-personal-notes-in-the-notes-table.md)). A save carries the whole text and
 the revision it started from; the store writes it only when that revision is still current, and
-every stored edit is announced on the event stream.
+every stored edit is announced on the event stream: a personal note's event is addressed to its
+owner (`Envelope.user`), and `WS /api/events` drops it for everyone else.
 
 ```mermaid
 sequenceDiagram
@@ -474,7 +477,7 @@ sequenceDiagram
     alt still at n
         D-->>S: revision n + 1
         S-->>A: Note
-        S-->>B: note.updated (sandbox viewers / everyone for team)
+        S-->>B: note.updated (sandbox viewers / everyone for team / the owner for Me)
         B->>S: GET notes (nothing unsaved)
     else someone saved meanwhile
         S-->>A: 409 conflict
