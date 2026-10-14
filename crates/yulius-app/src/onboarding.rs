@@ -1442,4 +1442,29 @@ mod tests {
         }
         Ok(())
     }
+
+    /// SPEC-129 R8 (task #111): every bootstrapped project keeps its keys in a git-ignored `.env`
+    /// beside a tracked `.env.example`, and agent secrets reach it through `secret_copy_to_env`.
+    #[test]
+    fn the_bootstrap_keeps_keys_in_an_ignored_env() -> Result<(), Box<dyn std::error::Error>> {
+        let skill = crate::skills::pack::PACKS
+            .iter()
+            .flat_map(|pack| pack.files.iter())
+            .find(|(rel, _)| *rel == "infra-bootstrap/SKILL.md")
+            .map(|(_, bytes)| {
+                String::from_utf8_lossy(bytes)
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .ok_or("infra-bootstrap is bundled")?;
+        for wording in [
+            "`.env`, `.env.*` and `!.env.example`",
+            "`.env.example`",
+            "`secret_copy_to_env`",
+        ] {
+            assert!(skill.contains(wording), "{wording}");
+        }
+        Ok(())
+    }
 }

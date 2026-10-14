@@ -14,6 +14,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   `yulius wait` for its armed merge no longer reads Done because its plan is complete and its
   checks are green. It reads "Waiting for checks or merge" until the merge, in the sidebar and
   on the server.
+- Keys have a default place: a git-ignored `.env` beside a tracked `.env.example` (SPEC-129,
+  ADR-0105, task #111). When a project's code needs an agent secret's real value, the agent calls
+  `secret_copy_to_env`. Yulius writes the value into `.env` and the name into `.env.example`; the
+  agent only ever sees `[secret:NAME]`, so it never writes the masked text by mistake. Git must
+  ignore the file and not track it, or nothing is written. A person allows each secret once on the
+  Secrets page ("Task #N asks to copy its value into the project's git-ignored .env": Allow,
+  Dismiss, later Revoke). The briefing, `secrets_list` and `infra-bootstrap` name this default.
+  This prepares Yulius CD (task #113).
 - Agents scan every change with Vidoc before delivery (SPEC-128, ADR-0104, task #109).
   `scripts/dev security` runs the Vidoc CLI pinned in `tools/vidoc` on the current branch. Vidoc
   scans the files that the branch changed since `dev`, and the command fails when the branch has
