@@ -1,7 +1,7 @@
 // Shared helpers for the suites. Tests run the UI in mock mode: a static file server and
 // assets/mock.js stand in for `yulius serve`, so no server, account or model is needed.
 import { createRequire } from 'node:module';
-import { afterEach, beforeEach, type Browser } from '@e2e-dev/web';
+import { afterEach, beforeEach, type Browser, type Screen } from '@e2e-dev/web';
 import { expect } from 'e2e';
 
 /**
@@ -91,6 +91,15 @@ export function axeViolations(browser: Browser): Promise<string[]> {
 export async function terminalShown(browser: Browser): Promise<void> {
   await expect.poll(() => browser.evaluate(() => document.querySelector('.taskview .term') !== null
     && document.querySelector('.taskview .term-pending, .taskview .term-placeholder') === null)).toBe(true);
+}
+
+/**
+ * Opens the Superagent where it lives (SPEC-132): first in the tools rail, under the tools toggle,
+ * which shows the rail first when it is hidden. The rail's Superagent button closes it again.
+ */
+export async function openSuperagent(browser: Browser, screen: Screen): Promise<void> {
+  if (await browser.locator('.rail:not([hidden])').count() === 0) await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent').click();
 }
 
 export function touchTask(browser: Browser, sandbox: string, number: number, changes: Record<string, unknown>): Promise<void> {

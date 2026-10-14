@@ -13,6 +13,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- The top bar has no Superagent button any more (SPEC-132, ADR-0106, task #120). The Superagent
+  is first in the tools rail, right under the tools toggle, so the button beside the toggle was a
+  second way to the same panel. The toggle now reads "Show tools (Superagent, browser, editor,
+  shell, notes)", and the Superagent links (`/s/<slug>/superagent`, `/agent`, `/cockpit`) open it as
+  before.
 - The Vidoc security gate can be turned off and on (SPEC-131, ADR-0107, task #119). `enabled` in
   `.config/vidoc.toml` is committed as `true`; with `false`, `scripts/dev security` exits 0 at once
   and says nothing was scanned, and agents report the scan as disabled. Only a committed `false`
