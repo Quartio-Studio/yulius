@@ -1231,27 +1231,27 @@ mod tests {
 
     /// SPEC-134 CDC-001/002: both tables, an empty one, a missing one.
     #[test]
-    fn cd_tables_define_dev_and_production() {
+    fn cd_tables_define_dev_and_production() -> TestResult {
         let cd = parse_yulius_toml_cd(
             "[cd.dev]\nabout = \"no dev machine yet\"\n\n[cd.prod]\npromote = true\n\
              deploy = \"scripts/cd/deploy.sh prod\"\nverify = 'scripts/cd/verify.sh prod'\n\
              secrets = \"PROD_SSH_KEY  PROD_HOST\"\n",
-        )
-        .unwrap();
-        let dev = cd.dev.as_ref().unwrap();
+        )?;
+        let dev = cd.dev.as_ref().ok_or("dev")?;
         assert_eq!(dev.about.as_deref(), Some("no dev machine yet"));
         assert_eq!(cd.state(CdEnv::Dev), CdState::Empty);
-        let prod = cd.prod.as_ref().unwrap();
+        let prod = cd.prod.as_ref().ok_or("prod")?;
         assert!(prod.promote);
         assert_eq!(prod.deploy.as_deref(), Some("scripts/cd/deploy.sh prod"));
         assert_eq!(prod.verify.as_deref(), Some("scripts/cd/verify.sh prod"));
         assert_eq!(prod.secrets, ["PROD_SSH_KEY", "PROD_HOST"]);
         assert!(cd.is_defined());
-        let none = parse_yulius_toml_cd("[commands]\ntest = \"x\"\n").unwrap();
+        let none = parse_yulius_toml_cd("[commands]\ntest = \"x\"\n")?;
         assert_eq!(none, CdConfig::default());
         assert_eq!(none.state(CdEnv::Prod), CdState::NotDefined);
         // The whole file is validated with them.
         assert!(parse_yulius_toml("[cd.dev]\n[cd.prod]\n").is_ok());
+        Ok(())
     }
 
     /// SPEC-134 CDC-001: every invalid form names its line.
@@ -1289,26 +1289,17 @@ mod tests {
             ),
         ];
         for (text, line, message) in cases {
-            let error = parse_yulius_toml_cd(text).unwrap_err();
-            assert_eq!(error.line, line, "{text}");
-            assert!(error.to_string().contains(message), "{text}: {error}");
+            let error = parse_yulius_toml_cd(text).err();
+            assert_eq!(error.as_ref().map(|e| e.line), Some(line), "{text}");
+            let shown = error.map(|e| e.to_string()).unwrap_or_default();
+            assert!(shown.contains(message), "{text}: {shown}");
             assert!(parse_yulius_toml(text).is_err(), "{text}");
         }
         let many: Vec<String> = (0..17).map(|n| format!("KEY_{n}")).collect();
         let text = format!("[cd.dev]\nsecrets = \"{}\"\n", many.join(" "));
-        assert!(
-            parse_yulius_toml_cd(&text)
-                .unwrap_err()
-                .to_string()
-                .contains("'secrets'")
-        );
+        assert!(parse_yulius_toml_cd(&text).is_err_and(|e| e.to_string().contains("'secrets'")));
         let text = format!("[cd.dev]\nabout = \"{}\"\n", "a".repeat(301));
-        assert!(
-            parse_yulius_toml_cd(&text)
-                .unwrap_err()
-                .to_string()
-                .contains("'about'")
-        );
+        assert!(parse_yulius_toml_cd(&text).is_err_and(|e| e.to_string().contains("'about'")));
     }
 
     #[test]

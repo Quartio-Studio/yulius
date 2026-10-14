@@ -329,9 +329,9 @@ mod tests {
             }),
             prod: None,
         };
-        let dev = authorize(&config, CdEnv::Dev, Requester::Agent, "app").unwrap_err();
-        assert_eq!(dev, CdRefusal::NothingToRun("dev", "dev"));
-        assert!(dev.to_string().contains("[cd.dev]"));
+        let dev = authorize(&config, CdEnv::Dev, Requester::Agent, "app").err();
+        assert_eq!(dev, Some(CdRefusal::NothingToRun("dev", "dev")));
+        assert!(dev.is_some_and(|refusal| refusal.to_string().contains("[cd.dev]")));
         assert_eq!(
             authorize(&config, CdEnv::Prod, person(true, Some("app")), "app"),
             Err(CdRefusal::NotDefined("production", "prod"))
