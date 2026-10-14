@@ -994,3 +994,49 @@ async fn assert_imported_resume(
     assert_eq!(app.prepare_imported_resume(&prep).await?, None);
     Ok(())
 }
+
+/// SPEC-097 OBT-003: tasks created at once in a `pending` sandbox wait after one onboarding task.
+#[tokio::test]
+async fn simultaneous_new_tasks_create_one_onboarding_task() -> TestResult {
+    let w = World::new("org").await?;
+    let (_, alice) = w.user("alice", false).await?;
+    let remote = w.remote(
+        OWNER,
+        "shop",
+        &[("README.md", "# Shop\n"), ("src/app.txt", "v1\n")],
+        &[],
+    )?;
+    w.grant("alice", "shop", "admin");
+    let offer = laptop_offer(&w, &remote)?;
+    let created = create_job(&w, &alice, offer.body()?).await?;
+    assert_eq!(created.status, StatusCode::OK, "{:?}", created.body);
+    let sandbox = w.h.store.sandboxes().await?.remove(0);
+    let tasks = format!("/api/sandboxes/{}/tasks", sandbox.id);
+    let new_task = |prompt: &'static str| {
+        call(
+            &w.h.router,
+            Method::POST,
+            &tasks,
+            Some(json!({"prompt": prompt, "harness": "claude"})),
+            &alice,
+        )
+    };
+    let (first, second) = tokio::join!(new_task("add a cart"), new_task("add a wishlist"));
+    let (first, second) = (first?, second?);
+    assert_eq!(first.status, StatusCode::CREATED, "{:?}", first.body);
+    assert_eq!(second.status, StatusCode::CREATED, "{:?}", second.body);
+    assert_eq!(
+        first.body["after"]["number"],
+        second.body["after"]["number"]
+    );
+    let listed = call(&w.h.router, Method::GET, &tasks, None, &alice).await?;
+    let onboarding = listed
+        .body
+        .as_array()
+        .ok_or("tasks")?
+        .iter()
+        .filter(|task| task["origin"] == "onboarding")
+        .count();
+    assert_eq!(onboarding, 1, "{:?}", listed.body);
+    Ok(())
+}

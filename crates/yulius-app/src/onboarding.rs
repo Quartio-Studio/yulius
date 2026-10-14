@@ -588,16 +588,28 @@ impl App {
         sid: &str,
     ) -> AppResult<Sandbox> {
         let id = SandboxId::parse(sid).map_err(|_| AppError::NotFound)?;
-        let (record, level) = self.require(&ctx.user, &id, Action::Administer).await?;
-        if OnboardingState::parse(&record.onboarding_state)
-            .is_some_and(OnboardingState::blocks_tasks)
-        {
-            let actor = self.login_of(&ctx.user.id).await;
-            self.set_onboarding_state(&record, OnboardingState::Skipped, &actor)
-                .await?;
-            if let Some(task) = &record.onboarding_task_id {
-                self.advance_chains(task).await;
+        let (_, level) = self.require(&ctx.user, &id, Action::Administer).await?;
+        let actor = self.login_of(&ctx.user.id).await;
+        // Under the creation lock, so an onboarding task created meanwhile never writes `pending`
+        // back over the skip (SPEC-097); released before the waiting tasks start.
+        let skipped = {
+            let _serial = self.onboarding_task_lock.lock().await;
+            let record = self
+                .deps
+                .store
+                .sandbox(&id)
+                .await?
+                .ok_or(AppError::NotFound)?;
+            let blocks = OnboardingState::parse(&record.onboarding_state)
+                .is_some_and(OnboardingState::blocks_tasks);
+            if blocks {
+                self.set_onboarding_state(&record, OnboardingState::Skipped, &actor)
+                    .await?;
             }
+            blocks.then_some(record.onboarding_task_id).flatten()
+        };
+        if let Some(task) = &skipped {
+            self.advance_chains(task).await;
         }
         let record = self
             .deps
@@ -641,7 +653,11 @@ impl App {
                 == Some(OnboardingState::Pending) =>
             {
                 // Boxed: creating that task goes through task creation, which called this.
-                Some(Box::pin(self.onboarding_task(sandbox)).await?)
+                match Box::pin(self.onboarding_task(sandbox)).await? {
+                    Some(task) => Some(task),
+                    // Skipped meanwhile: the new task may start now.
+                    None => return Ok(None),
+                }
             }
             task => task,
         };
@@ -696,7 +712,9 @@ impl App {
         if OnboardingState::parse(&record.onboarding_state) != Some(OnboardingState::Pending) {
             return Ok(false);
         }
-        let task = self.onboarding_task(sandbox).await?;
+        let Some(task) = self.onboarding_task(sandbox).await? else {
+            return Ok(false);
+        };
         if task.status.is_resting() {
             self.start_run(&task.id, RunStart::Resume { prompt: None }, None)
                 .await?;
@@ -707,20 +725,27 @@ impl App {
         Ok(true)
     }
 
-    /// The onboarding task of a `pending` sandbox, created (resting) by its sandbox's creator
-    /// when it has none yet: the repository's preparation, or its environment alone when it
-    /// already follows the format.
+    /// The onboarding task of a sandbox, created (resting) by its sandbox's creator when it has
+    /// none yet and is still `pending`: the repository's preparation, or its environment alone
+    /// when it already follows the format. `None` when it has none and is no longer `pending`
+    /// (an admin skipped meanwhile): nothing is created and its state is left as it is.
     ///
     /// # Errors
     /// `NotFound` when the creator is gone; store failures.
-    async fn onboarding_task(self: &Arc<Self>, sandbox: &SandboxId) -> AppResult<TaskRecord> {
+    async fn onboarding_task(
+        self: &Arc<Self>,
+        sandbox: &SandboxId,
+    ) -> AppResult<Option<TaskRecord>> {
         let _serial = self.onboarding_task_lock.lock().await;
         let store = &self.deps.store;
         let record = store.sandbox(sandbox).await?.ok_or(AppError::NotFound)?;
         if let Some(id) = &record.onboarding_task_id
             && let Some(task) = store.task(id).await?
         {
-            return Ok(task);
+            return Ok(Some(task));
+        }
+        if OnboardingState::parse(&record.onboarding_state) != Some(OnboardingState::Pending) {
+            return Ok(None);
         }
         let root = self.sandbox_repo(&record.id);
         let (report, _) = blocking(move || Ok(validate_checkout(&root))).await?;
@@ -738,7 +763,7 @@ impl App {
                 Some(&task.id),
             )
             .await?;
-        Ok(task)
+        Ok(Some(task))
     }
 
     /// The onboarding state of a sandbox and what is still pending, in words (for `yulius
