@@ -1,13 +1,16 @@
-"""The Vidoc security gate (SPEC-128): settings, the CLI run and the verdict, with fakes."""
+"""The Vidoc security gate (SPEC-128): settings, the repository, the CLI run and the verdict."""
 import contextlib
+import http.server
 import io
 import json
 import os
+from pathlib import Path
+import shutil
 import sys
 import tempfile
+import threading
 import time
 import unittest
-from pathlib import Path
 
 import vidoc_scan
 from vidoc_scan import Failed, Usage
@@ -15,6 +18,8 @@ from vidoc_scan import Failed, Usage
 SCAN_ID = "019f8a10-9e8d-7c6b-a5f4-3e2d1c0b9a87"
 CODEBASE = "019f8a1b-0c2d-73e4-a5f6-7b8c9d0e1f2a"
 BRANCH = "feat/109-vidoc"
+TOKEN = "yulius-secret-VIDOC_API_KEY"
+MERGE_BASE = "b0a35287149d5936984176bb1190dc3e8dca9f9a"
 
 
 def scan_record(**changes):
@@ -57,6 +62,25 @@ class FakeCli:
         return self.code, self.output
 
 
+class FakeGit:
+    """A clean branch two commits ahead of origin/dev unless told otherwise."""
+
+    def __init__(self, **answers):
+        self.answers = {
+            "symbolic-ref": (0, BRANCH + "\n"),
+            "status": (0, ""),
+            "remote": (0, "* remote origin\n  Fetch URL: https://github.com/o/r.git\n  HEAD branch: dev\n"),
+            "merge-base": (0, MERGE_BASE + "\n"),
+            "diff": (0, "scripts/vidoc_scan.py\ndocs/changes.md\n"),
+        }
+        self.answers.update(answers)
+        self.calls = []
+
+    def __call__(self, *args):
+        self.calls.append(args)
+        return self.answers[args[0]]
+
+
 def api_for(scan=None, issues=None):
     return FakeApi({
         "/v1/codebase": {"codebases": []},
@@ -65,10 +89,11 @@ def api_for(scan=None, issues=None):
     })
 
 
-def run(api=None, cli=None, branch=BRANCH, env=None):
+def run(api=None, cli=None, git=None, env=None):
     out = io.StringIO()
-    env = {"VIDOC_API_KEY": "yulius-secret-VIDOC_API_KEY"} if env is None else env
-    code = vidoc_scan.gate(env, branch, api or api_for(), cli or FakeCli(), Path("/tmp/vidoc.log"), out)
+    env = {"VIDOC_API_KEY": TOKEN} if env is None else env
+    code = vidoc_scan.gate(env, git or FakeGit(), api or api_for(), cli or FakeCli(),
+                           Path("/tmp/vidoc.log"), out)
     return code, out.getvalue()
 
 
@@ -94,6 +119,10 @@ class Settings(unittest.TestCase):
             with self.subTest(url=url), self.assertRaises(Usage):
                 vidoc_scan.settings({"VIDOC_API_KEY": "k", "VIDOC_API_URL": url})
 
+    def test_node_major_version(self):
+        self.assertEqual(vidoc_scan.node_major("v24.21.0\n"), 24)
+        self.assertIsNone(vidoc_scan.node_major("command not found"))
+
 
 class ScanId(unittest.TestCase):
     def test_reads_the_one_scan_id(self):
@@ -107,20 +136,23 @@ class ScanId(unittest.TestCase):
 
 
 class CliEnvironment(unittest.TestCase):
-    def test_passes_token_api_ci_and_a_log_outside_the_tree(self):
-        env = vidoc_scan.cli_env({"PATH": "/bin", "VIDOC_PROFILE": "x"}, "tok", "https://a.b",
-                                 Path("/tmp/l/vidoc.log"))
-        self.assertEqual(env["VIDOC_TOKEN"], "tok")
-        self.assertEqual(env["VIDOC_API_URL"], "https://a.b")
-        self.assertEqual(env["CI"], "true")
-        self.assertEqual(env["VIDOC_LOG_FILE"], "/tmp/l/vidoc.log")
-        self.assertEqual(env["PATH"], "/bin")
-        self.assertNotIn("VIDOC_PROFILE", env)
+    def test_passes_only_what_the_cli_and_git_need_plus_the_vidoc_settings(self):
+        env = vidoc_scan.cli_env({
+            "PATH": "/bin", "HOME": "/h", "HTTPS_PROXY": "http://p", "NODE_EXTRA_CA_CERTS": "/ca",
+            "GIT_CONFIG_COUNT": "1", "YULIUS_TASK_TOKEN": "t", "YULIUS_URL": "http://y",
+            "VIDOC_PROFILE": "x", "GITHUB_TOKEN": "g", "GITHUB_EVENT_PATH": "/e", "DEBUG": "1",
+            "ANTHROPIC_API_KEY": "a"}, "tok", "https://a.b", Path("/tmp/l/vidoc.log"))
+        self.assertEqual(env, {
+            "PATH": "/bin", "HOME": "/h", "HTTPS_PROXY": "http://p", "NODE_EXTRA_CA_CERTS": "/ca",
+            "GIT_CONFIG_COUNT": "1", "YULIUS_TASK_TOKEN": "t", "YULIUS_URL": "http://y",
+            "VIDOC_TOKEN": "tok", "VIDOC_API_URL": "https://a.b", "CI": "true",
+            "VIDOC_LOG_FILE": "/tmp/l/vidoc.log"})
 
 
 class Install(unittest.TestCase):
     def setUp(self):
         self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir)
         (self.dir / "package.json").write_text(json.dumps(
             {"dependencies": {"@vidocsecurity/cli": "0.1.25"}}))
 
@@ -148,13 +180,42 @@ class Install(unittest.TestCase):
         self.assertTrue(locked["integrity"].startswith("sha512-"))
 
 
+class Repository(unittest.TestCase):
+    def test_a_detached_head_is_not_run(self):
+        cli = FakeCli()
+        with self.assertRaises(Usage):
+            run(cli=cli, git=FakeGit(**{"symbolic-ref": (1, "")}))
+        self.assertIsNone(cli.env)
+
+    def test_uncommitted_or_untracked_files_are_not_run_because_the_cli_uploads_them(self):
+        git, cli = FakeGit(status=(0, "?? scratch.txt\n")), FakeCli()
+        with self.assertRaises(Usage) as caught:
+            run(cli=cli, git=git)
+        self.assertIn("commit", str(caught.exception))
+        self.assertIsNone(cli.env)
+        self.assertIn(("status", "--porcelain", "--untracked-files=all"), git.calls)
+
+    def test_an_unknown_default_branch_is_not_run(self):
+        cli = FakeCli()
+        for remote in [(128, ""), (0, "* remote origin\n")]:
+            with self.subTest(remote=remote), self.assertRaises(Usage):
+                run(cli=cli, git=FakeGit(remote=remote))
+        self.assertIsNone(cli.env)
+
+    def test_no_merge_base_with_the_default_branch_is_not_run(self):
+        git = FakeGit(**{"merge-base": (1, "")})
+        with self.assertRaises(Usage):
+            run(git=git)
+        self.assertIn(("merge-base", "HEAD", "origin/dev"), git.calls)
+
+
 class Gate(unittest.TestCase):
     def test_clean_scan_passes_and_names_it(self):
         api, cli = api_for(), FakeCli()
         code, out = run(api, cli)
         self.assertEqual(code, 0)
         self.assertIn(SCAN_ID, out)
-        self.assertEqual(cli.env["VIDOC_TOKEN"], "yulius-secret-VIDOC_API_KEY")
+        self.assertEqual(cli.env["VIDOC_TOKEN"], TOKEN)
         path, params = api.requests[-1]
         self.assertEqual(path, "/v1/issues")
         self.assertEqual(params, {"codebaseId": CODEBASE, "branch": BRANCH, "status": "open",
@@ -167,10 +228,26 @@ class Gate(unittest.TestCase):
         self.assertIn("crates/yulius-app/src/hooks.rs:42", out)
         self.assertIn(ISSUE["url"], out)
 
+    def test_findings_wrapped_like_the_cli_endpoint_are_printed_too(self):
+        code, out = run(api_for(issues=issues_page([{"issue": ISSUE}])))
+        self.assertEqual(code, 1)
+        self.assertIn("[high] Command injection in hook runner", out)
+
     def test_more_findings_than_one_page_still_fail_with_the_total(self):
         code, out = run(api_for(issues=issues_page([ISSUE], total=130)))
         self.assertEqual(code, 1)
         self.assertIn("130", out)
+
+    def test_the_key_is_never_printed(self):
+        for api in [api_for(), api_for(issues=issues_page([ISSUE]))]:
+            _, out = run(api)
+            self.assertNotIn(TOKEN, out)
+        for raised in [Usage, Failed]:
+            api = api_for()
+            api.answers["/v1/codebase"] = vidoc_scan.HttpError(401 if raised is Usage else 500, "no")
+            with self.assertRaises(raised) as caught:
+                run(api)
+            self.assertNotIn(TOKEN, str(caught.exception))
 
     def test_a_rejected_key_stops_before_the_upload(self):
         api = api_for()
@@ -181,10 +258,6 @@ class Gate(unittest.TestCase):
         self.assertIsNone(cli.env)
         self.assertIn("api.vidoc.dev", str(caught.exception))
 
-    def test_a_detached_head_is_a_usage_error(self):
-        with self.assertRaises(Usage):
-            run(branch=None)
-
     def test_a_cli_error_fails(self):
         with self.assertRaises(Failed):
             run(cli=FakeCli(code=1))
@@ -193,12 +266,13 @@ class Gate(unittest.TestCase):
         with self.assertRaises(Failed):
             run(cli=FakeCli(output="Scan did not complete successfully\n"))
 
-    def test_nothing_to_scan_passes_and_says_so(self):
+    def test_nothing_to_scan_passes_and_names_the_changed_files(self):
         output = "No scannable files matched the selected scope in the current directory.\n"
         api = api_for()
         code, out = run(api, FakeCli(output=output))
         self.assertEqual(code, 0)
         self.assertIn("nothing to scan", out)
+        self.assertIn("2 changed file(s) since origin/dev", out)
         self.assertEqual([p for p, _ in api.requests], ["/v1/codebase"])
 
     def test_an_unfinished_or_foreign_scan_fails(self):
@@ -221,13 +295,56 @@ class Gate(unittest.TestCase):
             run(api)
 
 
+class Redirecting(http.server.BaseHTTPRequestHandler):
+    seen = []
+
+    def do_GET(self):
+        Redirecting.seen.append((self.path, self.headers.get("x-vidoc-token")))
+        if self.path.startswith("/v1/"):
+            self.send_response(302)
+            self.send_header("Location", f"http://127.0.0.1:{self.server.server_port}/elsewhere")
+            self.end_headers()
+        else:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+    def log_message(self, *args):
+        pass
+
+
+class Http(unittest.TestCase):
+    def test_redirects_are_refused_so_the_key_never_follows_them(self):
+        server = http.server.HTTPServer(("127.0.0.1", 0), Redirecting)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        Redirecting.seen = []
+        api = vidoc_scan.Api(f"http://127.0.0.1:{server.server_port}", "the-key")
+        with self.assertRaises(vidoc_scan.HttpError) as caught:
+            api.get("/v1/codebase")
+        self.assertEqual(caught.exception.status, 302)
+        self.assertEqual(Redirecting.seen, [("/v1/codebase", "the-key")])
+
+
 FAKE_CLI = (
-    "import os, sys, time\n"
+    "import os, subprocess, sys, time\n"
     "assert sys.argv[1:] == ['ci'], sys.argv\n"
     "print('Indexing', flush=True)\n"
     "print('Scan started with ID: " + SCAN_ID + "', flush=True)\n"
+    "if os.environ.get('FAKE_CHILD'):\n"
+    "    child = subprocess.Popen(['sleep', '60'], stdout=subprocess.DEVNULL)\n"
+    "    print('child', child.pid, flush=True)\n"
     "time.sleep(float(os.environ.get('FAKE_SLEEP', '0')))\n"
     "sys.exit(int(os.environ.get('FAKE_EXIT', '0')))\n")
+
+
+def alive(pid):
+    try:
+        with open(f"/proc/{pid}/stat") as stat:
+            return stat.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except FileNotFoundError:
+        return False
 
 
 class RealRunner(unittest.TestCase):
@@ -242,11 +359,18 @@ class RealRunner(unittest.TestCase):
         self.assertEqual(vidoc_scan.parse_scan_id(output), SCAN_ID)
         self.assertIn("Indexing", echoed.getvalue())
 
-    def test_a_cli_past_its_bound_is_killed_and_fails(self):
+    @unittest.skipUnless(Path("/proc/self/stat").exists(), "needs /proc")
+    def test_a_cli_past_its_bound_is_killed_with_its_children_and_fails(self):
+        echoed = io.StringIO()
         started = time.monotonic()
-        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(Failed):
-            self.runner(timeout_s=1)({**os.environ, "FAKE_SLEEP": "60"})
+        with contextlib.redirect_stdout(echoed), self.assertRaises(Failed):
+            self.runner(timeout_s=1)({**os.environ, "FAKE_SLEEP": "60", "FAKE_CHILD": "1"})
         self.assertLess(time.monotonic() - started, 30)
+        child = int(echoed.getvalue().split("child ", 1)[1].split()[0])
+        deadline = time.monotonic() + 10
+        while alive(child) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(alive(child))
 
 
 if __name__ == "__main__":

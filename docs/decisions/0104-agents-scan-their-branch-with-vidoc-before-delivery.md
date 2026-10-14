@@ -25,7 +25,9 @@ had nothing to scan. Agents run the gate for every change before delivery (skill
 A failure counts like any other failed gate: fix the finding test-first. For a false positive, the
 independent reviewer must agree first. Then the agent ignores the finding in Vidoc with the
 reason, and lists it in the spec's Evidence and in the summary. When the gate cannot run (no usable
-key, a detached HEAD: exit 2), the agent reports it as unrun, never as passed. `scripts/dev ci` and
+key, a detached HEAD, uncommitted files, an unreadable default branch: exit 2), the agent reports
+it as unrun, never as passed. The gate refuses a dirty tree because the CLI uploads and scans the
+working tree, not the commits. `scripts/dev ci` and
 Yulius CI do not run the gate.
 
 ## Alternatives

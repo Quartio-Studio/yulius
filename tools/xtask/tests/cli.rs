@@ -42,7 +42,8 @@ fn security_is_listed_and_needs_a_vidoc_key() -> std::io::Result<()> {
         .env_remove("VIDOC_API_KEY")
         .arg("security")
         .output()?;
-    assert_eq!(result.status.code(), Some(1));
+    // Exit 2 is "not run", distinct from findings (1): the gate's code passes through.
+    assert_eq!(result.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&result.stderr).contains("No Vidoc API key"));
     Ok(())
 }

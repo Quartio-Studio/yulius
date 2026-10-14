@@ -69,13 +69,17 @@ is under `target/doc`. Build artifacts and local tools are ignored by Git.
 reads the verdict from the API. It needs Node 20+ and an API key in `VIDOC_TOKEN` or
 `VIDOC_API_KEY` (`VIDOC_API_URL` defaults to `https://api.vidoc.dev`). In agent sessions,
 `VIDOC_API_KEY` is the project's agent secret: a placeholder that the egress proxy replaces for
-`api.vidoc.dev` once a person has allowed that host. Commit first, because uncommitted changes are
-not scanned. A scan takes 10 to 15 minutes. Exit codes:
+`api.vidoc.dev` once a person has allowed that host. The CLI uploads the working tree, untracked
+files included, and scans the changed files as they are on disk, so the gate refuses a tree that is
+not clean. It also checks that `git remote show origin` names the default branch: without access
+to origin, the CLI would compare with `origin/main`. A scan takes 10 to 15 minutes, so run the gate
+with a tool timeout of 45 minutes or more, or in the background. Exit codes:
 
 - 0: passed, or the branch changed nothing that Vidoc scans.
 - 1: open critical or high findings (each one is printed), a failed or foreign scan, or an
   unexpected API answer.
-- 2: not run (no key, the key was rejected, or a detached HEAD).
+- 2: not run. The causes: no key, or the key was rejected; no Node 20+ or npm; a detached HEAD;
+  uncommitted or untracked files; origin's default branch or the merge base cannot be found.
 
 Agents run the gate for every change before delivery. They fix findings test-first. A false
 positive is ignored in Vidoc, with the reason, only after the independent reviewer agrees, and it

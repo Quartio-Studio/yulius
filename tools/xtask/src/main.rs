@@ -108,9 +108,22 @@ fn execute(task: &str) -> io::Result<()> {
                 ],
             )
         }
-        "security" => run(&python, &["scripts/vidoc_scan.py"]),
         _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "unknown task")),
     }
+}
+
+/// The security gate keeps its exit code: 2 (not run here) must stay distinct from 1 (failed).
+fn security() -> io::Result<ExitCode> {
+    let python = env::var("PYTHON").unwrap_or_else(|_| "python3".into());
+    println!("+ {python} scripts/vidoc_scan.py");
+    let status = Command::new(&python)
+        .arg("scripts/vidoc_scan.py")
+        .status()?;
+    Ok(match status.code() {
+        Some(0) => ExitCode::SUCCESS,
+        Some(code) => ExitCode::from(u8::try_from(code).unwrap_or(1)),
+        None => ExitCode::FAILURE,
+    })
 }
 
 fn main() -> ExitCode {
@@ -129,6 +142,14 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    if args[0] == "security" {
+        return env::set_current_dir(root)
+            .and_then(|()| security())
+            .unwrap_or_else(|error| {
+                eprintln!("Gate failed: {error}");
+                ExitCode::FAILURE
+            });
+    }
     if let Err(error) = env::set_current_dir(root).and_then(|()| execute(&args[0])) {
         eprintln!("Gate failed: {error}");
         return ExitCode::FAILURE;
