@@ -81,3 +81,4 @@ number differs from the file name, and a record this index does not list.
 - [0073](0073-loading-shows-shimmering-fields.md): Loading shows shimmering fields everywhere; a spinner marks only an action under way
 - [0075](0075-menu-descriptions-wrap.md): Menu descriptions wrap onto as many lines as they need instead of being cut
 - [0082](0082-the-session-web-sticks-and-its-creatures-move.md): The session's web sticks in its corner, its spider climbs in CSS, and a cockroach runs by from a timer
+- [0080](0080-a-wait-for-yulius-shows-a-still-muted-branch.md): A wait for Yulius shows a still, muted branch, not Working's turning green
