@@ -2,16 +2,16 @@
 // automation starts a task on a schedule: a recipe fills the name, the prompt and a sensible time;
 // the schedule is clicked, not written — once a day on the chosen days (or every hour) at a time
 // picked from chips — and the page says in words when it runs next; cron stays under Advanced.
-// The workflow is a chip, and so is how each task starts: the choices of New task's start chip
-// (SPEC-078). Run now, the switch and the run history live on the same page (Automation,
-// docs/api.md).
+// The workflow is a chip. How each task starts is New task's start chip, in the action bar beside
+// Run now and Save (SPEC-078, SPEC-093); Run now uses the choice it shows. Run now, the switch and
+// the run history live on the same page (Automation, docs/api.md).
 
 import { enc } from '../api.js';
-import { h, icon, setChildren, placeholder, loadError, confirmDialog, toast, invalid, badge, openMenu } from '../dom.js';
+import { h, icon, setChildren, placeholder, loadError, confirmDialog, toast, invalid, badge } from '../dom.js';
 import { href, navigate } from '../router.js';
 import { allows } from '../status.js';
-import { chainCandidates } from '../intake.js';
-import { openRuleEditor, ruleChoices, ruleFromText, ruleText } from '../ruleeditor.js';
+import { openRuleEditor, ruleFromText, ruleText } from '../ruleeditor.js';
+import { openStartMenu, renderStartChip, startKind } from '../startchoice.js';
 import { describeCron, cronValid, utcOffset, dateTime, relLong, startPhrase } from '../format.js';
 import { dataTable, notFound } from './common.js';
 
@@ -109,6 +109,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
   let alive = true;
   let saved = '';
   let showZone = false;
+  let loaded = false; // the automation has been read (SPEC-093): the chip and Run now turn on
   // The start choice (SPEC-078): at most one of supertask, after_task_id and start_rule.
   const state = { name: '', prompt: '', workflow_id: null, enabled: true, cron: '0 9 * * 1-5', offset: -new Date().getTimezoneOffset(), custom: false, supertask: false, after_task_id: null, after_task_number: null, start_rule: null };
   const live = h('div', { class: 'sr-only', role: 'status' });
@@ -116,12 +117,15 @@ export function mountAutomationEditor(ctx, sandbox, id) {
   const nameInput = h('input', { class: 'wf-name', placeholder: 'Name the automation', 'aria-label': 'Automation name', maxlength: 100, onInput: (e) => { state.name = e.target.value; changed(); } });
   const when = h('span', { class: 'wf-desc au-when' });
   const save = h('button', { type: 'button', class: 'btn btn-primary', disabled: !write, onClick: () => doSave() }, creating ? 'Create automation' : 'Save');
-  const runNow = creating ? null : h('button', { type: 'button', class: 'btn', disabled: !write, title: write ? 'Create a task from it now' : 'Requires write access', onClick: () => doRunNow() }, icon('send', { size: 14 }), 'Run now');
+  // How each task starts (SPEC-093): New task's start chip, before Run now. Both stay off until
+  // the automation is read, so Run now never sends a choice the page has not shown.
+  const startChip = h('button', { type: 'button', class: 'chip-btn au-start', 'aria-haspopup': 'menu', disabled: true, onClick: () => openStart() });
+  const runNow = creating ? null : h('button', { type: 'button', class: 'btn au-run', disabled: true, title: write ? 'Create a task from it now' : 'Requires write access', onClick: () => doRunNow() }, icon('send', { size: 14 }), 'Run now');
   const del = creating ? null : h('button', { type: 'button', class: 'btn btn-quiet-danger', disabled: !write, onClick: () => doDelete() }, icon('trash', { size: 14 }), 'Delete');
   const body = h('div', { class: 'au-body' }, placeholder('Loading the automation…', 'loading'));
   const head = h('header', { class: 'gt-head wf-head' },
     h('a', { class: 'gt-back', href: href(base), dataset: { route: base } }, icon('back', { size: 14 }), 'Automations'),
-    h('div', { class: 'gt-title-row' }, h('div', { class: 'wf-titles' }, nameInput, when), del, runNow, save),
+    h('div', { class: 'gt-title-row' }, h('div', { class: 'wf-titles' }, nameInput, when), del, del ? h('span', { class: 'au-break', 'aria-hidden': 'true' }) : null, startChip, runNow, save),
     !write ? h('p', { class: 'banner small' }, icon('lock', { size: 14 }), h('span', { class: 'banner-text' }, 'Read-only: changing automations needs write access to this sandbox.')) : null);
   const el = h('div', { class: 'page au-page' }, h('div', { class: 'page-inner mc-inner' }, h('h1', { class: 'sr-only' }, creating ? 'New automation' : 'Edit automation'), head, body, live));
 
@@ -206,66 +210,44 @@ export function mountAutomationEditor(ctx, sandbox, id) {
 
   // ---- what
   function whatSection() {
-    renderStart(true);
     const prompt = h('textarea', { class: 'textarea au-prompt', rows: 4, value: state.prompt, readOnly: !write, placeholder: 'What the task should do each time, e.g. “Implement yesterday’s customer feedback from the Quartio MCP.”', 'aria-label': 'What the task does', onInput: (e) => { state.prompt = e.target.value; changed(); } });
     const pick = (value, label) => chip(label, (state.workflow_id || null) === value, () => { state.workflow_id = value; render(); }, { role: 'radio', 'aria-checked': String((state.workflow_id || null) === value), 'aria-pressed': null });
     return section('The task', null, h('div', { class: 'stack-sm' }, prompt,
       h('div', { class: 'au-row' }, h('span', { class: 'wf-label' }, 'Workflow'),
-        h('div', { class: 'wf-chips', role: 'radiogroup', 'aria-label': 'Workflow' }, pick(null, 'None'), workflows.map((w) => pick(w.id, w.name)))),
-      startHost));
+        h('div', { class: 'wf-chips', role: 'radiogroup', 'aria-label': 'Workflow' }, pick(null, 'None'), workflows.map((w) => pick(w.id, w.name))))));
   }
 
-  // ---- how each task starts (SPEC-078): New task's start choices
-  // Its own host: it follows the project's task list (loaded late on a deep link) without
-  // re-rendering the prompt being typed.
-  const startHost = h('div');
-  let startKey = '';
+  // ---- how each task starts (SPEC-078, SPEC-093): New task's start chip and menu
   function setStart(next) {
     Object.assign(state, { supertask: false, after_task_id: null, after_task_number: null, start_rule: null }, next);
-    renderStart(true);
+    renderStart();
     changed();
   }
-  function renderStart(force) {
-    const row = startRow();
-    if (!force && row.key === startKey) return;
-    startKey = row.key;
-    setChildren(startHost, row.el);
-  }
-  function startRow() {
+  const kindOf = () => startKind({ supertask: state.supertask, afterTaskId: state.after_task_id, rule: state.start_rule });
+  /** The chip reads the choice; its tooltip says what it means. It follows the task list. */
+  function renderStart() {
+    // Until the automation is read the chip names no choice (its name is just "Start").
+    if (!loaded) { setChildren(startChip, icon('branch', { size: 14 }), h('span', { class: 'sr-only' }, 'Start'), h('span', { class: 'chip-label', 'aria-hidden': 'true' }, '…')); return; }
     const tasks = ctx.store.tasksOf(sandbox.id) || [];
-    const kind = state.supertask ? 'supertask' : state.after_task_id ? 'after' : state.start_rule ? 'rule' : 'now';
-    const radio = (on, label, onClick, extra = {}) => chip(label, on, onClick, { role: 'radio', 'aria-checked': String(on), 'aria-pressed': null, ...extra });
+    const kind = kindOf();
     const afterTask = tasks.find((t) => t.id === state.after_task_id);
     const number = afterTask ? afterTask.number : state.after_task_number;
     const rule = state.start_rule || '';
-    const ruleLabel = rule.length > 28 ? `${rule.slice(0, 27)}…` : rule;
-    const canRule = ruleChoices(tasks).length > 0;
-    const help = {
+    renderStartChip(startChip, { kind, number, rule, prefix: 'Start: ' });
+    startChip.title = {
       now: 'Each task starts as soon as a session slot is free.',
       supertask: 'Each task waits for this project’s running tasks, then runs alone: the project’s other tasks wait for it.',
       after: `Each task starts when #${number || '?'} is done. Once #${number || '?'} has ended, each task starts at once if it was done, or else waits for you to start or cancel it.`,
       rule: `Each task starts by itself when ${rule}.`,
     }[kind];
-    const key = JSON.stringify([kind, number, rule, canRule, write]);
-    return { key, el: h('div', { class: 'au-row' }, h('span', { class: 'wf-label' }, 'Start'),
-      h('div', { class: 'wf-chips', role: 'radiogroup', 'aria-label': 'Start' },
-        radio(kind === 'now', 'Start now', () => setStart({})),
-        radio(kind === 'supertask', 'Supertask', () => setStart({ supertask: true })),
-        radio(kind === 'after', kind === 'after' ? `After #${number || '?'}` : 'After a task…', (event) => openAfterMenu(event.currentTarget)),
-        radio(kind === 'rule', kind === 'rule' ? `When ${ruleLabel}` : 'When a rule is true…', openRuleDialog, { title: rule || (canRule ? null : 'This project has no task a rule could name yet'), disabled: !write || (!canRule && kind !== 'rule') })),
-      h('span', { class: 'muted xs' }, help)) };
   }
-  function openAfterMenu(anchor) {
-    const candidates = chainCandidates(ctx, sandbox);
-    if (!candidates.length) { toast('No task of this project is running or waiting to run after.', { kind: 'info' }); return; }
-    openMenu(anchor, [
-      { header: 'After a task is done' },
-      ...candidates.map((t) => ({ label: `#${t.number} ${t.title}`, checked: t.id === state.after_task_id, onSelect: () => setStart({ after_task_id: t.id, after_task_number: t.number }) })),
-    ]);
-  }
-  function openRuleDialog() {
-    if (!ruleChoices(ctx.store.tasksOf(sandbox.id)).length) { toast('This project has no task a rule could name yet.', { kind: 'info' }); return; }
-    openRuleEditor({ tasks: ctx.store.tasksOf(sandbox.id), value: ruleFromText(state.start_rule), onUse: (rule) => setStart({ start_rule: ruleText(rule) }) });
+  function openStart() {
+    openStartMenu(startChip, ctx, sandbox, {
+      kind: kindOf(),
+      afterTaskId: state.after_task_id,
+      onPick: ({ kind, task }) => setStart(kind === 'supertask' ? { supertask: true } : kind === 'after' ? { after_task_id: task.id, after_task_number: task.number } : {}),
+      onRule: () => openRuleEditor({ tasks: ctx.store.tasksOf(sandbox.id), value: ruleFromText(state.start_rule), onUse: (rule) => setStart({ start_rule: ruleText(rule) }) }),
+    });
   }
 
   function runningSection() {
@@ -308,6 +290,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
       whenSection(),
       runningSection(),
       creating ? null : section('Recent runs', null, runsHost)));
+    renderStart();
     changed();
   }
 
@@ -336,7 +319,8 @@ export function mountAutomationEditor(ctx, sandbox, id) {
     if (!runNow || runNow.classList.contains('busy')) return;
     runNow.classList.add('busy');
     try {
-      const run = await ctx.api.post(`/api/automations/${enc(id)}/run`);
+      // The start choice the chip shows, saved or not (SPEC-093 AUT-023), for this run only.
+      const run = await ctx.api.post(`/api/automations/${enc(id)}/run`, { supertask: state.supertask, after_task_id: state.after_task_id, start_rule: state.start_rule });
       const task = run && run.task_id ? ctx.store.findTask(run.task_id) : null;
       if (run && run.state === 'failed') toast(`Run failed${run.error ? `: ${run.error}` : ''}`, { kind: 'error' });
       else toast(`${RUN_LABEL[run && run.state] || 'Run recorded'}${task ? ` (#${task.number})` : ''}`, { kind: run && run.state === 'task_created' ? 'ok' : 'info' });
@@ -369,13 +353,14 @@ export function mountAutomationEditor(ctx, sandbox, id) {
     event.stopPropagation();
     if (await confirmDialog({ title: 'Leave without saving?', message: 'Your changes to this automation are not saved.', confirmLabel: 'Leave', danger: true })) { saved = snapshot(); navigate(link.dataset.route); }
   };
+  renderStart();
   window.addEventListener('beforeunload', onBeforeUnload);
   document.addEventListener('click', onLink, true);
   el.addEventListener('keydown', (event) => {
     if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 's') { event.preventDefault(); doSave(); }
   });
   const offRuns = creating ? () => {} : ctx.store.on('automation-run', (event) => { if (!event || event.automation_id === id) loadRuns(); });
-  const offTasks = ctx.store.on('tasks', (sid) => { if (sid === sandbox.id && startHost.isConnected) renderStart(false); });
+  const offTasks = ctx.store.on('tasks', (sid) => { if (sid === sandbox.id) renderStart(); });
 
   async function load() {
     try {
@@ -394,6 +379,9 @@ export function mountAutomationEditor(ctx, sandbox, id) {
         showZone = state.offset !== -new Date().getTimezoneOffset();
       }
       nameInput.readOnly = !write;
+      loaded = true;
+      startChip.disabled = !write;
+      if (runNow) runNow.disabled = !write;
       if (creating) { useRecipe(RECIPES[0]); saved = JSON.stringify({ ...state, name: '' }); } else { saved = snapshot(); render(); loadRuns(); }
     } catch (error) {
       if (alive) setChildren(body, loadError(`Couldn’t load the automation: ${error.message}`, load));
