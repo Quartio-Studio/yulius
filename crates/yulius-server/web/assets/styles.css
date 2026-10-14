@@ -220,7 +220,8 @@ p { margin: 0; }
  * counts the rows below. A row focused by the keyboard stops clear of the fade.
  */
 .menu-scroll.capped {
-  overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-gutter: stable;
+  /* No overscroll containment: at its end the wheel goes on to the menu's list (SPEC-038 MNU-001). */
+  overflow-y: auto; scrollbar-width: thin; scrollbar-gutter: stable;
   scroll-padding-block: var(--menu-fade);
 }
 .menu-scroll { --menu-fade: 20px; }

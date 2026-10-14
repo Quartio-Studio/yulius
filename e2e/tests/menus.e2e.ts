@@ -495,6 +495,9 @@ test('arrows scroll the task box so the focused task is wholly inside it (SPEC-1
   for (let i = 0; i < 7; i += 1) await browser.keyboard.press('ArrowDown');
   await expect(screen.getByRole('menuitemradio', /^#9 Move to the next account/)).toBeFocused();
   await expect.poll(() => focusedInBox(browser)).toBe(true);
+  // It stops clear of the bottom fade, the next task peeking under it.
+  const clearance = await browser.evaluate(() => document.querySelector('.menu-scroll')!.getBoundingClientRect().bottom - (document.activeElement as HTMLElement).getBoundingClientRect().bottom);
+  expect(clearance).toBeGreaterThanOrEqual(16);
   await browser.keyboard.press('ArrowDown');
   await browser.keyboard.press('ArrowDown');
   await browser.keyboard.press('ArrowDown');
@@ -525,6 +528,13 @@ test('the filter narrows the task box; with every match in view there is no fade
   expect(many).toMatchObject({ below: true });
   expect(many.more).toMatchObject({ text: `${matches - 5} more`, hidden: false });
   expect(await axeViolations(browser)).toEqual([]);
+  // Scrolled to the end of the matches, the line is blank but in place: the menu does not jump.
+  const filterTop = await browser.evaluate(() => document.querySelector('.menu-filter')!.getBoundingClientRect().top);
+  await browser.evaluate(() => { const box = document.querySelector('.menu-scroll')!; box.scrollTop = box.scrollHeight; });
+  await expect.poll(async () => (await taskBox(browser)).below).toBe(false);
+  const end = await taskBox(browser);
+  expect(end.more).toMatchObject({ text: '', hidden: false, height: many.more.height });
+  expect(await browser.evaluate(() => document.querySelector('.menu-filter')!.getBoundingClientRect().top)).toBe(filterTop);
 });
 
 test('the automation editor\'s "After a task…" menu shows its tasks five at a time too (SPEC-102)', async ({ app, browser, screen }) => {
@@ -536,4 +546,52 @@ test('the automation editor\'s "After a task…" menu shows its tasks five at a 
   expect(state).toMatchObject({ rows: 9, below: true });
   expect(state.inside).toHaveLength(5);
   expect(state.more.text).toBe('4 more');
+});
+
+test('a group menu without a filter focuses its checked row, in view, so Enter keeps it (SPEC-102, unit, in the page)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio'));
+  const result = await browser.evaluate(async () => {
+    const url = '/assets/dom.js';
+    const { openMenu, closeMenu } = await import(url);
+    const anchor = document.createElement('button');
+    anchor.style.cssText = 'position: fixed; left: 40px; top: 40px';
+    document.body.append(anchor);
+    let picked = '';
+    const items = Array.from({ length: 7 }, (_, i) => ({ label: `T${i + 1}`, checked: i === 6, onSelect: () => { picked = `T${i + 1}`; } }));
+    openMenu(anchor, [{ header: 'After a task is done', items }]);
+    const box = document.querySelector('.menu-scroll')!.getBoundingClientRect();
+    const focused = document.activeElement as HTMLElement;
+    const rect = focused.getBoundingClientRect();
+    const state = { filter: Boolean(document.querySelector('.menu-filter')), focused: focused.textContent, inside: rect.top >= box.top - 1 && rect.bottom <= box.bottom + 1 };
+    focused.click();
+    closeMenu();
+    anchor.remove();
+    return { ...state, picked };
+  });
+  expect(result).toEqual({ filter: false, focused: 'T7', inside: true, picked: 'T7' });
+});
+
+// #288 for the whole list: a window too short even for the shortened menu scrolls the list, which
+// keeps its place when the window height changes; the wheel over the task box's end reaches it.
+test('in a short window the whole menu still scrolls and keeps its place; the wheel passes from the task box to it (SPEC-102)', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 1280, height: 380 });
+  await openRunAfter({ app, screen });
+  await screen.getByRole('searchbox', 'Filter').fill('e');
+  const scrolled = await browser.evaluate(() => {
+    const list = document.querySelector('.menu-list')!;
+    list.scrollTop = 40;
+    return list.scrollTop;
+  });
+  expect(scrolled).toBeGreaterThan(0);
+  await browser.evaluate(() => { (window as unknown as { __resized: boolean }).__resized = false; addEventListener('resize', () => { (window as unknown as { __resized: boolean }).__resized = true; }); });
+  await browser.setViewport({ width: 1280, height: 360 });
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __resized: boolean }).__resized)).toBe(true);
+  expect(await browser.evaluate(() => document.querySelector('.menu-list')!.scrollTop)).toBe(scrolled);
+  // The wheel over the box, scrolled to its end, goes on to the whole list.
+  await screen.getByRole('searchbox', 'Filter').fill('');
+  await browser.evaluate(() => { const box = document.querySelector('.menu-scroll')!; box.scrollTop = box.scrollHeight; document.querySelector('.menu-list')!.scrollTop = 0; });
+  const box = await browser.evaluate(() => { const r = document.querySelector('.menu-scroll')!.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + Math.min(r.height / 2, 40) }; });
+  await browser.mouse.move(box.x, box.y);
+  await browser.mouse.wheel(0, 200);
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.menu-list')!.scrollTop)).toBeGreaterThan(0);
 });

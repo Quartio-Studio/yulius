@@ -567,7 +567,7 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
       dividers.push(list.appendChild(h('div', { class: 'menu-header', id: headerId }, item.header)));
       const box = h('div', { class: 'menu-scroll' });
       const members = item.items.filter(Boolean);
-      const group = { box, more: null, els: members.map((sub) => addRow(sub, box)) };
+      const group = { box, more: null, below: -1, els: members.map((sub) => addRow(sub, box)) };
       if (members.length > MENU_GROUP_ROWS) {
         box.classList.add('capped');
         // Decoration for pointers: a menu's items are already counted for a screen reader. A
@@ -584,16 +584,21 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
   }
   /**
    * Shows whether a capped group has rows out of sight: its edges fade where it continues, and the
-   * line under it counts the rows below (SPEC-102 MSG-002). While filtering, a blank line hides.
+   * line under it counts the rows below (SPEC-102 MSG-002). The line stays, blank, at the end; it
+   * hides only while a filter leaves no rows to scroll.
    */
   function cue(group) {
     const { box, more, els } = group;
+    const scrolls = box.scrollHeight > box.clientHeight + 1;
     box.classList.toggle('more-above', box.scrollTop > 1);
     box.classList.toggle('more-below', box.scrollTop + box.clientHeight < box.scrollHeight - 1);
     const edge = box.getBoundingClientRect().bottom;
     const below = els.filter((el) => !el.hidden && el.getBoundingClientRect().bottom > edge + 1).length;
-    setChildren(more, below ? [icon('down', { size: 12 }), h('span', null, `${below} more`)] : null);
-    more.hidden = !below && Boolean(filter && filter.value.trim());
+    if (below !== group.below) {
+      group.below = below;
+      setChildren(more, below ? [icon('down', { size: 12 }), h('span', null, `${below} more`)] : null);
+    }
+    more.hidden = !scrolls && Boolean(filter && filter.value.trim());
   }
   /** Shows the items matching the filter; headers and separators only while it is empty. */
   const applyFilter = () => {
@@ -746,7 +751,12 @@ export function openMenu(anchor, items, { align = 'start' } = {}) {
   };
   // On a touch screen the filter waits for a tap: focusing it would open the keyboard over the menu.
   const coarse = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
-  const first = (!coarse && filter) || menu.querySelector('.menu-item:not([aria-disabled="true"])') || menu.querySelector('.menu-item');
+  let first = (!coarse && filter) || menu.querySelector('.menu-item:not([aria-disabled="true"])') || menu.querySelector('.menu-item');
+  // A first row inside a capped group may be scrolled away for the checked one: that one takes the
+  // focus, so the focused row is in view and Enter keeps the choice (SPEC-102 MSG-003).
+  const firstGroup = first && groups.find((group) => group.box.contains(first));
+  const checkedRow = firstGroup && firstGroup.els.find((el) => el.getAttribute('aria-checked') === 'true');
+  if (checkedRow) first = checkedRow;
   if (first) first.focus({ preventScroll: true });
   return menu;
 }
