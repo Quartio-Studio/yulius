@@ -33,8 +33,8 @@ watching, steering and unblocking.
   pull request, no Yulius CI). It is its maker's and the superadmin's. Connecting GitHub is
   optional and can wait (SPEC-099).
 - **Superagent** (formerly the Agent, and before that the Cockpit): every user's own plain Claude
-  Code session per sandbox, in the right tool panel beside any page (top-bar Superagent button,
-  first in the tools rail), for quick work
+  Code session per sandbox, in the right tool panel beside any page (first in the tools rail, under
+  the tools toggle; the top bar has no button of its own since SPEC-132), for quick work
   such as setting up automations or asking a quick question; anything more complex, such as
   writing code, belongs in a task, and its panel says so. `/clear` starts over, it cannot be
   deleted and comes back with its conversation. It manages the project for its owner: asked to
@@ -90,7 +90,8 @@ watching, steering and unblocking.
 - **Notes**: in the tools rail, a notepad per sandbox and one for the whole team, shared and saved
   while people type; a teammate's edit shows up live, and two edits at once end in a choice. A
   third, **Me**, is each person's own: nobody else sees it, and it is the same in every sandbox.
-  The tabs go in any order (Team first until moved). Selections are drawn rounded and glide, and
+  The tabs go in any order (Team first until moved); each shows a drag grip and says it can be
+  clicked or dragged. Selections are drawn rounded and glide, and
   teammates who have a shared notepad open show as a caret with their name and their selection
   in their own colour.
 - **Editor, terminals, Git view, automations, workflow catalog** in one web UI, whose menus fit

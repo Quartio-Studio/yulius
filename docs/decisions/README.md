@@ -112,3 +112,4 @@ number differs from the file name, and a record this index does not list.
 - [0105](0105-agents-copy-allowed-secrets-into-an-ignored-env.md): Keys live in a git-ignored `.env` beside a tracked `.env.example`; agents copy an agent secret there with `secret_copy_to_env` only after a person allows it
 - [0104](0104-agents-scan-their-branch-with-vidoc-before-delivery.md): Agents scan their branch with Vidoc (`scripts/dev security`) before delivery; Yulius CI does not, as its jobs hold no secret
 - [0108](0108-the-superadmin-updates-from-the-sidebar-foot.md): The superadmin's Update button sits beside the account button in the sidebar foot; one click opens the update's confirmation
+- [0106](0106-the-superagent-is-opened-from-the-tools-rail-only.md): The Superagent is opened from the tools rail, not a top-bar button

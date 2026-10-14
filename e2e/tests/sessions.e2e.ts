@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, failOnPageErrors, mock, openSuperagent } from './support.ts';
 
 failOnPageErrors();
 
@@ -685,12 +685,12 @@ test('a session fills the content area edge to edge, beside the Superagent and o
   expect(wide.width).toBeGreaterThan(1200);
 
   // Beside the Superagent the content area is narrower; the well still fills it.
-  await screen.getByRole('button', 'Show Superagent').click();
+  await openSuperagent(browser, screen);
   await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
   const beside = await fit();
   expect(beside).toMatchObject(edgeToEdge);
   expect(beside.width).toBeLessThan(wide.width);
-  await screen.getByRole('button', 'Hide Superagent').click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Superagent').click();
   await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
 
   for (const theme of ['light', 'dark']) {

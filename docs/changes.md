@@ -4,6 +4,13 @@ Notable changes, newest first. Per-change detail lives in the merged pull reques
 evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-architecture.md)
 (sections 14 and 15).
 
+## 2026-10-15
+
+- The Notes tabs show that they drag (SPEC-136, task #122). Each tab has a six-dot grip before its
+  name, the one the workflow editor's steps use, faint at rest and brighter on the chosen or
+  hovered tab, and its tooltip reads "Click to open, drag to reorder". A device with no mouse or
+  pen, which moves tabs from the menu, does not show the grip.
+
 ## 2026-10-14
 
 - The superadmin updates Yulius from the sidebar (SPEC-133, ADR-0108, task #121). A button beside
@@ -11,6 +18,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   confirmation; while an update runs it reads "Updating", and otherwise it is a quiet "Version
   and updates" icon leading to the instance page. Dismissing the tab-row pill no longer hides the
   way to update, and the account menu lists "Version and updates" too.
+- The top bar has no Superagent button any more (SPEC-132, ADR-0106, task #120). The Superagent
+  is first in the tools rail, right under the tools toggle, so the button beside the toggle was a
+  second way to the same panel. The toggle now reads "Show tools (Superagent, browser, editor,
+  shell, notes)", and the Superagent links (`/s/<slug>/superagent`, `/agent`, `/cockpit`) open it as
+  before.
 - The Vidoc security gate can be turned off and on (SPEC-131, ADR-0107, task #119). `enabled` in
   `.config/vidoc.toml` is committed as `true`; with `false`, `scripts/dev security` exits 0 at once
   and says nothing was scanned, and agents report the scan as disabled. Only a committed `false`
