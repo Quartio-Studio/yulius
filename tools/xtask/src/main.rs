@@ -9,7 +9,8 @@ const HELP: &str = "Yulius engineering commands (scripts/dev <command>)
   lint    Check formatting and Clippy warnings
   test    Run nextest and documentation tests
   deps    Check advisories, licenses, sources, and unused dependencies
-  ci      Run all required gates, failing on the first failed command";
+  ci      Run all required gates, failing on the first failed command
+  security  Scan the branch with Vidoc; fail on open critical or high findings (needs a key, not in ci)";
 
 fn run(program: &str, args: &[&str]) -> io::Result<()> {
     println!("+ {program} {}", args.join(" "));
@@ -107,6 +108,7 @@ fn execute(task: &str) -> io::Result<()> {
                 ],
             )
         }
+        "security" => run(&python, &["scripts/vidoc_scan.py"]),
         _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "unknown task")),
     }
 }
@@ -118,7 +120,10 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if args.len() != 1
-        || !["doctor", "check", "fmt", "lint", "test", "deps", "ci"].contains(&args[0].as_str())
+        || ![
+            "doctor", "check", "fmt", "lint", "test", "deps", "ci", "security",
+        ]
+        .contains(&args[0].as_str())
     {
         eprintln!("Invalid command.\n{HELP}");
         return ExitCode::from(2);

@@ -35,8 +35,8 @@ the request for the bound host `api.vidoc.dev`.
     found issues or the scan failed; 1 only on errors. It reads `VIDOC_TOKEN` and `VIDOC_API_URL`,
     prints `Scan started with ID: <uuid>`, and prints "No scannable files matched the selected
     scope in the current directory." when the branch changed nothing it scans. It writes
-    `vidoc.log` in the current folder unless `VIDOC_LOG_FILE` is set. It needs `@vscode/ripgrep`,
-    whose install script downloads the `rg` binary.
+    `vidoc.log` in the current folder unless `VIDOC_LOG_FILE` is set. Its `rg` comes from
+    `@vscode/ripgrep`'s per-platform optional packages; no package of the tree has an install script.
   - "Fail a pipeline on issues": check `GET /v1/scan-workflows/:id/status` is `completed` for the
     expected branch, then `GET /v1/issues?codebaseId&branch&status=open&severity=critical,high`
     and fail when `total` is not 0.
@@ -57,7 +57,7 @@ the request for the bound host `api.vidoc.dev`.
 - SEC-003: Before uploading anything, one authenticated read (`GET /v1/codebase`) proves the key
   works; a 401 exits 2 naming the likely causes (host not bound to the agent secret, key expired).
 - SEC-004: The CLI is the version pinned with integrity hashes in `tools/vidoc/package-lock.json`,
-  installed with `npm ci` into the ignored `tools/vidoc/node_modules` only when the installed
+  installed with `npm ci --ignore-scripts` into the ignored `tools/vidoc/node_modules` only when the installed
   version differs from the pin.
 - SEC-005: The scan runs on a named branch (a detached HEAD exits 2), with `CI=true`, the log file
   outside the working tree, and a bound of 45 minutes after which the CLI's process group is
@@ -107,6 +107,6 @@ the request for the bound host `api.vidoc.dev`.
 - The scan driver is Python standard library, like the other gate scripts: no new dependency, and
   `urllib` honours the proxy and CA variables of agent sessions.
 - The CLI is pinned through a lockfile (integrity hashes) rather than `npx pkg@version`, which pins
-  the version only. Its install scripts run (`@vscode/ripgrep` needs its binary).
+  the version only, and installed without install scripts, like `e2e/` (none is needed).
 - "Nothing to scan" passes: a branch that changes only files Vidoc does not scan (docs) has nothing
   to review, and failing it would make the gate useless for such changes.
