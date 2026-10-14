@@ -1120,6 +1120,160 @@ async fn a_scheduled_release_checks_the_time_it_releases_on() -> R {
     Ok(())
 }
 
+/// SPEC-126 CHS-002/CHS-003: a waiting task's start is replaced in one step: the status read
+/// (compare-and-set), the chain and the start time together; a task that left that status keeps
+/// everything.
+#[tokio::test]
+async fn a_waiting_task_start_is_replaced_in_one_step() -> R {
+    use yulius_app::intake::{ChainRecord, StartChange};
+    use yulius_app::ports::store_ext::IntakeStore;
+    let dir = tempfile::tempdir()?;
+    let store = SqliteStore::open(&dir.path().join("y.db"))?;
+    let (sid, uid) = seed(&store).await?;
+    let (t1, t2) = (TaskId::parse("t1")?, TaskId::parse("t2")?);
+    store.insert_task(&task("t1", &sid, &uid)?).await?;
+    let mut record = task("t2", &sid, &uid)?;
+    record.status = TaskStatus::Prepared;
+    store.insert_task(&record).await?;
+    store
+        .set_task_schedule(&t2, Some(Timestamp(9_000)), Timestamp(1))
+        .await?;
+    let chain = |rule: Option<&str>, at| ChainRecord {
+        task_id: t2.clone(),
+        after_task_id: Some(t1.clone()),
+        after_number: 1,
+        blocked_reason: None,
+        created_at: Timestamp(at),
+        rule: rule.map(str::to_owned),
+    };
+    // Prepared (scheduled) → after #1: chained, no time.
+    let change = StartChange {
+        task_id: t2.clone(),
+        from: TaskStatus::Prepared,
+        to: TaskStatus::Chained,
+        chain: Some(chain(None, 10)),
+        start_at: None,
+        supertask: false,
+        at: Timestamp(10),
+    };
+    assert!(store.change_start(&change).await?);
+    assert_eq!(
+        store.task(&t2).await?.ok_or("t2")?.status,
+        TaskStatus::Chained
+    );
+    assert_eq!(store.chain(&t2).await?, Some(chain(None, 10)));
+    assert_eq!(store.task_schedule(&t2).await?, None);
+    // A change read before that one (still prepared) changes nothing.
+    assert!(!store.change_start(&change).await?);
+    // Chained → a rule: the chain row is replaced, not added.
+    let ruled = StartChange {
+        from: TaskStatus::Chained,
+        chain: Some(chain(Some("#1 done"), 20)),
+        at: Timestamp(20),
+        ..change.clone()
+    };
+    assert!(store.change_start(&ruled).await?);
+    assert_eq!(store.chain(&t2).await?, Some(chain(Some("#1 done"), 20)));
+    assert!(store.chain_successors(&t1).await?.len() == 1);
+    // Chained → prepared with a time: no chain any more.
+    assert!(
+        store
+            .change_start(&StartChange {
+                from: TaskStatus::Chained,
+                to: TaskStatus::Prepared,
+                chain: None,
+                start_at: Some(Timestamp(7_000)),
+                at: Timestamp(30),
+                ..change.clone()
+            })
+            .await?
+    );
+    assert_eq!(store.chain(&t2).await?, None);
+    assert_eq!(store.task_schedule(&t2).await?, Some(Timestamp(7_000)));
+    // Prepared → a supertask now: queued from now, flagged, no time.
+    assert!(
+        store
+            .change_start(&StartChange {
+                from: TaskStatus::Prepared,
+                to: TaskStatus::Queued,
+                chain: None,
+                start_at: None,
+                supertask: true,
+                at: Timestamp(40),
+                ..change.clone()
+            })
+            .await?
+    );
+    let started = store.task(&t2).await?.ok_or("t2")?;
+    assert_eq!(started.status, TaskStatus::Queued);
+    assert_eq!(started.queued_at, Some(Timestamp(40)));
+    assert!(started.supertask);
+    assert_eq!(store.task_schedule(&t2).await?, None);
+    Ok(())
+}
+
+/// SPEC-126 CHS-005: a release decided on a chain holds only while the stored chain still names
+/// the same predecessor and rule: a start changed after the evaluation read it wins.
+#[tokio::test]
+async fn a_chain_release_checks_the_chain_it_evaluated() -> R {
+    use yulius_app::intake::{ChainRecord, StartChange};
+    use yulius_app::ports::store_ext::IntakeStore;
+    let dir = tempfile::tempdir()?;
+    let store = SqliteStore::open(&dir.path().join("y.db"))?;
+    let (sid, uid) = seed(&store).await?;
+    let (t1, t2, t3) = (
+        TaskId::parse("t1")?,
+        TaskId::parse("t2")?,
+        TaskId::parse("t3")?,
+    );
+    store.insert_task(&task("t1", &sid, &uid)?).await?;
+    store.insert_task(&task("t2", &sid, &uid)?).await?;
+    let mut record = task("t3", &sid, &uid)?;
+    record.status = TaskStatus::Chained;
+    store.insert_task(&record).await?;
+    let evaluated = ChainRecord {
+        task_id: t3.clone(),
+        after_task_id: Some(t1.clone()),
+        after_number: 1,
+        blocked_reason: None,
+        created_at: Timestamp(5),
+        rule: None,
+    };
+    store.insert_chain(&evaluated).await?;
+    // The person moved it after #2 once the evaluation of "after #1" had read it.
+    assert!(
+        store
+            .change_start(&StartChange {
+                task_id: t3.clone(),
+                from: TaskStatus::Chained,
+                to: TaskStatus::Chained,
+                chain: Some(ChainRecord {
+                    after_task_id: Some(t2.clone()),
+                    after_number: 2,
+                    created_at: Timestamp(6),
+                    ..evaluated.clone()
+                }),
+                start_at: None,
+                supertask: false,
+                at: Timestamp(6),
+            })
+            .await?
+    );
+    assert!(!store.release_chain(&evaluated, Timestamp(7)).await?);
+    assert_eq!(
+        store.task(&t3).await?.ok_or("t3")?.status,
+        TaskStatus::Chained
+    );
+    // The current chain releases it, once, in line from then.
+    let current = store.chain(&t3).await?.ok_or("chain")?;
+    assert!(store.release_chain(&current, Timestamp(8)).await?);
+    let released = store.task(&t3).await?.ok_or("t3")?;
+    assert_eq!(released.status, TaskStatus::Queued);
+    assert_eq!(released.queued_at, Some(Timestamp(8)));
+    assert!(!store.release_chain(&current, Timestamp(9)).await?);
+    Ok(())
+}
+
 /// SPEC-118 KEY-002: every write that can change who may type into a terminal grows the access
 /// epoch (an open terminal re-checks its viewer's write access before the next keystroke); a
 /// permission refresh that finds the same level does not.

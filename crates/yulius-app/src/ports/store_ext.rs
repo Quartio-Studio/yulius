@@ -317,6 +317,19 @@ pub trait IntakeStore: Send + Sync {
     /// its stored time is at or before `now` (a time moved or cleared meanwhile wins). `false`
     /// when either no longer holds.
     async fn release_scheduled(&self, task: &TaskId, now: Timestamp) -> AppResult<bool>;
+    /// Replaces how a waiting task starts (SPEC-126), in one transaction: only while the task is
+    /// still `change.from`, it takes `change.to` (with `queued`: in line from `change.at`), its
+    /// chain becomes `change.chain` and its start time `change.start_at`. `false` when the task
+    /// left `change.from`.
+    async fn change_start(&self, change: &crate::intake::StartChange) -> AppResult<bool>;
+    /// `chained → queued` for an evaluation of `evaluated` (SPEC-126 CHS-005), in one statement:
+    /// only while the task is chained and its stored chain still names the same predecessor and
+    /// rule. `false` when either no longer holds.
+    async fn release_chain(
+        &self,
+        evaluated: &crate::intake::ChainRecord,
+        at: Timestamp,
+    ) -> AppResult<bool>;
     /// Inserts a pending held prompt; earlier pending holds of the task become `superseded`.
     async fn insert_hold(&self, hold: &crate::intake::HoldRecord) -> AppResult<()>;
     /// A held prompt by id.

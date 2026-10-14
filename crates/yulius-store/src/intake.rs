@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use rusqlite::{OptionalExtension, Row, params};
 use yulius_app::auto_choice::AutoChoiceRecord;
 use yulius_app::error::AppResult;
-use yulius_app::intake::{ChainRecord, HoldRecord, hold_state};
+use yulius_app::intake::{ChainRecord, HoldRecord, StartChange, hold_state};
 use yulius_app::ports::store_ext::IntakeStore;
 use yulius_domain::auto_choice::ChosenBy;
 use yulius_domain::ids::{TaskId, UserId};
@@ -218,6 +218,88 @@ impl IntakeStore for SqliteStore {
                         TaskStatus::Prepared.as_str(),
                         now.0,
                         task
+                    ],
+                )
+                .map_err(db)?;
+            Ok(n == 1)
+        })
+        .await
+    }
+
+    async fn change_start(&self, change: &StartChange) -> AppResult<bool> {
+        let c = change.clone();
+        self.call(move |conn| {
+            let tx = conn.transaction().map_err(db)?;
+            let task = c.task_id.as_str();
+            // `transition_task`'s bookkeeping (keep the two in step): a new state, in line from
+            // now when queued, no activity or working stretch.
+            let n = tx
+                .execute(
+                    "UPDATE tasks SET status = ?1, activity = NULL, updated_at = ?3, \
+                     state_at = CASE WHEN status IS NOT ?1 OR activity IS NOT NULL THEN ?3 ELSE state_at END, \
+                     working_since = NULL, queued_at = CASE WHEN ?1 = ?4 THEN ?3 ELSE NULL END, \
+                     gate_blocks = 0, supertask = ?5 WHERE id = ?6 AND status = ?2",
+                    params![
+                        c.to.as_str(),
+                        c.from.as_str(),
+                        c.at.0,
+                        TaskStatus::Queued.as_str(),
+                        c.supertask,
+                        task
+                    ],
+                )
+                .map_err(db)?;
+            if n != 1 {
+                return Ok(false);
+            }
+            tx.execute("DELETE FROM task_chains WHERE task_id = ?1", [task])
+                .map_err(db)?;
+            if let Some(chain) = &c.chain {
+                tx.execute(
+                    &format!("INSERT INTO task_chains ({CHAIN_COLS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"),
+                    params![
+                        task,
+                        chain.after_task_id.as_ref().map(TaskId::as_str),
+                        i64::from(chain.after_number),
+                        chain.blocked_reason,
+                        chain.created_at.0,
+                        chain.rule,
+                    ],
+                )
+                .map_err(db)?;
+            }
+            match c.start_at {
+                Some(start) => tx.execute(
+                    "INSERT INTO task_schedules (task_id, start_at, updated_at) VALUES (?1, ?2, ?3) \
+                     ON CONFLICT(task_id) DO UPDATE SET start_at = ?2, updated_at = ?3",
+                    params![task, start.0, c.at.0],
+                ),
+                None => tx.execute("DELETE FROM task_schedules WHERE task_id = ?1", [task]),
+            }
+            .map_err(db)?;
+            tx.commit().map_err(db)?;
+            Ok(true)
+        })
+        .await
+    }
+
+    async fn release_chain(&self, evaluated: &ChainRecord, at: Timestamp) -> AppResult<bool> {
+        let c = evaluated.clone();
+        self.call(move |conn| {
+            // `transition_task`'s bookkeeping for chained → queued (keep the two in step).
+            let n = conn
+                .execute(
+                    "UPDATE tasks SET status = ?1, activity = NULL, updated_at = ?3, state_at = ?3, \
+                     working_since = NULL, queued_at = ?3, gate_blocks = 0 \
+                     WHERE id = ?4 AND status = ?2 AND EXISTS \
+                     (SELECT 1 FROM task_chains WHERE task_id = ?4 AND after_task_id IS ?5 AND rule IS ?6)",
+                    params![
+                        TaskStatus::Queued.as_str(),
+                        TaskStatus::Chained.as_str(),
+                        at.0,
+                        c.task_id.as_str(),
+                        c.after_task_id.as_ref().map(TaskId::as_str),
+                        c.rule,
                     ],
                 )
                 .map_err(db)?;
