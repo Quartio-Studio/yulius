@@ -20,7 +20,8 @@ watching, steering and unblocking.
   Claude sessions with `yulius onboard`); each gets a contained sandbox with its own system
   layer, home, shells per user, browser and editor. The CLI only uploads: the onboarding task that
   adapts the repository to the Yulius standards starts when someone clicks Start onboarding on the
-  sandbox page.
+  sandbox page. Onboarding is mandatory: until it has finished, the sandbox's new-task page shows
+  only what it will do and its button, no task input.
 - **Superagent** (formerly the Agent, and before that the Cockpit): every user's own plain Claude
   Code session per sandbox, in the right tool panel beside any page (top-bar Superagent button,
   first in the tools rail), for quick work
@@ -33,6 +34,11 @@ watching, steering and unblocking.
   can do the same for their task's owner, except to their own task. When a usage limit cuts its
   turn, it moves to a subscription with capacity and goes on with the turn, as a task does; the
   panel follows it.
+- **MCP servers**: configured once for the instance or a sandbox (MCP page) and attached to every
+  task run on every subscription, their secrets taken from the agent secrets. A repository's
+  `.mcp.json` servers join its sandbox's list by themselves, with `${VAR}` becoming the agent
+  secret VAR's placeholder (the egress proxy swaps the value in on its bound hosts), and the
+  Superagent never asks about them.
 - **Sidebar**: the sandbox pages used every day (Tasks, Git, CI (tests), Secrets, Dashboard; the Superagent is on the right),
   then "More" for Sessions, Workflows, Skills, Automations and MCP, then the active tasks.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions

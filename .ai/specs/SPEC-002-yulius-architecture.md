@@ -1839,8 +1839,11 @@ sandbox's of the same name) in `HarnessLaunch.mcp` for each attempt — new, res
 another subscription by native resume or by hand — and the harness adapter renders them into the
 run's own `<run>/mcp.json` (`--mcp-config … --strict-mcp-config`, so nothing from a Claude home
 adds to or replaces them), with the Yulius tool server first. Secret values appear in the file
-only as `${VAR}` references (`env` of a stdio server; `Authorization: Bearer ${YULIUS_MCP_<NAME>_TOKEN}`
-for an HTTP server); the values travel in the run's secret environment. `CLAUDE_CONFIG_DIR` is
+only as `${VAR}` references (`env` of a stdio server: `${YULIUS_MCP_<NAME>_<VAR>}`, never the
+server's own variable name, which may hold an agent secret's placeholder; `Authorization: Bearer
+${YULIUS_MCP_<NAME>_TOKEN}` for an HTTP server; SPEC-095); the values travel in the run's secret
+environment. A repository's `.mcp.json` servers join the sandbox's servers before each run
+(SPEC-095, ADR-0078). `CLAUDE_CONFIG_DIR` is
 per sandbox and the credential an environment variable, so no subscription has servers of its
 own. A harness added later receives the same harness-neutral list. A stored value
 `${secret:NAME}` is a reference to an agent secret: it is resolved for each run by

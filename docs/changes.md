@@ -11,6 +11,24 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   which is the same in every sandbox. It saves and resolves conflicts like the other notepads, and
   an edit from the person's other tab or device shows up live: the event stream now addresses an
   event to one person (`Envelope.user`) and drops it for everyone else.
+- A repository's `.mcp.json` no longer stops the Superagent on Claude Code's "N new MCP servers
+  found in this project" dialog (SPEC-095, ADR-0078, #391). Before each task run and Superagent
+  start, Yulius adds the file's servers that the sandbox lacks to its MCP servers, so every task
+  gets them. Since agents can write the file, a `${VAR}` value becomes the placeholder of the agent
+  secret VAR, which the egress proxy replaces on the secret's bound hosts; the file never gets a
+  clear value. The Superagent starts rejecting the file's servers through `--settings`, including
+  ones a person had approved there (#395 will give it Yulius's servers). A server already
+  configured is left as it is, so one turned off stays off. An MCP server's values now reach a run
+  in `YULIUS_MCP_<SERVER>_<VAR>` variables. Before, one named like an agent secret, such as
+  `APIFY_TOKEN`, clashed with that secret's placeholder, and every run of the sandbox failed to
+  start.
+- Onboarding is mandatory (SPEC-096, ADR-0076, task #81): while a sandbox awaits or runs its
+  onboarding, its new-task page shows no task input. A centred message says what onboarding will
+  do (its task's own plan, which differs for a repository already in the Yulius format), with
+  Start onboarding, or Follow onboarding while it runs (waiting for capacity and a stopped task
+  are said too). The task box shows by itself once the sandbox is ready. The page no longer offers Skip;
+  the admin API keeps it as a recovery path. Tasks created through the API still wait after
+  onboarding.
 - The terminal's mouse is the program's when it asks for it, as in a native terminal (SPEC-098,
   ADR-0079, task #83). The "Mouse: select text · send to app" chip is gone. In Claude Code's
   full-screen view, clicks, drags, the wheel and right-clicks reach Claude Code, and Shift-drag

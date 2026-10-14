@@ -17,6 +17,7 @@
 //! while nothing answers to it.
 
 pub mod probe;
+pub mod project;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -413,20 +414,7 @@ impl App {
         } else {
             self.require(&ctx.user, &sid, Action::Configure).await?;
         }
-        let fields = validate(input)?;
-        let record = McpServerRecord {
-            id: self.deps.crypto.new_id(),
-            sandbox_id: (!instance).then_some(sid),
-            name: fields.name,
-            transport: fields.transport,
-            command: fields.command,
-            args: fields.args,
-            url: fields.url,
-            env: self.seal_secrets(&input.env.clone().unwrap_or_default())?,
-            headers: self.seal_secrets(&input.headers.clone().unwrap_or_default())?,
-            enabled: input.enabled.unwrap_or(true),
-            created_at: self.now(),
-        };
+        let record = self.new_mcp_record((!instance).then_some(sid), input)?;
         self.deps
             .store
             .insert_mcp_server(&record, MAX_SERVERS_PER_SCOPE)
@@ -440,6 +428,29 @@ impl App {
             })?;
         self.audit_mcp(ctx, "mcp.created", &record).await?;
         self.mcp_view(&record)
+    }
+
+    /// A new server of `sandbox_id`'s scope (`None`: the instance) from validated `input`, its
+    /// secrets sealed.
+    fn new_mcp_record(
+        &self,
+        sandbox_id: Option<SandboxId>,
+        input: &McpServerInput,
+    ) -> AppResult<McpServerRecord> {
+        let fields = validate(input)?;
+        Ok(McpServerRecord {
+            id: self.deps.crypto.new_id(),
+            sandbox_id,
+            name: fields.name,
+            transport: fields.transport,
+            command: fields.command,
+            args: fields.args,
+            url: fields.url,
+            env: self.seal_secrets(&input.env.clone().unwrap_or_default())?,
+            headers: self.seal_secrets(&input.headers.clone().unwrap_or_default())?,
+            enabled: input.enabled.unwrap_or(true),
+            created_at: self.now(),
+        })
     }
 
     async fn mcp_for_change(&self, ctx: &AuthContext, id: &str) -> AppResult<McpServerRecord> {
@@ -625,12 +636,7 @@ impl App {
                 &self.login_of(&ctx.user.id).await,
                 action,
                 Some(&record.id),
-                Some(&format!(
-                    "{} ({}, {})",
-                    record.name,
-                    record.scope(),
-                    record.transport.as_str()
-                )),
+                Some(&project::mcp_detail(record)),
             )
             .await
     }
