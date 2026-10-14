@@ -1321,6 +1321,7 @@ button.strip-pr { background: transparent; font-family: inherit; cursor: pointer
 .onboarding-gate p { margin: 0; color: var(--text-2); }
 .onboarding-gate-steps { display: flex; flex-direction: column; gap: 6px; margin: 0; padding-left: 20px; color: var(--text-2); text-align: left; }
 .onboarding-gate .btn { margin-top: 8px; }
+.onboarding-gate-loading { align-self: stretch; margin-top: 8px; }
 @media (max-width: 767px) { .composer.gated { padding: 16px; } }
 /* The prompt box (UI-021): a rounded chat box with the task's choices along its bottom edge. */
 .composer-box {

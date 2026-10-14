@@ -12,6 +12,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   output while it ran. Now each viewer holds a write grant, checked again only when something that
   decides access changes, and the re-check runs beside the stream. A hand-over still refuses the
   previous owner's next keystroke.
+- Start onboarding goes straight into the onboarding session (SPEC-111, ADR-0090, task #96). The
+  press turned nothing visible for seconds while the server started the task's run (the button
+  stayed pressable), then stopped on "Onboarding <name>" with Follow onboarding. Now the gate turns
+  into "Starting onboarding <name>" loading at once, with nothing to press, and opens the
+  onboarding task when the start answers; a failed start brings the gate back. That Follow
+  onboarding screen is gone: opening a sandbox while its onboarding runs opens its task.
 - The Git page beside a tool panel stays readable (SPEC-115, task #100). Its summary cards and board
   columns now respond to the page's width, not the window's. Beside the Editor, the board goes from
   four columns to two or one, and task titles no longer break letter by letter.
