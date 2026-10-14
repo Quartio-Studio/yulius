@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- A task starts with one message, before anyone can type (SPEC-117, ADR-0095, task #102). A goal
+  task used to open as an empty session. Yulius then typed a first message with the attached
+  images and, after its turn, a second one with `/goal`, and a person could type into the session
+  the whole time. Now Claude Code is launched with `/goal <condition>` as its prompt: one message,
+  nothing typed. The condition names the request file and the attached files, which the agent
+  opens with its Read tool, because a `/goal` drops pasted images (measured on Claude Code 2.1.292).
+  A prompt task with images still has its first message typed, since a paste is the only way to
+  attach an image natively. Until it is sent, a person's keys are not written into it, and the
+  first one is answered with "Yulius is typing this task's first message".
 - The new-task composer squeezed keeps its controls tidy (SPEC-119, task #104, #442). In a
   narrow window or beside a tool panel, Preview, model, effort and Start used to wrap as one block
   pushed to the right, leaving the left half of the row empty. At its narrowest, Start also stuck

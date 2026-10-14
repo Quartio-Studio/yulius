@@ -214,6 +214,21 @@ impl App {
         self.updates.hold.load(Ordering::SeqCst)
     }
 
+    /// Whether an update holds a hook of `task` now (it was held and not released yet).
+    pub(crate) fn held_for_update(&self, task: &TaskId) -> bool {
+        self.updates.hold.load(Ordering::SeqCst)
+            && !self
+                .updates
+                .released
+                .lock()
+                .is_ok_and(|released| released.contains(task))
+            && self
+                .updates
+                .held_at
+                .lock()
+                .is_ok_and(|held| held.contains_key(task))
+    }
+
     /// Whether the turn boundary of `task` is held for an update; records that it is.
     pub(crate) fn hold_for_update(&self, task: &TaskId) -> bool {
         if !self.updates.hold.load(Ordering::SeqCst) {

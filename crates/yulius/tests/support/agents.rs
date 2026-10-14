@@ -76,6 +76,9 @@ pub struct FakeAgentOptions {
     pub opening_turn_ms: Option<u64>,
     /// Each echoed message is a silent turn of this many milliseconds (`--echo-turn-ms`).
     pub echo_turn_ms: Option<u64>,
+    /// The agent never takes a `/goal` launch prompt, like a Claude Code that refuses the
+    /// condition (SPEC-117): it is not passed on.
+    pub ignores_goal_prompt: bool,
     /// Also report these environment variables at start (`--report-env`: set and length, never
     /// the value).
     pub report_env: Vec<String>,
@@ -226,8 +229,17 @@ impl HarnessPort for FakeAgentHarness {
         }
         // A continued resume (CLAUDE_CODE_RESUME_INTERRUPTED_TURN) opens with the turn Claude
         // Code redoes, like a first message (SPEC-034).
+        // A `/goal` launch prompt sets the goal and runs the goal's own turn, as Claude Code
+        // does (SPEC-117): no opening turn before it.
+        let goal_prompt = matches!(
+            &launch.mode,
+            yulius_app::ports::harness::SessionMode::New { prompt: Some(prompt), .. }
+                if prompt.starts_with("/goal ")
+        );
         let first_message = match &launch.mode {
-            yulius_app::ports::harness::SessionMode::New { prompt, .. } => prompt.is_some(),
+            yulius_app::ports::harness::SessionMode::New { prompt, .. } => {
+                prompt.is_some() && !goal_prompt
+            }
             yulius_app::ports::harness::SessionMode::Resume {
                 prompt,
                 continue_interrupted,
@@ -258,7 +270,10 @@ impl HarnessPort for FakeAgentHarness {
                 prompt: Some(prompt),
                 ..
             },
-        ) = (self.options.answers_first_message, &launch.mode)
+        ) = (
+            self.options.answers_first_message || goal_prompt,
+            &launch.mode,
+        ) && !(goal_prompt && self.options.ignores_goal_prompt)
         {
             argv.extend(["--prompt".into(), prompt.clone()]);
         }

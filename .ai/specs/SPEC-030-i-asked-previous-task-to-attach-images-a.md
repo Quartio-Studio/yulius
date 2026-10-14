@@ -5,7 +5,9 @@ status: done
 
 # SPEC-030: Attached images reach Claude Code as pasted images, not as paths
 
-Status: implemented
+Status: implemented; for goal tasks superseded by [SPEC-117](SPEC-117-creating-tasks-work-in-a-very-very-weird.md)
+(no typed first message: the `/goal` launch prompt names the attached files; a `/goal` carries no
+image block). Prompt tasks still paste images, and a person's keys wait meanwhile.
 Date: 2026-10-12
 Owner: Yulius task #28
 Scope authorization: user request ("I asked previous task to attach images as files, natively, but

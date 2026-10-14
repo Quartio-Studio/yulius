@@ -549,8 +549,9 @@ impl App {
             refreshed = store.task(&task.id).await?.ok_or(AppError::NotFound)?;
             task = &refreshed;
         }
-        // The turn on a goal session's first message (its attached files) ended, not held: it
-        // stops as it is, without gates or rotation, so the goal is typed next (SPEC-025).
+        // The opening turn of a resumed goal session (its continuation prompt) ended, not held:
+        // it stops as it is, without gates or rotation, so the goal is typed next (SPEC-025,
+        // SPEC-117).
         let opening = self
             .runtime(&task.id)
             .opening_turn

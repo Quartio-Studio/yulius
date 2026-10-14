@@ -2,6 +2,7 @@
 //! (SPEC-002 §7.7, AC-TSK-6, ACC-008; the size policy is [`crate::hub::control`]).
 
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use yulius_domain::ids::TaskId;
@@ -184,6 +185,20 @@ impl App {
         }
         if data.len() > 64 * 1024 {
             return Err(AppError::Invalid("input frame too large".into()));
+        }
+        if !scroll && is_typing(data) && self.keys_wait_for_opening(&attach.task_id) {
+            // Yulius types the task's first message: the keys would be mixed into it (SPEC-117
+            // ONE-006). They are dropped, not replayed: an Esc or Ctrl+C would cut its turn.
+            if !attach
+                .runtime
+                .typing_opening_said
+                .swap(true, Ordering::SeqCst)
+            {
+                attach.runtime.hub.notice(
+                    "Yulius is typing this task's first message. Type once it is sent.".to_owned(),
+                );
+            }
+            return Ok(());
         }
         // The viewer who types controls the terminal and its size, at once (TSK-006). A
         // forwarded wheel turn is not typing: it must not move control, and with it the size, to

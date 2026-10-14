@@ -118,7 +118,7 @@
 //! `COMPACTING` and never finishes. A refusal takes `--echo-turn-ms` after its user line, like
 //! the API's answer. `--prompt TEXT` is a first message
 //! given on the command line (Claude Code's prompt argument), answered like a typed one before
-//! input is read.
+//! input is read; a `/goal <condition>` one sets the goal and runs its turn, like Claude Code.
 //!
 //! Bracketed pastes (`ESC [200~ … ESC [201~`) are read like Claude Code 2.1.292 reads them: a
 //! pasted path ending in `.png`, `.jpg`, `.jpeg`, `.gif` or `.webp` becomes `[Image #N] ` (N
@@ -1500,13 +1500,19 @@ fn echo_loop(options: &Options, session_id: &str) -> io::Result<i32> {
         )?;
     }
     if let Some(prompt) = &options.prompt {
-        echo_message(
-            options,
-            prompt,
-            transcript.as_ref(),
-            hooks.as_ref(),
-            &mut state,
-        )?;
+        if prompt.starts_with("/goal ") && (transcript.is_some() || hooks.is_some()) {
+            // Claude Code runs a slash command given as its prompt argument (SPEC-117).
+            state.turns += 1;
+            goal_turn(options, prompt, transcript.as_ref(), hooks.as_ref())?;
+        } else {
+            echo_message(
+                options,
+                prompt,
+                transcript.as_ref(),
+                hooks.as_ref(),
+                &mut state,
+            )?;
+        }
     }
     let stdin = io::stdin();
     let mut input = stdin.lock();
