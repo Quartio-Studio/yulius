@@ -1143,10 +1143,15 @@ async fn writes_that_change_access_grow_the_access_epoch() -> R {
 
     let mut last = store.access_epoch();
 
+    // A first cached level takes nothing away: no grant was confirmed without one.
     store
         .put_access(&alice, &sid, AccessLevel::Write, Timestamp(1))
         .await?;
-    grew(&mut last, "a first cached level", store.access_epoch())?;
+    assert_eq!(
+        store.access_epoch(),
+        last,
+        "a first cached level changes nothing"
+    );
     store
         .put_access(&alice, &sid, AccessLevel::Write, Timestamp(2))
         .await?;

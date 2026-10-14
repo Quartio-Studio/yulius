@@ -1060,8 +1060,10 @@ impl App {
             return false;
         }
         let (ctx, runtime) = (ctx.clone(), Arc::clone(&attach.runtime));
+        // The full check also reads the user and the session again (the viewer's `ctx` is a copy
+        // from when the socket opened).
         self.write_granted(&attach.grant, move |app| async move {
-            app.shell_allowed(&ctx, &runtime).await
+            app.still_signed_in(&ctx).await && app.shell_allowed(&ctx, &runtime).await
         })
         .await
     }

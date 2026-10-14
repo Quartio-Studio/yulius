@@ -298,8 +298,10 @@ impl App {
             return false;
         }
         let (ctx, task) = (ctx.clone(), attach.task_id.clone());
+        // The full check also reads the user and the session again: the viewer's `ctx` was taken
+        // when the socket opened, and does not know they were disabled or signed out since.
         self.write_granted(&attach.grant, move |app| async move {
-            app.can_work(&ctx, &task).await
+            app.still_signed_in(&ctx).await && app.can_work(&ctx, &task).await
         })
         .await
     }

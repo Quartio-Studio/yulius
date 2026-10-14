@@ -224,6 +224,23 @@ async fn a_hand_over_refuses_the_previous_owners_next_keystroke() -> TestResult 
     Ok(())
 }
 
+/// SPEC-118 KEY-002 (review): disabling the typist refuses their next keystroke, although the
+/// viewer's own copy of the user (taken when the socket opened) is not disabled.
+#[tokio::test]
+async fn disabling_the_typist_refuses_their_next_keystroke() -> TestResult {
+    let f = fixture().await?;
+    let alice = auth(&f.h, "u-a").await?;
+    let typing = f.h.app.terminal_open(&alice, id_of(&f), None).await?;
+    let first = f.h.app.terminal_input(&alice, &typing, b"a", false).await;
+    assert!(!forbidden(&first), "{first:?}");
+    f.h.store
+        .update_user_flags(&alice.user.id, Some(Some(f.h.app.now())), None)
+        .await?;
+    let after = f.h.app.terminal_input(&alice, &typing, b"b", false).await;
+    assert!(forbidden(&after), "{after:?}");
+    Ok(())
+}
+
 /// SPEC-118 KEY-003: a grant older than 30 s is re-confirmed beside the input. A GitHub downgrade
 /// found there (the permission cache expired) refuses the keystrokes after the one that found it.
 #[tokio::test]

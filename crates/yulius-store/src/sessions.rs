@@ -369,8 +369,9 @@ impl PermissionStore for SqliteStore {
                 params![u, s, level.as_str(), at.0],
             )
             .map_err(db)?;
-            // Only a changed level changes who may type (SPEC-118 KEY-002).
-            if before.as_deref() != Some(level.as_str()) {
+            // Only a changed level changes who may type (SPEC-118 KEY-002); a first one takes
+            // nothing away (no grant was confirmed without it).
+            if before.is_some_and(|before| before != level.as_str()) {
                 epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }
             Ok(())

@@ -953,7 +953,8 @@ async fn a_task_shell_stops_taking_input_once_the_task_is_handed_over() -> TestR
 
 /// SPEC-118 KEY-001, KEY-005 (task #103): once the shell's viewer is confirmed, its keystrokes and
 /// resizes reach the shell and the echo comes back while every permission check hangs — GitHub
-/// stops answering, the permission cache has expired, and the 300 ms re-check ticks meanwhile.
+/// stops answering and the permission cache has expired, so the 300 ms re-check that starts
+/// meanwhile never finishes: the viewer's loop does not wait for it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shell_keystrokes_never_wait_for_a_permission_check() -> TestResult {
     let f = fixture_with(false, None, Some(300)).await?;
@@ -986,7 +987,7 @@ async fn shell_keystrokes_never_wait_for_a_permission_check() -> TestResult {
         )
         .await
         .map_err(|_| format!("{shown} was not echoed within 5 s while permission checks hang"))??;
-        // Let the 300 ms re-check tick in between.
+        // Typing goes on after the 300 ms re-check has started (and hangs).
         tokio::time::sleep(Duration::from_millis(350)).await;
     }
     Ok(())

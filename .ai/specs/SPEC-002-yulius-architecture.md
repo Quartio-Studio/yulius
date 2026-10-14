@@ -2012,8 +2012,9 @@ viewer queue 512 frames / 8 MiB; overflow closes with code 4008; client reconnec
 carries a client sequence for duplicate suppression after reconnect. Write permission is the
 viewer's grant (SPEC-118, ADR-0096). It is confirmed at open and checked again before the next frame
 only when the store's access epoch moved (owner, sandbox, user, session or GitHub level changed).
-It is re-confirmed in the background after 30 s. A keystroke never waits for the database or
-GitHub, and the 60 s access re-check runs beside the viewer's loop, never pausing its output. At most 16 viewers per task.
+It is re-confirmed in the background after 30 s. While the epoch is unchanged a keystroke waits
+for neither the database nor GitHub, and the 60 s access re-check runs beside the viewer's loop,
+never pausing its output. At most 16 viewers per task.
 Accepted TCP connections set `TCP_NODELAY`, so a keystroke's echo — one small frame — is sent at once
 instead of waiting behind Nagle's algorithm for the proxy's delayed ACK (F 2026-10-09, #29).
 

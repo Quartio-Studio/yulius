@@ -69,9 +69,47 @@ impl WriteGrant {
         state.confirmed = allowed.then_some(Confirmed { epoch, at_ms });
     }
 
+    /// Re-confirms the grant in a background task (a check that began at `epoch` and `at_ms`).
+    /// A check that fails or is cancelled counts as a refusal, so a stuck flag never stops later
+    /// re-confirmations. The task is not tied to the viewer: it ends with the check (GitHub calls
+    /// have their own timeout), at most one per grant.
+    pub fn refresh(
+        self: &Arc<Self>,
+        epoch: u64,
+        at_ms: i64,
+        check: impl Future<Output = bool> + Send + 'static,
+    ) -> tokio::task::JoinHandle<()> {
+        let verdict = Verdict {
+            grant: Arc::clone(self),
+            epoch,
+            at_ms,
+            allowed: false,
+        };
+        tokio::spawn(async move {
+            // Bind the guard itself: assigning to a field alone would capture only that field,
+            // and the guard would settle (as a refusal) before the check ran.
+            let mut verdict = verdict;
+            verdict.allowed = check.await;
+        })
+    }
+
     /// Drops the grant: the next input is checked first.
     pub fn revoke(&self) {
         self.state().confirmed = None;
+    }
+}
+
+/// Settles a background re-confirmation when it ends, however it ends.
+struct Verdict {
+    grant: Arc<WriteGrant>,
+    epoch: u64,
+    at_ms: i64,
+    allowed: bool,
+}
+
+impl Drop for Verdict {
+    fn drop(&mut self) {
+        self.grant.settle(self.epoch, self.at_ms, self.allowed);
     }
 }
 
@@ -94,12 +132,7 @@ impl App {
         match grant.decide(epoch, now) {
             Decision::Allow => true,
             Decision::AllowAndRefresh => {
-                let pending = check(Arc::clone(self));
-                let grant = Arc::clone(grant);
-                tokio::spawn(async move {
-                    let allowed = pending.await;
-                    grant.settle(epoch, now, allowed);
-                });
+                drop(grant.refresh(epoch, now, check(Arc::clone(self))));
                 true
             }
             Decision::Check => {
@@ -147,6 +180,31 @@ mod tests {
         grant.settle(1, old, true);
         assert_eq!(grant.decide(1, old + 5), Decision::Allow);
         assert_eq!(grant.decide(1, 2 * old), Decision::AllowAndRefresh);
+    }
+
+    #[tokio::test]
+    async fn input_flows_while_a_re_confirmation_is_pending() {
+        let grant = std::sync::Arc::new(WriteGrant::default());
+        grant.settle(1, 0, true);
+        assert_eq!(grant.decide(1, GRANT_REFRESH_MS), Decision::AllowAndRefresh);
+        let pending = grant.refresh(1, GRANT_REFRESH_MS, std::future::pending::<bool>());
+        tokio::task::yield_now().await;
+        assert_eq!(grant.decide(1, GRANT_REFRESH_MS + 1), Decision::Allow);
+        pending.abort();
+    }
+
+    #[tokio::test]
+    async fn a_re_confirmation_that_fails_checks_the_next_input() {
+        let grant = std::sync::Arc::new(WriteGrant::default());
+        grant.settle(1, 0, true);
+        assert_eq!(grant.decide(1, GRANT_REFRESH_MS), Decision::AllowAndRefresh);
+        let failed = grant
+            .refresh(1, GRANT_REFRESH_MS, async {
+                unreachable!("the check failed")
+            })
+            .await;
+        assert!(failed.is_err(), "the check panicked");
+        assert_eq!(grant.decide(1, GRANT_REFRESH_MS + 1), Decision::Check);
     }
 
     #[test]

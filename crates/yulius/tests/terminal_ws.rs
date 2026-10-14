@@ -451,8 +451,9 @@ async fn two_viewers_share_the_terminal_and_only_writers_type() -> TestResult {
 
 /// SPEC-118 KEY-001, KEY-004, KEY-005 (task #103: "things should be written instantly"): once a
 /// writer's access is confirmed, its keystrokes, resizes and presence reach the agent and the echo
-/// comes back while every permission check hangs — GitHub stops answering, the permission cache has
-/// expired, and the 300 ms re-check ticks several times meanwhile.
+/// comes back while every permission check hangs — GitHub stops answering and the permission cache
+/// has expired, so the 300 ms re-check that starts meanwhile never finishes: the viewer's loop does
+/// not wait for it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn keystrokes_and_echo_never_wait_for_a_permission_check() -> TestResult {
     let Fixture {
@@ -520,7 +521,7 @@ async fn keystrokes_and_echo_never_wait_for_a_permission_check() -> TestResult {
                 }
             }
         }
-        // Let the 300 ms re-check tick in between.
+        // Typing goes on after the 300 ms re-check has started (and hangs).
         tokio::time::sleep(Duration::from_millis(350)).await;
     }
     Ok(())

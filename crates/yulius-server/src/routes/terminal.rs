@@ -122,8 +122,8 @@ fn recheck_access(
 /// The pending re-check's verdict; never ready without one.
 async fn verdict(pending: &mut Option<JoinHandle<Recheck>>) -> Recheck {
     match pending.as_mut() {
-        // A re-check that panicked changes nothing; the next one runs on time.
-        Some(handle) => handle.await.unwrap_or(Recheck::Fine),
+        // A re-check that failed proves nothing: the viewer is closed, as without access.
+        Some(handle) => handle.await.unwrap_or(Recheck::Revoked),
         None => std::future::pending().await,
     }
 }
@@ -146,6 +146,8 @@ async fn pump(app: AppState, ctx: AuthContext, mut attach: TerminalAttach, mut s
     let mut last_input_seq: Option<u64> = None;
     let mut recheck =
         tokio::time::interval(Duration::from_millis(app.config.viewer_recheck_ms.max(100)));
+    // A re-check that took longer than the interval delays the next one; no burst follows it.
+    recheck.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     recheck.tick().await;
     let mut pending: Option<JoinHandle<Recheck>> = None;
     loop {

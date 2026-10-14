@@ -174,6 +174,8 @@ async fn pump(app: AppState, ctx: AuthContext, mut attach: ShellAttach, mut sock
     let mut last_input_seq: Option<u64> = None;
     let mut recheck =
         tokio::time::interval(Duration::from_millis(app.config.viewer_recheck_ms.max(100)));
+    // A re-check that took longer than the interval delays the next one; no burst follows it.
+    recheck.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     recheck.tick().await;
     let mut pending: Option<JoinHandle<Option<&'static str>>> = None;
     loop {
@@ -260,8 +262,8 @@ async fn pump(app: AppState, ctx: AuthContext, mut attach: ShellAttach, mut sock
 /// The pending re-check's verdict (`Some(reason)` to close); never ready without one.
 async fn verdict(pending: &mut Option<JoinHandle<Option<&'static str>>>) -> Option<&'static str> {
     match pending.as_mut() {
-        // A re-check that panicked changes nothing; the next one runs on time.
-        Some(handle) => handle.await.unwrap_or(None),
+        // A re-check that failed proves nothing: the viewer is closed, as without access.
+        Some(handle) => handle.await.unwrap_or(Some("access re-check failed")),
         None => std::future::pending().await,
     }
 }
