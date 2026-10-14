@@ -149,7 +149,7 @@ test('Start onboarding runs it, Follow onboarding opens it, and the task box com
   const prompt = screen.getByRole('textbox', 'Task prompt');
   await expect(prompt).toBeVisible();
   await expect(prompt).toBeFocused();
-  await expect(browser.locator('.composer > [role="status"]')).toHaveText('Onboarding finished: the task box is ready.');
+  await expect(browser.locator('.composer > [aria-live="polite"]')).toHaveText('Onboarding finished: the task box is ready.');
   await expect(browser.locator('.onboarding-gate')).toBeHidden();
   await expect(browser.locator('.composer-quote')).toBeVisible();
   await prompt.fill('Install the GitHub CLI');

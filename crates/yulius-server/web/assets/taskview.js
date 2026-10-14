@@ -626,7 +626,8 @@ export function mountComposer(ctx, sandbox) {
   // While the sandbox awaits onboarding, a centred message takes the card's place (SPEC-096).
   const gate = h('section', { class: 'onboarding-gate', hidden: true, 'aria-labelledby': `onboarding-gate-${sandbox.id}` });
   // Says what changed when someone else starts onboarding or it lands (the gate's text is rebuilt).
-  const gateNews = h('span', { class: 'sr-only', role: 'status' });
+  // A live region without the status role: the page's own status messages stay the only ones.
+  const gateNews = h('span', { class: 'sr-only', 'aria-live': 'polite', 'aria-atomic': 'true' });
   const card = h('div', { class: 'composer-card' },
       // A brand's niche for its mark (hidden unless a brand shows it; styles.css "Brand details").
       niche,
