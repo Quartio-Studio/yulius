@@ -129,10 +129,11 @@ the chip shows.
 
 ## Evidence
 
-- `scripts/dev ci` on f0bc30b4: exit 0. Repository contracts, fmt, clippy, deny, shear, nextest
-  **1521 tests passed** (16 skipped), doctests, docs.
-- Full e2e suite (`E2E_TELEMETRY_DISABLED=1 npx e2e run`) on f0bc30b4: exit 0, **284 passed**,
-  1 skipped (42 files).
+- `scripts/dev ci` on ecf7c3d4 (merged with `dev`): exit 0. Repository contracts, fmt, clippy,
+  deny, shear, nextest **1521 tests passed** (16 skipped), doctests, docs. Before the merge
+  (f0bc30b4): exit 0, 1521 passed.
+- Full e2e suite (`E2E_TELEMETRY_DISABLED=1 npx e2e run`) on ecf7c3d4: exit 0, **291 passed**,
+  1 skipped (43 files). Before the merge (f0bc30b4): 284 passed, 1 skipped.
 - New tests, each red before its change:
   - `crates/yulius/tests/automation_start.rs`
     `run_now_starts_its_task_with_the_choice_it_is_given` (AC-AUT-23):
