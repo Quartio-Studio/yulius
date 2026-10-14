@@ -358,7 +358,7 @@ export function prLine(pr) {
   const checks = CHECKS[pr.checks] || [pr.checks || 'checks unknown', 'warn'];
   const state = { open: 'accent', merged: 'violet', closed: '' }[pr.state] || '';
   return h('span', { class: 'row-wrap' },
-    h('a', { href: pr.url, target: '_blank', rel: 'noopener noreferrer' }, `#${pr.number}`),
+    h('a', { href: pr.url, target: '_blank', rel: 'noopener noreferrer' }, `PR #${pr.number}`),
     h('span', { class: 'ellipsis' }, pr.title),
     badge(pr.state, state),
     badge(checks[0], checks[1], pr.checks === 'unknown' ? UNKNOWN_CHECKS : null),
@@ -379,9 +379,9 @@ export function deliveryStrip(ctx, task, delivery, { reload = () => {} } = {}) {
   if (pr) {
     const checks = pr.state === 'open' ? CHECKS[pr.checks] : null;
     const glyph = checks ? CHECK_ICONS[pr.checks] : null;
-    const label = `Pull request #${pr.number}, ${pr.state}${checks ? `, ${checks[0]}` : ''} — delivery details`;
+    const label = `PR #${pr.number}, pull request, ${pr.state}${checks ? `, ${checks[0]}` : ''} — delivery details`;
     out.push(h('button', { type: 'button', class: ['tl-pr-chip', 'strip-pr', pr.state === 'merged' && 'merged', pr.state === 'closed' && 'closed'], title: label, 'aria-label': label, onClick: () => openDeliveryDialog(ctx, task).result.then(reload) },
-      icon('branch', { size: 12 }), `#${pr.number}`, glyph ? h('span', { class: `tone-${checks[1]}` }, icon(glyph, { size: 12 })) : null));
+      `PR #${pr.number}`, glyph ? h('span', { class: `tone-${checks[1]}` }, icon(glyph, { size: 12 })) : null));
   }
   return out;
 }

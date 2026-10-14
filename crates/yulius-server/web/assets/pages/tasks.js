@@ -66,7 +66,7 @@ function loadingRows(label) {
   const cells = [80, 60, 70, 50, 60, null, 70, 80, null];
   return [columnHeads(), skeletonOf(label, [h('div', { class: 'tl-group-head' }, bar('lg')),
     [55, 70, 45, 62].map((title) => h('div', { class: 'skeleton-tl-row' }, cells.map((width, i) => {
-      if (i === 0) return h('span', { class: 'skeleton-tl-link' }, h('span', { class: 'tl-mark' }, h('span', { class: 'skeleton-tile skeleton-dot' })), bar(title));
+      if (i === 0) return h('span', { class: 'skeleton-tl-link' }, h('span', { class: 'tl-mark' }, h('span', { class: 'skeleton-tile skeleton-dot' })), h('span', { class: 'task-num' }, bar('sm')), bar(title));
       if (i === 5) return h('span', null, h('span', { class: 'skeleton-tile skeleton-dot' }));
       // The row's actions are hidden until hover but hold their room; so does this spacer.
       if (i === 8) return h('span', { class: 'tl-actions' }, h('span', { class: 'tl-action' }));
@@ -325,8 +325,10 @@ export function mountTasksPage(ctx, sandbox) {
     const time = taskTime(task, info);
     const kebab = iconButton('more', `Actions for ${task.title || `task #${task.number}`}`, () => openTaskMenu(ctx, kebab, task), { class: 'tl-action', 'aria-haspopup': 'menu' });
     const row = h('li', { class: ['tl-row', `group-${group}`], dataset: { taskId: task.id, tone: info.tone } },
-      h('a', { class: 'tl-link', href: href(path), dataset: { route: path }, title: `#${task.number} ${task.title}${task.branch ? ` · ${task.branch}` : ''}` },
+      h('a', { class: 'tl-link', href: href(path), dataset: { route: path }, title: `Task #${task.number} ${task.title}${task.branch ? ` · ${task.branch}` : ''}` },
         h('span', { class: 'tl-mark' }, statusMark(info, 16)),
+        // The task's own number, as in the sidebar; its pull request's chip says "PR #N" (SPEC-122).
+        h('span', { class: 'task-num', title: `Task #${task.number}` }, h('span', { class: 'sr-only' }, 'Task '), `#${task.number}`),
         h('span', { class: 'tl-title' }, task.title || `Task #${task.number}`),
         task.origin && task.origin !== 'ui' ? h('span', { class: 'tl-origin' }, ORIGINS[task.origin] || task.origin) : null,
         h('span', { class: 'sr-only' }, `, ${what}`)),
