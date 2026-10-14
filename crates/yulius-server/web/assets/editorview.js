@@ -183,8 +183,9 @@ export function createEditorView(ctx, sandbox, getTask) {
   let monaco = null;
   let editor = null;
   let started = false;
-  const tabs = []; // {path, model, sha, dirty, viewState, external}
+  const tabs = []; // {path, model, sha, dirty, viewState, external}; text instead of model while suspended
   let active = null;
+  let suspended = false; // another sandbox is in front: no Monaco models (SPEC-113)
   const expanded = new Map(); // dir path → entries | null (loading)
 
   const folder = h('select', { class: 'select select-sm', 'aria-label': 'Folder' });
@@ -456,14 +457,21 @@ export function createEditorView(ctx, sandbox, getTask) {
       toast(file.too_large ? `${path} is too large for the editor (${Math.round(file.size / 1024)} KB).` : `${path} is a binary file.`, { kind: 'info' });
       return;
     }
-    const model = monaco.editor.createModel(file.content, languageFor(monaco, path));
-    const tab = { path, model, sha: file.sha256, dirty: false, viewState: null, saving: false };
-    model.onDidChangeContent(() => {
+    const tab = { path, model: null, sha: file.sha256, dirty: false, viewState: null, saving: false };
+    tabs.push(tab);
+    // Opened while another sandbox came to the front: it shows when this one is back.
+    if (suspended) { tab.text = file.content; active = tab; return; }
+    attach(tab, file.content);
+    activate(tab);
+  }
+
+  /** Gives `tab` a Monaco model holding `text`; the person's edits mark it modified. */
+  function attach(tab, text) {
+    tab.model = monaco.editor.createModel(text, languageFor(monaco, tab.path));
+    tab.model.onDidChangeContent(() => {
       if (tab.ignoreChange) return;
       if (!tab.dirty) { tab.dirty = true; renderTabs(); renderStatus(); }
     });
-    tabs.push(tab);
-    activate(tab);
   }
 
   /**
@@ -511,6 +519,8 @@ export function createEditorView(ctx, sandbox, getTask) {
     if (tab.dirty) return;
     try {
       const file = await api.get(`/api/sandboxes/${sid}/files/content?${query(tab.path)}`);
+      // Suspended meanwhile: activating it again on resume reads it again.
+      if (!tab.model) return;
       if (file.content != null && file.sha256 !== tab.sha && !tab.dirty) {
         const view = active === tab ? editor.saveViewState() : null;
         tab.ignoreChange = true;
@@ -615,7 +625,7 @@ export function createEditorView(ctx, sandbox, getTask) {
   }
 
   function renderStatus() {
-    if (!active || !editor) { setChildren(status, h('span', { class: 'muted' }, root === 'sandbox' ? 'Sandbox repository' : 'Task worktree')); return; }
+    if (!active || !editor || !active.model) { setChildren(status, h('span', { class: 'muted' }, root === 'sandbox' ? 'Sandbox repository' : 'Task worktree')); return; }
     const position = editor.getPosition();
     setChildren(status,
       h('span', null, active.path),
@@ -638,11 +648,37 @@ export function createEditorView(ctx, sandbox, getTask) {
       if (opts && opts.file) openAt(opts.file);
     },
     taskChanged: folderOptions,
+    // Another sandbox in front (SPEC-113 KST-006): the Monaco models go, so this sandbox's files feed
+    // no suggestions there; each open file keeps its text, unsaved mark and cursor for resume().
+    suspend() {
+      if (suspended) return;
+      suspended = true;
+      if (active && active.model && editor) active.viewState = editor.saveViewState();
+      if (editor) editor.setModel(null);
+      for (const tab of tabs) {
+        if (!tab.model) continue;
+        tab.text = tab.model.getValue();
+        tab.model.dispose();
+        tab.model = null;
+      }
+    },
+    resume() {
+      if (!suspended) return;
+      suspended = false;
+      for (const tab of tabs) {
+        if (tab.model) continue;
+        attach(tab, tab.text);
+        tab.text = null;
+      }
+      const shown = active;
+      active = null; // its saved cursor is restored, not replaced by the empty editor's
+      if (shown) activate(shown, { focus: false });
+    },
     // Called when the panel host drops this view (another sandbox): free Monaco's editor and
     // models, so other sandboxes' files neither leak nor feed suggestions.
     destroy() {
       if (sizeWatch) sizeWatch.disconnect();
-      for (const tab of tabs) tab.model.dispose();
+      for (const tab of tabs) if (tab.model) tab.model.dispose();
       tabs.length = 0;
       active = null;
       if (editor) editor.dispose();
