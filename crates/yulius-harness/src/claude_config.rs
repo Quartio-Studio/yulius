@@ -28,8 +28,8 @@ const DIFF_PANE_OPEN: &str = "open";
 /// Largest existing config read; a larger file is treated as corrupt and left untouched.
 const MAX_CONFIG_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Merges onboarding completion, trust for `worktree` (and its main repository, see
-/// [`main_repository`]) and a closed diff side panel into the
+/// Merges onboarding completion, trust for `worktree` (and, for a linked git worktree, its main
+/// repository) and a closed diff side panel into the
 /// Claude global config of `config_dir` (created 0700 when missing). `bypass_permissions` also
 /// records acceptance of the `--dangerously-skip-permissions` warning (contained runs only).
 /// Idempotent.
