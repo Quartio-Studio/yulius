@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- Start onboarding goes straight into the onboarding session (SPEC-111, ADR-0090, task #96). The
+  press turned nothing visible for seconds while the server started the task's run (the button
+  stayed pressable), then stopped on "Onboarding <name>" with Follow onboarding. Now the gate turns
+  into "Starting onboarding <name>" loading at once, with nothing to press, and opens the
+  onboarding task when the start answers; a failed start brings the gate back. That Follow
+  onboarding screen is gone: opening a sandbox while its onboarding runs opens its task.
 - Token use, its API-price cost and a chart for every figure (SPEC-110, ADR-0089, task #95). The
   Capacity card (Subscriptions page and the Dashboard) adds "Tokens (7 days)" and "API cost (7
   days)": what the pool used and what it would have cost at Claude API list prices (input, output,
