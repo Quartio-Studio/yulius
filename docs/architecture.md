@@ -448,9 +448,11 @@ requests as the last Git overview read said them (`yulius.pulls.<user>.<sandbox>
 after a reload, for a sandbox a view watches, until the page's own read replaces them (dropped if
 that read fails; SPEC-104). The overview is read every minute while the tab is in view, and at once
 when the server announces a change of the sandbox's pull requests (`pulls.updated`: a delivery
-stage moved, a Yulius CI run was queued, started or ended), or when a hidden tab that missed one
-is shown again. Reads of a sandbox never overlap; an announcement during a read brings one more
-read after it ([decision 0087](decisions/0087-pull-request-changes-are-announced.md)).
+stage moved, a Yulius CI run was queued, started or ended), at least 3 s after the start of the
+last read, or when a hidden tab that missed one is shown again. Reads of a sandbox never overlap,
+also across views that stop and start watching it; an announcement during a read brings one more
+read after it. A pull request Yulius recorded as merged reads merged even while GitHub still lists
+it open ([decision 0087](decisions/0087-pull-request-changes-are-announced.md)).
 Sign-out removes the notification history, the drafts and the pull requests; an expired session
 removes the pull requests too.
 

@@ -17,11 +17,12 @@ opens and merges them, reconciles them with GitHub and runs their checks), but s
 ## Decision
 
 The event stream carries `pulls.updated { sandbox_id }`, addressed to the sandbox's viewers. The
-server publishes it when a task's delivery stage moves (`dlv_transition`, the only writer of the
-stage) and when a Yulius CI run of the sandbox is queued, starts or ends (`ci_publish`). The
+server publishes it when a task's delivery stage moves (`dlv_transition`, through which every
+stage write of `yulius-app` goes) and when a Yulius CI run of the sandbox is queued, starts or ends (`ci_publish`). The
 browser reads the overview again when it watches that sandbox: at once while in view, or when the
-tab is shown again. Reads of a sandbox never overlap; an announcement during a read brings one
-more read after it. The minute poll stays for changes Yulius does not see.
+tab is shown again, and at least 3 s after the start of its last read. Reads of a sandbox never
+overlap; an announcement during a read brings one more read after it. A pull request Yulius
+recorded as merged reads merged even while GitHub still lists it open. The minute poll stays for changes Yulius does not see.
 
 ## Alternatives
 
@@ -36,8 +37,6 @@ more read after it. The minute poll stays for changes Yulius does not see.
 
 ## Consequences
 
-A merge, an opened pull request or a finished CI run reaches every watching browser within one
-or two overview reads (seconds). Each announcement costs at most one overview read per watching
-browser in view, as one poll does, and a burst of them makes at most two reads: the one it
-started and one after it. A hidden tab reads nothing until it is shown. A merge on GitHub outside
+A merge, an opened pull request or a finished CI run reaches every watching browser within
+seconds. Announcements cost at most one overview read per 3 s per watching browser in view. A hidden tab reads nothing until it is shown. A merge on GitHub outside
 Yulius is seen at the reconcile loop's next pass or at the next poll, whichever is first.

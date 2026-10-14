@@ -11,9 +11,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   state came live, its pull request only from the Git overview read every minute, never while the
   tab was hidden. The server now publishes `pulls.updated` to a sandbox's viewers when a delivery
   stage moves (opened, merged, reconciled with GitHub, by any path) and when a Yulius CI run is
-  queued, starts or ends; the browser reads the overview again at once, or when a hidden tab is
-  shown again. Reads of a sandbox no longer overlap, and a change announced during a read brings
-  one more read after it, so an older read never has the last word.
+  queued, starts or ends; the browser reads the overview again within seconds (at most one such
+  read per 3 s), or when a hidden tab is shown again. Reads of a sandbox no longer overlap, and a
+  change announced during a read brings one more read after it, so an older read never has the
+  last word. A pull request Yulius recorded as merged reads merged even while GitHub's list, read
+  just after the merge, still says open.
 - "Update now" works again with the GitHub App (SPEC-107, task #92, #423). GitHub now issues
   installation tokens of about 520 characters (`ghs_<APPID>_<JWT>`). The update helper refused
   anything over 255 as "the token is malformed"; it now accepts up to 4096 of the same characters.

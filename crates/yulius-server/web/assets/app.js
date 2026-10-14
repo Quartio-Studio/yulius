@@ -73,7 +73,7 @@ const ADMIN_PAGES = {
 function createApp(root, transport) {
   let expiredHandled = false;
   const api = createApi(transport, { onUnauthenticated: () => sessionExpired() });
-  const store = createStore(api);
+  const store = createStore(api, { pullGapMs: transport.pullGapMs });
   let shell = null;
   let centerView = null;
   let currentRoute = null;

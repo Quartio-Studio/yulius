@@ -188,12 +188,12 @@ test('a merge Yulius announces reaches the row at once', async ({ app, browser, 
   await expect(screen.getByRole('region', 'Done').getByRole('link', /Improve the code/)).toBeVisible();
   await expect(chip520(browser)).toHaveAttribute('title', 'Pull request #520 · open · checks running');
   await mocked(browser, (m) => m.changePull('sb_studio', 520, { state: 'merged' }));
-  // Well before the next minute's read.
-  await expect(chip520(browser)).toHaveAttribute('title', 'Pull request #520 · merged', { timeout: 3_000 });
+  // Within the 3 s between announced reads, well before the next minute's read.
+  await expect(chip520(browser)).toHaveAttribute('title', 'Pull request #520 · merged', { timeout: 10_000 });
 });
 
 test('an announcement during a read is read again after it', async ({ app, browser }) => {
-  await app.open(mock('/s/studio'));
+  await app.open(mock('/s/studio', '&pullgap=0'));
   await expect(chip520(browser)).toHaveAttribute('title', /checks running/);
   // A read starts before the merge and answers after it; the merge's announcement comes meanwhile.
   const before = await handledSoFar(browser, 'Improve the code, read');
@@ -211,7 +211,7 @@ test('an announcement during a read is read again after it', async ({ app, brows
 });
 
 test('a hidden tab reads nothing on an announcement and catches up when shown', async ({ app, browser }) => {
-  await app.open(mock('/s/studio'));
+  await app.open(mock('/s/studio', '&pullgap=0'));
   await expect(chip520(browser)).toHaveAttribute('title', /checks running/);
   const before = await handledSoFar(browser, 'Improve the code, shown');
   await browser.evaluate(() => {
@@ -228,4 +228,30 @@ test('a hidden tab reads nothing on an announcement and catches up when shown', 
     document.dispatchEvent(new Event('visibilitychange'));
   });
   await expect(chip520(browser)).toHaveAttribute('title', 'Pull request #520 · merged', { timeout: 3_000 });
+});
+
+test('announced reads of a sandbox keep their gap', async ({ app, browser }) => {
+  // A minute between announced reads: what this test sees in seconds stays apart.
+  await app.open(mock('/s/studio', '&pullgap=60000'));
+  await expect(chip520(browser)).toHaveAttribute('title', /checks running/);
+  const before = await handledSoFar(browser, 'Improve the code, before');
+  // A push: its run queued, started and ended, a superseded run cancelled.
+  await mocked(browser, (m) => { for (let i = 0; i < 4; i += 1) m.announcePulls('sb_studio'); });
+  expect(await handledSoFar(browser, 'Improve the code, after')).toBe(before);
+});
+
+test('watching a sandbox again during its read starts no second read', async ({ app, browser }) => {
+  await app.open(mock('/s/studio', '&pullgap=0'));
+  await expect(chip520(browser)).toHaveAttribute('title', /checks running/);
+  const before = await handledSoFar(browser, 'Improve the code, before');
+  await mocked(browser, (m) => { m.holdGitReads = true; m.announcePulls('sb_studio'); });
+  await expect.poll(() => mocked(browser, (m) => m.gitReads())).toBe(1);
+  // To another sandbox and back while studio's read is held: product reads once, studio waits for
+  // its read in flight.
+  await browser.evaluate(() => { location.hash = '#/s/product'; });
+  await expect(browser.locator('.task-list .task-row').filter({ hasText: 'Invoice PDF export' })).toBeVisible();
+  await browser.evaluate(() => { location.hash = '#/s/studio'; });
+  expect(await handledSoFar(browser, 'Improve the code, back')).toBe(before + 2);
+  await mocked(browser, (m) => { m.holdGitReads = false; m.releaseGit(); });
+  await expect(chip520(browser)).toHaveAttribute('title', /checks running/);
 });

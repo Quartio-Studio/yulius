@@ -1311,6 +1311,7 @@ route('POST', `/api/sandboxes/${ID}/delivery/promote`, ({ db, p }) => {
     task.delivery = { ...task.delivery, stage: production.length ? 'promoted' : 'production_done', environment: null };
     touch(db, task);
   }
+  announcePulls(db, sandbox.id);
   return { result: 'promoted', sha: 'e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3' };
 });
 
@@ -3942,6 +3943,8 @@ export function createMockTransport(params) {
   notesOf(db);
   return {
     kind: 'mock',
+    // `pullgap=<ms>`: the store's least time between announced pull request reads (SPEC-108).
+    pullGapMs: params.has('pullgap') ? Number(params.get('pullgap')) : undefined,
     // Like window.fetch, an aborted signal (a timeout, a view that went away) rejects the request.
     fetch: (url, init = {}) => {
       if (init.keepalive) db.keepaliveRequests.push(url);

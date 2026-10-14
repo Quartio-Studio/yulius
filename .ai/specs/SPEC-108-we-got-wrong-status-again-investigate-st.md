@@ -63,9 +63,10 @@ state with a pull request read from minutes before.
 | PRL-001 | The event stream carries `pulls.updated { sandbox_id }`, addressed to the sandbox (only people who may view it receive it). It says the sandbox's pull requests may have changed; it carries no pull request data. | `delivery::pull_request_changes_are_announced_to_the_sandbox`, `local_ci::a_run_announces_its_pull_requests` (the envelope's sandbox) |
 | PRL-002 | The server publishes it whenever a task's delivery stage moves (a pull request opened, merged, closed, reconciled with GitHub, an environment or promotion step), by any path: a person, an agent's tool, an armed merge, a merge train, the reconcile loop, a playground merge. A read that finds the stage unchanged publishes nothing. | `delivery::pull_request_changes_are_announced_to_the_sandbox` |
 | PRL-003 | The server publishes it whenever a Yulius CI run of the sandbox is queued, starts or ends (its commit status is published), except a merge train's run, which is no pull request's head. | `local_ci::a_run_announces_its_pull_requests` |
-| PRL-004 | A browser that watches the sandbox and is in view reads its pull requests again on the event, at once. | `pulls.e2e.ts` "a merge Yulius announces reaches the row at once" |
-| PRL-005 | A read never answers with older news than the newest change it was told about: reads of a sandbox do not overlap, and events during a read make one more read after it (a burst makes at most two reads). | `pulls.e2e.ts` "an announcement during a read is read again after it" |
-| PRL-006 | A hidden tab reads nothing on the event (PERF-12 stays), and reads at once when shown again, whatever the 15 s spacing, if an event came while it was hidden. | `pulls.e2e.ts` "a hidden tab catches up when shown" |
+| PRL-004 | A browser that watches the sandbox and is in view reads its pull requests again on the event: at once, or 3 s after the start of its last read when that was more recent (one timer collects the events meanwhile), so a busy sandbox costs at most one read per 3 s per tab instead of reads back to back. | `pulls.e2e.ts` "a merge Yulius announces reaches the row at once", "a burst of announcements makes one read" |
+| PRL-005 | A read never answers with older news than the newest change it was told about: reads of a sandbox do not overlap, also when a view stops watching it and another starts during a read, and events during a read make one more read after it. | `pulls.e2e.ts` "an announcement during a read is read again after it", "watching a sandbox again during its read starts no second read" |
+| PRL-006 | A hidden tab reads nothing on the event (PERF-12 stays), and reads at once when shown again, whatever the 15 s spacing, if an event came while it was hidden. `resync` (lost events, a restart) still reads at once, hidden or not: the server's counts start from such a read (#147). | `pulls.e2e.ts` "a hidden tab reads nothing on an announcement and catches up when shown" |
+| PRL-007 | The Git overview reads a pull request that a task's delivery record says is merged (its stage past the merge, same number) as merged, even while GitHub's list of open pull requests, read just after the merge, still has it. | `delivery::a_merged_pull_request_github_still_lists_as_open_reads_merged` |
 
 ## Plan
 
@@ -85,9 +86,11 @@ state with a pull request read from minutes before.
   which shows the merged pull request.
 - With the tab hidden, an announcement makes no read; showing the tab reads at once even 1 s after
   the last read.
-- In the integration tests, opening, merging and a GitHub-side close of a pull request each
-  publish `pulls.updated` for the sandbox; a status read that changes nothing publishes nothing;
-  a Yulius CI run publishes it when queued and when it ends.
+- In the integration tests, opening a pull request, merging it and a merge on GitHub that the
+  reconcile loop finds each publish `pulls.updated` for the sandbox once; a status read that
+  changes nothing publishes nothing; each Yulius CI run publishes it when queued, when it starts
+  and when it ends (exactly, even with GitHub refusing the commit status); a pull request
+  recorded as merged reads merged while GitHub still lists it open.
 
 ## Test plan
 
@@ -110,8 +113,17 @@ state with a pull request read from minutes before.
   The event costs one overview read per watching browser per change, which is what a poll costs,
   and bursts collapse into one read. ADR-0087.
 - **Published at the two places that change pull request facts**: the delivery stage write
-  (`dlv_transition`, wrapping the store's compare-and-set) and the CI commit status publication
-  (`ci_publish`). New paths that move a stage or a run go through them already.
+  (`dlv_transition`, wrapping the store's compare-and-set; every stage write of `yulius-app` goes
+  through it: opening, merging, reconciling, environments and promotion, playground merges) and
+  the CI commit status publication (`ci_publish`, on a run's queueing, start and end; the status
+  retry loop announces nothing, as it changes no run). The tests cover opening, merging and
+  reconciling; the other stage writes share the wrapper.
+- **At most one announced read per 3 s per tab.** A push brings several events (the run queued,
+  started, ended, a superseded run cancelled), and each read costs a GitHub list and Git commands
+  per task branch. A 3 s gap keeps a busy sandbox from reading back to back and still shows a
+  change within seconds.
+- **Yulius's own merge record wins over GitHub's list** of open pull requests (PRL-007): GitHub's
+  lists are eventually consistent, and the read an announced merge brings comes right after it.
 - **The polling stays** (60 s while in view) for changes Yulius does not see: a push to GitHub
   without a Yulius CI run, a merge on GitHub before the reconcile loop's next pass, another CI.
 - **No change to the rule of `taskInfo` and `AttentionFacts::group`.** Its order is right for
