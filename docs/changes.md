@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- The terminal's mouse is the program's when it asks for it, as in a native terminal (SPEC-098,
+  ADR-0079, task #83). The "Mouse: select text · send to app" chip is gone. In Claude Code's
+  full-screen view, clicks, drags, the wheel and right-clicks reach Claude Code, and Shift-drag
+  (Option-drag on macOS) selects text; the same key brings the Copy and Paste menu. A read-only
+  viewer, who cannot send anything, keeps the mouse for selection. A press beside another viewer's
+  grid reaches no program.
 - A task waiting for its checks or merge shows a still, muted branch (SPEC-100, ADR-0080, task #85,
   #393). The "Waiting for checks or merge" state took Working's tone so that it notified nobody,
   and that tone turned its git-branch icon green and spun it like the Working ring. It now takes
