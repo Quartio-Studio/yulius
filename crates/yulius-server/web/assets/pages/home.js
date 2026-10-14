@@ -6,7 +6,7 @@
 import { h, icon, badge, setChildren, keepFocus, coalesce, skeleton } from '../dom.js';
 import { relLong, dateTime } from '../format.js';
 import { allows } from '../status.js';
-import { href } from '../router.js';
+import { href, placeFor } from '../router.js';
 import { BRAND } from '../brand.js';
 import { openSandboxDialog } from '../actions.js';
 import { folderDropZone } from '../playground.js';
@@ -52,7 +52,7 @@ export function mountHomePage(ctx) {
       h('div', { class: 'home-card-head' },
         h('span', { class: 'item-icon', 'aria-hidden': 'true' }, icon('folder', { size: 18 })),
         h('div', { class: 'home-card-titles' },
-          h('h2', { class: 'home-card-name', id: nameId }, h('a', { href: href(path), dataset: { route: path } }, sandbox.name)),
+          h('h2', { class: 'home-card-name', id: nameId }, h('a', { href: href(path), dataset: { route: path, restore: 'sandbox' } }, sandbox.name)),
           sandbox.playground
             ? h('span', { class: 'home-card-repo', title: 'Its Git stays on this server; nothing is pushed to GitHub' }, icon('folder', { size: 12 }), h('span', { class: 'ellipsis' }, 'Playground · local Git on this server'))
             : repo ? h('span', { class: 'home-card-repo', title: repo }, icon('github', { size: 12 }), h('span', { class: 'ellipsis' }, repo)) : null),
@@ -65,7 +65,7 @@ export function mountHomePage(ctx) {
         count('clock', counts.queued || 0, 'queued', 'queued', '')),
       h('div', { class: 'home-activity', title: newest ? dateTime(newest) : null }, activity),
       h('div', { class: 'home-card-actions' },
-        h('a', { class: 'btn btn-sm', href: href(path), dataset: { route: path }, 'aria-label': `Open ${sandbox.name}` }, 'Open'),
+        h('a', { class: 'btn btn-sm', href: href(path), dataset: { route: path, restore: 'sandbox' }, 'aria-label': `Open ${sandbox.name}` }, 'Open'),
         h('button', {
           type: 'button',
           class: 'btn btn-sm btn-primary',
@@ -77,7 +77,7 @@ export function mountHomePage(ctx) {
     // A click anywhere on the card opens the sandbox (its links and buttons keep their own action).
     article.addEventListener('click', (event) => {
       if (event.defaultPrevented || event.target.closest('a, button')) return;
-      ctx.navigate(path);
+      ctx.navigate(placeFor(path, 'sandbox'));
     });
     return article;
   }

@@ -7,7 +7,7 @@
 // actions.js (task actions, dialogs), pages/*.js (pages), mock.js (?mock=1 backend).
 
 import { createApi, realTransport, enc } from './api.js';
-import { initRouter, onRoute, navigate, currentLocation, refreshRoute, parseAppLink, href } from './router.js';
+import { initRouter, onRoute, navigate, currentLocation, refreshRoute, parseAppLink, href, forgetPlace, forgetPlaces } from './router.js';
 import { createStore, readJson, writeJson } from './store.js';
 import { applyTheme, PHONE } from './theme.js';
 import { BRAND } from './brand.js';
@@ -123,8 +123,10 @@ function createApp(root, transport) {
       await signedIn(me);
     } catch (error) {
       if (error.status === 401) {
-        // A session found expired at load: what it kept for the next page load goes (SPEC-104).
+        // A session found expired at load: what it kept for the next page load goes (SPEC-104), and
+        // where it left each sandbox (SPEC-113).
         store.forgetPulls();
+        forgetPlaces();
         renderSignIn();
       } else fatal(error);
     }
@@ -230,6 +232,7 @@ function createApp(root, transport) {
     // The pull requests kept for the next page load go with the session, signed out or expired
     // (SPEC-104); a read answering later finds no user and writes nothing to storage.
     store.forgetPulls();
+    forgetPlaces(); // and where each sandbox was left (SPEC-113)
     unsubscribers.splice(0).forEach((off) => off());
     document.body.classList.remove('drawer-open');
   }
@@ -605,6 +608,8 @@ function createApp(root, transport) {
 
   /** Task #n of a sandbox does not exist (deleted, or a wrong link). */
   function missingTask(sandbox, number) {
+    // Not the sandbox's place to come back to: its tab opens the composer (SPEC-113 KST-004).
+    forgetPlace(currentLocation().full);
     const tasks = `/s/${encodeURIComponent(sandbox.slug)}/tasks`;
     missing(`missing-task:${sandbox.id}:${number}`, { title: 'Task not found', text: `There is no task #${number} in ${sandbox.name}. It may have been deleted.`, back: ['Tasks', tasks] });
   }
