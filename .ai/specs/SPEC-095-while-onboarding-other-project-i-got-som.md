@@ -67,12 +67,12 @@ there does. The Superagent opens straight on its prompt.
 
 | ID | Requirement | Verification |
 | --- | --- | --- |
-| PMC-001 | Before a task's run starts and before a Superagent starts, Yulius reads the sandbox repository's `.mcp.json`. It reads at most 256 KiB and at most 50 servers. Each server whose name no instance or sandbox server of that sandbox has (case-insensitive, `-` and `_` alike) is added as an enabled sandbox MCP server, audited `mcp.imported` by `yulius`. A server already there is never changed, so a server turned off in Yulius stays off. | `pool_supervision.rs`, `cockpit.rs`, unit tests |
-| PMC-002 | Mapping: stdio keeps `command`, `args` and `env`; http keeps `url` and `headers`. An env or header value that is exactly `${VAR}` or `${VAR:-default}` becomes `${secret:VAR}`; `Bearer ${VAR}` becomes `Bearer ${secret:VAR}`; any other value is stored as written (sealed). `sse` servers, and servers whose name or fields Yulius does not accept, are skipped with a warning. | unit tests in `mcp_config/project.rs` |
+| PMC-001 | Before a task's run starts and before a Superagent starts, Yulius reads the sandbox repository's `.mcp.json`. It reads only a regular file of the repository (no link out of it, no FIFO or directory, opened without blocking, as the other agent-written files the server reads outside containment, #70), at most 256 KiB and at most 50 servers. Each server whose name no instance or sandbox server of that sandbox has (case-insensitive, `-` and `_` alike) is added as an enabled sandbox MCP server, audited `mcp.imported` by `yulius`. A server already there is never changed, so a server turned off in Yulius stays off. | `pool_supervision.rs`, `cockpit.rs`, unit tests |
+| PMC-002 | Mapping: stdio keeps `command`, `args` and `env`; http keeps `url` and `headers` (runs still get only `Authorization: Bearer`, MCP-003; others are kept and a warning says so). Agents can write the file, so it never chooses which command receives a secret's value (VLT-004/006, ADR-20). An env or header value that is exactly `${VAR}` or `${secret:VAR}`, also after `Bearer `, becomes the agent secret's placeholder `yulius-secret-VAR`, which the egress proxy replaces on the secret's bound hosts only. `${VAR:-default}` becomes the placeholder when VAR is an agent secret of the sandbox, else the default. A VAR that is no valid agent secret name is left out. A stored value is never a `${secret:…}` reference. Any other value is stored as written (sealed). `sse` servers, and servers whose name or fields Yulius does not accept, are skipped with a warning. | unit tests in `mcp_config/project.rs`, `pool_supervision.rs` |
 | PMC-003 | A missing, unreadable, invalid or oversized `.mcp.json`, or a server the store refuses (limit, a concurrent import of the same name), never stops a run or a Superagent; a warning is logged and the rest goes on. | unit tests, `cockpit.rs` |
-| PMC-004 | The Superagent starts with `--settings '{"disabledMcpjsonServers":[…]}'` naming every server in the repository's `.mcp.json` (also skipped ones), so Claude Code never asks about them; the names are JSON in one argv element, never through a shell. Without such servers it starts as before, with no `--settings`. This amends MGT-004 ("no settings") for this one key. | harness unit test, `cockpit.rs` |
+| PMC-004 | The Superagent starts with `--settings '{"disabledMcpjsonServers":[…]}'` naming every server in the repository's `.mcp.json` (also skipped ones, up to 64 KiB of names, since one argv element is bounded at 128 KiB), so Claude Code never asks about them; the names are JSON in one argv element, never through a shell. Without such servers it starts as before, with no `--settings`. This amends MGT-004 ("no settings") for this one key. | harness unit test, `cockpit.rs` |
 | PMC-005 | Task runs are unchanged: `--strict-mcp-config` with the Yulius servers, which now include the imported ones with their secret references resolved (MCP-003, MCP-004). | `pool_supervision.rs` |
-| PMC-006 | An MCP server's secret values reach a run in variables of their own: `YULIUS_MCP_<SERVER>_<VAR>` for a stdio server's variable, and `YULIUS_MCP_<SERVER>_TOKEN` for an HTTP bearer as before. A name that two values would share gets a numbered suffix. The run's `mcp.json` maps each variable back to the server's own name, so an agent secret's placeholder of that name stays in the agent's environment and the run starts. | wiring unit test, `pool_supervision.rs` |
+| PMC-006 | An MCP server's secret values reach a run in variables of their own: `YULIUS_MCP_<SERVER>_<VAR>` for a stdio server's variable, and `YULIUS_MCP_<SERVER>_TOKEN` for an HTTP bearer as before. A name is cut to 120 characters (the harness takes at most 128), and a name that two values would share gets a numbered suffix. The run's `mcp.json` maps each variable back to the server's own name, so an agent secret's placeholder of that name stays in the agent's environment and the run starts. | wiring unit test, `pool_supervision.rs` |
 
 ## Plan
 
@@ -86,8 +86,11 @@ there does. The Superagent opens straight on its prompt.
 ## Acceptance criteria
 
 - A sandbox repository with a `.mcp.json` listing a stdio server (`env` `${APIFY_TOKEN}`) and an
-  http server: a task's first run has both in its `--mcp-config` file, the stdio one with
-  `APIFY_TOKEN` set from the agent secret of that name, and both are listed as sandbox servers.
+  http server (`Bearer ${secret:APIFY_TOKEN}`): a task's first run has both in its `--mcp-config`
+  file, both with the placeholder of the agent secret `APIFY_TOKEN` and never its value, and both
+  are listed as sandbox servers and audited `mcp.imported`.
+- A `.mcp.json` that is a link out of the repository, a FIFO or a directory imports nothing and
+  never blocks.
 - The Superagent in that sandbox starts with `--settings` naming both, and without `--settings`
   in a repository with no `.mcp.json`.
 - A server turned off in Yulius stays off after the next run, and an invalid `.mcp.json` starts
@@ -96,16 +99,24 @@ there does. The Superagent opens straight on its prompt.
 ## Test plan
 
 - Unit (`crates/yulius-app/src/mcp_config/project.rs`): stdio, http and typeless servers,
-  `${VAR}`, `${VAR:-x}` and `Bearer ${VAR}` mapped, literal values kept, `sse` and invalid
-  names skipped but named, invalid JSON, a non-object `mcpServers`, more than 50 servers.
+  `${VAR}`, `${VAR:-x}`, `${secret:VAR}` and `Bearer ${VAR}` mapped to placeholders or defaults,
+  no stored value a secret reference, literal values kept, `sse` and invalid names skipped but
+  named, invalid JSON, a non-object `mcpServers`, more than 50 servers, names bounded for argv, a
+  link out of the repository, a FIFO and a directory.
+- Wiring unit (`crates/yulius/src/wiring/harness.rs`): every MCP value gets a variable of its own,
+  within 128 characters for a 64-character server and a 128-character variable.
 - Harness unit (`crates/yulius-harness/tests/launch.rs`): `plan_cockpit` with project server names
   adds one `--settings` JSON element with `disabledMcpjsonServers`; without names, none.
 - Integration (`crates/yulius/tests/pool_supervision.rs`): the run of a task in a repository with
-  a `.mcp.json` gets the imported servers and the secret; a server turned off before the run stays
+  a `.mcp.json` gets the imported servers with the placeholder, never the value, even for a
+  `${secret:…}` the file names; the imports are audited; a server turned off before the run stays
   off.
 - Integration (`crates/yulius/tests/cockpit.rs`): the Superagent's argv carries the settings and
   the sandbox lists the imported servers; an invalid `.mcp.json` still starts it.
-- Each test is written first and fails on `dev` (no import, no `--settings`).
+- Each test is written first and fails on `dev` (no import, no `--settings`). The review's
+  findings (clear values for file-defined servers, the file read through links and FIFOs, long
+  variable names) each got a regression test with its fix; the run test's `${secret:…}` header
+  would carry the clear value under the first version's `${secret:VAR}` mapping.
 - Gates: `scripts/dev ci`.
 
 ## Decisions

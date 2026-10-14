@@ -8,9 +8,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 - A repository's `.mcp.json` no longer stops the Superagent on Claude Code's "N new MCP servers
   found in this project" dialog (SPEC-095, ADR-0078, #391). Before each task run and Superagent
-  start, Yulius adds the file's servers that the sandbox lacks to its MCP servers, with `${VAR}`
-  values read as the agent secret VAR, so every task gets them. The Superagent starts rejecting
-  them through `--settings`. A server already configured is left as it is, so one turned off stays
+  start, Yulius adds the file's servers that the sandbox lacks to its MCP servers, so every task
+  gets them. Since agents can write the file, a `${VAR}` value becomes the placeholder of the agent
+  secret VAR, which the egress proxy replaces on the secret's bound hosts; the file never gets a
+  clear value. The Superagent starts rejecting the file's servers through `--settings`, including
+  ones a person had approved there (#395 will give it Yulius's servers). A server already configured is left as it is, so one turned off stays
   off. An MCP server's values now reach a run in `YULIUS_MCP_<SERVER>_<VAR>` variables. Before, one
   named like an agent secret, such as `APIFY_TOKEN`, clashed with that secret's placeholder, and
   every run of the sandbox failed to start.

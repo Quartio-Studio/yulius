@@ -768,11 +768,14 @@ fn mcp_servers_reach_every_run_on_every_subscription() -> TestResult {
 }
 
 /// SPEC-095 PMC-001/002/005: the servers of the repository's `.mcp.json` join the sandbox's MCP
-/// servers before the run, with `${VAR}` read as the agent secret VAR, and reach the run like any
-/// server configured in Yulius. One already configured (here turned off) is left as it is.
+/// servers before the run, audited, and reach the run like any server configured in Yulius. One
+/// already configured (here turned off) is left as it is. Agents can write the file, so a variable
+/// it names, even as `${secret:…}`, reaches the server as the agent secret's placeholder, never as
+/// its value: the egress proxy puts the value in on the secret's bound hosts only (ADR-20).
 #[test]
 fn a_repository_mcp_json_reaches_the_run_through_yulius() -> TestResult {
-    const APIFY_TOKEN: &str = "synthetic-apify-token-95";
+    const APIFY_TOKEN: &str = "synthetic-apify-token-95-0123456789abcdef";
+    const PLACEHOLDER: &str = "yulius-secret-APIFY_TOKEN";
     let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
     let (_dir, data) = temp()?;
     let rt = runtime()?;
@@ -800,7 +803,7 @@ fn a_repository_mcp_json_reaches_the_run_through_yulius() -> TestResult {
                 "apify": {"command": "npx", "args": ["-y", "@apify/actors-mcp-server"],
                           "env": {"APIFY_TOKEN": "${APIFY_TOKEN}"}},
                 "pipedream-gmail": {"type": "http", "url": "https://mcp.pipedream.test/gmail",
-                                    "headers": {"Authorization": "Bearer ${PIPEDREAM_TOKEN}"}},
+                                    "headers": {"Authorization": "Bearer ${secret:APIFY_TOKEN}"}},
                 "Linear": {"type": "stdio", "command": "linear-mcp",
                            "env": {"LINEAR_KEY": "from-the-file"}}
             }}"#,
@@ -843,16 +846,29 @@ fn a_repository_mcp_json_reaches_the_run_through_yulius() -> TestResult {
             servers["pipedream-gmail"]["url"],
             "https://mcp.pipedream.test/gmail"
         );
-        // No agent secret answers to PIPEDREAM_TOKEN: the server comes without the header.
-        assert!(servers["pipedream-gmail"]["headers"].is_null(), "{text}");
+        assert_eq!(
+            servers["pipedream-gmail"]["headers"]["Authorization"],
+            "Bearer ${YULIUS_MCP_PIPEDREAM_GMAIL_TOKEN}"
+        );
         assert!(!text.contains(APIFY_TOKEN));
         let shown = screen(&app, &id);
         assert!(
             shown.contains(&format!(
                 "ENV YULIUS_MCP_APIFY_APIFY_TOKEN=set len={}",
-                APIFY_TOKEN.len()
+                PLACEHOLDER.len()
             )),
             "{shown}"
+        );
+        let record = app.deps.store.sandbox(&sandbox).await?.ok_or("sandbox")?;
+        let attached = format!("{:?}", app.mcp_attachments(&record).await?);
+        assert!(!attached.contains(APIFY_TOKEN), "{attached}");
+        assert!(
+            attached.contains(&format!("(\"APIFY_TOKEN\", \"{PLACEHOLDER}\")")),
+            "{attached}"
+        );
+        assert!(
+            attached.contains(&format!("bearer: Some(\"{PLACEHOLDER}\")")),
+            "{attached}"
         );
         assert!(
             shown.contains("ENV YULIUS_MCP_LINEAR_LINEAR_KEY=unset"),
@@ -870,6 +886,22 @@ fn a_repository_mcp_json_reaches_the_run_through_yulius() -> TestResult {
                 ("apify", true),
                 ("linear", false),
                 ("pipedream-gmail", true)
+            ]
+        );
+        let db = rusqlite::Connection::open(data.join("yulius.db"))?;
+        let mut audited: Vec<(String, String)> = db
+            .prepare("SELECT actor, detail FROM audit_log WHERE action = 'mcp.imported'")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<_, _>>()?;
+        audited.sort_unstable();
+        assert_eq!(
+            audited,
+            [
+                ("yulius".to_owned(), "apify (sandbox, stdio)".to_owned()),
+                (
+                    "yulius".to_owned(),
+                    "pipedream-gmail (sandbox, http)".to_owned()
+                ),
             ]
         );
         stop(&app, &id).await?;

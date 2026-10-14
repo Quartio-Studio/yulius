@@ -603,7 +603,6 @@ async fn a_resume_that_fails_at_once_starts_fresh_the_next_time() -> TestResult 
     Ok(())
 }
 
-/// The run directories of shells and Cockpits on disk.
 /// SPEC-095 PMC-001/003/004: a repository with a `.mcp.json` (as the onboarded project with
 /// supabase, apify and pipedream-gmail): its servers join the sandbox's MCP servers, and the
 /// Cockpit starts with Claude Code rejecting every one of them, so it never asks the person. An
@@ -682,6 +681,7 @@ async fn a_cockpit_takes_the_repository_mcp_servers_into_yulius_without_asking()
     Ok(())
 }
 
+/// The run directories of shells and Cockpits on disk.
 fn run_dirs(f: &Fixture) -> usize {
     std::fs::read_dir(f.data.join("shells"))
         .map(|entries| entries.count())

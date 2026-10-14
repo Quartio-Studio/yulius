@@ -46,16 +46,22 @@ fn io(err: std::io::Error) -> AppError {
     AppError::internal(err)
 }
 
+/// Longest MCP variable name before its numbered suffix: the harness takes names of at most 128
+/// characters, and a server name (64) and a variable (128) could make one of 204.
+const MCP_VAR_BASE_LEN: usize = 120;
+
 /// The run's MCP servers and the secret environment holding their values. Each value travels in a
 /// variable of its own, `YULIUS_MCP_<SERVER>_<VAR>` (`…_TOKEN` for a bearer), never under the
 /// server's own name: that name may be an agent secret's placeholder in the agent's environment, or
-/// another server's variable (SPEC-095). Names that still meet get a numbered suffix.
+/// another server's variable (SPEC-095). Agent secret names cannot start with `YULIUS_`. A name is
+/// cut to [`MCP_VAR_BASE_LEN`] characters, and names that still meet get a numbered suffix.
 fn mcp_specs(mcp: &[McpAttachment]) -> (Vec<McpServerSpec>, Vec<(String, String)>) {
     let mut secrets: Vec<(String, String)> = Vec::new();
     let mut variable = |server: &str, key: &str, value: &str| {
-        let base = format!("YULIUS_MCP_{server}_{key}")
+        let mut base = format!("YULIUS_MCP_{server}_{key}")
             .to_ascii_uppercase()
             .replace('-', "_");
+        base.truncate(MCP_VAR_BASE_LEN);
         let mut var = base.clone();
         let mut n = 2;
         while secrets.iter().any(|(k, _)| *k == var) {
@@ -480,5 +486,47 @@ mod tests {
             &servers[2].transport,
             McpTransport::Http { bearer_env: Some(var), .. } if var == "YULIUS_MCP_A_B_TOKEN_2"
         ));
+    }
+
+    /// The longest server name and variable still make names the harness takes, so the run
+    /// starts.
+    #[test]
+    fn mcp_variable_names_stay_within_the_harness_bound() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let name = "s".repeat(64);
+        let key = format!("K{}", "_".repeat(127));
+        let mcp: Vec<McpAttachment> = (0..12)
+            .map(|i| McpAttachment::Stdio {
+                name: format!("{}{i:02}", &name[..62]),
+                command: "x".into(),
+                args: vec![],
+                env: vec![(key.clone(), "v".into())],
+            })
+            .collect();
+        let (servers, secrets) = mcp_specs(&mcp);
+        assert_eq!(secrets.len(), 12);
+        assert!(
+            secrets.iter().all(|(var, _)| var.len() <= 128),
+            "{secrets:?}"
+        );
+        let request = launch::LaunchRequest {
+            harness: Harness::ClaudeCode,
+            mode: LaunchMode::New {
+                session_id: None,
+                prompt: None,
+            },
+            worktree: PathBuf::from("/w"),
+            sandbox_home: PathBuf::from("/h"),
+            run_dir: PathBuf::from("/r"),
+            model: None,
+            effort: None,
+            contained: false,
+            yulius_exe: PathBuf::from("/bin/yulius"),
+            yulius_url: "http://127.0.0.1:1".into(),
+            mcp_servers: servers,
+            credential: Credential::ClaudeOauthToken(HSecret::new("token".into())),
+        };
+        launch::plan_launch(&request)?;
+        Ok(())
     }
 }

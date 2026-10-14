@@ -35,8 +35,9 @@ watching, steering and unblocking.
   panel follows it.
 - **MCP servers**: configured once for the instance or a sandbox (MCP page) and attached to every
   task run on every subscription, their secrets taken from the agent secrets. A repository's
-  `.mcp.json` servers join its sandbox's list by themselves (`${VAR}` read as the agent secret
-  VAR), and the Superagent never asks about them.
+  `.mcp.json` servers join its sandbox's list by themselves, with `${VAR}` becoming the agent
+  secret VAR's placeholder (the egress proxy swaps the value in on its bound hosts), and the
+  Superagent never asks about them.
 - **Sidebar**: the sandbox pages used every day (Tasks, Git, CI (tests), Secrets, Dashboard; the Superagent is on the right),
   then "More" for Sessions, Workflows, Skills, Automations and MCP, then the active tasks.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions

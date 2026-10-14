@@ -4,47 +4,57 @@
 //! Before a task's run and before a Superagent starts, each server of the sandbox repository's
 //! `.mcp.json` that the sandbox and the instance lack is added as a sandbox server, so it reaches
 //! every run like any server configured in Yulius. A server already configured is never changed:
-//! one turned off in Yulius stays off. Values naming an environment variable (`${VAR}`,
-//! `${VAR:-default}`, `Bearer ${VAR}`) become references to the agent secret of that name
-//! (`${secret:VAR}`, MCP-003). The Superagent gets every name in the file to reject, so Claude
-//! Code never asks about them. Nothing here stops a run: a file that cannot be read or a server
-//! that cannot be added is logged and skipped.
+//! one turned off in Yulius stays off. The Superagent gets every name in the file to reject, so
+//! Claude Code never asks about them. Nothing here stops a run: a file that cannot be read or a
+//! server that cannot be added is logged and skipped.
+//!
+//! Agents can write the file, so it never chooses which command receives a secret's value. A value
+//! naming a variable (`${VAR}`, `${VAR:-default}`, `${secret:VAR}`, `Bearer ${VAR}`) becomes the
+//! agent secret's placeholder, `yulius-secret-VAR`, as agents get it in their own environment: the
+//! egress proxy puts the value in on the secret's bound hosts only (SPEC-002 ADR-20). A stored
+//! value is never a `${secret:…}` reference, which would hand the value itself to the server.
+//! Only a person changing the server on the MCP page can add one.
 
-use std::collections::{BTreeMap, HashSet};
-use std::io::{self, Read as _};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
 use serde_json::{Map, Value};
 use yulius_contracts::api::mcp::McpServerInput;
+use yulius_domain::vault::{SecretName, placeholder};
 
-use super::{MAX_SERVERS_PER_SCOPE, McpServerRecord, name_key, validate};
+use super::{MAX_SERVERS_PER_SCOPE, McpServerRecord, bearer_of, name_key, secret_ref, validate};
 use crate::context::App;
 use crate::error::AppResult;
+use crate::hooks::read_repo_doc;
 use crate::model::SandboxRecord;
 use crate::projects::blocking;
 
 /// File name of a repository's project MCP servers.
 pub const PROJECT_MCP_FILE: &str = ".mcp.json";
-/// Largest `.mcp.json` read; a larger one is ignored.
-pub const MAX_PROJECT_MCP_BYTES: u64 = 256 * 1024;
 /// Most servers taken from one `.mcp.json` (one scope's limit).
 pub const MAX_PROJECT_SERVERS: usize = MAX_SERVERS_PER_SCOPE as usize;
+/// Most bytes of server names handed to the Superagent: they travel in one argv element, which
+/// Linux bounds at 128 KiB.
+pub const MAX_PROJECT_NAME_BYTES: usize = 64 * 1024;
 /// Audit actor of an imported server.
 const IMPORT_ACTOR: &str = "yulius";
 
 /// The servers of one `.mcp.json`.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ProjectMcp {
-    /// Every server name in the file: Claude Code asks about each one.
+    /// The server names in the file (Claude Code asks about each), up to
+    /// [`MAX_PROJECT_NAME_BYTES`].
     pub names: Vec<String>,
     /// The servers Yulius can attach (stdio and http with fields it accepts), as sandbox servers.
     pub servers: Vec<McpServerInput>,
 }
 
-/// Parses `.mcp.json` text; `None` when it is not an object with an `mcpServers` object. Skipped
+/// Parses `.mcp.json` text; `None` when it is not an object with an `mcpServers` object.
+/// `agent_secrets` are the names of the agent secrets that apply to the sandbox: a
+/// `${VAR:-default}` value is the secret's placeholder when VAR is one, else the default. Skipped
 /// servers are logged and still named.
 #[must_use]
-pub fn parse_project_mcp(text: &str) -> Option<ProjectMcp> {
+pub fn parse_project_mcp(text: &str, agent_secrets: &BTreeSet<String>) -> Option<ProjectMcp> {
     let Ok(Value::Object(root)) = serde_json::from_str::<Value>(text) else {
         return None;
     };
@@ -52,13 +62,17 @@ pub fn parse_project_mcp(text: &str) -> Option<ProjectMcp> {
         return None;
     };
     let mut project = ProjectMcp::default();
+    let mut name_bytes = 0;
     for (name, server) in servers {
-        project.names.push(name.clone());
+        name_bytes += name.len() + 4;
+        if name_bytes <= MAX_PROJECT_NAME_BYTES {
+            project.names.push(name.clone());
+        }
         if project.servers.len() >= MAX_PROJECT_SERVERS {
             tracing::warn!(server = %name, "more than {MAX_PROJECT_SERVERS} servers in .mcp.json; the rest are not imported");
             continue;
         }
-        match server_input(name, server) {
+        match server_input(name, server, agent_secrets) {
             Some(input) if validate(&input).is_ok() => project.servers.push(input),
             _ => {
                 tracing::warn!(server = %name, "a .mcp.json server Yulius cannot attach (only stdio and http) is not imported");
@@ -70,7 +84,11 @@ pub fn parse_project_mcp(text: &str) -> Option<ProjectMcp> {
 
 /// One `.mcp.json` entry as a sandbox server: `type` stdio or http, or no type with a `command`
 /// (stdio) or a `url` (http).
-fn server_input(name: &str, server: &Value) -> Option<McpServerInput> {
+fn server_input(
+    name: &str,
+    server: &Value,
+    agent_secrets: &BTreeSet<String>,
+) -> Option<McpServerInput> {
     let server = server.as_object()?;
     let text = |key: &str| server.get(key).and_then(Value::as_str);
     let transport = match text("type") {
@@ -101,20 +119,30 @@ fn server_input(name: &str, server: &Value) -> Option<McpServerInput> {
                     .map(|a| a.as_str().map(str::to_owned))
                     .collect::<Option<_>>()?,
             };
-            input.env = secrets(server.get("env"))?;
+            input.env = values(name, server.get("env"), agent_secrets)?;
         }
         "http" => {
             input.url = Some(text("url")?.to_owned());
-            input.headers = secrets(server.get("headers"))?;
+            input.headers = values(name, server.get("headers"), agent_secrets)?;
+            if let Some(headers) = &input.headers {
+                let (_, ignored) = bearer_of(headers);
+                if !ignored.is_empty() {
+                    tracing::warn!(server = %name, headers = ?ignored, "runs get only an Authorization: Bearer header; the other .mcp.json headers are kept but not sent");
+                }
+            }
         }
         _ => return None,
     }
     Some(input)
 }
 
-/// An `env` or `headers` object with environment references turned into secret references;
-/// `None` when it is not an object of strings. Empty values are left out.
-fn secrets(map: Option<&Value>) -> Option<Option<BTreeMap<String, String>>> {
+/// An `env` or `headers` object with variables turned into placeholders; `None` when it is not an
+/// object of strings. Empty values, and values that cannot be stored safely, are left out.
+fn values(
+    server: &str,
+    map: Option<&Value>,
+    agent_secrets: &BTreeSet<String>,
+) -> Option<Option<BTreeMap<String, String>>> {
     let Some(map) = map else {
         return Some(None);
     };
@@ -122,66 +150,98 @@ fn secrets(map: Option<&Value>) -> Option<Option<BTreeMap<String, String>>> {
     let mut out = BTreeMap::new();
     for (key, value) in map {
         let value = value.as_str()?;
-        if !value.is_empty() {
-            out.insert(key.clone(), secret_value(value));
+        match file_value(value, agent_secrets) {
+            Some(value) if !value.is_empty() => {
+                out.insert(key.clone(), value);
+            }
+            Some(_) => {}
+            None => {
+                tracing::warn!(server = %server, key = %key, "a .mcp.json value names no valid agent secret; it is left out");
+            }
         }
     }
     Some((!out.is_empty()).then_some(out))
 }
 
-/// `${VAR}` or `${VAR:-default}` → `${secret:VAR}`, `Bearer ${VAR}` → `Bearer ${secret:VAR}`;
-/// anything else as written.
-fn secret_value(value: &str) -> String {
-    if let Some(var) = env_ref(value) {
-        return format!("${{secret:{var}}}");
-    }
-    if let Some((scheme, rest)) = value.split_once(' ')
+/// The stored form of a value from the file: a whole variable reference (also after `Bearer `)
+/// becomes the agent secret's placeholder, anything else stays as written. `None` when the
+/// reference names no valid agent secret, or when the result would still be a secret reference.
+fn file_value(value: &str, agent_secrets: &BTreeSet<String>) -> Option<String> {
+    let stored = if let Some(reference) = Reference::of(value) {
+        reference.stored(agent_secrets)?
+    } else if let Some((scheme, rest)) = value.split_once(' ')
         && scheme.eq_ignore_ascii_case("bearer")
-        && let Some(var) = env_ref(rest.trim())
+        && let Some(reference) = Reference::of(rest.trim())
     {
-        return format!("{scheme} ${{secret:{var}}}");
-    }
-    value.to_owned()
+        format!("{scheme} {}", reference.stored(agent_secrets)?)
+    } else {
+        value.to_owned()
+    };
+    // What [`App::mcp_attachments`] would resolve to a clear value is never stored from the file.
+    let probe = BTreeMap::from([("Authorization".to_owned(), stored.clone())]);
+    let resolvable = secret_ref(&stored).is_some()
+        || bearer_of(&probe)
+            .0
+            .as_deref()
+            .and_then(secret_ref)
+            .is_some();
+    (!resolvable).then_some(stored)
 }
 
-/// The `VAR` of a value that is exactly `${VAR}` or `${VAR:-default}`.
-fn env_ref(value: &str) -> Option<&str> {
-    let inner = value.strip_prefix("${")?.strip_suffix('}')?;
-    let var = inner.split_once(":-").map_or(inner, |(var, _)| var);
-    let mut bytes = var.bytes();
-    let valid = var.len() <= super::MAX_SECRET_REF_NAME
-        && bytes
+/// A value that is exactly `${VAR}`, `${VAR:-default}` or `${secret:VAR}`.
+struct Reference<'a> {
+    var: &'a str,
+    default: Option<&'a str>,
+}
+
+impl<'a> Reference<'a> {
+    fn of(value: &'a str) -> Option<Self> {
+        let inner = value.strip_prefix("${")?.strip_suffix('}')?;
+        if let Some(var) = inner.strip_prefix("secret:") {
+            return Some(Self { var, default: None });
+        }
+        let (var, default) = match inner.split_once(":-") {
+            Some((var, default)) => (var, Some(default)),
+            None => (inner, None),
+        };
+        let mut bytes = var.bytes();
+        let shaped = bytes
             .next()
             .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
-        && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_');
-    valid.then_some(var)
+            && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_');
+        shaped.then_some(Self { var, default })
+    }
+
+    /// The placeholder of VAR; the default instead when there is one and VAR is no agent secret.
+    fn stored(&self, agent_secrets: &BTreeSet<String>) -> Option<String> {
+        if let Some(default) = self.default
+            && !agent_secrets.contains(self.var)
+        {
+            return Some(default.to_owned());
+        }
+        SecretName::parse(self.var)
+            .ok()
+            .filter(|name| name.as_str() == self.var)
+            .map(|name| placeholder(&name))
+    }
 }
 
-/// The servers of `repo`'s `.mcp.json`; `None` when it is missing, larger than
-/// [`MAX_PROJECT_MCP_BYTES`], unreadable or invalid (all but missing are logged).
+/// The servers of `repo`'s `.mcp.json`; `None` when it is missing, not a regular file of the
+/// repository (a link out of it, a FIFO, a directory), unreadable or invalid. It is read with the
+/// rules for agent-written files the server reads outside containment ([`read_repo_doc`]), at most
+/// 256 KiB.
 #[must_use]
-pub fn read_project_mcp(repo: &Path) -> Option<ProjectMcp> {
+pub fn read_project_mcp(repo: &Path, agent_secrets: &BTreeSet<String>) -> Option<ProjectMcp> {
     let path = repo.join(PROJECT_MCP_FILE);
-    let text = match std::fs::File::open(&path).and_then(|file| {
-        let mut text = String::new();
-        file.take(MAX_PROJECT_MCP_BYTES + 1)
-            .read_to_string(&mut text)?;
-        Ok(text)
-    }) {
-        Ok(text) => text,
-        Err(err) if err.kind() == io::ErrorKind::NotFound => return None,
-        Err(err) => {
-            tracing::warn!(error = %err, path = %path.display(), "the repository's .mcp.json is unreadable; its servers are not imported");
-            return None;
+    let Some(text) = read_repo_doc(repo, PROJECT_MCP_FILE) else {
+        if std::fs::symlink_metadata(&path).is_ok() {
+            tracing::warn!(path = %path.display(), "the repository's .mcp.json is not a readable regular file of the repository; its servers are not imported");
         }
-    };
-    if text.len() as u64 > MAX_PROJECT_MCP_BYTES {
-        tracing::warn!(path = %path.display(), "the repository's .mcp.json is larger than 256 KiB; its servers are not imported");
         return None;
-    }
-    let project = parse_project_mcp(&text);
+    };
+    let project = parse_project_mcp(&text, agent_secrets);
     if project.is_none() {
-        tracing::warn!(path = %path.display(), "the repository's .mcp.json has no mcpServers object; its servers are not imported");
+        tracing::warn!(path = %path.display(), "the repository's .mcp.json is not valid (or larger than 256 KiB); its servers are not imported");
     }
     project
 }
@@ -189,11 +249,23 @@ pub fn read_project_mcp(repo: &Path) -> Option<ProjectMcp> {
 impl App {
     /// Adds each server of the sandbox repository's `.mcp.json` that no instance or sandbox
     /// server of `sandbox` has as an enabled sandbox server, audited `mcp.imported` (SPEC-095
-    /// PMC-001). Returns every server name in the file, for the Superagent to reject (PMC-004).
+    /// PMC-001). Returns the server names in the file, for the Superagent to reject (PMC-004).
     /// Never fails: what cannot be read or added is logged and skipped (PMC-003).
     pub(crate) async fn import_project_mcp(&self, sandbox: &SandboxRecord) -> Vec<String> {
+        let agent_secrets: BTreeSet<String> = match self
+            .deps
+            .store
+            .vault_agent(Some(&sandbox.id))
+            .await
+        {
+            Ok(records) => records.into_iter().map(|r| r.name).collect(),
+            Err(err) => {
+                tracing::warn!(error = %err, sandbox = %sandbox.id, "agent secrets unreadable; .mcp.json defaults are kept");
+                BTreeSet::new()
+            }
+        };
         let repo = self.sandbox_repo(&sandbox.id);
-        let project = match blocking(move || Ok(read_project_mcp(&repo))).await {
+        let project = match blocking(move || Ok(read_project_mcp(&repo, &agent_secrets))).await {
             Ok(Some(project)) => project,
             Ok(None) => return Vec::new(),
             Err(err) => {
@@ -209,28 +281,33 @@ impl App {
             }
         };
         for input in &project.servers {
-            if existing.contains(&name_key(&input.name)) {
-                continue;
-            }
-            if let Err(err) = self.import_mcp_server(sandbox, input).await {
-                tracing::warn!(error = %err, server = %input.name, sandbox = %sandbox.id, "a .mcp.json server could not be added");
+            if !existing.contains(&name_key(&input.name)) {
+                self.import_mcp_server(sandbox, input).await;
             }
         }
         project.names
     }
 
-    async fn import_mcp_server(
-        &self,
-        sandbox: &SandboxRecord,
-        input: &McpServerInput,
-    ) -> AppResult<()> {
-        let record = self.new_mcp_record(Some(sandbox.id.clone()), input)?;
-        self.deps
-            .store
-            .insert_mcp_server(&record, MAX_SERVERS_PER_SCOPE)
-            .await?;
+    async fn import_mcp_server(&self, sandbox: &SandboxRecord, input: &McpServerInput) {
+        let added: AppResult<McpServerRecord> = async {
+            let record = self.new_mcp_record(Some(sandbox.id.clone()), input)?;
+            self.deps
+                .store
+                .insert_mcp_server(&record, MAX_SERVERS_PER_SCOPE)
+                .await?;
+            Ok(record)
+        }
+        .await;
+        let record = match added {
+            Ok(record) => record,
+            Err(err) => {
+                tracing::warn!(error = %err, server = %input.name, sandbox = %sandbox.id, "a .mcp.json server could not be added");
+                return;
+            }
+        };
         tracing::info!(server = %record.name, sandbox = %sandbox.id, "a .mcp.json server joined the sandbox's MCP servers");
-        self.deps
+        if let Err(err) = self
+            .deps
             .store
             .audit(
                 self.now(),
@@ -240,6 +317,9 @@ impl App {
                 Some(&mcp_detail(&record)),
             )
             .await
+        {
+            tracing::warn!(error = %err, server = %record.name, "the import of a .mcp.json server could not be audited");
+        }
     }
 }
 
@@ -257,22 +337,26 @@ pub(super) fn mcp_detail(record: &McpServerRecord) -> String {
 mod tests {
     use super::*;
 
+    fn secrets(names: &[&str]) -> BTreeSet<String> {
+        names.iter().map(|n| (*n).to_owned()).collect()
+    }
+
     fn parsed(text: &str) -> ProjectMcp {
-        parse_project_mcp(text).unwrap_or_default()
+        parse_project_mcp(text, &secrets(&["APIFY_TOKEN"])).unwrap_or_default()
     }
 
     #[test]
-    fn stdio_http_and_typeless_servers_are_imported_with_secret_references() {
+    fn stdio_http_and_typeless_servers_are_imported_with_placeholders() {
         let project = parsed(
             r#"{"mcpServers": {
                 "supabase": {"command": "npx", "args": ["-y", "@supabase/mcp-server-supabase"],
                              "env": {"SUPABASE_ACCESS_TOKEN": "${SUPABASE_ACCESS_TOKEN}",
-                                     "REGION": "eu-1", "UNSET": ""}},
+                                     "REGION": "eu-1", "UNSET": "", "LOG": "${LOG_LEVEL:-info}"}},
                 "apify": {"type": "stdio", "command": "npx",
                           "env": {"APIFY_TOKEN": "${APIFY_TOKEN:-none}"}},
                 "pipedream-gmail": {"url": "https://remote.mcp.pipedream.test/gmail",
                                     "headers": {"Authorization": "Bearer ${PIPEDREAM_TOKEN}",
-                                                "X-Team": "${secret:team}"}}
+                                                "X-Team": "${secret:TEAM_KEY}"}}
             }}"#,
         );
         assert_eq!(project.names, ["apify", "pipedream-gmail", "supabase"]);
@@ -284,21 +368,23 @@ mod tests {
             ("stdio", Some("npx"))
         );
         assert!(apify.args.is_empty());
+        // APIFY_TOKEN is an agent secret: its placeholder wins over the default.
         assert_eq!(
             apify.env,
             Some(BTreeMap::from([(
                 "APIFY_TOKEN".into(),
-                "${secret:APIFY_TOKEN}".into()
+                "yulius-secret-APIFY_TOKEN".into()
             )]))
         );
         assert_eq!(supabase.args, ["-y", "@supabase/mcp-server-supabase"]);
         assert_eq!(
             supabase.env,
             Some(BTreeMap::from([
+                ("LOG".into(), "info".into()),
                 ("REGION".into(), "eu-1".into()),
                 (
                     "SUPABASE_ACCESS_TOKEN".into(),
-                    "${secret:SUPABASE_ACCESS_TOKEN}".into()
+                    "yulius-secret-SUPABASE_ACCESS_TOKEN".into()
                 ),
             ]))
         );
@@ -312,9 +398,9 @@ mod tests {
             Some(BTreeMap::from([
                 (
                     "Authorization".into(),
-                    "Bearer ${secret:PIPEDREAM_TOKEN}".into()
+                    "Bearer yulius-secret-PIPEDREAM_TOKEN".into()
                 ),
-                ("X-Team".into(), "${secret:team}".into()),
+                ("X-Team".into(), "yulius-secret-TEAM_KEY".into()),
             ]))
         );
         assert!(
@@ -325,18 +411,38 @@ mod tests {
         );
     }
 
+    /// Agents can write the file: it never stores a value the run would resolve to a secret's
+    /// clear value.
     #[test]
-    fn values_that_are_not_a_whole_reference_are_kept_as_written() {
-        for (value, kept) in [
-            ("plain-token", "plain-token"),
-            ("prefix-${VAR}", "prefix-${VAR}"),
-            ("${1BAD}", "${1BAD}"),
-            ("${}", "${}"),
-            ("Basic ${VAR}", "Basic ${VAR}"),
-            ("bearer ${VAR}", "bearer ${secret:VAR}"),
-            ("${VAR:-}", "${secret:VAR}"),
+    fn a_value_from_the_file_is_never_a_secret_reference() {
+        let none = BTreeSet::new();
+        for (value, stored) in [
+            ("plain-token", Some("plain-token")),
+            ("prefix-${VAR}", Some("prefix-${VAR}")),
+            ("${secret:STRIPE_KEY}", Some("yulius-secret-STRIPE_KEY")),
+            (
+                "Bearer ${secret:STRIPE_KEY}",
+                Some("Bearer yulius-secret-STRIPE_KEY"),
+            ),
+            (
+                "bearer  ${secret:STRIPE_KEY}",
+                Some("bearer yulius-secret-STRIPE_KEY"),
+            ),
+            (
+                "Bearer ${STRIPE_KEY}",
+                Some("Bearer yulius-secret-STRIPE_KEY"),
+            ),
+            ("${secret:team.key}", None),
+            ("${secret:}", None),
+            ("${lower_case}", None),
+            ("${YULIUS_TASK_TOKEN}", None),
+            ("${1BAD}", Some("${1BAD}")),
+            ("${}", Some("${}")),
+            ("Basic ${VAR}", Some("Basic ${VAR}")),
+            ("${VAR:-}", Some("")),
+            ("${VAR:-${secret:STRIPE_KEY}}", None),
         ] {
-            assert_eq!(secret_value(value), kept, "{value}");
+            assert_eq!(file_value(value, &none).as_deref(), stored, "{value}");
         }
     }
 
@@ -371,43 +477,67 @@ mod tests {
             r#"{"mcpServers": []}"#,
             r#"{"mcpServers": "x"}"#,
         ] {
-            assert_eq!(parse_project_mcp(text), None, "{text}");
+            assert_eq!(parse_project_mcp(text, &BTreeSet::new()), None, "{text}");
         }
         assert_eq!(
-            parse_project_mcp(r#"{"mcpServers": {}}"#),
+            parse_project_mcp(r#"{"mcpServers": {}}"#, &BTreeSet::new()),
             Some(ProjectMcp::default())
         );
     }
 
     #[test]
-    fn at_most_one_scope_of_servers_is_imported_and_every_name_is_kept() {
+    fn at_most_one_scope_of_servers_is_imported_and_names_fit_one_argument() {
         let servers: Vec<String> = (0..MAX_PROJECT_SERVERS + 3)
             .map(|i| format!(r#""s{i:03}": {{"command": "x"}}"#))
             .collect();
         let project = parsed(&format!(r#"{{"mcpServers": {{{}}}}}"#, servers.join(",")));
         assert_eq!(project.names.len(), MAX_PROJECT_SERVERS + 3);
         assert_eq!(project.servers.len(), MAX_PROJECT_SERVERS);
+
+        let long: Vec<String> = (0..100)
+            .map(|i| format!(r#""{i:03}{}": {{}}"#, "n".repeat(1_000)))
+            .collect();
+        let project = parsed(&format!(r#"{{"mcpServers": {{{}}}}}"#, long.join(",")));
+        let json = serde_json::to_string(&project.names).unwrap_or_default();
+        assert!(json.len() <= MAX_PROJECT_NAME_BYTES, "{}", json.len());
+        assert!(project.names.len() > 50, "{}", project.names.len());
     }
 
     #[test]
-    fn a_missing_oversized_or_invalid_file_reads_as_none() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn only_a_regular_file_of_the_repository_is_read() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir()?;
-        assert_eq!(read_project_mcp(dir.path()), None);
-        let file = dir.path().join(PROJECT_MCP_FILE);
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo)?;
+        let none = BTreeSet::new();
+        assert_eq!(read_project_mcp(&repo, &none), None);
+        let file = repo.join(PROJECT_MCP_FILE);
         std::fs::write(&file, "{ not json")?;
-        assert_eq!(read_project_mcp(dir.path()), None);
-        let padding = " ".repeat(usize::try_from(MAX_PROJECT_MCP_BYTES)?);
+        assert_eq!(read_project_mcp(&repo, &none), None);
+        let padding = " ".repeat(256 * 1024);
         std::fs::write(
             &file,
-            format!(r#"{{"mcpServers": {{"a": {{"command": "x"}}}}}}{padding}"#),
+            format!(r#"{padding}{{"mcpServers": {{"a": {{"command": "x"}}}}}}"#),
         )?;
-        assert_eq!(read_project_mcp(dir.path()), None);
+        assert_eq!(read_project_mcp(&repo, &none), None, "larger than 256 KiB");
         std::fs::write(&file, r#"{"mcpServers": {"a": {"command": "x"}}}"#)?;
         assert_eq!(
-            read_project_mcp(dir.path()).map(|p| p.names),
+            read_project_mcp(&repo, &none).map(|p| p.names),
             Some(vec!["a".to_owned()])
         );
+
+        // A link out of the repository (another sandbox's file, the service's own config).
+        let outside = dir.path().join("other.json");
+        std::fs::write(&outside, r#"{"mcpServers": {"leak": {"command": "x"}}}"#)?;
+        std::fs::remove_file(&file)?;
+        std::os::unix::fs::symlink(&outside, &file)?;
+        assert_eq!(read_project_mcp(&repo, &none), None);
+        // A FIFO would block the reader forever; a directory is no file.
+        std::fs::remove_file(&file)?;
+        nix::unistd::mkfifo(&file, nix::sys::stat::Mode::S_IRWXU)?;
+        assert_eq!(read_project_mcp(&repo, &none), None);
+        std::fs::remove_file(&file)?;
+        std::fs::create_dir(&file)?;
+        assert_eq!(read_project_mcp(&repo, &none), None);
         Ok(())
     }
 }
