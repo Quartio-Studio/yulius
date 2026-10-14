@@ -53,8 +53,8 @@ that it is running and links to its task. The task box appears by itself once th
 | OBG-002 | In their place, a region labelled by its heading is centred vertically and horizontally in the page. For `pending` it says, in order, what onboarding will do (one task an agent runs first; set up the environment and run the repository's checks; add what the repository lacks for the Yulius standards, mapping existing documents; move GitHub Actions into Yulius CI; documentation, configuration and CI only, through a pull request into the integration branch) and when the task box appears. | e2e: text, centring measured from bounding boxes at desktop and phone width |
 | OBG-003 | A person with write access sees one button, **Start onboarding**, which starts it (the existing approve call). A reader sees that someone with write access starts it, and no button. | e2e (write); reader covered by the `allows(access, 'write')` branch, as the banner's button was |
 | OBG-004 | No **Skip for now** is offered on the page: onboarding is mandatory in the UI. The admin skip endpoint stays as an operator's recovery path (ADR-0076). | e2e: no Skip button in either state |
-| OBG-005 | While `preparing`, the region says onboarding is running and offers one button, **Follow onboarding**, which opens the onboarding task. | e2e |
-| OBG-006 | When the sandbox becomes `ready` (or an operator skips it), the region goes away and the composer shows without a reload, with any draft kept. | e2e: the mock's approve → ready |
+| OBG-005 | While `preparing`, the region says onboarding is running and offers one action, **Follow onboarding** (a link styled as the primary button), which opens the onboarding task. After Start onboarding the keyboard moves to it, and it keeps the focus as task events arrive. | e2e |
+| OBG-006 | When the sandbox becomes `ready` (or an operator skips it), the region goes away and the composer shows without a reload. | e2e: the mock's approve → ready |
 | OBG-007 | The page has no WCAG violation in either state. | e2e with axe |
 
 ## Plan

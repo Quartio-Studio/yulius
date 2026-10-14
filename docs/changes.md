@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-14
 
+- Onboarding is mandatory (SPEC-096, ADR-0076, task #81): while a sandbox awaits or runs its
+  onboarding, its new-task page shows no task input. A centred message says what onboarding will
+  do (set up the environment, add what the repository lacks for the Yulius standards, move GitHub
+  Actions into Yulius CI, through a pull request) with Start onboarding, or Follow onboarding while
+  it runs. The task box shows by itself once the sandbox is ready. The page no longer offers Skip;
+  the admin API keeps it as a recovery path. Tasks created through the API still wait after
+  onboarding.
 - Runs recorded before SPEC-087 get their metrics from their transcripts (SPEC-091, ADR-0072).
   The upgrade queues every run recorded so far (migration 23, `metrics_recounts`). On the first
   start, once reconciliation is done, Yulius counts each ended run's own window of its transcript
