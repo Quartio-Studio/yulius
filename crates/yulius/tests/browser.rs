@@ -525,6 +525,31 @@ async fn agents_type_secrets_only_into_pages_of_their_hosts() -> TestResult {
                 .is_some_and(|t| t.contains("may only be typed into pages of docs.example"))
         );
         assert_eq!(f.fake.calls_for("Input.insertText").len(), before);
+        // A secret bound to no host yet (SPEC-121) is typed nowhere; the agent learns to ask.
+        let unbound = support::call(
+            &f.h.router,
+            axum::http::Method::POST,
+            "/api/sandboxes/s1/agent-secrets",
+            Some(json!({"name": "NEW_LOGIN", "value": "new-pass-4411-abc"})),
+            &f.writer,
+        )
+        .await?;
+        assert_eq!(unbound.status, axum::http::StatusCode::CREATED, "{}", unbound.body);
+        let refused = mcp_tool(
+            &f.h,
+            TOKEN,
+            "browser_fill_secret",
+            json!({"tab_id": tab, "secret": "NEW_LOGIN"}),
+        )
+        .await?;
+        assert_eq!(refused["isError"], true);
+        assert!(
+            tool_text(&refused)
+                .as_str()
+                .is_some_and(|t| t.contains("secret_request_hosts")),
+            "{refused}"
+        );
+        assert_eq!(f.fake.calls_for("Input.insertText").len(), before);
         let unknown = mcp_tool(
             &f.h,
             TOKEN,

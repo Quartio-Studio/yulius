@@ -171,6 +171,8 @@ impl App {
             updated_at: now,
             value_updated_at: now,
             last_used_at: None,
+            requested_hosts: Vec::new(),
+            requested_by: None,
         };
         self.deps.store.vault_insert(&record).await?;
         self.vault_audit(

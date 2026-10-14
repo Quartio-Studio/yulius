@@ -1078,7 +1078,13 @@ name and TOTP seed, and a value of at least 8 characters (shorter values cannot 
 output, VLT-006). Sandbox secrets are managed by members with write access, instance-wide ones by
 instance administrators; members who can view a sandbox see names, descriptions and bindings.
 Values are write-only for everyone (replace, never read back). (Since SPEC-040, ADR-0042: the
-people who manage one read it back after their two-factor code; agents still never do.)
+people who manage one read it back after their two-factor code; agents still never do.) (Since
+SPEC-121, ADR-0098: a new agent secret is a NAME, a value and a description, bound to no host and
+with no injection, so it is used nowhere. The agent proposes hosts with the MCP tool
+`secret_request_hosts`, which stores `requested_hosts`/`requested_by` (migration 0025, compare and
+set), audits `vault.agent.request` and flags the task `needs_attention`; a person who manages the
+secret allows them (`POST /api/agent-secrets/{id}/request {allow}`, audited `vault.agent.allow` or
+`vault.agent.dismiss`), and only then do they become bindings. An agent never binds a host.)
 
 Mechanisms considered for *using* a secret:
 

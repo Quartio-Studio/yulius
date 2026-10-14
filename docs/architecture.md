@@ -427,6 +427,33 @@ flowchart LR
   MCP -->|"automation_*, automation_template_enable"| AU["Automations and ready-made ones"]
 ```
 
+## Agent secret hosts
+
+An agent secret is used only on the hosts it is bound to (SPEC-002 ADR-20). Since SPEC-121
+(ADR-0098) a person adds one with a name, a value and a description, and it starts bound to
+nothing. The agent works out the service's host and proposes it; the request waits on the secret
+(`requested_hosts`) until a person who manages it allows it. An agent never binds a host itself,
+so an agent misled by injected content cannot send a secret to another server.
+
+```mermaid
+sequenceDiagram
+    participant P as Person
+    participant UI as Secrets page
+    participant App as Yulius (vault)
+    participant A as Agent
+    participant X as Egress proxy
+    P->>UI: Add VIDOC_API_KEY (name, value, description)
+    UI->>App: POST agent-secrets (hosts [], injection none)
+    A->>App: secrets_list, then secret_request_hosts(api.vidoc.com)
+    App-->>A: requested, waiting for a person (task needs attention)
+    A->>X: request to api.vidoc.com with the placeholder
+    X-->>A: forwarded without the secret (not bound yet)
+    P->>UI: Allow
+    UI->>App: POST agent-secrets/{id}/request {allow: true}
+    A->>X: request to api.vidoc.com with the placeholder
+    X-->>A: placeholder replaced by the value, response redacted
+```
+
 ## Terminal input
 
 A keystroke goes from xterm to the PTY and its echo comes back without waiting for the database or
