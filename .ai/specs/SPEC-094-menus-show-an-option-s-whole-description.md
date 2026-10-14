@@ -43,10 +43,10 @@ wider than today, and a short description still one line.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| MDS-001 | A menu item's description (or a disabled item's reason) wraps onto as many lines as it needs, focused or not, and is never cut or clipped; a word longer than the line breaks. Labels and hints stay on one line. This replaces SPEC-038 MNU-002. | `menus.e2e.ts` "a description wraps onto as many lines as it needs …", "the start menu shows Supertask's whole description, at desktop and phone width" |
+| MDS-001 | A menu item's description (or a disabled item's reason) wraps onto as many lines as it needs, focused or not, and is never cut or clipped; a word longer than the line breaks. Labels stay on one line. This replaces SPEC-038 MNU-002. | `menus.e2e.ts` "a description wraps onto as many lines as it needs …", "the start menu shows Supertask's whole description, inside a 1280 px window", "… inside a 390 px window" |
 | MDS-002 | Menus stay compact: a menu is no wider than 320 px (and than the window less 16 px), stays inside the window, and a description that fits on one line takes one line (its row no taller than 44 px). | `menus.e2e.ts`, the same tests and every SPEC-038 placement test |
 | MDS-003 | A description shown whole carries no tooltip repeating it. | `menus.e2e.ts` "a description wraps …" |
-| MDS-004 | The Supertask description reads as complete sentences: "Waits for this project’s running tasks, then runs alone while the project’s other tasks wait. For broad work such as security hardening." | `menus.e2e.ts` "the start menu shows Supertask's whole description …" |
+| MDS-004 | The Supertask description says whose tasks wait and ends its sentences: "Waits for this project’s running tasks, then runs alone while the project’s other tasks wait. For broad work such as security hardening." | `menus.e2e.ts` "the start menu shows Supertask's whole description, inside a 1280 px window" |
 
 ## Plan
 

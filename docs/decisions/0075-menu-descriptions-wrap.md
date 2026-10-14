@@ -19,7 +19,7 @@ at all on a touch screen.
 
 - An item's description (or a disabled item's reason) wraps onto as many lines as it needs and is
   never cut; a word longer than the line breaks. It carries no tooltip.
-- Labels and hints stay on one line, cut with an ellipsis when too long.
+- Labels stay on one line, cut with an ellipsis when too long.
 - The menu keeps its width rule: as wide as its widest content, at most 320 px and the window less
   16 px. Wrapping does not change a line's max-content width, so menus are as wide as before and a
   description that fits still takes one line.

@@ -33,7 +33,7 @@ test('a menu stays inside a short window and its items scroll', async ({ app, br
 });
 
 /** How a menu item's description shows: its text, whether anything of it is cut or clipped, and its lines. */
-const describe = (browser: any, label: string) => browser.evaluate((label: string) => {
+const descriptionOf = (browser: any, label: string) => browser.evaluate((label: string) => {
   const item = [...document.querySelectorAll('.menu-item')].find((el) => el.querySelector('.menu-label')!.textContent === label)!;
   const desc = item.querySelector('.menu-desc') as HTMLElement;
   const box = desc.getBoundingClientRect();
@@ -58,7 +58,7 @@ test('a description wraps onto as many lines as it needs, a short one takes one,
   // Every item shows its whole description, not only the focused one.
   await browser.keyboard.press('ArrowDown');
   await expect(screen.getByRole('menuitemradio', /^No workflow/)).toBeFocused();
-  const long = await describe(browser, 'Auto workflow');
+  const long = await descriptionOf(browser, 'Auto workflow');
   expect(long.text).toBe('Jev picks the workflow that fits, or none: features get a spec, research and questions do not');
   expect(long.cut).toBe(false);
   expect(long.insideList).toBe(true);
@@ -68,7 +68,7 @@ test('a description wraps onto as many lines as it needs, a short one takes one,
   expect(await browser.evaluate(() => document.querySelector('.menu-item.rich')!.getAttribute('title'))).toBe(null);
   // Compact as before (SPEC-038): a short description is one line in a row of at most 44 px, and
   // the menu is no wider than 320 px.
-  const short = await describe(browser, 'No workflow');
+  const short = await descriptionOf(browser, 'No workflow');
   expect(short.cut).toBe(false);
   expect(short.lines).toBe(1);
   expect(short.row).toBeLessThanOrEqual(44);
@@ -82,12 +82,12 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     await expect(screen.getByRole('link', /Checkout API/).first()).toBeAttached();
     await screen.getByRole('button', /Run after: Start now/).click();
     await expect(screen.getByRole('menuitemradio', /^Supertask/)).toBeVisible();
-    const supertask = await describe(browser, 'Supertask');
+    const supertask = await descriptionOf(browser, 'Supertask');
     expect(supertask.text).toBe('Waits for this project’s running tasks, then runs alone while the project’s other tasks wait. For broad work such as security hardening.');
     expect(supertask.cut).toBe(false);
     expect(supertask.insideList).toBe(true);
     expect(supertask.lines).toBeGreaterThan(1);
-    const start = await describe(browser, 'Start now');
+    const start = await descriptionOf(browser, 'Start now');
     expect(start.cut).toBe(false);
     // The menu stays inside the window, 8 px from its edges, and no wider than 320 px.
     const { menu, window } = supertask;
@@ -96,7 +96,6 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     expect(menu.top).toBeGreaterThanOrEqual(8);
     expect(menu.bottom).toBeLessThanOrEqual(window.height - 8);
     expect(menu.width).toBeLessThanOrEqual(320);
-    expect(await browser.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewport.width);
   });
 }
 

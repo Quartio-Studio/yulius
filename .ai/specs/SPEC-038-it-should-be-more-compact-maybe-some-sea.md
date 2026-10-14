@@ -83,7 +83,8 @@ scrolling. The "Run after" menu lists tasks as one-line rows.
   `aria-controls` on the list): ARIA menus may only own menu items, so the box is a sibling inside
   the same floating panel. Recorded in ADR-0030.
 - **Descriptions are cut to one line** with the full text as tooltip rather than dropped: they
-  still explain a choice at a glance (workflow steps, model notes).
+  still explain a choice at a glance (workflow steps, model notes). Replaced by
+  [SPEC-094](SPEC-094-menus-show-an-option-s-whole-description.md): descriptions wrap.
 - **Review round 1** (fresh session, `om-code-review`): fixed test-first: IME composition keys
   ignored (major); the tooltip no longer searched (every "Run after" row had "Starts by itself
   when…"); the focused item shows its whole description; a usable menu for an anchor taller than
