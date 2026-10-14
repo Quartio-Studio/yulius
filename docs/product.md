@@ -90,7 +90,8 @@ watching, steering and unblocking.
 - **Notes**: in the tools rail, a notepad per sandbox and one for the whole team, shared and saved
   while people type; a teammate's edit shows up live, and two edits at once end in a choice. A
   third, **Me**, is each person's own: nobody else sees it, and it is the same in every sandbox.
-  The tabs go in any order (Team first until moved). Selections are drawn rounded and glide, and
+  The tabs go in any order (Team first until moved); each shows a drag grip and says it can be
+  clicked or dragged. Selections are drawn rounded and glide, and
   teammates who have a shared notepad open show as a caret with their name and their selection
   in their own colour.
 - **Editor**: Monaco over the sandbox's files for people with write access. Like Notes, its
