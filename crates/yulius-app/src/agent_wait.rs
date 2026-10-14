@@ -211,6 +211,9 @@ pub struct WaitState {
     /// Its environment and why it ended without passing, when it says.
     #[serde(default)]
     pub cd_detail: Option<String>,
+    /// It ended and no wait reported it yet (a run that ended before the wait began, review M4).
+    #[serde(default)]
+    pub cd_unreported: bool,
 }
 
 impl WaitState {
@@ -684,8 +687,24 @@ impl App {
             .and_then(|problem| problem.clone())
             .filter(|(at, _)| !head.is_empty() && (at.starts_with(&head) || head.starts_with(at)))
             .map(|(_, text)| text);
-        let cd = self.cd_runs_of_task(task).await?.into_iter().next();
+        let cd = self.cd_latest_run_of_task(task).await?;
+        // A run that ended is reported once: the state that shows it marks it (the wait that
+        // gets it ends on it).
+        let cd_unreported = cd.as_ref().is_some_and(|run| {
+            run.state != yulius_domain::ci::RunState::Running
+                && self
+                    .runtime(&task.id)
+                    .cd_reported
+                    .lock()
+                    .map(|mut seen| {
+                        let fresh = seen.as_deref() != Some(run.id.as_str());
+                        *seen = Some(run.id.clone());
+                        fresh
+                    })
+                    .unwrap_or(false)
+        });
         Ok(WaitState {
+            cd_unreported,
             cd_run: cd.as_ref().map(|run| run.id.clone()),
             cd_state: cd.as_ref().map(|run| run.state.as_str().to_owned()),
             cd_detail: cd.map(|run| match run.reason {

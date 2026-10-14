@@ -133,6 +133,39 @@ impl CdStore for SqliteStore {
         .await
     }
 
+    async fn last_passed_cd_run(
+        &self,
+        sandbox: &SandboxId,
+        environment: CdEnv,
+    ) -> AppResult<Option<CdRunRecord>> {
+        let (sandbox, environment) = (sandbox.as_str().to_owned(), environment.as_str());
+        self.call(move |c| {
+            Ok(select(
+                c,
+                "sandbox_id = ?1 AND environment = ?2 AND state = 'passed' \
+                 ORDER BY started_at DESC, rowid DESC LIMIT 1",
+                &[&sandbox, &environment],
+            )?
+            .into_iter()
+            .next())
+        })
+        .await
+    }
+
+    async fn latest_cd_run_of_task(&self, task: &TaskId) -> AppResult<Option<CdRunRecord>> {
+        let task = task.as_str().to_owned();
+        self.call(move |c| {
+            Ok(select(
+                c,
+                "task_id = ?1 ORDER BY started_at DESC, rowid DESC LIMIT 1",
+                &[&task],
+            )?
+            .into_iter()
+            .next())
+        })
+        .await
+    }
+
     async fn running_cd_runs(&self) -> AppResult<Vec<CdRunRecord>> {
         self.call(move |c| select(c, "state = 'running' ORDER BY started_at, rowid", &[]))
             .await

@@ -545,7 +545,8 @@ Behavior (SPEC-001 GIT-001/002, DLV-001..005, DSC-002/007/008; SPEC-002 §6.7, �
   at least one `area:` label and an `## Acceptance criteria` checklist). On GitHub these tools
   act with the task creator's own token; a creator without a usable one (no linked account, an
   expired sign-in) gets the App's, and the task's terminal says so once (GIT-003).
-- **Promote** refuses while a merged task still has an integration environment pending, when
+- **Promote** needs an administrator and `{"confirm": "<slug>"}` (a release is a production deploy,
+  ADR-0110). It refuses while a merged task still has an integration environment pending, when
   production already equals integration, or when a fast-forward is impossible.
   `fast_forward`: production is fast-forwarded to the integration head (`result: "promoted"`,
   `sha` = new head). `merge_commit`: the first call opens the promotion PR integration →
@@ -666,12 +667,15 @@ secrets = "DEV_SSH_KEY DEV_HOST"    # at most 16 agent secrets, as environment v
 promote = true                      # a person's deploy first promotes the integration branch
 ```
 
-A run checks out the branch head into `<sandbox>/cd/checkouts/<env>` and runs `deploy` then `verify`
-through the process host inside the sandbox's containment, for at most the CI job timeout, with
-`YULIUS_CD=1`, `YULIUS_CD_ENV`, `YULIUS_CD_RUN`, `YULIUS_CD_SHA`, `YULIUS_CD_BRANCH`,
-`YULIUS_CD_CACHE` (persistent), a `HOME` made for the run and removed after it, and the real value
-of each named secret that a person allowed outside the proxy (`env_files = allowed`, ADR-0105); no
-task token, provider credential or GitHub token. Its stored output is the last 512 KiB with every
+A run deploys the commit GitHub reports for the branch, taken into a mirror only Yulius writes
+(every object checked, replacement refs ignored). It writes the commit's files into the run's own
+directory and runs `deploy` then `verify` through the process host (dev inside the sandbox's
+containment, production outside it on the host's read-only system), for at most the CI job
+timeout, with `YULIUS_CD=1`, `YULIUS_CD_ENV`, `YULIUS_CD_RUN`, `YULIUS_CD_SHA`,
+`YULIUS_CD_BRANCH`, `YULIUS_CD_CACHE` (persistent, per environment, out of the agents' reach), a
+`HOME` made for the run and removed after it, and the real value of each named secret allowed for
+that environment: dev, allowed outside the proxy (`env_files = allowed`, ADR-0105); production,
+allowed for production deploys (`cd_prod`). No task token, provider credential or GitHub token. Its stored output is the last 512 KiB with every
 agent secret of the sandbox redacted. One run per environment at a time; a run left running by a
 restart is recorded as `error` and never run again by itself.
 
@@ -682,13 +686,15 @@ restart is recorded as `error` and never run again by itself.
 | `POST /api/sandboxes/{sid}/cd/prod/deploy` | admin, `{"confirm": "<slug>"}` | the running `CdRun` after the promotion |
 | `GET /api/sandboxes/{sid}/cd/runs/{rid}` | read | `CdRun` with its `output` |
 | `POST /api/sandboxes/{sid}/cd/runs/{rid}/cancel` | write (a production run: admin) | `CdRun`; `conflict` when it ended |
+| `POST /api/agent-secrets/{id}/cd-prod` | manage the secret, `{"allow": true}` | `AgentSecretView` with `cd_prod`; production runs get it |
 
 ```text
 CdOverview = {"slug", "environments": [CdEnvironment (dev, then prod)], "runs": [CdRun] (newest 20),
               "can_deploy_dev": true, "can_deploy_prod": false}
 CdEnvironment = {"name": "dev|prod", "label": "dev|production", "state": "not_defined|empty|ready",
                  "branch", "head", "problem": "yulius.toml line 3: …"|null, "about", "deploy", "verify",
-                 "promote", "secrets": [{"name", "state": "ready|not_allowed|missing"}],
+                 "promote", "promotes_from": "<integration head>"|null,
+                 "secrets": [{"name", "state": "ready|not_allowed|missing"}],
                  "deployed": "<sha of the last passed run>"|null, "last_run": CdRun|null}
 CdRun = {"run_id", "environment": "dev|prod", "state": "running|passed|failed|error|cancelled",
          "branch", "commit", "requested_by": "<login>|task #<n>", "deploy", "verify",

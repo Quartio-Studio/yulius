@@ -56,6 +56,7 @@ fn from_row(row: &Row<'_>) -> rusqlite::Result<VaultSecretRecord> {
             EnvFiles::parse(&text).ok_or_else(|| bad_column("env_files", &text))?
         },
         env_requested_by: row.get("env_requested_by")?,
+        cd_prod: row.get::<_, i64>("cd_prod")? != 0,
     })
 }
 
@@ -189,7 +190,7 @@ impl VaultStore for SqliteStore {
         let id = id.to_owned();
         self.call(move |c| {
             c.query_row(
-                &format!("SELECT {COLS} FROM vault_secrets WHERE id = ?1"),
+                &format!("SELECT {COLS}, cd_prod FROM vault_secrets WHERE id = ?1"),
                 [id],
                 from_row,
             )
@@ -203,7 +204,7 @@ impl VaultStore for SqliteStore {
         self.call(|c| {
             let mut stmt = c
                 .prepare(&format!(
-                    "SELECT {COLS} FROM vault_secrets WHERE section = 'team' ORDER BY name COLLATE NOCASE, created_at"
+                    "SELECT {COLS}, cd_prod FROM vault_secrets WHERE section = 'team' ORDER BY name COLLATE NOCASE, created_at"
                 ))
                 .map_err(db)?;
             let rows = stmt.query_map([], from_row).map_err(db)?;
@@ -217,11 +218,11 @@ impl VaultStore for SqliteStore {
         self.call(move |c| {
             let sql = match sandbox {
                 Some(_) => format!(
-                    "SELECT {COLS} FROM vault_secrets WHERE section = 'agent' \
+                    "SELECT {COLS}, cd_prod FROM vault_secrets WHERE section = 'agent' \
                      AND (sandbox_id IS NULL OR sandbox_id = ?1) ORDER BY name"
                 ),
                 None => format!(
-                    "SELECT {COLS} FROM vault_secrets WHERE section = 'agent' AND ?1 IS NULL ORDER BY name"
+                    "SELECT {COLS}, cd_prod FROM vault_secrets WHERE section = 'agent' AND ?1 IS NULL ORDER BY name"
                 ),
             };
             let mut stmt = c.prepare(&sql).map_err(db)?;
@@ -307,6 +308,21 @@ impl VaultStore for SqliteStore {
                      WHERE id = ?1 AND section = 'agent' AND env_files = ?2 \
                      AND env_requested_by IS ?3",
                     params![id, from_state, from_by, to_state, to_by],
+                )
+                .map_err(db)?;
+            Ok(changed == 1)
+        })
+        .await
+    }
+
+    async fn vault_set_cd_prod(&self, id: &str, from: bool, to: bool) -> AppResult<bool> {
+        let id = id.to_owned();
+        self.call(move |c| {
+            let changed = c
+                .execute(
+                    "UPDATE vault_secrets SET cd_prod = ?3 \
+                     WHERE id = ?1 AND section = 'agent' AND cd_prod = ?2",
+                    params![id, i64::from(from), i64::from(to)],
                 )
                 .map_err(db)?;
             Ok(changed == 1)
@@ -622,6 +638,7 @@ mod tests {
             requested_by: None,
             env_files: EnvFiles::No,
             env_requested_by: None,
+            cd_prod: false,
         }
     }
 

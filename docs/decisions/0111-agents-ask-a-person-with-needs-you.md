@@ -19,9 +19,10 @@ stopped and waited, and its question was only in the transcript.
 - MCP `needs_you {action, why?, link?}` records one open request per task: what the person should
   do, why, and where. The task is in the sidebar's Needs you group, reads "Needs you: <action>", and
   people are notified, while the agent goes on with other work.
-- The request ends when a person writes to the task (they answered or did it) or when the agent calls
-  `needs_you {resolved: true}` (it saw the result, for example the secret is there). A task that ends
-  drops it.
+- The request ends when a person writes to the task (a prompt they typed into its terminal, or
+  continuing a stopped task; prompts Yulius types do not count) or when the agent calls
+  `needs_you {resolved: true}` (it saw the result, for example the secret is there). An ended task
+  shows none.
 - The request is stored with the task, so a restart keeps it, and audited (`task.needs_you`).
 
 ## Alternatives

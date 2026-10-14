@@ -38,7 +38,7 @@ test('production deploys only after the project slug is typed', async ({ app, br
   await app.open(mock('/s/studio/cd'));
   await screen.getByRole('region', 'Production environment').getByRole('button', 'Deploy production…').click();
   const confirm = screen.getByRole('dialog', 'Deploy production?');
-  await expect(confirm.getByText(/Promote the integration branch into main/)).toBeVisible();
+  await expect(confirm.getByText(/Promote the integration branch at 9f3c2a1 into main/)).toBeVisible();
   const go = confirm.getByRole('button', 'Deploy production');
   await expect(go).toBeDisabled();
   await confirm.getByRole('textbox', 'Type studio to confirm').fill('studi');

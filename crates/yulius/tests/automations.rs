@@ -724,7 +724,10 @@ async fn ready_made_automations_are_enabled_in_one_call() -> TestResult {
         .iter()
         .filter_map(|t| t["id"].as_str())
         .collect();
-    assert_eq!(ids, ["docs-up-to-date", "open-issues"]);
+    assert_eq!(
+        ids,
+        ["docs-up-to-date", "open-issues", "nightly-dev-deploy"]
+    );
     let docs = &list.body[0];
     assert_eq!(docs["name"], "Keep the docs up to date");
     assert_eq!(docs["cron"], "0 3 * * *");
@@ -1435,7 +1438,11 @@ async fn agents_enable_ready_made_automations_by_catalog_id() -> TestResult {
         .iter()
         .filter_map(|t| t["id"].as_str())
         .collect();
-    assert_eq!(ready, ["docs-up-to-date", "open-issues"], "{listed}");
+    assert_eq!(
+        ready,
+        ["docs-up-to-date", "open-issues", "nightly-dev-deploy"],
+        "{listed}"
+    );
     assert_eq!(listed["ready_made"][0]["automation_id"], Value::Null);
     assert_eq!(listed["ready_made"][0]["cron"], "0 3 * * *");
 

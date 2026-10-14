@@ -3333,7 +3333,8 @@ impl App {
         }
     }
 
-    /// `POST /api/sandboxes/{sid}/delivery/promote` (write): an explicit promotion. It acts as
+    /// `POST /api/sandboxes/{sid}/delivery/promote` (admin, `{"confirm": "<slug>"}`): an explicit
+    /// promotion, a production release as the CD page's (ADR-0110). It acts as
     /// the caller on GitHub, so the superadmin without a GitHub identity is told to release on
     /// GitHub (ACC-012).
     ///
@@ -3344,11 +3345,27 @@ impl App {
         &self,
         ctx: &AuthContext,
         sandbox_id: &str,
+        confirm: Option<&str>,
     ) -> AppResult<PromoteResult> {
-        let sandbox = self
-            .dlv_require_sandbox(ctx, sandbox_id, Action::Work)
-            .await?;
+        // A promotion is a production release: an administrator's, with the project's slug typed,
+        // as a production deploy on the CD page (SPEC-134, ADR-0110).
+        let sid = SandboxId::parse(sandbox_id).map_err(|_| AppError::NotFound)?;
+        let (sandbox, level) = self.require(&ctx.user, &sid, Action::Work).await?;
         crate::playground::refuse_in_playground(&sandbox, "Promotion")?;
+        yulius_domain::cd::may_deploy(
+            yulius_domain::cd::CdEnv::Prod,
+            yulius_domain::cd::Requester::Person {
+                administrator: level.allows(Action::Administer),
+                confirmation: confirm,
+            },
+            &sandbox.slug,
+        )
+        .map_err(|refused| match refused {
+            yulius_domain::cd::CdRefusal::ConfirmationMismatch { .. } => {
+                AppError::Invalid(refused.to_string())
+            }
+            other => AppError::Forbidden(other.to_string()),
+        })?;
         let profile = delivery_profile(&sandbox);
         let token = self
             .person_github_token(

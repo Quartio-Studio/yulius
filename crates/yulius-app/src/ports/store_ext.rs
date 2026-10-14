@@ -495,6 +495,17 @@ pub trait CdStore: Send + Sync {
         sandbox: &SandboxId,
         limit: u32,
     ) -> AppResult<Vec<crate::ci::cd::CdRunRecord>>;
+    /// The newest passed run of an environment of a sandbox (what is deployed), without output.
+    async fn last_passed_cd_run(
+        &self,
+        sandbox: &SandboxId,
+        environment: yulius_domain::cd::CdEnv,
+    ) -> AppResult<Option<crate::ci::cd::CdRunRecord>>;
+    /// The newest run a task's agent started, without output.
+    async fn latest_cd_run_of_task(
+        &self,
+        task: &TaskId,
+    ) -> AppResult<Option<crate::ci::cd::CdRunRecord>>;
     /// Running runs of every sandbox, without output.
     async fn running_cd_runs(&self) -> AppResult<Vec<crate::ci::cd::CdRunRecord>>;
     /// Replaces the output of a running run.
@@ -578,7 +589,6 @@ impl<T> ExtensionStores for T where
         + crate::ports::vault::VaultStore
         + CiStore
         + CdStore
-        + NeedsYouStore
         + NeedsYouStore
         + crate::ports::session_docs::SessionDocStore
         + NoteStore

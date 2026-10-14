@@ -41,6 +41,9 @@ pub struct CdEnvironment {
     pub verify: Option<String>,
     /// Production promotes the integration branch first.
     pub promote: bool,
+    /// With `promote`: the integration head a deploy now would promote (as last fetched).
+    #[serde(default)]
+    pub promotes_from: Option<String>,
     /// Secrets the commands get.
     pub secrets: Vec<CdSecret>,
     /// The commit of the last passed run.

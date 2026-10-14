@@ -128,6 +128,7 @@ impl App {
             requested_by: record.requested_by.clone(),
             env_files: record.env_files.as_str().into(),
             env_requested_by: record.env_requested_by.clone(),
+            cd_prod: record.cd_prod,
             injection: injection.kind().into(),
             header_name: record.header_name.clone(),
             injection_text: injection.describe(),
@@ -234,6 +235,7 @@ impl App {
             requested_by: None,
             env_files: crate::ports::vault::EnvFiles::No,
             env_requested_by: None,
+            cd_prod: false,
         };
         self.deps.store.vault_insert(&record).await?;
         self.vault.bump();

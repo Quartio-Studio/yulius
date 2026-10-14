@@ -1,31 +1,39 @@
 //! CD (deployment): runs of a project's dev and production environments (SPEC-134, ADR-0109,
 //! ADR-0110).
 //!
-//! A CD run deploys one environment from its protected branch: Yulius fetches, resolves the
-//! branch head, reads `[cd.<env>]` from `yulius.toml` **at that commit** (never from a task
-//! branch, a worktree or the database), checks the commit out into the environment's own
-//! checkout and runs the `deploy` command and then the `verify` command through the process host,
-//! inside the sandbox's containment, like a CI job. Dev reads the integration branch; production
-//! the commit it deploys (the integration head it promotes first when `[cd.prod] promote = true`
-//! there, else the production head).
+//! A CD run deploys one environment from its protected branch: Yulius fetches, asks GitHub for
+//! the branch head, takes exactly that commit from the sandbox clone into a mirror only Yulius
+//! writes (every object checked, replacement refs ignored), reads `[cd.<env>]` from `yulius.toml`
+//! there, writes the commit's files into the run's private directory and runs the `deploy`
+//! command and then the `verify` command through the process host. Dev reads the integration
+//! branch; production reads the commit it deploys (the integration head decides whether it
+//! promotes first; after a promotion the new production head is read again).
 //!
-//! Trust contract:
+//! Trust contract (review C1, H1, H2 of SPEC-134):
 //! - who may deploy is [`yulius_domain::cd::authorize`]: dev is a person's (write access) or an
 //!   agent's; production only an administrator's who typed the project's slug, never an agent's;
-//! - a run's environment has no task token, provider credential or GitHub token; it has the real
-//!   values of the secrets its table names, only those a person allowed outside the proxy
-//!   (ADR-0105), and a `HOME` made for the run and removed after it;
+//! - nothing agents can write changes what a run executes: the sandbox clone, the CI checkouts
+//!   and the sandbox directory are not read for a deploy. A run's files (the commit's tree, its
+//!   `HOME`, its log) live in its own run directory and its cache in `<data>/cd/<sandbox>/`, bound
+//!   only into that run's mount namespace;
+//! - dev runs inside the sandbox's containment (agents build and use dev); production runs
+//!   outside it, on the host's read-only system with its own root, so nothing an agent installed
+//!   in the sandbox runs with production's secrets;
+//! - a run's environment has no task token, provider credential or GitHub token; it has the
+//!   real values of the secrets its table names that a person allowed for that environment (dev:
+//!   outside the proxy, ADR-0105; production: for production deploys, an allowance of its own);
 //! - stored output is redacted of every agent secret of the sandbox;
-//! - one running run per environment; a run left running by a restart is recorded as `error` and
-//!   never run again by itself (a deploy is not assumed repeatable);
-//! - every run is audited before it starts (no audit entry, no run), and its end.
+//! - one running run per environment; a run left running by a restart has its process host
+//!   terminated and is recorded as `error`, never run again by itself;
+//! - every run is audited before it starts (no audit entry, no run), and its end; refused
+//!   production deploys are audited too.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::sync::watch;
 use yulius_contracts::api::cd::{CdDeploy, CdEnvironment, CdOverview, CdRun, CdSecret};
-use yulius_domain::cd::{self as dom, CdConfig, CdEnv, CdRefusal, CdState, Requester};
+use yulius_domain::cd::{self as dom, CdConfig, CdEnv, CdRefusal, CdState, CdTarget, Requester};
 use yulius_domain::ci::RunState;
 use yulius_domain::delivery::DeliveryProfile;
 use yulius_domain::ids::{SandboxId, TaskId};
@@ -34,15 +42,15 @@ use yulius_domain::spec_format::{MAX_CONFIG_BYTES, parse_yulius_toml_cd};
 use yulius_domain::time::Timestamp;
 
 use super::OUTPUT_BYTES;
-use super::exec::{Ended, Sink};
+use super::exec::{Ended, Sink, ci_join};
 use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::coordination::AgentContext;
 use crate::delivery::delivery_profile;
 use crate::delivery::runner::OutputRing;
 use crate::error::{AppError, AppResult};
-use crate::model::{SandboxRecord, UserRecord};
-use crate::ports::session::LaunchPlan;
+use crate::model::{SandboxRecord, Secret, UserRecord};
+use crate::ports::session::{Containment, LaunchPlan};
 
 /// Runs listed per sandbox.
 pub const CD_RUN_LIST_LIMIT: u32 = 20;
@@ -134,14 +142,22 @@ impl CdActor<'_> {
     }
 }
 
-/// An environment's configuration and where it comes from.
-struct CdSource {
-    /// The branch deployed.
+/// What a checked deploy runs.
+struct Prepared {
     branch: String,
-    /// Its head.
+    sha: String,
+    target: CdTarget,
+    secrets: Vec<(String, String)>,
+    note: Option<String>,
+}
+
+/// An environment's configuration as the clone shows it (the page; never what a deploy runs).
+struct ShownSource {
+    branch: String,
     head: Option<String>,
-    /// `[cd.*]` as the source commit defines it, or why it cannot be read.
     config: Result<CdConfig, String>,
+    /// Production with `promote`: the integration head it would promote.
+    promotes_from: Option<String>,
 }
 
 /// Who asked, as shown (`task:12` reads `task #12`).
@@ -166,9 +182,34 @@ fn refusal(refused: &CdRefusal) -> AppError {
     }
 }
 
+/// The ring's text for storing: when its start was cut, the cut line goes too, so no secret
+/// value split by the cut is left where redaction cannot recognise it (review L5).
+fn whole_lines(ring: &OutputRing) -> String {
+    let text = ring.text();
+    if ring.dropped() == 0 {
+        return text;
+    }
+    match text.split_once('\n') {
+        Some((_, rest)) => format!("[yulius] earlier output was cut\n{rest}"),
+        None => "[yulius] earlier output was cut\n".to_owned(),
+    }
+}
+
 impl App {
-    fn cd_dir(&self, sandbox: &SandboxId) -> PathBuf {
-        self.sandbox_dir(sandbox).join("cd")
+    /// `<data>/cd/<sandbox>`: Yulius's own CD files, outside every sandbox.
+    fn cd_private_dir(&self, sandbox: &SandboxId) -> PathBuf {
+        self.config.data_dir.join("cd").join(sandbox.as_str())
+    }
+
+    fn cd_mirror(&self, sandbox: &SandboxId) -> PathBuf {
+        self.cd_private_dir(sandbox).join("source.git")
+    }
+
+    fn cd_run_dir(&self, run_id: &str) -> PathBuf {
+        self.config
+            .data_dir
+            .join("runs")
+            .join(format!("cd-{run_id}"))
     }
 
     /// `[cd.dev]` and `[cd.prod]` of `yulius.toml` at `rev`: none without the file, `Err` with
@@ -190,15 +231,14 @@ impl App {
         parse_yulius_toml_cd(&text).map_err(|err| err.to_string())
     }
 
-    /// Where `env` comes from in the clone as last fetched (CDC-003): dev from the integration
-    /// head; production from the integration head when that head's `[cd.prod]` promotes, else
-    /// from the production head. The branch is the one deployed (production's for `prod`).
-    async fn cd_source(
+    /// For the page: where `env` comes from in the clone as last fetched (CDC-003). A deploy
+    /// never uses this: it reads the verified mirror ([`App::cd_prepare`]).
+    async fn cd_shown_source(
         &self,
         sandbox: &SandboxRecord,
         profile: &DeliveryProfile,
         env: CdEnv,
-    ) -> CdSource {
+    ) -> ShownSource {
         let repo = self.sandbox_repo(&sandbox.id);
         let head = |branch: String| {
             let repo = repo.clone();
@@ -220,28 +260,31 @@ impl App {
             )),
         };
         if env == CdEnv::Dev {
-            return CdSource {
+            return ShownSource {
                 branch: profile.integration_branch.clone(),
                 head: integration,
                 config: integration_config,
+                promotes_from: None,
             };
         }
         let production = head(profile.production_branch.clone()).await;
         let promotes = integration_config
             .as_ref()
             .is_ok_and(|config| config.prod.as_ref().is_some_and(|prod| prod.promote));
+        let promotes_from = promotes.then(|| integration.clone()).flatten();
         let config = if promotes {
             integration_config
         } else {
             match &production {
-                Some(sha) => self.cd_config_at(&repo, sha).await,
+                Some(sha) => self.cd_config_at(&repo, sha).await.map(no_promotion),
                 None => Ok(CdConfig::default()),
             }
         };
-        CdSource {
+        ShownSource {
             branch: profile.production_branch.clone(),
             head: production,
             config,
+            promotes_from,
         }
     }
 
@@ -275,11 +318,11 @@ impl App {
         let runs = self
             .deps
             .store
-            .cd_runs(&sandbox.id, CD_RUN_LIST_LIMIT.max(CD_KEEP_RUNS))
+            .cd_runs(&sandbox.id, CD_RUN_LIST_LIMIT)
             .await?;
         let mut environments = Vec::with_capacity(2);
         for env in CdEnv::ALL {
-            let source = self.cd_source(sandbox, &profile, env).await;
+            let source = self.cd_shown_source(sandbox, &profile, env).await;
             let (target, problem) = match &source.config {
                 Ok(config) => (config.target(env).cloned(), None),
                 Err(problem) => (None, Some(problem.clone())),
@@ -290,7 +333,7 @@ impl App {
             };
             let secrets = match &target {
                 Some(target) => self
-                    .cd_secret_states(&sandbox.id, &target.secrets)
+                    .cd_secret_states(&sandbox.id, env, &target.secrets)
                     .await?
                     .into_iter()
                     .map(|(name, state)| CdSecret {
@@ -300,12 +343,13 @@ impl App {
                     .collect(),
                 None => Vec::new(),
             };
-            let mine = runs.iter().filter(|run| run.environment == env);
-            let deployed = mine
-                .clone()
-                .find(|run| run.state == RunState::Passed)
-                .map(|run| run.sha.clone());
-            let last_run = match mine.clone().next() {
+            let deployed = self
+                .deps
+                .store
+                .last_passed_cd_run(&sandbox.id, env)
+                .await?
+                .map(|run| run.sha);
+            let last_run = match runs.iter().find(|run| run.environment == env) {
                 Some(run) => Some(self.cd_run_view(run, false).await),
                 None => None,
             };
@@ -321,13 +365,14 @@ impl App {
                 deploy: target.deploy,
                 verify: target.verify,
                 promote: target.promote,
+                promotes_from: source.promotes_from,
                 secrets,
                 deployed,
                 last_run,
             });
         }
         let mut views = Vec::new();
-        for run in runs.iter().take(CD_RUN_LIST_LIMIT as usize) {
+        for run in &runs {
             views.push(self.cd_run_view(run, false).await);
         }
         Ok(CdOverview {
@@ -426,81 +471,38 @@ impl App {
             .await;
             return Err(refusal(&refused));
         }
-        let profile = delivery_profile(sandbox);
-        self.dlv_refresh_clone(sandbox).await?;
-        let source = self.cd_source(sandbox, &profile, env).await;
-        let config = source.config.map_err(|problem| {
-            AppError::Conflict(format!(
-                "CD can't be read on '{}': {problem}",
-                if env == CdEnv::Dev {
-                    &profile.integration_branch
-                } else {
-                    &source.branch
+        let prepared = match self.cd_prepare(sandbox, env, requester, actor).await {
+            Ok(prepared) => prepared,
+            Err(err) => {
+                if env == CdEnv::Prod {
+                    self.dlv_audit(
+                        &actor.label(),
+                        "cd.refused",
+                        &target_name,
+                        &err.public_message(),
+                    )
+                    .await;
                 }
-            ))
-        })?;
-        dom::authorize(&config, env, requester, &sandbox.slug)
-            .map_err(|refused| refusal(&refused))?;
-        let Some(target) = config.target(env).cloned() else {
-            return Err(AppError::Internal(
-                "an authorized environment has a table".into(),
-            ));
+                return Err(err);
+            }
         };
-        if self
-            .deps
-            .store
-            .cd_runs(&sandbox.id, CD_KEEP_RUNS)
-            .await?
-            .iter()
-            .any(|run| run.environment == env && run.state == RunState::Running)
-        {
-            return Err(AppError::Conflict(format!(
-                "a deploy to {} is running; wait for it to end (or cancel it)",
-                env.label()
-            )));
-        }
         let asker = match actor {
             CdActor::Agent(ctx) => Some(*ctx),
             CdActor::Person(..) => None,
         };
-        let secrets = self
-            .cd_secret_values(
-                sandbox,
-                &target.secrets,
-                asker,
-                &format!("CD {} deploy", env.label()),
-            )
-            .await?;
-        let mut note = None;
-        if env == CdEnv::Prod && target.promote {
-            let CdActor::Person(user) = actor else {
-                return Err(refusal(&CdRefusal::ProductionIsAPersons));
-            };
-            note = Some(self.cd_promote(sandbox, &profile, user).await?);
-            self.dlv_refresh_clone(sandbox).await?;
-        }
-        let repo = self.sandbox_repo(&sandbox.id);
-        let sha = self
-            .deps
-            .git
-            .resolve_commit(&repo, &format!("origin/{}", source.branch))
-            .await?
-            .ok_or_else(|| {
-                AppError::Conflict(format!("branch '{}' has no head to deploy", source.branch))
-            })?;
         let run = CdRunRecord {
             id: self.deps.crypto.new_id(),
             sandbox_id: sandbox.id.clone(),
             environment: env,
-            branch: source.branch.clone(),
-            sha: sha.clone(),
+            branch: prepared.branch.clone(),
+            sha: prepared.sha.clone(),
             state: RunState::Running,
             reason: None,
             requested_by: actor.label(),
             task_id: asker.map(|ctx| ctx.task.id.clone()),
-            deploy: target.deploy.clone(),
-            verify: target.verify.clone(),
-            note,
+            deploy: prepared.target.deploy.clone(),
+            verify: prepared.target.verify.clone(),
+            note: prepared.note.clone(),
             output: String::new(),
             exit_code: None,
             started_at: self.now(),
@@ -511,19 +513,17 @@ impl App {
             .insert_cd_run(&run)
             .await
             .map_err(|err| match err {
-                AppError::Conflict(_) => AppError::Conflict(format!(
-                    "a deploy to {} is running; wait for it to end (or cancel it)",
-                    env.label()
-                )),
+                AppError::Conflict(_) => running_refusal(env),
                 other => other,
             })?;
         let detail = format!(
-            "run {} of {} at {sha}; deploy: {}; verify: {}; secrets: [{}]{}",
+            "run {} of {} at {}; deploy: {}; verify: {}; secrets: [{}]{}",
             run.id,
-            source.branch,
-            target.deploy.as_deref().unwrap_or("-"),
-            target.verify.as_deref().unwrap_or("-"),
-            target.secrets.join(" "),
+            run.branch,
+            run.sha,
+            prepared.target.deploy.as_deref().unwrap_or("-"),
+            prepared.target.verify.as_deref().unwrap_or("-"),
+            prepared.target.secrets.join(" "),
             run.note
                 .as_deref()
                 .map(|n| format!("; {n}"))
@@ -566,9 +566,168 @@ impl App {
         let app = Arc::clone(self);
         let (sandbox, started) = (sandbox.clone(), run.clone());
         tokio::spawn(async move {
-            app.cd_execute(sandbox, started, secrets, rx).await;
+            app.cd_execute(sandbox, started, prepared.secrets, rx).await;
         });
         Ok(run)
+    }
+
+    /// The commit GitHub reports as `branch`'s head, taken from the sandbox clone into the CD
+    /// mirror with every object checked (review C1): what a deploy runs never depends on
+    /// anything an agent can write.
+    async fn cd_verified_head(
+        &self,
+        sandbox: &SandboxRecord,
+        branch: &str,
+        token: &Secret,
+    ) -> AppResult<String> {
+        let sha = self
+            .deps
+            .github
+            .branch_sha(token, &sandbox.repo_owner, &sandbox.repo_name, branch)
+            .await?
+            .ok_or_else(|| {
+                AppError::Conflict(format!("branch '{branch}' does not exist on GitHub"))
+            })?;
+        self.deps
+            .git
+            .cd_mirror_fetch(
+                &self.cd_mirror(&sandbox.id),
+                &self.sandbox_repo(&sandbox.id),
+                branch,
+                &sha,
+            )
+            .await
+            .map_err(|err| {
+                AppError::Conflict(format!(
+                    "nothing ran: the commit GitHub reports for '{branch}' ({}) could not be \
+                     taken as it is ({}); deploy again in a minute",
+                    sha.get(..7).unwrap_or(&sha),
+                    err.public_message()
+                ))
+            })?;
+        Ok(sha)
+    }
+
+    /// `[cd.*]` of the verified commit `sha` in the CD mirror.
+    async fn cd_verified_config(&self, sandbox: &SandboxRecord, sha: &str) -> AppResult<CdConfig> {
+        self.cd_config_at(&self.cd_mirror(&sandbox.id), sha)
+            .await
+            .map_err(|problem| {
+                AppError::Conflict(format!(
+                    "CD can't be read at {}: {problem}",
+                    sha.get(..7).unwrap_or(sha)
+                ))
+            })
+    }
+
+    /// Everything a deploy needs, from verified sources (CDC-003): the commit, its table, the
+    /// secrets, and for production with `promote` the promotion, after which the new production
+    /// head is read and authorized again (review M2).
+    async fn cd_prepare(
+        &self,
+        sandbox: &SandboxRecord,
+        env: CdEnv,
+        requester: Requester<'_>,
+        actor: &CdActor<'_>,
+    ) -> AppResult<Prepared> {
+        let profile = delivery_profile(sandbox);
+        self.dlv_refresh_clone(sandbox).await?;
+        let token = self.dlv_installation_token(sandbox).await?;
+        let integration = self
+            .cd_verified_head(sandbox, &profile.integration_branch, &token)
+            .await?;
+        let integration_config = self.cd_verified_config(sandbox, &integration).await?;
+        let promotes = env == CdEnv::Prod
+            && integration_config
+                .prod
+                .as_ref()
+                .is_some_and(|prod| prod.promote);
+        let (branch, sha, config) = match env {
+            CdEnv::Dev => (
+                profile.integration_branch.clone(),
+                integration,
+                integration_config,
+            ),
+            CdEnv::Prod if promotes => (
+                profile.production_branch.clone(),
+                integration,
+                integration_config,
+            ),
+            CdEnv::Prod => {
+                let production = self
+                    .cd_verified_head(sandbox, &profile.production_branch, &token)
+                    .await?;
+                // Only the integration head decides a promotion (review L4).
+                let config = no_promotion(self.cd_verified_config(sandbox, &production).await?);
+                (profile.production_branch.clone(), production, config)
+            }
+        };
+        dom::authorize(&config, env, requester, &sandbox.slug).map_err(|r| refusal(&r))?;
+        let Some(target) = config.target(env).cloned() else {
+            return Err(AppError::Internal(
+                "an authorized environment has a table".into(),
+            ));
+        };
+        if self
+            .deps
+            .store
+            .cd_runs(&sandbox.id, CD_RUN_LIST_LIMIT)
+            .await?
+            .iter()
+            .any(|run| run.environment == env && run.state == RunState::Running)
+        {
+            return Err(running_refusal(env));
+        }
+        let asker = match actor {
+            CdActor::Agent(ctx) => Some(*ctx),
+            CdActor::Person(..) => None,
+        };
+        let why = format!("CD {} deploy", env.label());
+        // Secrets first: a refusal never comes after a promotion.
+        let secrets = self
+            .cd_secret_values(sandbox, env, &target.secrets, asker, &why)
+            .await?;
+        if !(env == CdEnv::Prod && target.promote) {
+            return Ok(Prepared {
+                branch,
+                sha,
+                target,
+                secrets,
+                note: None,
+            });
+        }
+        let CdActor::Person(user) = actor else {
+            return Err(refusal(&CdRefusal::ProductionIsAPersons));
+        };
+        let note = self.cd_promote(sandbox, &profile, user).await?;
+        self.dlv_refresh_clone(sandbox).await?;
+        let production = self
+            .cd_verified_head(sandbox, &profile.production_branch, &token)
+            .await?;
+        // What production holds now is what runs, with its own table.
+        let deployed = self.cd_verified_config(sandbox, &production).await?;
+        let mut checked = no_promotion(deployed);
+        if let Some(prod) = checked.prod.as_mut()
+            && prod.deploy.is_none()
+            && prod.verify.is_none()
+        {
+            // Promotion alone was the deploy: the run records it.
+            prod.promote = true;
+        }
+        dom::authorize(&checked, env, requester, &sandbox.slug).map_err(|r| refusal(&r))?;
+        let Some(target) = checked.prod.clone() else {
+            return Err(refusal(&CdRefusal::NotDefined(env.label(), env.as_str())));
+        };
+        let secrets = self
+            .cd_secret_values(sandbox, env, &target.secrets, None, &why)
+            .await?;
+        Ok(Prepared {
+            branch,
+            sha: production,
+            target,
+            secrets,
+            note: Some(note),
+        })
     }
 
     /// Promotes the integration branch for a person's production deploy: nothing when
@@ -619,7 +778,7 @@ impl App {
         sandbox: &SandboxRecord,
         profile: &DeliveryProfile,
         user: &UserRecord,
-        token: &crate::model::Secret,
+        token: &Secret,
     ) -> AppResult<yulius_contracts::api::git::PromoteResult> {
         self.dlv_promote(
             sandbox,
@@ -632,7 +791,7 @@ impl App {
         .await
     }
 
-    /// Background part of a run: checkout, the commands in the sandbox, the record of the end.
+    /// Background part of a run: its files, the commands, the record of the end.
     async fn cd_execute(
         self: Arc<Self>,
         sandbox: SandboxRecord,
@@ -650,11 +809,12 @@ impl App {
             run.sha,
             run.environment.label()
         ));
-        let home = self.cd_dir(&sandbox.id).join("homes").join(&run.id);
+        let run_dir = self.cd_run_dir(&run.id);
         let ended = self
-            .cd_process(&sandbox, &run, secrets, &home, &mut ring, &mut cancel)
+            .cd_process(&sandbox, &run, secrets, &run_dir, &mut ring, &mut cancel)
             .await;
-        let _ = std::fs::remove_dir_all(&home);
+        // The run's files (the tree, its HOME, its log) go with it.
+        let _ = std::fs::remove_dir_all(&run_dir);
         let (state, exit_code, reason) = match ended {
             Ok(Ended::Exit(exit)) if exit.spawn_failed => (
                 RunState::Error,
@@ -693,7 +853,9 @@ impl App {
         if let Some(reason) = &reason {
             ring.push_str(&format!("\n[yulius] {reason}\n"));
         }
-        let output = self.redact_for_sandbox(&sandbox.id, &ring.text()).await;
+        let output = self
+            .redact_for_sandbox(&sandbox.id, &whole_lines(&ring))
+            .await;
         let end = CdRunEnd {
             state,
             reason,
@@ -722,37 +884,93 @@ impl App {
         .await;
     }
 
+    /// The run's containment: dev joins the sandbox (agents build and use dev); production runs
+    /// outside it on the host's read-only system with the run's own root (review C1). Either way
+    /// only the run's directory and its environment's cache are bound in.
+    async fn cd_containment(
+        &self,
+        sandbox: &SandboxRecord,
+        env: CdEnv,
+        work: &Path,
+        home: &Path,
+        cache: &Path,
+    ) -> Result<(Containment, Option<crate::isolation::IsolationLease>), String> {
+        if !self.config.contained {
+            return Ok((Containment::None, None));
+        }
+        let readonly: Vec<PathBuf> = self.config.contained_readonly.clone();
+        if env == CdEnv::Prod {
+            return Ok((
+                Containment::Bubblewrap {
+                    sandbox_root: work.to_path_buf(),
+                    home: home.to_path_buf(),
+                    writable: vec![cache.to_path_buf()],
+                    readonly,
+                    binds: Vec::new(),
+                    identity: None,
+                    join: None,
+                },
+                None,
+            ));
+        }
+        // Held until the run ends: the sandbox's holder is not stopped as idle meanwhile.
+        let (join, lease) = match self.isolation_join(sandbox).await {
+            Ok(joined) => joined.unzip(),
+            Err(err) => return Err(err.public_message()),
+        };
+        Ok((
+            Containment::Bubblewrap {
+                sandbox_root: self.sandbox_dir(&sandbox.id),
+                home: home.to_path_buf(),
+                writable: vec![work.to_path_buf(), cache.to_path_buf()],
+                readonly: readonly
+                    .into_iter()
+                    .chain(join.iter().flat_map(|j| j.extra_readonly.iter().cloned()))
+                    .collect(),
+                binds: Vec::new(),
+                identity: None,
+                join: join.map(|join| Box::new(ci_join(join))),
+            },
+            lease,
+        ))
+    }
+
     #[allow(clippy::too_many_arguments)] // One run's whole context.
     async fn cd_process(
         &self,
         sandbox: &SandboxRecord,
         run: &CdRunRecord,
         secrets: Vec<(String, String)>,
-        home: &Path,
+        run_dir: &Path,
         ring: &mut OutputRing,
         cancel: &mut watch::Receiver<Option<String>>,
     ) -> Result<Ended, String> {
-        let cd_dir = self.cd_dir(&sandbox.id);
-        let checkout = cd_dir.join("checkouts").join(run.environment.as_str());
-        let (cache, logs) = (cd_dir.join("cache"), cd_dir.join("logs"));
-        for dir in [&cache, &logs, home] {
+        let work = run_dir.join("work");
+        let (src, home, log) = (work.join("src"), work.join("home"), work.join("log"));
+        let cache = self
+            .cd_private_dir(&sandbox.id)
+            .join("cache")
+            .join(run.environment.as_str());
+        let _ = std::fs::remove_dir_all(run_dir);
+        for dir in [&home, &cache] {
             std::fs::create_dir_all(dir)
-                .map_err(|e| format!("preparing the CD directory failed: {e}"))?;
+                .map_err(|e| format!("preparing the run's directories failed: {e}"))?;
         }
-        let repo = self.sandbox_repo(&sandbox.id);
         self.deps
             .git
-            .ci_checkout(&repo, &checkout, &run.sha, &cd_dir)
+            .export_tree(&self.cd_mirror(&sandbox.id), &run.sha, &src)
             .await
-            .map_err(|err| format!("checking out {} failed: {}", run.sha, err.public_message()))?;
-        let log = logs.join(format!("{}.log", run.id));
-        let _ = std::fs::remove_file(&log);
+            .map_err(|err| {
+                format!(
+                    "writing {}'s files failed: {}",
+                    run.sha,
+                    err.public_message()
+                )
+            })?;
         std::fs::File::create(&log).map_err(|e| format!("creating the run log failed: {e}"))?;
-        // Held until the run ends: the sandbox's holder is not stopped as idle meanwhile.
-        let (join, _lease) = match self.isolation_join(sandbox).await {
-            Ok(joined) => joined.unzip(),
-            Err(err) => return Err(err.public_message()),
-        };
+        let (containment, _lease) = self
+            .cd_containment(sandbox, run.environment, &work, &home, &cache)
+            .await?;
         let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/local/bin:/usr/bin:/bin".into());
         let env = vec![
             ("HOME".to_owned(), home.to_string_lossy().into_owned()),
@@ -785,37 +1003,25 @@ impl App {
                 run.deploy.clone().unwrap_or_default(),
                 run.verify.clone().unwrap_or_default(),
             ],
-            cwd: checkout,
+            cwd: src,
             env,
             secret_env: secrets,
             files: Vec::new(),
-            containment: self.ci_containment(sandbox, home, join),
+            containment,
         };
-        let run_dir = self
-            .config
-            .data_dir
-            .join("runs")
-            .join(format!("cd-{}", run.id));
-        let _ = std::fs::remove_dir_all(&run_dir);
-        std::fs::create_dir_all(&run_dir)
-            .map_err(|e| format!("creating the run directory failed: {e}"))?;
         let token = self.deps.crypto.random_bytes();
         let group = format!("cd-{}", run.id);
-        let outcome = self
-            .ci_watch(
-                &run_dir,
-                (&run.id, &group),
-                Sink::CdRun(&run.id, &sandbox.id),
-                &plan,
-                &token,
-                &log,
-                ring,
-                cancel,
-            )
-            .await;
-        let _ = std::fs::remove_dir_all(&run_dir);
-        let _ = std::fs::remove_file(&log);
-        outcome
+        self.ci_watch(
+            run_dir,
+            (&run.id, &group),
+            Sink::CdRun(&run.id, &sandbox.id),
+            &plan,
+            &token,
+            &log,
+            ring,
+            cancel,
+        )
+        .await
     }
 
     async fn cd_require_run(
@@ -853,8 +1059,37 @@ impl App {
         Ok(self.cd_run_view(&run, true).await)
     }
 
+    /// A run with no executor: its process host (which outlives a restart) is terminated and
+    /// its files removed (review H2), then it ends as `state`.
+    async fn cd_end_lost(
+        &self,
+        run: CdRunRecord,
+        state: RunState,
+        reason: &str,
+    ) -> AppResult<bool> {
+        let run_dir = self.cd_run_dir(&run.id);
+        if run_dir.exists() {
+            let _ = self.deps.session_host.terminate(&run_dir);
+            let _ = std::fs::remove_dir_all(&run_dir);
+        }
+        let full = self.deps.store.cd_run(&run.id, true).await?.unwrap_or(run);
+        self.deps
+            .store
+            .finish_cd_run(
+                &full.id,
+                &CdRunEnd {
+                    state,
+                    reason: Some(reason.to_owned()),
+                    exit_code: None,
+                    output: format!("{}\n[yulius] {reason}\n", full.output),
+                    ended_at: self.now(),
+                },
+            )
+            .await
+    }
+
     /// `POST /api/sandboxes/{sid}/cd/runs/{rid}/cancel` (write; a production run: administrator).
-    /// Kills the run's process group; a run without an executor (lost) is recorded cancelled.
+    /// Kills the run's process group; a run without an executor (lost) is ended as cancelled.
     ///
     /// # Errors
     /// `NotFound`, `Forbidden` below the access, `Conflict` when it already ended.
@@ -886,19 +1121,7 @@ impl App {
             })
             .unwrap_or(false);
         if !signalled {
-            let output = format!("{}\n[yulius] {reason}\n", run.output);
-            self.deps
-                .store
-                .finish_cd_run(
-                    &run.id,
-                    &CdRunEnd {
-                        state: RunState::Cancelled,
-                        reason: Some(reason.clone()),
-                        exit_code: None,
-                        output,
-                        ended_at: self.now(),
-                    },
-                )
+            self.cd_end_lost(run.clone(), RunState::Cancelled, &reason)
                 .await?;
         }
         self.dlv_audit(
@@ -912,9 +1135,9 @@ impl App {
         Ok(self.cd_run_view(&after, true).await)
     }
 
-    /// Startup: runs recorded as running have no executor after a restart. They are recorded as
-    /// `error` and never started again by themselves (CDR-004). Returns how many. Call once
-    /// before serving.
+    /// Startup: runs recorded as running have no executor after a restart. Their process hosts
+    /// are terminated and they are recorded as `error`, never started again by themselves
+    /// (CDR-004). Returns how many. Call once before serving.
     ///
     /// # Errors
     /// Store failures.
@@ -929,25 +1152,9 @@ impl App {
             {
                 continue;
             }
-            let reason = "Yulius restarted while it ran: its outcome is unknown, and it is not \
-                          run again by itself"
-                .to_owned();
-            let full = self.deps.store.cd_run(&run.id, true).await?.unwrap_or(run);
-            let ended = self
-                .deps
-                .store
-                .finish_cd_run(
-                    &full.id,
-                    &CdRunEnd {
-                        state: RunState::Error,
-                        reason: Some(reason.clone()),
-                        exit_code: None,
-                        output: format!("{}\n[yulius] {reason}\n", full.output),
-                        ended_at: self.now(),
-                    },
-                )
-                .await?;
-            if ended {
+            let reason = "Yulius restarted while it ran: it was stopped, its outcome is unknown, \
+                          and it is not run again by itself";
+            if self.cd_end_lost(run, RunState::Error, reason).await? {
                 closed += 1;
             }
         }
@@ -962,20 +1169,29 @@ impl App {
         }
     }
 
-    /// The recent CD runs `task`'s agent started, newest first (`yulius wait`, CDT-003).
-    pub(crate) async fn cd_runs_of_task(
+    /// The latest CD run `task`'s agent started (`yulius wait`, CDT-003).
+    pub(crate) async fn cd_latest_run_of_task(
         &self,
         task: &crate::model::TaskRecord,
-    ) -> AppResult<Vec<CdRunRecord>> {
-        Ok(self
-            .deps
-            .store
-            .cd_runs(&task.sandbox_id, CD_RUN_LIST_LIMIT)
-            .await?
-            .into_iter()
-            .filter(|run| run.task_id.as_ref() == Some(&task.id))
-            .collect())
+    ) -> AppResult<Option<CdRunRecord>> {
+        self.deps.store.latest_cd_run_of_task(&task.id).await
     }
+}
+
+/// A production table read from the production head: only the integration head decides a
+/// promotion (review L4).
+fn no_promotion(mut config: CdConfig) -> CdConfig {
+    if let Some(prod) = config.prod.as_mut() {
+        prod.promote = false;
+    }
+    config
+}
+
+fn running_refusal(env: CdEnv) -> AppError {
+    AppError::Conflict(format!(
+        "a deploy to {} is running; wait for it to end (or cancel it)",
+        env.label()
+    ))
 }
 
 /// One environment as `cd_status` prints it.

@@ -81,9 +81,10 @@ watching, steering and unblocking.
 - **Yulius CI**: the projects' only CI; it runs on the VM, no GitHub Actions.
 - **CD (deployment)**: beside CI, with the same discipline. Every project defines dev and
   production in `yulius.toml` (`[cd.dev]`, `[cd.prod]`), each with deploy and verify scripts
-  committed under `scripts/cd/`, or explicitly empty while it deploys nothing yet. Yulius runs them
-  inside the sandbox, from the protected branches only, with the agent secrets a person allowed, and
-  shows each run on the CD (deployment) page. A merge deploys nothing: a person or an agent
+  committed under `scripts/cd/`, or explicitly empty while it deploys nothing yet. Yulius runs the
+  exact commits GitHub reports for the protected branches, dev inside the sandbox and production
+  outside it, with the agent secrets a person allowed for each, and shows each run on the CD
+  (deployment) page. A merge deploys nothing: a person or an agent
   (`cd_deploy`) deploys dev when it is wanted, or the ready-made "Deploy dev every night"
   automation deploys and tests it. Production (with its promotion) is always a person's: an
   administrator types the project's slug. Agents build and improve CD through pull requests but

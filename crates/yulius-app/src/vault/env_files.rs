@@ -308,6 +308,48 @@ impl App {
         self.agent_view(&record, true).await
     }
 
+    /// `POST /api/agent-secrets/{id}/cd-prod`: a person who manages the secret allows production
+    /// CD runs to get its value, or revokes it (SPEC-134). Apart from `env_files`: an allowance
+    /// for `.env` files lets any agent of the project use the value, which production must not.
+    ///
+    /// # Errors
+    /// `NotFound` for invisible secrets, `Forbidden` for people who cannot manage it.
+    pub async fn answer_cd_prod(
+        &self,
+        ctx: &AuthContext,
+        id: &str,
+        allow: bool,
+    ) -> AppResult<AgentSecretView> {
+        let mut record = self.agent_record(ctx, id).await?;
+        self.require_manage_agent(ctx, record.sandbox_id.as_ref())
+            .await?;
+        if record.cd_prod != allow {
+            if !self
+                .deps
+                .store
+                .vault_set_cd_prod(id, record.cd_prod, allow)
+                .await?
+            {
+                return Err(AppError::Conflict(
+                    "the secret changed since you looked: reload and answer again".into(),
+                ));
+            }
+            record.cd_prod = allow;
+            self.vault_audit(
+                &Self::vault_actor(ctx),
+                if allow {
+                    "vault.agent.cd_prod_allow"
+                } else {
+                    "vault.agent.cd_prod_revoke"
+                },
+                Some(id),
+                &format!("{} → production CD runs", record.name),
+            )
+            .await?;
+        }
+        self.agent_view(&record, true).await
+    }
+
     /// `secret_copy_to_env`: copies the values of agent secrets of the task's project into a
     /// dotenv file of its worktree that Git ignores (default `.env`), and their names into the
     /// `.env.example` beside it. All or nothing: everything that would refuse the copy is checked
@@ -641,9 +683,9 @@ mod tests {
 /// Where a secret a CD environment names stands (SPEC-134 CDR-002).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CdSecretState {
-    /// A person allowed it outside the proxy: a CD run gets its value.
+    /// A person allowed it for this environment: a CD run gets its value.
     Ready,
-    /// It exists; no person allowed it outside the proxy yet.
+    /// It exists; no person allowed it for this environment yet.
     NotAllowed,
     /// No agent secret of the project has this name.
     Missing,
@@ -659,11 +701,23 @@ impl CdSecretState {
     }
 }
 
+/// Whether a run of `env` may get `record`'s value (SPEC-134, ADR-0109): dev runs the secrets a
+/// person allowed outside the proxy (`env_files`, ADR-0105: dev is the agents' own ground, as
+/// `.env` is), production only those a person allowed for production deploys (`cd_prod`), which
+/// no agent can use otherwise.
+fn allowed_for(record: &VaultSecretRecord, env: yulius_domain::cd::CdEnv) -> bool {
+    match env {
+        yulius_domain::cd::CdEnv::Dev => record.env_files == EnvFiles::Allowed,
+        yulius_domain::cd::CdEnv::Prod => record.cd_prod,
+    }
+}
+
 impl App {
-    /// The state of each secret `names` (SPEC-134 CDT-001).
+    /// The state of each secret `names` for runs of `env` (SPEC-134 CDT-001).
     pub(crate) async fn cd_secret_states(
         &self,
         sandbox: &yulius_domain::ids::SandboxId,
+        env: yulius_domain::cd::CdEnv,
         names: &[String],
     ) -> AppResult<Vec<(String, CdSecretState)>> {
         let all = self.deps.store.vault_agent(Some(sandbox)).await?;
@@ -672,7 +726,7 @@ impl App {
             .map(|name| {
                 let state = match all.iter().find(|r| &r.name == name) {
                     None => CdSecretState::Missing,
-                    Some(r) if r.env_files == EnvFiles::Allowed => CdSecretState::Ready,
+                    Some(r) if allowed_for(r, env) => CdSecretState::Ready,
                     Some(_) => CdSecretState::NotAllowed,
                 };
                 (name.clone(), state)
@@ -680,17 +734,17 @@ impl App {
             .collect())
     }
 
-    /// The values of the secrets a CD run of `sandbox` needs (SPEC-134 CDR-002, ADR-0109): each
-    /// must be an agent secret of the project that a person allowed outside the proxy. Otherwise
-    /// nothing is returned: a secret that exists is asked for when an agent (`asker`) wants the
-    /// run (as `secret_copy_to_env` does, the task then needs a person), and the refusal says what
-    /// a person must do.
+    /// The values of the secrets a CD run of `env` needs (SPEC-134 CDR-002): each must be an
+    /// agent secret of the project allowed for `env` ([`allowed_for`]). Otherwise nothing is
+    /// returned: for dev, a secret that exists is asked for when an agent (`asker`) wants the run
+    /// (as `secret_copy_to_env` does); the refusal says what a person must do.
     ///
     /// # Errors
     /// `Conflict` naming the missing or not-allowed secrets; store or decryption failures.
     pub(crate) async fn cd_secret_values(
         &self,
         sandbox: &crate::model::SandboxRecord,
+        env: yulius_domain::cd::CdEnv,
         names: &[String],
         asker: Option<&AgentContext>,
         why: &str,
@@ -718,9 +772,18 @@ impl App {
         let waiting: Vec<&VaultSecretRecord> = records
             .iter()
             .copied()
-            .filter(|r| r.env_files != EnvFiles::Allowed)
+            .filter(|r| !allowed_for(r, env))
             .collect();
         if !waiting.is_empty() {
+            let names: Vec<&str> = waiting.iter().map(|r| r.name.as_str()).collect();
+            if env == yulius_domain::cd::CdEnv::Prod {
+                return Err(AppError::Conflict(format!(
+                    "nothing ran: a person who manages {} allows {} for production deploys on \
+                     the Secrets page: {link}",
+                    names.join(", "),
+                    if names.len() == 1 { "it" } else { "them" },
+                )));
+            }
             if let Some(ctx) = asker {
                 for record in &waiting {
                     self.ask_env_files(ctx, record, &sandbox.slug, why).await?;
@@ -733,10 +796,9 @@ impl App {
                     tracing::warn!(task = %task.id, error = %err, "could not flag a CD secret request");
                 }
             }
-            let names: Vec<&str> = waiting.iter().map(|r| r.name.as_str()).collect();
             return Err(AppError::Conflict(format!(
                 "nothing ran: a person who manages {} allows using {} outside the proxy (the \
-                 project's .env and its CD runs) on the Secrets page: {link}",
+                 project's .env and its dev deploys) on the Secrets page: {link}",
                 names.join(", "),
                 if names.len() == 1 { "it" } else { "them" },
             )));

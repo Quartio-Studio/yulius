@@ -438,9 +438,11 @@ impl App {
         input: &HookInput,
     ) -> AppResult<HookReply> {
         let store = &self.deps.store;
-        // Someone wrote to the task, even a prompt held below: what its agent asked a person is
-        // answered (SPEC-134 CDT-004).
-        if crate::finish::is_typed_prompt(input.prompt.as_deref()) {
+        // A person wrote to the task (they typed it, even a prompt held below): what its agent
+        // asked a person is answered (SPEC-134 CDT-004). Prompts Yulius types do not count.
+        if crate::finish::is_typed_prompt(input.prompt.as_deref())
+            && self.typed_recently(&ctx.task.id).is_some()
+        {
             self.end_needs_you(&ctx.task.id).await;
         }
         // A prompt held for capacity stays held while its pause lasts (also across a restart).

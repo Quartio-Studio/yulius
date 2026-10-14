@@ -1612,7 +1612,7 @@ function seedCd() {
     sb_studio: {
       environments: [
         { name: 'dev', label: 'dev', state: 'ready', branch: 'quartio', head: '9f3c2a1b7e4d5f6a', problem: null, about: 'the team’s dev VM', deploy: 'scripts/cd/deploy.sh dev', verify: 'scripts/cd/verify.sh dev', promote: false, secrets: [{ name: 'DEV_SSH_KEY', state: 'ready' }, { name: 'DEV_HOST', state: 'not_allowed' }] },
-        { name: 'prod', label: 'production', state: 'ready', branch: 'main', head: '4be81c0d2a9f1e2d', problem: null, about: 'customers', deploy: 'scripts/cd/deploy.sh prod', verify: 'scripts/cd/verify.sh prod', promote: true, secrets: [] },
+        { name: 'prod', label: 'production', state: 'ready', branch: 'main', head: '4be81c0d2a9f1e2d', problem: null, about: 'customers', deploy: 'scripts/cd/deploy.sh prod', verify: 'scripts/cd/verify.sh prod', promote: true, promotes_from: '9f3c2a1b7e4d5f6a', secrets: [] },
       ],
       runs: [
         cdRun('cd_s2', 'dev', 'quartio', '7d1e0c9b8a7f6e5d', 'failed', 90, 'task #12', { reason: null, output: '[yulius] deploy: scripts/cd/deploy.sh dev\nssh: connect to host [secret:DEV_HOST] port 22: timed out\n[yulius] deploy failed with status 3; verify skipped\n' }),
@@ -2201,7 +2201,7 @@ function teamView(s) {
 
 function agentView(db, s, sandbox) {
   const manage = s.scope === 'instance' ? Boolean(db.me.user.is_instance_admin || db.me.user.is_superadmin) : RANK[sandbox.access] >= RANK.write;
-  return { id: s.id, name: s.name, description: s.description, scope: s.scope, hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, env_files: s.env_files || 'no', env_requested_by: s.env_requested_by || null, injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, can_manage: manage };
+  return { id: s.id, name: s.name, description: s.description, scope: s.scope, hosts: s.hosts, requested_hosts: s.requested_hosts, requested_by: s.requested_by, env_files: s.env_files || 'no', env_requested_by: s.env_requested_by || null, cd_prod: Boolean(s.cd_prod), injection: s.injection, header_name: s.header_name, injection_text: s.injection === 'header' ? `${s.header_name}: <value>` : INJECTION_TEXT[s.injection], placeholder: `yulius-secret-${s.name}`, has_username: Boolean(s.username), has_totp: false, created_by: s.created_by, updated_at: s.updated_at, value_updated_at: s.value_updated_at, last_used_at: s.last_used_at, rotate_due: false, can_manage: manage };
 }
 
 function reauthStatus(db) {
@@ -2359,6 +2359,16 @@ route('POST', `/api/agent-secrets/${ID}/env`, ({ db, p, body }) => {
   audit(db, body.allow ? 'vault.agent.env_allow' : state === 'asked' ? 'vault.agent.env_dismiss' : 'vault.agent.env_revoke', secret.id, `${secret.name} → .env files`);
   secret.env_files = body.allow ? 'allowed' : 'no';
   secret.env_requested_by = null;
+  return agentView(db, secret, sandbox);
+});
+route('POST', `/api/agent-secrets/${ID}/cd-prod`, ({ db, p, body }) => {
+  const secret = vaultOf(db).agent.find((s) => s.id === p[0]) || fail(404, 'not_found', 'not found');
+  const sandbox = secret.sandbox ? sandboxOf(db, secret.sandbox) : db.sandboxes[0];
+  if (!agentView(db, secret, sandbox).can_manage) fail(403, 'forbidden', 'only people who manage this secret allow it for production deploys');
+  if (Boolean(secret.cd_prod) !== Boolean(body.allow)) {
+    audit(db, body.allow ? 'vault.agent.cd_prod_allow' : 'vault.agent.cd_prod_revoke', secret.id, `${secret.name} → production CD runs`);
+    secret.cd_prod = Boolean(body.allow);
+  }
   return agentView(db, secret, sandbox);
 });
 route('DELETE', `/api/agent-secrets/${ID}`, ({ db, p }) => {

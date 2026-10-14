@@ -242,7 +242,7 @@ impl App {
 
     /// `Some(who)` when a person typed into the task's terminal within
     /// [`policy::TYPED_WINDOW_MS`].
-    fn typed_recently(&self, task: &TaskId) -> Option<Option<UserId>> {
+    pub(crate) fn typed_recently(&self, task: &TaskId) -> Option<Option<UserId>> {
         let runtime = self.runtime(task);
         let at = runtime.typed_at_ms.load(Ordering::SeqCst);
         if at <= 0 || self.now().0.saturating_sub(at) > policy::TYPED_WINDOW_MS {

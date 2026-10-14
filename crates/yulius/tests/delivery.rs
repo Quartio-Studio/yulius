@@ -1090,8 +1090,8 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
         .req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
-            None,
-            &f.bob,
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
         )
         .await?;
     assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
@@ -1119,8 +1119,8 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
         .req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
-            None,
-            &f.bob,
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
         )
         .await?;
     assert_eq!(waiting.status, StatusCode::CONFLICT);
@@ -1136,8 +1136,8 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
         .req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
-            None,
-            &f.bob,
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
         )
         .await?;
     assert_eq!(unknown.status, StatusCode::CONFLICT);
@@ -1151,8 +1151,8 @@ async fn standard_flow_merges_on_green_checks_and_promotes_by_pr() -> TestResult
         .req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
-            None,
-            &f.bob,
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
         )
         .await?;
     assert_eq!(promoted.status, StatusCode::OK, "{}", promoted.body);
@@ -1285,8 +1285,8 @@ async fn product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out()
         .req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
-            None,
-            &f.bob,
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
         )
         .await?;
     assert!(
@@ -1358,8 +1358,8 @@ async fn product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out()
         .req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
-            None,
-            &f.bob,
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
         )
         .await?;
     assert_eq!(promoted.status, StatusCode::OK, "{}", promoted.body);
@@ -1378,8 +1378,8 @@ async fn product_flow_deploys_on_confirmation_then_fast_forwards_and_rolls_out()
         .req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
-            None,
-            &f.bob,
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
         )
         .await?;
     assert_eq!(
@@ -1497,8 +1497,8 @@ async fn studio_auto_promotes_until_the_profile_is_gated() -> TestResult {
         .req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
-            None,
-            &f.bob,
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
         )
         .await?;
     assert_eq!(promoted.status, StatusCode::OK, "{}", promoted.body);
@@ -1960,8 +1960,8 @@ async fn reads_reconcile_with_github_and_degrade_gracefully() -> TestResult {
         .req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
-            None,
-            &f.bob,
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
         )
         .await?;
     assert_eq!(opened.body["result"], "pr_opened", "{}", opened.body);
@@ -1980,8 +1980,8 @@ async fn reads_reconcile_with_github_and_degrade_gracefully() -> TestResult {
         .req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
-            None,
-            &f.bob,
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
         )
         .await?;
     assert_eq!(recorded.status, StatusCode::OK, "{}", recorded.body);
@@ -1992,8 +1992,8 @@ async fn reads_reconcile_with_github_and_degrade_gracefully() -> TestResult {
         .req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
-            None,
-            &f.bob,
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
         )
         .await?;
     assert_eq!(nothing.status, StatusCode::CONFLICT);
@@ -2792,7 +2792,7 @@ async fn the_superadmin_delivers_through_the_app_and_is_told_what_needs_github()
         .req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
-            Some(json!({})),
+            Some(json!({"confirm": "shop"})),
             &owner,
         )
         .await?;
@@ -4030,8 +4030,8 @@ async fn the_branch_policy_gates_every_merge() -> TestResult {
         f.req(
             Method::POST,
             "/api/sandboxes/s1/delivery/promote",
-            None,
-            &f.bob,
+            Some(json!({"confirm": "shop"})),
+            &f.alice,
         )
     };
     let opened = promote().await?;

@@ -116,14 +116,17 @@ example when it starts deploying for real), and record every change as a decisio
    - **What is committed.** Scripts and the tables are reviewed and tested like code (add
      `bash -n` or `shellcheck` of `scripts/cd/` to the gate). Machines, addresses, keys and tokens
      are agent secrets named in `secrets`, never in the repository; the run gets their real values
-     as environment variables, only once a person allowed each one outside the proxy (the Secrets
-     page). Do not write secrets to disk: the run's `HOME` is removed after it, `$YULIUS_CD_CACHE`
-     persists for caches only.
-   - **How it runs.** Yulius checks out the exact head of the protected branch (never your task
-     branch or worktree), runs inside the sandbox's containment with `YULIUS_CD_ENV`,
-     `YULIUS_CD_SHA` and `YULIUS_CD_BRANCH`, keeps a redacted output tail, and allows one run per
-     environment at a time. So you improve CD only through a pull request, and nothing you merge
-     reaches production until a person deploys it.
+     as environment variables, only once a person allowed each one for that environment on the
+     Secrets page (dev: outside the proxy; production: "for production deploys"). Do not write
+     secrets to disk: the run's `HOME` is removed after it, `$YULIUS_CD_CACHE` persists for caches
+     only.
+   - **How it runs.** Yulius runs the exact commit GitHub reports for the protected branch (never
+     your task branch, worktree or the sandbox clone), in a directory of its own, with
+     `YULIUS_CD_ENV`, `YULIUS_CD_SHA` and `YULIUS_CD_BRANCH`, keeps a redacted output tail, and
+     allows one run per environment at a time. Dev runs in the sandbox with its tools; production
+     runs outside it on a clean system, so production scripts install what they need (a CLI, a
+     package) into `$YULIUS_CD_CACHE` themselves. You improve CD only through a pull request, and
+     nothing you merge reaches production until a person deploys it.
    - **Who deploys.** A merge deploys nothing. Dev: a person on the CD page, or an agent with
      `cd_deploy` when its task asks (then `yulius wait`), or a nightly automation that deploys and
      tests it. Production: only a person with administrator access, typing the project's slug;

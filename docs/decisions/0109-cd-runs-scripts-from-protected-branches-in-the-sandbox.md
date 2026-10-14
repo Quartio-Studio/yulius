@@ -1,4 +1,4 @@
-# 0109. CD runs the repository's scripts from protected branches, inside the sandbox
+# 0109. CD runs the repository's scripts from protected branches, out of the agents' reach
 
 ## Status
 
@@ -28,17 +28,30 @@ build them, and a command that runs a repository script would run agent-written 
 - **Scripts in Git.** Deploy and verify scripts are committed (`scripts/cd/` by convention) and go
   through review and CI like code. Machines, addresses and credentials are agent secrets. Run
   records and logs live in Yulius.
-- **Protected sources only.** Dev reads its table and scripts at the integration branch head;
-  production at the commit it deploys (the integration head it promotes, or the production head).
-  A task branch, a worktree or the database never changes what a deploy runs.
-- **Run like CI, not on the server.** A CD run checks out that exact commit into the environment's
-  own checkout and runs `deploy` then `verify` through the process host inside the sandbox's
-  containment, bounded by the CI job timeout. It has its own `cd_runs` table: a deploy result never
-  counts as a test of its commit, and a run left by a restart is recorded as `error`, never run again
-  by itself.
-- **Secrets.** A run gets the real values of the secrets its table names, only when a person allowed
-  each one outside the proxy (ADR-0105's allowance); its home is made for the run and removed after
-  it; its stored output is redacted.
+- **Protected sources only, verified.** Dev reads its table and scripts at the integration
+  branch head; production at the commit it deploys (the integration head decides whether it
+  promotes; after a promotion the new production head is read and authorized again). The commit
+  is the one GitHub reports for the branch. It is taken from the sandbox clone into a mirror only
+  Yulius writes (`<data>/cd/<sandbox>/source.git`), with every object checked
+  (`transfer.fsckObjects`) and replacement refs ignored, and read there. A task branch, a
+  worktree, the sandbox clone's state or the database never changes what a deploy runs.
+- **Run files out of the agents' reach.** A run's files (the commit's tree, its `HOME`, its log)
+  live in its own run directory and its cache in `<data>/cd/<sandbox>/cache/<env>`, bound only into
+  that run's mount namespace and removed with the run (the cache stays). Each run has its own
+  PID namespace, so no agent reads its environment.
+- **Dev in the sandbox, production outside it.** Dev runs inside the sandbox's containment: agents
+  build and use dev, with the tools they installed. Production runs on the host's read-only
+  system with the run's directory as its root and the host's network, so nothing an agent
+  installed in the sandbox runs with production's secrets; its scripts fetch the tools they need
+  into `$YULIUS_CD_CACHE`.
+- **Secrets per environment.** Dev runs get the secrets their table names that a person allowed
+  outside the proxy (ADR-0105's allowance: dev is the agents' ground, as `.env` is). Production
+  runs get only those a person allowed for production deploys, an allowance of its own that no
+  agent can use otherwise. Stored output is redacted.
+- **Bounded and never repeated.** Runs share the CI job timeout; one runs per environment at a
+  time; a run a restart left behind has its process host terminated, its files removed and is
+  recorded as `error`, never started again by itself (it has its own `cd_runs` table: a deploy
+  result never counts as a test of its commit).
 - **Separate from merges.** A merge never deploys. A person (CD page), an agent (`cd_deploy`) or an
   automation's task deploys dev when it is wanted.
 
@@ -52,13 +65,20 @@ build them, and a command that runs a repository script would run agent-written 
   test, and a restart would run a deploy again.
 - **Read the configuration from the task's worktree.** An agent could run anything as a deploy
   without review.
-- **A second, CD-only allowance for secrets.** The exposure is the one ADR-0105 already asks a
-  person about: the value leaves the proxy for code the project runs.
+- **One allowance for every CD secret** (the first version, ADR-0105's). An allowance for `.env`
+  lets any agent of the project use the value, so a production credential allowed that way could
+  be used without a person's production deploy (independent review, H1).
+- **Production inside the sandbox too.** Its system layer, cache and checkouts are writable by
+  the project's agents, who could then change what a production deploy runs or read its secrets
+  (independent review, C1).
 
 ## Consequences
 
 - Agents improve CD by pull requests; what they merge into the integration branch reaches dev on
   the next dev deploy, and production only through a person's production deploy.
 - Every project states its CD explicitly, even when it deploys nothing yet.
-- Deploys use the sandbox's network: SSH and HTTPS to machines work, the host's loopback does not.
+- Dev deploys use the sandbox's network; production deploys use the host's network (its loopback
+  included) and only the host's tools, which their scripts complete in `$YULIUS_CD_CACHE`.
+- What the CD page shows is read from the clone as last fetched; what a deploy runs is verified
+  again at the deploy.
 - `[[delivery.environments]]` keep working for projects that use them; new projects use CD.

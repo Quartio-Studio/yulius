@@ -1305,3 +1305,65 @@ fn a_squash_lands_one_commit_on_the_remote_branch_or_names_the_conflicts() -> Te
     assert_eq!(fx.git.rev_parse(&remote, "dev")?, commit, "nothing pushed");
     Ok(())
 }
+
+/// SPEC-134 (review C1): CD reads a project's scripts from a mirror only Yulius writes. A
+/// replacement planted in the sandbox clone (`git replace`, writable by its agents) never reaches
+/// it, a tracking ref that moved away from the expected commit is refused, and the exported tree
+/// is exactly the commit's.
+#[test]
+fn the_cd_mirror_takes_only_the_expected_commit_and_ignores_replacements() -> TestResult {
+    let fx = Fixture::new()?;
+    let (_remote, repo) = fx.repo_with_remote()?;
+    fs::create_dir_all(repo.join("scripts/cd"))?;
+    fs::write(repo.join("scripts/cd/deploy.sh"), "echo honest\n")?;
+    fx.git.commit_all(&repo, "deploy script", &author())?;
+    fx.raw(&repo, &["push", "--quiet", "origin", "main"])?;
+    fx.raw(&repo, &["fetch", "--quiet", "origin"])?;
+    let sha = fx.git.rev_parse(&repo, "origin/main")?;
+
+    // An agent plants a replacement for the script's blob in the sandbox clone.
+    let honest = fx.raw(
+        &repo,
+        &["rev-parse", &format!("{sha}:scripts/cd/deploy.sh")],
+    )?;
+    fs::write(fx.path("evil.sh"), "echo evil\n")?;
+    let evil = fx.raw(
+        &repo,
+        &[
+            "hash-object",
+            "-w",
+            fx.path("evil.sh").to_str().ok_or("path")?,
+        ],
+    )?;
+    fx.raw(&repo, &["replace", honest.trim(), evil.trim()])?;
+
+    let mirror = fx.path("cd/source.git");
+    fx.git.cd_mirror_fetch(&mirror, &repo, "main", &sha)?;
+    assert_eq!(
+        fx.git
+            .show_file(&mirror, &sha, "scripts/cd/deploy.sh")?
+            .as_deref(),
+        Some("echo honest\n")
+    );
+    let dest = fx.path("run/src");
+    fx.git.export_tree(&mirror, &sha, &dest)?;
+    assert_eq!(
+        fs::read_to_string(dest.join("scripts/cd/deploy.sh"))?,
+        "echo honest\n"
+    );
+    assert!(dest.join("README.md").exists() || fs::read_dir(&dest)?.count() > 1);
+    assert!(!dest.join(".git").exists(), "a plain tree, no repository");
+
+    // The clone's tracking ref moved to another commit: refused, nothing fetched for it.
+    let other = fx.raw(
+        &repo,
+        &["commit-tree", "-m", "x", &format!("{sha}^{{tree}}")],
+    )?;
+    fx.raw(
+        &repo,
+        &["update-ref", "refs/remotes/origin/main", other.trim()],
+    )?;
+    let refused = fx.git.cd_mirror_fetch(&mirror, &repo, "main", &sha);
+    assert!(refused.is_err(), "{refused:?}");
+    Ok(())
+}

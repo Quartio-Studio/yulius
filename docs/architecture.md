@@ -485,10 +485,12 @@ ADR-0110, ADR-0111). `yulius.toml` defines `[cd.dev]` and `[cd.prod]`; Yulius re
 heads of the protected branches (`crates/yulius-app/src/ci/cd.rs`), so a task branch or a worktree
 never changes what a deploy runs. `yulius_domain::cd::authorize` decides who may deploy: dev a
 person with write access or an agent (`cd_deploy`), production only an administrator who typed the
-project's slug. A run checks the commit out into the environment's own checkout and runs through
-the process host inside the sandbox's containment, the same way as a CI job (`ci_watch`), with the
-secrets a person allowed outside the proxy; its output is redacted before it is stored in
-`cd_runs`. A run has no lane and no retry: a deploy is not assumed repeatable, so one left by a
+project's slug. The commit is the one GitHub reports, taken into a mirror only Yulius writes
+(`yulius_git::Git::cd_mirror_fetch`, every object checked); its tree is written into the run's
+own directory (`export_tree`) and runs through the process host like a CI job (`ci_watch`): dev in
+the sandbox's containment, production outside it on the host's read-only system, each with the
+secrets allowed for that environment; nothing agents can write is bound in. Output is redacted
+before it is stored in `cd_runs`. A run has no lane and no retry: a deploy is not assumed repeatable, so one left by a
 restart is recorded as an error. `needs_you` (table column `tasks.needs_you`) puts a task in Needs
 you until a person writes to it.
 
@@ -501,11 +503,11 @@ sequenceDiagram
     participant S as Sandbox (process host)
     A->>App: deploy dev (cd_deploy / CD page)
     App->>App: authorize (production: administrator + typed slug)
-    App->>G: fetch, read [cd.dev] at origin/dev head
-    App->>V: values of the named secrets (allowed outside the proxy)
+    App->>G: fetch; GitHub's dev head into the private mirror (objects checked), read [cd.dev]
+    App->>V: values of the named secrets (allowed for this environment)
     V-->>App: values, or "nothing ran: a person allows …"
     App->>App: record the run (cd_runs) and audit cd.deploy
-    App->>S: checkout head, run deploy then verify
+    App->>S: the commit's tree in the run's own directory, run deploy then verify
     S-->>App: output (redacted), exit status
     App->>App: passed / failed / error, audit cd.finished
 ```

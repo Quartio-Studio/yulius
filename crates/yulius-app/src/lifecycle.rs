@@ -469,6 +469,8 @@ impl App {
         self.ensure_tasks_may_start(&task.sandbox_id, task.origin)
             .await?;
         let account = parse_account(req)?;
+        // A person continues it: whatever its agent asked a person before is past (SPEC-134).
+        self.end_needs_you(&task.id).await;
         if task.archived_at.is_some() {
             let now = self.now();
             self.deps

@@ -22,8 +22,11 @@ authority, and only the tool's description asked it not to unless its task asked
 - With `promote = true`, the production deploy first promotes the integration branch with the
   profile's method, under the person's GitHub identity; a promotion that cannot complete now (its
   pull request's checks still run or failed) refuses the deploy and says so.
-- `delivery_promote` refuses agents, and `delivery_deploy` refuses production-stage environments.
-  An agent that needs production asks a person with `needs_you`.
+- Agents have no promotion tool any more (`delivery_promote` is gone), and `delivery_deploy`
+  refuses production-stage environments. An agent that needs production asks a person with
+  `needs_you`.
+- The promotion API (`POST /api/sandboxes/{sid}/delivery/promote`) follows the same rule: an
+  administrator and `{"confirm": "<slug>"}`; for Yulius a promotion is the release.
 - An administrator's `auto_promote` in the delivery profile stays: a person chose it.
 
 ## Alternatives

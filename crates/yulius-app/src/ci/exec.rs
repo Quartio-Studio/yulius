@@ -99,7 +99,7 @@ impl AnsiStripper {
 
 /// A CI job joins the sandbox's CI group, weighted above the agents' (SPEC-053 CPU-203), so its
 /// speed does not depend on what the agents build.
-fn ci_join(join: SandboxJoin) -> SandboxJoin {
+pub(super) fn ci_join(join: SandboxJoin) -> SandboxJoin {
     SandboxJoin {
         cgroup: join.ci_cgroup.clone().or(join.cgroup),
         ..join

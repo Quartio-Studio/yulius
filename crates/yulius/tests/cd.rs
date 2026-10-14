@@ -812,6 +812,33 @@ async fn a_typed_prompt_ends_a_needs_you_request() -> TestResult {
         "{}",
         sandbox.body
     );
+    // A prompt Yulius types (nobody typed into the terminal) answers nothing (review M5).
+    let typed_by_yulius = call(
+        &f.h.internal,
+        Method::POST,
+        "/hooks/claude/UserPromptSubmit",
+        Some(json!({"prompt": "Go on with the plan", "hook_event_name": "UserPromptSubmit"})),
+        &agent,
+    )
+    .await?;
+    assert!(
+        typed_by_yulius.status.is_success(),
+        "{}",
+        typed_by_yulius.body
+    );
+    let still = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1",
+        None,
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(still.body["counts"]["needs_attention"], 1, "{}", still.body);
+    f.h.app.record_typing(
+        &yulius_domain::ids::TaskId::parse("t1")?,
+        &yulius_domain::ids::UserId::parse("u-alice")?,
+    );
     let prompt = call(
         &f.h.internal,
         Method::POST,
@@ -834,5 +861,149 @@ async fn a_typed_prompt_ends_a_needs_you_request() -> TestResult {
         "{}",
         sandbox.body
     );
+    Ok(())
+}
+
+/// Review C1 (CDC-003): nothing an agent can write in the sandbox changes what a deploy runs. A
+/// replacement planted in the sandbox clone (`git replace`) and files planted where checkouts
+/// used to live are ignored: the run executes the commit GitHub reports, from Yulius's own mirror.
+#[tokio::test]
+async fn nothing_an_agent_writes_in_the_sandbox_changes_what_a_deploy_runs() -> TestResult {
+    let f = fixture(&full_cd()).await?;
+    f.allow_secret().await?;
+    let repo = f.h.app.config.data_dir.join("sandboxes/s1/repo");
+    let dev = f.head("dev")?;
+    let honest = git(
+        &repo,
+        &["rev-parse", &format!("{dev}:scripts/cd/deploy.sh")],
+    )?;
+    let evil_file = f.marks.join("evil.sh");
+    std::fs::write(&evil_file, "#!/bin/sh\necho REPLACED\n")?;
+    let evil = git(
+        &repo,
+        &["hash-object", "-w", evil_file.to_str().ok_or("path")?],
+    )?;
+    git(&repo, &["replace", &honest, &evil])?;
+    let planted =
+        f.h.app
+            .config
+            .data_dir
+            .join("sandboxes/s1/cd/checkouts/dev/scripts/cd");
+    std::fs::create_dir_all(&planted)?;
+    std::fs::write(planted.join("deploy.sh"), "#!/bin/sh\necho PLANTED\n")?;
+
+    let started = f.deploy(&f.alice, "dev", None).await?;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    let run = f
+        .ended(started.body["run_id"].as_str().ok_or("id")?)
+        .await?;
+    let output = run["output"].as_str().unwrap_or_default();
+    assert_eq!(run["state"], "passed", "{output}");
+    assert!(
+        output.contains("token-ok") && output.contains("verified"),
+        "{output}"
+    );
+    assert!(
+        !output.contains("REPLACED") && !output.contains("PLANTED"),
+        "{output}"
+    );
+    // Its files were private to the run and are gone.
+    let runs = f.h.app.config.data_dir.join("runs");
+    assert!(
+        std::fs::read_dir(&runs).map_or(true, |d| d
+            .filter_map(Result::ok)
+            .all(|e| !e.file_name().to_string_lossy().starts_with("cd-"))),
+        "the run's directory is removed"
+    );
+    Ok(())
+}
+
+/// Review H1 (CDR-002): production runs get only secrets a person allowed for production; an
+/// allowance for `.env` files (which any agent of the project could use) is not enough.
+#[tokio::test]
+async fn production_secrets_need_their_own_allowance() -> TestResult {
+    let f = fixture(
+        "[cd.dev]\n\n[cd.prod]\n\
+         deploy = \"MARKS={marks} sh scripts/cd/deploy.sh\"\n\
+         verify = \"MARKS={marks} sh scripts/cd/verify.sh\"\n\
+         secrets = \"DEV_TOKEN\"\n",
+    )
+    .await?;
+    f.allow_secret().await?;
+    let refused = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    assert!(
+        refused.body.to_string().contains("for production deploys"),
+        "{}",
+        refused.body
+    );
+    let overview = call(
+        &f.h.router,
+        Method::GET,
+        "/api/sandboxes/s1/cd",
+        None,
+        &f.bob,
+    )
+    .await?;
+    assert_eq!(
+        overview.body["environments"][1]["secrets"][0]["state"],
+        "not_allowed"
+    );
+
+    // Someone who manages the secret (its maker) allows it on the Secrets page.
+    let allowed = call(
+        &f.h.router,
+        Method::POST,
+        &format!("/api/agent-secrets/{}/cd-prod", f.secret),
+        Some(json!({"allow": true})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
+    assert_eq!(allowed.body["cd_prod"], true);
+    let started = f.deploy(&f.bob, "prod", Some("app")).await?;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    let run = f
+        .ended(started.body["run_id"].as_str().ok_or("id")?)
+        .await?;
+    let output = run["output"].as_str().unwrap_or_default();
+    assert_eq!(run["state"], "passed", "{output}");
+    assert!(
+        output.contains("token-ok") && !output.contains(VALUE),
+        "{output}"
+    );
+    Ok(())
+}
+
+/// Review H2 (CDR-004): a run left by a restart has its process host stopped and its files
+/// removed, not only its row closed.
+#[tokio::test]
+async fn a_lost_run_leaves_no_files_behind() -> TestResult {
+    let f = fixture(&full_cd()).await?;
+    let run_dir = f.h.app.config.data_dir.join("runs/cd-lost2");
+    std::fs::create_dir_all(run_dir.join("work/home"))?;
+    std::fs::write(run_dir.join("work/home/key"), "secret material")?;
+    f.h.store
+        .insert_cd_run(&CdRunRecord {
+            id: "lost2".into(),
+            sandbox_id: SandboxId::parse("s1")?,
+            environment: CdEnv::Prod,
+            branch: "main".into(),
+            sha: f.head("main")?,
+            state: RunState::Running,
+            reason: None,
+            requested_by: "bob".into(),
+            task_id: None,
+            deploy: None,
+            verify: None,
+            note: None,
+            output: String::new(),
+            exit_code: None,
+            started_at: Timestamp(1),
+            ended_at: None,
+        })
+        .await?;
+    assert_eq!(f.h.app.reconcile_cd_runs().await?, 1);
+    assert!(!run_dir.exists(), "the lost run's files are removed");
     Ok(())
 }

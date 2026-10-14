@@ -171,7 +171,7 @@ export function mountCdPage(ctx, sandbox, route) {
 
   async function deployProd(env, overview) {
     const steps = [];
-    if (env.promote) steps.push(`Promote the integration branch into ${env.branch} (with the project’s promotion method, as you).`);
+    if (env.promote) steps.push(`Promote the integration branch${env.promotes_from ? ` at ${shortSha(env.promotes_from)}` : ''} into ${env.branch} (with the project’s promotion method, as you).`);
     if (env.deploy) steps.push(`Run the deploy command at the new ${env.branch} head: ${env.deploy}`);
     if (env.verify) steps.push(`Then verify: ${env.verify}`);
     const ok = await confirmDialog({

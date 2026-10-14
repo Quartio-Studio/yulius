@@ -86,31 +86,43 @@ Configuration (CDC):
   **empty** (the table is there, with nothing to run: no deploy, no verify, no promotion) or
   **ready**. Both may be empty; "not defined" is a gap the briefing and onboarding report.
 - CDC-003. Yulius reads dev's table from the integration branch head and production's from the
-  commit it deploys: the integration head when that head's `[cd.prod]` says `promote = true`, else
-  the production head. A task branch, a worktree or the database never changes what a deploy runs.
+  commit it deploys: the integration head decides whether production promotes (its `[cd.prod]`
+  says `promote = true`), after a promotion the new production head is read and authorized again,
+  and without one the production head is read (its own `promote` is ignored). Each commit is the
+  one GitHub reports for the branch, taken from the sandbox clone into a mirror only Yulius writes
+  with every object checked and replacement refs ignored. A task branch, a worktree, the sandbox
+  clone or the database never changes what a deploy runs.
 - CDC-004. Scripts live in the repository (`scripts/cd/` by convention) and are reviewed and tested
   like code; machines, addresses and credentials are agent secrets, never committed; run records
   and logs live in Yulius, not in Git.
 
 Runs (CDR):
 
-- CDR-001. A deploy of an environment is one **CD run**: Yulius fetches, resolves the branch head,
-  reads the configuration at that commit, checks it out into the environment's own checkout and
-  runs `deploy` and then `verify` (each skipped when absent, `verify` only after a successful
-  `deploy`) through the process host inside the sandbox's containment. Its result is `passed`
-  (every step exited 0), `failed`, `error` (could not run, timed out, lost) or `cancelled`.
+- CDR-001. A deploy of an environment is one **CD run**: Yulius verifies the commit (CDC-003),
+  reads its table, writes the commit's files into the run's private directory and runs `deploy`
+  and then `verify` (each skipped when absent, `verify` only after a successful `deploy`) through
+  the process host: dev inside the sandbox's containment, production outside it on the host's
+  read-only system with the run's directory as its root. The run's files, `HOME` and log are bound
+  only into its own mount namespace and removed with it; its cache is `<data>/cd/<sandbox>/cache/
+  <env>`. Its result is `passed` (every step exited 0), `failed`, `error` (could not run, timed out,
+  lost) or `cancelled`.
 - CDR-002. A run's environment has no task token, provider credential or GitHub token; it has
   `YULIUS_CD=1`, `YULIUS_CD_ENV` (`dev` or `prod`), `YULIUS_CD_SHA`, `YULIUS_CD_BRANCH`,
   `YULIUS_CD_RUN`, a `HOME` made for the run and removed after it, a persistent `YULIUS_CD_CACHE`,
   and each named secret's real value. A secret is given only when it is an agent secret of the
-  project that a person allowed outside the proxy (`env_files = allowed`, ADR-0105); a missing or
-  not-allowed secret refuses the run before anything starts and says what a person must do.
+  project allowed for that environment: for dev, allowed outside the proxy (`env_files = allowed`,
+  ADR-0105); for production, allowed for production deploys (`cd_prod`, its own allowance, set by
+  someone who manages the secret, `POST /api/agent-secrets/{id}/cd-prod`). A missing or not-allowed
+  secret refuses the run before anything starts (before a promotion) and says what a person must
+  do.
 - CDR-003. Stored output is the run's tail with every agent secret's value replaced by
   `[secret:NAME]`.
 - CDR-004. One active run per environment and project; a second request is refused while one runs.
   A run is bounded by the CI job timeout; cancelling kills its process group. A run that was
-  running when Yulius restarted is recorded as `error` ("outcome unknown") and never started again
-  by itself. Runs are kept like CI runs (50 per project, 14 days).
+  running when Yulius restarted (or that is cancelled without an executor) has its process host
+  terminated and its files removed, is recorded as `error` ("outcome unknown") and is never
+  started again by itself. Runs are kept 14 days, 50 per environment, and each environment's last
+  passed run always.
 - CDR-005. Every run and refusal of a production deploy is audited (`cd.deploy`, `cd.finished`,
   `cd.refused`) with the actor (`login`, `task:#N`).
 
@@ -124,9 +136,10 @@ Who deploys (CDA):
   With `promote = true` the deploy first promotes the integration branch with the profile's method
   (it opens the promotion pull request, or merges it when its checks passed; a promotion that cannot
   complete now refuses the deploy and says why); then it deploys the new production head.
-- CDA-003. Agents never promote: `delivery_promote` refuses for agents ("a person deploys
-  production on the CD page"), and `delivery_deploy` refuses production-stage environments. A
-  profile's `auto_promote`, set by an administrator, keeps working.
+- CDA-003. Agents never promote: the `delivery_promote` tool is removed, and `delivery_deploy`
+  refuses production-stage environments. The promotion API (`POST …/delivery/promote`) needs an
+  administrator and `{"confirm": "<slug>"}`, like a production deploy. A profile's `auto_promote`,
+  set by an administrator, keeps working.
 
 Agents and people (CDT):
 
@@ -135,11 +148,14 @@ Agents and people (CDT):
 - CDT-002. MCP `cd_deploy {environment: "dev"}`: starts a dev run and returns its id; refuses
   production (CDA-002), an empty or undefined environment, missing secrets (asking a person to
   allow the ones that exist, like `secret_copy_to_env`) and a running run.
-- CDT-003. `yulius wait` also returns when a CD run the task started ends, with its result.
+- CDT-003. `yulius wait` also returns when a CD run the task started ends, with its result, also
+  when it ended before the wait began (reported once).
 - CDT-004. MCP `needs_you {action, why?, link?}`: the agent asks a person to do something only a
   person can (add a credential, allow a secret, deploy production). The task shows "Needs you:
   <action>" (sidebar group Needs you, on every page that groups tasks) until a person writes to the
-  task or the agent calls `needs_you {resolved: true}`. The request is audited (`task.needs_you`).
+  task (a prompt they typed, or continuing it; prompts Yulius types do not count) or the agent calls
+  `needs_you {resolved: true}`; an ended task shows none. The request is audited (`task.needs_you`).
+  Its link must be a page of this Yulius.
 - CDT-005. The **CD (deployment)** page (nav entry next to "CI (tests)") shows dev and production:
   state, what runs, secrets and their state with a link to Secrets, the deployed commit against the
   branch head, the last run, Deploy buttons (dev: confirm; production: a dialog that says what will
@@ -186,9 +202,12 @@ Teaching (CDK):
 - AC3 (CDR-001): a failing deploy skips verify and the run is `failed`; a failing verify is
   `failed`; an empty or undefined environment and a missing or not-allowed secret are refused
   before anything runs.
-- AC4 (CDA-002/003): an agent's production deploy, `delivery_promote` and a production-stage
-  `delivery_deploy` are refused; a person without the typed slug, or below administrator, is
-  refused; with it, production is promoted and the production head is deployed.
+- AC4 (CDA-002/003): an agent's production deploy, `delivery_promote` (no such tool) and a
+  production-stage `delivery_deploy` are refused; a person without the typed slug, or below
+  administrator, is refused; with it, production is promoted and the production head is deployed.
+- AC9 (review C1, H1, H2): a replacement planted in the sandbox clone and files planted in the
+  sandbox change nothing a deploy runs; a production secret allowed only for `.env` is refused
+  until it is allowed for production deploys; a lost run leaves no files.
 - AC5 (CDR-004): a second request while a run is active is refused; a run left running at a restart
   is recorded as `error`.
 - AC6 (CDT-003/004): `yulius wait` returns when the task's CD run ends; `needs_you` puts the task
@@ -225,13 +244,15 @@ Teaching (CDK):
   deploy. Production reads what it deploys, so a script change reaches production only through a
   person's production deploy. Alternatives: the database profile (agents cannot build CD at all),
   the task worktree (an agent could run anything as a deploy).
-- **Runs inside the sandbox, not on the server** (ADR-0109). Deploy scripts are code agents write;
-  running them with the server's privileges (as delivery environments do) would hand agents the
-  instance. The sandbox's network reaches machines over SSH and HTTPS.
-- **Secrets by the existing allowance** (ADR-0109). A deploy needs real values (SSH keys, tokens);
-  the person's allowance that lets a value leave the proxy into `.env` (ADR-0105) is the same
-  exposure, so it also covers CD runs. Alternatives: a second allowance (one more click with the
-  same meaning), all of the project's secrets (more than a deploy needs).
+- **Not on the server; production not in the agents' sandbox** (ADR-0109). Deploy scripts are
+  code agents write; running them with the server's privileges (as delivery environments do)
+  would hand agents the instance. Dev runs in the sandbox (agents' ground, their tools); production
+  runs on the host's read-only system with its own root, since the sandbox's system layer, cache
+  and files are writable by its agents (review C1).
+- **Secrets per environment** (ADR-0109). Dev takes ADR-0105's allowance (the same exposure as
+  `.env`, which agents already use); production has its own allowance, which no agent can use
+  otherwise (review H1). Alternatives: one allowance for both (a production credential usable by
+  any agent), all of the project's secrets (more than a deploy needs).
 - **Production is a person's, always** (ADR-0110). An agent never deploys production or promotes;
   a person with administrator access types the project's slug. Alternatives: a checkbox confirm (a
   click is not strong), two-factor codes (not every account has a second factor), letting agents
@@ -244,6 +265,14 @@ Teaching (CDK):
   only when an agent explicitly asks; the existing requests are each bound to one surface (the
   browser, a secret). Alternatives: steps marked blocked (a plan state, not a request to a person),
   issues (they never reach "needs you").
+- **Independent review, round 1 (request changes; all fixed test-first).** C1: production runs and
+  their sources moved out of the agents' reach (verified mirror, private run files, production
+  outside the sandbox). H1: production secrets got their own allowance. H2: lost runs stop their
+  host and lose their files. M1/M2: a run executes exactly the commit whose table it read, and
+  production is re-read after a promotion; the dialog names the commit it promotes. M3: the
+  promotion API follows the production rule. M4: `yulius wait` reports a run that ended before
+  it. M5: only a person's prompt ends a `needs_you` request. L1, L2, L4, L5, L6, L7 fixed; L3
+  (cancel racing the end) cannot happen: the executor leaves the map only after writing the end.
 - **One pull request.** The parts depend on each other (the page needs the runs, the tools need the
   rule, onboarding teaches the tools); split, each part would ship unusable. The diff is larger
   than the usual 400 lines; the review gets the whole.

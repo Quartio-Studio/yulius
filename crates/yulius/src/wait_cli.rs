@@ -80,12 +80,14 @@ pub fn settled(now: &WaitState, before: Option<&WaitState>) -> Option<String> {
     if decided && let Some(outcome) = &now.merge_outcome {
         return Some(outcome.clone());
     }
-    // A CD run this task started ended (SPEC-134 CDT-003).
-    if let Some(before) = before
-        && before.cd_state.as_deref() == Some("running")
-        && now.cd_run == before.cd_run
-        && now.cd_state.as_deref() != Some("running")
-    {
+    // A CD run this task started ended (SPEC-134 CDT-003): during this wait, or before it began
+    // and no wait reported it yet.
+    let cd_ended_now = before.is_some_and(|before| {
+        before.cd_state.as_deref() == Some("running")
+            && now.cd_run == before.cd_run
+            && now.cd_state.as_deref() != Some("running")
+    });
+    if cd_ended_now || (before.is_none() && now.cd_unreported) {
         return Some(format!(
             "The CD run {} ({}) ended {}. Read it with `cd_status` and run_id {}.",
             now.cd_run.as_deref().unwrap_or("?"),
@@ -275,6 +277,24 @@ mod tests {
         let line = settled(&ended, Some(&deploying)).unwrap_or_default();
         assert!(line.contains("CD run r1 (dev) ended failed"), "{line}");
         assert!(line.contains("cd_status"), "{line}");
+        // Ended before the wait began (review M4): reported once, then the wait goes on.
+        let unreported = WaitState {
+            cd_unreported: true,
+            ..ended.clone()
+        };
+        let line = settled(&unreported, None).unwrap_or_default();
+        assert!(line.contains("CD run r1 (dev) ended failed"), "{line}");
+        assert!(
+            settled(
+                &WaitState {
+                    cd_unreported: false,
+                    ..state("running")
+                },
+                None
+            )
+            .is_none(),
+            "a reported run does not end the next wait"
+        );
     }
 
     #[test]
