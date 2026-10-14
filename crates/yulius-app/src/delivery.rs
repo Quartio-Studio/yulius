@@ -2377,6 +2377,8 @@ impl App {
             observed.pr.as_ref().filter(|p| is_open(p)),
         ) && pull.head_sha == head
         {
+            // Delivered some other way meanwhile: an earlier "not delivered" note is stale.
+            self.clear_push_problem(task_id);
             return Ok(AutoDelivery::Unchanged);
         }
         // A task that needs a spec needs its plan too; research, docs and chores may have none.

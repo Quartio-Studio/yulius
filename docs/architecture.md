@@ -200,8 +200,9 @@ a violation is refused with the rule in words, also for promotion pull requests
 [decision 0051](decisions/0051-the-merge-gate-enforces-the-branch-policy.md)).
 `delivery_merge` first delivers the head the way the end of a clean turn does
 (`try_auto_open_pr`): it pushes the branch and opens the pull request, or pushes new commits to
-it. A head it cannot deliver yet (open step, invalid spec, uncommitted work) is refused with the
-reason. A goal task whose evaluator keeps every turn going therefore still gets its pull request
+it. A head it cannot deliver yet (open step, no plan for a task that needs a spec, invalid spec,
+uncommitted work) is refused with the reason, and a push GitHub refuses answers with the remedy
+(merge the pushed head, never force). A goal task whose evaluator keeps every turn going therefore still gets its pull request
 ([SPEC-116](../.ai/specs/SPEC-116-linter-dead-code-should-be-installed-on.md) DMG-001).
 
 ```mermaid

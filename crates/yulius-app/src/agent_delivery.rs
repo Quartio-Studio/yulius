@@ -196,7 +196,20 @@ impl App {
         // Deliver the head first, as the end of a clean turn would: a goal task's evaluator may
         // keep every turn going, and without its pull request the merge would wait for nothing
         // (SPEC-116 DMG-001, task #101).
-        match self.try_auto_open_pr(&ctx.task.id).await? {
+        let delivered = match self.try_auto_open_pr(&ctx.task.id).await {
+            Ok(delivered) => delivered,
+            // A refused push answers with the remedy `yulius wait` would say (never force).
+            Err(err) => {
+                let remedy = self
+                    .runtime(&ctx.task.id)
+                    .push_problem
+                    .lock()
+                    .ok()
+                    .and_then(|problem| problem.as_ref().map(|(_, text)| text.clone()));
+                return Err(remedy.map_or(err, AppError::Conflict));
+            }
+        };
+        match delivered {
             AutoDelivery::Blocked(reason) => {
                 return Err(AppError::Conflict(format!(
                     "Yulius cannot deliver this head yet: {reason}"

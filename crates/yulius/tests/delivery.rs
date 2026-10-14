@@ -3769,6 +3769,18 @@ async fn a_merge_call_opens_the_pull_request_a_goal_task_still_lacks() -> TestRe
             .count()
     };
     let merge = json!({"reviewed_head": head, "review_summary": "approve"});
+    let refusal = |result: &Value| {
+        assert_eq!(result["isError"], true, "{result}");
+        result["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    };
+
+    // A feature without a plan is not delivered either (review of SPEC-116, finding 2).
+    let unplanned = agent_tool(&f, &agent, "delivery_merge", merge.clone()).await?;
+    assert!(refusal(&unplanned).contains("no plan"), "{unplanned}");
+    assert_eq!(pulls_opened(), 0);
 
     set_steps(&f, "t1", &["done", "in_progress"]).await?;
     let blocked = agent_tool(&f, &agent, "delivery_merge", merge.clone()).await?;
@@ -3802,6 +3814,30 @@ async fn a_merge_call_opens_the_pull_request_a_goal_task_still_lacks() -> TestRe
     assert_eq!(again["armed"], true, "{again}");
     assert_eq!(f.origin_sha("feat/1-checkout-api")?, follow_up, "pushed");
     assert_eq!(pulls_opened(), 1, "no second pull request");
+
+    // A rewritten branch GitHub refuses: the call answers with the remedy, not git's words
+    // (review of SPEC-116, finding 3), and nothing is force-pushed.
+    git(&wt, &["reset", "--quiet", "--hard", &head])?;
+    commit_file(&wt, "rewritten.txt", "other", "Rewritten")?;
+    let rewritten = git(&wt, &["rev-parse", "HEAD"])?;
+    let refused = agent_tool(
+        &f,
+        &agent,
+        "delivery_merge",
+        json!({"reviewed_head": rewritten, "review_summary": "approve"}),
+    )
+    .await?;
+    let why = refusal(&refused);
+    assert!(
+        why.contains("Do not force-push")
+            && why.contains("git merge --no-edit origin/feat/1-checkout-api"),
+        "{why}"
+    );
+    assert_eq!(
+        f.origin_sha("feat/1-checkout-api")?,
+        follow_up,
+        "not forced"
+    );
     Ok(())
 }
 

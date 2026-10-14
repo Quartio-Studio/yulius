@@ -65,8 +65,8 @@ The same onboarding also showed two other problems:
   stay free of application-code rewrites.
 - **Every later task starts with a gate.** The briefing's "Project foundations" gap list no
   longer stays open after onboarding.
-- **Refused merge calls.** `delivery_merge` refuses a head it cannot deliver (open step, invalid
-  spec, uncommitted work) instead of arming a merge that would never be decided.
+- **Refused merge calls.** `delivery_merge` refuses a head it cannot deliver (open step, no plan
+  for a task that needs a spec, invalid spec, uncommitted work) instead of arming a merge that would never be decided.
 - **Older open pull requests and `main` go red.** New CI jobs gate every ref, including branches
   made before onboarding, until those merge the integration branch. That is the intended
   contract.

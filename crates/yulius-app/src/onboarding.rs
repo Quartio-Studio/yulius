@@ -335,14 +335,15 @@ pub fn onboarding_prompt(repo: &str, profile: &Profile, report: &ProjectReport) 
          10. Hooks: when the repository's instructions describe a hooks setup (for example \
          `git config core.hooksPath .githooks`), apply it in your worktree before committing. \
          Never bypass hooks with --no-verify.\n\
-         11. Commit on your task branch and mark every step done as you finish it. Then get \
+         11. Change documentation, configuration and CI only, not application code; a test \
+         changes only to run correctly on Yulius CI. Make sure every problem listed above is \
+         resolved.\n\
+         12. Commit on your task branch and mark every step done as you finish it. Then get \
          the independent review of the exact head and call `delivery_merge` with that head: \
          Yulius pushes your branch, opens the pull request into {integration} (or pushes later \
          commits to it) and merges it once its checks pass. Then start `yulius wait` with \
          run_in_background and end your turn. Do not open it yourself or push it by hand, and \
-         never push to {integration} or {production}. Change documentation, configuration and \
-         CI only, not application code; a test changes only to run correctly on Yulius CI.\n\
-         12. Before finishing, make sure every problem listed above is resolved.",
+         never push to {integration} or {production}.",
         preset = profile.preset,
         problems = problems.join("\n"),
         environment = ENVIRONMENT_SETUP,
@@ -368,7 +369,7 @@ pub fn environment_prompt(repo: &str, profile: &Profile) -> String {
          3. {GATE_SETUP}\n\
          4. Change only what the environment and the gate need (yulius.toml [commands] and \
          [[ci.jobs]], the checks' configuration, a missing setup note in the docs), never \
-         application code. When you changed something, commit it on your task branch, mark \
+         application code; a test changes only to run correctly on Yulius CI. When you changed something, commit it on your task branch, mark \
          every step done, get the independent review of the exact head and call \
          `delivery_merge` with that head: Yulius pushes your branch, opens the pull request into \
          {integration} and merges it once its checks pass. Then start `yulius wait` with \
@@ -1341,6 +1342,16 @@ mod tests {
             assert!(
                 !prompt.contains("by itself once every step is done"),
                 "the pull request does not appear while the agent keeps working"
+            );
+            // Review of SPEC-116, findings 5 and 7: the root note's test skip is allowed, and
+            // the turn's end is the prompt's last instruction.
+            assert!(prompt.contains("a test changes only to run correctly on Yulius CI"));
+            assert!(
+                prompt
+                    .trim_end()
+                    .ends_with("never push to quartio or main.")
+                    || prompt.contains("When nothing needed to change, just mark the steps done"),
+                "{prompt}"
             );
         }
         Ok(())
