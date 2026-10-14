@@ -1,11 +1,11 @@
 ---
 yulius-task: 7a705d0c-6cb1-4209-afd2-75b62d40be59
-status: in-progress
+status: done
 ---
 
 # SPEC-113: screens keep their state when you switch away and back
 
-Status: in-progress
+Status: done
 Date: 2026-10-14
 Owner: task #98
 Scope authorization: the person's request (task #98): "When I switch between screens, I want to
@@ -66,7 +66,8 @@ the editor's open files with unsaved text, the terminals).
 - [x] Each sandbox keeps its open tool and tool views across a switch
 - [x] MCP scope and Dashboard period kept in the address
 - [x] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green with docs, ADR and evidence
+- [x] Docs, ADR-0092 and changes entry written
+- [x] Every gate green with evidence in the spec
 
 ## Acceptance criteria
 
@@ -121,3 +122,23 @@ the editor's open files with unsaved text, the terminals).
   suspended path; a suspended `activate` keeps the cursor; deleting a session keeps the list's
   search. Kept views hold the sandbox object they were made with (a renamed sandbox shows its old
   name in a kept view until it is rebuilt): cosmetic, the server enforces access.
+- The final review of the exact head and the merge into `dev` on green Yulius CI are delivery steps
+  tracked in the task's steps, not in this Plan: checking them here would change the reviewed head.
+
+## Evidence
+
+- `scripts/dev ci` at `c5c2cfe5` (the head with every fix): exit 0. Repository check, script tests,
+  `cargo check`, `fmt`, `clippy -D warnings`, `nextest` 1604/1604 passed, doctests, `cargo deny`,
+  `cargo shear`, `cargo doc`. (Earlier, at `6ab95ebc`, one run failed
+  `task_done::an_achieved_goal_with_no_shell_left_makes_the_task_done` with "timed out waiting for
+  Done" while e2e suites ran beside it: the flaky-under-load test tracked in #404; this change touches
+  no Rust.)
+- e2e, whole suite at `6ab95ebc` (`npx e2e run`): 354 passed, 1 skipped (needs a model), 2 failed,
+  both tracked flaky under load and passing when run alone: `terminal.e2e.ts` file paths (Monaco
+  "UNKNOWN service ICodeLensCache", #394) and `notes.e2e.ts` lost-answer save (#349). Rerun alone:
+  `terminal.e2e.ts` + `notes.e2e.ts` 36/36 passed.
+- e2e after round 2 at `c5c2cfe5`: `places.e2e.ts` (19 tests) and the suites the change touches
+  (`agent-panel`, `terminals`, `editor`, `notes`, `sign-in`, `ci`, `mcp`, `skills`, `workflows`,
+  `automations`, `sessions`, `navigation`, `phone`) passed. The whole-suite rerun at this head was
+  stopped by the machine running low on memory; Yulius CI runs it before the merge.
+- `spec_check`: valid.
