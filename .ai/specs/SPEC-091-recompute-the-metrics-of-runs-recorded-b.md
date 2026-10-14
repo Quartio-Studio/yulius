@@ -1,11 +1,11 @@
 ---
 yulius-task: b86510d8-8ed4-4539-8dd1-c5e05b866c74
-status: in-progress
+status: done
 ---
 
 # SPEC-091: runs recorded before SPEC-087 get their metrics from their transcripts, once
 
-Status: in progress
+Status: implemented
 Date: 2026-10-14
 Owner: task #76
 Scope authorization: the person's request (task #76): "Make Yulius recompute, once and
@@ -53,10 +53,10 @@ recorded.
 ## Plan
 
 - [x] Spec, ADR and plan for recounting old runs
-- [ ] A run's own window of a transcript is counted by the live rules
-- [ ] The store queues old runs once and records each recount
-- [ ] Yulius recounts queued runs after start and records the outcome
-- [ ] Docs, review fixes and gates green
+- [x] A run's own window of a transcript is counted by the live rules
+- [x] The store queues old runs once and records each recount
+- [x] Yulius recounts queued runs after start and records the outcome
+- [x] Docs, review fixes and gates green
 
 ## Acceptance criteria
 
@@ -110,3 +110,24 @@ recorded.
 ## Open questions
 
 None.
+
+## Evidence
+
+- Fixture `claude/resumed.jsonl`: record types and keys checked read-only against Claude Code
+  2.1.292 transcripts in this instance's sandbox home (2026-10-14); figures derived by hand
+  (run one: 1,510 output tokens, 3 turns, 220.2 s; run two: 400, 1, 39.1 s) and matched by
+  `recount::tests::each_run_of_a_resumed_session_counts_its_own_window`. Without the window's end
+  run two would count the terminal's turn (1,399 tokens, 2 turns), which the test asserts.
+- Mutation checks: `metrics_recount::old_runs_get_their_transcripts_figures_once` fails when the
+  window ignores the next run's start (run one: 1,910 tokens, 4 turns) and when the session id is
+  not validated (the `../../escape` run counted).
+- Tests written first and seen failing: the window API (compile), the store's `before` at queue
+  time and the sub-agent read failure (assertions).
+- `scripts/dev ci` (doctor, check, lint with clippy `-D warnings`, nextest, doctests, deny,
+  shear, doc): exit 0, 1,509 tests passed before the review fixes; rerun after them (below).
+- Independent review (fresh session, `om-code-review`): round one requested changes (failure path
+  untested; `before` read after reconciliation; sub-agent errors cut the count; untested
+  `no_lines` and next-run window; session id); all fixed test-first. The reconciliation overwrite
+  that predates this change is #385.
+- Not testable here: the production database (41 of 109 runs at 0 active time); the recount runs
+  there on the first start after `dev` reaches it.
