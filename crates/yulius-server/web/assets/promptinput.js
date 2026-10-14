@@ -125,11 +125,11 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
   }
 
   /**
-   * Draws the model; a drag from this box under way is forgotten unless the text stays the same
-   * (`same`): its offsets would be stale.
+   * Draws the model. A drag from this box under way is forgotten: its offsets may be stale, and its
+   * source node is replaced, so its `dragend` would never arrive.
    */
-  function draw(plain, atoms, { same = false } = {}) {
-    if (moving && !same) dragDone();
+  function draw(plain, atoms) {
+    if (moving) dragDone();
     const nodes = [];
     plain.split(ATOM).forEach((text, i) => {
       if (i > 0) nodes.push(atomEl(atoms[i - 1]));
@@ -621,7 +621,7 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
       const focused = document.activeElement === el;
       const [start, end] = focused ? selection() : [0, 0];
       const { plain, atoms } = scan();
-      draw(plain, atoms, { same: true });
+      draw(plain, atoms);
       if (focused) select(start, end);
     },
   };

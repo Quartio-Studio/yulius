@@ -334,3 +334,30 @@ test('a drag that ended off the prompt, or outlived a redraw, moves no stale ran
   await dragOut(true);
   expect((await promptText(browser)).replace(/\n/g, '')).toBe('alpha beta gammaXX');
 });
+
+// SPEC-124 review round 4: a placeholder deleted before its upload fails leaves no empty steps.
+test('a placeholder deleted before its upload fails leaves no empty undo steps', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await screen.getByRole('textbox', 'Task prompt').click();
+  await browser.keyboard.type('One ');
+  await holdUploads(browser);
+  await pasteImage(browser, 'gone.png');
+  await expect(browser.locator('.composer-prompt .pi-pending')).toHaveCount(1);
+  await browser.keyboard.press('Backspace');
+  await expect(browser.locator('.composer-prompt .pi-pending')).toHaveCount(0);
+  await browser.keyboard.type('two');
+  await browser.evaluate(() => (window as unknown as Holding).__fail!());
+  // The upload has ended (it failed) before the undo.
+  await expect(browser.locator('.composer-box .upload-status-error')).toHaveCount(1);
+  expect(await promptText(browser)).toBe('One two');
+  // Every undo changes the text until it is empty, and the placeholder never comes back.
+  let before = await promptText(browser);
+  for (let i = 0; i < 6 && before; i += 1) {
+    await browser.keyboard.press('ControlOrMeta+z');
+    await expect(browser.locator('.composer-prompt .pi-pending')).toHaveCount(0);
+    const now = await promptText(browser);
+    expect(now).not.toBe(before);
+    before = now;
+  }
+  expect(before).toBe('');
+});

@@ -189,13 +189,22 @@ Run on this branch (Linux, Chromium 153 headless, Claude Code behaviour through 
 - Review round 3 (fresh session) requested changes on `60efc265`. The stale-drag and failed-upload
   fixes had no regression test. The new Enter guard also swallowed ⌘/Ctrl+Enter on a Preview file
   button. Also flagged: `cancel()` kept duplicate steps when the placeholder had been deleted, and
-  a composition was counted against the cap. Fixed with e2e tests that fail on `60efc265`'s parent
-  code (verified by running them against it): `a failed upload leaves no empty undo step…`,
-  `a drag that ended off the prompt, or outlived a redraw…`, `at the length cap…` and ⌘/Ctrl+Enter
-  from a Preview file in `filedrop.e2e.ts`. A thumbnail redraw no longer cancels a drag.
-- Past three rounds the decision recorded here is to take one more confirmation round, narrowed to
-  the round-3 delta: every finding left was concrete and is fixed with a regression test, and
-  `delivery_merge` needs an approval of the exact head.
+  a composition was counted against the cap. Fixed in `61b44f93`; these e2e tests fail on the
+  code before the fixes (run against it): `a failed upload leaves no empty undo step…` and
+  `a drag that ended off the prompt, or outlived a redraw…` against `6881e422`, `at the length
+  cap…` against `6881e422`, and the ⌘/Ctrl+Enter step in `filedrop.e2e.ts` against `60efc265`.
+- Review round 4 (fresh session) requested changes on `61b44f93`: the `cancel()`-after-delete fix
+  had no test, and keeping a drag across a thumbnail redraw could leave its range set when the
+  replaced source node's `dragend` never arrived. Fixed: `a placeholder deleted before its upload
+  fails leaves no empty undo steps` (fails on `60efc265`'s code, empty steps), and every redraw
+  forgets a drag again. A drag that a thumbnail interrupts must be started again; that is
+  accepted, since the alternative risks moving stale text.
+- Untested, with the reason: the length cap does not count an IME or Android composition, which a
+  page cannot stop. This engine cannot simulate a real composition, and the server's 64 KiB prompt
+  limit still bounds the prompt.
+- Past three rounds the decision recorded here is to keep taking narrowed confirmation rounds:
+  every remaining finding is concrete and small, and `delivery_merge` needs an approval of the
+  exact head.
 
 Not tested here: a real Claude Code TUI receiving an interleaved typed message (the fake agent
 models Claude Code 2.1.292's paste handling), and browsers other than Chromium.
