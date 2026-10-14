@@ -17,6 +17,7 @@ import { h, openMenu, setChildren, skeleton } from './dom.js';
 import { relLong } from './format.js';
 import { attachMarkdownInput } from './mdinput.js';
 import { allows } from './status.js';
+import { createPresence, PRESENCE_SWEEP_MS } from './presence.js';
 import { createTextLayer, mapPosition, textEdit } from './textlayer.js';
 import { readJson, writeJson } from './store.js';
 
@@ -36,21 +37,6 @@ const RETRY_MAX_MS = 30000;
 const MAX_NOTE_BYTES = 256 * 1024;
 /** Browsers bound the bodies of requests that outlive the page (64 KiB in all). */
 const KEEPALIVE_MAX_BYTES = 60 * 1024;
-/** Presence (SPEC-112 NOT-020): the least time between two updates of one's own selection. */
-const PRESENCE_GAP_MS = 100;
-/** …sent again this often while the notepad is shown, so the others know one is still there. */
-const PRESENCE_HEARTBEAT_MS = 15000;
-/** A teammate not heard of for this long has gone. */
-const PRESENCE_EXPIRY_MS = 45000;
-/** How often teammates who went quiet are looked for. */
-const PRESENCE_SWEEP_MS = 1000;
-/** A refused or lost update is sent again after this, doubling up to the heartbeat. */
-const PRESENCE_RETRY_MS = 1000;
-/** Hellos are answered at most this often, however many people open the notepad at once. */
-const PRESENCE_ANSWER_GAP_MS = 1000;
-/** This browser tab, so one person's tabs are told apart (SPEC-112 NOT-020). */
-const CLIENT_ID = Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => b.toString(16).padStart(2, '0')).join('');
-
 const retryable = (error) => !error.status || error.status === 408 || error.status === 429 || error.status >= 500;
 const byteLength = (text) => new TextEncoder().encode(text).length;
 
@@ -705,94 +691,31 @@ function notepad(ctx, { key, label, textLabel, path, putPresence = null, unsaved
     load();
   }
 
-  // ---- presence (SPEC-112 NOT-020): where this person is in a shared notepad goes to its other
-  // readers, and theirs is drawn here. Offsets travel in the saved text at `base`, mapped through
-  // the unsaved typing on each side; someone at another revision is hidden until both meet again.
-  // Nothing goes out before the text box first has the keyboard (opening Notes gives it; Notes
-  // shown again because the page changed does not), so nobody shows at the start unasked.
-  const peers = new Map(); // `user id:tab` → {userId, name, revision, selection, seen}
-  let present = false; // the notepad is shown
+  // ---- presence (SPEC-112 NOT-020, the loop in presence.js): where this person is in a shared
+  // notepad goes to its other readers, and theirs is drawn here. Offsets travel in the saved text
+  // at `base`, mapped through the unsaved typing on each side; someone at another revision is
+  // hidden until both meet again. Nothing goes out before the text box first has the keyboard
+  // (opening Notes gives it; Notes shown again because the page changed does not), so nobody
+  // shows at the start unasked.
   let touched = false; // the caret was put in it
-  let presenceTimer = 0;
-  let lastPresenceAt = 0;
-  let lastPresence = null; // the last update sent, as JSON
-  let wasThere = false; // the last update sent had a selection
-  let helloDue = false;
-  let forceDue = false;
-  let retryMs = PRESENCE_RETRY_MS;
-  let lastAnswerAt = 0;
-  let answerTimer = 0;
-  let presenceInFlight = false;
-  let presenceQueued = false; // an update waits for the one on its way
 
   /** The text box's own text and the saved one are the same document, unless a conflict is open. */
   const inStep = () => loaded && !conflict;
 
   function ownSelection() {
-    if (!present || !touched || !inStep()) return null;
+    if (!touched || !inStep()) return null;
     const { selectionStart, selectionEnd, selectionDirection } = textarea;
     const [anchor, head] = selectionDirection === 'backward' ? [selectionEnd, selectionStart] : [selectionStart, selectionEnd];
     const edit = textEdit(textarea.value, saved);
     return { anchor: mapPosition(anchor, edit), head: mapPosition(head, edit) };
   }
 
-  /** Sends the selection now; `leaving` sends `null`, `going` with a request that outlives the page. */
-  function sendPresence({ leaving = false, going = false } = {}) {
-    clearTimeout(presenceTimer);
-    presenceTimer = 0;
-    if (!putPresence || !loaded) return;
-    // One update on its way at a time, so they reach the others in order: the newest goes when it
-    // is answered (hidden by then, that is `null`). A page going away cannot wait.
-    if (presenceInFlight && !going) {
-      presenceQueued = true;
-      return;
-    }
-    const selection = leaving ? null : ownSelection();
-    const update = JSON.stringify({ revision: base, selection });
-    // Nothing new, or nothing to take back: nothing to say, unless asked.
-    if (!helloDue && !forceDue && (update === lastPresence || (!selection && !wasThere))) return;
-    const hello = helloDue && !leaving;
-    helloDue = false;
-    forceDue = false;
-    lastPresence = update;
-    lastPresenceAt = Date.now();
-    wasThere = Boolean(selection);
-    presenceInFlight = true;
-    const answered = () => {
-      presenceInFlight = false;
-      if (presenceQueued && !destroyed) {
-        presenceQueued = false;
-        sendPresence();
-      }
-    };
-    putPresence({ revision: base, selection, hello, client: CLIENT_ID }, { keepalive: going }).then(() => {
-      retryMs = PRESENCE_RETRY_MS;
-      answered();
-    }, () => {
-      answered();
-      // Refused (429) or lost: sent again later, unless something newer went out meanwhile.
-      if (lastPresence !== update || leaving || destroyed) return;
-      lastPresence = null;
-      if (hello) helloDue = true;
-      clearTimeout(presenceTimer);
-      presenceTimer = setTimeout(sendPresence, retryMs);
-      retryMs = Math.min(retryMs * 2, PRESENCE_HEARTBEAT_MS);
-    });
-  }
-
-  /** Sends where this person is soon: at most one update per PRESENCE_GAP_MS, the last always. */
-  function presenceSoon() {
-    if (!putPresence || !present || presenceTimer) return;
-    presenceTimer = setTimeout(sendPresence, Math.max(0, lastPresenceAt + PRESENCE_GAP_MS - Date.now()));
-  }
-
   /** Teammates drawn in the text box's text: those at this revision, mapped through the typing. */
   function drawPeers() {
-    if (!putPresence) return;
     const list = [];
-    if (present && inStep()) {
+    if (presence.present && inStep()) {
       const edit = textEdit(saved, textarea.value);
-      for (const [id, peer] of peers) {
+      for (const [id, peer] of presence.peers) {
         if (peer.revision !== base) continue;
         const anchor = mapPosition(peer.selection.anchor, edit);
         const head = mapPosition(peer.selection.head, edit);
@@ -802,71 +725,21 @@ function notepad(ctx, { key, label, textLabel, path, putPresence = null, unsaved
     layer.setPeers(list);
   }
 
+  const presence = putPresence ? createPresence({
+    put: putPresence,
+    state: () => (loaded ? { revision: base, selection: ownSelection() } : null),
+    draw: drawPeers,
+    myId,
+  }) : null;
+
   /** The text, its revision or the selection moved: redraw the others and tell them. */
   function presenceMoved() {
+    if (!presence) return;
     drawPeers();
-    presenceSoon();
+    presence.soon();
   }
 
-  /** A teammate's update (`note.presence`); this person's own, from any tab, is not drawn. */
-  function peerPresence(event) {
-    if (!putPresence || event.user_id === myId) return;
-    const id = `${event.user_id}:${event.client || ''}`;
-    if (event.selection) peers.set(id, { userId: event.user_id, name: event.name, revision: event.revision, selection: event.selection, seen: Date.now() });
-    else peers.delete(id);
-    // Someone opened the notepad: tell them where this person is, even if it did not change
-    // (once a second at most, however many open it at once: a later hello is answered then).
-    if (event.hello && present && wasThere && !answerTimer) {
-      answerTimer = setTimeout(() => {
-        answerTimer = 0;
-        if (!present || !wasThere) return;
-        lastAnswerAt = Date.now();
-        forceDue = true;
-        sendPresence();
-      }, Math.max(0, lastAnswerAt + PRESENCE_ANSWER_GAP_MS - Date.now()));
-    }
-    drawPeers();
-  }
-
-  /** Events were lost (a reconnect): who is here is asked again, and nobody stays from before. */
-  function presenceLost() {
-    if (!putPresence || !present) return;
-    peers.clear();
-    helloDue = true;
-    presenceSoon();
-    drawPeers();
-  }
-
-  /** Shown (says hello) or hidden (leaves; `going`: the page goes, so the request outlives it). */
-  function setShown(next, { going = false } = {}) {
-    if (!putPresence || next === present) return;
-    present = next;
-    if (next) {
-      helloDue = true;
-      if (loaded) sendPresence();
-    } else {
-      helloDue = false; // a hello not sent yet has nobody to greet
-      forceDue = false;
-      clearTimeout(answerTimer);
-      answerTimer = 0;
-      sendPresence({ leaving: true, going });
-      peers.clear(); // drawn again from their answers to the next hello
-    }
-    drawPeers();
-  }
-
-  /** Once a second: teammates gone quiet fade out; a present person says so now and then. */
-  function tick() {
-    if (!putPresence) return;
-    const now = Date.now();
-    let gone = false;
-    for (const [id, peer] of peers) if (now - peer.seen > PRESENCE_EXPIRY_MS) { peers.delete(id); gone = true; }
-    if (gone) drawPeers();
-    if (present && wasThere && now - lastPresenceAt >= PRESENCE_HEARTBEAT_MS) {
-      forceDue = true;
-      sendPresence();
-    }
-  }
+  const presenceSoon = () => { if (presence) presence.soon(); };
 
   textarea.addEventListener('input', () => {
     if (failed && failed !== 'retrying' && failed !== 'loading') failed = null; // a refusal is retried after the next edit
@@ -892,13 +765,13 @@ function notepad(ctx, { key, label, textLabel, path, putPresence = null, unsaved
     renderMeta,
     unsaved: () => Boolean(conflict || saving || timer || checking || dirty()),
     focus() { textarea.focus(); },
-    setShown,
-    peerPresence,
-    presenceLost,
-    tick,
+    setShown: (next, options) => { if (presence) presence.setShown(next, options); },
+    peerPresence: (event) => { if (presence) presence.peer(event); },
+    presenceLost: () => { if (presence) presence.lost(); },
+    tick: () => { if (presence) presence.tick(); },
     destroy() {
       flush({ leaving: true }); // kept for the next load; the save goes on after the view is gone
-      setShown(false, { going: true });
+      if (presence) presence.destroy();
       destroyed = true;
       document.removeEventListener('selectionchange', onSelect);
       layer.destroy();
