@@ -2,7 +2,8 @@
 // left sidebar with navigation, the active task list and the user menu at its foot.
 
 import { h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip, skeleton } from './dom.js';
-import { relLong, bytes, duration, dateTime, resetLabel } from './format.js';
+import { relLong, bytes, duration, dateTime, resetLabel, compact } from './format.js';
+import { sparkline, usd } from './charts.js';
 import { taskTime } from './tasktime.js';
 import { taskInfo, taskActions, activityLine, allows } from './status.js';
 import { href } from './router.js';
@@ -482,12 +483,43 @@ export function accountUsage(account, { foldable = false, open = false } = {}) {
   return rememberOpen(h('details', { class: 'account-fold' }, h('summary', { class: 'account-head' }, head), body), `account:${account.id}`, open);
 }
 
-/** A number tile of the capacity panel: name, value and a detail line (no meter). */
-function capacityTile(iconName, name, value, detail, tone = 'ok') {
+/** A number tile of the capacity panel: name, value, detail lines and its 7-day chart (no meter). */
+function capacityTile(iconName, name, value, detail, tone = 'ok', chart = null) {
+  const lines = (Array.isArray(detail) ? detail : [detail]).filter(Boolean);
   return h('div', { class: ['stat-tile', `stat-${tone}`] },
     h('div', { class: 'stat-head' }, icon(iconName, { size: 15 }), h('span', null, name)),
     h('div', { class: 'tile-value' }, value),
-    h('div', { class: 'stat-detail' }, detail || ' '));
+    chart,
+    (lines.length ? lines : [' ']).map((line) => h('div', { class: 'stat-detail' }, line)));
+}
+
+/** A 7-day chart of a capacity figure ("Tokens, last 7 days: first …"), or null without data. */
+function weekChart(name, values, format) {
+  return Array.isArray(values) ? sparkline(values, { label: `${name}, last 7 days`, format }) : null;
+}
+
+const spent = (t) => (t ? (t.input || 0) + (t.output || 0) : null);
+
+/** The token and API-cost tiles of the pool (SPEC-110 TUS-006). */
+function tokenTiles(tokens) {
+  const t = tokens || {};
+  const week = t.last_7d || null;
+  const day = t.last_24h || null;
+  const perDay = Array.isArray(t.per_day) ? t.per_day : null;
+  const cost = week && Number.isFinite(week.cost_usd) ? week.cost_usd : null;
+  const unpriced = t.unpriced_runs || 0;
+  const unknown = t.unknown_usage_runs || 0;
+  return [
+    capacityTile('chart', 'Tokens (7 days)', week ? compact(spent(week)) : '—', week ? [
+      `${compact(week.input)} in · ${compact(week.output)} out · ${compact(week.cache_read)} from cache`,
+      `last 24 h: ${compact(spent(day))}${unknown ? ` · ${unknown} ${unknown === 1 ? 'run' : 'runs'} reported no usage` : ''}`,
+    ] : 'not known yet', 'ok', perDay && weekChart('Tokens', perDay.map(spent), compact)),
+    capacityTile('zap', 'API cost (7 days)', cost === null ? '—' : `≈ ${usd(cost)}`, [
+      'at Claude API list prices',
+      cost === null ? (week && spent(week) ? 'no run’s model has a price' : null)
+        : `last 24 h ≈ ${usd(day && Number.isFinite(day.cost_usd) ? day.cost_usd : 0)}${unpriced ? ` · ${unpriced} ${unpriced === 1 ? 'run' : 'runs'} of unknown models not counted` : ''}`,
+    ], 'ok', perDay && weekChart('API cost', perDay.map((d) => (Number.isFinite(d.cost_usd) ? d.cost_usd : null)), usd)),
+  ];
 }
 
 /** Subscriptions' weekly limits used per week at `burn` points per hour (ADR-17 §2.4). */
@@ -498,7 +530,8 @@ function perWeek(burn) {
 /**
  * The subscription pool from GET /api/capacity (ROT-013): one recommendation line and the
  * numbers behind it — available now, what is left this week, the burn rate, when the pool runs
- * out at that rate and the hours tasks waited. Shared by the Accounts page and the Dashboard;
+ * out at that rate, the tokens it used and their cost at API list prices (SPEC-110), and the hours
+ * tasks waited, with a 7-day chart where the history means something. Shared by the Accounts page and the Dashboard;
  * unknown values read as "—" or "not enough readings yet", never as zero.
  */
 export function capacityPanel(view) {
@@ -522,9 +555,12 @@ export function capacityPanel(view) {
     h('div', { class: 'stat-tiles' },
       capacityTile('user', 'Available now', `${Number.isFinite(v.available) ? v.available : 0} of ${subscriptions}`, `below ${threshold}% in every window`, v.available ? 'ok' : 'danger'),
       capacityTile('clock', 'Left this week', Number.isFinite(weekly) ? `${Math.round(weekly)}%` : '—', Number.isFinite(session) ? `5-hour windows: ${Math.round(session)}% left` : 'of the pool before it pauses', leftTone(weekly)),
-      capacityTile('zap', 'Burn rate', burn24 === null ? '—' : `${burn24.toFixed(1)} / week`, burn24 === null ? 'not enough readings yet' : `subscriptions' weekly limits, last 24 h${burn7 === null ? '' : ` (7 d: ${burn7.toFixed(1)})`}`, 'ok'),
+      capacityTile('zap', 'Burn rate', burn24 === null ? '—' : `${burn24.toFixed(1)} / week`, burn24 === null ? 'not enough readings yet' : `subscriptions' weekly limits, last 24 h${burn7 === null ? '' : ` (7 d: ${burn7.toFixed(1)})`}`, 'ok',
+        weekChart('Burn rate', (v.burn_per_day || []).map(perWeek), (x) => `${x.toFixed(1)} / week`)),
       capacityTile('chart', 'Runs out', v.runs_out_at ? resetLabel(v.runs_out_at).replace(/^Resets (at )?/, '') : burn24 === null ? '—' : 'Not this week', v.runs_out_at ? 'at the current rate' : 'at the current rate, before the next resets', v.runs_out_at ? 'warn' : 'ok'),
-      capacityTile('pulse', 'Paused (7 days)', `${hours.toFixed(hours >= 10 ? 0 : 1)} h`, Number.isFinite(v.active_hours_7d) ? `task-hours; ${Math.round(v.active_hours_7d)} h worked` : 'task-hours', hours > 0 ? 'warn' : 'ok')));
+      tokenTiles(v.tokens),
+      capacityTile('pulse', 'Paused (7 days)', `${hours.toFixed(hours >= 10 ? 0 : 1)} h`, Number.isFinite(v.active_hours_7d) ? `task-hours; ${Math.round(v.active_hours_7d)} h worked` : 'task-hours', hours > 0 ? 'warn' : 'ok',
+        weekChart('Paused', v.paused_hours_per_day, (x) => `${x.toFixed(1)} h`))));
 }
 
 // ---------------------------------------------------------------- sidebar

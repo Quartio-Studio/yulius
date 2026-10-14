@@ -99,7 +99,7 @@ pub struct AccountView {
 }
 
 /// Token totals of an account's runs; `None` values are unknown (runs without usage data).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct TokenTotalsView {
     /// Runs started in the window.
     pub runs: u32,
@@ -113,6 +113,10 @@ pub struct TokenTotalsView {
     pub cache_read: Option<u64>,
     /// Cache-write tokens.
     pub cache_write: Option<u64>,
+    /// What the runs whose model has a price would cost at Claude API list prices, in USD;
+    /// `null` when none has one (SPEC-110 TUS-004).
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
 }
 
 /// `POST /api/admin/accounts`.
@@ -160,10 +164,6 @@ pub struct CapacityAccount {
     /// Live tasks on it, except Done ones (instance administrators only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_use_by: Option<u32>,
-    /// Its tokens and their estimated cost over the last 7 days; `null` when no run with usage
-    /// ran on it (SPEC-110 TUS-004).
-    #[serde(default)]
-    pub tokens_7d: Option<TokenSpendView>,
 }
 
 /// Tokens spent in a period and what they would cost at Claude API list prices (SPEC-110).

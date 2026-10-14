@@ -740,7 +740,6 @@ impl App {
                 available: is_available,
                 id: admin.then(|| record.id.to_string()),
                 in_use_by: admin.then(|| in_use_count(&record.id, &live)),
-                tokens_7d: pool.by_account.get(record.id.as_str()).map(spend_view),
             });
         }
         let since = now.plus_millis(-WEEK_MS);
@@ -836,7 +835,6 @@ impl App {
             .map(|r| {
                 let m = r.metrics.unwrap_or_default();
                 TokenRun {
-                    account: r.account_id.map(|a| a.to_string()),
                     span: Span {
                         start: r.started_at,
                         end: r.ended_at,

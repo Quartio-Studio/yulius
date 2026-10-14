@@ -12,6 +12,7 @@ import { statusInfo } from '../status.js';
 import { pageFrame, loader } from './common.js';
 import { modelLabel } from '../models.js';
 import { accountUsage, capacityPanel } from '../layout.js';
+import { sparkline } from '../charts.js';
 
 const RANGES = [[7, '7 days'], [30, '30 days'], [90, '90 days']];
 const DAY = 86400000;
@@ -124,19 +125,6 @@ function kpi({ label, value, change, sub, extra, note, hint }) {
     extra || null,
     sub ? h('span', { class: 'db-kpi-sub' }, sub) : null,
     note ? h('span', { class: 'db-kpi-note' }, note) : null);
-}
-
-/** A small trend line under a number (decorative; the chart below has the values). */
-function sparkline(values) {
-  if (values.length < 2) return null;
-  const w = 120;
-  const hgt = 28;
-  const max = Math.max(...values, 1);
-  const pts = values.map((v, i) => [(i / (values.length - 1)) * w, hgt - 2 - (v / max) * (hgt - 4)]);
-  const line = pts.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`).join('');
-  return svgEl('svg', { class: 'db-spark', viewBox: `0 0 ${w} ${hgt}`, preserveAspectRatio: 'none', 'aria-hidden': 'true' },
-    svgEl('path', { class: 'db-spark-area', d: `${line}L${w},${hgt}L0,${hgt}Z` }),
-    svgEl('path', { class: 'db-spark-line', d: line }));
 }
 
 function card(title, sub, body, { tools, className } = {}) {

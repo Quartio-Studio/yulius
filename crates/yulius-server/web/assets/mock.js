@@ -2355,7 +2355,12 @@ route('PATCH', `/api/admin/users/${ID}`, ({ db, p, body }) => {
   if (body.is_instance_admin !== undefined) user.is_instance_admin = Boolean(body.is_instance_admin);
   return user;
 });
-route('GET', '/api/admin/accounts', ({ db }) => { adminOnly(db); return db.accounts; });
+// Each subscription's tokens Yulius observed, with their cost at API list prices (SPEC-110).
+route('GET', '/api/admin/accounts', ({ db }) => {
+  adminOnly(db);
+  const totals = (k, runs) => ({ runs, tasks: Math.max(1, runs - 1), ...poolSpend(k) });
+  return db.accounts.map((a, i) => (a.status === 'pending_login' ? a : { ...a, tokens_24h: totals(0.3 / (i + 1), 2), tokens_7d: totals(2 / (i + 1), 9) }));
+});
 // 201 {account, login_id}: the account waits in `pending_login` until the login terminal finishes.
 route('POST', '/api/admin/accounts', ({ db, body }) => {
   adminOnly(db);
@@ -2644,6 +2649,24 @@ route('POST', '/api/admin/jev/test', ({ db }) => {
   return { ok: true, result: 'ok', message: 'Jev answered: the key works.', latency_ms: 240 };
 });
 
+// The pool's tokens over 7 rolling days (SPEC-110), priced as Opus 5.5 ($4 in, $20 out, $0.20
+// cache read, $5 cache write per million).
+const poolSpend = (k) => {
+  const t = { input: Math.round(2.1e6 * k), output: Math.round(1.4e6 * k), cache_read: Math.round(310e6 * k), cache_write: Math.round(9e6 * k) };
+  return { ...t, cost_usd: (t.input * 4 + t.output * 20 + t.cache_read * 0.2 + t.cache_write * 5) / 1e6 };
+};
+function poolTokens() {
+  const perDay = [0.6, 0.9, 0.4, 1.1, 1.3, 0.8, 1.2].map(poolSpend);
+  const sum = (key) => perDay.reduce((a, d) => a + d[key], 0);
+  return {
+    last_24h: perDay[6],
+    last_7d: { input: sum('input'), output: sum('output'), cache_read: sum('cache_read'), cache_write: sum('cache_write'), cost_usd: sum('cost_usd') },
+    per_day: perDay,
+    unknown_usage_runs: 1,
+    unpriced_runs: 0,
+  };
+}
+
 // GET /api/capacity (`CapacityView`, ROT-013): the pool, burn rate and forecast. The mock's pool
 // burns faster than it refills and tasks waited this week, so it recommends one more subscription.
 route('GET', '/api/capacity', ({ db }) => {
@@ -2665,6 +2688,8 @@ route('GET', '/api/capacity', ({ db }) => {
     five_hour_left: left('primary'),
     burn_24h: 2.4,
     burn_7d: 1.9,
+    burn_per_day: [1.2, 1.6, null, 1.9, 2.2, 2.0, 2.4],
+    paused_hours_per_day: [0, 0, 1.5, 0, 2, 0.5, 2.5],
     runs_out_at: isoIn(1.6 * DAY),
     paused_hours_7d: 6.5,
     active_hours_7d: 118,
@@ -2677,6 +2702,7 @@ route('GET', '/api/capacity', ({ db }) => {
       label: a.label, status: a.status, usage: a.usage, available: isAvailable(a),
       ...(admin ? { id: a.id, in_use_by: a.in_use_by } : {}),
     })),
+    tokens: poolTokens(),
   };
 });
 

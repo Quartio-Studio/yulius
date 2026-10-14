@@ -12,9 +12,17 @@ test('the subscriptions page shows the pool capacity and nothing to manage but a
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Subscriptions');
   const capacity = screen.getByRole('region', 'Capacity');
   await expect(capacity.getByText(/Add about 1 subscription to stop pausing/)).toBeVisible();
-  for (const figure of ['Available now', 'Left this week', 'Burn rate', 'Runs out', 'Paused (7 days)']) {
+  for (const figure of ['Available now', 'Left this week', 'Burn rate', 'Runs out', 'Tokens (7 days)', 'API cost (7 days)', 'Paused (7 days)']) {
     await expect(capacity.getByText(figure)).toBeVisible();
   }
+  // Token use and its cost at API list prices, each with a 7-day chart (SPEC-110 TUS-006, TUS-010).
+  await expect(capacity.getByText(/^≈ \$[\d,.]+$/)).toBeVisible();
+  await expect(capacity.getByText(/at Claude API list prices/)).toBeVisible();
+  for (const name of ['Tokens', 'API cost', 'Burn rate', 'Paused']) {
+    await expect(capacity.getByRole('img', new RegExp(`^${name}, last 7 days: first .+, highest .+, last .+$`))).toBeVisible();
+  }
+  // Each subscription's observed tokens say what they would cost on the API (TUS-004).
+  await expect(screen.getByText(/^[\d.,]+[KMB]? tokens · 9 runs · 8 tasks · ≈ \$[\d,.]+ at API prices$/).first()).toBeVisible();
   await expect(screen.getByRole('button', 'Add subscription')).toBeVisible();
   await expect(screen.getByRole('button', 'Sign in again')).toBeVisible();
   // No priority, ordering or on/off controls remain (only the account list's Remove buttons).

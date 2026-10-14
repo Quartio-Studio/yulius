@@ -305,8 +305,6 @@ pub fn forecast(input: &ForecastInput<'_>) -> Forecast {
 /// One agent run's tokens for the pool's token use (SPEC-110 TUS-003).
 #[derive(Debug, Clone, PartialEq)]
 pub struct TokenRun {
-    /// The subscription it ran on, when known.
-    pub account: Option<String>,
     /// Its lifetime; `end = None` while it runs.
     pub span: Span,
     /// The model it ran, when known.
@@ -368,8 +366,6 @@ impl TokenSpend {
 pub struct PoolTokens {
     /// One entry per 24 hours, oldest first; the last ends at `now`.
     pub per_day: Vec<TokenSpend>,
-    /// The whole window per subscription.
-    pub by_account: std::collections::BTreeMap<String, TokenSpend>,
     /// Runs in the window that reported no usage.
     pub unknown_usage_runs: u32,
     /// Runs in the window whose model has no price.
@@ -417,7 +413,6 @@ pub fn pool_tokens(runs: &[TokenRun], now: Timestamp, days: usize) -> PoolTokens
             out.unpriced_runs = out.unpriced_runs.saturating_add(1);
         }
         let length = end.millis_since(start);
-        let mut in_window = 0.0;
         for (i, bucket) in out.per_day.iter_mut().enumerate() {
             let lo = from.plus_millis(i64::try_from(i).unwrap_or(0) * DAY_MS);
             let hi = lo.plus_millis(DAY_MS);
@@ -430,14 +425,7 @@ pub fn pool_tokens(runs: &[TokenRun], now: Timestamp, days: usize) -> PoolTokens
             };
             if share > 0.0 {
                 bucket.add(run, share, cost);
-                in_window += share;
             }
-        }
-        if let Some(account) = &run.account {
-            out.by_account
-                .entry(account.clone())
-                .or_default()
-                .add(run, in_window, cost);
         }
     }
     out
@@ -667,9 +655,8 @@ mod tests {
         );
     }
 
-    fn token_run(account: &str, from: i64, to: Option<i64>, model: &str, tokens: u64) -> TokenRun {
+    fn token_run(from: i64, to: Option<i64>, model: &str, tokens: u64) -> TokenRun {
         TokenRun {
-            account: Some(account.into()),
             span: Span {
                 start: at(from),
                 end: to.map(at),
@@ -687,13 +674,13 @@ mod tests {
     fn pool_tokens_spread_runs_over_rolling_days() {
         let runs = vec![
             // 40 h, still running: 16 h in the day before yesterday's window, 24 h in the last.
-            token_run("a", -40, None, "claude-opus-5-5", 1_000_000),
+            token_run(-40, None, "claude-opus-5-5", 1_000_000),
             // Ended 12 h ago after 2 h: all in the last 24 h.
-            token_run("b", -14, Some(-12), "claude-sonnet-5-5", 100),
+            token_run(-14, Some(-12), "claude-sonnet-5-5", 100),
             // Ended before the window: nowhere.
-            token_run("a", -200, Some(-170), "claude-opus-5-5", 9_999),
+            token_run(-200, Some(-170), "claude-opus-5-5", 9_999),
             // Half of its 4 h lifetime falls before the 7 days.
-            token_run("b", -170, Some(-166), "claude-opus-5-5", 1_000),
+            token_run(-170, Some(-166), "claude-opus-5-5", 1_000),
         ];
         let pool = pool_tokens(&runs, NOW, 7);
         assert_eq!(pool.per_day.len(), 7);
@@ -704,23 +691,19 @@ mod tests {
         // Opus 5.5: $4 in + $20 out + $0.20 cache read per million.
         assert!(close(pool.per_day[5].cost_usd, 0.4 * 24.2));
         assert_eq!(pool.per_day[3].cost(), Some(0.0));
-        let a = &pool.by_account["a"];
-        assert!(close(a.input, 1_000_000.0));
-        assert!(close(a.cost_usd, 24.2));
-        assert!(close(pool.by_account["b"].input, 600.0));
         assert_eq!((pool.unknown_usage_runs, pool.unpriced_runs), (0, 0));
     }
 
     #[test]
     fn pool_tokens_count_unknown_usage_and_models_without_price() {
-        let mut silent = token_run("a", -3, Some(-2), "claude-opus-5-5", 0);
+        let mut silent = token_run(-3, Some(-2), "claude-opus-5-5", 0);
         silent.input = None;
         silent.output = None;
         silent.cache_read = None;
         let runs = vec![
             silent,
-            token_run("a", -5, Some(-4), "mystery-model", 1_000),
-            token_run("a", -6, Some(-6), "claude-opus-5-5", 0),
+            token_run(-5, Some(-4), "mystery-model", 1_000),
+            token_run(-6, Some(-6), "claude-opus-5-5", 0),
         ];
         let pool = pool_tokens(&runs, NOW, 7);
         assert_eq!(pool.unknown_usage_runs, 1);

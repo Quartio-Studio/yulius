@@ -577,10 +577,23 @@ async fn the_capacity_view_reports_burn_forecast_and_recommendation() -> TestRes
     assert!(close(&tokens["last_24h"]["cost_usd"], 18.6), "{tokens}");
     assert_eq!(tokens["unknown_usage_runs"], 0);
     assert_eq!(tokens["unpriced_runs"], 0);
-    assert_eq!(first["tokens_7d"]["output"], 1_000_000);
-    assert!(close(&first["tokens_7d"]["cost_usd"], 31.0));
+    // TUS-004: each subscription's own token totals carry their cost (runs started in the window).
+    let list = call(&h.router, Method::GET, "/api/admin/accounts", None, &admin).await?;
+    assert_eq!(list.status, 200, "{}", list.body);
+    let mine = |label: &str| {
+        list.body
+            .as_array()
+            .and_then(|l| l.iter().find(|a| a["label"] == label))
+            .cloned()
+            .unwrap_or_default()
+    };
+    assert!(close(&mine("Claude acc-a")["tokens_7d"]["cost_usd"], 31.0));
     assert!(
-        v["accounts"][1]["tokens_7d"].is_null(),
+        mine("Claude acc-a")["tokens_24h"]["cost_usd"].is_null(),
+        "it started 40 h ago"
+    );
+    assert!(
+        mine("Claude acc-b")["tokens_7d"]["cost_usd"].is_null(),
         "nothing ran on acc-b"
     );
 
