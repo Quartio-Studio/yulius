@@ -35,10 +35,16 @@ const pageHelpers = () => {
   });
 };
 
-async function openNotes(screen: Screen): Promise<void> {
+/** Opens Notes on `tab` (Team opens first by default, SPEC-112), or as it opens with `null`. */
+async function openNotes(screen: Screen, tab: string | null = 'This sandbox'): Promise<void> {
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('navigation', 'Tools').getByRole('button', 'Notes').click();
+  if (tab) await screen.getByRole('tab', tab).click();
 }
+
+/** The Notes tabs' names, in order. */
+const tabOrder = (browser: Browser) =>
+  browser.evaluate(() => [...document.querySelectorAll('[role="tablist"][aria-label="Notes"] [role="tab"]')].map((tab) => tab.textContent));
 
 /** The text stored by the mock server for `scope` (`team` or `sandbox:<sid>`). */
 const stored = (browser: Browser, scope: string) =>
@@ -383,8 +389,8 @@ test('an undo after a lost answer is not Saved until the server is checked', asy
 // it focuses the notepad.
 test('Notes beside a task does not take the keyboard when another task opens', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
-  await openNotes(screen);
-  const notes = screen.getByRole('textbox', 'Sandbox notes');
+  await openNotes(screen, null);
+  const notes = screen.getByRole('textbox', 'Team notes');
   await expect(notes).toBeFocused();
 
   await screen.getByRole('link', /3D model viewer/).click();
@@ -399,9 +405,8 @@ test('Notes beside a task does not take the keyboard when another task opens', a
 
 test('Me after Team is the person’s own notepad, the same in every sandbox', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
-  await openNotes(screen);
-  expect(await browser.evaluate(() => [...document.querySelectorAll('[role="tablist"][aria-label="Notes"] [role="tab"]')].map((tab) => tab.textContent)))
-    .toEqual(['This sandbox', 'Team', 'Me']);
+  await openNotes(screen, null);
+  expect(await tabOrder(browser)).toEqual(['Team', 'This sandbox', 'Me']);
 
   await screen.getByRole('tab', 'Me').click();
   await expect(screen.getByRole('tab', 'Me')).toHaveAttribute('aria-selected', 'true');
@@ -474,4 +479,69 @@ test('a conflict on Me is always with the person’s own other tab, even under a
   const banner = screen.getByRole('alert');
   await expect(banner).toHaveText(/You changed these notes in another tab or on another device/);
   await expect(banner.getByRole('button', 'Use that version')).toBeVisible();
+});
+
+// SPEC-112: the tabs in any order, Team first by default.
+
+test('Team comes first and opens first; the tabs move by drag, keyboard and menu and stay so', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen, null);
+  expect(await tabOrder(browser)).toEqual(['Team', 'This sandbox', 'Me']);
+  await expect(screen.getByRole('tab', 'Team')).toHaveAttribute('aria-selected', 'true');
+  await expect(screen.getByRole('textbox', 'Team notes')).toBeVisible();
+
+  // Drag Me before Team: the press does not choose Me.
+  const me = await screen.getByRole('tab', 'Me').boundingBox();
+  const team = await screen.getByRole('tab', 'Team').boundingBox();
+  if (!me || !team) throw new Error('tabs not laid out');
+  await browser.mouse.move(me.x + me.width / 2, me.y + me.height / 2);
+  await browser.mouse.down();
+  for (const x of [me.x - 10, team.x + team.width, team.x + team.width / 2, team.x + 4]) await browser.mouse.move(x, me.y + me.height / 2);
+  await browser.mouse.up();
+  await expect.poll(() => tabOrder(browser)).toEqual(['Me', 'Team', 'This sandbox']);
+  await expect(screen.getByRole('tab', 'Team')).toHaveAttribute('aria-selected', 'true');
+
+  // Alt+← moves the focused tab one place and keeps the keyboard on it; the first goes no further.
+  await screen.getByRole('tab', 'Team').focus();
+  await expect(screen.getByRole('tab', 'Team')).toHaveAttribute('aria-keyshortcuts', 'Alt+ArrowLeft Alt+ArrowRight');
+  await browser.keyboard.press('Alt+ArrowLeft');
+  expect(await tabOrder(browser)).toEqual(['Team', 'Me', 'This sandbox']);
+  await expect(screen.getByRole('tab', 'Team')).toBeFocused();
+  await browser.keyboard.press('Alt+ArrowLeft');
+  expect(await tabOrder(browser)).toEqual(['Team', 'Me', 'This sandbox']);
+  await browser.keyboard.press('Alt+ArrowRight');
+  expect(await tabOrder(browser)).toEqual(['Me', 'Team', 'This sandbox']);
+
+  // The context menu moves it without dragging (WCAG 2.5.7); the first tab cannot go left.
+  await browser.evaluate(() => {
+    const tab = document.getElementById('notes-tab-me') as HTMLElement;
+    const box = tab.getBoundingClientRect();
+    tab.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: box.left + 8, clientY: box.bottom }));
+  });
+  await expect(screen.getByRole('menuitem', 'Move left')).toHaveAttribute('aria-disabled', 'true');
+  await screen.getByRole('menuitem', 'Move right').click();
+  expect(await tabOrder(browser)).toEqual(['Team', 'Me', 'This sandbox']);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // Kept after a reload and in another sandbox.
+  await browser.reload();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Notes').click();
+  expect(await tabOrder(browser)).toEqual(['Team', 'Me', 'This sandbox']);
+  await app.open(mock('/s/product'));
+  expect(await tabOrder(browser)).toEqual(['Team', 'Me', 'This sandbox']);
+
+  // A stored order that is not the three tabs is ignored.
+  await browser.evaluate(() => localStorage.setItem('yulius.notesOrder', JSON.stringify(['team', 'team', 'me'])));
+  await browser.reload();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Notes').click();
+  expect(await tabOrder(browser)).toEqual(['Team', 'This sandbox', 'Me']);
+});
+
+test('a remembered tab still opens first', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await openNotes(screen, 'Me');
+  await browser.reload();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', 'Notes').click();
+  await expect(screen.getByRole('tab', 'Me')).toHaveAttribute('aria-selected', 'true');
+  expect(await tabOrder(browser)).toEqual(['Team', 'This sandbox', 'Me']);
 });

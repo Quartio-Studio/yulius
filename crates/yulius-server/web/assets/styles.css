@@ -2045,6 +2045,11 @@ a.dl-task:hover { text-decoration: underline; }
 /* Notes (SPEC-041): a notepad per sandbox and one for the team, saved while typing. */
 .notes-tabs .term-tab { padding: 0 12px; border-top: 0; border-bottom: 0; border-left: 0; background: none; font: inherit; }
 .notes-tabs .term-tab.active { background: var(--term-bg); }
+/* Tabs in any order (SPEC-112): the dragged tab rides above, the others slide aside, it settles. */
+.notes-tabs.reordering { cursor: grabbing; user-select: none; }
+.notes-tabs.reordering .term-tab { transition: transform var(--duration-fast) var(--ease); }
+.notes-tabs .term-tab.dragging { position: relative; z-index: 1; transition: none; background: var(--surface-2); box-shadow: var(--shadow); cursor: grabbing; }
+.notes-tabs .term-tab.settling { position: relative; z-index: 1; transition: transform var(--duration-fast) var(--ease); }
 .notes-panes { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--term-bg); }
 .notes-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .notes-pane[hidden] { display: none; }
