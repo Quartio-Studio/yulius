@@ -111,6 +111,10 @@ pub struct TaskSummary {
     /// the project's pending supertasks. Empty otherwise.
     #[serde(default)]
     pub held_by: Vec<u32>,
+    /// While `prepared` (SPEC-105): when it starts by itself, RFC 3339; null when it waits for a
+    /// person ("when I decide") or is not prepared.
+    #[serde(default)]
+    pub start_at: Option<String>,
 }
 
 /// How "Auto" chose a new task's mode and workflow (SPEC-001 TSK-015).
@@ -217,6 +221,22 @@ pub struct CreateTask {
     /// the project's other tasks wait for it. Not together with `after_task_id` or `start_rule`.
     #[serde(default)]
     pub supertask: bool,
+    /// Prepared (SPEC-105): the task waits as `prepared` until a person starts it ("when I
+    /// decide"). Not together with `after_task_id`, `start_rule` or `supertask`.
+    #[serde(default)]
+    pub prepared: bool,
+    /// Prepared, and it starts by itself at this time (RFC 3339; at most 60 s past, at most 366
+    /// days ahead). Implies `prepared`.
+    #[serde(default)]
+    pub start_at: Option<String>,
+}
+
+/// `PUT /api/tasks/{tid}/schedule` (SPEC-105): when a prepared task starts by itself.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ScheduleTask {
+    /// The new time (RFC 3339), or null: it waits for a person.
+    #[serde(default)]
+    pub start_at: Option<String>,
 }
 
 /// `POST /api/tasks/{tid}/continue` and `/switch`.

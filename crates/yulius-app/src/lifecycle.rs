@@ -11,6 +11,7 @@ use yulius_domain::ids::{AccountId, SandboxId, StepId, TaskId, UserId};
 use yulius_domain::permission::Action;
 use yulius_domain::rule::Rule;
 use yulius_domain::task::TaskStatus;
+use yulius_domain::time::Timestamp;
 
 use crate::auth::AuthContext;
 use crate::auto_choice::WorkflowPick;
@@ -63,6 +64,15 @@ fn parse_harness(text: &str) -> AppResult<Harness> {
     })
 }
 
+/// A prepared task has one way to start (SPEC-105 PRP-001).
+fn prepared_alone() -> AppError {
+    AppError::Invalid(
+        "a prepared task starts when you decide or at its time: it cannot also run after a task, \
+         by a rule or as a supertask"
+            .into(),
+    )
+}
+
 impl App {
     /// Creates a task record (and optionally starts it). Enforces the onboarding gate (U-08).
     ///
@@ -98,7 +108,26 @@ impl App {
         after: Option<&TaskRecord>,
         rule: Option<&Rule>,
     ) -> AppResult<TaskRecord> {
+        self.create_task_held(req, after, rule, None).await
+    }
+
+    /// [`App::create_task_ruled`], or `prepared` (SPEC-105): `Some(None)` waits until a person
+    /// starts it, `Some(Some(time))` until that time. A prepared task has no predecessor or rule.
+    ///
+    /// # Errors
+    /// As [`App::create_task_ruled`]; `Invalid` for a prepared task with a predecessor or rule,
+    /// `Capacity` beyond the sandbox's prepared tasks.
+    pub async fn create_task_held(
+        self: &Arc<Self>,
+        req: NewTask,
+        after: Option<&TaskRecord>,
+        rule: Option<&Rule>,
+        prepared: Option<Option<Timestamp>>,
+    ) -> AppResult<TaskRecord> {
         let store = &self.deps.store;
+        if prepared.is_some() && (after.is_some() || rule.is_some() || req.supertask) {
+            return Err(prepared_alone());
+        }
         let after = match (after, rule) {
             (Some(_), Some(_)) => {
                 return Err(AppError::Invalid(
@@ -116,8 +145,13 @@ impl App {
             .ok_or(AppError::NotFound)?;
         // While the sandbox is being prepared a new task is not refused: it waits after the
         // preparation task and starts by itself once the sandbox is ready (U-08, IMP-010).
+        // A prepared task waits for onboarding when it is released instead (PRP-003).
         let after = match after {
             Some(task) => Some(task),
+            None if prepared.is_some() => {
+                self.ensure_prepared_room(&sandbox.id).await?;
+                None
+            }
             None if req.start => match self.onboarding_wait(&sandbox.id, req.origin).await? {
                 Some(preparation) => {
                     self.ensure_chain_room(&sandbox.id).await?;
@@ -154,6 +188,8 @@ impl App {
             workflow_id: req.workflow_id.clone(),
             status: if after.is_some() {
                 TaskStatus::Chained
+            } else if prepared.is_some() {
+                TaskStatus::Prepared
             } else if req.start {
                 TaskStatus::Queued
             } else {
@@ -171,7 +207,7 @@ impl App {
             updated_at: now,
             closed_at: (!req.start).then_some(now),
             archived_at: (!req.start).then_some(now),
-            queued_at: (req.start && after.is_none()).then_some(now),
+            queued_at: (req.start && after.is_none() && prepared.is_none()).then_some(now),
             gate_blocks: 0,
             wake_enabled: true,
             mode: req.mode,
@@ -180,6 +216,11 @@ impl App {
         let task = store.insert_task(&record).await?;
         if let Some(before) = &after {
             self.link_chain(&task, before, rule).await?;
+        }
+        if let Some(Some(start_at)) = prepared {
+            store
+                .set_task_schedule(&task.id, Some(start_at), now)
+                .await?;
         }
         let branch = branch_for(task.number, &task.title);
         store
@@ -228,6 +269,9 @@ impl App {
             // The predecessor may already be Done: start at once then.
             self.advance_chains(&before.id).await;
             self.publish_task(&before.id).await;
+        } else if prepared.is_some() {
+            // A time within the grace minute starts it now rather than on the next tick.
+            self.release_due_prepared().await;
         } else if req.start {
             let app = self.clone();
             let id = task.id.clone();
@@ -317,6 +361,16 @@ impl App {
                     .into(),
             ));
         }
+        // Prepared (SPEC-105): when a person decides, or at a time.
+        let prepared = match req.start_at.as_deref().map(str::trim) {
+            Some(text) if !text.is_empty() => {
+                Some(Some(crate::prepared::parse_start_at(text, self.now())?))
+            }
+            _ => req.prepared.then_some(None),
+        };
+        if prepared.is_some() && (after.is_some() || rule.is_some() || req.supertask) {
+            return Err(prepared_alone());
+        }
         // Jev is asked only about a prompt the task accepts.
         let prompt = req.prompt.trim();
         if prompt.is_empty() || prompt.len() > MAX_PROMPT_BYTES {
@@ -326,7 +380,7 @@ impl App {
         }
         let choice = self.auto_choose(&sid, prompt, mode, workflow).await?;
         let task = self
-            .create_task_ruled(
+            .create_task_held(
                 NewTask {
                     sandbox: sid,
                     created_by: user.id.clone(),
@@ -349,6 +403,7 @@ impl App {
                 },
                 after.as_ref(),
                 rule.as_ref(),
+                prepared,
             )
             .await?;
         if choice.is_auto() {

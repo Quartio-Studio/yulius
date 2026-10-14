@@ -81,7 +81,10 @@ impl App {
     async fn task_started(&self, task: &TaskRecord) -> AppResult<bool> {
         let waiting = matches!(
             task.status,
-            TaskStatus::Queued | TaskStatus::Chained | TaskStatus::WaitingCapacity
+            TaskStatus::Queued
+                | TaskStatus::Chained
+                | TaskStatus::Prepared
+                | TaskStatus::WaitingCapacity
         );
         let store = &self.deps.store;
         Ok(!waiting

@@ -569,7 +569,7 @@ impl TaskStore for SqliteStore {
             let n = c
                 .execute(
                     "UPDATE tasks SET prompt = prompt || ?1, updated_at = ?2 \
-                     WHERE id = ?3 AND status IN (?4, ?5, ?6) \
+                     WHERE id = ?3 AND status IN (?4, ?5, ?6, ?8) \
                      AND NOT EXISTS (SELECT 1 FROM attempts WHERE task_id = ?3) \
                      AND NOT EXISTS (SELECT 1 FROM provider_sessions WHERE task_id = ?3) \
                      AND length(CAST(prompt AS BLOB)) + length(CAST(?1 AS BLOB)) <= ?7",
@@ -580,7 +580,8 @@ impl TaskStore for SqliteStore {
                         TaskStatus::Queued.as_str(),
                         TaskStatus::Chained.as_str(),
                         TaskStatus::WaitingCapacity.as_str(),
-                        max
+                        max,
+                        TaskStatus::Prepared.as_str()
                     ],
                 )
                 .map_err(db)?;

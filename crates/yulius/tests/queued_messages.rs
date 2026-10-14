@@ -59,6 +59,7 @@ async fn a_task_that_has_not_started_takes_a_message_into_its_request() -> TestR
     for (id, status) in [
         ("t-queued", TaskStatus::Queued),
         ("t-chained", TaskStatus::Chained),
+        ("t-prepared", TaskStatus::Prepared),
         ("t-paused", TaskStatus::WaitingCapacity),
     ] {
         seed_task(&h, id, "s1", "u-alice", status, None).await?;
