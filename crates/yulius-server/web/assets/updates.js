@@ -14,6 +14,9 @@ const DISMISSED_KEY = 'yulius.update.dismissed';
 /** While an update runs: how often the view is read again. */
 const POLL_MS = 3000;
 
+/** The states of a run that has ended (the instance page shows its outcome). */
+export const UPDATE_OUTCOMES = new Set(['succeeded', 'failed', 'rolled_back', 'cancelled']);
+
 /** The route of the instance page (updates and the Jev key). */
 export const INSTANCE_ROUTE = '/admin/instance';
 
@@ -68,7 +71,7 @@ export function createUpdateButton(ctx, updates) {
 
   function state() {
     if (!view) return 'idle';
-    if (view.phase || (view.run && !['succeeded', 'failed', 'rolled_back', 'cancelled'].includes(view.run.state))) return 'running';
+    if (view.phase || (view.run && !UPDATE_OUTCOMES.has(view.run.state))) return 'running';
     return view.available ? 'offer' : 'idle';
   }
 
@@ -80,7 +83,9 @@ export function createUpdateButton(ctx, updates) {
     if (now === 'offer') {
       const available = view.available;
       el.setAttribute('aria-label', `Update ${BRAND.name} to ${available.short}`);
-      el.title = `Update available: ${available.summary}`;
+      el.title = view.helper_installed === false
+        ? 'Update available, but it needs the update helper on this server: see the instance page'
+        : `Update available: ${available.summary}`;
       setChildren(el, icon('download', { size: 14 }), h('span', { class: 'update-btn-text' }, 'Update'));
     } else if (now === 'running') {
       const text = phaseText(view.phase, view.run) || `Updating ${BRAND.name}`;

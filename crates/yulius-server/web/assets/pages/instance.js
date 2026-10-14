@@ -8,7 +8,7 @@ import { relLong, dateTime } from '../format.js';
 import { BRAND } from '../brand.js';
 import { pageFrame } from './common.js';
 import { jevSettingsCard } from '../jevkey.js';
-import { confirmAndStartUpdate } from '../updates.js';
+import { confirmAndStartUpdate, UPDATE_OUTCOMES as OUTCOMES } from '../updates.js';
 
 const REPO_URL = 'https://github.com/Quartio-Studio/yulius';
 const STEPS = [
@@ -17,7 +17,6 @@ const STEPS = [
   ['restarting', 'Restart', 'Installs and starts the new version, after a database backup.'],
   ['resuming', 'Resume', 'Tasks continue one by one.'],
 ];
-const OUTCOMES = new Set(['succeeded', 'failed', 'rolled_back', 'cancelled']);
 
 function short(commit) {
   return commit ? commit.slice(0, 7) : 'unknown';
