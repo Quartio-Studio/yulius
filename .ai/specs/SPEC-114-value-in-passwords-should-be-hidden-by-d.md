@@ -1,11 +1,11 @@
 ---
 yulius-task: 390df895-a86d-4902-9e83-893ace623a66
-status: in-progress
+status: done
 ---
 
 # SPEC-114: a shown secret value stays masked until the eye is pressed
 
-Status: in-progress
+Status: done
 Date: 2026-10-14
 Owner: Yulius task #99
 Scope authorization: the person's request (task #99), "Value in passwords should be hidden by
@@ -52,8 +52,8 @@ the keyboard into it) shows a copy button inside the value box. The current **Co
 - [x] A shown secret value opens masked and the eye button reveals and hides it
 - [x] Hovering or focusing the value offers a quick copy beside the kept Copy button
 - [x] Docs, decision record and changes log describe the masked value
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -107,3 +107,21 @@ the keyboard into it) shows a copy button inside the value box. The current **Co
   hand because it redraws its own icon and title; on touch screens the quick copy shows once the
   eye is tapped (focus in the box), and the always-visible Copy button covers a direct copy, so
   no `hover: none` rule is added.
+
+## Evidence
+
+- Red first: with the new tests on the code of `dev`, `npx e2e run tests/secrets.e2e.ts` failed 3
+  of 8 (the value was in the page on opening, no `Show value` button); after the masking slice
+  only the quick-copy assertion failed; after the quick copy, 8 of 8 passed.
+- Mutation: with `.secret-box:focus-within .secret-quick-copy` removed from the CSS, the new test
+  fails (`toBeVisible failed`).
+- `scripts/dev ci` (repository check, fmt, clippy, 1604 nextest tests, doctests, deny, shear,
+  doc): exit 0. `python3 scripts/check_repository.py` at the final head: passed.
+- `E2E_TELEMETRY_DISABLED=1 npx e2e run` (full suite): 45 files passed, 1 skipped (`agent.e2e.ts`
+  needs a model); 338 tests passed.
+- Screenshots of the trace (1440 px masked on hover, 390 px shown) checked by eye: dots, eye, quick
+  copy and Copy inside the dialog.
+- Independent review in a fresh session: round 1 approved aba21f22 with two minor test gaps,
+  fixed in 792841e2; round 2 approved 792841e2 with no findings to fix.
+- Not tested here: a real clipboard (the tests stub `navigator.clipboard.writeText`) and real touch
+  devices.
