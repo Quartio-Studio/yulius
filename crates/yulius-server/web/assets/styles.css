@@ -2347,8 +2347,8 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
    a quiet list. */
 .secret-value { word-break: break-all; user-select: all; }
 .secret-notes { max-height: 240px; overflow: auto; }
-/* A shown value (SPEC-114) sits in a box with its eye button; masked, it is a fixed run of dots
-   that cannot be selected. */
+/* A shown value (SPEC-114) sits in a box with its eye and quick-copy buttons; masked, it is a
+   fixed run of dots that cannot be selected. */
 .secret-box {
   display: flex; align-items: center; gap: 4px; flex: 1 1 220px; min-width: 0;
   min-height: var(--control-md); padding: 2px 4px 2px 8px;
@@ -2357,6 +2357,9 @@ a.update-text:hover { text-decoration: underline; text-underline-offset: 2px; }
 .secret-box .secret-value { flex: 1; min-width: 0; }
 .secret-box .btn-icon { width: var(--control-sm); height: var(--control-sm); }
 .secret-masked { user-select: none; letter-spacing: 0.1em; }
+/* The quick copy shows on hover or with focus in the box, like a task row's quick Archive. */
+.secret-quick-copy { visibility: hidden; }
+.secret-box:hover .secret-quick-copy, .secret-box:focus-within .secret-quick-copy { visibility: visible; }
 .section-title { margin: 16px 0 0; font-size: var(--fs-md); line-height: var(--lh-md); font-weight: 600; }
 .plain-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .stack-tight { display: flex; flex-direction: column; gap: 4px; }
