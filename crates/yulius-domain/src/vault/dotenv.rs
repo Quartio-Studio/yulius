@@ -109,7 +109,10 @@ mod tests {
 
     #[test]
     fn values_are_quoted_the_way_every_reader_agrees_on() -> Result<(), VaultError> {
-        assert_eq!(line("K", "sk_live_a1b2.c3/d4+e5=")?, "K=sk_live_a1b2.c3/d4+e5=");
+        assert_eq!(
+            line("K", "sk_live_a1b2.c3/d4+e5=")?,
+            "K=sk_live_a1b2.c3/d4+e5="
+        );
         assert_eq!(line("K", "has space #and hash")?, "K='has space #and hash'");
         assert_eq!(line("K", "dollar$and\"quote\\")?, "K='dollar$and\"quote\\'");
         assert_eq!(line("K", "it's-a-key")?, "K=\"it's-a-key\"");
@@ -123,7 +126,10 @@ mod tests {
     #[test]
     fn the_names_lines_are_replaced_and_everything_else_kept() -> Result<(), VaultError> {
         let text = "# local settings\nOTHER=1\nexport API_KEY=old\n\nAPI_KEY = older\nMORE='x'";
-        let out = upsert(text, &[entry("API_KEY", "new-value-123")?, entry("NEW", "n-v-456")?]);
+        let out = upsert(
+            text,
+            &[entry("API_KEY", "new-value-123")?, entry("NEW", "n-v-456")?],
+        );
         assert_eq!(
             out,
             "# local settings\nOTHER=1\nexport API_KEY=new-value-123\n\nMORE='x'\nNEW=n-v-456\n"

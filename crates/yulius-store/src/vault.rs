@@ -641,8 +641,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn env_copies_change_only_from_what_was_seen() -> Result<(), Box<dyn std::error::Error>>
-    {
+    async fn env_copies_change_only_from_what_was_seen() -> Result<(), Box<dyn std::error::Error>> {
         let store = store_with_sandboxes().await?;
         store
             .vault_insert(&record("a", VaultSection::Agent, Some("s1"), "KEY"))

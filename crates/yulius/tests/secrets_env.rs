@@ -61,7 +61,15 @@ async fn world() -> Result<World, Box<dyn std::error::Error>> {
     std::fs::write(worktree.join("README.md"), "# app\n")?;
     git(&worktree, &["add", "."])?;
     git(&worktree, &["commit", "-q", "-m", "init"])?;
-    seed_task(&h, "t1", "s1", "u-alice", TaskStatus::Running, Some(&worktree)).await?;
+    seed_task(
+        &h,
+        "t1",
+        "s1",
+        "u-alice",
+        TaskStatus::Running,
+        Some(&worktree),
+    )
+    .await?;
     seed_live_attempt(&h, "t1", TOKEN).await?;
     let created = call(
         &h.router,
@@ -157,7 +165,10 @@ async fn people_allow_dismiss_and_revoke_env_copies() -> TestResult {
         "vault.agent.env_allow",
         "vault.agent.env_revoke",
     ] {
-        assert!(actions.iter().any(|a| a == expected), "{expected}: {actions:?}");
+        assert!(
+            actions.iter().any(|a| a == expected),
+            "{expected}: {actions:?}"
+        );
     }
     let _ = &w.worktree;
     Ok(())
@@ -203,16 +214,12 @@ async fn an_allowed_secret_is_copied_into_the_ignored_env() -> TestResult {
     assert!(!w.worktree.join(".env.example").exists());
     let secret = w.h.store.vault_get(&w.id).await?.ok_or("secret")?;
     assert_eq!(secret.env_files, EnvFiles::Asked);
-    let task = w
-        .h
-        .store
-        .task(&yulius_domain::ids::TaskId::parse("t1")?)
-        .await?
-        .ok_or("task")?;
-    assert_eq!(
-        secret.env_requested_by,
-        Some(format!("#{}", task.number))
-    );
+    let task =
+        w.h.store
+            .task(&yulius_domain::ids::TaskId::parse("t1")?)
+            .await?
+            .ok_or("task")?;
+    assert_eq!(secret.env_requested_by, Some(format!("#{}", task.number)));
     assert_eq!(
         task.activity,
         Some(yulius_domain::task::Activity::NeedsAttention)
@@ -238,15 +245,15 @@ async fn an_allowed_secret_is_copied_into_the_ignored_env() -> TestResult {
         format!("# local\nOTHER=1\nSTRIPE_KEY={VALUE}\n"),
         "the masked line is replaced by the real value, the rest is kept"
     );
-    assert_eq!(
-        std::fs::metadata(&env)?.permissions().mode() & 0o777,
-        0o600
-    );
+    assert_eq!(std::fs::metadata(&env)?.permissions().mode() & 0o777, 0o600);
     assert_eq!(read(&w.worktree.join(".env.example")), "STRIPE_KEY=\n");
 
     // In a folder of its own, with an example that already names it.
     std::fs::create_dir_all(w.worktree.join("deploy"))?;
-    std::fs::write(w.worktree.join("deploy/.env.example"), "# keys\nSTRIPE_KEY=\n")?;
+    std::fs::write(
+        w.worktree.join("deploy/.env.example"),
+        "# keys\nSTRIPE_KEY=\n",
+    )?;
     let nested = support::mcp_tool(
         &w.h,
         TOKEN,
@@ -290,10 +297,16 @@ async fn copies_are_refused_where_git_could_commit_them() -> TestResult {
     std::fs::write(&outside_file, "")?;
     std::os::unix::fs::symlink(&outside_file, w.worktree.join(".env.local"))?;
     std::fs::write(w.worktree.join("tracked.env"), "")?;
-    std::fs::write(w.worktree.join(".gitignore"), ".env\n.env.*\n!.env.example\n*.env\n")?;
+    std::fs::write(
+        w.worktree.join(".gitignore"),
+        ".env\n.env.*\n!.env.example\n*.env\n",
+    )?;
     git(&w.worktree, &["add", "-f", "tracked.env"])?;
     git(&w.worktree, &["commit", "-q", "-m", "a tracked env file"])?;
-    std::fs::write(w.worktree.join(".gitignore"), ".env\n.env.*\n!.env.example\n")?;
+    std::fs::write(
+        w.worktree.join(".gitignore"),
+        ".env\n.env.*\n!.env.example\n",
+    )?;
     std::fs::create_dir_all(w.worktree.join("docs"))?;
 
     // Unallowed: an unknown name, or more than 16.
@@ -334,7 +347,13 @@ async fn copies_are_refused_where_git_could_commit_them() -> TestResult {
     assert_eq!(read(&w.worktree.join("tracked.env")), "");
     assert!(!w.worktree.join("prod.env").exists());
     assert!(!w.worktree.join(".env.example").exists());
-    assert!(!w.h.app.config.data_dir.join("sandboxes/s1/worktrees/escape.env").exists());
+    assert!(
+        !w.h.app
+            .config
+            .data_dir
+            .join("sandboxes/s1/worktrees/escape.env")
+            .exists()
+    );
     let refused = support::mcp_tool(
         &w.h,
         TOKEN,
@@ -354,9 +373,8 @@ async fn copies_are_refused_where_git_could_commit_them() -> TestResult {
 #[tokio::test]
 async fn secrets_list_teaches_the_env_default() -> TestResult {
     let w = world().await?;
-    let listed = support::tool_text(
-        &support::mcp_tool(&w.h, TOKEN, "secrets_list", json!({})).await?,
-    );
+    let listed =
+        support::tool_text(&support::mcp_tool(&w.h, TOKEN, "secrets_list", json!({})).await?);
     assert_eq!(listed["secrets"][0]["env_files"], "no", "{listed}");
     let advice = listed["how_to_use"].to_string();
     for needle in [".env.example", "secret_copy_to_env", "git-ignored .env"] {

@@ -393,14 +393,22 @@ impl App {
         let path = target.folder.join(EXAMPLE);
         let existing = match read_existing(worktree, &path, &relative) {
             Ok(existing) => existing,
-            Err(err) => return (Vec::new(), Some(format!("{relative} was not changed: {err}"))),
+            Err(err) => {
+                return (
+                    Vec::new(),
+                    Some(format!("{relative} was not changed: {err}")),
+                );
+            }
         };
         let (text, added) = dotenv::example(existing.as_deref().unwrap_or_default(), names);
         if !added.is_empty() {
             let mode = std::fs::metadata(&path).map_or(0o644, |m| m.permissions().mode() & 0o777);
             let nonce = crate::auth::hex_token(&self.deps.crypto.random_bytes()[..8]);
             if let Err(err) = write_whole(&target.folder, EXAMPLE, &text, mode, &nonce) {
-                return (Vec::new(), Some(format!("{relative} was not changed: {err}")));
+                return (
+                    Vec::new(),
+                    Some(format!("{relative} was not changed: {err}")),
+                );
             }
         }
         let ignored = self

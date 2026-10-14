@@ -284,7 +284,12 @@ fn same_hosts(a: &[HostPattern], b: &[HostPattern]) -> bool {
 
 /// Who asks: `#N`, with the sandbox for a secret of every sandbox (shown on every sandbox's
 /// page); added to the earlier askers of a request that still waits.
-pub(super) fn requester(earlier: Option<&str>, waiting: bool, number: u32, slug: Option<&str>) -> String {
+pub(super) fn requester(
+    earlier: Option<&str>,
+    waiting: bool,
+    number: u32,
+    slug: Option<&str>,
+) -> String {
     let me = match slug {
         Some(slug) => format!("#{number} in {slug}"),
         None => format!("#{number}"),

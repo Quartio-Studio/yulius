@@ -10,9 +10,9 @@ use serde::Deserialize;
 use yulius_app::model::Secret;
 use yulius_app::vault::Revealed;
 use yulius_contracts::api::secrets::{
-    AgentSecretInput, AgentSecretPatch, AgentSecretView, EnvFilesAnswer, HostRequestAnswer, ReauthPassword,
-    ReauthStatus, RevealRequest, TeamSecretInput, TeamSecretPatch, TeamSecretView, UnlockRequest,
-    VaultActivity,
+    AgentSecretInput, AgentSecretPatch, AgentSecretView, EnvFilesAnswer, HostRequestAnswer,
+    ReauthPassword, ReauthStatus, RevealRequest, TeamSecretInput, TeamSecretPatch, TeamSecretView,
+    UnlockRequest, VaultActivity,
 };
 use yulius_contracts::scrub::{FingerprintSet, RedactionReport};
 
