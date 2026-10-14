@@ -21,7 +21,7 @@ use crate::error::{AppError, AppResult};
 /// Largest note body, in bytes of UTF-8 (NOT-006).
 pub const MAX_NOTE_BYTES: usize = 256 * 1024;
 
-/// Presence updates a person may send per notepad in [`PRESENCE_WINDOW_MS`] (NOT-019).
+/// Presence updates a person may send per notepad in a second (NOT-019).
 pub const PRESENCE_PER_SECOND: usize = 20;
 /// The window [`PRESENCE_PER_SECOND`] counts in.
 const PRESENCE_WINDOW_MS: i64 = 1_000;
