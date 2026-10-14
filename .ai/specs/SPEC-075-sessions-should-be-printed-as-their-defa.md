@@ -123,8 +123,8 @@ read-only: a locked prompt box, nothing to type into.
   without its result (session ended, or the result on the next page) claimed "Updated"; it now
   claims nothing and stays folded. A Write reads "Wrote N lines to path". The prompt background
   no longer bleeds past the entry (clipped by `content-visibility`). Hiding non-wrapper meta
-  notes (skill bodies, injected context) as the TUI does is follow-up #347: they were shown
-  before this change too.
+  notes (skill bodies, injected context) as the TUI does is follow-up #347 (done in SPEC-090):
+  they were shown before this change too.
 - Review round 3 (fresh session): REQUEST_CHANGES at 187881a. Major: `content-visibility` on an
   entry clipped the folded call's outset focus ring (WCAG 2.4.7) and the search target's ring.
   Fixed test-first: both are inset, drawn in the entry's 1ch side padding, which also lines the
