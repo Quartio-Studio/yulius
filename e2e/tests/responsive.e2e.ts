@@ -226,3 +226,60 @@ test('every top-level page is centred, with no empty band on the right', async (
   await expect.poll(() => browser.evaluate(() => Boolean(document.querySelector('#main .wf-page')))).toBe(true);
   await expect.poll(centred).toBe(true);
 });
+
+// Task #104 (SPEC-119, #442): squeezed, the new-task composer's model, effort and Start moved to a
+// second row as one block pushed to the right, its left half empty, and at its narrowest Start
+// left the box. Squeezed, the last row now starts where the first does and ends with Start.
+const composerControls = (browser: Browser) => browser.evaluate(() => {
+  const box = document.querySelector('.composer-box')!.getBoundingClientRect();
+  const controls = [...document.querySelectorAll('.composer-tools .chip-btn, .composer-tools .composer-preview-toggle, .composer-send')]
+    .map((el) => ({ el, r: el.getBoundingClientRect() }));
+  const send = document.querySelector('.composer-send')!.getBoundingClientRect();
+  const rows = [...new Set(controls.map(({ r }) => Math.round(r.top + r.height / 2)))].sort((a, b) => a - b);
+  const rowOf = (r: DOMRect) => rows.findIndex((y) => Math.abs(y - (r.top + r.height / 2)) <= 4);
+  const left = (row: number) => Math.min(...controls.filter(({ r }) => rowOf(r) === row).map(({ r }) => r.left));
+  const outside = controls.filter(({ r }) => r.left < box.left || r.right > box.right)
+    .map(({ el }) => el.getAttribute('aria-label') || el.textContent!.trim());
+  let overlaps = 0;
+  for (const a of controls) for (const b of controls) {
+    if (a === b) continue;
+    if (Math.min(a.r.right, b.r.right) - Math.max(a.r.left, b.r.left) > 1 && Math.min(a.r.bottom, b.r.bottom) - Math.max(a.r.top, b.r.top) > 1) overlaps += 1;
+  }
+  const last = rows.length - 1;
+  return {
+    rows: new Set(controls.map(({ r }) => rowOf(r))).size,
+    outside,
+    overlaps,
+    // The last row starts at the first row's left edge, and Start ends it, at the right.
+    lastRowAligned: Math.abs(left(last) - left(0)) <= 1,
+    startEndsLastRow: rowOf(send) === last && controls.every(({ r }) => r.right <= send.right + 0.5),
+  };
+});
+
+test('the new-task composer squeezed keeps its controls in the box, the last row starting at the left', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await expect(screen.getByRole('textbox', 'Task prompt')).toBeVisible();
+  // Wide, every control is on one row.
+  await expect.poll(async () => (await composerControls(browser)).rows).toBe(1);
+  const squeezed = { outside: [], overlaps: 0, lastRowAligned: true, startEndsLastRow: true };
+  const check = async () => {
+    await expect.poll(async () => {
+      const { rows: _rows, ...rest } = await composerControls(browser);
+      return rest;
+    }).toEqual(squeezed);
+  };
+  for (const width of [900, 768, 600, 390]) {
+    await browser.setViewport({ width, height: 900 });
+    await expect.poll(async () => (await composerControls(browser)).rows).toBeGreaterThan(1);
+    await check();
+  }
+  // The reported screen: a tool panel beside the composer.
+  await browser.setViewport({ width: 1440, height: 900 });
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('navigation', 'Tools').getByRole('button', /^Shell/).click();
+  await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
+  for (const width of [1920, 1440, 1280, 1024]) {
+    await browser.setViewport({ width, height: 900 });
+    await check();
+  }
+});
