@@ -18,7 +18,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use yulius_contracts::api::sandboxes::{Profile, Sandbox};
+use yulius_contracts::api::sandboxes::{OnboardingPlan, Profile, Sandbox};
 use yulius_contracts::import::{OnboardingStatus, OnboardingTask};
 use yulius_domain::harness::Harness;
 use yulius_domain::ids::SandboxId;
@@ -377,6 +377,16 @@ fn onboarding_steps() -> Vec<String> {
     .collect()
 }
 
+/// The onboarding task's title and steps for a repository: the environment alone when it already
+/// follows the format, else the whole preparation.
+fn planned(report: &ProjectReport) -> (&'static str, Vec<String>) {
+    if report.is_valid() {
+        (ENVIRONMENT_TITLE, environment_steps())
+    } else {
+        (ONBOARDING_TITLE, onboarding_steps())
+    }
+}
+
 /// Refuses a caller that is not a person in the browser: onboarding starts only from the sandbox
 /// page (SPEC-051 OBD-002, ADR-0038).
 fn ensure_browser(ctx: &AuthContext) -> AppResult<()> {
@@ -432,19 +442,11 @@ impl App {
     ) -> AppResult<TaskRecord> {
         let profile = self.profile_of(sandbox);
         let repo = format!("{}/{}", sandbox.repo_owner, sandbox.repo_name);
-        // A repository that already follows the format still needs its environment.
-        let (prompt, title, steps) = if report.is_valid() {
-            (
-                environment_prompt(&repo, &profile),
-                ENVIRONMENT_TITLE,
-                environment_steps(),
-            )
+        let (title, steps) = planned(report);
+        let prompt = if report.is_valid() {
+            environment_prompt(&repo, &profile)
         } else {
-            (
-                onboarding_prompt(&repo, &profile, report),
-                ONBOARDING_TITLE,
-                onboarding_steps(),
-            )
+            onboarding_prompt(&repo, &profile, report)
         };
         let task = self
             .create_task_internal(NewTask {
@@ -764,6 +766,38 @@ impl App {
             )
             .await?;
         Ok(Some(task))
+    }
+
+    /// `GET /api/sandboxes/{sid}/onboarding/plan` (read): what onboarding does — its task's title
+    /// and steps, or, while that task does not exist yet, the ones it would be created with. Reads
+    /// only; creates nothing (SPEC-097 OBT-004).
+    ///
+    /// # Errors
+    /// `NotFound` without access.
+    pub async fn onboarding_plan(&self, ctx: &AuthContext, sid: &str) -> AppResult<OnboardingPlan> {
+        let id = SandboxId::parse(sid).map_err(|_| AppError::NotFound)?;
+        let (record, _) = self.require(&ctx.user, &id, Action::View).await?;
+        let store = &self.deps.store;
+        let task = match &record.onboarding_task_id {
+            Some(task) => store.task(task).await?,
+            None => None,
+        };
+        if let Some(task) = task {
+            let steps = store.steps(&task.id).await?;
+            return Ok(OnboardingPlan {
+                title: task.title,
+                steps: steps.into_iter().map(|step| step.title).collect(),
+                task_number: Some(task.number),
+            });
+        }
+        let root = self.sandbox_repo(&record.id);
+        let (report, _) = blocking(move || Ok(validate_checkout(&root))).await?;
+        let (title, steps) = planned(&report);
+        Ok(OnboardingPlan {
+            title: title.to_owned(),
+            steps,
+            task_number: None,
+        })
     }
 
     /// The onboarding state of a sandbox and what is still pending, in words (for `yulius

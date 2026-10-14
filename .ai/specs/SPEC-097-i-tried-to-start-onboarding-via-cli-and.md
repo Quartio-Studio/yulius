@@ -34,8 +34,9 @@ empty instead of showing a "Closed · 0/6 steps" task that never ran.
   when it is missing (Start onboarding), `App::onboarding_status` names "the preparation task", and
   deleting the onboarding task clears `onboarding_task_id` (`yulius-store` `tasks.rs`). Only
   `App::onboarding_wait` refuses (409) a new task in a `pending` sandbox without one.
-- Parallel task #81 (SPEC-096) hides the task input in the web UI until onboarding finishes; this
-  fix is the server side and does not touch the UI.
+- Parallel task #81 (SPEC-096, merged first as #402) made onboarding mandatory in the UI: a
+  `pending` sandbox's page lists what onboarding will do from the onboarding task's own steps. With
+  no task before Start onboarding, that plan needs its own read (OBT-004).
 
 ## Requirements
 
@@ -44,6 +45,8 @@ empty instead of showing a "Closed · 0/6 steps" task that never ran.
 | OBT-001 | Linking a repository with a bearer token (`yulius onboard`, `POST /api/sandboxes` with a token) creates no task: the sandbox is `pending` with no onboarding task, and its task list is empty. | Rust `import_server::onboarding_starts_only_from_the_browser` |
 | OBT-002 | Start onboarding in the browser creates the onboarding task (full preparation, or the environment task for a repository that already validates) and starts it; the sandbox becomes `preparing`. Adding a repository in the browser still starts onboarding at once. | Rust `import_server::start_onboarding_creates_the_task_a_cli_upload_left_out`, `projects::import_links_owner_repositories_with_profiles_ports_and_onboarding`; e2e `onboarding.e2e.ts` (the mock follows the server) |
 | OBT-003 | A new task created in a `pending` sandbox without an onboarding task still waits after one (IMP-010, OBD-005): the onboarding task is created then, resting, and the new task is `chained` after it. Continuing that resting task with a token is still refused (OBD-002). Simultaneous requests create one onboarding task, and a skip made meanwhile is never undone (the creation and the skip share one lock; nothing is created once the sandbox is no longer `pending`). | Rust `import_server::onboarding_starts_only_from_the_browser`, `import_server::simultaneous_new_tasks_create_one_onboarding_task` |
+
+| OBT-004 | What onboarding will do stays readable before its task exists: `GET /api/sandboxes/{sid}/onboarding/plan` (read access) returns the task's title and steps, or the ones it would be created with (`task_number: null`), and creates nothing. The mandatory-onboarding page (SPEC-096 OBG-002) shows that plan for a `pending` sandbox, naming the task once it exists. | Rust `import_server::onboarding_starts_only_from_the_browser`, `projects::import_links_owner_repositories_with_profiles_ports_and_onboarding`; e2e `onboarding.e2e.ts` (both kinds) |
 
 ## Plan
 
@@ -69,7 +72,9 @@ empty instead of showing a "Closed · 0/6 steps" task that never ran.
   a validating repository has no task; Start onboarding in the browser creates the environment task.
 - `import_server::simultaneous_new_tasks_create_one_onboarding_task`: two new tasks at once wait
   after the same, single onboarding task (fails without the lock: two are created).
-- e2e `onboarding.e2e.ts`: the mock's pending sandbox lists no task until Start onboarding.
+- e2e `onboarding.e2e.ts`: the mock's pending sandbox lists no task until Start onboarding, and its
+  page still shows the six-step (or, for a repository in the format, three-step) plan, read from
+  `…/onboarding/plan`.
 - The whole gate (`scripts/dev ci`).
 
 ## Decisions
@@ -106,3 +111,9 @@ empty instead of showing a "Closed · 0/6 steps" task that never ran.
 - Independent review in a fresh session (om-code-review) of e6bbeeef: APPROVE, no blocker or major;
   minor findings 1-4 fixed (skip lock and `pending` guard, concurrency test, mock and its e2e,
   SPEC-051 and ADR-0038 text), 5 and nits recorded above.
+- Round 2 review of c27f4d22: APPROVE; its pre-existing minor (Start onboarding vs. a concurrent
+  Skip) filed as #406; the mock nit fixed (the mock creates its preparation task only once a new
+  task's request is valid and waits for it).
+- Merging #402 (SPEC-096) conflicted: its page read the plan from the resting task. OBT-004 adds
+  the plan read; the tests failed first (404 on `…/onboarding/plan`; e2e: the two pending-page
+  tests fail with the previous page) and pass after.

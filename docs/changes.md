@@ -9,7 +9,8 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - `yulius onboard` no longer leaves a "Closed · 0/6 steps" onboarding task behind (SPEC-097,
   ADR-0077). Linking a repository creates no task: the onboarding task is created when someone
   clicks Start onboarding in the browser, or when a new task has to wait after it. Sandboxes
-  already waiting keep their task.
+  already waiting keep their task. The onboarding page still lists what onboarding will do, now
+  from `GET /api/sandboxes/{sid}/onboarding/plan`.
 - A repository's `.mcp.json` no longer stops the Superagent on Claude Code's "N new MCP servers
   found in this project" dialog (SPEC-095, ADR-0078, #391). Before each task run and Superagent
   start, Yulius adds the file's servers that the sandbox lacks to its MCP servers, so every task

@@ -42,6 +42,18 @@ pub struct RepoRef {
 
 /// Live counters for a sandbox: three of the web UI sidebar's groups, by its rule (SPEC-001
 /// UI-050; `yulius_domain::task::AttentionFacts::group`). `running` plus `queued` is the sidebar's
+/// What a sandbox's onboarding does: its task's plan, or the one that task would get while it does
+/// not exist yet (SPEC-097).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OnboardingPlan {
+    /// The onboarding task's title.
+    pub title: String,
+    /// Its steps' titles, in order.
+    pub steps: Vec<String>,
+    /// The task's number once it exists.
+    pub task_number: Option<u32>,
+}
+
 /// Working group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SandboxCounts {

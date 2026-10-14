@@ -21,6 +21,9 @@ right after `yulius onboard` the task list showed "Prepare this repository for Y
   that at once), or when a new task must wait after it (IMP-010: new tasks in a `pending` sandbox
   wait after the onboarding task; it is created then, resting, and they chain after it).
 - One lock serializes that creation, so Start onboarding and a waiting task never create two.
+- What onboarding will do stays readable without the task: `GET /api/sandboxes/{sid}/onboarding/plan`
+  returns the task's plan, or the one it would be created with, and creates nothing. The
+  mandatory-onboarding page (ADR-0076) reads it.
 
 ## Alternatives
 

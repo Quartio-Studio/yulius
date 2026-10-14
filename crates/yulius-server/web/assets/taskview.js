@@ -800,11 +800,11 @@ export function mountComposer(ctx, sandbox) {
     // reading them failed), `null` when they are and it is not among them.
     const list = ctx.store.tasksOf(sb.id);
     const prep = !preparing ? null : !list || ctx.store.tasksError(sb.id) ? undefined : list.find((t) => t.origin === 'onboarding') || null;
-    if (sb.onboarding === 'pending' && prep) loadPlan(prep);
+    if (sb.onboarding === 'pending') loadPlan(prep);
     // Rebuilt only when what it says changes (task events are frequent), and a rebuild keeps the
     // keyboard on its action.
     const shown = sb.onboarding === 'pending'
-      ? [prep && prep.title, prep && plans.get(prep.id), branchOf(sb)]
+      ? [prep && prep.title, plans.get(planKey(prep)), branchOf(sb)]
       : [prep === undefined ? 'unknown' : prep && phaseOf(prep)];
     const key = preparing ? JSON.stringify([sb.onboarding, sb.name, sb.slug, sb.access, prep && prep.number, ...shown]) : '';
     if (key !== gateKey) {
@@ -839,20 +839,23 @@ export function mountComposer(ctx, sandbox) {
   /** Where an onboarding task stands, as the gate words it (`onboarding_status` on the server). */
   const phaseOf = (task) => (task.status === 'waiting_capacity' ? 'capacity' : isLive(task.status) || task.status === 'chained' ? 'running' : 'stopped');
 
-  // The onboarding task's own plan (its steps' titles) per task id: what exactly it will do,
-  // whichever kind it is (`onboarding_prompt` or `environment_prompt`). `null` while it loads,
-  // `false` when it could not be read.
+  // What exactly onboarding will do, `{ title, steps }`, whichever kind it is (`onboarding_prompt`
+  // or `environment_prompt`): its task's own plan, or before that task exists (it is created when
+  // onboarding starts, SPEC-097) the plan it will get. Per task id, or `''` while there is no task.
+  // `null` while it loads, `false` when it could not be read.
   const plans = new Map();
+  const planKey = (task) => (task ? task.id : '');
   let destroyed = false;
   function loadPlan(task) {
-    if (plans.has(task.id)) return;
-    plans.set(task.id, null);
-    ctx.api.get(`/api/tasks/${enc(task.id)}`)
-      .then((detail) => {
-        const steps = detail && Array.isArray(detail.steps_list) ? detail.steps_list.map((step) => step.title).filter(Boolean) : [];
-        plans.set(task.id, steps.length ? steps : false);
+    const key = planKey(task);
+    if (plans.has(key)) return;
+    plans.set(key, null);
+    ctx.api.get(`/api/sandboxes/${enc(sandbox.id)}/onboarding/plan`)
+      .then((plan) => {
+        const steps = plan && Array.isArray(plan.steps) ? plan.steps.filter(Boolean) : [];
+        plans.set(key, steps.length ? { title: plan.title, steps } : false);
       })
-      .catch(() => plans.set(task.id, false))
+      .catch(() => plans.set(key, false))
       .finally(() => { if (!destroyed) renderBanner(); });
   }
 
@@ -881,13 +884,14 @@ export function mountComposer(ctx, sandbox) {
           : `An agent is setting up this sandbox and adapting the repository to the ${BRAND.name} standards in #${prep.number}.`;
       return [title, h('p', null, what, ' ', ready), link(phase === 'stopped' ? 'Open onboarding' : 'Follow onboarding')];
     }
-    const plan = prep ? plans.get(prep.id) : false;
+    const plan = plans.get(planKey(prep));
+    const intro = 'Onboarding is one task an agent runs before any other in this sandbox';
     return [
       h('h2', { id: titleId, class: 'onboarding-gate-title', tabindex: -1 }, `Onboard ${sb.name} first`),
       h('p', null, prep
-        ? [`Onboarding is one task an agent runs before any other in this sandbox: `, h('a', { href: href(path), dataset: { route: path } }, `#${prep.number} ${prep.title}`), '. Its plan:']
-        : 'Onboarding is one task an agent runs before any other in this sandbox.'),
-      plan ? h('ol', { class: 'onboarding-gate-steps' }, plan.map((step) => h('li', null, step)))
+        ? [`${intro}: `, h('a', { href: href(path), dataset: { route: path } }, `#${prep.number} ${prep.title}`), '. Its plan:']
+        : plan ? `${intro}: ${plan.title}. Its plan:` : `${intro}.`),
+      plan ? h('ol', { class: 'onboarding-gate-steps' }, plan.steps.map((step) => h('li', null, step)))
         : plan === null ? skeleton('Loading what onboarding will do…', 4) : null,
       h('p', null, `It changes documentation, configuration and CI only, never application code, and any change reaches ${branchOf(sb)} through a pull request. ${ready}`),
       allows(sb.access, 'write')
