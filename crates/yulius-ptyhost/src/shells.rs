@@ -20,9 +20,9 @@
 //! command line and outlives it. Once adopted, it is no shell of the agent's: Claude Code does not
 //! track it and never wakes the agent for it. A wrapper shell whose parent is a namespace init
 //! ([`ProcessEntry::ns_init`]) is skipped with everything under it (SPEC-130 DMD-001; task #108
-//! read Working for good behind such a preview server). The probe reads the process table once: on Linux it walks
-//! `/proc/<pid>/task/<tid>/children` from the agent (falling back to a scan of `/proc`), elsewhere
-//! it runs `ps` with a timeout. Every read is bounded ([`MAX_PROCESSES`], [`MAX_DEPTH`],
+//! read Working for good behind such a preview server). The probe reads the process table once:
+//! on Linux it walks `/proc/<pid>/task/<tid>/children` from the agent (falling back to a scan of
+//! `/proc`), elsewhere it runs `ps` with a timeout. Every read is bounded ([`MAX_PROCESSES`], [`MAX_DEPTH`],
 //! [`MAX_CMDLINE_BYTES`], [`PS_TIMEOUT`]); `None` means the table could not be read.
 
 use std::collections::{HashMap, HashSet, VecDeque};
