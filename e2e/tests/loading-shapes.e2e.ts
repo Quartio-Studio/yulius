@@ -140,3 +140,35 @@ test('the Git page loads as its status cards, sections and board (the reported s
   expectSameBox(waiting, await box(browser, '#main .dl-strip > .dl-card:last-child'), ['x', 'width']);
   expectSameBox(boardBox, await box(browser, '#main .dl-board'), ['x', 'width']);
 });
+
+test('the sidebar and Tasks lists load as task rows of the real rows’ height', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks', '&hold=/api/sandboxes/sb_studio/tasks'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Tasks');
+  const side = '.task-list .skeleton[role="status"]';
+  const page = '#main .tl .skeleton[role="status"]';
+  await expect(browser.locator(side)).toHaveText('Loading tasks…');
+  await expect(browser.locator(page)).toHaveText(/^Loading the tasks of /);
+  await expectQuietShape(browser, side);
+  await expectQuietShape(browser, page);
+  // A group band over rows; the real row classes match real tasks only.
+  await expect(browser.locator(`${side} .task-group-head`)).toHaveCount(1);
+  expect(await browser.locator(`${side} .skeleton-task-row`).count()).toBeGreaterThanOrEqual(3);
+  expect(await browser.locator('.task-list .task-row, .task-list .task-group').count()).toBe(0);
+  expect(await browser.locator(`${page} .skeleton-tl-row`).count()).toBeGreaterThanOrEqual(3);
+  expect(await browser.locator('#main .tl-row').count()).toBe(0);
+  const sideRow = await box(browser, `${side} .skeleton-task-row`);
+  const sideHead = await box(browser, `${side} .task-group-head`);
+  const pageRow = await box(browser, `${page} .skeleton-tl-row`);
+  const pageColumns = await box(browser, '#main .tl > .tl-columns');
+  expect(await axeViolations(browser)).toEqual([]);
+
+  await release(browser);
+  await expect(browser.locator('.task-list .task-row').first()).toBeVisible();
+  await expect(browser.locator('#main .tl-row').first()).toBeVisible();
+  await expect(browser.locator('.skeleton')).toHaveCount(0);
+  // The first group band and its rows sit where the outlines were; rows are as tall as real ones.
+  expectSameBox(sideHead, await box(browser, '.task-list .task-group-head'));
+  expectSameBox(sideRow, await box(browser, '.task-list .task-row'), ['x', 'width', 'height']);
+  expectSameBox(pageColumns, await box(browser, '#main .tl-columns'));
+  expectSameBox(pageRow, await box(browser, '#main .tl-row'), ['x', 'width', 'height']);
+});

@@ -38,7 +38,8 @@ test('the Git page shows shimmering fields, not a spinner, while delivery loads'
   const fields = browser.locator('#main .skeleton[role="status"]');
   await expect(fields).toBeVisible();
   await expect(fields).toHaveText('Loading delivery…');
-  expect(await browser.locator('#main .skeleton[role="status"] .skeleton-line').count()).toBeGreaterThan(0);
+  // Bars in the page's own layout (SPEC-120; loading-shapes.e2e.ts checks the shape).
+  expect(await browser.locator('#main .skeleton[role="status"] .skeleton-bar').count()).toBeGreaterThan(0);
   expect(await browser.locator('.placeholder-loading').count()).toBe(0);
   expect(await visibleLoadingText(browser)).toEqual([]);
   expect(await axeViolations(browser)).toEqual([]);
