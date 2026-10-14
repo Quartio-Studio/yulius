@@ -7,6 +7,7 @@ import os
 import signal
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -142,8 +143,32 @@ class Switch(unittest.TestCase):
             code = vidoc_scan.main(root=root, env={"PATH": os.environ.get("PATH", "")})
         return code, out.getvalue(), err.getvalue()
 
+    def committed(self, text):
+        root = self.root_with(text)
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+        for args in (["init", "-q"], ["add", "-A"],
+                     ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "switch"]):
+            subprocess.run(["git", *args], cwd=root, env=env, check=True, capture_output=True)
+        return root
+
+    def test_only_a_committed_switch_turns_the_gate_off(self):
+        vidoc_scan.committed_switch(FakeGit(status=(0, "")))
+        for status in ((0, " M .config/vidoc.toml\n"), (0, "?? .config/vidoc.toml\n"),
+                       (128, "")):
+            with self.subTest(status=status), self.assertRaises(Usage) as caught:
+                vidoc_scan.committed_switch(FakeGit(status=status))
+            self.assertIn(".config/vidoc.toml", str(caught.exception))
+
+    def test_an_uncommitted_off_switch_is_not_run(self):
+        root = self.committed("enabled = true\n")
+        (root / ".config" / "vidoc.toml").write_text("enabled = false\n")
+        code, out, err = self.run_main(root)
+        self.assertEqual(code, 2)
+        self.assertNotIn("disabled", out)
+        self.assertIn("uncommitted", err)
+
     def test_disabled_passes_at_once_without_a_key_and_says_nothing_was_scanned(self):
-        code, out, err = self.run_main(self.root_with("enabled = false\n"))
+        code, out, err = self.run_main(self.committed("enabled = false\n"))
         self.assertEqual(code, 0)
         self.assertIn("Security scan disabled: .config/vidoc.toml sets enabled = false; "
                       "nothing was scanned.", out)

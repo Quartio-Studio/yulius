@@ -9,7 +9,8 @@ and the branch must have no open critical or high finding. Exit codes: 0 passed,
 run (no key or a rejected one, no Node, a detached HEAD, uncommitted files, no base).
 
 `.config/vidoc.toml` (SPEC-131) turns the gate off with `enabled = false`: it then exits 0 at once
-and says nothing was scanned. Without the file the gate is on; a malformed one exits 2.
+and says nothing was scanned, once that line is committed (an uncommitted edit exits 2). Without
+the file the gate is on; a malformed one exits 2.
 """
 from collections import deque
 import hashlib
@@ -92,17 +93,30 @@ class HttpError(Exception):
 
 def switch(root):
     """Whether the gate is on: `enabled` in `.config/vidoc.toml`, the only key; no file means on."""
-    path = root / SWITCH
     try:
-        config = tomllib.loads(path.read_text())
+        with (root / SWITCH).open("rb") as file:
+            config = tomllib.load(file)
     except FileNotFoundError:
         return True
-    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as err:
+    except (OSError, tomllib.TOMLDecodeError) as err:
         raise Usage(f"{SWITCH} cannot be read: {err}") from err
-    if set(config) != {"enabled"} or not isinstance(config["enabled"], bool):
-        raise Usage(f"{SWITCH} must hold exactly one key, enabled = true or enabled = false, "
-                    f"not {sorted(config)} with enabled = {config.get('enabled')!r}")
+    if set(config) - {"enabled"}:
+        raise Usage(f"{SWITCH} has unexpected keys {sorted(set(config) - {'enabled'})}; "
+                    "it holds only enabled = true or enabled = false")
+    if not isinstance(config.get("enabled"), bool):
+        raise Usage(f"{SWITCH} must set enabled = true or enabled = false, "
+                    f"not {config.get('enabled')!r}")
     return config["enabled"]
+
+
+def committed_switch(git):
+    """Only a committed switch turns the gate off: an edit in the working tree does not count."""
+    code, output = git("status", "--porcelain", "--untracked-files=all", "--", SWITCH)
+    if code != 0:
+        raise Usage(f"cannot tell whether {SWITCH} is committed (git status exit {code})")
+    if output.strip():
+        raise Usage(f"{SWITCH} turns the gate off in an uncommitted change; commit it in a "
+                    "reviewed pull request, or restore it")
 
 
 def settings(env):
@@ -412,6 +426,7 @@ def main(root=None, env=None):
     log = None
     try:
         if not switch(root):
+            committed_switch(git_in(root))
             print(f"Security scan disabled: {SWITCH} sets enabled = false; nothing was scanned.",
                   flush=True)
             return 0

@@ -37,7 +37,8 @@ network or a scan, and agents report the scan as disabled, not as passed.
 - VSW-001: `.config/vidoc.toml` holds one key, `enabled`, a boolean. The committed value is `true`.
 - VSW-002: With `enabled = false`, `scripts/dev security` prints
   `Security scan disabled: .config/vidoc.toml sets enabled = false; nothing was scanned.` and exits
-  0 before it reads the key, checks Node, installs the CLI, touches Git or calls the API.
+  0 before it reads the key, checks Node, installs the CLI or calls the API. Its only Git call
+  checks that the switch is committed: an uncommitted `enabled = false` exits 2.
 - VSW-003: With `enabled = true`, or without the file, the gate behaves exactly as in SPEC-128.
 - VSW-004: A file that is not valid TOML, an `enabled` that is not a boolean, a missing `enabled`
   or any other key exits 2 ("not run") naming the file and the problem; the gate never guesses.
@@ -47,8 +48,8 @@ network or a scan, and agents report the scan as disabled, not as passed.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] A committed switch in .config/vidoc.toml turns the Vidoc gate on or off, on by default
-- [ ] Agents' docs, the verify skill and ADR-0107 explain the switch
+- [x] A committed switch in .config/vidoc.toml turns the Vidoc gate on or off, on by default
+- [x] Agents' docs, the verify skill and ADR-0107 explain the switch
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 
@@ -82,3 +83,9 @@ network or a scan, and agents report the scan as disabled, not as passed.
 - A missing file means enabled: deleting the file cannot silently turn security off.
 - A malformed file exits 2 rather than falling back to either value: a typo such as
   `enabled = "false"` must be noticed, not read as on or off.
+- Review round 1 (fresh session, approved 2d09aae7 with four minors) found that an uncommitted
+  `enabled = false` turned the gate off with nothing in history. The off path now asks Git that the
+  switch is committed and exits 2 otherwise. The PR that turns the scan off is not scanned itself;
+  ADR-0107 asks its reviewer to check it changes only the switch and says why. The other minors
+  (ADR-0104 cross-reference, the missing-`enabled` case in the ADR, plan ticks) and the nits
+  (binary read for `tomllib`, separate messages for extra keys and a non-boolean) were fixed.

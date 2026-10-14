@@ -80,16 +80,16 @@ The gate is on. `enabled = false` in `.config/vidoc.toml`
 [ADR-0107](../decisions/0107-a-committed-switch-turns-the-vidoc-gate-on-or-off.md)) turns it off
 for every branch that has that commit: it then prints `Security scan disabled: ...; nothing was
 scanned.` and exits 0 without a key, Node or the network. Agents report such a run as disabled,
-never as passed. Turn it off or on in a reviewed pull request that says why; without the file the
-gate is on. Exit codes:
+never as passed. Turn it off or on in a reviewed pull request that says why; an uncommitted
+`enabled = false` exits 2, and without the file the gate is on. Exit codes:
 
 - 0: passed, the branch changed nothing that Vidoc scans, or the gate is disabled (its message says
   so).
 - 1: failed. The causes: open critical or high findings (each one is printed); a failed or foreign
   scan; an unexpected API answer; a CLI error, a timeout or a signal; a failed `npm ci`.
-- 2: not run. The causes: a malformed `.config/vidoc.toml`; no key, a malformed key, or a rejected one; Vidoc unreachable or out of
-  quota (402, 429) before the scan; "nothing to scan" although the branch changed source files; no Node
-  20+ or npm; a detached HEAD; uncommitted or untracked files; a first remote other than `origin`,
+- 2: not run. The causes: a malformed or uncommitted `.config/vidoc.toml` switch; no key, a
+  malformed key, or a rejected one; Vidoc unreachable or out of quota (402, 429) before the scan;
+  "nothing to scan" although the branch changed source files; no Node 20+ or npm; a detached HEAD; uncommitted or untracked files; a first remote other than `origin`,
   or origin unreachable the way the CLI checks it; no default branch or no merge base.
 
 Vidoc never indexes `bin/`, `vendor/`, `target/`, `build/`, `dist/`, `out/` and similar directories,
