@@ -1,9 +1,10 @@
-// Mouse-tracking filter for terminal output (F 2026-10-07: terminal text must behave like
-// page text). TUIs such as Claude Code switch on mouse reporting (DECSET 1000/1002/1003/1006
-// …); xterm.js then sends clicks to the app and the user cannot select or double-click text.
-// The filter removes those switches from the output stream by default, remembering what the
-// app asked for, so the viewer can hand the mouse back to the app on request. Sequences split
-// across chunks are carried over (bounded). Pure module: no DOM access.
+// Mouse-tracking filter for terminal output. TUIs such as Claude Code switch on mouse reporting
+// (DECSET 1000/1002/1003/1006 …); xterm.js then sends clicks to the program and a plain drag no
+// longer selects text. A viewer who can write hands the mouse to the program, as a native terminal
+// does (SPEC-098); a read-only viewer cannot send anything, so for it the filter removes those
+// switches from the output stream, remembering what the program asked for, and its mouse keeps
+// selecting text (F 2026-10-07). Sequences split across chunks are carried over (bounded). Pure
+// module: no DOM access.
 
 const ESC = 0x1b;
 const LBRACKET = 0x5b; // [
@@ -13,8 +14,6 @@ const H = 0x68;
 const L = 0x6c;
 /** Private modes that turn mouse reporting on or change its encoding. */
 const MOUSE_MODES = new Set([9, 1000, 1001, 1002, 1003, 1005, 1006, 1015, 1016]);
-/** Modes that turn mouse reporting on; the others only choose its encoding (#78). */
-const TRACKING_MODES = new Set([9, 1000, 1001, 1002, 1003]);
 /** Longest private-mode sequence considered (anything longer passes through untouched). */
 const MAX_SEQUENCE = 64;
 const EMPTY = new Uint8Array(0);
@@ -70,8 +69,7 @@ function sequence(params, set) {
 
 /**
  * A stateful filter. feed(bytes) → bytes for xterm; reset() after a snapshot;
- * setAppMouse(on) → bytes that switch xterm's mouse reporting to match;
- * requested() → whether the app currently asks for mouse reporting.
+ * setAppMouse(on) → bytes that switch xterm's mouse reporting to match.
  */
 export function createMouseFilter() {
   let carry = EMPTY;
@@ -117,41 +115,16 @@ export function createMouseFilter() {
     return parts.length === 1 ? parts[0] : concat(parts);
   }
 
-  /** One mouse report: SGR (`ESC [ < b ; col ; row M|m`) when the app asked for 1006, else X10. */
-  function report(button, col, row, press) {
-    if (requested.has(1006)) return `\x1b[<${button};${col};${row}${press ? 'M' : 'm'}`;
-    const byte = (n) => String.fromCharCode(32 + Math.min(Math.max(n, 1), 223));
-    // X10 has no released button: a release is button 3.
-    return `\x1b[M${String.fromCharCode(32 + (press ? button : 3))}${byte(col)}${byte(row)}`;
-  }
-
   return {
     feed,
     /** The screen was replaced by a snapshot, which carries the current modes again (#78). */
     reset() { carry = EMPTY; requested.clear(); },
-    requested: () => [...requested].some((mode) => TRACKING_MODES.has(mode)),
     appMouse: () => appMouse,
-    /** Hands the mouse to the app (true) or back to text selection (false). */
+    /** Hands the mouse to the program (true) or keeps it for text selection (false). */
     setAppMouse(on) {
       appMouse = on;
       if (!requested.size) return EMPTY;
       return sequence([...requested].sort((a, b) => a - b), on);
-    },
-    /**
-     * A wheel turn as the app's mouse reporting encodes it, at 1-based cell (col, row): SGR
-     * (`ESC [ < 64|65 ; col ; row M`) when the app asked for 1006, otherwise the X10 bytes.
-     * Lets the app scroll with the wheel while drags stay with text selection (#34).
-     */
-    wheelReport(up, col, row) {
-      return report(up ? 64 : 65, col, row, true);
-    },
-    /**
-     * A primary click (press and release) as the app's mouse reporting encodes it, at 1-based cell
-     * (col, row): lets a full-screen app such as Claude Code expand what was clicked while drags
-     * and double-clicks stay with text selection (#25).
-     */
-    clickReport(col, row) {
-      return report(0, col, row, true) + report(0, col, row, false);
     },
   };
 }

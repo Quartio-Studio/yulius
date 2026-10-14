@@ -78,6 +78,7 @@ number differs from the file name, and a record this index does not list.
 - [0069](0069-mcp-tools-answer-with-short-text.md): Yulius's MCP tools answer with short text; the record only when a client asks
 - [0072](0072-recount-old-runs-from-their-transcripts-once.md): Runs recorded before SPEC-087 are recounted from their transcripts once, after the upgrade
 - [0071](0071-long-injected-context-folds-in-the-session-view.md): Long injected context folds to one line in the session view; short notes stay readable
+- [0079](0079-the-terminal-mouse-is-the-programs.md): The terminal's mouse is the program's when it asks for it (Shift or Option selects), with no mouse chip
 - [0073](0073-loading-shows-shimmering-fields.md): Loading shows shimmering fields everywhere; a spinner marks only an action under way
 - [0075](0075-menu-descriptions-wrap.md): Menu descriptions wrap onto as many lines as they need instead of being cut
 - [0077](0077-onboarding-task-is-created-when-needed.md): A sandbox's onboarding task is created when onboarding starts, not at import
