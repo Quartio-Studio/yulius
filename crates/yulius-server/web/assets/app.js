@@ -60,7 +60,7 @@ const SANDBOX_PAGES = {
   mcp: (ctx, sandbox, route) => mountMcpPage(ctx, sandbox, route),
   secrets: (ctx, sandbox, route) => mountSecretsPage(ctx, sandbox, route),
   ci: (ctx, sandbox, route) => mountCiPage(ctx, sandbox, route),
-  dashboard: (ctx, sandbox) => mountDashboardPage(ctx, sandbox),
+  dashboard: (ctx, sandbox, route) => mountDashboardPage(ctx, sandbox, route),
 };
 
 const ADMIN_PAGES = {

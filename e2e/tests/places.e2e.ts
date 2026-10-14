@@ -144,9 +144,11 @@ test('MCP’s scope and the Dashboard’s period come back with the page', async
   const nav = screen.getByRole('navigation', 'Sandbox');
   await nav.getByRole('link', 'Dashboard').click();
   await expect(heading(screen)).toHaveText('Dashboard');
-  await screen.getByRole('radiogroup', 'Date range').getByRole('radio', '7 days').check();
+  // The radio itself is see-through under its label (a segmented control): the label takes the click.
+  await screen.getByRole('radiogroup', 'Date range').getByText('7 days').click();
   await expect(browser).toHaveURL(/#\/s\/studio\/dashboard\?days=7$/);
 
+  await nav.getByRole('button', 'More').click(); // MCP is under More, closed on the Dashboard
   await nav.getByRole('link', 'MCP').click();
   await expect(browser).toHaveURL(/#\/s\/studio\/mcp\?scope=instance$/);
   await expect(screen.getByRole('radio', /^Every sandbox/)).toHaveAttribute('aria-checked', 'true');

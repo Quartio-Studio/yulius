@@ -55,16 +55,16 @@ the editor's open files with unsaved text, the terminals).
 | KST-003 | A sidebar page link and the Tasks and Git back links return to the page's remembered address (its filters); a link to the page in view opens it plain, as before. | `places.e2e.ts` "a page link returns …" |
 | KST-004 | A task that is not there (deleted, archived elsewhere) is not remembered as the sandbox's place: the next visit opens the composer instead of "Task not found". | `places.e2e.ts` "a missing task …" |
 | KST-005 | Each sandbox keeps its open tool, or none: coming back opens the tool it had (the rail shown for it, not saved as the person's Tools choice) or closes the panel. A sandbox not visited yet keeps the tool in view, as before. | `places.e2e.ts` "the tool panel …" |
-| KST-006 | Tool views survive a sandbox switch for the 3 sandboxes used last (the current one included); an older sandbox's views are destroyed. A sandbox's views are hidden when it leaves (the browser stream stops) and the editor of a background sandbox disposes its Monaco models (so they feed no other sandbox's suggestions) but keeps each open file's text, unsaved changes, dirty mark and cursor, recreating them when it is shown again. | `places.e2e.ts` "the editor keeps unsaved text …", `terminals.e2e.ts`, `agent-panel.e2e.ts` |
+| KST-006 | The Superagent, Browser, Editor and Shell views survive a sandbox switch for the 3 sandboxes used last (the current one included); an older sandbox's views are destroyed. Notes is rebuilt as before: its Team and Me notepads are the same in every sandbox, and two live copies in one tab would edit them against each other (its text is saved on the server and its tab is remembered). A sandbox's views are hidden when it leaves (the browser stream stops) and the editor of a background sandbox disposes its Monaco models (so they feed no other sandbox's suggestions) but keeps each open file's text, unsaved changes, dirty mark and cursor, recreating them when it is shown again. | `places.e2e.ts` "the editor keeps unsaved text …", `terminals.e2e.ts`, `agent-panel.e2e.ts` |
 | KST-007 | MCP's scope filter and the Dashboard's period are kept in the address (`?scope=`, `?days=`), so they come back with the page. | `places.e2e.ts` "MCP's scope and the Dashboard's period …" |
 
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression tests that fail
-- [ ] Sandbox tabs and page links return to where each was left
-- [ ] Each sandbox keeps its open tool and tool views across a switch
-- [ ] MCP scope and Dashboard period kept in the address
+- [x] Write the fix spec and the regression tests that fail
+- [x] Sandbox tabs and page links return to where each was left
+- [x] Each sandbox keeps its open tool and tool views across a switch
+- [x] MCP scope and Dashboard period kept in the address
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green with docs, ADR and evidence
 
@@ -81,7 +81,11 @@ the editor's open files with unsaved text, the terminals).
 
 ## Test plan
 
-- New `e2e/tests/places.e2e.ts` (mock, Chromium) with the cases above; each fails before the fix.
+- New `e2e/tests/places.e2e.ts` (mock, Chromium) with the cases above; six failed before the fix.
+  "The tab of the sandbox in view opens its composer" and "a missing task is not remembered" passed
+  before it: they guard the behaviour the fix must keep (the second fails if `forgetPlace` is
+  removed, since the router now remembers every address in a sandbox).
+- `agent-panel.e2e.ts` reads the shown Superagent only: the one of the sandbox left stays, hidden.
 - Existing sandbox-switch tests (`navigation`, `agent-panel`, `terminals`, `notes`, `editor`)
   stay green.
 - Full gate: `scripts/dev ci` and the whole e2e suite.
