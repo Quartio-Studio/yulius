@@ -48,7 +48,7 @@ like one character, and reaches the agent at its place when the message is queue
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| QMF-001 | The card's request shows each file it names as a placeholder at its place: an image as `Image N` (N its number among the request's images, in order), another file as its name. No raw `@'/path'` mention shows. Text stays as written (lines kept). | `queued-messages.e2e.ts` "the request shows its files…" |
+| QMF-001 | The card's request shows each file it names as a placeholder at its place: an image as `Image N` (N its number among the request's images, in order; an image named twice keeps one number), another file as its name. No raw `@'/path'` mention shows. Text stays as written (lines kept). | `queued-messages.e2e.ts` "the request shows its files…" |
 | QMF-002 | Clicking (or Enter on) an image placeholder in the request opens the image in the preview dialog, once however often it is clicked meanwhile. Another file downloads. A file the server does not have says so in a toast. Each file is read once per view and its URL revoked when the view goes. | `queued-messages.e2e.ts` "the request shows its files…" |
 | QMF-003 | The message box is the new-task prompt input ("Message for the agent"). An image or file pasted or dropped on it uploads to the task (`POST /api/tasks/{tid}/attachments`) and lands at the caret as a placeholder, numbered after the request's images in the text's order. An upload that ends after the task started is not added and says so ("The task has started: the file was not added."). | `queued-messages.e2e.ts` "an image pasted into the message…", "an image deleted before queueing…", "an upload that ends after the task started…" |
 | QMF-004 | A placeholder in the box moves by drag or cut and paste and deletes with one Backspace; double-click opens the image. | `queued-messages.e2e.ts` "an image pasted into the message…" |
@@ -60,7 +60,8 @@ like one character, and reaches the agent at its place when the message is queue
 - [x] Read the product context and related work, then write and validate the spec
 - [x] The queue card's request shows its files as clickable Image N placeholders
 - [x] The queue box takes pasted and dropped images as movable placeholders and queues them
-- [ ] Independent review in a fresh session, findings fixed test-first
+- [x] Review round 1 in a fresh session, its findings fixed test-first
+- [ ] Review round 2 approves the exact head
 - [ ] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
@@ -101,5 +102,8 @@ like one character, and reaches the agent at its place when the message is queue
   shows text and placeholders at once and fetches one file when it is opened.
 - **Numbers.** The request numbers its images in order of appearance. The box numbers its images
   after the request's, in the order its text holds them, so each keeps its number once queued (a
-  deleted image gives its number up; moving one before another swaps theirs). Review round 1
-  replaced numbering in upload order, which changed a number once queued.
+  deleted image gives its number up; moving one before another swaps theirs). An image named twice
+  has one number on both sides. Review round 1 replaced numbering in upload order, and round 2
+  numbering each occurrence in the request, which both changed a number once queued.
+- **A pending upload keeps the card.** A task that starts while a file uploads into an otherwise
+  empty box keeps the card (read-only, with Dismiss), so "the file was not added" is seen (round 2).

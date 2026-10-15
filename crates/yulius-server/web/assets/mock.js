@@ -1261,6 +1261,9 @@ route('GET', `/api/tasks/${ID}/prompt`, ({ db, p }) => {
   };
 });
 route('GET', `/api/tasks/${ID}/prompt/attachments/${ID}`, ({ db, p }) => {
+  // Reads per `task/index`, so a test can tell a file was read once.
+  db.promptFileReads = db.promptFileReads || {};
+  db.promptFileReads[`${p[0]}/${p[1]}`] = (db.promptFileReads[`${p[0]}/${p[1]}`] || 0) + 1;
   const task = taskOf(db, p[0]);
   const path = promptParts(task).paths[Number(p[1])];
   if (!path || !promptFileServed(task, path)) fail(404, 'not_found', 'not found');

@@ -335,6 +335,8 @@ test('the request shows its files as placeholders that open them', async ({ app,
   const dialog = screen.getByRole('dialog', 'shot.png');
   await expect(dialog.getByRole('img', 'shot.png')).toBeVisible();
   expect(await browser.evaluate(() => document.querySelectorAll('dialog[open]').length)).toBe(1);
+  // The file was read once for both clicks.
+  expect(await browser.evaluate(() => (window as unknown as { __yuliusMock: { promptFileReads?: Record<string, number> } }).__yuliusMock.promptFileReads?.['tsk_product_7/0'] ?? 0)).toBe(1);
   await browser.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
 
@@ -474,4 +476,45 @@ test('an upload that ends after the task started says so in the kept card', asyn
   await expect(card).toContainText('The task has started');
   await browser.evaluate(() => (window as unknown as Holding).__release!());
   await expect(browser.locator('.queue-card .upload-status:has-text("The task has started: the file was not added.")')).toBeVisible();
+});
+
+test('an image put in the message twice keeps one number, also once queued', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/product/t/7'));
+  const card = screen.getByRole('region', 'Queued messages');
+  await card.getByRole('textbox', 'Message for the agent').click();
+  await browser.keyboard.type('Here ');
+  await pasteIntoQueue(browser, 'twice.png');
+  const atoms = browser.locator('.queue-card .composer-prompt .pi-image');
+  await expect(atoms).toHaveText(['Image 1']);
+  // Copied and pasted again after " and here ".
+  await browser.keyboard.press('Shift+ArrowLeft');
+  await browser.keyboard.press('ControlOrMeta+c');
+  await browser.keyboard.press('End');
+  await browser.keyboard.type(' and here ');
+  await browser.keyboard.press('ControlOrMeta+v');
+  await expect(atoms).toHaveText(['Image 1', 'Image 1']);
+  await pasteIntoQueue(browser, 'other.png');
+  await expect(atoms).toHaveText(['Image 1', 'Image 1', 'Image 2']);
+  await card.getByRole('button', 'Queue').click();
+  const request = browser.locator('.queue-request .queue-file');
+  await expect(request).toHaveText(['Image 1', 'Image 1', 'Image 2']);
+});
+
+test('a file pasted into an empty box keeps the card when the task starts during its upload', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/product/t/7'));
+  const card = screen.getByRole('region', 'Queued messages');
+  await browser.evaluate(() => {
+    const w = window as unknown as Holding;
+    w.__yuliusMock.holdUpload = new Promise<void>((resolve) => { w.__release = resolve; });
+  });
+  await card.getByRole('textbox', 'Message for the agent').click();
+  await pasteIntoQueue(browser, 'alone.png');
+  await expect(browser.locator('.queue-card .composer-prompt .pi-pending')).toHaveCount(1);
+  await touchProduct7(browser, { status: 'starting', started: false });
+  await expect(card).toContainText('The task has started');
+  await browser.evaluate(() => (window as unknown as Holding).__release!());
+  await expect(browser.locator('.queue-card .upload-status:has-text("The task has started: the file was not added.")')).toBeVisible();
+  // The card's Dismiss (the upload status has its own).
+  await browser.locator('.queue-compose > button:has-text("Dismiss")').click();
+  await expect(card).toBeHidden();
 });

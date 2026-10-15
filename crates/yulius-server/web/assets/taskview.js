@@ -334,8 +334,8 @@ export function mountTaskView(ctx, sandbox, task) {
   // the text holds them: the numbers the request gives them once queued.
   const queueFiles = new Map(); // every file uploaded here: path → { name, type, file }
   const queueUrls = new Map(); // path → the object URL a file of the box opened with
-  let queueImages = []; // the paths of the box's images, in the text's order
-  let requestImages = 0;
+  let queueImages = []; // the paths of the box's images not in the request, in the text's order
+  let requestNumbers = new Map(); // each image of the request (by path) → its number
   const WAIT_UPLOAD = 'Wait for the upload to finish.';
   // Its own callbacks read it: null until it is made.
   let queueBox = null;
@@ -348,13 +348,13 @@ export function mountTaskView(ctx, sandbox, task) {
       const item = queueFiles.get(path);
       if (!item) return null;
       if (!IMAGE_PATH.test(path)) return { name: item.name };
-      const n = queueImages.indexOf(path) + 1;
-      return { name: item.name, image: true, label: n ? `Image ${requestImages + n}` : 'Image' };
+      const n = requestNumbers.get(path) || (queueImages.includes(path) ? requestNumbers.size + queueImages.indexOf(path) + 1 : 0);
+      return { name: item.name, image: true, label: n ? `Image ${n}` : 'Image' };
     },
     known: (path) => queueFiles.has(path),
     onChange: () => {
       if (!queueBox) return;
-      const images = [...new Set(queueBox.paths().filter((path) => IMAGE_PATH.test(path) && queueFiles.has(path)))];
+      const images = [...new Set(queueBox.paths().filter((path) => IMAGE_PATH.test(path) && queueFiles.has(path) && !requestNumbers.has(path)))];
       if (images.join('\n') !== queueImages.join('\n')) { queueImages = images; queueBox.refresh(); }
       // The upload ended (or failed): the reason no longer holds.
       if (queueError.textContent === WAIT_UPLOAD && !queueBox.el.querySelector('.pi-pending')) queueError.textContent = '';
@@ -424,10 +424,16 @@ export function mountTaskView(ctx, sandbox, task) {
   }
   function drawRequest(text) {
     const { parts, paths } = parsePrompt(text);
-    let images = 0;
-    const numbers = paths.map((path) => (IMAGE_PATH.test(path) ? (images += 1) : 0));
+    // One number per image, however often the request names it (the box counts the same way).
+    const images = new Map();
+    for (const path of paths) if (IMAGE_PATH.test(path) && !images.has(path)) images.set(path, images.size + 1);
+    const numbers = paths.map((path) => images.get(path) || 0);
     // The box's images are numbered after these.
-    if (requestImages !== images) { requestImages = images; queueBox.refresh(); }
+    if ([...images.keys()].join('\n') !== [...requestNumbers.keys()].join('\n')) {
+      requestNumbers = images;
+      queueImages = queueImages.filter((path) => !images.has(path));
+      queueBox.refresh();
+    }
     setChildren(requestEl, parts.map((part) => {
       if ('text' in part) return part.text;
       const path = paths[part.file];
@@ -494,7 +500,7 @@ export function mountTaskView(ctx, sandbox, task) {
     // person can copy the text into the session (SPEC-052 QMS-006, SPEC-056 WUI-106). A task that
     // ended or was archived instead takes the card away.
     const started = current.status === 'starting' || RAN.has(current.status);
-    const kept = !waiting && started && !current.archived && !queueSlot.hidden && Boolean(queueBox.value.trim() || queueError.textContent);
+    const kept = !waiting && started && !current.archived && !queueSlot.hidden && Boolean(queueBox.value.trim() || queueError.textContent || queueBox.el.querySelector('.pi-pending'));
     // Back to waiting before it ran: a refusal from the start no longer holds.
     if (waiting && !queueDismiss.hidden) queueError.textContent = '';
     queueSlot.hidden = !waiting && !kept;
