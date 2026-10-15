@@ -16,7 +16,6 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   same conversation. A goal task whose launch `/goal` was not recorded when the server restarted is
   watched again and flagged if Claude Code never takes it; a goal recorded meanwhile (also while
   Yulius was down) is never flagged.
-
 - `pulls.e2e.ts` waits on conditions, and a failed read keeps the real chips (SPEC-144, task #133):
   - **#438, #461:** `chipsAfterRead` returns once every sidebar chip is drawn with its label. Rows
     skip rendering until drawn (`content-visibility: auto`), so a chip read before the next frame

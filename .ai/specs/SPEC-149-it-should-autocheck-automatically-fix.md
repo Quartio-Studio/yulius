@@ -1,11 +1,11 @@
 ---
 yulius-task: b1f92762-0e2e-47f8-9eeb-f4d96b976935
-status: in-progress
+status: done
 ---
 
 # SPEC-149: Opening the instance page checks main by itself
 
-Status: in-progress
+Status: done
 Date: 2026-10-15
 Owner: Yulius task #143, issue #500
 Scope authorization: the person's request (task #143), with a screenshot of Instance → Updates
@@ -49,7 +49,7 @@ last hourly check, without clicking "Check now".
 - [x] Write the fix spec and the regression test that fails
 - [x] Fix the cause until the regression test and every gate pass
 - [x] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green on the branch merged with dev
+- [x] Every gate green on the branch merged with dev
 
 ## Acceptance criteria
 
@@ -80,3 +80,18 @@ last hourly check, without clicking "Check now".
   read landing last. They are filed as #502 with deterministic tests as acceptance criteria,
   rather than fixed here without a failing test; the docs no longer claim "one compare per 30 s
   whatever the tabs". The nits (wrapping, AC-OPS-6, IAC-003's evidence) are fixed.
+
+## Evidence
+
+- Regression first (`138db6b7`, page unchanged): `npx e2e run tests/update.e2e.ts`: the two new
+  cases failed: "Checked just now" not found (still "Checked 10 min ago"), and `failedPosts`
+  stayed 0 (no check sent). With the fix (`dc64390c`): 14/14 passed.
+- `scripts/dev check` and `scripts/dev lint`: passed.
+- `scripts/dev test`: 1784 tests run, 1784 passed, 16 skipped.
+- Full e2e (`npx e2e run`, while `scripts/dev test` loaded the machine): 445 passed, 1 skipped,
+  1 failed: `notes.e2e.ts` "the tabs show a grip…" (hover colour poll), not touched here. Run
+  again alone: 35/35 passed. Filed as flaky, #503.
+- `scripts/dev security`: exit 2, not run (Vidoc answers 401 to the stored key, #470;
+  ADR-0104). Unrun, not passed.
+- Independent review (fresh session) of `e37fdd21..dc64390c`: approved; minors filed as #502,
+  nits fixed.
