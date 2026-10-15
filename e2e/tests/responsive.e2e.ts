@@ -331,22 +331,6 @@ test('a narrow strip beside a panel shows no chip even when one fits', async ({ 
   await browser.setViewport({ width: 1560, height: 900 });
   await expect.poll(async () => (await stripFit(browser)).shown).toEqual(['Then #14']);
 });
-  await expect.poll(async () => (await stripFit(browser)).shown).toEqual(['Goal', 'Then #14']);
-  // As a wider face would: the chip's text grows by a little more than the label can give up
-  // (nothing else resizes), then the fonts say they are done.
-  await browser.evaluate(() => {
-    const toggle = document.querySelector('.taskview .stepstrip-toggle')!;
-    const chip = document.querySelector('.taskview .chain-chip')!;
-    const grow = toggle.getBoundingClientRect().width - parseFloat(getComputedStyle(toggle).minWidth) + 24;
-    const style = document.createElement('style');
-    style.textContent = `.taskview .chain-chip { letter-spacing: ${grow / (chip.textContent || '').length}px; }`;
-    document.head.append(style);
-  });
-  await expect.poll(async () => (await stripFit(browser)).past.length).toBeGreaterThan(0);
-  await browser.evaluate(() => document.fonts.dispatchEvent(new Event('loadingdone')));
-  await expect.poll(async () => (await stripFit(browser)).shown).toEqual(['Goal']);
-  expect((await stripFit(browser)).past).toEqual([]);
-});
 
 test('a task with a short state keeps it whole while the step name gives way', async ({ app, browser, screen }) => {
   await browser.setViewport({ width: 768, height: 900 });
