@@ -614,6 +614,40 @@ impl App {
         Err(AppError::Unauthenticated)
     }
 
+    /// The person a workspace token belongs to, and its sandbox, while they are enabled and may
+    /// work there (SPEC-147 SAM-003: the redaction in their Superagent), by a decision within
+    /// the staleness bound ([`App::settled_access_level`]): every command asks. Otherwise the
+    /// token is refused as invalid.
+    ///
+    /// # Errors
+    /// `Unauthenticated` for unknown tokens, disabled people and lost access; store failures.
+    pub(crate) async fn workspace_worker(&self, token: &str) -> AppResult<(UserRecord, SandboxId)> {
+        let (user_id, sandbox_id) = self.workspace_owner(token).await?;
+        let user = self
+            .deps
+            .store
+            .user(&user_id)
+            .await?
+            .filter(|u| u.disabled_at.is_none())
+            .ok_or(AppError::Unauthenticated)?;
+        let sandbox = self
+            .deps
+            .store
+            .sandbox(&sandbox_id)
+            .await?
+            .filter(|s| s.removed_at.is_none())
+            .ok_or(AppError::Unauthenticated)?;
+        if self
+            .settled_access_level(&user, &sandbox)
+            .await?
+            .allows(Action::Work)
+        {
+            Ok((user, sandbox_id))
+        } else {
+            Err(AppError::Unauthenticated)
+        }
+    }
+
     /// A GitHub credential for a user process: the user's own token (the superadmin without a
     /// GitHub identity: the App's token for this repository, ACC-012), for the sandbox's
     /// repository only, while the user may still work in the sandbox.

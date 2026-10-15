@@ -221,7 +221,7 @@ pub fn run_scrub_exec(args: &[String], env: &dyn Fn(&str) -> Option<String>) -> 
         Fingerprints::NotARun => None,
         Fingerprints::Unavailable => {
             eprintln!(
-                "yulius: the agent-secret fingerprints of this run cannot be loaded, so the command was not run (Yulius is restarting or the run ended); try again"
+                "yulius: the agent-secret fingerprints of this run cannot be loaded, so the command was not run (Yulius is restarting, the run ended, or this session may no longer work in the project); try again"
             );
             return NOT_RUN;
         }
