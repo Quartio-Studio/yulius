@@ -296,3 +296,44 @@ test('an older answer applied after a failed newer read keeps the newer status (
   await browser.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0))));
   await expect(strip).not.toContainText('Starting');
 });
+
+// SPEC-168 (task #158): "For images here we want movable but also clickable placeholders, not raw
+// "@" - like in the task view. I also want to upload images to the queue."
+
+type Touch = { __yuliusMock: { touchTask: (sid: string, n: number, c: object) => void } };
+const PRODUCT_DRAFTS = '/srv/yulius/sandboxes/sb_product/attachments/drafts/usr_mkarp';
+
+test('the request shows its files as placeholders that open them', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/product/t/7'));
+  const card = screen.getByRole('region', 'Queued messages');
+  const request = card.getByRole('region', 'Request');
+  await expect(request).toContainText('Invoice emails');
+  // The composer wrote two files inside the text, and an older prompt's file on a line of its own;
+  // one of them is no longer on the server (another person's drafts are not this task's).
+  const prompt = `Invoice emails: this part @'${PRODUCT_DRAFTS}/shot.png' looks wrong, the log is @'${PRODUCT_DRAFTS}/notes.txt'.\nAnd @'/srv/yulius/sandboxes/sb_product/attachments/drafts/usr_bob/gone.png'\n@${PRODUCT_DRAFTS}/second.png`;
+  await browser.evaluate((p) => (window as unknown as Touch).__yuliusMock.touchTask('sb_product', 7, { prompt: p }), prompt);
+
+  await expect(request.getByRole('button', 'Image 1, shot.png')).toBeVisible();
+  await expect(request.getByRole('button', 'notes.txt')).toBeVisible();
+  await expect(request.getByRole('button', 'Image 2, gone.png')).toBeVisible();
+  await expect(request.getByRole('button', 'Image 3, second.png')).toBeVisible();
+  await expect(request).not.toContainText("@'");
+  await expect(request).not.toContainText('/srv/yulius');
+  // The text as written, its lines kept.
+  expect(await browser.evaluate(() => document.querySelector('.queue-request')?.textContent ?? null))
+    .toBe('Invoice emails: this part Image 1 looks wrong, the log is notes.txt.\nAnd Image 2\nImage 3');
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // A click opens the image in the preview dialog.
+  await request.getByRole('button', 'Image 1, shot.png').click();
+  const dialog = screen.getByRole('dialog', 'shot.png');
+  await expect(dialog.getByRole('img', 'shot.png')).toBeVisible();
+  await browser.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+
+  // Enter on a placeholder opens it too; a file gone from the server says so.
+  await request.getByRole('button', 'Image 2, gone.png').focus();
+  await browser.keyboard.press('Enter');
+  await expect(browser.locator('.toast-msg:has-text("gone.png is no longer on the server")')).toBeVisible();
+  await expect(screen.getByRole('dialog', 'gone.png')).toBeHidden();
+});

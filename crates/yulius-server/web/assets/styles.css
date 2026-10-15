@@ -1101,6 +1101,9 @@ button.notif-open:hover, button.notif-open:focus-visible { color: var(--text); }
 .queue-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
 .queue-request { margin: 0; padding: 8px 12px; max-height: 140px; overflow: auto; border-left: 2px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface-2); white-space: pre-wrap; overflow-wrap: anywhere; }
 .queue-compose { display: flex; align-items: flex-end; gap: 8px; }
+/* A file of the request (SPEC-168): the composer's placeholder, a button that opens it. */
+.queue-file { font: inherit; font-size: var(--fs-sm); cursor: pointer; user-select: none; }
+.queue-file:focus-visible { outline: 2px solid var(--accent-border-strong); outline-offset: 1px; }
 .queue-input { flex: 1; min-width: 0; height: auto; min-height: var(--control-xl); padding: 6px 8px; resize: vertical; font: inherit; }
 .queue-card .field-error:empty { display: none; }
 /* A waiting task has no session to send keys to: the phone's quick input gives way to the card. */

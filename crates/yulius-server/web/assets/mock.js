@@ -1243,8 +1243,10 @@ function promptFileServed(task, path) {
   const base = `${MOCK_SANDBOXES}/${task.sandbox_id}/attachments`;
   const uploads = `${MOCK_UPLOADS}/${task.sandbox_id}/attachments`;
   const owned = [`${base}/drafts/usr_${task.created_by.login}`, `${base}/tasks/${task.id}`];
-  // A task created in this page: its creator's composer uploads, where the upload route put them.
-  if (task.created_by.id) owned.push(`${uploads}/drafts/${task.created_by.id}`, `${uploads}/tasks/${task.id}`);
+  // The task's own folder, where the upload route puts a file dropped on its terminal or queued
+  // with a message (SPEC-168), and for a task created in this page its creator's composer uploads.
+  owned.push(`${uploads}/tasks/${task.id}`);
+  if (task.created_by.id) owned.push(`${uploads}/drafts/${task.created_by.id}`);
   const slash = path.lastIndexOf('/');
   const plain = path.split('/').slice(1).every((part) => part && part !== '.' && part !== '..');
   return plain && owned.includes(path.slice(0, slash)) && !MOCK_GONE.has(path);

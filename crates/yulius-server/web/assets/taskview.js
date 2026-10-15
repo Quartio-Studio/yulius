@@ -14,7 +14,7 @@ import { SUBMIT_KEYS, SUBMIT_ARIA } from './shortcuts.js';
 import { openTaskMenu, continueTask, deliveryStrip, startNow, stopTask, requestControl, dropControlRequest, handOverTask, openScheduleDialog, rescheduleTask } from './actions.js';
 import { attachTerminalDrop, attachPromptDrop, draftAttachments, taskAttachments, withAttachments, openAttachment } from './filedrop.js';
 import { createPromptInput, ATOM, FILE_MARK, FILE_MARK_END, PLACE_TYPE, placeFiles, withoutMarks } from './promptinput.js';
-import { mentionOf } from './promptparts.js';
+import { mentionOf, parsePrompt } from './promptparts.js';
 import { relLong, dateTime, whenLabel } from './format.js';
 import { readJson, writeJson } from './store.js';
 import { href } from './router.js';
@@ -30,6 +30,8 @@ const STEP_LABEL = { done: 'Done', in_progress: 'In progress', pending: 'To do',
 const STRIP_KEY = 'yulius.stepsOpen';
 // Waiting states in which a task that never started takes queued messages (SPEC-052).
 const WAITING = new Set(['queued', 'chained', 'prepared', 'waiting_capacity']);
+// An attached file the server serves as an image (`is_image` in yulius-domain).
+const IMAGE_PATH = /\.(png|jpe?g|gif|webp)$/i;
 // States only a task with a run is in.
 const RAN = new Set(['running', 'switching', 'stopping']);
 
@@ -338,6 +340,42 @@ export function mountTaskView(ctx, sandbox, task) {
     renderQueue();
     if (!isPhone()) terminal.focus();
   } }, 'Dismiss');
+  // The request's files (SPEC-168): each a placeholder where it sits, `Image N` for an image (N
+  // its number among the request's images), its name otherwise; a click reads the file from the
+  // prompt endpoint (by its index among the request's files) and opens it.
+  const fileUrls = [];
+  destroyers.push(() => { fileUrls.forEach((url) => URL.revokeObjectURL(url)); fileUrls.length = 0; });
+  let requestShown = null;
+  async function openRequestFile(index, name, image) {
+    let blob;
+    try {
+      // An attached file can be as large as an upload: longer than a JSON read.
+      blob = await ctx.api.get(`/api/tasks/${enc(current.id)}/prompt/attachments/${index}`, { as: 'blob', timeoutMs: 120000 });
+    } catch (error) {
+      if (!alive) return;
+      if (error.status === 404) toast(`${name} is no longer on the server.`, { kind: 'warn' });
+      else errorToast(error, `Couldn’t open ${name}`);
+      return;
+    }
+    if (!alive) return;
+    const url = URL.createObjectURL(blob);
+    fileUrls.push(url);
+    if (image) openAttachment({ name }, { image: url });
+    else h('a', { href: url, download: name }).click();
+  }
+  function drawRequest(text) {
+    const { parts, paths } = parsePrompt(text);
+    let images = 0;
+    const numbers = paths.map((path) => (IMAGE_PATH.test(path) ? (images += 1) : 0));
+    setChildren(requestEl, parts.map((part) => {
+      if ('text' in part) return part.text;
+      const path = paths[part.file];
+      const name = path.split('/').pop();
+      const n = numbers[part.file];
+      return h('button', { type: 'button', class: ['pi-atom', 'queue-file', n ? 'pi-image' : 'pi-file'], title: name, 'aria-label': n ? `Image ${n}, ${name}` : name, onClick: () => openRequestFile(part.file, name, Boolean(n)) },
+        icon(n ? 'image' : 'file', { size: 14 }), h('span', { class: 'pi-file-name' }, n ? `Image ${n}` : name));
+    }));
+  }
   setChildren(queueSlot, h('section', { class: 'queue-card', role: 'region', 'aria-label': 'Queued messages' },
     h('div', { class: 'queue-head' }, icon('send', { size: 16 }), h('strong', null, 'Queued messages'), queueNote),
     requestEl,
@@ -388,8 +426,9 @@ export function mountTaskView(ctx, sandbox, task) {
     queueDismiss.hidden = !kept;
     if (kept) return;
     const text = detail.request || '';
-    if (requestEl.textContent !== text) {
-      requestEl.textContent = text;
+    if (requestShown !== text) {
+      requestShown = text;
+      drawRequest(text);
       requestEl.scrollTop = requestEl.scrollHeight; // the latest message in view
     }
   }
