@@ -120,3 +120,4 @@ number differs from the file name, and a record this index does not list.
 - [0111](0111-agents-ask-a-person-with-needs-you.md): Agents ask a person to act with one tool, `needs_you`; the task stays in Needs you until a person writes to it or the agent resolves it
 - [0108](0108-the-superadmin-updates-from-the-sidebar-foot.md): The superadmin's Update button sits beside the account button in the sidebar foot; one click opens the update's confirmation
 - [0106](0106-the-superagent-is-opened-from-the-tools-rail-only.md): The Superagent is opened from the tools rail, not a top-bar button
+- [0116](0116-ci-jobs-use-named-agent-secrets-through-the-proxy.md): A CI job uses the agent secrets the integration branch's `[[ci.jobs]]` entry names, as placeholders through the egress proxy with a per-job credential (`ci:<run>`), only toward their bound hosts; a pull request's own grant counts for nothing
