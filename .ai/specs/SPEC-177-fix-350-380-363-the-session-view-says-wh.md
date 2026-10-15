@@ -60,7 +60,8 @@ Three defects of the read-only session view (SPEC-075, SPEC-090) are gone:
   `Result of Bash(npm test)`, `Input of Grep(…)`, `Changed lines of path` with `(n of m)` for
   several hunks (`(n of m shown)` for a cut diff), and `Result (line N)` for a result whose call is
   not on the page. A name already used in the view (a command run twice, a second added context)
-  adds ` (line N)`, and ` (line N, 2)`, … when it repeats within that entry.
+  adds ` (line N)`, and ` (line N, 2)`, … when it repeats within that entry; a name that already
+  says its line (`Result (line 19)`) counts on inside it (`Result (line 19, 2)`).
 - **SCV-005 (review round 1).** A cut meta block whose last line is command output says "Cut here:
   the output is longer."; an opened result whose call is not on the page keeps a name for its
   summary ("Tool result", for assistive technology). A `summary` record cut at the message bound
@@ -76,6 +77,7 @@ Three defects of the read-only session view (SPEC-075, SPEC-090) are gone:
 - [x] Gates green and independent review passed
 - [x] Review round 1 findings fixed: focus kept, unique names, cut output, tests
 - [x] Review round 2 findings fixed: names unique within an entry, cut hunk counts, cut summaries
+- [x] Review round 3 nits fixed: one line suffix per name, a cut edit's summary tested
 
 ## Acceptance criteria
 
@@ -138,4 +140,10 @@ Three defects of the read-only session view (SPEC-075, SPEC-090) are gone:
   `truncated: false`) fixed test-first: the new e2e assertion failed on e40cd270's page
   (`["Code","Code (line 24)","Code (line 24)"]`) and the Rust summary assertion failed before
   `entry_of` set the flag. `sessions.e2e.ts`: 25 passed after the fix.
+- At 17418006 (current with dev): `scripts/dev ci` exit 0 (1874 nextest passed, 18 skipped); full
+  `npx e2e run`: 529 passed, 1 skipped.
+- Review round 3 at 5dd747a7: APPROVE with two nits in this change's code, fixed test-first per
+  ADR-0141 (a nit about a missing assertion is an own-code finding): two results without their
+  call in one entry read `Result (line 19)`, `Result (line 19, 2)` (the test failed before with
+  `Result (line 19) (line 19)`), and a cut Edit's summary is asserted as "Updated e2e/steps.ts".
 
