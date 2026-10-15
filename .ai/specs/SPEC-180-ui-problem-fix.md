@@ -42,9 +42,9 @@ composer's tray shows them.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| OPP-001 | An image inside the text shows as a placeholder one line high: an image icon and `Image N`, the file's name as its tooltip, named "Open Image N, <name>". N is the image's number among the prompt's images in order. An image named twice (the same name) keeps one number. The line holding it keeps the text's line height. | e2e `original-prompt` "an image inside the prompt is a one-line Image N placeholder…" |
-| OPP-002 | A click (or Enter) on the placeholder opens the image in the preview dialog, once however often it is clicked meanwhile. The file is read once per dialog, shared with its thumbnail in the list. An image that is no longer on the server shows its name and "No longer on the server" in its place, as before; one that cannot be read when clicked says so in a toast. | same test; existing "a prompt starting with ---" test |
-| OPP-003 | The "Attached files" list below the text shows every file of the prompt once, in order: those inside the text and those after it. An image is a thumbnail carrying its number (`Image N` on the tile, named "Open Image N, <name>"), opening full size. Another file downloads; a gone file is named, as before. | e2e `original-prompt` (all tests) |
+| OPP-001 | An image inside the text shows as a placeholder one line high: an image icon and `Image N`, the file's name as its tooltip, named "Open Image N, <name>". N is the image's number among the prompt's images in order, gone ones counted, as the queue card counts (SPEC-168). An image named twice (the same name) keeps one number. The line holding it keeps the text's line height. | e2e `original-prompt` "an image inside the prompt is a one-line Image N placeholder…", "a gone image keeps its number…" |
+| OPP-002 | A click (or Enter) on the placeholder opens the image in the preview dialog, once however often it is clicked meanwhile. The file is read once per dialog, shared with its thumbnail in the list. An image that is no longer on the server shows its name and "No longer on the server" in its place, as before; one that cannot be read when clicked says so in a toast, and the next click tries again. | e2e `original-prompt` "a placeholder opens its image once, and tries again after a failed read" |
+| OPP-003 | The "Attached files" list below the text shows every file of the prompt once, in order: those inside the text and those after it. A gone file never stands in for an available one of the same name. An image is a thumbnail carrying its number (`Image N` on the tile, named "Open Image N, <name>"), opening full size. Another file downloads; a gone file is named, as before. | e2e `original-prompt` (all tests), "a gone image keeps its number, and the list keeps a file named like a gone one" |
 | OPP-004 | Another file inside the text keeps its one-line download button; the text and files after it are unchanged otherwise (SPEC-043, SPEC-124, #303). No axe violations. | existing `original-prompt` tests |
 
 ## Plan
@@ -89,6 +89,11 @@ composer's tray shows them.
   with one name in different folders would share a number. That is harmless here: each still opens
   its own file, which is read by its index. Changing the API to send paths was not worth it for
   this.
+- **The list is one entry per name and availability** (review round 1). One entry per name let a
+  gone file hide an available one of the same name, so its picture never showed.
+- **A 404 on opening gets the generic error toast** (review nit, not taken). The dialog marks a
+  file the server no longer has before any click ("No longer on the server"), so a 404 at the
+  click means the file went while the dialog was open, which the error toast already reports.
 - **No ADR.** This applies the decision of SPEC-150 (ADR-0124) to one more view; it takes no new
   lasting decision.
 
