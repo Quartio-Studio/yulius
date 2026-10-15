@@ -32,7 +32,7 @@ number differs from the file name, and a record this index does not list.
 - [0022](0022-native-task-attachments.md): Attached files reach Claude Code as `@path` mentions in its first message
 - [0023](0023-no-messages-until-delivery-is-reliable.md): No messages until their delivery is reliable
 - [0024](0024-default-model-and-effort.md): Tasks default to Opus 5.5 at high effort
-- [0025](0025-sandbox-navigation-more-group.md): Six sandbox pages in the sidebar, the rest under "More"
+- [0025](0025-sandbox-navigation-more-group.md): Six sandbox pages in the sidebar, the rest under "More" (amended by 0125)
 - [0026](0026-attached-images-are-pasted.md): Attached images are pasted into the first message, not mentioned
 - [0027](0027-step-back-past-a-usage-limit.md): A usage limit steps the transcript back; Claude Code continues the cut turn
 - [0028](0028-one-integration-test-binary.md): The product's integration tests are one test binary
@@ -129,3 +129,4 @@ number differs from the file name, and a record this index does not list.
 - [0117](0117-a-run-that-ends-while-yulius-is-down-is-counted-from-its-transcript.md): A run that ends before its watcher read its transcript to the end (it ended while Yulius was down: reconciliation, or a reattach that gets the exit at once) is counted from its transcript window, never saved from an empty snapshot; the metrics recount starts only after a reconciliation that succeeded
 - [0121](0121-the-superagent-gets-the-sandbox-mcp-servers-and-the-redaction.md): The Superagent gets the sandbox's MCP servers as a task run does (values only in its secret environment) and the task runs' redaction (the `--scrub-exec` wrapper and the `PostToolUse` hook, its only hook), authenticated with the person's workspace token (amends MGT-004, CKP-002)
 - [0120](0120-a-shell-ends-only-when-its-host-is-proven-gone.md): A sandbox shell or the Superagent is recorded as ended only once it exited or its host was terminated; otherwise it stays live and its viewers are told, and the Superagent's usage-limit move starts no second one. A launch `/goal` not yet recorded is watched again after a restart (`launch-goal-pending` in the run directory)
+- [0125](0125-ci-and-cd-are-one-page-with-two-tabs.md): CI and CD are one CI/CD page: one sidebar entry, the Secrets page's tab strip with CI (tests) and CD (deployment), the CD tab at `?section=cd`, and `/s/<slug>/cd` as its alias (amends 0025)
