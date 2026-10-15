@@ -155,9 +155,10 @@ test('a placeholder pressed or dragged with the mouse looks selected as a whole,
 
   // A click in the text leaves it; a press chooses it again, and Delete takes it.
   const to = await points();
-  await browser.mouse.click(to.end.x, to.end.y);
+  const click = async ({ x, y }: { x: number; y: number }) => { await browser.mouse.move(x, y); await browser.mouse.down(); await browser.mouse.up(); };
+  await click(to.end);
   await expect.poll(look).toEqual({ ...chosen, selected: false });
-  await browser.mouse.click(to.atom.x, to.atom.y);
+  await click(to.atom);
   await expect.poll(look).toEqual(chosen);
   await browser.keyboard.press('Delete');
   await expect(browser.locator('.composer-prompt .pi-atom')).toHaveCount(0);

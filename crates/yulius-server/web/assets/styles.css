@@ -1448,6 +1448,13 @@ span.composer-attachment-open { cursor: default; }
 .pi-pending { border-style: dashed; cursor: progress; }
 .pi-spinner { flex: none; width: 10px; height: 10px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin var(--duration-spin) linear infinite; }
 .pi-dragging { opacity: 0.4; }
+/* A file in the selection is chosen as a whole (#535): its label is never painted as selected text,
+   the placeholder takes the selection's colour instead. */
+.pi-atom::selection, .pi-atom ::selection { background: transparent; }
+.pi-atom.pi-selected { border-color: var(--accent); background: var(--selection); color: var(--text); }
+@media (forced-colors: active) {
+  .pi-atom.pi-selected { outline: 2px solid Highlight; }
+}
 .pi-preview-image { display: block; max-width: 100%; max-height: 160px; border-radius: var(--radius); }
 .pi-preview-file { display: inline-flex; max-width: min(240px, 100%); margin: 2px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; vertical-align: middle; cursor: zoom-in; }
 .pi-preview-after { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }

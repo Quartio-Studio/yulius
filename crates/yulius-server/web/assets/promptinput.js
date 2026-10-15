@@ -606,6 +606,22 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
   // Where `place` puts a file by default: the caret the person left.
   el.addEventListener('focusout', () => { kept = selection(); });
 
+  // A file in the selection looks chosen as a whole: its label is never painted as selected text
+  // (the stylesheet), the file is marked instead (#535). Followed while the box has the keyboard.
+  function markSelected() {
+    const sel = window.getSelection();
+    const range = el.contains(document.activeElement) && sel && sel.rangeCount && el.contains(sel.anchorNode) ? sel.getRangeAt(0) : null;
+    for (const atom of el.querySelectorAll('.pi-atom')) atom.classList.toggle('pi-selected', Boolean(range) && !range.collapsed && range.intersectsNode(atom));
+  }
+  el.addEventListener('focusin', () => {
+    document.addEventListener('selectionchange', markSelected);
+    markSelected();
+  });
+  el.addEventListener('focusout', () => {
+    document.removeEventListener('selectionchange', markSelected);
+    for (const atom of el.querySelectorAll('.pi-selected')) atom.classList.remove('pi-selected');
+  });
+
   // ---------------------------------------------------------------- the composer's side
 
   function setValue(text) {
