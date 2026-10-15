@@ -91,5 +91,13 @@ person who manages one reveals it only after a two-factor unlock.
   one audit entry per person, sandbox, secret and channel while Yulius runs.
 - Any process with a person's workspace token (their terminals too) can read the fingerprints of
   their sandbox's agent secrets: salted hashes a task agent started by the same person gets anyway.
+- The Superagent's conversation is kept in the person's own home (`~/.claude/projects`), which
+  their plain terminal reads without redaction. What passes the in-session layers (an MCP tool
+  error, a raw result Claude Code keeps) can be written there in clear. That only adds an
+  accidental way to see a value: a person bent on it already could transform one past the
+  exact-value redaction (`printenv … | rev`), as an agent could.
+- A server imported from `.mcp.json` is named both in `disabledMcpjsonServers` and, by the same
+  name, in `--mcp-config`. Measured on Claude Code 2.1.292 (SPEC-147): the inline server starts
+  and the rejected project server does not.
 - Literal MCP values remain readable in the session (`echo $YULIUS_MCP_…`), as in task runs; a
   follow-up could redact them in both.

@@ -135,3 +135,8 @@ there as it is in a task run.
   once the access cache was older than 5 minutes (fixed: the staleness bound, a test with a
   hanging GitHub), imported servers need the proxy (recorded, above), and missing tests for a
   disabled person and a refused report (added).
+- Independent review round 2 (APPROVE, low findings): a test that an adopted Superagent's screen
+  stays redacted (added; it fails with the snapshot unredacted); transcripts in the person's home
+  and same-named servers recorded in ADR-0121, the latter measured on Claude Code 2.1.292 (the
+  inline server starts, the rejected `.mcp.json` one does not). `CockpitLaunch`'s derived `Debug`
+  can print MCP values as `HarnessLaunch`'s can; neither is logged.

@@ -1523,6 +1523,51 @@ async fn the_superagent_gets_the_sandbox_mcp_servers_with_their_secrets_redacted
     Ok(())
 }
 
+/// SPEC-147 SAM-004: a Superagent adopted after a server restart shows its screen redacted, as
+/// it was before the restart.
+#[tokio::test]
+async fn an_adopted_superagent_screen_stays_redacted() -> TestResult {
+    let f = fixture().await?;
+    let served = serve(f.h.router.clone()).await?;
+    add_apify_key(&f).await?;
+    let id = cockpit_id(&f, &f.alice).await?;
+    let mut socket = attach(served.addr, &id, &f.alice).await?;
+    let mut screen = String::new();
+    read_until(&mut socket, &mut screen, "ready").await?;
+    socket
+        .send(Message::text(
+            json!({"type": "input", "data": format!("echo shown-{SECRET_VALUE}-end\r")})
+                .to_string(),
+        ))
+        .await?;
+    read_until(
+        &mut socket,
+        &mut screen,
+        &format!("shown-{SECRET_LABEL}-end\r\n"),
+    )
+    .await?;
+    assert!(!screen.contains(SECRET_VALUE), "{screen}");
+    drop(socket);
+    f.h.app.stop_workspace_services().await;
+
+    // The restarted server's vault (the test store is in memory) holds the same secret.
+    let g = fixture_with(true, Some(f.data.clone())).await?;
+    add_apify_key(&g).await?;
+    assert_eq!(g.h.app.adopt_shells().await, (1, 0));
+    let served = serve(g.h.router.clone()).await?;
+    let mut socket = attach(served.addr, &id, &g.alice).await?;
+    let mut screen = String::new();
+    read_until(
+        &mut socket,
+        &mut screen,
+        &format!("shown-{SECRET_LABEL}-end"),
+    )
+    .await?;
+    assert!(!screen.contains(SECRET_VALUE), "{screen}");
+    g.h.app.end_all_shells().await;
+    Ok(())
+}
+
 /// SPEC-147 SAM-003: the redaction in a Superagent loads its fingerprints with the person's
 /// workspace token, which its environment already holds: answered while the person may work in
 /// the sandbox, refused once they cannot, and a redaction is audited with their login.
