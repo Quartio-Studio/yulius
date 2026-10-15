@@ -695,3 +695,252 @@ async fn agents_set_the_start_choice_with_the_automation_tools() -> TestResult {
     );
     Ok(())
 }
+
+/// AC-AUT-26 (SPEC-155): "When I decide" is stored as `prepared`, read back and cleared; it is
+/// refused with any other start choice on create, update and Run now, and nothing changes.
+#[tokio::test]
+async fn an_automation_stores_when_i_decide() -> TestResult {
+    let (h, alice) = world().await?;
+    h.clock.0.store(BASE, Ordering::SeqCst);
+
+    let plain = send(&h, &alice, Method::POST, CREATE, nightly(&json!({}))).await?;
+    assert_eq!(plain.body["prepared"], json!(false), "{}", plain.body);
+
+    let r = send(
+        &h,
+        &alice,
+        Method::POST,
+        CREATE,
+        nightly(&json!({"prepared": true})),
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::CREATED, "{}", r.body);
+    assert_eq!(r.body["prepared"], json!(true), "{}", r.body);
+    assert_eq!(
+        choice(&r.body),
+        (json!(false), Value::Null, Value::Null, Value::Null)
+    );
+    let id = r.body["id"].as_str().ok_or("id")?.to_owned();
+    assert_eq!(stored(&h, &alice, &id).await?["prepared"], json!(true));
+
+    let path = format!("/api/automations/{id}");
+    for extra in [
+        json!({"prepared": true, "supertask": true}),
+        json!({"prepared": true, "after_task_id": "t-one"}),
+        json!({"prepared": true, "start_rule": "#1 done"}),
+    ] {
+        let r = send(&h, &alice, Method::POST, CREATE, nightly(&extra)).await?;
+        assert_eq!(
+            r.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{extra}: {}",
+            r.body
+        );
+        let r = send(&h, &alice, Method::PUT, &path, nightly(&extra)).await?;
+        assert_eq!(
+            r.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{extra}: {}",
+            r.body
+        );
+        let r = run_with(&h, &alice, &id, extra.clone()).await?;
+        assert_eq!(
+            r.status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{extra}: {}",
+            r.body
+        );
+    }
+    assert!(h.store.runs(&id, 10).await?.is_empty(), "no run recorded");
+    assert_eq!(stored(&h, &alice, &id).await?["prepared"], json!(true));
+
+    // Sent back unchanged it is kept; a PUT without it is start now, like the other choices.
+    let r = send(
+        &h,
+        &alice,
+        Method::PUT,
+        &path,
+        nightly(&json!({"prepared": true, "name": "Renamed"})),
+    )
+    .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(r.body["prepared"], json!(true), "{}", r.body);
+    let r = send(&h, &alice, Method::PUT, &path, nightly(&json!({}))).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(stored(&h, &alice, &id).await?["prepared"], json!(false));
+    Ok(())
+}
+
+async fn act_on(h: &Harness, creds: &Creds, path: &str) -> Result<support::Resp, Error> {
+    call(&h.router, Method::POST, path, None, creds).await
+}
+
+/// AC-AUT-27 and AC-AUT-28 (SPEC-155): each run of a prepared automation creates its task
+/// `prepared`, which waits across ticks; while it waits the next run is skipped; once it was
+/// started and ended the next run prepares a new one. Run now with `prepared` prepares a task of a
+/// start-now automation for that run only; a sandbox full of prepared tasks fails the run.
+#[tokio::test]
+async fn each_run_of_a_prepared_automation_prepares_its_task() -> TestResult {
+    let (h, alice) = world().await?;
+    h.clock.0.store(BASE, Ordering::SeqCst);
+    let id = create(&h, &alice, &json!({"prepared": true})).await?;
+
+    let slot = BASE + 3 * HOUR;
+    h.clock.0.store(slot + 10_000, Ordering::SeqCst);
+    assert_eq!(h.app.automation_tick().await?.created, 1);
+    let task = run_task(&h, &id, slot).await?;
+    assert_eq!((task.status, task.supertask), (TaskStatus::Prepared, false));
+    assert!(h.store.chain(&task.id).await?.is_none());
+    assert_eq!(
+        h.store.task_schedule(&task.id).await?,
+        None,
+        "no start time"
+    );
+    let summary = call(
+        &h.router,
+        Method::GET,
+        &format!("/api/tasks/{}", task.id),
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(
+        (&summary.body["status"], &summary.body["start_at"]),
+        (&json!("prepared"), &Value::Null),
+        "{}",
+        summary.body
+    );
+    // It never starts by itself.
+    h.clock.0.store(slot + 2 * HOUR, Ordering::SeqCst);
+    h.app.release_due_prepared().await;
+    assert_eq!(
+        h.store.task(&task.id).await?.ok_or("task")?.status,
+        TaskStatus::Prepared
+    );
+
+    // AC-AUT-28: the next day's run is skipped while it waits.
+    h.clock.0.store(slot + 24 * HOUR + 10_000, Ordering::SeqCst);
+    h.app.automation_tick().await?;
+    let history = h.store.runs(&id, 1).await?;
+    assert_eq!(history[0].state.as_str(), "skipped_previous_active");
+    assert_eq!(
+        history[0].error.as_deref(),
+        Some(format!("the previous task #{} is still prepared", task.number).as_str())
+    );
+
+    // Started by a person, then cancelled: the following run prepares a new task.
+    let r = act_on(&h, &alice, &format!("/api/tasks/{}/start-now", task.id)).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let r = act_on(&h, &alice, &format!("/api/tasks/{}/stop", task.id)).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let next = slot + 48 * HOUR;
+    h.clock.0.store(next + 10_000, Ordering::SeqCst);
+    assert_eq!(h.app.automation_tick().await?.created, 1);
+    let again = run_task(&h, &id, next).await?;
+    assert_ne!(again.id, task.id);
+    assert_eq!(again.status, TaskStatus::Prepared);
+
+    // Run now with the stored choice prepares too (here: skipped, the new task still waits).
+    let run = run_now(&h, &alice, &id).await?;
+    assert_eq!(run["state"], "skipped_previous_active", "{run}");
+    close(&h, &again, next + 20_000).await?;
+    h.clock.0.store(next + 30_000, Ordering::SeqCst);
+    let run = run_now(&h, &alice, &id).await?;
+    assert_eq!(run["state"], "task_created", "{run}");
+    let prepared = task_of(&h, &run).await?;
+    assert_eq!(prepared.status, TaskStatus::Prepared);
+    close(&h, &prepared, next + 40_000).await?;
+
+    // Run now with `prepared` on a start-now automation: this run only, audited.
+    let plain = create(&h, &alice, &json!({})).await?;
+    h.clock.0.store(next + 50_000, Ordering::SeqCst);
+    let r = run_with(&h, &alice, &plain, json!({"prepared": true})).await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    let task = task_of(&h, &r.body).await?;
+    assert_eq!(task.status, TaskStatus::Prepared);
+    assert_eq!(stored(&h, &alice, &plain).await?["prepared"], json!(false));
+    let audit = h.store.automation_audit(&plain, 1).await?;
+    let detail: Value = serde_json::from_str(audit[0].detail.as_deref().unwrap_or("null"))?;
+    assert_eq!(
+        detail,
+        json!({"state": "task_created", "start": "when I decide"})
+    );
+    close(&h, &task, next + 60_000).await?;
+
+    // The sandbox's bound of prepared tasks fails the run and says why.
+    for i in 0..32 {
+        seed_task(
+            &h,
+            &format!("t-prep-{i}"),
+            "s1",
+            "u-alice",
+            TaskStatus::Prepared,
+            None,
+        )
+        .await?;
+    }
+    h.clock.0.store(next + 70_000, Ordering::SeqCst);
+    let run = run_now(&h, &alice, &id).await?;
+    assert_eq!(run["state"], "failed", "{run}");
+    assert!(
+        run["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("prepared tasks"),
+        "{run}"
+    );
+    assert_eq!(run["task_id"], Value::Null);
+    Ok(())
+}
+
+/// AC-AUT-29 (SPEC-155): agents set "When I decide" with `prepared` in `automation_create` and
+/// `automation_update`; another choice replaces it; together with another choice it is refused.
+#[tokio::test]
+async fn agents_set_when_i_decide_with_the_automation_tools() -> TestResult {
+    let (h, alice) = world().await?;
+    seed_live_attempt(&h, "t-one", "tok-agent").await?;
+    let created = mcp_tool(
+        &h,
+        "tok-agent",
+        "automation_create",
+        json!({"name": "Morning", "cron": "0 7 * * *", "prompt": "Prepare the day", "prepared": true}),
+    )
+    .await?;
+    assert_eq!(created["isError"], json!(false), "{created}");
+    let view = tool_text(&created)["automation"].clone();
+    assert_eq!(view["prepared"], json!(true), "{view}");
+    let id = view["id"].as_str().ok_or("id")?.to_owned();
+
+    let update = |args: Value| {
+        let mut args = args;
+        args["automation_id"] = json!(id);
+        mcp_tool(&h, "tok-agent", "automation_update", args)
+    };
+    for args in [
+        json!({"prepared": true, "start_rule": "#1 done"}),
+        json!({"prepared": true, "supertask": true}),
+        json!({"prepared": "yes"}),
+    ] {
+        let r = update(args.clone()).await?;
+        assert_eq!(r["isError"], json!(true), "{args}: {r}");
+    }
+    assert_eq!(stored(&h, &alice, &id).await?["prepared"], json!(true));
+
+    let r = update(json!({"supertask": true})).await?;
+    assert_eq!(r["isError"], json!(false), "{r}");
+    let view = stored(&h, &alice, &id).await?;
+    assert_eq!(
+        (&view["prepared"], &view["supertask"]),
+        (&json!(false), &json!(true))
+    );
+    let r = update(json!({"prepared": true})).await?;
+    assert_eq!(r["isError"], json!(false), "{r}");
+    assert_eq!(tool_text(&r)["automation"]["prepared"], json!(true), "{r}");
+    let list = mcp_tool(&h, "tok-agent", "automations_list", json!({})).await?;
+    assert_eq!(
+        tool_text(&list)["automations"][0]["prepared"],
+        json!(true),
+        "{list}"
+    );
+    Ok(())
+}

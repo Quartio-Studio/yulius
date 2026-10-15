@@ -112,7 +112,8 @@ watching, steering and unblocking.
   automation deploys and tests it. Production (with its promotion) is always a person's: an
   administrator types the project's slug, and on GitHub a ruleset only repository admins bypass
   keeps the production branch out of reach of the agents' own token, which is never a person's
-  (onboarding says when that ruleset is missing). Agents build and improve CD through pull requests but
+  (onboarding says when that ruleset is missing, and its agent adds it with `production_protect`
+  as the person who started onboarding when they are a repository admin). Agents build and improve CD through pull requests but
   cannot change what a deploy runs, and they ask a person with `needs_you` for what only a person
   can give (a machine's credentials). Onboarding finds how a project deploys today and writes it
   down this way; "Set up CD with an agent" does the same later, through a task. For Yulius itself
@@ -125,7 +126,8 @@ watching, steering and unblocking.
   core team's issues verified in parallel, a Fix task for each actionable one, no new issues) and
   "Deploy dev every night" (a CD run of dev, tested, a failure filed as an issue),
   nightly at 03:00 CEST. An automation's tasks start like New task's: now, as a supertask, after
-  another task or when a rule is true, picked with New task's start chip beside Run now and Save;
+  another task or when a rule is true, or wait prepared until the person presses Start now ("When
+  I decide"), picked with New task's start chip beside Run now and Save;
   Run now starts its task the way the chip shows.
 - **Notes**: in the tools rail, a notepad per sandbox and one for the whole team, shared and saved
   while people type; a teammate's edit shows up live, and two edits at once end in a choice. A

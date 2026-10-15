@@ -1,7 +1,8 @@
 // How a task starts: New task's start chip and its menu, shared with the automation editor's
 // action bar (SPEC-093). Start now, Supertask (SPEC-071), after a task is done (TSK-012; the
 // filterable list of SPEC-038) or when a rule is true (SPEC-017, picked in the rule editor of
-// SPEC-022); New task also prepares a task, started when you decide or at a time (SPEC-105).
+// SPEC-022); New task also prepares a task, started when you decide or at a time (SPEC-105), and
+// an automation prepares its tasks, started when you decide (SPEC-155).
 // Each page keeps its own state and opens the rule editor with its own value. A task that waits
 // to start changes its choice with the same menu, from its view (SPEC-126).
 // Every API path is a literal at its call site (tests/ui_contract.rs checks them).
@@ -51,16 +52,19 @@ export function renderStartChip(chip, { kind, number, rule, at, prefix }) {
  * gets `{ kind: 'now' }`, `{ kind: 'supertask' }`, `{ kind: 'prepared' }` or
  * `{ kind: 'after', task }`, and `onRule` opens the caller's rule editor. With `onTime` (New task
  * only, SPEC-105) it also offers "When I decide" and "At a time…", which calls `onTime`; `at` is
- * the time picked before. `exclude` is a task the menu leaves out: one cannot wait for itself.
+ * the time picked before. With `prepare` (the automation editor, SPEC-155) it offers "When I
+ * decide" alone. `exclude` is a task the menu leaves out: one cannot wait for itself.
  */
-export function openStartMenu(anchor, ctx, sandbox, { kind, afterTaskId, at, onPick, onRule, onTime, exclude }) {
+export function openStartMenu(anchor, ctx, sandbox, { kind, afterTaskId, at, onPick, onRule, onTime, prepare, exclude }) {
   const candidates = chainCandidates(ctx, sandbox).filter((t) => t.id !== exclude);
   openMenu(anchor, [
     { label: 'Start now', icon: 'up', description: 'The task starts as soon as a session slot is free', checked: kind === 'now', onSelect: () => onPick({ kind: 'now' }) },
     { label: 'Supertask', icon: 'shield', description: SUPERTASK_HELP, checked: kind === 'supertask', onSelect: () => onPick({ kind: 'supertask' }) },
     // Written now, started later (SPEC-105).
-    ...(onTime ? [
+    ...(onTime || prepare ? [
       { label: 'When I decide', icon: 'st-prepared', description: WHEN_I_DECIDE_HELP, checked: kind === 'prepared', onSelect: () => onPick({ kind: 'prepared' }) },
+    ] : []),
+    ...(onTime ? [
       { label: 'At a time…', icon: 'clock', description: kind === 'scheduled' && at ? `Starts by itself ${whenLabel(at)}` : 'Starts by itself at the date and time you pick', checked: kind === 'scheduled', onSelect: onTime },
     ] : []),
     // One line per task under one heading, every live one: the menu's filter finds it (SPEC-038);

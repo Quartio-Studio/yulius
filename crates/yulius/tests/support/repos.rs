@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -398,6 +398,8 @@ pub struct RepoGitHub {
     pub rulesets: Mutex<Vec<(String, RulesetRequest, String)>>,
     /// Installation lookups.
     pub installation_lookups: AtomicU32,
+    /// GitHub refuses every new ruleset (a private repository on a free plan).
+    pub refuse_rulesets: AtomicBool,
 }
 
 impl RepoGitHub {
@@ -531,6 +533,11 @@ impl GitHubPort for RepoGitHub {
         name: &str,
         request: &RulesetRequest,
     ) -> AppResult<()> {
+        if self.refuse_rulesets.load(Ordering::SeqCst) {
+            return Err(AppError::Upstream(
+                "GitHub 403: Upgrade to GitHub Pro or make this repository public".into(),
+            ));
+        }
         if let Ok(mut rulesets) = self.rulesets.lock() {
             rulesets.push((
                 format!("{owner}/{name}"),
@@ -637,6 +644,7 @@ impl World {
             created: Mutex::new(Vec::new()),
             rulesets: Mutex::new(Vec::new()),
             installation_lookups: AtomicU32::new(0),
+            refuse_rulesets: AtomicBool::new(false),
         });
         let clock = Arc::new(TestClock(AtomicI64::new(1_791_331_200_000)));
         let config = AppConfig::new(

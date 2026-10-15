@@ -32,7 +32,7 @@ left of its group and session, and reaps it.
   host writes before it sends the frame. The socket protocol is unchanged, so a host and a server of
   different versions still understand each other; an older host's file reads as unknown.
 - **Stored with the end, added by the end trigger**: `ci_jobs` and `cd_runs` get `cpu_ms`,
-  `memory_peak_mb` and `disk_written_mb` (migration 30), and the end triggers patch them into the
+  `memory_peak_mb` and `disk_written_mb` (`0030_job_resource_use.sql`, schema version 31), and the end triggers patch them into the
   `job` / `run` span with `json_patch`, which leaves a `NULL` out: unknown stays absent.
 - **A job Yulius killed has no figures**: cancelling, a timeout or too much output kills the job's
   whole group and session at once, so its processes are reaped by init, outside the host's chain,
