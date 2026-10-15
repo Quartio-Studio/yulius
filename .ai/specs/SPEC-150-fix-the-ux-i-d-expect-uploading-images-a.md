@@ -59,6 +59,8 @@ and paste. The agent still gets each file at its placeholder's place (SPEC-124).
 - [x] Images sit in the text as one-line numbered placeholders, placed from the tray by drag or the keyboard
 - [x] The zoom dialog shows an image fitted or at its own size
 - [x] ADR, architecture, product, earlier specs and the changes log describe the tray and placeholders
+- [x] Review round 1: the tray is part of undo, caret, focus and Preview findings fixed test-first
+- [x] Review round 2: actual size reaches every edge and an undone paste's upload stays out, fixed test-first
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green and the change delivered to dev
 
@@ -123,3 +125,43 @@ and paste. The agent still gets each file at its placeholder's place (SPEC-124).
   nothing there, which harms nobody; measuring the space on every open was not worth it.
 - **Zoom is a fit / actual-size toggle** in the existing dialog, not a zoom slider: it answers "I
   still want to zoom the image" with one click, and pinch zoom on phones works as before.
+
+## Evidence
+
+Run on this branch (Linux, Chromium headless, mock mode), on a host shared with other tasks
+(load average 70–90 on 12 cores during the e2e runs):
+
+- `scripts/dev ci`: exit 0 at `d72fc040` (doctor, repository contracts, fmt and Clippy
+  `-D warnings`, nextest 1789 passed, 16 skipped, doctests, cargo-deny, cargo-shear). The later
+  commits change only the web UI, its e2e tests and this spec; Yulius CI runs the gate on the final
+  head.
+- `scripts/dev security`: exit 2, **not run**. Vidoc rejected the key (HTTP 401, #470), so it is
+  unrun under ADR-0104, not passed. Yulius CI's `security` job reports the same until the key is
+  fixed.
+- The composer suites at `021a255e`: `inline-images.e2e.ts` 18 passed, `drafts.e2e.ts` 13 passed,
+  `filedrop.e2e.ts` 11 passed. `new-task`, `original-prompt`, `intake` and `responsive` passed 42 of
+  42 at `78a989fd`.
+- Test-first: before the change, the tray tests failed (6 failed in `inline-images`). The review
+  round 1 tests failed on `78a989fd`'s code: the tray in undo, the undone paste, the caret after ×,
+  the unplaced file in the Preview, and the one-line placeholder measured by the next line. The
+  round 2 tests failed on `d72fc040`'s code: "Actual size" left the image's left edge out of reach,
+  and an upload ending after its paste was undone stayed in the tray.
+- Full e2e suite (`npx e2e run`) at `021a255e`: 424 passed, 29 failed, 1 skipped. Rerunning the
+  failures (`--last-failed`) left 11, in the editor, terminal, rail, start-change and supertask
+  suites. The same files on unchanged `origin/dev`, in a detached worktree under the same load,
+  failed 14 tests: the same editor, terminal, rail, start-change and supertask tests. They are
+  load timeouts and mock-clock races that predate this change; task #134 tracks the suite under
+  host load. Every composer suite passed.
+- Screenshots (scratch test, not committed): the tray shows two numbered thumbnails above a line
+  `This part [Image 1] looks wrong, while here [Image 2] the header is fine` at the text's height,
+  and "Actual size" shows an 800 × 500 image at its own size.
+- Review round 1 (fresh session) requested changes on `78a989fd`. Its one major was the tray not
+  being part of undo. Its minors: the stale caret, focus lost after ×, the Preview, screen-reader
+  names, test gaps and stale comments. All were fixed test-first in `5f0dd384`. The `Image N` label
+  limitation and the zoom toggle on small images are recorded in Decisions.
+- Review round 2 (fresh session) requested changes on `d72fc040` for two majors (actual-size
+  clipping, an undone paste's upload). Both were fixed test-first in `021a255e`, together with the
+  tests it asked for: focus after × and double-click opening a placeholder.
+
+Not tested here: browsers other than Chromium, and a real Claude Code session receiving files sent
+after the text (the prompt format is unchanged from ADR-0101, whose tests cover it).
