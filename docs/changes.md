@@ -11,7 +11,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   `start_rule`) and the `automation_create` / `automation_update` tools offer "When I decide": each
   run, and Run now, creates the task `prepared`, and it waits for Start now. The chip, the sentence
   and the list row name it; a run while the previous prepared task still waits is
-  `skipped_previous_active`. Stored in migration 0031.
+  `skipped_previous_active`. Stored in migration 0031 (schema version 30).
 - CI and CD are one CI/CD page (SPEC-151, task #145, ADR-0125): the sidebar's single **CI/CD**
   entry opens a page whose **CI (tests)** and **CD (deployment)** tabs work like the Secrets page's
   Team and Agent tabs; the CD tab is `?section=cd` and `/s/<slug>/cd` (with `?run=`) still opens it.

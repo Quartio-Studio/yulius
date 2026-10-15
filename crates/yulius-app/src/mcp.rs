@@ -279,7 +279,7 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
         },
         ToolDescriptor {
             name: "automation_create".into(),
-            description: "Create a scheduled automation in this project: on a five-field cron schedule (minute hour day-of-month month day-of-week, evaluated at utc_offset_minutes from UTC) Yulius creates and starts a new task with the given prompt. Use it when the user asks for recurring work, e.g. \"every day at 9 implement yesterday's customer feedback\". Created tasks start like New task: now (the default), after_task, start_rule, as a supertask, or prepared (waiting until the person presses Start now). The automation appears on the project's Automations page.".into(),
+            description: "Create a scheduled automation in this project: on a five-field cron schedule (minute hour day-of-month month day-of-week, evaluated at utc_offset_minutes from UTC) Yulius creates a new task with the given prompt. Use it when the user asks for recurring work, e.g. \"every day at 9 implement yesterday's customer feedback\". Created tasks start like New task: now (the default), after_task, start_rule, as a supertask, or prepared (waiting until the person presses Start now). The automation appears on the project's Automations page.".into(),
             input_schema: schema(json!({
                 "name": {"type": "string", "description": "Short name; also the title of created tasks"},
                 "cron": {"type": "string", "description": "Five-field cron expression, e.g. \"0 9 * * *\" (daily at 09:00) or \"0 9 * * MON-FRI\""},

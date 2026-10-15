@@ -3,9 +3,9 @@
 // the schedule is clicked, not written — once a day on the chosen days (or every hour) at a time
 // picked from chips — and the page says in words when it runs next; cron stays under Advanced.
 // The workflow is a chip. How each task starts is New task's start chip, in the action bar beside
-// Run now and Save (SPEC-078, SPEC-093), with "When I decide" but no "At a time…" (SPEC-155); Run
-// now uses the choice it shows. Run now, the switch and
-// the run history live on the same page (Automation, docs/api.md).
+// Run now and Save (SPEC-078, SPEC-093), with "When I decide" but no "At a time…" (SPEC-155).
+// Run now uses the choice it shows. Run now, the switch and the run history live on the same page
+// (Automation, docs/api.md).
 
 import { enc } from '../api.js';
 import { h, icon, setChildren, placeholder, loadError, confirmDialog, toast, invalid, badge } from '../dom.js';

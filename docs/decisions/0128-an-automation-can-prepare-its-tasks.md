@@ -17,7 +17,7 @@ morning, and sent when they are ready, had no way to say so.
 
 - The automation's start choice gets a fifth value, **When I decide** (`AutomationStart::Prepared`).
   On the wire it is the flag `prepared` on `Automation` and on Run now's `RunAutomation`, as on
-  `CreateTask`; in the store it is the column `automations.prepared` (migration 0031, default 0),
+  `CreateTask`; in the store it is the column `automations.prepared` (migration 0031, schema version 30, default 0),
   beside the three columns of migration 0019.
 - It stands alone: with `supertask`, `after_task_id` or `start_rule` it is refused (422), with the
   same reason New task gives.

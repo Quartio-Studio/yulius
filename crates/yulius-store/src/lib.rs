@@ -74,6 +74,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("migrations/0027_cd_runs.sql"),
     include_str!("migrations/0028_spans.sql"),
     include_str!("migrations/0029_ci_job_failures.sql"),
+    // Schema version 30: the file number is reserved per task (`record_number`), so a later
+    // migration numbered 0030 goes after this line, never before (the position is the version).
     include_str!("migrations/0031_automation_prepared.sql"),
 ];
 
