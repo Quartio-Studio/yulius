@@ -49,7 +49,7 @@ watching, steering and unblocking.
   `.mcp.json` servers join its sandbox's list by themselves, with `${VAR}` becoming the agent
   secret VAR's placeholder (the egress proxy swaps the value in on its bound hosts), and the
   Superagent never asks about them.
-- **Sidebar**: the sandbox pages used every day (Tasks, Git, CI (tests), CD (deployment), Secrets, Dashboard; the Superagent is on the right),
+- **Sidebar**: the sandbox pages used every day (Tasks, Git, CI (tests), CD (deployment), Pipeline (stages), Secrets, Dashboard; the Superagent is on the right),
   then "More" for Sessions, Workflows, Skills, Automations and MCP, then the active tasks.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions
   outlive server restarts. Task intake splits mixed requests, holds scope changes and chains
@@ -81,6 +81,13 @@ watching, steering and unblocking.
   `yulius.toml`, with the branch policy (typed branches, conventional titles, `dev` → `main`
   promotions) that Yulius checks before every merge.
 - **Yulius CI**: the projects' only CI; it runs on the VM, no GitHub Actions.
+- **Pipeline (stages)**: every stage of tasks, CI runs and deployments is measured as it happens
+  and kept 180 days (SPEC-137): a task's waits, states, steps (with their tokens), runs, pauses,
+  pull request and merge waits; a CI run's queue (and why), jobs and the stages their output names
+  (`::yulius-stage`, with test counts); a deploy's confirmation, promotion, deploy and verify. The
+  Pipeline page shows deployment frequency, lead time, change failure rate and time to restore for
+  dev and production, any stage's daily p50 and p90 and the stage table with CSV/JSON export; a CI
+  run, a deploy and a task show their own waterfall, and the Dashboard the overview.
 - **CD (deployment)**: beside CI, with the same discipline. Every project defines dev and
   production in `yulius.toml` (`[cd.dev]`, `[cd.prod]`), each with deploy and verify scripts
   committed under `scripts/cd/`, or explicitly empty while it deploys nothing yet. Yulius runs the

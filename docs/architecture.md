@@ -773,6 +773,34 @@ live / gone"| keep[("metrics kept;
 outcome recorded")]
 ```
 
+## Stages
+
+Every stage of a task, a CI run and a CD run is one row of `spans`
+([SPEC-137](../.ai/specs/SPEC-137-rich-measurements-of-every-stage-tasks-c.md),
+[decision 0112](decisions/0112-stages-are-spans-written-with-the-state-they-measure.md)). Spans that
+follow a state are written by SQLite triggers in the same transaction as the state change, with the
+time the application wrote; the rest by Yulius as it happens (`yulius-app/src/stages.rs`): a CI
+run's preparation, job-slot waits and checkouts, a CD run's checks, promotion and confirmation, a
+task's armed-merge waits and updates onto the integration branch, and the stages job or deploy
+output names, read from the log Yulius already follows (`OutputScanner` in `yulius-domain`). Nothing
+outside Yulius writes a span; the API only reads them, and the Pipeline page, the run dialogs, the
+task overview and the Dashboard draw them. Spans older than 180 days go with the hourly CI upkeep.
+
+```mermaid
+flowchart LR
+  subgraph States["state tables"]
+    T["tasks, step_events, attempts, metrics, capacity_pauses, delivery"]
+    C["ci_runs, ci_jobs, cd_runs"]
+  end
+  T -->|"triggers, same transaction"| S[("spans")]
+  C -->|"triggers, same transaction"| S
+  LOG["job / deploy log (read every 0.5 s)"] -->|"::yulius-stage, test summaries"| SC["OutputScanner + OutputStages"]
+  SC -->|"Yulius's clock"| S
+  APP["CI prepare, slot wait, checkout; CD checks, promotion, confirmation; armed merge, updates"] --> S
+  S --> API["GET …/stages/timeline, summary, spans"]
+  API --> UI["Pipeline page, run dialogs, task overview, Dashboard"]
+```
+
 ## Notes
 
 The tools rail's Notes hold a notepad per sandbox and one for the team, shared and saved while

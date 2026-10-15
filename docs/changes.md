@@ -6,6 +6,19 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- Every stage of tasks, CI and CD is measured and shown (SPEC-137, ADR-0112, task #116). One `spans`
+  table records, as things happen, a task's waits before it starts, its states (needs you and how
+  long a person took to answer included), steps with the tokens and agent work spent in them, runs,
+  usage-limit pauses, pull request open → merged, armed-merge waits and updates onto dev; a CI
+  run's queue and why it waited, preparation, job-slot waits, checkouts, jobs and the stages their
+  output names with `::yulius-stage` (test counts read from nextest, cargo test, pytest and
+  Playwright; reused results marked, never counted); a deploy's confirmation, checks, promotion,
+  deploy, verify and their stages. Existing CI, CD, run, step and pause history is backfilled and
+  marked. A new Pipeline (stages) page beside CI and CD shows dev and production deployment
+  frequency, lead time from merge, change failure rate and time to restore, any stage's daily p50
+  and p90 and the stage table with CSV/JSON export; CI runs, deploys and task overviews show their
+  stages as a waterfall, and the Dashboard the overview. `scripts/dev ci` names its gates.
+
 - CD (deployment) runs beside CI, with the same discipline (SPEC-134, ADR-0109..0111, task #113).
   Every project defines dev and production in `yulius.toml`, as `[cd.dev]` and `[cd.prod]`. Each
   has deploy and verify scripts committed under `scripts/cd/`, or is explicitly empty while it

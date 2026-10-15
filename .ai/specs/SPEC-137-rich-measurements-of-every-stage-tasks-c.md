@@ -1,11 +1,11 @@
 ---
 yulius-task: 72a9717c-ce79-4b0c-aa63-04eaf04ef7e2
-status: draft
+status: in-progress
 ---
 
 # SPEC-137: every stage of tasks, CI and CD measured as it happens and shown as timelines and trends
 
-Status: draft
+Status: in progress
 Date: 2026-10-15
 Owner: Yulius task #116
 Scope authorization: the person's request (task #116): "We want rich measurements of every stage
@@ -68,7 +68,7 @@ Model (STG-0xx):
 | STG-002 | Spans are written by Yulius only, at the moment the state they measure changes: state-derived spans by triggers in the same transaction as the state's own write (so they are never missed and never disagree with it), output stages by Yulius as it reads the output. No API, MCP tool or hook writes or changes a span; times are Yulius's clock, never a value from a job, an agent or a page. | store trigger tests; integration `stages::*`; route list has no write route |
 | STG-003 | Measuring never fails or slows the work: a span write that fails is logged and dropped; output stages are scanned from the bytes Yulius already reads, bounded (line length, stages per job, figures per stage). | `stages::tests::scanner_bounds`; store test: a failing span write leaves the CI job's own write |
 | STG-004 | Existing history is backfilled once by the migration where it is reliably derivable, with `source = backfilled`: CI runs (queue, run, jobs), CD runs (run), task runs (attempts, with their metrics), steps (from `step_events`), pauses (`capacity_pauses`). Nothing else is guessed. | migration test with seeded rows |
-| STG-005 | Retention is bounded: spans older than 180 days go, and a subject keeps at most 400 output stages; pruning runs with the existing upkeep. | store test `spans::prune_*` |
+| STG-005 | Retention is bounded: spans older than 180 days go, and a subject's output adds at most 400 stages; pruning runs with the hourly CI and CD upkeep. | `spans::tests::spans_are_filtered_limited_and_pruned`; `stages::tests::a_job_s_stages_are_bounded` |
 
 Tasks (STG-1xx):
 
@@ -77,13 +77,13 @@ Tasks (STG-1xx):
 | STG-101 | A task's state track: each change of its status or activity ends the open `state` span and opens the next one, named `queued`, `chained`, `prepared`, `starting`, `working`, `idle`, `needs_you`, `done`, `paused` (waiting for capacity), `switching`, `stopping`; an ending status (closed, stopped, failed) ends the track. `needs_you` also covers an agent's `needs_you` request, so its duration is how long a person took to answer. | store trigger test; integration |
 | STG-102 | Each step's `in_progress` → `done`/`skipped`/`blocked` is a `step` span named by its title, with the tokens and agent working time the task's runs recorded between its start and its end (the step's attribution; absent when the task had no metrics). | store trigger test |
 | STG-103 | Each run (attempt) is a `run` span with its launch kind, subscription and, once known, tokens, turns and active time; each capacity or usage-limit pause is a `pause` span named by its kind with its outcome. A task's retries are its runs after the first. | store trigger test |
-| STG-104 | Delivery: each change of a task's delivery stage ends the open `delivery` span and opens the next (`pr_open` until merged is the pull request's open → merged time); CI runs of the task's pull request are shown in its timeline as its time waiting for CI. Merge-train waits and updates onto the integration branch are recorded where Yulius performs them. | integration; store test |
+| STG-104 | Delivery: each change of a task's delivery stage ends the open `delivery` span and opens the next (`pr_open` until merged is the pull request's open → merged time); CI runs of the task's pull request are shown in its timeline as its time waiting for CI. An armed merge's wait for its checks (one by one or in a merge train) is a `wait` span `merge_armed` (merged or dropped), and each update of the branch onto the integration branch Yulius makes is an `update` span (merged or conflict). | integration; store test |
 
 CI (STG-2xx):
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| STG-201 | A CI run's `queue` span runs from queued to started (or to its end when it never started), with the reason it waited (`lane busy`, the disk wait text); its `run` span from start to end with the state, the commit, the reference and who asked; each job a `job` span with its exit code and state; reruns are new runs with `rerun_of`; a result reused from an identical tree is marked `reused` and excluded from durations and trends. | store trigger test; integration `local_ci` stages |
+| STG-201 | A CI run's `queue` span runs from queued to started (or to its end when it never started), with the reason it waited (`lane busy`, the disk wait text); its `run` span from start to end with the state, the commit, the reference and who asked; each job a `job` span with its exit code and state, and its wait for a job slot; a rerun is a new run (its own spans), a requeue ends what ran (`requeued`) and opens a new queue span; a result reused from an identical tree is marked `reused` and excluded from durations and trends. | store trigger test; integration `local_ci` stages |
 | STG-202 | A job's preparation (checkout) is a `prepare` span recorded by Yulius. | integration |
 | STG-203 | Inside a job, a line `::yulius-stage <name>` starts a `stage` span (ending the one before) and `::yulius-stage-end` ends it; the job's end ends an open stage with the job's outcome. `::yulius-measure k=v …` adds figures (tests, cache hits…) to the open stage or the job. Test summaries of common runners (cargo nextest, cargo test, pytest, Playwright) are read into `tests_passed`, `tests_failed`, `tests_skipped`, `tests_flaky`. The times are Yulius's, taken as the line is read. | `stages::tests::*`; integration |
 | STG-204 | Yulius's own gate prints its stages (`doctor`, `check`, `lint`, `test`, `deps`, `docs`). | xtask test |
@@ -107,14 +107,14 @@ Show (STG-4xx):
 
 ## Plan
 
-- [ ] Spans stored, written by triggers for tasks, CI and CD, history backfilled
-- [ ] CI preparation, job stages and test figures recorded from the output
-- [ ] CD promotion, deploy, verify and their stages recorded, with the production confirmation
-- [ ] Timelines, stage percentiles, trends, delivery figures and export served
-- [ ] Pipeline page with filters, trends, stage table and export
+- [x] Spans stored, written by triggers for tasks, CI and CD, history backfilled
+- [x] CI preparation, job stages and test figures recorded from the output
+- [x] CD promotion, deploy, verify and their stages recorded, with the production confirmation
+- [x] Timelines, stage percentiles, trends, delivery figures and export served
+- [x] Pipeline page with filters, trends, stage table and export
 - [ ] Waterfalls in CI runs, CD runs and task overviews, overview on the Dashboard
-- [ ] Retention bounded and Yulius's gate prints its stages
-- [ ] Docs, ADR and changes updated
+- [x] Retention bounded and Yulius's gate prints its stages
+- [x] Docs, ADR and changes updated
 - [ ] Independent review approves the exact head
 - [ ] Every gate green and the merge into dev armed on Yulius CI
 
@@ -159,3 +159,9 @@ Show (STG-4xx):
   protected branch, and a stage can only divide the job's own time, which Yulius measures.
 - **The Pipeline page is its own page beside CI and CD** (ADR-0112): its subject is all three;
   inside CD it would hide CI and tasks, and the Dashboard keeps the overview only.
+- **Not in this change** (recorded as follow-up): a job's actual CPU, memory and disk use
+  ([#488](https://github.com/Quartio-Studio/yulius/issues/488)); CI jobs share the sandbox's `ci/`
+  cgroup today, so per-job use needs its own accounting. Cache hits are figures a job prints
+  (`::yulius-measure cache_hits=…`). Onboarding and automation runs are tasks, so their stages are
+  the task's; promotions are a CD production run's `promote` span and a task's `promoted` delivery
+  stage.
