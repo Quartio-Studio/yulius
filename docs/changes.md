@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- An isolated sandbox's agent is told there is no container engine (SPEC-173, ADR-0140, task #163,
+  fixes #550). An agent of another project had designed a deployer around a local Docker daemon
+  before finding that `docker` exists but no daemon does: the sandbox's containment refuses what one
+  needs. The briefing now has a `## Containers` section: no engine here, in Yulius CI or in CD; use
+  an engine on another machine (`DOCKER_HOST=ssh://…`), keep rollback images there or in a
+  registry, and install test services with `apt`. An engine per sandbox is #551.
 - The Tasks page shows how tasks hang together (SPEC-164, ADR-0135, task #154). A List / Graph
   switch (`?view=graph`, also the sidebar Working group's "Show as a graph") opens Starts next (the
   queued tasks in the order they get a free session: supertasks first, then the longest queued),

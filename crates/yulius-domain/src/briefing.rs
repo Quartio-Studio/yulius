@@ -806,6 +806,20 @@ fn ports(input: &BriefingInput<'_>) -> String {
     format!("## Dev servers\n\n{body}\n\n")
 }
 
+/// What an isolated sandbox cannot run (SPEC-173 CTR-001): its containment (SPEC-002 ADR-22) leaves
+/// no container engine, although the base copies the host's `docker` client.
+fn containers(input: &BriefingInput<'_>) -> String {
+    if !input.isolated {
+        return String::new();
+    }
+    "## Containers\n\nThere is no container engine in this sandbox, in Yulius CI or in CD runs: \
+     the `docker` client is installed, but its containment refuses what a daemon needs. Use an \
+     engine on another machine through the client (`DOCKER_HOST=ssh://user@host` or a `docker \
+     context`): build images where they run, keep rollback images there or in a registry. For \
+     the services tests need (a database, a cache), install them with `apt`.\n\n"
+        .to_owned()
+}
+
 fn task_header(input: &BriefingInput<'_>) -> String {
     let task = &input.task;
     let goal = if task.goal.trim().is_empty() {
@@ -1084,6 +1098,7 @@ pub fn build_briefing(input: &BriefingInput<'_>, budget_bytes: usize) -> String 
         Part::Mandatory(read_first(input)),
         Part::Mandatory(tools(input.playground)),
         Part::Mandatory(ports(input)),
+        Part::Mandatory(containers(input)),
         Part::Mandatory(task_header(input)),
         Part::Optional {
             text: task_steps(input),

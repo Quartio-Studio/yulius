@@ -1480,6 +1480,7 @@ Hence the shared, ownership-shifted **base** under a kernel overlay with a per-s
 - **The subordinate range is shared by every sandbox.** Mount, PID and network namespaces separate them; per-sandbox ranges are a later refinement.
 - **Disk is a soft quota.** It needs project quotas on a dedicated data volume to become hard.
 - **The secrets proxy is a way out, not the only one,** unless `YULIUS_SANDBOX_EGRESS=none`.
+- **No container engine.** The capability set and seccomp filter leave no room for one (`dockerd` fails at its first `iptables`), although the base copies the host's `docker` client. The briefing tells agents so (SPEC-173, ADR-0140); an engine per sandbox is #551.
 
 ## 3. Code organization
 
