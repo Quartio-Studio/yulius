@@ -50,6 +50,7 @@ mod playground;
 mod pool_supervision;
 mod prepared;
 mod preview;
+mod production_branch;
 mod projects;
 mod queued_messages;
 mod recovery;
