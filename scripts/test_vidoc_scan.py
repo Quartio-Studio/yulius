@@ -466,8 +466,9 @@ class PullRequestCi(unittest.TestCase):
 
 
 class SecurityJob(unittest.TestCase):
-    """SPEC-142 CSE-007: the `security` CI job is granted VIDOC_API_KEY and runs the gate on pull
-    request heads only; findings fail it, and until a scan can run (#470) exit 2 does not."""
+    """SPEC-142 CSE-007, SPEC-162 SKP-004/005: the `security` CI job is granted VIDOC_API_KEY and
+    runs the gate on pull request heads only; findings fail it, and a scan that could not run
+    (exit 2) ends the job skipped, never passed."""
 
     def job(self):
         import tomllib
@@ -476,7 +477,7 @@ class SecurityJob(unittest.TestCase):
         self.assertEqual(len(jobs), 1, "one security job")
         return jobs[0]
 
-    def run_job(self, ref, code):
+    def run_job(self, ref, code, skip_code="78"):
         root = Path(tempfile.mkdtemp(prefix="vidoc-job-"))
         self.addCleanup(shutil.rmtree, root)
         (root / "scripts").mkdir()
@@ -484,16 +485,17 @@ class SecurityJob(unittest.TestCase):
         dev = root / "scripts" / "dev"
         dev.write_text(f"#!/bin/sh\necho \"dev $*\" >> ran\nexit {code}\n")
         dev.chmod(0o755)
-        result = subprocess.run(["/bin/sh", "-c", self.job()["command"]], cwd=root,
-                                env={"PATH": os.environ.get("PATH", ""), "YULIUS_CI": "1",
-                                     "YULIUS_CI_REF": ref},
+        env = {"PATH": os.environ.get("PATH", ""), "YULIUS_CI": "1", "YULIUS_CI_REF": ref}
+        if skip_code is not None:
+            env["YULIUS_CI_SKIP_CODE"] = skip_code
+        result = subprocess.run(["/bin/sh", "-c", self.job()["command"]], cwd=root, env=env,
                                 capture_output=True, text=True, timeout=60)
         ran = (root / "ran").read_text() if (root / "ran").exists() else ""
         return result.returncode, result.stdout + result.stderr, ran
 
-    def test_it_waits_for_its_grant_until_the_running_instance_knows_the_key(self):
-        # An instance older than SPEC-142 rejects `secrets` and with it the whole yulius.toml.
-        self.assertNotIn("secrets", self.job())
+    def test_it_is_granted_the_vidoc_key(self):
+        # The running instance knows `secrets` since dev was promoted to main with SPEC-142 (#517).
+        self.assertEqual(self.job().get("secrets"), "VIDOC_API_KEY")
 
     def test_a_pull_request_head_passes_or_fails_with_the_scan(self):
         for code, expected in ((0, 0), (1, 1)):
@@ -502,11 +504,17 @@ class SecurityJob(unittest.TestCase):
                 self.assertEqual(exit_code, expected)
                 self.assertEqual(ran, "dev security\n")
 
-    def test_a_scan_that_cannot_run_does_not_fail_the_job_but_says_so(self):
+    def test_a_scan_that_cannot_run_ends_the_job_skipped(self):
         exit_code, output, ran = self.run_job("pr/3", 2)
-        self.assertEqual((exit_code, ran), (0, "dev security\n"))
-        self.assertIn("did not run", output)
-        self.assertIn("#470", output)
+        self.assertEqual((exit_code, ran), (78, "dev security\n"))
+        self.assertIn("security scan skipped", output)
+
+    def test_an_instance_without_a_skip_code_passes_it_and_still_says_skipped(self):
+        # Before SPEC-162 reaches the running instance, jobs get no YULIUS_CI_SKIP_CODE: exit 0,
+        # so no pull request is blocked by what only a person can fix.
+        exit_code, output, _ = self.run_job("pr/3", 2, skip_code=None)
+        self.assertEqual(exit_code, 0)
+        self.assertIn("security scan skipped", output)
 
     def test_other_heads_are_not_scanned(self):
         for ref in ("branch/dev", "branch/main", "train/3+4"):
