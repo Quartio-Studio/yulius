@@ -1,11 +1,11 @@
 ---
 yulius-task: c74a8653-3073-41c5-96e3-554d200bf0bd
-status: in-progress
+status: done
 ---
 
 # SPEC-139: `yulius wait` and `delivery_merge` report the current push state, not a stale note
 
-Status: in-progress
+Status: done
 Date: 2026-10-15
 Owner: Yulius task #123 (part of task #118, SPEC-138 lanes)
 Scope authorization: the person's request (task #123): fix GitHub issues #366 and #448 together,
@@ -55,7 +55,9 @@ wrote, never with an older one.
 - [x] A push GitHub already has counts as done and clears the note
 - [x] yulius wait ignores a push note once the remote branch is at the head
 - [x] delivery_merge answers only with a note its own call wrote
-- [ ] Docs, gates, review and delivery
+- [x] Docs updated: architecture, specs, ADR index, changes
+- [x] Review findings fixed: remote read via ls-remote, bounded, notes told apart
+- [x] Gates green and Evidence recorded
 
 ## Acceptance criteria
 
@@ -110,3 +112,27 @@ DLV-201/204 and DMG-001 tests stay green. Full gate: `scripts/dev ci`.
 - The worktree's remote-tracking ref is not used as the truth: it moves only with pushes and
   fetches made from this clone and would miss a head pushed from elsewhere or a push GitHub took
   while reporting failure.
+
+## Evidence
+
+- Test-first: the three first regression tests (`a_push_github_already_has_counts_as_done`,
+  `a_stale_push_note_does_not_end_the_wait_once_the_branch_is_at_the_head`,
+  `a_merge_call_answers_its_own_failure_not_an_older_note`) failed on `dev` (43731493) for the
+  reasons #366 and #448 describe: the old push error answered `delivery_merge`, the stale note
+  stayed in the wait, and the older "is in_progress" note answered an unrelated failure.
+- `cargo test -p yulius --test main -- delivery:: wait merge_train`: 78 passed (b2b346b6).
+- `cargo test -p yulius-git --test git_ops remote`: 3 passed (ls-remote, stalled remote bounded at
+  10 s).
+- `scripts/dev ci` at b2b346b6: exit 0. Repository check, script tests, `cargo check`, `fmt`,
+  `clippy -D warnings`, nextest 1755 passed / 16 skipped, doctests, `cargo deny`, `cargo shear`,
+  `cargo doc`.
+- `scripts/dev security`: exit 2, not run. Vidoc rejected the key (HTTP 401), as for every task
+  since 2026-10-14 (#470); unrun, not passed (ADR-0104).
+- Independent review in fresh sessions: round 1 (blocker: GitHub `branch_sha` is a production stub;
+  major: a create-pull failure marked as a push failure), round 2 (major: unbounded ls-remote in
+  the wait), round 3 approved 1e561b48 with minor findings fixed or recorded under Decisions; the
+  final head is reviewed before `delivery_merge`.
+- Not testable here: a real GitHub `remote rejected … (failed)`; the fake Git port injects it, and
+  `ls-remote` with the token is the same transport the push uses.
+- Follow-up outside this change (no issue created, per the task's rules): `GitHubAdapter::branch_sha`
+  always fails in production, and CD (`cd_verified_head`) and promotion call it.
