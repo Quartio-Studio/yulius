@@ -134,3 +134,20 @@ test('the Shell shown again for another task leaves the keyboard there; the rail
   await shell.click();
   await expect(shownInput(browser)).toBeFocused();
 });
+
+// Review of #439 (SPEC-170 TKS-002): a sandbox visited for the first time with the Shell open builds
+// its own Shell, which loads its terminals; shown for the new page, it leaves the keyboard there too.
+test('the Shell of a sandbox first visited with it open leaves the keyboard on the page', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await openShellPanel(screen);
+  await expect(shownInput(browser)).toBeFocused();
+
+  // A page without a text field (the composer's prompt keeps the keyboard anyway).
+  await browser.evaluate(() => { window.location.hash = '#/s/product/git'; });
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Git');
+  const productTerminal = browser.locator('.panel-body > .panel-view:not([hidden]) .term-slot:not([hidden]) .xterm-rows');
+  await expect(productTerminal).toHaveText(/Contained sandbox shell/);
+  // The Shell focused as its terminal was shown: the timers queued before this one ran.
+  await browser.evaluate(() => new Promise((resolve) => { setTimeout(() => resolve(true), 0); }));
+  expect(await browser.evaluate(() => Boolean(document.activeElement?.closest('.term-views')))).toBe(false);
+});
