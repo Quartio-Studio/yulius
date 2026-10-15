@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- The Editor never opens a file twice, and a moved image placeholder is never shown as selected
+  text (SPEC-166, task #156). The task's screenshots, two editors stacked in one host, were #394,
+  fixed by #523 before this task. Reproducing them showed the Editor still broke another way:
+  - **#534:** a file opened again before its first open showed it (a double-click on its row,
+    which is two clicks) got a second tab, with a second model of the same file. Every open of a
+    path now waits for the one under way.
+  - **#535:** a press on a placeholder in the new-task prompt, and a drop, select it so Delete,
+    cut or a drag takes it. The browser painted that selection as a text highlight over the label
+    "Image 1". Now the placeholder is marked as a whole and its label is never painted.
 - Playgrounds get Yulius CI (SPEC-163, ADR-0134, task #130, fixes #411). The CI sync tests a
   playground's `dev` head without GitHub, and `delivery_merge` first tests the task head merged into
   `dev`, built in Yulius's clone (`Task #n` runs): it squashes on green, arms while the run goes

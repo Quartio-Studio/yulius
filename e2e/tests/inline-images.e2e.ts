@@ -114,6 +114,57 @@ test('an image dragged to another place in the text lands at the drop point', as
   expect(await promptText(browser)).toBe('Before the image, [drag.png] after it.');
 });
 
+// #535 (SPEC-166): a press selects a placeholder (so Delete, cut or a drag takes it) and a drop
+// selects it where it landed; it looks chosen as a whole, and its label is never painted as
+// selected text. A real mouse: Chromium's own press, drag and drop.
+test('a placeholder pressed or dragged with the mouse looks selected as a whole, its label never as selected text', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await screen.getByRole('textbox', 'Task prompt').click();
+  await browser.keyboard.type('Before the image, ');
+  await pasteImage(browser, 'drag.png');
+  await expect(browser.locator('.composer-prompt .pi-image')).toHaveCount(1);
+  await browser.keyboard.type(' after it.');
+  const look = () => browser.evaluate(() => {
+    const atom = document.querySelector('.composer-prompt .pi-atom')!;
+    return { selected: atom.classList.contains('pi-selected'), paint: getComputedStyle(atom.querySelector('.pi-file-name')!, '::selection').backgroundColor };
+  });
+  const chosen = { selected: true, paint: 'rgba(0, 0, 0, 0)' };
+  const points = () => browser.evaluate(() => {
+    const input = document.querySelector('.composer-prompt')!;
+    const atom = input.querySelector('.pi-atom')!.getBoundingClientRect();
+    const text = [...input.childNodes].find((n) => n.nodeType === 3 && (n as Text).data.length > 1)! as Text;
+    const range = document.createRange();
+    range.setStart(text, 0);
+    range.setEnd(text, 1);
+    const first = range.getBoundingClientRect();
+    const end = range.cloneRange();
+    end.setStart(text, text.data.length - 1);
+    end.setEnd(text, text.data.length);
+    const last = end.getBoundingClientRect();
+    return { atom: { x: atom.left + atom.width / 2, y: atom.top + atom.height / 2 }, start: { x: first.left + 1, y: first.top + first.height / 2 }, end: { x: last.right - 1, y: last.top + last.height / 2 } };
+  });
+
+  const from = await points();
+  await browser.mouse.move(from.atom.x, from.atom.y);
+  await browser.mouse.down();
+  await expect.poll(look).toEqual(chosen);
+  for (let i = 1; i <= 8; i += 1) await browser.mouse.move(from.atom.x + ((from.start.x - from.atom.x) * i) / 8, from.start.y);
+  await browser.mouse.up();
+  await expect.poll(() => promptText(browser)).toBe('[drag.png]Before the image,  after it.');
+  await expect.poll(look).toEqual(chosen);
+
+  // A click in the text leaves it; a press chooses it again, and Delete takes it.
+  const to = await points();
+  const click = async ({ x, y }: { x: number; y: number }) => { await browser.mouse.move(x, y); await browser.mouse.down(); await browser.mouse.up(); };
+  await click(to.end);
+  await expect.poll(look).toEqual({ ...chosen, selected: false });
+  await click(to.atom);
+  await expect.poll(look).toEqual(chosen);
+  await browser.keyboard.press('Delete');
+  await expect(browser.locator('.composer-prompt .pi-atom')).toHaveCount(0);
+  expect(await promptText(browser)).toBe('Before the image,  after it.');
+});
+
 test('a draft keeps each image in its place across a reload; an older draft shows its files in the tray', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
   await screen.getByRole('textbox', 'Task prompt').click();
