@@ -644,6 +644,35 @@ async fn early_exit_without_client_lingers_then_exits() -> TestResult {
     Ok(())
 }
 
+/// SPEC-154 USE-001: the host records what the child's process tree used when it reaped it: the
+/// CPU time of a grandchild that burns it, its peak memory and (where the kernel accounts for it)
+/// the bytes written. `exit.json` carries it; the `Exit` frame is unchanged.
+#[tokio::test]
+async fn the_exit_record_holds_what_the_process_tree_used() -> TestResult {
+    let mut launch = spec(&[])?;
+    // A shell that burns CPU in a child (counted once that child is reaped) and exits 3.
+    launch.argv = vec![
+        "/bin/sh".into(),
+        "-c".into(),
+        "/bin/sh -c 'i=0; while [ $i -lt 300000 ]; do i=$((i+1)); done'; exit 3".into(),
+    ];
+    launch.linger_ms = 300;
+    let mut run = start_with(&launch, &[]).await?;
+    within("host exit", run.host.wait()).await?;
+    let file = read_exit_file(&run.run_dir)?;
+    assert_eq!(file.exit.code, Some(3));
+    let usage = file.usage.ok_or("the use was not recorded")?;
+    assert_eq!(yulius_ptyhost::exit_usage(&run.run_dir), Some(usage));
+    assert!(usage.cpu_ms >= 50, "CPU time of the busy loop: {usage:?}");
+    assert!(usage.max_rss_bytes >= 64 << 10, "a shell's peak: {usage:?}");
+    if cfg!(target_os = "linux") && Path::new("/proc/self/io").exists() {
+        assert!(usage.written_bytes.is_some(), "{usage:?}");
+    } else {
+        assert_eq!(usage.written_bytes, None, "{usage:?}");
+    }
+    Ok(())
+}
+
 // 7 -------------------------------------------------------------------------------------------
 
 async fn expect_spawn_failed(launch: &LaunchSpec, detail_part: &str) -> TestResult {
@@ -667,6 +696,7 @@ async fn expect_spawn_failed(launch: &LaunchSpec, detail_part: &str) -> TestResu
     }
     let recorded = read_exit_file(&run_dir)?;
     assert_eq!(recorded.exit.reason, ExitReason::SpawnFailed);
+    assert_eq!(recorded.usage, None, "nothing ran, so nothing was used");
     assert!(!run_dir.join(STATUS_FILE).exists());
     assert!(!run_dir.join(SOCKET_FILE).exists());
     Ok(())

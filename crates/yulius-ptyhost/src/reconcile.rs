@@ -8,9 +8,9 @@ use std::time::Duration;
 use nix::errno::Errno;
 use nix::sys::signal::Signal;
 use nix::unistd::Pid;
-use yulius_contracts::ptyhost::{ExitRecord, STATUS_FILE, StatusRecord};
+use yulius_contracts::ptyhost::{ExitRecord, ProcessUsage, STATUS_FILE, StatusRecord};
 
-use crate::files::{read_exit, read_status};
+use crate::files::{read_exit, read_exit_file, read_status};
 use crate::process::{self, kill_session, matches_record, signal_group, wait_gone};
 
 /// How long [`terminate_recorded`] waits for killed processes to disappear.
@@ -112,6 +112,13 @@ pub fn inspect_run_dir(run_dir: &Path) -> RunDirState {
         child_alive,
         same_boot,
     }
+}
+
+/// What the run in `run_dir` used, as its host recorded in `exit.json` once it reaped the child
+/// (SPEC-154 USE-001); `None` while it runs, when it never ran or from an older host.
+#[must_use]
+pub fn exit_usage(run_dir: &Path) -> Option<ProcessUsage> {
+    read_exit_file(run_dir).ok().flatten()?.usage
 }
 
 fn host_matches(status: &StatusRecord) -> Option<Pid> {
