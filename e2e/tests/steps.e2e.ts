@@ -49,3 +49,24 @@ test('the step in progress shows on the bar in the working colour', async ({ app
   // 22 % finished, then the open step's 3 of 9 effort units (33 %) right after it.
   expect(bar).toEqual({ done: 22, active: 33, after: true, hidden: false, colour: true, distinct: true });
 });
+
+test('a plan with no step in progress shows no in-progress segment', async ({ app, browser, screen }) => {
+  // #3 "Image pipeline" crashed with 2 of 7 steps done and none in progress.
+  await app.open(mock('/s/studio/t/3'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#3 Image pipeline');
+  const bar = browser.locator('.step-progress');
+  await expect(bar).toHaveAttribute('aria-label', '2 of 7 steps done, 22% of the plan');
+
+  const shown = await browser.evaluate(() => {
+    const active = document.querySelector('.step-progress-active') as HTMLElement | null;
+    const done = document.querySelector('.step-progress-fill');
+    if (!active || !done) return null;
+    return {
+      hidden: active.hidden,
+      width: active.getBoundingClientRect().width,
+      // The finished fill keeps its rounded end when nothing follows it.
+      rounded: parseFloat(getComputedStyle(done).borderTopRightRadius) > 0,
+    };
+  });
+  expect(shown).toEqual({ hidden: true, width: 0, rounded: true });
+});

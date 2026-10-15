@@ -39,14 +39,14 @@ in progress in different color. 2/4 and only 1/4 colored seems weird".
 | --- | --- | --- |
 | PIP-001 | `Progress` (domain) counts the effort of steps in progress; `active_percent()` is their share of the plan's effort, computed so that `percent + active_percent` is the rounded-down share of finished plus in-progress effort (never over 100); 0 with no plan or no step in progress. Blocked, pending, done and skipped steps are not in progress. | domain unit tests `active_percent_*` |
 | PIP-002 | The API's step summary carries `active_percent` (0-100, default 0 for older servers) beside `percent`. | Rust `progress_view` unit test; `docs/api.md` |
-| PIP-003 | The step strip's bar shows a second segment right after the finished fill, `active_percent` wide, in the working colour (`--ok`), with `data-active` set; it is hidden when nothing is in progress. The bar's accessible name says the in-progress share: "1 of 4 steps done, 25% of the plan, 25% in progress"; without a step in progress it stays "N of M steps done, P% of the plan". | e2e `steps.e2e.ts` |
+| PIP-003 | The step strip's bar shows a second segment right after the finished fill, `active_percent` wide, in the working colour (`--ok`); it is hidden when nothing is in progress, and the finished fill then keeps its rounded end. The bar's accessible name says the in-progress share: "1 of 4 steps done, 25% of the plan, 25% in progress"; without a step in progress it stays "N of M steps done, P% of the plan". | e2e `steps.e2e.ts` |
 | PIP-004 | The web mock computes `active_percent` with the server's rule. | e2e `steps.e2e.ts` runs on the mock |
 
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] The step summary reports the effort share of the steps in progress
-- [ ] The step strip draws the step in progress in the working colour
+- [x] The step summary reports the effort share of the steps in progress
+- [x] The step strip draws the step in progress in the working colour
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Docs, gates and delivery
 
@@ -74,5 +74,9 @@ in progress in different color. 2/4 and only 1/4 colored seems weird".
   beside the bar (UI-050: one colour per state). A lighter shade of the finished colour was
   rejected: the request asks for a different colour, and a 50 % tint of `--series-1` is hard to
   tell from the 20 % track. No ADR: a presentational choice recorded here.
+- The segment keeps the working colour while the task is paused or stopped with a step still
+  marked in progress: the bar records the plan's state (which step is open), the status chip beside
+  it says whether the agent is working. Tinting it by the session's state would tie two
+  independent signals together (review round 1 nit, declined).
 - `active_percent` is a difference of cumulative floors so the two segments never exceed the bar
   and the right edge of the second segment matches "finished + in progress" exactly.

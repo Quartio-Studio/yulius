@@ -445,8 +445,11 @@ impl Progress {
         if self.total_effort == 0 {
             return 0;
         }
-        let through =
-            (self.done_effort + self.active_effort).saturating_mul(100) / self.total_effort;
+        let through = self
+            .done_effort
+            .saturating_add(self.active_effort)
+            .saturating_mul(100)
+            / self.total_effort;
         u8::try_from(through.min(100))
             .unwrap_or(100)
             .saturating_sub(self.percent())
