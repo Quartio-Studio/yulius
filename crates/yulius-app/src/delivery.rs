@@ -1036,6 +1036,16 @@ impl From<AppError> for AutoDeliveryError {
     }
 }
 
+/// Which step of opening a pull request failed ([`App::try_auto_open_pr`]).
+enum Failed {
+    /// The delivery rules refused it: nothing was pushed.
+    Refused,
+    /// The push.
+    Push,
+    /// Opening the pull request, after the push.
+    Open,
+}
+
 /// What one automatic delivery of a task's head did ([`App::try_auto_open_pr`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AutoDelivery {
@@ -2422,7 +2432,8 @@ impl App {
         let short = head.get(..9).unwrap_or(head);
         let text = format!(
             "Yulius pushed {short} but could not open its pull request: {} It tries again at the \
-             end of your next turn; `delivery_status` shows the branch state.",
+             end of your next turn and on `delivery_merge`; `delivery_status` shows the branch \
+             state.",
             err.public_message()
         );
         if let Ok(mut problem) = self.runtime(task_id).push_problem.lock() {
@@ -2594,7 +2605,8 @@ impl App {
         if ahead == 0 || !self.claim_auto_head(task_id, &head)? {
             return Ok(AutoDelivery::Unchanged);
         }
-        // Whether the failure was the push: only that note is about pushing (SPEC-139 PSH-002).
+        // Which step failed: only a push failure's note is about pushing, and a refusal pushed
+        // nothing (SPEC-139 PSH-002).
         let opened = match dlv::apply(
             &observed.record.stage,
             &DeliveryAction::OpenPr,
@@ -2611,10 +2623,10 @@ impl App {
                         &sandbox, &task, &profile, &observed, &token, None, None, "yulius",
                     )
                     .await
-                    .map_err(|err| (err, false)),
-                Err(err) => Err((err, true)),
+                    .map_err(|err| (err, Failed::Open)),
+                Err(err) => Err((err, Failed::Push)),
             },
-            Err(err) => Err((refusal(&err), false)),
+            Err(err) => Err((refusal(&err), Failed::Refused)),
         };
         match opened {
             Ok(number) => {
@@ -2624,17 +2636,20 @@ impl App {
                     profile.integration_branch
                 )))
             }
-            Err((error, push_failed)) => {
+            Err((error, failed)) => {
                 self.release_auto_head(task_id);
-                let note = if push_failed {
-                    self.set_push_problem(task_id, &head, &branch, None, &error)
-                } else {
-                    self.set_open_problem(task_id, &head, &error)
+                let note = match failed {
+                    Failed::Push => {
+                        Some(self.set_push_problem(task_id, &head, &branch, None, &error))
+                    }
+                    Failed::Open => Some(self.set_open_problem(task_id, &head, &error)),
+                    Failed::Refused => {
+                        self.note_undelivered(&task, &worktree, &error.public_message())
+                            .await;
+                        None
+                    }
                 };
-                Err(AutoDeliveryError {
-                    error,
-                    note: Some(note),
-                })
+                Err(AutoDeliveryError { error, note })
             }
         }
     }

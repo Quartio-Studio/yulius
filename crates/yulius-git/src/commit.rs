@@ -13,6 +13,10 @@ use crate::validate::{
 /// Longest accepted commit message in bytes.
 pub const MAX_COMMIT_MESSAGE: usize = 64 * 1024;
 
+/// Deadline for reading one branch of a remote ([`Git::remote_branch_head`]): a short read that
+/// `yulius wait` makes within its own bound, so a stalled remote never holds it (SPEC-139).
+pub const REMOTE_HEAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// What merging a revision into a worktree did ([`Git::merge_into`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MergeInto {
@@ -179,9 +183,10 @@ impl Git {
 
     /// The commit `branch` points at on `remote`, as the remote answers now (`git ls-remote`),
     /// not as a remote-tracking ref last saw it; `None` when the remote has no such branch.
+    /// Bounded by [`REMOTE_HEAD_TIMEOUT`] (or the network deadline when shorter).
     ///
     /// # Errors
-    /// Invalid names, or the remote cannot be read.
+    /// Invalid names, a timeout, or the remote cannot be read.
     pub fn remote_branch_head(
         &self,
         repo: &Path,
@@ -195,7 +200,7 @@ impl Git {
             Invocation::new(self, "ls-remote", Some(repo))
                 .args(["ls-remote", "--heads", "--", remote])
                 .arg(&wanted)
-                .timeout(self.network_timeout),
+                .timeout(self.network_timeout.min(REMOTE_HEAD_TIMEOUT)),
         )?;
         Ok(listed.stdout_trimmed().lines().find_map(|line| {
             let (sha, name) = line.split_once('\t')?;

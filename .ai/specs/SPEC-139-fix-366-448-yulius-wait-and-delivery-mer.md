@@ -45,8 +45,8 @@ wrote, never with an older one.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| PSH-001 | Every push Yulius makes of a task's head (end of turn, `delivery_merge`, Deliver…, the armed-merge upkeep, merge trains) goes through one helper. When `git push` fails but the remote says (`git ls-remote`) the branch is at that head, the push counts as done. A push that is done clears the task's note about that head. | `delivery::a_push_github_already_has_counts_as_done`, `delivery::a_pull_request_that_fails_to_open_after_its_push_keeps_its_note`, `git_ops::remote_branch_head_reads_the_remote_itself` |
-| PSH-002 | `yulius wait` does not end on a failed-push note for its head when the remote's branch is at that head: the note is cleared and the wait goes on to the checks and the armed merge. The check costs one read of the remote per wait request, and only while such a note exists; when the remote cannot be read the note stands. A note that is no push failure (not delivered, the pull request could not be opened after its push) stays. | `delivery::a_stale_push_note_does_not_end_the_wait_once_the_branch_is_at_the_head`, `delivery::a_pull_request_that_fails_to_open_after_its_push_keeps_its_note` |
+| PSH-001 | Every push Yulius makes of a task's head (end of turn, `delivery_merge`, Deliver…, the armed-merge upkeep, merge trains) goes through one helper. When `git push` fails but the remote says (`git ls-remote`) the branch is at that head, the push counts as done. A push that is done clears the task's note about that head. | `delivery::a_push_github_already_has_counts_as_done`, `delivery::a_pull_request_that_fails_to_open_after_its_push_keeps_its_note`, `delivery::a_push_clears_only_the_note_about_its_own_head`, `delivery::deliver_opens_the_pull_request_after_a_push_that_landed`, `git_ops::remote_branch_head_reads_the_remote_itself` |
+| PSH-002 | `yulius wait` does not end on a failed-push note for its head when the remote's branch is at that head: the note is cleared and the wait goes on to the checks and the armed merge. The check costs one read of the remote per wait request, only while such a note exists, and at most `REMOTE_HEAD_TIMEOUT` (10 s, the Git process killed after it); when the remote cannot be read in time the note stands. A note that is no push failure (not delivered, the pull request could not be opened after its push) stays. | `delivery::a_stale_push_note_does_not_end_the_wait_once_the_branch_is_at_the_head`, `delivery::a_pull_request_that_fails_to_open_after_its_push_keeps_its_note`, `git_ops::reading_a_remote_branch_gives_up_on_a_stalled_remote` |
 | PSH-003 | `delivery_merge` answers a failed delivery with the note that same delivery wrote (a refused push's remedy), otherwise with the failure itself, never with an older note about the same head. | `delivery::a_merge_call_answers_its_own_failure_not_an_older_note`, `delivery::a_merge_call_opens_the_pull_request_a_goal_task_still_lacks` |
 
 ## Plan
@@ -89,7 +89,16 @@ DLV-201/204 and DMG-001 tests stay green. Full gate: `scripts/dev ci`.
   implementing it would change CD and promotion, which call it too, in this fix (one concern per
   pull request). Reported in the summary instead.
 - The push moves out of `dlv_open_pull` into its callers, so a failure to open the pull request
-  after a push that landed is told apart from a push failure (review round 1).
+  after a push that landed is told apart from a push failure (review round 1); a refusal of the
+  delivery rules pushes nothing and leaves a "not delivered" note (review round 2).
+- `ls-remote` gets its own 10 s deadline inside `yulius-git`, where the runner kills the process
+  group, rather than a `tokio::time::timeout` around the call, which would leave the Git process
+  running (AGENTS.md: a timeout is not proof a subprocess died; review round 2).
+- Accepted race (review round 2, nit): the head compared with the remote is the one observed before
+  the push, while `push` sends the branch ref. A commit made in between whose push fails while the
+  remote is at the observed head counts that observed head as pushed; the newer head is pushed at
+  the next end of turn or `delivery_merge`, and its own failure is noted then. Pushing an explicit
+  SHA would need a new refspec form in the push guard, out of proportion for this window.
 - Reconcile in the wait endpoint, not in the CLI: the CLI has no GitHub token, and the server
   already owns the note. Once per wait request, not per poll: a note that appears during a wait
   comes from a push that has just checked GitHub itself.

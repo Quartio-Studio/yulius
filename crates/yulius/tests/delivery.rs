@@ -4050,6 +4050,74 @@ async fn a_pull_request_that_fails_to_open_after_its_push_keeps_its_note() -> Te
     Ok(())
 }
 
+/// SPEC-139 PSH-001: a push clears only the note about the head it pushed; a failed push of
+/// another head keeps its note.
+#[tokio::test]
+async fn a_push_clears_only_the_note_about_its_own_head() -> TestResult {
+    let t = ArmedTask::new().await?;
+    let f = &t.f;
+    let task = TaskId::parse("t1")?;
+    commit_file(&t.wt, "follow-up.txt", "more", "Follow-up")?;
+    let first = git(&t.wt, &["rev-parse", "HEAD"])?;
+    f.git.fail_pushes(Some(PushFailure::Refused));
+    f.h.app.auto_open_pr(&task).await;
+    assert!(t.wait_at(&first).await?["push_problem"].is_string());
+
+    commit_file(&t.wt, "second.txt", "more", "Second")?;
+    let second = git(&t.wt, &["rev-parse", "HEAD"])?;
+    f.git.fail_pushes(None);
+    f.h.app.auto_open_pr(&task).await;
+    assert_eq!(f.origin_sha("feat/1-landing")?, second, "pushed");
+    let state = t.wait_at(&first).await?;
+    assert!(state["push_problem"].is_string(), "{state}");
+    Ok(())
+}
+
+/// SPEC-139 PSH-001: Deliver… opens the pull request when its push lands while Git reports a
+/// failure.
+#[tokio::test]
+async fn deliver_opens_the_pull_request_after_a_push_that_landed() -> TestResult {
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    let head = git(&wt, &["rev-parse", "HEAD"])?;
+    f.git.fail_pushes(Some(PushFailure::AfterLanding));
+    let opened = f
+        .req(
+            Method::POST,
+            "/api/tasks/t1/delivery/pr",
+            Some(json!({"title": "feat: checkout API"})),
+            &f.bob,
+        )
+        .await?;
+    assert_eq!(opened.status, StatusCode::OK, "{}", opened.body);
+    assert_eq!(f.origin_sha("feat/1-checkout-api")?, head);
+    assert_eq!(f.delivery("t1").await?["stage"], "pr_open");
+
+    // A push that never lands is still refused.
+    let f = fixture(&DeliveryProfile::standard()).await?;
+    let wt = f
+        .add_task("t1", "Checkout API", "feat/1-checkout-api", "dev")
+        .await?;
+    commit_file(&wt, "feature.txt", "hello", "Add feature")?;
+    commit_file(&wt, SPEC_PATH, &valid_spec("t1"), "Spec")?;
+    f.git.fail_pushes(Some(PushFailure::Refused));
+    let refused = f
+        .req(
+            Method::POST,
+            "/api/tasks/t1/delivery/pr",
+            Some(json!({"title": "feat: checkout API"})),
+            &f.bob,
+        )
+        .await?;
+    assert_ne!(refused.status, StatusCode::OK, "{}", refused.body);
+    assert_eq!(f.delivery("t1").await?["stage"], "none");
+    Ok(())
+}
+
 /// SPEC-139 PSH-003 (#448): a `delivery_merge` that fails for a reason unrelated to pushing,
 /// after an earlier call was refused for an open step since resolved, answers with its own
 /// failure, not the older "not delivered" note about the same head.

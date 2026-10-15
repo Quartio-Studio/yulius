@@ -10,8 +10,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   ADR-0113, task #123, fixes #366 and #448). A head GitHub's branch already has counts as pushed
   even when `git push` reported a failure, and clears the earlier note; `yulius wait` drops a
   failed-push note once the branch is at its head and waits for the checks and the armed merge;
-  `delivery_merge` answers a failed delivery with that failure, or the remedy its own push wrote,
-  never with an older "not delivered" note.
+  `delivery_merge` answers a failed delivery with that failure, or the note its own call wrote (a
+  refused push's remedy, or that the pull request did not open after its push), never with an
+  older "not delivered" note. The remote is asked with `git ls-remote`, bounded to 10 s.
 
 - Every stage of tasks, CI and CD is measured and shown (SPEC-137, ADR-0112, task #116). One `spans`
   table records, as things happen, a task's waits before it starts, its states (needs you and how

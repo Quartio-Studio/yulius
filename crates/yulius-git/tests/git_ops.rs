@@ -838,6 +838,28 @@ fn local_identity_is_worktree_scoped() -> TestResult {
     Ok(())
 }
 
+/// SPEC-139: a remote that never answers is given up on within `REMOTE_HEAD_TIMEOUT`, not the
+/// half-hour network deadline, so `yulius wait` stays within its own bound.
+#[cfg(unix)]
+#[test]
+fn reading_a_remote_branch_gives_up_on_a_stalled_remote() -> TestResult {
+    let fx = Fixture::new()?;
+    let script = fx.path("stalled-git");
+    write_hook(&script, "#!/bin/sh\nexec sleep 60\n")?;
+    let git = Git::new(&script);
+    let started = Instant::now();
+    match git.remote_branch_head(&fx.root, "origin", "feat/1-x") {
+        Err(GitError::Timeout { .. }) => {}
+        other => return Err(format!("expected timeout, got {other:?}").into()),
+    }
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= yulius_git::REMOTE_HEAD_TIMEOUT && elapsed < yulius_git::REMOTE_HEAD_TIMEOUT * 3,
+        "{elapsed:?}"
+    );
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn timeout_kills_the_whole_process_group() -> TestResult {

@@ -199,8 +199,9 @@ impl App {
         // (SPEC-116 DMG-001, task #101).
         let delivered = match self.try_auto_open_pr(&ctx.task.id).await {
             Ok(delivered) => delivered,
-            // A refused push answers with the remedy `yulius wait` would say (never force). Only
-            // the note this delivery wrote: an older one is not this failure's (SPEC-139 PSH-003).
+            // A refused push answers with the remedy `yulius wait` would say (never force), a pull
+            // request that did not open after its push with that. Only the note this delivery
+            // wrote: an older one is not this failure's (SPEC-139 PSH-003).
             Err(failed) => return Err(failed.note.map_or(failed.error, AppError::Conflict)),
         };
         match delivered {
