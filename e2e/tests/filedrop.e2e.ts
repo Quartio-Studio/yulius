@@ -1,6 +1,6 @@
 import { test, type Browser, type Screen } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { editorShown, failOnPageErrors, mock, promptText } from './support.ts';
+import { axeViolations, editorShown, failOnPageErrors, mock, promptText } from './support.ts';
 
 failOnPageErrors();
 
@@ -159,7 +159,7 @@ test('files dropped or pasted on the new-task prompt sit in its text, at the car
   await browser.evaluate(() => (window as unknown as Mocked).__e2eDrop!('.composer-box', [['screen shot.png', 'png', 'image/png']], ['dragenter', 'dragover']));
   await expect(browser.locator('.composer-box .drop-overlay')).toHaveText('Drop to add to the prompt');
   await browser.evaluate(() => (window as unknown as Mocked).__e2eDrop!('.composer-box', [['screen shot.png', 'png', 'image/png']], ['drop']));
-  await expect(browser.locator('.composer-prompt .pi-image img')).toHaveCount(1);
+  await expect(browser.locator('.composer-prompt .pi-image')).toHaveCount(1);
   await expect.poll(() => promptText(browser)).toBe('Fix the layout in [screen-shot.png]');
 
   await browser.evaluate(() => {
@@ -169,7 +169,7 @@ test('files dropped or pasted on the new-task prompt sit in its text, at the car
     input.focus();
     input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
   });
-  await expect(browser.locator('.composer-prompt .pi-image img')).toHaveCount(2);
+  await expect(browser.locator('.composer-prompt .pi-image')).toHaveCount(2);
   await expect.poll(() => promptText(browser)).toMatch(/^Fix the layout in \[screen-shot\.png\]\[pasted-\d{8}-\d{6}\.png\]$/);
 
   // SPEC-025 ATT-001: a file opens from the prompt's preview; an image previews in a dialog that
@@ -272,4 +272,47 @@ test('leaving the new-task composer revokes the URL of a file opened in a tab', 
   await screen.getByRole('link', /Checkout API/).first().click();
   await expect(screen.getByRole('heading', { level: 1 })).toHaveText(/#12/);
   await expect.poll(() => browser.evaluate(() => (window as unknown as { __revoked: string[] }).__revoked)).toContain(opened);
+});
+
+// SPEC-150 (task #144): "i still want to zoom the image". The dialog fits a large image to the
+// window, and "Actual size" shows it at its own size, scrollable, then fits it again.
+test('an image opened from the tray fits the window and zooms to its actual size', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio'));
+  await screen.getByRole('textbox', 'Task prompt').click();
+  // A real 3000 × 400 PNG, as a wide screenshot pasted from the clipboard.
+  await browser.evaluate(async () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 3000;
+    canvas.height = 400;
+    const g = canvas.getContext('2d')!;
+    g.fillStyle = '#3a6';
+    g.fillRect(0, 0, 3000, 400);
+    const blob = await new Promise<Blob>((resolve) => canvas.toBlob((b) => resolve(b!), 'image/png'));
+    const data = new DataTransfer();
+    data.items.add(new File([blob], 'wide.png', { type: 'image/png' }));
+    document.querySelector('.composer-prompt')!.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+  });
+  await screen.getByRole('button', 'Open Image 1, wide.png').click();
+  await expect(screen.getByRole('dialog', 'wide.png').getByRole('img', 'wide.png')).toBeVisible();
+  const size = () => browser.evaluate(() => {
+    const img = document.querySelector('dialog.modal img') as HTMLImageElement;
+    const body = document.querySelector('dialog.modal .modal-body')!;
+    // At the scroll's start the image's left edge is in view: none of it is out of reach.
+    return {
+      width: Math.round(img.getBoundingClientRect().width), natural: img.naturalWidth, scrolls: body.scrollWidth > body.clientWidth,
+      reachable: body.scrollLeft > 0 || img.getBoundingClientRect().left >= body.getBoundingClientRect().left,
+    };
+  });
+  await expect.poll(async () => (await size()).natural).toBe(3000);
+  const fitted = await size();
+  expect(fitted.width).toBeLessThan(3000);
+  expect(fitted.scrolls).toBe(false);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  await screen.getByRole('button', 'Actual size').click();
+  await expect(browser.locator('dialog.modal button[aria-pressed="true"]')).toHaveCount(1);
+  await expect.poll(size).toEqual({ width: 3000, natural: 3000, scrolls: true, reachable: true });
+  // The keyboard way back: the same toggle.
+  await screen.getByRole('button', 'Actual size').press('Enter');
+  await expect.poll(size).toEqual(fitted);
 });

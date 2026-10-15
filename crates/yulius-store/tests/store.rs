@@ -180,6 +180,37 @@ async fn task_numbers_and_status_cas() -> R {
     Ok(())
 }
 
+/// SPEC-153 OLC-001: an onboarding state change lands only on the state it was decided on; a
+/// start that read `pending` before an admin's skip never writes `preparing` over `skipped`.
+#[tokio::test]
+async fn onboarding_transitions_only_from_the_state_read() -> R {
+    let store = SqliteStore::open_in_memory()?;
+    let (sid, uid) = seed(&store).await?;
+    let prep = store.insert_task(&task("t1", &sid, &uid)?).await?;
+    store
+        .set_onboarding(&sid, "pending", Some(&prep.id))
+        .await?;
+    assert!(
+        store
+            .transition_onboarding(&sid, "pending", "skipped")
+            .await?
+    );
+    assert!(
+        !store
+            .transition_onboarding(&sid, "pending", "preparing")
+            .await?,
+        "the state is no longer pending"
+    );
+    let record = store.sandbox(&sid).await?.ok_or("sandbox")?;
+    assert_eq!(record.onboarding_state, "skipped");
+    assert_eq!(
+        record.onboarding_task_id.as_ref(),
+        Some(&prep.id),
+        "the onboarding task is kept"
+    );
+    Ok(())
+}
+
 /// SPEC-087 TIM-001, TIM-002: a task's state time moves only when its status or activity
 /// changes, not when the same value is set again (every prompt sets Working) nor when anything
 /// else changes. Its working stretch starts when it starts working and goes on through idle
