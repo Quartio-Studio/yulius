@@ -103,12 +103,12 @@ export function createWatchView(ctx, { taskId, task, owner, emptyMessage, sessio
     // `seen` lets the server answer an unchanged transcript without reading it; after a full page
     // the rest is read whatever the size (null).
     const query = seen.loaded && seen.session
-      ? `?from=${seen.end}&session=${encodeURIComponent(seen.session)}${seen.bytes === null ? '' : `&seen=${seen.bytes}`}`
-      : `?limit=${TAIL}`;
+      ? `from=${seen.end}&session=${encodeURIComponent(seen.session)}${seen.bytes === null ? '' : `&seen=${seen.bytes}`}`
+      : `limit=${TAIL}`;
     reading = new AbortController();
     let page = null;
     try {
-      page = await ctx.api.get(`/api/tasks/${enc(taskId)}/transcript${query}`, { signal: reading.signal });
+      page = await ctx.api.get(`/api/tasks/${enc(taskId)}/transcript?${query}`, { signal: reading.signal });
     } catch (error) {
       if (!alive) return; // left: the read was cancelled
       // The first read shows why and a way to try again; a later one tries again on its own.
