@@ -676,6 +676,11 @@ sequenceDiagram
   Note over L: every 60 s a spawned re-check, its verdict selected beside input and output
 ```
 
+Output can carry a program's copy: Claude Code copies the selection it draws with an OSC 52 write.
+The browser terminal (`terminal-core.js`) writes it to the clipboard only for a viewer who can write
+and just pressed a key or the mouse there, and never answers a clipboard query
+([decision 0130](decisions/0130-a-program-s-copy-reaches-the-clipboard-of-the-viewer-who-used-it.md)).
+
 ## Task ownership
 
 A task acts on GitHub with one person's token, so it is that person's: its owner, the creator
