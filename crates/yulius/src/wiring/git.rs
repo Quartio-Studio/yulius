@@ -677,6 +677,11 @@ impl GitPort for GitAdapter {
         blocking(move || git.is_ancestor(&repo, &a, &d)).await
     }
 
+    async fn parents(&self, repo: &Path, rev: &str) -> AppResult<Vec<String>> {
+        let (git, repo, rev) = (self.git(), repo.to_path_buf(), rev.to_owned());
+        blocking(move || git.parents(&repo, &rev)).await
+    }
+
     async fn on_remote(&self, repo: &Path, sha: &str) -> AppResult<bool> {
         let (git, repo, sha) = (self.git(), repo.to_path_buf(), sha.to_owned());
         blocking(move || git.on_remote(&repo, &sha)).await

@@ -471,8 +471,18 @@ fn ci_status(value: &Value) -> Option<String> {
         );
         push_line(&mut out, &outline(workflows));
     }
+    let playground = value
+        .get("playground")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     match value.get("pull_request").and_then(Value::as_u64) {
         Some(number) => push_line(&mut out, &format!("Your pull request: #{number}.")),
+        // SPEC-163: a playground's task is tested as its head merged into the integration branch.
+        None if playground => push_line(
+            &mut out,
+            "This is a playground: `delivery_merge` tests your head merged into the integration \
+             branch (the Task runs) before it squashes.",
+        ),
         None => push_line(&mut out, "Your task has no pull request yet."),
     }
     if runs.is_empty() {

@@ -7,6 +7,8 @@
 //! commit, and publishes the commit status `yulius/ci`. A pull request into an integration
 //! branch without CI is tested with its own configuration (bootstrap, so the onboarding pull
 //! request that replaces GitHub Actions is tested by what it adds).
+//! A playground (SPEC-099), which has no GitHub, gets its integration head tested and, when a
+//! task delivers, that task's head merged into it (`task/<n>`, SPEC-163); nothing is published.
 //!
 //! Ownership and bounds (RUN-001..003):
 //! - the **sync loop** (every [`CiSettings::poll`]) fetches each sandbox clone, lists open pull
@@ -33,6 +35,7 @@ pub mod cd;
 mod disk_wait;
 mod exec;
 pub mod hygiene;
+pub(crate) mod playground;
 mod tools;
 
 use std::collections::{HashMap, HashSet};
@@ -79,6 +82,8 @@ pub const KILL_GRACE: Duration = Duration::from_secs(10);
 pub const MAX_WORKFLOW_FILES: usize = 20;
 /// Where workflows live.
 pub const WORKFLOWS_DIR: &str = ".github/workflows";
+/// Why a playground's run has no commit status (SPEC-163 PCI-005).
+pub const PLAYGROUND_STATUS_NOTE: &str = "not published: a playground has no GitHub repository";
 const GATE_CACHE_MS: i64 = 60_000;
 const STATUS_RETRY_WINDOW_MS: i64 = 24 * 60 * 60 * 1000;
 const PLAN_RUNS: u32 = 200;
@@ -248,7 +253,7 @@ pub struct CiState {
     pub(crate) armed_passes: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
-fn short(sha: &str) -> &str {
+pub(crate) fn short(sha: &str) -> &str {
     sha.get(..7).unwrap_or(sha)
 }
 
@@ -325,7 +330,7 @@ pub fn run_view(run: &CiRunRecord, jobs: &[CiJobRecord], with_output: bool) -> C
         label: run.reference.label(),
         pr_number: match run.reference {
             CiRef::PullRequest(n) => Some(n),
-            CiRef::Branch(_) | CiRef::Train(_) => None,
+            CiRef::Branch(_) | CiRef::Train(_) | CiRef::Task(_) => None,
         },
         sha: run.sha.clone(),
         state: run.state.as_str().to_owned(),
@@ -578,11 +583,17 @@ impl App {
     /// GitHub or Git failures (the round is retried at the next poll).
     pub async fn ci_sync_sandbox(&self, sandbox: &SandboxRecord) -> AppResult<()> {
         let repo = self.sandbox_repo(&sandbox.id);
-        // Yulius CI follows pull requests on GitHub; a playground has neither (SPEC-099).
-        if sandbox.removed_at.is_some() || sandbox.is_playground() || !repo.join(".git").exists() {
+        if sandbox.removed_at.is_some() || !repo.join(".git").exists() {
             return Ok(());
         }
-        let token = self.dlv_installation_token(sandbox).await?;
+        // A playground has no GitHub (SPEC-163 PCI-001): no token and no pull request; its own
+        // `origin` is fetched, and its tasks' heads are tested when they deliver.
+        let playground = sandbox.is_playground();
+        let token = if playground {
+            None
+        } else {
+            Some(self.dlv_installation_token(sandbox).await?)
+        };
         self.dlv_refresh_clone(sandbox).await?;
         self.ci_forget_gate(&sandbox.id);
         let view = self.ci_gate(sandbox).await;
@@ -590,7 +601,8 @@ impl App {
         let mut targets: Vec<(Target, Gate)> = Vec::new();
         if let Some(gate) = &view.gate {
             let mut branches = vec![profile.integration_branch.clone()];
-            if profile.production_branch != profile.integration_branch {
+            // Only a promotion moves the production branch, and a playground has none.
+            if profile.production_branch != profile.integration_branch && !playground {
                 branches.push(profile.production_branch.clone());
             }
             for branch in branches {
@@ -610,11 +622,15 @@ impl App {
                 }
             }
         }
-        let pulls = self
-            .deps
-            .github
-            .list_pulls(&token, &sandbox.repo_owner, &sandbox.repo_name, None)
-            .await?;
+        let pulls = match &token {
+            Some(token) => {
+                self.deps
+                    .github
+                    .list_pulls(token, &sandbox.repo_owner, &sandbox.repo_name, None)
+                    .await?
+            }
+            None => Vec::new(),
+        };
         for pull in pulls
             .into_iter()
             .filter(|p| p.state == "open" && p.base == profile.integration_branch)
@@ -682,10 +698,11 @@ impl App {
             }
         }
         let runs = self.deps.store.ci_runs(&sandbox.id, PLAN_RUNS).await?;
-        // A merge train's run is the train's own (SPEC-084): it starts and cancels it.
+        // A merge train's run is the train's own (SPEC-084), a playground task's its delivery's
+        // (SPEC-163): they start and cancel them.
         let facts: Vec<RunFacts> = runs
             .iter()
-            .filter(|run| !matches!(run.reference, CiRef::Train(_)))
+            .filter(|run| !matches!(run.reference, CiRef::Train(_) | CiRef::Task(_)))
             .map(|run| RunFacts {
                 id: run.id.clone(),
                 reference: run.reference.clone(),
@@ -943,6 +960,13 @@ impl App {
         // GitHub takes the status below.
         if announce {
             self.publish_pulls(&run.sandbox_id);
+        }
+        // A playground has no GitHub repository (SPEC-163 PCI-005): its runs gate its merges here
+        // and publish nothing.
+        if sandbox.is_playground() {
+            return store
+                .record_ci_status(run_id, None, Some(PLAYGROUND_STATUS_NOTE))
+                .await;
         }
         let jobs = store.ci_jobs(run_id, false).await?;
         let failed = jobs.iter().find(|j| j.state == RunState::Failed);
