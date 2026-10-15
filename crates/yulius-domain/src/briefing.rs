@@ -7,12 +7,12 @@
 //! profile, the docs index to read before building, Yulius tools, dev-server ports, the task
 //! with its workflow and steps (with progress and nudges), the project's missing foundations
 //! (infra bootstrap), the project summary, the architecture pointer, in an isolated sandbox the
-//! missing container engine (SPEC-173), the decision index, recent changes and parallel tasks with
-//! their scope claims.
+//! missing container engine (SPEC-173), the decision index, recent changes and parallel tasks
+//! with their scope claims.
 //!
 //! Mandatory parts (role, discipline, git, docs index, tools, ports, task header, foundations,
-//! architecture pointer, containers when isolated) are always included; user-controlled strings inside them are
-//! clipped per field so they stay small. The optional parts (steps, project summary, decisions,
+//! architecture pointer, containers when isolated) are always included; user-controlled strings
+//! inside them are clipped per field so they stay small. The optional parts (steps, project summary, decisions,
 //! recent changes, parallel tasks) share the remaining budget by weight; a part that needs less
 //! donates the rest. Every cut is UTF-8 safe and marked `(truncated)`. Inline fields are
 //! collapsed to one line so repository or user text cannot forge briefing headings. Output is
@@ -1926,9 +1926,14 @@ mod tests {
             for needle in [
                 "## Your task",
                 "Task id: `18fcb52b-ce6f-4546-bab5-a771d949c52e`",
-                "Spec: .ai/specs/SPEC-173-",
+                "Spec: `.ai/specs/SPEC-173-",
                 "## Architecture",
             ] {
+                // With a short goal the plain briefing keeps them all, so the check is not empty.
+                assert!(
+                    goal_len != 80 || plain.contains(needle),
+                    "goal {goal_len}: {needle} not in the plain {plain}"
+                );
                 assert!(
                     !plain.contains(needle) || isolated.contains(needle),
                     "goal {goal_len}: {needle} lost in {isolated}"

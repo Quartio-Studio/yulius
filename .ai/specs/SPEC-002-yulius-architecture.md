@@ -2020,8 +2020,8 @@ Git hygiene and the profile's path, "Read before you build" (the docs index and 
 `sessions_search`, `session_read`), Yulius tools, dev-server ports, task (goal, workflow, spec path
 and policy, steps with weighted progress and nudges), project foundations it lacks (DSC-014), project
 summary (`docs/product.md` head), architecture pointer, in an isolated sandbox the missing container
-engine (SPEC-173; the last mandatory part, so a tight budget cuts it first), decision index (titles), recent changes
-(last 10 delivered tasks + `docs/changes.md` head), parallel tasks and scope claims.
+engine (SPEC-173; the last mandatory part, so a tight budget cuts it first), decision index
+(titles), recent changes (last 10 delivered tasks + `docs/changes.md` head), parallel tasks and scope claims.
 
 ### 7.7 Terminal WebSocket (`/api/tasks/{id}/terminal`)
 
