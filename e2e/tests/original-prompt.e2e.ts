@@ -158,6 +158,15 @@ test('an image inside the prompt is a one-line Image N placeholder, its picture 
   await expect(preview.getByRole('img', 'b.png')).toBeVisible();
   await browser.keyboard.press('Escape');
   await expect(preview).toBeHidden();
+
+  // The image named twice is one file: its second placeholder opens what the list read (review
+  // round 2), with no read of its own.
+  await browser.locator('.prompt-modal .prompt-text [aria-label="Open Image 1, a.png"] >> nth=1').click();
+  const first = screen.getByRole('dialog', 'a.png');
+  await expect(first.getByRole('img', 'a.png')).toBeVisible();
+  type Mock = { __yuliusMock: { promptFileReads?: Record<string, number> } };
+  expect(await browser.evaluate(() => (window as unknown as Mock).__yuliusMock.promptFileReads ?? null)).toMatchObject({ 'tsk_studio_12/0': 1 });
+  expect(await browser.evaluate(() => (window as unknown as Mock).__yuliusMock.promptFileReads?.['tsk_studio_12/2'] ?? 0)).toBe(0);
 });
 
 // SPEC-180 OPP-002 (review round 1): a placeholder reads its image once, shared with the list,
@@ -173,7 +182,8 @@ test('a placeholder opens its image once, and tries again after a failed read', 
   await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
   await screen.getByRole('menuitem', 'See the original prompt').click();
   const dialog = screen.getByRole('dialog', 'Original prompt · #12');
-  await expect(dialog.getByRole('list', 'Attached files')).toHaveText(/a\.png\s*Couldn’t load it/);
+  const files = dialog.getByRole('list', 'Attached files');
+  await expect(files).toHaveText(/a\.png\s*Couldn’t load it/);
   const text = browser.locator('.prompt-modal .prompt-text');
   await text.getByRole('button', { name: 'Open Image 1, a.png' }).click();
   await expect(browser.locator('.toast-msg:has-text("Couldn’t open a.png")')).toBeVisible();
@@ -185,10 +195,27 @@ test('a placeholder opens its image once, and tries again after a failed read', 
   await expect(preview.getByRole('img', 'a.png')).toBeVisible();
   await browser.keyboard.press('Escape');
   await expect(preview).toBeHidden();
+  // The list's tile shows the picture it could not load before (review round 2).
+  await expect(files.getByRole('img', 'a.png')).toBeVisible();
+  await expect(files).not.toHaveText(/Couldn’t load it/);
+});
 
-  // A double-click opens one preview, from the file already read.
-  await text.getByRole('button', { name: 'Open Image 1, a.png' }).dblclick();
-  await expect(preview.getByRole('img', 'a.png')).toBeVisible();
+// Review round 2: clicks while the image is still being read open one preview, from one read
+// shared with the list's thumbnail.
+test('clicks while the image is read open one preview from one read', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&hold=/api/tasks/tsk_studio_12/prompt/attachments/0'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('#12 Checkout API');
+  const drafts = '/srv/yulius/sandboxes/sb_studio/attachments/drafts/usr_mkarp';
+  await touchTask(browser, 'sb_studio', 12, { prompt: `See @'${drafts}/a.png' here.` });
+
+  await browser.locator('.taskview .stepstrip-main [aria-label="Task actions"]').click();
+  await screen.getByRole('menuitem', 'See the original prompt').click();
+  const text = browser.locator('.prompt-modal .prompt-text');
+  await text.getByRole('button', { name: 'Open Image 1, a.png' }).click();
+  await text.getByRole('button', { name: 'Open Image 1, a.png' }).click();
+  type Mock = { __yuliusMock: { release: () => void; promptFileReads?: Record<string, number> } };
+  await browser.evaluate(() => { (window as unknown as Mock).__yuliusMock.release(); });
+  await expect(screen.getByRole('dialog', 'a.png').getByRole('img', 'a.png')).toBeVisible();
   expect(await browser.evaluate(() => document.querySelectorAll('dialog[open]').length)).toBe(2);
   expect(await browser.evaluate(() => (window as unknown as Mock).__yuliusMock.promptFileReads?.['tsk_studio_12/0'] ?? 0)).toBe(1);
 });
