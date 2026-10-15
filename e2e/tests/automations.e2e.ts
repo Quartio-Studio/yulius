@@ -63,7 +63,8 @@ test('the start chip beside Run now sets each start choice, kept by Save and a r
   // Supertask.
   await screen.getByRole('menuitemradio', /^Supertask/).click();
   await expect(chip).toHaveText('Start: Supertask');
-  await expect(chip).toHaveAttribute('title', /runs alone/);
+  // New task's wording (SUPERTASK_HELP), said of each task (#407).
+  await expect(chip).toHaveAttribute('title', 'Each task waits for this project’s running tasks, then runs alone while the project’s other tasks wait.');
   await expect(sentence).toHaveText(/ · supertask/);
   await screen.getByRole('button', 'Save').click();
   await expect(screen.getByText('Automation Daily customer feedback saved.')).toBeVisible();
@@ -145,6 +146,12 @@ test('Run now and the start chip wait until the automation has loaded (SPEC-093 
   await app.open(mock('/s/studio/automations/aut_2', '&hold=/api/sandboxes/sb_studio/automations'));
   await expect(screen.getByRole('button', 'Start')).toBeDisabled();
   await expect(screen.getByRole('button', 'Run now')).toBeDisabled();
+  // Its label loads as a shimmering bar, as every loading field does (ADR-0073, #407): no "…".
+  expect(await browser.evaluate(() => {
+    const chip = document.querySelector('.au-start')!;
+    const bar = chip.querySelector('.skeleton-bar');
+    return { text: chip.textContent, bar: Boolean(bar), hidden: bar?.closest('[aria-hidden="true"]') !== null, drawn: (bar?.getBoundingClientRect().width ?? 0) >= 40 };
+  })).toEqual({ text: 'Start', bar: true, hidden: true, drawn: true });
   await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
   await expect(screen.getByRole('button', 'Run now')).toBeEnabled();
   await expect(screen.getByRole('button', 'Start: Start now')).toBeEnabled();

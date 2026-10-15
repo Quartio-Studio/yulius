@@ -8,7 +8,7 @@
 // (Automation, docs/api.md).
 
 import { enc } from '../api.js';
-import { h, icon, setChildren, placeholder, loadError, confirmDialog, toast, invalid, badge } from '../dom.js';
+import { h, icon, setChildren, placeholder, loadError, confirmDialog, toast, invalid, badge, bar } from '../dom.js';
 import { href, navigate, linkTarget } from '../router.js';
 import { allows } from '../status.js';
 import { openRuleEditor, ruleFromText, ruleText } from '../ruleeditor.js';
@@ -228,8 +228,9 @@ export function mountAutomationEditor(ctx, sandbox, id) {
   const kindOf = () => startKind({ supertask: state.supertask, afterTaskId: state.after_task_id, rule: state.start_rule, prepare: state.prepared ? {} : null });
   /** The chip reads the choice; its tooltip says what it means. It follows the task list. */
   function renderStart() {
-    // Until the automation is read the chip names no choice (its name is just "Start").
-    if (!loaded) { setChildren(startChip, icon('branch', { size: 14 }), h('span', { class: 'sr-only' }, 'Start'), h('span', { class: 'chip-label', 'aria-hidden': 'true' }, '…')); return; }
+    // Until the automation is read the chip names no choice (its name is just "Start"); its label
+    // is a shimmering bar, as every loading field is (ADR-0073, #407).
+    if (!loaded) { setChildren(startChip, icon('branch', { size: 14 }), h('span', { class: 'sr-only' }, 'Start'), h('span', { class: 'chip-label', 'aria-hidden': 'true' }, bar('lg'))); return; }
     const tasks = ctx.store.tasksOf(sandbox.id) || [];
     const kind = kindOf();
     const afterTask = tasks.find((t) => t.id === state.after_task_id);
@@ -238,7 +239,8 @@ export function mountAutomationEditor(ctx, sandbox, id) {
     renderStartChip(startChip, { kind, number, rule, prefix: 'Start: ' });
     startChip.title = {
       now: 'Each task starts as soon as a session slot is free.',
-      supertask: 'Each task waits for this project’s running tasks, then runs alone: the project’s other tasks wait for it.',
+      // New task's wording (SUPERTASK_HELP), said of each task (#407).
+      supertask: 'Each task waits for this project’s running tasks, then runs alone while the project’s other tasks wait.',
       after: `Each task starts when #${number || '?'} is done. Once #${number || '?'} has ended, each task starts at once if it was done, or else waits for you to start or cancel it.`,
       rule: `Each task starts by itself when ${rule}.`,
       prepared: 'Each task waits, prepared, until you press Start now.',
