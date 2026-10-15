@@ -11,7 +11,7 @@ Access must be narrow and revocable, and GitHub stays the source of permissions.
 
 ## Decision
 
-A GitHub App created by manifest flow provides installation tokens and user-to-server OAuth; permissions are read per user per repository with a 5-minute cache. Since 2026-10-11 a task acts on GitHub with its creator's user-to-server token (pushes, pull requests, merges, promotions, issues, the agent's Git and `gh`); the installation token is the fallback and serves instance housekeeping (CI statuses, branch cleanup, background reads).
+A GitHub App created by manifest flow provides installation tokens and user-to-server OAuth; permissions are read per user per repository with a 5-minute cache. Since 2026-10-11 a task acts on GitHub with its creator's user-to-server token (pushes, pull requests, merges, promotions, issues, the agent's Git and `gh`); the installation token is the fallback and serves instance housekeeping (CI statuses, branch cleanup, background reads). Since 2026-10-15 the agent's Git and `gh` hold a narrowed installation token instead ([ADR-0114](0114-agents-hold-a-token-github-refuses-on-production.md)).
 
 ## Alternatives
 

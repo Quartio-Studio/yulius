@@ -20,8 +20,8 @@ use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::Secret;
 use yulius_app::ports::Clock;
 use yulius_app::ports::github::{
-    ChecksReport, ChecksState, GhIssue, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig,
-    GitHubPort, NewCommitStatus, NewIssue, NewPull, RepoAccess, RulesetRequest,
+    BranchGuard, ChecksReport, ChecksState, GhIssue, GhPull, GhRepo, GhUser, GhUserToken,
+    GitHubAppConfig, GitHubPort, NewCommitStatus, NewIssue, NewPull, RepoAccess, RulesetRequest,
     STATUS_PERMISSION_MISSING,
 };
 use yulius_domain::permission::GitHubPermissions;
@@ -50,6 +50,9 @@ pub struct FakeGitHub {
     pub hang_permissions: std::sync::atomic::AtomicBool,
     /// Pull requests (delivery tests).
     pub pulls: Mutex<Vec<GhPull>>,
+    /// Branches (`owner/name:branch`) whose rules agents' tokens cannot bypass (ADR-0114); every
+    /// other branch is writable by them.
+    pub guarded_branches: Mutex<Vec<String>>,
     /// Checks per commit SHA (default: `None`, every source read).
     pub check_states: Mutex<HashMap<String, ChecksReport>>,
     /// When set, reading checks fails with this error (as the adapter maps GitHub errors).
@@ -184,6 +187,9 @@ impl GitHubPort for FakeGitHub {
     async fn installation_token(&self, _: &GitHubAppConfig, _: u64) -> AppResult<Secret> {
         Ok(Secret("inst".into()))
     }
+    async fn agent_token(&self, _: &GitHubAppConfig, _: u64, _: &str) -> AppResult<Secret> {
+        Ok(Secret("agent-inst".into()))
+    }
     async fn installation_repos(&self, _: &GitHubAppConfig, _: u64) -> AppResult<Vec<GhRepo>> {
         Ok(Vec::new())
     }
@@ -196,6 +202,24 @@ impl GitHubPort for FakeGitHub {
         _: &str,
     ) -> AppResult<GhRepo> {
         Err(AppError::Upstream("n/a".into()))
+    }
+    async fn branch_guard(
+        &self,
+        _: &Secret,
+        owner: &str,
+        name: &str,
+        branch: &str,
+    ) -> AppResult<BranchGuard> {
+        let wanted = format!("{owner}/{name}:{branch}");
+        let guarded = self
+            .guarded_branches
+            .lock()
+            .map_err(AppError::internal)?
+            .contains(&wanted);
+        Ok(BranchGuard {
+            updates_restricted: guarded,
+            deletion_restricted: guarded,
+        })
     }
     async fn create_ruleset(
         &self,

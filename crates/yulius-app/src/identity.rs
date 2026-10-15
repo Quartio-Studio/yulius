@@ -13,13 +13,14 @@
 //!   host path;
 //! - Git in user processes authenticates through the credential helper with a workspace token
 //!   that the internal listener maps to the user's own GitHub token (the superadmin, who has no
-//!   GitHub identity, gets the App's token for the sandbox's repository, as agents do, ACC-012)
+//!   GitHub identity, gets the App's full token for the sandbox's repository, ACC-012: a person's
+//!   terminal, unlike an agent's narrowed one, ADR-0114)
 //!   ([`App::workspace_git_credential`]); a grant is checked against the user's current access
 //!   on every use;
 //! - the GitHub CLI is logged in the same way: a `gh` shim first on `PATH` fetches that token per
 //!   invocation (`yulius gh-token`) and runs the real `gh` with it ([`gh_shim`], SPEC-004); agent
-//!   runs get the same shim, answered with their task token as the task's owner
-//!   (`App::add_agent_gh`, F 2026-10-11).
+//!   runs get the same shim, answered with their task token by the App's narrowed agent token,
+//!   never a person's (`App::add_agent_gh`, ADR-0114).
 
 use std::collections::HashMap;
 use std::io::Write as _;
@@ -364,8 +365,8 @@ impl App {
     /// Puts the `gh` shim first on the `PATH` of an agent run planned with `launch`'s final
     /// environment and containment (F 2026-10-11, SPEC-004): a contained run sees only the
     /// shim's directory, read-only at [`SANDBOX_BIN`] (the rest of `runtime/` stays out of it); an
-    /// uncontained one gets its host directory. The shim's `yulius gh-token` answers with the
-    /// run's task token, so `gh` acts as the task's owner, exactly like the agent's Git.
+    /// uncontained one gets its host directory. The shim's `yulius gh-token` asks with the run's
+    /// task token for the App's agent token, exactly like the agent's Git (ADR-0114).
     ///
     /// # Errors
     /// `Internal` when the shim cannot be written.

@@ -6,9 +6,9 @@ use async_trait::async_trait;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::Secret;
 use yulius_app::ports::github::{
-    ChecksReport, ChecksSource, ChecksState, GhIssue, GhPull, GhRepo, GhUser, GhUserToken,
-    GitHubAppConfig, GitHubPort, NewCommitStatus, NewIssue, NewPull, RepoAccess, RulesetRequest,
-    STATUS_PERMISSION_MISSING,
+    BranchGuard, ChecksReport, ChecksSource, ChecksState, GhIssue, GhPull, GhRepo, GhUser,
+    GhUserToken, GitHubAppConfig, GitHubPort, NewCommitStatus, NewIssue, NewPull, RepoAccess,
+    RulesetRequest, STATUS_PERMISSION_MISSING,
 };
 use yulius_github::{
     AppCredentials, CheckSource, ChecksSummary, CommitStatus, CreateRepo, GitHubClient,
@@ -259,6 +259,20 @@ impl GitHubPort for GitHubAdapter {
         Ok(app_secret(&t.token))
     }
 
+    async fn agent_token(
+        &self,
+        app: &GitHubAppConfig,
+        installation_id: u64,
+        repo: &str,
+    ) -> AppResult<Secret> {
+        let t = self
+            .client(app)?
+            .create_agent_token(installation_id, repo)
+            .await
+            .map_err(map_err)?;
+        Ok(app_secret(&t.token))
+    }
+
     async fn installation_repos(
         &self,
         app: &GitHubAppConfig,
@@ -292,6 +306,24 @@ impl GitHubPort for GitHubAdapter {
         Ok(repo(created.map_err(map_err)?))
     }
 
+    async fn branch_guard(
+        &self,
+        token: &Secret,
+        owner: &str,
+        name: &str,
+        branch: &str,
+    ) -> AppResult<BranchGuard> {
+        let guard = self
+            .plain
+            .branch_guard(&gh(token), owner, name, branch)
+            .await
+            .map_err(map_err)?;
+        Ok(BranchGuard {
+            updates_restricted: guard.updates_restricted,
+            deletion_restricted: guard.deletion_restricted,
+        })
+    }
+
     async fn create_ruleset(
         &self,
         token: &Secret,
@@ -311,6 +343,7 @@ impl GitHubPort for GitHubAdapter {
             allowed_merge_methods: methods,
             block_force_push: true,
             block_deletion: true,
+            restrict_updates: request.restrict_updates,
         };
         self.plain
             .create_branch_ruleset(&gh(token), owner, name, &spec)

@@ -318,6 +318,10 @@ pub struct OnboardingStatus {
     pub pending: Vec<String>,
     /// The preparation task, when there is one.
     pub task: Option<OnboardingTask>,
+    /// What people should fix even when the sandbox is ready, for example a production branch
+    /// the agents could write (ADR-0114).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// The preparation task of a sandbox.

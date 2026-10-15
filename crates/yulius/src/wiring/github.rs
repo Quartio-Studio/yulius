@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::Secret;
 use yulius_app::ports::github::{
-    ChecksReport, GhIssue, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig, GitHubPort,
-    NewIssue, NewPull, RepoAccess, RulesetRequest,
+    BranchGuard, ChecksReport, GhIssue, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig,
+    GitHubPort, NewIssue, NewPull, RepoAccess, RulesetRequest,
 };
 
 /// GitHub port that reports the integration as unavailable.
@@ -41,6 +41,9 @@ impl GitHubPort for UnavailableGitHub {
     async fn installation_token(&self, _: &GitHubAppConfig, _: u64) -> AppResult<Secret> {
         unavailable()
     }
+    async fn agent_token(&self, _: &GitHubAppConfig, _: u64, _: &str) -> AppResult<Secret> {
+        unavailable()
+    }
     async fn installation_repos(&self, _: &GitHubAppConfig, _: u64) -> AppResult<Vec<GhRepo>> {
         unavailable()
     }
@@ -52,6 +55,9 @@ impl GitHubPort for UnavailableGitHub {
         _: &str,
         _: &str,
     ) -> AppResult<GhRepo> {
+        unavailable()
+    }
+    async fn branch_guard(&self, _: &Secret, _: &str, _: &str, _: &str) -> AppResult<BranchGuard> {
         unavailable()
     }
     async fn create_ruleset(

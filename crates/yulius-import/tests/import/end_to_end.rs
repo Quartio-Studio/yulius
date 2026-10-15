@@ -191,6 +191,8 @@ fn onboards_everything_then_sends_nothing_new_on_rerun() -> TestResult {
         "Onboarding   ● waiting for Start onboarding in the browser",
         "· someone clicks Start onboarding on the sandbox page: https://yulius.example/s/demo",
         "New tasks wait for it and start by themselves once onboarding is ready.",
+        // SPEC-141 R5: what people must fix is said too.
+        "The production branch `main` is not protected from agents: add a ruleset.",
     ] {
         assert!(
             output.contains(expected),
