@@ -138,4 +138,6 @@ Three defects of the read-only session view (SPEC-075, SPEC-090) are gone:
   `truncated: false`) fixed test-first: the new e2e assertion failed on e40cd270's page
   (`["Code","Code (line 24)","Code (line 24)"]`) and the Rust summary assertion failed before
   `entry_of` set the flag. `sessions.e2e.ts`: 25 passed after the fix.
+- At 17418006 (current with dev): `scripts/dev ci` exit 0 (1874 nextest passed, 18 skipped); full
+  `npx e2e run`: 529 passed, 1 skipped.
 
