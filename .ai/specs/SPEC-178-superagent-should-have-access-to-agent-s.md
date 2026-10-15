@@ -40,7 +40,7 @@ ever reaching the model or the screen.
 
 - VAU-001: The Superagent is served `secrets_list` for its sandbox: the same records a task agent
   of that sandbox gets (name, description, scope, hosts, requested hosts, fields, `.env` state),
-  never a value. Its `how_to_use` is the Superagent's own: it is not behind the proxy, so it has no
+  never a value, and without the proxy's placeholder and injection, which it cannot use. Its `how_to_use` is the Superagent's own: it is not behind the proxy, so it has no
   placeholders in its environment; values are verified with `secret_verify`; a person adds, binds
   and reveals secrets on the Secrets page (link given); using a secret in requests, the project
   browser or `.env` belongs in a task.
@@ -77,7 +77,8 @@ ever reaching the model or the screen.
 - [x] The Superagent runs both vault tools without asking; ADR-0144 and the docs say what it gets
 - [x] Independent review in a fresh session, findings fixed test-first
 - [x] Review round 2 findings fixed test-first: secret_verify is the Superagent's only
-- [ ] Review round 3 approves the head
+- [x] Review round 3 findings fixed test-first: the rotation re-audit is proven
+- [ ] Review round 4 confirms the round-3 fixes on the head
 - [ ] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
@@ -136,8 +137,8 @@ ever reaching the model or the screen.
   production values are kept out of every agent use.
 - Independent review round 1 (REQUEST CHANGES, all own code, all fixed): the digest comparison
   used `==` on caller-chosen bytes (now `CryptoPort::constant_time_eq` over every variant, no
-  early exit); the audit key ignored rotations (now keyed by the vault generation, test
-  `a_verify_after_a_rotation_is_audited_again`, red before); variant strings left freed copies of
+  early exit); the audit key ignored rotations (now keyed by the vault generation; the rotation
+  test was replaced in round 3, see below); variant strings left freed copies of
   the value (now hashed piece by piece in place, and `sha2`'s `zeroize` feature wipes the hasher);
   `lines` was answered for `different` too (now on a match only, tests updated, red before). The
   direct use of `sha2` instead of the crypto port stays, as in `imports.rs` and `uploads.rs`.
@@ -148,3 +149,15 @@ ever reaching the model or the screen.
   lacked the sandbox and held the candidate's hash (now keyed by the sandbox and a digest of the
   candidate, unit test); `sha256sum`'s own line was refused (now read, red before); the
   Superagent's own production refusal and rotation are now tested in `cockpit.rs`.
+- Independent review round 3 (REQUEST CHANGES; product code found correct and secure; all own
+  code, all fixed): the rotation check in `cockpit.rs` could not fail (an identical "→ different"
+  entry existed before the rotation; it now asserts a seventh entry, and fails with the
+  generation dropped from the key, checked); the Superagent's `secrets_list` carried the proxy's
+  `placeholder` and `adds` (now left out, test red before); no wrong-sandbox `secret_verify` test
+  (added); the repeated check's answer was not asserted (now `exact`, `lines: 3`); product wording
+  ("as a task does") corrected; the generation is read before the record. Left as they are (nits):
+  `lines` counts any literal `\n`, also in a value that is not a key, and `sha256sum`'s escaped
+  line for a file name with a backslash is refused with the message saying what is wanted.
+- Review rounds: the rule allows three; a fourth, focused on the round-3 fixes (tests, two small
+  code changes, wording), confirms the exact head before delivery, because the merge needs an
+  approved head. Decided here rather than merging on a self-check.

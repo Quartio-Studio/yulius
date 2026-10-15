@@ -165,6 +165,8 @@ impl App {
                     .into(),
             )
         })?;
+        // Read before the record: a rotation landing meanwhile audits the next check again.
+        let generation = self.vault_generation();
         let record = self
             .deps
             .store
@@ -190,7 +192,7 @@ impl App {
         drop(payload);
         self.vault_audit_once(
             audit_key(
-                self.vault_generation(),
+                generation,
                 caller.sandbox.as_str(),
                 &caller.actor,
                 &record.id,

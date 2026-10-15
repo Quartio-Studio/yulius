@@ -2359,6 +2359,13 @@ async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> Tes
         Some(1),
         "{listed}"
     );
+    // The Superagent is not behind the proxy: no placeholder and no proxy injection to use.
+    for proxy_only in ["placeholder", "adds"] {
+        assert!(
+            listed["secrets"][0].get(proxy_only).is_none(),
+            "{proxy_only}: {listed}"
+        );
+    }
     let raw = listed.to_string();
     for hidden in [SECRET_VALUE, "OTHER_KEY", "other_synthetic_value_4471"] {
         assert!(!raw.contains(hidden), "{hidden} in {raw}");
@@ -2503,14 +2510,17 @@ async fn the_superagent_verifies_a_multi_line_value_by_its_hash() -> TestResult 
             .any(|e| e["detail"] == "FOUNDER_PRIVATE_KEY → exact"),
         "{checks:?}"
     );
-    // The same check again writes no second entry.
-    cockpit_tool(
+    // The same check again (plain hex this time) answers the same and writes no second entry.
+    let (repeated, is_error) = cockpit_tool(
         &f,
         &token,
         "secret_verify",
         json!({"secret": "FOUNDER_PRIVATE_KEY", "sha256": value_sha}),
     )
     .await?;
+    assert!(!is_error, "{repeated}");
+    assert_eq!(repeated["match"], "exact", "{repeated}");
+    assert_eq!(repeated["lines"], 3, "{repeated}");
     let again = call(
         &f.h.router,
         Method::GET,
@@ -2556,16 +2566,48 @@ async fn the_superagent_verifies_a_multi_line_value_by_its_hash() -> TestResult 
         &f.alice,
     )
     .await?;
-    let newest = rotated_activity
+    // A seventh entry, newer than the one the unrotated "different" candidate wrote: the
+    // exact candidate's own check, audited again under the new generation.
+    let verifies: Vec<&Value> = rotated_activity
         .body
         .as_array()
         .ok_or("activity")?
         .iter()
-        .find(|e| e["action"] == "vault.agent.verify")
-        .ok_or("no verify entry")?;
+        .filter(|e| e["action"] == "vault.agent.verify")
+        .collect();
     assert_eq!(
-        newest["detail"], "FOUNDER_PRIVATE_KEY → different",
-        "{newest}"
+        verifies.len(),
+        7,
+        "re-audited after the rotation: {verifies:?}"
+    );
+    assert_eq!(
+        verifies[0]["detail"], "FOUNDER_PRIVATE_KEY → different",
+        "{verifies:?}"
+    );
+
+    // Another project's secret is not this Superagent's to check (sandbox scope).
+    seed_sandbox(&f.h, "s2", "other", "u-alice").await?;
+    f.h.github.set_perm("alice", "acme/other", perms("write"));
+    let other = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s2/agent-secrets",
+        Some(json!({"name": "OTHER_KEY", "value": "other_synthetic_value_4471"})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(other.status, StatusCode::CREATED, "{:?}", other.body);
+    let (refused, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "secret_verify",
+        json!({"secret": "OTHER_KEY", "sha256": sha("other_synthetic_value_4471")}),
+    )
+    .await?;
+    assert!(is_error, "{refused}");
+    assert!(
+        refused.to_string().contains("no agent secret named"),
+        "{refused}"
     );
 
     // A production secret is refused (SPEC-134).

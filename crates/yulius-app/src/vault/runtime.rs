@@ -493,23 +493,28 @@ impl App {
     /// never a value.
     pub(crate) async fn tool_secrets_list(&self, caller: &ProjectCaller) -> AppResult<Value> {
         let records = self.deps.store.vault_agent(Some(&caller.sandbox)).await?;
+        let superagent = caller.task.is_none();
         let secrets: Vec<Value> = records
             .iter()
             .map(|r| {
-                json!({
+                let mut secret = json!({
                     "name": r.name,
                     "description": r.description,
                     "scope": if r.sandbox_id.is_some() { "this project" } else { "every project" },
                     "hosts": r.hosts,
                     "requested_hosts": r.requested_hosts,
-                    "adds": injection_of(r).describe(),
-                    "placeholder": format!("{PLACEHOLDER_PREFIX}{}", r.name),
                     "fields": r.fields,
                     "env_files": r.env_files.as_str(),
-                })
+                });
+                // What the proxy adds and the placeholder it replaces: of no use outside it.
+                if !superagent {
+                    secret["adds"] = json!(injection_of(r).describe());
+                    secret["placeholder"] = json!(format!("{PLACEHOLDER_PREFIX}{}", r.name));
+                }
+                secret
             })
             .collect();
-        if caller.task.is_none() {
+        if superagent {
             let sandbox = self
                 .deps
                 .store
