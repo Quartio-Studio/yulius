@@ -34,6 +34,6 @@ right after a merge to `main` wants to know whether it is on offer, and was told
 ## Consequences
 
 - One GitHub compare per instance page visit, reused for 30 s. Checks sent at the same moment (two
-  tabs, or during the hourly check) may each compare once, as two "Check now" clicks already
+  tabs, or during the hourly check) may each compare once, as "Check now" in two tabs already
   could (#502).
 - With `YULIUS_UPDATE_CHECK_MINUTES=0` the page still checks when opened.
