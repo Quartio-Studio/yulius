@@ -9,8 +9,8 @@ failOnPageErrors();
 // empty and production not defined; sandbox-3 is read-only (assets/mock.js, seedCd).
 
 test('the CD page shows dev and production as their branches define them', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/cd'));
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('CD');
+  await app.open(mock('/s/studio/ci?section=cd'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('CI/CD');
   const dev = screen.getByRole('region', 'Dev environment');
   const prod = screen.getByRole('region', 'Production environment');
   await expect(dev.getByText('scripts/cd/deploy.sh dev')).toBeVisible();
@@ -24,14 +24,75 @@ test('the CD page shows dev and production as their branches define them', async
   await screen.getByRole('button', /Open the dev deploy at 7d1e0c9/).click();
   const dialog = screen.getByRole('dialog', 'Deploy');
   await expect(browser.locator('.run-output')).toHaveText(/\[secret:DEV_HOST\]/);
-  await expect(browser).toHaveURL(/#\/s\/studio\/cd\?run=cd_s2$/);
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci\?section=cd&run=cd_s2$/);
   await browser.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci\?section=cd$/);
 
   // Dev needs a secret nobody allowed yet: nothing runs, and the page says why.
   await dev.getByRole('button', 'Deploy dev').click();
   await screen.getByRole('dialog', 'Deploy dev?').getByRole('button', 'Deploy dev').click();
   await expect(screen.getByText(/DEV_HOST allows using it outside the proxy/)).toBeVisible();
+});
+
+// Task #145 (SPEC-151): "make CI/CD one tab with a tab like in secrets team/agent". One sidebar
+// entry, one page; its sections are the Secrets page's tabs, kept in ?section=.
+test('CI and CD are two tabs of the CI/CD page, like the Secrets sections', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/ci'));
+  const nav = screen.getByRole('navigation', 'Sandbox');
+  await expect(nav.getByRole('link', 'CI/CD')).toHaveAttribute('aria-current', 'page');
+  await expect(screen.getByRole('radiogroup', 'Section')).toBeVisible();
+  await expect(screen.getByRole('button', 'Check for commits')).toBeVisible();
+  await expect(screen.getByRole('button', 'Set up CD with an agent')).toBeHidden();
+
+  // A click shows CD in place, with its own header action; the address names the tab.
+  await screen.getByRole('radio', 'CD (deployment)').click();
+  await expect(screen.getByRole('radio', 'CD (deployment)')).toHaveAttribute('aria-checked', 'true');
+  await expect(screen.getByRole('region', 'Dev environment')).toBeVisible();
+  await expect(screen.getByRole('button', 'Set up CD with an agent')).toBeVisible();
+  await expect(screen.getByRole('button', 'Check for commits')).toBeHidden();
+  await expect(screen.getByRole('heading', 'Repository hygiene')).toBeHidden();
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci\?section=cd$/);
+  await expect(nav.getByRole('link', 'CI/CD')).toHaveAttribute('aria-current', 'page');
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // The tab survives a reload; an arrow key goes back to CI and keeps the focus on the tabs.
+  await browser.reload();
+  await expect(screen.getByRole('radio', 'CD (deployment)')).toHaveAttribute('aria-checked', 'true');
+  await screen.getByRole('radio', 'CD (deployment)').press('ArrowLeft');
+  await expect(screen.getByRole('radio', 'CI (tests)')).toHaveAttribute('aria-checked', 'true');
+  await expect(screen.getByRole('radio', 'CI (tests)')).toBeFocused();
+  await expect(screen.getByRole('heading', 'Repository hygiene')).toBeVisible();
+  await expect(screen.getByRole('region', 'Dev environment')).toBeHidden();
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci$/);
+
+  // The sidebar's link goes back to the tab last shown (SPEC-113), from another page.
+  await screen.getByRole('radio', 'CI (tests)').press('ArrowRight');
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci\?section=cd$/);
+  await nav.getByRole('link', 'Git').click();
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Git');
+  await nav.getByRole('link', 'CI/CD').click();
+  await expect(screen.getByRole('region', 'Dev environment')).toBeVisible();
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci\?section=cd$/);
+});
+
+// The CD page's own address, in agents' messages and older links, opens the CD tab (SPEC-151 CCD-004).
+test('the earlier CD address opens the CD tab, and a deploy with it', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/cd'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('CI/CD');
+  await expect(screen.getByRole('radio', 'CD (deployment)')).toHaveAttribute('aria-checked', 'true');
+  await expect(screen.getByRole('region', 'Dev environment')).toBeVisible();
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci\?section=cd$/);
+  await expect(screen.getByRole('navigation', 'Sandbox').getByRole('link', 'CI/CD')).toHaveAttribute('aria-current', 'page');
+
+  await app.open(mock('/s/studio/cd?run=cd_s2'));
+  const dialog = screen.getByRole('dialog', 'Deploy');
+  await expect(browser.locator('.run-output')).toHaveText(/\[secret:DEV_HOST\]/);
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci\?section=cd&run=cd_s2$/);
+  await browser.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(browser).toHaveURL(/#\/s\/studio\/ci\?section=cd$/);
+  await expect(screen.getByRole('radio', 'CD (deployment)')).toHaveAttribute('aria-checked', 'true');
 });
 
 test('production deploys only after the project slug is typed', async ({ app, browser, screen }) => {

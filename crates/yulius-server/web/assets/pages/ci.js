@@ -1,14 +1,15 @@
-// CI page (SPEC-001 DLV-006/007, SPEC-002 ADR-21): Yulius is the projects' only CI. The jobs
-// in force and where they come from, the runs of pull request heads and of the integration and
-// production branches with each job's log, Run again and Cancel, and repository hygiene (stale
-// branches and worktrees). A run opens from `?run=<id>`, the link of the `yulius/ci` commit status.
+// CI tab of the CI/CD page (SPEC-001 DLV-006/007, SPEC-002 ADR-21, SPEC-151): Yulius is the
+// projects' only CI. The jobs in force and where they come from, the runs of pull request heads and
+// of the integration and production branches with each job's log, Run again and Cancel, and
+// repository hygiene (stale branches and worktrees). A run opens from `?run=<id>`, the link of the
+// `yulius/ci` commit status.
 
 import { enc } from '../api.js';
 import { h, badge, itemCard, emptyState, setChildren, placeholder, openModal, toast, errorToast, confirmDialog, pollPaused, icon, bar, drawShape } from '../dom.js';
 import { relLong, dateTime, duration, plural } from '../format.js';
 import { allows } from '../status.js';
 import { replaceQuietly, href } from '../router.js';
-import { pageFrame, loader } from './common.js';
+import { loader } from './common.js';
 import { BRAND } from '../brand.js';
 import { loadWaterfall } from '../stages.js';
 import { pipelineHref } from './pipeline.js';
@@ -45,15 +46,21 @@ function jobsLine(jobs) {
   return parts.join(' · ');
 }
 
-/** Mount the CI page. */
-export function mountCiPage(ctx, sandbox, route) {
+/** What the CI/CD page's sub-heading says on the CI tab. */
+export const CI_SUB = `tests run on this ${BRAND.name} machine`;
+
+/**
+ * Mount the CI tab into `host`, with its header action in `actions`; returns its teardown, which
+ * stops its refreshes and closes its run dialog.
+ */
+export function mountCiSection(ctx, sandbox, route, host, actions) {
   const write = allows(sandbox.access, 'write');
   const base = `/api/sandboxes/${enc(sandbox.id)}`;
   const syncButton = h('button', { type: 'button', class: 'btn', disabled: !write, title: write ? 'Look for new commits now' : 'Requires write access', onClick: () => sync() }, icon('refresh', { size: 16 }), 'Check for commits');
-  const frame = pageFrame({ title: 'CI', sub: `runs on this ${BRAND.name} machine`, actions: [syncButton] });
+  setChildren(actions, syncButton);
   const runsHost = h('div');
   const hygieneHost = h('div');
-  frame.body.append(runsHost, hygieneHost);
+  host.append(runsHost, hygieneHost);
   let timer = null;
   let destroyed = false;
   let openRun = null;
@@ -275,9 +282,5 @@ export function mountCiPage(ctx, sandbox, route) {
   const deepRun = route && route.query && route.query.get('run');
   if (deepRun) showRun(deepRun);
 
-  return {
-    el: frame.el,
-    key: `ci:${sandbox.id}`,
-    destroy: () => { destroyed = true; clearTimeout(timer); if (openRun) openRun.close(); },
-  };
+  return () => { destroyed = true; clearTimeout(timer); if (openRun) openRun.close(); };
 }

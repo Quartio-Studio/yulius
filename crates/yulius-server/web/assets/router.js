@@ -7,7 +7,7 @@ const quietListeners = new Set();
 let hashMode = false;
 let lastKey = null;
 
-const SANDBOX_PAGES = new Set(['tasks', 'sessions', 'git', 'ci', 'cd', 'pipeline', 'workflows', 'skills', 'automations', 'mcp', 'secrets', 'dashboard']);
+const SANDBOX_PAGES = new Set(['tasks', 'sessions', 'git', 'ci', 'pipeline', 'workflows', 'skills', 'automations', 'mcp', 'secrets', 'dashboard']);
 const ADMIN_PAGES = new Set(['users', 'accounts', 'github', 'instance']);
 
 // Where each sandbox and each sandbox page was left (SPEC-113 KST-001): a link marked
@@ -203,6 +203,11 @@ export function matchRoute(path, query = new URLSearchParams()) {
     // (the Agent's, the Cockpit's) open it too.
     if (parts.length === 3 && ['superagent', 'agent', 'cockpit'].includes(third)) return { ...base, name: 'composer', slug: second, panel: 'agent' };
     if (parts.length === 3 && SANDBOX_PAGES.has(third)) return { ...base, name: 'page', slug: second, page: third };
+    // The CD page's earlier address is the CI/CD page's CD tab (SPEC-151 CCD-004).
+    if (parts.length === 3 && third === 'cd') {
+      const section = new URLSearchParams([['section', 'cd'], ...[...query].filter(([key]) => key !== 'section')]);
+      return { ...base, query: section, name: 'page', slug: second, page: 'ci' };
+    }
   }
   return { ...base, name: 'notfound' };
 }
