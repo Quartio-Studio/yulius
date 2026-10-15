@@ -30,7 +30,7 @@ watching, steering and unblocking.
   instance Home offers it first: drop a project folder (a repository keeps its branches and
   history) or start from a template, and tasks start a minute later. Its Git stays on the server
   and nothing is pushed anywhere; its tasks merge into its own `dev` with `delivery_merge` (no
-  pull request, no Yulius CI). It is its maker's and the superadmin's. Connecting GitHub is
+  pull request), on green Yulius CI when the project has CI (SPEC-163). It is its maker's and the superadmin's. Connecting GitHub is
   optional and can wait (SPEC-099).
 - **Superagent** (formerly the Agent, and before that the Cockpit): every user's own plain Claude
   Code session per sandbox, in the right tool panel beside any page (first in the tools rail, under

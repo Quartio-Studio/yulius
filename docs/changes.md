@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- Playgrounds get Yulius CI (SPEC-163, ADR-0134, task #130, fixes #411). The CI sync tests a
+  playground's `dev` head without GitHub, and `delivery_merge` first tests the task head merged into
+  `dev`, built in Yulius's clone (`Task #n` runs): it squashes on green, arms while the run goes
+  (Yulius lands it when it passes, or builds and tests again when `dev` moved), and refuses on red.
+  A person's merge waits for green too. `yulius wait`, `ci_status` and `ci_rerun` work for a
+  playground's agents, and nothing is published to GitHub. A playground without CI merges at once,
+  as before.
 - The Pipeline (stages) is a tab of the Dashboard, not a sidebar entry (SPEC-161, ADR-0132, task
   #152). The sidebar lists Tasks, Git, CI/CD, Secrets and Dashboard; the Dashboard's tab strip (the
   CI/CD page's, now shared as `sectionedPage`) shows Overview and Pipeline (stages), the latter at

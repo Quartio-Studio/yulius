@@ -320,7 +320,8 @@ impl App {
         let Ok(Some(sandbox)) = self.deps.store.sandbox(sandbox_id).await else {
             return;
         };
-        if sandbox.removed_at.is_some() {
+        // A playground's merges go one by one (SPEC-163): it has no pull request to train.
+        if sandbox.removed_at.is_some() || sandbox.is_playground() {
             return;
         }
         let mut state = self.read_trains(sandbox_id);

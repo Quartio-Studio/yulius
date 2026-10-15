@@ -29,7 +29,7 @@
 //! example filter drivers) and tools reading `HOME` remain agent-influenced. Commands are
 //! visible to everyone with read access, so they must not contain secrets.
 
-mod playground;
+pub(crate) mod playground;
 pub mod runner;
 
 use std::path::{Component, Path, PathBuf};
@@ -2871,9 +2871,9 @@ impl App {
     /// `Upstream` GitHub failures.
     pub async fn merge_task_pr(&self, ctx: &AuthContext, task_id: &str) -> AppResult<Delivery> {
         let task = self.load_task(ctx, task_id, Action::Work).await?;
-        // A playground merges here, with no GitHub identity needed (SPEC-099).
+        // A playground merges here, with no GitHub identity needed (SPEC-099), on green (SPEC-163).
         if self.dlv_sandbox_of(&task).await?.is_playground() {
-            return self.playground_merge(&ctx.user, &task, None).await;
+            return self.playground_merge_now(&ctx.user, &task).await;
         }
         let token = self
             .person_github_token(&ctx.user, "Merging a pull request")
@@ -2898,8 +2898,12 @@ impl App {
     ) -> Result<Delivery, MergeFailure> {
         let task = self.load_task(ctx, task_id, Action::Work).await?;
         let sandbox = self.dlv_sandbox_of(&task).await?;
+        // A playground merges through `playground_merge` under the armed-merge pass, which its
+        // callers hold (SPEC-163): never from here.
         if sandbox.is_playground() {
-            return Ok(self.playground_merge(&ctx.user, &task, None).await?);
+            return Err(MergeFailure::Refused(AppError::internal(
+                "a playground's merge does not go through its pull request",
+            )));
         }
         let token = self.task_github_token(&task, &sandbox).await?;
         self.dlv_merge(ctx, task, &token).await

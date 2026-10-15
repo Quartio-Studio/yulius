@@ -24,7 +24,8 @@ pub use folder::{FolderUpload, MAX_FOLDER_UPLOAD_BYTES};
 
 /// The note a playground's delivery views carry instead of a GitHub error (PLY-008).
 pub const PLAYGROUND_NOTE: &str = "This playground keeps its Git on this server: no pull \
-     requests; `delivery_merge` squashes a task into the integration branch here.";
+     requests; `delivery_merge` squashes a task into the integration branch here once Yulius CI \
+     passed on it.";
 
 /// Refuses `what` in a playground (PLY-002): it needs GitHub, which a playground never calls.
 ///
@@ -34,7 +35,7 @@ pub(crate) fn refuse_in_playground(sandbox: &SandboxRecord, what: &str) -> AppRe
     if sandbox.is_playground() {
         return Err(AppError::Conflict(format!(
             "{what} needs GitHub, and this sandbox is a playground: its Git stays on this server, \
-             with no pull request, CI, deploy, promotion or GitHub issue"
+             with no pull request, deploy, promotion or GitHub issue"
         )));
     }
     Ok(())
