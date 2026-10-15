@@ -46,12 +46,13 @@ command = "python3 scripts/bootstrap.py --install-rustup && scripts/dev ci"
 name = "e2e"
 command = "cd e2e && npm ci --ignore-scripts && npx e2e-web install chromium && E2E_TELEMETRY_DISABLED=1 npx e2e run --reporter list,junit"
 
-# The Vidoc scan (ADR-0104, ADR-0116) on pull request heads only: dev and main have nothing of their
-# own to scan, so there the job ends skipped. Findings (exit 1) fail it. Exit 2 (the scan could not run: no key, a rejected one,
-# #470, or a missing host binding) ends it skipped (SPEC-162, ADR-0133): it exits with the
-# $YULIUS_CI_SKIP_CODE Yulius gives its jobs, so it reads Skipped, never Passed, and blocks no pull
-# request over what only a person can fix (an instance that gives no skip code passes it: exit 0).
-# It gets VIDOC_API_KEY as a placeholder through the egress proxy, never the value (SPEC-142).
+# The Vidoc scan (ADR-0104, ADR-0116) on pull request heads only: dev and main have nothing of
+# their own to scan, so there the job ends skipped. Findings (exit 1) fail it. Exit 2 (the scan
+# could not run: no key, a rejected one, #470, or a missing host binding) ends it skipped
+# (SPEC-162, ADR-0133): it exits with the $YULIUS_CI_SKIP_CODE Yulius gives its jobs, so it reads
+# Skipped, never Passed, and blocks no pull request over what only a person can fix (an instance
+# that gives no skip code passes it: exit 0). It gets VIDOC_API_KEY as a placeholder through the
+# egress proxy, never the value (SPEC-142).
 [[ci.jobs]]
 name = "security"
 secrets = "VIDOC_API_KEY"

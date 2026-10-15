@@ -686,6 +686,11 @@ command = "true"
 [[ci.jobs]]
 name = "scan"
 command = 'echo "nothing to scan"; exit "$YULIUS_CI_SKIP_CODE"'
+
+[[ci.jobs]]
+name = "split"
+matrix = "1 2"
+command = 'if [ "$YULIUS_CI_MATRIX" = 2 ]; then exit "$YULIUS_CI_SKIP_CODE"; fi'
 "#
         .to_owned()
     })
@@ -712,11 +717,13 @@ command = 'echo "nothing to scan"; exit "$YULIUS_CI_SKIP_CODE"'
     assert_eq!(job("check")?["state"], "passed", "{detail}");
     assert_eq!(job("scan")?["state"], "skipped", "{detail}");
     assert_eq!(job("scan")?["exit_code"], 78, "{detail}");
+    assert_eq!(job("split (1)")?["state"], "passed", "{detail}");
+    assert_eq!(job("split (2)")?["state"], "skipped", "{detail}");
     let sha = run["sha"].as_str().ok_or("sha")?;
     let (state, description, _) = f.last_status(sha).ok_or("status")?;
     assert_eq!(state, "success", "{description}");
     assert!(
-        description.starts_with("Passed: 2 jobs, 1 skipped"),
+        description.starts_with("Passed: 4 jobs, 2 skipped"),
         "{description}"
     );
 
@@ -747,8 +754,11 @@ command = 'echo "nothing to scan"; exit "$YULIUS_CI_SKIP_CODE"'
     assert_eq!(job("check")?["state"], "passed", "{detail}");
     assert_eq!(job("scan")?["state"], "skipped", "{detail}");
     assert_eq!(job("scan")?["exit_code"], 78, "{detail}");
+    // Each value of a matrix job keeps its own verdict (they share the definition's key).
+    assert_eq!(job("split (1)")?["state"], "passed", "{detail}");
+    assert_eq!(job("split (2)")?["state"], "skipped", "{detail}");
     let (_, description, _) = f.last_status(&merged).ok_or("status")?;
-    assert!(description.contains("1 skipped"), "{description}");
+    assert!(description.contains("2 skipped"), "{description}");
     Ok(())
 }
 

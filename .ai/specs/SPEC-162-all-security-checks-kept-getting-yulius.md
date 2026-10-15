@@ -16,10 +16,11 @@ user knows exactly".
 
 ## Goal
 
-A Yulius CI job can end **skipped**, a state of its own that the CI page, `ci_status` and the
-commit status show as such (`yulius wait` reports run states, and a run is never skipped): it does not block a merge, and it is never counted as passed.
-This repository's `security` job ends skipped when the Vidoc scan could not run, and it gets
-`VIDOC_API_KEY` (as a placeholder through the egress proxy) so that it can run.
+A Yulius CI job can end **skipped**, a state of its own that the CI page, `ci_status` and the commit
+status show as such (`yulius wait` reports run states, and a run is never skipped): it does not
+block a merge, and it is never counted as passed. This repository's `security` job ends skipped when
+the Vidoc scan could not run, and it gets `VIDOC_API_KEY` (as a placeholder through the egress
+proxy) so that it can run.
 
 ## Context
 
@@ -51,8 +52,9 @@ This repository's `security` job ends skipped when the Vidoc scan could not run,
   merge with the same tree, a merge train's verdict) keeps each skipped job skipped.
 - **SKP-003.** Skipped shows as Skipped: the CI page (a badge and the run's job line), `ci_status`,
   and the commit status (`Passed: 3 jobs, 1 skipped in …`).
-- **SKP-004.** The `security` job maps `scripts/dev security`'s exit 2 to `${YULIUS_CI_SKIP_CODE:-0}`
-  and says `skipped`, and exits the same way on heads it does not scan (dev, main, merge trains), so an instance that does not yet know the code still passes it (no pull
+- **SKP-004.** The `security` job maps `scripts/dev security`'s exit 2 to
+  `${YULIUS_CI_SKIP_CODE:-0}` and says `skipped`, and exits the same way on heads it does not scan
+  (dev, main, merge trains), so an instance that does not yet know the code still passes it (no pull
   request is blocked by what only a person can fix). Findings (exit 1) still fail it.
 - **SKP-005.** The `security` job names `secrets = "VIDOC_API_KEY"`.
 

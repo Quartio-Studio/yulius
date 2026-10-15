@@ -803,8 +803,13 @@ impl App {
             .iter()
             .enumerate()
             .map(|(index, job)| {
+                // The values of a matrix job share its key: match the value too. A job the
+                // source did not have (the gate changed since) is passed, as before SPEC-162.
                 let (state, exit_code) = dom::copied_job_verdict(
-                    tested.iter().find(|t| t.key == job.key).map(|t| t.state),
+                    tested
+                        .iter()
+                        .find(|t| t.key == job.key && t.matrix == job.matrix)
+                        .map(|t| t.state),
                 );
                 CiJobRecord {
                     id: self.deps.crypto.new_id(),

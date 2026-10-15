@@ -104,17 +104,17 @@ is listed in the spec's Evidence. To update the CLI, change the pin in
 Yulius CI also runs the gate, as the `security` job of `yulius.toml`, on every pull request head
 ([SPEC-142](../../.ai/specs/SPEC-142-fix-466-yulius-ci-jobs-opt-in-to-named-a.md),
 [ADR-0116](../decisions/0116-ci-jobs-use-named-agent-secrets-through-the-proxy.md)); `dev` and
-`main` heads (and merge trains) print that they are not scanned and end skipped. A `secrets = "VIDOC_API_KEY"` line on the job, read
-from `dev`'s `yulius.toml` only, gives it the agent secret's placeholder and the egress proxy with a
-credential of its own, never the value; the proxy adds the key only toward `api.vidoc.dev`, and each
-use is in the secrets audit as `ci:<run>`. A CI checkout is a
-detached worktree without a GitHub credential, so on a pull request the gate scans a private clone
-of the head on branch `yulius-ci/pr-<n>` whose `origin` answers from a local mirror of origin's
-default branch (`dev`). Findings (exit 1) fail the job and so the merge gate. Exit 2 does not fail
-it: while the stored key is rejected ([#470](https://github.com/Quartio-Studio/yulius/issues/470))
-every pull request would otherwise be blocked by something only a person can fix. The job then
-prints `[yulius] security scan skipped` and exits with `$YULIUS_CI_SKIP_CODE`, so it reads
-**Skipped**, never Passed, and blocks no merge
+`main` heads (and merge trains) print that they are not scanned and end skipped. A `secrets =
+"VIDOC_API_KEY"` line on the job, read from `dev`'s `yulius.toml` only, gives it the agent secret's
+placeholder and the egress proxy with a credential of its own, never the value; the proxy adds the
+key only toward `api.vidoc.dev`, and each use is in the secrets audit as `ci:<run>`. A CI checkout
+is a detached worktree without a GitHub credential, so on a pull request the gate scans a private
+clone of the head on branch `yulius-ci/pr-<n>` whose `origin` answers from a local mirror of
+origin's default branch (`dev`). Findings (exit 1) fail the job and so the merge gate. Exit 2 does
+not fail it: while the stored key is rejected
+([#470](https://github.com/Quartio-Studio/yulius/issues/470)) every pull request would otherwise be
+blocked by something only a person can fix. The job then prints `[yulius] security scan skipped` and
+exits with `$YULIUS_CI_SKIP_CODE`, so it reads **Skipped**, never Passed, and blocks no merge
 ([ADR-0133](../decisions/0133-a-ci-job-that-checked-nothing-ends-skipped.md); an instance that gives
 no skip code passes it). Skipped is not a pass: agents still run the gate themselves and report it
 as unrun.
