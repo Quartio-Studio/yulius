@@ -811,6 +811,22 @@ items, and a menu of 8 or more items opens with a filter box
 start menu's tasks) shows five rows and scrolls the rest in a box of its own, fading at the edge it
 continues past with a "↓ N more" line under it ([decision 0083](decisions/0083-long-menu-groups-scroll-five-rows.md)).
 
+The Tasks page's Graph view (`?view=graph`, SPEC-164, [decision 0135](decisions/0135-the-task-graph-is-drawn-in-the-browser-from-the-task-summaries.md))
+is drawn from the task summaries the store already holds, with no endpoint of its own:
+`taskgraph.js` reads each open task's `after` (a chain, or a start rule's `#N`s), `held_by`,
+`supertask`, `status` and `state_since` into the queue in start order, a layered graph (a column
+per longest path, rows by barycenter, cycles never followed) drawn as HTML cards over SVG arrows,
+the prepared tasks and the rest, and redraws on the store's `tasks` events.
+
+```mermaid
+flowchart LR
+  S["store.js tasksOf(sandbox)"] -->|"after, held_by, supertask, status, state_since"| M["taskgraph.js taskStructure"]
+  EV["task.updated / task.created"] --> S
+  M --> Q["Starts next (supertasks first, then longest queued)"]
+  M --> L["layered layout: columns, rows"] --> V["cards (links) over SVG arrows"]
+  M --> R["Prepared, On their own"]
+```
+
 ```mermaid
 flowchart LR
   PI["promptinput.js (files inside the text)"] -->|"value with @'path' in place"| C
@@ -957,7 +973,11 @@ the job's end and the end trigger adds them to its span
 [decision 0127](decisions/0127-a-job-s-resource-use-comes-from-its-process-host.md)). Nothing
 outside Yulius writes a span; the API only reads them, and the Dashboard's Pipeline tab (SPEC-161),
 the run dialogs, the task overview and the Dashboard's Overview draw them. Spans older than 180
-days go with the hourly CI upkeep.
+days go with the hourly CI upkeep. A waterfall (`stages.js`) draws one subject's spans on a time
+axis with a legend, folds a span's children (one with a failure opens), and in a CI run puts each
+job's slot wait on the job's own row under "Jobs", paired by the job id in the span keys
+([SPEC-165](../.ai/specs/SPEC-165-for-very-complex-tests-it-s-not-readable.md),
+[decision 0136](decisions/0136-a-ci-job-s-slot-wait-is-drawn-on-its-own-row.md)).
 
 ```mermaid
 flowchart LR
