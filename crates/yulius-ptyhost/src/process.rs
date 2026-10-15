@@ -8,8 +8,11 @@
 use std::time::{Duration, Instant};
 
 use nix::errno::Errno;
+use nix::sys::resource::{UsageWho, getrusage};
 use nix::sys::signal::{Signal, kill, killpg};
+use nix::sys::time::TimeVal;
 use nix::unistd::{Pid, getpgid, getsid};
+use yulius_contracts::ptyhost::ProcessUsage;
 
 /// Slack for start-time comparisons: covers second-granularity clocks and rounding.
 const START_SLACK_MS: i64 = 2_000;
@@ -65,6 +68,41 @@ pub(crate) fn wait_gone(pids: &[Pid], timeout: Duration) -> Option<Pid> {
             Some(_) => std::thread::sleep(Duration::from_millis(10)),
         }
     }
+}
+
+/// What the reaped children of this process used (SPEC-154 USE-001). A host runs one child, and
+/// the kernel adds each reaped process's use (and its reaped descendants') to its parent, so
+/// after the reap this is the child's whole tree. `None` when the reading fails.
+pub(crate) fn children_usage() -> Option<ProcessUsage> {
+    let usage = getrusage(UsageWho::RUSAGE_CHILDREN).ok()?;
+    let ms = |time: TimeVal| {
+        u64::try_from(time.tv_sec())
+            .unwrap_or(0)
+            .saturating_mul(1000)
+            .saturating_add(u64::try_from(time.tv_usec()).unwrap_or(0) / 1000)
+    };
+    let max_rss = u64::try_from(usage.max_rss()).unwrap_or(0);
+    // Linux and the BSDs count kilobytes, macOS bytes.
+    let max_rss_bytes = if cfg!(target_vendor = "apple") {
+        max_rss
+    } else {
+        max_rss.saturating_mul(1024)
+    };
+    Some(ProcessUsage {
+        cpu_ms: ms(usage.user_time()).saturating_add(ms(usage.system_time())),
+        max_rss_bytes,
+        written_bytes: written_bytes(usage.block_writes()),
+    })
+}
+
+/// Bytes written to storage from `ru_oublock`: on Linux the kernel's write accounting in 512-byte
+/// units, kept only where that accounting exists (`/proc/self/io`); elsewhere a count of
+/// operations, not bytes, so unknown.
+fn written_bytes(blocks: std::ffi::c_long) -> Option<u64> {
+    if !cfg!(target_os = "linux") || !std::path::Path::new("/proc/self/io").exists() {
+        return None;
+    }
+    u64::try_from(blocks).ok().map(|b| b.saturating_mul(512))
 }
 
 #[cfg(target_os = "linux")]
