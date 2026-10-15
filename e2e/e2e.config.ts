@@ -1,14 +1,16 @@
-// End-to-end tests of the web UI (#86). The runner serves crates/yulius-server/web with Python's
-// static file server and the tests open it in mock mode (`?mock=1`), so no `yulius serve`,
-// account or model is needed. Agent steps (`agent.act`, `agent.assert`) need a model: they use
-// Anthropic when ANTHROPIC_API_KEY is set and are skipped otherwise. CI uses the same budgets and
-// no retries, so a timeout is a failure: they held under agents' builds (SPEC-053 Evidence).
+// End-to-end tests of the web UI (#86). The runner serves crates/yulius-server/web with a Python
+// static file server (serve.py: keep-alive and a deep listen queue, SPEC-148) and the tests open
+// it in mock mode (`?mock=1`), so no `yulius serve`, account or model is needed. Agent steps
+// (`agent.act`, `agent.assert`) need a model: they use Anthropic when ANTHROPIC_API_KEY is set and
+// are skipped otherwise. CI uses the same budgets and no retries, so a timeout is a failure: they
+// held under agents' builds (SPEC-053 Evidence).
 import type { E2EConfig } from 'e2e';
 import { anthropic } from '@ai-sdk/anthropic';
 import { web } from '@e2e-dev/web';
 import { fileURLToPath } from 'node:url';
 
 const ui = fileURLToPath(new URL('../crates/yulius-server/web', import.meta.url));
+const serve = fileURLToPath(new URL('./serve.py', import.meta.url));
 // Where Yulius runs the suite (agent sessions, CI jobs) it gives the process a CPU budget
 // (SPEC-082). Like the runner's own default of half the cores, half the budget: a worker is a
 // browser and the runner. Elsewhere the runner's default (half the cores; one in CI).
@@ -25,7 +27,7 @@ export default {
         url: 'http://127.0.0.1:0',
         command: {
           executable: 'python3',
-          args: ['-I', '-m', 'http.server', '{port}', '--bind', '127.0.0.1', '--directory', ui],
+          args: ['-I', serve, '{port}', ui],
           log: '.e2e/logs/server.log',
         },
       },

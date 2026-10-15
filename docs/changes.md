@@ -6,6 +6,20 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- The e2e suite holds under host load, and the Editor waits for all of Monaco (SPEC-148,
+  ADR-0122, task #134):
+  - **#354:** the suite's static server (`e2e/serve.py`) keeps connections alive and queues 1024
+    of them. `python3 -m http.server` queued 5 and closed every connection, so on a loaded machine
+    the kernel dropped a page's module requests and the browser waited 1–3 s to try again.
+    Starved to a fifth of a CPU per thread, about 1 run in 360 still fails a 5 s wait; #354
+    stays open for that.
+  - **#394:** a file opened while Monaco loaded made a second editor from the half-loaded
+    `window.monaco`, which lacked five services ("depends on UNKNOWN service ICodeLensCache").
+    The editor now waits for all of `editor.main`, and tests touch Monaco's API only once the
+    Editor shows (`editorShown`). An editor whose setup failed is disposed, so the next file
+    makes one instead of a second.
+  - **#356, #349:** the Editor's first opening is waited for with Monaco's cold-load budget, and the
+    kept-notes test reads the text after a load that can succeed instead of waiting out the backoff.
 - CI jobs and CD runs record what they used (SPEC-154, ADR-0127, task #129; fixes #488): the
   process host measures a job's reaped process tree (CPU time, the largest process's peak memory,
   bytes written on Linux) into `exit.json`, and the job's or run's span gets `cpu_ms`,

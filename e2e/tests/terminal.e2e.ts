@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { failOnPageErrors, mock } from './support.ts';
+import { editorShown, failOnPageErrors, mock, terminalShown } from './support.ts';
 
 failOnPageErrors();
 
@@ -80,15 +80,6 @@ async function hoverPlain(browser: Browser, text: string, scope = '.taskview'): 
   await settle();
   return onLink(browser);
 }
-
-/**
- * Waits until the Editor a link opened shows an editor. Its first opening loads Monaco (many
- * files), which takes however long a starved runner needs (#320): a condition, as in
- * filedrop.e2e.ts.
- */
-const editorLoaded = (browser: Browser) => expect
-  .poll(() => browser.evaluate(() => ((window as unknown as { monaco?: Monaco }).monaco?.editor.getEditors().length ?? 0) > 0), { timeout: 60000 })
-  .toBe(true);
 
 /** Presses and releases the primary button where the pointer rests (a click without moving). */
 async function press(browser: Browser): Promise<void> {
@@ -408,6 +399,9 @@ test('a read-only viewer’s clipboard is never written by the program', async (
 test('a read-only viewer cannot paste', async ({ app, browser, screen }) => {
   await app.open(mock('/s/sandbox-3/t/1'));
   await expect(screen.getByText('Read-only (GitHub: read)')).toBeVisible();
+  // That banner is the sandbox's; the terminal says read-only once its first state arrived, which
+  // shows it. A paste before then has no terminal to land in (#354).
+  await terminalShown(browser);
   await browser.evaluate(() => {
     const data = new DataTransfer();
     data.setData('text/plain', 'should not arrive');
@@ -637,7 +631,7 @@ test('file paths in the task terminal open the editor at the file and line', asy
   // pointer: before, the click lands on plain text).
   await hoverLink(browser, 'src/api/checkout.rs:2:5');
   await press(browser);
-  await editorLoaded(browser);
+  await editorShown(browser);
   await expect(screen.getByRole('tab', /checkout\.rs/)).toHaveAttribute('aria-selected', 'true');
   await expect
     .poll(() => browser.evaluate(() => (window as unknown as { monaco?: Monaco }).monaco?.editor.getEditors()[0]?.getPosition() ?? null))
@@ -656,6 +650,6 @@ test('file names a shell prints open the editor', async ({ app, browser, screen 
   expect(await hoverPlain(browser, 'Cargo.toml', shell), 'not in the repository').toBe(false);
   await hoverLink(browser, 'AGENTS.md', shell);
   await press(browser);
-  await editorLoaded(browser);
+  await editorShown(browser);
   await expect(screen.getByRole('tab', /AGENTS\.md/)).toHaveAttribute('aria-selected', 'true');
 });
