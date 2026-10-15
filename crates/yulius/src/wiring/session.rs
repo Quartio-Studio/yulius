@@ -16,11 +16,11 @@ use yulius_contracts::ptyhost::{
     self as wire, BubblewrapSpec, ClientFrame, ExitReason, ExitRecord, HostFrame, LaunchSpec,
     SignalKind,
 };
-use yulius_sandbox::{cgroup, freeze};
 use yulius_ptyhost::{
     DEFAULT_SPAWN_TIMEOUT, PtyClient, PtyReader, PtyWriter, RunDirState, SpawnedHost,
     inspect_run_dir, spawn_host, terminate_recorded, token_sha256_hex,
 };
+use yulius_sandbox::{cgroup, freeze};
 
 /// The ptyhost wire form of an app-level containment plan (shared with the editor adapter).
 #[must_use]
@@ -260,7 +260,7 @@ impl SessionHost for PtySessionHost {
             Ok(frozen) if frozen.settled => RunFreeze::Frozen,
             Ok(_) => RunFreeze::Freezing,
             Err(error) => {
-                tracing::info!(run = %name, %error, "the run pauses at its turn boundary");
+                tracing::debug!(run = %name, %error, "the run pauses at its turn boundary");
                 // A group frozen before a later write failed must not stay frozen.
                 let _ = freeze::thaw(&tree, &freeze::Procfs, child, &name);
                 RunFreeze::Unsupported

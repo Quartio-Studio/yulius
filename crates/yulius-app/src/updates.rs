@@ -8,13 +8,16 @@
 //!
 //! **Update.** Nothing updates by itself. A superadmin confirms the offered commit, then one run
 //! moves through `building` (the root helper builds the commit; tasks keep working) →
-//! `draining` (every task pauses at its turn boundary: the Stop and `UserPromptSubmit` hooks are
-//! held as for a capacity pause, ADR-17, and new starts queue) → `installing` (the helper stops
+//! `draining` (every task's agent is frozen at once by the process host, mid-turn, SPEC-160; a
+//! run that cannot be frozen pauses at its turn boundary: the Stop and `UserPromptSubmit` hooks
+//! are held as for a capacity pause, ADR-17; new starts queue) → `installing` (the helper stops
 //! the service, backs up, installs, starts and checks the new build, rolling back on failure)
-//! → `resuming` (the held tasks are released one by one) → an outcome. The run is a database row,
-//! so the server that starts after the restart carries it on; the agents are never told.
+//! → `resuming` (the tasks are released and thawed one by one) → an outcome. The run is a
+//! database row, so the server that starts after the restart carries it on; the agents are never
+//! told.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -34,6 +37,7 @@ use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::Secret;
+use crate::ports::session::RunFreeze;
 use crate::ports::updates::{ReleaseSource, ReleaseState, SourceError, UpdateHelper};
 
 /// Automatic checks of `main`.
@@ -146,6 +150,8 @@ pub struct UpdateState {
     released: Mutex<HashSet<TaskId>>,
     /// When each task's hook was last held for the update (ms).
     held_at: Mutex<HashMap<TaskId, i64>>,
+    /// What freezing each task's run did while this server drained (SPEC-160).
+    frozen: Mutex<HashMap<TaskId, Frozen>>,
     check: Mutex<Option<CheckSnapshot>>,
     checking: tokio::sync::Mutex<()>,
     /// "Continue without waiting" was chosen for the draining run.
@@ -165,6 +171,13 @@ pub struct UpdateState {
     started: AtomicBool,
 }
 
+/// A task's run as the drain froze it (SPEC-160).
+#[derive(Debug, Clone)]
+struct Frozen {
+    run_dir: String,
+    state: RunFreeze,
+}
+
 fn build_view(commit: Option<&str>) -> BuildView {
     BuildView {
         commit: commit.map(str::to_owned),
@@ -182,7 +195,7 @@ fn step_message(step: &str) -> Option<&'static str> {
         "fetching" => "Fetching the new version from GitHub.",
         "verifying" => "Checking that the commit is on main.",
         "compiling" => "Building the new version. Tasks keep working meanwhile.",
-        "built" => "Built. Pausing tasks at their next step.",
+        "built" => "Built. Pausing tasks.",
         "stopping" => "Stopping the server. Agent sessions keep running.",
         "backing_up" => "Backing up the database.",
         "installing" => "Installing the new version.",
@@ -269,11 +282,86 @@ impl App {
 
     /// At start: an open run that pauses tasks keeps them paused from the first hook call on
     /// (before the loop runs), so a restart in the middle of an update never lets an agent go on.
+    ///
+    /// With no update holding tasks, every run left frozen (a server that stopped between freeze
+    /// and thaw) is thawed (SPEC-160 OPS-013); one that installs or resumes keeps them frozen
+    /// until it resumes them.
     pub async fn restore_update_hold(&self) {
-        if let Ok(Some(run)) = self.deps.store.open_update_run().await
-            && run.state.holds_tasks()
+        match self.deps.store.open_update_run().await {
+            Ok(Some(run)) if run.state.holds_tasks() => self.set_hold(true),
+            Ok(_) => self.sweep_frozen_runs().await,
+            Err(err) => tracing::warn!(error = %err, "cannot read the open update run"),
+        }
+    }
+
+    /// Freezes the run of every live task not confirmed frozen yet (SPEC-160 OPS-010). A run the
+    /// host cannot freeze pauses at its turn boundary meanwhile (OPS-011) and is asked again on
+    /// the next pass (its run may not have been recorded yet).
+    async fn freeze_live_runs(&self) {
+        let attempts = self.deps.store.live_attempts().await.unwrap_or_default();
+        for attempt in attempts {
+            let confirmed = self.updates.frozen.lock().is_ok_and(|f| {
+                f.get(&attempt.task_id)
+                    .is_some_and(|run| run.state == RunFreeze::Frozen)
+            });
+            if confirmed {
+                continue;
+            }
+            let host = Arc::clone(&self.deps.session_host);
+            let dir = PathBuf::from(&attempt.run_dir);
+            let state = tokio::task::spawn_blocking(move || host.freeze(&dir))
+                .await
+                .unwrap_or(RunFreeze::Unsupported);
+            if let Ok(mut frozen) = self.updates.frozen.lock() {
+                frozen.insert(
+                    attempt.task_id.clone(),
+                    Frozen {
+                        run_dir: attempt.run_dir.clone(),
+                        state,
+                    },
+                );
+            }
+        }
+    }
+
+    /// Thaws one run (blocking work off the runtime).
+    async fn thaw_run(&self, run_dir: &str) {
+        let host = Arc::clone(&self.deps.session_host);
+        let dir = PathBuf::from(run_dir);
+        if tokio::task::spawn_blocking(move || host.thaw(&dir))
+            .await
+            .is_err()
         {
-            self.set_hold(true);
+            tracing::warn!(run = run_dir, "thawing the run panicked");
+        }
+    }
+
+    /// Thaws every run this server froze, then every run group left frozen (OPS-013).
+    async fn thaw_frozen_runs(&self) {
+        let runs: Vec<String> = self
+            .updates
+            .frozen
+            .lock()
+            .map(|mut f| {
+                f.drain()
+                    .filter(|(_, run)| run.state != RunFreeze::Unsupported)
+                    .map(|(_, run)| run.run_dir)
+                    .collect()
+            })
+            .unwrap_or_default();
+        for run in runs {
+            self.thaw_run(&run).await;
+        }
+        self.sweep_frozen_runs().await;
+    }
+
+    /// Thaws every run group the process host finds frozen.
+    async fn sweep_frozen_runs(&self) {
+        let host = Arc::clone(&self.deps.session_host);
+        match tokio::task::spawn_blocking(move || host.thaw_all()).await {
+            Ok(0) => {}
+            Ok(thawed) => tracing::info!(thawed, "thawed runs left frozen by an update"),
+            Err(_) => tracing::warn!("thawing left-over runs panicked"),
         }
     }
 
@@ -841,6 +929,7 @@ impl App {
                 }
             }
             RunState::Draining => {
+                self.freeze_live_runs().await;
                 let progress = self.pause_progress().await;
                 let proceed = self.updates.proceed.load(Ordering::SeqCst);
                 let ready = proceed || progress.waiting.is_empty();
@@ -1002,8 +1091,10 @@ impl App {
         }
     }
 
-    /// Ends the hold: every task goes on, queued tasks start, paused capacity is re-evaluated.
+    /// Ends the hold: every task goes on (frozen runs are thawed), queued tasks start, paused
+    /// capacity is re-evaluated.
     async fn end_update_hold(&self) {
+        self.thaw_frozen_runs().await;
         self.set_hold(false);
         self.updates.proceed.store(false, Ordering::SeqCst);
         self.capacity_changed();
@@ -1015,26 +1106,22 @@ impl App {
         services: &UpdateServices,
         run: &UpdateRunRecord,
     ) {
-        let mut live: Vec<(i64, TaskId)> = match self.deps.store.live_attempts().await {
-            Ok(attempts) => {
-                let held = self
-                    .updates
-                    .held_at
-                    .lock()
-                    .map(|h| h.clone())
-                    .unwrap_or_default();
-                attempts
-                    .into_iter()
-                    .map(|a| {
-                        (
-                            held.get(&a.task_id).copied().unwrap_or(a.started_at.0),
-                            a.task_id,
-                        )
-                    })
-                    .collect()
-            }
-            Err(_) => Vec::new(),
-        };
+        let attempts = self.deps.store.live_attempts().await.unwrap_or_default();
+        let held = self
+            .updates
+            .held_at
+            .lock()
+            .map(|h| h.clone())
+            .unwrap_or_default();
+        let mut live: Vec<(i64, TaskId)> = attempts
+            .iter()
+            .map(|a| {
+                (
+                    held.get(&a.task_id).copied().unwrap_or(a.started_at.0),
+                    a.task_id.clone(),
+                )
+            })
+            .collect();
         live.sort();
         live.dedup_by(|a, b| a.1 == b.1);
         let total = u32::try_from(live.len()).unwrap_or(u32::MAX);
@@ -1046,6 +1133,13 @@ impl App {
             }
             if let Ok(mut released) = self.updates.released.lock() {
                 released.insert(task.clone());
+            }
+            // Released first: its first hook after the thaw is not held.
+            for attempt in attempts.iter().filter(|a| a.task_id == *task) {
+                self.thaw_run(&attempt.run_dir).await;
+            }
+            if let Ok(mut frozen) = self.updates.frozen.lock() {
+                frozen.remove(task);
             }
             let done = u32::try_from(index + 1).unwrap_or(u32::MAX);
             self.updates.resumed.store(done, Ordering::SeqCst);
@@ -1084,6 +1178,17 @@ impl App {
             .lock()
             .map(|h| h.clone())
             .unwrap_or_default();
+        let frozen: HashSet<TaskId> = self
+            .updates
+            .frozen
+            .lock()
+            .map(|f| {
+                f.iter()
+                    .filter(|(_, run)| run.state == RunFreeze::Frozen)
+                    .map(|(task, _)| task.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut tasks: Vec<TaskId> = store
             .live_attempts()
             .await
@@ -1096,6 +1201,10 @@ impl App {
         let mut paused = 0_u32;
         let mut waiting = Vec::new();
         for id in &tasks {
+            if frozen.contains(id) {
+                paused += 1;
+                continue;
+            }
             let Ok(Some(task)) = store.task(id).await else {
                 paused += 1;
                 continue;
@@ -1210,10 +1319,7 @@ impl App {
                 message = Some(if pause.waiting.is_empty() {
                     "Every task is paused. Restarting next.".to_owned()
                 } else {
-                    format!(
-                        "Pausing tasks at their next step: {} of {} paused.",
-                        pause.paused, pause.total
-                    )
+                    format!("Pausing tasks: {} of {} paused.", pause.paused, pause.total)
                 });
                 step = Some("pausing".into());
                 tasks = Some(pause);

@@ -114,7 +114,10 @@ fn groups(
     }
     let own = procs.cgroup(child).ok_or(FreezeError::Gone)?;
     let relative = own.trim().trim_start_matches('/');
-    if relative.split('/').any(|c| c == ".." || c == "." || c.is_empty()) {
+    if relative
+        .split('/')
+        .any(|c| c == ".." || c == "." || c.is_empty())
+    {
         return Err(FreezeError::NotDelegated);
     }
     let current = tree.root.join(relative);
@@ -310,7 +313,10 @@ mod tests {
         }
 
         fn parent(&self, pid: u32) -> Option<u32> {
-            self.0.iter().find(|(p, _, _)| *p == pid).map(|(_, p, _)| *p)
+            self.0
+                .iter()
+                .find(|(p, _, _)| *p == pid)
+                .map(|(_, p, _)| *p)
         }
     }
 
@@ -348,7 +354,11 @@ mod tests {
         let frozen = freeze(&tree, &table(), 100, "a1")?;
         assert_eq!(frozen.group, group);
         assert_eq!(std::fs::read_to_string(group.join("cgroup.freeze"))?, "1");
-        assert_eq!(frozen.moved, vec![100, 101, 102], "never the ptyhost or a shell");
+        assert_eq!(
+            frozen.moved,
+            vec![100, 101, 102],
+            "never the ptyhost or a shell"
+        );
         // A fake `cgroup.procs` keeps the last write; the kernel moves each process.
         assert_eq!(std::fs::read_to_string(group.join("cgroup.procs"))?, "102");
         assert!(!frozen.settled, "frozen only once the kernel says so");

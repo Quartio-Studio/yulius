@@ -1,12 +1,19 @@
 //! A fake `main` source and update helper (SPEC-002 ADR-18): what GitHub shows and what the root
 //! helper reports, set by the test.
 
+use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use yulius::wiring::pending::UnavailableSessionHost;
+use yulius_app::error::AppResult;
 use yulius_app::model::Secret;
+use yulius_app::ports::session::{
+    AttachedRun, LaunchPlan, RunFreeze, RunInspection, SessionHost, SpawnedRun,
+};
 use yulius_app::ports::updates::{
     ReleaseSource, ReleaseState, RemoteCommit, SourceError, UpdateHelper,
 };
@@ -147,4 +154,105 @@ pub fn services(build: &str, source: &Arc<FakeSource>, helper: &Arc<FakeHelper>)
     services.check_every = None;
     services.resume_stagger = Duration::from_millis(20);
     services
+}
+
+/// A process host that freezes runs as the cgroup freezer would (SPEC-160): runs answer
+/// [`RunFreeze::Frozen`] unless set otherwise; every freeze, thaw and sweep is recorded.
+pub struct FreezingHost {
+    /// What freezing a run directory answers (default frozen).
+    pub answers: Mutex<HashMap<String, RunFreeze>>,
+    /// Run directories frozen and not thawed.
+    pub frozen: Mutex<Vec<String>>,
+    /// Run directories thawed, in order.
+    pub thawed: Mutex<Vec<String>>,
+    /// [`SessionHost::thaw_all`] calls.
+    pub sweeps: AtomicUsize,
+}
+
+impl FreezingHost {
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self {
+            answers: Mutex::new(HashMap::new()),
+            frozen: Mutex::new(Vec::new()),
+            thawed: Mutex::new(Vec::new()),
+            sweeps: AtomicUsize::new(0),
+        })
+    }
+
+    /// Freezing `run_dir` answers `answer` from now on.
+    pub fn answer(&self, run_dir: &str, answer: RunFreeze) {
+        if let Ok(mut answers) = self.answers.lock() {
+            answers.insert(run_dir.into(), answer);
+        }
+    }
+
+    pub fn frozen(&self) -> Vec<String> {
+        self.frozen.lock().map(|f| f.clone()).unwrap_or_default()
+    }
+
+    pub fn thawed(&self) -> Vec<String> {
+        self.thawed.lock().map(|t| t.clone()).unwrap_or_default()
+    }
+}
+
+#[async_trait]
+impl SessionHost for FreezingHost {
+    async fn spawn(
+        &self,
+        run_dir: &Path,
+        attempt_id: &str,
+        task_id: &str,
+        plan: &LaunchPlan,
+        token: &[u8; 32],
+        size: (u16, u16),
+    ) -> AppResult<SpawnedRun> {
+        UnavailableSessionHost
+            .spawn(run_dir, attempt_id, task_id, plan, token, size)
+            .await
+    }
+    async fn attach(&self, run_dir: &Path, token: &[u8; 32]) -> AppResult<AttachedRun> {
+        UnavailableSessionHost.attach(run_dir, token).await
+    }
+    fn inspect(&self, run_dir: &Path) -> RunInspection {
+        UnavailableSessionHost.inspect(run_dir)
+    }
+    fn terminate(&self, run_dir: &Path) -> AppResult<()> {
+        UnavailableSessionHost.terminate(run_dir)
+    }
+    fn freeze(&self, run_dir: &Path) -> RunFreeze {
+        let dir = run_dir.to_string_lossy().into_owned();
+        let answer = self
+            .answers
+            .lock()
+            .ok()
+            .and_then(|a| a.get(&dir).copied())
+            .unwrap_or(RunFreeze::Frozen);
+        if answer != RunFreeze::Unsupported
+            && let Ok(mut frozen) = self.frozen.lock()
+            && !frozen.contains(&dir)
+        {
+            frozen.push(dir);
+        }
+        answer
+    }
+    fn thaw(&self, run_dir: &Path) {
+        let dir = run_dir.to_string_lossy().into_owned();
+        if let Ok(mut frozen) = self.frozen.lock() {
+            frozen.retain(|d| *d != dir);
+        }
+        if let Ok(mut thawed) = self.thawed.lock() {
+            thawed.push(dir);
+        }
+    }
+    fn thaw_all(&self) -> usize {
+        self.sweeps.fetch_add(1, Ordering::SeqCst);
+        self.frozen
+            .lock()
+            .map(|mut f| {
+                let n = f.len();
+                f.clear();
+                n
+            })
+            .unwrap_or(0)
+    }
 }
