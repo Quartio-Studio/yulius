@@ -145,14 +145,17 @@ export function mountTaskView(ctx, sandbox, task) {
 
   // ---- phone quick input
   const quickInput = h('input', { class: 'input', type: 'text', placeholder: 'Message the agent…', autocomplete: 'off', autocapitalize: 'off', enterkeyhint: 'send', 'aria-label': 'Quick input' });
+  // Types text into the session and submits it separately, so TUIs treat it as typed input, not a
+  // pasted newline. False when the terminal refused it (it says why: read-only, not connected).
+  const typeAndSubmit = (text) => {
+    if (!terminal.sendKeys(text)) return false;
+    setTimeout(() => terminal.sendKeys('\r'), 60);
+    return true;
+  };
   const sendQuick = () => {
     const text = quickInput.value;
     if (!text) { terminal.sendKeys('\r'); return; }
-    if (terminal.sendKeys(text)) {
-      quickInput.value = '';
-      // Submit separately so TUIs treat the text as typed input, not a pasted newline.
-      setTimeout(() => terminal.sendKeys('\r'), 60);
-    }
+    if (typeAndSubmit(text)) quickInput.value = '';
   };
   quickInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); sendQuick(); } });
   const quickbar = h('div', { class: 'quickbar' },
@@ -164,11 +167,45 @@ export function mountTaskView(ctx, sandbox, task) {
   // the terminal (each resize makes Claude Code redraw its whole screen, F 2026-10-09).
   const attention = h('div', { class: 'attention-bar', role: 'status', hidden: true });
   // Where the user answers the agent: its terminal (the quick input on phones).
-  const reply = () => (isPhone() ? quickInput.focus() : terminal.focus());
+  const focusReply = () => (isPhone() ? quickInput.focus() : terminal.focus());
+  // A text answer (Needs you, waiting for your reply) is written in a field in the bar and typed
+  // into the session (SPEC-156): focusing the terminal alone showed nothing, as Claude Code draws
+  // its own cursor. Phones have the quick input for it.
+  let replying = false;
+  const replyInput = h('input', { class: 'input', type: 'text', placeholder: 'Reply to the agent…', autocomplete: 'off', enterkeyhint: 'send', 'aria-label': 'Reply to the agent' });
+  const replyButton = h('button', { type: 'button', class: 'btn btn-sm', onClick: () => {
+    if (isPhone()) { quickInput.focus(); return; }
+    replying = true;
+    renderAttention();
+    replyInput.focus();
+  } }, 'Reply');
+  const closeReply = () => {
+    replying = false;
+    renderAttention();
+    if (replyButton.isConnected) replyButton.focus();
+  };
+  const sendReply = () => {
+    const text = replyInput.value.trim();
+    if (!text) { replyInput.focus(); return; }
+    if (!typeAndSubmit(text)) return;
+    replyInput.value = '';
+    replying = false;
+    renderAttention();
+    terminal.focus();
+  };
+  replyInput.addEventListener('keydown', (event) => {
+    if (event.isComposing) return;
+    if (event.key === 'Enter') { event.preventDefault(); sendReply(); }
+    else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeReply(); }
+  });
+  const replyForm = h('div', { class: 'attention-reply' }, replyInput,
+    h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: sendReply }, 'Send'),
+    h('button', { type: 'button', class: 'btn btn-sm', onClick: closeReply }, 'Cancel'));
   function renderAttention() {
     const pr = ctx.store.pullsOf(current.sandbox_id).get(current.id);
     const info = taskInfo(current, ctx.store.state.actionRequests, pr);
     let content = null;
+    let answers = null; // the reply button or field, when the bar asks for a text answer
     const access = (ctx.store.sandboxById(sandbox.id) || sandbox).access;
     const can = taskActions(current, access, pr, me());
     const request = current.control_request;
@@ -222,16 +259,16 @@ export function mountTaskView(ctx, sandbox, task) {
       const asked = info.needsYou;
       content = [icon('st-attention', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'Needs you: '), asked.action, asked.why ? ` · ${asked.why}` : ''),
         asked.link ? h('a', { class: 'btn btn-sm', href: asked.link, target: asked.link.startsWith(location.origin) ? null : '_blank', rel: 'noopener' }, 'Open') : null,
-        owner() ? null : h('button', { type: 'button', class: 'btn btn-sm', onClick: reply }, 'Reply')];
+        owner() ? null : (answers = replying ? replyForm : replyButton)];
     } else if (info.request) {
       content = [icon('globe', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'Action needed in the browser: '), info.request.reason || 'the agent asked you to do something there.'),
         h('button', { type: 'button', class: 'btn btn-sm', onClick: () => ctx.openBrowserTab && ctx.openBrowserTab(sandbox, info.request.tab_id) }, 'Open browser tab')];
     } else if (current.status === 'running' && current.activity === 'needs_attention') {
       content = [icon('st-attention', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'The agent needs your attention. '), 'Its question is in the terminal below.'),
-        owner() ? null : h('button', { type: 'button', class: 'btn btn-sm', onClick: reply }, 'Reply')];
+        owner() ? null : h('button', { type: 'button', class: 'btn btn-sm', onClick: focusReply }, 'Reply')];
     } else if (current.status === 'running' && current.activity === 'waiting' && info.group === 'needs') {
       content = [icon('st-input', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'The agent is waiting for your reply. '), 'Type it in the terminal below.'),
-        owner() ? null : h('button', { type: 'button', class: 'btn btn-sm', onClick: reply }, 'Reply')];
+        owner() ? null : (answers = replying ? replyForm : replyButton)];
     }
     attention.hidden = !content && !control;
     attention.classList.toggle('waiting', !control && !info.request && current.activity === 'waiting' && info.group === 'needs');
@@ -239,9 +276,19 @@ export function mountTaskView(ctx, sandbox, task) {
     // A waiting task's start chip and buttons go below its words (SPEC-126).
     const waits = (current.status === 'chained' || current.status === 'prepared') && can.startNow;
     attention.classList.toggle('wrap', waits && !control);
+    // No text answer asked any more: the field closes (its words wait for the next Reply).
+    if (answers !== replyForm) replying = false;
+    attention.classList.toggle('replying', answers === replyForm);
+    // The bar is rebuilt on every task update: someone typing a reply keeps the keyboard and caret.
+    const typing = document.activeElement === replyInput;
+    const caret = typing ? [replyInput.selectionStart, replyInput.selectionEnd, replyInput.selectionDirection] : null;
     setChildren(attention, control && content
       ? [h('div', { class: 'attention-row' }, control), h('div', { class: 'attention-row' }, content)]
       : control || content);
+    if (typing && replyInput.isConnected) {
+      replyInput.focus();
+      replyInput.setSelectionRange(...caret);
+    }
   }
   // A browser request changes the bar and the state in the strip ("Needs you in the browser").
   destroyers.push(ctx.store.on('browser-action', (event) => { if (event.sandbox_id === sandbox.id) renderStrip(); }));

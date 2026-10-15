@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- Reply in a task's attention bar does something visible (SPEC-156, task #147, #516). On
+  "Needs you" and "The agent is waiting for your reply" it opens a reply field in the bar; Enter or
+  Send types the answer into the session as the person's prompt, which also ends a `needs_you`
+  request, and Escape or Cancel closes it. Before, Reply only focused the terminal, which showed
+  nothing because Claude Code draws its own cursor. Phones keep their quick input.
 - Uploading files and positioning them are two steps again in the new-task composer (SPEC-150,
   ADR-0124, task #144). Pasted or dropped files show in a tray above the prompt, numbered; a click
   opens an image large, fitted to the window or at its actual size. In the text each file is a
