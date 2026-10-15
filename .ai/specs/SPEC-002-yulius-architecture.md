@@ -1719,7 +1719,11 @@ task is created then; continuing a `pending` sandbox's onboarding task and impor
 `POST /api/sandboxes` start it only from a browser session too); `preparing → ready` when the task has finished — it rests after running, or its turn ended
 with every step of its plan resolved — and the project validates in its worktree or the clone
 (re-evaluated on reads, turn ends, task closes and the gate);
-`→ skipped` by an admin. Failure: a start failure leaves `pending` (shown with what is pending);
+`→ skipped` by an admin. Every change is a compare-and-set from the state it was decided on, so a
+start or a refresh running during a skip never writes over it (attaching a new onboarding task
+writes `pending` under the lock a skip takes; SPEC-153, ADR-0126); the resting
+onboarding task of a `pending` sandbox is summarised `not_started` and `awaits_start_onboarding`,
+not Closed. Failure: a start failure leaves `pending` (shown with what is pending);
 no subscription with capacity leaves the task paused and the sandbox `preparing` (ADR-17). While
 `pending/preparing`, a new task (create, held-prompt choice, chain, automation run) is created
 `chained` after the preparation task (`App::onboarding_wait`) and released by `advance_chains`
@@ -1844,9 +1848,10 @@ Claude's own keys. For a linked worktree it also trusts the main repository (rea
 worktree's `.git` file and `commondir`), where Claude Code 2.1.292 looks a worktree's trust up when
 `.claude/settings.json` pre-approves tools (SPEC-106, measured 2026-10-14). A trust prompt that
 appears all the same is left to a person: a launch-prompt goal runs once it is answered, a typed
-one is typed after it (SPEC-117). It also sets
-`diffSidebarOpen: false` there and `"open": false` in existing stores of the built-in diff plugin (`<CLAUDE_CONFIG_DIR>/plugins/store`), so Claude Code's diff side
-panel does not open by itself beside the transcript in a wide task terminal (SPEC-024).
+one is typed after it (SPEC-117). It also sets `diffSidebarOpen: false` there and
+`"open": false` in existing stores of the built-in diff plugin
+(`<CLAUDE_CONFIG_DIR>/plugins/store`), so Claude Code's diff side panel does not open by itself
+beside the transcript in a wide task terminal (SPEC-024).
 Enabled skills are copied into `<CLAUDE_CONFIG_DIR>/skills` at each launch.
 
 MCP servers (MCP-001/004) are part of every launch, not of an account: the supervisor passes the

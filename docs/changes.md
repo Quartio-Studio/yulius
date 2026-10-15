@@ -12,6 +12,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   updates, Restrict deletions, Block force pushes, only repository admins bypass) as the person who
   owns the task, when GitHub says they are a repository admin. The agent asks a person with
   `needs_you` only when that is refused; its own token still cannot change protection.
+- Onboarding writes never undo a Skip; a task that never ran is not Closed (SPEC-153, ADR-0126,
+  task #126, fixes #406, #431 and #399):
+  - **#406:** every onboarding state write is a compare-and-set from the state it read, so Start
+    onboarding running while an admin skips leaves the sandbox `skipped`. The mock nit was already
+    done by #405.
+  - **#431:** a test archives a live, Done onboarding task in a `preparing` sandbox and gets it
+    closed, archived and the sandbox `ready`. The close's "changing state" 409 now reads "stop the
+    task first" for archive and delete, and `archive_task` documents its 409s. SPEC-002's long
+    line is reflowed.
+  - **#399:** the task summary says `not_started` and `awaits_start_onboarding`. The UI reads the
+    onboarding task of a `pending` sandbox "Waits for Start onboarding", and a task that never ran
+    "Not started". Neither is in the Closed group, tab or count.
 - Uploading files and positioning them are two steps again in the new-task composer (SPEC-150,
   ADR-0124, task #144). Pasted or dropped files show in a tray above the prompt, numbered; a click
   opens an image large, fitted to the window or at its actual size. In the text each file is a
