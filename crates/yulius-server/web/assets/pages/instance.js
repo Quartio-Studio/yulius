@@ -1,7 +1,7 @@
 // Instance (superadmin; SPEC-001 OPS-006..OPS-009, ADM-002): the version this server runs, the
-// update offered from main with its new commits, "Update now" and the update's progress
-// (building → pausing tasks → restarting → resuming, with a failure or rollback said plainly),
-// and the Jev key.
+// update offered from main (checked when the page opens, SPEC-149) with its new commits, "Update
+// now" and the update's progress (building → pausing tasks → restarting → resuming, with a
+// failure or rollback said plainly), and the Jev key.
 
 import { h, icon, setChildren, errorToast, confirmDialog, badge, skeleton } from '../dom.js';
 import { relLong, dateTime } from '../format.js';
@@ -116,7 +116,7 @@ export function mountInstancePage(ctx) {
       const relation = check.relation === 'ahead' ? ' This build is newer than main.' : '';
       parts.push(h('p', { class: 'muted xs' }, `Checked ${relLong(check.checked_at)} ${via}.${relation}`));
     } else {
-      parts.push(h('p', { class: 'muted xs' }, `${BRAND.name} checks main every hour. Check now to look at once.`));
+      parts.push(h('p', { class: 'muted xs' }, `${BRAND.name} checks main when this page opens and every hour.`));
     }
     if (view.helper_installed === false) {
       parts.push(h('div', { class: 'banner banner-info', role: 'note' }, icon('shield', { size: 16 }),
@@ -147,14 +147,15 @@ export function mountInstancePage(ctx) {
     setChildren(updatesBody, ...parts);
   }
 
-  async function checkNow() {
+  /** Reads main now; `quiet` (the check on opening) keeps the last result if it fails (SPEC-149). */
+  async function checkNow({ quiet = false } = {}) {
     checkButton.disabled = true;
     checkButton.classList.add('busy');
     try {
       await ctx.api.post('/api/admin/update/check', {});
       await ctx.updates.refresh();
     } catch (error) {
-      errorToast(error, 'Couldn’t check for updates');
+      if (!quiet) errorToast(error, 'Couldn’t check for updates');
     } finally {
       checkButton.disabled = false;
       checkButton.classList.remove('busy');
@@ -192,6 +193,8 @@ export function mountInstancePage(ctx) {
     ctx.updates.setQuiet(true);
     if (ctx.updates.view()) render(ctx.updates.view());
     ctx.updates.refresh();
+    // Opening the page checks main at once; the server reuses a check younger than 30 s.
+    checkNow({ quiet: true });
   }
   return {
     el: frame.el,
