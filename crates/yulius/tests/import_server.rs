@@ -407,6 +407,11 @@ async fn onboarding_starts_only_from_the_browser() -> TestResult {
     assert_eq!(task_plan.body["steps"], plan.body["steps"]);
     let unchanged = w.h.store.sandbox(&sandbox.id).await?.ok_or("sandbox")?;
     assert_eq!(unchanged.onboarding_state, "pending");
+    // SPEC-153 OLC-005 (#399): it never ran, so it is not Closed: it waits for Start onboarding.
+    let summary = onboarding_summary(&w, &alice, &sandbox.id).await?;
+    assert_eq!(summary["status"], "closed", "{summary:?}");
+    assert_eq!(summary["not_started"], true, "{summary:?}");
+    assert_eq!(summary["awaits_start_onboarding"], true, "{summary:?}");
 
     // Nor can a CLI token continue the resting onboarding task itself.
     let prep = unchanged
@@ -451,6 +456,70 @@ async fn onboarding_starts_only_from_the_browser() -> TestResult {
         Some(&prep),
         "Start onboarding starts the task the new task waits after"
     );
+    let summary = onboarding_summary(&w, &alice, &sandbox.id).await?;
+    assert_eq!(summary["not_started"], false, "it started: {summary:?}");
+    assert_eq!(summary["awaits_start_onboarding"], false, "{summary:?}");
+    Ok(())
+}
+
+/// The onboarding task's summary in its sandbox's task list.
+async fn onboarding_summary(w: &World, creds: &Creds, sandbox: &SandboxId) -> Result<Value, Error> {
+    let listed = call(
+        &w.h.router,
+        Method::GET,
+        &format!("/api/sandboxes/{sandbox}/tasks"),
+        None,
+        creds,
+    )
+    .await?;
+    Ok(listed
+        .body
+        .as_array()
+        .ok_or("tasks")?
+        .iter()
+        .find(|task| task["origin"] == "onboarding")
+        .ok_or("no onboarding task")?
+        .clone())
+}
+
+/// SPEC-153 OLC-005 (#399): skipped before it ran, the onboarding task waits for nothing but has
+/// still not started: it reads as such, not as waiting for Start onboarding.
+#[tokio::test]
+async fn a_skipped_onboarding_task_reads_not_started() -> TestResult {
+    let w = World::new("org").await?;
+    let (_, alice) = w.user("alice", false).await?;
+    let remote = w.remote(
+        OWNER,
+        "shop",
+        &[("README.md", "# Shop\n"), ("src/app.txt", "v1\n")],
+        &[],
+    )?;
+    w.grant("alice", "shop", "admin");
+    let offer = laptop_offer(&w, &remote)?;
+    let created = create_job(&w, &alice, offer.body()?).await?;
+    assert_eq!(created.status, StatusCode::OK, "{:?}", created.body);
+    let sandbox = w.h.store.sandboxes().await?.remove(0);
+    let waiting = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{}/tasks", sandbox.id),
+        Some(json!({"prompt": "add a cart", "harness": "claude"})),
+        &alice,
+    )
+    .await?;
+    assert_eq!(waiting.status, StatusCode::CREATED, "{:?}", waiting.body);
+    let skip = call(
+        &w.h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{}/onboarding/skip", sandbox.id),
+        None,
+        &alice,
+    )
+    .await?;
+    assert_eq!(skip.status, StatusCode::OK, "{:?}", skip.body);
+    let summary = onboarding_summary(&w, &alice, &sandbox.id).await?;
+    assert_eq!(summary["not_started"], true, "{summary:?}");
+    assert_eq!(summary["awaits_start_onboarding"], false, "{summary:?}");
     Ok(())
 }
 

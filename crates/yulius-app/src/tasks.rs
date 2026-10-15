@@ -127,6 +127,18 @@ impl App {
         };
         let (after, next) = self.chain_links(task).await;
         let times = store.task_times(&task.id).await?;
+        let not_started =
+            task.status == TaskStatus::Closed && store.attempts(&task.id).await?.is_empty();
+        let awaits_start_onboarding = not_started
+            && task.origin == TaskOrigin::Onboarding
+            && store
+                .sandbox(&task.sandbox_id)
+                .await?
+                .is_some_and(|sandbox| {
+                    sandbox.onboarding_task_id.as_ref() == Some(&task.id)
+                        && crate::onboarding::OnboardingState::parse(&sandbox.onboarding_state)
+                            == Some(crate::onboarding::OnboardingState::Pending)
+                });
         Ok(TaskSummary {
             id: task.id.to_string(),
             sandbox_id: task.sandbox_id.to_string(),
@@ -188,6 +200,8 @@ impl App {
             yulius_wait: task.status == TaskStatus::Running
                 && task.activity.is_some_and(Activity::is_idle)
                 && self.agent_waits_on_yulius(&task.id),
+            not_started,
+            awaits_start_onboarding,
         })
     }
 

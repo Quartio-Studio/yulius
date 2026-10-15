@@ -119,6 +119,14 @@ pub struct TaskSummary {
     /// person ("when I decide") or is not prepared.
     #[serde(default)]
     pub start_at: Option<String>,
+    /// The task rests without ever having run (`closed` with no attempt: created resting, or
+    /// ended before its first run), so it is not shown as Closed (SPEC-153 OLC-005).
+    #[serde(default)]
+    pub not_started: bool,
+    /// It never ran and is the onboarding task its `pending` sandbox waits for: it starts with
+    /// Start onboarding (SPEC-153 OLC-005).
+    #[serde(default)]
+    pub awaits_start_onboarding: bool,
 }
 
 /// How "Auto" chose a new task's mode and workflow (SPEC-001 TSK-015).
