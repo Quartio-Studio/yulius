@@ -1281,8 +1281,9 @@ a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
 /* A narrow centre (a tool panel open beside it): the step name, then the state and count give way,
    so the strip's parts never overlap (UI-046). */
 @container strip (max-width: 560px) {
-  .step-progress { width: 60px; }
-  .step-current, .strip-extra { display: none; }
+  /* `.stepstrip` outranks the base rule that comes later (it kept the bar at 120 px, #348). */
+  .stepstrip .step-progress { width: 60px; }
+  .step-current, .strip-extras { display: none; }
 }
 @container strip (max-width: 420px) {
   .strip-state, .step-count { display: none; }
@@ -1315,6 +1316,10 @@ a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
 button.strip-pr { background: transparent; font-family: inherit; cursor: pointer; }
 .strip-extras { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
 .strip-extras:empty { display: none; }
+/* Parts that gave way so the strip keeps within its edge (#348, fitStrip in taskview.js); while
+   the chips decide, the state keeps its words, so chips go first. */
+.stepstrip-main .strip-gone { display: none; }
+.strip-fitting .strip-status { flex-shrink: 0; }
 .strip-status { display: inline-flex; align-items: center; gap: 4px; min-width: 30px; max-width: 40%; height: var(--control-sm); padding: 0 8px; border-radius: var(--radius-full); font-size: var(--fs-sm); line-height: var(--lh-sm); color: var(--text-2); white-space: nowrap; }
 .strip-status .glyph { flex: none; }
 .strip-state { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
@@ -2214,7 +2219,7 @@ a.dl-task:hover { text-decoration: underline; }
   .quickbar { display: flex; }
   .step-progress { width: 60px; }
   /* Phones: the task title keeps the strip; state shows as its icon, the step as the bar (UX2-06). */
-  .strip-state, .strip-extra, .step-count { display: none; }
+  .strip-state, .strip-extras, .step-count { display: none; }
   .step-current { display: none; }
   .stepstrip-toggle { min-width: 0; }
   .composer { padding-top: 16px; }
