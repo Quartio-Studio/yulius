@@ -79,6 +79,17 @@ flowchart LR
   S --> W["crates/yulius-server/web"]
 ```
 
+## Containers
+
+An isolated sandbox runs no container engine. Its runs (agents, CI jobs, CD) have Docker's default
+capability set and a seccomp filter without mount APIs or nested user namespaces, which a daemon
+needs; a `docker` client is there only when the base copied one from the host's `/usr`. The
+briefing says so in a `## Containers` section, its last mandatory part, and points agents to an
+engine on another machine (`DOCKER_HOST=ssh://…`) and to `apt` for test services
+([SPEC-173](../.ai/specs/SPEC-173-i-got-this-from-a-different-projectfix.md),
+[decision 0140](decisions/0140-isolated-sandboxes-have-no-container-engine-agents-are-told.md)); an
+engine per sandbox is #551.
+
 ## Disk
 
 A sandbox has a soft disk quota. The application prunes build caches of tasks that do not
@@ -973,7 +984,11 @@ the job's end and the end trigger adds them to its span
 [decision 0127](decisions/0127-a-job-s-resource-use-comes-from-its-process-host.md)). Nothing
 outside Yulius writes a span; the API only reads them, and the Dashboard's Pipeline tab (SPEC-161),
 the run dialogs, the task overview and the Dashboard's Overview draw them. Spans older than 180
-days go with the hourly CI upkeep.
+days go with the hourly CI upkeep. A waterfall (`stages.js`) draws one subject's spans on a time
+axis with a legend, folds a span's children (one with a failure opens), and in a CI run puts each
+job's slot wait on the job's own row under "Jobs", paired by the job id in the span keys
+([SPEC-165](../.ai/specs/SPEC-165-for-very-complex-tests-it-s-not-readable.md),
+[decision 0136](decisions/0136-a-ci-job-s-slot-wait-is-drawn-on-its-own-row.md)).
 
 ```mermaid
 flowchart LR
