@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- CI and CD are one CI/CD page (SPEC-151, task #145, ADR-0125): the sidebar's single **CI/CD**
+  entry opens a page whose **CI (tests)** and **CD (deployment)** tabs work like the Secrets page's
+  Team and Agent tabs; the CD tab is `?section=cd` and `/s/<slug>/cd` (with `?run=`) still opens it.
 - `pulls.e2e.ts` waits on conditions, and a failed read keeps the real chips (SPEC-144, task #133):
   - **#438, #461:** `chipsAfterRead` returns once every sidebar chip is drawn with its label. Rows
     skip rendering until drawn (`content-visibility: auto`), so a chip read before the next frame
