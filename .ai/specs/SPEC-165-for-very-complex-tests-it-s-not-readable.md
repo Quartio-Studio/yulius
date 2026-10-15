@@ -74,8 +74,8 @@ carry their `job`. This is a presentation change; the API and the spans stay as 
 
 ## Acceptance criteria
 
-- AC1 (STR-001, STR-002, STR-003): mock run `ci_s4` (running, 12 jobs, eight of which waited for a
-  slot) shows no row named "Waiting for a job slot"; the row "engine" has a hatched and a solid
+- AC1 (STR-001, STR-002, STR-003): mock run `ci_s4` (running, eight jobs that waited 6 to 9 min
+  for a slot) shows no row named "Waiting for a job slot"; the row "engine" has a hatched and a solid
   segment that touch, says "waited 6 min" and "running", and the rows under "Jobs" are in waiting
   order.
 - AC2 (STR-004): in `ci_s4`, a job's "Checkout" is hidden until its job's disclosure is opened; in
@@ -108,4 +108,4 @@ carry their `job`. This is a presentation change; the API and the spans stay as 
   run"; the Table keeps the clock time of each start.
 - **Jobs still waiting with no span stay out.** A job waiting for a slot has no span until it gets
   one (`ci::exec` records the wait when it ends); the dialog's job chips show them. Recording an
-  open wait span is a backend change, filed as a follow-up issue.
+  open wait span is a backend change, filed as #536.
