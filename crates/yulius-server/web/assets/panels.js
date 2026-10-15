@@ -123,6 +123,7 @@ export function createPanelHost(ctx) {
   const views = new Map(); // key → view
   let recent = []; // sandbox ids whose views are kept, the one used last first
   const toolOf = new Map(); // sandbox id → the tool it had open, or null (SPEC-113 KST-005)
+  const arriving = new Set(); // sandbox ids whose page is loading, not the context yet (SPEC-170)
 
   // ---- width (default 45 % of the work area, resizable, remembered per user in this browser). The
   // work area is the room the centre and the panel share: the window less the rail and the sidebar,
@@ -311,7 +312,15 @@ export function createPanelHost(ctx) {
     /** Applies the remembered rail visibility once the rail is in the document. */
     mounted() { setRailVisible(railVisible, { persist: false }); },
     get kind() { return panel.hidden ? null : kind; },
+    /** A sandbox's page started loading: setContext comes once it has, unless the person left first. */
+    arrive(next) { arriving.add(next.id); },
     setContext(nextSandbox, nextTask) {
+      // A sandbox left while its page loaded never was the context: it comes back with no tool,
+      // unless it kept one from an earlier visit (SPEC-170 TKS-001, #489).
+      for (const id of arriving) {
+        if (id !== (nextSandbox && nextSandbox.id) && id !== (sandbox && sandbox.id) && !toolOf.has(id)) toolOf.set(id, null);
+      }
+      arriving.clear();
       const sandboxChanged = (nextSandbox && nextSandbox.id) !== (sandbox && sandbox.id);
       const taskChanged = (nextTask && nextTask.id) !== (task && task.id);
       const left = sandbox;

@@ -208,6 +208,22 @@ test('a sandbox left without a tool comes back without one', async ({ app, brows
   await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
 });
 
+// #489 (SPEC-170 TKS-001): a sandbox left while its page still loads never became the panel's
+// context; it is recorded as having no tool, not given the other sandbox's tool on return.
+test('a sandbox left while its page loads comes back without a tool', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12', '&hold=/api/sandboxes/sb_studio/tasks'));
+  await expect(tab(screen, 'studio')).toHaveAttribute('aria-current', 'page');
+  await tab(screen, 'product').click();
+  await expect(heading(screen)).toHaveText('New task');
+  await openSuperagent(browser, screen);
+  await expect(screen.getByRole('region', 'Tool panel')).toBeVisible();
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+
+  await tab(screen, 'studio').click();
+  await expect(heading(screen)).toHaveText('#12 Checkout API');
+  await expect(screen.getByRole('region', 'Tool panel')).toBeHidden();
+});
+
 test('the back links of a session and an MCP server return to the list’s filters', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/sessions'));
   await screen.getByRole('searchbox', 'Search sessions').fill('stripe');
