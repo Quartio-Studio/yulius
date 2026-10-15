@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- A playground's lifecycle at its ends (SPEC-171, ADR-0139, task #131, fixes #409 and #420).
+  `yulius onboard --playground [path] [--name <name>]` brings a local checkout without GitHub into a
+  new or existing playground of yours: every branch and tag, the uncommitted work (one commit on the
+  checked-out branch of a new playground) and the chosen sessions (on its Sessions page), through
+  the import upload; nothing is pushed anywhere and GitHub is never called. Removing a playground
+  can delete its code for good ("Also delete its code from this server for good" in the dialog,
+  `POST /api/sandboxes/{sid}/purge`): its `origin` and sandbox directory go once nothing of its
+  sandbox runs, its place among its maker's 10 is freed, and task records and the audit stay.
 - Playgrounds get Yulius CI (SPEC-163, ADR-0134, task #130, fixes #411). The CI sync tests a
   playground's `dev` head without GitHub, and `delivery_merge` first tests the task head merged into
   `dev`, built in Yulius's clone (`Task #n` runs): it squashes on green, arms while the run goes

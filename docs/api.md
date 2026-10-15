@@ -77,6 +77,7 @@ grants per client and 1000 per instance; past either it answers 429.
 | POST | `/api/sandboxes/{sid}/onboarding/skip` | admin | → `Sandbox` (`pending`/`preparing` → `skipped`); an operator's recovery path for an onboarding that cannot finish: the web UI offers no skip (ADR-0076) |
 | POST | `/api/sandboxes/{sid}/onboarding/approve` | write, browser session | Start onboarding → `Sandbox`; creates the onboarding task if it has none and starts it (`pending` → `preparing`); idempotent while `preparing`; 403 for a bearer token (the CLI only uploads, SPEC-051); 409 when nothing awaits preparation or the task cannot start |
 | DELETE | `/api/sandboxes/{sid}` | admin | → 204; stops live/queued tasks; GitHub repository, clone and task records kept |
+| POST | `/api/sandboxes/{sid}/purge` | admin of a live playground; the superadmin for a removed one | → `{"state": "purged"\|"waiting", "waiting_for": ["1 agent run", …]}`; removes the playground as `DELETE` does (when still live) and asks for its code to be deleted for good: its `origin` and sandbox directory go once no agent run, shell, browser, CI run or other process of its sandbox is left (at once, else with the disk upkeep); task records, the export and the audit stay, and the quota no longer counts it; 409 for a GitHub sandbox (SPEC-171, ADR-0139) |
 
 A **playground** (SPEC-099) is a sandbox without GitHub: `Sandbox.playground` is true, its `repo`
 has an empty `owner` and `url`, its onboarding is `not_needed`, and only its maker and the
@@ -152,8 +153,8 @@ in `crates/yulius-contracts/src/import.rs`.
 
 | Method | Path | Body → Response |
 | --- | --- | --- |
-| POST | `/api/onboard/plan` | `{"owner","name","sessions":[{"harness":"claude","session_id","sha256","size"}]}` (≤ 2000) → `OnboardPlan`. Changes nothing. |
-| POST | `/api/import` | `{"manifest": ImportManifest}` → `{"job_id", "missing": [{"name", "received_bytes"}]}`. Links the repository as a sandbox when needed (admin/maintain; owner repositories only; write for an existing sandbox); an unfinished job with the same manifest is reused; files already stored for the sandbox (same `sha256`) are not listed. A session file is at most 128 MiB; at most 2000 sessions, each once. |
+| POST | `/api/onboard/plan` | `{"owner","name","sessions":[{"harness":"claude","session_id","sha256","size"}]}` (≤ 2000) → `OnboardPlan`. Changes nothing. With `"playground": true` (and an empty `owner`), the caller's playground named `name` (or a taken-name variant, `name-2`), else whether they may make one (the limit of 10, SPEC-171). |
+| POST | `/api/import` | `{"manifest": ImportManifest}` → `{"job_id", "missing": [{"name", "received_bytes"}]}`. Links the repository as a sandbox when needed (admin/maintain; owner repositories only; write for an existing sandbox); an unfinished job with the same manifest is reused; files already stored for the sandbox (same `sha256`) are not listed. A session file is at most 128 MiB; at most 2000 sessions, each once. A manifest with `"playground": true` (empty owner and remote URL, `bundle` every branch) goes to the caller's playground of that name, else to a new one made when the job completes (its branches as they are, the snapshot one commit on `head_branch`; 422 without a bundle or a branch, 409 at the limit of 10). Without that flag an empty owner is refused (SPEC-171). |
 | PUT | `/api/import/{job}/files/{name}?offset=N` | raw chunk (≤ 8 MiB) with `X-Chunk-Sha256` → `{"name", "received_bytes"}`. `name` is one percent-encoded segment. Repeats are acknowledged; an offset beyond the received length is 409; a wrong digest is 422 (a wrong whole-file digest resets the file to 0). |
 | POST | `/api/import/{job}/complete` | → `ImportResult`; 409 while files are incomplete. Idempotent. |
 

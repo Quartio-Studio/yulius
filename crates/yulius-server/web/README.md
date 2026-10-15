@@ -263,7 +263,7 @@ the real server. Options (combine with `&`): `setup=1` (setup required; token
 (the account has no GitHub link: the superadmin still sees every sandbox, other roles see none and
 the home page asks them to sign in with GitHub), `sandboxes=0` (a fresh instance without sandboxes: the
 home screen's first steps, a playground first; `POST /api/playgrounds` keeps the names of the
-archive it got in `__yuliusMock.playgroundUploads`), `tasks=0` (sandboxes without tasks yet: no start rule to offer), `tasks=many` (30 more queued tasks in studio: a long "Run after" menu), `othercols=N&otherrows=M` (another, active viewer sets task terminals to
+archive it got in `__yuliusMock.playgroundUploads`; `POST /api/sandboxes/{sid}/purge` keeps the purged slugs in `__yuliusMock.purges` and waits for `__yuliusMock.purgeWaitsFor` when set, SPEC-171), `tasks=0` (sandboxes without tasks yet: no start rule to offer), `tasks=many` (30 more queued tasks in studio: a long "Run after" menu), `othercols=N&otherrows=M` (another, active viewer sets task terminals to
 N×M until this one types or clicks into the terminal), `update=1` (a newer `main` is on offer; Update
 now walks through its phases in about six seconds) or `update=fail` (the same, rolled back),
 `helper=0` (no update helper), `jev=config` (a Jev key file is configured), `browserask=0` (no
