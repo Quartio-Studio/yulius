@@ -378,7 +378,10 @@ impl App {
     /// is archived.
     ///
     /// # Errors
-    /// `Conflict` for other live tasks.
+    /// `Conflict` for other live tasks; while a finished task's session is closing (it changed
+    /// state meanwhile: "stop the task first"; still closing at the bound: "try again"; or its
+    /// session could not be ended); and for the onboarding task its sandbox still waits for
+    /// (SPEC-106 OTR-004).
     pub async fn archive_task(
         self: &Arc<Self>,
         ctx: &AuthContext,

@@ -2296,6 +2296,84 @@ fn a_done_task_can_be_archived() -> TestResult {
     Ok(())
 }
 
+/// SPEC-153 OLC-003 (#431, SPEC-106 OTR-004): a live, Done onboarding task with plan steps open,
+/// in a `preparing` sandbox whose project validates, is archived: closed, its run's end awaited
+/// (an open plan does not make the sandbox ready while the run lives), then archived, and the
+/// sandbox is `ready`.
+#[test]
+fn a_done_onboarding_task_is_archived_and_the_sandbox_is_ready() -> TestResult {
+    let fake = locate_fake_agent().ok_or("fake-agent is not built (cargo build -p fake-agent)")?;
+    let (_dir, data) = data_dir()?;
+    let rt = runtime()?;
+    rt.block_on(async {
+        let agent = FakeAgentOptions {
+            transcript: true,
+            hooks: true,
+            ..FakeAgentOptions::default()
+        };
+        let (app, _) = start(&data, &fake, agent, 0).await?;
+        let (sandbox, user) = seed(&app, &data).await?;
+        // The project validates in the sandbox's clone.
+        let repo = data.join("sandboxes").join(sandbox.as_str()).join("repo");
+        for (path, contents) in yulius_domain::spec_format::scaffold_files(
+            "done",
+            yulius_domain::spec_format::TemplateKind::Empty,
+        ) {
+            let target = repo.join(path);
+            std::fs::create_dir_all(target.parent().ok_or("no parent")?)?;
+            std::fs::write(target, contents)?;
+        }
+        let ctx = yulius_app::auth::AuthContext {
+            user: app.deps.store.user(&user).await?.ok_or("user")?,
+            csrf_token: None,
+            session_hash: None,
+        };
+        let id = app
+            .create_task_internal(NewTask {
+                sandbox: sandbox.clone(),
+                created_by: user.clone(),
+                prompt: "Prepare this repository and verify it".into(),
+                harness: Harness::ClaudeCode,
+                title: Some("Prepare this repository for Yulius".into()),
+                workflow_id: None,
+                steps: vec!["Write the docs".into(), "Lay the gate".into()],
+                model: None,
+                effort: None,
+                origin: TaskOrigin::Onboarding,
+                automation_run: None,
+                start: true,
+                mode: TaskMode::Goal,
+                supertask: false,
+            })
+            .await?
+            .id;
+        app.deps
+            .store
+            .set_onboarding(&sandbox, "preparing", Some(&id))
+            .await?;
+        wait_for("the shell probe", Duration::from_secs(90), || async {
+            shown(&app, &id).await.ok() == Some((Some("done".into()), Some(0)))
+        })
+        .await?;
+        let record = app.deps.store.sandbox(&sandbox).await?.ok_or("sandbox")?;
+        assert_eq!(record.onboarding_state, "preparing", "the plan is open");
+        let archived = app.archive_task(&ctx, id.as_str(), true).await?;
+        assert!(archived.archived);
+        assert_eq!(
+            archived.status, "closed",
+            "the run ended before the archive"
+        );
+        let record = app.deps.store.sandbox(&sandbox).await?.ok_or("sandbox")?;
+        assert_eq!(record.onboarding_state, "ready");
+        let stored = task(&app, &id).await?;
+        assert_eq!(stored.status, TaskStatus::Closed);
+        assert!(stored.archived_at.is_some());
+        Ok::<(), BoxError>(())
+    })?;
+    rt.shutdown_timeout(Duration::from_secs(5));
+    Ok(())
+}
+
 /// The details of the sandbox's onboarding audit entries (`<from> -> <to>`), oldest first.
 fn onboarding_audit(data: &Path, sandbox: &SandboxId) -> Result<Vec<String>, BoxError> {
     let db = rusqlite::Connection::open(data.join("yulius.db"))?;
