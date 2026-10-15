@@ -53,6 +53,9 @@ watching, steering and unblocking.
   `.mcp.json` servers join its sandbox's list by themselves, with `${VAR}` becoming the agent
   secret VAR's placeholder (the egress proxy swaps the value in on its bound hosts), and the
   Superagent never asks about them.
+- **Sandbox tabs**: the top row starts with All sandboxes, then a tab per sandbox in the order
+  the person chose: each shows a drag grip, as the Notes tabs do, and says it can be clicked or
+  dragged; its menu moves it too.
 - **Sidebar**: the sandbox pages used every day (Tasks, Git, CI/CD — one page whose CI (tests) and CD (deployment) tabs work like Secrets' Team and Agent tabs —, Pipeline (stages), Secrets, Dashboard; the Superagent is on the right),
   then "More" for Sessions, Workflows, Skills, Automations and MCP, then the active tasks.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions

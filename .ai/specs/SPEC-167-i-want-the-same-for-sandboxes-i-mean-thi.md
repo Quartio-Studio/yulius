@@ -52,7 +52,7 @@ the pointer, so a person finds the reordering without being told.
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] Sandbox tabs show a drag grip and a click-or-drag hint
+- [x] Sandbox tabs show a drag grip and a click-or-drag hint
 - [ ] Independent review in a fresh session, findings fixed test-first
 - [ ] Every gate green, docs and the changes log updated
 

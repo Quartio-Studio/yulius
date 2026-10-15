@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- The sandbox tabs show that they drag (SPEC-167, task #157). Each sandbox tab in the top row has
+  the six-dot grip the Notes tabs have (SPEC-136) before its name, and its tooltip adds "Click to
+  open, drag to reorder" under the repository and access. The grip is faint until the tab is
+  hovered or current and is hidden on devices without a mouse or pen; "All sandboxes" has none,
+  since it does not move. Both strips take the hint from one constant.
 - Reply in a task's attention bar does something visible (SPEC-156, task #147, #516). On
   "Needs you" and "The agent is waiting for your reply" it opens a reply field in the bar; Enter or
   Send types the answer into the session as the person's prompt, which also ends a `needs_you`

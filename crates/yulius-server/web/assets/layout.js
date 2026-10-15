@@ -1,7 +1,7 @@
 // Global layout pieces (SPEC-001 §6.1): thin sandbox tab row with the Status panel, and the
 // left sidebar with navigation, the active task list and the user menu at its foot.
 
-import { h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip, skeleton, bar, skeletonOf } from './dom.js';
+import { DRAG_TAB_HINT, h, icon, iconButton, openMenu, setChildren, statusMark, popoverFocus, keepFocus, loadError, coalesce, pollPaused, prChip, skeleton, bar, skeletonOf } from './dom.js';
 import { relLong, bytes, duration, dateTime, resetLabel, compact } from './format.js';
 import { sparkline, usd } from './charts.js';
 import { taskTime } from './tasktime.js';
@@ -121,9 +121,11 @@ export function createTabRow(ctx) {
         // Back to the screen left in that sandbox (SPEC-113); its own tab opens the composer.
         dataset: { route: `/s/${encodeURIComponent(sandbox.slug)}`, restore: 'sandbox', id: sandbox.id },
         draggable: 'true',
-        title: `${sandbox.repo ? `${sandbox.repo.owner}/${sandbox.repo.name}` : sandbox.name} · ${sandbox.access} access`,
+        title: `${sandbox.repo ? `${sandbox.repo.owner}/${sandbox.repo.name}` : sandbox.name} · ${sandbox.access} access\n${DRAG_TAB_HINT}`,
         'aria-current': sandbox.slug === currentSlug ? 'page' : null,
       },
+      // The grip says the tab drags, as on the Notes tabs (SPEC-167); decorative, the name stays the tab's.
+      h('span', { class: 'tab-grip', 'aria-hidden': 'true' }, icon('grip', { size: 12 })),
       h('span', { class: 'tab-name' }, sandbox.name),
       h('span', { class: 'sr-only' }, [counts.running ? `, ${counts.running} working` : '', counts.needs_attention ? `, ${counts.needs_attention} need${counts.needs_attention === 1 ? 's' : ''} you` : ''].join('')),
       counts.running ? h('span', { class: 'tab-running', title: `${counts.running} working`, 'aria-hidden': 'true' }, String(counts.running)) : null,
