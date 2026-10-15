@@ -1215,6 +1215,7 @@ async fn a_cockpit_manages_the_project_for_its_owner() -> TestResult {
             "automation_template_enable",
             "automation_update",
             "automations_list",
+            "secret_verify",
             "secrets_list",
             "session_read",
             "sessions_search",
@@ -2370,6 +2371,140 @@ async fn the_superagent_lists_its_sandboxs_agent_secrets_without_values() -> Tes
         assert!(is_error, "{tool}: {refused}");
         assert!(refused.to_string().contains("unknown tool"), "{tool}: {refused}");
     }
+    f.h.app.end_all_shells().await;
+    Ok(())
+}
+
+/// A synthetic three-line key, as a PEM file holds it.
+const PEM_KEY: &str =
+    "-----BEGIN SYNTHETIC KEY-----\nc3ludGhldGljLWtleS1ib2R5LTQ0MTc=\n-----END SYNTHETIC KEY-----";
+
+/// SPEC-178 VAU-002 (ADR-0144): the Superagent checks a value the person holds against the vault
+/// by its SHA-256, a multi-line key (which the vault holds on one line, with literal `\n`)
+/// included, and learns how a near match differs; it never gets the value or its hash, and each
+/// check is audited with the Superagent as actor.
+#[tokio::test]
+async fn the_superagent_verifies_a_multi_line_value_by_its_hash() -> TestResult {
+    use yulius_domain::ids::UserId;
+
+    let f = fixture().await?;
+    // An agent secret never spans lines: a multi-line key is stored with literal `\n`.
+    let stored = PEM_KEY.replace('\n', "\\n");
+    let added = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "FOUNDER_PRIVATE_KEY", "value": stored})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(added.status, StatusCode::CREATED, "{:?}", added.body);
+    cockpit_id(&f, &f.alice).await?;
+    let token =
+        f.h.app
+            .cockpit_mcp_token(&UserId::parse("u-alice")?, &sid())
+            .ok_or("token")?;
+    let sha = |text: &str| f.h.app.deps.crypto.sha256_hex(text.as_bytes());
+    let value_sha = sha(&stored);
+
+    for (candidate, kind) in [
+        (stored.clone(), "exact"),
+        (format!("{stored}\n"), "trailing_newline"),
+        (PEM_KEY.to_owned(), "escaped_newlines"),
+        (format!("{PEM_KEY}\n"), "escaped_newlines"),
+        (format!("{}\r\n", PEM_KEY.replace('\n', "\r\n")), "escaped_newlines"),
+        (PEM_KEY.replace("LTQ0MTc", "LTQ0MTg"), "different"),
+    ] {
+        // Upper-case hex is the same hash.
+        let hash = if kind == "trailing_newline" {
+            sha(&candidate).to_uppercase()
+        } else {
+            sha(&candidate)
+        };
+        let (answer, is_error) = cockpit_tool(
+            &f,
+            &token,
+            "secret_verify",
+            json!({"secret": "FOUNDER_PRIVATE_KEY", "sha256": hash}),
+        )
+        .await?;
+        assert!(!is_error, "{kind}: {answer}");
+        assert_eq!(answer["match"], kind, "{answer}");
+        assert_eq!(answer["lines"], 3, "{answer}");
+        let raw = answer.to_string();
+        assert!(!raw.contains("c3ludGhldGljLWtleS1ib2R5LTQ0MTc="), "{raw}");
+        assert!(!raw.contains(&value_sha), "{raw}");
+    }
+
+    for (args, refusal) in [
+        (
+            json!({"secret": "NO_SUCH_KEY", "sha256": value_sha}),
+            "no agent secret named",
+        ),
+        (
+            json!({"secret": "FOUNDER_PRIVATE_KEY", "sha256": "abc123"}),
+            "64 hexadecimal digits",
+        ),
+        (
+            json!({"secret": "FOUNDER_PRIVATE_KEY", "sha256": value_sha, "value": "x"}),
+            "invalid arguments",
+        ),
+    ] {
+        let (refused, is_error) = cockpit_tool(&f, &token, "secret_verify", args).await?;
+        assert!(is_error, "{refused}");
+        assert!(refused.to_string().contains(refusal), "{refusal}: {refused}");
+    }
+
+    let activity = call(
+        &f.h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &f.alice,
+    )
+    .await?;
+    let checks: Vec<&Value> = activity
+        .body
+        .as_array()
+        .ok_or("activity")?
+        .iter()
+        .filter(|e| e["action"] == "vault.agent.verify")
+        .collect();
+    assert_eq!(checks.len(), 6, "one entry per distinct check: {checks:?}");
+    assert!(
+        checks.iter().all(|e| e["actor"] == "cockpit:alice"),
+        "{checks:?}"
+    );
+    assert!(
+        checks
+            .iter()
+            .any(|e| e["detail"] == "FOUNDER_PRIVATE_KEY → exact"),
+        "{checks:?}"
+    );
+    // The same check again writes no second entry.
+    cockpit_tool(
+        &f,
+        &token,
+        "secret_verify",
+        json!({"secret": "FOUNDER_PRIVATE_KEY", "sha256": value_sha}),
+    )
+    .await?;
+    let again = call(
+        &f.h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &f.alice,
+    )
+    .await?;
+    let count = again
+        .body
+        .as_array()
+        .ok_or("activity")?
+        .iter()
+        .filter(|e| e["action"] == "vault.agent.verify")
+        .count();
+    assert_eq!(count, 6);
     f.h.app.end_all_shells().await;
     Ok(())
 }

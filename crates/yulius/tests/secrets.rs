@@ -2437,3 +2437,87 @@ async fn an_answer_covers_only_the_hosts_the_person_saw() -> TestResult {
     assert_eq!(by_admin.status, StatusCode::OK, "{}", by_admin.body);
     Ok(())
 }
+
+/// SPEC-178 VAU-002: a task's agent verifies a value of its own project's agent secrets by its
+/// SHA-256, never another project's, and never a production secret's.
+#[tokio::test]
+async fn agents_verify_a_value_of_their_projects_secrets_by_its_hash() -> TestResult {
+    let w = world().await?;
+    for (sandbox, body) in [
+        ("s1", json!({"name": "STRIPE_KEY", "hosts": ["api.stripe.test"], "value": STRIPE})),
+        ("s1", json!({"name": "PROD_KEY", "value": "prod-value-12345"})),
+        ("s2", json!({"name": "OTHER_KEY", "value": "other-value-12345"})),
+    ] {
+        let created = add_agent_secret(&w, &w.writer, sandbox, body).await?;
+        assert_eq!(created.status, StatusCode::CREATED, "{}", created.body);
+        if created.body["name"] == "PROD_KEY" {
+            use yulius_app::ports::vault::VaultStore as _;
+            let id = created.body["id"].as_str().ok_or("id")?;
+            assert!(w.h.store.vault_set_cd_prod(id, false, true).await?);
+        }
+    }
+    let sha = |text: &str| w.h.app.deps.crypto.sha256_hex(text.as_bytes());
+
+    let verified = tool_text(
+        &mcp_tool(
+            &w.h,
+            TOKEN_S1,
+            "secret_verify",
+            json!({"secret": "STRIPE_KEY", "sha256": sha(STRIPE)}),
+        )
+        .await?,
+    );
+    assert_eq!(verified["match"], "exact", "{verified}");
+    assert_eq!(verified["lines"], 1, "{verified}");
+    let wrong = tool_text(
+        &mcp_tool(
+            &w.h,
+            TOKEN_S1,
+            "secret_verify",
+            json!({"secret": "STRIPE_KEY", "sha256": sha("not-the-key")}),
+        )
+        .await?,
+    );
+    assert_eq!(wrong["match"], "different", "{wrong}");
+    assert_hidden(&verified, &[STRIPE, &sha(STRIPE)]);
+
+    let other = mcp_tool(
+        &w.h,
+        TOKEN_S1,
+        "secret_verify",
+        json!({"secret": "OTHER_KEY", "sha256": sha("other-value-12345")}),
+    )
+    .await?;
+    assert_eq!(other["isError"], true, "{other}");
+    assert!(tool_text(&other).to_string().contains("no agent secret named"), "{other}");
+    let production = mcp_tool(
+        &w.h,
+        TOKEN_S1,
+        "secret_verify",
+        json!({"secret": "PROD_KEY", "sha256": sha("prod-value-12345")}),
+    )
+    .await?;
+    assert_eq!(production["isError"], true, "{production}");
+    assert!(
+        tool_text(&production).to_string().contains("production secret"),
+        "{production}"
+    );
+
+    let activity = call(
+        &w.h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &w.writer,
+    )
+    .await?;
+    assert!(
+        activity.body.as_array().is_some_and(|a| a.iter().any(|e| e["action"]
+            == "vault.agent.verify"
+            && e["actor"] == "task:1"
+            && e["detail"] == "STRIPE_KEY → exact")),
+        "{}",
+        activity.body
+    );
+    Ok(())
+}

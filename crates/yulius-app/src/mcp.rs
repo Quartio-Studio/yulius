@@ -25,7 +25,7 @@ fn schema(properties: Value, required: &[&str]) -> Value {
 /// The tools a Cockpit is served: managing the project's tasks and automations (SPEC-037
 /// MGT-006, SPEC-066 MGT-012) and reading its agent vault (SPEC-178, ADR-0144). Everything else
 /// belongs to a task.
-pub const COCKPIT_TOOLS: [&str; 16] = [
+pub const COCKPIT_TOOLS: [&str; 17] = [
     "tasks_list",
     "task_get",
     "task_create",
@@ -42,6 +42,7 @@ pub const COCKPIT_TOOLS: [&str; 16] = [
     "sessions_search",
     "session_read",
     "secrets_list",
+    "secret_verify",
 ];
 
 /// Who calls the MCP server.
@@ -359,6 +360,14 @@ fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
             input_schema: schema(json!({}), &[]),
         },
         ToolDescriptor {
+            name: "secret_verify".into(),
+            description: "Check whether a value someone holds (a key in a file, one they pasted into a file) is an agent secret's value, without anyone seeing it: compute the candidate's SHA-256 in a shell without printing the value (sha256sum key.pem, or printf %s \"$VAR\" | sha256sum) and pass that hash. Answers match: exact, trailing_newline (the candidate ends with a line break), escaped_newlines (the candidate has line breaks where the vault holds literal \\n, as a multi-line key is stored) or different, and the lines the value stands for. Never returns the value. Audited.".into(),
+            input_schema: schema(json!({
+                "secret": {"type": "string", "description": "Secret NAME from secrets_list"},
+                "sha256": {"type": "string", "description": "The candidate value's SHA-256, 64 hexadecimal digits"}
+            }), &["secret", "sha256"]),
+        },
+        ToolDescriptor {
             name: "secret_request_hosts".into(),
             description: "Ask for the hosts an agent secret should be sent to or typed into (SPEC-121). A person adds a secret with only a name, a value and a description; you find the service's API or sign-in host from the description and the service's documentation (e.g. api.vidoc.com, *.vidoc.com for subdomains) and request it here. Nothing is bound until a person who manages the secret allows it on the Secrets page: print the returned link for them, go on with other work, and use the secret once secrets_list shows the host bound.".into(),
             input_schema: schema(json!({
@@ -502,6 +511,7 @@ impl App {
             }
             "workflows_list" => self.tool_workflows_list(&project).await,
             "secrets_list" => self.tool_secrets_list(&project).await,
+            "secret_verify" => self.tool_secret_verify(&project, &args).await,
             _ => match caller {
                 McpCaller::Cockpit(_) => Err(AppError::Invalid(format!("unknown tool: {name}"))),
                 McpCaller::Agent(ctx) => match self.task_tool(ctx, name, &args).await {

@@ -47,9 +47,11 @@ ever reaching the model or the screen.
 - VAU-002: `secret_verify {secret, sha256}` is served to task agents and to the Superagent. Given
   the SHA-256 (64 hex digits) of a candidate value and the name of an agent secret that applies to
   the caller's sandbox, it answers whether the candidate is the secret's value: `exact`, or a match
-  once a difference common in copied keys is set aside (`trailing_newline`: line breaks at the end;
-  `line_endings`: CRLF against LF; `escaped_newlines`: literal `\n` against line breaks), or
-  `different`. It also says how many lines the vault's value has. It never returns a value, a
+  once a difference common in copied keys is set aside (`trailing_newline`: the candidate ends
+  with a line break; `escaped_newlines`: the candidate has line breaks, LF or CRLF, where the
+  vault's value has literal `\n`, as a multi-line key must be stored since an agent secret never
+  spans lines), or `different`. It also says how many lines the value stands for (its literal
+  `\n` read as line breaks). It never returns a value, a
   value's hash or anything else derived from it. An unknown secret, a malformed hash and a
   production secret (SPEC-134) are refused. Each distinct check is audited once
   (`vault.agent.verify`, with the task or `cockpit:<login>` as actor) while Yulius runs.
@@ -77,9 +79,10 @@ ever reaching the model or the screen.
   `secret_copy_to_env`, `secret_request_hosts` or `browser_fill_secret`; `secrets_list` names its
   sandbox's secrets only, with no value, and its `how_to_use` names `secret_verify` and the Secrets
   page; `secret_copy_to_env` is refused as unknown.
-- With a three-line agent secret, `secret_verify` answers `exact` for the SHA-256 of the value,
-  `trailing_newline` for the value with a final `\n`, `line_endings` for it with CRLF,
-  `escaped_newlines` for it with literal `\n`, and `different` otherwise, with `lines: 3`; it
+- With a three-line key stored with literal `\n`, `secret_verify` answers `exact` for the SHA-256
+  of the stored value, `trailing_newline` for it with a final line break, `escaped_newlines` for
+  the key with real line breaks (LF or CRLF, with or without a final one), and `different`
+  otherwise, with `lines: 3`; it
   refuses an unknown name, a hash that is not 64 hex digits, and a production secret; the check is
   audited with the caller as actor; no answer holds the value or its SHA-256.
 - A task agent's `secret_verify` answers the same for its own sandbox, and nothing for another
@@ -88,8 +91,8 @@ ever reaching the model or the screen.
 
 ## Test plan
 
-- Unit tests in `crates/yulius-app/src/vault/` for the comparison (each kind, an empty value, a
-  value without line breaks) and in `mcp.rs` for the Superagent's tool list.
+- Unit tests in `crates/yulius-app/src/vault/` for the comparison (each kind, a value without
+  escapes, a candidate that is only close) and in `mcp.rs` for the Superagent's tool list.
 - Integration tests in `crates/yulius/tests/cockpit.rs` (the Superagent over its `ck_` token) and
   `crates/yulius/tests/secrets.rs` (a task agent), using synthetic values only.
 - Existing `secrets.rs`, `secrets_env.rs`, `manage_tools.rs` and harness launch tests keep passing.
@@ -106,8 +109,11 @@ ever reaching the model or the screen.
   equality oracle, which the redaction (and the salted fingerprints any process of the person
   already reads) already gives; it adds no way to learn an unknown value, only exactness.
 - Lenient kinds are computed on the vault side (variants of the stored value), because Yulius
-  never receives the candidate.
-- The line count of the stored value is returned: it is what the person asked to confirm and says
+  never receives the candidate. An agent secret holds no control characters
+  (`check_agent_value`), so a multi-line key is stored with literal `\n`: the variants are the
+  value with a final LF or CRLF, and the value with its `\n` as LF or CRLF line breaks, with or
+  without a final one. CRLF against LF inside the vault cannot occur and is not a kind.
+- The line count the value stands for is returned: it is what the person asked to confirm and says
   next to nothing about the value.
 - `secret_verify` is served to task agents too ("as well" goes both ways): the same check helps an
   agent confirm a key it was given before asking a person to store it.
