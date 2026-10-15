@@ -1,11 +1,11 @@
 ---
 yulius-task: b4939f6f-6afd-4cb2-97b6-aed728d10432
-status: in-progress
+status: done
 ---
 
 # SPEC-138: open GitHub issues triaged; stateless installation tokens redacted; flaky waits fixed
 
-Status: in progress
+Status: implemented
 Date: 2026-10-15
 Owner: Yulius task #118
 Scope authorization: user request: "Fix all open actionable issues from GitHub without creating
@@ -96,12 +96,12 @@ already fixed, fix them test-first, and close each issue once its fix is on `dev
 
 ## Plan
 
-- [ ] Open issues triaged: fixed ones closed, the rest handed to chained tasks
-- [ ] Every redactor removes a whole stateless installation token (#424)
-- [ ] A .env with an unclosed quote is refused, and the copy's refusals are tested end to end (#475)
-- [ ] Flaky waits wait on what they assert: context_full audit rows and the e2e mock (#430, #446, #455)
-- [ ] Independent review approves the head, findings fixed test-first
-- [ ] Gates green, spec evidence and changes log written, issues closed
+- [x] Open issues triaged: fixed ones closed, the rest handed to chained tasks
+- [x] Every redactor removes a whole stateless installation token (#424)
+- [x] A .env with an unclosed quote is refused, and the copy's refusals are tested end to end (#475)
+- [x] Flaky waits wait on what they assert: context_full audit rows and the e2e mock (#430, #446, #455)
+- [x] Independent review approves the head, findings fixed test-first
+- [x] Gates green, spec evidence and changes log written, issues closed
 
 ## Acceptance criteria
 
@@ -156,3 +156,44 @@ already fixed, fix them test-first, and close each issue once its fix is on `dev
   person is told which line to fix.
 - **#412 is left to the product owner.** ACC-005 is a user requirement of SPEC-001, not a
   SPEC-002 engineering assumption, so an agent cannot overturn it in an ADR.
+
+## Evidence
+
+Base `dev` 43731493. Head approved by the independent review: 774d793a.
+
+| Requirement | Test | Before the fix | After |
+| --- | --- | --- | --- |
+| RED-101 | `yulius-domain` `redact::tests::a_stateless_installation_token_is_redacted_whole`, `…the_stateless_shape_needs_an_app_id_and_a_jwt_header` | failed: "not redacted" (the whole token kept) | pass |
+| RED-102 | `yulius-git` `redact::tests::removes_a_whole_stateless_installation_token`; `yulius-github` `error::tests::scrubs_a_whole_stateless_installation_token` | failed: `[redacted].eyJ…payload….signature` left in clear | pass |
+| RED-102 (review round 1) | `…a_stateless_token_holding_another_prefix_is_removed_whole` (Git), `…scrubs_a_stateless_token_holding_another_prefix_whole` (GitHub) | failed: `[redacted][redacted]-PAYLOAD….SIGNATURE…` | pass |
+| RED-103 | the existing near-miss and provider-token tests, plus `ghs_1234567_notatoken` and `ghs_app_eyJ…` near misses; Git's `a_bare_prefix_does_not_hide_a_later_token` (review round 2) | the bare-prefix test failed: both tokens kept | pass |
+| ENV-101 | `yulius-domain` `vault::dotenv::tests::a_quote_left_open_at_the_end_is_refused` | failed: the names were written after the open quote | pass |
+| ENV-101, ENV-102 | `secrets_env::a_dotenv_that_cannot_be_updated_is_refused_and_the_example_keeps_its_mode` | failed with the old `dotenv.rs`: the unclosed quote was not refused and a person was asked | pass (7 of 7 `secrets_env::`) |
+| TST-101 | `context_full::` (the 3 changed tests) | not reproduced: 15 rounds of the original under 12 extra CPU-bound workers, load average about 60, all passed (the window is one database write) | 50 of 50 rounds passed under the same load (load average 53–62); 8 of 8 `context_full::` |
+| TST-102 | `e2e/tests/mock-ready.e2e.ts` (mock.js held back 1.5 s by a route) | failed: `EVALUATE_FAILED: Cannot read properties of undefined (reading 'sandboxes')`, the error of #455 | pass; `notes.e2e.ts` and `mock-ready.e2e.ts` passed 5 of 5 rounds under 12 extra CPU-bound workers (load average about 30) |
+
+Gates:
+- `scripts/dev ci` at 6ff8db4b: exit 0, 1752 tests passed, 16 skipped. The commits after it change only
+  the Git and GitHub redactors' prefix order and loop, their tests, comments, `e2e/tests/support.ts`
+  and the specs, all re-run: `cargo test -p yulius-domain -p yulius-git -p yulius-github --lib`
+  (317, 23 and 15 passed) and `cargo clippy … --all-targets -D warnings` (clean).
+- Full e2e suite (`npx e2e run`) at 67b7452c: exit 0, 53 files passed, 1 skipped; 443 tests passed, 1 skipped (`agent.e2e.ts`, which needs a model).
+- The 15 touched e2e files, run together at 3e30c1c3: 150 of 151 passed. The one failure was
+  `editor.e2e.ts` "two people in one file…", from Monaco's "depends on UNKNOWN service
+  ICodeLensCache" under load: #394, handed to task #134, and not related to this change.
+- `scripts/dev security`: **not run**, exit 2, "Vidoc rejected the key (HTTP 401: Invalid or
+  expired token)". The stored key needs replacing by a person (#470). Per ADR-0104 this is
+  reported as unrun, not passed.
+
+Independent review (a fresh read-only session, skill `om-code-review`):
+- **Round 1, 6ff8db4b: request changes.** The major finding was a partial leak when another prefix
+  (`ghu_`) sat inside a token's payload. It was fixed test-first in 67b7452c, together with two
+  minors (the mock wait's failure message, and the app's own `mock=1` test) and three nits.
+- **Round 2, 67b7452c: approve.** One minor that predates this task (a bare prefix hid a later
+  token in Git's redactor) was fixed test-first in 774d793a.
+- **Confirmation, 774d793a: approve,** with no findings.
+
+Not tested here: a live GitHub App token through the real update and transcript paths; the
+synthetic tokens follow the documented `ghs_<APPID>_<JWT>` shape. macOS (`F_GETPATH` on a non-UTF-8
+worktree path, a remark in #475) is not covered; this host is Linux.
+
