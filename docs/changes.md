@@ -12,6 +12,33 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   - A dev deploy that can't run is a plain button, not a grey primary slab.
   - A promoting production names what it promotes ("Promotes dev at e37fdd2 into main") instead of
     "First".
+- CI and CD are one CI/CD page (SPEC-151, task #145, ADR-0125): the sidebar's single **CI/CD**
+  entry opens a page whose **CI (tests)** and **CD (deployment)** tabs work like the Secrets page's
+  Team and Agent tabs; the CD tab is `?section=cd` and `/s/<slug>/cd` (with `?run=`) still opens it.
+- The Superagent gets the sandbox's MCP servers, with their secrets redacted (SPEC-147, ADR-0121,
+  task #141, issue #395). Its `--mcp-config` lists the servers a task run of its sandbox gets next
+  to `yulius`, their values only as `${YULIUS_MCP_<SERVER>_<VAR>}` references and the values in its
+  secret environment. Its Bash commands, hooks and stdio servers run through `yulius --scrub-exec`
+  and its tool results pass the `PostToolUse` redaction hook, its only hook, as in task runs: an
+  agent secret prints as `[secret:NAME]`. Both load their fingerprints with the person's workspace
+  token, which the scrub endpoints now accept while the person may work in the sandbox, and its
+  screen is redacted on the server as a task's terminal is. Literal values typed into a server's
+  form are not agent secrets and stay unredacted, as in task runs; servers imported from
+  `.mcp.json` with agent-secret placeholders need the egress proxy, which the Superagent does not
+  have yet.
+- A failed CI test's output stays readable (SPEC-145, ADR-0119, task #128; fixes #460, part of #485).
+  While a job runs, Yulius keeps each failing test's block (nextest's `FAIL` line with its stdout and
+  stderr, or libtest's), at most 8 KiB each and 32 KiB per job, and `ci_status` with `run_id` shows
+  them before the end of the job's output. Flaky tests:
+  - `cockpit::a_cockpit_manages_the_project_for_its_owner` archived the task it created before the
+    task's start had failed in the background; it now waits for the task to rest (#460).
+  - `local_ci::a_run_over_the_disk_quota_waits_and_starts_when_space_frees` advanced the clock once,
+    and a disk check that ended after the jump dated the next check a minute later; it now lets time
+    pass until the runs start. That race only times out, while CI saw a fast failure that stays
+    unexplained, so the test is quarantined and #485 stays open.
+- Opening Settings → Instance checks `main` at once (SPEC-149, ADR-0123, task #143): the page no
+  longer shows a check up to an hour old until "Check now". The server reuses a check younger than
+  30 s; a failed automatic check keeps the last result without an error toast.
 - A shell ends only when its host is proven gone; a launch `/goal` is watched again after a restart
   (SPEC-146, ADR-0120, task #125, fixes #346 and #453). A terminal or the Superagent whose host
   cannot be terminated stays live with its run directory, listed and closable again, and its
@@ -19,7 +46,6 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   same conversation. A goal task whose launch `/goal` was not recorded when the server restarted is
   watched again and flagged if Claude Code never takes it; a goal recorded meanwhile (also while
   Yulius was down) is never flagged.
-
 - `pulls.e2e.ts` waits on conditions, and a failed read keeps the real chips (SPEC-144, task #133):
   - **#438, #461:** `chipsAfterRead` returns once every sidebar chip is drawn with its label. Rows
     skip rendering until drawn (`content-visibility: auto`), so a chip read before the next frame

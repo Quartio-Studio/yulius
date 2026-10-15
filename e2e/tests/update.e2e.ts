@@ -200,3 +200,25 @@ test('a key file shows as config and moves into settings in one click', async ({
   await screen.getByRole('button', 'Save it here').click();
   await expect(screen.getByText(/In use: saved here/)).toBeVisible();
 });
+
+// Opening the instance page checks main by itself; "Check now" stays for a later look (SPEC-149,
+// task #143).
+test('opening the instance page checks main without a click', async ({ app, screen }) => {
+  // The mock's last check is 10 minutes old.
+  await app.open(mock('/admin/instance', '&update=1'));
+  await expect(screen.getByText(/^Checked just now with the GitHub App\.$/)).toBeVisible();
+  await expect(screen.getByRole('button', 'Check now')).toBeEnabled();
+});
+
+test('an automatic check that fails keeps the last result and raises no error', async ({ app, browser, screen }) => {
+  await app.open(mock('/admin/instance', '&update=1&failpost=/api/admin/update/check'));
+  await expect(screen.getByText('Update to 9c1e7d3')).toBeVisible();
+  // The automatic check was sent and failed; it has settled once the button is enabled again.
+  await expect.poll(() => browser.evaluate(() => (window as unknown as { __yuliusMock: { failedPosts: number } }).__yuliusMock.failedPosts)).toBe(1);
+  await expect(screen.getByRole('button', 'Check now')).toBeEnabled();
+  await expect(screen.getByText(/^Checked 10 min ago with the GitHub App\.$/)).toBeVisible();
+  expect(await browser.locator('.toast').count()).toBe(0);
+  // Asked for, a failed check is said.
+  await screen.getByRole('button', 'Check now').click();
+  await expect(screen.getByText(/Couldn’t check for updates/)).toBeVisible();
+});

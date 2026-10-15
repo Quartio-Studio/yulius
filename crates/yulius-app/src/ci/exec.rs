@@ -19,6 +19,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 use tokio::sync::watch;
+use yulius_domain::ci::failures::FailureScanner;
 use yulius_domain::ci::{self as dom, Gate, GateSource, RunState};
 use yulius_domain::resources::{Budget, budget_env};
 use yulius_domain::vault::{SecretName, placeholder};
@@ -553,6 +554,8 @@ impl App {
             "[yulius] budget: {budget} (YULIUS_CPUS={}, YULIUS_MEMORY_MB={})\n",
             budget.cpus, budget.memory_mb
         ));
+        // Its failing tests' output, from all it prints (SPEC-145): the ring keeps only the end.
+        let mut failures = FailureScanner::default();
         let ended = self
             .ci_job_process(
                 sandbox,
@@ -560,7 +563,7 @@ impl App {
                 job,
                 budget,
                 checkout,
-                (&mut ring, &mut stages),
+                (&mut ring, &mut stages, &mut failures),
                 &mut cancel,
             )
             .await;
@@ -606,6 +609,7 @@ impl App {
             reason,
             exit_code,
             output: Some(ring.text()),
+            failures: failures.finish(),
             started_at: None,
             ended_at: Some(self.now()),
         };
@@ -777,7 +781,7 @@ impl App {
         job: &CiJobRecord,
         budget: Budget,
         checkout_name: &str,
-        (ring, stages): (&mut OutputRing, &mut OutputStages),
+        (ring, stages, failures): (&mut OutputRing, &mut OutputStages, &mut FailureScanner),
         cancel: &mut watch::Receiver<Option<String>>,
     ) -> Result<Ended, String> {
         let ci_dir = self.ci_dir(&sandbox.id);
@@ -856,7 +860,7 @@ impl App {
                 &plan,
                 &token,
                 &log,
-                (ring, stages),
+                (ring, stages, Some(failures)),
                 cancel,
             )
             .await;
@@ -868,8 +872,8 @@ impl App {
     }
 
     /// Starts `plan` through the process host as run `ids` (its id and its group) and follows
-    /// it to its end: its log into `ring` and `sink`, cancellation, the CI job timeout and the
-    /// output limit.
+    /// it to its end: its log into `ring`, `sink` and `failures` (a CI job's), cancellation, the
+    /// CI job timeout and the output limit.
     #[allow(clippy::too_many_arguments)] // One job's whole context; split further it only moves.
     pub(super) async fn ci_watch(
         &self,
@@ -879,7 +883,11 @@ impl App {
         plan: &LaunchPlan,
         token: &[u8; 32],
         log: &Path,
-        (ring, stages): (&mut OutputRing, &mut OutputStages),
+        (ring, stages, mut failures): (
+            &mut OutputRing,
+            &mut OutputStages,
+            Option<&mut FailureScanner>,
+        ),
         cancel: &mut watch::Receiver<Option<String>>,
     ) -> Result<Ended, String> {
         let (sandbox, subject) = stages.subject();
@@ -938,7 +946,11 @@ impl App {
                         }
                         _ => {}
                     }
-                    let ops = stages.feed(&tail.take_fresh(), self.now());
+                    let fresh = tail.take_fresh();
+                    if let Some(failures) = failures.as_deref_mut() {
+                        failures.push(&fresh);
+                    }
+                    let ops = stages.feed(&fresh, self.now());
                     self.record_spans(&sandbox, (subject.0, &subject.1), ops).await;
                     ticks += 1;
                     if ticks.is_multiple_of(FLUSH_EVERY_TICKS) {
@@ -958,7 +970,11 @@ impl App {
         // What the job wrote last (bounded: one more read of at most a chunk per pass).
         for _ in 0..8 {
             let read = tail.read(ring).await;
-            let ops = stages.feed(&tail.take_fresh(), self.now());
+            let fresh = tail.take_fresh();
+            if let Some(failures) = failures.as_deref_mut() {
+                failures.push(&fresh);
+            }
+            let ops = stages.feed(&fresh, self.now());
             self.record_spans(&sandbox, (subject.0, &subject.1), ops)
                 .await;
             match read {
@@ -1221,6 +1237,7 @@ mod tests {
             reason: None,
             exit_code: None,
             output: String::new(),
+            failures: None,
             started_at: None,
             ended_at: None,
             need: yulius_domain::resources::Need::default(),

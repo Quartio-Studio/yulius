@@ -43,13 +43,17 @@ watching, steering and unblocking.
   automations and enables the ready-made ones, asking the person before each change. Task agents
   can do the same for their task's owner, except to their own task. When a usage limit cuts its
   turn, it moves to a subscription with capacity and goes on with the turn, as a task does; the
-  panel follows it.
+  panel follows it. It has the project's MCP servers, as a task does, and an agent secret one of
+  them or a command prints shows there as `[secret:NAME]` (SPEC-147). A server taken from
+  `.mcp.json` whose key is an agent secret's placeholder needs the egress proxy, which the
+  Superagent does not have yet; one whose value is `${secret:NAME}` works.
 - **MCP servers**: configured once for the instance or a sandbox (MCP page) and attached to every
-  task run on every subscription, their secrets taken from the agent secrets. A repository's
+  task run on every subscription and to the Superagent, their secrets taken from the agent
+  secrets. A repository's
   `.mcp.json` servers join its sandbox's list by themselves, with `${VAR}` becoming the agent
   secret VAR's placeholder (the egress proxy swaps the value in on its bound hosts), and the
   Superagent never asks about them.
-- **Sidebar**: the sandbox pages used every day (Tasks, Git, CI (tests), CD (deployment), Pipeline (stages), Secrets, Dashboard; the Superagent is on the right),
+- **Sidebar**: the sandbox pages used every day (Tasks, Git, CI/CD — one page whose CI (tests) and CD (deployment) tabs work like Secrets' Team and Agent tabs —, Pipeline (stages), Secrets, Dashboard; the Superagent is on the right),
   then "More" for Sessions, Workflows, Skills, Automations and MCP, then the active tasks.
 - **Tasks**: each task runs a real Claude Code CLI in a PTY on its own git worktree. Sessions
   outlive server restarts. Task intake splits mixed requests, holds scope changes and chains
@@ -93,7 +97,7 @@ watching, steering and unblocking.
   Pipeline page shows deployment frequency, lead time, change failure rate and time to restore for
   dev and production, any stage's daily p50 and p90 and the stage table with CSV/JSON export; a CI
   run, a deploy and a task show their own waterfall, and the Dashboard the overview.
-- **CD (deployment)**: beside CI, with the same discipline. Every project defines dev and
+- **CD (deployment)**: the CI/CD page's second tab, with CI's discipline. Every project defines dev and
   production in `yulius.toml` (`[cd.dev]`, `[cd.prod]`), each with deploy and verify scripts
   committed under `scripts/cd/`, or explicitly empty while it deploys nothing yet. Yulius runs the
   exact commits GitHub reports for the protected branches, dev inside the sandbox and production

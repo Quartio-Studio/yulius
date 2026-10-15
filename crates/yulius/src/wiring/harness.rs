@@ -174,6 +174,7 @@ impl HarnessPort for HarnessAdapter {
     }
 
     fn plan_cockpit(&self, l: &CockpitLaunch) -> AppResult<LaunchPlan> {
+        let (mcp_servers, mcp_secrets) = mcp_specs(&l.mcp);
         let plan = launch::plan_cockpit(&launch::CockpitRequest {
             cwd: l.cwd.clone(),
             config_dir: l.config_dir.clone(),
@@ -187,6 +188,8 @@ impl HarnessPort for HarnessAdapter {
                 token: HSecret::new(token.expose().to_owned()),
             }),
             project_mcp_servers: l.project_mcp_servers.clone(),
+            mcp_servers,
+            redaction_exe: Some(self.yulius_exe.clone()),
         })
         .map_err(|e| AppError::Invalid(e.to_string()))?;
         // A person answers the prompts, so approvals stay on (no bypass acceptance recorded).
@@ -210,11 +213,13 @@ impl HarnessPort for HarnessAdapter {
                 }
             }
         }
+        let mut secret_env = plan.secret_env;
+        secret_env.extend(mcp_secrets);
         Ok(LaunchPlan {
             argv: plan.argv,
             cwd: plan.cwd,
             env: plan.env,
-            secret_env: plan.secret_env,
+            secret_env,
             files: Vec::new(),
             containment: Containment::None,
         })
