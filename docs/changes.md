@@ -20,6 +20,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   - **#430, #446, #455:** the `context_full` tests wait for the audit rows they check, and in the
     e2e suite opening or reloading a mock page waits for the mock, so tests no longer fail on a
     busy machine for those reasons.
+- `yulius wait` and `delivery_merge` report the current push state, not a stale note (SPEC-139,
+  ADR-0113, task #123, fixes #366 and #448). A head GitHub's branch already has counts as pushed
+  even when `git push` reported a failure, and clears the earlier note; `yulius wait` drops a
+  failed-push note once the branch is at its head and waits for the checks and the armed merge;
+  `delivery_merge` answers a failed delivery with that failure, or the note its own call wrote (a
+  refused push's remedy, or that the pull request did not open after its push), never with an
+  older "not delivered" note. The remote is asked with `git ls-remote`, bounded to 10 s.
 - Agents can no longer push to, merge into or fast-forward the production branch with a person's
   token (SPEC-141, ADR-0114, task #139, issue #486). The agent's Git and `gh` now hold an App
   installation token restricted to the repository and to contents, pull requests and issues

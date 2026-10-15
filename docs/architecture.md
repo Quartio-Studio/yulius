@@ -205,7 +205,12 @@ a violation is refused with the rule in words, also for promotion pull requests
 (`try_auto_open_pr`): it pushes the branch and opens the pull request, or pushes new commits to
 it. A head it cannot deliver yet (open step, no plan for a task that needs a spec, invalid spec,
 uncommitted work) is refused with the reason, and a push GitHub refuses answers with the remedy
-(merge the pushed head, never force). A goal task whose evaluator keeps every turn going therefore still gets its pull request
+(merge the pushed head, never force): only a note that same call wrote replaces its error. A head
+is pushed when GitHub's branch is at it, whatever `git push` said: every push of a task's head
+(end of turn, `delivery_merge`, Deliver…, armed-merge upkeep, merge trains) goes through one helper
+that asks the remote (`git ls-remote`) when Git reports a failure, and the wait drops a failed-push
+note once the branch is at its head ([SPEC-139](../.ai/specs/SPEC-139-fix-366-448-yulius-wait-and-delivery-mer.md),
+[decision 0113](decisions/0113-github-s-branch-says-whether-a-head-is-pushed.md)). A goal task whose evaluator keeps every turn going therefore still gets its pull request
 ([SPEC-116](../.ai/specs/SPEC-116-linter-dead-code-should-be-installed-on.md) DMG-001).
 
 ```mermaid
@@ -215,7 +220,7 @@ sequenceDiagram
     participant Y as Yulius (internal API)
     A->>Y: delivery_merge (head pushed and pull request opened if missing; policy checked; checks running: armed)
     A->>W: start, end the turn
-    W->>Y: POST /internal/agent/wait (long poll)
+    W->>Y: POST /internal/agent/wait (long poll; a failed-push note goes once GitHub has the head)
     Y-->>W: checks ended / stage moved / armed merge decided (merged, refused, dropped)
     W-->>A: one line, then exits: Claude Code wakes the agent
 ```

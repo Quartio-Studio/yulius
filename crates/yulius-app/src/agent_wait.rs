@@ -662,7 +662,10 @@ impl App {
                 ))
             }
             Ok(MergeIntegration::Merged(head)) => {
-                match self.deps.git.push(worktree, branch, branch, &token).await {
+                match self
+                    .dlv_push_head(&task.id, worktree, branch, &head, &token)
+                    .await
+                {
                     Ok(()) => {
                         let detail = format!(
                             "merged {integration} into {branch} at {head} for the armed merge"
@@ -747,8 +750,10 @@ impl App {
             .lock()
             .ok()
             .and_then(|problem| problem.clone())
-            .filter(|(at, _)| !head.is_empty() && (at.starts_with(&head) || head.starts_with(at)))
-            .map(|(_, text)| text);
+            .filter(|note| {
+                !head.is_empty() && (note.head.starts_with(&head) || head.starts_with(&note.head))
+            })
+            .map(|note| note.text);
         let cd = self.cd_latest_run_of_task(task).await?;
         // A run that ended is reported once, recorded with the run (a restart keeps it): the
         // state that shows it marks it, and the wait that gets it ends on it.
@@ -784,7 +789,8 @@ impl App {
 
     /// `POST /internal/agent/wait`: the state now when `since` is absent or already differs,
     /// else the first state that differs from it within `timeout` (at most [`WAIT_MAX`]), else
-    /// the unchanged state.
+    /// the unchanged state. A note that a push of `head` failed is dropped first when GitHub's
+    /// branch is at `head`.
     ///
     /// # Errors
     /// As [`App::agent_wait_state`].
@@ -796,6 +802,17 @@ impl App {
         timeout: Duration,
     ) -> AppResult<WaitState> {
         let deadline = tokio::time::Instant::now() + timeout.min(WAIT_MAX);
+        // A failed push of this head that GitHub's branch has since reached is old news: the
+        // wait goes on to the checks and the armed merge (SPEC-139 PSH-002, #366). Once per
+        // request: a note written during the wait comes from a push that just asked GitHub.
+        if let Some(head) = head
+            .map(str::trim)
+            .filter(|h| h.len() >= 7 && h.chars().all(|c| c.is_ascii_hexdigit()))
+        {
+            let ctx = self.agent_context(token).await?;
+            self.forget_push_problem_if_pushed(&ctx.task, &head.to_ascii_lowercase())
+                .await;
+        }
         loop {
             let state = self.agent_wait_state(token, head).await?;
             if since.is_none_or(|since| *since != state) || tokio::time::Instant::now() >= deadline

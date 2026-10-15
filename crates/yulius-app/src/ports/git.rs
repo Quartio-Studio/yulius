@@ -231,6 +231,17 @@ pub trait GitPort: Send + Sync {
         remote_branch: &str,
         token: &Secret,
     ) -> AppResult<()>;
+    /// The commit `branch` points at on origin, as origin answers now with `token` (not a
+    /// remote-tracking ref); `None` when origin has no such branch (SPEC-139).
+    async fn remote_branch_head(
+        &self,
+        repo: &Path,
+        branch: &str,
+        token: &Secret,
+    ) -> AppResult<Option<String>> {
+        let _ = (repo, branch, token);
+        unsupported("reading the remote's branches")
+    }
     /// The commit `rev` names, if it exists in `repo`.
     async fn resolve_commit(&self, repo: &Path, rev: &str) -> AppResult<Option<String>> {
         let _ = (repo, rev);
