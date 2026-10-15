@@ -9,6 +9,18 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 - The task strip's **PR #N** chip stays on one line (SPEC-169, task #161, fixes #542). In a strip
   crowded by a panel beside the task, it broke into "PR" over "#523" and spilled out of its pill;
   the narrow-strip e2e test now checks that no strip chip's text overflows its box.
+- Playgrounds get Yulius CI (SPEC-163, ADR-0134, task #130, fixes #411). The CI sync tests a
+  playground's `dev` head without GitHub, and `delivery_merge` first tests the task head merged into
+  `dev`, built in Yulius's clone (`Task #n` runs): it squashes on green, arms while the run goes
+  (Yulius lands it when it passes, or builds and tests again when `dev` moved), and refuses on red.
+  A person's merge waits for green too. `yulius wait`, `ci_status` and `ci_rerun` work for a
+  playground's agents, and nothing is published to GitHub. A playground without CI merges at once,
+  as before.
+- The Pipeline (stages) is a tab of the Dashboard, not a sidebar entry (SPEC-161, ADR-0132, task
+  #152). The sidebar lists Tasks, Git, CI/CD, Secrets and Dashboard; the Dashboard's tab strip (the
+  CI/CD page's, now shared as `sectionedPage`) shows Overview and Pipeline (stages), the latter at
+  `?section=pipeline` with its filters after it. `/pipeline` links, "In Pipeline" and the
+  Overview's Pipeline card open the tab.
 - A CI job that checked nothing reads **Skipped**, never Passed (SPEC-162, ADR-0133, task #153,
   fixes #530). Yulius gives every job `YULIUS_CI_SKIP_CODE` (78); a job that exits with it ends
   skipped, blocks no merge, and is counted in the run's commit status (`Passed: 3 jobs, 1 skipped`),

@@ -5,6 +5,8 @@
 Accepted. Specified in [SPEC-137](../../.ai/specs/SPEC-137-rich-measurements-of-every-stage-tasks-c.md);
 task #116. Builds on [0070](0070-run-metrics-come-from-the-transcript.md) (a run's tokens and
 working time) and [0109](0109-cd-runs-verified-commits-out-of-the-agents-reach.md) (CD runs).
+The page's place is amended by [0132](0132-the-pipeline-is-a-tab-of-the-dashboard.md): it is the
+Dashboard's Pipeline (stages) tab.
 
 ## Context
 
@@ -52,7 +54,8 @@ requeue were lost. Nothing split a CI job into its gates or a deploy into deploy
   first passed deployment of an environment that started after it (an environment deploys its
   branch head); the change failure rate is failed over finished deployments; a failure is restored
   by the next passed one.
-- **The Pipeline page** (nav "Pipeline (stages)", beside CI and CD) holds the figures, trends and
+- **The Pipeline page** (nav "Pipeline (stages)", beside CI and CD; since ADR-0132 the Dashboard's
+  Pipeline (stages) tab) holds the figures, trends and
   stage table; CI runs, CD runs and task overviews show their own waterfall; the Dashboard shows the
   overview.
 
