@@ -396,6 +396,8 @@ function createShellView(ctx, sandbox, getTask) {
   let active = null;
   let loaded = false;
   let shown = false;
+  // Shown by the person (it takes the keyboard), not again for a new page (SPEC-170 TKS-002).
+  let focusWanted = false;
   let destroyed = false;
   let where = '';
   let renaming = null;
@@ -594,12 +596,12 @@ function createShellView(ctx, sandbox, getTask) {
       shells = list.map((shell) => ({ ...shell }));
       if (!shells.length) {
         renderTabs();
-        await create({ focus: shown });
+        await create({ focus: shown && focusWanted });
         return;
       }
       const remembered = readJson(activeKey, null);
       const pick = shells.find((shell) => shell.id === remembered) || shells[shells.length - 1];
-      activate(pick.id, { focus: shown });
+      activate(pick.id, { focus: shown && focusWanted });
     } catch (error) {
       if (destroyed) return;
       setChildren(views, h('div', { class: 'panel-msg stack items-center' },
@@ -631,13 +633,16 @@ function createShellView(ctx, sandbox, getTask) {
   return {
     el,
     headExtra: () => [folderSelect(), iconButton('plus', 'New terminal', () => create({ focus: true }))],
-    show() {
+    show(opts = {}) {
       shown = true;
+      // Shown again for a new task or sandbox, not opened by the person: the keyboard stays with
+      // the page, as for the Superagent and Notes (SPEC-056, #439).
+      focusWanted = !opts.context;
       if (!loaded) { load(); return; }
       const shell = shells.find((s) => s.id === active);
-      if (shell && shell.view) setTimeout(() => { shell.view.refit(); shell.view.focus(); }, 0);
+      if (shell && shell.view) setTimeout(() => { shell.view.refit(); if (focusWanted) shell.view.focus(); }, 0);
       // Opened again after its last terminal was closed: a new one, as on the first opening.
-      else if (!shells.length) create({ focus: true });
+      else if (!shells.length) create({ focus: focusWanted });
     },
     hide() { shown = false; },
     destroy() {
