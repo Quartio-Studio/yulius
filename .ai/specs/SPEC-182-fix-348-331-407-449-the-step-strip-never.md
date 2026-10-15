@@ -136,14 +136,28 @@ Checked on `dev` (5599635c) and on #137's branch, which this task starts from: a
   (the bar's `!total`). Alternatives: more container query breakpoints guess at widths that
   depend on what the strip holds (the cause of #341 and of this issue); a wrapping chip row clipped
   by `overflow: hidden` drops whole chips in CSS alone, but the clipped links stay focusable and
-  read, and the order between chips and the state's words cannot be set. Recorded as an ADR,
-  since it is the pattern for a row whose parts have priorities.
+  read, and the order between chips and the state's words cannot be set. Recorded as
+  [ADR-0147](../../docs/decisions/0147-the-step-strip-fits-itself-by-priority.md). Measured with
+  the fit: beside the Shell, a 1800 px window drops one "Then", 1700 px two, 1600 px keeps only
+  Auto, 1480–1560 px keep no chip (Auto does not fit beside the label's 8 rem floor), and a 110 px
+  strip keeps only the label, the state's icon and Task actions.
+- **The narrow strip's bar is 60 px, as SPEC-073 meant.** The 560 px query's `.step-progress {
+  width: 60px }` never applied: the base rule comes later in `styles.css` with the same
+  specificity, so the bar stayed 120 px in narrow strips. The query now reads
+  `.stepstrip .step-progress`, as the 420 px query already does for the toggle.
 - **The 560 px query hides `.strip-extras` itself, not each chip,** so an empty extras box takes
   no gap in the row.
 - **#407 uses `bar()`, ADR-0097's skeleton bar, inside the `aria-hidden` label.** The issue names
   `skeleton-line`, SPEC-092's bar; ADR-0097 made `bar()` (`skeleton-bar`, one line tall) the bar
   for shaped content. A chip label is a line of text, so `bar()` keeps the chip's height and
   matches the rest of the page's loading states.
+- **The task overview's figures guess a two-line sub-line.** In the six-column grid (173 px tiles at
+  a 1440 px window) the figures' words wrap by content (loaded tiles are 140–156 px tall), which
+  a shape cannot know. Its tiles draw a two-line sub-line, the common case, and the test compares
+  the figures' x, y and width and the cards' x and width, not the cards' y (ADR-0097: shapes guess
+  counts; the content keeps its columns).
+- **A dialog's shapes are measured from the dialog body's top.** A centred dialog moves as its
+  content grows, so its top edge says nothing about the shape.
 - **#449 shapes are composed next to their renderers,** except the `.list-item` rows, shared
   through `SHAPES.rows` because the repository and template lists both use them. Controls in a
   final layout (buttons, radios, tabs) are drawn as non-focusable spans with the same classes or as

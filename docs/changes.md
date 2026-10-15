@@ -6,6 +6,15 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- The step strip never overflows, the keyboard survives a hidden Archive, and the last loading
+  states take their final shape (SPEC-182, ADR-0147, task #138, fixes #348, #331, #407, #449). The
+  task step strip gives way whole parts by priority (chain chips, Auto, Supertask, then the bar and
+  the pull request chip) so it never passes its edge and Task actions stays clickable beside a
+  panel; its bar is 60 px in narrow strips as SPEC-073 meant. The keyboard on a quick Archive that
+  hides moves to its row's link. The automation editor's loading start chip is a skeleton bar and
+  its Supertask tooltip reads as New task's. The New sandbox lists, the delivery and CI run dialogs,
+  a task's changes, commits and overview, and the CI hygiene and GitHub connection cards load in
+  their final layout.
 - The session view says when the server cut a diff or a context, and every scroller is reachable
   (SPEC-177, ADR-0143, task #137, fixes #350, #380, #363). Transcript diffs and meta blocks carry
   `truncated`; a cut edit reads "Wrote path" / "Updated path" with no count and "Cut here: the
