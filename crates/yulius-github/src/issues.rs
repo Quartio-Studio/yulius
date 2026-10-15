@@ -1,5 +1,6 @@
-//! Issues and their labels (SPEC-001 DLV-008): agents log follow-up work, bugs and flaky tests
-//! as issues with Definition-of-Ready labels.
+//! Issues and their labels (SPEC-001 DLV-008): agents log what lies outside their change
+//! (pre-existing bugs, flaky tests they did not cause, nits left after review; ADR-0141) as issues
+//! with Definition-of-Ready labels.
 
 use reqwest::Method;
 use serde::Deserialize;

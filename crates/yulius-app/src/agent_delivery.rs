@@ -1,7 +1,7 @@
 //! Agents deliver their own work (SPEC-001 DLV-008, GIT-002; SPEC-002 ADR-19): `delivery_merge`,
 //! `delivery_deploy` (integration environments only: production is a person's, ADR-0110), and
-//! `issue_create` for follow-up work, bugs and flaky
-//! tests, refused unless the issue meets the Definition of Ready (one `type:` and one `priority:`
+//! `issue_create` for what lies outside the change (pre-existing bugs, flaky tests it did not
+//! cause, nits left after review; ADR-0141), refused unless the issue meets the Definition of Ready (one `type:` and one `priority:`
 //! label, at least one `area:` label, and acceptance criteria as a checklist).
 //!
 //! An agent acts with the authority of the person who created its task, through the same

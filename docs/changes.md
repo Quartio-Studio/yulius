@@ -15,6 +15,19 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   queued task, or a failed push leaves the playground as it was
   (`POST /api/sandboxes/{sid}/move-to-github`).
 
+- Review findings in a change's own code are fixed before merge, never deferred to an issue
+  (SPEC-174, ADR-0141, task #164). The delivery pipeline, `om-code-review` (skill, checklist and
+  report format), the Feature and Fix workflows, the `yulius-review`, `yulius-verify` and
+  `yulius-git` primitives, the engineering workflow, the briefing and the `issue_create` tool now
+  say the same: an own-code finding is fixed test-first in the same pull request whatever the
+  round (keep fixing, split, or ask a person); only pre-existing bugs, flaky tests the change did
+  not cause and nits left at the round limit become issues, saying why; the reviewer marks each
+  finding own code or pre-existing, and deferring an own-code one is "request changes". A unit
+  test keeps every location stating the rule.
+- A long goal no longer pushes mandatory parts out of the briefing (SPEC-174, fixes #555). A Fix
+  task's workflow instructions lower the budget, and a 600-byte goal used to cut `## Architecture`
+  and every optional part. The goal quote now shrinks first (down to 40 bytes; the whole request is
+  in the task's prompt or request file), and no bundled workflow is larger than 1,444 bytes.
 - A held redraw never eats a click or a drag, and one Start onboarding shows one toast (SPEC-175,
   task #136, fixes #477, #478, #436). A plain click on an Editor tab while a strip redraw waited
   activates the tab (the redraw runs after the click; the browser dropped the click before); a
