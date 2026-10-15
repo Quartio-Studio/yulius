@@ -133,7 +133,7 @@ pub const YULIUS_TOOLS: [(&str, &str); 39] = [
     ),
     (
         "issue_create",
-        "log a pre-existing bug, a flaky test you did not cause or a leftover nit as a ready GitHub issue",
+        "log a pre-existing bug, a flaky test you did not cause or a nit left after 3 rounds as a ready GitHub issue",
     ),
     (
         "ci_status",
@@ -667,9 +667,9 @@ fn git_rules(input: &BriefingInput<'_>) -> String {
          - To wait for checks, a merge or a person, start `yulius wait` with run_in_background \
          and end your turn. Never poll with `sleep`, `pgrep -f` loops or monitors, and never hide \
          an exit code behind `| tail`.\n\
-         - Report a bug you confirm (one you fix or met on the way) with `issue_create` unless an \
-         open issue tracks it (then reference it); a flaky test you did not cause or a leftover nit \
-         too, saying why it is outside your change; a task told not to \
+         - Report a bug you confirm with `issue_create` unless an open issue tracks it (then \
+         reference it); one met on the way, a flaky test you did not cause or a nit left after 3 \
+         rounds says why it is outside your change; a task told not to \
          create issues never does, and comments or says it in its summary instead. After the \
          merge leave nothing stale (`repo_hygiene`, `repo_cleanup`).\n\
          - Delivery path ({preset} profile): {path}.\n\n",
@@ -703,7 +703,7 @@ fn playground_git_rules(input: &BriefingInput<'_>) -> String {
          - Before delivery, get an independent review in a fresh session (a read-only subagent \
          given only the diff range, the spec and skill `om-code-review`), which marks each finding \
          own code or pre-existing. Fix every own-code finding test-first before the merge, \
-         whatever the round, never deferring it.\n\
+         never deferring it (after 3 rounds: keep fixing, split the change or `needs_you`).\n\
          - Before delivery, run every project gate yourself. When the work is ready (spec valid \
          if needed, steps done, all committed) and the review approved the exact head, call \
          `delivery_merge`: Yulius CI tests your head merged into {integration} (when the \
@@ -1386,7 +1386,8 @@ mod tests {
             "answer each in the pull request",
             "never as an issue",
             "after 3 rounds: keep fixing, split the change or `needs_you`",
-            "saying why it is outside your change",
+            "one met on the way, a flaky test you did not cause or a nit left after 3 rounds says \
+             why it is outside your change",
         ] {
             assert!(text.contains(needle), "missing {needle}");
         }
@@ -1795,7 +1796,8 @@ mod tests {
             YULIUS_TOOLS
                 .iter()
                 .any(|(name, summary)| *name == "issue_create"
-                    && summary.contains("a flaky test you did not cause or a leftover nit"))
+                    && summary
+                        .contains("a flaky test you did not cause or a nit left after 3 rounds"))
         );
         let rendered = tools(false);
         for (index, (name, _)) in YULIUS_TOOLS.iter().enumerate() {
@@ -1846,6 +1848,7 @@ mod tests {
             "`ci_rerun`",
             "marks each finding own code or pre-existing",
             "Fix every own-code finding",
+            "split the change or `needs_you`",
             "List in your summary what is outside your change",
         ] {
             assert!(text.contains(present), "{present} not in {text}");
