@@ -203,7 +203,7 @@ test('a task beside a tool panel keeps room for its step count in a narrow strip
       await expect.poll(() => layoutProblems(browser)).toEqual({ overlaps: [], sideways: false });
       await expect.poll(async () => (await stripRoom(browser)).countInside).toBe(true);
       expect(await spilledChips(browser)).toEqual([]);
-      const strip =await browser.evaluate(() => document.querySelector('.taskview .stepstrip')!.getBoundingClientRect().width);
+      const strip = await browser.evaluate(() => document.querySelector('.taskview .stepstrip')!.getBoundingClientRect().width);
       if (strip > 420 && strip <= 500) narrow.add(width);
     }
   }
