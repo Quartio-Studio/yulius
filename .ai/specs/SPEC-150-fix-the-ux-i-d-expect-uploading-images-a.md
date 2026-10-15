@@ -123,6 +123,10 @@ and paste. The agent still gets each file at its placeholder's place (SPEC-124).
   as a label, which would change the prompt format and every reader of it.
 - **"Actual size" stays on for an image smaller than the dialog** (review nit): toggling it changes
   nothing there, which harms nobody; measuring the space on every open was not worth it.
+- **A fourth, narrowed review round** past the three-round guide: every finding so far was a
+  concrete, reproduced defect in the undo of uploads, each fixed with a failing test first, and
+  `delivery_merge` needs an approval of the exact head. Round 4 confirms the round 3 fix and
+  looks only for blockers and majors.
 - **Zoom is a fit / actual-size toggle** in the existing dialog, not a zoom slider: it answers "I
   still want to zoom the image" with one click, and pinch zoom on phones works as before.
 
