@@ -214,8 +214,8 @@ Every run used `CI=true` and the config's `retries: 0`.
 
 **A run starved beyond the target** (head `d8896dca`, before the final merge of `dev`). The four
 files `--repeat-each 10 --workers 4` next to 40 busy loops, load 61–84, 10:47–12:04: archive 20
-of 80 failed, terminal 54 of 130, editor 13 of 110, notes about 10 of the 200 or so that ran before it was
-stopped. Not counted as the proof, and not retried as one:
+of 80 failed, terminal 54 of 130, editor 13 of 110, notes about 10 of the 200 or so that ran
+before it was stopped. Not counted as the proof, and not retried as one:
 - the same code passed these files at 48 loops in the morning (archive 80/80, editor 100/100,
   terminal 129/130); here each test took 2–2.5 times as long (archive 22.6 s a test against
   8.7 s in the reproduction, terminal 16.8 s against 7.1 s), and a busy loop got 0.11 of a CPU:
