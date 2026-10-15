@@ -21,6 +21,8 @@ const STATE = {
   failed: { label: 'Failed', tone: 'danger', icon: 'x' },
   error: { label: 'Error', tone: 'danger', icon: 'warn' },
   cancelled: { label: 'Cancelled', tone: '', icon: 'x' },
+  // SPEC-162: the job exited with $YULIUS_CI_SKIP_CODE: it checked nothing and blocks nothing.
+  skipped: { label: 'Skipped', tone: 'warn', icon: 'forward' },
 };
 const ACTIVE = new Set(['queued', 'running']);
 const SOURCE = {
@@ -39,7 +41,7 @@ function jobsLine(jobs) {
   const list = Array.isArray(jobs) ? jobs : [];
   const count = (state) => list.filter((j) => j.state === state).length;
   const parts = [plural(list.length, 'job')];
-  for (const state of ['passed', 'failed', 'error', 'running', 'queued', 'cancelled']) {
+  for (const state of ['passed', 'skipped', 'failed', 'error', 'running', 'queued', 'cancelled']) {
     const n = count(state);
     if (n && !(state === 'passed' && n === list.length)) parts.push(`${n} ${stateOf(state).label.toLowerCase()}`);
   }
