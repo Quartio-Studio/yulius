@@ -81,8 +81,10 @@ grants per client and 1000 per instance; past either it answers 429.
 A **playground** (SPEC-099) is a sandbox without GitHub: `Sandbox.playground` is true, its `repo`
 has an empty `owner` and `url`, its onboarding is `not_needed`, and only its maker and the
 superadmin see it (admin). Its `origin` is a bare repository on the server outside the sandbox, so
-nothing is pushed anywhere; Yulius CI, pull requests, hygiene's GitHub checks and the automatic pull request skip
-it, and its delivery view and Git page carry one note saying so. Nothing issues a GitHub token for
+nothing is pushed anywhere; pull requests, hygiene's GitHub checks and the automatic pull request skip
+it, and its delivery view and Git page carry one note saying so. Yulius CI tests its integration
+head and, when a task delivers, the task head merged into it (runs `task/<n>`, labelled `Task #n`);
+it publishes no commit status (SPEC-163). Nothing issues a GitHub token for
 it (`/internal/git-credential` answers 403), promotion and `issue_create` answer 409, and since its
 maker may be anyone signed in, it has no deploy: a profile with an environment command is 422 and
 an environment run 409.
@@ -451,7 +453,7 @@ the agents' delivery workflow and other clients; no page of the web UI calls the
 | GET | `/api/tasks/{tid}/changes` | read | → `TaskChanges`: the task worktree (committed, uncommitted and untracked work; symlinks listed, never followed) against the merge base with `origin/<integration>`; 409 when the worktree is gone |
 | GET | `/api/tasks/{tid}/commits` | read | → `[TaskCommit]`: the task branch's commits not on the integration branch, newest first (at most 100) |
 | POST | `/api/tasks/{tid}/delivery/pr` | write | `{"title?","body?"}` (body optional) → `Delivery` (refused without a valid spec or with uncommitted changes); opened with the caller's GitHub account, the superadmin's by the App |
-| POST | `/api/tasks/{tid}/delivery/merge` | write | → `Delivery` (requires the domain gates: open PR at the checked head, valid spec, no open steps, checks per profile); acts as the caller on GitHub: 403 with a message for the superadmin without a GitHub identity. In a playground: squashes the task branch onto its integration branch in the playground's own `origin` (valid spec where required, steps resolved, a clean worktree, commits to deliver; 409 naming the files on a conflict), no GitHub identity needed (SPEC-099) |
+| POST | `/api/tasks/{tid}/delivery/merge` | write | → `Delivery` (requires the domain gates: open PR at the checked head, valid spec, no open steps, checks per profile); acts as the caller on GitHub: 403 with a message for the superadmin without a GitHub identity. In a playground: squashes the task branch onto its integration branch in the playground's own `origin` (valid spec where required, steps resolved, a clean worktree, commits to deliver; 409 naming the files on a conflict), no GitHub identity needed (SPEC-099), once Yulius CI passed on the head merged into the integration branch: 409 while that run goes (it never arms) or when it failed (SPEC-163) |
 | POST | `/api/sandboxes/{sid}/delivery/promote` | write | → `{"result":"promoted|pr_opened","sha"}`; acts as the caller on GitHub: 403 with a message for the superadmin without a GitHub identity |
 | POST | `/api/sandboxes/{sid}/delivery/environments/{env}/runs` | write | `{"confirm":true}` → `EnvironmentRun` (includes `run_id`) |
 | POST | `/api/sandboxes/{sid}/delivery/environments/{env}/confirm` | write | `{"confirm":true}` → `EnvironmentRun` (manual verification) |

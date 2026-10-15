@@ -6,6 +6,13 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- Playgrounds get Yulius CI (SPEC-163, ADR-0134, task #130, fixes #411). The CI sync tests a
+  playground's `dev` head without GitHub, and `delivery_merge` first tests the task head merged into
+  `dev`, built in Yulius's clone (`Task #n` runs): it squashes on green, arms while the run goes
+  (Yulius lands it when it passes, or builds and tests again when `dev` moved), and refuses on red.
+  A person's merge waits for green too. `yulius wait`, `ci_status` and `ci_rerun` work for a
+  playground's agents, and nothing is published to GitHub. A playground without CI merges at once,
+  as before.
 - CI jobs and CD runs record what they used (SPEC-154, ADR-0127, task #129; fixes #488): the
   process host measures a job's reaped process tree (CPU time, the largest process's peak memory,
   bytes written on Linux) into `exit.json`, and the job's or run's span gets `cpu_ms`,
