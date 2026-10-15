@@ -123,6 +123,8 @@ pub struct CdRunEnd {
     pub output: String,
     /// End.
     pub ended_at: Timestamp,
+    /// What it used, when its process host measured it (SPEC-154).
+    pub usage: Option<yulius_domain::stages::ResourceUse>,
 }
 
 /// Who asks for a deploy, as the application sees them.
@@ -578,6 +580,7 @@ impl App {
                         output: "[yulius] not started: the audit entry could not be written\n"
                             .into(),
                         ended_at: self.now(),
+                        usage: None,
                     },
                 )
                 .await;
@@ -971,9 +974,13 @@ impl App {
             run.environment.label()
         ));
         let run_dir = self.cd_run_dir(&run.id);
-        let ended = self
+        let (ended, usage) = match self
             .cd_process(&sandbox, &run, secrets, &run_dir, &mut ring, &mut cancel)
-            .await;
+            .await
+        {
+            Ok((ended, usage)) => (Ok(ended), usage),
+            Err(reason) => (Err(reason), None),
+        };
         // The run's files (the tree, its HOME, its log) go with it.
         let _ = std::fs::remove_dir_all(&run_dir);
         let (state, exit_code, reason) = match ended {
@@ -1023,6 +1030,7 @@ impl App {
             exit_code,
             output,
             ended_at: self.now(),
+            usage,
         };
         if let Err(err) = self.deps.store.finish_cd_run(&run.id, &end).await {
             tracing::error!(error = %err, run = %run.id, "recording a CD run's end failed");
@@ -1109,7 +1117,7 @@ impl App {
         run_dir: &Path,
         ring: &mut OutputRing,
         cancel: &mut watch::Receiver<Option<String>>,
-    ) -> Result<Ended, String> {
+    ) -> Result<(Ended, super::exec::Used), String> {
         let work = run_dir.join("work");
         let (src, home, log) = (work.join("src"), work.join("home"), work.join("log"));
         let cache = self
@@ -1254,6 +1262,7 @@ impl App {
                     exit_code: None,
                     output: format!("{}\n[yulius] {reason}\n", full.output),
                     ended_at: self.now(),
+                    usage: None,
                 },
             )
             .await

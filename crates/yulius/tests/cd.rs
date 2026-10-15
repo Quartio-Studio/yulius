@@ -1190,6 +1190,11 @@ async fn a_deploy_records_its_confirmation_checks_promotion_phases_and_stages() 
         (detail["requested_by"].as_str(), detail["sha"].as_str()),
         (Some("bob"), Some(f.head("main")?.as_str()))
     );
+    // SPEC-154 USE-003: what the deploy's processes used, as their host measured it.
+    assert!(
+        detail["cpu_ms"].as_i64().is_some() && detail["memory_peak_mb"].as_i64() >= Some(1),
+        "{detail}"
+    );
     let deploy_span = find("run/deploy")?;
     let verify_span = find("run/verify")?;
     assert_eq!(

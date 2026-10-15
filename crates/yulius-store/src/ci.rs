@@ -297,9 +297,11 @@ impl CiStore for SqliteStore {
                 "UPDATE ci_jobs SET state = ?1, reason = COALESCE(?2, reason), \
                  exit_code = COALESCE(?3, exit_code), output = COALESCE(?4, output), \
                  started_at = COALESCE(?5, started_at), ended_at = COALESCE(?6, ended_at), \
-                 failures = COALESCE(?8, failures) \
+                 failures = COALESCE(?8, failures), cpu_ms = COALESCE(?9, cpu_ms), \
+                 memory_peak_mb = COALESCE(?10, memory_peak_mb), \
+                 disk_written_mb = COALESCE(?11, disk_written_mb) \
                  WHERE id = ?7 AND state IN ({})",
-                placeholders(9, from.len())
+                placeholders(12, from.len())
             );
             let mut args: Vec<Box<dyn rusqlite::ToSql>> = vec![
                 Box::new(to.as_str().to_owned()),
@@ -310,6 +312,9 @@ impl CiStore for SqliteStore {
                 Box::new(update.ended_at.map(|t| t.0)),
                 Box::new(id),
                 Box::new(update.failures),
+                Box::new(update.usage.map(|u| u.cpu_ms)),
+                Box::new(update.usage.map(|u| u.memory_peak_mb)),
+                Box::new(update.usage.and_then(|u| u.disk_written_mb)),
             ];
             args.extend(
                 from.into_iter()

@@ -230,6 +230,7 @@ async fn lifecycle(f: &Fixture) -> TestResult {
                     exit_code: Some(0),
                     output: String::new(),
                     ended_at: Timestamp(start + 10 * MIN),
+                    usage: None,
                 },
             )
             .await?;
