@@ -6,6 +6,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- Tools and the keyboard stay where the person left them, and presence leaves arrive last
+  (SPEC-170, ADR-0138, task #135, fixes #489, #439, #463). A sandbox left while its page still
+  loads comes back with no tool open, not the other sandbox's; the Shell shown again for another
+  task or sandbox leaves the keyboard on the page (the rail still gives it to the terminal); and
+  notepad and file presence updates carry a per-tab `seq`, so an update arriving after the leave
+  sent as a teammate's tab hid no longer leaves their caret drawn.
 - The Pipeline (stages) is a tab of the Dashboard, not a sidebar entry (SPEC-161, ADR-0132, task
   #152). The sidebar lists Tasks, Git, CI/CD, Secrets and Dashboard; the Dashboard's tab strip (the
   CI/CD page's, now shared as `sectionedPage`) shows Overview and Pipeline (stages), the latter at
