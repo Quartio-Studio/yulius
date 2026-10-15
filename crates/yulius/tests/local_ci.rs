@@ -801,6 +801,32 @@ impl Fixture {
         }
     }
 
+    /// Lets time pass, a recheck interval at a time, until no run waits for disk any more. The
+    /// check that noted the wait ends in the background and dates the next one from its own end:
+    /// one jump of the clock taken before it ended left the next check a minute ahead, forever
+    /// in a frozen clock (#485).
+    async fn recheck_until_started(&self) -> BoxResult<()> {
+        let deadline = tokio::time::Instant::now() + WAIT;
+        loop {
+            self.h.clock.0.fetch_add(61_000, Ordering::SeqCst);
+            self.h.app.ci_dispatch().await;
+            let overview = self.get("/api/sandboxes/s1/ci").await?;
+            let waiting = overview["runs"].as_array().ok_or("runs")?.iter().any(|r| {
+                r["state"] == "queued"
+                    && r["reason"]
+                        .as_str()
+                        .is_some_and(|w| w.starts_with("waiting for disk space"))
+            });
+            if !waiting {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() > deadline {
+                return Err(format!("the runs still wait for disk: {overview}").into());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     /// Every run passed and none ended otherwise (no error, no rerun).
     async fn all_passed(&self, runs: usize) -> BoxResult<()> {
         let overview = self.get("/api/sandboxes/s1/ci").await?;
@@ -849,7 +875,7 @@ async fn a_run_over_the_disk_quota_waits_and_starts_when_space_frees() -> TestRe
     disk.used.store(80 * GB, Ordering::SeqCst);
     f.h.app.ci_dispatch().await;
     f.all_waiting("waiting for disk space").await?;
-    f.h.clock.0.fetch_add(61_000, Ordering::SeqCst);
+    f.recheck_until_started().await?;
     f.settle().await?;
     f.all_passed(2).await?;
     let overview = f.get("/api/sandboxes/s1/ci").await?;
