@@ -218,8 +218,8 @@ pub trait SandboxStore: Send + Sync {
     async fn request_purge(&self, id: &SandboxId, by: &UserId, at: Timestamp) -> AppResult<bool>;
     /// Sandboxes whose purge was requested and is not done yet, oldest request first.
     async fn pending_purges(&self) -> AppResult<Vec<SandboxId>>;
-    /// Marks the purge of `id` done.
-    async fn finish_purge(&self, id: &SandboxId, at: Timestamp) -> AppResult<()>;
+    /// Marks the purge of `id` done; `false` when it was done already.
+    async fn finish_purge(&self, id: &SandboxId, at: Timestamp) -> AppResult<bool>;
 }
 
 /// Field updates for a task (only `Some` fields change).

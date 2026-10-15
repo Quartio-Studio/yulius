@@ -88,6 +88,12 @@ pub enum RepoError {
          (`git switch <branch>`), then run the command again"
     )]
     DetachedHead,
+    /// A playground upload of a repository whose `HEAD` has no commit yet.
+    #[error(
+        "the repository has no commits yet; make a first commit (`git add -A && git commit -m \
+         \"First commit\"`), then run the command again"
+    )]
+    NoFirstCommit,
     /// A Git invocation failed.
     #[error(transparent)]
     Git(#[from] GitError),
@@ -231,14 +237,17 @@ pub fn discover_repo(path: &Path) -> Result<RepoInfo, RepoError> {
 /// the uncommitted work lands.
 ///
 /// # Errors
-/// [`RepoError::NotGitRepository`], [`RepoError::NoCommits`], [`RepoError::DetachedHead`] or a
-/// Git failure.
+/// [`RepoError::NotGitRepository`], [`RepoError::NoFirstCommit`], [`RepoError::DetachedHead`] or
+/// a Git failure.
 pub fn discover_playground_checkout(
     path: &Path,
     name: Option<&str>,
 ) -> Result<RepoInfo, RepoError> {
     let root = checkout_root(path)?;
-    let head_sha = head_commit(&root)?;
+    let head_sha = match head_commit(&root) {
+        Err(RepoError::NoCommits) => return Err(RepoError::NoFirstCommit),
+        other => other?,
+    };
     let head_branch = head_branch(&root)?.ok_or(RepoError::DetachedHead)?;
     let worktrees = other_worktrees(&root)?;
     let name = name

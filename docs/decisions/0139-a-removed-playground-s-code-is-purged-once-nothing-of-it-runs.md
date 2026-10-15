@@ -49,6 +49,10 @@ shell, the sandbox browser or a CI run may still be running then.
 ## Consequences
 
 - Removing a playground can free its disk and its place in the limit of 10.
-- A purge may take up to one upkeep round after the last process ended.
+- A purge may take up to one upkeep round after the last process ended. It deletes the sandbox
+  directory before `origin`, so one that fails half-way keeps the code and its place in the quota,
+  and is retried on the next round.
+- The sandbox host's own state of the sandbox (`<data>/sysroots/<id>`, `runtime/sandboxes/<id>`)
+  stays; it is the host's to manage.
 - A removed playground is invisible in the UI, so purging one removed before this change is an API
   call by the superadmin until a list of removed playgrounds exists.

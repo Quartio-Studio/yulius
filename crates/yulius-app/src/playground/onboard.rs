@@ -104,15 +104,42 @@ impl App {
         }
         self.playground_quota(&ctx.user).await?;
         let store = &self.deps.store;
+        // The person's unfinished uploads into a playground not made yet: the same one is resumed,
+        // the others are superseded, so abandoned uploads never pile up (one open at a time).
+        let mut unfinished = Vec::new();
         for job in store.user_import_jobs(&ctx.user.id, JOB_LIST_LIMIT).await? {
             let open = JobState::parse(&job.state).is_some_and(JobState::accepts_uploads);
-            if !open || job.manifest != canonical {
+            let Some(sandbox) = job.sandbox_id.clone() else {
                 continue;
+            };
+            if open && store.sandbox(&sandbox).await?.is_none() {
+                if job.manifest == canonical {
+                    return Ok(UploadTarget::Resume(job));
+                }
+                unfinished.push((job, sandbox));
             }
-            if let Some(sandbox) = &job.sandbox_id
-                && store.sandbox(sandbox).await?.is_none()
+        }
+        for (job, sandbox) in unfinished {
+            let open = [
+                JobState::Created,
+                JobState::Receiving,
+                JobState::Received,
+                JobState::Failed,
+            ]
+            .map(JobState::as_str);
+            if store
+                .transition_import_job(
+                    &job.id,
+                    &open,
+                    JobState::Superseded.as_str(),
+                    None,
+                    None,
+                    self.now(),
+                )
+                .await?
             {
-                return Ok(UploadTarget::Resume(job));
+                // Its reserved directory holds only this job's files.
+                remove_tree(self.sandbox_dir(&sandbox)).await;
             }
         }
         let id = SandboxId::parse(&self.deps.crypto.new_id()).map_err(AppError::internal)?;
@@ -151,6 +178,8 @@ impl App {
     ) -> AppResult<(SandboxRecord, Option<AppliedSnapshot>)> {
         let name = playground_name(&manifest.repo.name)?;
         let branch = self.new_playground_branch(manifest)?;
+        // Within the limit before any seeding (again when recorded: creations run at once).
+        self.playground_quota(user).await?;
         // An earlier attempt that failed half-way left these; the job's files stay.
         self.discard_cli_seed(id).await;
         let staging = self.sandbox_dir(id).join("upload");
@@ -165,10 +194,17 @@ impl App {
                 return Err(err);
             }
         };
-        let record = self
+        match self
             .record_playground(id.clone(), &name, &profile, user, "cli")
-            .await?;
-        Ok((record, snapshot))
+            .await
+        {
+            Ok(record) => Ok((record, snapshot)),
+            Err(err) => {
+                // The job's files stay, so completing again retries.
+                self.discard_cli_seed(id).await;
+                Err(err)
+            }
+        }
     }
 
     /// Removes what seeding a playground from a CLI upload made: its `origin`, clone and staging,

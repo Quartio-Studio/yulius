@@ -238,15 +238,16 @@ impl SandboxStore for SqliteStore {
         .await
     }
 
-    async fn finish_purge(&self, id: &SandboxId, at: Timestamp) -> AppResult<()> {
+    async fn finish_purge(&self, id: &SandboxId, at: Timestamp) -> AppResult<bool> {
         let id = id.as_str().to_owned();
         self.call(move |c| {
-            c.execute(
-                "UPDATE playground_purges SET purged_at = ?1 WHERE sandbox_id = ?2 AND purged_at IS NULL",
-                params![at.0, id],
-            )
-            .map_err(db)?;
-            Ok(())
+            let changed = c
+                .execute(
+                    "UPDATE playground_purges SET purged_at = ?1 WHERE sandbox_id = ?2 AND purged_at IS NULL",
+                    params![at.0, id],
+                )
+                .map_err(db)?;
+            Ok(changed > 0)
         })
         .await
     }

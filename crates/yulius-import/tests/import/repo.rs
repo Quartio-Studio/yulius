@@ -273,6 +273,19 @@ fn playground_discovery_needs_no_remote() -> TestResult {
         discover_playground_checkout(&fixture.repo, None),
         Err(RepoError::DetachedHead)
     ));
+    // A repository without a commit is told to make one, not to push to GitHub.
+    let empty = tempfile::tempdir()?;
+    git(empty.path(), &["init", "-q", "-b", "main"])?;
+    let refused = discover_playground_checkout(empty.path(), None);
+    assert!(
+        matches!(refused, Err(RepoError::NoFirstCommit)),
+        "{refused:?}"
+    );
+    let message = refused.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(
+        message.contains("make a first commit") && !message.contains("GitHub"),
+        "{message}"
+    );
     Ok(())
 }
 

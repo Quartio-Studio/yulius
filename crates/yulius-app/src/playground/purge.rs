@@ -188,6 +188,14 @@ impl App {
                 "{id} is not a removed playground; nothing is purged"
             )));
         };
+        let purged = || PurgeState {
+            state: "purged".into(),
+            waiting_for: Vec::new(),
+        };
+        // Done already (a request again, or a round that ran beside this one).
+        if !store.pending_purges().await?.contains(id) {
+            return Ok(purged());
+        }
         let waiting = self.still_running(id).await?;
         if !waiting.is_empty() {
             return Ok(PurgeState {
@@ -202,10 +210,17 @@ impl App {
                 waiting_for: vec!["a CI run".into()],
             });
         }
+        // Checked again under the claim: a purge beside this one may have finished meanwhile.
+        if !store.pending_purges().await.is_ok_and(|p| p.contains(id)) {
+            self.ci_release(id);
+            return Ok(purged());
+        }
         let deleted = self.delete_playground_code(&sandbox).await;
         self.ci_release(id);
         deleted?;
-        store.finish_purge(id, self.now()).await?;
+        if !store.finish_purge(id, self.now()).await? {
+            return Ok(purged());
+        }
         store
             .audit(
                 self.now(),
@@ -218,17 +233,16 @@ impl App {
                 )),
             )
             .await?;
-        Ok(PurgeState {
-            state: "purged".into(),
-            waiting_for: Vec::new(),
-        })
+        Ok(purged())
     }
 
+    /// Deletes the sandbox directory, then `origin`: a purge that fails half-way keeps the code
+    /// (and its place in the quota) and is tried again on the next round.
     async fn delete_playground_code(&self, sandbox: &SandboxRecord) -> AppResult<()> {
         let origin = self.playground_origin(&sandbox.id);
         let dir = self.sandbox_dir(&sandbox.id);
         blocking(move || {
-            for path in [&origin, &dir] {
+            for path in [&dir, &origin] {
                 delete_tree(path).map_err(|err| {
                     AppError::internal(format!("cannot delete {}: {err}", path.display()))
                 })?;

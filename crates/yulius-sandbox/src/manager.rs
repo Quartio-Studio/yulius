@@ -352,8 +352,9 @@ impl Manager {
         }))
     }
 
-    /// Processes running in `sandbox`'s namespaces besides its holder (0 without a live holder;
-    /// 1 when they cannot be counted, so that nothing reads as ended that is not).
+    /// Processes running in `sandbox`'s namespaces besides its holder, as `/proc` shows them (0
+    /// without a live holder). Yulius's own records of runs, shells and the browser are checked
+    /// beside it.
     pub async fn processes(&self, sandbox: &str) -> usize {
         let record = {
             let entry = self.entry(sandbox);

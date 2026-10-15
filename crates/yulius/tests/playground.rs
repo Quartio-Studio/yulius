@@ -2102,6 +2102,10 @@ async fn onboard_cli_uploads_a_checkout_into_a_new_playground() -> TestResult {
     let again = again.map_err(|err| format!("{err}\n{output}"))?;
     assert_eq!(again.sessions_sent, 0, "{output}");
     assert_eq!(playgrounds_named(&h, "shop").await?.len(), 1);
+    // Review round 1: branches it already has are not imported again under `import/`.
+    let clone = sandbox_dir(&h, &sandbox).join("repo");
+    let local = branches(&clone)?;
+    assert!(!local.iter().any(|b| b.starts_with("import/")), "{local:?}");
     no_github_writes(&h)?;
     Ok(())
 }
@@ -2442,5 +2446,213 @@ async fn only_an_admin_purges_and_the_superadmin_purges_a_removed_one() -> TestR
     assert_eq!(purged.status, StatusCode::OK, "{:?}", purged.body);
     assert_eq!(purged.body["state"], "purged");
     assert!(!origin_of(&h, &made.body).exists());
+    Ok(())
+}
+
+// ------------------------------------------------- review round 1 (SPEC-171)
+
+/// A CLI upload of `checkout` into a new playground `name` as the CLI makes it, through the HTTP
+/// API: the job is created and every file uploaded, not completed. Returns the job id.
+async fn cli_job(h: &Harness, creds: &Creds, checkout: &Path, name: &str) -> BoxResult<String> {
+    let bundle_path = checkout.join("..").join(format!("{name}.bundle"));
+    git(
+        checkout,
+        &[
+            "bundle",
+            "create",
+            "--quiet",
+            &bundle_path.to_string_lossy(),
+            "--branches",
+            "--tags",
+        ],
+    )?;
+    let bundle = std::fs::read(&bundle_path)?;
+    let head = git(checkout, &["rev-parse", "HEAD"])?.trim().to_owned();
+    let manifest = json!({"manifest": {
+        "version": 1,
+        "repo": {"remote_url": "", "owner": "", "name": name, "head_branch": "main", "head_sha": head},
+        "bundle": {"name": "repo.bundle", "size": bundle.len(), "sha256": h.app.deps.crypto.sha256_hex(&bundle)},
+        "snapshot": null, "sessions": [], "since": "1970-01-01T00:00:00.000Z", "playground": true
+    }});
+    let created = call(
+        &h.router,
+        Method::POST,
+        "/api/import",
+        Some(manifest),
+        creds,
+    )
+    .await?;
+    assert_eq!(created.status, StatusCode::OK, "{:?}", created.body);
+    let job = created.body["job_id"].as_str().ok_or("job")?.to_owned();
+    if created.body["missing"]
+        .as_array()
+        .is_some_and(|m| !m.is_empty())
+    {
+        let sha = h.app.deps.crypto.sha256_hex(&bundle);
+        let put = support::repos::call_raw(
+            &h.router,
+            Method::PUT,
+            &format!("/api/import/{job}/files/repo.bundle?offset=0"),
+            bundle,
+            &[
+                ("x-chunk-sha256", &sha),
+                ("content-type", "application/octet-stream"),
+            ],
+            creds,
+        )
+        .await?;
+        assert_eq!(put.status, StatusCode::OK, "{:?}", put.body);
+    }
+    Ok(job)
+}
+
+async fn complete_job(h: &Harness, creds: &Creds, job: &str) -> BoxResult<support::Resp> {
+    call(
+        &h.router,
+        Method::POST,
+        &format!("/api/import/{job}/complete"),
+        None,
+        creds,
+    )
+    .await
+}
+
+/// Review round 1 (major): a new playground that cannot be made when its upload completes (here:
+/// another playground took the person's tenth place meanwhile) keeps the uploaded files, so
+/// completing again once there is room makes it (PGL-003).
+#[tokio::test]
+async fn a_cli_upload_refused_at_completion_keeps_its_files_and_completes_later() -> TestResult {
+    use yulius_app::ports::store::UserStore;
+    let (h, _owner) = world().await?;
+    support::configure_github_app(&h).await?;
+    let alice = support::seed_github_user(&h, "u-alice", "alice").await?;
+    let user = h
+        .store
+        .user(&yulius_domain::ids::UserId::parse("u-alice")?)
+        .await?
+        .ok_or("alice")?;
+    let bearer = Creds {
+        bearer: Some(
+            h.app
+                .issue_api_token(&user, "tests")
+                .await?
+                .expose()
+                .to_owned(),
+        ),
+        ..Creds::default()
+    };
+    let mut first = Value::Null;
+    for n in 0..9 {
+        let made = from_template(&h, &alice, &format!("lab {n}")).await?;
+        assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
+        if n == 0 {
+            first = made.body;
+        }
+    }
+    let tmp = tempfile::tempdir()?;
+    let (checkout, _remote, _claude) = laptop(tmp.path())?;
+    let job = cli_job(&h, &bearer, &checkout, "shop").await?;
+    let tenth = from_template(&h, &alice, "lab 9").await?;
+    assert_eq!(tenth.status, StatusCode::CREATED, "{:?}", tenth.body);
+
+    let refused = complete_job(&h, &bearer, &job).await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{:?}", refused.body);
+    assert!(playgrounds_named(&h, "shop").await?.is_empty());
+
+    let sid = first["id"].as_str().ok_or("id")?;
+    let purged = purge(&h, &alice, sid).await?;
+    assert_eq!(purged.body["state"], "purged", "{:?}", purged.body);
+    let done = complete_job(&h, &bearer, &job).await?;
+    assert_eq!(done.status, StatusCode::OK, "{:?}", done.body);
+    let made = playgrounds_named(&h, "shop").await?;
+    assert_eq!(made.len(), 1);
+    let origin = origin_of(&h, &json!({"id": made[0].id.as_str()}));
+    assert_eq!(branches(&origin)?, ["dev", "feature", "main"]);
+    Ok(())
+}
+
+/// Review round 1: a person has one new-playground upload open at a time; starting another
+/// supersedes the earlier one, whose files go, so abandoned uploads cannot pile up on the disk.
+#[tokio::test]
+async fn a_new_playground_upload_supersedes_an_unfinished_one() -> TestResult {
+    let (h, _owner) = world().await?;
+    let bearer = support::superadmin_bearer(&h).await?;
+    let tmp = tempfile::tempdir()?;
+    let (checkout, _remote, _claude) = laptop(tmp.path())?;
+    let first = cli_job(&h, &bearer, &checkout, "shop").await?;
+    let reserved = {
+        use yulius_app::ports::store_ext::ImportStore;
+        h.store
+            .import_job(&first)
+            .await?
+            .ok_or("job")?
+            .sandbox_id
+            .ok_or("sandbox")?
+    };
+    let dir = h
+        .app
+        .config
+        .data_dir
+        .join("sandboxes")
+        .join(reserved.as_str());
+    assert!(
+        dir.join("imports")
+            .join(&first)
+            .join("repo.bundle")
+            .exists()
+    );
+    // The same upload again resumes the same job.
+    assert_eq!(cli_job(&h, &bearer, &checkout, "shop").await?, first);
+
+    let second = cli_job(&h, &bearer, &checkout, "lab").await?;
+    assert_ne!(second, first);
+    assert!(!dir.exists(), "the superseded upload's files are gone");
+    let stale = complete_job(&h, &bearer, &first).await?;
+    assert_eq!(stale.status, StatusCode::CONFLICT, "{:?}", stale.body);
+    assert!(
+        stale.body.to_string().contains("superseded"),
+        "{:?}",
+        stale.body
+    );
+    let done = complete_job(&h, &bearer, &second).await?;
+    assert_eq!(done.status, StatusCode::OK, "{:?}", done.body);
+    assert_eq!(playgrounds_named(&h, "lab").await?.len(), 1);
+    Ok(())
+}
+
+/// Review round 1 (PGL-006): the purge waits for a CI run of the sandbox too (its checkouts are
+/// claimed while a run executes), and an already purged playground is not purged or audited again.
+#[tokio::test]
+async fn a_purge_waits_for_a_ci_run_and_is_done_once() -> TestResult {
+    let (h, owner) = world().await?;
+    let made = from_template(&h, &owner, "shop").await?;
+    let sid = made.body["id"].as_str().ok_or("id")?.to_owned();
+    let id = yulius_domain::ids::SandboxId::parse(&sid)?;
+    assert!(h.app.ci_claim(&id), "a CI run holds the checkouts");
+    let asked = purge(&h, &owner, &sid).await?;
+    assert_eq!(asked.body["state"], "waiting", "{:?}", asked.body);
+    assert_eq!(asked.body["waiting_for"][0], "a CI run", "{:?}", asked.body);
+    assert!(origin_of(&h, &made.body).exists());
+    h.app.ci_release(&id);
+    assert_eq!(h.app.run_purges().await, 1);
+    assert!(!origin_of(&h, &made.body).exists() && !sandbox_dir(&h, &made.body).exists());
+
+    let again = purge(&h, &owner, &sid).await?;
+    assert_eq!(again.status, StatusCode::OK, "{:?}", again.body);
+    assert_eq!(again.body["state"], "purged");
+    let actions = audit_actions(&h, &sid).await?;
+    assert_eq!(
+        actions.iter().filter(|a| *a == "sandbox.purged").count(),
+        1,
+        "{actions:?}"
+    );
+    assert_eq!(
+        actions
+            .iter()
+            .filter(|a| *a == "sandbox.purge_requested")
+            .count(),
+        1,
+        "{actions:?}"
+    );
     Ok(())
 }

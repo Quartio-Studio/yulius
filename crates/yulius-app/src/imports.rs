@@ -82,6 +82,9 @@ pub enum JobState {
     Completed,
     /// Applying failed; completing again retries.
     Failed,
+    /// A new playground's upload replaced by a newer one of its person (SPEC-171); its files are
+    /// gone and it never completes.
+    Superseded,
 }
 
 impl JobState {
@@ -95,6 +98,7 @@ impl JobState {
             Self::Applying => "applying",
             Self::Completed => "completed",
             Self::Failed => "failed",
+            Self::Superseded => "superseded",
         }
     }
 
@@ -108,6 +112,7 @@ impl JobState {
             "applying" => Some(Self::Applying),
             "completed" => Some(Self::Completed),
             "failed" => Some(Self::Failed),
+            "superseded" => Some(Self::Superseded),
             _ => None,
         }
     }
@@ -783,6 +788,13 @@ impl App {
         if let Some(applied) = applied_of(&job) {
             return Ok(applied.result);
         }
+        if JobState::parse(&job.state) == Some(JobState::Superseded) {
+            return Err(AppError::Conflict(
+                "this upload was superseded by a newer playground upload of yours; run the \
+                 command again"
+                    .into(),
+            ));
+        }
         let manifest = parse_manifest(&job)?;
         let incomplete = manifest
             .files()
@@ -930,12 +942,16 @@ impl App {
                         .await?;
                 }
                 let bundle_refs = match &manifest.bundle {
-                    Some(bundle) => {
-                        self.deps
-                            .git
-                            .import_bundle(&repo_dir, &job_dir.join(&bundle.name), &prefix)
-                            .await?
-                    }
+                    Some(bundle) => match self.applied_bundle(&sid, &ctx.user, bundle).await? {
+                        // The same person's same bundle is already here (SPEC-171: a re-run).
+                        Some(refs) => refs,
+                        None => {
+                            self.deps
+                                .git
+                                .import_bundle(&repo_dir, &job_dir.join(&bundle.name), &prefix)
+                                .await?
+                        }
+                    },
                     None => Vec::new(),
                 };
                 let snapshot = match &manifest.snapshot {
@@ -993,6 +1009,34 @@ impl App {
             snapshot,
             tasks: Vec::new(),
         })
+    }
+
+    /// The branches an earlier completed job of `user` in `sandbox` made from the same bundle,
+    /// when there is one: importing it again changes nothing (a playground made from it holds its
+    /// branches as its own, and none are listed).
+    async fn applied_bundle(
+        &self,
+        sandbox: &SandboxId,
+        user: &UserRecord,
+        bundle: &FileRef,
+    ) -> AppResult<Option<Vec<String>>> {
+        for job in self.deps.store.import_jobs(sandbox, JOB_LIST_LIMIT).await? {
+            if job.user_id != user.id {
+                continue;
+            }
+            let Some(applied) = applied_of(&job) else {
+                continue;
+            };
+            let same = parse_manifest(&job).is_ok_and(|earlier| {
+                earlier
+                    .bundle
+                    .is_some_and(|b| b.sha256 == bundle.sha256 && b.size == bundle.size)
+            });
+            if same {
+                return Ok(Some(applied.bundle_refs));
+            }
+        }
+        Ok(None)
     }
 
     /// Where an imported session's worktree should start: the snapshot when the session ran on

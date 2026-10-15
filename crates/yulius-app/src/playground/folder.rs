@@ -268,9 +268,16 @@ impl App {
                 return Err(err);
             }
         };
-        let record = self
-            .record_playground(id, &name, &profile, &ctx.user, "folder")
-            .await?;
+        let record = match self
+            .record_playground(id.clone(), &name, &profile, &ctx.user, "folder")
+            .await
+        {
+            Ok(record) => record,
+            Err(err) => {
+                self.discard_playground(&id).await;
+                return Err(err);
+            }
+        };
         // Its maker has admin on it (PLY-005).
         self.sandbox_view(&record, AccessLevel::Admin).await
     }
