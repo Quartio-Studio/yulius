@@ -202,6 +202,27 @@ impl SandboxStore for SqliteStore {
         .await
     }
 
+    async fn move_to_github(
+        &self,
+        id: &SandboxId,
+        owner: &str,
+        name: &str,
+        github_repo_id: Option<u64>,
+    ) -> AppResult<bool> {
+        let (id, owner, name) = (id.as_str().to_owned(), owner.to_owned(), name.to_owned());
+        self.call_access(move |c| {
+            let changed = c
+                .execute(
+                    "UPDATE sandboxes SET repo_owner = ?1, repo_name = ?2, github_repo_id = ?3 \
+                     WHERE id = ?4 AND repo_owner = '' AND removed_at IS NULL",
+                    params![owner, name, github_repo_id.map(to_i64), id],
+                )
+                .map_err(db)?;
+            Ok(changed > 0)
+        })
+        .await
+    }
+
     async fn request_purge(&self, id: &SandboxId, by: &UserId, at: Timestamp) -> AppResult<bool> {
         let (id, by) = (id.as_str().to_owned(), by.as_str().to_owned());
         self.call(move |c| {

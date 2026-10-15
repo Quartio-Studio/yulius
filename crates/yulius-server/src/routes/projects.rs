@@ -5,7 +5,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use yulius_contracts::api::sandboxes::{
-    AvailableRepo, CreateSandbox, OnboardingPlan, PurgeState, Sandbox, Template,
+    AvailableRepo, CreateSandbox, MoveToGitHub, OnboardingPlan, PurgeState, Sandbox, Template,
 };
 
 use crate::AppState;
@@ -41,6 +41,18 @@ pub async fn remove(
 ) -> ApiResult<StatusCode> {
     app.delete_sandbox(&ctx, &sid).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Moves a playground into an empty GitHub repository of the instance owner (SPEC-176).
+pub async fn move_to_github(
+    State(app): State<AppState>,
+    Auth(ctx): Auth,
+    Path(sid): Path<String>,
+    Json(req): Json<MoveToGitHub>,
+) -> ApiResult<Json<Sandbox>> {
+    Ok(Json(
+        app.move_playground_to_github(&ctx, &sid, &req.name).await?,
+    ))
 }
 
 /// Removes a playground (when still live) and deletes its code for good once nothing of it runs

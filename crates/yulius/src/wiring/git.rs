@@ -21,28 +21,66 @@ use yulius_git::{
 #[derive(Clone)]
 pub struct GitAdapter {
     exe: PathBuf,
+    /// Test seam: a directory standing in for `https://github.com/` (see
+    /// [`GitAdapter::with_github_base`]).
+    github_base: Option<String>,
 }
 
 impl GitAdapter {
     /// Adapter using the `git` executable on PATH (or `exe`).
     #[must_use]
     pub fn new(exe: impl Into<PathBuf>) -> Self {
-        Self { exe: exe.into() }
+        Self {
+            exe: exe.into(),
+            github_base: None,
+        }
+    }
+
+    /// For tests: every `https://github.com/<owner>/<name>.git` this adapter's Git reaches is
+    /// `<dir>/<owner>/<name>.git` instead (`url.<dir>/.insteadOf`), so the real adapter runs end
+    /// to end against local bare repositories. Never set in production.
+    #[must_use]
+    pub fn with_github_base(mut self, dir: &Path) -> Self {
+        self.github_base = Some(format!("{}/", dir.display()));
+        self
     }
 
     fn git(&self) -> Git {
-        Git::new(self.exe.clone())
+        self.git_with_config(&[])
+    }
+
+    /// Git with `config` (key, value) entries passed through `GIT_CONFIG_*`, plus the test seam's
+    /// rewrite when set.
+    fn git_with_config(&self, config: &[(&str, String)]) -> Git {
+        let mut entries: Vec<(String, String)> = config
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), value.clone()))
+            .collect();
+        if let Some(base) = &self.github_base {
+            entries.push((
+                format!("url.{base}.insteadOf"),
+                "https://github.com/".to_owned(),
+            ));
+        }
+        if entries.is_empty() {
+            return Git::new(self.exe.clone());
+        }
+        let mut git =
+            Git::new(self.exe.clone()).with_env("GIT_CONFIG_COUNT", entries.len().to_string());
+        for (i, (key, value)) in entries.into_iter().enumerate() {
+            git = git
+                .with_env(format!("GIT_CONFIG_KEY_{i}"), key)
+                .with_env(format!("GIT_CONFIG_VALUE_{i}"), value);
+        }
+        git
     }
 
     fn git_with_token(&self, token: &Secret) -> Git {
         let basic = base64_encode(format!("x-access-token:{}", token.expose()).as_bytes());
-        self.git()
-            .with_env("GIT_CONFIG_COUNT", "1")
-            .with_env("GIT_CONFIG_KEY_0", "http.https://github.com/.extraheader")
-            .with_env(
-                "GIT_CONFIG_VALUE_0",
-                format!("AUTHORIZATION: basic {basic}"),
-            )
+        self.git_with_config(&[(
+            "http.https://github.com/.extraheader",
+            format!("AUTHORIZATION: basic {basic}"),
+        )])
     }
 }
 
@@ -135,6 +173,46 @@ impl GitPort for GitAdapter {
     async fn copy_refs(&self, repo: &Path, source: &Path) -> AppResult<()> {
         let (git, repo, source) = (self.git(), repo.to_path_buf(), source.to_path_buf());
         blocking(move || git.copy_refs(&repo, &source)).await
+    }
+
+    async fn push_all_refs(
+        &self,
+        repo: &Path,
+        url: &str,
+        first: Option<&str>,
+        token: &Secret,
+    ) -> AppResult<()> {
+        let first = first.map(str::to_owned);
+        let (git, repo, url) = (
+            self.git_with_token(token),
+            repo.to_path_buf(),
+            url.to_owned(),
+        );
+        blocking(move || git.push_all_refs(&repo, &url, first.as_deref())).await
+    }
+
+    async fn remote_refs(
+        &self,
+        repo: &Path,
+        url: &str,
+        token: &Secret,
+    ) -> AppResult<Vec<(String, String)>> {
+        let (git, repo, url) = (
+            self.git_with_token(token),
+            repo.to_path_buf(),
+            url.to_owned(),
+        );
+        blocking(move || git.remote_refs(&repo, &url)).await
+    }
+
+    async fn scrub_transport_config(&self, repo: &Path) -> AppResult<()> {
+        let (git, repo) = (self.git(), repo.to_path_buf());
+        blocking(move || git.scrub_transport_config(&repo)).await
+    }
+
+    async fn set_origin_url(&self, repo: &Path, url: &str) -> AppResult<()> {
+        let (git, repo, url) = (self.git(), repo.to_path_buf(), url.to_owned());
+        blocking(move || git.set_remote_url(&repo, "origin", &url)).await
     }
 
     async fn land_squash(

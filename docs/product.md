@@ -33,7 +33,10 @@ watching, steering and unblocking.
   pull request), on green Yulius CI when the project has CI (SPEC-163). It is its maker's and the superadmin's. Connecting GitHub is
   optional and can wait (SPEC-099). A local checkout without GitHub, with its Claude Code
   sessions, comes in with `yulius onboard --playground`, and removing a playground can delete its
-  code from the server for good, which frees its place among its maker's 10 (SPEC-171).
+  code from the server for good, which frees its place among its maker's 10 (SPEC-171). Once GitHub
+  is connected, an admin of a playground moves it into an empty repository of the instance owner
+  ("Move to GitHub…" in its sandbox menu): its branches and tags are pushed there, it becomes a
+  GitHub sandbox with the same tasks and history, and its access follows GitHub (SPEC-176).
 - **Superagent** (formerly the Agent, and before that the Cockpit): every user's own plain Claude
   Code session per sandbox, in the right tool panel beside any page (first in the tools rail, under
   the tools toggle; the top bar has no button of its own since SPEC-132), for quick work
