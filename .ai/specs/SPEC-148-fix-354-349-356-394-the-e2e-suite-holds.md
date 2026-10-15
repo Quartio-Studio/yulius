@@ -285,3 +285,9 @@ states the load the suite holds at; #356's comment says the Stopped toggle did n
 E2L-009 (a half set-up editor is disposed) fixed test-first; E2L-008's red run recorded: without
 `ensureEditor`'s reset both "…makes it then, once" tests timed out in `editorShown` (60 s), and
 without E2L-009's disposal the set-up one failed "expected 2 to be 1".
+
+**Gates** (head `b52e4456`, after `scripts/bootstrap.py` linked the pinned tools).
+- `scripts/dev ci`: exit 0. nextest 1809 passed, 18 skipped; doctests ok; `unittest discover -s
+  scripts` 103 tests OK (with `test_e2e_serve.py`); `cargo deny`, `cargo shear`, `cargo doc` clean.
+- `scripts/dev security`: exit 2, not run: "Vidoc rejected the key (HTTP 401: Invalid or expired
+  token)". Unrun, not passed, as ADR-0104 records; the key is #470.
