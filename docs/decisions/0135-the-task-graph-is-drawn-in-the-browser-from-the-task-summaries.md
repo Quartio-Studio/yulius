@@ -20,7 +20,8 @@ already carries those links, live through the event stream.
   to it ("Show as a graph").
 - `taskgraph.js` builds the structure in the browser from the summaries: **Starts next** (queued
   tasks, supertasks first, then by `state_since`, numbered), **Chains and rules** (every open task
-  with a link, and the tasks its links name), **Prepared** and **On their own**. A task is drawn in
+  that still waits: a `chained` task's chain or rule, a queued task's supertask hold; and the tasks
+  those links name — a started task's old `after` is history), **Prepared** and **On their own**. A task is drawn in
   one place; the queue lists queued tasks even when the graph draws them, since it shows order.
 - The graph is laid out by its own small layered layout: a column per longest path from the tasks
   nothing waits for (links closing a cycle ignored for the columns, still drawn), rows ordered by

@@ -52,10 +52,10 @@ runs on its own; each task one click from its overview.
 | --- | --- |
 | TGR-001 | The Tasks page has a List / Graph switch in its header; Graph is kept in the URL (`?view=graph`), so a link opens it. The sidebar's Working group head has a "Show as a graph" button that opens it. |
 | TGR-002 | **Starts next**: the project's queued tasks in the order the queue offers them a session (supertasks first, then the longest queued first), numbered 1, 2, 3, each with what it waits for (a free session, or a supertask), and a note that sessions are shared with other projects. |
-| TGR-003 | **Chains and rules**: every open task (the sidebar's Needs you and Working groups) linked to another task by a chain (`after`), a start rule (every `#N` the rule names) or a supertask hold (`held_by`) is drawn as a node in a left-to-right graph: a task right of everything it waits for, one arrow per link, solid for "runs after", dashed for a start rule, dotted for a supertask hold, with a legend. A linked task that is not open (done, ended) shows as a faded node; one not in the list (archived or deleted) as a ghost node with its number. |
-| TGR-004 | A node shows the task's state mark, number, title and its state line in words (`activityLine`), with the rule's text on a rule-started task; it is a link to the task's overview whose accessible name says the task, its state and what it waits for. |
+| TGR-003 | **Chains and rules**: every open task (the sidebar's Needs you and Working groups) that still waits on another task — a `chained` task by its chain (`after`) or start rule (every `#N` the rule names), a queued one by a supertask hold (`held_by`) — is drawn with the tasks it waits for as a node in a left-to-right graph: a task right of everything it waits for, one arrow per link, solid for "runs after", dashed for a start rule, dotted for a supertask hold, with a legend. A linked task that is not open (done, ended) shows as a faded node; one not in the list (archived or deleted) as a ghost node with its number. |
+| TGR-004 | A node shows the task's state mark, number, title and its state line in words (`activityLine`), with the rule's text on a rule-started task; it is a link to the task's overview whose accessible name says the task, its state and what it waits for. Cards come column by column, top to bottom, in the Tab order, and j / k move between the view's tasks as in the List. |
 | TGR-005 | **Prepared**: prepared tasks with when they start (a time, or "When you decide"). **On their own**: the other open tasks (running, needs you, paused…) with their state. A section with nothing is left out; with no open task at all, the page shows one empty state. |
-| TGR-006 | The graph follows live task events (coalesced as the list is) and stays within the page: it scrolls inside its own frame when wider than the window (390 px phones included), never the page sideways. A cycle or a dangling link never hangs or breaks the drawing. |
+| TGR-006 | The graph follows live task events (coalesced as the list is), keeping the focused card and the frame's scroll, loads in its own shape (SPEC-120), and stays within the page: it scrolls inside its own frame when wider than the window (390 px phones included), never the page sideways. A cycle or a dangling link never hangs or breaks the drawing. |
 
 ## Plan
 
@@ -81,7 +81,12 @@ runs on its own; each task one click from its overview.
 - A rule naming an archived task draws a ghost node `#N`; links forming a cycle still draw every
   node once.
 - The switch's Graph choice sets `?view=graph`; List removes it; the sidebar's "Show as a graph"
-  opens the Graph view; a new task created meanwhile appears without a reload.
+  opens the Graph view; a task chained meanwhile appears without a reload, and a live update keeps
+  the focused card and the frame's scroll. The search's "Show every task matching" opens the List.
+- #14, which once ran after #13 and has started, is on its own, not in the graph; #11 (done, held
+  by the supertask) is faded; cards are in the DOM column by column; j / k move between tasks.
+- While the tasks load, the Graph shows section outlines and no toolbar; with no open task, one
+  empty state.
 - At 390 px the page has no sideways scroll; the graph frame scrolls instead. No axe violations.
 
 ## Test plan
@@ -109,3 +114,7 @@ runs on its own; each task one click from its overview.
 - **Queue order on the client** from `supertask` and `state_since`: equal to the server's
   `queued_at` for every task queued once; a supertask hold is shown, not hidden.
 - **Faded context nodes**: only tasks a link reaches, so done work does not crowd the picture.
+- **Only waits are drawn** (review round 1): a started task keeps its `after` in the summary, but
+  it no longer waits, so its link is history and it sits On its own.
+- **A live repaint rebuilds the graph** and puts focus and the frame's scroll back (review round
+  1); the layout is cheap at these bounds, so no diffing.

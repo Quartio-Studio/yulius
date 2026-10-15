@@ -50,6 +50,14 @@ test('Chains, rules and supertask holds are drawn left to right, one arrow per l
   // The archived #1 a rule names is a ghost node; nothing else from the closed past is drawn.
   await expect(browser.locator('.tg-node[data-number="1"]')).toHaveAttribute('class', /tg-ghost/);
   await expect(browser.locator('.tg-node[data-number="5"]')).toHaveCount(0);
+  // #11 (done, PR in review) is held by the supertask: drawn faded, as context.
+  await expect(browser.locator('.tg-node[data-number="11"]')).toHaveAttribute('class', /tg-context/);
+  // #14 once ran after #13 but has started: what waits for what no longer includes it.
+  await expect(browser.locator('.tg-node[data-number="14"]')).toHaveCount(0);
+  await expect(browser.locator('.tg-alone .tg-item:has-text("#14")')).toHaveCount(1);
+  // The cards are in the DOM (and the Tab order) column by column, top to bottom.
+  const order = await browser.evaluate(() => [...document.querySelectorAll<HTMLElement>('.tg-node')].map((n) => { const r = n.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.top)]; }));
+  expect(order).toEqual([...order].sort((a, b) => a[0] - b[0] || a[1] - b[1]));
   await browser.locator('.tg-node[data-number="15"]').click();
   await expect(browser).toHaveURL(/#\/s\/studio\/tasks\/15$/);
 });
@@ -112,4 +120,48 @@ test('On a phone the graph scrolls in its frame, never the page (TGR-006)', asyn
   });
   expect(sizes.page).toBeLessThanOrEqual(sizes.window);
   expect(sizes.frame).toBe(true);
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+test('A live update keeps the focused card and the frame scrolled where it was (TGR-006)', async ({ app, browser }) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open(mock('/s/studio/tasks?view=graph', GRAPH));
+  await expect(browser.locator('.tg-node[data-number="16"]')).toHaveCount(1);
+  await browser.evaluate(() => {
+    (document.querySelector('.tg-frame') as HTMLElement).scrollLeft = 200;
+    (document.querySelector('.tg-node[data-number="16"]') as HTMLElement).focus({ preventScroll: true });
+  });
+  await browser.evaluate(() => (window as unknown as WithMock).__yuliusMock.touchTask('sb_studio', 12, { title: 'Checkout API v2' }));
+  await expect(browser.locator('.tg-node[data-number="12"]')).toContainText('Checkout API v2');
+  expect(await browser.evaluate(() => ({ focused: (document.activeElement as HTMLElement).dataset.number ?? null, left: (document.querySelector('.tg-frame') as HTMLElement).scrollLeft }))).toEqual({ focused: '16', left: 200 });
+});
+
+test('The Graph loads in its own shape, and with nothing open shows one empty state (TGR-005)', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/tasks?view=graph', `${GRAPH}&hold=/api/sandboxes/sb_studio/tasks`));
+  const shape = '#main .skeleton[role="status"]';
+  await expect(browser.locator(shape)).toHaveText(/^Loading the tasks of /);
+  await expect(browser.locator(`${shape} .tg-section`).first()).toBeAttached();
+  expect(await browser.evaluate(() => (document.querySelector('.tl-toolbar') as HTMLElement).hidden)).toBe(true);
+  await browser.evaluate(() => (window as unknown as { __yuliusMock: { release: () => void } }).__yuliusMock.release());
+  await expect(browser.locator('.tg-node[data-number="15"]')).toBeVisible();
+
+  await app.open(mock('/s/studio/tasks?view=graph', '&tasks=0'));
+  await expect(browser.locator('.tg .empty-state')).toHaveText(/Nothing is open in studio/);
+  await expect(browser.locator('.tg-section')).toHaveCount(0);
+});
+
+test('In the Graph, j / k move between tasks and the search shows its matches in the List', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/tasks?view=graph', GRAPH));
+  await expect(browser.locator('.tg-node[data-number="15"]')).toBeVisible();
+  await browser.keyboard.press('j');
+  await expect(browser.locator('.tg-queue .tg-queue-item:nth-child(1) .tg-item')).toBeFocused();
+  await browser.keyboard.press('j');
+  await expect(browser.locator('.tg-queue .tg-queue-item:nth-child(2) .tg-item')).toBeFocused();
+
+  await screen.getByRole('button', 'Search tasks').click();
+  await screen.getByRole('combobox', /Search tasks in studio/).fill('Cart');
+  await browser.locator('.spot-item.spot-more').click();
+  await expect(browser).toHaveURL(/#\/s\/studio\/tasks\?q=Cart$/);
+  await expect(browser.locator('.tl-row')).toHaveCount(1);
+  await expect(screen.getByRole('radio', 'List')).toBeChecked();
 });

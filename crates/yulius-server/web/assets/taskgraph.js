@@ -6,7 +6,7 @@
 // linked tasks laid out in columns (a task right of everything it waits for), the prepared tasks
 // and the rest; `taskGraphView` draws it: cards are links over an SVG of arrows.
 
-import { h, icon, statusMark } from './dom.js';
+import { h, icon, statusMark, skeletonOf, bar } from './dom.js';
 import { href } from './router.js';
 import { activityLine, heldBy } from './status.js';
 
@@ -32,7 +32,10 @@ export function queueOrder(items) {
     || String(a.task.state_since || a.task.created_at).localeCompare(String(b.task.state_since || b.task.created_at)) || byNumber(a.task, b.task));
 }
 
-/** Every link from the open tasks, one per pair of tasks: `{ from, to, kind }` by task number. */
+/**
+ * Every link from the open tasks that still wait, one per pair of tasks: `{ from, to, kind }` by
+ * task number. A started task keeps its `after`, but it waits for nothing any more.
+ */
 function linksOf(open) {
   const links = new Map();
   const add = (from, to, kind) => {
@@ -42,7 +45,7 @@ function linksOf(open) {
     if (!seen || KIND_RANK[kind] > KIND_RANK[seen.kind]) links.set(key, { from, to, kind });
   };
   for (const { task } of open) {
-    const after = task.after;
+    const after = task.status === 'chained' ? task.after : null;
     // A rule's anchor is one of the tasks it names: each named task gets the rule's arrow.
     if (after && after.rule) ruleNumbers(after.rule).forEach((n) => add(n, task.number, 'rule'));
     else if (after) add(after.number, task.number, 'after');
@@ -203,7 +206,8 @@ function graphSection(sandbox, graph) {
   // Room below the last row for a cycle's loop.
   const size = { width: graph.width * (NODE_W + GAP_X) - GAP_X, height: graph.height * (NODE_H + GAP_Y) - GAP_Y + (graph.links.some((l) => l.back) ? NODE_H : 0) };
   const canvas = h('div', { class: 'tg-canvas', style: { width: `${size.width}px`, height: `${size.height}px` } },
-    edgesSvg(graph, at, size), graph.nodes.map((node) => nodeView(sandbox, node, at.get(node.number))));
+    // Cards column by column, top to bottom: the Tab order follows the picture.
+    edgesSvg(graph, at, size), [...graph.nodes].sort((a, b) => a.column - b.column || a.row - b.row).map((node) => nodeView(sandbox, node, at.get(node.number))));
   const legend = h('p', { class: 'tg-legend' }, [['after', 'Runs after'], ['rule', 'Start rule'], ['hold', 'Supertask hold']].map(([kind, label]) => {
     const line = svgEl('svg', { class: 'tg-legend-line', width: 28, height: 8, 'aria-hidden': 'true' });
     line.append(svgEl('path', { d: 'M1 4H27', class: `tg-edge tg-edge-${kind}` }));
@@ -212,6 +216,13 @@ function graphSection(sandbox, graph) {
   const open = graph.nodes.filter((node) => node.kind === 'open').length;
   return section('tg-graph', 'workflow', 'Chains and rules', open, 'A task stands right of the tasks it waits for. Faded: done or ended.',
     h('div', { class: 'tg-frame', tabindex: '0', role: 'group', 'aria-label': 'Graph of the tasks that wait for each other' }, canvas), legend);
+}
+
+/** The Graph's shape while the tasks load (SPEC-120): two section outlines with rows of bars. */
+export function taskGraphLoading(label) {
+  return skeletonOf(label, [3, 2].map((rows) => h('div', { class: 'tg-section' },
+    h('div', { class: 'tg-head' }, bar('lg')),
+    h('div', { class: 'tg-list' }, Array.from({ length: rows }, (_, i) => h('div', { class: 'tg-item' }, bar([60, 45, 52][i])))))));
 }
 
 /**

@@ -17,7 +17,7 @@ import { readJson, writeJson } from '../store.js';
 import { initials } from '../layout.js';
 import { pageFrame, dataTable, loader } from './common.js';
 import { NEW_TASK_KEYS } from '../shortcuts.js';
-import { taskGraphView } from '../taskgraph.js';
+import { taskGraphView, taskGraphLoading } from '../taskgraph.js';
 
 function statusCell(task) {
   const info = statusInfo(task);
@@ -210,7 +210,7 @@ export function mountTasksPage(ctx, sandbox) {
           };
         });
       },
-      more: (text) => (text ? { title: `Show every task matching “${text}” in the list`, onPick: () => { searchQuery = text; render(); } } : null),
+      more: (text) => (text ? { title: `Show every task matching “${text}” in the list`, onPick: () => { searchQuery = text; view = 'list'; render(); } } : null),
     });
   }
 
@@ -220,12 +220,15 @@ export function mountTasksPage(ctx, sandbox) {
     const tasks = ctx.store.tasksOf(sandbox.id);
     if (tasks === null) {
       const error = ctx.store.tasksError(sandbox.id);
-      setChildren(listHost, error
-        ? loadError(`Couldn’t load the tasks of ${sandbox.name}: ${error.message}`, () => ctx.store.loadTasks(sandbox.id).catch(() => {}))
-        : loadingRows(`Loading the tasks of ${sandbox.name}…`));
-      loadingToolbar(!error);
-      listHost.hidden = false;
-      graphHost.hidden = true;
+      const failed = error ? loadError(`Couldn’t load the tasks of ${sandbox.name}: ${error.message}`, () => ctx.store.loadTasks(sandbox.id).catch(() => {})) : null;
+      // Each view loads in its own shape (SPEC-120); the Graph has no toolbar.
+      const graph = view === 'graph';
+      toolbar.hidden = graph;
+      listHost.hidden = graph;
+      graphHost.hidden = !graph;
+      if (graph) setChildren(graphHost, failed || taskGraphLoading(`Loading the tasks of ${sandbox.name}…`));
+      else setChildren(listHost, failed || loadingRows(`Loading the tasks of ${sandbox.name}…`));
+      loadingToolbar(!error && !graph);
       return;
     }
     // The Graph shows every open task: the filters would cut its links, so they stay with List.
@@ -237,9 +240,20 @@ export function mountTasksPage(ctx, sandbox) {
     if (!graph) graphHost.replaceChildren();
     if (graph) {
       const infoOf = (task) => taskInfo(task, ctx.store.state.actionRequests, ctx.store.pullsOf(task.sandbox_id).get(task.id));
+      // A live repaint keeps the focused card or row and the frame's scroll (the graph is rebuilt).
+      const focused = graphHost.contains(document.activeElement) ? document.activeElement : null;
+      const again = !focused ? null
+        : focused.matches('.tg-node') ? `.tg-node[data-number="${focused.dataset.number}"]`
+          : focused.matches('.tg-item') ? `.${focused.closest('.tg-section').classList[1]} .tg-item[data-route="${CSS.escape(focused.dataset.route)}"]`
+            : focused.matches('.tg-frame') ? '.tg-frame' : null;
+      const before = graphHost.querySelector('.tg-frame');
+      const scroll = before ? [before.scrollLeft, before.scrollTop] : null;
       setChildren(graphHost, taskGraphView(sandbox, tasks, infoOf, emptyState({ iconName: 'tasks', title: `Nothing is open in ${sandbox.name}`,
         text: 'Running, queued, chained and prepared tasks show here with what each waits for.',
         action: canStart ? h('button', { type: 'button', class: 'btn btn-primary', onClick: () => ctx.openNewTask && ctx.openNewTask() }, icon('plus', { size: 14 }), 'New task') : null })));
+      const after = graphHost.querySelector('.tg-frame');
+      if (after && scroll) [after.scrollLeft, after.scrollTop] = scroll;
+      if (again) graphHost.querySelector(again)?.focus({ preventScroll: true });
       return;
     }
     const me = myLogin();
@@ -396,14 +410,14 @@ export function mountTasksPage(ctx, sandbox) {
     if (typing(event.target)) return;
     if (event.key === '/' && (onPage || !event.target.closest('.panel, dialog, .menu, [role="menu"]'))) { event.preventDefault(); openSearch(); return; }
     if (!onPage) return;
-    const links = [...listHost.querySelectorAll('.tl-link')];
+    const links = view === 'graph' ? [...graphHost.querySelectorAll('.tg-item, a.tg-node')] : [...listHost.querySelectorAll('.tl-link')];
     const index = links.indexOf(document.activeElement);
     const move = { j: 1, ArrowDown: 1, k: -1, ArrowUp: -1 }[event.key];
     if (move && (index >= 0 || event.key === 'j' || event.key === 'k')) {
       event.preventDefault();
       const next = links[index < 0 ? 0 : Math.max(0, Math.min(links.length - 1, index + move))];
       if (next) { next.focus(); next.scrollIntoView({ block: 'nearest' }); }
-    } else if (event.key === '.' && index >= 0) {
+    } else if (event.key === '.' && index >= 0 && view === 'list') {
       event.preventDefault();
       links[index].closest('.tl-row').querySelector('.tl-actions .tl-action:last-child')?.click();
     }

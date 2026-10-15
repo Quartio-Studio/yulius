@@ -324,6 +324,8 @@ function seed(params) {
     chainAfter(cart, find(12));
     chainAfter(receipts, cart);
     chainAfter(release, find(12), '#12 done and #16 done');
+    // #14 ran after #13 and has started: its link is history, not a wait.
+    chainAfter(find(14), find(13));
     add(18, 'Weekly cleanup', 'claude', 'prepared', null, { noSteps: true, updated: 25 * MIN }).start_at = isoIn(2 * DAY);
     add(19, 'Pricing experiment', 'claude', 'prepared', null, { noSteps: true, updated: 20 * MIN });
     const hardening = add(20, 'Security hardening', 'claude', 'queued', null, { noSteps: true, updated: 15 * MIN });
