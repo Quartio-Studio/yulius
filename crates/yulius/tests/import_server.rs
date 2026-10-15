@@ -512,6 +512,100 @@ async fn start_onboarding_creates_the_task_a_cli_upload_left_out() -> TestResult
     Ok(())
 }
 
+/// SPEC-157: the onboarding agent protects an unprotected production branch itself, through
+/// `production_protect`, as the person who started onboarding when they are a repository admin;
+/// a second call changes nothing, and an owner who is not an admin is sent to `needs_you`.
+#[tokio::test]
+async fn the_onboarding_agent_protects_production_as_its_admin_owner() -> TestResult {
+    use yulius_app::ports::store::InstanceStore as _;
+    let w = World::new("org").await?;
+    w.h.store.set_installation(Some(1)).await?;
+    let (alice_user, alice) = w.user("alice", false).await?;
+    let (_bob, _) = w.user("bob", false).await?;
+    let remote = w.remote(
+        OWNER,
+        "shop",
+        &[("README.md", "# Shop\n"), ("src/app.txt", "v1\n")],
+        &[],
+    )?;
+    w.grant("alice", "shop", "admin");
+    w.grant("bob", "shop", "push");
+    let offer = laptop_offer(&w, &remote)?;
+    let created = create_job(&w, &alice, offer.body()?).await?;
+    assert_eq!(created.status, StatusCode::OK, "{:?}", created.body);
+    let sandbox = w.h.store.sandboxes().await?.remove(0);
+    let browser = w.browser(&alice_user).await?;
+    let approve = format!("/api/sandboxes/{}/onboarding/approve", sandbox.id);
+    let started = call(&w.h.router, Method::POST, &approve, None, &browser).await?;
+    assert_eq!(started.status, StatusCode::OK, "{:?}", started.body);
+    let task =
+        w.h.store
+            .tasks(&sandbox.id, false)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or("onboarding task")?;
+    // AC4: the agent is asked to protect it itself, and a person only when that is refused.
+    assert!(
+        task.prompt.contains("`production_protect`") && task.prompt.contains("needs_you"),
+        "{}",
+        task.prompt
+    );
+    assert!(
+        !task.prompt.contains("Only a person can apply it"),
+        "{}",
+        task.prompt
+    );
+
+    // AC3: a task owned by someone who is not a repository admin is refused; nothing is created.
+    support::seed_task(
+        &w.h,
+        "t-bob",
+        sandbox.id.as_str(),
+        "u-bob",
+        yulius_domain::task::TaskStatus::Running,
+        None,
+    )
+    .await?;
+    support::seed_live_attempt(&w.h, "t-bob", "tok-bob").await?;
+    let refused = support::mcp_tool(&w.h, "tok-bob", "production_protect", json!({})).await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    let text = support::tool_text(&refused).to_string();
+    assert!(
+        text.contains("not a repository admin") && text.contains("needs_you"),
+        "{text}"
+    );
+    assert!(w.github.rulesets().is_empty(), "{:?}", w.github.rulesets());
+
+    // AC1: as the admin who started onboarding, one people-only ruleset, with her token.
+    support::seed_live_attempt(&w.h, task.id.as_str(), "tok-prep").await?;
+    let done = support::mcp_tool(&w.h, "tok-prep", "production_protect", json!({})).await?;
+    let record = support::tool_text(&done);
+    assert_eq!(record["protected"], true, "{done}");
+    assert_eq!(record["added"], "yulius-people-only-main", "{done}");
+    let rulesets = w.github.rulesets();
+    assert_eq!(rulesets.len(), 1, "{rulesets:?}");
+    let (repo, request, token) = &rulesets[0];
+    assert_eq!(repo, &format!("{OWNER}/shop"));
+    assert_eq!(token, "token-alice", "acts as the person, never the App");
+    assert_eq!(request.branch, "main");
+    assert!(
+        request.restrict_updates && !request.require_pr,
+        "{request:?}"
+    );
+    let stored = w.h.store.sandbox(&sandbox.id).await?.ok_or("sandbox")?;
+    let status = w.h.app.onboarding_status(&stored).await?;
+    assert!(status.warnings.is_empty(), "{status:?}");
+
+    // AC2: once protected, calling again adds nothing.
+    let again = support::mcp_tool(&w.h, "tok-prep", "production_protect", json!({})).await?;
+    let record = support::tool_text(&again);
+    assert_eq!(record["protected"], true, "{again}");
+    assert_eq!(record["added"], Value::Null, "{again}");
+    assert_eq!(w.github.rulesets().len(), 1);
+    Ok(())
+}
+
 #[tokio::test]
 async fn import_resumes_applies_and_reruns_idempotently() -> TestResult {
     let w = World::new("org").await?;

@@ -46,7 +46,7 @@ const MAX_STEPS_LISTED: usize = 100;
 const MAX_ENVIRONMENTS_LISTED: usize = 8;
 
 /// Yulius MCP tools announced to every session (SPEC-002 §7.4), as `(name, purpose)`.
-pub const YULIUS_TOOLS: [(&str, &str); 38] = [
+pub const YULIUS_TOOLS: [(&str, &str); 39] = [
     (
         "project_context",
         "project summary, architecture and decision index, recent changes, delivery rules",
@@ -126,6 +126,10 @@ pub const YULIUS_TOOLS: [(&str, &str); 38] = [
     (
         "needs_you",
         "ask a person to do what only a person can (a credential, production)",
+    ),
+    (
+        "production_protect",
+        "protect the production branch from agents, as the task's admin owner",
     ),
     (
         "issue_create",
@@ -756,8 +760,9 @@ fn foundations(input: &BriefingInput<'_>) -> String {
 /// briefing has to stay under Claude Code's hook-context limit (F 2026-10-12).
 /// A playground leaves out the tools of GitHub, CI and deployment (SPEC-099).
 fn tools(playground: bool) -> String {
-    const NOT_IN_A_PLAYGROUND: [&str; 7] = [
+    const NOT_IN_A_PLAYGROUND: [&str; 8] = [
         "delivery_deploy",
+        "production_protect",
         "cd_status",
         "cd_deploy",
         "issue_create",
