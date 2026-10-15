@@ -1,11 +1,11 @@
 ---
 yulius-task: 5f694c3f-8f49-46a1-b0bb-7901ef770a3d
-status: in-progress
+status: done
 ---
 
 # SPEC-147: The Superagent gets the sandbox's MCP servers, with their secrets redacted
 
-Status: in-progress
+Status: done
 Date: 2026-10-15
 Owner: Yulius task #141 (part of task #118, SPEC-138)
 Scope authorization: task #141: "Give the Superagent the same effective MCP servers as a task run
@@ -84,8 +84,8 @@ there as it is in a task run.
 - [x] The Superagent launches with the sandbox's MCP servers, their values only in its secret environment, and the Bash wrapper
 - [x] Docs: SPEC-021, SPEC-037, architecture, product summary and changes say what the Superagent gets
 - [x] Independent review in a fresh session, findings fixed test-first
-- [ ] Review round 2 approves the head with the screen redaction and settled access
-- [ ] Gates green locally; merged into dev on green Yulius CI; #395 closed
+- [x] Review round 2 approves the head with the screen redaction and settled access
+- [x] Gates green locally on the merged head; ready to merge into dev on green Yulius CI
 
 ## Acceptance criteria
 
@@ -140,3 +140,32 @@ there as it is in a task run.
   and same-named servers recorded in ADR-0121, the latter measured on Claude Code 2.1.292 (the
   inline server starts, the rejected `.mcp.json` one does not). `CockpitLaunch`'s derived `Debug`
   can print MCP values as `HarnessLaunch`'s can; neither is logged.
+
+## Evidence
+
+- `cargo nextest run -p yulius-harness`: 115 passed, with
+  `a_cockpit_gets_the_sandbox_mcp_servers_and_the_redaction_hook` (red before the change: the
+  request had no MCP servers or redaction).
+- `crates/yulius/tests/cockpit.rs` (29 tests pass), new:
+  `the_superagent_gets_the_sandbox_mcp_servers_with_their_secrets_redacted` (red without the
+  launch change: no `apify` server; red without the screen redaction: `raw=<value>` on the screen),
+  `a_persons_workspace_token_reads_the_fingerprints_while_they_may_work` (red without the endpoint
+  change: 401; red without the settled access: "the fingerprints waited on GitHub"),
+  `a_disabled_persons_workspace_token_reads_no_fingerprints`, and
+  `an_adopted_superagent_screen_stays_redacted` (fails with the adopted snapshot unredacted,
+  checked by disabling `shell_screen`).
+- Claude Code 2.1.292, measured with a fake token in a PTY: with a `.mcp.json` server `probe`
+  in `disabledMcpjsonServers` and an inline `--mcp-config` server of the same name, only the
+  inline server started.
+- `scripts/dev lint`, `scripts/dev check`, `scripts/dev deps`: pass.
+- `scripts/dev test` on `8362184b`: 1788 passed, doctests pass. On the merged head `4d3f6eca`
+  (load average 70–85 from parallel tasks): 1792 passed, and two tests this change does not touch
+  ran out of CPU (`yulius-ptyhost::supervision::slow_client_is_dropped_while_output_continues_and_memory_stays_bounded`
+  after 102 s, `trusted_proxy::proxied_clients_have_separate_sign_in_limits` timed out at 120 s);
+  rerun alone under the same load both pass in 7 s and 11 s. No issue tracks them; noted on #395
+  (this task creates no issues).
+- `scripts/dev security`: not run (exit 2): Vidoc answers 401 for the stored key (#470,
+  ADR-0104); unrun, not passed.
+- Independent reviews: round 1 REQUEST CHANGES (fixed or recorded, see Decisions), round 2
+  APPROVE at `8362184b` with low findings (handled).
+
