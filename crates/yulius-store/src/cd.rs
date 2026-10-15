@@ -205,14 +205,18 @@ impl CdStore for SqliteStore {
             let changed = c
                 .execute(
                     "UPDATE cd_runs SET state = ?2, reason = ?3, exit_code = ?4, output = ?5, \
-                     ended_at = ?6 WHERE id = ?1 AND state = 'running'",
+                     ended_at = ?6, cpu_ms = ?7, memory_peak_mb = ?8, disk_written_mb = ?9 \
+                     WHERE id = ?1 AND state = 'running'",
                     params![
                         id,
                         end.state.as_str(),
                         end.reason,
                         end.exit_code,
                         end.output,
-                        end.ended_at.0
+                        end.ended_at.0,
+                        end.usage.map(|u| u.cpu_ms),
+                        end.usage.map(|u| u.memory_peak_mb),
+                        end.usage.and_then(|u| u.disk_written_mb)
                     ],
                 )
                 .map_err(db)?;
@@ -282,6 +286,7 @@ mod tests {
             exit_code: Some(0),
             output: "[yulius] done\n".into(),
             ended_at: Timestamp(at),
+            usage: None,
         }
     }
 

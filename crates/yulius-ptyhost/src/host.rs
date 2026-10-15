@@ -36,9 +36,9 @@ use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use yulius_contracts::ptyhost::{
     ClientFrame, Containment, EXIT_FILE, ExitFile, ExitReason, ExitRecord, FrameDecoder,
     HELLO_TIMEOUT_MS, HostFrame, LAUNCH_FILE, LaunchSpec, LaunchSpecError, MAX_ERROR_MESSAGE_BYTES,
-    MAX_EXIT_DETAIL_BYTES, MAX_OUTPUT_CHUNK, MAX_SNAPSHOT_BYTES, PROTOCOL_VERSION, RECORD_VERSION,
-    SOCKET_FILE, STATUS_FILE, SignalKind, Snapshot, StatusRecord, Welcome, encode_host, error_code,
-    valid_identifier,
+    MAX_EXIT_DETAIL_BYTES, MAX_OUTPUT_CHUNK, MAX_SNAPSHOT_BYTES, PROTOCOL_VERSION, ProcessUsage,
+    RECORD_VERSION, SOCKET_FILE, STATUS_FILE, SignalKind, Snapshot, StatusRecord, Welcome,
+    encode_host, error_code, valid_identifier,
 };
 
 use crate::containment::bwrap_argv;
@@ -340,11 +340,17 @@ fn abort_child(child_pid: Pid) {
     let _ = waitpid(child_pid, None);
 }
 
-fn write_exit(run_dir: &Path, attempt_id: &str, record: &ExitRecord) -> io::Result<()> {
+fn write_exit(
+    run_dir: &Path,
+    attempt_id: &str,
+    record: &ExitRecord,
+    usage: Option<ProcessUsage>,
+) -> io::Result<()> {
     let file = ExitFile {
         version: RECORD_VERSION,
         attempt_id: attempt_id.to_owned(),
         exit: record.clone(),
+        usage,
     };
     let json = serde_json::to_vec_pretty(&file)?;
     atomic_write(run_dir, EXIT_FILE, &json, 0o600)
@@ -364,7 +370,7 @@ fn record_failure(
         detail: Some(truncate_utf8(error.to_string(), MAX_EXIT_DETAIL_BYTES)),
     };
     // Best effort: the error is returned either way.
-    let _ = write_exit(run_dir, attempt_id, &record);
+    let _ = write_exit(run_dir, attempt_id, &record, None);
     error
 }
 
@@ -628,13 +634,21 @@ fn exit_record(status: Result<WaitStatus, Errno>) -> ExitRecord {
 }
 
 fn reap_and_record(shared: &Shared, child: Box<dyn portable_pty::Child + Send + Sync>) {
-    let record = exit_record(reap(shared));
+    let status = reap(shared);
+    // What the reaped tree used (SPEC-154 USE-001), once the child really ran and was reaped.
+    let usage = matches!(
+        status,
+        Ok(WaitStatus::Exited(..) | WaitStatus::Signaled(..))
+    )
+    .then(process::children_usage)
+    .flatten();
+    let record = exit_record(status);
     drop(child);
     // Let the pump forward output written before the exit, bounded: a process outside the
     // group may keep the PTY open.
     shared.wait_until(OUTPUT_DRAIN_TIMEOUT, |state| state.output_done);
     // exit.json is durable before the Exit frame is sent (SPEC-002 §7.1).
-    let written = write_exit(&shared.run_dir, &shared.attempt_id, &record);
+    let written = write_exit(&shared.run_dir, &shared.attempt_id, &record, usage);
     let mut state = shared.lock();
     if let Err(error) = written {
         state.exit_file_error = Some(error.to_string());

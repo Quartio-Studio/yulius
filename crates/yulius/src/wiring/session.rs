@@ -16,6 +16,7 @@ use yulius_contracts::ptyhost::{
     self as wire, BubblewrapSpec, ClientFrame, ExitReason, ExitRecord, HostFrame, LaunchSpec,
     SignalKind,
 };
+use yulius_domain::stages::ResourceUse;
 use yulius_ptyhost::{
     DEFAULT_SPAWN_TIMEOUT, PtyClient, PtyReader, PtyWriter, RunDirState, SpawnedHost,
     inspect_run_dir, spawn_host, terminate_recorded, token_sha256_hex,
@@ -126,11 +127,15 @@ fn write_planned(file: &PlannedFile) -> std::io::Result<()> {
     std::fs::rename(&tmp, &file.path)
 }
 
-fn exit_of(record: &ExitRecord) -> RunExit {
+/// The run's end, with what it used as its host recorded in `run_dir`'s `exit.json` (written
+/// before the `Exit` frame is sent; SPEC-154 USE-001).
+fn exit_of(record: &ExitRecord, run_dir: &Path) -> RunExit {
     RunExit {
         code: record.code,
         signal: record.signal,
         spawn_failed: record.reason == ExitReason::SpawnFailed,
+        usage: yulius_ptyhost::exit_usage(run_dir)
+            .map(|used| ResourceUse::measured(used.cpu_ms, used.max_rss_bytes, used.written_bytes)),
     }
 }
 
@@ -201,7 +206,7 @@ impl SessionHost for PtySessionHost {
                 rows: welcome.rows,
                 snapshot: snapshot.map(|s| s.bytes),
             },
-            reader: Box::new(Reader(reader)),
+            reader: Box::new(Reader(reader, run_dir.to_path_buf())),
             writer: Box::new(Writer(writer)),
         })
     }
@@ -209,7 +214,7 @@ impl SessionHost for PtySessionHost {
     fn inspect(&self, run_dir: &Path) -> RunInspection {
         match inspect_run_dir(run_dir) {
             RunDirState::Missing => RunInspection::Missing,
-            RunDirState::Exited(exit) => RunInspection::Exited(exit_of(&exit)),
+            RunDirState::Exited(exit) => RunInspection::Exited(exit_of(&exit, run_dir)),
             RunDirState::Recorded {
                 host_alive,
                 child_alive,
@@ -252,7 +257,7 @@ impl SessionHost for PtySessionHost {
     }
 }
 
-struct Reader(PtyReader);
+struct Reader(PtyReader, PathBuf);
 
 #[async_trait]
 impl RunReader for Reader {
@@ -274,7 +279,9 @@ impl RunReader for Reader {
                         bytes: s.bytes,
                     }));
                 }
-                Some(HostFrame::Exit(exit)) => return Ok(Some(RunEvent::Exit(exit_of(&exit)))),
+                Some(HostFrame::Exit(exit)) => {
+                    return Ok(Some(RunEvent::Exit(exit_of(&exit, &self.1))));
+                }
                 Some(HostFrame::Error { code, message }) => {
                     if code == wire::error_code::REPLACED {
                         return Ok(None);
