@@ -1,16 +1,18 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock } from './support.ts';
+import { axeViolations, editorShown, failOnPageErrors, MONACO_LOAD_MS, mock } from './support.ts';
 
 failOnPageErrors();
 
-test('a file from the tree opens in an editor tab', async ({ app, screen }) => {
+test('a file from the tree opens in an editor tab', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('button', 'Editor').click();
 
   const tree = screen.getByRole('tree', 'Files');
   await tree.getByRole('treeitem', 'README.md').click();
+  // The first file loads Monaco: a condition with the cold load's budget, not the tab's 5 s (#356).
+  await editorShown(browser);
 
   await expect(screen.getByRole('tab', /^README\.md/)).toHaveAttribute('aria-selected', 'true');
   await expect(screen.getByRole('textbox', 'Editor content')).toBeAttached();
@@ -19,6 +21,38 @@ test('a file from the tree opens in an editor tab', async ({ app, screen }) => {
   await expect(folder).toHaveAttribute('aria-expanded', 'false');
   await folder.click();
   await expect(folder).toHaveAttribute('aria-expanded', 'true');
+});
+
+// #394: Monaco's main chunk sets `window.monaco` long before the chunk that registers five of its
+// services (ICodeLensCache, IInlayHintsCache…) has run, and the first editor fixes the services
+// every editor gets. A file opened while Monaco loads must wait for all of it, not create an
+// editor from the half-loaded `window.monaco`.
+test('a second file opened while the editor loads waits for all of Monaco: one editor, no errors', async ({ app, browser, screen }) => {
+  let release = () => {};
+  const held = new Promise<void>((resolve) => { release = resolve; });
+  await browser.route(/\/vendor\/monaco\/vs\/toggleHighContrast-[^/]*\.js$/, async (route) => { await held; await route.continue(); });
+  await app.open(mock('/s/studio/t/12'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  const tree = screen.getByRole('tree', 'Files');
+  await tree.getByRole('treeitem', 'README.md').click();
+  // Monaco's main chunk has run (it sets `window.monaco`); its services chunk is held back.
+  await expect.poll(() => browser.evaluate(() => 'monaco' in window), { timeout: MONACO_LOAD_MS }).toBe(true);
+  await tree.getByRole('treeitem', 'AGENTS.md').click();
+  release();
+  await editorShown(browser);
+  await expect(screen.getByRole('tab', /^AGENTS\.md/)).toBeVisible();
+  await expect(screen.getByRole('tab', /^README\.md/)).toBeVisible();
+  expect(await browser.evaluate(() => document.querySelectorAll('.ed-host .monaco-editor').length)).toBe(1);
+  // The code lens and inlay hint contributions are made when the browser is idle; asked for by id,
+  // they are made at once, and throw without their services.
+  expect(await browser.evaluate(() => {
+    type Ed = { getContribution(id: string): unknown };
+    const [ed] = (window as unknown as { monaco: { editor: { getEditors(): Ed[] } } }).monaco.editor.getEditors();
+    return ['css.editor.codeLens', 'editor.contrib.InlayHints'].map((id) => {
+      try { return ed.getContribution(id) ? 'made' : 'missing'; } catch (error) { return String(error); }
+    });
+  })).toEqual(['made', 'made']);
 });
 
 type WithMonaco = Window & { monaco: { editor: { getEditors(): { getRawOptions(): { wordWrap?: string } }[] } } };
@@ -33,6 +67,7 @@ test('word wrap turns on and off from the toolbar and Alt+Z, and stays after a r
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('button', 'Editor').click();
   await screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md').click();
+  await editorShown(browser);
   const content = screen.getByRole('textbox', 'Editor content');
   await expect(content).toBeAttached();
 
@@ -62,6 +97,7 @@ test('word wrap turns on and off from the toolbar and Alt+Z, and stays after a r
   await screen.getByRole('button', 'Editor').click();
   await expect(screen.getByRole('button', 'Word wrap')).toHaveAttribute('aria-pressed', 'true');
   await screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md').click();
+  await editorShown(browser);
   await expect(screen.getByRole('textbox', 'Editor content')).toBeAttached();
   await expect.poll(() => monacoWordWrap(browser)).toBe('on');
 });
@@ -78,6 +114,7 @@ test('the task terminal showing late does not take the keys typed into the Edito
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('button', 'Editor').click();
   await screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md').click();
+  await editorShown(browser);
   const content = screen.getByRole('textbox', 'Editor content');
   await expect(content).toBeAttached();
   // The file has loaded: keys typed before it arrives are replaced by its content (SPEC-082
@@ -116,6 +153,7 @@ async function openLong(app: { open(url: string): Promise<void> }, browser: Brow
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('button', 'Editor').click();
   await screen.getByRole('tree', 'Files').getByRole('treeitem', 'long.md').click();
+  await editorShown(browser);
   await expect(screen.getByRole('tab', /^long\.md/)).toHaveAttribute('aria-selected', 'true');
   await expect.poll(() => browser.evaluate(() => (window as unknown as EdWindow).monaco.editor.getEditors()[0].getModel()?.getValue().length ?? 0)).toBe(LONG.length);
 }
@@ -252,8 +290,11 @@ async function bobOpens(browser: Browser, name: string) {
   await bobClick(browser, '.ed-tree [role="treeitem"]', name);
   await expect.poll(() => browser.evaluate((file) => {
     const w = (window as unknown as { __bob: EdWindow & Window }).__bob;
-    return w.document.querySelector('.ed-tab.active')?.getAttribute('data-path') === file && Boolean(w.monaco?.editor.getEditors()[0]?.getModel()?.getValue());
-  }, name)).toBe(true);
+    // Monaco's API only once his editor shows (`editorShown`, #394); his first opening loads it.
+    return w.document.querySelector('.ed-tab.active')?.getAttribute('data-path') === file
+      && w.document.querySelector('.ed-host .monaco-editor') !== null
+      && Boolean(w.monaco.editor.getEditors()[0]?.getModel()?.getValue());
+  }, name), { timeout: MONACO_LOAD_MS }).toBe(true);
 }
 
 // SPEC-127 AC-127-1: two signed-in people (this page as mkarp, a second window as bob, the mock
@@ -263,6 +304,7 @@ test('two people in one file see each other’s caret, name and selection in the
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('button', 'Editor').click();
   await screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md').click();
+  await editorShown(browser);
   await expect.poll(() => inEditor<number>(browser, 'me', 'return ed.getModel()?.getValue().length ?? 0')).toBeGreaterThan(0);
 
   // Bob signs in in his own window and opens the same file.
@@ -330,6 +372,7 @@ test('a teammate in a file follows the person’s unsaved typing, hides at anoth
   await screen.getByRole('button', /^Show tools/).click();
   await screen.getByRole('button', 'Editor').click();
   await screen.getByRole('tree', 'Files').getByRole('treeitem', 'README.md').click();
+  await editorShown(browser);
   await expect.poll(() => inEditor<number>(browser, 'me', 'return ed.getModel()?.getValue().length ?? 0')).toBeGreaterThan(0);
   // Shown: a hello with the file's saved version.
   await expect.poll(async () => (await fileSent(browser)).some((u) => u.path === 'README.md' && u.hello && /^[0-9a-f]{64}$/.test(u.sha256))).toBe(true);
@@ -378,6 +421,7 @@ test('the editor’s file tabs move by drag, Alt+arrows and the menu', async ({ 
   const tree = screen.getByRole('tree', 'Files');
   for (const name of ['README.md', 'AGENTS.md']) {
     await tree.getByRole('treeitem', name).click();
+    await editorShown(browser);
     await expect(screen.getByRole('tab', new RegExp(`^${name.replace('.', '\\.')}`))).toHaveAttribute('aria-selected', 'true');
   }
   await tree.getByRole('treeitem', /src$/).click();
@@ -440,6 +484,7 @@ test('a file closed, a folder switched or a page gone says the person left, even
   await screen.getByRole('button', 'Editor').click();
   const tree = screen.getByRole('tree', 'Files');
   await tree.getByRole('treeitem', 'README.md').click();
+  await editorShown(browser);
   await expect.poll(async () => (await fileSent(browser)).some((u) => u.path === 'README.md' && u.selection !== null)).toBe(true);
   const last = async (path: string) => (await fileSent(browser)).filter((u) => u.path === path).at(-1);
 
@@ -482,6 +527,7 @@ test('a tab closed while another is dragged keeps the drag going, and the order 
   const tree = screen.getByRole('tree', 'Files');
   for (const name of ['README.md', 'AGENTS.md']) {
     await tree.getByRole('treeitem', name).click();
+    await editorShown(browser);
     await expect(screen.getByRole('tab', new RegExp(`^${name.replace('.', '\\.')}`))).toHaveAttribute('aria-selected', 'true');
   }
   await tree.getByRole('treeitem', /src$/).click();

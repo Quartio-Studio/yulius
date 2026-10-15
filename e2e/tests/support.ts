@@ -90,6 +90,27 @@ export function axeViolations(browser: Browser): Promise<string[]> {
   });
 }
 
+/**
+ * Budget for the Editor's first opening, which loads Monaco (about 120 files, 3.8 MB of script to
+ * parse): on a starved runner that takes longer than an assertion's 5 s (#320, #356). It bounds
+ * that one condition, not the steps after it.
+ */
+export const MONACO_LOAD_MS = 60_000;
+
+/**
+ * Waits until the Editor shows a Monaco editor, within Monaco's cold load (`MONACO_LOAD_MS`).
+ * Touch `window.monaco.editor` only after it: Monaco's main chunk sets `window.monaco` before its
+ * last chunk has registered its services, and the first call into the API fixes the services every
+ * editor gets. A call in that gap (a poll of `getEditors()`) makes the editor's idle-time setup
+ * throw "depends on UNKNOWN service ICodeLensCache" (#394).
+ */
+export async function editorShown(browser: Browser): Promise<void> {
+  await expect.poll(() => browser.evaluate(() => document.querySelector('.ed-host .monaco-editor') !== null), {
+    timeout: MONACO_LOAD_MS,
+    message: 'the Editor never showed a Monaco editor (Monaco did not load)',
+  }).toBe(true);
+}
+
 /** Changes a mock task as the server would announce it (`__yuliusMock.touchTask`). */
 /**
  * Waits until the task view's terminal shows its first screen. The task view asks for the
