@@ -610,7 +610,7 @@ body.resizing iframe, body.resizing canvas { pointer-events: none; }
 .status-count { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: var(--fs-sm); line-height: var(--lh-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .status-count.live { color: var(--text); }
 .live-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
-.account-list { display: flex; flex-direction: column; gap: 8px; }
+.account-list { display: flex; flex-direction: column; gap: 8px; container: accounts / inline-size; }
 /* One account: avatar, who, plan and state; usage windows as horizontal rows (ROT-009). */
 .account-card, .account-fold { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface-2); }
 /* Off or paused things dim their graphics, never their text below 4.5:1 (WCAG 1.4.3). */
@@ -635,8 +635,18 @@ body.resizing iframe, body.resizing canvas { pointer-events: none; }
 .state-warn { background: var(--warn-soft); color: var(--warn-fg); }
 .state-danger { background: var(--danger-soft); color: var(--danger-fg); }
 .state-muted { background: var(--surface-3); color: var(--muted); }
-.account-glance { display: flex; align-items: center; gap: 8px; width: 96px; flex: none; }
-.account-glance .meter { flex: 1; }
+/* Folded, both windows at a glance (SPEC-172): one grid, so the two bars line up. */
+.account-glance { display: grid; grid-template-columns: auto 64px minmax(4ch, auto); align-items: center; column-gap: 8px; row-gap: 2px; flex: none; }
+.glance-line { display: contents; }
+.glance-name { color: var(--muted); font-size: var(--fs-xs); line-height: var(--lh-xs); white-space: nowrap; }
+.account-glance .usage-pct { font-size: var(--fs-xs); line-height: var(--lh-xs); }
+/* Beside the glance, a folded row's state shows as its icon where the list is narrow; its name still reads it. */
+@container accounts (width < 480px) {
+  .account-fold .account-state { padding: 0 6px; }
+  .account-fold .account-state-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+}
+/* A narrow list (the Status panel on a phone) keeps the names and percents and gives the bars' room to the name. */
+@container accounts (width < 360px) { .account-glance { grid-template-columns: auto minmax(4ch, auto); } .account-glance .meter { display: none; } }
 .account-body { display: flex; flex-direction: column; gap: 12px; padding: 12px; }
 .account-card .account-body { padding-top: 0; }
 /* On the Accounts page the block already sits in a card. */
