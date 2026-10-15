@@ -3781,11 +3781,29 @@ class TermSession {
     this.broadcast(this.snapshot());
   }
 
+  /**
+   * A primary release at another column of the press's row ends a drag: like Claude Code 2.1.292,
+   * the program copies the text it selected with OSC 52 (task #149).
+   */
+  release(col, row) {
+    const press = this.pressed;
+    this.pressed = null;
+    if (!press || press[1] !== row || press[0] === col) return;
+    const bottom = this.regionBottom();
+    const line = this.lines[this.lines.length - this.scroll - bottom + row - 1];
+    if (!line) return;
+    const text = line.replace(/\x1b\[[0-9;]*m/g, '').slice(Math.min(press[0], col) - 1, Math.max(press[0], col)).trim();
+    const bytes = new TextEncoder().encode(text);
+    this.broadcast(`\x1b]52;c;${btoa(String.fromCharCode(...bytes))}\x07`);
+  }
+
   onInput(data) {
     // Mouse reports (the viewer's wheel and clicks) are not typed text: a wheel turn scrolls, a
-    // primary press clicks, its release does nothing.
-    const typed = data.replace(/\x1b\[<(\d+);\d+;(\d+)([Mm])/g, (_, button, row, kind) => {
-      if (Number(button) === 0) { if (kind === 'M') this.click(Number(row)); } else this.wheel(Number(button));
+    // primary press clicks, its release after a drag copies the dragged text.
+    const typed = data.replace(/\x1b\[<(\d+);(\d+);(\d+)([Mm])/g, (_, button, col, row, kind) => {
+      if (Number(button) !== 0) this.wheel(Number(button));
+      else if (kind === 'M') { this.pressed = [Number(col), Number(row)]; this.click(Number(row)); }
+      else this.release(Number(col), Number(row));
       return '';
     });
     for (const ch of typed.replace(/\x1b\[[AB]/g, '')) {

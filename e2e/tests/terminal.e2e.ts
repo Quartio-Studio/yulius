@@ -198,6 +198,14 @@ test('the clipboard keys follow desktop terminals', async ({ app, browser }) => 
     'AltGr+C': null,
     'c': null,
   });
+  // The program's copy (OSC 52, SPEC-158): a write's text, never a query or a broken payload.
+  const osc = await browser.evaluate(async () => {
+    const url = '/assets/termkeys.js';
+    const { osc52Text } = await import(url);
+    const utf8 = (text: string) => btoa(String.fromCharCode(...new TextEncoder().encode(text)));
+    return ['c;' + utf8('git push → ✓'), ';' + utf8('no letters'), 'pc;' + utf8('two'), 'c;?', 'c;', 'c;%%%', utf8('no separator'), 'c;' + utf8('')].map((data) => osc52Text(data));
+  });
+  expect(osc).toEqual(['git push → ✓', 'no letters', 'two', null, null, null, null, null]);
 });
 
 test('file references are found in every form and resolved inside the folder only', async ({ app, browser }) => {
@@ -293,6 +301,62 @@ test('Ctrl+C copies a selection and interrupts without one; paste types the clip
   await expect(screen.getByRole('menuitem', /^Select all/)).toBeVisible();
   await browser.keyboard.press('Escape');
   await expect(screen.getByRole('menuitem', /^Paste/)).toBeHidden();
+});
+
+test('a selection the program copies (OSC 52) reaches the clipboard, or the copy key when the browser refuses', async ({ app, browser }) => {
+  // Task #149, SPEC-158: Claude Code selects a plain drag itself and copies it with OSC 52, as the
+  // mock does; the browser clipboard must get it.
+  await app.open(mock('/s/studio/t/12'));
+  await expect(rows(browser)).toHaveText(/Read 142 lines/);
+  await holdStill(browser);
+  type Clip = { __written: string[]; __refuse: boolean; __copied: string[] };
+  // The clipboard API, recorded; `__refuse` rejects writes as Safari does outside a key press.
+  await browser.evaluate(() => {
+    const w = window as unknown as Clip;
+    w.__written = [];
+    w.__refuse = false;
+    w.__copied = [];
+    navigator.clipboard.writeText = (text: string) => {
+      if (w.__refuse) return Promise.reject(new DOMException('Write permission denied.', 'NotAllowedError'));
+      w.__written.push(text);
+      return Promise.resolve();
+    };
+    document.addEventListener('copy', (event) => w.__copied.push(event.clipboardData ? event.clipboardData.getData('text/plain') : ''));
+  });
+  const written = () => browser.evaluate(() => (window as unknown as Clip).__written);
+  const copied = () => browser.evaluate(() => (window as unknown as Clip).__copied);
+  const notice = browser.locator('.taskview .term-notice');
+  /** The program prints `sequence` to every viewer, unasked. */
+  const print = (sequence: string) => browser.evaluate((text) => {
+    for (const [, session] of (window as unknown as { __yuliusMock: { sessions: Map<string, { broadcast(text: string): void }> } }).__yuliusMock.sessions) session.broadcast(text);
+  }, sequence);
+
+  // A copy the program prints while this viewer has not used the terminal writes nothing.
+  await print(`\x1b]52;c;${btoa('unasked')}\x07`);
+  await settle();
+  expect(await written(), 'no write without this viewer\'s input').toEqual([]);
+
+  // A plain drag is the program's: it selects and copies the text, which reaches the clipboard.
+  await selectRow(browser, 'Read 142 lines');
+  await expect.poll(written).toEqual([expect.stringContaining('Read 142 lines')]);
+  await expect(notice).toHaveText('Copied');
+  expect(await selected(browser), 'xterm itself selects nothing').toBe(false);
+
+  // A query is never answered, and nothing is written for it.
+  const sent = await recordInput(browser);
+  await print('\x1b]52;c;?\x07');
+  await settle();
+  expect(await sent(), 'no answer to a query').toEqual([]);
+  expect((await written()).length).toBe(1);
+
+  // A browser that refuses the write: the copy key copies the program's text.
+  await browser.evaluate(() => { (window as unknown as Clip).__refuse = true; });
+  await selectRow(browser, 'Read 142 lines');
+  const mac = await browser.evaluate(() => /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || ''));
+  await expect(notice).toHaveText(mac ? 'Press ⌘C to copy' : 'Press Ctrl+Shift+C to copy');
+  await browser.keyboard.press(mac ? 'Meta+c' : 'Control+Shift+c');
+  await expect.poll(copied).toEqual([expect.stringContaining('Read 142 lines')]);
+  await expect(notice).toHaveText('Copied');
 });
 
 test('a read-only viewer cannot paste', async ({ app, browser, screen }) => {
