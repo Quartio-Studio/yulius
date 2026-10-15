@@ -752,6 +752,64 @@ test('a long diff that scrolls shows its keyboard focus', async ({ app, browser 
   await expect(browser.locator('.ss-tui .ss-note-text[tabindex="0"]')).toHaveCount(1);
 });
 
+// #350: the server cuts each side of an edit at 16 Ki characters and keeps 20 hunks; a cut diff
+// claims no count and says it was cut.
+test('a diff the server cut claims no line count and says it was cut', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/sessions/ses_imp_flaky'));
+  const write = '.ss-tui details.ss-tool:has-text("Write(e2e/fixtures/users.json)")';
+  await expect(browser.locator(`${write} > summary`)).toContainText(/⎿\s*Wrote e2e\/fixtures\/users\.json$/);
+  await expect(browser.locator(`${write} > summary`)).not.toContainText(/\d+ lines?/);
+  await expect(browser.locator(write)).toHaveAttribute('open', '');
+  await expect(browser.locator(`${write} .ss-cut`)).toHaveText('Cut here: the change is longer.');
+  await expect(browser.locator(`${write} .ss-cut`)).toBeVisible();
+  // A whole diff keeps its count and says nothing of a cut.
+  await expect(browser.locator('.ss-tui details.ss-tool > summary:has-text("Write(e2e/wait.ts)")')).toContainText(/Wrote 3 lines to e2e\/wait\.ts/);
+  await expect(screen.getByText('Cut here: the change is longer.')).toHaveCount(1);
+  expect(await axeViolations(browser)).toEqual([]);
+});
+
+// #380: a context the server cut says so, and its size is a lower bound.
+test('a context the server cut says so when opened and reads its size as at least', async ({ app, browser }) => {
+  await app.open(mock('/s/studio/sessions/ses_imp_flaky'));
+  const note = '.ss-tui details.ss-note';
+  await expect(browser.locator(note)).toHaveCount(1);
+  await expect(browser.locator(`${note} > summary`)).toHaveText(/⎿\s*Context added \(at least 16 KiB\)$/);
+  await expect(browser.locator(`${note} .ss-cut`)).toBeHidden();
+  await browser.locator(`${note} > summary`).click();
+  await expect(browser.locator(`${note} .ss-note-text`)).toContainText('Hook context: flaky test history');
+  await expect(browser.locator(`${note} .ss-cut`)).toHaveText('Cut here: the context is longer.');
+  await expect(browser.locator(`${note} .ss-cut`)).toBeVisible();
+  expect(await axeViolations(browser)).toEqual([]);
+  // A whole context keeps its plain size (SPEC-090).
+  await app.open(mock('/s/studio/sessions/ses_task_4'));
+  await expect(browser.locator(`${note} > summary`)).toHaveText(/⎿\s*Context added \(1\.6 KiB\)$/);
+  await expect(browser.locator('.ss-tui .ss-cut')).toHaveCount(0);
+});
+
+// #363: a block is a region when it scrolls as laid out, not by an estimate made for a wide page.
+test('a result that scrolls only on a phone is a named region there and no tab stop on a desktop', async ({ app, browser }) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open(mock('/s/studio/sessions/ses_imp_flaky'));
+  const call = '.ss-tui details.ss-tool:has-text("Bash(npx playwright test --list)")';
+  await browser.locator(`${call} > summary`).click();
+  const result = browser.locator(`${call} .ss-result`);
+  await expect(result).toHaveAttribute('role', 'region');
+  await expect(result).toHaveAttribute('aria-label', 'Result of Bash(npx playwright test --list)');
+  await expect(result).toHaveAttribute('tabindex', '0');
+  const scrolls = () => browser.evaluate(() => { const el = document.querySelector('.ss-result[data-region="Result of Bash(npx playwright test --list)"]')!; return el.scrollHeight > el.clientHeight; });
+  expect(await scrolls()).toBe(true);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // Wide, the same 16 lines fit: no tab stop, no region.
+  await browser.setViewport({ width: 1280, height: 900 });
+  await expect(result).not.toHaveAttribute('tabindex', '0');
+  await expect(result).not.toHaveAttribute('role', 'region');
+  expect(await scrolls()).toBe(false);
+  // Narrow again, it is reachable again.
+  await browser.setViewport({ width: 390, height: 844 });
+  await expect(result).toHaveAttribute('role', 'region');
+});
+
 test('a search match opens the transcript at its line', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/sessions?q=fulfilling'));
   await screen.getByRole('list', 'Sessions').getByRole('link', /Add Stripe checkout/).click();
