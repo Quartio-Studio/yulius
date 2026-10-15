@@ -58,3 +58,7 @@ longer refused by an overflowing queue. Idle keep-alive connections hold a serve
 the browser closes them, which the runner's one browser per worker bounds. A test that adds a
 Monaco call must wait for `editorShown` first. Opening two files while Monaco loads creates one
 editor; which of them is in front still depends on which file's read answers last.
+
+The suite holds down to about a fifth of a CPU per thread (SPEC-148's proof). Starved further, as
+when another suite runs on the same budget, the runner's 5 s waits run out before its reads of the
+page do, and tests fail without a defect: that is the cost of keeping the default budgets.

@@ -131,8 +131,9 @@ loops (`sh -c 'while :; do :; done'`) beside the runs, the 1-minute load average
 - The #394 regression test fails without the `editorview.js` change (two editors, five "UNKNOWN
   service" errors) and passes with it.
 - `notes.e2e.ts`, `archive.e2e.ts`, `editor.e2e.ts` and `terminal.e2e.ts` each pass 10 consecutive
-  runs next to CPU-bound processes that leave one CPU-bound thread about a fifth of a CPU (the
-  starvation under which the unchanged code failed), with `retries: 0` and no sleeps.
+  runs next to CPU-bound processes that leave one CPU-bound thread about a fifth of a CPU, with
+  each file's seconds per test at least the reproduction's (where the unchanged code failed),
+  `retries: 0` and no sleeps.
 - The full suite passes twice in a row under the same load.
 - No retry, sleep or blanket timeout increase is added; the one longer budget is Monaco's cold
   load, which existed before and is now one named constant.
@@ -169,8 +170,9 @@ loops (`sh -c 'while :; do :; done'`) beside the runs, the 1-minute load average
 - **The proof's load is the starvation of one thread, not the load average.** The load average
   is the host's; a sandbox runs under its own CPU budget, so the same number of busy loops starved
   the suite twice as much when other tasks were busy (see Evidence: "a run starved beyond the
-  target"). A controller holds a CPU-bound probe at 0.20 of a CPU instead, which is about what the
-  reproduction ran at (tests as slow as there).
+  target"). A controller holds a CPU-bound probe at 0.20 of a CPU instead. The reproduction did not
+  measure that share; 0.20 is inferred from its tests' speed, so the proof also compares each
+  file's seconds per test with the reproduction's, and does not count where it ran faster.
 
 ## Evidence
 
