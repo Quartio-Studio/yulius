@@ -57,6 +57,7 @@ Pipeline page's stage table, and one job's figures in its waterfall row.
 - [x] The Pipeline page and the waterfall show the use
 - [x] Docs, ADR and changes updated
 - [x] Review round 1 fixed: a killed job's use is unknown, docs say what is counted
+- [x] Review round 2 fixed: a run queued again forgets its jobs' earlier use
 - [ ] Independent review approves the exact head
 - [ ] Every gate green and the merge into dev armed on Yulius CI
 
@@ -106,5 +107,8 @@ Pipeline page's stage table, and one job's figures in its waterfall row.
   refuses unknown flag bits, so a new field there would break a server and a host of different
   versions (a detached host outlives an upgrade, ADR-0002). The host writes `exit.json` before it
   sends the frame, so the server reads the usage from the file when the frame arrives.
+- **On a phone the stage table hides the CPU and memory columns**, as it already hides Longest and
+  Total: the narrow table keeps the stage, its count, failures and p50/p90 durations, and a job's
+  own figures stay in its waterfall row (review round 1, kept in round 2).
 - **The waterfall shows one span's figures** (a single job has no percentile); the p50/p90 are in
   the stage table, the place that aggregates.

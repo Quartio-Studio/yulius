@@ -355,7 +355,8 @@ impl CiStore for SqliteStore {
             if changed == 1 {
                 tx.execute(
                     "UPDATE ci_jobs SET state = 'queued', started_at = NULL, ended_at = NULL, \
-                     reason = NULL, exit_code = NULL, output = ?2, failures = NULL WHERE run_id = ?1",
+                     reason = NULL, exit_code = NULL, output = ?2, failures = NULL, cpu_ms = NULL, \
+                     memory_peak_mb = NULL, disk_written_mb = NULL WHERE run_id = ?1",
                     [&id, &note],
                 )
                 .map_err(db)?;

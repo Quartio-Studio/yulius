@@ -698,6 +698,49 @@ mod tests {
         let unmeasured = detail(&spans(&store, SubjectKind::CdRun, "cd2").await?[0]);
         assert!(unmeasured.get("cpu_ms").is_none(), "{unmeasured}");
         assert_eq!(unmeasured["exit_code"].as_i64(), Some(0));
+
+        // Review round 2: a run queued again (a restart) runs its jobs anew; a job that then ends
+        // unmeasured never shows the earlier attempt's use.
+        store
+            .call(|c| {
+                c.execute_batch(
+                    "UPDATE ci_runs SET state = 'running' WHERE id = 'r1';
+                     UPDATE ci_jobs SET state = 'running', ended_at = NULL WHERE id = 'j1';",
+                )
+                .map_err(db)
+            })
+            .await?;
+        assert!(store.requeue_ci_run("r1", "again", Timestamp(50)).await?);
+        store
+            .call(|c| {
+                c.execute_batch(
+                    "UPDATE ci_runs SET state = 'running', started_at = 60 WHERE id = 'r1';
+                     UPDATE ci_jobs SET state = 'running', started_at = 65 WHERE id = 'j1';",
+                )
+                .map_err(db)
+            })
+            .await?;
+        let again = CiJobUpdate {
+            ended_at: Some(Timestamp(70)),
+            ..CiJobUpdate::default()
+        };
+        assert!(
+            store
+                .transition_ci_job("j1", &running, RunState::Cancelled, &again)
+                .await?
+        );
+        let rerun = spans(&store, SubjectKind::CiRun, "r1")
+            .await?
+            .into_iter()
+            .find(|s| s.key == "job:j1@65")
+            .map(|s| detail(&s))
+            .ok_or("the second attempt's span")?;
+        for figure in ["cpu_ms", "memory_peak_mb", "disk_written_mb"] {
+            assert!(
+                rerun.get(figure).is_none(),
+                "{figure} of the first attempt: {rerun}"
+            );
+        }
         Ok(())
     }
 
