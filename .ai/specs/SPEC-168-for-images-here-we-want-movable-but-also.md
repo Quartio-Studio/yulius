@@ -1,11 +1,11 @@
 ---
 yulius-task: f749919e-3eff-4edf-9cee-94755b107da6
-status: in-progress
+status: done
 ---
 
 # SPEC-168: Queued messages show and take files as placeholders
 
-Status: in progress
+Status: implemented
 Date: 2026-10-15
 Owner: Yulius task #158
 Scope authorization: task #158, "For images here we want movable but also clickable placeholders
@@ -61,8 +61,9 @@ like one character, and reaches the agent at its place when the message is queue
 - [x] The queue card's request shows its files as clickable Image N placeholders
 - [x] The queue box takes pasted and dropped images as movable placeholders and queues them
 - [x] Review round 1 in a fresh session, its findings fixed test-first
-- [ ] Review round 2 approves the exact head
-- [ ] Every gate green, docs and the changes log updated
+- [x] Review round 2, its findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
+- [x] Review round 3 approves the exact head
 
 ## Acceptance criteria
 
@@ -107,3 +108,25 @@ like one character, and reaches the agent at its place when the message is queue
   numbering each occurrence in the request, which both changed a number once queued.
 - **A pending upload keeps the card.** A task that starts while a file uploads into an otherwise
   empty box keeps the card (read-only, with Dismiss), so "the file was not added" is seen (round 2).
+
+## Evidence
+
+Run on the branch head after merging `origin/dev` (eface777), 2026-10-15:
+
+| Command | Result |
+| --- | --- |
+| `scripts/dev ci` (repository check, fmt, clippy, nextest, doctests, deny, shear, doc) | exit 0; nextest 1847 passed, 18 skipped |
+| `cd e2e && npx e2e run` (whole suite) | 55 files passed, 1 skipped; 509 tests passed, 1 skipped |
+| `npx e2e run tests/queued-messages.e2e.ts` | 21 passed, 7 of them new for QMF-001..005 and the review findings; each new test failed on the code before its change (raw `@'path'` request, a textarea box, the round 1 and 2 defects) |
+| `python3 scripts/check_repository.py` | passed (`index.html` modulepreload order synced with `--sync-brand`) |
+| `scripts/dev security` | **not run**: exit 2, Vidoc rejects the key (HTTP 401, #470). Per ADR-0104 this is unrun, not passed; the reviewers checked the diff for security by hand (DOM built with `h()`, blob URLs only, uploads under `Action::Work` to the task's own folder) |
+
+Independent reviews in fresh sessions: round 1 (head f169db2c) approved with 7 minor findings
+and 4 nits, and round 2 (head 6dc576d5) approved with 2 minor findings and a nit. All were fixed
+test-first. Round 3 reviews the final head.
+
+Not testable here: the real server and Claude Code receiving a queued image. The server path
+needs no change: uploads go to `attachments/tasks/<task>`, which `task_prompt_attachment` already
+serves. The request file and the first message already read files anywhere in the prompt
+(SPEC-124). The UI was exercised against the mock, whose routes mirror those rules.
+
