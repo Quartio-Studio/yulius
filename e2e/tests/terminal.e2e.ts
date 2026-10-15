@@ -303,14 +303,13 @@ test('Ctrl+C copies a selection and interrupts without one; paste types the clip
   await expect(screen.getByRole('menuitem', /^Paste/)).toBeHidden();
 });
 
-test('a selection the program copies (OSC 52) reaches the clipboard, or the copy key when the browser refuses', async ({ app, browser }) => {
-  // Task #149, SPEC-158: Claude Code selects a plain drag itself and copies it with OSC 52, as the
-  // mock does; the browser clipboard must get it.
-  await app.open(mock('/s/studio/t/12'));
-  await expect(rows(browser)).toHaveText(/Read 142 lines/);
-  await holdStill(browser);
-  type Clip = { __written: string[]; __refuse: boolean; __copied: string[] };
-  // The clipboard API, recorded; `__refuse` rejects writes as Safari does outside a key press.
+type Clip = { __written: string[]; __refuse: boolean; __copied: string[] };
+
+/**
+ * Records the clipboard: `written()` what the clipboard API was given (`refuse(true)` rejects it,
+ * as Safari does outside a key press) and `copied()` what each copy event carried.
+ */
+async function recordClipboard(browser: Browser) {
   await browser.evaluate(() => {
     const w = window as unknown as Clip;
     w.__written = [];
@@ -323,40 +322,87 @@ test('a selection the program copies (OSC 52) reaches the clipboard, or the copy
     };
     document.addEventListener('copy', (event) => w.__copied.push(event.clipboardData ? event.clipboardData.getData('text/plain') : ''));
   });
-  const written = () => browser.evaluate(() => (window as unknown as Clip).__written);
-  const copied = () => browser.evaluate(() => (window as unknown as Clip).__copied);
+  return {
+    written: () => browser.evaluate(() => (window as unknown as Clip).__written),
+    copied: () => browser.evaluate(() => (window as unknown as Clip).__copied),
+    refuse: (on: boolean) => browser.evaluate((value) => { (window as unknown as Clip).__refuse = value; }, on),
+  };
+}
+
+/**
+ * The program prints `sequence` to every viewer, unasked, then the line `marker`; once the marker
+ * shows, the terminal has handled the sequence (output is parsed in order).
+ */
+async function printUnasked(browser: Browser, sequence: string, marker: string): Promise<void> {
+  await browser.evaluate(([text, line]) => {
+    for (const [, session] of (window as unknown as { __yuliusMock: { sessions: Map<string, { broadcast(text: string): void; appendLine(line: string): void }> } }).__yuliusMock.sessions) {
+      session.broadcast(text);
+      session.appendLine(line);
+    }
+  }, [sequence, marker] as const);
+  await expect(rows(browser)).toHaveText(new RegExp(marker));
+}
+
+test('a selection the program copies (OSC 52) reaches the clipboard, or the copy key when the browser refuses', async ({ app, browser }) => {
+  // Task #149, SPEC-158: Claude Code selects a plain drag itself and copies it with OSC 52, as the
+  // mock does; the browser clipboard must get it.
+  await app.open(mock('/s/studio/t/12'));
+  await expect(rows(browser)).toHaveText(/Read 142 lines/);
+  await holdStill(browser);
+  const clip = await recordClipboard(browser);
   const notice = browser.locator('.taskview .term-notice');
-  /** The program prints `sequence` to every viewer, unasked. */
-  const print = (sequence: string) => browser.evaluate((text) => {
-    for (const [, session] of (window as unknown as { __yuliusMock: { sessions: Map<string, { broadcast(text: string): void }> } }).__yuliusMock.sessions) session.broadcast(text);
-  }, sequence);
 
   // A copy the program prints while this viewer has not used the terminal writes nothing.
-  await print(`\x1b]52;c;${btoa('unasked')}\x07`);
-  await settle();
-  expect(await written(), 'no write without this viewer\'s input').toEqual([]);
+  await printUnasked(browser, `\x1b]52;c;${btoa('unasked')}\x07`, 'marker one');
+  expect(await clip.written(), 'no write without this viewer\'s input').toEqual([]);
 
   // A plain drag is the program's: it selects and copies the text, which reaches the clipboard.
   await selectRow(browser, 'Read 142 lines');
-  await expect.poll(written).toEqual([expect.stringContaining('Read 142 lines')]);
+  await expect.poll(clip.written).toEqual([expect.stringContaining('Read 142 lines')]);
   await expect(notice).toHaveText('Copied');
   expect(await selected(browser), 'xterm itself selects nothing').toBe(false);
 
   // A query is never answered, and nothing is written for it.
   const sent = await recordInput(browser);
-  await print('\x1b]52;c;?\x07');
-  await settle();
+  await printUnasked(browser, '\x1b]52;c;?\x07', 'marker two');
   expect(await sent(), 'no answer to a query').toEqual([]);
-  expect((await written()).length).toBe(1);
+  expect((await clip.written()).length).toBe(1);
 
   // A browser that refuses the write: the copy key copies the program's text.
-  await browser.evaluate(() => { (window as unknown as Clip).__refuse = true; });
+  await clip.refuse(true);
   await selectRow(browser, 'Read 142 lines');
   const mac = await browser.evaluate(() => /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || ''));
+  const copyKey = mac ? 'Meta+c' : 'Control+Shift+c';
   await expect(notice).toHaveText(mac ? 'Press ⌘C to copy' : 'Press Ctrl+Shift+C to copy');
-  await browser.keyboard.press(mac ? 'Meta+c' : 'Control+Shift+c');
-  await expect.poll(copied).toEqual([expect.stringContaining('Read 142 lines')]);
+  await browser.keyboard.press(copyKey);
+  await expect.poll(clip.copied).toEqual([expect.stringContaining('Read 142 lines')]);
   await expect(notice).toHaveText('Copied');
+
+  // xterm's own selection wins over a refused program copy, and drops it (OSC-004).
+  await selectRow(browser, 'Read 142 lines');
+  await expect(notice).toHaveText(mac ? 'Press ⌘C to copy' : 'Press Ctrl+Shift+C to copy');
+  await keySelectRow(browser, 'Searched for 2 patterns');
+  await expect.poll(() => selected(browser), { message: 'a Shift-drag selects' }).toBe(true);
+  await browser.keyboard.press(copyKey);
+  await expect.poll(clip.copied).toEqual([expect.stringContaining('Read 142 lines'), expect.stringContaining('Searched for 2 patterns')]);
+  await rows(browser).click({ position: { x: 300, y: 8 } });
+  expect(await selected(browser), 'a click clears the selection').toBe(false);
+  // The copy event fires during the key press, so it would be recorded by now.
+  await browser.keyboard.press(copyKey);
+  expect((await clip.copied()).length, 'the program copy went with the selection').toBe(2);
+});
+
+test('a read-only viewer’s clipboard is never written by the program', async ({ app, browser, screen }) => {
+  // SPEC-158 OSC-003: a viewer who cannot write only watches; the program's copy is not theirs,
+  // even right after they clicked into the terminal.
+  await app.open(mock('/s/sandbox-3/t/1'));
+  await expect(screen.getByText('Read-only (GitHub: read)')).toBeVisible();
+  await expect(rows(browser)).toHaveText(/Read 142 lines/);
+  const clip = await recordClipboard(browser);
+  await rows(browser).click({ position: { x: 300, y: 8 } });
+  await printUnasked(browser, `\x1b]52;c;${btoa('not yours')}\x07`, 'marker four');
+  expect(await clip.written(), 'nothing written for a read-only viewer').toEqual([]);
+  await expect(browser.locator('.taskview .term-notice')).not.toHaveText(/Copied|to copy/);
 });
 
 test('a read-only viewer cannot paste', async ({ app, browser, screen }) => {
