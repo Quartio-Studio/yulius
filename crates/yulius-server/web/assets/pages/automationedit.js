@@ -3,7 +3,8 @@
 // the schedule is clicked, not written — once a day on the chosen days (or every hour) at a time
 // picked from chips — and the page says in words when it runs next; cron stays under Advanced.
 // The workflow is a chip. How each task starts is New task's start chip, in the action bar beside
-// Run now and Save (SPEC-078, SPEC-093); Run now uses the choice it shows. Run now, the switch and
+// Run now and Save (SPEC-078, SPEC-093), with "When I decide" but no "At a time…" (SPEC-155); Run
+// now uses the choice it shows. Run now, the switch and
 // the run history live on the same page (Automation, docs/api.md).
 
 import { enc } from '../api.js';
@@ -110,8 +111,9 @@ export function mountAutomationEditor(ctx, sandbox, id) {
   let saved = '';
   let showZone = false;
   let loaded = false; // the automation has been read (SPEC-093): the chip and Run now turn on
-  // The start choice (SPEC-078): at most one of supertask, after_task_id and start_rule.
-  const state = { name: '', prompt: '', workflow_id: null, enabled: true, cron: '0 9 * * 1-5', offset: -new Date().getTimezoneOffset(), custom: false, supertask: false, after_task_id: null, after_task_number: null, start_rule: null };
+  // The start choice (SPEC-078, SPEC-155): at most one of supertask, after_task_id, start_rule and
+  // prepared.
+  const state = { name: '', prompt: '', workflow_id: null, enabled: true, cron: '0 9 * * 1-5', offset: -new Date().getTimezoneOffset(), custom: false, supertask: false, after_task_id: null, after_task_number: null, start_rule: null, prepared: false };
   const live = h('div', { class: 'sr-only', role: 'status' });
 
   const nameInput = h('input', { class: 'wf-name', placeholder: 'Name the automation', 'aria-label': 'Automation name', maxlength: 100, onInput: (e) => { state.name = e.target.value; changed(); } });
@@ -219,11 +221,11 @@ export function mountAutomationEditor(ctx, sandbox, id) {
 
   // ---- how each task starts (SPEC-078, SPEC-093): New task's start chip and menu
   function setStart(next) {
-    Object.assign(state, { supertask: false, after_task_id: null, after_task_number: null, start_rule: null }, next);
+    Object.assign(state, { supertask: false, after_task_id: null, after_task_number: null, start_rule: null, prepared: false }, next);
     renderStart();
     changed();
   }
-  const kindOf = () => startKind({ supertask: state.supertask, afterTaskId: state.after_task_id, rule: state.start_rule });
+  const kindOf = () => startKind({ supertask: state.supertask, afterTaskId: state.after_task_id, rule: state.start_rule, prepare: state.prepared ? {} : null });
   /** The chip reads the choice; its tooltip says what it means. It follows the task list. */
   function renderStart() {
     // Until the automation is read the chip names no choice (its name is just "Start").
@@ -239,13 +241,15 @@ export function mountAutomationEditor(ctx, sandbox, id) {
       supertask: 'Each task waits for this project’s running tasks, then runs alone: the project’s other tasks wait for it.',
       after: `Each task starts when #${number || '?'} is done. Once #${number || '?'} has ended, each task starts at once if it was done, or else waits for you to start or cancel it.`,
       rule: `Each task starts by itself when ${rule}.`,
+      prepared: 'Each task waits, prepared, until you press Start now.',
     }[kind];
   }
   function openStart() {
     openStartMenu(startChip, ctx, sandbox, {
       kind: kindOf(),
       afterTaskId: state.after_task_id,
-      onPick: ({ kind, task }) => setStart(kind === 'supertask' ? { supertask: true } : kind === 'after' ? { after_task_id: task.id, after_task_number: task.number } : {}),
+      prepare: true,
+      onPick: ({ kind, task }) => setStart(kind === 'supertask' ? { supertask: true } : kind === 'after' ? { after_task_id: task.id, after_task_number: task.number } : kind === 'prepared' ? { prepared: true } : {}),
       onRule: () => openRuleEditor({ tasks: ctx.store.tasksOf(sandbox.id), value: ruleFromText(state.start_rule), onUse: (rule) => setStart({ start_rule: ruleText(rule) }) }),
     });
   }
@@ -300,7 +304,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
     if (!state.name.trim()) { invalid(nameInput, 'Give the automation a name.'); return; }
     if (!state.prompt.trim()) { invalid(el.querySelector('.au-prompt'), 'Say what the task should do.'); return; }
     if (!cronValid(state.cron)) { const cron = el.querySelector('.au-cron'); cron?.closest('details')?.setAttribute('open', ''); if (cron) invalid(cron, 'A schedule has five fields, e.g. “0 9 * * 1-5”.'); return; }
-    const payload = { name: state.name.trim(), cron: state.cron, utc_offset_minutes: state.offset, prompt: state.prompt.trim(), workflow_id: state.workflow_id || null, enabled: state.enabled, supertask: state.supertask, after_task_id: state.after_task_id, start_rule: state.start_rule };
+    const payload = { name: state.name.trim(), cron: state.cron, utc_offset_minutes: state.offset, prompt: state.prompt.trim(), workflow_id: state.workflow_id || null, enabled: state.enabled, supertask: state.supertask, after_task_id: state.after_task_id, start_rule: state.start_rule, prepared: state.prepared };
     save.classList.add('busy');
     try {
       if (creating) await ctx.api.post(`/api/sandboxes/${enc(sandbox.id)}/automations`, payload);
@@ -320,7 +324,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
     runNow.classList.add('busy');
     try {
       // The start choice the chip shows, saved or not (SPEC-093 AUT-023), for this run only.
-      const run = await ctx.api.post(`/api/automations/${enc(id)}/run`, { supertask: state.supertask, after_task_id: state.after_task_id, start_rule: state.start_rule });
+      const run = await ctx.api.post(`/api/automations/${enc(id)}/run`, { supertask: state.supertask, after_task_id: state.after_task_id, start_rule: state.start_rule, prepared: state.prepared });
       const task = run && run.task_id ? ctx.store.findTask(run.task_id) : null;
       if (run && run.state === 'failed') toast(`Run failed${run.error ? `: ${run.error}` : ''}`, { kind: 'error' });
       else toast(`${RUN_LABEL[run && run.state] || 'Run recorded'}${task ? ` (#${task.number})` : ''}`, { kind: run && run.state === 'task_created' ? 'ok' : 'info' });
@@ -374,7 +378,7 @@ export function mountAutomationEditor(ctx, sandbox, id) {
         automation = (Array.isArray(list) ? list : []).find((a) => a.id === id);
         if (!automation) { saved = snapshot(); setChildren(el, notFound({ title: 'Automation not found', text: `There is no automation “${id}” in ${sandbox.name}. It may have been deleted.`, back: ['Automations', base] })); return; }
         Object.assign(state, { name: automation.name, prompt: automation.prompt || '', workflow_id: automation.workflow_id || null, enabled: automation.enabled, cron: automation.cron, offset: automation.utc_offset_minutes, custom: !readSchedule(automation.cron),
-          supertask: Boolean(automation.supertask), after_task_id: automation.after_task_id || null, after_task_number: automation.after_task_number ?? null, start_rule: automation.start_rule || null });
+          supertask: Boolean(automation.supertask), after_task_id: automation.after_task_id || null, after_task_number: automation.after_task_number ?? null, start_rule: automation.start_rule || null, prepared: Boolean(automation.prepared) });
         nameInput.value = automation.name;
         showZone = state.offset !== -new Date().getTimezoneOffset();
       }
