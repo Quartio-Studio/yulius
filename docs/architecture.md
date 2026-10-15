@@ -218,7 +218,7 @@ repository of the instance owner that its mover could import (`admin` or `mainta
 superadmin: one the App can access). Detached from its request, while no task of it is live or
 queued and no CI run of it is active, and holding the
 sandbox's merge pass, Yulius pushes every branch and tag of `origin` to it in one atomic push with
-the installation token, points the clone's `origin` at it and fetches, then writes the GitHub owner,
+the installation token (the default branch alone first, so GitHub takes it as its default), points the clone's `origin` at it and fetches, then writes the GitHub owner,
 name and repository id into the record in one compare-and-set (the commit point; a failure before
 it points the clone back). It then deletes the bare `origin`. From then on every playground test
 (`is_playground`) answers no, so access, credentials, delivery and CI take their GitHub paths.
