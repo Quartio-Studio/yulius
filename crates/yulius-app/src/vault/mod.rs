@@ -16,6 +16,7 @@ mod runtime;
 mod team;
 mod terminal;
 mod two_factor;
+mod verify;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

@@ -14,6 +14,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   repeats; edited text is kept and the status bar says "Changed on disk". The Explorer's label now
   shortens at its narrowest instead of pushing the Refresh button over the first file tab.
   Co-editing of unsaved text is #566.
+- The Superagent reads the agent vault (SPEC-178, ADR-0144, task #165): `secrets_list` names its
+  project's agent secrets (never values) with guidance for a session outside the proxy, and the
+  new `secret_verify {secret, sha256}`, the Superagent's only, tells whether a value the person holds
+  is a secret's value from its SHA-256: exactly, without a final line break, or with its line
+  breaks as the literal `\n` a multi-line key is stored with. Both run without asking; each
+  distinct check is audited (`vault.agent.verify`).
 - The original prompt reads as written (SPEC-180, fixes #565, task #167). An image inside the
   text was a thumbnail up to 160 px high, so its line grew to the picture's height. It is now the
   composer's one-line `Image N` placeholder, which opens the image. The "Attached files" list
