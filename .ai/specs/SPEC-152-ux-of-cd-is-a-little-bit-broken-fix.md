@@ -53,9 +53,10 @@ card's geometry, the button's emphasis or the promoted commit.
 ## Plan
 
 - [x] Reproduce the defect and find its root cause
-- [ ] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
+- [x] Write the fix spec and the regression test that fails
+- [x] Fix the cause until the regression test and every gate pass
 - [ ] Independent review in a fresh session, findings fixed test-first
+- [ ] Every gate green on the branch merged with current dev
 
 ## Acceptance criteria
 
