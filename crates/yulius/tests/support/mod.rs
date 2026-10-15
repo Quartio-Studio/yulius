@@ -81,6 +81,9 @@ pub struct FakeGitHub {
     /// When set, reading checks waits for it (a slow GitHub); `checks_entered` says a read began.
     pub checks_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
     pub checks_entered: tokio::sync::Notify,
+    /// When set, permission lookups wait for it (a slow GitHub); `access_entered` says one began.
+    pub access_hold: Mutex<Option<Arc<tokio::sync::Notify>>>,
+    pub access_entered: tokio::sync::Notify,
     /// A ruleset like Yulius's own on its integration branch (SPEC-084): a merge needs the
     /// `yulius/ci` status at success on the head and the base in the head (strict "up to date");
     /// a pull request whose head lacks its base reads `behind`.
@@ -159,6 +162,11 @@ impl GitHubPort for FakeGitHub {
         }
         if self.hang_permissions.load(Ordering::SeqCst) {
             std::future::pending::<()>().await;
+        }
+        let hold = self.access_hold.lock().ok().and_then(|h| h.clone());
+        if let Some(hold) = hold {
+            self.access_entered.notify_one();
+            hold.notified().await;
         }
         let key = (login_of(token), format!("{owner}/{name}"));
         let perms = self
@@ -1011,6 +1019,22 @@ impl FakeGitHub {
             *h = Some(Arc::clone(&hold));
         }
         hold
+    }
+    /// Holds every permission lookup until [`FakeGitHub::release_access`].
+    pub fn hold_access(&self) -> Arc<tokio::sync::Notify> {
+        let hold = Arc::new(tokio::sync::Notify::new());
+        if let Ok(mut h) = self.access_hold.lock() {
+            *h = Some(Arc::clone(&hold));
+        }
+        hold
+    }
+    /// Lets the held permission lookups (and every later one) go on.
+    pub fn release_access(&self, hold: &tokio::sync::Notify) {
+        if let Ok(mut h) = self.access_hold.lock() {
+            *h = None;
+        }
+        hold.notify_waiters();
+        hold.notify_one();
     }
     /// Lets the held checks read (and every later one) go on.
     pub fn release_checks(&self, hold: &tokio::sync::Notify) {

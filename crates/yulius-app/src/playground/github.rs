@@ -3,9 +3,11 @@
 //! branch and tag of its bare `origin` is pushed in one atomic push, the clone's `origin` becomes
 //! the repository, and the record's compare-and-set turns it into a GitHub sandbox, which is the
 //! commit point. A failure before it leaves the playground as it was. The bare `origin` is deleted
-//! after it.
+//! after it. The move runs detached from its request, so a client that goes away never leaves it
+//! half done (ADR-0053).
 
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use yulius_contracts::api::sandboxes::Sandbox;
@@ -18,7 +20,7 @@ use crate::auth::AuthContext;
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 use crate::model::{SandboxRecord, Secret};
-use crate::projects::{clone_url, remove_tree};
+use crate::projects::{blocking, clone_url};
 
 impl App {
     /// `POST /api/sandboxes/{sid}/move-to-github` `{name}` (MPG-001..005): moves the playground
@@ -35,26 +37,46 @@ impl App {
         sid: &str,
         name: &str,
     ) -> AppResult<Sandbox> {
+        let (app, ctx) = (Arc::clone(self), ctx.clone());
+        let (sid, name) = (sid.to_owned(), name.trim().to_owned());
+        Self::run_detached(async move { app.move_to_github(&ctx, &sid, &name).await }).await
+    }
+
+    /// [`App::move_playground_to_github`], run to its end whatever happens to the request.
+    async fn move_to_github(
+        self: &Arc<Self>,
+        ctx: &AuthContext,
+        sid: &str,
+        name: &str,
+    ) -> AppResult<Sandbox> {
         let id = SandboxId::parse(sid).map_err(|_| AppError::NotFound)?;
-        let (record, _) = self.require(&ctx.user, &id, Action::Administer).await?;
+        self.require(&ctx.user, &id, Action::Administer).await?;
+        let (owner, _) = self.instance_owner().await.map_err(|err| match err {
+            AppError::Conflict(_) => AppError::Conflict(
+                "connect this instance to GitHub first (Administration → GitHub): a playground \
+                 moves into a repository of the instance's GitHub owner"
+                    .into(),
+            ),
+            other => other,
+        })?;
+        // Merges of this playground hold the same pass: none lands on `origin` during the move.
+        let pass = self.armed_pass(&id);
+        let _pass = pass.lock().await;
+        // Read under the pass: a move or merge that held it before may have changed it.
+        let record = self
+            .deps
+            .store
+            .sandbox(&id)
+            .await?
+            .filter(|s| s.removed_at.is_none())
+            .ok_or(AppError::NotFound)?;
         if !record.is_playground() {
             return Err(AppError::Conflict(format!(
                 "{}/{} is already a GitHub repository's sandbox; only a playground moves to GitHub",
                 record.repo_owner, record.repo_name
             )));
         }
-        let (owner, _) = self.instance_owner().await.map_err(|_| {
-            AppError::Conflict(
-                "connect this instance to GitHub first (Administration → GitHub): a playground \
-                 moves into a repository of the instance's GitHub owner"
-                    .into(),
-            )
-        })?;
-        let name = name.trim();
-        // Merges of this playground hold the same pass: none lands on `origin` during the move.
-        let pass = self.armed_pass(&id);
-        let _pass = pass.lock().await;
-        self.refuse_live_tasks(&id).await?;
+        self.refuse_busy(&id).await?;
         if let Some(existing) = self.deps.store.sandbox_by_repo(&owner, name).await? {
             return Err(AppError::Conflict(format!(
                 "{owner}/{name} is already the sandbox /s/{}",
@@ -78,6 +100,11 @@ impl App {
         self.push_playground(&origin, &url, &token, &owner, &name)
             .await?;
         self.repoint_clone(&record, &url, &token).await?;
+        // Again before the commit point: a task may have started during the push.
+        if let Err(err) = self.refuse_busy(&id).await {
+            self.restore_origin(&record).await;
+            return Err(err);
+        }
         let repo_id = (repo.id > 0).then_some(repo.id);
         let recorded = self
             .deps
@@ -97,9 +124,11 @@ impl App {
             self.restore_origin(&record).await;
             return Err(err);
         }
-        // Its code is on GitHub now: the server's copy goes, as a purge would delete it.
-        remove_tree(origin).await;
-        self.deps
+        // The move is done. Its code is on GitHub now: the server's copy goes, as a purge would
+        // delete it. What follows only reports it, and never turns it into an error.
+        delete_origin(origin).await;
+        if let Err(err) = self
+            .deps
             .store
             .audit(
                 self.now(),
@@ -108,7 +137,10 @@ impl App {
                 Some(id.as_str()),
                 Some(&format!("{} → {owner}/{name}", record.slug)),
             )
-            .await?;
+            .await
+        {
+            tracing::warn!(sandbox = %id, error = %err, "could not audit a playground's move to GitHub");
+        }
         // Access mirrors GitHub now: every viewer reads its sandboxes again.
         self.publish_resync(None);
         let moved = self
@@ -124,10 +156,23 @@ impl App {
         self.sandbox_view(&moved, level).await
     }
 
-    /// Refuses the move while a task of the sandbox is live or queued (MPG-005): its agent was
-    /// started, or is about to start, with a playground's briefing, tools and credentials. A
-    /// chained or prepared task starts later, as a GitHub task.
-    async fn refuse_live_tasks(&self, id: &SandboxId) -> AppResult<()> {
+    /// Refuses the move while a task of the sandbox is live or queued, or a CI run of it is
+    /// (MPG-005): the agent was started, or is about to start, with a playground's briefing, tools
+    /// and credentials, and the run tests a commit that may exist only on this server. A chained
+    /// or prepared task starts later, as a GitHub task.
+    async fn refuse_busy(&self, id: &SandboxId) -> AppResult<()> {
+        let testing = self
+            .deps
+            .store
+            .active_ci_runs()
+            .await?
+            .iter()
+            .any(|run| run.sandbox_id == *id);
+        if testing {
+            return Err(AppError::Conflict(
+                "Yulius CI is testing this playground: move it once its run ended".into(),
+            ));
+        }
         let mut live: Vec<u32> = self
             .deps
             .store
@@ -159,8 +204,8 @@ impl App {
     }
 
     /// Pushes every branch and tag of the playground's `origin` to `url` in one atomic push, when
-    /// the repository is empty. A repository that already holds exactly them (a move that failed
-    /// after its push) takes nothing more (MPG-002).
+    /// the repository is empty. A repository that holds only them, at their commits or behind
+    /// them (a move that failed after its push), is brought up to date (MPG-002).
     async fn push_playground(
         &self,
         origin: &Path,
@@ -174,11 +219,28 @@ impl App {
             .remote_refs(origin, &origin.to_string_lossy(), &no_token())
             .await?;
         let theirs = git.remote_refs(origin, url, token).await?;
-        if theirs.is_empty() {
-            return git.push_all_refs(origin, url, token).await;
-        }
         if theirs == ours {
             return Ok(());
+        }
+        // An earlier move that failed after its push left GitHub with the playground's refs as
+        // they were; merges since only moved them forward, and the push fast-forwards them.
+        let ours: HashMap<&str, &str> = ours
+            .iter()
+            .map(|(name, sha)| (name.as_str(), sha.as_str()))
+            .collect();
+        let mut behind = true;
+        for (name, sha) in &theirs {
+            behind = match ours.get(name.as_str()) {
+                Some(our) if *our == sha => true,
+                Some(our) => git.is_ancestor(origin, sha, our).await.unwrap_or(false),
+                None => false,
+            };
+            if !behind {
+                break;
+            }
+        }
+        if behind {
+            return git.push_all_refs(origin, url, token).await;
         }
         Err(AppError::Conflict(format!(
             "{owner}/{name} is not empty ({} on GitHub); a playground moves only into an empty \
@@ -224,5 +286,18 @@ fn plural_refs(count: usize) -> String {
         "1 branch or tag".to_owned()
     } else {
         format!("{count} branches and tags")
+    }
+}
+
+/// Deletes a moved playground's bare `origin`; a failure is logged, the move stays done.
+async fn delete_origin(origin: PathBuf) {
+    let path = origin.clone();
+    let removed = blocking(move || match std::fs::remove_dir_all(&path) {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(AppError::internal(err)),
+        _ => Ok(()),
+    })
+    .await;
+    if let Err(err) = removed {
+        tracing::warn!(origin = %origin.display(), error = %err, "could not delete a moved playground's origin");
     }
 }

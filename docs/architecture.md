@@ -215,7 +215,8 @@ A playground moves to GitHub
 ([SPEC-176](../.ai/specs/SPEC-176-fix-410-move-a-playground-to-a-github-re.md),
 [decision 0142](decisions/0142-a-playground-moves-into-an-empty-github-repository.md)) into an empty
 repository of the instance owner that its mover could import (`admin` or `maintain` there; the
-superadmin: one the App can access). While no task of it is live or queued, and holding the
+superadmin: one the App can access). Detached from its request, while no task of it is live or
+queued and no CI run of it is active, and holding the
 sandbox's merge pass, Yulius pushes every branch and tag of `origin` to it in one atomic push with
 the installation token, points the clone's `origin` at it and fetches, then writes the GitHub owner,
 name and repository id into the record in one compare-and-set (the commit point; a failure before

@@ -14,10 +14,14 @@ use serde_json::{Value, json};
 use support::repos::git;
 use support::{Creds, Harness, HarnessOptions, TestResult, call, harness_with};
 use yulius::wiring::git::GitAdapter;
+use yulius_app::ci::CiRunRecord;
 use yulius_app::ports::github::GhRepo;
 use yulius_app::ports::store::{SandboxStore, TaskStore};
+use yulius_app::ports::store_ext::CiStore;
+use yulius_domain::ci::{CiRef, GateSource, RunState};
 use yulius_domain::ids::{SandboxId, TaskId};
 use yulius_domain::task::TaskStatus;
+use yulius_domain::time::Timestamp;
 
 type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -348,9 +352,7 @@ async fn a_repository_that_is_not_empty_is_refused() -> TestResult {
     assert_as_it_was(&w, &sandbox, &origin, &before).await
 }
 
-/// MPG-005, MPG-002: a push GitHub refuses changes nothing; once it goes through, the move
-/// completes, and a repository holding exactly the playground's refs (a move that failed after
-/// its push) is taken as it is.
+/// MPG-005: a push GitHub refuses changes nothing.
 #[tokio::test]
 async fn a_failed_push_leaves_the_playground_as_it_was() -> TestResult {
     let w = world().await?;
@@ -367,7 +369,7 @@ async fn a_failed_push_leaves_the_playground_as_it_was() -> TestResult {
 
     let failed = w.move_it(&w.alice, &sandbox, "alices-lab").await?;
     assert!(
-        failed.status.is_server_error() || failed.status == StatusCode::BAD_GATEWAY,
+        failed.status.is_server_error(),
         "{:?} {:?}",
         failed.status,
         failed.body
@@ -440,4 +442,197 @@ async fn a_live_task_holds_the_move() -> TestResult {
     assert!(!text.contains(&format!("#{}", prepared.number)), "{text}");
     assert!(refs(&github)?.is_empty(), "nothing was pushed");
     assert_as_it_was(&w, &sandbox, &origin, &before).await
+}
+
+/// MPG-005 (review round 1): a move that fails after its push (here the clone's fetch: a ref it
+/// must write is locked) points the clone back at its own `origin` and leaves the playground as it
+/// was; once the cause is gone, the move is retried and completes with what GitHub already holds.
+#[tokio::test]
+async fn a_move_failing_after_its_push_points_the_clone_back_and_is_retried() -> TestResult {
+    let w = world().await?;
+    let (sandbox, origin) = w.playground(&w.alice, "alices-lab").await?;
+    let before = refs(&origin)?;
+    let github = w.empty_repository("alices-lab")?;
+    w.h.github.set_perm(
+        "alice",
+        &format!("{OWNER}/alices-lab"),
+        support::perms("admin"),
+    );
+    let lock = w
+        .clone_of(&sandbox)?
+        .join(".git/refs/remotes/origin/feat/1-idea.lock");
+    std::fs::create_dir_all(lock.parent().ok_or("parent")?)?;
+    std::fs::write(&lock, "")?;
+
+    let failed = w.move_it(&w.alice, &sandbox, "alices-lab").await?;
+    assert!(
+        failed.status.is_server_error(),
+        "{:?} {:?}",
+        failed.status,
+        failed.body
+    );
+    assert_eq!(refs(&github)?, before, "the push went through");
+    assert_as_it_was(&w, &sandbox, &origin, &before).await?;
+
+    std::fs::remove_file(&lock)?;
+    let moved = w.move_it(&w.alice, &sandbox, "alices-lab").await?;
+    assert_eq!(moved.status, StatusCode::OK, "{:?}", moved.body);
+    assert!(!w.record(&sandbox).await?.is_playground());
+    assert!(!origin.exists());
+    Ok(())
+}
+
+/// MPG-002 (review round 1): a playground that moved on after a failed move (a merge landed) is
+/// still taken by its repository: GitHub's refs are behind the playground's, and the non-forcing
+/// push fast-forwards them.
+#[tokio::test]
+async fn a_retry_after_the_playground_moved_on_fast_forwards() -> TestResult {
+    let w = world().await?;
+    let (sandbox, origin) = w.playground(&w.alice, "alices-lab").await?;
+    let github = w.empty_repository("alices-lab")?;
+    w.h.github.set_perm(
+        "alice",
+        &format!("{OWNER}/alices-lab"),
+        support::perms("admin"),
+    );
+    git(
+        &origin,
+        &[
+            "push",
+            "--quiet",
+            &github.to_string_lossy(),
+            "refs/heads/*:refs/heads/*",
+            "refs/tags/*:refs/tags/*",
+        ],
+    )?;
+    // A merge landed on `dev` since.
+    let tree = git(&origin, &["rev-parse", "dev^{tree}"])?;
+    let next = git(
+        &origin,
+        &[
+            "commit-tree",
+            tree.trim(),
+            "-p",
+            "dev",
+            "-m",
+            "feat: landed after",
+        ],
+    )?;
+    git(&origin, &["update-ref", "refs/heads/dev", next.trim()])?;
+    let before = refs(&origin)?;
+
+    let moved = w.move_it(&w.alice, &sandbox, "alices-lab").await?;
+    assert_eq!(moved.status, StatusCode::OK, "{:?}", moved.body);
+    assert_eq!(refs(&github)?, before, "GitHub's dev fast-forwarded");
+    Ok(())
+}
+
+/// MPG-001 (review round 1): a repository another sandbox holds is refused.
+#[tokio::test]
+async fn a_repository_that_is_already_a_sandbox_is_refused() -> TestResult {
+    let w = world().await?;
+    let (sandbox, origin) = w.playground(&w.alice, "alices-lab").await?;
+    let before = refs(&origin)?;
+    w.empty_repository("alices-lab")?;
+    w.h.github.set_perm(
+        "alice",
+        &format!("{OWNER}/alices-lab"),
+        support::perms("admin"),
+    );
+    let mut other = w.record(&sandbox).await?;
+    other.id = SandboxId::parse("s-other")?;
+    other.slug = "other".into();
+    other.repo_owner = OWNER.into();
+    other.repo_name = "alices-lab".into();
+    other.port_base = 21000;
+    w.h.store.insert_sandbox(&other).await?;
+
+    let refused = w.move_it(&w.alice, &sandbox, "alices-lab").await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{:?}", refused.body);
+    assert!(
+        refused.body.to_string().contains("/s/other"),
+        "{:?}",
+        refused.body
+    );
+    assert_as_it_was(&w, &sandbox, &origin, &before).await
+}
+
+/// MPG-005 (review round 1): a CI run of the playground that is queued or running holds the move:
+/// it tests a commit that may exist only on this server.
+#[tokio::test]
+async fn an_active_ci_run_holds_the_move() -> TestResult {
+    let w = world().await?;
+    let (sandbox, origin) = w.playground(&w.alice, "alices-lab").await?;
+    let before = refs(&origin)?;
+    let github = w.empty_repository("alices-lab")?;
+    w.h.github.set_perm(
+        "alice",
+        &format!("{OWNER}/alices-lab"),
+        support::perms("admin"),
+    );
+    w.h.store
+        .insert_ci_run(
+            &CiRunRecord {
+                id: "ci-task-1".into(),
+                sandbox_id: SandboxId::parse(sandbox["id"].as_str().ok_or("id")?)?,
+                reference: CiRef::Task(1),
+                sha: "abc1234".into(),
+                source: GateSource::ProjectConfig,
+                state: RunState::Running,
+                reason: None,
+                requested_by: "yulius".into(),
+                status_for: None,
+                status_note: None,
+                status_attempts: 0,
+                queued_at: Timestamp(1),
+                started_at: Some(Timestamp(2)),
+                ended_at: None,
+            },
+            &[],
+        )
+        .await?;
+
+    let held = w.move_it(&w.alice, &sandbox, "alices-lab").await?;
+    assert_eq!(held.status, StatusCode::CONFLICT, "{:?}", held.body);
+    assert!(held.body.to_string().contains("CI"), "{:?}", held.body);
+    assert!(refs(&github)?.is_empty(), "nothing was pushed");
+    assert_as_it_was(&w, &sandbox, &origin, &before).await
+}
+
+/// MPG-005 (review round 1): a move outlives its request. The client goes away while the move
+/// waits for GitHub; the move still ends, completed, not half done.
+#[tokio::test]
+async fn a_move_ends_when_its_client_goes_away() -> TestResult {
+    let w = world().await?;
+    let (sandbox, origin) = w.playground(&w.alice, "alices-lab").await?;
+    let before = refs(&origin)?;
+    let github = w.empty_repository("alices-lab")?;
+    w.h.github.set_perm(
+        "alice",
+        &format!("{OWNER}/alices-lab"),
+        support::perms("admin"),
+    );
+    let hold = w.h.github.hold_access();
+    {
+        let request = w.move_it(&w.alice, &sandbox, "alices-lab");
+        tokio::pin!(request);
+        let entered = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            tokio::select! {
+                done = &mut request => Err(format!("the move ended while GitHub was held: {:?}", done.map(|r| r.status).map_err(|e| e.to_string()))),
+                () = w.h.github.access_entered.notified() => Ok(()),
+            }
+        })
+        .await?;
+        entered?;
+        // The request is dropped here: its client went away.
+    }
+    w.h.github.release_access(&hold);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while w.record(&sandbox).await?.is_playground() || origin.exists() {
+        assert!(std::time::Instant::now() < deadline, "the move never ended");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(refs(&github)?, before);
+    Ok(())
 }

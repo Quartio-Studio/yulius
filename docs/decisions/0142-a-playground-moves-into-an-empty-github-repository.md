@@ -25,15 +25,19 @@ the App creates in an organisation gives nobody but the organisation's owners a 
    move. The mover must be an admin of the playground and pass the import check (IMP-002):
    `admin` or `maintain` on that repository on GitHub, or, for the superadmin, a repository the
    App installation can access.
-2. **"Empty" means no branch and no tag**, or exactly the playground's branches and tags at the
-   same commits: a move that failed after its push is retried.
+2. **"Empty" means no branch and no tag**, or only the playground's branches and tags at their
+   commits or behind them: a move that failed after its push is retried, and the non-forcing push
+   fast-forwards what merged since.
 3. **The move runs in this order:** an atomic, non-forcing push of every branch and tag of the
    bare `origin`, with the installation token. Then the clone's `origin` is repointed to the
    repository and fetched. Then a compare-and-set on the sandbox record writes the owner, name and
    repository id, and holds only while it is still a playground. That write is the commit point:
    when it fails, the clone's `origin` is pointed back. Only after it is the bare `origin`
    deleted. The move is audited as `sandbox.moved_to_github`.
-4. **Live or queued tasks hold it** (409), and it holds the sandbox's armed-merge pass. Stopped and
+4. **Live or queued tasks and active CI runs hold it** (409), checked before the push and again
+   before the record update, and it holds the sandbox's armed-merge pass. It runs detached from
+   its request, as a shell start does (ADR-0053), so a client that goes away never leaves it half
+   done. Stopped and
    finished tasks stay and continue as GitHub tasks: their briefing is built per attempt.
 
 ## Alternatives
