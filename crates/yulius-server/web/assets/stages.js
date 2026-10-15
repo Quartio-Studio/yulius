@@ -1,9 +1,12 @@
 // Stages (SPEC-137): the measured parts of a task, a CI run or a CD run, drawn the Dashboard's way
 // (one series colour, recessive grid, a table one click away, hover for the exact figures).
 //
-// - `waterfall(timeline)`: one subject's spans on a shared time axis, nested by their parent, a
-//   row each: what it was, its bar, how long it took. Waits are drawn hatched, failures in the
-//   danger colour with a mark and a word, a span still running reaches "now".
+// - `waterfall(timeline)`: one subject's spans on a shared time axis (ticks from its start, "now"
+//   while it runs, a legend of the bars), nested by their parent, a row each: what it was, its bar,
+//   how long it took. A span's children fold under it (a failed one opens). Waits are drawn
+//   hatched, failures in the danger colour with a mark and a word, a span still running reaches
+//   "now". A CI run's jobs come under "Jobs", each with its wait for a job slot on its own row
+//   (SPEC-165).
 // - `trendChart(trend)`: a stage's daily p50 (the series line) and p90 (dashed), both labelled at
 //   their end and in a legend, with a crosshair and a table.
 
@@ -116,35 +119,72 @@ function outcomeWord(span) {
   return span.outcome || 'ended';
 }
 
-/** Spans in tree order with their depth: a child right after its parent. */
-function ordered(spans) {
-  const keys = new Set(spans.map((s) => s.key));
-  const children = new Map();
-  const roots = [];
-  for (const span of spans) {
-    if (span.parent_key && keys.has(span.parent_key)) {
-      if (!children.has(span.parent_key)) children.set(span.parent_key, []);
-      children.get(span.parent_key).push(span);
-    } else {
-      roots.push(span);
-    }
-  }
-  const out = [];
-  const walk = (span, depth) => {
-    out.push({ span, depth });
-    for (const child of children.get(span.key) || []) walk(child, depth + 1);
-  };
-  roots.forEach((span) => walk(span, 0));
-  return out;
-}
+// A CI job's mark beside its name (SPEC-165 STR-003): its state as an icon with its word.
+const JOB_MARKS = { running: 'refresh', passed: 'check', failed: 'x', error: 'warn', cancelled: 'x' };
 
 const time = (iso) => Date.parse(iso);
+const jobId = (key, prefix) => (key.startsWith(prefix) && key.includes('@') ? key.slice(prefix.length, key.lastIndexOf('@')) : null);
+
+/**
+ * Each CI job's wait for a job slot, by its job span's key (SPEC-165): `ci::exec` records the
+ * wait as `wait:<job id>@…` beside the job's `job:<job id>@…`, so they pair by the job id; a job
+ * requeued waited more than once and takes its last wait before it started.
+ */
+function slotWaits(spans) {
+  const waits = new Map();
+  for (const span of spans) {
+    const id = span.kind === 'wait' && span.name === 'job slot' ? jobId(span.key, 'wait:') : null;
+    if (id) waits.set(id, [...(waits.get(id) || []), span]);
+  }
+  const paired = new Map();
+  for (const span of spans) {
+    const id = span.kind === 'job' ? jobId(span.key, 'job:') : null;
+    const before = (id && waits.get(id) || []).filter((w) => time(w.started_at) <= time(span.started_at));
+    if (before.length) paired.set(span.key, before.reduce((a, b) => (time(b.started_at) > time(a.started_at) ? b : a)));
+  }
+  return paired;
+}
+
+/**
+ * The rows of a list of spans: groups (a CI run's own spans under "Run", its jobs under "Jobs" in
+ * the order they began waiting), each a tree by `parent_key` with a job's slot wait on its row.
+ */
+function grouped(spans, heading) {
+  const waits = slotWaits(spans);
+  const waitKeys = new Set([...waits.values()].map((w) => w.key));
+  const shown = spans.filter((s) => !waitKeys.has(s.key));
+  const keys = new Set(shown.map((s) => s.key));
+  const children = new Map();
+  const roots = [];
+  for (const span of shown) {
+    if (span.parent_key && keys.has(span.parent_key)) children.set(span.parent_key, [...(children.get(span.parent_key) || []), span]);
+    else roots.push(span);
+  }
+  const began = (span) => time((waits.get(span.key) || span).started_at);
+  const jobs = roots.filter((s) => s.kind === 'job' && s.subject_kind === 'ci_run').sort((a, b) => began(a) - began(b));
+  const tree = { children, waits };
+  if (jobs.length === 0) return [{ heading, roots, tree }];
+  return [
+    ...(heading ? [{ heading, roots: [], tree }] : []),
+    { heading: 'Run', roots: roots.filter((s) => !jobs.includes(s)), tree },
+    { heading: 'Jobs', roots: jobs, tree, jobs: true },
+  ];
+}
+
+// Axis steps: the smallest that leaves at most six intervals (SPEC-165 STR-005).
+const SECOND = 1000;
+const MINUTE = 60 * SECOND;
+const HOUR = 60 * MINUTE;
+const TICK_STEPS = [1, 2, 5, 10, 15, 30].map((n) => n * SECOND)
+  .concat([1, 2, 5, 10, 15, 30].map((n) => n * MINUTE), [1, 2, 3, 6, 12, 24, 48, 168].map((n) => n * HOUR));
+const tickStep = (total) => TICK_STEPS.find((step) => total / step <= 6) || total / 6;
 
 /**
  * One subject's spans as a waterfall (and a table). `related` spans (a task's CI runs) follow
- * under their own heading. Empty when nothing was measured.
+ * under their own heading. Empty when nothing was measured. `view` keeps what a person chose
+ * (the spans they opened or closed, the table) across redraws of a running subject.
  */
-export function waterfall(timeline, { now = Date.now(), title = 'Stages' } = {}) {
+export function waterfall(timeline, { now = Date.now(), title = 'Stages', view = { open: new Map(), table: false } } = {}) {
   const spans = (timeline && timeline.spans) || [];
   const related = (timeline && timeline.related) || [];
   const all = [...spans, ...related];
@@ -152,72 +192,140 @@ export function waterfall(timeline, { now = Date.now(), title = 'Stages' } = {})
   const start = Math.min(...all.map((s) => time(s.started_at)));
   const end = Math.max(...all.map((s) => (s.ended_at ? time(s.ended_at) : now)), start + 1);
   const total = end - start;
+  const running = all.some((s) => !s.ended_at);
+  const step = tickStep(total);
+  const at = (ms) => ((ms - start) / total) * 100;
   const tip = h('div', { class: 'chart-tip st-tip', hidden: true });
-  const rows = [];
-  const tableRows = [];
-  const add = (span, depth) => {
+  const groups = [...grouped(spans, null), ...(related.length ? grouped(related, 'CI runs of its pull request') : [])];
+  const used = { wait: false, ran: false, running: false, failed: false };
+  const anyWait = groups.some((g) => g.tree.waits.size > 0);
+
+  const bar = (from, to, classes) => h('span', {
+    class: ['st-bar', ...classes],
+    style: { left: `${at(from)}%`, width: `${Math.max(((to - from) / total) * 100, 0.4)}%` },
+  });
+  // What one span says: its words, how long it took (and waited), its outcome and figures.
+  const describe = (span, inJobs, wait) => {
     const from = time(span.started_at);
     const to = span.ended_at ? time(span.ended_at) : now;
-    const left = ((from - start) / total) * 100;
-    const width = Math.max(((to - from) / total) * 100, 0.4);
-    const failed = FAILED.has(span.outcome);
-    const label = stageLabel(span);
+    const label = inJobs && span.kind === 'job' ? span.name : stageLabel(span);
     const took = span.ended_at ? duration(span.duration_ms) : `${duration(to - from)} so far`;
+    const waited = wait ? duration(time(wait.ended_at || span.started_at) - time(wait.started_at)) : null;
     const figures = figureText(span);
-    const said = `${label}: ${took}, ${outcomeWord(span)}${figures ? ` (${figures})` : ''}`;
-    const barEl = h('span', {
-      class: ['st-bar', WAIT_KINDS.has(span.kind) && 'st-bar-wait', failed && 'st-bar-failed', !span.ended_at && 'st-bar-running', span.source === 'backfilled' && 'st-bar-backfilled'],
-      style: { left: `${left}%`, width: `${width}%` },
-    });
+    const said = `${label}: ${waited ? `waited ${waited} for a job slot, ran ${took}` : took}, ${outcomeWord(span)}${figures ? ` (${figures})` : ''}`;
+    return { from, to, label, took, waited, figures, said, failed: FAILED.has(span.outcome) };
+  };
+
+  const rowOf = (span, depth, { inJobs, wait, kids, open, toggle }) => {
+    const d = describe(span, inJobs, wait);
+    const isWait = WAIT_KINDS.has(span.kind);
+    used.wait ||= isWait || Boolean(wait);
+    used.failed ||= d.failed;
+    used.running ||= !span.ended_at && !isWait;
+    used.ran ||= Boolean(span.ended_at) && !d.failed && !isWait;
+    const bars = [
+      wait ? bar(time(wait.started_at), d.from, ['st-bar-wait', 'st-bar-lead']) : null,
+      bar(d.from, d.to, [isWait && 'st-bar-wait', d.failed && 'st-bar-failed', !span.ended_at && 'st-bar-running', span.source === 'backfilled' && 'st-bar-backfilled', wait && 'st-bar-tail']),
+    ];
     const show = (event) => {
-      setChildren(tip, h('span', null, `${label}${span.source === 'backfilled' ? ' · backfilled' : ''}`), h('strong', null, took), figures ? h('span', null, figures) : null);
+      setChildren(tip, h('span', null, `${d.label}${span.source === 'backfilled' ? ' · backfilled' : ''}`), h('strong', null, d.took),
+        d.waited ? h('span', null, `waited ${d.waited} for a job slot`) : null, d.figures ? h('span', null, d.figures) : null);
       tip.hidden = false;
       const box = tip.parentElement.getBoundingClientRect();
       tip.style.left = `${Math.max(80, Math.min(box.width - 80, event.clientX - box.left))}px`;
       tip.style.top = `${event.clientY - box.top}px`;
     };
-    const row = h('li', { class: 'st-row', title: said, onPointerMove: show, onPointerLeave: () => { tip.hidden = true; } },
-      h('span', { class: 'st-name', style: { paddingLeft: `${depth * 14}px` } },
-        failed ? icon('x', { size: 12, label: 'failed' }) : null,
-        h('span', { class: 'st-name-text' }, label)),
-      h('span', { class: 'st-track', 'aria-hidden': 'true' }, barEl),
-      h('span', { class: ['st-took', failed && 'st-took-failed'] }, took));
-    rows.push(row);
-    tableRows.push(h('tr', null,
-      h('td', null, h('span', { style: { paddingLeft: `${depth * 14}px` } }, label)),
-      h('td', null, new Date(from).toLocaleTimeString()),
-      h('td', { class: 'num' }, took),
-      h('td', null, outcomeWord(span)),
-      h('td', null, [figures, span.source === 'backfilled' ? 'backfilled' : ''].filter(Boolean).join(' · '))));
+    const word = outcomeWord(span);
+    const mark = span.kind === 'job' && JOB_MARKS[word] ? icon(JOB_MARKS[word], { size: 12, label: word })
+      : d.failed ? icon('x', { size: 12, label: 'failed' }) : null;
+    const name = [
+      kids ? icon(open ? 'down' : 'right', { size: 12 }) : h('span', { class: 'st-fold-space', 'aria-hidden': 'true' }),
+      mark ? h('span', { class: ['st-mark', `st-mark-${d.failed ? 'failed' : word}`] }, mark) : null,
+      h('span', { class: 'st-name-text' }, d.label),
+      kids ? h('span', { class: 'st-count' }, `${kids} ${kids === 1 ? 'stage' : 'stages'}`) : null,
+    ];
+    return h('li', { class: ['st-row', span.kind === 'job' && inJobs && 'st-job'], title: d.said, onPointerMove: show, onPointerLeave: () => { tip.hidden = true; } },
+      kids
+        ? h('button', { type: 'button', class: 'st-name st-fold', 'aria-expanded': String(open), style: { paddingLeft: `${depth * 14}px` }, onClick: toggle }, name)
+        : h('span', { class: 'st-name', style: { paddingLeft: `${depth * 14}px` } }, name),
+      h('span', { class: 'st-track', 'aria-hidden': 'true' }, bars),
+      h('span', { class: ['st-took', d.failed && 'st-took-failed'] }, h('span', null, d.took), d.waited ? h('span', { class: 'st-waited' }, `waited ${d.waited}`) : null));
   };
-  ordered(spans).forEach(({ span, depth }) => add(span, depth));
-  if (related.length) {
-    rows.push(h('li', { class: 'st-group' }, 'CI runs of its pull request'));
-    tableRows.push(h('tr', null, h('th', { colspan: 5, scope: 'rowgroup' }, 'CI runs of its pull request')));
-    ordered(related).forEach(({ span, depth }) => add(span, depth));
+
+  const list = h('ol', { class: 'st-rows', role: 'list', 'aria-label': `${title}: ${duration(total)} from the first start to the last end` });
+  const draw = () => {
+    const rows = [];
+    const walk = (group, span, depth) => {
+      const kids = (group.tree.children.get(span.key) || []).length;
+      const open = kids > 0 && (view.open.has(span.key) ? view.open.get(span.key) : FAILED.has(span.outcome));
+      rows.push(rowOf(span, depth, {
+        inJobs: Boolean(group.jobs), wait: group.tree.waits.get(span.key), kids, open,
+        toggle: () => { view.open.set(span.key, !open); draw(); list.querySelector(`[data-key="${CSS.escape(span.key)}"] .st-fold`)?.focus(); },
+      }));
+      rows[rows.length - 1].dataset.key = span.key;
+      if (open) for (const child of group.tree.children.get(span.key)) walk(group, child, depth + 1);
+    };
+    for (const group of groups) {
+      if (group.heading) rows.push(h('li', { class: 'st-group' }, group.heading));
+      group.roots.forEach((span) => walk(group, span, 0));
+    }
+    setChildren(list, rows);
+  };
+  draw();
+
+  // The table: every span, folded or not, in the same groups.
+  const tableRows = [];
+  const tableRow = (group, span, depth) => {
+    const wait = group.tree.waits.get(span.key);
+    const d = describe(span, Boolean(group.jobs), wait);
+    tableRows.push(h('tr', null,
+      h('td', null, h('span', { style: { paddingLeft: `${depth * 14}px` } }, d.label)),
+      h('td', null, new Date(d.from).toLocaleTimeString()),
+      anyWait ? h('td', { class: 'num st-waited' }, d.waited || '') : null,
+      h('td', { class: 'num' }, d.took),
+      h('td', null, outcomeWord(span)),
+      h('td', null, [d.figures, span.source === 'backfilled' ? 'backfilled' : ''].filter(Boolean).join(' · '))));
+    for (const child of group.tree.children.get(span.key) || []) tableRow(group, child, depth + 1);
+  };
+  const columns = ['Stage', 'Started', anyWait ? 'Waited' : null, 'Took', 'Outcome', 'Figures'].filter(Boolean);
+  for (const group of groups) {
+    if (group.heading) tableRows.push(h('tr', null, h('th', { colspan: columns.length, scope: 'rowgroup' }, group.heading)));
+    group.roots.forEach((span) => tableRow(group, span, 0));
   }
-  const list = h('ol', { class: 'st-rows', role: 'list', 'aria-label': `${title}: ${duration(total)} from the first start to the last end` }, rows);
-  const table = h('table', { class: 'table st-table', hidden: true },
-    h('thead', null, h('tr', null, ['Stage', 'Started', 'Took', 'Outcome', 'Figures'].map((c, i) => h('th', { class: i === 2 ? 'num' : null }, c)))),
+  const table = h('table', { class: 'table st-table', hidden: !view.table },
+    h('thead', null, h('tr', null, columns.map((c) => h('th', { class: c === 'Took' || c === 'Waited' ? 'num' : null }, c)))),
     h('tbody', null, tableRows));
-  const toggle = h('button', { type: 'button', class: 'btn btn-sm db-table-toggle', 'aria-pressed': 'false', onClick: () => {
-    const on = toggle.getAttribute('aria-pressed') !== 'true';
-    toggle.setAttribute('aria-pressed', String(on));
-    table.hidden = !on;
-    plot.hidden = on;
+
+  // The axis: time from the subject's start, a faint line at each tick, "now" while it runs.
+  const ticks = [];
+  for (let t = 0; at(start + t) < 92; t += step) ticks.push(h('span', { class: 'st-tick', style: { left: `${at(start + t)}%` } }, t === 0 ? '0' : duration(t)));
+  if (running) ticks.push(h('span', { class: 'st-tick st-tick-now', style: { left: '100%' } }, 'now'));
+  const axis = h('div', { class: 'st-axis', 'aria-hidden': 'true' }, h('span'), h('span', { class: 'st-axis-ticks' }, ticks), h('span'));
+  const legend = h('ul', { class: 'st-legend st-bars-legend', 'aria-label': 'What the bars mean' }, [
+    used.wait && ['Waiting', 'st-bar-wait'], used.ran && ['Ran', null], used.running && ['Still running', 'st-bar-running'], used.failed && ['Failed', 'st-bar-failed'],
+  ].filter(Boolean).map(([text, cls]) => h('li', null, h('span', { class: ['st-swatch', cls], 'aria-hidden': 'true' }), text)));
+
+  const plot = h('div', { class: 'st-plot', hidden: view.table, style: { '--st-step': `${(step / total) * 100}%` } }, axis, list, tip);
+  const toggle = h('button', { type: 'button', class: 'btn btn-sm db-table-toggle', 'aria-pressed': String(view.table), onClick: () => {
+    view.table = !view.table;
+    toggle.setAttribute('aria-pressed', String(view.table));
+    table.hidden = !view.table;
+    plot.hidden = view.table;
   } }, icon('tasks', { size: 14 }), 'Table');
-  const plot = h('div', { class: 'st-plot' }, list, tip);
   return h('section', { class: 'st-waterfall', 'aria-label': title },
     h('div', { class: 'st-head' }, h('h3', { class: 'st-title' }, title), h('span', { class: 'muted small' }, `${duration(total)} in all`), h('span', { class: 'spacer' }), toggle),
+    legend,
     timeline.truncated ? h('p', { class: 'muted small' }, 'Only the newest 2,000 stages are shown.') : null,
     plot, table);
 }
 
 const drawn = new WeakMap(); // host → the timeline it shows, so a poll that changed nothing keeps it
+const views = new WeakMap(); // host → what a person opened, closed and toggled there
 
 /**
  * Loads and draws one subject's waterfall into `host` (`subject`: `ci_run:<id>`, …). A timeline
- * that has not changed since the last load is left as it is (its table toggle, its hover).
+ * that has not changed since the last load is left as it is (its table toggle, its hover); one
+ * that has is redrawn with the spans opened or closed and the table as the person left them.
  */
 export async function loadWaterfall(ctx, sandbox, subject, host, options = {}) {
   try {
@@ -226,7 +334,9 @@ export async function loadWaterfall(ctx, sandbox, subject, host, options = {}) {
     const running = [...(timeline.spans || []), ...(timeline.related || [])].some((s) => !s.ended_at);
     if (!running && drawn.get(host) === text && host.firstChild) return;
     drawn.set(host, text);
-    setChildren(host, waterfall(timeline, options));
+    const key = `${sandbox.id} ${subject}`;
+    if (views.get(host)?.key !== key) views.set(host, { key, open: new Map(), table: false });
+    setChildren(host, waterfall(timeline, { ...options, view: views.get(host) }));
   } catch (error) {
     setChildren(host, h('p', { class: 'muted small' }, `Couldn’t load the stages: ${error.message || error}`));
   }

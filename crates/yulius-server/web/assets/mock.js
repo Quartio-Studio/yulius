@@ -2906,8 +2906,35 @@ function stageSpan(subjectKind, subjectId, key, kind, name, startMin, tookMin, e
   };
 }
 
+// A busy running run (SPEC-165, the screenshot of task #155): eight jobs waited 6 to 9 min for a
+// job slot, as `ci::exec` records it (`wait:<job id>@…` beside the job's `job:<job id>@…`), each
+// with its checkout; four are still running.
+const BUSY_JOBS = [
+  ['shared', 6, 0.5], ['engine', 6, null], ['prototypes', 6, 0.15], ['package (gateway)', 6.2, null],
+  ['package (broker)', 6.8, 0.7], ['package (deployer)', 7.8, null], ['package (mcp/browser)', 8.9, 0.7], ['package (mcp/email)', 9.2, null],
+];
+
+function busyTimeline(id) {
+  const s = (...args) => stageSpan('ci_run', id, ...args);
+  const spans = [
+    s('queue@1', 'queue', 'queue', 10, 0.02, { detail: { reference: 'pr/486', reason: null } }),
+    s('run@1', 'run', 'run', 9.98, null, { detail: { reference: 'pr/486', sha: '7c43db6a01e2', requested_by: 'yulius' } }),
+    s('prepare@1', 'prepare', 'commit', 9.98, 0.005),
+  ];
+  BUSY_JOBS.forEach(([name, waited, ran], i) => {
+    const at = 9.95 - waited;
+    const job = `job:j${i}@1`;
+    spans.push(s(`wait:j${i}@1`, 'wait', 'job slot', 9.95, waited, { job: name, outcome: 'started', detail: { cpus: 4, memory_mb: 8192 } }));
+    spans.push(s(job, 'job', name, at, ran, { job: name, detail: ran === null ? {} : { cpu_ms: Math.round(ran * 3 * MIN), memory_peak_mb: 900 } }));
+    spans.push(s(`${job}/checkout`, 'prepare', 'checkout', at, 0.01, { parent_key: job, job: name }));
+    if (name === 'engine') spans.push(s(`${job}/stage:1`, 'stage', 'build', at - 0.01, null, { parent_key: job, job: name }));
+  });
+  return { spans, related: [] };
+}
+
 function mockTimeline(kind, id) {
   const s = (...args) => stageSpan(kind, id, ...args);
+  if (kind === 'ci_run' && id === 'ci_s4') return busyTimeline(id);
   if (kind === 'ci_run') {
     const failed = id === 'ci_s2';
     return { spans: [
@@ -2919,6 +2946,7 @@ function mockTimeline(kind, id) {
       s('job:j1@1/stage:1', 'stage', 'lint', 44.3, 3, { parent_key: 'job:j1@1', job: 'quality' }),
       s('job:j1@1/stage:2', 'stage', 'unit', 41.3, 8.5, { parent_key: 'job:j1@1', job: 'quality', detail: { tests_passed: 1234, tests_flaky: 2, tests_skipped: 3 } }),
       s('job:j2@1', 'job', failed ? 'test (2/2)' : 'e2e', 44.8, 13.8, { job: 'test', outcome: failed ? 'failed' : 'passed', detail: failed ? { exit_code: 1 } : {} }),
+      s('job:j2@1/stage:1', 'stage', 'integration', 44.6, 13.6, { parent_key: 'job:j2@1', job: 'test', outcome: failed ? 'failed' : 'passed', detail: failed ? { tests_passed: 310, tests_failed: 1 } : {} }),
     ], related: [] };
   }
   if (kind === 'cd_run') {
