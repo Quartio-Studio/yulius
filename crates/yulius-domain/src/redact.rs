@@ -525,7 +525,7 @@ pub const INSTALLATION_TOKEN_PREFIX: &str = "ghs_";
 /// least 12 base64url characters beginning `eyJ`; the payload and signature that follow, each
 /// after a `.`, are counted as far as they go, so a cut token is covered too. Shared by every
 /// redactor (the transcripts', Git's and GitHub's), so they agree on where the token ends. Each
-/// segment is read up to [`MAX_TOKEN_CHARS`], as every token rule is: about twice a real token's
+/// segment is read up to the token rules' limit of 1024 characters: about twice a real token's
 /// whole length, so a longer segment (nothing GitHub issues) would keep its rest.
 #[must_use]
 pub fn stateless_installation_token_len(body: &str) -> Option<usize> {
