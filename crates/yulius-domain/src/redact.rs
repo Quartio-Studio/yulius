@@ -516,6 +516,39 @@ fn run_len(bytes: &[u8], from: usize, charset: Charset) -> usize {
         .count()
 }
 
+/// The prefix of a GitHub App installation token.
+pub const INSTALLATION_TOKEN_PREFIX: &str = "ghs_";
+
+/// Length of a stateless GitHub App installation token's body at the start of `body`, the text
+/// right after [`INSTALLATION_TOKEN_PREFIX`]: `<APPID>_<JWT>` (GitHub's format since 2026-10-02,
+/// about 520 characters). `None` unless `body` starts with digits, `_` and a JWT header of at
+/// least 12 base64url characters beginning `eyJ`; the payload and signature that follow, each
+/// after a `.`, are counted as far as they go, so a cut token is covered too. Shared by every
+/// redactor (the transcripts', Git's and GitHub's), so they agree on where the token ends. Each
+/// segment is read up to the token rules' limit of 1024 characters: about twice a real token's
+/// whole length, so a longer segment (nothing GitHub issues) would keep its rest.
+#[must_use]
+pub fn stateless_installation_token_len(body: &str) -> Option<usize> {
+    let bytes = body.as_bytes();
+    let app_id = bytes.iter().take_while(|b| b.is_ascii_digit()).count();
+    if app_id == 0 || !body[app_id..].starts_with("_eyJ") {
+        return None;
+    }
+    let header = app_id + 1;
+    let mut end = header + run_len(bytes, header, Charset::Base64Url);
+    if end - header < 12 {
+        return None;
+    }
+    for _ in 0..2 {
+        let len = run_len(bytes, end + 1, Charset::Base64Url);
+        if bytes.get(end) != Some(&b'.') || len == 0 {
+            break;
+        }
+        end += 1 + len;
+    }
+    Some(end)
+}
+
 /// One pass over word starts: provider tokens by prefix (dispatched on the first byte) and
 /// `Bearer`/`Basic` authorization values.
 fn detect_tokens(text: &str, spans: &mut Vec<Span>) {
@@ -528,6 +561,17 @@ fn detect_tokens(text: &str, spans: &mut Vec<Span>) {
         let rest = &text[start..];
         if matches!(first, b'b' | b'B') {
             authorization_at(text, start, spans);
+        }
+        if let Some(body) = rest.strip_prefix(INSTALLATION_TOKEN_PREFIX)
+            && let Some(len) = stateless_installation_token_len(body)
+        {
+            spans.push(Span {
+                start,
+                end: start + INSTALLATION_TOKEN_PREFIX.len() + len,
+                rule: Rule::GithubToken,
+                label: INSTALLATION_TOKEN_PREFIX.to_owned(),
+            });
+            continue;
         }
         for rule in TOKEN_RULES {
             if rule.prefix.as_bytes()[0] != first || !rest.starts_with(rule.prefix) {
@@ -1069,10 +1113,72 @@ mod tests {
         }
     }
 
+    /// A stateless GitHub App installation token (`ghs_<APPID>_<JWT>`, about 520 characters
+    /// since GitHub's 2026-10-02 rollout), built at run time.
+    fn stateless_installation_token() -> String {
+        format!(
+            "ghs_1234567_eyJ{}.eyJ{}.{}",
+            "hbGciOiJSUzI1NiJ9".repeat(4),
+            "pc3MiOiIxMjM0NTY3In0".repeat(12),
+            "c2lnbmF0dXJl_-".repeat(16)
+        )
+    }
+
+    /// #424: the app id stopped the old `ghs_` rule short of its 36 characters, and the `_`
+    /// before `eyJ` kept the JWT rule off, so the whole token was kept.
+    #[test]
+    fn a_stateless_installation_token_is_redacted_whole() {
+        let secret = stateless_installation_token();
+        for text in [
+            format!("deploy {secret}. done"),
+            format!("GH_TOKEN={secret}\nnext"),
+        ] {
+            let Some(out) = redact(&text) else {
+                panic!("not redacted: {text}");
+            };
+            assert!(!out.text.contains("1234567"), "{}", out.text);
+            assert!(!out.text.contains("eyJ"), "{}", out.text);
+            assert!(!out.text.contains("c2ln"), "{}", out.text);
+            assert!(
+                out.findings
+                    .iter()
+                    .any(|f| f.rule == Rule::GithubToken && f.label == "ghs_"),
+                "{:?}",
+                out.findings
+            );
+        }
+        assert_eq!(
+            redacted(&format!("deploy {secret}. done")),
+            "deploy [REDACTED:github-token]. done"
+        );
+    }
+
+    #[test]
+    fn the_stateless_shape_needs_an_app_id_and_a_jwt_header() {
+        assert_eq!(
+            stateless_installation_token_len(&stateless_installation_token()["ghs_".len()..]),
+            Some(stateless_installation_token().len() - "ghs_".len())
+        );
+        for body in [
+            "1234567_eyJshort",
+            "app_eyJhbGciOiJSUzI1NiJ9",
+            "_eyJhbGciOiJSUzI1NiJ9",
+            "1234567_abcdefghijklmnop",
+        ] {
+            assert_eq!(stateless_installation_token_len(body), None, "{body}");
+        }
+        // A cut token is redacted as far as it goes, and a trailing full stop is kept.
+        assert_eq!(
+            stateless_installation_token_len("12_eyJhbGciOiJSUzI1NiJ9."),
+            Some("12_eyJhbGciOiJSUzI1NiJ9".len())
+        );
+    }
+
     #[test]
     fn near_misses_and_ordinary_text_are_left_alone() {
         for text in [
             "ghp_short",
+            "ghs_1234567_notatoken and ghs_app_eyJhbGciOiJSUzI1NiJ9",
             "the task-runner uses sk-learn style names",
             "AKIAIOSFODNN7EXAMPLEX is too long for an AWS key id",
             "token = newToken",

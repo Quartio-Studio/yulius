@@ -59,6 +59,8 @@ pub struct FakeGitHub {
     pub checks_error: Mutex<Option<AppError>>,
     /// The next retitles of pull requests fail with these errors, one each, in order.
     pub retitle_errors: Mutex<Vec<AppError>>,
+    /// While set, opening a pull request fails with this message (SPEC-139).
+    pub create_pull_error: Mutex<Option<String>>,
     /// Repository side of PRs and refs; without it PR heads are unknown.
     pub remote: Mutex<Option<Arc<dyn FakeRemote>>>,
     /// Recorded state-changing calls (`create_pull …`, `merge_pull …`, `fast_forward …`).
@@ -271,6 +273,9 @@ impl GitHubPort for FakeGitHub {
         repo: &str,
         pull: &NewPull,
     ) -> AppResult<GhPull> {
+        if let Some(message) = self.create_pull_error.lock().ok().and_then(|e| e.clone()) {
+            return Err(AppError::Upstream(message));
+        }
         let head_sha = self
             .remote()
             .and_then(|r| r.branch_sha(&pull.head))

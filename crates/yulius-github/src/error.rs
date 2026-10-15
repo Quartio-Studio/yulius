@@ -2,11 +2,14 @@
 
 use std::time::Duration;
 
+use yulius_domain::redact::{INSTALLATION_TOKEN_PREFIX, stateless_installation_token_len};
+
 /// A GitHub adapter failure.
 ///
 /// Upstream messages are truncated and scrubbed: known request credentials are removed
-/// verbatim and GitHub token literals (`ghs_…`, `ghu_…`, `github_pat_…`) and JWT-shaped
-/// strings are replaced by `[redacted]`.
+/// verbatim and GitHub token literals (`ghs_…`, including whole stateless installation tokens
+/// `ghs_<APPID>_<JWT>`, `ghu_…`, `github_pat_…`) and JWT-shaped strings are replaced by
+/// `[redacted]`.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum GitHubError {
@@ -83,7 +86,9 @@ pub enum GitHubError {
     InvalidKey,
 }
 
-const TOKEN_PREFIXES: &[&str] = &["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"];
+/// `ghs_` first: a stateless installation token is removed whole before another prefix found
+/// inside its base64url payload or signature could cut it.
+const TOKEN_PREFIXES: &[&str] = &["ghs_", "ghp_", "gho_", "ghu_", "ghr_", "github_pat_"];
 const MAX_MESSAGE: usize = 300;
 const REDACTED: &str = "[redacted]";
 
@@ -101,9 +106,15 @@ pub(crate) fn scrub(text: &str, known: &[&str]) -> String {
         while let Some(found) = out[search_from..].find(prefix) {
             let start = search_from + found;
             let tail = &out[start + prefix.len()..];
-            let len = tail
-                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-                .unwrap_or(tail.len());
+            let stateless = if *prefix == INSTALLATION_TOKEN_PREFIX {
+                stateless_installation_token_len(tail)
+            } else {
+                None
+            };
+            let len = stateless.unwrap_or_else(|| {
+                tail.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .unwrap_or(tail.len())
+            });
             if len == 0 {
                 search_from = start + prefix.len();
                 continue;
@@ -162,6 +173,36 @@ mod tests {
         assert!(
             clean.starts_with("Bad credentials for [redacted]"),
             "{clean}"
+        );
+    }
+
+    /// #424: a stateless installation token (`ghs_<APPID>_<JWT>`) is removed whole; its
+    /// payload and signature used to survive as a two-segment remainder.
+    #[test]
+    fn scrubs_a_whole_stateless_installation_token() {
+        let token = format!(
+            "ghs_1234567_eyJ{}.eyJ{}.{}",
+            "hbGciOiJSUzI1NiJ9".repeat(2),
+            "pc3MiOiIxIn0".repeat(4),
+            "c2lnbmF0dXJl_-".repeat(4)
+        );
+        let clean = scrub(&format!("Bad credentials for {token} (installation)"), &[]);
+        assert_eq!(clean, "Bad credentials for [redacted] (installation)");
+    }
+
+    /// Review of SPEC-138: a payload that happens to hold another prefix (`ghu_`) is not cut
+    /// there, leaving the rest of the token.
+    #[test]
+    fn scrubs_a_stateless_token_holding_another_prefix_whole() {
+        let token = format!(
+            "ghs_1234567_eyJ{}.eyJpc3MiOiIxghu_AB-{}.{}",
+            "hbGciOiJSUzI1NiJ9".repeat(2),
+            "PAYLOADSECRET".repeat(3),
+            "SIGNATURESECRET_-gho_x".repeat(3)
+        );
+        assert_eq!(
+            scrub(&format!("Bad credentials for {token} (installation)"), &[]),
+            "Bad credentials for [redacted] (installation)"
         );
     }
 

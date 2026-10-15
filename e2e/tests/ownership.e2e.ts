@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock, mockReady } from './support.ts';
+import { axeViolations, failOnPageErrors, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -9,9 +9,7 @@ failOnPageErrors();
 // in as mkarp: product #3 is anna-q's, studio #12 mkarp's.
 
 type Mocked = { __yuliusMock: { touchTask: (sid: string, n: number, c: object) => void } };
-// The mock installs itself after its module loads, which can follow `app.open`: wait for it.
 const touch = async (browser: Browser, sandbox: string, number: number, changes: object) => {
-  await mockReady(browser);
   await browser.evaluate(([s, n, c]) => (window as unknown as Mocked).__yuliusMock.touchTask(s as string, n as number, c as object), [sandbox, number, changes]);
 };
 
