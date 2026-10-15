@@ -2271,3 +2271,176 @@ async fn a_cli_playground_counts_toward_the_ten() -> TestResult {
     assert!(playgrounds_named(&h, "shop").await?.is_empty());
     Ok(())
 }
+
+// ------------------------------------------------- purging a removed playground (SPEC-171)
+
+async fn purge(h: &Harness, creds: &Creds, sid: &str) -> BoxResult<support::Resp> {
+    call(
+        &h.router,
+        Method::POST,
+        &format!("/api/sandboxes/{sid}/purge"),
+        None,
+        creds,
+    )
+    .await
+}
+
+/// The audit actions recorded on a sandbox, oldest first.
+async fn audit_actions(h: &Harness, sid: &str) -> BoxResult<Vec<String>> {
+    use yulius_app::ports::store_ext::AutomationStore;
+    let mut entries = h.store.automation_audit(sid, 100).await?;
+    entries.reverse();
+    Ok(entries.into_iter().map(|e| e.action).collect())
+}
+
+/// SPEC-171 PGL-006: the purge of a removed playground deletes nothing while a process of its
+/// sandbox runs (here: an agent run still ending after the removal stopped its task), and
+/// deletes `origin` and the sandbox directory on the first round after it ended.
+#[tokio::test]
+async fn a_purge_waits_while_a_process_of_the_sandbox_runs() -> TestResult {
+    use yulius_app::ports::store::{TaskStore, UserStore};
+    let (h, owner) = world().await?;
+    let made = from_template(&h, &owner, "shop").await?;
+    let sid = made.body["id"].as_str().ok_or("id")?.to_owned();
+    let (origin, dir) = (origin_of(&h, &made.body), sandbox_dir(&h, &made.body));
+    let creator = h.store.superadmin().await?.ok_or("superadmin")?.id;
+    support::seed_task(
+        &h,
+        "t1",
+        &sid,
+        creator.as_str(),
+        yulius_domain::task::TaskStatus::Closed,
+        None,
+    )
+    .await?;
+    support::seed_live_attempt(&h, "t1", "tok-t1").await?;
+
+    let asked = purge(&h, &owner, &sid).await?;
+    assert_eq!(asked.status, StatusCode::OK, "{:?}", asked.body);
+    assert_eq!(asked.body["state"], "waiting", "{:?}", asked.body);
+    assert_eq!(
+        asked.body["waiting_for"][0], "1 agent run",
+        "{:?}",
+        asked.body
+    );
+    assert!(
+        origin.exists() && dir.exists(),
+        "nothing is deleted while a run lives"
+    );
+    // The playground is removed at once: nobody sees it any more.
+    let listed = call(&h.router, Method::GET, "/api/sandboxes", None, &owner).await?;
+    assert!(!listed.body.to_string().contains(&sid), "{:?}", listed.body);
+    assert_eq!(h.app.run_purges().await, 0);
+    assert!(
+        origin.exists() && dir.exists(),
+        "a round while it runs deletes nothing"
+    );
+
+    let attempt = yulius_domain::ids::AttemptId::parse("a-t1")?;
+    assert!(
+        h.store
+            .transition_attempt(
+                &attempt,
+                yulius_domain::task::AttemptState::Exited,
+                &yulius_app::ports::store::AttemptUpdate::default(),
+            )
+            .await?
+    );
+    assert_eq!(h.app.run_purges().await, 1);
+    assert!(
+        !origin.exists() && !dir.exists(),
+        "deleted once nothing runs"
+    );
+    assert_eq!(h.app.run_purges().await, 0, "a purge is done once");
+    let actions = audit_actions(&h, &sid).await?;
+    assert!(
+        actions.ends_with(&[
+            "sandbox.removed".into(),
+            "sandbox.purge_requested".into(),
+            "sandbox.purged".into()
+        ]),
+        "{actions:?}"
+    );
+    // Task records stay.
+    assert!(
+        h.store
+            .task(&yulius_domain::ids::TaskId::parse("t1")?)
+            .await?
+            .is_some()
+    );
+    Ok(())
+}
+
+/// SPEC-171 PGL-005, PGL-007: purging on removal deletes the code at once when nothing runs, and
+/// its maker may make another playground at the limit of 10.
+#[tokio::test]
+async fn purging_a_playground_deletes_its_code_once_nothing_runs() -> TestResult {
+    let (h, _owner) = world().await?;
+    support::configure_github_app(&h).await?;
+    let alice = support::seed_github_user(&h, "u-alice", "alice").await?;
+    let mut last = Value::Null;
+    for n in 0..10 {
+        let made = from_template(&h, &alice, &format!("lab {n}")).await?;
+        assert_eq!(made.status, StatusCode::CREATED, "{:?}", made.body);
+        last = made.body;
+    }
+    let sid = last["id"].as_str().ok_or("id")?;
+    let purged = purge(&h, &alice, sid).await?;
+    assert_eq!(purged.status, StatusCode::OK, "{:?}", purged.body);
+    assert_eq!(purged.body["state"], "purged", "{:?}", purged.body);
+    assert!(!origin_of(&h, &last).exists());
+    assert!(!sandbox_dir(&h, &last).exists());
+    let again = from_template(&h, &alice, "lab again").await?;
+    assert_eq!(again.status, StatusCode::CREATED, "{:?}", again.body);
+    // The removal's export of its tasks stays.
+    let exports = std::fs::read_dir(h.app.config.data_dir.join("exports"))?.count();
+    assert!(exports >= 1);
+    no_github_writes(&h)?;
+    Ok(())
+}
+
+/// SPEC-171 PGL-005: a GitHub sandbox's code is on GitHub and is never purged; nothing is removed.
+#[tokio::test]
+async fn a_github_sandbox_is_never_purged() -> TestResult {
+    let (h, owner) = world().await?;
+    let creator = {
+        use yulius_app::ports::store::UserStore;
+        h.store.superadmin().await?.ok_or("superadmin")?.id
+    };
+    support::seed_sandbox(&h, "s1", "shop", creator.as_str()).await?;
+    let refused = purge(&h, &owner, "s1").await?;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{:?}", refused.body);
+    let still = call(&h.router, Method::GET, "/api/sandboxes/s1", None, &owner).await?;
+    assert_eq!(still.status, StatusCode::OK, "{:?}", still.body);
+    Ok(())
+}
+
+/// SPEC-171 PGL-005: only an admin of the playground purges it; a removed playground is purged by
+/// the superadmin only (it is invisible to everyone else).
+#[tokio::test]
+async fn only_an_admin_purges_and_the_superadmin_purges_a_removed_one() -> TestResult {
+    let (h, owner) = world().await?;
+    support::configure_github_app(&h).await?;
+    let alice = support::seed_github_user(&h, "u-alice", "alice").await?;
+    let bob = support::seed_github_user(&h, "u-bob", "bob").await?;
+    let made = from_template(&h, &alice, "lab").await?;
+    let sid = made.body["id"].as_str().ok_or("id")?;
+    assert_eq!(purge(&h, &bob, sid).await?.status, StatusCode::NOT_FOUND);
+    assert!(origin_of(&h, &made.body).exists());
+    let removed = call(
+        &h.router,
+        Method::DELETE,
+        &format!("/api/sandboxes/{sid}"),
+        None,
+        &alice,
+    )
+    .await?;
+    assert!(removed.status.is_success(), "{:?}", removed.body);
+    assert_eq!(purge(&h, &alice, sid).await?.status, StatusCode::NOT_FOUND);
+    assert!(origin_of(&h, &made.body).exists());
+    let purged = purge(&h, &owner, sid).await?;
+    assert_eq!(purged.status, StatusCode::OK, "{:?}", purged.body);
+    assert_eq!(purged.body["state"], "purged");
+    assert!(!origin_of(&h, &made.body).exists());
+    Ok(())
+}

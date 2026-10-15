@@ -20,6 +20,7 @@ use crate::projects::{PORT_RANGE_SIZE, Scaffold, profile_view, remove_tree, slug
 
 mod folder;
 mod onboard;
+mod purge;
 
 pub(crate) use onboard::UploadTarget;
 

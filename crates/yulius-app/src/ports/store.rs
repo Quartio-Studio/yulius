@@ -213,6 +213,13 @@ pub trait SandboxStore: Send + Sync {
     /// `<slug>-removed-<removed_at ms>`, freeing it for the same repository added again; `false`
     /// when no such removed sandbox holds it.
     async fn release_removed_slug(&self, slug: &str, owner: &str, name: &str) -> AppResult<bool>;
+    /// Records `by`'s request to purge the playground `id`'s code (SPEC-171); `false` when one
+    /// is already recorded.
+    async fn request_purge(&self, id: &SandboxId, by: &UserId, at: Timestamp) -> AppResult<bool>;
+    /// Sandboxes whose purge was requested and is not done yet, oldest request first.
+    async fn pending_purges(&self) -> AppResult<Vec<SandboxId>>;
+    /// Marks the purge of `id` done.
+    async fn finish_purge(&self, id: &SandboxId, at: Timestamp) -> AppResult<()>;
 }
 
 /// Field updates for a task (only `Some` fields change).

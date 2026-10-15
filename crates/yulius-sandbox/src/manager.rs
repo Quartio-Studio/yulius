@@ -352,6 +352,22 @@ impl Manager {
         }))
     }
 
+    /// Processes running in `sandbox`'s namespaces besides its holder (0 without a live holder;
+    /// 1 when they cannot be counted, so that nothing reads as ended that is not).
+    pub async fn processes(&self, sandbox: &str) -> usize {
+        let record = {
+            let entry = self.entry(sandbox);
+            let state = entry.lock().await;
+            match &state.live {
+                Some(live) => live.record.clone(),
+                None => return 0,
+            }
+        };
+        tokio::task::spawn_blocking(move || Self::runs_in(record.net_ns, record.inner_pid))
+            .await
+            .unwrap_or(1)
+    }
+
     /// Ends a lease taken by [`Manager::prepare`].
     pub async fn release(&self, sandbox: &str) {
         let entry = self.entry(sandbox);
