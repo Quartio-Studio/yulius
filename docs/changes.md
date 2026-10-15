@@ -14,6 +14,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   repeats; edited text is kept and the status bar says "Changed on disk". The Explorer's label now
   shortens at its narrowest instead of pushing the Refresh button over the first file tab.
   Co-editing of unsaved text is #566.
+- The session view says when the server cut a diff or a context, and every scroller is reachable
+  (SPEC-177, ADR-0143, task #137, fixes #350, #380, #363). Transcript diffs and meta blocks carry
+  `truncated`; a cut edit reads "Wrote path" / "Updated path" with no count and "Cut here: the
+  change is longer.", and a cut context reads "Context added (at least 16 KiB)" and says it was cut
+  when opened. Code, results, diffs and context are keyboard regions when they scroll as laid out
+  (also on a phone), named after their call, such as `Result of Bash(npm test)`.
 - Review findings in a change's own code are fixed before merge, never deferred to an issue
   (SPEC-174, ADR-0141, task #164). The delivery pipeline, `om-code-review` (skill, checklist and
   report format), the Feature and Fix workflows, the `yulius-review`, `yulius-verify` and
