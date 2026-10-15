@@ -553,16 +553,17 @@ function manualClock(start) {
   const add = (fn, ms, every) => {
     const id = nextId;
     nextId += 1;
-    timers.set(id, { at: now + Math.max(0, ms), fn, every });
+    timers.set(id, { at: now + (Number(ms) > 0 ? Number(ms) : 0), fn, every }); // like setTimeout: NaN or less is 0
     return id;
   };
   return {
     now: () => now,
     setTimeout: (fn, ms) => add(fn, ms, 0),
     clearTimeout: (id) => { timers.delete(id); },
-    setInterval: (fn, ms) => add(fn, ms, Math.max(1, ms)),
+    setInterval: (fn, ms) => add(fn, ms, Number(ms) > 1 ? Number(ms) : 1),
     clearInterval: (id) => { timers.delete(id); },
     advance(ms) {
+      if (!(ms >= 0)) throw new Error(`advanceClock takes a time to move forward, not ${ms}`);
       const end = now + ms;
       for (;;) {
         let next = null;
@@ -572,7 +573,7 @@ function manualClock(start) {
         now = timer.at;
         if (timer.every) timer.at += timer.every;
         else timers.delete(id);
-        timer.fn();
+        try { timer.fn(); } catch (error) { now = end; throw error; }
       }
       now = end;
     },

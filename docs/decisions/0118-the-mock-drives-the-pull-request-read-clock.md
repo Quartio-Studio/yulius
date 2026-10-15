@@ -26,8 +26,11 @@ announcements cause, still needs the host to reach each step within 1.5 s, which
   `pullGapMs`. Without one, it uses the real clock, so production is unchanged.
 - In mock mode, `pullclock=manual` gives a clock that only `__yuliusMock.advanceClock(ms)` moves.
   Moving it runs the timers that come due on the way, in order.
-- Tests of how pull request reads are spaced in time use the manual clock, so they count reads
-  without depending on how fast the host is.
+- A test whose result depends on reaching a step within a planned wait (a count of reads within
+  the gap) uses the manual clock, so it counts reads whatever the host's speed. Real time stays
+  fine where the wait is far longer than the test can take: "announced reads of a sandbox keep
+  their gap" (`pullgap=60000`) and "a merge Yulius announces reaches the row at once" (the default
+  3 s gap, waited on with a 10 s timeout).
 
 ## Alternatives
 

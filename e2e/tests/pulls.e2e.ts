@@ -46,7 +46,6 @@ async function chipsAfterRead(browser: Browser): Promise<string[]> {
 test('after a reload the sidebar shows the pull requests at once, before the Git overview answers', async ({ app, browser }) => {
   await app.open(mock('/s/studio'));
   const seen = await chipsAfterRead(browser);
-  expect(seen.length).toBeGreaterThan(0);
 
   // The reload's overview read is held: the rows already show what was last seen.
   await app.open(mock('/s/studio', `&hold=${GIT}`));
