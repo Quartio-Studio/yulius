@@ -33,7 +33,8 @@ a delegated cgroup v2 subtree in which every agent run lives (`<unit>/sandboxes/
 - A run that cannot be frozen (no delegation, a run on the host, a write refused, its agent not
   moved) keeps the turn boundary pause, its 30-minute bound and "Continue without waiting". While
   such a run is still in a turn nothing is frozen; the others freeze once it is held, so no task
-  sits frozen while another works. A run the kernel does not confirm frozen within 5 passes is
+  sits frozen while another works ("Continue without waiting" freezes every run that can be frozen
+  and installs at once). A run the kernel does not confirm frozen within 5 passes is
   thawed and pauses at its turn boundary.
 - Freeze passes and the thaw of all runs are serialized, and each freeze re-checks that the update
   still drains, so a cancel never leaves a run frozen.
@@ -56,7 +57,7 @@ a delegated cgroup v2 subtree in which every agent run lives (`<unit>/sandboxes/
 
 - Updates no longer wait for turns; tasks pause for about the install and its health check
   (unless a run that cannot be frozen is still in a turn: then the others keep working until it
-  is held).
+  is held, or until "Continue without waiting").
 - The provider stream of a frozen agent goes through the egress proxy in the server process, so a
   response streaming at the restart is cut; after the thaw Claude Code retries the request (the
   model sees nothing, the terminal may show a retry line). Keeping it open needs the proxy outside

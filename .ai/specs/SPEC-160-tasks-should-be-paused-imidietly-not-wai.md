@@ -1,11 +1,11 @@
 ---
 yulius-task: c0e1fbe5-0e04-4474-973a-5b52218d1031
-status: in-progress
+status: done
 ---
 
 # SPEC-160: an update freezes every task at once
 
-Status: in progress
+Status: implemented
 Date: 2026-10-15
 Owner: Yulius task #151
 Scope authorization: the request of task #151, with a screenshot of the instance page stuck at
@@ -51,9 +51,9 @@ gets cancelled after 30 minutes because one task was still working.
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | OPS-010 | When the build is done (`draining`), every live task's agent run is **frozen at once** with the cgroup v2 freezer: the agent's whole process tree (the agent, its tools, its background shells, found as the descendants of the run's recorded child in the child's cgroup) moves into the run's own group `run-<attempt>` under it and that group is frozen. The ptyhost, people's shells and browsers, CI jobs and the sandbox holder are never frozen. Nothing is typed into, signalled to or told to the agent, and task states are untouched. A task counts as paused once its group reports `frozen 1`. | unit `freeze.rs`; int `self_update.rs` |
-| OPS-011 | A run that cannot be frozen (no delegated cgroup, its child not under `<unit>/sandboxes/`, the run gone, a write refused, its child not moved) **pauses at its turn boundary as before** (the hold, the 30-minute bound, "Continue without waiting"). **Nothing is frozen while such a run is still in a turn** (checked without freezing, `SessionHost::can_freeze`): the others freeze once it is held, so no task sits frozen while another works. A run the kernel has not confirmed frozen after 5 passes (10 s) is thawed and pauses at its turn boundary instead. Freezing never fails an update by itself. | unit `freeze.rs`; int `self_update.rs` (existing tests unchanged) |
+| OPS-011 | A run that cannot be frozen (no delegated cgroup, its child not under `<unit>/sandboxes/`, the run gone, a write refused, its child not moved) **pauses at its turn boundary as before** (the hold, the 30-minute bound, "Continue without waiting"). **Nothing is frozen while such a run is still in a turn** (checked without freezing, `SessionHost::can_freeze`): the others freeze once it is held, so no task sits frozen while another works (except after "Continue without waiting": every run that can be frozen is frozen and the install starts). A run the kernel has not confirmed frozen after 5 passes (10 s) is thawed and pauses at its turn boundary instead. Freezing never fails an update by itself. | unit `freeze.rs`; int `self_update.rs`: `a_run_that_cannot_be_frozen_is_waited_for_before_any_freeze`, `a_run_that_never_settles_falls_back_to_its_turn_boundary`, `continuing_without_waiting_still_freezes_what_it_can` (existing tests unchanged) |
 | OPS-012 | The install is requested once every live task is frozen or at a pause point on two consecutive passes (one pass, 2 s, lets Yulius requests the agents had already sent be answered; the graceful shutdown answers the rest). | int `self_update.rs` |
-| OPS-013 | **Thawing.** Freeze passes and thaws of all runs are serialized, and each freeze re-checks that the update still drains, so a cancel never leaves a run frozen; with no open run, anything still recorded frozen is thawed. While the hold is on, every task not yet released counts as paused (`held_for_update`: a frozen agent makes no hook call, so the launch goal's watch stops its clock). Resuming thaws the runs one by one (2 s apart), each task's hook release before its thaw; a cancel (by a person, the 30-minute bound or a missing helper) thaws every frozen run at once; a failed or rolled-back install resumes and thaws the same way. A server that starts with no update holding tasks thaws every run group left frozen under its delegated unit (a crash between freeze and resume); one that starts while the run installs or resumes keeps them frozen until it resumes them. | unit `freeze.rs`; int `self_update.rs` |
+| OPS-013 | **Thawing.** Freeze passes and thaws of all runs are serialized, and each freeze re-checks that the update still drains, so a cancel never leaves a run frozen; with no open run, anything still recorded frozen is thawed. While the hold is on, every task not yet released counts as paused (`held_for_update`: a frozen agent makes no hook call, so the launch goal's watch stops its clock). Resuming thaws the runs one by one (2 s apart), each task's hook release before its thaw; a cancel (by a person, the 30-minute bound or a missing helper) thaws every frozen run at once; a failed or rolled-back install resumes and thaws the same way. A server that starts with no update holding tasks thaws every run group left frozen under its delegated unit (a crash between freeze and resume); one that starts while the run installs or resumes keeps them frozen until it resumes them; one that restarts mid-drain sweeps while a run that cannot be frozen works. | unit `freeze.rs`; int `self_update.rs`: `frozen_tasks_thaw_one_by_one_after_the_restart`, `a_cancel_or_a_rollback_thaws_every_frozen_task`, `a_cancel_during_a_freeze_pass_leaves_nothing_frozen`, `continuing_without_waiting_still_freezes_what_it_can` |
 | OPS-014 | The instance page and the banner say tasks pause **at once**: the step "Pause tasks" reads "Tasks pause at once, mid-step. The agents don't notice."; the message "Pausing tasks: N of M paused."; "Still in a turn" lists only tasks that could not be frozen; the confirmation says tasks pause at once. | e2e `update.e2e.ts` (mock) |
 | OPS-015 | SPEC-001 OPS-008, SPEC-002 ADR-18, the architecture document, the product summary, an ADR and `docs/changes.md` describe it, including its limits. | review |
 
@@ -65,8 +65,10 @@ gets cancelled after 30 minutes because one task was still working.
 - [x] Tasks thaw one by one after the restart, at once on a cancel, and none stays frozen after a crash
 - [x] The instance page, banner and confirmation say tasks pause at once
 - [x] Docs, ADR and the changes log describe the freeze and its limits
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, evidence recorded, delivered on green CI
+- [x] Review round 1 in a fresh session, its findings fixed test-first
+- [x] Review round 2 approves, its minors fixed test-first
+- [x] Review round 3 approves the final head
+- [x] Every gate green, evidence recorded, delivered on green CI
 
 ## Acceptance criteria
 
@@ -146,3 +148,49 @@ gets cancelled after 30 minutes because one task was still working.
   passes; `a_run_that_never_settles_falls_back_to_its_turn_boundary`); the revert constraint
   recorded; the fake sweep no longer hides per-run thaws; both group paths and a manual thaw in
   `docs/operations.md`; a debug line when the last move pass still finds processes.
+- **Review round 2** (fresh session, APPROVE of d10e5b3e, three minors and two nits), fixed
+  test-first in a6c7f10c: "Continue without waiting" freezes every run that can be frozen; a
+  mid-drain restart sweeps while an unfreezable run works; the cancel race test asserts before any
+  backstop round and its wait is bounded; runs being frozen are not "still in a turn", and drain
+  readiness counts paused tasks (`paused >= total`) instead of an empty waiting list.
+- **Review round 3** (fresh session, APPROVE of 39b37614, the merge of `dev`): two documentation
+  minors fixed (the "Continue without waiting" exception in OPS-011, the ADR and the operations
+  guide; the new tests named in the requirements). Its nits stay: the 30-minute cancel message
+  counting the capped waiting list is #533; locking the freeze map twice in `pause_progress` is
+  cosmetic.
+
+## Evidence
+
+- `scripts/dev ci` on 39b37614 (the branch merged with `dev`): exit 0. Repository contracts and
+  doctor, script tests, check, fmt, clippy `-D warnings`, nextest **1834 passed**, 18 skipped,
+  doctests, deny, shear, doc. (An earlier run on d10e5b3e passed nextest, 1826 tests, but failed
+  its doctest step with a missing `rustls` rlib: a cargo build I ran in the same `target/`
+  meanwhile. Rerun alone on the merged head, it is green.) The commit after 39b37614 changes only
+  this spec, ADR-0131 and `docs/operations.md`; `scripts/check_repository.py` passes on it.
+- New tests, each red before its change (checked by reverting or mutating the change):
+  - Unit `crates/yulius-sandbox/src/freeze.rs` (6): the agent tree moves into its frozen group and
+    its host does not (mutation: freezing every process in the group fails it); a run already in
+    its group reuses it; runs outside the sandboxes, gone or badly named are not frozen and nothing
+    is created; a child that did not move is not counted as frozen; `thaw_all`; `/proc` parents.
+  - Integration `crates/yulius/tests/self_update.rs` (7 new, 13 in the file):
+    `every_task_freezes_at_once_and_the_install_follows`,
+    `a_run_that_cannot_be_frozen_is_waited_for_before_any_freeze`,
+    `a_run_that_never_settles_falls_back_to_its_turn_boundary`,
+    `a_cancel_during_a_freeze_pass_leaves_nothing_frozen`,
+    `frozen_tasks_thaw_one_by_one_after_the_restart`,
+    `a_cancel_or_a_rollback_thaws_every_frozen_task`,
+    `continuing_without_waiting_still_freezes_what_it_can`. Mutations caught: no lock or draining
+    re-check (cancel race), the old `held_for_update`, no up-front blocker check. The six existing
+    update tests and `update_supervision.rs` (a real ptyhost across a restart) pass unchanged.
+  - e2e `e2e/tests/update.e2e.ts`: "an update on offer … runs to the end" now checks the
+    confirmation, the step text and "Pausing tasks: 2 of 3 paused." (red against the old copy).
+- Full e2e suite (`npx e2e run`) on d10e5b3e: **465 passed**, 1 skipped, 0 failed (54 files). The
+  later commits change no web asset.
+- `scripts/dev security` (Vidoc): **not run**, exit 2. Vidoc rejected the key (HTTP 401), as it
+  has since 2026-10-14 (#470); under ADR-0104 that is unrun, not passed.
+- `spec_check` valid.
+- Not testable here: the kernel freezer itself. This sandbox has no `/sys/fs/cgroup`, so the
+  freeze is tested against a temporary tree that has the kernel's file layout. A real
+  update, with a real Claude Code stream cut and retried, needs the production VM. On a delegated
+  host, `docs/operations.md` §8 says how to see `frozen 1` and how to thaw by hand.
+
