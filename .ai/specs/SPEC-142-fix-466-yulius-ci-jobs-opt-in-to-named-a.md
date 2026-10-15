@@ -1,11 +1,11 @@
 ---
 yulius-task: c287f47b-b31e-4838-bc88-69cc87be3914
-status: in-progress
+status: done
 ---
 
 # SPEC-142: Yulius CI jobs opt in to named agent secrets through the egress proxy
 
-Status: in-progress
+Status: done
 Date: 2026-10-15
 Owner: Yulius task #140 (part of task #118, SPEC-138)
 Scope authorization: task #140: "A `[[ci.jobs]]` entry can opt in to named agent secrets (e.g.
@@ -79,7 +79,8 @@ that secret, and every use is audited as `ci:<run>`. With that, this repository'
   real URL but resolves to a local mirror of origin's default branch, so the CLI finds the same base
   as on an agent's branch without a GitHub credential, and the sandbox's shared clone is never
   written.
-- CSE-007: This repository's `yulius.toml` gains a `security` job granted `VIDOC_API_KEY`. It runs
+- CSE-007: This repository's `yulius.toml` gains a `security` job, granted `VIDOC_API_KEY` once
+  the running instance knows `secrets` (see Decisions). It runs
   `scripts/dev security` on pull request heads only and reports other heads as not scanned. It
   fails on exit 1 (findings, failed scan). Until a run can happen (#470), exit 2 (not runnable)
   does not fail the job: the output says the scan did not run and why.
@@ -95,8 +96,9 @@ that secret, and every use is audited as `ci:<run>`. With that, this repository'
 - [x] An opted-in CI job gets the proxy, CA and placeholders from the integration branch's grant; a PR's own grant is ignored
 - [x] The Vidoc gate runs in a Yulius CI pull request checkout
 - [x] The security job runs on PR heads; docs, ADR-0104 and the yulius-verify skill updated
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Gates green, merged into dev on green CI, issue #466 closed
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Review round 3 approves the final head; gates green locally
+- [x] Gates green, merged into dev on green CI, issue #466 closed
 
 ## Acceptance criteria
 
@@ -115,7 +117,7 @@ that secret, and every use is audited as `ci:<run>`. With that, this repository'
   `yulius-ci/pr-<n>`, the real `origin` URL, `origin`'s default branch read from the mirror, the
   integration branch as merge base, and leaves the shared clone's refs untouched; outside a
   pull request CI run the gate is unchanged.
-- `yulius.toml` has the `security` job with the grant; a test pins its command's behavior for
+- `yulius.toml` has the `security` job (its grant waits, see Decisions); a test pins its command's behavior for
   exit 0, 1, 2 and a non-PR ref.
 
 ## Test plan
@@ -176,3 +178,50 @@ that secret, and every use is audited as `ci:<run>`. With that, this repository'
   a granted production-deploy secret is reported as such, not as missing; ADR-0116 notes the
   mirror kept on disk; a long doc line is wrapped. Out of scope and noted on #466: the sandbox
   clone's fetch with an installation token reads repository config agents can write (#54 part B).
+- Review round 3 (fresh session, the last) approved 3eb67798 with one minor and three nits. Decided
+  after three rounds: the approved code ships unchanged. The minor (no test moves the integration
+  head between the sync and the job, so the fetch-and-retry branch of `ci_verified_gate` and "a
+  removed name takes effect for the next job" are untested) and the nits (a CD-worded message when
+  a grant cannot be verified; an ambiguous report when an instance-wide and a sandbox secret share
+  a name, `cd_secret_states` has the same rule) are follow-ups noted on #466, since this task
+  creates no issue. The only later change is a rewrapped doc comment and this record.
+- Found after round 3 (`spec_check` of the running instance): the instance, built from `main`,
+  rejects `secrets` in `[[ci.jobs]]` as an unknown key, and with it the whole `yulius.toml`. Had
+  `dev` carried the grant line, the running Yulius would have lost the CI of every pull request
+  into `dev` until a person promotes. So the product capability ships, and this repository's
+  `security` job ships without its grant line; tests pin that. A follow-up adds
+  `secrets = "VIDOC_API_KEY"` once the running instance knows the key; nothing is lost meanwhile,
+  as the stored key is rejected anyway (#470). #466 stays open for it, with a comment saying so.
+  The round-3 reviewer confirmed this delta.
+
+## Evidence
+
+- `scripts/dev ci` (doctor, check, lint, test, deps, rustdoc) at 3eb67798: exit 0; nextest 1778
+  passed, 16 skipped; `python3 -m unittest discover -s scripts`: 100 tests OK; repository
+  contracts passed; cargo-deny advisories, bans, licenses and sources ok. Also exit 0 at 6324fa8c
+  and 9c138d10.
+- New tests, each seen failing before its change:
+  - `yulius-domain` `ci_jobs_name_their_agent_secrets`, `the_repositorys_own_ci_has_a_security_job_and_no_grant_yet`;
+  - `yulius-app` `ci::exec::tests::only_the_integration_branch_jobs_grant_secrets`,
+    `run_files_outside_the_sandbox_are_bound_read_only`;
+  - `secrets::a_ci_job_uses_only_its_granted_secrets_toward_their_hosts` (host binding, ungranted
+    and production-deploy secrets, 403 on `X-Yulius-Secret`, audit actor `ci:run-7`, credential
+    gone once closed); it fails when `may_use` ignores the grant or `cd_prod`;
+  - `local_ci::ci_jobs_get_the_secrets_the_integration_branch_grants_them` (opt-in, no opt-in, a
+    pull request's own grant, the credential a `ci:<run>` client only while the job runs),
+    `a_grant_forged_in_the_shared_clone_gives_nothing` (failed before B1's fix: the job got
+    `OTHER_KEY`), `a_grant_verifies_without_a_fresh_fetch_when_the_clone_has_the_head`;
+  - `local_ci::a_contained_granted_job_reads_its_ca_bundle` skips here: bubblewrap cannot create
+    namespaces in this environment ("Operation not permitted"), as `contained_jobs_see_only_their_sandbox` does;
+  - `scripts/test_vidoc_scan.py` `PullRequestCi` (5) and `SecurityJob` (4).
+- `scripts/dev security` (agent-side, at 6324fa8c): exit 2, "Vidoc rejected the key (HTTP 401:
+  Invalid or expired token)": unrun, not passed (#470, ADR-0104).
+- Not verifiable here: a live Vidoc scan in Yulius CI (needs a valid key, #470) and the CA bundle
+  inside bubblewrap (no user namespaces here). Yulius CI on the delivered head runs the new
+  `security` job; without its grant line and while #470 stands it ends "the security scan did not
+  run" and passes.
+- `spec_check` (the running instance) after the grant line was removed: docs valid, spec valid.
+- After the grant-line change: `python3 -m unittest discover -s scripts`: 100 OK; the domain test
+  above passes; `cargo fmt --check`, clippy and `scripts/check_repository.py` pass.
+- Reviews: three fresh read-only sessions; round 1 requested changes (B1 forged grant and four
+  smaller findings, all fixed test-first), rounds 2 and 3 approved.

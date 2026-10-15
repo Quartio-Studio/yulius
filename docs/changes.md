@@ -11,10 +11,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   and only the integration branch's entry of the job's name counts: a pull request's own grant
   gives nothing. A granted job gets placeholders, the CA bundle and a proxy credential of its own,
   never a value; the proxy client it names, `ci:<run>`, uses only those secrets toward their bound
-  hosts, and every use is in the secrets audit. This repository's new `security` job runs
+  hosts, and every use is in the secrets audit; the grant is verified at the integration head
+  GitHub reports, so nothing a job writes can forge it. This repository's new `security` job runs
   `scripts/dev security` on pull request heads, in a private clone that reaches its base without a
-  GitHub credential. Findings fail it; while the stored key is rejected (#470), "did not run"
-  (exit 2) does not.
+  GitHub credential. Findings fail it; "did not run" (exit 2) does not, while the stored key is
+  rejected (#470) and until the job's grant line is added, once the running instance knows
+  `secrets` (an older one rejects the whole `yulius.toml`).
 
 - Open GitHub issues triaged and the first fixes delivered (SPEC-138, task #118). Of 63 open issues:
   - #423, #425 and #465 were already fixed and are closed.

@@ -47,13 +47,14 @@ name = "e2e"
 command = "cd e2e && npm ci --ignore-scripts && npx e2e-web install chromium && E2E_TELEMETRY_DISABLED=1 npx e2e run --reporter list,junit"
 
 # The Vidoc scan (ADR-0104, ADR-0116) on pull request heads only: dev and main have nothing of their
-# own to scan. It gets the agent secret VIDOC_API_KEY as a placeholder through the egress proxy,
-# never its value, and only because this entry on the integration branch grants it. Findings (exit
-# 1) fail it. Exit 2 (the scan could not run: a rejected key, #470, or a missing host binding) does
-# not, so no pull request is blocked by what only a person can fix; the output says it did not run.
+# own to scan. Findings (exit 1) fail it. Exit 2 (the scan could not run: no key, a rejected one,
+# #470, or a missing host binding) does not, so no pull request is blocked by what only a person can
+# fix; the output says it did not run. It gets VIDOC_API_KEY (a placeholder through the egress
+# proxy, never the value) once this entry has `secrets = "VIDOC_API_KEY"`: that line waits until the
+# running Yulius instance knows the key (after dev is promoted to main), because an older instance
+# rejects the whole file and CI would stop for every pull request (SPEC-142, #466).
 [[ci.jobs]]
 name = "security"
-secrets = "VIDOC_API_KEY"
 command = 'case "$YULIUS_CI_REF" in pr/*) python3 scripts/bootstrap.py --install-rustup && { scripts/dev security; code=$?; if [ "$code" -eq 2 ]; then echo "[yulius] the security scan did not run (exit 2, reason above): not passed; it does not fail the job until a scan can run (#470)"; code=0; fi; exit "$code"; } ;; *) echo "Not a pull request head: Vidoc scans pull requests only (ADR-0116)." ;; esac'
 
 # CD (deployment), SPEC-134: Yulius runs these from the protected branches, inside the sandbox

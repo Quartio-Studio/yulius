@@ -73,8 +73,9 @@ can be tested before it merges. So "the jobs of this run" are partly the pull re
 - The sandbox clone stays writable by CI jobs, so a pull request can still change which jobs a
   later run of the sandbox executes (not what they may use). That is older than this decision and
   belongs to its own change.
-- This repository's `security` job (`scripts/dev security`, granted `VIDOC_API_KEY`) runs on pull
-  request heads only. Until the scan can run (#470: the stored key is rejected), its exit 2 does
+- This repository's `security` job (`scripts/dev security`) runs on pull request heads only. Its
+  grant, `secrets = "VIDOC_API_KEY"`, waits until the running Yulius instance knows `secrets` (after `dev` is promoted to `main`; an older instance rejects the whole `yulius.toml`): Yulius's own `dev` runs ahead of
+  the instance that reads it. A project's instance already knows the key when it uses it. Until the scan can run (#470: the stored key is rejected), its exit 2 does
   not fail the job; findings (exit 1) do. Exit 2 also covers causes a pull request controls (a
   malformed `.config/vidoc.toml`, a broken clone), so once a scan runs, the follow-up is to make
   exit 2 fail the job again (noted on #466).

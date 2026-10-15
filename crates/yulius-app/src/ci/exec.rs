@@ -10,8 +10,8 @@
 //! placeholders and the egress proxy with a credential of its own, never a value (SPEC-142,
 //! [`App::ci_job_secrets`]). `HOME` and `YULIUS_CI_CACHE` are persistent per sandbox and shared
 //! by its lanes (up to [`super::CiSettings::lanes`] runs at once, so a job's installs there must
-//! tolerate a concurrent run), and each job keeps a persistent checkout per lane ([`checkout_name`]), so caches
-//! (dependency downloads, build outputs) survive between runs.
+//! tolerate a concurrent run), and each job keeps a persistent checkout per lane
+//! ([`checkout_name`]), so caches (dependency downloads, build outputs) survive between runs.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

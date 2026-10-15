@@ -491,8 +491,9 @@ class SecurityJob(unittest.TestCase):
         ran = (root / "ran").read_text() if (root / "ran").exists() else ""
         return result.returncode, result.stdout + result.stderr, ran
 
-    def test_it_is_granted_the_vidoc_key_only(self):
-        self.assertEqual(self.job()["secrets"], "VIDOC_API_KEY")
+    def test_it_waits_for_its_grant_until_the_running_instance_knows_the_key(self):
+        # An instance older than SPEC-142 rejects `secrets` and with it the whole yulius.toml.
+        self.assertNotIn("secrets", self.job())
 
     def test_a_pull_request_head_passes_or_fails_with_the_scan(self):
         for code, expected in ((0, 0), (1, 1)):

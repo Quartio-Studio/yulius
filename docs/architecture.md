@@ -511,7 +511,7 @@ audited under that actor.
 ```mermaid
 flowchart LR
   GH["GitHub: integration head"] -->|"exact commit, objects checked"| MIR["CD mirror (Yulius only)"]
-  MIR -->|"yulius.toml: security, secrets = VIDOC_API_KEY; grant by job name"| EXEC["CI job start (ci_job_secrets)"]
+  MIR -->|"yulius.toml, e.g. security: secrets = VIDOC_API_KEY; grant by job name"| EXEC["CI job start (ci_job_secrets)"]
   CLONE["sandbox clone (CI jobs can write it)"] -.->|"only whether to look"| EXEC
   PR["pull request's own yulius.toml"] -.->|"never read for grants"| EXEC
   EXEC -->|"placeholder, CA, proxy credential"| JOB["CI job (pull request code)"]

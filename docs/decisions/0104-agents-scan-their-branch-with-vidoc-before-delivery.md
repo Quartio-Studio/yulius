@@ -5,8 +5,9 @@
 Accepted. Specified in [SPEC-128](../../.ai/specs/SPEC-128-in-keys-for-agents-you-have-vidoc-securi.md).
 Amended by [0107](0107-a-committed-switch-turns-the-vidoc-gate-on-or-off.md): `.config/vidoc.toml`
 turns the gate on or off. Amended by [0116](0116-ci-jobs-use-named-agent-secrets-through-the-proxy.md):
-Yulius CI now runs the gate as the `security` job on pull request heads, with `VIDOC_API_KEY` as a
-placeholder through the egress proxy; the title's "Yulius CI does not" no longer holds.
+Yulius CI now runs the gate as the `security` job on pull request heads, and can give it
+`VIDOC_API_KEY` as a placeholder through the egress proxy; the title's "Yulius CI does not" no
+longer holds.
 
 ## Context
 
