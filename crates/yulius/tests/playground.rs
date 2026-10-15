@@ -1551,3 +1551,113 @@ async fn delivery_merge_tests_the_head_merged_into_dev_first() -> TestResult {
     nothing_on_github(&h)?;
     Ok(())
 }
+
+/// `delivery_merge` of `head` by the agent whose task token is `token`, reviewed.
+async fn agent_merge(h: &Harness, token: &str, head: &str) -> BoxResult<Value> {
+    agent_tool(
+        h,
+        token,
+        "delivery_merge",
+        json!({"reviewed_head": head, "review_summary": "approve"}),
+    )
+    .await
+}
+
+/// PCI-003 (#411): a head whose merge into `dev` fails its checks never lands: the armed merge is
+/// dropped with why when the run ends, and the next `delivery_merge` is refused (merge on green
+/// only).
+#[tokio::test]
+async fn a_failing_head_is_refused_and_its_armed_merge_dropped() -> TestResult {
+    let (h, owner) = ci_world().await?;
+    let body = ci_playground(&h, &owner).await?;
+    let origin = origin_of(&h, &body);
+    let dev = git(&origin, &["rev-parse", "dev"])?.trim().to_owned();
+    let worktree = playground_task(&h, &body, "t1", &[("broken", "yes\n")], &["done"]).await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?.trim().to_owned();
+    support::seed_live_attempt(&h, "t1", "tok-t1").await?;
+    let armed = answer(&agent_merge(&h, "tok-t1", &head).await?);
+    assert!(armed.contains("armed: true"), "{armed}");
+
+    let overview = ci_settle(&h, &owner, &body).await?;
+    assert_eq!(task_run(&overview)?["state"], "failed", "{overview}");
+    let sid = yulius_domain::ids::SandboxId::parse(body["id"].as_str().ok_or("id")?)?;
+    h.app.merge_armed(&sid).await;
+    let state = wait_state(&h, "tok-t1", &head).await?;
+    assert_eq!(state["checks"], "failed", "{state}");
+    assert_eq!(state["merge_armed"], false, "{state}");
+    assert!(
+        state["merge_outcome"]
+            .as_str()
+            .is_some_and(|o| o.contains("merge on green only")),
+        "{state}"
+    );
+
+    let refused = agent_merge(&h, "tok-t1", &head).await?;
+    assert_eq!(refused["isError"], true, "{refused}");
+    assert!(
+        refused.to_string().contains("merge on green only"),
+        "{refused}"
+    );
+    assert_eq!(
+        git(&origin, &["rev-parse", "dev"])?.trim(),
+        dev,
+        "nothing landed"
+    );
+    nothing_on_github(&h)?;
+    Ok(())
+}
+
+/// PCI-003 (#411): when `dev` moves while a merge is armed, the next decision tests the head
+/// merged into the new `dev` (the older run is cancelled as superseded) and lands that.
+#[tokio::test]
+async fn an_armed_merge_follows_a_moved_dev() -> TestResult {
+    let (h, owner) = ci_world().await?;
+    let body = ci_playground(&h, &owner).await?;
+    let origin = origin_of(&h, &body);
+    let worktree = playground_task(&h, &body, "t1", &[("feature.txt", "one\n")], &["done"]).await?;
+    let head = git(&worktree, &["rev-parse", "HEAD"])?.trim().to_owned();
+    support::seed_live_attempt(&h, "t1", "tok-t1").await?;
+    let armed = answer(&agent_merge(&h, "tok-t1", &head).await?);
+    assert!(armed.contains("armed: true"), "{armed}");
+    // Nothing is dispatched yet: the first run is still queued when dev moves.
+    let first = task_run(&ci_overview(&h, &owner, &body).await?)?;
+    assert_eq!(first["state"], "queued", "{first}");
+
+    let moved = push_to_dev(&h, &body, &[("other.txt", "two\n")])?;
+    let sid = yulius_domain::ids::SandboxId::parse(body["id"].as_str().ok_or("id")?)?;
+    h.app.merge_armed(&sid).await;
+    let overview = ci_overview(&h, &owner, &body).await?;
+    let second = task_run(&overview)?;
+    assert_ne!(second["id"], first["id"], "{overview}");
+    let repo = sandbox_dir(&h, &body).join("repo");
+    git(
+        &repo,
+        &[
+            "merge-base",
+            "--is-ancestor",
+            &moved,
+            second["sha"].as_str().ok_or("sha")?,
+        ],
+    )?;
+    let old = overview["runs"]
+        .as_array()
+        .ok_or("runs")?
+        .iter()
+        .find(|r| r["id"] == first["id"])
+        .ok_or("the first run")?;
+    assert_eq!(old["state"], "cancelled", "{overview}");
+    assert!(
+        old["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("superseded")),
+        "{overview}"
+    );
+
+    ci_settle(&h, &owner, &body).await?;
+    dev_moves(&h, &body, &moved).await?;
+    assert_eq!(git(&origin, &["rev-parse", "dev^"])?.trim(), moved);
+    assert_eq!(file_at(&origin, "dev", "feature.txt")?, "one\n");
+    assert_eq!(file_at(&origin, "dev", "other.txt")?, "two\n");
+    nothing_on_github(&h)?;
+    Ok(())
+}

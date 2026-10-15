@@ -63,7 +63,7 @@ of it reaches GitHub.
 - [x] Spec SPEC-163 written and validated
 - [x] A playground's integration head gets Yulius CI runs, with no GitHub status
 - [x] delivery_merge tests the head merged into dev and squashes only on green
-- [ ] Armed playground merges land, drop or follow a moved dev when a run ends
+- [x] Armed playground merges land, drop or follow a moved dev when a run ends
 - [ ] The person's merge action waits for green in a playground
 - [ ] yulius wait and ci_status follow a playground task's run
 - [ ] A playground's agents are told about its CI
