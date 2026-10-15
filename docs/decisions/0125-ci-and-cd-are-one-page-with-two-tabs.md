@@ -4,7 +4,8 @@
 
 Accepted. Specified in [SPEC-151](../../.ai/specs/SPEC-151-make-ci-cd-one-tab-with-a-tab-like-in-se.md);
 amends [0025](0025-sandbox-navigation-more-group.md) and SPEC-134, which gave CI (tests) and CD
-(deployment) an entry each in the sandbox navigation.
+(deployment) an entry each in the sandbox navigation. Its Pipeline alternative is amended by
+[0132](0132-the-pipeline-is-a-tab-of-the-dashboard.md): the Pipeline is a tab of the Dashboard.
 
 ## Context
 

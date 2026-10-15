@@ -1276,14 +1276,22 @@ mod tests {
         Ok(())
     }
 
-    /// SPEC-142 CSE-007: Yulius's own CI has its `security` job, and grants no secret until the
-    /// running instance knows `secrets` (an older one rejects the whole file).
+    /// SPEC-142 CSE-007, SPEC-162 SKP-005: Yulius's own CI has its `security` job, granted
+    /// `VIDOC_API_KEY` alone (the running instance knows `secrets` since the promotion of #517);
+    /// no other job gets a secret.
     #[test]
-    fn the_repositorys_own_ci_has_a_security_job_and_no_grant_yet() -> TestResult {
+    fn the_repositorys_own_security_job_alone_is_granted_the_vidoc_key() -> TestResult {
         let config = parse_yulius_toml(include_str!("../../../../yulius.toml"))?;
         let jobs = crate::ci::project_jobs(config.commands.gate.as_deref(), &config.ci)?;
+        for job in &jobs {
+            let expected: &[&str] = if job.name == "security" {
+                &["VIDOC_API_KEY"]
+            } else {
+                &[]
+            };
+            assert_eq!(job.secrets, expected, "{jobs:?}");
+        }
         assert!(jobs.iter().any(|j| j.name == "security"), "{jobs:?}");
-        assert!(jobs.iter().all(|j| j.secrets.is_empty()), "{jobs:?}");
         Ok(())
     }
 
