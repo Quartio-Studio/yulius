@@ -1,11 +1,15 @@
-//! Server-lifetime background work: crash recovery, queue draining, the subscription pool's
-//! resume loop (ROT-010) and account usage refresh (ROT-009) (SPEC-002 §6.1, §7.5, §10). Nothing
-//! is typed into an idle task's session (SPEC-028 MSR-004).
+//! Server-lifetime background work: crash recovery and the metrics recount, queue draining, the
+//! subscription pool's resume loop (ROT-010) and account usage refresh (ROT-009) (SPEC-002 §6.1,
+//! §7.5, §10). Nothing is typed into an idle task's session (SPEC-028 MSR-004).
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio::task::JoinHandle;
+
 use crate::context::App;
+use crate::error::AppResult;
+use crate::metrics_recount::RecountTally;
 
 /// Queue drain interval, also the device grant purge interval (#169).
 const TICK: Duration = Duration::from_secs(60);
@@ -17,23 +21,32 @@ const USAGE_EVERY: Duration = Duration::from_secs(2 * 60);
 /// Delivery reconciliation with GitHub (pull requests merged or closed outside Yulius, #35).
 const DELIVERY_EVERY: Duration = Duration::from_secs(3 * 60);
 impl App {
+    /// Reconciles the runs recorded live before this start, then starts the metrics recount
+    /// (SPEC-091 RCT-004, SPEC-143 RDM-003): once the runs that did not survive the restart have
+    /// ended, the runs recorded before SPEC-087 get their transcripts' figures. Without
+    /// reconciliation a lost run would read as live, so nothing is recounted until a start that
+    /// reconciles. Returns the recount, running in its own task, when it started.
+    pub async fn recover(self: &Arc<Self>) -> Option<JoinHandle<AppResult<RecountTally>>> {
+        if let Err(err) = self.reconcile().await {
+            tracing::error!(error = %err, "session reconciliation failed");
+            return None;
+        }
+        let recount = Arc::clone(self);
+        Some(tokio::spawn(async move {
+            let tally = recount.recount_old_metrics().await;
+            if let Err(err) = &tally {
+                tracing::warn!(error = %err, "the metrics recount could not start");
+            }
+            tally
+        }))
+    }
+
     /// Starts recovery and periodic work; call once after the listeners are bound.
     pub fn start_background(self: &Arc<Self>) {
         let app = Arc::clone(self);
         tokio::spawn(async move {
-            if let Err(err) = app.reconcile().await {
-                tracing::error!(error = %err, "session reconciliation failed");
-            } else {
-                // Runs recorded before SPEC-087 get their transcripts' figures, once the runs
-                // that did not survive the restart have ended (SPEC-091 RCT-004); nothing waits
-                // for it. Without reconciliation a lost run would read as live: the next start.
-                let recount = Arc::clone(&app);
-                tokio::spawn(async move {
-                    if let Err(err) = recount.recount_old_metrics().await {
-                        tracing::warn!(error = %err, "the metrics recount could not start");
-                    }
-                });
-            }
+            // Nothing waits for the recount (SPEC-091 RCT-005).
+            drop(app.recover().await);
             // Merges armed before the restart stay armed (DLV-205).
             app.restore_armed_merges().await;
             app.drain_queue().await;

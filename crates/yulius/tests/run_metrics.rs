@@ -278,7 +278,10 @@ fn a_run_that_ends_while_yulius_is_down_keeps_its_metrics() -> TestResult {
                 "usage": {"input_tokens": 3, "output_tokens": 1000}}})
         ),
     )?;
-    signal(run.child_pid.ok_or("agent pid")?, nix::sys::signal::Signal::SIGTERM)?;
+    signal(
+        run.child_pid.ok_or("agent pid")?,
+        nix::sys::signal::Signal::SIGTERM,
+    )?;
     let run_dir = PathBuf::from(&run.run_dir);
     let second = runtime()?;
     second.block_on(async {
