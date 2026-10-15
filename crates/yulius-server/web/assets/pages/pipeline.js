@@ -1,14 +1,15 @@
 // Pipeline (SPEC-137, ADR-0112): how long every stage of this project's tasks, CI runs and CD runs
-// takes, beside CI (tests) and CD (deployment). The delivery figures of dev and production first
+// takes, the Dashboard's Pipeline (stages) tab (SPEC-161, ADR-0132). The delivery figures of dev and production first
 // (deployment frequency, lead time, change failure rate, time to restore), then the chosen
 // stage's daily p50 and p90, then every stage's figures, which choose the trend. Filters (range,
-// what, environment, job) and the chosen stage are kept in the address; `?open=<kind>:<id>` shows
+// what, environment, job) and the chosen stage are kept in the address after `?section=pipeline`
+// (`/s/<slug>/pipeline` is its earlier address); `open=<kind>:<id>` shows
 // one run's, task's or deployment's waterfall on top. CSV/JSON export like the Dashboard's.
 
 import { h, setChildren, icon, iconButton, openMenu, bar } from '../dom.js';
 import { duration, int } from '../format.js';
 import { replaceQuietly } from '../router.js';
-import { pageFrame, loader } from './common.js';
+import { loader } from './common.js';
 import { trendChart, stageTitle, loadWaterfall, subjectLabel } from '../stages.js';
 
 const RANGES = [[7, '7 days'], [30, '30 days'], [90, '90 days']];
@@ -20,8 +21,13 @@ const isoDay = (date) => date.toISOString().slice(0, 10);
 const ENV_NAMES = { dev: 'Dev', prod: 'Production' };
 const OPEN_KINDS = { ci_run: 'CI run', cd_run: 'Deployment', task: 'Task' };
 
-/** Mount the Pipeline page. */
-export function mountPipelinePage(ctx, sandbox, route) {
+export const PIPELINE_SUB = 'how long every stage of tasks, CI and CD takes';
+
+/**
+ * Mount the Pipeline tab into `section`, with its range, export and refresh in `actions`; returns
+ * its teardown, which stops its refreshes. Its addresses are the Dashboard's `?section=pipeline`.
+ */
+export function mountPipelineSection(ctx, sandbox, route, section, actions) {
   const query = route ? route.query : new URLSearchParams();
   const asked = Number(query.get('days'));
   const state = {
@@ -32,7 +38,7 @@ export function mountPipelinePage(ctx, sandbox, route) {
     trend: query.get('trend') || '',
     open: query.get('open') || '',
   };
-  const base = `/s/${encodeURIComponent(sandbox.slug)}/pipeline`;
+  const base = pipelinePath(sandbox);
   const api = `/api/sandboxes/${encodeURIComponent(sandbox.id)}`;
   let options = { jobs: [], environments: [] };
 
@@ -41,7 +47,7 @@ export function mountPipelinePage(ctx, sandbox, route) {
     if (state.days !== 30) params.set('days', String(state.days));
     for (const key of ['subject', 'environment', 'job', 'trend', 'open']) if (state[key]) params.set(key, state[key]);
     const text = params.toString();
-    replaceQuietly(text ? `${base}?${text}` : base);
+    replaceQuietly(text ? `${base}&${text}` : base);
   }
 
   function period() {
@@ -72,11 +78,11 @@ export function mountPipelinePage(ctx, sandbox, route) {
   ], { align: 'end' }) }, icon('download', { size: 14 }), 'Export');
   const range = h('div', { class: 'seg db-seg', role: 'radiogroup', 'aria-label': 'Date range' }, RANGES.map(([value, label]) => h('label', null,
     h('input', { type: 'radio', name: 'pipeline-range', value: String(value), checked: value === state.days, onChange: () => { state.days = value; remember(); reload(); } }), label)));
-  const frame = pageFrame({ title: 'Pipeline', sub: 'how long every stage of tasks, CI and CD takes', actions: [rangeLabel, range, exportButton, iconButton('refresh', 'Refresh', () => reload())] });
+  setChildren(actions, rangeLabel, range, exportButton, iconButton('refresh', 'Refresh', () => reload()));
   const openHost = h('div');
   const filters = h('div', { class: 'pl-filters', role: 'group', 'aria-label': 'Filters' });
   const host = h('div', { class: 'db' });
-  frame.body.append(openHost, filters, host);
+  section.append(openHost, filters, host);
 
   function select(label, key, choices) {
     return h('label', { class: 'pl-filter' }, h('span', { class: 'pl-filter-label' }, label),
@@ -209,10 +215,15 @@ export function mountPipelinePage(ctx, sandbox, route) {
   const live = setInterval(() => {
     if (document.visibilityState === 'visible') reload({ quiet: true });
   }, LIVE_MS);
-  return { el: frame.el, key: `pipeline:${sandbox.id}`, destroy: () => clearInterval(live) };
+  return () => clearInterval(live);
 }
 
-/** The Pipeline page's address for one subject's waterfall. */
+/** The Dashboard's Pipeline tab. */
+export function pipelinePath(sandbox) {
+  return `/s/${encodeURIComponent(sandbox.slug)}/dashboard?section=pipeline`;
+}
+
+/** The Pipeline tab's address for one subject's waterfall. */
 export function pipelineHref(sandbox, subject) {
-  return `/s/${encodeURIComponent(sandbox.slug)}/pipeline?open=${encodeURIComponent(subject)}`;
+  return `${pipelinePath(sandbox)}&open=${encodeURIComponent(subject)}`;
 }

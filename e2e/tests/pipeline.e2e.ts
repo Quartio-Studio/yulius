@@ -7,10 +7,12 @@ failOnPageErrors();
 // Task #116 (SPEC-137): every stage of tasks, CI and CD measured and shown. The mock's stages are
 // in assets/mock.js ("Stages"): a stage table, a daily trend, dev and production delivery figures,
 // and the waterfalls of a CI run (ci_s2 failed in its test job), a dev deploy and a task.
+// Task #152 (SPEC-161): the Pipeline (stages) is a tab of the Dashboard, at ?section=pipeline.
 
-test('the Pipeline page shows delivery figures, a stage trend with p50 and p90, and the stage table', async ({ app, browser, screen }) => {
-  await app.open(mock('/s/studio/pipeline'));
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Pipeline');
+test('the Pipeline shows delivery figures, a stage trend with p50 and p90, and the stage table', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/dashboard?section=pipeline'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Dashboard');
+  await expect(screen.getByRole('radio', 'Pipeline (stages)')).toHaveAttribute('aria-checked', 'true');
   const delivery = screen.getByRole('region', 'Delivery');
   const dev = delivery.getByRole('group', 'Dev');
   await expect(dev).toContainText(/Deployments\s*2\.6 a week/);
@@ -34,11 +36,66 @@ test('the Pipeline page shows delivery figures, a stage trend with p50 and p90, 
   // A stage of the table becomes the trend, and the choice stays in the address.
   await stages.getByRole('button', 'Task · Needs you').click();
   await expect(screen.getByRole('region', 'Trend: Task · Needs you')).toBeVisible();
-  await expect(browser).toHaveURL(/#\/s\/studio\/pipeline\?trend=task%3Astate%3Aneeds_you$/);
+  await expect(browser).toHaveURL(/#\/s\/studio\/dashboard\?section=pipeline&trend=task%3Astate%3Aneeds_you$/);
+});
+
+// SPEC-161 DPL-001..003: no sidebar entry; the Dashboard's tabs, like the CI/CD page's.
+test('the Pipeline is the second tab of the Dashboard, not a sidebar entry', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/dashboard'));
+  const nav = screen.getByRole('navigation', 'Sandbox');
+  await expect(nav.getByRole('link', 'Pipeline (stages)')).toBeHidden();
+  await expect(nav.getByRole('link', 'Dashboard')).toHaveAttribute('aria-current', 'page');
+  await expect(screen.getByRole('radiogroup', 'Section')).toBeVisible();
+  await expect(screen.getByRole('radio', 'Overview')).toHaveAttribute('aria-checked', 'true');
+  await expect(screen.getByRole('link', 'Open Pipeline')).toBeVisible();
+
+  // A click shows the Pipeline in place, with its own header actions; the address names the tab.
+  await screen.getByRole('radio', 'Pipeline (stages)').click();
+  await expect(screen.getByRole('radio', 'Pipeline (stages)')).toHaveAttribute('aria-checked', 'true');
+  await expect(screen.getByRole('region', 'Delivery')).toBeVisible();
+  await expect(screen.getByRole('combobox', 'What')).toBeVisible();
+  await expect(screen.getByRole('link', 'Open Pipeline')).toBeHidden();
+  await expect(browser.locator('.page-sub')).toHaveText('how long every stage of tasks, CI and CD takes');
+  await expect(browser).toHaveURL(/#\/s\/studio\/dashboard\?section=pipeline$/);
+  await expect(nav.getByRole('link', 'Dashboard')).toHaveAttribute('aria-current', 'page');
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // Its state follows the tab in the address, and a reload keeps both.
+  await screen.getByRole('radiogroup', 'Date range').getByText('7 days').click();
+  await expect(browser).toHaveURL(/#\/s\/studio\/dashboard\?section=pipeline&days=7$/);
+  await browser.reload();
+  await expect(screen.getByRole('radio', 'Pipeline (stages)')).toHaveAttribute('aria-checked', 'true');
+  await expect(screen.getByRole('radiogroup', 'Date range').getByRole('radio', '7 days')).toBeChecked();
+
+  // An arrow key goes back to the Overview and keeps the focus on the tabs.
+  await screen.getByRole('radio', 'Pipeline (stages)').press('ArrowLeft');
+  await expect(screen.getByRole('radio', 'Overview')).toHaveAttribute('aria-checked', 'true');
+  await expect(screen.getByRole('radio', 'Overview')).toBeFocused();
+  await expect(screen.getByRole('link', 'Open Pipeline')).toBeVisible();
+  await expect(screen.getByRole('region', 'Delivery')).toBeHidden();
+  await expect(browser.locator('.page-sub')).toHaveText('what the tasks of this sandbox did, and what it took');
+  await expect(browser).toHaveURL(/#\/s\/studio\/dashboard$/);
+});
+
+// SPEC-161 DPL-004: the Pipeline page's own address, in older links, opens the tab with its state.
+test('the earlier Pipeline address opens the Dashboard\'s Pipeline tab', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/pipeline'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Dashboard');
+  await expect(screen.getByRole('radio', 'Pipeline (stages)')).toHaveAttribute('aria-checked', 'true');
+  await expect(screen.getByRole('region', 'Delivery')).toBeVisible();
+  await expect(browser).toHaveURL(/#\/s\/studio\/dashboard\?section=pipeline$/);
+  await expect(screen.getByRole('navigation', 'Sandbox').getByRole('link', 'Dashboard')).toHaveAttribute('aria-current', 'page');
+
+  // With its state: the filters come with it, after the tab in the canonical address.
+  await app.open(mock('/s/studio/pipeline?days=7&subject=cd_run&environment=prod'));
+  await expect(screen.getByRole('combobox', 'Environment')).toHaveValue('prod');
+  await expect(screen.getByRole('radiogroup', 'Date range').getByRole('radio', '7 days')).toBeChecked();
+  await expect(browser).toHaveURL(/#\/s\/studio\/dashboard\?section=pipeline&days=7&subject=cd_run&environment=prod$/);
 });
 
 test('filters narrow the stages and stay in the address', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/pipeline?days=7'));
+  await expect(browser).toHaveURL(/#\/s\/studio\/dashboard\?section=pipeline&days=7$/);
   await expect(screen.getByRole('radio', '7 days')).toBeChecked();
   await screen.getByRole('combobox', 'What').selectOption('CD runs');
   await expect(browser).toHaveURL(/subject=cd_run/);
@@ -74,9 +131,10 @@ test('a CI run, a deploy and a task each show a waterfall of their stages', asyn
   await expect(run.getByRole('table')).toContainText('Job test (2/2)');
   expect(await axeViolations(browser)).toEqual([]);
 
-  // The same run on the Pipeline page.
+  // The same run on the Dashboard's Pipeline tab.
   await screen.getByRole('link', 'In Pipeline').click();
-  await expect(browser).toHaveURL(/#\/s\/studio\/pipeline\?open=ci_run%3Aci_s2$/);
+  await expect(browser).toHaveURL(/#\/s\/studio\/dashboard\?section=pipeline&open=ci_run%3Aci_s2$/);
+  await expect(screen.getByRole('radio', 'Pipeline (stages)')).toHaveAttribute('aria-checked', 'true');
   await expect(screen.getByRole('region', 'CI run stages')).toContainText('Job quality');
 
   // A deploy's checks, run, deploy and the stages of its output.
@@ -91,9 +149,12 @@ test('a CI run, a deploy and a task each show a waterfall of their stages', asyn
     await expect(task).toContainText(text);
   }
   expect(await axeViolations(browser)).toEqual([]);
+  await screen.getByRole('link', 'In Pipeline').click();
+  await expect(browser).toHaveURL(/#\/s\/studio\/dashboard\?section=pipeline&open=task%3A/);
+  await expect(screen.getByRole('region', 'Task stages')).toBeVisible();
 });
 
-test('the Dashboard shows the pipeline overview and opens the Pipeline page', async ({ app, browser, screen }) => {
+test('the Dashboard shows the pipeline overview and opens the Pipeline tab', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/dashboard'));
   const pipeline = browser.locator('.db-card:has-text("Pipeline")');
   await expect(pipeline).toContainText(/Deployments a week\s*0\.9 · 2\.6/);
@@ -101,6 +162,7 @@ test('the Dashboard shows the pipeline overview and opens the Pipeline page', as
   await expect(pipeline).toContainText(/Change failure rate\s*17%/);
   await expect(pipeline).toContainText(/CI run\s*14 min/);
   await screen.getByRole('link', 'Open Pipeline').click();
-  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('Pipeline');
-  await expect(browser).toHaveURL(/#\/s\/studio\/pipeline$/);
+  await expect(screen.getByRole('radio', 'Pipeline (stages)')).toHaveAttribute('aria-checked', 'true');
+  await expect(screen.getByRole('region', 'Delivery')).toBeVisible();
+  await expect(browser).toHaveURL(/#\/s\/studio\/dashboard\?section=pipeline$/);
 });
