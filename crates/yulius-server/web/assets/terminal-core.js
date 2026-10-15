@@ -16,8 +16,11 @@
 //
 // Copy and paste work as in a desktop terminal (termkeys.js): ⌘C/⌘V on macOS, Ctrl+C copies a
 // selection (and sends ^C without one), Ctrl+V pastes (bracketed when the program asked for it),
-// Ctrl+Shift+C/V and a right-click menu with Copy and Paste. Paths of existing files are links to
-// the built-in editor (termlinks.js).
+// Ctrl+Shift+C/V and a right-click menu with Copy and Paste. A program that has the mouse selects
+// a plain drag itself and copies it with OSC 52 (Claude Code does): the write reaches the
+// clipboard for a viewer who just used this terminal, and when the browser refuses it the copy key
+// copies it (SPEC-158, ADR-0130). Paths of existing files are links to the built-in editor
+// (termlinks.js).
 //
 // It appears once, at its final size and font (F 2026-10-09): the grid is fitted before the
 // socket opens and the size travels with the connection (`?cols=&rows=`), so the server's first
@@ -30,7 +33,7 @@ import { FitAddon } from './vendor/xterm/addon-fit.mjs';
 import { WebLinksAddon } from './vendor/xterm/addon-web-links.mjs';
 import { TerminalSocket, isEndedStatus, CLOSE_REVOKED } from './termsocket.js';
 import { createMouseFilter } from './mousefilter.js';
-import { clipboardKeyAction } from './termkeys.js';
+import { clipboardKeyAction, osc52Text } from './termkeys.js';
 import { isTyping } from './typing.js';
 import { createFileChecker, createFileLinkProvider, relativeCwd, trackOscFileLinks } from './termlinks.js';
 import { h, icon, setChildren, openMenu } from './dom.js';
@@ -53,6 +56,8 @@ const CLICK_SETTLE_MS = 450;
 const INPUT_CHUNK = 8192;
 /** Longest time the placeholder covers a terminal whose server has not drawn it yet. */
 const REVEAL_LIMIT_MS = 5000;
+/** A program's clipboard write (OSC 52) counts only this soon after this viewer's key or click. */
+const PROGRAM_COPY_MS = 5000;
 
 /**
  * Whether the person is typing in a text field outside `root` that is not a terminal's own input
@@ -307,9 +312,13 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
   };
   if (document.fonts && document.fonts.addEventListener) document.fonts.addEventListener('loadingdone', onFontsLoaded);
 
+  // The text of the program's last copy (OSC 52) the browser refused, for the copy keys.
+  let programCopy = '';
   // Copy on select, like many terminals: the selection is in the clipboard right away.
   let copyTimer = 0;
   term.onSelectionChange(() => {
+    // A selection of xterm's own is what the copy keys take from now on, not an older program copy.
+    if (term.hasSelection()) programCopy = '';
     clearTimeout(copyTimer);
     copyTimer = setTimeout(() => {
       const text = term.getSelection();
@@ -326,17 +335,60 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     if (!navigator.clipboard || !navigator.clipboard.writeText) { showNotice('Copying is not available in this browser'); return; }
     navigator.clipboard.writeText(text).then(() => showNotice('Copied'), () => showNotice('The browser blocked the clipboard'));
   }
-  /** Copies the selection from a key press: the browser's copy command (xterm fills it), else the clipboard API. */
+  /**
+   * Copies the selection from a key press: the browser's copy command (xterm fills it), else the
+   * clipboard API. Without a selection of xterm's own, the program's copy the browser refused.
+   */
   function copySelection(clear) {
-    const text = term.getSelection();
+    const text = term.getSelection() || programCopy;
     if (!text) return;
+    const fromProgram = !term.hasSelection();
+    // xterm fills the copy event only for its own selection; the program's text is filled here.
+    let filled = false;
+    const fill = (event) => {
+      if (!event.clipboardData) return;
+      event.clipboardData.setData('text/plain', text);
+      event.preventDefault();
+      filled = true;
+    };
+    if (fromProgram) document.addEventListener('copy', fill, true);
     let copied = false;
     try { copied = document.execCommand('copy'); } catch { copied = false; }
+    if (fromProgram) {
+      document.removeEventListener('copy', fill, true);
+      copied = copied && filled;
+    }
     if (copied) showNotice('Copied');
     else writeClipboard(text);
+    if (fromProgram) programCopy = '';
     // After Ctrl+C the selection goes, so the next Ctrl+C interrupts the program (as in Windows Terminal).
     if (clear) term.clearSelection();
   }
+
+  // The program's copy (OSC 52): Claude Code copies the selection it draws (a plain drag is its
+  // own) this way, as a native terminal expects. One PTY shows to several viewers and runs an
+  // agent's code, so only a viewer who can write and pressed a key or the mouse here moments ago
+  // takes it; a query is never answered. A write the browser refuses (Safari, no user gesture;
+  // plain HTTP, no clipboard API) waits for the copy key, whose copy command needs no permission.
+  let handsOnAt = 0;
+  const handsOn = () => { handsOnAt = Date.now(); };
+  el.addEventListener('keydown', handsOn, true);
+  // A drag may end anywhere (the program still gets that release): the release counts too.
+  el.addEventListener('mousedown', () => {
+    handsOn();
+    window.addEventListener('mouseup', handsOn, { capture: true, once: true });
+  }, true);
+  term.parser.registerOscHandler(52, (data) => {
+    const text = osc52Text(data);
+    if (!text || !state.can_write || Date.now() - handsOnAt > PROGRAM_COPY_MS) return true;
+    const refused = () => {
+      programCopy = text;
+      showNotice(`Press ${IS_MAC ? '⌘C' : 'Ctrl+Shift+C'} to copy`);
+    };
+    if (!navigator.clipboard || !navigator.clipboard.writeText) { refused(); return true; }
+    navigator.clipboard.writeText(text).then(() => { programCopy = ''; showNotice('Copied'); }, refused);
+    return true;
+  });
   /** Pastes the clipboard's text where no paste key exists (Ctrl+V on macOS, the menu). */
   async function pasteFromClipboard() {
     if (!state.can_write) { showNotice(readOnlyText()); return; }
@@ -385,9 +437,10 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       if (!pageKey(event)) { event.preventDefault(); return; }
     } else if (event.shiftKey) return;
     event.preventDefault();
-    const selected = term.getSelection();
+    const own = term.hasSelection();
+    const selected = term.getSelection() || programCopy;
     openMenu({ x: event.clientX, y: event.clientY }, [
-      { label: 'Copy', hint: IS_MAC ? '⌘C' : 'Ctrl+C', disabled: !selected, title: selected ? null : 'Select text first', onSelect: () => { writeClipboard(selected); term.focus(); } },
+      { label: 'Copy', hint: IS_MAC ? '⌘C' : own ? 'Ctrl+C' : 'Ctrl+Shift+C', disabled: !selected, title: selected ? null : 'Select text first', onSelect: () => { writeClipboard(selected); if (!own) programCopy = ''; term.focus(); } },
       { label: 'Paste', hint: IS_MAC ? '⌘V' : 'Ctrl+V', disabled: !state.can_write, title: state.can_write ? null : readOnlyText(), onSelect: () => { term.focus(); pasteFromClipboard(); } },
       { separator: true },
       { label: 'Select all', hint: IS_MAC ? '⌘A' : null, onSelect: () => { term.selectAll(); term.focus(); } },
@@ -774,6 +827,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     },
     destroy() {
       destroyed = true;
+      window.removeEventListener('mouseup', handsOn, true);
       clearTimeout(noticeTimer);
       clearTimeout(revealTimer);
       clearTimeout(presenceTimer);
