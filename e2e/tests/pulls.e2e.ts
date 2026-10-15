@@ -179,6 +179,8 @@ type Mocked = {
     gitRequests: number;
     releaseGit: () => void;
     advanceClock: (ms: number) => void;
+    failPath: string | null;
+    failedReads: number;
   };
 };
 const mocked = <T>(browser: Browser, run: (m: Mocked['__yuliusMock']) => T) => browser.evaluate(`(${run.toString()})(window.__yuliusMock)`) as Promise<T>;
@@ -195,6 +197,24 @@ async function handledSoFar(browser: Browser, title: string): Promise<number> {
   await expect(browser.locator('.task-list .task-row').filter({ hasText: title })).toBeVisible();
   return mocked(browser, (m) => m.gitRequests);
 }
+
+// #415: a later read that fails (a deploy restarting the server) keeps the chips this page read;
+// only chips seeded from storage are dropped when a read fails (PRC-003).
+test('a failed later read keeps the chips the page read before', async ({ app, browser }) => {
+  await app.open(mock('/s/studio', '&pullgap=0'));
+  const seen = await chipsAfterRead(browser);
+  await mocked(browser, (m) => {
+    m.failPath = '/api/sandboxes/sb_studio/git';
+    m.announcePulls('sb_studio');
+    m.announcePulls('sb_studio');
+  });
+  // Reads never overlap: the second failed read is asked for only once the first one was handled.
+  await expect.poll(() => mocked(browser, (m) => m.failedReads)).toBe(2);
+  // The sidebar repaints rows and chips together: once this rename shows, it repainted after the failure.
+  await touchTask(browser, 'sb_studio', 13, { title: 'Improve the code, after the failure' });
+  await expect(browser.locator('.task-list .task-row').filter({ hasText: 'Improve the code, after the failure' })).toBeVisible();
+  await expect(chips(browser)).toHaveText(seen);
+});
 
 test('a merge Yulius announces reaches the row at once', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));

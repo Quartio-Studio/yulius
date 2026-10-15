@@ -153,8 +153,10 @@ function seed(params) {
     },
     jev: { key: null, setAt: null, setBy: null, config: params.get('jev') === 'config' },
     // fail=<path> answers 500 to GET requests of that exact path, to show how a view says a load
-    // failed (in place, naming what failed, with Try again; #147).
+    // failed (in place, naming what failed, with Try again; #147). A test may set `failPath` later;
+    // `failedReads` counts the GET requests failed on purpose.
     failPath: params.get('fail') || null,
+    failedReads: 0,
     holdPath: params.get('hold') || null,
     // failpost=<path> does the same to POST requests, to show how an action says it failed.
     failPostPath: params.get('failpost') || null,
@@ -3392,7 +3394,10 @@ async function handleFetch(db, url, init = {}) {
   // `hold=<path>` keeps GET requests of that path waiting, to look at a view while it loads (SPEC-092).
   if (db.held && method === 'GET' && u.pathname === db.holdPath) await db.held;
   if (!PUBLIC.includes(u.pathname) && !db.signedIn) return json(401, { error: { code: 'unauthenticated', message: 'Sign in first.' } });
-  if (db.failPath && method === 'GET' && u.pathname === db.failPath) return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
+  if (db.failPath && method === 'GET' && u.pathname === db.failPath) {
+    db.failedReads += 1;
+    return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
+  }
   // Tests count archive requests (`__yuliusMock.archiveRequests`), also those failed on purpose.
   if (method === 'POST' && /^\/api\/tasks\/[^/]+\/archive$/.test(u.pathname)) db.archiveRequests = (db.archiveRequests || 0) + 1;
   if (db.failPostPath && method === 'POST' && u.pathname === db.failPostPath) return json(500, { error: { code: 'internal', message: 'The mock server failed on purpose' } });
