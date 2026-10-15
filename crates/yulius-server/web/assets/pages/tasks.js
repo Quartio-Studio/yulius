@@ -17,6 +17,7 @@ import { readJson, writeJson } from '../store.js';
 import { initials } from '../layout.js';
 import { pageFrame, dataTable, loader } from './common.js';
 import { NEW_TASK_KEYS } from '../shortcuts.js';
+import { taskGraphView } from '../taskgraph.js';
 
 function statusCell(task) {
   const info = statusInfo(task);
@@ -86,6 +87,8 @@ export function mountTasksPage(ctx, sandbox) {
     authors: new Set((query.get('author') || '').split(',').filter(Boolean)),
     origins: new Set((query.get('origin') || '').split(',').filter(Boolean)),
   };
+  // List or Graph (SPEC-164), kept in the URL like the filters.
+  let view = query.get('view') === 'graph' ? 'graph' : 'list';
   let alive = true;
   const stored = readJson(COLLAPSED_KEY, []);
   const collapsed = new Set(Array.isArray(stored) ? stored : []);
@@ -94,7 +97,12 @@ export function mountTasksPage(ctx, sandbox) {
 
   // Read access watches; starting tasks needs write access, as on Home and every other page.
   const canStart = allows(sandbox.access, 'write');
+  const viewName = `tl-view-${Math.random().toString(36).slice(2, 8)}`;
+  const viewRadio = (id, label, iconName) => h('label', null,
+    h('input', { type: 'radio', name: viewName, value: id, checked: view === id, onChange: () => { view = id; render(); } }), icon(iconName, { size: 14 }), label);
+  const viewSwitch = h('div', { class: ['seg', 'tl-view'], role: 'radiogroup', 'aria-label': 'View' }, viewRadio('list', 'List', 'menu'), viewRadio('graph', 'Graph', 'workflow'));
   const frame = pageFrame({ title: 'Tasks', sub: 'each task is a Claude Code session on its own branch', actions: [
+    viewSwitch,
     h('button', { type: 'button', class: 'tl-find', 'aria-keyshortcuts': '/', 'aria-label': 'Search tasks', onClick: () => openSearch() }, icon('search', { size: 14 }), h('span', { class: 'tl-find-text', 'aria-hidden': 'true' }, 'Press', h('span', { class: 'kbd' }, '/'), 'to search')),
     h('button', { type: 'button', class: 'btn btn-primary', disabled: !canStart, title: canStart ? null : 'Requires write access', onClick: () => ctx.openNewTask && ctx.openNewTask() }, icon('plus', { size: 14 }), 'New task', h('span', { class: 'kbd kbd-on-accent' }, NEW_TASK_KEYS)),
   ] });
@@ -102,11 +110,14 @@ export function mountTasksPage(ctx, sandbox) {
   const chips = h('div', { class: 'tl-chips' });
   const summary = h('span', { class: 'tl-summary', 'aria-live': 'polite' });
   const listHost = h('div', { class: 'tl' });
+  const graphHost = h('div', { hidden: true });
+  const toolbar = h('div', { class: 'tl-toolbar' }, tabs, chips, summary);
   const footer = h('div', { class: 'tl-footer' }, h('a', { href: href('/archived'), dataset: { route: '/archived' } }, 'View archived tasks', icon('right', { size: 12 })));
-  frame.body.append(h('div', { class: 'tl-toolbar' }, tabs, chips, summary), listHost, footer);
+  frame.body.append(toolbar, listHost, graphHost, footer);
 
   function syncUrl() {
     const params = new URLSearchParams();
+    if (view === 'graph') params.set('view', 'graph');
     if (filters.state !== 'all') params.set('state', filters.state);
     if (filters.authors.size) params.set('author', [...filters.authors].join(','));
     if (filters.origins.size) params.set('origin', [...filters.origins].join(','));
@@ -213,6 +224,22 @@ export function mountTasksPage(ctx, sandbox) {
         ? loadError(`Couldn’t load the tasks of ${sandbox.name}: ${error.message}`, () => ctx.store.loadTasks(sandbox.id).catch(() => {}))
         : loadingRows(`Loading the tasks of ${sandbox.name}…`));
       loadingToolbar(!error);
+      listHost.hidden = false;
+      graphHost.hidden = true;
+      return;
+    }
+    // The Graph shows every open task: the filters would cut its links, so they stay with List.
+    const graph = view === 'graph';
+    toolbar.hidden = graph;
+    listHost.hidden = graph;
+    graphHost.hidden = !graph;
+    viewSwitch.querySelectorAll('input').forEach((input) => { input.checked = input.value === view; });
+    if (!graph) graphHost.replaceChildren();
+    if (graph) {
+      const infoOf = (task) => taskInfo(task, ctx.store.state.actionRequests, ctx.store.pullsOf(task.sandbox_id).get(task.id));
+      setChildren(graphHost, taskGraphView(sandbox, tasks, infoOf, emptyState({ iconName: 'tasks', title: `Nothing is open in ${sandbox.name}`,
+        text: 'Running, queued, chained and prepared tasks show here with what each waits for.',
+        action: canStart ? h('button', { type: 'button', class: 'btn btn-primary', onClick: () => ctx.openNewTask && ctx.openNewTask() }, icon('plus', { size: 14 }), 'New task') : null })));
       return;
     }
     const me = myLogin();
@@ -397,6 +424,7 @@ export function mountTasksPage(ctx, sandbox) {
     filters.authors.clear(); (next.get('author') || '').split(',').filter(Boolean).forEach((a) => filters.authors.add(a));
     filters.origins.clear(); (next.get('origin') || '').split(',').filter(Boolean).forEach((o) => filters.origins.add(o));
     searchQuery = next.get('q') || '';
+    view = next.get('view') === 'graph' ? 'graph' : 'list';
     render();
   }
   return { el: frame.el, key: `tasks:${sandbox.id}`, update, destroy: () => {
