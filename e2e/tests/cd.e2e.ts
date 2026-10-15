@@ -15,7 +15,7 @@ test('the CD page shows dev and production as their branches define them', async
   const prod = screen.getByRole('region', 'Production environment');
   await expect(dev.getByText('scripts/cd/deploy.sh dev')).toBeVisible();
   await expect(dev.getByText('waiting for a person to allow it')).toBeVisible();
-  await expect(prod.getByText('promotes the integration branch into main')).toBeVisible();
+  await expect(prod.getByText('Promotes')).toBeVisible();
   await expect(prod.getByText(/Production is always deployed by a person/)).toBeVisible();
   await expect(screen.getByText('ssh: connect to host')).toBeHidden();
   expect(await axeViolations(browser)).toEqual([]);
@@ -89,6 +89,53 @@ test('read access watches; CD is set up with an agent through a task', async ({ 
   expect(await axeViolations(browser)).toEqual([]);
   await setup.getByRole('button', 'Start task').click();
   await expect(browser).toHaveURL(/#\/s\/product\/t\/\d+$/);
+});
+
+// Task #146 (#501): the cards' layout. The deploy button stays at the top right of its card at
+// every width (only the title and its badge wrap), a deploy that cannot run is not styled as the
+// card's main action, and a promoting production names the branch and commit it promotes.
+type DeployHead = { name: string; sameRow: boolean; fromRight: number; primary: boolean; disabled: boolean };
+const deployHeads = (browser: { evaluate<T>(fn: () => T): Promise<T> }) => browser.evaluate((): DeployHead[] => [...document.querySelectorAll('.cd-env')].map((card) => {
+  const title = card.querySelector('.card-title')!.getBoundingClientRect();
+  const button = [...card.querySelectorAll('button')].find((b) => /^Deploy/.test(b.textContent || ''))!;
+  const at = button.getBoundingClientRect();
+  const style = getComputedStyle(card);
+  const inner = card.getBoundingClientRect().right - parseFloat(style.borderRightWidth) - parseFloat(style.paddingRight);
+  return {
+    name: card.getAttribute('aria-label') || '',
+    sameRow: at.top < title.bottom && title.top < at.bottom,
+    fromRight: Math.round(inner - at.right),
+    primary: button.classList.contains('btn-primary'),
+    disabled: button.disabled,
+  };
+}));
+
+test('each card keeps its deploy button top right, never styles a dead deploy as the main action', async ({ app, browser, screen }) => {
+  await browser.setViewport({ width: 390, height: 844 });
+  await app.open(mock('/s/studio/cd'));
+  await expect(screen.getByRole('region', 'Production environment')).toBeVisible();
+  expect(await deployHeads(browser)).toEqual([
+    { name: 'Dev environment', sameRow: true, fromRight: 0, primary: true, disabled: false },
+    { name: 'Production environment', sameRow: true, fromRight: 0, primary: false, disabled: false },
+  ]);
+  expect(await browser.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  expect(await axeViolations(browser)).toEqual([]);
+
+  // "Production · Not defined" is the widest head: its button fell under the title, left-aligned.
+  await app.open(mock('/s/product/cd'));
+  await expect(screen.getByRole('region', 'Production environment')).toBeVisible();
+  expect(await deployHeads(browser)).toEqual([
+    { name: 'Dev environment', sameRow: true, fromRight: 0, primary: false, disabled: true },
+    { name: 'Production environment', sameRow: true, fromRight: 0, primary: false, disabled: true },
+  ]);
+});
+
+test('a promoting production names the branch and the commit it promotes', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/cd'));
+  await expect(screen.getByRole('region', 'Production environment')).toBeVisible();
+  const facts = browser.locator('[aria-label="Production environment"] .cd-facts');
+  await expect(facts).toHaveText(/Promotes\s*quartio at 9f3c2a1 into main/);
+  await expect(facts).not.toHaveText(/First/);
 });
 
 type Touching = Window & { __yuliusMock: { touchTask(sandbox: string, number: number, changes: object): void } };
