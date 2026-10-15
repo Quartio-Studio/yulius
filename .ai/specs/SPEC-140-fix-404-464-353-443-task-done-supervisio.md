@@ -93,6 +93,7 @@ fails the test although its total is far from 120 s.
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | STP-001 | A stop or close that comes while the task's run is launching (spawned, Yulius not attached yet) asks the run to shut down once it is attached, so the run ends as stopped or closed at once, not at the escalation. A stop that comes later still finds the run itself; the process host takes a second shutdown request as the first. | `task_done::a_stop_while_the_run_is_launching_ends_it_once_attached` (fails without: the stop waits for a 60 s escalation); `task_done::a_switch_waits_for_a_background_agent_launched_in_the_turn` ("the stop" 20.1 s → 0.1 s) |
+| STP-002 | An end intent that no run consumed (a stop or close that ended no run: between a switch's two runs, before a failed spawn) is not left for the next run: a launch that no switch drives starts with no intent, and the stop that ends a Stopping task with no live run clears it. A stop asked at the attach also arms the escalation for that run (the stop came before the run existed, so it armed none). | `task_done::a_stop_that_ended_no_run_does_not_end_the_next_one` (fails without: the continued task's resumed run is killed as `cancelled` at its attach) |
 | HKS-001 | A hook event Yulius received is handled to its end even when its client stops waiting and closes the connection: the server runs it in its own task, and the HTTP handler only waits for its answer. The status line is unchanged (it only reads). | `agent_hooks::a_hook_whose_client_hangs_up_is_still_applied` (fails without: the notice is never applied) |
 | TWT-001 | A test that stops a task waits for the stop within the product's own bound: the stop escalation (`stop_escalation_ms` of that app) plus a settle margin for the termination and its record, waiting for every stopped task at once. When the bound passes, the error names each task's status and its runs' states and exit reasons. | `support::wait_stopped`, used by `task_done` and `supervision` |
 | TWT-002 | The merge train tests share one deadline from the start of the test, under nextest's kill bound with room to report what was seen (100 s of the 120 s), instead of a fixed 50 s per phase. | `merge_train::*` |
@@ -107,6 +108,7 @@ fails the test although its total is far from 120 s.
 - [x] Loaded repeat runs of every named test pass
 - [ ] Decision record, architecture and changes log; every gate green
 - [ ] Independent review in a fresh session, findings fixed test-first
+- [x] A stop that ended no run leaves nothing for the next run (review), test-first
 
 ## Acceptance criteria
 
@@ -211,6 +213,15 @@ rounds back to back (load 16 → 48, then 40 → 53):
 "The stop" in the switch test: 0.24 to 0.32 s at the slowest (20.1 s before); in the slot test
 0.34 s at the slowest. The red train test's 49.0 s is within its 100 s budget (the old per-phase
 bound was 50 s).
+
+Review round 1 (head 5bcdd606, request changes): one major finding, a Cancel or Close that no run
+consumed stays in the task's runtime and, with STP-001, shut the next run down at its attach (the
+task then read Running with no run). `task_done::a_stop_that_ended_no_run_does_not_end_the_next_one`
+without the fix: FAIL, "the resumed run ended: … state: Killed … exit_reason: Some(\"cancelled\")"
+(1.1 s); with it 3/3 PASS (3.0 to 3.4 s). Minor findings taken: the attach-time shutdown arms the
+escalation; ADR-0115 lists the late effects of a hook finished after its client went on; the hook
+test's wording says what it shows and its start wait is bounded; the join error is logged.
+`scripts/dev ci` at 5bcdd606: exit 0, 1762/1762 tests.
 
 Also run: `cargo nextest run -p yulius -E 'binary_id(yulius::main) & (test(/^supervision::/) |
 test(/^task_done::/))'` 51/51; `test(/^merge_train::/)` 7/7; `test(/^agent_hooks::/)` 15/15.

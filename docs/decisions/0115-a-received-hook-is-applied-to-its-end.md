@@ -39,3 +39,8 @@ while the server handles it was never applied.
   (its answer lost to the client's timeout) still counts as a gate block, as the agent did stop.
 - A hook's work can outlive its connection by the hook's own bounds (its store calls, its Git work);
   hold answers stay short, so no hook task waits for long.
+- A hook finished late can land after the agent's next hooks, which were never ordered with it:
+  a Stop that settles after a prompt submitted meanwhile can read Done or Your turn while the agent
+  works, until the agent's next work or hook says Working again. A hold or pause decided after the
+  client went on is repaired by the lost-hold check (`HOLD_LOST_MS`, 45 s), and a step nudge the
+  agent never received counts as given. Each of these was a lost or half-applied event before.

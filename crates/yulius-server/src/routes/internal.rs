@@ -66,9 +66,12 @@ pub async fn hook(
     // HKS-001, ADR-0115): the agent went on, so its event happened.
     let (token, which, what) = (token.to_owned(), harness.clone(), event.clone());
     let handled = tokio::spawn(async move { app.hook_event(&token, &which, &what, &input).await });
-    let Ok(reply) = handled.await else {
-        tracing::warn!(%harness, %event, "a hook's handling ended without an answer");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    let reply = match handled.await {
+        Ok(reply) => reply,
+        Err(err) => {
+            tracing::warn!(error = %err, %harness, %event, "a hook's handling ended without an answer");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
     };
     match reply {
         Ok(HookReply::Hold { retry_after_secs }) => (

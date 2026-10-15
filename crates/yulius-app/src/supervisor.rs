@@ -956,6 +956,14 @@ impl App {
             .sandbox(&task.sandbox_id)
             .await?
             .ok_or(AppError::NotFound)?;
+        // An intent left by a stop or close that ended no run is not for this one (SPEC-140
+        // STP-002): a stop of a live task makes it Stopping, so only a switch's launch can carry an
+        // intent meant for its new run (a stop while it switched, asked at the attach).
+        if task.status != TaskStatus::Switching
+            && let Ok(mut intent) = self.runtime(&task.id).intent.lock()
+        {
+            *intent = None;
+        }
         // Status → Starting (unless a switch drives this launch).
         if task.status != TaskStatus::Switching && task.status != TaskStatus::Starting {
             let next = match task.status {
@@ -1901,6 +1909,8 @@ impl App {
             .lock()
             .is_ok_and(|intent| matches!(*intent, Some(EndIntent::Cancel | EndIntent::Close)));
         if ending {
+            // The stop may have come before this run existed, so it armed no escalation for it.
+            self.arm_escalation(task_id, Some(attempt.id.clone()));
             request_shutdown(&runtime).await;
         }
         // A viewer who took the size while the run was starting (the PTY spawned at the size before
@@ -2527,6 +2537,10 @@ impl App {
                         )
                         .await?
                 {
+                    // An earlier stop's intent that no run consumed goes with it (STP-002).
+                    if let Ok(mut intent) = self.runtime(task_id).intent.lock() {
+                        *intent = None;
+                    }
                     self.end_pause(task_id, "cancelled").await;
                     self.publish_task(task_id).await;
                     self.advance_chains(task_id).await;

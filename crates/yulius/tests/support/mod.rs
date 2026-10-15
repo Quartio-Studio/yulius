@@ -836,8 +836,9 @@ pub async fn insert_sandbox(
 }
 
 /// What a stop may take beyond its escalation: terminating the run's host and recording its end,
-/// on a starved runner (SPEC-140 TWT-001). That takes under a second measured at load 79; the
-/// margin keeps a test with its stop inside nextest's 120 s.
+/// on a starved runner (SPEC-140 TWT-001). That takes under a second measured at load 79. With the
+/// default 20 s escalation a stop may take 60 s, which suits a test that is short before its stop
+/// (nextest kills at 120 s).
 pub const STOP_SETTLE: std::time::Duration = std::time::Duration::from_secs(40);
 
 /// Stops `tasks` and waits until none is live (see [`wait_stopped`]).
@@ -850,7 +851,8 @@ pub async fn stop_tasks(app: &Arc<App>, tasks: &[&yulius_domain::ids::TaskId]) -
 
 /// Waits until none of `tasks` is live, all together, within the product's own bound for a stop:
 /// after `stop_escalation_ms` the run's host is terminated and the run recorded as lost (SPEC-065
-/// END-001), plus [`STOP_SETTLE`]. A miss says each live task's status and its runs' states.
+/// END-001), plus [`STOP_SETTLE`]. A miss says each live task's status and its runs' states; a
+/// deleted task counts as stopped.
 pub async fn wait_stopped(app: &App, tasks: &[&yulius_domain::ids::TaskId]) -> TestResult {
     let bound = std::time::Duration::from_millis(app.config.stop_escalation_ms) + STOP_SETTLE;
     let deadline = tokio::time::Instant::now() + bound;

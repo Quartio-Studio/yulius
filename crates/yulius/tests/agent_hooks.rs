@@ -904,11 +904,12 @@ async fn a_renamed_spec_is_followed_by_its_frontmatter() -> TestResult {
 }
 
 /// SPEC-140 HKS-001 (#404): the hook client gives up after `HOOK_TIMEOUT` and lets the agent go on
-/// (fail-open), closing its connection, and the server then drops the handling of the request. A
-/// hook Yulius received is still applied to its end. Here a notice that asks a person: the server
-/// starts handling it and never takes it further (a layer holds it, as a dropped handler would be),
-/// and the client hangs up. Before, the hook's work went with the handler, so on a loaded host a
-/// Stop that took longer than the client's wait never made its task Done.
+/// (fail-open), closing its connection, and hyper then drops the request's handler. A hook Yulius
+/// received is still applied to its end, whatever becomes of its handler. Here a notice that asks a
+/// person: a layer starts its handler and never drives it further (as a dropped handler), and the
+/// client hangs up. Before, the hook's work was the handler's, so on a loaded host a Stop that took
+/// longer than the client's wait never made its task Done. (That hyper drops the handler when the
+/// client hangs up was shown with the layer resuming it after a while: SPEC-140 Evidence.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_hook_whose_client_hangs_up_is_still_applied() -> TestResult {
     use tokio::io::AsyncWriteExt;
@@ -958,7 +959,7 @@ async fn a_hook_whose_client_hangs_up_is_still_applied() -> TestResult {
     );
     let mut client = tokio::net::TcpStream::connect(addr).await?;
     client.write_all(request.as_bytes()).await?;
-    started.wait_for(|s| *s).await?;
+    tokio::time::timeout(std::time::Duration::from_secs(10), started.wait_for(|s| *s)).await??;
     drop(client);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while activity(&f).await? != Some(Activity::NeedsAttention) {
