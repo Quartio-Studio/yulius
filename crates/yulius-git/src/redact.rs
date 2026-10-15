@@ -1,5 +1,7 @@
 //! Credential redaction for text that may reach logs or error messages (SEC-002).
 
+use yulius_domain::redact::{INSTALLATION_TOKEN_PREFIX, stateless_installation_token_len};
+
 const TOKEN_PREFIXES: &[&str] = &["ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"];
 const REDACTED: &str = "[redacted]";
 
@@ -46,9 +48,7 @@ fn redact_word(word: &str) -> String {
     for prefix in TOKEN_PREFIXES {
         while let Some(start) = word.find(prefix) {
             let tail = &word[start + prefix.len()..];
-            let len = tail
-                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-                .unwrap_or(tail.len());
+            let len = token_len(prefix, tail);
             if len == 0 {
                 break;
             }
@@ -56,6 +56,20 @@ fn redact_word(word: &str) -> String {
         }
     }
     word
+}
+
+/// Length of the token after `prefix`: a stateless installation token (`ghs_<APPID>_<JWT>`)
+/// through its signature, any other through its `[A-Za-z0-9_]` run.
+fn token_len(prefix: &str, tail: &str) -> usize {
+    let stateless = if prefix == INSTALLATION_TOKEN_PREFIX {
+        stateless_installation_token_len(tail)
+    } else {
+        None
+    };
+    stateless.unwrap_or_else(|| {
+        tail.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(tail.len())
+    })
 }
 
 fn redact_userinfo(word: &str) -> String {
@@ -86,6 +100,26 @@ mod tests {
         assert!(!clean.contains("github_pat_11ABC_xyz"), "{clean}");
         assert!(clean.contains("github.com/o/r.git"), "{clean}");
         assert!(clean.contains("403"), "{clean}");
+    }
+
+    /// #424: a stateless installation token (`ghs_<APPID>_<JWT>`) is removed whole, not cut at
+    /// the JWT's first `.`.
+    #[test]
+    fn removes_a_whole_stateless_installation_token() {
+        let token = format!(
+            "ghs_1234567_eyJ{}.eyJ{}.{}",
+            "hbGciOiJSUzI1NiJ9".repeat(2),
+            "pc3MiOiIxIn0".repeat(10),
+            "c2lnbmF0dXJl_-".repeat(16)
+        );
+        let text = format!(
+            "fatal: unable to access 'https://x-access-token:{token}@github.com/o/r.git/'\n\
+             remote: {token}."
+        );
+        assert_eq!(
+            redact(&text),
+            "fatal: unable to access 'https://[redacted]@github.com/o/r.git/'\nremote: [redacted]."
+        );
     }
 
     #[test]
