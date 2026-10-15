@@ -906,6 +906,13 @@ fn a_launch_goal_unrecorded_across_a_restart_is_watched_again() -> TestResult {
                 .any(|n| n.contains("Claude Code did not take the task's goal")),
             "{said:?}"
         );
+        // Flagged once: no later restart flags it again (GWR-001).
+        let attempt = app.deps.store.live_attempt(&id).await?.ok_or("run")?;
+        let marker = launch_goal_marker(&attempt.run_dir);
+        wait_for("the marker's removal", Duration::from_secs(10), || async {
+            !marker.exists()
+        })
+        .await?;
         stop(&app, &id).await
     })?;
     rt.shutdown_timeout(Duration::from_secs(5));

@@ -26,7 +26,9 @@ that a goal was taken.
   `terminate` succeeded (which waits for its processes to be gone). Otherwise it stays live: it
   keeps its registration and run directory, a pending close is cleared so it is listed and closable
   again, the failure is logged and its viewers get a notice. Closing it again, or the idle reaper's
-  next pass, retries. The wait before terminating is configuration (`shell_exit_ms`, 10 s).
+  next pass, retries. The wait before terminating is configuration (`shell_exit_ms`, 10 s). A
+  lost connection to a shell whose host or process still lives (a killed host, a child that
+  survives it) is handled the same way.
 - `end_shells` says whether every shell ended. The Superagent's move starts the new Superagent only
   when the old one ended; otherwise the old one stays on its subscription, no longer switching, and
   its viewers are told why.
@@ -53,5 +55,5 @@ that a goal was taken.
 - The idle reaper retries such a shell every pass (each a bounded 2 s `terminate`).
 - A restart while a launch goal is unconfirmed flags the task as a launch without restart would,
   later by the time the new server needs to see the session read input.
-- Not covered (noted on #346): a lost host connection (`pump_shell`), an unadoptable run directory
-  at start and a shell whose start failed still ignore `terminate`'s result.
+- Not covered (noted on #346): an unadoptable run directory at start and a shell whose start
+  failed still ignore `terminate`'s result.

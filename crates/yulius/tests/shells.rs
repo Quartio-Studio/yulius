@@ -850,6 +850,68 @@ async fn a_terminal_whose_host_cannot_be_ended_stays_live() -> TestResult {
     Ok(())
 }
 
+/// SPEC-146 SHE-001 (review round 1): a terminal whose host died while its process lives on (it
+/// ignores the hang-up) and cannot be ended is not recorded as ended when the connection is lost:
+/// it stays listed with its run directory and its viewer is told. A later close ends it once its
+/// process can be ended.
+#[tokio::test]
+async fn a_terminal_whose_host_died_but_whose_process_survives_stays_live() -> TestResult {
+    let f = fixture_ending(false, None, None, Some(500)).await?;
+    let served = serve(f.h.router.clone()).await?;
+    let created = create(&f, &f.writer, "s1", None).await?;
+    assert_eq!(created.status, StatusCode::CREATED, "{:?}", created.body);
+    let id = created.body["id"].as_str().ok_or("id")?.to_owned();
+    let run_dir = f.data.join("shells").join(&id);
+    let mut socket = open_terminal(served.addr, &id, &f.writer).await?;
+    let (host, child) = run_pids(&run_dir)?;
+    // The recorded child becomes a process that outlives its host: same pid, session and start.
+    input(&mut socket, "trap '' HUP; exec sleep 600\r").await?;
+    wait_for("the child to be sleep", || {
+        std::fs::read_to_string(format!("/proc/{child}/comm")).is_ok_and(|c| c.trim() == "sleep")
+    })
+    .await?;
+
+    f.gate.refuse_ends(true);
+    nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(host),
+        nix::sys::signal::Signal::SIGKILL,
+    )?;
+    loop {
+        let message = next_json(&mut socket).await?;
+        assert_ne!(message["type"], "exit", "recorded as ended: {message}");
+        if message["type"] == "notice"
+            && message["text"]
+                .as_str()
+                .is_some_and(|t| t.contains("could not be ended"))
+        {
+            break;
+        }
+    }
+    let shown = listed(&list(&f, &f.writer, "s1").await?);
+    assert!(shown.iter().any(|(listed, _)| *listed == id), "{shown:?}");
+    assert!(run_dir.join("shell.json").is_file(), "run directory kept");
+    assert!(pid_alive(child));
+
+    f.gate.refuse_ends(false);
+    let closed = call(
+        &f.h.router,
+        Method::DELETE,
+        &format!("/api/sandboxes/s1/shells/{id}"),
+        None,
+        &f.writer,
+    )
+    .await?;
+    assert_eq!(closed.status, StatusCode::NO_CONTENT, "{:?}", closed.body);
+    loop {
+        if next_json(&mut socket).await?["type"] == "exit" {
+            break;
+        }
+    }
+    wait_for("the process to end", || !pid_alive(child)).await?;
+    wait_for("the run directory's removal", || !run_dir.exists()).await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn shells_keep_running_across_a_server_restart_and_are_adopted() -> TestResult {
     let f = fixture().await?;

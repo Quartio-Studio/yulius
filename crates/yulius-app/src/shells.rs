@@ -914,10 +914,17 @@ impl App {
                     }
                     break match self.deps.session_host.inspect(&runtime.run_dir) {
                         RunInspection::Exited(exit) => Some(exit),
+                        // Its host or its process lives on: ended only once they are gone
+                        // (SPEC-146 SHE-001).
                         RunInspection::Recorded {
-                            host_alive: true, ..
-                        } => {
-                            let _ = self.deps.session_host.terminate(&runtime.run_dir);
+                            host_alive,
+                            child_alive,
+                            ..
+                        } if host_alive || child_alive => {
+                            if let Err(err) = self.deps.session_host.terminate(&runtime.run_dir) {
+                                self.keep_unended(&runtime, &err);
+                                return;
+                            }
                             None
                         }
                         _ => None,
@@ -986,16 +993,22 @@ impl App {
             // It exited meanwhile: its pump recorded the end.
             Err(_) if runtime.has_ended() => true,
             Err(err) => {
-                tracing::error!(shell = %runtime.id, sandbox = %runtime.sandbox, error = %err, "the shell's host could not be terminated; it stays live");
-                runtime.closing.store(false, Ordering::SeqCst);
-                // A Superagent's move says so itself, once it decided (SPEC-146 SHE-002).
-                match runtime.kind {
-                    ShellKind::Terminal => runtime.hub.notice(TERMINAL_NOT_ENDED),
-                    ShellKind::Cockpit if runtime.switching.load(Ordering::SeqCst) => {}
-                    ShellKind::Cockpit => runtime.hub.notice(COCKPIT_NOT_ENDED),
-                }
+                self.keep_unended(runtime, &err);
                 false
             }
+        }
+    }
+
+    /// A shell whose host or process could not be terminated stays live (SPEC-146 SHE-001):
+    /// registered with its run directory, listed and closable again, its viewers told.
+    fn keep_unended(&self, runtime: &ShellRuntime, err: &AppError) {
+        tracing::error!(shell = %runtime.id, sandbox = %runtime.sandbox, error = %err, "the shell's host could not be terminated; it stays live");
+        runtime.closing.store(false, Ordering::SeqCst);
+        // A Superagent's move says so itself, once it decided (SPEC-146 SHE-002).
+        match runtime.kind {
+            ShellKind::Terminal => runtime.hub.notice(TERMINAL_NOT_ENDED),
+            ShellKind::Cockpit if runtime.switching.load(Ordering::SeqCst) => {}
+            ShellKind::Cockpit => runtime.hub.notice(COCKPIT_NOT_ENDED),
         }
     }
 
