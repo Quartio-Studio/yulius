@@ -2,22 +2,13 @@
 // assets/mock.js stand in for `yulius serve`, so no server, account or model is needed.
 import { createRequire } from 'node:module';
 import { afterEach, beforeEach, type Browser, type Screen } from '@e2e-dev/web';
-import { expect } from 'e2e';
+import { expect, type App } from 'e2e';
 
 /**
  * A UI path in mock mode (`?mock=1`, hash routing). `options` are further mock switches, such as
  * `&signedout=1` (see crates/yulius-server/web/README.md, "Run the mock locally").
  */
 export const mock = (path: string, options = '') => `/?mock=1${options}#${path}`;
-
-/**
- * Waits until the mock is installed (`window.__yuliusMock`). The app loads mock.js with a dynamic
- * import, so the page's load event can come first; a test that touches the mock right after
- * `app.open` calls this.
- */
-export async function mockReady(browser: Browser): Promise<void> {
-  await expect.poll(() => browser.evaluate(() => Boolean((window as { __yuliusMock?: unknown }).__yuliusMock))).toBe(true);
-}
 
 const axeScript = createRequire(import.meta.url).resolve('axe-core/axe.min.js');
 
@@ -43,12 +34,31 @@ export async function instrument(browser: Browser): Promise<void> {
 }
 
 /**
+ * Makes `app.open` and `browser.reload` of a mock page return only once the mock is installed, so
+ * a test may touch `window.__yuliusMock` right after either (#446, #455): the page's load event
+ * does not wait for the app's dynamic import of mock.js, which a busy machine delays.
+ */
+function waitForTheMockOnEveryLoad(app: App, browser: Browser): void {
+  // The app's own test for mock mode (app.js): `?mock=1`.
+  const ready = () => expect.poll(() => browser.evaluate(() => new URLSearchParams(location.search).get('mock') !== '1'
+    || Boolean((window as { __yuliusMock?: unknown }).__yuliusMock)), {
+    message: 'window.__yuliusMock was never installed (mock.js did not load or the app did not start)',
+  }).toBe(true);
+  const open = app.open.bind(app);
+  const reload = browser.reload.bind(browser);
+  Object.assign(app, { open: async (path?: string) => { await open(path); await ready(); } });
+  Object.assign(browser, { reload: async (...args: Parameters<Browser['reload']>) => { await reload(...args); await ready(); } });
+}
+
+/**
  * Registers hooks for the calling test file: every test loads axe-core and fails when the page
- * reported an error (uncaught exception, unhandled rejection or `console.error`).
+ * reported an error (uncaught exception, unhandled rejection or `console.error`). Opening or
+ * reloading a mock page also waits for the mock (`waitForTheMockOnEveryLoad`).
  */
 export function failOnPageErrors(): void {
-  beforeEach(async ({ browser }) => {
+  beforeEach(async ({ app, browser }) => {
     await instrument(browser);
+    waitForTheMockOnEveryLoad(app, browser);
   });
   afterEach(async ({ browser }) => {
     expect(await pageErrors(browser)).toEqual([]);

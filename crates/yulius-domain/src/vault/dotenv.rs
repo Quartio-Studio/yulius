@@ -83,13 +83,16 @@ fn still_open(rest: &str, quote: char) -> bool {
 ///
 /// # Errors
 /// [`VaultError::Value`] when a name to set already holds a multi-line quoted value: replacing
-/// its first line would leave the others as stray lines.
+/// its first line would leave the others as stray lines. Also when a quoted value is still open
+/// at the end of the file: it would swallow the lines appended after it.
 pub fn upsert(text: &str, entries: &[(String, String)]) -> Result<String, VaultError> {
     let eol = line_end(text);
     let mut seen = vec![false; entries.len()];
     let mut out = String::with_capacity(text.len() + entries.len() * 64);
     let mut open: Option<char> = None;
-    for raw in text.lines() {
+    // The line number and name of the value the open quote belongs to.
+    let mut opened_at = (0, "");
+    for (number, raw) in text.lines().enumerate() {
         if let Some(quote) = open {
             if !still_open(raw, quote) {
                 open = None;
@@ -101,8 +104,9 @@ pub fn upsert(text: &str, entries: &[(String, String)]) -> Result<String, VaultE
         let key = key_of(raw);
         let value = raw.split_once('=').map_or("", |(_, v)| v);
         let found = key.and_then(|k| entries.iter().position(|(n, _)| n == k));
-        if key.is_some() {
+        if let Some(key) = key {
             open = opens(value);
+            opened_at = (number + 1, key);
         }
         match found {
             Some(i) if open.is_some() => {
@@ -125,6 +129,13 @@ pub fn upsert(text: &str, entries: &[(String, String)]) -> Result<String, VaultE
                 out.push_str(eol);
             }
         }
+    }
+    if open.is_some() {
+        let (number, key) = opened_at;
+        return Err(VaultError::Value(format!(
+            "the quote that opens {key}'s value on line {number} of the file never closes: close \
+             it first"
+        )));
     }
     for (i, (_, line)) in entries.iter().enumerate() {
         if !seen[i] {
@@ -224,6 +235,28 @@ mod tests {
             upsert("KEY=\"a \\\" b\"\n", &[entry("KEY", "new-value-1")?])?,
             "KEY=new-value-1\n",
             "an escaped quote does not close the value"
+        );
+        Ok(())
+    }
+
+    /// #475: a quote that never closes swallows the rest of the file, so the names appended
+    /// after it would land inside that value. The file is refused, naming the line.
+    #[test]
+    fn a_quote_left_open_at_the_end_is_refused() -> Result<(), VaultError> {
+        let text = "A=1\nBROKEN='never closed\nKEY=old\n";
+        for entries in [
+            vec![entry("NEW", "n-v-456")?],
+            vec![entry("KEY", "new-value-1")?],
+        ] {
+            let Err(VaultError::Value(why)) = upsert(text, &entries) else {
+                panic!("an unclosed quote was written after: {entries:?}");
+            };
+            assert!(why.contains("line 2") && why.contains("BROKEN"), "{why}");
+        }
+        assert_eq!(
+            upsert("A='x\ny'\n", &[entry("NEW", "n-v-456")?])?,
+            "A='x\ny'\nNEW=n-v-456\n",
+            "a quote closed on a later line is fine"
         );
         Ok(())
     }

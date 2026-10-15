@@ -1,6 +1,6 @@
 import { test, type Browser, type Screen } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { failOnPageErrors, mock, mockReady, promptText } from './support.ts';
+import { failOnPageErrors, mock, promptText } from './support.ts';
 
 failOnPageErrors();
 
@@ -175,7 +175,6 @@ test('signing out removes the stored drafts', async ({ app, browser, screen }) =
 
 test('an upload that ends after leaving and coming back shows in the composer', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
-  await mockReady(browser);
   await browser.evaluate(() => {
     const w = window as unknown as Holding;
     w.__yuliusMock.holdUpload = new Promise<void>((resolve) => { w.__release = resolve; });
@@ -194,7 +193,6 @@ test('an upload that ends after leaving and coming back shows in the composer', 
 
 test('a task still starting is not started again from a returned composer', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
-  await mockReady(browser);
   const before = await browser.evaluate(() => (window as unknown as Holding).__yuliusMock.tasks.length);
   await browser.evaluate(() => {
     const w = window as unknown as Holding;
@@ -308,7 +306,6 @@ const storedDraft = (browser: Browser) => browser.evaluate(() => {
 // the draft, which keeps what was typed.
 test('an upload that ends after leaving joins the stored draft, kept across a reload', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
-  await mockReady(browser);
   await browser.evaluate(() => {
     const w = window as unknown as Holding;
     w.__yuliusMock.holdUpload = new Promise<void>((resolve) => { w.__release = resolve; });
@@ -325,7 +322,6 @@ test('an upload that ends after leaving joins the stored draft, kept across a re
 
 test('text typed in a returned composer while an upload ends is kept with the file', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
-  await mockReady(browser);
   await browser.evaluate(() => {
     const w = window as unknown as Holding;
     w.__yuliusMock.holdUpload = new Promise<void>((resolve) => { w.__release = resolve; });

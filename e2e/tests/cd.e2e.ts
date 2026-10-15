@@ -1,6 +1,6 @@
 import { test } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock, mockReady } from './support.ts';
+import { axeViolations, failOnPageErrors, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -76,7 +76,6 @@ test('read access watches; CD is set up with an agent through a task', async ({ 
   await expect(screen.getByRole('button', 'Set up CD with an agent')).toBeDisabled();
 
   await app.open(mock('/s/product/cd'));
-  await mockReady(browser);
   // The server ships the Infra bootstrap workflow (catalog/workflows); the shared mock lists fewer,
   // so the composer's menus elsewhere keep their size.
   await browser.evaluate(() => (window as unknown as { __yuliusMock: { workflows: object[] } }).__yuliusMock.workflows.push({
@@ -98,7 +97,6 @@ type Touching = Window & { __yuliusMock: { touchTask(sandbox: string, number: nu
 // "Needs you: <action>" with the link, until the request is gone.
 test('a needs_you request puts the task in Needs you with what to do', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
-  await mockReady(browser);
   await browser.evaluate(() => (window as unknown as Touching).__yuliusMock.touchTask('sb_studio', 12, {
     needs_you: { action: 'Add DEV_SSH_KEY on the Secrets page', why: 'the dev deploy reaches the VM over SSH', link: `${location.origin}/#/s/studio/secrets?section=agents`, at: new Date().toISOString() },
   }));

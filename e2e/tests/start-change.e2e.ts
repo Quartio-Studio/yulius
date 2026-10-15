@@ -1,6 +1,6 @@
 import { test, type Browser } from '@e2e-dev/web';
 import { expect } from 'e2e';
-import { axeViolations, failOnPageErrors, mock, mockReady } from './support.ts';
+import { axeViolations, failOnPageErrors, mock } from './support.ts';
 
 failOnPageErrors();
 
@@ -90,7 +90,6 @@ test('a chained task changes to When I decide; someone else sees no start chip (
   expect(await browser.evaluate(mockTask, number)).toMatchObject({ status: 'prepared', afterLink: null });
 
   // Handed to someone else: read-only, no chip.
-  await mockReady(browser);
   await browser.evaluate((n) => (window as unknown as Mocked).__yuliusMock.touchTask('sb_studio', n, { owner: { login: 'anna-q' } }), number);
   await expect(screen.getByText('@anna-q owns this task:')).toBeVisible();
   await expect(bar.getByRole('button', /^Starts:/)).toHaveCount(0);
