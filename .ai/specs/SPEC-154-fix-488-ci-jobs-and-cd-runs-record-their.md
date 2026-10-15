@@ -1,11 +1,11 @@
 ---
 yulius-task: 34fa1e0a-cc4f-4c63-b55f-205765d773f6
-status: in-progress
+status: done
 ---
 
 # SPEC-154: CI jobs and CD runs record their CPU, memory and disk use as stage figures
 
-Status: in-progress
+Status: done
 Date: 2026-10-15
 Owner: Yulius task #129 (part of task #118, SPEC-138)
 Scope authorization: issue [#488](https://github.com/Quartio-Studio/yulius/issues/488), the
@@ -58,8 +58,8 @@ Pipeline page's stage table, and one job's figures in its waterfall row.
 - [x] Docs, ADR and changes updated
 - [x] Review round 1 fixed: a killed job's use is unknown, docs say what is counted
 - [x] Review round 2 fixed: a run queued again forgets its jobs' earlier use
-- [ ] Independent review approves the exact head
-- [ ] Every gate green and the merge into dev armed on Yulius CI
+- [x] Independent review approves the exact head
+- [x] Every gate green and the merge into dev armed on Yulius CI
 
 ## Acceptance criteria
 
@@ -112,3 +112,31 @@ Pipeline page's stage table, and one job's figures in its waterfall row.
   own figures stay in its waterfall row (review round 1, kept in round 2).
 - **The waterfall shows one span's figures** (a single job has no percentile); the p50/p90 are in
   the stage table, the place that aggregates.
+
+## Evidence
+
+Commands run in the task's worktree (Linux, the pinned toolchain, host load 40-55 from parallel tasks):
+
+| Command | Result |
+| --- | --- |
+| `scripts/dev ci` at `38b9f3dd` (doctor, check, fmt, clippy `-D warnings`, nextest, doctests, deny, shear, doc) | passed: 1,816 tests passed, 18 skipped |
+| `scripts/dev ci` at `eaa882d7` (before review) | 1,804 passed, 1 failed: `first_message::a_launch_goal_unrecorded_across_a_restart_is_watched_again`, which fails on a clean `origin/dev` too (2 of 2 runs) and is tracked by #514; dev has since marked it `#[ignore]` |
+| e2e suite at `38b9f3dd` (`npx e2e run`) | 36 files passed; `ownership.e2e.ts` failed once under load (#506) and fail-fast stopped the rest; the 18 remaining files, ownership included, then passed (103 tests) |
+| e2e `pipeline.e2e.ts` | 4 passed; with `stages.js` and `pipeline.js` at their base, 2 fail (the new columns and the waterfall figures) |
+| `supervision::the_exit_record_holds_what_the_process_tree_used` (ptyhost) | passed; failed before the host recorded `usage` |
+| `local_ci::a_job_records_the_cpu_and_memory_it_used` | passed; with the wiring's usage disabled it fails ("no cpu_ms"), and the job's own `::yulius-measure cpu_ms=1` is refused |
+| `local_ci::a_killed_job_leaves_its_use_unknown` | passed; before the round-1 fix it failed with `cpu_ms: 3` for an 8-second busy loop |
+| `cd::a_deploy_records_its_confirmation_checks_promotion_phases_and_stages` | passed, with the deploy's `cpu_ms` and `memory_peak_mb` |
+| store `spans::tests::a_job_s_and_a_deploy_s_use_are_figures_of_their_spans` | passed; fails with the 0028 triggers (no figures) and, before the round-2 fix, after a requeue (the first attempt's use) |
+| domain `measured_use_*`, app `the_summary_has_percentiles_of_cpu_time_and_peak_memory`, `stages::` integration | passed |
+| `scripts/dev security` | **not run**: Vidoc rejected the key (HTTP 401, exit 2; ADR-0104, issue #470) |
+
+Reviews: round 1 (`eaa882d7`) requested changes (a killed job's near-zero use; docs; nits), fixed in
+`708b0ea1`; round 2 approved `465a2023` with a medium (a requeued job kept its earlier use), fixed in
+`97e76544`; round 3 approved `97e76544`; the merge of dev (`38b9f3dd`, conflict in `e2e/README.md`)
+was approved.
+
+Not tested here: a host with cgroup delegation or macOS (the figures do not depend on cgroups; macOS
+reports `ru_maxrss` in bytes, handled by `cfg`); a real long CI job on the VM. Follow-up (in the
+issue's closing comment, no new issue): a child-subreaper host could give killed jobs figures too,
+and a per-job cgroup could give the sum of processes' memory.
