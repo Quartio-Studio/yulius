@@ -96,9 +96,11 @@ watching, steering and unblocking.
 - **Pipeline (stages)**: every stage of tasks, CI runs and deployments is measured as it happens
   and kept 180 days (SPEC-137): a task's waits, states, steps (with their tokens), runs, pauses,
   pull request and merge waits; a CI run's queue (and why), jobs and the stages their output names
-  (`::yulius-stage`, with test counts); a deploy's confirmation, promotion, deploy and verify. The
-  Pipeline page shows deployment frequency, lead time, change failure rate and time to restore for
-  dev and production, any stage's daily p50 and p90 and the stage table with CSV/JSON export; a CI
+  (`::yulius-stage`, with test counts); a deploy's confirmation, promotion, deploy and verify; what a
+  CI job or deploy used (CPU time, peak memory, bytes written; SPEC-154). The Pipeline page shows
+  deployment frequency, lead time, change failure rate and time to restore for dev and production,
+  any stage's daily p50 and p90 and the stage table (with CPU and memory p50 · p90) with CSV/JSON
+  export; a CI
   run, a deploy and a task show their own waterfall, and the Dashboard the overview.
 - **CD (deployment)**: the CI/CD page's second tab, with CI's discipline. Every project defines dev and
   production in `yulius.toml` (`[cd.dev]`, `[cd.prod]`), each with deploy and verify scripts

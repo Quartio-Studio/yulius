@@ -745,6 +745,16 @@ Yulius records of the span: `tests_…`, `…_start` and the names Yulius writes
 `input_tokens`…) are ignored, as are new names past 64 per span. Figures are written once per span
 each half second the output is read (counts added up, the last value kept).
 
+A CI job's `job` span and a CD run's `run` span also carry what its processes used (SPEC-154,
+ADR-0127), measured by the process host when it reaped them and written with the job's end:
+`cpu_ms` (user + system CPU time of the job's processes that ended and were reaped within it),
+`memory_peak_mb` (the largest peak resident memory of one of them, in MiB, at least the host's own
+few MiB a fork starts with) and `disk_written_mb` (what they wrote to storage, rounded to the
+nearest MiB, on Linux hosts that account for it). Background processes still running when the job
+ends are killed and not counted. A job Yulius killed (cancelled, timed out, too much output), one
+that never started, one whose host was lost, or an older host's: the figures are absent, never `0`.
+The three names are reserved.
+
 | Method and path | Access | Result |
 | --- | --- | --- |
 | `GET /api/sandboxes/{sid}/stages/timeline?subject=<task|ci_run|cd_run>:<id>` | read | `TimelineView` |
@@ -764,7 +774,8 @@ StageSummary = {"from", "to", "stages": [StageRow], "trend": {"subject_kind", "k
                 "days": [{"date", "count", "p50_ms", "p90_ms"}]}, "delivery": [DeliveryFigures (dev, prod)],
                 "options": {"jobs", "environments", "kinds"}, "reused_runs", "truncated"}
 StageRow = {"subject_kind", "kind", "name", "job", "environment", "count", "failed", "running",
-            "backfilled", "p50_ms", "p90_ms", "max_ms", "total_ms"}
+            "backfilled", "p50_ms", "p90_ms", "max_ms", "total_ms", "cpu_p50_ms"?, "cpu_p90_ms"?,
+            "memory_peak_p50_mb"?, "memory_peak_p90_mb"?}   # ? only when an ended span measured it
 DeliveryFigures = {"environment", "deployments", "passed", "per_week", "lead_time_p50_ms",
                    "lead_time_p90_ms", "lead_time_count", "change_failure_rate",
                    "time_to_restore_p50_ms", "restores"}

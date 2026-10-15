@@ -365,6 +365,20 @@ pub struct ExitRecord {
     pub detail: Option<String>,
 }
 
+/// What a run's process tree used, measured by its host when it reaped the child (SPEC-154
+/// USE-001): every descendant reaped down the child's chain counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessUsage {
+    /// User plus system CPU time, in milliseconds.
+    pub cpu_ms: u64,
+    /// The largest peak resident set of any one of its processes, in bytes.
+    pub max_rss_bytes: u64,
+    /// Bytes its processes caused to be written to storage; `None` where the host does not
+    /// account for them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub written_bytes: Option<u64>,
+}
+
 /// Content of `exit.json`: a versioned wrapper around the [`ExitRecord`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExitFile {
@@ -374,6 +388,10 @@ pub struct ExitFile {
     pub attempt_id: String,
     /// The outcome.
     pub exit: ExitRecord,
+    /// What the run used, when its child ran and was measured (absent from older hosts' files;
+    /// not part of the `Exit` frame, so the socket protocol is unchanged).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<ProcessUsage>,
 }
 
 /// Bubblewrap containment of one run (SPEC-002 ADR-03). Paths are absolute host paths.
@@ -1808,12 +1826,35 @@ mod tests {
                 reason: ExitReason::Signalled,
                 detail: None,
             },
+            usage: None,
         };
         let json = serde_json::to_value(&exit)?;
         assert_eq!(json["exit"]["reason"], "signalled");
         assert_eq!(json["exit"]["signal"], 9);
         assert!(json["exit"].get("detail").is_none());
+        assert!(json.get("usage").is_none(), "unknown use is absent");
         assert_eq!(serde_json::from_value::<ExitFile>(json)?, exit);
+
+        // SPEC-154 USE-001: the use a host measured, and an older host's file without it.
+        let measured = ExitFile {
+            usage: Some(ProcessUsage {
+                cpu_ms: 1_250,
+                max_rss_bytes: 64 << 20,
+                written_bytes: None,
+            }),
+            ..exit.clone()
+        };
+        let json = serde_json::to_value(&measured)?;
+        assert_eq!(json["usage"]["cpu_ms"], 1_250);
+        assert_eq!(json["usage"]["max_rss_bytes"], 64 << 20);
+        assert!(json["usage"].get("written_bytes").is_none());
+        assert_eq!(serde_json::from_value::<ExitFile>(json)?, measured);
+        let older = serde_json::json!({
+            "version": RECORD_VERSION,
+            "attempt_id": "att-1",
+            "exit": { "code": 0, "signal": null, "ended_at_ms": 1, "reason": "exited" },
+        });
+        assert_eq!(serde_json::from_value::<ExitFile>(older)?.usage, None);
 
         let status = StatusRecord {
             version: RECORD_VERSION,
