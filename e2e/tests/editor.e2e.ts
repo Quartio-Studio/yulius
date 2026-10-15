@@ -679,3 +679,43 @@ test('a tab closed while another is dragged keeps the drag going, and the order 
   await browser.mouse.up();
   await expect.poll(() => editorTabs(browser)).toEqual(['src/api/checkout.rs', 'AGENTS.md']);
 });
+
+// #477: a redraw held back during a plain click on a tab runs after the click, so the element
+// pressed is the one clicked (Firefox drops a click whose pressed element was replaced).
+test('a tab clicked while a redraw is held back is the one clicked, and is chosen', async ({ app, browser, screen }) => {
+  await app.open(mock('/s/studio/t/12'));
+  await screen.getByRole('button', /^Show tools/).click();
+  await screen.getByRole('button', 'Editor').click();
+  const tree = screen.getByRole('tree', 'Files');
+  for (const name of ['README.md', 'AGENTS.md']) {
+    await tree.getByRole('treeitem', name).click();
+    await editorShown(browser);
+    await expect(screen.getByRole('tab', new RegExp(`^${name.replace('.', '\\.')}`))).toHaveAttribute('aria-selected', 'true');
+  }
+  await tree.getByRole('treeitem', /src$/).click();
+  await tree.getByRole('treeitem', /api$/).click();
+  await tree.getByRole('treeitem', 'checkout.rs').click();
+  await expect.poll(() => editorTabs(browser)).toEqual(['README.md', 'AGENTS.md', 'src/api/checkout.rs']);
+
+  // What the pressed tab and the clicked one are when the click arrives.
+  await browser.evaluate(() => {
+    const w = window as unknown as { __pressed: Element | null; __clicks: { same: boolean; connected: boolean; path: string }[] };
+    w.__clicks = [];
+    document.addEventListener('pointerdown', (event) => { w.__pressed = (event.target as Element).closest('.ed-tab'); }, true);
+    document.addEventListener('click', (event) => {
+      if (!event.isTrusted) return; // the close mark's own click below
+      const tab = (event.target as Element).closest('.ed-tab') as HTMLElement | null;
+      if (tab) w.__clicks.push({ same: tab === w.__pressed, connected: Boolean(w.__pressed && w.__pressed.isConnected), path: tab.dataset.path ?? '' });
+    }, true);
+  });
+  const box = await screen.getByRole('tab', /^AGENTS\.md/).boundingBox();
+  if (!box) throw new Error('tab not laid out');
+  await browser.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await browser.mouse.down();
+  // README closes meanwhile: the strip's redraw waits for the press to end.
+  await browser.evaluate(() => (document.querySelector('.ed-tab[data-path="README.md"] .ed-tab-close') as HTMLElement).click());
+  await browser.mouse.up();
+  await expect.poll(() => editorTabs(browser)).toEqual(['AGENTS.md', 'src/api/checkout.rs']);
+  expect(await browser.evaluate(() => (window as unknown as { __clicks: unknown[] }).__clicks)).toEqual([{ same: true, connected: true, path: 'AGENTS.md' }]);
+  await expect(screen.getByRole('tab', /^AGENTS\.md/)).toHaveAttribute('aria-selected', 'true');
+});
