@@ -87,6 +87,13 @@ card's geometry, the button's emphasis or the promoted commit.
 - **The promoted branch comes from the overview's dev environment.** The API already carries the
   integration branch as dev's `branch`, so there is no contract change. Without a dev entry the fact
   reads "the integration branch".
+- **Quarantining #514 here.** Dev's `first_message::a_launch_goal_unrecorded_across_a_restart_is_watched_again`
+  (#499) failed this pull request's quality job twice (runs c6fc158a and 9d09927c, "timed out
+  waiting for the flag" after 45 s) and failed one of three local runs at load ~70, on Rust
+  identical to dev. Nothing in this change touches it. The engineering workflow allows fixing a
+  flaky test or quarantining it with an issue, never retrying it. Its race sits in #499's restart
+  watch, outside this task, so it is `#[ignore]`d with the reason pointing at #514, which tracks the
+  fix and the removal of the ignore.
 - **What the cause could also break:** any other page that draws a header as `row-wrap` with a
   spacer has the same wrap. The CD page is the one reported; others aren't changed here.
 
@@ -119,3 +126,8 @@ card's geometry, the button's emphasis or the promoted commit.
     same load.
   - Tracked by #506 and #356 (editor, ownership) and #510 (consistency, notes, places, pipeline;
     filed by this task).
+- **Merges of dev.** 8ed0eca3 brought in #507 (the CI/CD page; one README conflict resolved), and
+  Yulius's own merge 4776944d brought in #512 and #518. `cd.e2e.ts` passed 10 of 10 on 8ed0eca3,
+  and with dev's `cd.js` and `styles.css` restored the 3 SPEC-152 tests fail. CI at 8ed0eca3
+  passed (run fd09c365). At 4776944d only the #514 test failed; it is quarantined above.
+
