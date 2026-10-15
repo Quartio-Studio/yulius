@@ -6,9 +6,9 @@ use async_trait::async_trait;
 use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::Secret;
 use yulius_app::ports::github::{
-    ChecksReport, ChecksSource, ChecksState, GhIssue, GhPull, GhRepo, GhUser, GhUserToken,
-    GitHubAppConfig, GitHubPort, NewCommitStatus, NewIssue, NewPull, RepoAccess, RulesetRequest,
-    STATUS_PERMISSION_MISSING,
+    BranchGuard, ChecksReport, ChecksSource, ChecksState, GhIssue, GhPull, GhRepo, GhUser,
+    GhUserToken, GitHubAppConfig, GitHubPort, NewCommitStatus, NewIssue, NewPull, RepoAccess,
+    RulesetRequest, STATUS_PERMISSION_MISSING,
 };
 use yulius_github::{
     AppCredentials, CheckSource, ChecksSummary, CommitStatus, CreateRepo, GitHubClient,
@@ -304,6 +304,24 @@ impl GitHubPort for GitHubAdapter {
             self.plain.create_user_repo(&gh(token), &spec).await
         };
         Ok(repo(created.map_err(map_err)?))
+    }
+
+    async fn branch_guard(
+        &self,
+        token: &Secret,
+        owner: &str,
+        name: &str,
+        branch: &str,
+    ) -> AppResult<BranchGuard> {
+        let guard = self
+            .plain
+            .branch_guard(&gh(token), owner, name, branch)
+            .await
+            .map_err(map_err)?;
+        Ok(BranchGuard {
+            updates_restricted: guard.updates_restricted,
+            deletion_restricted: guard.deletion_restricted,
+        })
     }
 
     async fn create_ruleset(

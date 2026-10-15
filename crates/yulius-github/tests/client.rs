@@ -467,6 +467,84 @@ async fn rulesets_protect_branches() -> TestResult {
     Ok(())
 }
 
+/// ADR-0114 (SPEC-141 R4): whether a token could write a branch is read from GitHub's branch rules
+/// and each applying ruleset's `current_user_can_bypass`: guarded only by update and deletion
+/// rules the token can never bypass; a refused read is an error, never "guarded".
+#[tokio::test]
+async fn a_branch_is_guarded_only_by_rules_the_token_cannot_bypass() -> TestResult {
+    let (fake, client) = setup().await?;
+    let installation = fake.add_installation("acme", OwnerKind::Organization);
+    fake.add_repo("acme", "app", true);
+    fake.add_user("boss", None);
+    fake.set_permission("acme", "app", "boss", perms(true, true, true, true, true));
+    let admin = fake.issue_user_token("boss");
+    let agent = client.create_agent_token(installation, "app").await?.token;
+
+    // No ruleset: the agent could write `main`.
+    let open = client.branch_guard(&agent, "acme", "app", "main").await?;
+    assert!(!open.updates_restricted && !open.deletion_restricted);
+    assert!(!open.is_guarded());
+
+    // Yulius's production ruleset: guarded for the agent, not for the admin who may bypass it.
+    let production = RulesetSpec {
+        name: "yulius-production-main".into(),
+        branch: "main".into(),
+        require_pr: true,
+        allowed_merge_methods: vec![MergeMethod::Merge],
+        block_force_push: true,
+        block_deletion: true,
+        restrict_updates: true,
+    };
+    client
+        .create_branch_ruleset(&admin, "acme", "app", &production)
+        .await?;
+    assert!(
+        client
+            .branch_guard(&agent, "acme", "app", "main")
+            .await?
+            .is_guarded()
+    );
+    assert!(
+        !client
+            .branch_guard(&admin, "acme", "app", "main")
+            .await?
+            .is_guarded()
+    );
+    // Another branch stays unguarded.
+    assert!(
+        !client
+            .branch_guard(&agent, "acme", "app", "dev")
+            .await?
+            .is_guarded()
+    );
+
+    // A ruleset the App may bypass guards nothing against the agent.
+    fake.add_ruleset(
+        "acme",
+        "app",
+        serde_json::json!({
+            "name": "app-bypass",
+            "enforcement": "active",
+            "conditions": {"ref_name": {"include": ["refs/heads/release"], "exclude": []}},
+            "rules": [{"type": "update"}, {"type": "deletion"}],
+            "bypass_actors": [{"actor_id": yulius_github::fake::FAKE_APP_ID, "actor_type": "Integration", "bypass_mode": "always"}]
+        }),
+    );
+    let bypassed = client
+        .branch_guard(&agent, "acme", "app", "release")
+        .await?;
+    assert!(!bypassed.is_guarded());
+
+    // A repository GitHub does not show: an error, never guarded.
+    assert!(
+        client
+            .branch_guard(&agent, "acme", "missing", "main")
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
 /// DLV-008 (#139): agents log issues with Definition-of-Ready labels; labels the repository does
 /// not have yet are created first, existing ones are reused, and bad input never reaches GitHub.
 #[tokio::test]

@@ -108,6 +108,23 @@ pub struct RulesetRequest {
     pub restrict_updates: bool,
 }
 
+/// Whether a token could write a branch, as GitHub's rules say (ADR-0114).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BranchGuard {
+    /// An active `update` rule applies that the token can never bypass.
+    pub updates_restricted: bool,
+    /// An active `deletion` rule applies that the token can never bypass.
+    pub deletion_restricted: bool,
+}
+
+impl BranchGuard {
+    /// The token can neither move nor delete the branch.
+    #[must_use]
+    pub fn is_guarded(self) -> bool {
+        self.updates_restricted && self.deletion_restricted
+    }
+}
+
 /// Aggregated checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChecksState {
@@ -348,6 +365,18 @@ pub trait GitHubPort: Send + Sync {
         name: &str,
         description: &str,
     ) -> AppResult<GhRepo>;
+    /// Whether `token` could write `branch` of `owner/name`: GitHub's branch rules and whether
+    /// the token may bypass them (ADR-0114).
+    ///
+    /// # Errors
+    /// GitHub failures: an unreadable rule is never "guarded".
+    async fn branch_guard(
+        &self,
+        token: &Secret,
+        owner: &str,
+        name: &str,
+        branch: &str,
+    ) -> AppResult<BranchGuard>;
     /// Creates a branch ruleset.
     async fn create_ruleset(
         &self,

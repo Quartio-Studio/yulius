@@ -469,3 +469,19 @@ mod tests {
         );
     }
 }
+
+/// One rule GitHub applies to a branch (`GET /repos/{o}/{r}/rules/branches/{branch}`).
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireBranchRule {
+    #[serde(rename = "type")]
+    pub(crate) kind: String,
+    #[serde(default)]
+    pub(crate) ruleset_id: Option<u64>,
+}
+
+/// A ruleset as the asking token sees it.
+#[derive(Debug, Deserialize)]
+pub(crate) struct WireRuleset {
+    #[serde(default)]
+    pub(crate) current_user_can_bypass: Option<String>,
+}

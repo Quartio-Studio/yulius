@@ -19,8 +19,8 @@ use yulius_app::error::{AppError, AppResult};
 use yulius_app::model::{GitHubTokenRecord, Secret, UserRecord, WebSessionRecord};
 use yulius_app::ports::git::{CommitInfo, DiffStat, GitPort};
 use yulius_app::ports::github::{
-    ChecksReport, GhIssue, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig, GitHubPort,
-    NewIssue, NewPull, RepoAccess, RulesetRequest,
+    BranchGuard, ChecksReport, GhIssue, GhPull, GhRepo, GhUser, GhUserToken, GitHubAppConfig,
+    GitHubPort, NewIssue, NewPull, RepoAccess, RulesetRequest,
 };
 use yulius_app::ports::store::{InstanceStore, SessionStore, UserStore};
 use yulius_domain::ids::UserId;
@@ -502,6 +502,27 @@ impl GitHubPort for RepoGitHub {
             });
         }
         Ok(repo)
+    }
+    async fn branch_guard(
+        &self,
+        _: &Secret,
+        owner: &str,
+        name: &str,
+        branch: &str,
+    ) -> AppResult<BranchGuard> {
+        let repo = format!("{owner}/{name}");
+        let guarded = self
+            .rulesets
+            .lock()
+            .map_err(AppError::internal)?
+            .iter()
+            .any(|(on, request, ..)| {
+                *on == repo && request.branch == branch && request.restrict_updates
+            });
+        Ok(BranchGuard {
+            updates_restricted: guarded,
+            deletion_restricted: guarded,
+        })
     }
     async fn create_ruleset(
         &self,

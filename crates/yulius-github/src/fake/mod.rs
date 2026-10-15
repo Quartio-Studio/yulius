@@ -596,6 +596,18 @@ impl FakeGitHub {
             .unwrap_or_default()
     }
 
+    /// Adds a ruleset body as an administrator would (bypass actors included) and returns its id.
+    pub fn add_ruleset(&self, owner: &str, repo: &str, ruleset: Value) -> u64 {
+        let mut state = lock(&self.state);
+        let id = Self::next_id(&mut state);
+        if let Some(repo) = state.repos.get_mut(&key(owner, repo)) {
+            let mut stored = ruleset;
+            stored["id"] = json!(id);
+            repo.rulesets.push(stored);
+        }
+        id
+    }
+
     /// Whether the repository exists.
     #[must_use]
     pub fn has_repo(&self, owner: &str, repo: &str) -> bool {
@@ -1300,6 +1312,37 @@ fn repo_action(state: &mut FakeState, repo: &mut FakeRepo, request: &RepoRequest
                 201,
                 json!({"id": id, "name": body["name"], "enforcement": body["enforcement"]}),
             )
+        }
+        ("GET", ["rules", "branches", branch @ ..]) => {
+            let branch = branch.join("/");
+            let rules: Vec<Value> = rulesets_on(repo, &branch)
+                .flat_map(|ruleset| {
+                    ruleset["rules"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|rule| {
+                            json!({"type": rule["type"], "ruleset_source_type": "Repository",
+                                "ruleset_source": format!("{}/{}", repo.owner, repo.name),
+                                "ruleset_id": ruleset["id"]})
+                        })
+                })
+                .collect();
+            reply(200, Value::Array(paginate(&rules, query)))
+        }
+        ("GET", ["rulesets", id]) => {
+            let Some(ruleset) = repo.rulesets.iter().find(|r| r["id"].to_string() == *id) else {
+                return error(404, "Not Found");
+            };
+            let mut shown = ruleset.clone();
+            shown["current_user_can_bypass"] =
+                json!(if may_bypass(ruleset, identity, permissions) {
+                    "always"
+                } else {
+                    "never"
+                });
+            reply(200, shown)
         }
         ("DELETE", ["rulesets", id]) => {
             let before = repo.rulesets.len();
