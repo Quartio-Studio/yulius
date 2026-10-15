@@ -1,11 +1,11 @@
 ---
 yulius-task: bb4f1f3d-0924-4f70-8119-47f69e4940c0
-status: in-progress
+status: done
 ---
 
 # SPEC-159: the step in progress shows on the task's progress bar in its own colour
 
-Status: in-progress
+Status: done
 Date: 2026-10-15
 Owner: Yulius task #150
 Scope authorization: the person's request (task #150, screenshot of the step strip of task #148
@@ -48,8 +48,8 @@ in progress in different color. 2/4 and only 1/4 colored seems weird".
 - [x] The step summary reports the effort share of the steps in progress
 - [x] The step strip draws the step in progress in the working colour
 - [x] Independent review in a fresh session, findings fixed test-first
-- [ ] Gates green and the review approves the final head
-- [ ] Docs, gates and delivery
+- [x] Gates green and the review approves the final head
+- [x] Docs, gates and delivery
 
 ## Acceptance criteria
 
@@ -81,3 +81,28 @@ in progress in different color. 2/4 and only 1/4 colored seems weird".
   independent signals together (review round 1 nit, declined).
 - `active_percent` is a difference of cumulative floors so the two segments never exceed the bar
   and the right edge of the second segment matches "finished + in progress" exactly.
+
+## Evidence
+
+- Test-first: `cargo test -p yulius-domain active_percent` failed to compile before
+  `Progress::active_percent` existed (E0599), then passed (2 tests); `progress_view`'s unit test
+  asserts `active_percent` 50 and 0. `e2e/tests/steps.e2e.ts` failed on the old web assets (no
+  `.step-progress-active`; label without the in-progress share) and passes with the change (3/3).
+  Mutations: dropping the `:has()` corner rule fails "the step in progress shows on the bar…"
+  (`join: false`); squaring the fill's end fails "a plan with no step in progress…"
+  (`rounded: false`).
+- `scripts/dev ci` at the merged head `f50f5ee0` (origin/dev merged): exit 0; repository
+  contracts passed; nextest 1816 run, 1816 passed, 18 skipped; fmt, clippy `-D warnings`, deny,
+  shear and docs passed. (An earlier run failed 72 tests with `[double-spawn] failed to exec`: the
+  test binary was rebuilt by a concurrent reviewer build in the shared target directory; the
+  reviewers' own runs and this rerun pass.)
+- e2e, full suite (`cd e2e && npx e2e run`): 53 files passed, 1 skipped; 467 tests passed,
+  1 skipped (14 min 41 s).
+- `scripts/dev security`: **not run** (exit 2): Vidoc rejects the key with HTTP 401, the open
+  #470 (ADR-0104); not passed.
+- Visual check: a screenshot of mock task #12's strip shows the finished 22 % in the bar colour
+  then 33 % in the green of the "Working" mark beside it.
+- Independent review: round 1 (`3605055c`) approved with two minors (unimplemented `data-active`
+  clause; no test for the hidden segment) and nits, fixed test-first in `fe2d6e93`; round 2
+  (`fe2d6e93`) approved with a nit (the square join untested), fixed in `669ee338`.
+
