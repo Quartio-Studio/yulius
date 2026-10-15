@@ -352,11 +352,7 @@ async fn screen_contains(app: &App, id: &TaskId, needle: &str) -> bool {
 }
 
 async fn stop(app: &Arc<App>, id: &TaskId) -> TestResult {
-    app.stop_task_now(id).await?;
-    wait_for("the stop", Duration::from_secs(30), || async {
-        task(app, id).await.is_ok_and(|t| !t.status.is_live())
-    })
-    .await
+    support::stop_tasks(app, &[id]).await
 }
 
 fn runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
@@ -1713,50 +1709,6 @@ fn a_switch_waits_for_a_background_agent_launched_in_the_turn() -> TestResult {
     Ok(())
 }
 
-/// The real process host, except that it connects to a run only once the test releases it, and
-/// says when a connection is asked for: the run is spawned and Yulius is not attached to it yet.
-struct AttachWhenReleased {
-    inner: PtySessionHost,
-    asked: tokio::sync::watch::Sender<bool>,
-    release: tokio::sync::watch::Receiver<bool>,
-}
-
-#[async_trait::async_trait]
-impl SessionHost for AttachWhenReleased {
-    async fn spawn(
-        &self,
-        run_dir: &Path,
-        attempt_id: &str,
-        task_id: &str,
-        plan: &LaunchPlan,
-        token: &[u8; 32],
-        size: (u16, u16),
-    ) -> AppResult<SpawnedRun> {
-        self.inner
-            .spawn(run_dir, attempt_id, task_id, plan, token, size)
-            .await
-    }
-
-    async fn attach(&self, run_dir: &Path, token: &[u8; 32]) -> AppResult<AttachedRun> {
-        self.asked.send_replace(true);
-        let mut release = self.release.clone();
-        let _ = release.wait_for(|r| *r).await;
-        self.inner.attach(run_dir, token).await
-    }
-
-    fn inspect(&self, run_dir: &Path) -> RunInspection {
-        self.inner.inspect(run_dir)
-    }
-
-    fn terminate(&self, run_dir: &Path) -> AppResult<()> {
-        self.inner.terminate(run_dir)
-    }
-
-    fn background_shells(&self, child_pid: u32) -> Option<u32> {
-        self.inner.background_shells(child_pid)
-    }
-}
-
 /// SPEC-140 STP-001 (#464): a stop that comes while the task's run is launching (spawned, Yulius
 /// not attached yet) finds no run to ask. The run is asked once it is attached, so it ends at once
 /// as stopped, not when the escalation terminates it (here 60 s, beyond the wait).
@@ -1766,19 +1718,16 @@ fn a_stop_while_the_run_is_launching_ends_it_once_attached() -> TestResult {
     let (_dir, data) = data_dir()?;
     let rt = runtime()?;
     rt.block_on(async {
-        let (asked, mut attach_asked) = tokio::sync::watch::channel(false);
-        let (release, release_rx) = tokio::sync::watch::channel(false);
-        let host = Arc::new(AttachWhenReleased {
-            inner: PtySessionHost::new(PathBuf::from(env!("CARGO_BIN_EXE_yulius"))),
-            asked,
-            release: release_rx,
-        });
+        let host = Arc::new(support::gated::GatedHost::new(PathBuf::from(env!(
+            "CARGO_BIN_EXE_yulius"
+        ))));
+        host.arm();
         let (app, _) = start_on(
             &data,
             &fake,
             FakeAgentOptions::default(),
             0,
-            Some(host),
+            Some(host.clone()),
             Some(60_000),
             false,
             None,
@@ -1786,9 +1735,9 @@ fn a_stop_while_the_run_is_launching_ends_it_once_attached() -> TestResult {
         .await?;
         let (sandbox, user) = seed(&app, &data).await?;
         let id = goal_task(&app, &sandbox, &user, "Tidy the parser").await?;
-        tokio::time::timeout(Duration::from_secs(60), attach_asked.wait_for(|a| *a)).await??;
+        tokio::time::timeout(Duration::from_secs(60), host.reached()).await?;
         app.stop_task_now(&id).await?;
-        release.send_replace(true);
+        host.release();
         wait_for("the stop", Duration::from_secs(30), || async {
             task(&app, &id).await.is_ok_and(|t| !t.status.is_live())
         })
