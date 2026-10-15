@@ -3072,7 +3072,7 @@ function runUpdate(db, id) {
   }
   later(() => {
     if (!live()) return;
-    moveUpdate(db, 'pausing', { step: 'pausing', message: 'Pausing tasks at their next step: 2 of 3 paused.', tasks: { paused: 2, total: 3, waiting: [{ id: 'tsk_x', number: 4, title: 'Fix the flaky export test', sandbox: 'studio' }], deadline: new Date(Date.now() + 30 * MIN).toISOString() } });
+    moveUpdate(db, 'pausing', { step: 'pausing', message: 'Pausing tasks: 2 of 3 paused.', tasks: { paused: 2, total: 3, waiting: [{ id: 'tsk_x', number: 4, title: 'Fix the flaky export test', sandbox: 'studio' }], deadline: new Date(Date.now() + 30 * MIN).toISOString() } });
   }, UPDATE_STEP_MS + 100);
   later(() => {
     if (!live()) return;
