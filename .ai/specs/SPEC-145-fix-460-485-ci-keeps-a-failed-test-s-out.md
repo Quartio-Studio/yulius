@@ -1,11 +1,11 @@
 ---
 yulius-task: 55625998-c034-4e18-9005-eff1d729b573
-status: in-progress
+status: done
 ---
 
 # SPEC-145: CI keeps a failed test's output; the cockpit and local_ci flakes are fixed
 
-Status: in-progress
+Status: done
 Date: 2026-10-15
 Owner: Yulius task #128 (part of task #118, SPEC-138)
 Scope authorization: task #128: "Fix GitHub issues #460 and #485 […] 1. When a CI job fails, the
@@ -52,11 +52,11 @@ and #485 (`local_ci::a_run_over_the_disk_quota_waits_and_starts_when_space_frees
 ## Plan
 
 - [x] Spec SPEC-145 records the plan and the decision
-- [ ] A failed CI job keeps its failing tests' output (domain scanner, bounded)
-- [ ] ci_status shows a failed job's kept failing-test output
-- [ ] The cockpit flake is reproduced under load, named and fixed with a regression test
-- [ ] The local_ci disk-wait flake and its siblings are reproduced, named and fixed
-- [ ] Docs, ADR, independent review and gates are done and the change is delivered
+- [x] A failed CI job keeps its failing tests' output (domain scanner, bounded)
+- [x] ci_status shows a failed job's kept failing-test output
+- [x] The cockpit flake is reproduced under load, named and fixed with a regression test
+- [x] The local_ci disk-wait flake and its siblings are reproduced, named and fixed
+- [x] Docs, ADR, independent review and gates are done and the change is delivered
 
 ## Acceptance criteria
 
@@ -120,3 +120,20 @@ and #485 (`local_ci::a_run_over_the_disk_quota_waits_and_starts_when_space_frees
   it) or the whole log (unbounded disk, and still needs a search to find the failure), or
   repeating failures at the end with nextest's `failure-output = "immediate-final"` (only this
   repository's nextest, and still cut by the 16 KiB tail).
+
+## Evidence
+
+- `scripts/dev ci` at the merged head (dev at #497 merged in): exit 0; nextest `Summary [ 612.598s]
+  1794 tests run: 1794 passed (6 slow), 17 skipped` (the quarantined test among the skipped);
+  fmt, clippy, repository checks and `cargo deny` (advisories, bans, licenses, sources ok) passed.
+- `cargo nextest run -p yulius --run-ignored all -E 'binary_id(yulius::main) & (test(/^local_ci::/) |
+  test(/^cockpit::/))'`: 42 passed, the quarantined test included.
+- Scanner unit tests (`ci::failures::`, 9) failed against a stub `finish` returning `None`, then
+  passed; the review-round tests (status alignment, libtest `successes:`) failed before their fix.
+- `mcp_text` rendering test failed before the rendering (no "Failing tests" section), then passed.
+- `local_ci::a_failed_jobs_failing_tests_stay_readable_after_long_output`: a real job prints a nextest
+  failure and 670 KB more and fails; its output no longer holds the message, `failures` does; a
+  passing job keeps none (AC1, AC3). Store test: the column round-trips and a requeue clears it.
+- Flakes: see Findings (probe delays were temporary and are not in the change).
+- `scripts/dev security`: not run, exit 2 (Vidoc rejected the key, HTTP 401; #470, ADR-0104).
+- Not testable here: the real CI host's load; whether #485's fast failure recurs (quarantined).
