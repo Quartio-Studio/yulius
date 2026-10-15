@@ -31,9 +31,11 @@ reconciliation that succeeded.
   run, so the snapshot is empty and `put_metrics` (an upsert) replaces the run's stored tokens,
   turns and active time with NULLs (#385, found by the review of SPEC-091, task #76).
 - `finalize_attempt` is also called when the host reports the exit to the attached reader, and
-  when a lost connection finds the run exited: in both, `attach_run` started the run's watcher in
-  this process, so the snapshot is the run's (SPEC-087 MET-002: a reattached run reads its
-  transcript from its start again).
+  when a lost connection finds the run exited. `attach_run` started the run's watcher, but a
+  started watcher is not one that has read the transcript: it resets the snapshot and first polls
+  1 s later. An agent that exits while Yulius is down leaves its host lingering 30 s to hand the
+  exit over, so a quick restart reattaches and gets `Exit` at once, before that poll: the same
+  empty save (review round 1).
 - SPEC-091 counts an ended run's own window of its session transcript (`HarnessPort::recount`,
   `App::count_ended_run` in `metrics_recount.rs`): from its start (or, resumed, the first line at or
   after its start) to its end, sub-agents included, by the live watch's accumulator. It answers
@@ -46,8 +48,8 @@ reconciliation that succeeded.
 
 | ID | Requirement | Evidence |
 | --- | --- | --- |
-| RDM-001 | A run that reconciliation finds exited (its exit happened while Yulius was down) is ended without saving the runtime's snapshot: once its end is recorded, its window of its transcript is counted as SPEC-091 RCT-001/RCT-002 count it, and its stored figures are replaced only by figures that count found. No session, worktree or transcript, a window with no line of the run, or a failed count leaves the stored row as it was (a failure is logged). | `run_metrics::a_run_that_ends_while_yulius_is_down_keeps_its_metrics` |
-| RDM-002 | A run that ends while a watcher of this process reads it is saved as before: the watcher's snapshot, after the end is recorded. | `run_metrics::a_restart_keeps_a_resumed_run_s_metrics`, `supervision` suite (unchanged) |
+| RDM-001 | A run that ends before a watcher of this process has read its transcript to its end at least once — reconciliation finds it exited, or the host hands over the exit right after a reattach — is ended without saving the runtime's snapshot: once its end is recorded, its window of its transcript is counted as SPEC-091 RCT-001/RCT-002 count it, and its stored figures are replaced only by figures that count found. No session, worktree or transcript, a window with no line of the run, or a failed count leaves the stored row as it was (logged). | `run_metrics::a_run_that_ends_while_yulius_is_down_keeps_its_metrics` (host gone), `run_metrics::a_run_whose_exit_waits_for_the_next_start_keeps_its_metrics` (host lingering) |
+| RDM-002 | A run that ends after its watcher read its transcript to its end is saved as before: the watcher's snapshot, after the end is recorded. | `run_metrics::a_restart_keeps_a_resumed_run_s_metrics`, `supervision` suite (unchanged) |
 | RDM-003 | The start's recovery step reconciles, then starts the metrics recount only when reconciliation succeeded, and says whether it did (the recount's handle); `start_background` runs that step. While reconciliation fails no queued run is recorded; the next start that reconciles recounts them. | `metrics_recount::the_recount_waits_for_a_reconciliation_that_succeeds` |
 | RDM-004 | SPEC-002's data model lists `metrics_recounts` (schema version 23, SPEC-091). | SPEC-002 §data model |
 
@@ -76,8 +78,9 @@ reconciliation that succeeded.
 - Integration (`run_metrics.rs`, real ptyhost and fake agent writing a Claude Code shaped
   transcript): a first server runs a turn and saves the run's figures; it goes down; a sub-agent
   line is written and the agent is killed while it is down; the second server reconciles once the
-  host recorded the exit; the run stores its turns and its tokens plus the sub-agent's, never
-  NULLs.
+  host recorded the exit, with the host killed (reconciliation finds the exit record) and with the
+  host still lingering (reconciliation reattaches and gets the exit at once); the run stores its
+  turns and its tokens plus the sub-agent's, never NULLs.
 - Integration (`metrics_recount.rs`, a store upgraded from schema version 22): one queued ended
   run without a transcript and a running task whose row the store cannot read (reconciliation
   fails listing running tasks). The recovery step answers no recount and the queue is untouched;
@@ -91,12 +94,17 @@ reconciliation that succeeded.
   the figures a watched run would have stored, and when it finds nothing it falls back to
   skipping. The cost is one transcript read per run that ended while Yulius was down, at start and
   off the async workers.
-- **The caller says whether a watcher read the run.** `finalize_attempt` takes how the run's
-  figures are known (`Watched` or `Unwatched`): reconciliation is the only caller with no watcher,
-  and saying so at the call is clearer than inferring it from a runtime flag shared by the task's
-  successive runs.
+- **The runtime records which run its snapshot has read to the end.** `usage_read` names the run
+  whose transcript the watcher read to its end at least once (reset when a watcher starts, set by
+  the poll that reaches the end); `finalize_attempt` saves the snapshot only for that run and
+  counts otherwise. The first round passed the caller's knowledge (`Watched`/`Unwatched`), but a
+  reattached run's caller cannot know whether its watcher has polled yet (review round 1); naming
+  the run also keeps a snapshot from being taken for another run of the same task.
 - **The recovery step returns the recount's handle.** Extracting `recover` from
   `start_background` lets a test observe, without sleeps, that no recount starts after a failed
   reconciliation; the background loop is otherwise unchanged.
-- **A counted model replaces the stored one,** as a live save does: a transcript with usage names
-  its model.
+- **A counted model replaces the stored one,** as a live save does (`put_metrics`, unchanged).
+  The stored model comes from an assistant line of the same window the count reads (SPEC-087 live
+  rules), so a count with no model means the stored row had none either; changing `put_metrics`
+  to keep a stored model would touch the live save path the task keeps unchanged (review round 1,
+  finding 2).

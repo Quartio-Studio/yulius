@@ -779,9 +779,10 @@ recorded before that rule are counted again once: migration 23 queues every run 
 and after start, once reconciliation has ended the lost runs, a background job counts each ended
 run's window of its transcript and records the outcome with the figures it replaced
 ([ADR-0072](decisions/0072-recount-old-runs-from-their-transcripts-once.md)); no recount starts
-after a failed reconciliation (`App::recover`). A run whose agent exited while Yulius was down is
-counted the same way when reconciliation ends it, since no watcher of this process read it; its
-row changes only when the count finds figures
+after a failed reconciliation (`App::recover`). A run that ends before a watcher of this process
+read its transcript to its end (its agent exited while Yulius was down: reconciliation finds the
+exit, or a reattach gets it at once) is counted the same way when it is ended; its row changes only
+when the count finds figures
 ([ADR-0117](decisions/0117-a-run-that-ends-while-yulius-is-down-is-counted-from-its-transcript.md)):
 
 ```mermaid
@@ -790,7 +791,12 @@ flowchart LR
 queue every run so far"] --> queue[("metrics_recounts")]
     start["start: reconcile"] -->|"succeeded"| job["recount_old_metrics
 (background)"]
-    start -->|"run exited while down"| count
+    ended["run ended before its watcher
+read its transcript to the end
+(exited while Yulius was down)"] --> rcount["harness.recount
+of its window"]
+    rcount -->|"figures found"| rput[("metrics replaced")]
+    rcount -->|"nothing / failed"| rkeep[("metrics kept")]
     queue --> job
     job -->|"ended run, transcript exists"| count["harness.recount
 (spawn_blocking): its window

@@ -4,7 +4,8 @@
 //! reconciliation has ended the runs that did not survive the restart, each queued run is counted
 //! again from its own window of its session transcript, by the live watch's rules, and its outcome
 //! is recorded with the figures it replaced. A recorded run is never counted again. A run that
-//! ended while Yulius was down is counted the same way when reconciliation ends it (SPEC-143).
+//! ends before a watcher of this process read its transcript (it ended while Yulius was down) is
+//! counted the same way when it is ended (SPEC-143).
 
 use std::path::PathBuf;
 
@@ -112,9 +113,10 @@ impl App {
         Ok(tally)
     }
 
-    /// Stores the figures of a run that ended while Yulius was down, counted from its window of
-    /// its transcript: no watcher of this process read it, so its usage snapshot is empty (SPEC-143
-    /// RDM-001). Call it once the run's end is recorded. When the count finds nothing or fails,
+    /// Stores the figures of a run that ended before a watcher of this process read its transcript
+    /// to its end (it ended while Yulius was down, or right after a reattach), counted from its
+    /// window of its transcript: its usage snapshot is empty or partial (SPEC-143 RDM-001). Call
+    /// it once the run's end is recorded. When the count finds nothing or fails,
     /// the stored figures stay as they are.
     pub(crate) async fn save_counted_metrics(&self, id: &AttemptId) {
         let attempt = match self.deps.store.attempt(id).await {
@@ -136,7 +138,9 @@ impl App {
                     tracing::warn!(attempt = %id, error = %err, "a run's counted metrics could not be saved");
                 }
             }
-            Ok((_, None)) => {}
+            Ok((outcome, None)) => {
+                tracing::debug!(attempt = %id, ?outcome, "a run's transcript gave no figures; its figures stay");
+            }
             Err(err) => {
                 tracing::warn!(attempt = %id, error = %err, "a run's metrics could not be counted; its figures stay");
             }

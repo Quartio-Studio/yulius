@@ -82,6 +82,10 @@ pub struct TaskRuntime {
     run: tokio::sync::Mutex<Option<ActiveRun>>,
     intent: Mutex<Option<EndIntent>>,
     usage: Arc<Mutex<UsageSnapshot>>,
+    /// The run whose transcript `usage` has read to its end at least once: only then is the
+    /// snapshot that run's figures (SPEC-143 RDM-001). A run that ends before (it ended while
+    /// Yulius was down, or right after a reattach) is counted from its transcript instead.
+    usage_read: Mutex<Option<AttemptId>>,
     watcher_alive: Arc<AtomicBool>,
     /// The latest transcript watcher started: an older one ends even when the next run starts
     /// before it saw its own run end (it would read the new run's lines as its own).
@@ -226,6 +230,7 @@ impl TaskRuntime {
             run: tokio::sync::Mutex::new(None),
             intent: Mutex::new(None),
             usage: Arc::new(Mutex::new(UsageSnapshot::default())),
+            usage_read: Mutex::new(None),
             watcher_alive: Arc::new(AtomicBool::new(false)),
             watcher_generation: AtomicU64::new(0),
             last_input_ms: AtomicI64::new(0),
@@ -581,16 +586,6 @@ pub fn branch_for(number: u32, title: &str) -> String {
 const KILLED_EXIT_CODES: [i32; 4] = [129, 130, 137, 143];
 /// SIGHUP, SIGINT, SIGKILL and SIGTERM.
 const KILL_SIGNALS: [i32; 4] = [1, 2, 9, 15];
-
-/// How the figures of a run that ended are known (SPEC-143 RDM-001, RDM-002).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Figures {
-    /// A watcher of this process read the run: its usage snapshot holds them.
-    Watched,
-    /// The run ended while Yulius was down: nothing read it here, so its snapshot is empty and
-    /// only its transcript knows them.
-    Unwatched,
-}
 
 /// The task event of a run that ended without Yulius ending it (F 2026-10-10: the task follows
 /// its session). The person left the session — `/exit`, Ctrl+C twice, Ctrl+D or `/logout`, which
@@ -1935,8 +1930,7 @@ impl App {
                         app.runtime(&tid).hub.reset(seq, &screen, cols, rows);
                     }
                     Ok(Some(RunEvent::Exit(exit))) => {
-                        app.finalize_attempt(&tid, &aid, exit, Figures::Watched)
-                            .await;
+                        app.finalize_attempt(&tid, &aid, exit).await;
                         return;
                     }
                     Ok(None) | Err(_) => {
@@ -2001,10 +1995,7 @@ impl App {
             return;
         }
         match self.deps.session_host.inspect(Path::new(&attempt.run_dir)) {
-            RunInspection::Exited(exit) => {
-                self.finalize_attempt(task_id, attempt_id, exit, Figures::Watched)
-                    .await
-            }
+            RunInspection::Exited(exit) => self.finalize_attempt(task_id, attempt_id, exit).await,
             // The host or the agent may still run (an agent that outlived its killed host).
             RunInspection::Recorded {
                 host_alive,
@@ -2112,7 +2103,6 @@ impl App {
         task_id: &TaskId,
         attempt_id: &AttemptId,
         exit: RunExit,
-        figures: Figures,
     ) {
         let store = &self.deps.store;
         let runtime = self.runtime(task_id);
@@ -2156,9 +2146,16 @@ impl App {
         if !first {
             return; // another observer already recorded the outcome
         }
-        match figures {
-            Figures::Watched => self.save_metrics(task_id, attempt_id, &runtime).await,
-            Figures::Unwatched => self.save_counted_metrics(attempt_id).await,
+        // The snapshot is the run's once its watcher read the run's transcript to its end;
+        // otherwise it is empty or partial, and the transcript is counted (SPEC-143 RDM-001).
+        let read = runtime
+            .usage_read
+            .lock()
+            .is_ok_and(|read| read.as_ref() == Some(attempt_id));
+        if read {
+            self.save_metrics(task_id, attempt_id, &runtime).await;
+        } else {
+            self.save_counted_metrics(attempt_id).await;
         }
         {
             let mut run = runtime.run.lock().await;
@@ -3048,9 +3045,10 @@ impl App {
                 continue;
             }
             match self.deps.session_host.inspect(Path::new(&attempt.run_dir)) {
-                // It ended while Yulius was down: no watcher of this process read it.
+                // It ended while Yulius was down: no watcher of this process read it, so its
+                // figures are counted from its transcript (SPEC-143 RDM-001).
                 RunInspection::Exited(exit) => {
-                    self.finalize_attempt(&attempt.task_id, &attempt.id, exit, Figures::Unwatched)
+                    self.finalize_attempt(&attempt.task_id, &attempt.id, exit)
                         .await
                 }
                 RunInspection::Recorded {
@@ -3139,6 +3137,9 @@ impl App {
         runtime.at_limit.store(false, Ordering::SeqCst);
         if let Ok(mut u) = runtime.usage.lock() {
             *u = UsageSnapshot::default();
+        }
+        if let Ok(mut read) = runtime.usage_read.lock() {
+            *read = None;
         }
         runtime.turn_started_ms.store(0, Ordering::SeqCst);
         // A new attempt (or the same one after a restart) learns the goal from its transcript.
@@ -3283,6 +3284,11 @@ impl App {
             let runtime = self.runtime(&task_id);
             if let Ok(mut u) = runtime.usage.lock() {
                 *u = usage.clone();
+            }
+            if w.caught_up()
+                && let Ok(mut read) = runtime.usage_read.lock()
+            {
+                *read = Some(attempt.id.clone());
             }
             let turn_ended = observations
                 .iter()

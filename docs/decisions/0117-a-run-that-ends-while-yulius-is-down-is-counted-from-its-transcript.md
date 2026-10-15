@@ -16,12 +16,14 @@ The SPEC-091 recount covered the upgrade that introduced it, not later restarts.
 
 ## Decision
 
-- **Reconciliation counts the run instead of saving the snapshot.** Once the end is recorded, the
-  run's window of its session transcript is counted with SPEC-091's recount (the live watch's
-  accumulator, sub-agents included), and the stored figures are replaced only by figures it found.
-  No transcript, no line of the run, or a failed count leaves the row as it was.
-- **The caller says how the figures are known.** `finalize_attempt` takes `Watched` (the run's
-  watcher in this process holds them: unchanged live path) or `Unwatched` (reconciliation).
+- **A run its watcher has not read to the end is counted, not saved from the snapshot.** The
+  runtime names the run whose transcript its watcher read to its end at least once (`usage_read`).
+  When any other run ends — reconciliation finds it exited, or a reattach gets its exit before the
+  watcher's first poll (its host lingers 30 s to hand the exit over) — its window of its session
+  transcript is counted with SPEC-091's recount (the live watch's accumulator, sub-agents
+  included) once its end is recorded, and the stored figures are replaced only by figures it
+  found. No transcript, no line of the run, or a failed count leaves the row as it was. A run its
+  watcher has read is saved from the snapshot, as before.
 - **Recovery is one step that reports the recount.** `App::recover` reconciles and starts the
   metrics recount only when reconciliation succeeded, returning its handle; `start_background`
   runs it, so a test can prove the order (#389).
@@ -32,8 +34,11 @@ The SPEC-091 recount covered the upgrade that introduced it, not later restarts.
   stored figures are those of the last live save, which miss what the run did after it: a turn or
   a goal continuation while Yulius was down, a turn the 30 s live throttle had not saved. Kept as
   the fallback when the count finds nothing.
-- **Infer "unwatched" from a runtime flag.** The runtime is per task and outlives its runs, so a
-  flag would need resetting at every launch and reattach; the one caller that knows says it.
+- **The caller says whether a watcher read the run** (`Watched`/`Unwatched`, the first round of
+  this change). Reconciliation knows, but the reader of a reattached run does not know whether its
+  watcher has polled yet, so it saved an empty snapshot when the exit came first (review round 1).
+- **Count whenever the snapshot is empty.** Misses a partial snapshot (a long transcript replayed
+  over several polls) and cannot tell whose snapshot it is.
 - **Queue such runs in `metrics_recounts`.** Reuses the queue, but delays the figures past start
   and mixes a per-restart event into a once-per-upgrade record.
 
@@ -42,4 +47,7 @@ The SPEC-091 recount covered the upgrade that introduced it, not later restarts.
 - A restart never erases a run's usage; a run that worked while Yulius was down gets those lines.
 - Each run that ended while Yulius was down costs one read of its transcript window at start, off
   the async workers.
-- A counted model replaces the stored one, as a live save does.
+- A counted model replaces the stored one, as a live save does; the stored model comes from the
+  same window's assistant lines, so the count finds it whenever the row has one.
+- A run that exits before its watcher's first poll (a spawn failure, an exit within a second) is
+  counted too: no metrics row when its transcript has nothing, rather than a row of NULLs.
