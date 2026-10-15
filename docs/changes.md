@@ -6,6 +6,9 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- The task strip's **PR #N** chip stays on one line (SPEC-169, task #161, fixes #542). In a strip
+  crowded by a panel beside the task, it broke into "PR" over "#523" and spilled out of its pill;
+  the narrow-strip e2e test now checks that no strip chip's text overflows its box.
 - A CI job that checked nothing reads **Skipped**, never Passed (SPEC-162, ADR-0133, task #153,
   fixes #530). Yulius gives every job `YULIUS_CI_SKIP_CODE` (78); a job that exits with it ends
   skipped, blocks no merge, and is counted in the run's commit status (`Passed: 3 jobs, 1 skipped`),
