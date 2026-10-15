@@ -1,11 +1,11 @@
 ---
 yulius-task: 5cf2374c-26ae-468b-be74-b7c1ccc4efe3
-status: in-progress
+status: done
 ---
 
 # SPEC-155: automations can create prepared tasks ("When I decide")
 
-Status: in progress
+Status: implemented
 Date: 2026-10-15
 Owner: Yulius task #142 (part of task #118, SPEC-138)
 Scope authorization: GitHub issue #416, a follow-up of SPEC-105 (prepared tasks) and SPEC-078
@@ -60,8 +60,9 @@ automation can then write the day's task for the person to send when they are re
 - [x] Agents set the prepared choice with the automation tools
 - [x] The automation editor, list row and sentence offer and name When I decide
 - [x] Docs, ADR and the changes log describe it
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, evidence recorded
+- [x] Independent review round 1 in a fresh session, its findings fixed
+- [x] Review round 2 approves the final head
+- [x] Every gate green, evidence recorded
 
 ## Acceptance criteria
 
@@ -111,3 +112,31 @@ automation can then write the day's task for the person to send when they are re
 - **A prepared automation task skips the onboarding wait at creation,** as New task's prepared
   task does (PRP-003): it waits for onboarding when it is started.
 - Recorded as ADR-0128.
+- **Review round 1** (fresh session, APPROVE of a508d5f6, two minors and three nits), all fixed in
+  1bde25f3: the 0031 file is schema version 30 (a comment in `MIGRATIONS` keeps task #129's
+  0030 after it), AUT-028's wording, "creates a new task" in `automation_create`, AUT-016 of
+  SPEC-078, and a rewrapped header comment. **Round 2**: APPROVE of 1bde25f3.
+
+## Evidence
+
+- `scripts/dev ci` on a508d5f6 (the branch merged with `dev`): exit 0. Repository contracts,
+  fmt, clippy, deny (advisories, bans, licenses, sources), shear, nextest **1807 passed**, 17
+  skipped, doctests. 1bde25f3 after it changes comments, docs and one tool description only:
+  `cargo fmt --check`, `scripts/check_repository.py`, and `yulius-store` tests (63 passed) rerun.
+- New tests, each red before its slice:
+  - `crates/yulius/tests/automation_start.rs`: `an_automation_stores_when_i_decide` (AC-AUT-26),
+    `each_run_of_a_prepared_automation_prepares_its_task` (AC-AUT-27/28),
+    `agents_set_when_i_decide_with_the_automation_tools` (AC-AUT-29); the file: 9 passed.
+  - Unit `a_start_choice_is_one_of_five` in `yulius-app/src/automations.rs`.
+  - `e2e/tests/automations.e2e.ts`: "When I decide prepares each task…" (AC-AUT-30, no WCAG
+    violations); the file: 7 passed. `menus`, `prepared` and `supertask` e2e files pass too.
+- Full e2e suite (`npx e2e run`) on 1bde25f3: 451 passed, 1 skipped, 1 failed:
+  `notes.e2e.ts` "the tabs show a grip and say they can be clicked or dragged" (a hover poll
+  timing out under load). The code is untouched here. Run alone it failed 1 of 3 times. It is the
+  open flake #503 (and #510), which task #134 works on, so it stays out of this change.
+- `scripts/dev security` (Vidoc): **not run**, exit 2. The key is rejected with HTTP 401, as it has
+  been since 2026-10-14 (#470); under ADR-0104 that counts as unrun, not passed.
+- `spec_check` valid.
+- Not testable here: a real Claude Code run of a released prepared task (the in-memory harness
+  stops at `start_run`, as in SPEC-105), and the scheduler on a live server across a restart
+  (catch-up shares `process_slot` with the tested tick).
