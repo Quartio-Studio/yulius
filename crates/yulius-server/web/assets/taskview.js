@@ -2,7 +2,7 @@
 // and the new-task composer shown when no task is selected (SPEC-001 §6.1, STP-003).
 
 import { enc } from './api.js';
-import { h, icon, iconButton, setChildren, toast, errorToast, skeleton, openMenu, statusMark, singleFlight, keepFocus } from './dom.js';
+import { append, h, icon, iconButton, setChildren, toast, errorToast, skeleton, openMenu, statusMark, singleFlight, keepFocus } from './dom.js';
 import { openRuleEditor, ruleText } from './ruleeditor.js';
 import { openStartMenu, renderStartChip, startKind, waitingStartChip, SUPERTASK_HELP, WHEN_I_DECIDE_HELP } from './startchoice.js';
 import { createTerminalView } from './terminal.js';
@@ -147,14 +147,17 @@ export function mountTaskView(ctx, sandbox, task) {
 
   // ---- phone quick input
   const quickInput = h('input', { class: 'input', type: 'text', placeholder: 'Message the agent…', autocomplete: 'off', autocapitalize: 'off', enterkeyhint: 'send', 'aria-label': 'Quick input' });
+  // Types text into the session and submits it separately, so TUIs treat it as typed input, not a
+  // pasted newline. False when the terminal refused it (it says why: read-only, not connected).
+  const typeAndSubmit = (text) => {
+    if (!terminal.sendKeys(text)) return false;
+    setTimeout(() => terminal.sendKeys('\r'), 60);
+    return true;
+  };
   const sendQuick = () => {
     const text = quickInput.value;
     if (!text) { terminal.sendKeys('\r'); return; }
-    if (terminal.sendKeys(text)) {
-      quickInput.value = '';
-      // Submit separately so TUIs treat the text as typed input, not a pasted newline.
-      setTimeout(() => terminal.sendKeys('\r'), 60);
-    }
+    if (typeAndSubmit(text)) quickInput.value = '';
   };
   quickInput.addEventListener('keydown', (event) => { if (event.key === 'Enter') { event.preventDefault(); sendQuick(); } });
   const quickbar = h('div', { class: 'quickbar' },
@@ -164,13 +167,51 @@ export function mountTaskView(ctx, sandbox, task) {
   // ---- attention bar (UX-03): what the agent needs from the user, with the way to do it. It
   // floats over the top of the terminal: coming and going with every turn, it must not resize
   // the terminal (each resize makes Claude Code redraw its whole screen, F 2026-10-09).
-  const attention = h('div', { class: 'attention-bar', role: 'status', hidden: true });
+  // It takes the keyboard (tabindex -1) only from a reply field closed under someone typing.
+  const attention = h('div', { class: 'attention-bar', role: 'status', tabindex: -1, hidden: true });
   // Where the user answers the agent: its terminal (the quick input on phones).
-  const reply = () => (isPhone() ? quickInput.focus() : terminal.focus());
+  const focusReply = () => (isPhone() ? quickInput.focus() : terminal.focus());
+  // A text answer (Needs you, waiting for your reply) is written in a field in the bar and typed
+  // into the session (SPEC-156): focusing the terminal alone showed nothing, as Claude Code draws
+  // its own cursor. Phones have the quick input for it. The field stays in the bar (hidden when not
+  // replying), so the bar's updates never take it out from under someone typing (IME, readers).
+  let replying = false;
+  const replyInput = h('input', { class: 'input', type: 'text', placeholder: 'Reply to the agent…', autocomplete: 'off', enterkeyhint: 'send', 'aria-label': 'Reply to the agent' });
+  const replyButton = h('button', { type: 'button', class: 'btn btn-sm', onClick: () => {
+    if (isPhone()) { quickInput.focus(); return; }
+    replying = true;
+    renderAttention();
+    replyInput.focus();
+  } }, 'Reply');
+  const closeReply = () => {
+    replying = false;
+    renderAttention();
+    if (replyButton.isConnected) replyButton.focus();
+  };
+  const sendReply = () => {
+    if (!replying) return; // a closed (hidden) field never sends
+    const text = replyInput.value.trim();
+    if (!text) { replyInput.focus(); return; }
+    if (!typeAndSubmit(text)) return;
+    replyInput.value = '';
+    replying = false;
+    renderAttention();
+    terminal.focus();
+  };
+  replyInput.addEventListener('keydown', (event) => {
+    if (event.isComposing || event.keyCode === 229) return; // an IME's Enter (Safari: keyCode 229)
+    if (event.key === 'Enter') { event.preventDefault(); sendReply(); }
+    else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeReply(); }
+  });
+  const replyForm = h('div', { class: 'attention-reply' }, replyInput,
+    h('button', { type: 'button', class: 'btn btn-sm btn-primary', onClick: sendReply }, 'Send'),
+    h('button', { type: 'button', class: 'btn btn-sm', onClick: closeReply }, 'Cancel'));
+  replyForm.hidden = true;
   function renderAttention() {
     const pr = ctx.store.pullsOf(current.sandbox_id).get(current.id);
     const info = taskInfo(current, ctx.store.state.actionRequests, pr);
     let content = null;
+    let textAnswer = false; // the bar asks for an answer written in its reply field
     const access = (ctx.store.sandboxById(sandbox.id) || sandbox).access;
     const can = taskActions(current, access, pr, me());
     const request = current.control_request;
@@ -222,18 +263,23 @@ export function mountTaskView(ctx, sandbox, task) {
     } else if (info.needsYou) {
       // The agent asked a person to act (`needs_you`, SPEC-134): what, why, and where.
       const asked = info.needsYou;
+      // The request stays while the agent asks something in the terminal (a permission menu): text
+      // typed there would pick the menu's options unseen, so Reply goes to the terminal then.
+      const asksInTerminal = current.activity === 'needs_attention';
+      textAnswer = !owner() && !asksInTerminal;
       content = [icon('st-attention', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'Needs you: '), asked.action, asked.why ? ` · ${asked.why}` : ''),
         asked.link ? h('a', { class: 'btn btn-sm', href: asked.link, target: asked.link.startsWith(location.origin) ? null : '_blank', rel: 'noopener' }, 'Open') : null,
-        owner() ? null : h('button', { type: 'button', class: 'btn btn-sm', onClick: reply }, 'Reply')];
+        owner() ? null : asksInTerminal ? h('button', { type: 'button', class: 'btn btn-sm', onClick: focusReply }, 'Reply') : replying ? null : replyButton];
     } else if (info.request) {
       content = [icon('globe', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'Action needed in the browser: '), info.request.reason || 'the agent asked you to do something there.'),
         h('button', { type: 'button', class: 'btn btn-sm', onClick: () => ctx.openBrowserTab && ctx.openBrowserTab(sandbox, info.request.tab_id) }, 'Open browser tab')];
     } else if (current.status === 'running' && current.activity === 'needs_attention') {
       content = [icon('st-attention', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'The agent needs your attention. '), 'Its question is in the terminal below.'),
-        owner() ? null : h('button', { type: 'button', class: 'btn btn-sm', onClick: reply }, 'Reply')];
+        owner() ? null : h('button', { type: 'button', class: 'btn btn-sm', onClick: focusReply }, 'Reply')];
     } else if (current.status === 'running' && current.activity === 'waiting' && info.group === 'needs') {
       content = [icon('st-input', { size: 16 }), h('span', { class: 'attention-text' }, h('strong', null, 'The agent is waiting for your reply. '), 'Type it in the terminal below.'),
-        owner() ? null : h('button', { type: 'button', class: 'btn btn-sm', onClick: reply }, 'Reply')];
+        owner() ? null : replying ? null : replyButton];
+      textAnswer = !owner();
     }
     attention.hidden = !content && !control;
     attention.classList.toggle('waiting', !control && !info.request && current.activity === 'waiting' && info.group === 'needs');
@@ -241,9 +287,20 @@ export function mountTaskView(ctx, sandbox, task) {
     // A waiting task's start chip and buttons go below its words (SPEC-126).
     const waits = (current.status === 'chained' || current.status === 'prepared') && can.startNow;
     attention.classList.toggle('wrap', waits && !control);
-    setChildren(attention, control && content
+    // No text answer asked any more: the field closes (its words wait for the next Reply).
+    if (!textAnswer) replying = false;
+    attention.classList.toggle('replying', replying);
+    const typing = replyForm.contains(document.activeElement);
+    // Everything but the reply field is rebuilt; the field stays last.
+    for (const child of [...attention.childNodes]) if (child !== replyForm) child.remove();
+    attention.insertBefore(append(document.createDocumentFragment(), control && content
       ? [h('div', { class: 'attention-row' }, control), h('div', { class: 'attention-row' }, content)]
-      : control || content);
+      : control || content), replyForm.parentNode === attention ? replyForm : null);
+    if (replyForm.parentNode !== attention) attention.append(replyForm);
+    replyForm.hidden = !replying;
+    // A field closed under someone typing (or Escape) leaves the keyboard on the bar, which does
+    // nothing with keys: never the terminal, where a permission menu may have opened.
+    if (typing && !replying) attention.focus({ preventScroll: true });
   }
   // A browser request changes the bar and the state in the strip ("Needs you in the browser").
   destroyers.push(ctx.store.on('browser-action', (event) => { if (event.sandbox_id === sandbox.id) renderStrip(); }));
