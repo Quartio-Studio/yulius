@@ -61,14 +61,14 @@ Both concern the supervisor's process lifecycle across ends and restarts:
 | SHE-003 | Notices: a terminal "This terminal's process could not be ended, so it keeps running. Close it again to retry."; the Superagent "The Superagent's process could not be ended, so it keeps running." and, during a move, "The Superagent could not move to another subscription: its process could not be ended, so it stays on this one." | the tests above |
 | GWR-001 | A run whose launch prompt is a `/goal` (SPEC-117 ONE-001, ONE-003) has a `launch-goal-pending` marker in its run directory, written before the spawn. The goal watch removes it when it ends with an outcome: the goal recorded, the task flagged (goal not taken, trust dialog unanswered). It stays when the watch ends because the run is no longer live. | `first_message.rs` `a_launch_goal_recorded_before_a_restart_is_not_watched_again` |
 | GWR-002 | `App::reconcile`, on reattaching a run whose run directory has that marker, starts the goal watch again, as at the launch: the session reading input, then `launch_goal_ms` (holds not counted). A goal never recorded flags the task with "Claude Code did not take the task's goal". | `first_message.rs` `a_launch_goal_unrecorded_across_a_restart_is_watched_again` |
-| GWR-003 | A run that recorded its goal is never flagged after a restart: with the marker removed it is not watched; when the goal was recorded while Yulius was down (marker left), the transcript replay of the reattached run (TSK-014) records it within the watch's bound and the watch ends without a flag. | `first_message.rs` `a_launch_goal_recorded_before_a_restart_is_not_watched_again` |
+| GWR-003 | A run that recorded its goal is never flagged after a restart: with the marker removed it is not watched; when the goal was recorded while Yulius was down (marker left), the transcript replay of the reattached run (TSK-014) counts any goal record of the run as taken (`TranscriptFacts::goal_recorded`; before, the replay set the goal's state but not that it was taken) and the watch ends without a flag. | `first_message.rs` `a_launch_goal_recorded_before_a_restart_is_not_watched_again`; `finish.rs` unit test `a_replayed_transcript_reduces_to_its_final_state` |
 
 ## Plan
 
 - [x] Spec and plan for #346 and #453
 - [x] A terminal ends only when its host is proven gone (#346)
 - [x] The Superagent's usage-limit move waits for the old host to be gone (#346)
-- [ ] A launch /goal held across a restart is watched again (#453)
+- [x] A launch /goal held across a restart is watched again (#453)
 - [ ] Docs, ADR and changes
 - [ ] Independent review and fixes
 - [ ] Gates green, evidence and delivery
