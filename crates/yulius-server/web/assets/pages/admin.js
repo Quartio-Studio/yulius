@@ -2,7 +2,7 @@
 // subscription pool with the login terminal, and the GitHub App connection (manifest flow).
 
 import { enc } from '../api.js';
-import { h, badge, openModal, field, invalid, toast, confirmDialog, errorToast, toggle, setChildren, emptyState, skeleton } from '../dom.js';
+import { h, badge, openModal, field, invalid, toast, confirmDialog, errorToast, toggle, setChildren, emptyState, skeleton, bar } from '../dom.js';
 import { compact } from '../format.js';
 import { usd } from '../charts.js';
 import { createTerminalView } from '../terminal.js';
@@ -321,8 +321,20 @@ export function mountGithubPage(ctx) {
         h('p', { class: 'muted small' }, 'Repository permissions on GitHub decide who sees and controls each sandbox. Next: admit users and add subscriptions.'));
     }
     return manifestForm(ctx);
-  });
+  }, { shape: githubLoading });
   return { el: frame.el, key: 'admin:github' };
+}
+
+/**
+ * The connection while it loads (SPEC-120, #449), drawn as the connected card most instances
+ * show: its state line, the App and owner, the next step.
+ */
+function githubLoading() {
+  return h('div', { class: 'card card-pad stack' },
+    h('div', { class: 'row' }, bar('md'), bar('lg')),
+    h('dl', { class: 'kv' }, h('dt', null, bar('md')), h('dd', null, bar(40)), h('dt', null, bar('sm')), h('dd', null, bar(30))),
+    h('div', null, h('span', { class: 'skeleton-button' })),
+    h('p', { class: 'muted small' }, bar(70)));
 }
 
 function manifestForm(ctx) {

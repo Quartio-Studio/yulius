@@ -428,3 +428,37 @@ test('a task’s changes, commits and overview load in their own layouts', async
   expectSameBox(columns, await box(browser, '#main .ti-columns'), ['x', 'width']);
   expectSameBox(plan, await box(browser, '#main .ti-columns > .ti-card'), ['x', 'width']);
 });
+
+test('the CI hygiene and GitHub connection cards load as their cards', async ({ app, browser, screen }) => {
+  // Hygiene, under the CI runs (read apart): its head line with the controls' room, then its list.
+  await app.open(mock('/s/studio/ci', '&hold=/api/sandboxes/sb_studio/hygiene'));
+  let shape = '#main .skeleton[role="status"]:has(.ci-hygiene)';
+  await expect(browser.locator(shape)).toHaveText('Loading the repository hygiene…');
+  await expectQuietShape(browser, shape);
+  // Measured once the runs above it have landed.
+  await expect(browser.locator('#main .item-card').first()).toBeVisible();
+  await expect(browser.locator('#main .skeleton[role="status"]:has(.ci-heading)')).toHaveCount(0);
+  const card = await box(browser, `${shape} .card`);
+  const list = await box(browser, `${shape} .ci-hygiene`);
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(browser.locator(shape)).toHaveCount(0);
+  expectSameBox(card, await box(browser, '#main section[aria-label="Repository hygiene"]'), ['x', 'y', 'width']);
+  expectSameBox(list, await box(browser, '#main .ci-hygiene'), ['x', 'y', 'width']);
+
+  // The GitHub connection: its state line, the App and owner, the next step.
+  await app.open(mock('/admin/github', '&hold=/api/admin/github'));
+  await expect(screen.getByRole('heading', { level: 1 })).toHaveText('GitHub connection');
+  shape = '#main .skeleton[role="status"]';
+  await expect(browser.locator(shape)).toHaveText('Loading the GitHub connection…');
+  await expectQuietShape(browser, shape);
+  expect(await browser.locator(`${shape} .card .kv > dt`).count()).toBe(2);
+  const connection = await box(browser, `${shape} .card`);
+  const facts = await box(browser, `${shape} .card .kv`);
+  expect(await axeViolations(browser)).toEqual([]);
+  await release(browser);
+  await expect(browser.locator(shape)).toHaveCount(0);
+  await expect(screen.getByText('Connected')).toBeVisible();
+  expectSameBox(connection, await box(browser, '#main .card'), ['x', 'y', 'width']);
+  expectSameBox(facts, await box(browser, '#main .card .kv'), ['x', 'y', 'width']);
+});

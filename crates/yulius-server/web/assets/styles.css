@@ -1243,6 +1243,7 @@ a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
 .skeleton-chart { height: 160px; border-radius: var(--radius); }
 .skeleton-spark { border-radius: var(--radius-sm); }
 .skeleton-button { flex: none; width: 72px; height: var(--control-md); border-radius: var(--radius); }
+.skeleton-button-sm { height: var(--control-sm); }
 .skeleton-dot { display: block; flex: none; width: 16px; height: 16px; border-radius: 50%; }
 .tl-chips-loading { display: flex; gap: 8px; }
 .tl-chips-loading[hidden] { display: none; }

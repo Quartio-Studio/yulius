@@ -254,7 +254,16 @@ export function mountCiSection(ctx, sandbox, route, host, actions) {
 
   // ---- hygiene
 
-  const loadHygiene = loader(hygieneHost, 'the repository hygiene', () => ctx.api.get(`${base}/hygiene`), renderHygiene);
+  const loadHygiene = loader(hygieneHost, 'the repository hygiene', () => ctx.api.get(`${base}/hygiene`), renderHygiene, { shape: hygieneLoading });
+
+  /** The hygiene card while it loads (SPEC-120, #449): its head line with the buttons' room, its list. */
+  function hygieneLoading() {
+    return h('div', { class: 'card card-pad stack-sm' },
+      h('div', { class: 'row-wrap' }, h('div', { class: 'card-title' }, bar('xl')), h('span', { class: 'spacer' }), h('span', { class: 'small' }, bar('md')),
+        h('span', { class: 'skeleton-button skeleton-button-sm' }), h('span', { class: 'skeleton-button skeleton-button-sm' })),
+      h('ul', { class: 'ci-hygiene' }, [40, 55, 30].map((width) => h('li', null, bar('lg'), bar(width)))),
+      h('p', { class: 'muted small' }, bar(60)));
+  }
 
   function renderHygiene(report) {
     const items = report.items || [];
