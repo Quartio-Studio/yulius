@@ -30,15 +30,19 @@ multi-line key is stored with literal `\n`.
   own guidance: no placeholders in its session, values checked with `secret_verify`, secrets
   managed on the Secrets page (its link), and work that uses a secret belongs in a task.
 - **Values are verified by their SHA-256.** A new tool, `secret_verify {secret, sha256}`, served
-  to task agents and the Superagent, compares the candidate's hash with the stored value and with
+  to the Superagent only, compares the candidate's hash with the stored value and with
   its variants: the value with a final line break (`trailing_newline`) and the value with its
   literal `\n` as LF or CRLF line breaks, with or without a final one (`escaped_newlines`). It
   answers the kind of match (or `different`) and, on a match, the lines the value stands for, never
-  the value or its hash. The variants are hashed in place (no copy of the value) and all compared
+  the value or a hash Yulius computed from it. The variants are hashed in place (no copy of the value) and all compared
   in constant time, without an early exit. The caller computes the hash in a shell (`sha256sum key.pem`), so the value
   reaches neither the model nor the screen. Production secrets (SPEC-134) are refused. Each
-  distinct check is audited once per vault generation (`vault.agent.verify`, actor `task:N` or
+  distinct check is audited once per vault generation and sandbox (`vault.agent.verify`, actor
   `cockpit:<login>`), so a check repeated after a rotation is audited again.
+- **Not for task agents.** On a match the hash the caller sends is the value's unsalted SHA-256,
+  and it stays in the caller's transcript (Bash output, tool input), which redaction does not
+  catch. A task's transcript is read by every member who can view the project; the Superagent's
+  conversation is its person's own, and they hold the candidate already.
 - **Both run without asking.** They join `COCKPIT_READ_ONLY_TOOLS`: they change nothing but the
   audit.
 - **The rest stays a task's.** `secret_request_hosts`, `secret_copy_to_env` and
@@ -62,15 +66,26 @@ multi-line key is stored with literal `\n`.
   matches a value stored with `\n`. Not enough.
 - **Return a hash of the stored value** for the caller to compare. That hands out an unsalted
   hash of every secret, which can be attacked offline. Rejected.
+- **`secret_verify` for task agents too.** A matching candidate's hash would sit in a transcript
+  every viewer of the project reads, open to an offline attack on a short value (a sign-in
+  password). Rejected.
+- **A salted check** (Yulius hands out a salt, the caller hashes salt and candidate). The salt sits
+  next to the hash in the same transcript, so a targeted offline attack still works. Not enough to
+  serve task agents.
 
 ## Consequences
 
 - The Superagent answers "which secrets does this project have" and "is this the key in the
-  vault" without anyone seeing a value; task agents can verify a key too.
+  vault" without anyone seeing a value. Task agents keep `secrets_list` and do not verify.
 - `secret_verify` is an equality oracle, which redaction and the salted fingerprints a person's
   processes already read give too; it adds exactness and the line count, not a way to learn an
   unknown value. A low-entropy secret could be guessed by trying candidates, as with redaction;
   every distinct candidate leaves an audit entry.
-- The audit holds one `vault.agent.verify` entry per caller, secret and candidate while Yulius
-  runs (the once-per-key cache is bounded and cleared when full).
+- On a match the person's own Superagent conversation (kept in their home) holds the value's
+  unsalted SHA-256; whoever reads that home could attack a short value offline. The person reads
+  it unredacted anyway (ADR-0121), and agent secrets meant to be verified are keys, not short
+  passwords.
+- The audit holds one `vault.agent.verify` entry per vault generation, sandbox, caller, secret and
+  candidate while Yulius runs (the once-per-key cache, holding a digest of the candidate, is
+  bounded and cleared when full).
 - Using a secret from the Superagent still needs a task (proxy, browser, `.env`).

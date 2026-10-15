@@ -525,7 +525,8 @@ proxy, so servers imported from `.mcp.json` with placeholders do not authenticat
 [decision 0121](decisions/0121-the-superagent-gets-the-sandbox-mcp-servers-and-the-redaction.md)).
 
 The Superagent reads the agent vault too: `secrets_list` names its sandbox's agent secrets (never
-a value), and `secret_verify`, served to task agents as well, compares the SHA-256 of a value the
+a value), and `secret_verify`, the Superagent's only (a matching candidate's hash must not reach
+a task transcript other members read), compares the SHA-256 of a value the
 person holds with the stored value and its variants (a final line break; literal `\n` as line
 breaks, since an agent secret never spans lines), answering only the kind of match and the line
 count. Both run without asking; the proxy, `.env` copies, host requests and the browser stay a

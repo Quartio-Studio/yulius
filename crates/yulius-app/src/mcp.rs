@@ -67,8 +67,25 @@ impl McpCaller {
 pub fn cockpit_tool_descriptors() -> Vec<ToolDescriptor> {
     tool_descriptors()
         .into_iter()
+        .chain(cockpit_only_tool_descriptors())
         .filter(|tool| COCKPIT_TOOLS.contains(&tool.name.as_str()))
         .collect()
+}
+
+/// Tools only a Cockpit is served (SPEC-178, ADR-0144): `secret_verify`, whose input is, on a
+/// match, the value's SHA-256. The Superagent's conversation is its person's own; a task's
+/// transcript is read by every member who can view the project.
+fn cockpit_only_tool_descriptors() -> Vec<ToolDescriptor> {
+    vec![
+        ToolDescriptor {
+            name: "secret_verify".into(),
+            description: "Check whether a value the person holds (a key in a file, one they pasted into a file) is an agent secret's value, without anyone seeing it: compute the candidate's SHA-256 in a shell without printing the value (sha256sum key.pem, or printf %s \"$VAR\" | sha256sum) and pass that hash (or sha256sum's line). Answers match: exact, trailing_newline (the candidate ends with a line break), escaped_newlines (the candidate has line breaks where the vault holds literal \\n, as a multi-line key is stored) or different, and on a match the lines the value stands for. Never returns the value. Audited.".into(),
+            input_schema: schema(json!({
+                "secret": {"type": "string", "description": "Secret NAME from secrets_list"},
+                "sha256": {"type": "string", "description": "The candidate value's SHA-256, 64 hexadecimal digits"}
+            }), &["secret", "sha256"]),
+        },
+    ]
 }
 
 /// Tool descriptors served to a task's agent by `tools/list`.
@@ -360,14 +377,6 @@ fn secret_tool_descriptors() -> Vec<ToolDescriptor> {
             input_schema: schema(json!({}), &[]),
         },
         ToolDescriptor {
-            name: "secret_verify".into(),
-            description: "Check whether a value someone holds (a key in a file, one they pasted into a file) is an agent secret's value, without anyone seeing it: compute the candidate's SHA-256 in a shell without printing the value (sha256sum key.pem, or printf %s \"$VAR\" | sha256sum) and pass that hash. Answers match: exact, trailing_newline (the candidate ends with a line break), escaped_newlines (the candidate has line breaks where the vault holds literal \\n, as a multi-line key is stored) or different, and on a match the lines the value stands for. Never returns the value. Audited.".into(),
-            input_schema: schema(json!({
-                "secret": {"type": "string", "description": "Secret NAME from secrets_list"},
-                "sha256": {"type": "string", "description": "The candidate value's SHA-256, 64 hexadecimal digits"}
-            }), &["secret", "sha256"]),
-        },
-        ToolDescriptor {
             name: "secret_request_hosts".into(),
             description: "Ask for the hosts an agent secret should be sent to or typed into (SPEC-121). A person adds a secret with only a name, a value and a description; you find the service's API or sign-in host from the description and the service's documentation (e.g. api.vidoc.com, *.vidoc.com for subdomains) and request it here. Nothing is bound until a person who manages the secret allows it on the Secrets page: print the returned link for them, go on with other work, and use the secret once secrets_list shows the host bound.".into(),
             input_schema: schema(json!({
@@ -511,8 +520,10 @@ impl App {
             }
             "workflows_list" => self.tool_workflows_list(&project).await,
             "secrets_list" => self.tool_secrets_list(&project).await,
-            "secret_verify" => self.tool_secret_verify(&project, &args).await,
             _ => match caller {
+                McpCaller::Cockpit(_) if name == "secret_verify" => {
+                    self.tool_secret_verify(&project, &args).await
+                }
                 McpCaller::Cockpit(_) => Err(AppError::Invalid(format!("unknown tool: {name}"))),
                 McpCaller::Agent(ctx) => match self.task_tool(ctx, name, &args).await {
                     TaskToolResult::Value(outcome) => outcome,

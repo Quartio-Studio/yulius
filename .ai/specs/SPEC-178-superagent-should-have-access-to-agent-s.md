@@ -44,7 +44,8 @@ ever reaching the model or the screen.
   placeholders in its environment; values are verified with `secret_verify`; a person adds, binds
   and reveals secrets on the Secrets page (link given); using a secret in requests, the project
   browser or `.env` belongs in a task.
-- VAU-002: `secret_verify {secret, sha256}` is served to task agents and to the Superagent. Given
+- VAU-002: `secret_verify {secret, sha256}` is served to the Superagent only (not to task agents,
+  whose transcripts every member who can view the project reads). Given
   the SHA-256 (64 hex digits) of a candidate value and the name of an agent secret that applies to
   the caller's sandbox, it answers whether the candidate is the secret's value: `exact`, or a match
   once a difference common in copied keys is set aside (`trailing_newline`: the candidate ends
@@ -52,11 +53,14 @@ ever reaching the model or the screen.
   vault's value has literal `\n`, as a multi-line key must be stored since an agent secret never
   spans lines), or `different`. On a match it also says how many lines the value stands for (its
   literal `\n` read as line breaks). Every variant is compared in constant time, without an early
-  exit, and no copy of the value is made to hash it. It never returns a value, a
-  value's hash or anything else derived from it. An unknown secret, a malformed hash and a
+  exit, and no copy of the value is made to hash it. `sha256sum`'s own line (`<hash>  <file>`) is
+  read as its hash. It never returns a value, a value's hash or anything else derived from it;
+  the candidate's hash the caller sends stays in the Superagent's conversation, which is its
+  person's own. An unknown secret, a malformed hash and a
   production secret (SPEC-134) are refused. Each distinct check is audited once per vault
-  generation (`vault.agent.verify`, with the task or `cockpit:<login>` as actor) while Yulius
-  runs, so a check repeated after a rotation is audited again.
+  generation and sandbox (`vault.agent.verify`, with `cockpit:<login>` as actor) while Yulius
+  runs, so a check repeated after a rotation is audited again; the once-cache keeps a digest of
+  the candidate, never the candidate's hash itself.
 - VAU-003: Both tools run in the Superagent without asking the person (they change nothing but
   the audit): they join `COCKPIT_READ_ONLY_TOOLS`. The Superagent's MCP instructions name them.
   The other vault tools stay a task's: `secret_request_hosts`, `secret_copy_to_env` and
@@ -72,7 +76,8 @@ ever reaching the model or the screen.
 - [x] secret_verify says whether a candidate's SHA-256 matches an agent secret's value
 - [x] The Superagent runs both vault tools without asking; ADR-0144 and the docs say what it gets
 - [x] Independent review in a fresh session, findings fixed test-first
-- [ ] Review round 2 approves the head with constant-time verify and rotation audits
+- [x] Review round 2 findings fixed test-first: secret_verify is the Superagent's only
+- [ ] Review round 3 approves the head
 - [ ] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
@@ -88,8 +93,9 @@ ever reaching the model or the screen.
   otherwise, with `lines: 3` on a match and no `lines` for `different`; it
   refuses an unknown name, a hash that is not 64 hex digits, and a production secret; the check is
   audited with the caller as actor; no answer holds the value or its SHA-256.
-- A task agent's `secret_verify` answers the same for its own sandbox, and nothing for another
-  sandbox's secret.
+- A task agent is not served `secret_verify` and its call is refused as unknown; it keeps
+  `secrets_list`. After a rotation the Superagent's same check answers `different` and is audited
+  again.
 - `COCKPIT_READ_ONLY_TOOLS` holds both tools, and the harness test plans them as allowed.
 
 ## Test plan
@@ -97,7 +103,7 @@ ever reaching the model or the screen.
 - Unit tests in `crates/yulius-app/src/vault/` for the comparison (each kind, a value without
   escapes, a candidate that is only close) and in `mcp.rs` for the Superagent's tool list.
 - Integration tests in `crates/yulius/tests/cockpit.rs` (the Superagent over its `ck_` token) and
-  `crates/yulius/tests/secrets.rs` (a task agent), using synthetic values only.
+  `crates/yulius/tests/secrets.rs` (a task agent is refused), using synthetic values only.
 - Existing `secrets.rs`, `secrets_env.rs`, `manage_tools.rs` and harness launch tests keep passing.
 
 ## Decisions
@@ -118,8 +124,14 @@ ever reaching the model or the screen.
   without a final one. CRLF against LF inside the vault cannot occur and is not a kind.
 - The line count the value stands for is returned on a match only: it is what the person asked to
   confirm, and a caller who does not hold the value learns nothing of its shape.
-- `secret_verify` is served to task agents too ("as well" goes both ways): the same check helps an
-  agent confirm a key it was given before asking a person to store it.
+- `secret_verify` is the Superagent's only (review round 2 reversed the first choice of serving it
+  to task agents too). On a match the candidate's hash is the value's unsalted SHA-256, and it
+  stays in the caller's transcript (the Bash output and the tool input), which redaction does not
+  catch. A task's transcript is read by every member who can view the project, who could attack a
+  short value offline; the Superagent's conversation is its person's own (other people's shells
+  are not found), and that person holds the candidate already and has the redaction oracle. A
+  salt handed out with the check would sit next to the hash in the same transcript, so it would
+  not help.
 - A production secret is refused, as `secret_request_hosts` and `secret_copy_to_env` refuse one:
   production values are kept out of every agent use.
 - Independent review round 1 (REQUEST CHANGES, all own code, all fixed): the digest comparison
@@ -129,3 +141,10 @@ ever reaching the model or the screen.
   the value (now hashed piece by piece in place, and `sha2`'s `zeroize` feature wipes the hasher);
   `lines` was answered for `different` too (now on a match only, tests updated, red before). The
   direct use of `sha2` instead of the crypto port stays, as in `imports.rs` and `uploads.rs`.
+- Independent review round 2 (REQUEST CHANGES; round-1 fixes confirmed; all own code, all
+  fixed): the candidate's hash in shared task transcripts (high: `secret_verify` is now the
+  Superagent's only, test `agents_are_not_served_secret_verify`, red before); `lines` counted a
+  final literal `\n` as a line (now ends the last line, unit test red before); the audit-once key
+  lacked the sandbox and held the candidate's hash (now keyed by the sandbox and a digest of the
+  candidate, unit test); `sha256sum`'s own line was refused (now read, red before); the
+  Superagent's own production refusal and rotation are now tested in `cockpit.rs`.

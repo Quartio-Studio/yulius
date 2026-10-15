@@ -2430,11 +2430,11 @@ async fn the_superagent_verifies_a_multi_line_value_by_its_hash() -> TestResult 
         ),
         (PEM_KEY.replace("LTQ0MTc", "LTQ0MTg"), "different"),
     ] {
-        // Upper-case hex is the same hash.
-        let hash = if kind == "trailing_newline" {
-            sha(&candidate).to_uppercase()
-        } else {
-            sha(&candidate)
+        // Upper-case hex is the same hash, and `sha256sum`'s own line is taken as it prints it.
+        let hash = match kind {
+            "trailing_newline" => sha(&candidate).to_uppercase(),
+            "exact" => format!("{}  key.pem\n", sha(&candidate)),
+            _ => sha(&candidate),
         };
         let (answer, is_error) = cockpit_tool(
             &f,
@@ -2527,6 +2527,79 @@ async fn the_superagent_verifies_a_multi_line_value_by_its_hash() -> TestResult 
         .filter(|e| e["action"] == "vault.agent.verify")
         .count();
     assert_eq!(count, 6);
+
+    // After a rotation the same check answers anew and is audited again (review round 1).
+    let id = added.body["id"].as_str().ok_or("id")?;
+    let rotated = call(
+        &f.h.router,
+        Method::PATCH,
+        &format!("/api/agent-secrets/{id}"),
+        Some(json!({"value": "rotated-founder-key-value-1"})),
+        &f.alice,
+    )
+    .await?;
+    assert!(rotated.status.is_success(), "{:?}", rotated.body);
+    let (after, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "secret_verify",
+        json!({"secret": "FOUNDER_PRIVATE_KEY", "sha256": value_sha}),
+    )
+    .await?;
+    assert!(!is_error, "{after}");
+    assert_eq!(after["match"], "different", "{after}");
+    let rotated_activity = call(
+        &f.h.router,
+        Method::GET,
+        "/api/secrets/activity",
+        None,
+        &f.alice,
+    )
+    .await?;
+    let newest = rotated_activity
+        .body
+        .as_array()
+        .ok_or("activity")?
+        .iter()
+        .find(|e| e["action"] == "vault.agent.verify")
+        .ok_or("no verify entry")?;
+    assert_eq!(
+        newest["detail"], "FOUNDER_PRIVATE_KEY → different",
+        "{newest}"
+    );
+
+    // A production secret is refused (SPEC-134).
+    let production = call(
+        &f.h.router,
+        Method::POST,
+        "/api/sandboxes/s1/agent-secrets",
+        Some(json!({"name": "PROD_KEY", "value": "prod-synthetic-value-12345"})),
+        &f.alice,
+    )
+    .await?;
+    assert_eq!(
+        production.status,
+        StatusCode::CREATED,
+        "{:?}",
+        production.body
+    );
+    {
+        use yulius_app::ports::vault::VaultStore as _;
+        let id = production.body["id"].as_str().ok_or("id")?;
+        assert!(f.h.store.vault_set_cd_prod(id, false, true).await?);
+    }
+    let (refused, is_error) = cockpit_tool(
+        &f,
+        &token,
+        "secret_verify",
+        json!({"secret": "PROD_KEY", "sha256": sha("prod-synthetic-value-12345")}),
+    )
+    .await?;
+    assert!(is_error, "{refused}");
+    assert!(
+        refused.to_string().contains("production secret"),
+        "{refused}"
+    );
     f.h.app.end_all_shells().await;
     Ok(())
 }

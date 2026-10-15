@@ -58,9 +58,10 @@ impl Likeness {
     }
 }
 
-/// The 32 bytes of a SHA-256 written as 64 hexadecimal digits (either case, spaces around).
+/// The 32 bytes of a SHA-256 written as 64 hexadecimal digits (either case), alone or as the
+/// first word of the line `sha256sum` prints (`<hash>  <file>`).
 fn parse_sha256(text: &str) -> Option<[u8; 32]> {
-    let text = text.trim();
+    let text = text.split_whitespace().next()?;
     if text.len() != 64 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
@@ -113,16 +114,44 @@ fn likeness(value: &str, candidate: &[u8; 32], same: &dyn Fn(&[u8], &[u8]) -> bo
     found
 }
 
-/// The lines `value` stands for, its literal `\n` read as line breaks.
+/// The lines `value` stands for, its literal `\n` read as line breaks (a final one ends the last
+/// line).
 fn lines(value: &str) -> usize {
-    value.matches("\\n").count() + 1
+    let breaks = value.matches("\\n").count();
+    if value.ends_with("\\n") {
+        breaks
+    } else {
+        breaks + 1
+    }
+}
+
+/// The key that audits a check once: the vault generation (a rotation audits it again), the
+/// sandbox (task numbers and instance-wide secrets repeat across projects), the caller, the secret
+/// and a digest of the candidate, never the candidate itself, which on a match is the value's
+/// hash.
+fn audit_key(
+    generation: u64,
+    sandbox: &str,
+    actor: &str,
+    record: &str,
+    candidate: &[u8; 32],
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"yulius secret_verify audit key|");
+    hasher.update(candidate);
+    let candidate: [u8; 32] = hasher.finalize().into();
+    format!(
+        "vault.agent.verify|{generation}|{sandbox}|{actor}|{record}|{}",
+        yulius_domain::vault::encode::hex(&candidate, false)
+    )
 }
 
 impl App {
-    /// `secret_verify`: whether the candidate whose SHA-256 the caller gives is the value of an
-    /// agent secret of its project (not a production one), or close to it; audited once per
-    /// caller, secret and candidate. Never answers a value or anything computed from one but the
-    /// comparison and its line count.
+    /// `secret_verify` (the Superagent's only, ADR-0144): whether the candidate whose SHA-256 the
+    /// caller gives is the value of an agent secret of its project (not a production one), or
+    /// close to it; audited once per vault generation, sandbox, caller, secret and candidate.
+    /// Never answers a value or anything computed from one but the comparison and, on a match,
+    /// its line count.
     pub(crate) async fn tool_secret_verify(
         &self,
         caller: &ProjectCaller,
@@ -159,14 +188,13 @@ impl App {
         });
         let count = lines(&payload.value);
         drop(payload);
-        // Keyed by the vault's generation too: after a rotation the same check is audited again.
         self.vault_audit_once(
-            format!(
-                "vault.agent.verify|{}|{}|{}|{}",
+            audit_key(
                 self.vault_generation(),
-                caller.actor,
-                record.id,
-                yulius_domain::vault::encode::hex(&candidate, false)
+                caller.sandbox.as_str(),
+                &caller.actor,
+                &record.id,
+                &candidate,
             ),
             &caller.actor,
             "vault.agent.verify",
@@ -189,7 +217,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    use super::{Likeness, likeness, lines, parse_sha256};
+    use super::{Likeness, audit_key, likeness, lines, parse_sha256};
     use sha2::{Digest, Sha256};
 
     fn digest(text: &str) -> [u8; 32] {
@@ -240,6 +268,40 @@ mod tests {
         );
         assert_eq!(lines(value), 1);
         assert_eq!(lines(STORED), 3);
+    }
+
+    #[test]
+    fn a_final_escape_ends_the_last_line_without_adding_one() {
+        let stored = format!("{STORED}\\n");
+        assert_eq!(lines(&stored), 3);
+        assert_eq!(
+            likeness(&stored, &digest(&format!("{PEM}\n")), &same),
+            Likeness::EscapedNewlines
+        );
+    }
+
+    #[test]
+    fn the_audit_key_names_the_sandbox_and_hides_the_candidate() {
+        let candidate = digest(STORED);
+        let here = audit_key(7, "s1", "cockpit:alice", "as_1", &candidate);
+        assert_ne!(
+            here,
+            audit_key(7, "s2", "cockpit:alice", "as_1", &candidate)
+        );
+        assert_ne!(
+            here,
+            audit_key(8, "s1", "cockpit:alice", "as_1", &candidate)
+        );
+        let hex = yulius_domain::vault::encode::hex(&candidate, false);
+        assert!(!here.contains(&hex), "{here}");
+    }
+
+    #[test]
+    fn sha256sum_lines_are_read_as_their_hash() {
+        let hex = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        assert_eq!(parse_sha256(&format!("{hex}  key.pem\n")), Some(digest("")));
+        assert_eq!(parse_sha256(&format!("{hex}  -")), Some(digest("")));
+        assert_eq!(parse_sha256(&format!("{hex}x  key.pem")), None);
     }
 
     #[test]
