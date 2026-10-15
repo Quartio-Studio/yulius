@@ -39,7 +39,10 @@ test('Reply on Needs you opens a field whose text the agent gets', async ({ app,
 
   // The bar is rebuilt on every task update: the text, the keyboard and the caret stay.
   await browser.keyboard.type('Ruleset added');
-  await touchTask(browser, 'sb_studio', 12, { activity: 'working' });
+  await touchTask(browser, 'sb_studio', 12, {
+    needs_you: { action: 'Add a ruleset on main', why: 'agents can push to main', at: new Date().toISOString() },
+  });
+  await expect(browser.locator('.attention-bar')).toHaveText(/Needs you: Add a ruleset on main/);
   await expect.poll(() => focused(browser)).toEqual({ label: 'Reply to the agent', caret: 13 });
   await expect(field).toHaveValue('Ruleset added');
 
@@ -103,7 +106,9 @@ test('Reply on Needs you while the agent asks in the terminal focuses the termin
   await expect(screen.getByRole('textbox', 'Reply to the agent')).toBeHidden();
 });
 
-test('a reply field that closes while typing hands the keyboard to the terminal', async ({ app, browser, screen }) => {
+// Review round 2: the keys typed after it closes must not reach the terminal, where a permission
+// menu may have opened (Enter approves, a digit picks an option).
+test('a reply field that closes while typing keeps the keys out of the terminal', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio/t/12'));
   await terminalShown(browser);
   await askRuleset(browser);
@@ -111,8 +116,13 @@ test('a reply field that closes while typing hands the keyboard to the terminal'
   await expect.poll(() => focused(browser)).toEqual({ label: 'Reply to the agent', caret: 0 });
   await browser.keyboard.type('Hal');
   await touchTask(browser, 'sb_studio', 12, { activity: 'needs_attention' });
-  await expect(screen.getByRole('textbox', 'Reply to the agent')).toBeHidden();
-  await expect.poll(() => focused(browser)).toEqual({ label: 'Terminal input', caret: 0 });
+  const field = screen.getByRole('textbox', 'Reply to the agent');
+  await expect(field).toBeHidden();
+  // The keyboard rests on the bar, which does nothing with keys.
+  await expect.poll(() => browser.evaluate(() => document.activeElement?.classList.contains('attention-bar') ?? false)).toBe(true);
+  await browser.keyboard.type('lo 2');
+  expect(await typedIntoTask(browser)).toBe('');
+  await expect(field).toHaveValue('Hal');
 });
 
 test('Reply on a phone focuses the quick input; no field opens', async ({ app, browser, screen }) => {
