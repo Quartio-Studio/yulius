@@ -690,7 +690,7 @@ mod tests {
         }
         let store = SqliteStore::open(&path)?;
         let sid = SandboxId::parse("s1")?;
-        let read = |kind, id: &'static str| store.subject_spans(&sid, kind, id);
+        let read = |kind, id: &'static str| store.subject_spans(&sid, kind, id, 1_000);
         let shape = |spans: Vec<yulius_app::stages::SpanRecord>| {
             spans
                 .into_iter()
@@ -745,6 +745,44 @@ mod tests {
         assert!(
             read(SubjectKind::Task, "t2").await?.is_empty(),
             "an ended task's states are not stored"
+        );
+        Ok(())
+    }
+
+    /// SPEC-137 review H1: the backfill reads a step's events by an index, so a large history
+    /// migrates in seconds, not minutes (40k events took 21 s without one).
+    #[tokio::test]
+    async fn a_large_step_history_backfills_quickly() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("v27-big.db");
+        {
+            let mut conn = rusqlite::Connection::open(&path)?;
+            for sql in &MIGRATIONS[..27] {
+                conn.execute_batch(sql)?;
+            }
+            conn.pragma_update(None, "user_version", 27)?;
+            conn.execute_batch(
+                "INSERT INTO users (id, display_name, created_at) VALUES ('u1', 'U', 1);
+                 INSERT INTO sandboxes (id, slug, repo_owner, repo_name, default_branch, profile, port_base, port_count, created_by, onboarding_state, created_at) VALUES ('s1', 's', 'o', 'r', 'main', '{}', 20000, 10, 'u1', 'not_needed', 1);
+                 INSERT INTO tasks (id, sandbox_id, number, title, prompt, harness, status, origin, created_by, created_at, updated_at) VALUES ('t1', 's1', 1, 'T', 'p', 'claude', 'closed', 'ui', 'u1', 1, 1);",
+            )?;
+            let tx = conn.transaction()?;
+            for i in 0..25_000_i64 {
+                let step = format!("st{}", i / 2);
+                let to = if i % 2 == 0 { "in_progress" } else { "done" };
+                tx.execute(
+                    "INSERT INTO step_events (step_id, task_id, at, actor, to_status) VALUES (?1, 't1', ?2, 'a', ?3)",
+                    rusqlite::params![step, i, to],
+                )?;
+            }
+            tx.commit()?;
+        }
+        let started = std::time::Instant::now();
+        let _store = SqliteStore::open(&path)?;
+        let took = started.elapsed();
+        assert!(
+            took < std::time::Duration::from_secs(5),
+            "the migration took {took:?}"
         );
         Ok(())
     }

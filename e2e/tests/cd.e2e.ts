@@ -47,6 +47,10 @@ test('production deploys only after the project slug is typed', async ({ app, br
   expect(await axeViolations(browser)).toEqual([]);
   await go.click();
   await expect(screen.getByText('Deploying production.')).toBeVisible();
+  // The time the person kept the confirmation open goes with it, as the run's confirmation wait
+  // (SPEC-137 STG-302).
+  const sent = await browser.evaluate(() => (window as unknown as { __yuliusMock: { lastCdDeploy?: { confirm_ms?: number } } }).__yuliusMock.lastCdDeploy?.confirm_ms ?? null);
+  expect(typeof sent === 'number' && sent > 0).toBe(true);
   const run = screen.getByRole('dialog', 'Deploy');
   await expect(run.getByText('Deploying')).toBeVisible();
   await expect(run.getByText(/promoted the integration branch|by mkarp/)).toBeVisible();

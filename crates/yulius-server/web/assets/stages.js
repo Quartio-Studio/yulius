@@ -182,13 +182,23 @@ export function waterfall(timeline, { now = Date.now(), title = 'Stages' } = {})
   const plot = h('div', { class: 'st-plot' }, list, tip);
   return h('section', { class: 'st-waterfall', 'aria-label': title },
     h('div', { class: 'st-head' }, h('h3', { class: 'st-title' }, title), h('span', { class: 'muted small' }, `${duration(total)} in all`), h('span', { class: 'spacer' }), toggle),
+    timeline.truncated ? h('p', { class: 'muted small' }, 'Only the newest stages are shown; the export has every one.') : null,
     plot, table);
 }
 
-/** Loads and draws one subject's waterfall into `host` (`subject`: `ci_run:<id>`, …). */
+const drawn = new WeakMap(); // host → the timeline it shows, so a poll that changed nothing keeps it
+
+/**
+ * Loads and draws one subject's waterfall into `host` (`subject`: `ci_run:<id>`, …). A timeline
+ * that has not changed since the last load is left as it is (its table toggle, its hover).
+ */
 export async function loadWaterfall(ctx, sandbox, subject, host, options = {}) {
   try {
     const timeline = await ctx.api.get(`/api/sandboxes/${encodeURIComponent(sandbox.id)}/stages/timeline?subject=${encodeURIComponent(subject)}`);
+    const text = JSON.stringify(timeline);
+    const running = [...(timeline.spans || []), ...(timeline.related || [])].some((s) => !s.ended_at);
+    if (!running && drawn.get(host) === text && host.firstChild) return;
+    drawn.set(host, text);
     setChildren(host, waterfall(timeline, options));
   } catch (error) {
     setChildren(host, h('p', { class: 'muted small' }, `Couldn’t load the stages: ${error.message || error}`));

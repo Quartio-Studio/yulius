@@ -25,6 +25,8 @@ const ORIGIN_NAMES = { ui: 'Started here', automation: 'Automation', import: 'Im
 
 /** How often an open dashboard refreshes itself. */
 const LIVE_MS = 30_000;
+/** How often its pipeline overview is read again. */
+const PIPELINE_MS = 5 * 60_000;
 const isoDay = (date) => date.toISOString().slice(0, 10);
 const parseDay = (day) => new Date(`${day}T00:00:00Z`);
 
@@ -62,6 +64,15 @@ export function mountDashboardPage(ctx, sandbox, route) {
     a.remove();
   }
 
+  let pipeline = { key: null, at: 0, data: null };
+  async function pipelineSummary(p) {
+    const key = `${p.from}:${p.to}`;
+    if (pipeline.key === key && Date.now() - pipeline.at < PIPELINE_MS) return pipeline.data;
+    const data = await ctx.api.get(`/api/sandboxes/${encodeURIComponent(sandbox.id)}/stages/summary?from=${p.from}&to=${p.to}`).catch(() => null);
+    pipeline = { key, at: Date.now(), data };
+    return data;
+  }
+
   const reload = loader(host, 'the dashboard', async () => {
     const current = period();
     rangeLabel.textContent = `${SHORT_DATE.format(parseDay(current.from))} – ${SHORT_DATE.format(parseDay(current.to))}`;
@@ -70,8 +81,9 @@ export function mountDashboardPage(ctx, sandbox, route) {
       ctx.api.get(`/api/analytics/summary?${query(current)}`),
       ctx.api.get(`/api/analytics/summary?${query(period(1))}`).catch(() => null),
       ctx.api.get('/api/capacity').catch(() => null),
-      // The pipeline's overview (SPEC-137); the page works without it.
-      ctx.api.get(`/api/sandboxes/${encodeURIComponent(sandbox.id)}/stages/summary?from=${current.from}&to=${current.to}`).catch(() => null),
+      // The pipeline's overview (SPEC-137), read again at most every 5 minutes (it reads every
+      // stage of the range); the page works without it.
+      pipelineSummary(current),
     ]);
     return { now: now || {}, before, days, capacity, stages };
   }, ({ now, before, days: n, capacity, stages }) => [renderSummary(now, before, n, capacity), pipelineCard(stages, sandbox, n)], { shape: loadingLayout });

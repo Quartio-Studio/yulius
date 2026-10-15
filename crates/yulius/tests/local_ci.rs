@@ -1067,7 +1067,7 @@ async fn a_run_s_jobs_record_their_stages_and_test_counts() -> TestResult {
     let id = run["id"].as_str().ok_or("id")?;
     let spans =
         f.h.store
-            .subject_spans(&SandboxId::parse("s1")?, SubjectKind::CiRun, id)
+            .subject_spans(&SandboxId::parse("s1")?, SubjectKind::CiRun, id, 1_000)
             .await?;
     let find = |kind: &str, name: &str| {
         spans

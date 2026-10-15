@@ -237,13 +237,49 @@ fn marker(rest: &str) -> Option<OutputEvent> {
     (!figures.is_empty()).then_some(OutputEvent::Measures(figures))
 }
 
-/// A figure's name: a lower-case letter, then up to 31 lower-case letters, digits or `_`.
+/// What Yulius records of a span itself: a job's figures never overwrite these.
+pub const RESERVED_FIGURES: [&str; 29] = [
+    "account_id",
+    "action",
+    "active_ms",
+    "branch",
+    "cache_read",
+    "cache_write",
+    "cpus",
+    "effort",
+    "exit_code",
+    "exit_reason",
+    "head",
+    "input_tokens",
+    "launch",
+    "matrix",
+    "measured_by",
+    "memory_mb",
+    "model",
+    "output_tokens",
+    "pr",
+    "reason",
+    "reference",
+    "requested_by",
+    "requeued",
+    "reused",
+    "seq",
+    "sha",
+    "step_id",
+    "task_id",
+    "turns",
+];
+
+/// A figure's name a job may set: a lower-case letter, then up to 31 lower-case letters, digits or
+/// `_`, and none of [`RESERVED_FIGURES`] (nor a `…_start` total of a step).
 #[must_use]
 pub fn figure_name(key: &str) -> bool {
     let mut chars = key.chars();
     matches!(chars.next(), Some(c) if c.is_ascii_lowercase())
         && key.len() <= 32
         && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        && !RESERVED_FIGURES.contains(&key)
+        && !key.ends_with("_start")
 }
 
 /// Counts of the common runners' summaries: cargo nextest (`Summary [ 1.2s] 10 tests run: 9
@@ -483,6 +519,25 @@ mod tests {
         let got = events(&[&format!("::yulius-measure{many}\n")], false);
         assert!(matches!(&got[..], [OutputEvent::Measures(v)] if v.len() == MAX_MEASURES));
         assert_eq!(events(&["::yulius-measure nothing\n"], false), vec![]);
+    }
+
+    /// Review M5: a job's figures never overwrite what Yulius records of the span (its commit,
+    /// trigger, budget, exit code, tokens…).
+    #[test]
+    fn reserved_figures_are_refused() {
+        let got = events(
+            &["::yulius-measure sha=1 task_id=2 cpus=64 exit_code=0 input_tokens=9 cache_hits=2\n"],
+            false,
+        );
+        assert_eq!(
+            got,
+            vec![OutputEvent::Measures(vec![("cache_hits".into(), 2.0)])]
+        );
+        assert!(
+            !figure_name("requested_by")
+                && !figure_name("active_ms_start")
+                && figure_name("cache_hits")
+        );
     }
 
     #[test]

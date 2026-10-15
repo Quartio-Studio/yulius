@@ -583,12 +583,13 @@ pub trait SpanStore: Send + Sync {
         figures: &[(String, f64)],
         add: bool,
     ) -> AppResult<()>;
-    /// A subject's spans in start order.
+    /// A subject's newest `limit` spans, in start order.
     async fn subject_spans(
         &self,
         sandbox: &SandboxId,
         kind: yulius_domain::stages::SubjectKind,
         subject: &str,
+        limit: u32,
     ) -> AppResult<Vec<crate::stages::SpanRecord>>;
     /// The queue and run spans of the CI runs of pull request `number` (alone or in a train).
     async fn ci_reference_spans(

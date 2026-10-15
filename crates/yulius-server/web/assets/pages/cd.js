@@ -177,6 +177,8 @@ export function mountCdPage(ctx, sandbox, route) {
     if (env.promote) steps.push(`Promote the integration branch${env.promotes_from ? ` at ${shortSha(env.promotes_from)}` : ''} into ${env.branch} (with the project’s promotion method, as you).`);
     if (env.deploy) steps.push(`Run the deploy command at the new ${env.branch} head: ${env.deploy}`);
     if (env.verify) steps.push(`Then verify: ${env.verify}`);
+    // How long the person kept the confirmation open is the run's confirmation wait (SPEC-137).
+    const opened = performance.now();
     const ok = await confirmDialog({
       title: 'Deploy production?',
       message: 'This changes what your users run. It happens now:',
@@ -185,15 +187,16 @@ export function mountCdPage(ctx, sandbox, route) {
       danger: true,
       typeToConfirm: overview.slug,
     });
-    if (ok) await start('prod', overview.slug, env.promote ? env.promotes_from : env.head);
+    if (ok) await start('prod', overview.slug, env.promote ? env.promotes_from : env.head, Math.round(performance.now() - opened));
   }
 
-  async function start(env, confirm, expect) {
+  async function start(env, confirm, expect, confirmMs) {
     try {
       // The commit the person saw: the server refuses if the branch moved since.
       const body = {};
       if (confirm) body.confirm = confirm;
       if (expect) body.expect = expect;
+      if (Number.isFinite(confirmMs)) body.confirm_ms = Math.max(0, confirmMs);
       const run = await ctx.api.post(`${base}/cd/${env}/deploy`, body);
       toast(env === 'dev' ? 'Deploying dev.' : 'Deploying production.', { kind: 'ok' });
       reload({ quiet: true });

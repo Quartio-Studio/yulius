@@ -23,6 +23,12 @@ CREATE TABLE spans (
 );
 CREATE INDEX spans_sandbox ON spans(sandbox_id, started_at);
 CREATE INDEX spans_open ON spans(subject_kind, subject_id, kind) WHERE ended_at IS NULL;
+CREATE INDEX spans_kind ON spans(sandbox_id, subject_kind, kind, started_at);
+-- What the triggers and the backfill look up (review H1, L10).
+CREATE INDEX IF NOT EXISTS step_events_step ON step_events(step_id, id);
+CREATE INDEX IF NOT EXISTS metrics_task ON metrics(task_id);
+-- A key that follows a state carries the span's own sequence (`state#<n>`), so changes in the same
+-- millisecond each keep theirs.
 
 -- ---- Tasks: the state track. Each change of status or activity ends the open state span and
 -- opens the next; an ending status (closed, stopped, failed) only ends it.
@@ -33,7 +39,7 @@ BEGIN
     SELECT NEW.sandbox_id,
         'task',
         NEW.id,
-        'state@' || NEW.created_at || ':' || NEW.status,
+        'state#' || (SELECT COALESCE(MAX(id), 0) + 1 FROM spans),
         'state',
         CASE
             WHEN NEW.status = 'waiting_capacity' THEN 'paused'
@@ -42,7 +48,7 @@ BEGIN
             ELSE NEW.status
         END,
         NEW.created_at
-    WHERE NOT EXISTS (SELECT 1 FROM spans x WHERE x.subject_kind = 'task' AND x.subject_id = NEW.id AND x.key = 'state@' || NEW.created_at || ':' || NEW.status);
+    WHERE NOT EXISTS (SELECT 1 FROM spans x WHERE x.subject_kind = 'task' AND x.subject_id = NEW.id AND x.key = 'state#' || (SELECT COALESCE(MAX(id), 0) + 1 FROM spans));
 END;
 
 CREATE TRIGGER spans_task_state AFTER UPDATE OF status, activity ON tasks
@@ -53,7 +59,7 @@ BEGIN
             'stopping', 'waiting_capacity', 'running') THEN NULL ELSE NEW.status END
     WHERE subject_kind = 'task' AND subject_id = NEW.id AND kind = 'state' AND ended_at IS NULL;
     INSERT INTO spans (sandbox_id, subject_kind, subject_id, key, kind, name, started_at)
-    SELECT NEW.sandbox_id, 'task', NEW.id, 'state@' || NEW.updated_at || ':' || NEW.status || ':' || COALESCE(NEW.activity, ''), 'state',
+    SELECT NEW.sandbox_id, 'task', NEW.id, 'state#' || (SELECT COALESCE(MAX(id), 0) + 1 FROM spans), 'state',
         CASE
             WHEN NEW.status = 'waiting_capacity' THEN 'paused'
             WHEN NEW.status = 'running' THEN CASE NEW.activity WHEN 'waiting' THEN 'idle'
@@ -62,7 +68,7 @@ BEGIN
         END, NEW.updated_at
     WHERE NEW.status IN ('queued', 'chained', 'prepared', 'starting', 'switching', 'stopping',
         'waiting_capacity', 'running')
-        AND NOT EXISTS (SELECT 1 FROM spans x WHERE x.subject_kind = 'task' AND x.subject_id = NEW.id AND x.key = 'state@' || NEW.updated_at || ':' || NEW.status || ':' || COALESCE(NEW.activity, ''));
+        AND NOT EXISTS (SELECT 1 FROM spans x WHERE x.subject_kind = 'task' AND x.subject_id = NEW.id AND x.key = 'state#' || (SELECT COALESCE(MAX(id), 0) + 1 FROM spans));
 END;
 
 -- An agent's request to a person (`needs_you`, SPEC-134): from the request to its answer. The
@@ -75,12 +81,12 @@ BEGIN
     WHERE subject_kind = 'task' AND subject_id = NEW.id AND kind = 'wait' AND name = 'needs_you'
         AND ended_at IS NULL;
     INSERT INTO spans (sandbox_id, subject_kind, subject_id, key, kind, name, started_at, detail)
-    SELECT NEW.sandbox_id, 'task', NEW.id, 'needs_you@' || json_extract(NEW.needs_you, '$.at'), 'wait',
+    SELECT NEW.sandbox_id, 'task', NEW.id, 'needs_you#' || (SELECT COALESCE(MAX(id), 0) + 1 FROM spans), 'wait',
         'needs_you', json_extract(NEW.needs_you, '$.at'),
         json_object('action', json_extract(NEW.needs_you, '$.action'))
     WHERE NEW.needs_you IS NOT NULL AND json_valid(NEW.needs_you)
         AND json_extract(NEW.needs_you, '$.at') IS NOT NULL
-        AND NOT EXISTS (SELECT 1 FROM spans x WHERE x.subject_kind = 'task' AND x.subject_id = NEW.id AND x.key = 'needs_you@' || json_extract(NEW.needs_you, '$.at'));
+        AND NOT EXISTS (SELECT 1 FROM spans x WHERE x.subject_kind = 'task' AND x.subject_id = NEW.id AND x.key = 'needs_you#' || (SELECT COALESCE(MAX(id), 0) + 1 FROM spans));
 END;
 
 -- ---- Steps: in_progress opens a step span with the task's token and working-time totals at
@@ -172,10 +178,10 @@ CREATE TRIGGER spans_delivery_insert AFTER INSERT ON delivery
 WHEN NEW.stage != 'none'
 BEGIN
     INSERT INTO spans (sandbox_id, subject_kind, subject_id, key, kind, name, started_at, detail)
-    SELECT t.sandbox_id, 'task', NEW.task_id, 'delivery@' || NEW.updated_at || ':' || NEW.stage, 'delivery',
+    SELECT t.sandbox_id, 'task', NEW.task_id, 'delivery#' || (SELECT COALESCE(MAX(id), 0) + 1 FROM spans), 'delivery',
         NEW.stage, NEW.updated_at, json_object('pr', NEW.pr_number)
     FROM tasks t WHERE t.id = NEW.task_id AND NEW.stage != 'production_done'
-        AND NOT EXISTS (SELECT 1 FROM spans x WHERE x.subject_kind = 'task' AND x.subject_id = NEW.task_id AND x.key = 'delivery@' || NEW.updated_at || ':' || NEW.stage);
+        AND NOT EXISTS (SELECT 1 FROM spans x WHERE x.subject_kind = 'task' AND x.subject_id = NEW.task_id AND x.key = 'delivery#' || (SELECT COALESCE(MAX(id), 0) + 1 FROM spans));
 END;
 
 CREATE TRIGGER spans_delivery_update AFTER UPDATE OF stage ON delivery
@@ -184,10 +190,10 @@ BEGIN
     UPDATE spans SET ended_at = MAX(started_at, NEW.updated_at), outcome = NEW.stage
     WHERE subject_kind = 'task' AND subject_id = NEW.task_id AND kind = 'delivery' AND ended_at IS NULL;
     INSERT INTO spans (sandbox_id, subject_kind, subject_id, key, kind, name, started_at, detail)
-    SELECT t.sandbox_id, 'task', NEW.task_id, 'delivery@' || NEW.updated_at || ':' || NEW.stage, 'delivery',
+    SELECT t.sandbox_id, 'task', NEW.task_id, 'delivery#' || (SELECT COALESCE(MAX(id), 0) + 1 FROM spans), 'delivery',
         NEW.stage, NEW.updated_at, json_object('pr', NEW.pr_number)
     FROM tasks t WHERE t.id = NEW.task_id AND NEW.stage NOT IN ('none', 'production_done')
-        AND NOT EXISTS (SELECT 1 FROM spans x WHERE x.subject_kind = 'task' AND x.subject_id = NEW.task_id AND x.key = 'delivery@' || NEW.updated_at || ':' || NEW.stage);
+        AND NOT EXISTS (SELECT 1 FROM spans x WHERE x.subject_kind = 'task' AND x.subject_id = NEW.task_id AND x.key = 'delivery#' || (SELECT COALESCE(MAX(id), 0) + 1 FROM spans));
 END;
 
 -- ---- CI runs: the queue (why it waited: the disk note, else a busy lane), the run, each job.
@@ -227,13 +233,13 @@ BEGIN
     SELECT NEW.sandbox_id,
         'ci_run',
         NEW.id,
-        'run@' || NEW.started_at,
+        'run#' || (SELECT COALESCE(MAX(id), 0) + 1 FROM spans),
         'run',
         'run',
         NEW.started_at,
         json_object('reference', NEW.reference, 'sha', NEW.sha, 'requested_by', NEW.requested_by,
             'reused', json('false'))
-    WHERE NOT EXISTS (SELECT 1 FROM spans x WHERE x.subject_kind = 'ci_run' AND x.subject_id = NEW.id AND x.key = 'run@' || NEW.started_at);
+    WHERE NOT EXISTS (SELECT 1 FROM spans x WHERE x.subject_kind = 'ci_run' AND x.subject_id = NEW.id AND x.key = 'run#' || (SELECT COALESCE(MAX(id), 0) + 1 FROM spans));
 END;
 
 CREATE TRIGGER spans_ci_run_end AFTER UPDATE OF ended_at ON ci_runs
@@ -256,13 +262,13 @@ BEGIN
     SELECT NEW.sandbox_id,
         'ci_run',
         NEW.id,
-        'queue@' || NEW.requeued_at,
+        'queue#' || (SELECT COALESCE(MAX(id), 0) + 1 FROM spans),
         'queue',
         'queue',
         NEW.requeued_at,
         json_object('reference', NEW.reference, 'sha', NEW.sha, 'requested_by', NEW.requested_by,
             'requeued', json('true'), 'reused', json('false'))
-    WHERE NOT EXISTS (SELECT 1 FROM spans x WHERE x.subject_kind = 'ci_run' AND x.subject_id = NEW.id AND x.key = 'queue@' || NEW.requeued_at);
+    WHERE NOT EXISTS (SELECT 1 FROM spans x WHERE x.subject_kind = 'ci_run' AND x.subject_id = NEW.id AND x.key = 'queue#' || (SELECT COALESCE(MAX(id), 0) + 1 FROM spans));
 END;
 
 CREATE TRIGGER spans_ci_job_start AFTER UPDATE OF started_at ON ci_jobs

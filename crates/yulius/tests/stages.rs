@@ -476,3 +476,47 @@ async fn spans_export_as_csv_and_json_and_stay_inside_their_sandbox() -> TestRes
     }
     Ok(())
 }
+
+/// Review L9: a task of another sandbox read through this sandbox's timeline shows nothing: not
+/// its spans and not this sandbox's CI runs that share its pull request's number.
+#[tokio::test]
+async fn a_task_of_another_sandbox_shows_no_timeline_here() -> TestResult {
+    let f = fixture().await?;
+    lifecycle(&f).await?;
+    seed_sandbox(&f.h, "s2", "other", "u-alice").await?;
+    let mut other = task_record("t2")?;
+    other.sandbox_id = SandboxId::parse("s2")?;
+    other.number = 1;
+    f.h.store.insert_task(&other).await?;
+    let task = TaskId::parse("t2")?;
+    let open = DeliveryRecord {
+        task_id: task,
+        stage: DeliveryStage::PrOpen,
+        pr_number: Some(12),
+        updated_at: Timestamp(OCT1),
+    };
+    f.h.store
+        .transition_delivery(&DeliveryStage::None, &open)
+        .await?;
+    let r = f
+        .get(
+            "/api/sandboxes/s1/stages/timeline?subject=task:t2",
+            &f.alice,
+        )
+        .await?;
+    assert_eq!(r.status, StatusCode::OK, "{}", r.body);
+    assert_eq!(
+        r.body["spans"].as_array().map(Vec::len),
+        Some(0),
+        "{}",
+        r.body
+    );
+    assert_eq!(
+        r.body["related"].as_array().map(Vec::len),
+        Some(0),
+        "{}",
+        r.body
+    );
+    assert_eq!(r.body["truncated"], false);
+    Ok(())
+}

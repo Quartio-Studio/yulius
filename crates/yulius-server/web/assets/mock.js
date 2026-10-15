@@ -1685,6 +1685,7 @@ route('POST', `/api/sandboxes/${ID}/cd/${ID}/deploy`, ({ db, p, body }) => {
   const env = cd.environments.find((e) => e.name === name);
   if (!env) fail(422, 'invalid', 'the environment is dev or prod');
   need(sandbox, name === 'prod' ? 'admin' : 'write');
+  db.lastCdDeploy = body || {}; // what the page sent (SPEC-137: `confirm_ms` of a production deploy)
   if (name === 'prod' && String((body && body.confirm) || '').trim() !== sandbox.slug) fail(422, 'invalid', `type the project's slug '${sandbox.slug}' to confirm a production deploy`);
   if (env.state !== 'ready') fail(409, 'conflict', `CD ${env.label} is ${env.state === 'empty' ? 'empty' : 'not defined'}`);
   if (env.secrets.some((s) => s.state !== 'ready')) fail(409, 'conflict', `nothing ran: a person who manages ${env.secrets.filter((s) => s.state !== 'ready').map((s) => s.name).join(', ')} allows using it outside the proxy on the Secrets page`);

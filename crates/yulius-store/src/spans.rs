@@ -153,6 +153,7 @@ impl SpanStore for SqliteStore {
         sandbox: &SandboxId,
         kind: SubjectKind,
         subject: &str,
+        limit: u32,
     ) -> AppResult<Vec<SpanRecord>> {
         let args = vec![
             Value::Text(sandbox.as_str().to_owned()),
@@ -160,11 +161,16 @@ impl SpanStore for SqliteStore {
             Value::Text(subject.to_owned()),
         ];
         self.call(move |c| {
-            select(
+            let mut rows = select(
                 c,
-                "sandbox_id = ?1 AND subject_kind = ?2 AND subject_id = ?3 ORDER BY started_at, id",
+                &format!(
+                    "sandbox_id = ?1 AND subject_kind = ?2 AND subject_id = ?3 \
+                     ORDER BY started_at DESC, id DESC LIMIT {limit}"
+                ),
                 &args,
-            )
+            )?;
+            rows.reverse();
+            Ok(rows)
         })
         .await
     }
@@ -280,6 +286,7 @@ mod tests {
                 &SandboxId::parse("s1").map_err(|_| db(bad_column("s", "s1")))?,
                 kind,
                 id,
+                1_000,
             )
             .await
     }
@@ -564,6 +571,11 @@ mod tests {
             "waiting for disk space: 9 of 8 GiB used"
         );
         assert_eq!(detail(&all[0])["reference"], "pr/7");
+        // A timeline reads the newest spans, in start order (review M7).
+        let newest = store
+            .subject_spans(&sid, SubjectKind::CiRun, "r1", 2)
+            .await?;
+        assert_eq!(summary(&newest), summary(&all[3..]));
         assert_eq!(all[2].job.as_deref(), Some("test"));
         assert_eq!(detail(&all[2])["exit_code"].as_i64(), Some(2));
         assert_eq!(detail(&all[3])["tests_passed"].as_f64(), Some(7.0));
@@ -704,9 +716,11 @@ mod tests {
         store
             .call(|c| {
                 c.execute_batch(
+                    // The seeded task's queued span is id 1; these are ids 2 and 3, so the next
+                    // span's key would be `…#4`: every later insert collides.
                     "INSERT INTO spans (sandbox_id, subject_kind, subject_id, key, kind, name, started_at) VALUES
-                       ('s1', 'task', 't1', 'state@200:starting:', 'state', 'planted', 1),
-                       ('s1', 'task', 't1', 'delivery@5:pr_open', 'delivery', 'planted', 1);",
+                       ('s1', 'task', 't1', 'state#4', 'state', 'planted', 1),
+                       ('s1', 'task', 't1', 'delivery#4', 'delivery', 'planted', 1);",
                 )
                 .map_err(db)
             })
@@ -751,6 +765,46 @@ mod tests {
         assert_eq!(
             store.delivery(&task).await?.map(|d| d.stage),
             Some(DeliveryStage::MergedIntegration)
+        );
+        Ok(())
+    }
+
+    /// Review L8: changes in the same millisecond each keep their span, and the last one stays
+    /// open.
+    #[tokio::test]
+    async fn same_millisecond_changes_keep_every_state_span() -> TestResult {
+        let store = seeded().await?;
+        let task = TaskId::parse("t1")?;
+        store
+            .transition_task(
+                &task,
+                Some(TaskStatus::Queued),
+                TaskStatus::Running,
+                Some(Activity::Working),
+                Timestamp(300),
+            )
+            .await?;
+        store
+            .set_activity(&task, Some(Activity::NeedsAttention), Timestamp(300))
+            .await?;
+        store
+            .set_activity(&task, Some(Activity::Working), Timestamp(300))
+            .await?;
+        let states: Vec<_> = summary(&spans(&store, SubjectKind::Task, "t1").await?)
+            .into_iter()
+            .filter(|s| s.0 == "state")
+            .collect();
+        assert_eq!(
+            states
+                .iter()
+                .map(|s| (s.1.as_str(), s.3))
+                .collect::<Vec<_>>(),
+            [
+                ("queued", Some(300)),
+                ("working", Some(300)),
+                ("needs_you", Some(300)),
+                ("working", None)
+            ]
         );
         Ok(())
     }

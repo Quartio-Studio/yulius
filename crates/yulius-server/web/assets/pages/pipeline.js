@@ -13,7 +13,8 @@ import { trendChart, stageTitle, loadWaterfall, subjectLabel } from '../stages.j
 
 const RANGES = [[7, '7 days'], [30, '30 days'], [90, '90 days']];
 const DAY = 86400000;
-const LIVE_MS = 60_000;
+// Every stage of the range is read: refreshed by itself every 5 minutes (Refresh reads now).
+const LIVE_MS = 5 * 60_000;
 const SHORT_DATE = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', timeZone: 'UTC' });
 const isoDay = (date) => date.toISOString().slice(0, 10);
 const ENV_NAMES = { dev: 'Dev', prod: 'Production' };

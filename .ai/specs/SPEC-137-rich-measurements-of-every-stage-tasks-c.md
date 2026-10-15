@@ -116,6 +116,7 @@ Show (STG-4xx):
 - [x] Retention bounded and Yulius's gate prints its stages
 - [x] Docs, ADR and changes updated
 - [ ] Independent review approves the exact head
+- [x] Review round 1: backfill and triggers indexed, figures coalesced and reserved, timelines bounded and scoped, the confirmation sent
 - [ ] Every gate green and the merge into dev armed on Yulius CI
 
 ## Acceptance criteria
@@ -165,3 +166,22 @@ Show (STG-4xx):
   (`::yulius-measure cache_hits=…`). Onboarding and automation runs are tasks, so their stages are
   the task's; promotions are a CD production run's `promote` span and a task's `promoted` delivery
   stage.
+- **One pull request, larger than usual** (about 2,000 lines of code outside tests, docs and the
+  mock). The request's done criteria need the model, its recording for all three subjects, the
+  read API and the page together; a split would merge a table nothing reads, or a page with
+  nothing to show. Each commit is one slice that keeps the project working.
+- **Review round 1** (all fixed test-first unless noted): the step backfill and the step trigger
+  scanned whole tables (indexes `step_events(step_id, id)` and `metrics(task_id)`; a 25k-event
+  history now migrates in well under 5 s, 26.6 s before); output that repeats figures wrote one
+  transaction per line (now one write per span and read, added up or the last value); a job's
+  `::yulius-measure` could overwrite what Yulius records (`sha`, `cpus`, `task_id`… are reserved);
+  same-millisecond changes lost a state span (keys carry the span's sequence); a timeline was
+  unbounded (newest 2,000, `truncated`) and redrew on every poll (only when it changed); a task of
+  another sandbox showed this sandbox's CI runs of the same pull request number (scoped); the page
+  never sent `confirm_ms` (it does). Decided, not changed: a deploy script can print the wrapper's
+  `[yulius] verify: …` line and so move the deploy/verify boundary inside its own run; the run's
+  total, outcome, commit and trigger stay Yulius's, and the scripts are reviewed on the protected
+  branch (splitting deploy and verify into two processes would change how CD runs; ADR-0112
+  consequences). Clearing a `needs_you` request now dates it in `tasks.updated_at` (the last change
+  of anything, as for every other change). Output Yulius skips when a job writes faster than it is
+  read (more than 2 MiB behind) can lose a stage line; the stage then ends at the next one.

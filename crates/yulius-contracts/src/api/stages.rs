@@ -51,6 +51,8 @@ pub struct TimelineView {
     pub spans: Vec<SpanView>,
     /// For a task: the CI runs of its pull request (its time waiting for CI).
     pub related: Vec<SpanView>,
+    /// The subject has more spans than are read: these are the newest.
+    pub truncated: bool,
 }
 
 /// Figures of one stage over the range.

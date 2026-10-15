@@ -30,6 +30,8 @@ use crate::auth::{AuthContext, rfc3339};
 use crate::context::App;
 use crate::error::{AppError, AppResult};
 
+/// Most spans one timeline reads (the newest).
+pub const MAX_TIMELINE_SPANS: u32 = 2_000;
 /// Most spans one summary or export reads.
 pub const MAX_SUMMARY_SPANS: u32 = 200_000;
 /// Longest range a summary covers, in days.
@@ -333,6 +335,34 @@ impl OutputStages {
 
     fn apply(&mut self, events: Vec<OutputEvent>, now: Timestamp) -> Vec<SpanOp> {
         let mut ops = Vec::new();
+        // Figures are written once per span and read (review H2): counts added up, set values the
+        // last one, after the spans they belong to were started.
+        let mut figures: Vec<SpanOp> = Vec::new();
+        let mut merge = |key: String, values: Vec<(String, f64)>, add: bool| {
+            let found = figures.iter_mut().find_map(|op| match op {
+                SpanOp::Figures {
+                    key: k,
+                    figures: f,
+                    add: a,
+                } if *k == key && *a == add => Some(f),
+                _ => None,
+            });
+            let Some(current) = found else {
+                figures.push(SpanOp::Figures {
+                    key,
+                    figures: values,
+                    add,
+                });
+                return;
+            };
+            for (name, value) in values {
+                match current.iter_mut().find(|(n, _)| *n == name) {
+                    Some((_, v)) if add => *v += value,
+                    Some((_, v)) => *v = value,
+                    None => current.push((name, value)),
+                }
+            }
+        };
         for event in events {
             match event {
                 OutputEvent::Stage(name) => {
@@ -348,27 +378,25 @@ impl OutputStages {
                     self.stage = Some(key);
                 }
                 OutputEvent::StageEnd => self.end_stage(now, &mut ops),
-                OutputEvent::Measures(figures) => ops.push(SpanOp::Figures {
-                    key: self
-                        .stage
+                OutputEvent::Measures(values) => merge(
+                    self.stage
                         .clone()
                         .unwrap_or_else(|| self.parent().to_owned()),
-                    figures,
-                    add: false,
-                }),
-                OutputEvent::Tests(counts) => ops.push(SpanOp::Figures {
-                    key: self
-                        .stage
+                    values,
+                    false,
+                ),
+                OutputEvent::Tests(counts) => merge(
+                    self.stage
                         .clone()
                         .unwrap_or_else(|| self.parent().to_owned()),
-                    figures: counts
+                    counts
                         .figures()
                         .into_iter()
                         .filter(|(_, n)| *n > 0)
                         .map(|(name, n)| (name.to_owned(), count_value(n)))
                         .collect(),
-                    add: true,
-                }),
+                    true,
+                ),
                 OutputEvent::PhaseStart(phase) => {
                     self.end_stage(now, &mut ops);
                     if let Some(key) = self.phase.take() {
@@ -403,6 +431,7 @@ impl OutputStages {
                 }
             }
         }
+        ops.extend(figures);
         ops
     }
 }
@@ -512,10 +541,17 @@ impl App {
             .ok_or_else(|| {
                 AppError::Invalid("subject must be task:<id>, ci_run:<id> or cd_run:<id>".into())
             })?;
-        let spans = self.deps.store.subject_spans(&sandbox, kind, id).await?;
+        let spans = self
+            .deps
+            .store
+            .subject_spans(&sandbox, kind, id, MAX_TIMELINE_SPANS)
+            .await?;
+        let truncated = u32::try_from(spans.len()).unwrap_or(u32::MAX) >= MAX_TIMELINE_SPANS;
         let mut related = Vec::new();
+        // Only a task of this sandbox has its pull request's CI runs here (review L9).
         if kind == SubjectKind::Task
             && let Ok(task) = TaskId::parse(id)
+            && matches!(self.deps.store.task(&task).await?, Some(t) if t.sandbox_id == sandbox)
             && let Some(number) = self
                 .deps
                 .store
@@ -549,6 +585,7 @@ impl App {
             subject_id: id.to_owned(),
             spans: spans.iter().map(SpanRecord::view).collect(),
             related,
+            truncated,
         })
     }
 
@@ -1083,6 +1120,38 @@ mod tests {
             .filter(|op| matches!(op, SpanOp::Start(_)))
             .count();
         assert_eq!(starts, MAX_OUTPUT_STAGES);
+    }
+
+    /// Review H2: output that repeats figures (a flood of summaries and measures) becomes one
+    /// write per span and read, added up or the last value kept, so it never floods the store.
+    #[test]
+    fn repeated_figures_become_one_write_per_span_and_read() {
+        let mut stages = OutputStages::ci_job(sid(), "r1", "job:j1@5", "quality");
+        let mut text = String::from("::yulius-stage unit\n");
+        for _ in 0..10_000 {
+            text.push_str("1 passed\n::yulius-measure cache_hits=1\n");
+        }
+        text.push_str("::yulius-measure cache_hits=7\n");
+        let ops = stages.feed(text.as_bytes(), Timestamp(1));
+        let figures: Vec<&SpanOp> = ops
+            .iter()
+            .filter(|op| matches!(op, SpanOp::Figures { .. }))
+            .collect();
+        assert_eq!(
+            figures,
+            [
+                &SpanOp::Figures {
+                    key: "job:j1@5/stage:1".into(),
+                    figures: vec![("tests_passed".into(), 10_000.0)],
+                    add: true
+                },
+                &SpanOp::Figures {
+                    key: "job:j1@5/stage:1".into(),
+                    figures: vec![("cache_hits".into(), 7.0)],
+                    add: false
+                },
+            ]
+        );
     }
 
     #[test]

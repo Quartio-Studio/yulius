@@ -1159,7 +1159,7 @@ async fn a_deploy_records_its_confirmation_checks_promotion_phases_and_stages() 
     assert_eq!(run["state"], "passed", "{run}");
     let spans =
         f.h.store
-            .subject_spans(&SandboxId::parse("s1")?, SubjectKind::CdRun, &id)
+            .subject_spans(&SandboxId::parse("s1")?, SubjectKind::CdRun, &id, 1_000)
             .await?;
     let find = |key: &str| {
         spans
@@ -1220,7 +1220,12 @@ async fn a_deploy_records_its_confirmation_checks_promotion_phases_and_stages() 
     follow.abort();
     let again_spans =
         f.h.store
-            .subject_spans(&SandboxId::parse("s1")?, SubjectKind::CdRun, &again_id)
+            .subject_spans(
+                &SandboxId::parse("s1")?,
+                SubjectKind::CdRun,
+                &again_id,
+                1_000,
+            )
             .await?;
     assert!(
         again_spans

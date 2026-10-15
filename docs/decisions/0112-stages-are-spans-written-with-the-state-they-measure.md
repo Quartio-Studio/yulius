@@ -75,5 +75,9 @@ requeue were lost. Nothing split a CI job into its gates or a deploy into deploy
 - A change of the state tables' writes needs the triggers kept in mind (the store tests cover each
   one); a trigger bug would surface as a failed state write, which the tests check never happens
   for a span that already exists.
+- A job's figures cannot overwrite what Yulius records of a span (reserved names), and repeated
+  figures are written once per span and read. A deploy script can still move the boundary between
+  its own deploy and verify by printing the wrapper's line; the run's total, outcome, commit and
+  trigger stay Yulius's.
 - Measurements describe what Yulius saw: a stage is accurate to the half second at which job output
   is read, and a backfilled span may be shorter than the truth (a CI run's wait before a requeue).
