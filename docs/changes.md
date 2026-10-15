@@ -6,6 +6,14 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- Someone else's task is watched as its live transcript, not a broken terminal (SPEC-179,
+  ADR-0145, task #166). The owner's terminal is drawn for the owner's window, so a watcher saw it
+  wrapped and overlapping. Now they read the session as the Sessions view prints it, in the
+  terminal's normal colours, as it writes (new messages, tool calls and prompts every 1.5 s; the
+  tail of a long session first). "You are watching @owner's task" sits above it with Request
+  control, the sidebar shows the owner's initials on their tasks, and an electro-blue pixel octopus
+  with dot eyes and an ε mouth crawls between the top corners. New `GET /api/tasks/{tid}/transcript`.
+
 - Review findings in a change's own code are fixed before merge, never deferred to an issue
   (SPEC-174, ADR-0141, task #164). The delivery pipeline, `om-code-review` (skill, checklist and
   report format), the Feature and Fix workflows, the `yulius-review`, `yulius-verify` and
