@@ -288,7 +288,10 @@ mod tests {
         serde_json::from_str(span.detail.as_deref().unwrap_or("{}")).unwrap_or_default()
     }
 
-    fn summary(spans: &[SpanRecord]) -> Vec<(String, String, i64, Option<i64>, Option<String>)> {
+    /// A span as kind, name, start, end and outcome.
+    type Shape = (String, String, i64, Option<i64>, Option<String>);
+
+    fn summary(spans: &[SpanRecord]) -> Vec<Shape> {
         spans
             .iter()
             .map(|s| {

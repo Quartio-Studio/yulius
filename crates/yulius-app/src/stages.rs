@@ -174,7 +174,7 @@ pub struct SpanFilter {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SpanOp {
     /// Start a span.
-    Start(NewSpan),
+    Start(Box<NewSpan>),
     /// End an open span.
     End {
         /// Its key.
@@ -343,13 +343,8 @@ impl OutputStages {
                     self.count += 1;
                     let parent = self.parent().to_owned();
                     let key = format!("{parent}/stage:{}", self.count);
-                    ops.push(SpanOp::Start(self.span(
-                        key.clone(),
-                        Some(parent),
-                        "stage",
-                        &name,
-                        now,
-                    )));
+                    let span = self.span(key.clone(), Some(parent), "stage", &name, now);
+                    ops.push(SpanOp::Start(Box::new(span)));
                     self.stage = Some(key);
                 }
                 OutputEvent::StageEnd => self.end_stage(now, &mut ops),
@@ -384,13 +379,9 @@ impl OutputStages {
                         });
                     }
                     let key = format!("{}/{}", self.root, phase.as_str());
-                    ops.push(SpanOp::Start(self.span(
-                        key.clone(),
-                        Some(self.root.clone()),
-                        phase.as_str(),
-                        phase.as_str(),
-                        now,
-                    )));
+                    let root = Some(self.root.clone());
+                    let span = self.span(key.clone(), root, phase.as_str(), phase.as_str(), now);
+                    ops.push(SpanOp::Start(Box::new(span)));
                     self.phase = Some(key);
                 }
                 OutputEvent::PhaseEnd { failed } => {
@@ -451,8 +442,19 @@ impl App {
             span.subject_kind,
             span.subject_id.clone(),
         );
-        self.record_spans(&sandbox, (kind, &id), vec![SpanOp::Start(span)])
+        self.record_spans(&sandbox, (kind, &id), vec![SpanOp::Start(Box::new(span))])
             .await;
+    }
+
+    /// Deletes spans older than [`yulius_domain::stages::RETAIN_MS`] (SPEC-137 STG-005), with
+    /// the CI and CD runs' hourly upkeep.
+    pub(crate) async fn prune_spans(&self, now: Timestamp) {
+        let before = Timestamp(now.0.saturating_sub(yulius_domain::stages::RETAIN_MS));
+        match self.deps.store.prune_spans(before).await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(spans = n, "old stage spans deleted"),
+            Err(err) => tracing::warn!(error = %err, "pruning stage spans failed"),
+        }
     }
 
     /// A span of a task Yulius measured, recorded once it ended (an armed merge's wait, an
@@ -720,6 +722,9 @@ pub struct StageQuery {
     pub format: Option<String>,
 }
 
+/// What a stage row is: subject, kind, name, job, environment.
+type RowKey = (String, String, String, Option<String>, Option<String>);
+
 /// A count as a figure's value.
 #[allow(clippy::cast_precision_loss)] // Counts far below 2^52.
 fn count_value(n: u64) -> f64 {
@@ -728,7 +733,7 @@ fn count_value(n: u64) -> f64 {
 
 /// The row a span counts in: a task's steps together, a job by its definition, a queue also by why
 /// it waited.
-fn row_keys(span: &SpanRecord) -> Vec<(String, String, String, Option<String>, Option<String>)> {
+fn row_keys(span: &SpanRecord) -> Vec<RowKey> {
     let subject = span.subject_kind.as_str().to_owned();
     let name = match span.kind.as_str() {
         "step" => "step".to_owned(),
@@ -783,8 +788,7 @@ pub fn summarize(
     trend: Option<&str>,
     truncated: bool,
 ) -> StageSummary {
-    type Key = (String, String, String, Option<String>, Option<String>);
-    let mut rows: BTreeMap<Key, (Vec<i64>, StageRow)> = BTreeMap::new();
+    let mut rows: BTreeMap<RowKey, (Vec<i64>, StageRow)> = BTreeMap::new();
     let mut options = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
     let mut reused_runs = 0u64;
     let wanted: Option<(String, String, String)> = trend.and_then(|text| {
@@ -1048,7 +1052,7 @@ mod tests {
                     at: Timestamp(20),
                     outcome: None
                 },
-                SpanOp::Start(NewSpan {
+                SpanOp::Start(Box::new(NewSpan {
                     started_at: Timestamp(20),
                     ..stages.span(
                         "job:j1@5/stage:2".into(),
@@ -1057,7 +1061,7 @@ mod tests {
                         "unit",
                         Timestamp(20)
                     )
-                }),
+                })),
                 SpanOp::Figures {
                     key: "job:j1@5/stage:2".into(),
                     figures: vec![("tests_passed".into(), 3.0), ("tests_flaky".into(), 1.0)],

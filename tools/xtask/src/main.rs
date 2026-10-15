@@ -12,6 +12,19 @@ const HELP: &str = "Yulius engineering commands (scripts/dev <command>)
   ci        Run all required gates, failing on the first failed command
   security  Scan the branch with Vidoc, failing on open critical or high findings (needs a key; not in ci)";
 
+/// The line that names a stage of a Yulius CI job (SPEC-137): Yulius times the stage from when
+/// it reads this line until the next one or the job's end.
+fn stage_marker(name: &str) -> String {
+    format!("::yulius-stage {name}")
+}
+
+/// Names the gate that starts now, when the job runs under Yulius CI (`YULIUS_CI=1`).
+fn stage(name: &str) {
+    if env::var_os("YULIUS_CI").is_some() {
+        println!("{}", stage_marker(name));
+    }
+}
+
 fn run(program: &str, args: &[&str]) -> io::Result<()> {
     println!("+ {program} {}", args.join(" "));
     let mut command = Command::new(program);
@@ -95,8 +108,10 @@ fn execute(task: &str) -> io::Result<()> {
         }
         "ci" => {
             for gate in ["doctor", "check", "lint", "test", "deps"] {
+                stage(gate);
                 execute(gate)?;
             }
+            stage("docs");
             run(
                 &cargo,
                 &[
@@ -165,4 +180,14 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stage_marker;
+
+    #[test]
+    fn a_stage_line_is_the_marker_yulius_reads() {
+        assert_eq!(stage_marker("lint"), "::yulius-stage lint");
+    }
 }
