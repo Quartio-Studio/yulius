@@ -30,8 +30,13 @@ a delegated cgroup v2 subtree in which every agent run lives (`<unit>/sandboxes/
   passes (2 s apart); the server's graceful shutdown answers Yulius requests the agents had sent.
 - Resuming releases and **thaws** the tasks one by one; a cancel thaws them at once; a server that
   starts with no update holding tasks thaws every run group left frozen under its unit.
-- A run that cannot be frozen (no delegation, a run on the host, a write refused) keeps the turn
-  boundary pause, its 30-minute bound and "Continue without waiting".
+- A run that cannot be frozen (no delegation, a run on the host, a write refused, its agent not
+  moved) keeps the turn boundary pause, its 30-minute bound and "Continue without waiting". While
+  such a run is still in a turn nothing is frozen; the others freeze once it is held, so no task
+  sits frozen while another works. A run the kernel does not confirm frozen within 5 passes is
+  thawed and pauses at its turn boundary.
+- Freeze passes and the thaw of all runs are serialized, and each freeze re-checks that the update
+  still drains, so a cancel never leaves a run frozen.
 
 ## Alternatives
 
@@ -49,7 +54,9 @@ a delegated cgroup v2 subtree in which every agent run lives (`<unit>/sandboxes/
 
 ## Consequences
 
-- Updates no longer wait for turns; tasks pause for about the install and its health check.
+- Updates no longer wait for turns; tasks pause for about the install and its health check
+  (unless a run that cannot be frozen is still in a turn: then the others keep working until it
+  is held).
 - The provider stream of a frozen agent goes through the egress proxy in the server process, so a
   response streaming at the restart is cut; after the thaw Claude Code retries the request (the
   model sees nothing, the terminal may show a retry line). Keeping it open needs the proxy outside
@@ -59,3 +66,7 @@ a delegated cgroup v2 subtree in which every agent run lives (`<unit>/sandboxes/
 - Run groups stay after a thaw (their processes stay in them, under the same sandbox limits) and are
   reused by the next freeze; empty ones are removed by the next sweep.
 - Without delegation nothing changes: tasks pause at their turn boundary as before.
+- The thaw needs a binary with this change: the server installed by the update, or the previous
+  one restored by a rollback (which froze them). A binary without it (a revert of this change)
+  thaws nothing; a revert must keep the start-up `thaw_all`, or the groups are thawed by hand
+  (`docs/operations.md` §8).

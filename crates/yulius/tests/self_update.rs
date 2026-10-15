@@ -613,10 +613,11 @@ async fn every_task_freezes_at_once_and_the_install_follows() -> TestResult {
     Ok(())
 }
 
-/// AC-OPS-11/12: a run the host cannot freeze still pauses at its turn boundary, and one the
-/// kernel has not confirmed frozen yet is not counted as paused.
+/// AC-OPS-11/12: a run the host cannot freeze still pauses at its turn boundary, and nothing is
+/// frozen while it works (the others would sit frozen for up to the 30-minute bound); once it is
+/// held, the others freeze and the install follows.
 #[tokio::test]
-async fn a_run_that_cannot_be_frozen_is_still_waited_for() -> TestResult {
+async fn a_run_that_cannot_be_frozen_is_waited_for_before_any_freeze() -> TestResult {
     let (i, host) = freezing_instance().await?;
     let (working, _idle) = two_tasks(&i).await?;
     host.answer(RUN_WORKING, RunFreeze::Unsupported);
@@ -626,24 +627,103 @@ async fn a_run_that_cannot_be_frozen_is_still_waited_for() -> TestResult {
     }
     let view = get(&i, &i.admin).await?;
     assert_eq!(view["run"]["state"], "pausing");
-    assert_eq!(view["run"]["tasks"]["paused"], 1);
+    assert_eq!(
+        view["run"]["tasks"]["paused"], 1,
+        "the idle task is at its boundary"
+    );
     assert_eq!(view["run"]["tasks"]["waiting"][0]["id"], working.as_str());
     assert_eq!(view["run"]["message"], "Pausing tasks: 1 of 2 paused.");
     assert_eq!(i.helper.last().map(|r| r.action), Some(HelperAction::Build));
-    assert_eq!(host.frozen(), vec![RUN_IDLE.to_owned()]);
+    assert!(host.frozen().is_empty(), "nothing frozen while it works");
+    assert!(host.thawed().is_empty(), "not even for a moment");
 
-    // It can be frozen now, but the kernel has not confirmed it: still not paused.
-    host.answer(RUN_WORKING, RunFreeze::Freezing);
+    // Its turn ends and is held: the others freeze at once, then the install.
+    let (code, _, _) = hook(&i.h.internal, WORKING, "Stop").await?;
+    assert_eq!(code, 202);
     let _ = i.h.app.update_round().await;
-    let view = get(&i, &i.admin).await?;
-    assert_eq!(view["run"]["tasks"]["paused"], 1);
-    host.answer(RUN_WORKING, RunFreeze::Frozen);
-    let _ = i.h.app.update_round().await;
+    assert_eq!(host.frozen(), vec![RUN_IDLE.to_owned()]);
     let _ = i.h.app.update_round().await;
     assert_eq!(
         i.helper.last().map(|r| r.action),
         Some(HelperAction::Install)
     );
+    Ok(())
+}
+
+/// AC-OPS-11: a run the kernel never confirms frozen is thawed after five passes and paused at
+/// its turn boundary instead, and the others are thawed while it works.
+#[tokio::test]
+async fn a_run_that_never_settles_falls_back_to_its_turn_boundary() -> TestResult {
+    let (i, host) = freezing_instance().await?;
+    two_tasks(&i).await?;
+    host.answer(RUN_WORKING, RunFreeze::Freezing);
+    built(&i).await?;
+    let _ = i.h.app.update_round().await;
+    assert_eq!(host.frozen().len(), 2);
+    let view = get(&i, &i.admin).await?;
+    assert_eq!(
+        view["run"]["tasks"]["paused"], 1,
+        "not confirmed: not paused"
+    );
+    for _ in 0..4 {
+        let _ = i.h.app.update_round().await;
+    }
+    let mut thawed = host.thawed();
+    thawed.sort();
+    assert_eq!(thawed, vec![RUN_IDLE.to_owned(), RUN_WORKING.to_owned()]);
+    assert!(host.frozen().is_empty());
+    assert_eq!(i.helper.last().map(|r| r.action), Some(HelperAction::Build));
+
+    assert_eq!(hook(&i.h.internal, WORKING, "Stop").await?.0, 202);
+    let _ = i.h.app.update_round().await;
+    assert_eq!(
+        host.frozen(),
+        vec![RUN_IDLE.to_owned()],
+        "refused runs are not asked again"
+    );
+    let _ = i.h.app.update_round().await;
+    assert_eq!(
+        i.helper.last().map(|r| r.action),
+        Some(HelperAction::Install)
+    );
+    Ok(())
+}
+
+/// AC-OPS-13 (review): a cancel that lands while a freeze pass runs never leaves a run frozen.
+#[tokio::test]
+async fn a_cancel_during_a_freeze_pass_leaves_nothing_frozen() -> TestResult {
+    let (i, host) = freezing_instance().await?;
+    two_tasks(&i).await?;
+    built(&i).await?;
+    let (entered_tx, entered) = std::sync::mpsc::channel();
+    let (release, gate) = std::sync::mpsc::channel();
+    *host.entered.lock().map_err(|_| "lock")? = Some(entered_tx);
+    *host.gate.lock().map_err(|_| "lock")? = Some(gate);
+    let app = i.h.app.clone();
+    let round = tokio::spawn(async move { app.update_round().await });
+    tokio::task::spawn_blocking(move || entered.recv_timeout(std::time::Duration::from_secs(30)))
+        .await??;
+    // The first freeze is under way: the person cancels.
+    let ctx = support_ctx(&i).await?;
+    let app = i.h.app.clone();
+    let mut cancel = tokio::spawn(async move { app.cancel_update(&ctx).await.map(|_| ()) });
+    loop {
+        let view = get(&i, &i.admin).await?;
+        if view["run"]["state"] == "cancelled" {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    // Without serialization the cancel's thaw would finish here, before the freeze is recorded.
+    let early = tokio::time::timeout(std::time::Duration::from_millis(200), &mut cancel).await;
+    release.send(()).map_err(|_| "release")?;
+    round.await?;
+    match early {
+        Ok(done) => done??,
+        Err(_) => cancel.await??,
+    }
+    let _ = i.h.app.update_round().await;
+    assert!(host.frozen().is_empty(), "left frozen: {:?}", host.frozen());
     Ok(())
 }
 
@@ -653,7 +733,7 @@ async fn a_run_that_cannot_be_frozen_is_still_waited_for() -> TestResult {
 #[tokio::test]
 async fn frozen_tasks_thaw_one_by_one_after_the_restart() -> TestResult {
     let (i, host) = freezing_instance().await?;
-    two_tasks(&i).await?;
+    let (working, _idle) = two_tasks(&i).await?;
     built(&i).await?;
     let _ = i.h.app.update_round().await;
     let _ = i.h.app.update_round().await;
@@ -669,6 +749,10 @@ async fn frozen_tasks_thaw_one_by_one_after_the_restart() -> TestResult {
     assert_eq!(host.frozen().len(), 2);
     let _ = restarted.update_round().await;
     assert!(host.thawed().is_empty(), "frozen until the helper reports");
+    assert!(
+        restarted.held_for_update(&working),
+        "paused across the restart"
+    );
 
     i.helper
         .report(&install, HelperState::Done, "succeeded", None);
@@ -679,6 +763,7 @@ async fn frozen_tasks_thaw_one_by_one_after_the_restart() -> TestResult {
     assert_eq!(thawed, vec![RUN_IDLE.to_owned(), RUN_WORKING.to_owned()]);
     assert!(host.frozen().is_empty());
     assert!(host.sweeps.load(Ordering::SeqCst) >= 1, "the rest is swept");
+    assert!(!restarted.held_for_update(&working), "released");
     let view = restarted.update_view(&support_ctx(&i).await?).await?;
     assert_eq!(view.run.ok_or("run")?.state, "succeeded");
 
@@ -697,15 +782,17 @@ async fn frozen_tasks_thaw_one_by_one_after_the_restart() -> TestResult {
 async fn a_cancel_or_a_rollback_thaws_every_frozen_task() -> TestResult {
     let (i, host) = freezing_instance().await?;
     two_tasks(&i).await?;
-    // One run waits for its turn, so the update stays pausing.
-    host.answer(RUN_WORKING, RunFreeze::Unsupported);
+    // One run is not confirmed frozen yet, so the update stays pausing.
+    host.answer(RUN_WORKING, RunFreeze::Freezing);
     built(&i).await?;
     let _ = i.h.app.update_round().await;
-    assert_eq!(host.frozen(), vec![RUN_IDLE.to_owned()]);
+    assert_eq!(host.frozen().len(), 2);
     let r = post(&i, "/api/admin/update/cancel", None, &i.admin).await?;
     assert_eq!(r.status, StatusCode::OK, "{}", r.body);
     assert!(host.frozen().is_empty(), "thawed at once");
-    assert!(host.thawed().contains(&RUN_IDLE.to_owned()));
+    let mut thawed = host.thawed();
+    thawed.sort();
+    assert_eq!(thawed, vec![RUN_IDLE.to_owned(), RUN_WORKING.to_owned()]);
 
     // A rolled-back install resumes and thaws too.
     host.answer(RUN_WORKING, RunFreeze::Frozen);
@@ -725,9 +812,17 @@ async fn a_cancel_or_a_rollback_thaws_every_frozen_task() -> TestResult {
     let restarted = App::new(i.h.app.config.clone(), i.h.app.deps.clone());
     restarted.set_updates(services(OLD, &i.source, &i.helper));
     restarted.restore_update_hold().await;
+    let thawed_before = host.thawed().len();
     let _ = restarted.update_round().await;
     let _ = restarted.update_round().await;
     assert!(host.frozen().is_empty());
+    let mut thawed = host.thawed().split_off(thawed_before);
+    thawed.sort();
+    assert_eq!(
+        thawed,
+        vec![RUN_IDLE.to_owned(), RUN_WORKING.to_owned()],
+        "each run thawed by the resume itself"
+    );
     let view = restarted.update_view(&support_ctx(&i).await?).await?;
     assert_eq!(view.run.ok_or("run")?.state, "rolled_back");
     Ok(())

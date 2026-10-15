@@ -883,7 +883,10 @@ ptyhost adapter moves the agent's process tree (the recorded child and its desce
 child's cgroup, `yulius_sandbox::freeze`) into `run-<attempt>` under that cgroup and writes `1` to
 its `cgroup.freeze`; only groups under the delegated unit's `sandboxes/` are touched. A task whose
 group reports `frozen 1` counts as paused, mid-turn: nothing in it can observe the freeze. Resuming
-thaws each task right after releasing it; a cancel thaws every frozen run; a server that starts
+thaws each task right after releasing it; a cancel thaws every frozen run (passes and thaws are
+serialized, and a freeze re-checks that the run still drains); while a run that cannot be frozen
+(`SessionHost::can_freeze`) is still in a turn nothing is frozen, and a run not confirmed frozen
+within 5 passes is thawed and falls back to the pause point; a server that starts
 with no run holding tasks thaws every run group left frozen (`thaw_all`). A run that cannot be
 frozen falls back to the pause point below. A provider stream open at the restart is cut (the
 egress proxy is in the server) and the agent CLI retries it.

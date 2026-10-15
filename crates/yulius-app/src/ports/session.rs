@@ -267,6 +267,10 @@ pub trait SessionHost: Send + Sync {
     fn freeze(&self, _run_dir: &Path) -> RunFreeze {
         RunFreeze::Unsupported
     }
+    /// Whether [`Self::freeze`] could freeze the run, without freezing anything (OPS-011).
+    fn can_freeze(&self, _run_dir: &Path) -> bool {
+        false
+    }
     /// Thaws a run [`Self::freeze`] froze; nothing for a run that is not frozen (OPS-013).
     fn thaw(&self, _run_dir: &Path) {}
     /// Thaws every run this host left frozen, also those of a server that stopped before it

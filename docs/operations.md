@@ -781,10 +781,13 @@ commits. Nothing updates by itself: a superadmin chooses **Update now** and conf
    ptyhost, shells and browsers keep running) and new starts queue. The agents are told nothing.
    This needs the delegated cgroup of §3 (`Delegate=yes`, `DelegateSubgroup=server`); a run that
    cannot be frozen pauses at its next turn boundary instead (its Stop or `UserPromptSubmit` hook
-   is held, as for a capacity pause). A task still in a turn after 30 minutes cancels the update
+   is held, as for a capacity pause), and while such a run is still in a turn nothing is frozen:
+   the others freeze once it is held. A task still in a turn after 30 minutes cancels the update
    (nothing changes); the superadmin can also **Continue without waiting** or **Cancel**. To check
    a freeze on a host: `cat /sys/fs/cgroup/system.slice/yulius.service/sandboxes/*/agents/run-*/cgroup.events`
-   shows `frozen 1` while the update restarts. A response streaming from the model provider at the
+   (`sandboxes/*/run-*` without the `cpu` controller) shows `frozen 1` while the update restarts.
+   A server that starts thaws every run group left frozen; to thaw them by hand (a binary without
+   this, SPEC-160): `for f in /sys/fs/cgroup/system.slice/yulius.service/sandboxes/*/{,agents/}run-*/cgroup.freeze; do echo 0 > "$f"; done`. A response streaming from the model provider at the
    restart is cut (the egress proxy restarts with the server) and Claude Code retries it.
 3. **Restart**: the helper stops `yulius.service` (with `KillMode=process` agent sessions and
    terminals keep running), copies the binary and `yulius.db` (with its WAL) to

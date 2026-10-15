@@ -51,9 +51,9 @@ gets cancelled after 30 minutes because one task was still working.
 | ID | Requirement | Evidence |
 | --- | --- | --- |
 | OPS-010 | When the build is done (`draining`), every live task's agent run is **frozen at once** with the cgroup v2 freezer: the agent's whole process tree (the agent, its tools, its background shells, found as the descendants of the run's recorded child in the child's cgroup) moves into the run's own group `run-<attempt>` under it and that group is frozen. The ptyhost, people's shells and browsers, CI jobs and the sandbox holder are never frozen. Nothing is typed into, signalled to or told to the agent, and task states are untouched. A task counts as paused once its group reports `frozen 1`. | unit `freeze.rs`; int `self_update.rs` |
-| OPS-011 | A run that cannot be frozen (no delegated cgroup, its child not under `<unit>/sandboxes/`, the run gone, a write refused) **pauses at its turn boundary as before** (the hold, the 30-minute bound, "Continue without waiting"). Freezing never fails an update by itself. | unit `freeze.rs`; int `self_update.rs` (existing tests unchanged) |
+| OPS-011 | A run that cannot be frozen (no delegated cgroup, its child not under `<unit>/sandboxes/`, the run gone, a write refused, its child not moved) **pauses at its turn boundary as before** (the hold, the 30-minute bound, "Continue without waiting"). **Nothing is frozen while such a run is still in a turn** (checked without freezing, `SessionHost::can_freeze`): the others freeze once it is held, so no task sits frozen while another works. A run the kernel has not confirmed frozen after 5 passes (10 s) is thawed and pauses at its turn boundary instead. Freezing never fails an update by itself. | unit `freeze.rs`; int `self_update.rs` (existing tests unchanged) |
 | OPS-012 | The install is requested once every live task is frozen or at a pause point on two consecutive passes (one pass, 2 s, lets Yulius requests the agents had already sent be answered; the graceful shutdown answers the rest). | int `self_update.rs` |
-| OPS-013 | **Thawing.** Resuming thaws the runs one by one (2 s apart), each task's hook release before its thaw; a cancel (by a person, the 30-minute bound or a missing helper) thaws every frozen run at once; a failed or rolled-back install resumes and thaws the same way. A server that starts with no update holding tasks thaws every run group left frozen under its delegated unit (a crash between freeze and resume); one that starts while the run installs or resumes keeps them frozen until it resumes them. | unit `freeze.rs`; int `self_update.rs` |
+| OPS-013 | **Thawing.** Freeze passes and thaws of all runs are serialized, and each freeze re-checks that the update still drains, so a cancel never leaves a run frozen; with no open run, anything still recorded frozen is thawed. While the hold is on, every task not yet released counts as paused (`held_for_update`: a frozen agent makes no hook call, so the launch goal's watch stops its clock). Resuming thaws the runs one by one (2 s apart), each task's hook release before its thaw; a cancel (by a person, the 30-minute bound or a missing helper) thaws every frozen run at once; a failed or rolled-back install resumes and thaws the same way. A server that starts with no update holding tasks thaws every run group left frozen under its delegated unit (a crash between freeze and resume); one that starts while the run installs or resumes keeps them frozen until it resumes them. | unit `freeze.rs`; int `self_update.rs` |
 | OPS-014 | The instance page and the banner say tasks pause **at once**: the step "Pause tasks" reads "Tasks pause at once, mid-step. The agents don't notice."; the message "Pausing tasks: N of M paused."; "Still in a turn" lists only tasks that could not be frozen; the confirmation says tasks pause at once. | e2e `update.e2e.ts` (mock) |
 | OPS-015 | SPEC-001 OPS-008, SPEC-002 ADR-18, the architecture document, the product summary, an ADR and `docs/changes.md` describe it, including its limits. | review |
 
@@ -96,7 +96,8 @@ gets cancelled after 30 minutes because one task was still working.
   table: AC-OPS-10, AC-OPS-11 (refusals), thawing one run and `thaw_all` (only frozen `run-*`
   groups under `sandboxes/`), leaf names that are not attempt ids refused.
 - Integration, `crates/yulius/tests/self_update.rs` with a recording fake session host that freezes
-  (or not): AC-OPS-12, AC-OPS-13; the existing tests keep the host that cannot freeze (AC-OPS-11).
+  (or not, or never settles, or blocks a freeze while a cancel lands): AC-OPS-11..13; the existing
+  tests keep the host that cannot freeze (AC-OPS-11).
 - e2e, `e2e/tests/update.e2e.ts` against the mock: AC-OPS-14.
 - Not testable here: the kernel freezer itself (this sandbox has no `/sys/fs/cgroup`); the paths
   and file contents are the kernel's documented interface, and the freeze is verified on a
@@ -121,8 +122,27 @@ gets cancelled after 30 minutes because one task was still working.
   a response streaming at the restart ends; after the thaw Claude Code sees a dropped connection
   and retries the request itself (the model sees nothing; the terminal may show a retry line).
   Keeping tunnels open across a restart needs the proxy outside the server: follow-up #529.
+- **Nothing freezes while a run that cannot be frozen still works (review round 1).** Freezing
+  the others at once and waiting for it would keep them frozen for up to the 30-minute bound, and a
+  tool timeout (2 minutes for Claude Code's Bash tool) would then fire after the thaw: the agent
+  would notice. They stay running and freeze the moment it is held, so the frozen time stays the
+  install's. Without delegation every run is such a run and the update behaves as before.
+- **The thaw needs a binary with this change.** The server that thaws is the one installed (or
+  restored by a rollback, which is the binary that froze). Installing a binary without this change
+  (a revert) would leave groups frozen until thawed by hand (`docs/operations.md` §8 gives the
+  command); a revert must keep `thaw_all` at start.
 - **Wall-clock timers count the pause.** A tool timeout (Claude Code's Bash tool: 2 minutes by
   default) keeps running while frozen, so a command within about a minute of its timeout may time
   out after the thaw. The pause is about a minute (install and health check), which keeps this
   rare.
 - Recorded as ADR-0131.
+- **Review round 1** (fresh session, REQUEST CHANGES of a2fcb80f: three majors, four minors, two
+  nits), all fixed test-first: a cancel racing a freeze pass (serialized, re-checked, plus a
+  backstop thaw with no open run; `a_cancel_during_a_freeze_pass_leaves_nothing_frozen`); runs kept
+  frozen while an unfreezable one works (nothing freezes until it is held;
+  `a_run_that_cannot_be_frozen_is_waited_for_before_any_freeze`); the launch goal's watch counting
+  frozen time (`held_for_update` counts every unreleased task under the hold); a child that did
+  not move counted as frozen (`FreezeError::NotMoved`); a run that never settles (thawed after 5
+  passes; `a_run_that_never_settles_falls_back_to_its_turn_boundary`); the revert constraint
+  recorded; the fake sweep no longer hides per-run thaws; both group paths and a manual thaw in
+  `docs/operations.md`; a debug line when the last move pass still finds processes.

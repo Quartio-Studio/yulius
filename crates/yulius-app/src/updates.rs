@@ -72,6 +72,9 @@ const MAX_COMMITS_SHOWN: usize = 50;
 const MAX_WAITING_SHOWN: usize = 20;
 /// Consecutive passes that must find every task at a pause point before installing.
 const READY_PASSES: u32 = 2;
+/// Passes a run may stay frozen without the kernel confirming it; then it is thawed and paused
+/// at its turn boundary instead (SPEC-160 OPS-011).
+const MAX_UNSETTLED_PASSES: u32 = 5;
 
 /// One update run as stored.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,6 +155,9 @@ pub struct UpdateState {
     held_at: Mutex<HashMap<TaskId, i64>>,
     /// What freezing each task's run did while this server drained (SPEC-160).
     frozen: Mutex<HashMap<TaskId, Frozen>>,
+    /// Held by a freeze pass and by every thaw of all runs, so that a cancel's thaw never runs
+    /// between a pass's freeze and its record.
+    freezing: tokio::sync::Mutex<()>,
     check: Mutex<Option<CheckSnapshot>>,
     checking: tokio::sync::Mutex<()>,
     /// "Continue without waiting" was chosen for the draining run.
@@ -175,7 +181,18 @@ pub struct UpdateState {
 #[derive(Debug, Clone)]
 struct Frozen {
     run_dir: String,
-    state: RunFreeze,
+    state: FreezeState,
+}
+
+/// Where freezing a task's run stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FreezeState {
+    /// The kernel confirmed it: the task counts as paused.
+    Frozen,
+    /// Frozen, not confirmed yet after this many passes.
+    Freezing(u32),
+    /// It cannot be frozen in this drain: it pauses at its turn boundary.
+    Refused,
 }
 
 fn build_view(commit: Option<&str>) -> BuildView {
@@ -228,19 +245,17 @@ impl App {
         self.updates.hold.load(Ordering::SeqCst)
     }
 
-    /// Whether an update holds a hook of `task` now (it was held and not released yet).
-    pub(crate) fn held_for_update(&self, task: &TaskId) -> bool {
+    /// Whether an update pauses `task` now: the hold is on and the task was not released yet.
+    /// Its agent may be frozen (SPEC-160), which makes no hook call, or held at its boundary;
+    /// either way time spent so does not count against it (the launch goal's watch).
+    #[must_use]
+    pub fn held_for_update(&self, task: &TaskId) -> bool {
         self.updates.hold.load(Ordering::SeqCst)
             && !self
                 .updates
                 .released
                 .lock()
                 .is_ok_and(|released| released.contains(task))
-            && self
-                .updates
-                .held_at
-                .lock()
-                .is_ok_and(|held| held.contains_key(task))
     }
 
     /// Whether the turn boundary of `task` is held for an update; records that it is.
@@ -294,24 +309,51 @@ impl App {
         }
     }
 
-    /// Freezes the run of every live task not confirmed frozen yet (SPEC-160 OPS-010). A run the
-    /// host cannot freeze pauses at its turn boundary meanwhile (OPS-011) and is asked again on
-    /// the next pass (its run may not have been recorded yet).
-    async fn freeze_live_runs(&self) {
+    /// One freeze pass of the draining run `run_id` (SPEC-160 OPS-010/011): freezes the run of
+    /// every live task not confirmed frozen yet, unless a run that cannot be frozen is still in a
+    /// turn: then nothing stays frozen (the others would sit frozen while it works, for up to
+    /// the drain's bound) and they freeze once it is at its turn boundary.
+    async fn freeze_pass(&self, run_id: &str) {
+        let _pass = self.updates.freezing.lock().await;
         let attempts = self.deps.store.live_attempts().await.unwrap_or_default();
-        for attempt in attempts {
-            let confirmed = self.updates.frozen.lock().is_ok_and(|f| {
-                f.get(&attempt.task_id)
-                    .is_some_and(|run| run.state == RunFreeze::Frozen)
-            });
-            if confirmed {
-                continue;
+        if self.unfreezable_in_turn(&attempts).await {
+            self.thaw_unconfirmed_and_frozen().await;
+            return;
+        }
+        for attempt in &attempts {
+            let known = self
+                .updates
+                .frozen
+                .lock()
+                .ok()
+                .and_then(|f| f.get(&attempt.task_id).map(|run| run.state));
+            let passes = match known {
+                Some(FreezeState::Frozen | FreezeState::Refused) => continue,
+                Some(FreezeState::Freezing(passes)) => passes,
+                None if !self.can_freeze(&attempt.run_dir).await => continue,
+                None => 0,
+            };
+            // A cancel may have ended the drain while this pass ran.
+            if !self.still_draining(run_id).await {
+                return;
             }
             let host = Arc::clone(&self.deps.session_host);
             let dir = PathBuf::from(&attempt.run_dir);
-            let state = tokio::task::spawn_blocking(move || host.freeze(&dir))
+            let answer = tokio::task::spawn_blocking(move || host.freeze(&dir))
                 .await
                 .unwrap_or(RunFreeze::Unsupported);
+            let state = match answer {
+                RunFreeze::Frozen => FreezeState::Frozen,
+                RunFreeze::Freezing if passes + 1 < MAX_UNSETTLED_PASSES => {
+                    FreezeState::Freezing(passes + 1)
+                }
+                RunFreeze::Freezing => {
+                    tracing::warn!(task = %attempt.task_id, "the run did not freeze; it pauses at its turn boundary");
+                    self.thaw_run(&attempt.run_dir).await;
+                    FreezeState::Refused
+                }
+                RunFreeze::Unsupported => FreezeState::Refused,
+            };
             if let Ok(mut frozen) = self.updates.frozen.lock() {
                 frozen.insert(
                     attempt.task_id.clone(),
@@ -321,6 +363,83 @@ impl App {
                     },
                 );
             }
+        }
+        // A run refused in this pass may be in a turn.
+        if self.unfreezable_in_turn(&attempts).await {
+            self.thaw_unconfirmed_and_frozen().await;
+        }
+    }
+
+    async fn still_draining(&self, run_id: &str) -> bool {
+        matches!(
+            self.deps.store.open_update_run().await,
+            Ok(Some(run)) if run.id == run_id && run.state == RunState::Draining
+        )
+    }
+
+    async fn can_freeze(&self, run_dir: &str) -> bool {
+        let host = Arc::clone(&self.deps.session_host);
+        let dir = PathBuf::from(run_dir);
+        tokio::task::spawn_blocking(move || host.can_freeze(&dir))
+            .await
+            .unwrap_or(false)
+    }
+
+    /// Whether a live task whose run cannot be frozen is still in a turn.
+    async fn unfreezable_in_turn(&self, attempts: &[crate::model::AttemptRecord]) -> bool {
+        for attempt in attempts {
+            let known = self
+                .updates
+                .frozen
+                .lock()
+                .ok()
+                .and_then(|f| f.get(&attempt.task_id).map(|run| run.state));
+            let unfreezable = match known {
+                Some(FreezeState::Refused) => true,
+                Some(_) => false,
+                None => !self.can_freeze(&attempt.run_dir).await,
+            };
+            if unfreezable && !self.at_turn_pause(&attempt.task_id).await {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Whether `task` is at a pause point of the turn-boundary hold (or gone).
+    async fn at_turn_pause(&self, task: &TaskId) -> bool {
+        let Ok(Some(record)) = self.deps.store.task(task).await else {
+            return true;
+        };
+        let now = self.now().0;
+        let recently_held = self.updates.held_at.lock().is_ok_and(|h| {
+            h.get(task)
+                .is_some_and(|at| now.saturating_sub(*at) <= HELD_FRESH_MS)
+        });
+        policy::at_pause_point(record.status, record.activity, recently_held)
+    }
+
+    /// Thaws every run frozen in this drain and forgets it (refused runs are kept: they stay
+    /// paused at their turn boundary).
+    async fn thaw_unconfirmed_and_frozen(&self) {
+        let runs: Vec<String> = self
+            .updates
+            .frozen
+            .lock()
+            .map(|mut f| {
+                let thawed: Vec<TaskId> = f
+                    .iter()
+                    .filter(|(_, run)| run.state != FreezeState::Refused)
+                    .map(|(task, _)| task.clone())
+                    .collect();
+                thawed
+                    .into_iter()
+                    .filter_map(|task| f.remove(&task).map(|run| run.run_dir))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for run in runs {
+            self.thaw_run(&run).await;
         }
     }
 
@@ -338,13 +457,14 @@ impl App {
 
     /// Thaws every run this server froze, then every run group left frozen (OPS-013).
     async fn thaw_frozen_runs(&self) {
+        let _pass = self.updates.freezing.lock().await;
         let runs: Vec<String> = self
             .updates
             .frozen
             .lock()
             .map(|mut f| {
                 f.drain()
-                    .filter(|(_, run)| run.state != RunFreeze::Unsupported)
+                    .filter(|(_, run)| run.state != FreezeState::Refused)
                     .map(|(_, run)| run.run_dir)
                     .collect()
             })
@@ -406,10 +526,13 @@ impl App {
             self.drive_update(services, run).await;
             return TICK;
         }
-        // No open run: nothing may stay held (a run ended while this server was down).
+        // No open run: nothing may stay held (a run ended while this server was down) or frozen.
         if self.update_holds_starts() {
             self.set_hold(false);
             self.drain_queue().await;
+        }
+        if self.updates.frozen.lock().is_ok_and(|f| !f.is_empty()) {
+            self.thaw_frozen_runs().await;
         }
         let now = self.now().0;
         if let Some(every) = services.check_every {
@@ -929,7 +1052,7 @@ impl App {
                 }
             }
             RunState::Draining => {
-                self.freeze_live_runs().await;
+                self.freeze_pass(&run.id).await;
                 let progress = self.pause_progress().await;
                 let proceed = self.updates.proceed.load(Ordering::SeqCst);
                 let ready = proceed || progress.waiting.is_empty();
@@ -1184,7 +1307,7 @@ impl App {
             .lock()
             .map(|f| {
                 f.iter()
-                    .filter(|(_, run)| run.state == RunFreeze::Frozen)
+                    .filter(|(_, run)| run.state == FreezeState::Frozen)
                     .map(|(task, _)| task.clone())
                     .collect()
             })

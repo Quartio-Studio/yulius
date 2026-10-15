@@ -14,7 +14,7 @@
 //! run group after a thaw, under the same sandbox limits; the next freeze reuses it.
 
 use std::collections::{HashMap, HashSet};
-use std::io;
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
 /// Prefix of a run's group.
@@ -77,6 +77,9 @@ pub enum FreezeError {
     /// The child's group is not under the delegated unit's sandboxes.
     #[error("the run is not in a sandbox group of this server")]
     NotDelegated,
+    /// The run's child did not move into its group (it keeps running).
+    #[error("the run's process did not move into its group")]
+    NotMoved,
     /// A cgroup file cannot be written.
     #[error("cgroup: {0}")]
     Io(#[from] io::Error),
@@ -138,6 +141,29 @@ fn groups(
     }
 }
 
+/// Moves `pid` into `group` (appended, as `echo pid >> cgroup.procs`: the kernel moves each).
+fn move_into(group: &Path, pid: u32) -> io::Result<()> {
+    // `create` is a no-op on cgroupfs, where the kernel made the file with the group.
+    std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(group.join("cgroup.procs"))?
+        .write_all(format!("{pid}\n").as_bytes())
+}
+
+/// Checks that freezing `name` could work, without freezing or creating anything.
+///
+/// # Errors
+/// As [`freeze`], before it writes.
+pub fn check(
+    tree: &Tree,
+    procs: &dyn ProcessTable,
+    child: u32,
+    name: &str,
+) -> Result<(), FreezeError> {
+    groups(tree, procs, child, name).map(|_| ())
+}
+
 fn settled(group: &Path) -> bool {
     std::fs::read_to_string(group.join("cgroup.events"))
         .is_ok_and(|text| text.lines().any(|l| l.trim() == "frozen 1"))
@@ -181,9 +207,10 @@ fn descends(procs: &dyn ProcessTable, pid: u32, child: u32, seen: &mut HashMap<u
 /// docs). Idempotent: a frozen run is checked again and stragglers are moved.
 ///
 /// # Errors
-/// [`FreezeError`]: the run cannot be frozen; nothing is frozen unless the error is [`Io`]
-/// after the group was frozen, which a [`thaw`] undoes.
+/// [`FreezeError`]: the run cannot be frozen; nothing is frozen unless the error is
+/// [`NotMoved`] or [`Io`] after the group was frozen, which a [`thaw`] undoes.
 ///
+/// [`NotMoved`]: FreezeError::NotMoved
 /// [`Io`]: FreezeError::Io
 pub fn freeze(
     tree: &Tree,
@@ -198,7 +225,7 @@ pub fn freeze(
     let mut seen = HashMap::new();
     let mut moved = Vec::new();
     let mut done = HashSet::new();
-    for _ in 0..MAX_PASSES {
+    for pass in 0..MAX_PASSES {
         let found: Vec<u32> = members(&parent)
             .into_iter()
             .filter(|pid| !done.contains(pid) && descends(procs, *pid, child, &mut seen))
@@ -206,12 +233,19 @@ pub fn freeze(
         if found.is_empty() {
             break;
         }
+        if pass + 1 == MAX_PASSES {
+            tracing::debug!(run = name, "the run still forked on the last pass");
+        }
         for pid in found {
             // A process that exited meanwhile is not an error.
-            let _ = std::fs::write(group.join("cgroup.procs"), pid.to_string());
+            let _ = move_into(&group, pid);
             done.insert(pid);
             moved.push(pid);
         }
+    }
+    // The agent itself must be in: otherwise the run keeps working while counted as paused.
+    if !members(&group).contains(&child) {
+        return Err(FreezeError::NotMoved);
     }
     Ok(Frozen {
         settled: settled(&group),
@@ -359,8 +393,11 @@ mod tests {
             vec![100, 101, 102],
             "never the ptyhost or a shell"
         );
-        // A fake `cgroup.procs` keeps the last write; the kernel moves each process.
-        assert_eq!(std::fs::read_to_string(group.join("cgroup.procs"))?, "102");
+        assert_eq!(
+            std::fs::read_to_string(group.join("cgroup.procs"))?,
+            "100\n101\n102\n"
+        );
+        assert!(check(&tree, &table(), 100, "a1").is_ok());
         assert!(!frozen.settled, "frozen only once the kernel says so");
         std::fs::write(group.join("cgroup.events"), "populated 1\nfrozen 1\n")?;
         let again = freeze(&tree, &table(), 100, "a1")?;
@@ -415,8 +452,25 @@ mod tests {
                 Err(FreezeError::BadName)
             ));
         }
+        assert!(matches!(
+            check(&tree, &outside, 100, "a1"),
+            Err(FreezeError::NotDelegated)
+        ));
         assert!(!root.path().join("u/server").exists(), "nothing created");
         assert!(!thaw(&tree, &table(), 100, "a1")?, "never frozen");
+        Ok(())
+    }
+
+    #[test]
+    fn a_child_that_did_not_move_is_not_counted_as_frozen() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (_root, tree, agents) = tree()?;
+        // The parent group no longer lists the child (it cannot be moved from where it is).
+        std::fs::write(agents.join("cgroup.procs"), "99\n200\n")?;
+        assert!(matches!(
+            freeze(&tree, &table(), 100, "a1"),
+            Err(FreezeError::NotMoved)
+        ));
         Ok(())
     }
 

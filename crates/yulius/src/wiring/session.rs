@@ -268,6 +268,12 @@ impl SessionHost for PtySessionHost {
         }
     }
 
+    fn can_freeze(&self, run_dir: &Path) -> bool {
+        freeze_target(run_dir).is_some_and(|(tree, child, name)| {
+            freeze::check(&tree, &freeze::Procfs, child, &name).is_ok()
+        })
+    }
+
     fn thaw(&self, run_dir: &Path) {
         if let Some((tree, child, name)) = freeze_target(run_dir)
             && let Err(error) = freeze::thaw(&tree, &freeze::Procfs, child, &name)

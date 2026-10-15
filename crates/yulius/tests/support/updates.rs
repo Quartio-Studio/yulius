@@ -167,6 +167,10 @@ pub struct FreezingHost {
     pub thawed: Mutex<Vec<String>>,
     /// [`SessionHost::thaw_all`] calls.
     pub sweeps: AtomicUsize,
+    /// Told when the next freeze starts.
+    pub entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    /// The next freeze waits for this.
+    pub gate: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
 }
 
 impl FreezingHost {
@@ -176,6 +180,8 @@ impl FreezingHost {
             frozen: Mutex::new(Vec::new()),
             thawed: Mutex::new(Vec::new()),
             sweeps: AtomicUsize::new(0),
+            entered: Mutex::new(None),
+            gate: Mutex::new(None),
         })
     }
 
@@ -220,6 +226,12 @@ impl SessionHost for FreezingHost {
         UnavailableSessionHost.terminate(run_dir)
     }
     fn freeze(&self, run_dir: &Path) -> RunFreeze {
+        if let Some(entered) = self.entered.lock().ok().and_then(|mut e| e.take()) {
+            let _ = entered.send(());
+        }
+        if let Some(gate) = self.gate.lock().ok().and_then(|mut g| g.take()) {
+            let _ = gate.recv_timeout(Duration::from_secs(30));
+        }
         let dir = run_dir.to_string_lossy().into_owned();
         let answer = self
             .answers
@@ -235,6 +247,14 @@ impl SessionHost for FreezingHost {
         }
         answer
     }
+    fn can_freeze(&self, run_dir: &Path) -> bool {
+        let dir = run_dir.to_string_lossy().into_owned();
+        self.answers
+            .lock()
+            .ok()
+            .and_then(|a| a.get(&dir).copied())
+            .is_none_or(|answer| answer != RunFreeze::Unsupported)
+    }
     fn thaw(&self, run_dir: &Path) {
         let dir = run_dir.to_string_lossy().into_owned();
         if let Ok(mut frozen) = self.frozen.lock() {
@@ -244,15 +264,10 @@ impl SessionHost for FreezingHost {
             thawed.push(dir);
         }
     }
+    /// Counts the sweep; frozen runs stay recorded, so a test sees which ones were thawed
+    /// one by one.
     fn thaw_all(&self) -> usize {
         self.sweeps.fetch_add(1, Ordering::SeqCst);
-        self.frozen
-            .lock()
-            .map(|mut f| {
-                let n = f.len();
-                f.clear();
-                n
-            })
-            .unwrap_or(0)
+        0
     }
 }
