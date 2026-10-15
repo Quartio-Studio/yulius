@@ -16,6 +16,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   - **#415:** a new case proves that a failed later Git overview read keeps the chips the page read.
     The mock counts GETs it failed on purpose (`failedReads`).
   - **#469:** was already fixed by #490 and is closed.
+- task_done, supervision and merge_train tests hold under host load (SPEC-140, ADR-0115, task #127;
+  fixes #404, #464, #353, #443). Two product races fixed: a hook whose client gave up after its 5 s
+  is still applied to its end (a slow Stop used to be cut off before setting Done), and a stop that
+  comes while a run is launching (a switch, a start) asks the run once it is attached instead of
+  waiting 20 s for the escalation. Tests wait for a stop within the stop escalation plus a margin and
+  say what they saw; merge train tests share one deadline under nextest's 120 s.
 - Open GitHub issues triaged and the first fixes delivered (SPEC-138, task #118). Of 63 open issues:
   - #423, #425 and #465 were already fixed and are closed.
   - The rest go to 20 chained tasks (#123–#142) in four lanes, or stay open with a comment naming
