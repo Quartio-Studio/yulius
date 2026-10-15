@@ -609,6 +609,8 @@ export function createPromptInput({ label, placeholder = '', keyshortcuts, maxLe
   // A file in the selection looks chosen as a whole: its label is never painted as selected text
   // (the stylesheet), the file is marked instead (#535). Followed while the box has the keyboard.
   function markSelected() {
+    // Gone with the keyboard in it: some browsers send no focusout then.
+    if (!el.isConnected) { document.removeEventListener('selectionchange', markSelected); return; }
     const sel = window.getSelection();
     const range = el.contains(document.activeElement) && sel && sel.rangeCount && el.contains(sel.anchorNode) ? sel.getRangeAt(0) : null;
     for (const atom of el.querySelectorAll('.pi-atom')) atom.classList.toggle('pi-selected', Boolean(range) && !range.collapsed && range.intersectsNode(atom));

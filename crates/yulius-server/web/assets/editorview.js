@@ -578,18 +578,22 @@ export function createEditorView(ctx, sandbox, getTask) {
     return true;
   }
 
-  // Paths being opened: a second open of one (a double-click on its row) waits for the first, so a
-  // file never gets two tabs (#534). A failed open is gone from here, so the next one tries again.
+  // Files being opened, by folder and path: a second open of one (a double-click on its row) waits
+  // for the first, so a file never gets two tabs (#534). A failed open is gone from here, so the next
+  // one tries again.
   const opening = new Map();
   function openFile(path) {
     const existing = tabs.find((t) => t.path === path);
     if (existing) { activate(existing); return Promise.resolve(); }
-    if (!opening.has(path)) opening.set(path, loadFile(path).finally(() => opening.delete(path)));
-    return opening.get(path);
+    const key = `${root}\n${path}`;
+    if (!opening.has(key)) opening.set(key, loadFile(path).finally(() => opening.delete(key)));
+    return opening.get(key);
   }
 
   async function loadFile(path) {
-    if (!(await ensureEditor())) return;
+    // Another folder chosen meanwhile: this file is not one of its files, and is not shown.
+    const from = root;
+    if (!(await ensureEditor()) || root !== from) return;
     let file;
     try {
       file = await api.get(`/api/sandboxes/${sid}/files/content?${query(path)}`);
@@ -597,6 +601,7 @@ export function createEditorView(ctx, sandbox, getTask) {
       errorToast(error, `Couldn’t open ${path}`);
       return;
     }
+    if (root !== from) return;
     if (file.binary || file.too_large || file.content == null) {
       toast(file.too_large ? `${path} is too large for the editor (${Math.round(file.size / 1024)} KB).` : `${path} is a binary file.`, { kind: 'info' });
       return;
