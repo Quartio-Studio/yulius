@@ -437,9 +437,10 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
       if (!pageKey(event)) { event.preventDefault(); return; }
     } else if (event.shiftKey) return;
     event.preventDefault();
+    const own = term.hasSelection();
     const selected = term.getSelection() || programCopy;
     openMenu({ x: event.clientX, y: event.clientY }, [
-      { label: 'Copy', hint: IS_MAC ? '⌘C' : 'Ctrl+C', disabled: !selected, title: selected ? null : 'Select text first', onSelect: () => { writeClipboard(selected); term.focus(); } },
+      { label: 'Copy', hint: IS_MAC ? '⌘C' : own ? 'Ctrl+C' : 'Ctrl+Shift+C', disabled: !selected, title: selected ? null : 'Select text first', onSelect: () => { writeClipboard(selected); if (!own) programCopy = ''; term.focus(); } },
       { label: 'Paste', hint: IS_MAC ? '⌘V' : 'Ctrl+V', disabled: !state.can_write, title: state.can_write ? null : readOnlyText(), onSelect: () => { term.focus(); pasteFromClipboard(); } },
       { separator: true },
       { label: 'Select all', hint: IS_MAC ? '⌘A' : null, onSelect: () => { term.selectAll(); term.focus(); } },
@@ -826,6 +827,7 @@ export function createTerminalView({ transport, path, onLink, readOnlyLabel, onS
     },
     destroy() {
       destroyed = true;
+      window.removeEventListener('mouseup', handsOn, true);
       clearTimeout(noticeTimer);
       clearTimeout(revealTimer);
       clearTimeout(presenceTimer);

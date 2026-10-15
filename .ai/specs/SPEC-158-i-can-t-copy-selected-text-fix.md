@@ -50,8 +50,9 @@ person's clipboard, as it is in a native terminal.
 
 - [x] Reproduce the defect and find its root cause
 - [x] Write the fix spec and the regression test that fails
-- [ ] Fix the cause until the regression test and every gate pass
+- [x] Fix the cause until the regression test and every gate pass
 - [ ] Independent review in a fresh session, findings fixed test-first
+- [ ] Full e2e suite green and the spec's evidence recorded
 
 ## Acceptance criteria
 
