@@ -62,7 +62,7 @@ onboarding task of a `pending` sandbox says it waits for Start onboarding. Rust 
 | OLC-003 | Archiving a live, Done onboarding-origin task with a plan step open, in a `preparing` sandbox whose project validates, answers 200: the task is closed and archived and the sandbox `ready`. | Rust `task_done::a_done_onboarding_task_is_archived_and_the_sandbox_is_ready` (fails with `close_task_now`: the plan is open, so only the run's end makes the sandbox ready) |
 | OLC-004 | The 409 for a task that is neither closed, resting nor stopping when an archive or a deletion closes it reads "the task is changing state; stop the task first" for both. `archive_task` documents its 409s: a live task that is not Done, a session still closing, a session that could not be ended, and the onboarding task of a blocking sandbox. | review of the text; `cargo doc` |
 | OLC-005 | The task summary says whether a resting task never ran: `not_started` is true for a `closed` task with no attempt; `awaits_start_onboarding` is true when that task is the onboarding task of its `pending` sandbox. Both default to false (older servers). | Rust `import_server::onboarding_starts_only_from_the_browser` (pending: both true; after Start: both false), `import_server::a_skipped_onboarding_task_reads_not_started` |
-| OLC-006 | The web UI reads such a task as "Waits for Start onboarding" (the Working group, like a prepared task waiting for a person) or "Not started" (with the stopped ones), never "Closed": not in the task list's Closed group, tab or count, nor in the sidebar's. | e2e `onboarding.e2e.ts` `the onboarding task a new task waits for reads Waits for Start onboarding, not Closed` |
+| OLC-006 | The web UI reads such a task as "Waits for Start onboarding" (the Working group, like a prepared task waiting for a person) or "Not started" (with the stopped ones), never "Closed": not in the task list's Closed group, tab or count, and its time says "waiting" or "created", not "closed". The sidebar leaves `closed` tasks out, as before. | e2e `onboarding.e2e.ts` `the onboarding task a new task waits for reads Waits for Start onboarding, not Closed` |
 | OLC-007 | SPEC-002's 163-character line (launch preparation, diff sidebar) is reflowed under 100 characters. | the diff |
 
 ## Plan
@@ -73,7 +73,7 @@ onboarding task of a `pending` sandbox says it waits for Start onboarding. Rust 
 - [x] A live Done onboarding task's archive is tested; the close 409 reads stop the task first
 - [x] The task summary says a task never ran or waits for Start onboarding
 - [x] The web UI shows Not started and Waits for Start onboarding outside Closed
-- [ ] Docs, ADR and changes
+- [x] Docs, ADR and changes
 - [ ] Independent review and fixes
 - [ ] Gates green, evidence and delivery
 

@@ -1718,7 +1718,10 @@ task is created then; continuing a `pending` sandbox's onboarding task and impor
 `POST /api/sandboxes` start it only from a browser session too); `preparing → ready` when the task has finished — it rests after running, or its turn ended
 with every step of its plan resolved — and the project validates in its worktree or the clone
 (re-evaluated on reads, turn ends, task closes and the gate);
-`→ skipped` by an admin. Failure: a start failure leaves `pending` (shown with what is pending);
+`→ skipped` by an admin. Every change is a compare-and-set from the state it was decided on, so a
+start or a refresh running during a skip never writes over it (SPEC-153, ADR-0126); the resting
+onboarding task of a `pending` sandbox is summarised `not_started` and `awaits_start_onboarding`,
+not Closed. Failure: a start failure leaves `pending` (shown with what is pending);
 no subscription with capacity leaves the task paused and the sandbox `preparing` (ADR-17). While
 `pending/preparing`, a new task (create, held-prompt choice, chain, automation run) is created
 `chained` after the preparation task (`App::onboarding_wait`) and released by `advance_chains`
