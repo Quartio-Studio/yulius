@@ -458,6 +458,36 @@ fn commit_all_and_push_with_explicit_refspecs() -> TestResult {
     Ok(())
 }
 
+/// SPEC-139: the remote's own answer for a branch, which a push that reported a failure may
+/// have moved, and none for a branch it does not have.
+#[test]
+fn remote_branch_head_reads_the_remote_itself() -> TestResult {
+    let fx = Fixture::new()?;
+    let remote = fx.path("remote.git");
+    let work = fx.path("work");
+    fx.git.init(&remote, "main", true)?;
+    fx.git.init(&work, "main", false)?;
+    fs::write(work.join("a.txt"), "a\n")?;
+    let sha = fx
+        .git
+        .commit_all(&work, "chore: a", &author())?
+        .ok_or("expected a commit")?;
+    fx.git.remote_add(&work, "origin", path_str(&remote)?)?;
+    assert_eq!(fx.git.remote_branch_head(&work, "origin", "main")?, None);
+    fx.git
+        .push(&work, "origin", "refs/heads/main:refs/heads/feat/1-x")?;
+    assert_eq!(
+        fx.git.remote_branch_head(&work, "origin", "feat/1-x")?,
+        Some(sha)
+    );
+    assert_eq!(fx.git.remote_branch_head(&work, "origin", "feat/1")?, None);
+    assert!(matches!(
+        fx.git.remote_branch_head(&work, "origin", "-x"),
+        Err(GitError::InvalidBranchName { .. })
+    ));
+    Ok(())
+}
+
 #[test]
 fn status_reports_hostile_file_names_verbatim() -> TestResult {
     let fx = Fixture::new()?;
@@ -805,6 +835,28 @@ fn local_identity_is_worktree_scoped() -> TestResult {
             .set_local_identity(&task, "-c core.pager=evil", "x@y"),
         Err(GitError::InvalidInput { .. })
     ));
+    Ok(())
+}
+
+/// SPEC-139: a remote that never answers is given up on within `REMOTE_HEAD_TIMEOUT`, not the
+/// half-hour network deadline, so `yulius wait` stays within its own bound.
+#[cfg(unix)]
+#[test]
+fn reading_a_remote_branch_gives_up_on_a_stalled_remote() -> TestResult {
+    let fx = Fixture::new()?;
+    let script = fx.path("stalled-git");
+    write_hook(&script, "#!/bin/sh\nexec sleep 60\n")?;
+    let git = Git::new(&script);
+    let started = Instant::now();
+    match git.remote_branch_head(&fx.root, "origin", "feat/1-x") {
+        Err(GitError::Timeout { .. }) => {}
+        other => return Err(format!("expected timeout, got {other:?}").into()),
+    }
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= yulius_git::REMOTE_HEAD_TIMEOUT && elapsed < yulius_git::REMOTE_HEAD_TIMEOUT * 3,
+        "{elapsed:?}"
+    );
     Ok(())
 }
 

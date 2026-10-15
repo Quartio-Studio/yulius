@@ -28,7 +28,8 @@ someone else's GitHub token (task #66).
   stored on the task. The owner hands over or declines, and the asker may withdraw. A hand-over is
   one conditional update (the owner and the request the decision saw), then the commit identity,
   a terminal notice, an audit entry and the published summary. The next GitHub call of the task,
-  also in a run that goes on, uses the new owner's token.
+  also in a run that goes on, uses the new owner's token. (Since ADR-0114 the agent's own Git and
+  `gh` hold a narrowed App token instead; Yulius's calls for the task still use the owner's.)
 - When the owner can no longer act (disabled, deleted, or without write access to the project), a
   request passes control at once, whatever request waits, so a task is never stuck with an absent
   owner. A waiting asker who can no longer work gives way to the next person who asks, and a

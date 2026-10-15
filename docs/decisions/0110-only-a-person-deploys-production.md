@@ -28,9 +28,10 @@ authority, and only the tool's description asked it not to unless its task asked
 - The promotion API (`POST /api/sandboxes/{sid}/delivery/promote`) follows the same rule: an
   administrator and `{"confirm": "<slug>"}`; for Yulius a promotion is the release.
 - An administrator's `auto_promote` in the delivery profile stays: a person chose it.
-- The limit of this decision is Yulius's own paths: an agent's shell still holds its task owner's
-  GitHub token, which can write the production branch on GitHub directly until issue #486 closes
-  that.
+- The limit of this decision is Yulius's own paths: an agent's shell held its task owner's GitHub
+  token, which could write the production branch on GitHub directly. [ADR-0114](0114-agents-hold-a-token-github-refuses-on-production.md)
+  closes that: agents hold a narrowed App token, and a ruleset only people bypass protects the
+  production branch.
 
 ## Alternatives
 

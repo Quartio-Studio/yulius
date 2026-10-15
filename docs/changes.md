@@ -12,6 +12,24 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   comes while a run is launching (a switch, a start) asks the run once it is attached instead of
   waiting 20 s for the escalation. Tests wait for a stop within the stop escalation plus a margin and
   say what they saw; merge train tests share one deadline under nextest's 120 s.
+- `yulius wait` and `delivery_merge` report the current push state, not a stale note (SPEC-139,
+  ADR-0113, task #123, fixes #366 and #448). A head GitHub's branch already has counts as pushed
+  even when `git push` reported a failure, and clears the earlier note; `yulius wait` drops a
+  failed-push note once the branch is at its head and waits for the checks and the armed merge;
+  `delivery_merge` answers a failed delivery with that failure, or the note its own call wrote (a
+  refused push's remedy, or that the pull request did not open after its push), never with an
+  older "not delivered" note. The remote is asked with `git ls-remote`, bounded to 10 s.
+- Agents can no longer push to, merge into or fast-forward the production branch with a person's
+  token (SPEC-141, ADR-0114, task #139, issue #486). The agent's Git and `gh` now hold an App
+  installation token restricted to the repository and to contents, pull requests and issues
+  (write) and checks, statuses and metadata (read): never the task owner's token, never
+  Administration or Workflows. The production ruleset Yulius gives new projects also restricts
+  updates, with repository admins as the only bypass actors, so GitHub refuses that token on the
+  branch, `--no-verify` and `gh` included. Onboarding (`yulius onboard`, the import result and the
+  preparation task's prompt) reports a production branch the agents could write and names the
+  ruleset a repository admin must add. Commits stay authored by the owner; Yulius's own pushes,
+  pull requests and merges for a task stay the owner's.
+
 - Every stage of tasks, CI and CD is measured and shown (SPEC-137, ADR-0112, task #116). One `spans`
   table records, as things happen, a task's waits before it starts, its states (needs you and how
   long a person took to answer included), steps with the tokens and agent work spent in them, runs,

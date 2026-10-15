@@ -6,9 +6,12 @@ use crate::client::GitHubClient;
 use crate::error::GitHubError;
 use crate::http::Call;
 use crate::secret::Secret;
-use crate::types::{CreateRepo, Repo, RepoAccess, RulesetSpec};
+use crate::types::{BranchGuard, CreateRepo, Repo, RepoAccess, RulesetSpec};
 use crate::validate;
-use crate::wire::{WireId, WireRepo};
+use crate::wire::{WireBranchRule, WireId, WireRepo, WireRuleset};
+
+/// The repository admin role, as rulesets name it among bypass actors.
+const REPOSITORY_ADMIN_ROLE: u64 = 5;
 
 impl GitHubClient {
     /// The user's permission on `owner/repo` (SPEC-001 ACC-007). GitHub's 404 (missing or
@@ -151,15 +154,79 @@ impl GitHubClient {
         if spec.block_deletion {
             rules.push(serde_json::json!({"type": "deletion"}));
         }
-        let body = serde_json::json!({
+        if spec.restrict_updates {
+            rules.push(serde_json::json!({"type": "update"}));
+        }
+        let mut body = serde_json::json!({
             "name": spec.name,
             "target": "branch",
             "enforcement": "active",
             "conditions": {"ref_name": {"include": [format!("refs/heads/{}", spec.branch)], "exclude": []}},
             "rules": rules,
         });
+        if spec.restrict_updates {
+            body["bypass_actors"] = serde_json::json!([{
+                "actor_id": REPOSITORY_ADMIN_ROLE,
+                "actor_type": "RepositoryRole",
+                "bypass_mode": "always"
+            }]);
+        }
         let url = self.api_url(&["repos", owner, repo, "rulesets"])?;
         let wire: WireId = self.send_json(Method::POST, url, Some(token), body).await?;
         Ok(wire.id)
+    }
+
+    /// Whether `token` could write `branch` (ADR-0114): the rules GitHub applies to it, and for
+    /// each `update` or `deletion` rule whether its ruleset lets this token bypass it
+    /// (`current_user_can_bypass`; anything but `never` counts as a bypass).
+    ///
+    /// # Errors
+    /// Typed GitHub errors: a rule or ruleset that cannot be read is never "guarded".
+    pub async fn branch_guard(
+        &self,
+        token: &Secret,
+        owner: &str,
+        repo: &str,
+        branch: &str,
+    ) -> Result<BranchGuard, GitHubError> {
+        validate::owner(owner)?;
+        validate::repo_name(repo)?;
+        validate::branch(branch)?;
+        let mut segments = vec!["repos", owner, repo, "rules", "branches"];
+        segments.extend(branch.split('/'));
+        let url = self.api_url(&segments)?;
+        let rules = self
+            .get_pages(url, Some(token), |value| {
+                serde_json::from_value::<Vec<WireBranchRule>>(value)
+                    .map_err(|e| GitHubError::Decode(e.to_string()))
+            })
+            .await?;
+        let mut never: std::collections::HashMap<u64, bool> = std::collections::HashMap::new();
+        let mut guard = BranchGuard::default();
+        for rule in rules {
+            let Some(id) = rule.ruleset_id else { continue };
+            if rule.kind != "update" && rule.kind != "deletion" {
+                continue;
+            }
+            let binding = if let Some(known) = never.get(&id) {
+                *known
+            } else {
+                let id_text = id.to_string();
+                let mut url = self.api_url(&["repos", owner, repo, "rulesets", &id_text])?;
+                url.query_pairs_mut()
+                    .append_pair("includes_parents", "true");
+                let ruleset: WireRuleset = self.get_json(url, Some(token)).await?;
+                let binds = ruleset.current_user_can_bypass.as_deref() == Some("never");
+                never.insert(id, binds);
+                binds
+            };
+            if binding {
+                match rule.kind.as_str() {
+                    "update" => guard.updates_restricted = true,
+                    _ => guard.deletion_restricted = true,
+                }
+            }
+        }
+        Ok(guard)
     }
 }

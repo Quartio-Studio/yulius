@@ -39,7 +39,7 @@ mod worktree;
 
 pub use bundle::{BundleHead, BundleSpec, IMPORT_PREFIX, ImportRef};
 pub use ci::BranchTip;
-pub use commit::{Author, MAX_COMMIT_MESSAGE, MergeInto};
+pub use commit::{Author, MAX_COMMIT_MESSAGE, MergeInto, REMOTE_HEAD_TIMEOUT};
 pub use credential::{run_credential_helper, run_gh_token};
 pub use error::GitError;
 pub use hooks::HOOKS_DIR_NAME;

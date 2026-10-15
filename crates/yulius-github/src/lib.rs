@@ -37,7 +37,9 @@ mod wire;
 #[cfg(feature = "fake")]
 pub mod fake;
 
-pub use app::{AUTH_CALLBACK_PATH, MANIFEST_CALLBACK_PATH, TOKEN_REFRESH_MARGIN_MS};
+pub use app::{
+    AGENT_TOKEN_PERMISSIONS, AUTH_CALLBACK_PATH, MANIFEST_CALLBACK_PATH, TOKEN_REFRESH_MARGIN_MS,
+};
 pub use client::GitHubClient;
 pub use config::{
     AppCredentials, Clock, DEFAULT_API_BASE, DEFAULT_WEB_BASE, GitHubConfig, OwnerKind,
@@ -49,8 +51,8 @@ pub use reqwest::Url;
 pub use secret::Secret;
 pub use statuses::{CommitStatus, MAX_STATUS_CONTEXT_BYTES, MAX_STATUS_DESCRIPTION_CHARS};
 pub use types::{
-    CheckSource, ChecksReport, ChecksSummary, CompareStatus, Comparison, CreateRepo, GitHubUser,
-    InstallationToken, IssueRef, MergeMethod, MergeOutcome, NewIssue, NewPull, PullFilter,
-    PullRequest, PullState, Repo, RepoAccess, RulesetSpec, UserToken,
+    BranchGuard, CheckSource, ChecksReport, ChecksSummary, CompareStatus, Comparison, CreateRepo,
+    GitHubUser, InstallationToken, IssueRef, MergeMethod, MergeOutcome, NewIssue, NewPull,
+    PullFilter, PullRequest, PullState, Repo, RepoAccess, RulesetSpec, UserToken,
 };
 pub use yulius_domain::permission::{AccessLevel, GitHubPermissions};
