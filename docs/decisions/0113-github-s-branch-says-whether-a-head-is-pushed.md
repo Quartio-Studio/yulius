@@ -27,8 +27,8 @@ note matched the head.
   (not delivered; the pull request did not open after its push) are never cleared this way.
 - **The push is told apart from what follows it.** The end of a turn pushes, then opens the pull
   request; a failure to open it after the push landed is its own note, not a push failure.
-- **A delivery failure carries its own note.** `try_auto_open_pr` fails with the error and, for a
-  push, the note it wrote. `delivery_merge` answers with that note or with the error, never with a
+- **A delivery failure carries its own note.** `try_auto_open_pr` fails with the error and the
+  note it wrote (a refused push's remedy, or that the pull request did not open). `delivery_merge` answers with that note or with the error, never with a
   note it finds in the slot.
 
 ## Alternatives
@@ -45,7 +45,7 @@ note matched the head.
 
 ## Consequences
 
-- A stale push note costs at most one GitHub read per `yulius wait` request and then disappears.
+- A stale push note costs at most one `git ls-remote` per `yulius wait` request and then disappears.
 - Every push site (end of turn, `delivery_merge`, Deliver…, armed-merge upkeep, merge trains) shares
   the rule, so a new push site uses the helper.
 - `delivery_merge`'s answer to a push GitHub refuses keeps its remedy (DMG-001).
