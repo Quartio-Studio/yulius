@@ -2943,7 +2943,8 @@ function busyTimeline(id) {
 }
 
 // A short run (about 2 min, SPEC-165 review): its axis steps by 30 s, "quality" was requeued after
-// its process host was lost (two waits, two job spans), and "e2e"'s wait has no job span.
+// its process host was lost (two waits, two job spans), "e2e"'s wait has no job span and
+// "security" was skipped.
 function shortTimeline(id) {
   const s = (...args) => stageSpan('ci_run', id, ...args);
   return { spans: [
@@ -2953,6 +2954,9 @@ function shortTimeline(id) {
     s('wait:j0@1', 'wait', 'job slot', 1.94, 0.1, { job: 'quality', outcome: 'started' }),
     s('job:j0@1', 'job', 'quality', 1.84, 0.3, { job: 'quality', outcome: 'error', detail: { reason: 'the job’s process host was lost' } }),
     s('wait:j9@1', 'wait', 'job slot', 1.94, 0.2, { job: 'e2e', outcome: 'started' }),
+    // Checked nothing (exit 78, ADR-0133): skipped, not passed.
+    s('wait:j5@1', 'wait', 'job slot', 1.9, 0.05, { job: 'security', outcome: 'started' }),
+    s('job:j5@1', 'job', 'security', 1.85, 0.1, { job: 'security', outcome: 'skipped', detail: { exit_code: 78 } }),
     s('wait:j0@2', 'wait', 'job slot', 1.54, 0.3, { job: 'quality', outcome: 'started' }),
     s('job:j0@2', 'job', 'quality', 1.24, 1.1, { job: 'quality' }),
   ], related: [] };
@@ -2995,6 +2999,7 @@ function mockTimeline(kind, id) {
     s('step:b', 'step', 'Spans stored for tasks, CI and CD', 224, 60),
     s('delivery@1', 'delivery', 'pr_open', 150, 52, { outcome: 'merged_integration', detail: { pr: 221 } }),
     s('wait@1', 'wait', 'merge_armed', 120, 22, { outcome: 'merged' }),
+    s('wait@2', 'wait', 'merge_armed', 10, null, { outcome: null }),
   ], related: [
     stageSpan('ci_run', 'ci_s3', 'queue@1', 'queue', 'queue', 140, 4),
     stageSpan('ci_run', 'ci_s3', 'run@1', 'run', 'run', 136, 16, { detail: { reference: 'pr/221', sha: '4be81c0d2a9f', requested_by: 'yulius' } }),

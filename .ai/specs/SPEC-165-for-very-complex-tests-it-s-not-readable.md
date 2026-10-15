@@ -1,11 +1,11 @@
 ---
 yulius-task: 6a231da4-60bb-4232-990a-ae5050c2c4be
-status: in-progress
+status: done
 ---
 
 # SPEC-165: a CI run's stages read as one row per job, on a time axis
 
-Status: in progress
+Status: implemented
 Date: 2026-10-15
 Owner: Yulius task #155
 Scope authorization: task #155 ("For very complex tests it's not readable at all. Even for small
@@ -66,11 +66,12 @@ carry their `job`. This is a presentation change; the API and the spans stay as 
 ## Plan
 
 - [x] Read the product context and related work, then write and validate the spec
-- [ ] A busy CI run in the mock reproduces the screenshot, and each job's slot wait and run share one row named by the job
-- [ ] A job's own stages fold under it (a failed job opens), and the fold survives the dialog's refresh
-- [ ] A time axis and a legend say when each bar happened and what its look means
-- [ ] Independent review in a fresh session, findings fixed test-first
-- [ ] Every gate green, docs and the changes log updated
+- [x] A busy CI run in the mock reproduces the screenshot, and each job's slot wait and run share one row named by the job
+- [x] A job's own stages fold under it (a failed job opens), and the fold survives the dialog's refresh
+- [x] A time axis and a legend say when each bar happened and what its look means
+- [x] Review round 1 findings fixed test-first: exact tick labels, failures never folded away, focus kept
+- [x] Independent review in a fresh session, findings fixed test-first
+- [x] Every gate green, docs and the changes log updated
 
 ## Acceptance criteria
 
@@ -78,15 +79,17 @@ carry their `job`. This is a presentation change; the API and the spans stay as 
   for a slot, "prototypes" began waiting before "package (gateway)" but started after it) shows no
   row named "Waiting for a job slot"; every job's hatched and solid segments touch; "engine" says
   "waited 6 min" and "running"; the rows under "Jobs" are in waiting order. In `ci_s3`, a job
-  requeued after its process host was lost shows each attempt with its own wait, and a wait with no
-  job span keeps its own "Waiting for a job slot" row.
+  requeued after its process host was lost shows each attempt with its own wait, a wait with no
+  job span keeps its own "Waiting for a job slot" row, and a skipped job (ADR-0133) has the
+  "skipped" mark and an outlined bar the legend names "Skipped".
 - AC2 (STR-004): in `ci_s4`, "engine"'s Checkout is hidden until its disclosure is opened; after
   the running dialog's refresh it is still open and the focused fold button still has focus. A
   running job whose stage failed ("package (deployer)") and the failed "test (2/2)" in `ci_s2` are
   open; the passed "quality" is folded.
 - AC3 (STR-005, STR-006): every waterfall (CI, CD, task) shows axis ticks that start at "0", each
   label exact and different (`ci_s3`: "0, 30 s, 1 min, 1 min 30 s"); a running run shows "now";
-  the legend names every bar look in use, folded or not, and hides with the plot in Table view.
+  the legend names every bar look in use, folded or not, and hides with the plot in Table view; a
+  wait still running (task #12's armed merge) keeps the hatch "Waiting" stands for.
 - AC4 (STR-007, STR-008): the Table has a Waited column with "6 min" for "engine"; the CD and task
   waterfalls still show what SPEC-137's test checks; no WCAG violation (axe) with the plot showing
   and a fold open; no horizontal scroll at 390 px on the CI dialog and the task page.
@@ -111,8 +114,42 @@ carry their `job`. This is a presentation change; the API and the spans stay as 
 - **Axis ticks from the subject's start, not wall-clock times.** "4 min in" answers "where in the
   run"; the Table keeps the clock time of each start. Ticks have their own exact label ("1 min
   30 s", "2 h") rather than `duration()`, which rounds down and repeated "1 min" on a 30 s step.
+- **Skipped is its own look.** A job that checked nothing (exit 78, ADR-0133, merged from `dev`
+  during review) ran but proved nothing, so it is neither "Ran" nor "Failed": an outlined bar, the
+  `forward` mark the CI page's Skipped badge uses, and "Skipped" in the legend.
 - **Open on any failure within.** A running job whose stage already failed opens too, and the
   legend is computed from every span, so folding never hides a failure or an unexplained colour.
 - **Jobs still waiting with no span stay out.** A job waiting for a slot has no span until it gets
   one (`ci::exec` records the wait when it ends); the dialog's job chips show them. Recording an
   open wait span is a backend change, filed as #536.
+
+## Evidence
+
+- **Tests fail first.** `npx e2e run tests/pipeline.e2e.ts` against the old `stages.js`:
+  - the four new tests failed ("Jobs" heading missing, Checkout rows shown, no axis ticks);
+  - after review round 1, its four regression tests failed against 1fee7e92's code: ticks
+    "0, 30 s, 1 min, 1 min", focus lost on redraw, the running deployer job folded, the legend
+    without "Failed";
+  - after review round 2, its two failed against 539a84e2's code merged with dev: no "skipped"
+    mark, a running wait drawn without its hatch (`backgroundImage` "none").
+- **Fix.** `tests/pipeline.e2e.ts`: 12 of 12 passed after the dev merge (90383d57) with the
+  round-2 fix. Checked by eye in screenshots of the mock dialog at 1280 and 390 px (busy `ci_s4`,
+  failed `ci_s2`, short `ci_s3`).
+- **Whole e2e suite** (`npx e2e run`, load average 38–49): 482 passed, 1 skipped (55 files) at
+  b89cacc4.
+- **`scripts/dev ci`:** exit 0 at 539a84e2 (nextest 1823 passed, 18 skipped).
+  - An earlier run at b89cacc4 failed one test this change does not touch:
+    `local_ci::a_run_s_jobs_record_their_stages_and_test_counts` ("real durations: 1040 ms,
+    480 ms", load average 38). Its fake clock lags real time under load; filed as #538.
+  - The run on the final head is recorded in the pull request.
+- **`scripts/dev security`:** exit 2, unrun, not passed. Vidoc rejected the key (HTTP 401), as
+  tracked in #470 (ADR-0104).
+- **Review.** Independent read-only reviewers in fresh sessions:
+  - Round 1 at b89cacc4: REQUEST CHANGES. One major (repeated tick labels) and seven minors:
+    focus ring, focus on redraw, a failure folded inside a running job, the legend built from
+    drawn rows only, axe and 390 px coverage, fixtures, AC wording. All were fixed in 539a84e2.
+  - Round 2 at 539a84e2: REQUEST CHANGES. It confirmed every round-1 fix. It asked to merge
+    dev and give the new skipped state a mark (major), and found a running wait losing its hatch
+    and a tick that could crowd "now" (minors). All were fixed after the merge.
+- **Follow-ups:** #536 (a job still waiting for a slot has no span yet), #538 (the flaky Rust
+  test above).

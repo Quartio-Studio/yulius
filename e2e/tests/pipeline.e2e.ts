@@ -276,6 +276,13 @@ test('every waterfall has a time axis from 0 and a legend of its bars', async ({
   await app.open(mock('/s/studio/tasks/12'));
   await expect(screen.getByRole('region', 'Stages of this task')).toContainText('Needs you');
   expect((await axis())[0]).toBe('0');
+  // A wait still running keeps the hatch the legend gives "Waiting" (not the solid running look).
+  const runningWait = await browser.evaluate(() => {
+    const bar = document.querySelector('.st-row[data-key="wait@2"] .st-bar');
+    return bar ? getComputedStyle(bar).backgroundImage : null;
+  });
+  expect(runningWait).toContain('repeating-linear-gradient');
+  expect(await legend()).toContain('Waiting');
   expect(await browser.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
   expect(await axeViolations(browser)).toEqual([]);
 });
@@ -287,8 +294,12 @@ test('a short run’s axis names each tick once; a requeued job keeps each wait,
   expect(await axis()).toEqual(['0', '30 s', '1 min', '1 min 30 s']);
   // Requeued after its process host was lost: each attempt with its own wait, in waiting order.
   const rows = await jobRows(browser);
-  expect(rows.map((r) => [r.name, r.took?.replace(/\s+/g, ' ')])).toEqual([['quality', '18 swaited 6 s'], ['quality', '1 minwaited 18 s']]);
+  expect(rows.map((r) => [r.name, r.took?.replace(/\s+/g, ' ')])).toEqual([['quality', '18 swaited 6 s'], ['security', '6 swaited 3 s'], ['quality', '1 minwaited 18 s']]);
   await expect(browser.locator('.st-row.st-job[data-key="job:j0@1"] [aria-label="error"]')).toBeVisible();
+  // A skipped job (ADR-0133) says so with its mark and its own bar look, named in the legend.
+  await expect(browser.locator('.st-row.st-job[data-key="job:j5@1"] [aria-label="skipped"]')).toBeVisible();
+  await expect(browser.locator('.st-row.st-job[data-key="job:j5@1"] .st-bar-skipped')).toHaveCount(1);
+  expect(await browser.evaluate(() => [...document.querySelectorAll('.st-bars-legend li')].map((t) => t.textContent))).toEqual(['Waiting', 'Ran', 'Skipped', 'Failed']);
   // A wait with no job span still shows, on its own row, under Run.
   await expect(browser.locator('.st-row:has-text("Waiting for a job slot")')).toHaveCount(1);
   // On a phone the CI dialog's stages fit the width.

@@ -120,7 +120,9 @@ function outcomeWord(span) {
 }
 
 // A CI job's mark beside its name (SPEC-165 STR-003): its state as an icon with its word.
-const JOB_MARKS = { running: 'refresh', passed: 'check', failed: 'x', error: 'warn', cancelled: 'x' };
+const JOB_MARKS = { running: 'refresh', passed: 'check', skipped: 'forward', failed: 'x', error: 'warn', cancelled: 'x' };
+// A job that checked nothing (ADR-0133) ran, but is not drawn as one that passed.
+const SKIPPED = 'skipped';
 
 const time = (iso) => Date.parse(iso);
 const jobId = (key, prefix) => (key.startsWith(prefix) && key.includes('@') ? key.slice(prefix.length, key.lastIndexOf('@')) : null);
@@ -214,8 +216,9 @@ export function waterfall(timeline, { now = Date.now(), title = 'Stages', view =
   // The bar looks in use, folded or not, for the legend.
   const used = {
     wait: anyWait || all.some((s) => WAIT_KINDS.has(s.kind)),
-    ran: all.some((s) => s.ended_at && !WAIT_KINDS.has(s.kind) && !FAILED.has(s.outcome)),
+    ran: all.some((s) => s.ended_at && !WAIT_KINDS.has(s.kind) && !FAILED.has(s.outcome) && s.outcome !== SKIPPED),
     running: all.some((s) => !s.ended_at && !WAIT_KINDS.has(s.kind)),
+    skipped: all.some((s) => s.outcome === SKIPPED && !WAIT_KINDS.has(s.kind)),
     failed: all.some((s) => FAILED.has(s.outcome)),
   };
 
@@ -240,7 +243,7 @@ export function waterfall(timeline, { now = Date.now(), title = 'Stages', view =
     const isWait = WAIT_KINDS.has(span.kind);
     const bars = [
       wait ? bar(time(wait.started_at), d.from, ['st-bar-wait', 'st-bar-lead']) : null,
-      bar(d.from, d.to, [isWait && 'st-bar-wait', d.failed && 'st-bar-failed', !span.ended_at && 'st-bar-running', span.source === 'backfilled' && 'st-bar-backfilled', wait && 'st-bar-tail']),
+      bar(d.from, d.to, [isWait && 'st-bar-wait', d.failed && 'st-bar-failed', !isWait && span.outcome === SKIPPED && 'st-bar-skipped', !span.ended_at && 'st-bar-running', span.source === 'backfilled' && 'st-bar-backfilled', wait && 'st-bar-tail']),
     ];
     const show = (event) => {
       setChildren(tip, h('span', null, `${d.label}${span.source === 'backfilled' ? ' · backfilled' : ''}`), h('strong', null, d.took),
@@ -315,11 +318,14 @@ export function waterfall(timeline, { now = Date.now(), title = 'Stages', view =
 
   // The axis: time from the subject's start, a faint line at each tick, "now" while it runs.
   const ticks = [];
-  for (let t = 0; at(start + t) < 92; t += step) ticks.push(h('span', { class: 'st-tick', style: { left: `${at(start + t)}%` } }, tickLabel(t)));
+  // The last tick keeps clear of the end, and of "now" while it runs.
+  const last = running ? 84 : 92;
+  for (let t = 0; at(start + t) < last; t += step) ticks.push(h('span', { class: 'st-tick', style: { left: `${at(start + t)}%` } }, tickLabel(t)));
   if (running) ticks.push(h('span', { class: 'st-tick st-tick-now', style: { left: '100%' } }, 'now'));
   const axis = h('div', { class: 'st-axis', 'aria-hidden': 'true' }, h('span'), h('span', { class: 'st-axis-ticks' }, ticks), h('span'));
   const legend = h('ul', { class: 'st-legend st-bars-legend', 'aria-label': 'What the bars mean' }, [
-    used.wait && ['Waiting', 'st-bar-wait'], used.ran && ['Ran', null], used.running && ['Still running', 'st-bar-running'], used.failed && ['Failed', 'st-bar-failed'],
+    used.wait && ['Waiting', 'st-bar-wait'], used.ran && ['Ran', null], used.running && ['Still running', 'st-bar-running'],
+    used.skipped && ['Skipped', 'st-bar-skipped'], used.failed && ['Failed', 'st-bar-failed'],
   ].filter(Boolean).map(([text, cls]) => h('li', null, h('span', { class: ['st-swatch', cls], 'aria-hidden': 'true' }), text)));
 
   const plot = h('div', { class: 'st-plot', hidden: view.table, style: { '--st-step': `${(step / total) * 100}%` } }, legend, axis, list, tip);

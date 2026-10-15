@@ -21,6 +21,8 @@ the store's trigger opens the job as `job:<job id>@<ms>`.
   duration column says how long it ran and how long it waited; the table has a Waited column.
 - A CI run's waterfall has two groups: "Run" (its own spans) and "Jobs" (job spans, named by the
   job, in the order they began waiting, each with its state as an icon and a word).
+- A skipped job (ADR-0133) is drawn outlined, neither ran nor failed, with "Skipped" in the
+  legend.
 - Every span with children folds them behind a disclosure; one that failed, or has a failure
   under it, opens by default. What a person opens or closes, and the Table toggle, are kept per host across the
   redraws of a running subject.
