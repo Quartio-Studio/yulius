@@ -32,7 +32,7 @@ export function mountPipelinePage(ctx, sandbox, route) {
     open: query.get('open') || '',
   };
   const base = `/s/${encodeURIComponent(sandbox.slug)}/pipeline`;
-  const api = `/api/sandboxes/${encodeURIComponent(sandbox.id)}/stages`;
+  const api = `/api/sandboxes/${encodeURIComponent(sandbox.id)}`;
   let options = { jobs: [], environments: [] };
 
   function remember() {
@@ -58,7 +58,7 @@ export function mountPipelinePage(ctx, sandbox, route) {
   }
 
   function download(format) {
-    const a = h('a', { href: `${api}/spans?${params({ format })}`, download: '' });
+    const a = h('a', { href: `${api}/stages/spans?${params({ format })}`, download: '' });
     document.body.append(a);
     a.click();
     a.remove();
@@ -109,7 +109,7 @@ export function mountPipelinePage(ctx, sandbox, route) {
   const reload = loader(host, 'the pipeline', async () => {
     const p = period();
     rangeLabel.textContent = `${SHORT_DATE.format(new Date(`${p.from}T00:00:00Z`))} – ${SHORT_DATE.format(new Date(`${p.to}T00:00:00Z`))}`;
-    return ctx.api.get(`${api}/summary?${params()}`);
+    return ctx.api.get(`${api}/stages/summary?${params()}`);
   }, (summary) => {
     options = summary.options || options;
     renderFilters();
