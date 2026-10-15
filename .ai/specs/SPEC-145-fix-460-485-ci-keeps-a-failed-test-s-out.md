@@ -135,5 +135,10 @@ and #485 (`local_ci::a_run_over_the_disk_quota_waits_and_starts_when_space_frees
   failure and 670 KB more and fails; its output no longer holds the message, `failures` does; a
   passing job keeps none (AC1, AC3). Store test: the column round-trips and a requeue clears it.
 - Flakes: see Findings (probe delays were temporary and are not in the change).
+- CI run `7b347fa3` (PR #505 at `0b6558a`) failed `local_ci::a_failed_jobs_failing_tests_stay_readable_after_long_output`
+  after 2.4 s: the test had a passing sibling job, which a failing job cancels (CI fails fast), so
+  under load it could end cancelled, not passed. The sibling is gone; a passing job keeping no
+  failures is asserted in `runs_jobs_in_parallel_publishes_statuses_and_gates_merges`. 60 runs of
+  the test, 12 at a time with 12 busy loops, passed.
 - `scripts/dev security`: not run, exit 2 (Vidoc rejected the key, HTTP 401; #470, ADR-0104).
 - Not testable here: the real CI host's load; whether #485's fast failure recurs (quarantined).

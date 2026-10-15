@@ -329,6 +329,8 @@ async fn runs_jobs_in_parallel_publishes_statuses_and_gates_merges() -> TestResu
         .await?;
     let jobs = detail["jobs"].as_array().ok_or("jobs")?;
     assert_eq!(jobs.len(), 3);
+    // Passing jobs keep no failing tests' output (SPEC-145 AC3).
+    assert!(jobs.iter().all(|j| j["failures"].is_null()), "{detail}");
     let output = |i: usize| jobs[i]["output"].as_str().unwrap_or_default().to_owned();
     assert!(output(0).contains("lint-ok"), "{}", output(0));
     let ci_home = f.data.join("sandboxes/s1/ci/home");
@@ -632,17 +634,15 @@ async fn contained_jobs_see_only_their_sandbox() -> TestResult {
 
 /// SPEC-145 (#460, #485): a failing test's output stays readable however much the job prints
 /// after it. The job prints a nextest failure, then 600 KB (more than the 512 KiB of output it
-/// keeps) and fails: its failing tests' output is kept with it and shown by `ci_status`; a
-/// passing job keeps none.
+/// keeps) and fails: its failing tests' output is kept with it. (Its only job: a sibling would be
+/// cancelled by the failure, sooner or later; a passing job keeping none is checked in
+/// `runs_jobs_in_parallel_publishes_statuses_and_gates_merges`.)
 #[tokio::test]
 async fn a_failed_jobs_failing_tests_stay_readable_after_long_output() -> TestResult {
     let f = fixture_with(false, |_| {
         r#"[[ci.jobs]]
 name = "suite"
 command = 'printf "        FAIL [   0.547s] (290/1670) yulius::main cockpit::manages\n  stderr ───\n    thread panicked at tests/cockpit.rs:1258:5:\n    the kept assertion message\n\n"; yes "        PASS [   0.010s] (1/1670) yulius::main filler::line padding padding padding" | head -n 8000; exit 1'
-[[ci.jobs]]
-name = "ok"
-command = 'echo "        PASS [   0.010s] (1/1) a b"'
 "#
         .to_owned()
     })
@@ -670,9 +670,6 @@ command = 'echo "        PASS [   0.010s] (1/1) a b"'
         "{failures}"
     );
     assert!(!failures.contains("filler::"), "{failures}");
-    let ok = jobs.iter().find(|j| j["name"] == "ok").ok_or("ok")?;
-    assert_eq!(ok["state"], "passed", "{detail}");
-    assert!(ok["failures"].is_null(), "{ok}");
     Ok(())
 }
 
