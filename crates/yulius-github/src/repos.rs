@@ -10,6 +10,9 @@ use crate::types::{CreateRepo, Repo, RepoAccess, RulesetSpec};
 use crate::validate;
 use crate::wire::{WireId, WireRepo};
 
+/// The repository admin role, as rulesets name it among bypass actors.
+const REPOSITORY_ADMIN_ROLE: u64 = 5;
+
 impl GitHubClient {
     /// The user's permission on `owner/repo` (SPEC-001 ACC-007). GitHub's 404 (missing or
     /// invisible) is [`RepoAccess::NoAccess`], not an error.
@@ -151,13 +154,23 @@ impl GitHubClient {
         if spec.block_deletion {
             rules.push(serde_json::json!({"type": "deletion"}));
         }
-        let body = serde_json::json!({
+        if spec.restrict_updates {
+            rules.push(serde_json::json!({"type": "update"}));
+        }
+        let mut body = serde_json::json!({
             "name": spec.name,
             "target": "branch",
             "enforcement": "active",
             "conditions": {"ref_name": {"include": [format!("refs/heads/{}", spec.branch)], "exclude": []}},
             "rules": rules,
         });
+        if spec.restrict_updates {
+            body["bypass_actors"] = serde_json::json!([{
+                "actor_id": REPOSITORY_ADMIN_ROLE,
+                "actor_type": "RepositoryRole",
+                "bypass_mode": "always"
+            }]);
+        }
         let url = self.api_url(&["repos", owner, repo, "rulesets"])?;
         let wire: WireId = self.send_json(Method::POST, url, Some(token), body).await?;
         Ok(wire.id)

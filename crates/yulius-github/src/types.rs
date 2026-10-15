@@ -151,6 +151,10 @@ pub struct RulesetSpec {
     pub block_force_push: bool,
     /// Block branch deletion.
     pub block_deletion: bool,
+    /// Restrict updates (`update` rule) with repository admins as the only bypass actors: GitHub
+    /// then refuses every other actor's push, merge or fast-forward, the App's tokens included
+    /// (ADR-0114).
+    pub restrict_updates: bool,
 }
 
 /// Pull request state.

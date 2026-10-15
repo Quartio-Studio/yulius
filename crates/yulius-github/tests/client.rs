@@ -403,12 +403,14 @@ async fn rulesets_protect_branches() -> TestResult {
         allowed_merge_methods: vec![MergeMethod::Squash],
         block_force_push: true,
         block_deletion: true,
+        restrict_updates: false,
     };
     client
         .create_branch_ruleset(&token, "acme", "app", &spec)
         .await?;
     let rulesets = fake.rulesets("acme", "app");
     assert_eq!(rulesets.len(), 1);
+    assert!(rulesets[0].get("bypass_actors").is_none());
     let ruleset = &rulesets[0];
     assert_eq!(ruleset["enforcement"], "active");
     assert_eq!(
@@ -436,6 +438,32 @@ async fn rulesets_protect_branches() -> TestResult {
             .await,
         Err(GitHubError::Forbidden { .. })
     ));
+
+    // ADR-0114: a production ruleset restricts updates; repository admins alone bypass it.
+    let production = RulesetSpec {
+        name: "yulius: protect main".into(),
+        branch: "main".into(),
+        restrict_updates: true,
+        ..spec
+    };
+    client
+        .create_branch_ruleset(&token, "acme", "app", &production)
+        .await?;
+    let ruleset = &fake.rulesets("acme", "app")[1];
+    let types: Vec<&str> = ruleset["rules"]
+        .as_array()
+        .ok_or("rules")?
+        .iter()
+        .filter_map(|r| r["type"].as_str())
+        .collect();
+    assert_eq!(
+        types,
+        ["pull_request", "non_fast_forward", "deletion", "update"]
+    );
+    assert_eq!(
+        ruleset["bypass_actors"],
+        serde_json::json!([{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}])
+    );
     Ok(())
 }
 

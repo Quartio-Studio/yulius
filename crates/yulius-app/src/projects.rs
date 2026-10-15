@@ -140,7 +140,8 @@ pub fn clone_url(owner: &str, name: &str) -> String {
 }
 
 /// Branch rulesets protecting a profile's integration and production branches (DSC-007):
-/// pull requests required, merge methods per the profile.
+/// pull requests required, merge methods per the profile; only repository admins update the
+/// production branch, so an agent's token never moves it (ADR-0114).
 #[must_use]
 pub fn rulesets_for(profile: &DeliveryProfile) -> Vec<RulesetRequest> {
     let promote = match profile.promote {
@@ -153,12 +154,14 @@ pub fn rulesets_for(profile: &DeliveryProfile) -> Vec<RulesetRequest> {
             branch: profile.integration_branch.clone(),
             require_pr: true,
             merge_methods: vec![profile.merge.as_str().to_owned()],
+            restrict_updates: false,
         },
         RulesetRequest {
             name: format!("yulius-production-{}", profile.production_branch),
             branch: profile.production_branch.clone(),
             require_pr: true,
             merge_methods: vec![promote.as_str().to_owned()],
+            restrict_updates: true,
         },
     ]
 }
@@ -1187,6 +1190,9 @@ mod tests {
         assert_eq!(rules[1].branch, "main");
         assert_eq!(rules[1].merge_methods, vec!["merge".to_owned()]);
         assert!(rules.iter().all(|r| r.require_pr));
+        // ADR-0114: only people (repository admins) move the production branch.
+        assert!(!rules[0].restrict_updates);
+        assert!(rules[1].restrict_updates);
     }
 
     /// F 2026-10-11: commits carry the address GitHub links to the account (`{id}+{login}`).

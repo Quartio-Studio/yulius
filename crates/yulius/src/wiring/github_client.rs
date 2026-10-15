@@ -325,6 +325,7 @@ impl GitHubPort for GitHubAdapter {
             allowed_merge_methods: methods,
             block_force_push: true,
             block_deletion: true,
+            restrict_updates: request.restrict_updates,
         };
         self.plain
             .create_branch_ruleset(&gh(token), owner, name, &spec)

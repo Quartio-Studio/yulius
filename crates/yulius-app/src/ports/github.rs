@@ -104,6 +104,8 @@ pub struct RulesetRequest {
     pub require_pr: bool,
     /// Allowed merge methods (`squash`, `merge`, `rebase`).
     pub merge_methods: Vec<String>,
+    /// Only repository admins may update the branch: the production branch (ADR-0114).
+    pub restrict_updates: bool,
 }
 
 /// Aggregated checks.
