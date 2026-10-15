@@ -18,6 +18,10 @@ pub struct StepProgress {
     /// is 90.
     #[serde(default)]
     pub percent: u8,
+    /// Share of the plan's effort in progress, 0-100: `percent + active_percent` is the finished
+    /// and in-progress share rounded down (#150). 0 from older servers.
+    #[serde(default)]
+    pub active_percent: u8,
 }
 
 /// A task in lists and events.

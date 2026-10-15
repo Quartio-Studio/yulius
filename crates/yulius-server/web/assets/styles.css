@@ -1272,8 +1272,12 @@ a.chain-chip:hover { background: var(--surface-3); color: var(--text); }
 .step-current { flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .step-task { flex: 0 1 auto; min-width: 0; color: var(--text); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .step-task-num { margin-right: 6px; color: var(--muted); font-weight: 400; font-variant-numeric: tabular-nums; }
-.step-progress { width: 120px; height: 4px; border-radius: var(--radius-full); background: var(--accent-track); overflow: hidden; flex: none; }
-.step-progress-fill { width: 0; height: 100%; background: var(--series-1); border-radius: var(--radius-full); transition: width var(--duration-slow) var(--ease); }
+.step-progress { display: flex; width: 120px; height: 4px; border-radius: var(--radius-full); background: var(--accent-track); overflow: hidden; flex: none; }
+.step-progress-fill { flex: none; width: 0; height: 100%; background: var(--series-1); border-radius: var(--radius-full); transition: width var(--duration-slow) var(--ease); }
+/* The step in progress, in the working colour (the "Working" mark beside the bar), right after
+   the finished share; the two meet square (#150, SPEC-159). */
+.step-progress-active { flex: none; width: 0; height: 100%; background: var(--ok); border-radius: 0 var(--radius-full) var(--radius-full) 0; transition: width var(--duration-slow) var(--ease); }
+.step-progress-fill:has(+ .step-progress-active:not([hidden])) { border-radius: var(--radius-full) 0 0 var(--radius-full); }
 .strip-delivery { display: inline-flex; align-items: center; gap: 8px; }
 .strip-delivery:empty { display: none; }
 button.strip-pr { background: transparent; font-family: inherit; cursor: pointer; }

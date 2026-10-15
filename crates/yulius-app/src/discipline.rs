@@ -41,8 +41,8 @@ pub fn step_states(records: &[StepRecord], timings: &[StepTiming]) -> Vec<StepSt
         .collect()
 }
 
-/// The API's progress summary: effort-weighted `percent`, finished (done or skipped) and all
-/// steps, and the current step.
+/// The API's progress summary: effort-weighted `percent` and `active_percent` (in progress),
+/// finished (done or skipped) and all steps, and the current step.
 #[must_use]
 pub fn progress_view(records: &[StepRecord]) -> StepProgress {
     let states: Vec<StepState> = records.iter().map(|r| step_state(r, None)).collect();
@@ -52,6 +52,7 @@ pub fn progress_view(records: &[StepRecord]) -> StepProgress {
         total: u32::try_from(p.total).unwrap_or(u32::MAX),
         current: rules::current(&states).map(|i| records[i].title.clone()),
         percent: p.percent(),
+        active_percent: p.active_percent(),
     }
 }
 
@@ -271,8 +272,11 @@ mod tests {
         ];
         let view = progress_view(&records);
         assert_eq!((view.done, view.total, view.percent), (2, 3, 50));
+        // The step in progress carries 2 of 4 effort units (#150).
+        assert_eq!(view.active_percent, 50);
         assert_eq!(view.current.as_deref(), Some("API"));
         assert_eq!(progress_view(&[]).percent, 0);
+        assert_eq!(progress_view(&[]).active_percent, 0);
         assert_eq!(
             step_by_title(&records, "  store ").map(|r| r.id.as_str()),
             Some("b")
