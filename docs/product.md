@@ -70,8 +70,11 @@ watching, steering and unblocking.
   Until a task starts, how it starts can change: the start chip in a waiting task's view offers
   the same choices as New task (after a task, a rule, When I decide, a time, Start now or
   Supertask); a task that started keeps its start.
-  An image or file pasted or dropped into the prompt sits in its text where it was put, as a
-  thumbnail or chip that moves and deletes like a character, and the agent gets it at that place.
+  An image or file pasted or dropped into the prompt shows in a tray above the text, where an
+  image opens large (fitted or at its actual size), and sits in the text as a one-line
+  placeholder (`Image 1`) at the caret. The placeholder moves and deletes like a character, or is
+  placed from the tray, and the agent gets the file at that place (a file left without one comes
+  after the text).
   A half-written task (its prompt, attached files and choices) waits in the composer while
   people look elsewhere, also across a reload, until it starts.
   A task is its owner's: Yulius acts on GitHub for it with their credentials (the agent's own Git

@@ -44,8 +44,8 @@ async function leaveAndReturn(browser: Browser, screen: Screen): Promise<void> {
   await expect(browser).toHaveURL(/#\/s\/studio$/);
 }
 
-/** The names of the files in the prompt's text, in order (SPEC-124: they sit inside it). */
-const attachmentNames = (browser: Browser) => browser.evaluate(() => [...document.querySelectorAll('.composer-prompt .pi-atom:not(.pi-pending)')].map((atom) => atom.getAttribute('title')));
+/** The names of the attached files, in order (SPEC-150: the tray above the text holds them). */
+const attachmentNames = (browser: Browser) => browser.evaluate(() => [...document.querySelectorAll('.composer-attachments .composer-attachment-name')].map((name) => name.textContent));
 
 test('the prompt and its attachments come back after visiting another page', async ({ app, browser, screen }) => {
   await app.open(mock('/s/studio'));
@@ -59,10 +59,9 @@ test('the prompt and its attachments come back after visiting another page', asy
 
   await expect.poll(() => promptText(browser)).toBe('If I type something here[screen.png][notes.pdf]');
   await expect.poll(() => attachmentNames(browser)).toEqual(['screen.png', 'notes.pdf']);
-  await expect(browser.locator('.composer-prompt .pi-image img')).toHaveCount(1);
+  await expect(browser.locator('.composer-attachments img')).toHaveCount(1);
   // A removed attachment stays removed.
-  await prompt.press('End');
-  await prompt.press('Backspace');
+  await screen.getByRole('button', 'Remove notes.pdf').click();
   await leaveAndReturn(browser, screen);
   await expect.poll(() => attachmentNames(browser)).toEqual(['screen.png']);
 });
@@ -129,7 +128,7 @@ test('the draft survives a reload and is cleared once the task starts', async ({
   await expect.poll(() => promptText(browser)).toBe('Kept across a reload[screen.png][notes.pdf]');
   await expect.poll(() => attachmentNames(browser)).toEqual(['screen.png', 'notes.pdf']);
   // The image keeps a (stored, scaled) thumbnail.
-  await expect(browser.locator('.composer-prompt .pi-image img')).toHaveCount(1);
+  await expect(browser.locator('.composer-attachments img')).toHaveCount(1);
   // SPEC-025: it still opens, as its thumbnail; the PDF's bytes stayed with the old page, so its
   // chip is not a button any more.
   await screen.getByRole('button', 'Preview').click();
@@ -186,8 +185,7 @@ test('an upload that ends after leaving and coming back shows in the composer', 
   await browser.evaluate(() => (window as unknown as Holding).__release!());
   // What will be sent is what shows, and can be removed.
   await expect.poll(() => attachmentNames(browser)).toEqual(['late.pdf']);
-  await screen.getByRole('textbox', 'Task prompt').press('End');
-  await screen.getByRole('textbox', 'Task prompt').press('Backspace');
+  await screen.getByRole('button', 'Remove late.pdf').click();
   await expect.poll(() => attachmentNames(browser)).toEqual([]);
 });
 
@@ -244,10 +242,10 @@ test('a stored draft drops attachments the server no longer keeps and unsafe thu
     }));
   });
   await app.open(mock('/s/studio'));
-  // A draft from before SPEC-124 holds its files apart from its text: they follow it.
-  await expect.poll(() => promptText(browser)).toBe('From last week\n[fresh.png]');
+  // A draft from before SPEC-124 holds its files apart from its text: they show in the tray.
+  await expect.poll(() => promptText(browser)).toBe('From last week');
   await expect.poll(() => attachmentNames(browser)).toEqual(['fresh.png']);
-  await expect(browser.locator('.composer-prompt .pi-image img')).toHaveCount(0);
+  await expect(browser.locator('.composer-attachments img')).toHaveCount(0);
   await expect(screen.getByRole('button', 'Mode: Auto mode')).toBeVisible();
 });
 
@@ -335,5 +333,6 @@ test('text typed in a returned composer while an upload ends is kept with the fi
   await expect.poll(() => attachmentNames(browser)).toEqual(['late.pdf']);
   await expect.poll(() => storedDraft(browser)).toMatchObject({ files: ['late.pdf'] });
   await browser.reload();
-  await expect.poll(() => promptText(browser)).toBe('Words more typed\n[late.pdf]');
+  await expect.poll(() => promptText(browser)).toBe('Words more typed');
+  await expect.poll(() => attachmentNames(browser)).toEqual(['late.pdf']);
 });

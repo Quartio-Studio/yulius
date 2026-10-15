@@ -18,6 +18,12 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   - **#399:** the task summary says `not_started` and `awaits_start_onboarding`. The UI reads the
     onboarding task of a `pending` sandbox "Waits for Start onboarding", and a task that never ran
     "Not started". Neither is in the Closed group, tab or count.
+- Uploading files and positioning them are two steps again in the new-task composer (SPEC-150,
+  ADR-0124, task #144). Pasted or dropped files show in a tray above the prompt, numbered; a click
+  opens an image large, fitted to the window or at its actual size. In the text each file is a
+  one-line placeholder (`Image 1`) at the caret, moved by drag, by cut and paste or by dragging its
+  tray thumbnail into the text. × in the tray removes a file; a file without a placeholder is sent
+  after the text.
 - CI and CD are one CI/CD page (SPEC-151, task #145, ADR-0125): the sidebar's single **CI/CD**
   entry opens a page whose **CI (tests)** and **CD (deployment)** tabs work like the Secrets page's
   Team and Agent tabs; the CD tab is `?section=cd` and `/s/<slug>/cd` (with `?run=`) still opens it.
