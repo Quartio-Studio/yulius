@@ -6,6 +6,11 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
 
 ## 2026-10-15
 
+- Text selected in Claude Code's full-screen view is copied again (SPEC-158, ADR-0130, task #149,
+  fixes #519). Claude Code copies its own plain-drag selection with OSC 52, which the web terminal
+  dropped; the write now reaches the clipboard of the viewer who just used the terminal, and when
+  the browser refuses it (Safari, plain HTTP) ⌘C / Ctrl+Shift+C copies it. Queries are never
+  answered.
 - Onboarding writes never undo a Skip; a task that never ran is not Closed (SPEC-153, ADR-0126,
   task #126, fixes #406, #431 and #399):
   - **#406:** every onboarding state write is a compare-and-set from the state it read, so Start
