@@ -1525,9 +1525,11 @@ mod tests {
         input.repo_instructions = vec![long.clone(); 50];
         input.parallel_tasks[0].title = huge.clone();
         input.decision_titles[0] = huge.clone();
+        // SPEC-173: the largest mandatory set, with the isolated sandbox's section.
+        input.isolated = true;
         let text = build_briefing(&input, DEFAULT_BUDGET_BYTES);
         assert!(text.len() <= DEFAULT_BUDGET_BYTES, "{} bytes", text.len());
-        for heading in MANDATORY_HEADINGS {
+        for heading in MANDATORY_HEADINGS.into_iter().chain(["## Containers"]) {
             assert!(text.contains(heading), "missing {heading}");
         }
         for needle in [
@@ -1876,6 +1878,43 @@ mod tests {
         let plain = build_briefing(&base(&profile, &layout)?, DEFAULT_BUDGET_BYTES);
         assert!(!plain.contains("## Containers"), "{plain}");
         assert!(!plain.contains("no container engine"), "{plain}");
+        Ok(())
+    }
+
+    /// SPEC-173 CTR-002 (review of task #163): the hook lowers the budget by the workflow
+    /// instructions (a Fix workflow is about 1.7 KB). An isolated Fix task's briefing with
+    /// realistic fields keeps its task header and every mandatory part, uncut.
+    #[test]
+    fn an_isolated_fix_task_keeps_every_mandatory_part_within_the_workflow_budget() -> TestResult {
+        let profile = DeliveryProfile::standard();
+        let layout = DocsLayout::default();
+        let mut input = BriefingInput {
+            isolated: true,
+            ..base(&profile, &layout)?
+        };
+        input.project_name = "Quartio-Studio/yulius".to_owned();
+        input.task.id = TaskId::parse("18fcb52b-ce6f-4546-bab5-a771d949c52e")?;
+        input.task.title = "i got this from a different projectfix".to_owned();
+        input.task.goal = "a deployer that builds images and copies them to VMs ".repeat(12);
+        input.task.branch = "feat/163-i-got-this-from-a-different-projectfix".to_owned();
+        input.task.spec_path =
+            ".ai/specs/SPEC-173-i-got-this-from-a-different-projectfix.md".to_owned();
+        input.task.workflow = Some("Fix".to_owned());
+        input.repo_instructions = vec!["AGENTS.md".to_owned(), "CLAUDE.md".to_owned()];
+        let budget = DEFAULT_BUDGET_BYTES - 1_800;
+        let text = build_briefing(&input, budget);
+        assert!(text.len() <= budget, "{} bytes", text.len());
+        for needle in MANDATORY_HEADINGS.into_iter().chain([
+            "## Containers",
+            "Task id: `18fcb52b-ce6f-4546-bab5-a771d949c52e`",
+            "Spec: .ai/specs/SPEC-173-",
+        ]) {
+            assert!(text.contains(needle), "missing {needle} in {text}");
+        }
+        assert!(
+            !text.trim_end().ends_with(TRUNCATION_MARKER),
+            "mandatory parts were cut: {text}"
+        );
         Ok(())
     }
 }
