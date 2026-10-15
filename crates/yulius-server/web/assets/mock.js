@@ -999,6 +999,24 @@ route('POST', `/api/sandboxes/${ID}/purge`, ({ db, p }) => {
   return { state: waiting.length ? 'waiting' : 'purged', waiting_for: waiting };
 });
 
+// Moving a playground to GitHub (SPEC-176): the mock keeps the moves (`__yuliusMock.moves`), and
+// `moveRefusal` makes the server refuse with that sentence.
+route('POST', `/api/sandboxes/${ID}/move-to-github`, ({ db, p, body }) => {
+  const sandbox = sandboxOf(db, p[0]);
+  need(sandbox, 'admin');
+  if (!sandbox.playground) fail(409, 'conflict', 'only a playground moves to GitHub');
+  if (!db.me.instance.github_configured) fail(409, 'conflict', 'connect this instance to GitHub first');
+  const name = String((body && body.name) || '');
+  if (!/^[A-Za-z0-9._-]{1,100}$/.test(name)) fail(422, 'invalid', `${name} is not a GitHub repository name`);
+  if (db.moveRefusal) fail(409, 'conflict', db.moveRefusal);
+  const owner = db.me.instance.owner_login;
+  sandbox.playground = false;
+  sandbox.repo = { owner, name, url: `https://github.com/${owner}/${name}` };
+  (db.moves = db.moves || []).push({ slug: sandbox.slug, name });
+  resync(db);
+  return sandbox;
+});
+
 // Live previews (ADR-14, "Open live in a new window"): the mock has no preview proxy, so a
 // live page is a small data: page.
 const MOCK_PREVIEW = ['<!doctype html><html lang="en"><title>Mock app</title><body><h1>Mock app on port ', '</h1><p>On a real server this tab shows the dev server live, running in your browser.</p></body></html>'];
