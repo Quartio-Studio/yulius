@@ -122,3 +122,4 @@ number differs from the file name, and a record this index does not list.
 - [0106](0106-the-superagent-is-opened-from-the-tools-rail-only.md): The Superagent is opened from the tools rail, not a top-bar button
 - [0115](0115-a-received-hook-is-applied-to-its-end.md): A hook Yulius received is applied to its end in its own task, even when the hook client stopped waiting and closed its connection
 - [0113](0113-github-s-branch-says-whether-a-head-is-pushed.md): A head is pushed when GitHub's branch is at it, whatever `git push` said; `yulius wait` clears a push note once the branch is at its head, and `delivery_merge` answers only with the note its own call wrote
+- [0119](0119-ci-keeps-failing-tests-output-from-the-whole-job.md): A CI job keeps its failing tests' output from all it printed (nextest and libtest failure blocks, bounded) with the job, and `ci_status` shows it before the end of its output
