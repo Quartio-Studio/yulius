@@ -127,7 +127,8 @@ onboarding** no longer exists: whoever opens a sandbox while its onboarding runs
   runs shows two toasts) and two nits (a stale comment, `openNewTask` reading a possibly stale
   sandbox). After three rounds these go to issue #436 rather than a fourth: the path needs the
   person to leave and return within the seconds the start takes, and its effect is one redundant
-  toast.
+  toast. Fixed by SPEC-175 (task #136): a module-level, per-sandbox marker of the page announcing
+  the opened task replaces the per-mount check; the leave-and-return e2e test counts one toast.
 
 ## Evidence
 
