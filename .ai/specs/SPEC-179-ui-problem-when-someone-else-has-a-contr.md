@@ -118,8 +118,8 @@ reference face crawls along the top between the corners.
   entry's session, redaction of a token and an agent secret, read access (a reader of the project
   reads, an outsider gets 404) and the empty answer for a task with no session.
 - **AC-WAT-2.** e2e: a watcher of a running task sees its transcript (no `.xterm`, no read-only
-  label), new entries appended by the mock appear without a reload, a prompt reads as the owner's,
-  and when the owner hands it over the terminal returns; handing it away brings the transcript back.
+  label), new entries appended by the mock appear without a reload, a late tool result lands inside
+  its call, and when the owner hands it over the terminal returns; handing it away brings the transcript back.
 - **AC-WAT-3.** e2e: scrolled up, new entries do not move the view and "New messages" appears and
   jumps down; at the bottom the view follows.
 - **AC-WAT-4.** e2e: the live transcript's foreground and background equal the terminal's and are
