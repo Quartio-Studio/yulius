@@ -13,6 +13,7 @@ evidence and changelog sections of [SPEC-002](../.ai/specs/SPEC-002-yulius-archi
   same conversation. A goal task whose launch `/goal` was not recorded when the server restarted is
   watched again and flagged if Claude Code never takes it; a goal recorded meanwhile (also while
   Yulius was down) is never flagged.
+
 - Yulius CI jobs can use agent secrets, and every pull request runs a `security` job (SPEC-142,
   ADR-0116, task #140, issue #466). A `[[ci.jobs]]` entry names them, `secrets = "VIDOC_API_KEY"`,
   and only the integration branch's entry of the job's name counts: a pull request's own grant
